@@ -1,0 +1,4 @@
+version: v1.64.5
+plugins:
+  - module: 'github.com/lightninglabs/darepo/tools/linters'
+    path: ./linters
