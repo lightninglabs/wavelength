@@ -1,19 +1,102 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
+.PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: unit unit-cover unit-race check-go-version release
 
 # =========
 # VARIABLES
 # =========
 
+PKG := github.com/lightninglabs/darepo
+TOOLS_DIR := tools
+
+GOCC ?= go
+
+GOIMPORTS_PKG := github.com/rinchsan/gosimports/cmd/gosimports
+
 GO_BIN := $(GOPATH)/bin
 MIGRATE_BIN := $(GO_BIN)/migrate
+GOIMPORTS_BIN := $(GO_BIN)/gosimports
+
+# GO_VERSION is the Go version used for the release build, docker files, and
+# GitHub Actions. This is the reference version for the project.
+GO_VERSION := 1.25.3
+
+GOBUILD := $(GOCC) build -v
+GOINSTALL := $(GOCC) install -v
+GOTEST := $(GOCC) test
+
+GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -name "*pb.go" -not -name "*pb.gw.go" -not -name "*.pb.json.go" -not -path "./db/sqlc/*")
+
+RM := rm -f
+MAKE := make
+XARGS := xargs -L 1
+
+COMMIT := $(shell git describe --tags --dirty 2>/dev/null || echo "unknown")
 
 # DB connection string for migrations (example).
 DB_CONNECTIONSTRING ?= sqlite://./darepo.db
 
-# Print helper.
+# Build tags.
+DEV_TAGS := dev
+LOG_TAGS := nolog
+TEST_FLAGS :=
+RELEASE_TAGS := kvdb_postgres kvdb_sqlite
+
+ifneq ($(tags),)
+DEV_TAGS += ${tags}
+endif
+
+# Coverage settings.
+COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
+COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
+
+# Test commands.
+GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
+UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
+UNIT_RACE := $(UNIT) -race
+UNIT_COVER := $(GOTEST) $(COVER_FLAGS) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(COVER_PKG)
+
+# Linting uses a lot of memory, so keep it under control by limiting the number
+# of workers if requested.
+ifneq ($(workers),)
+LINT_WORKERS = --concurrency=$(workers)
+endif
+
+# Apply the optimized cache mounting from PR #10202.
+DOCKER_TOOLS = docker run \
+  --rm \
+  -v $(shell bash -c "mkdir -p /tmp/go-build-cache; echo /tmp/go-build-cache"):/root/.cache/go-build \
+  -v $(shell bash -c "mkdir -p /tmp/go-lint-cache; echo /tmp/go-lint-cache"):/root/.cache/golangci-lint \
+  -v $$(pwd):/build darepo-tools
+
+GREEN := "\\033[0;32m"
+NC := "\\033[0m"
 define print
-	@echo "===> $(1)"
+	@echo $(GREEN)$1$(NC)
 endef
+
+# Release build settings.
+BUILD_SYSTEM := linux-amd64 linux-arm64 linux-armv7 darwin-amd64 darwin-arm64 windows-amd64
+
+# By default we will build all systems. But with the 'sys' tag, a specific
+# system can be specified. This is useful to release for a subset of
+# systems/architectures.
+ifneq ($(sys),)
+BUILD_SYSTEM = $(sys)
+endif
+
+# ============
+# DEPENDENCIES
+# ============
+
+$(GOIMPORTS_BIN):
+	@$(call print, "Installing goimports.")
+	cd $(TOOLS_DIR); $(GOCC) install -trimpath $(GOIMPORTS_PKG)
+
+# Install golang-migrate if not present.
+$(MIGRATE_BIN):
+	@$(call print, "Installing golang-migrate")
+	go install -tags 'postgres sqlite3' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
 # ============
 # SQLC TARGETS
@@ -37,11 +120,6 @@ sqlc-check: sqlc
 		exit 1; \
 	fi
 
-# Install golang-migrate if not present.
-$(MIGRATE_BIN):
-	@$(call print, "Installing golang-migrate")
-	go install -tags 'postgres sqlite3' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-
 migrate-create: $(MIGRATE_BIN)
 	@$(call print, "Creating migration: $(patchname)")
 	@if [ -z "$(patchname)" ]; then \
@@ -61,6 +139,83 @@ migrate-down: $(MIGRATE_BIN)
 # Main code generation target.
 gen: sqlc
 
+# ==============
+# LINTING & CODE
+# ==============
+
+docker-tools:
+	@$(call print, "Building tools docker image.")
+	docker build -q -t darepo-tools $(TOOLS_DIR)
+
+lint-source: docker-tools
+	@$(call print, "Linting source.")
+	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
+
+lint: check-go-version lint-source
+
+fmt: $(GOIMPORTS_BIN)
+	@$(call print, "Fixing imports.")
+	gosimports -w $(GOFILES_NOVENDOR)
+	@$(call print, "Formatting source.")
+	gofmt -l -w -s $(GOFILES_NOVENDOR)
+
+fmt-check: fmt
+	@$(call print, "Checking fmt results.")
+	if test -n "$$(git status --porcelain)"; then echo "code not formatted correctly, please run `make fmt` again!"; git status; git diff; exit 1; fi
+
+tidy-module:
+	@$(call print, "Running 'go mod tidy' for all modules")
+	cd $(TOOLS_DIR) && go mod tidy
+	cd $(TOOLS_DIR)/linters && go mod tidy
+	go mod tidy
+
+tidy-module-check: tidy-module
+	if test -n "$$(git status --porcelain)"; then echo "modules not updated, please run `make tidy-module` again!"; git status; exit 1; fi
+
+check-go-version: check-go-version-dockerfile check-go-version-yaml
+
+check-go-version-dockerfile:
+	@$(call print, "Checking for target Go version (v$(GO_VERSION)) in Dockerfile files")
+	@./scripts/check-go-version.sh $(GO_VERSION) Dockerfile "FROM golang:"
+
+check-go-version-yaml:
+	@$(call print, "Checking for target Go version (v$(GO_VERSION)) in YAML files")
+	@./scripts/check-go-version.sh $(GO_VERSION) "*.yml *.yaml" "go-version:\\|GO_VERSION:\\|go:"
+
+# =======
+# TESTING
+# =======
+
+unit:
+	@$(call print, "Running unit tests.")
+	$(UNIT)
+
+unit-cover:
+	@$(call print, "Running unit coverage tests.")
+	$(UNIT_COVER)
+
+unit-race:
+	@$(call print, "Running unit race tests.")
+	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
+
+# ============
+# INSTALLATION & RELEASE
+# ============
+
+release:
+	@$(call print, "Cross compiling release binaries.")
+	@for sys in $(BUILD_SYSTEM); do \
+		echo "Building for $$sys"; \
+		export CGO_ENABLED=0 GOOS=$$(echo $$sys | cut -d- -f1) GOARCH=$$(echo $$sys | cut -d- -f2); \
+		if [ "$$GOARCH" = "armv6" ]; then \
+			export GOARCH=arm; export GOARM=6; \
+		elif [ "$$GOARCH" = "armv7" ]; then \
+			export GOARCH=arm; export GOARM=7; \
+		fi; \
+		$(GOBUILD) -trimpath -tags="$(RELEASE_TAGS)" -o /tmp/darepo-$$sys ./cmd/...; \
+		echo; \
+	done
+
 # ============
 # HELP
 # ============
@@ -68,14 +223,34 @@ gen: sqlc
 help:
 	@echo "Available make targets:"
 	@echo ""
+	@echo "Code Generation:"
 	@echo "  sqlc               - Generate SQL code from schema and queries"
 	@echo "  sqlc-check         - Verify SQL code generation is up to date"
+	@echo "  gen                - Generate all code (sqlc, etc.)"
+	@echo ""
+	@echo "Database Migrations:"
 	@echo "  migrate-create     - Create a new migration (requires patchname=...)"
 	@echo "  migrate-up         - Apply all pending migrations"
 	@echo "  migrate-down       - Roll back one migration"
-	@echo "  gen                - Generate all code (sqlc, etc.)"
+	@echo ""
+	@echo "Linting & Formatting:"
+	@echo "  lint               - Run static code analysis"
+	@echo "  fmt                - Format code and fix imports"
+	@echo "  fmt-check          - Verify code is formatted correctly"
+	@echo "  tidy-module        - Run 'go mod tidy' for all modules"
+	@echo "  tidy-module-check  - Verify modules are up to date"
+	@echo ""
+	@echo "Testing:"
+	@echo "  unit               - Run unit tests"
+	@echo "  unit-cover         - Run unit tests with coverage"
+	@echo "  unit-race          - Run unit tests with race detector"
+	@echo ""
+	@echo "Building:"
+	@echo "  release            - Cross compile for all supported platforms"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make sqlc"
+	@echo "  make lint"
+	@echo "  make unit tags=\"test_db_postgres\""
 	@echo "  make migrate-create patchname=add_users_table"
-	@echo "  make migrate-up DB_CONNECTIONSTRING=postgres://user:pass@localhost/dbname"
+	@echo "  make release sys=linux-amd64"
