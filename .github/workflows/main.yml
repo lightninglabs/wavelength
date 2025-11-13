@@ -169,8 +169,8 @@ jobs:
       matrix:
         unit_type:
           - unit-cover
-          - unit tags="test_db_sqlite"
-          - unit tags="test_db_postgres"
+          - unit tags="test_sqlite"
+          - unit tags="test_postgres"
           - unit-race
 
     steps:

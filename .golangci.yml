@@ -4,6 +4,10 @@ run:
   # Abort after 10 minutes.
   timeout: 10m
 
+  build-tags:
+    - test_postgres
+    - test_sqlite
+
 linters-settings:
   custom:
     ll:
