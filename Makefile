@@ -1,9 +1,9 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
-.PHONY: unit unit-cover unit-race check-go-version release
+.PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
 
-# Default target
+# Default target.
 .DEFAULT_GOAL := build
 
 # =========
@@ -45,6 +45,13 @@ DEV_TAGS := dev
 LOG_TAGS := nolog
 TEST_FLAGS :=
 RELEASE_TAGS :=
+
+# Build flags for debug builds (similar to lnd).
+DEV_GCFLAGS := -gcflags "all=-N -l"
+DEV_LDFLAGS := -ldflags "-X $(PKG)/build.Commit=$(COMMIT)"
+
+# Build flags for release builds.
+RELEASE_LDFLAGS := -ldflags "-s -w -buildid= -X $(PKG)/build.Commit=$(COMMIT)"
 
 ifneq ($(tags),)
 DEV_TAGS += ${tags}
@@ -213,15 +220,18 @@ rpc: #? Generate RPC stubs from proto files (uses Docker)
 # BUILDING
 # ============
 
-build: #? Build arkd and arkcli binaries
-	@$(call print, "Building arkd and arkcli.")
-	$(GOBUILD) -o ./arkd ./cmd/arkd
-	$(GOBUILD) -o ./arkcli ./cmd/arkcli
+build: #? Build debug binaries and place in project directory
+	@$(call print, "Building debug binaries.")
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/...
 
-install: #? Install arkd and arkcli to GOPATH/bin
-	@$(call print, "Installing arkd and arkcli.")
-	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkd
-	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkcli
+install: #? Build and install binaries to GOPATH/bin
+	@$(call print, "Installing binaries.")
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/...
+
+clean: #? Remove build artifacts
+	@$(call print, "Cleaning build artifacts.")
+	$(RM) ./merge-sql-schemas
+	$(RM) -r ./bin
 
 # ============
 # INSTALLATION & RELEASE
@@ -229,6 +239,7 @@ install: #? Install arkd and arkcli to GOPATH/bin
 
 release: #? Cross compile for all supported platforms
 	@$(call print, "Cross compiling release binaries.")
+	@mkdir -p ./bin
 	@for sys in $(BUILD_SYSTEM); do \
 		echo "Building for $$sys"; \
 		export CGO_ENABLED=0 GOOS=$$(echo $$sys | cut -d- -f1) GOARCH=$$(echo $$sys | cut -d- -f2); \
@@ -237,7 +248,7 @@ release: #? Cross compile for all supported platforms
 		elif [ "$$GOARCH" = "armv7" ]; then \
 			export GOARCH=arm; export GOARM=7; \
 		fi; \
-		$(GOBUILD) -trimpath -tags="$(RELEASE_TAGS)" -o /tmp/darepo-$$sys ./cmd/...; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/darepo-$$sys ./cmd/...; \
 		echo; \
 	done
 
