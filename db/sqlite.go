@@ -47,15 +47,15 @@ var (
 // SqliteConfig holds all the config arguments needed to interact with our
 // sqlite DB.
 //
-// nolint: lll
+//nolint:ll
 type SqliteConfig struct {
 	// SkipMigrations if true, then all the tables will be created on start
 	// up if they don't already exist.
 	SkipMigrations bool `long:"skipmigrations" description:"Skip applying migrations on startup."`
 
-	// SkipMigrationDbBackup if true, then a backup of the database will not
+	// SkipMigrationDBBackup if true, then a backup of the database will not
 	// be created before applying migrations.
-	SkipMigrationDbBackup bool `long:"skipmigrationdbbackup" description:"Skip creating a backup of the database before applying migrations."`
+	SkipMigrationDBBackup bool `long:"skipmigrationdbbackup" description:"Skip creating a backup of the database before applying migrations."`
 
 	// DatabaseFileName is the full file path where the database file can be
 	// found.
@@ -195,22 +195,23 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string) error {
 // initiating the migration, and then migrates the database to the latest
 // version.
 func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
-	currentDbVersion int, maxMigrationVersion uint) error {
+	currentDBVersion int, maxMigrationVersion uint) error {
 
 	// Determine if a database migration is necessary given the current
 	// database version and the maximum migration version.
-	versionUpgradePending := currentDbVersion < int(maxMigrationVersion)
+	versionUpgradePending := currentDBVersion < int(maxMigrationVersion)
 	if !versionUpgradePending {
 		log.Infof("Current database version is up-to-date, skipping "+
 			"migration attempt and backup creation "+
 			"(current_db_version=%v, max_migration_version=%v)",
-			currentDbVersion, maxMigrationVersion)
+			currentDBVersion, maxMigrationVersion)
+
 		return nil
 	}
 
 	// At this point, we know that a database migration is necessary.
 	// Create a backup of the database before starting the migration.
-	if !s.cfg.SkipMigrationDbBackup {
+	if !s.cfg.SkipMigrationDBBackup {
 		log.Infof("Creating database backup (before applying " +
 			"migration(s))")
 
@@ -224,6 +225,7 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	}
 
 	log.Infof("Applying migrations to database")
+
 	return mig.Up()
 }
 
@@ -245,6 +247,7 @@ func (s *SqliteStore) ExecuteMigrations(target MigrationTarget,
 	}
 
 	sqliteFS := newReplacerFS(sqlSchemas, sqliteSchemaReplacements)
+
 	return applyMigrations(
 		sqliteFS, driver, "sqlc/migrations", "sqlite", target, opts,
 	)
@@ -260,12 +263,12 @@ func NewTestSqliteDB(t testing.TB) *SqliteStore {
 	dbPath := filepath.Join(t.TempDir(), "tmp.db")
 	t.Logf("Creating new SQLite DB handle for testing: %s", dbPath)
 
-	return NewTestSqliteDbHandleFromPath(t, dbPath)
+	return NewTestSqliteDBHandleFromPath(t, dbPath)
 }
 
-// NewTestSqliteDbHandleFromPath is a helper function that creates a SQLite
+// NewTestSqliteDBHandleFromPath is a helper function that creates a SQLite
 // database handle given a database file path.
-func NewTestSqliteDbHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
+func NewTestSqliteDBHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
 	t.Helper()
 
 	sqlDB, err := NewSqliteStore(&SqliteConfig{

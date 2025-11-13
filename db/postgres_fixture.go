@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -92,6 +91,7 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 		if err != nil {
 			return err
 		}
+
 		return testDB.Ping()
 	})
 	require.NoError(t, err, "Could not connect to docker")
@@ -133,7 +133,7 @@ func (f *TestPgFixture) ClearDB(t testing.TB) {
 	require.NoError(t, err)
 
 	_, err = dbConn.ExecContext(
-		context.Background(),
+		t.Context(),
 		`DROP SCHEMA IF EXISTS public CASCADE;
 		 CREATE SCHEMA public;`,
 	)

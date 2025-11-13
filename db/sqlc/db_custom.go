@@ -53,6 +53,8 @@ func NewPostgres(db DBTX) *Queries {
 // meant to replace the `?` placeholders in a SQL query with numbered parameters
 // like `$1`, `$2`, etc. This is required for the sqlc /*SLICE:<field_name>*/
 // workaround. See scripts/gen_sqlc_docker.sh for more details.
+//
+//nolint:unused
 func makeQueryParams(numTotalArgs, numListArgs int) string {
 	diff := numTotalArgs - numListArgs
 	result := ""
@@ -64,5 +66,6 @@ func makeQueryParams(numTotalArgs, numListArgs int) string {
 		}
 		result += fmt.Sprintf("$%d,", i)
 	}
+
 	return result
 }

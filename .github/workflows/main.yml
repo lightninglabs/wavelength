@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "*"
+  merge_group:
+    branches:
+      - "main"
+
+permissions:
+  # Required to manage and delete caches.
+  actions: write
+  # Default permission for checking out code.
+  contents: read
+
+concurrency:
+  # Cancel any previous workflows if they are from a PR or push.
+  group: ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # If you change this please also update GO_VERSION in Makefile.
+  GO_VERSION: 1.25.3
+
+jobs:
+  ########################
+  # static checks
+  ########################
+  static-checks:
+    name: Static Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          # Needed for some checks.
+          fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Setup Go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          use-build-cache: 'no'
+
+      ########################
+      # Check code format
+      ########################
+      - name: Check code format
+        run: make fmt-check
+
+      - name: Check go modules tidiness
+        run: make tidy-module-check
+
+      ########################
+      # SQLC code gen check
+      ########################
+      - name: Docker image cache
+        uses: satackey/action-docker-layer-caching@v0.0.11
+        # Ignore the failure of a step and avoid terminating the job.
+        continue-on-error: true
+
+      - name: Check SQL models
+        run: make sqlc-check
+
+  ########################
+  # lint code
+  ########################
+  lint:
+    name: Lint code
+    runs-on: ubuntu-latest
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          # Use the same cache from unit test job to save time.
+          key-prefix: unit-test
+
+      - name: lint
+        run: GOGC=50 make lint
+
+  ########################
+  # cross compilation
+  ########################
+  cross-compile:
+    name: Cross compilation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-amd64
+            sys: linux-amd64
+          - name: linux-arm64
+            sys: linux-arm64
+          - name: linux-armv7
+            sys: linux-armv7
+          - name: darwin-amd64
+            sys: darwin-amd64
+          - name: darwin-arm64
+            sys: darwin-arm64
+          - name: windows-amd64
+            sys: windows-amd64
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: cross-compile
+          use-build-cache: 'no'
+
+      - name: Build release for ${{ matrix.name }}
+        run: make release sys="${{ matrix.sys }}"
+
+  ########################
+  # run unit tests
+  ########################
+  unit-test:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      # Allow other tests in the matrix to continue if one fails.
+      fail-fast: false
+      matrix:
+        unit_type:
+          - unit-cover
+          - unit tags="test_db_sqlite"
+          - unit tags="test_db_postgres"
+          - unit-race
+
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Clean up runner space
+        uses: ./.github/actions/cleanup-space
+
+      - name: Fetch and rebase on ${{ github.base_ref }}
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/rebase
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: unit-test
+
+      - name: Run ${{ matrix.unit_type }}
+        run: make ${{ matrix.unit_type }}
+
+      - name: Clean coverage
+        run: grep -Ev '(\.pb\.go|\.pb\.json\.go|\.pb\.gw\.go|db/sqlc/)' coverage.txt > coverage-norpc.txt
+        if: matrix.unit_type == 'unit-cover'
+
+      - name: Send coverage
+        uses: coverallsapp/github-action@v2
+        if: matrix.unit_type == 'unit-cover'
+        continue-on-error: true
+        with:
+          file: coverage-norpc.txt
+          flag-name: 'unit'
+          format: 'golang'
+          parallel: true
