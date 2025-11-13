@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -24,17 +23,18 @@ func main() {
 	migrationDir := "db/sqlc/migrations"
 	files, err := os.ReadDir(migrationDir)
 	if err != nil {
+		//nolint:gocritic
 		log.Fatalf("Failed to read migration directory: %v", err)
 	}
 
 	// Filter for .up.sql files and sort them.
 	var migrationFiles []string
-	upSqlPattern := regexp.MustCompile(`\.up\.sql$`)
+	upSQLPattern := regexp.MustCompile(`\.up\.sql$`)
 	for _, file := range files {
 		if file.IsDir() {
 			continue
 		}
-		if upSqlPattern.MatchString(file.Name()) {
+		if upSQLPattern.MatchString(file.Name()) {
 			migrationFiles = append(migrationFiles, file.Name())
 		}
 	}
@@ -100,5 +100,5 @@ func main() {
 		log.Fatalf("Failed to write schema file: %v", err)
 	}
 
-	fmt.Printf("Successfully generated schema at: %s\n", outFile)
+	log.Printf("Successfully generated schema at: %s", outFile)
 }

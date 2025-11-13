@@ -2,7 +2,6 @@ package db
 
 import (
 	"embed"
-	_ "embed"
 )
 
 //go:embed sqlc/migrations/*.*.sql
