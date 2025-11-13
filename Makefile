@@ -1,7 +1,7 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: unit unit-cover unit-race check-go-version release
-.PHONY: build rpc install
+.PHONY: build rpc install help
 
 # Default target
 .DEFAULT_GOAL := build
@@ -106,13 +106,13 @@ $(MIGRATE_BIN):
 # SQLC TARGETS
 # ============
 
-sqlc:
+sqlc: #? Generate SQL code from schema and queries
 	@$(call print, "Generating sql models and queries in Go")
 	./scripts/gen_sqlc_docker.sh
 	@$(call print, "Merging SQL migrations into consolidated schemas")
 	go run ./cmd/merge-sql-schemas/main.go
 
-sqlc-check: sqlc
+sqlc-check: sqlc #? Verify SQL code generation is up to date
 	@$(call print, "Verifying sql code generation")
 	@if [ ! -f db/sqlc/schemas/generated_schema.sql ]; then \
 		echo "Missing file: db/sqlc/schemas/generated_schema.sql"; \
@@ -124,7 +124,7 @@ sqlc-check: sqlc
 		exit 1; \
 	fi
 
-migrate-create: $(MIGRATE_BIN)
+migrate-create: $(MIGRATE_BIN) #? Create a new migration (requires patchname=...)
 	@$(call print, "Creating migration: $(patchname)")
 	@if [ -z "$(patchname)" ]; then \
 		echo "Error: patchname is required. Usage: make migrate-create patchname=add_new_table"; \
@@ -132,16 +132,15 @@ migrate-create: $(MIGRATE_BIN)
 	fi
 	migrate create -dir db/sqlc/migrations -seq -ext sql $(patchname)
 
-migrate-up: $(MIGRATE_BIN)
+migrate-up: $(MIGRATE_BIN) #? Apply all pending migrations
 	@$(call print, "Applying all migrations")
 	migrate -path db/sqlc/migrations -database $(DB_CONNECTIONSTRING) -verbose up
 
-migrate-down: $(MIGRATE_BIN)
+migrate-down: $(MIGRATE_BIN) #? Roll back one migration
 	@$(call print, "Rolling back one migration")
 	migrate -path db/sqlc/migrations -database $(DB_CONNECTIONSTRING) -verbose down 1
 
-# Main code generation target.
-gen: sqlc rpc
+gen: sqlc rpc #? Generate all code (rpc, sqlc, etc.)
 
 # ==============
 # LINTING & CODE
@@ -155,25 +154,25 @@ lint-source: docker-tools
 	@$(call print, "Linting source.")
 	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
 
-lint: check-go-version lint-source
+lint: check-go-version lint-source #? Run static code analysis
 
-fmt: $(GOIMPORTS_BIN)
+fmt: $(GOIMPORTS_BIN) #? Format code and fix imports
 	@$(call print, "Fixing imports.")
 	gosimports -w $(GOFILES_NOVENDOR)
 	@$(call print, "Formatting source.")
 	gofmt -l -w -s $(GOFILES_NOVENDOR)
 
-fmt-check: fmt
+fmt-check: fmt #? Verify code is formatted correctly
 	@$(call print, "Checking fmt results.")
 	if test -n "$$(git status --porcelain)"; then echo "code not formatted correctly, please run `make fmt` again!"; git status; git diff; exit 1; fi
 
-tidy-module:
+tidy-module: #? Run 'go mod tidy' for all modules
 	@$(call print, "Running 'go mod tidy' for all modules")
 	cd $(TOOLS_DIR) && go mod tidy
 	cd $(TOOLS_DIR)/linters && go mod tidy
 	go mod tidy
 
-tidy-module-check: tidy-module
+tidy-module-check: tidy-module #? Verify modules are up to date
 	if test -n "$$(git status --porcelain)"; then echo "modules not updated, please run `make tidy-module` again!"; git status; exit 1; fi
 
 check-go-version: check-go-version-dockerfile check-go-version-yaml
@@ -190,15 +189,15 @@ check-go-version-yaml:
 # TESTING
 # =======
 
-unit:
+unit: #? Run unit tests
 	@$(call print, "Running unit tests.")
 	$(UNIT)
 
-unit-cover:
+unit-cover: #? Run unit tests with coverage
 	@$(call print, "Running unit coverage tests.")
 	$(UNIT_COVER)
 
-unit-race:
+unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
@@ -206,7 +205,7 @@ unit-race:
 # RPC GENERATION
 # ============
 
-rpc:
+rpc: #? Generate RPC stubs from proto files (uses Docker)
 	@$(call print, "Generating RPC stubs from proto files using Docker.")
 	./scripts/gen_protos_docker.sh
 
@@ -214,12 +213,12 @@ rpc:
 # BUILDING
 # ============
 
-build:
+build: #? Build arkd and arkcli binaries
 	@$(call print, "Building arkd and arkcli.")
 	$(GOBUILD) -o ./arkd ./cmd/arkd
 	$(GOBUILD) -o ./arkcli ./cmd/arkcli
 
-install:
+install: #? Install arkd and arkcli to GOPATH/bin
 	@$(call print, "Installing arkd and arkcli.")
 	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkd
 	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkcli
@@ -228,7 +227,7 @@ install:
 # INSTALLATION & RELEASE
 # ============
 
-release:
+release: #? Cross compile for all supported platforms
 	@$(call print, "Cross compiling release binaries.")
 	@for sys in $(BUILD_SYSTEM); do \
 		echo "Building for $$sys"; \
@@ -246,42 +245,14 @@ release:
 # HELP
 # ============
 
-help:
+help: #? Show this help message
 	@echo "Available make targets:"
 	@echo ""
-	@echo "Code Generation:"
-	@echo "  rpc                - Generate RPC stubs from proto files (uses Docker)"
-	@echo "  sqlc               - Generate SQL code from schema and queries"
-	@echo "  sqlc-check         - Verify SQL code generation is up to date"
-	@echo "  gen                - Generate all code (rpc, sqlc, etc.)"
-	@echo ""
-	@echo "Database Migrations:"
-	@echo "  migrate-create     - Create a new migration (requires patchname=...)"
-	@echo "  migrate-up         - Apply all pending migrations"
-	@echo "  migrate-down       - Roll back one migration"
-	@echo ""
-	@echo "Linting & Formatting:"
-	@echo "  lint               - Run static code analysis"
-	@echo "  fmt                - Format code and fix imports"
-	@echo "  fmt-check          - Verify code is formatted correctly"
-	@echo "  tidy-module        - Run 'go mod tidy' for all modules"
-	@echo "  tidy-module-check  - Verify modules are up to date"
-	@echo ""
-	@echo "Testing:"
-	@echo "  unit               - Run unit tests"
-	@echo "  unit-cover         - Run unit tests with coverage"
-	@echo "  unit-race          - Run unit tests with race detector"
-	@echo ""
-	@echo "Building:"
-	@echo "  build              - Build arkd and arkcli binaries"
-	@echo "  install            - Install arkd and arkcli to GOPATH/bin"
-	@echo "  release            - Cross compile for all supported platforms"
+	@grep -E '^[a-zA-Z_-]+:.*?#\? .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?#\\? "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make rpc"
-	@echo "  make sqlc"
-	@echo "  make lint"
 	@echo "  make unit tags=\"test_db_postgres\""
 	@echo "  make migrate-create patchname=add_users_table"
-	@echo "  make release sys=linux-amd64"
