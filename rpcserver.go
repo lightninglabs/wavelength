@@ -16,6 +16,7 @@ import (
 // RPCConfig contains configuration for the client-facing RPC server.
 type RPCConfig struct {
 	// RPCListen is the listen address for the client RPC server.
+	//nolint:ll
 	RPCListen string `long:"listen" description:"Listen address for the client RPC server"`
 
 	// RPCListener is the listener for the client RPC server. If nil,
@@ -33,6 +34,7 @@ func DefaultRPCConfig() *RPCConfig {
 // AdminRPCConfig contains configuration for the admin RPC server.
 type AdminRPCConfig struct {
 	// RPCListen is the listen address for the admin RPC server.
+	//nolint:ll
 	RPCListen string `long:"listen" description:"Listen address for the admin RPC server"`
 
 	// RPCListener is the listener for the admin RPC server. If nil,

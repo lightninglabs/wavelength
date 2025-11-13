@@ -31,6 +31,8 @@ const (
 )
 
 // Config is the main configuration struct for the operator server.
+//
+//nolint:ll
 type Config struct {
 	// DB contains the database configuration (sqlite or postgres).
 	DB *db.Config `group:"db" namespace:"db"`
@@ -46,7 +48,8 @@ type Config struct {
 	Network string `long:"network" description:"Network to run on" choice:"mainnet" choice:"regtest" choice:"testnet" choice:"signet"`
 
 	// Logging contains the logging configuration.
-	LogLevel    string `long:"loglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical}"`
+	LogLevel string `long:"loglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical}"`
+
 	LogFilePath string `long:"logfile" description:"Path to write the log file"`
 
 	Shutdown func()
