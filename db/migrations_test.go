@@ -35,6 +35,16 @@ func TestMigrationSteps(t *testing.T) {
 	// As a first step, we create a new database migrated to version 1.
 	db := NewTestDBWithVersion(t, 1)
 
+	// Insert some test data into the chain_info table.
+	//nolint:ll
+	insertMainnet := transformByteLiterals(t, db.BaseDB, `
+		INSERT INTO chain_info (id, chain_name, genesis_hash) VALUES (
+			1, 'mainnet', X'000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f'
+		)
+	`)
+	_, err := db.ExecContext(ctx, insertMainnet)
+	require.NoError(t, err)
+
 	// We should be able to query the chain_info table.
 	//nolint:ll
 	chainInfoQuery := `SELECT chain_name, genesis_hash FROM chain_info WHERE id = 1`
@@ -42,7 +52,7 @@ func TestMigrationSteps(t *testing.T) {
 	var chainName string
 	var genesisHash []byte
 	//nolint:ll
-	err := db.QueryRowContext(ctx, chainInfoQuery).Scan(&chainName, &genesisHash)
+	err = db.QueryRowContext(ctx, chainInfoQuery).Scan(&chainName, &genesisHash)
 	require.NoError(t, err)
 	require.Equal(t, "mainnet", chainName)
 	require.Len(t, genesisHash, 32) // Bitcoin genesis hash is 32 bytes.

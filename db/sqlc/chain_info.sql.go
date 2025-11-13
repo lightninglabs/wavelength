@@ -10,23 +10,18 @@ import (
 )
 
 const GetChainInfo = `-- name: GetChainInfo :one
-SELECT id, chain_name, genesis_hash, created_at FROM chain_info WHERE chain_name = $1
+SELECT id, chain_name, genesis_hash FROM chain_info WHERE chain_name = $1
 `
 
 func (q *Queries) GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error) {
 	row := q.db.QueryRowContext(ctx, GetChainInfo, chainName)
 	var i ChainInfo
-	err := row.Scan(
-		&i.ID,
-		&i.ChainName,
-		&i.GenesisHash,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.ID, &i.ChainName, &i.GenesisHash)
 	return i, err
 }
 
 const ListChainInfo = `-- name: ListChainInfo :many
-SELECT id, chain_name, genesis_hash, created_at FROM chain_info ORDER BY id
+SELECT id, chain_name, genesis_hash FROM chain_info ORDER BY id
 `
 
 func (q *Queries) ListChainInfo(ctx context.Context) ([]ChainInfo, error) {
@@ -38,12 +33,7 @@ func (q *Queries) ListChainInfo(ctx context.Context) ([]ChainInfo, error) {
 	var items []ChainInfo
 	for rows.Next() {
 		var i ChainInfo
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChainName,
-			&i.GenesisHash,
-			&i.CreatedAt,
-		); err != nil {
+		if err := rows.Scan(&i.ID, &i.ChainName, &i.GenesisHash); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
