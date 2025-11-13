@@ -1,3 +1,4 @@
 /arkcli
 /arkd
 merge-sql-schemas
+**/test-artifacts
