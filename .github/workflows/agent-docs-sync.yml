@@ -1,0 +1,35 @@
+name: Agent Docs Sync Check
+
+on:
+  push:
+    branches:
+      - "master"
+  pull_request:
+    branches:
+      - "*"
+  merge_group:
+    branches:
+      - "master"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel any previous workflows if they are from a PR or push.
+  group: agent-docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check-agent-docs-sync:
+    name: Check CLAUDE.md and AGENTS.md are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+
+      - name: Check agent docs sync
+        run: ./.github/scripts/check-agent-docs-sync.sh
