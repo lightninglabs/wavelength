@@ -4,13 +4,8 @@
 
 package sqlc
 
-import (
-	"time"
-)
-
 type ChainInfo struct {
 	ID          int64
 	ChainName   string
 	GenesisHash []byte
-	CreatedAt   time.Time
 }

@@ -1,7 +1,6 @@
 CREATE TABLE chain_info (
     id INTEGER PRIMARY KEY,
     chain_name TEXT NOT NULL UNIQUE,
-    genesis_hash BLOB NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    genesis_hash BLOB NOT NULL
 );
 

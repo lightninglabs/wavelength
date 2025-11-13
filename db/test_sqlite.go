@@ -14,7 +14,7 @@ func NewTestDB(t testing.TB) *SqliteStore {
 // NewTestDBHandleFromPath is a helper function that creates a new handle to an
 // existing SQLite database for testing.
 func NewTestDBHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
-	return NewTestSqliteDbHandleFromPath(t, dbPath)
+	return NewTestSqliteDBHandleFromPath(t, dbPath)
 }
 
 // NewTestDBWithVersion is a helper function that creates an SQLite database for
