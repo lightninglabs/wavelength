@@ -28,12 +28,14 @@ func main() {
 
 	// 2) Construct the server.
 	ctxt, cancel := context.WithTimeout(ctx, time.Second*10)
-	defer cancel()
 
 	server, err := darepo.NewServer(ctxt, cfg)
 	if err != nil {
 		err := fmt.Errorf("error creating server: %w", err)
 		_, _ = fmt.Fprintln(os.Stderr, err)
+
+		// Cancel the context to clean up resources.
+		cancel()
 
 		os.Exit(1)
 	}
@@ -43,8 +45,14 @@ func main() {
 		err := fmt.Errorf("error starting server: %w", err)
 		_, _ = fmt.Fprintln(os.Stderr, err)
 
+		// Cancel the context to clean up resources.
+		cancel()
+
 		os.Exit(1)
 	}
+
+	// Normal exit path: cancel the context.
+	cancel()
 }
 
 // setupInterceptor sets up a context that is canceled when an interrupt signal

@@ -240,6 +240,6 @@ issues:
         - godot
 
     # Allow fmt.Printf() in commands.
-    - path: cmd/*/main\.go
+    - path: cmd/.*/main\.go
       linters:
         - forbidigo
