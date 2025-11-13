@@ -8,7 +8,7 @@
 # Example: check-go-version.sh 1.25.3 "Dockerfile" "FROM golang:"
 # Example: check-go-version.sh 1.25.3 "*.yml *.yaml" "go-version:|GO_VERSION:|go:"
 
-set -e
+set -euo pipefail
 
 TARGET_VERSION="$1"
 FILE_PATTERN="$2"
