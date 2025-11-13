@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package arkrpc;
+
+option go_package = "github.com/lightninglabs/darepo/arkrpc";
+
+service ArkService {
+    // GetInfo returns basic information about the ark server
+    rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+    // The version of the protocol that the operator is running.
+    string version = 1;
+
+    // The ark operator's main public key. This pub key must be used in the
+    // construction of boarding scripts
+    bytes pubkey = 2;
+
+    // The network the operator is running on.
+    string network = 3;
+
+    // The current block height tip that the operator is aware of.
+    uint32 block_height = 4;
+}
