@@ -207,11 +207,8 @@ unit-race:
 # ============
 
 rpc:
-	@$(call print, "Generating RPC stubs from proto files.")
-	@$(call print, "Generating arkrpc...")
-	cd arkrpc && ./gen_protos.sh
-	@$(call print, "Generating adminrpc...")
-	cd adminrpc && ./gen_protos.sh
+	@$(call print, "Generating RPC stubs from proto files using Docker.")
+	./scripts/gen_protos_docker.sh
 
 # ============
 # BUILDING
@@ -253,7 +250,7 @@ help:
 	@echo "Available make targets:"
 	@echo ""
 	@echo "Code Generation:"
-	@echo "  rpc                - Generate RPC stubs from proto files"
+	@echo "  rpc                - Generate RPC stubs from proto files (uses Docker)"
 	@echo "  sqlc               - Generate SQL code from schema and queries"
 	@echo "  sqlc-check         - Verify SQL code generation is up to date"
 	@echo "  gen                - Generate all code (rpc, sqlc, etc.)"
