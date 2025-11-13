@@ -22,6 +22,7 @@ func transformByteLiterals(t *testing.T, db *BaseDB, query string) string {
 		re := regexp.MustCompile(`X'([0-9A-Fa-f]+?)'`)
 		query = re.ReplaceAllString(query, `'\x$1'`)
 	}
+
 	return query
 }
 
@@ -29,22 +30,25 @@ func transformByteLiterals(t *testing.T, db *BaseDB, query string) string {
 // migrations by selectively applying only some migrations, inserting dummy data
 // and then applying the remaining migrations.
 func TestMigrationSteps(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// As a first step, we create a new database migrated to version 1.
 	db := NewTestDBWithVersion(t, 1)
 
 	// We should be able to query the chain_info table.
+	//nolint:ll
 	chainInfoQuery := `SELECT chain_name, genesis_hash FROM chain_info WHERE id = 1`
 
 	var chainName string
 	var genesisHash []byte
+	//nolint:ll
 	err := db.QueryRowContext(ctx, chainInfoQuery).Scan(&chainName, &genesisHash)
 	require.NoError(t, err)
 	require.Equal(t, "mainnet", chainName)
 	require.Len(t, genesisHash, 32) // Bitcoin genesis hash is 32 bytes.
 
 	// We can insert a new chain info entry.
+	//nolint:ll
 	insertQuery := transformByteLiterals(t, db.BaseDB, `
 		INSERT INTO chain_info (id, chain_name, genesis_hash) VALUES (
 			2, 'testnet', X'000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943'
@@ -73,9 +77,9 @@ func TestMigrationDowngrade(t *testing.T) {
 	require.ErrorIs(t, err, ErrMigrationDowngrade)
 }
 
-// findDbBackupFilePath walks the directory of the given database file path and
+// findDBBackupFilePath walks the directory of the given database file path and
 // returns the path to the backup file.
-func findDbBackupFilePath(t *testing.T, dbFilePath string) string {
+func findDBBackupFilePath(t *testing.T, dbFilePath string) string {
 	var dbBackupFilePath string
 	dir := filepath.Dir(dbFilePath)
 
@@ -89,6 +93,7 @@ func findDbBackupFilePath(t *testing.T, dbFilePath string) string {
 			if !info.IsDir() && hasSuffix {
 				dbBackupFilePath = path
 			}
+
 			return nil
 		},
 	)
@@ -104,7 +109,7 @@ func findDbBackupFilePath(t *testing.T, dbFilePath string) string {
 // version, create a backup during migration, and then verify both the migrated
 // and backup databases contain the expected data.
 func TestSqliteMigrationBackup(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a new database without running migrations.
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
@@ -122,6 +127,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert some test data.
+	//nolint:ll
 	insertQuery := transformByteLiterals(t, db.BaseDB, `
 		INSERT INTO chain_info (id, chain_name, genesis_hash) VALUES (
 			2, 'regtest', X'0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206'
@@ -156,7 +162,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	// Since we're already at the latest version, no backup should be
 	// created. This test verifies the backup logic works correctly by
 	// NOT creating a backup when unnecessary.
-	dbBackupFilePath := findDbBackupFilePath(t, dbFileName)
+	dbBackupFilePath := findDBBackupFilePath(t, dbFileName)
 	require.Empty(t, dbBackupFilePath, "no backup should be created "+
 		"when already at latest version")
 }

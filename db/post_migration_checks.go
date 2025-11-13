@@ -23,6 +23,8 @@ var (
 	//
 	// NOTE: This is empty for now, but can be populated with custom
 	// migration checks as needed.
+	//
+	//nolint:unused
 	postMigrationChecks = map[uint]postMigrationCheck{}
 )
 
@@ -42,7 +44,7 @@ func makePostStepCallbacks(db DatabaseBackend,
 
 	var (
 		ctx  = context.Background()
-		txDb = NewTransactionExecutor(
+		txDB = NewTransactionExecutor(
 			db, func(tx *sql.Tx) sqlc.Querier {
 				return db.WithTx(tx)
 			},
@@ -80,7 +82,7 @@ func makePostStepCallbacks(db DatabaseBackend,
 		postStepCallbacks[version] = func(m *migrate.Migration,
 			_ database.Driver) error {
 
-			return txDb.ExecTx(
+			return txDB.ExecTx(
 				ctx, writeTxOpts, func(q sqlc.Querier) error {
 					return runCheck(m, q)
 				},

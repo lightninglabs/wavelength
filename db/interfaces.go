@@ -76,7 +76,7 @@ func WriteTxOption() *BaseTxOptions {
 type BatchedTx[Q any] interface {
 	// ExecTx will execute the passed txBody, operating upon generic
 	// parameter Q (usually a storage interface) in a single transaction.
-	// The set of TxOptions are passed in in order to allow the caller to
+	// The set of TxOptions are passed in order to allow the caller to
 	// specify if a transaction should be read-only and optionally what
 	// type of concurrency control should be used.
 	ExecTx(ctx context.Context, txOptions TxOptions,
@@ -161,6 +161,7 @@ func (t *txExecutorOptions) randRetryDelay(attempt int) time.Duration {
 	// multiplying the value with 2^n. We limit the power to 32 to avoid
 	// overflows.
 	factor := time.Duration(math.Pow(2, math.Min(float64(attempt), 32)))
+	//nolint:durationcheck
 	actualDelay := initialDelay * factor
 
 	// Cap the delay at the maximum configured value.
@@ -272,6 +273,7 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				_ = tx.Rollback()
 
 				waitBeforeRetry(i)
+
 				continue
 			}
 
@@ -287,6 +289,7 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				_ = tx.Rollback()
 
 				waitBeforeRetry(i)
+
 				continue
 			}
 
@@ -322,6 +325,7 @@ func (s *BaseDB) BeginTx(ctx context.Context, opts TxOptions) (*sql.Tx, error) {
 		ReadOnly:  opts.ReadOnly(),
 		Isolation: sql.LevelSerializable,
 	}
+
 	return s.DB.BeginTx(ctx, &sqlOptions)
 }
 

@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -22,10 +21,11 @@ var (
 )
 
 // sqlInt64 turns a numerical integer type into the NullInt64 that sql/sqlc
-// uses when an integer field can be permitted to be NULL.
+// uses when an integer field can be permitted to be NULL.  We use the
+// constraints.Integer constraint here which maps to all signed and unsigned
+// integer types.
 //
-// We use the constraints.Integer constraint here which maps to all signed and
-// unsigned integer types.
+//nolint:unused
 func sqlInt64[T constraints.Integer](num T) sql.NullInt64 {
 	return sql.NullInt64{
 		Int64: int64(num),
@@ -34,10 +34,11 @@ func sqlInt64[T constraints.Integer](num T) sql.NullInt64 {
 }
 
 // sqlInt32 turns a numerical integer type into the NullInt32 that sql/sqlc
-// uses when an integer field can be permitted to be NULL.
+// uses when an integer field can be permitted to be NULL.  We use the
+// constraints.Integer constraint here which maps to all signed and unsigned
+// integer types.
 //
-// We use the constraints.Integer constraint here which maps to all signed and
-// unsigned integer types.
+//nolint:unused
 func sqlInt32[T constraints.Integer](num T) sql.NullInt32 {
 	return sql.NullInt32{
 		Int32: int32(num),
@@ -46,10 +47,11 @@ func sqlInt32[T constraints.Integer](num T) sql.NullInt32 {
 }
 
 // sqlInt16 turns a numerical integer type into the NullInt16 that sql/sqlc
-// uses when an integer field can be permitted to be NULL.
+// uses when an integer field can be permitted to be NULL.  We use the
+// constraints.Integer constraint here which maps to all signed and unsigned
+// integer types.
 //
-// We use the constraints.Integer constraint here which maps to all signed and
-// unsigned integer types.
+//nolint:unused
 func sqlInt16[T constraints.Integer](num T) sql.NullInt16 {
 	return sql.NullInt16{
 		Int16: int16(num),
@@ -59,6 +61,8 @@ func sqlInt16[T constraints.Integer](num T) sql.NullInt16 {
 
 // sqlBool turns a boolean into the NullBool that sql/sqlc uses when a boolean
 // field can be permitted to be NULL.
+//
+//nolint:unused
 func sqlBool(b bool) sql.NullBool {
 	return sql.NullBool{
 		Bool:  b,
@@ -68,6 +72,8 @@ func sqlBool(b bool) sql.NullBool {
 
 // sqlStr turns a string into the NullString that sql/sqlc uses when a string
 // can be permitted to be NULL.
+//
+//nolint:unused
 func sqlStr(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
@@ -79,65 +85,84 @@ func sqlStr(s string) sql.NullString {
 	}
 }
 
-// extractSqlInt64 turns a NullInt64 into a numerical type. This can be useful
+// extractSQLInt64 turns a NullInt64 into a numerical type. This can be useful
 // when reading directly from the database, as this function handles extracting
 // the inner value from the "option"-like struct.
-func extractSqlInt64[T constraints.Integer](num sql.NullInt64) T {
+//
+//nolint:unused
+func extractSQLInt64[T constraints.Integer](num sql.NullInt64) T {
 	return T(num.Int64)
 }
 
-// extractSqlInt32 turns a NullInt32 into a numerical type. This can be useful
+// extractSQLInt32 turns a NullInt32 into a numerical type. This can be useful
 // when reading directly from the database, as this function handles extracting
 // the inner value from the "option"-like struct.
-func extractSqlInt32[T constraints.Integer](num sql.NullInt32) T {
+//
+//nolint:unused
+func extractSQLInt32[T constraints.Integer](num sql.NullInt32) T {
 	return T(num.Int32)
 }
 
-// extractSqlInt16 turns a NullInt16 into a numerical type. This can be useful
+// extractSQLInt16 turns a NullInt16 into a numerical type. This can be useful
 // when reading directly from the database, as this function handles extracting
 // the inner value from the "option"-like struct.
-func extractSqlInt16[T constraints.Integer](num sql.NullInt16) T {
+//
+//nolint:unused
+func extractSQLInt16[T constraints.Integer](num sql.NullInt16) T {
 	return T(num.Int16)
 }
 
 // extractBool turns a NullBool into a boolean. This can be useful when reading
 // directly from the database, as this function handles extracting the inner
 // value from the "option"-like struct.
+//
+//nolint:unused
 func extractBool(b sql.NullBool) bool {
 	return b.Bool
 }
 
 // fMapKeys extracts the set of keys from a map, applies the function f to each
 // element and returns the results in a new slice.
+//
+//nolint:unused
 func fMapKeys[K comparable, V, R any](m map[K]V, f func(K) R) []R {
 	keys := make([]R, 0, len(m))
 	for k := range m {
 		r := f(k)
 		keys = append(keys, r)
 	}
+
 	return keys
 }
 
 // fMap takes an input slice, and applies the function f to each element,
 // yielding a new slice.
+//
+//nolint:unused
 func fMap[T1, T2 any](s []T1, f func(T1) T2) []T2 {
 	r := make([]T2, len(s))
 	for i, v := range s {
 		r[i] = f(v)
 	}
+
 	return r
 }
 
 // mergeMap adds all the values that are in map b to map a.
+//
+//nolint:unused
 func mergeMap[K comparable, V any](a, b map[K]V) map[K]V {
 	for k, v := range b {
 		a[k] = v
 	}
+
 	return a
 }
 
 // noError1 calls a function with 1 argument and verifies that no error is
 // returned. If the error is nil, then the value is returned.
+//
+//nolint:unused
 func noError1[T any, Q any](t *testing.T, f func(Q) (T, error), args Q) T {
 	v, err := f(args)
 	require.NoError(t, err)
@@ -146,6 +171,8 @@ func noError1[T any, Q any](t *testing.T, f func(Q) (T, error), args Q) T {
 
 // parseCoalesceNumericType parses a value that is expected to be a numeric
 // value into a numeric type.
+//
+//nolint:unused
 func parseCoalesceNumericType[T constraints.Integer](value any) (T, error) {
 	switch typedValue := value.(type) {
 	case int64:
@@ -178,7 +205,7 @@ func parseCoalesceNumericType[T constraints.Integer](value any) (T, error) {
 // InsertTestdata reads the given file and inserts its content into the given
 // database. The file should contain valid SQL statements.
 func InsertTestdata(t *testing.T, db *BaseDB, filePath string) {
-	ctx := context.Background()
+	ctx := t.Context()
 	tx, err := db.BeginTx(ctx, &BaseTxOptions{readOnly: false})
 	require.NoError(t, err)
 

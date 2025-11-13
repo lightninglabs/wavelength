@@ -49,21 +49,21 @@ func parseSqliteError(sqliteErr *sqlite.Error) error {
 	case sqlite3.SQLITE_CONSTRAINT_UNIQUE,
 		sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
 
-		return &ErrSqlUniqueConstraintViolation{
-			DbError: sqliteErr,
+		return &ErrSQLUniqueConstraintViolation{
+			DBError: sqliteErr,
 		}
 
 	// Database is currently busy, so we'll need to try again.
 	case sqlite3.SQLITE_BUSY:
 		return &ErrSerializationError{
-			DbError: sqliteErr,
+			DBError: sqliteErr,
 		}
 
 	// A write operation could not continue because of a conflict within
 	// the same database connection.
 	case sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_BUSY_SNAPSHOT:
 		return &ErrDeadlockError{
-			DbError: sqliteErr,
+			DBError: sqliteErr,
 		}
 
 	// Generic error, need to parse the message further.
@@ -73,7 +73,7 @@ func parseSqliteError(sqliteErr *sqlite.Error) error {
 		switch {
 		case strings.Contains(errMsg, "no such table"):
 			return &ErrSchemaError{
-				DbError: sqliteErr,
+				DBError: sqliteErr,
 			}
 
 		default:
@@ -91,27 +91,27 @@ func parsePostgresError(pqErr *pgconn.PgError) error {
 	switch pqErr.Code {
 	// Handle unique constraint violation error.
 	case pgerrcode.UniqueViolation:
-		return &ErrSqlUniqueConstraintViolation{
-			DbError: pqErr,
+		return &ErrSQLUniqueConstraintViolation{
+			DBError: pqErr,
 		}
 
 	// Unable to serialize the transaction, so we'll need to try again.
 	case pgerrcode.SerializationFailure:
 		return &ErrSerializationError{
-			DbError: pqErr,
+			DBError: pqErr,
 		}
 
 	// A write operation could not continue because of a conflict within
 	// the same database connection.
 	case pgerrcode.DeadlockDetected:
 		return &ErrDeadlockError{
-			DbError: pqErr,
+			DBError: pqErr,
 		}
 
 	// Handle schema error.
 	case pgerrcode.UndefinedColumn, pgerrcode.UndefinedTable:
 		return &ErrSchemaError{
-			DbError: pqErr,
+			DBError: pqErr,
 		}
 
 	default:
@@ -120,47 +120,47 @@ func parsePostgresError(pqErr *pgconn.PgError) error {
 	}
 }
 
-// ErrSqlUniqueConstraintViolation is an error type which represents a database
+// ErrSQLUniqueConstraintViolation is an error type which represents a database
 // agnostic SQL unique constraint violation.
-type ErrSqlUniqueConstraintViolation struct {
-	DbError error
+type ErrSQLUniqueConstraintViolation struct {
+	DBError error
 }
 
-func (e ErrSqlUniqueConstraintViolation) Error() string {
-	return fmt.Sprintf("sql unique constraint violation: %v", e.DbError)
+func (e ErrSQLUniqueConstraintViolation) Error() string {
+	return fmt.Sprintf("sql unique constraint violation: %v", e.DBError)
 }
 
 // ErrSerializationError is an error type which represents a database agnostic
 // error that a transaction couldn't be serialized with other concurrent db
 // transactions.
 type ErrSerializationError struct {
-	DbError error
+	DBError error
 }
 
 // Unwrap returns the wrapped error.
 func (e ErrSerializationError) Unwrap() error {
-	return e.DbError
+	return e.DBError
 }
 
 // Error returns the error message.
 func (e ErrSerializationError) Error() string {
-	return e.DbError.Error()
+	return e.DBError.Error()
 }
 
 // ErrDeadlockError is an error type which represents a database agnostic error
 // where transactions have led to cyclic dependencies in lock acquisition.
 type ErrDeadlockError struct {
-	DbError error
+	DBError error
 }
 
 // Unwrap returns the wrapped error.
 func (e ErrDeadlockError) Unwrap() error {
-	return e.DbError
+	return e.DBError
 }
 
 // Error returns the error message.
 func (e ErrDeadlockError) Error() string {
-	return e.DbError.Error()
+	return e.DBError.Error()
 }
 
 // IsSerializationError returns true if the given error is a serialization
@@ -185,17 +185,17 @@ func IsSerializationOrDeadlockError(err error) bool {
 // ErrSchemaError is an error type which represents a database agnostic error
 // that the schema of the database is incorrect for the given query.
 type ErrSchemaError struct {
-	DbError error
+	DBError error
 }
 
 // Unwrap returns the wrapped error.
 func (e ErrSchemaError) Unwrap() error {
-	return e.DbError
+	return e.DBError
 }
 
 // Error returns the error message.
 func (e ErrSchemaError) Error() string {
-	return e.DbError.Error()
+	return e.DBError.Error()
 }
 
 // IsSchemaError returns true if the given error is a schema error.
@@ -207,12 +207,12 @@ func IsSchemaError(err error) bool {
 // ErrDatabaseConnectionError is an error type which represents a database
 // connection error with sensitive information sanitized.
 type ErrDatabaseConnectionError struct {
-	DbError error
+	DBError error
 }
 
 // Unwrap returns the wrapped error.
 func (e ErrDatabaseConnectionError) Unwrap() error {
-	return e.DbError
+	return e.DBError
 }
 
 // Error returns a generic error message without revealing connection details.
@@ -262,7 +262,7 @@ func sanitizeConnectionError(err error) error {
 		// sanitized version to prevent information leakage.
 		log.Errorf("Database connection error (sanitized): %v", err)
 		return &ErrDatabaseConnectionError{
-			DbError: err,
+			DBError: err,
 		}
 	}
 

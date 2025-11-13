@@ -8,6 +8,7 @@ import (
 
 	postgres_migrate "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +45,7 @@ var (
 
 // PostgresConfig holds the postgres database configuration.
 //
-// nolint:lll
+//nolint:ll
 type PostgresConfig struct {
 	SkipMigrations     bool          `long:"skipmigrations" description:"Skip applying migrations on startup."`
 	Host               string        `long:"host" description:"Database server hostname."`
@@ -89,7 +90,7 @@ type PostgresStore struct {
 func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
 	log.Infof("Using SQL database '%s'", cfg.DSN(true))
 
-	rawDb, err := sql.Open("pgx", cfg.DSN(false))
+	rawDB, err := sql.Open("pgx", cfg.DSN(false))
 	if err != nil {
 		return nil, MapSQLError(err)
 	}
@@ -114,16 +115,16 @@ func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
 		connMaxIdleTime = cfg.ConnMaxIdleTime
 	}
 
-	rawDb.SetMaxOpenConns(maxConns)
-	rawDb.SetMaxIdleConns(maxIdleConns)
-	rawDb.SetConnMaxLifetime(connMaxLifetime)
-	rawDb.SetConnMaxIdleTime(connMaxIdleTime)
+	rawDB.SetMaxOpenConns(maxConns)
+	rawDB.SetMaxIdleConns(maxIdleConns)
+	rawDB.SetConnMaxLifetime(connMaxLifetime)
+	rawDB.SetConnMaxIdleTime(connMaxIdleTime)
 
-	queries := sqlc.NewPostgres(rawDb)
+	queries := sqlc.NewPostgres(rawDB)
 	s := &PostgresStore{
 		cfg: cfg,
 		BaseDB: &BaseDB{
-			DB:      rawDb,
+			DB:      rawDB,
 			Queries: queries,
 		},
 	}
@@ -159,6 +160,7 @@ func (s *PostgresStore) ExecuteMigrations(target MigrationTarget,
 	}
 
 	postgresFS := newReplacerFS(sqlSchemas, postgresSchemaReplacements)
+
 	return applyMigrations(
 		postgresFS, driver, "sqlc/migrations", s.cfg.DBName, target,
 		opts,

@@ -11,9 +11,9 @@ func NewTestDB(t testing.TB) *PostgresStore {
 	return NewTestPostgresDB(t)
 }
 
-// NewTestDbHandleFromPath is a helper function that creates a new handle to an
+// NewTestDBHandleFromPath is a helper function that creates a new handle to an
 // existing SQLite database for testing.
-func NewTestDbHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
+func NewTestDBHandleFromPath(t testing.TB, dbPath string) *PostgresStore {
 	return NewTestPostgresDB(t)
 }
 
