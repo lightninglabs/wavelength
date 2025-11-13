@@ -44,7 +44,7 @@ DB_CONNECTIONSTRING ?= sqlite://./darepo.db
 DEV_TAGS := dev
 LOG_TAGS := nolog
 TEST_FLAGS :=
-RELEASE_TAGS := kvdb_postgres kvdb_sqlite
+RELEASE_TAGS :=
 
 ifneq ($(tags),)
 DEV_TAGS += ${tags}
