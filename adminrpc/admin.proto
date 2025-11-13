@@ -5,13 +5,14 @@ package adminrpc;
 option go_package = "github.com/lightninglabs/darepo/adminrpc";
 
 service OperatorAdmin {
-  rpc Info(InfoRequest) returns (InfoResponse);
+    rpc Info (InfoRequest) returns (InfoResponse);
 }
 
-message InfoRequest {}
+message InfoRequest {
+}
 
 message InfoResponse {
-  string version = 1;
-  string pubkey = 2;
-  string network = 3;
+    string version = 1;
+    string pubkey = 2;
+    string network = 3;
 }
