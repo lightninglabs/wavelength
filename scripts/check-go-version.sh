@@ -22,17 +22,21 @@ fi
 
 # Find all files matching the pattern (supports multiple patterns space-separated).
 if [[ "$FILE_PATTERN" == *" "* ]]; then
-    # Multiple patterns - need to build find command dynamically.
+    # Multiple patterns - build find arguments array safely.
     PATTERNS=($FILE_PATTERN)
-    FIND_CMD="find . -type f \("
+    find_args=()
     for i in "${!PATTERNS[@]}"; do
-        if [ $i -gt 0 ]; then
-            FIND_CMD="$FIND_CMD -o"
+        if [ ${#find_args[@]} -gt 0 ]; then
+            find_args+=(-o)
         fi
-        FIND_CMD="$FIND_CMD -name '${PATTERNS[$i]}'"
+        find_args+=(-name "${PATTERNS[$i]}")
     done
-    FIND_CMD="$FIND_CMD \) -not -path './vendor/*' -not -path './.git/*'"
-    FILES=$(eval $FIND_CMD)
+
+    if [ ${#find_args[@]} -gt 0 ]; then
+        FILES=$(find . -type f \( "${find_args[@]}" \) -not -path "./vendor/*" -not -path "./.git/*")
+    else
+        FILES=""
+    fi
 else
     # Single pattern.
     FILES=$(find . -type f -name "$FILE_PATTERN" -not -path "./vendor/*" -not -path "./.git/*")
