@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
 
 # restore_files is a function to restore original schema files.
 restore_files() {
