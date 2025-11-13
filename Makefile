@@ -1,6 +1,10 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: unit unit-cover unit-race check-go-version release
+.PHONY: build rpc install
+
+# Default target
+.DEFAULT_GOAL := build
 
 # =========
 # VARIABLES
@@ -137,7 +141,7 @@ migrate-down: $(MIGRATE_BIN)
 	migrate -path db/sqlc/migrations -database $(DB_CONNECTIONSTRING) -verbose down 1
 
 # Main code generation target.
-gen: sqlc
+gen: sqlc rpc
 
 # ==============
 # LINTING & CODE
@@ -199,6 +203,31 @@ unit-race:
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
 # ============
+# RPC GENERATION
+# ============
+
+rpc:
+	@$(call print, "Generating RPC stubs from proto files.")
+	@$(call print, "Generating arkrpc...")
+	cd arkrpc && ./gen_protos.sh
+	@$(call print, "Generating adminrpc...")
+	cd adminrpc && ./gen_protos.sh
+
+# ============
+# BUILDING
+# ============
+
+build:
+	@$(call print, "Building arkd and arkcli.")
+	$(GOBUILD) -o ./arkd ./cmd/arkd
+	$(GOBUILD) -o ./arkcli ./cmd/arkcli
+
+install:
+	@$(call print, "Installing arkd and arkcli.")
+	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkd
+	$(GOINSTALL) -tags="$(DEV_TAGS)" ./cmd/arkcli
+
+# ============
 # INSTALLATION & RELEASE
 # ============
 
@@ -224,9 +253,10 @@ help:
 	@echo "Available make targets:"
 	@echo ""
 	@echo "Code Generation:"
+	@echo "  rpc                - Generate RPC stubs from proto files"
 	@echo "  sqlc               - Generate SQL code from schema and queries"
 	@echo "  sqlc-check         - Verify SQL code generation is up to date"
-	@echo "  gen                - Generate all code (sqlc, etc.)"
+	@echo "  gen                - Generate all code (rpc, sqlc, etc.)"
 	@echo ""
 	@echo "Database Migrations:"
 	@echo "  migrate-create     - Create a new migration (requires patchname=...)"
@@ -246,9 +276,13 @@ help:
 	@echo "  unit-race          - Run unit tests with race detector"
 	@echo ""
 	@echo "Building:"
+	@echo "  build              - Build arkd and arkcli binaries"
+	@echo "  install            - Install arkd and arkcli to GOPATH/bin"
 	@echo "  release            - Cross compile for all supported platforms"
 	@echo ""
 	@echo "Examples:"
+	@echo "  make build"
+	@echo "  make rpc"
 	@echo "  make sqlc"
 	@echo "  make lint"
 	@echo "  make unit tags=\"test_db_postgres\""
