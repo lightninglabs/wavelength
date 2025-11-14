@@ -74,6 +74,26 @@ jobs:
         run: make sqlc-check
 
   ########################
+  # check submodules
+  ########################
+  submodule-check:
+    name: Check Submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          # Initialize submodules during checkout.
+          submodules: recursive
+          # Use fine-grained PAT with read access to private submodule repos.
+          # The token must have Contents: Read permission for both the main
+          # repo and any private submodules (e.g., darepo-client).
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      - name: Check submodule status
+        run: make submodule-check
+
+  ########################
   # lint code
   ########################
   lint:

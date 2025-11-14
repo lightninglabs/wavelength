@@ -2,6 +2,7 @@
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
+.PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -215,6 +216,30 @@ unit-race: #? Run unit tests with race detector
 rpc: #? Generate RPC stubs from proto files (uses Docker)
 	@$(call print, "Generating RPC stubs from proto files using Docker.")
 	./scripts/gen_protos_docker.sh
+
+# ============
+# SUBMODULE MANAGEMENT
+# ============
+
+submodule-init: #? Initialize and update all submodules (first-time setup)
+	@$(call print, "Initializing submodules.")
+	./scripts/submodule_helper.sh init
+
+submodule-update: #? Update submodules to latest remote commits
+	@$(call print, "Updating submodules to latest commits.")
+	./scripts/submodule_helper.sh update
+
+submodule-status: #? Show detailed status of all submodules
+	@$(call print, "Checking submodule status.")
+	./scripts/submodule_helper.sh status
+
+submodule-check: #? Verify submodules are initialized (CI check)
+	@$(call print, "Verifying submodule status.")
+	./scripts/submodule_helper.sh check
+
+submodule-sync: #? Sync submodule URLs from .gitmodules
+	@$(call print, "Syncing submodule URLs.")
+	./scripts/submodule_helper.sh sync
 
 # ============
 # BUILDING
