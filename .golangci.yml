@@ -1,0 +1,245 @@
+run:
+  go: "1.25.3"
+
+  # Abort after 10 minutes.
+  timeout: 10m
+
+  build-tags:
+    - dev
+    - kvdb_postgres
+    - kvdb_sqlite
+    - test_db_postgres
+    - test_db_sqlite
+
+linters-settings:
+  custom:
+    ll:
+      type: "module"
+      description: "Custom lll linter with log line exclusion."
+      settings:
+        # Max line length, lines longer will be reported.
+        line-length: 80
+        # Tab width in spaces.
+        tab-width: 8
+        # The regex that we will use to detect the start of a log line.
+        log-regex: "^\\s*.*(L|l)og\\."
+
+  errorlint:
+    # Check for incorrect fmt.Errorf error wrapping.
+    errorf: true
+
+  gofmt:
+    # simplify code: gofmt with `-s` option, true by default.
+    simplify: true
+
+  tagliatelle:
+    case:
+      rules:
+        json: snake
+
+  whitespace:
+    multi-func: true
+    multi-if: true
+
+  gosec:
+    excludes:
+      - G402 # Look for bad TLS connection settings.
+      - G306 # Poor file permissions used when writing to a new file.
+      - G601 # Implicit memory aliasing in for loop.
+      - G115 # Integer overflow in conversion.
+
+  staticcheck:
+    checks: ["-SA1019"]
+
+  funlen:
+    # Checks the number of lines in a function.
+    # If lower than 0, disable the check.
+    lines: 200
+    # Checks the number of statements in a function.
+    statements: 80
+
+  dupl:
+    # Tokens count to trigger issue.
+    threshold: 200
+
+  nestif:
+    # Minimal complexity of if statements to report.
+    min-complexity: 10
+
+  nlreturn:
+    # Size of the block (including return statement that is still "OK")
+    # so no return split required.
+    block-size: 3
+
+  gomnd:
+    # List of numbers to exclude from analysis.
+    # The numbers should be written as string.
+    # Values always ignored: "1", "1.0", "0" and "0.0".
+    ignored-numbers:
+      - '0666'
+      - '0755'
+
+    # List of function patterns to exclude from analysis.
+    # Values always ignored: `time.Date`.
+    ignored-functions:
+      - 'math.*'
+      - 'strconv.ParseInt'
+      - 'errors.Wrap'
+
+  gomoddirectives:
+    replace-local: true
+    replace-allow-list:
+      # Allow forked migrate package.
+      - github.com/golang-migrate/migrate/v4
+
+
+linters:
+  enable-all: true
+  disable:
+    # We instead use our own custom line length linter called `ll` since
+    # then we can ignore log lines.
+    - lll
+
+    # Global variables are used in many places throughout the code base.
+    - gochecknoglobals
+
+    # We want to allow short variable names.
+    - varnamelen
+
+    # We want to allow TODOs.
+    - godox
+
+    # Instances of table driven tests that don't pre-allocate shouldn't trigger
+    # the linter.
+    - prealloc
+
+    # Init functions are used by loggers throughout the codebase.
+    - gochecknoinits
+
+    # Deprecated linters. See https://golangci-lint.run/usage/linters/.
+    - bodyclose
+    - contextcheck
+    - nilerr
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - tparallel
+    - unparam
+    - wastedassign
+
+    # Disable gofumpt as it has weird behavior regarding formatting multiple
+    # lines for a function which is in conflict with our contribution
+    # guidelines. See https://github.com/mvdan/gofumpt/issues/235.
+    - gofumpt
+
+    # Disable whitespace linter as it has conflict rules against our
+    # contribution guidelines.
+    - wsl
+
+    # Allow using default empty values.
+    - exhaustruct
+
+    # Allow exiting case select faster by putting everything in default.
+    - exhaustive
+
+    # Allow tests to be put in the same package.
+    - testpackage
+
+    # Don't run the cognitive related linters.
+    - gocognit
+    - gocyclo
+    - maintidx
+    - cyclop
+
+    # Allow customized interfaces to be returned from functions.
+    - ireturn
+
+    # Disable too many blank identifiers check. We won't be able to run this
+    # unless a large refactor has been applied to old code.
+    - dogsled
+
+    # We don't wrap errors.
+    - wrapcheck
+
+    # Allow dynamic errors.
+    - err113
+
+    # We use ErrXXX instead.
+    - errname
+
+    # Disable nil check to allow returning multiple nil values.
+    - nilnil
+
+    # We often split tests into separate test functions. If we are forced to
+    # call t.Helper() within those functions, we lose the information where
+    # exactly a test failed in the generated failure stack trace.
+    - thelper
+
+    # The linter is too aggressive and doesn't add much value since reviewers
+    # will also catch magic numbers that make sense to extract.
+    - mnd
+
+    # Some of the tests cannot be parallelized. On the other hand, we don't
+    # gain much performance with this check so we disable it for now until
+    # unit tests become our CI bottleneck.
+    - paralleltest
+
+    # New linters that we haven't had time to address yet.
+    - testifylint
+    - perfsprint
+    - inamedparam
+    - copyloopvar
+    - tagalign
+    - protogetter
+    - revive
+    - depguard
+    - gosmopolitan
+    - intrange
+    - goconst
+
+    # Deprecated linters that have been replaced by newer ones.
+    - tenv
+
+issues:
+  # Skip autogenerated files.
+  skip-files:
+    - "\\.pb\\.go$"
+    - "\\.pb\\.gw\\.go$"
+    - "db/sqlc/.*\\.go$"
+
+  exclude-rules:
+    # Exclude gosec from running for tests so that tests with weak randomness
+    # (math/rand) will pass the linter.
+    - path: _test\.go
+      linters:
+        - gosec
+        - funlen
+        - revive
+        # Allow duplications in tests so it's easier to follow a single unit
+        # test.
+        - dupl
+
+    - path: mock*
+      linters:
+        - revive
+        # forcetypeassert is skipped for the mock because the test would fail
+        # if the returned value doesn't match the type, so there's no need to
+        # check the convert.
+        - forcetypeassert
+
+    - path: test*
+      linters:
+        - gosec
+        - funlen
+
+    # Allow duplicated code and fmt.Printf() in DB migrations.
+    - path: db/.*migration*
+      linters:
+        - dupl
+        - forbidigo
+        - godot
+
+    # Allow fmt.Printf() in commands.
+    - path: cmd/.*/main\.go
+      linters:
+        - forbidigo
