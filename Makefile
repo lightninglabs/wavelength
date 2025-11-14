@@ -265,5 +265,5 @@ help: #? Show this help message
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make rpc"
-	@echo "  make unit tags=\"test_db_postgres\""
+	@echo "  make unit tags=\"test_postgres\""
 	@echo "  make migrate-create patchname=add_users_table"

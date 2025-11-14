@@ -1,4 +1,4 @@
-//go:build test_db_postgres
+//go:build test_postgres
 
 package db
 
