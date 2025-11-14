@@ -1,4 +1,4 @@
-package darepo
+package darepoclient
 
 import (
 	"os"

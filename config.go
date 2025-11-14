@@ -1,11 +1,11 @@
-package darepo
+package darepoclient
 
 import (
 	"path/filepath"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/jessevdk/go-flags"
-	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo-client/db"
 )
 
 var (

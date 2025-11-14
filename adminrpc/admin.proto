@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package adminrpc;
 
-option go_package = "github.com/lightninglabs/darepo/adminrpc";
+option go_package = "github.com/lightninglabs/darepo-client/adminrpc";
 
 service OperatorAdmin {
     rpc Info (InfoRequest) returns (InfoResponse);

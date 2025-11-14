@@ -7,7 +7,7 @@ import (
 	prand "math/rand"
 	"time"
 
-	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 )
 
 var (

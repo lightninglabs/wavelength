@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
 

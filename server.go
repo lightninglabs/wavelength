@@ -1,4 +1,4 @@
-package darepo
+package darepoclient
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightningnetwork/lnd/fn"
 )
 

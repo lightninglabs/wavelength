@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/lightninglabs/darepo/adminrpc"
+	"github.com/lightninglabs/darepo-client/adminrpc"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

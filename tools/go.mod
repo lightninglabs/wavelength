@@ -1,4 +1,4 @@
-module github.com/lightninglabs/darepo/tools
+module github.com/lightninglabs/darepo-client/tools
 
 go 1.25
 

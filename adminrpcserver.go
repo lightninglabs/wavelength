@@ -1,4 +1,4 @@
-package darepo
+package darepoclient
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo/adminrpc"
+	"github.com/lightninglabs/darepo-client/adminrpc"
 	"google.golang.org/grpc"
 )
 

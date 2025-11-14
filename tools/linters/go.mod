@@ -1,4 +1,4 @@
-module github.com/lightninglabs/darepo/tools/linters
+module github.com/lightninglabs/darepo-client/tools/linters
 
 go 1.25
 

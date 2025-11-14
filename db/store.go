@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
 )
 
 // Store is the unified SQL-based storage implementation that wraps all

@@ -10,7 +10,7 @@
 # VARIABLES
 # =========
 
-PKG := github.com/lightninglabs/darepo
+PKG := github.com/lightninglabs/darepo-client
 TOOLS_DIR := tools
 
 GOCC ?= go

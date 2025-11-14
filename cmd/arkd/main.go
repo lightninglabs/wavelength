@@ -9,14 +9,14 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx driver
-	"github.com/lightninglabs/darepo"
+	darepoclient "github.com/lightninglabs/darepo-client"
 )
 
 func main() {
 	ctx, shutdown := setupInterceptor()
 
 	// 1) Load the server's config.
-	cfg, err := darepo.LoadConfig()
+	cfg, err := darepoclient.LoadConfig()
 	if err != nil {
 		err := fmt.Errorf("error loading config: %w", err)
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -29,7 +29,7 @@ func main() {
 	// 2) Construct the server.
 	ctxt, cancel := context.WithTimeout(ctx, time.Second*10)
 
-	server, err := darepo.NewServer(ctxt, cfg)
+	server, err := darepoclient.NewServer(ctxt, cfg)
 	if err != nil {
 		err := fmt.Errorf("error creating server: %w", err)
 		_, _ = fmt.Fprintln(os.Stderr, err)
