@@ -2,6 +2,7 @@ package chainbackends
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -90,7 +91,7 @@ func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	select {
 	case epoch, ok := <-event.Epochs:
 		if !ok {
-			return 0, chainhash.Hash{}, fmt.Errorf("block epoch "+
+			return 0, chainhash.Hash{}, fmt.Errorf("block epoch " +
 				"channel closed")
 		}
 
@@ -149,6 +150,7 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 	// Start a goroutine to convert and forward the confirmation.
 	go func() {
 		defer close(confChan)
+		defer event.Cancel()
 
 		select {
 		case lndConf, ok := <-event.Confirmed:
@@ -198,6 +200,7 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 	// Start a goroutine to convert and forward the spend.
 	go func() {
 		defer close(spendChan)
+		defer event.Cancel()
 
 		select {
 		case lndSpend, ok := <-event.Spend:
@@ -241,8 +244,44 @@ func (b *LNDBackend) RegisterBlocks(
 			err)
 	}
 
+	// Create a channel to convert lnd's BlockEpoch to our type.
+	epochChan := make(chan *chainsource.BlockEpoch, 10)
+
+	// Start a goroutine to convert and forward block epochs.
+	go func() {
+		defer close(epochChan)
+		defer event.Cancel()
+
+		for {
+			select {
+			case lndEpoch, ok := <-event.Epochs:
+				if !ok {
+					return
+				}
+
+				// Convert to our type.
+				epoch := &chainsource.BlockEpoch{
+					Hash:      *lndEpoch.Hash,
+					Height:    lndEpoch.Height,
+					Timestamp: lndEpoch.BlockHeader.Timestamp.Unix(),
+				}
+
+				// Send to our channel, respecting context
+				// cancellation.
+				select {
+				case epochChan <- epoch:
+				case <-ctx.Done():
+					return
+				}
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	return &chainsource.BlockRegistration{
-		Epochs: event.Epochs,
+		Epochs: epochChan,
 		Cancel: event.Cancel,
 	}, nil
 }
@@ -267,14 +306,22 @@ func (b *LNDBackend) Start() error {
 
 // Stop shuts down the LND backend by stopping the notifier and fee estimator.
 func (b *LNDBackend) Stop() error {
+	var errs []error
+
 	// Stop the notifier.
 	if err := b.notifier.Stop(); err != nil {
-		return fmt.Errorf("failed to stop notifier: %w", err)
+		errs = append(errs, fmt.Errorf("failed to stop notifier: %w",
+			err))
 	}
 
 	// Stop the fee estimator.
 	if err := b.feeEstimator.Stop(); err != nil {
-		return fmt.Errorf("failed to stop fee estimator: %w", err)
+		errs = append(errs, fmt.Errorf("failed to stop fee "+
+			"estimator: %w", err))
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 
 	return nil
