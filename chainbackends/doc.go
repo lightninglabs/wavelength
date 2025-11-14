@@ -1,7 +1,7 @@
 // Package chainbackends provides concrete implementations of the
 // chainsource.ChainBackend interface.
 //
-// The ChainBackend interface is defined in arkmachine/actors/chainsource and
+// The ChainBackend interface is defined in the chainsource package and
 // provides a blockchain data abstraction layer for the Ark actor system. This
 // package contains pluggable backend implementations that can be used depending
 // on deployment requirements.
@@ -42,23 +42,23 @@
 // # Implementation Requirements
 //
 // Backend implementations must:
-//  - Implement all methods of chainsource.ChainBackend
-//  - Be safe for concurrent use
-//  - Handle context cancellation properly
-//  - Clean up resources in Stop()
-//  - Document any limitations or unsupported operations
+//   - Implement all methods of chainsource.ChainBackend
+//   - Be safe for concurrent use
+//   - Handle context cancellation properly
+//   - Clean up resources in Stop()
+//   - Document any limitations or unsupported operations
 //
 // # Backend Selection Criteria
 //
 // Choose LNDBackend when:
-//  - Running a full node with lnd
-//  - Real-time notifications are required
-//  - Low latency is critical
-//  - Full Bitcoin protocol support is needed
+//   - Running a full node with lnd
+//   - Real-time notifications are required
+//   - Low latency is critical
+//   - Full Bitcoin protocol support is needed
 //
 // Choose ExplorerBackend when:
-//  - Running a light client without a full node
-//  - Eventual consistency is acceptable
-//  - Network bandwidth/storage is limited
-//  - Simplified deployment is preferred
+//   - Running a light client without a full node
+//   - Eventual consistency is acceptable
+//   - Network bandwidth/storage is limited
+//   - Simplified deployment is preferred
 package chainbackends
