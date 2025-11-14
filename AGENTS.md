@@ -14,6 +14,13 @@
 - `make rpc` - Install protoc plugins and regenerate Go/Python stubs
 - `make sqlc` - Regenerate type-safe database queries (after schema/query changes)
 
+### Submodule Management
+- `make submodule-init` - Initialize submodules (first-time setup)
+- `make submodule-update` - Update submodules to latest commits
+- `make submodule-status` - Show detailed submodule status
+- `make submodule-check` - Verify submodules are initialized (CI check)
+- `make submodule-sync` - Sync submodule URLs from .gitmodules
+
 ### Testing Commands
 - Single package: `make unit pkg=<package> timeout=5m`
 - Debug with logs: `make unit-debug log="stdlog trace" pkg=$pkg case=$case timeout=10s`
@@ -121,6 +128,32 @@ When implementing significant features or refactors, create an **ExecPlan** foll
 1. **Protobuf changes**: Edit `.proto` files → run `make rpc` → commit generated code separately
 2. **Database changes**: Edit `db/schema/` or `db/queries/` → run `make sqlc` → commit generated code separately
 3. **Never edit generated code manually** - Always regenerate via make targets
+
+### Submodule Workflow
+The `client/` directory is a git submodule pointing to the `darepo-client` repository.
+
+**First-time setup:**
+```bash
+make submodule-init
+```
+
+**Updating to latest commits:**
+```bash
+make submodule-update  # Fetches and updates to latest remote commits
+git add client         # Stage the submodule pointer update
+git commit -m "client: update submodule to latest"
+```
+
+**Checking status:**
+```bash
+make submodule-status  # Shows commit, branch, and any uncommitted changes
+```
+
+**Important notes:**
+- The submodule uses SSH authentication (`git@github.com`)
+- Submodules are automatically checked in CI via `make submodule-check`
+- After `submodule-update`, commit the updated submodule pointer
+- Run `make submodule-sync` if .gitmodules URLs change
 
 ## Important Conventions
 
