@@ -234,7 +234,7 @@ func (a *ChainSourceActor) handleSubscribeBlocks(ctx context.Context,
 func (a *ChainSourceActor) handleUnregisterConf(ctx context.Context,
 	req *UnregisterConfRequest) fn.Result[ChainSourceResp] {
 
-	// To unregister a confirmation, we reconsturct the service key that
+	// To unregister a confirmation, we reconstruct the service key that
 	// created the actor in the first place, so we can find and stop it.
 	keyPart, err := txidOrScriptKey(req.Txid, req.PkScript)
 	if err != nil {
@@ -257,7 +257,7 @@ func (a *ChainSourceActor) handleUnregisterConf(ctx context.Context,
 func (a *ChainSourceActor) handleUnregisterSpend(ctx context.Context,
 	req *UnregisterSpendRequest) fn.Result[ChainSourceResp] {
 
-	// To unregister a confirmation, we reconsturct the service key that
+	// To unregister a confirmation, we reconstruct the service key that
 	// created the actor in the first place, so we can find and stop it.
 	keyPart, err := outpointOrScriptKey(req.Outpoint, req.PkScript)
 	if err != nil {
