@@ -74,6 +74,22 @@ jobs:
         run: make sqlc-check
 
   ########################
+  # check submodules
+  ########################
+  submodule-check:
+    name: Check Submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          # Initialize submodules during checkout.
+          submodules: true
+
+      - name: Check submodule status
+        run: make submodule-check
+
+  ########################
   # lint code
   ########################
   lint:
