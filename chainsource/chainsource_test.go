@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/actor"
-	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +18,7 @@ type mockBackend struct {
 	// Channels for controlling mock behavior.
 	confChan  chan *TxConfirmation
 	spendChan chan *SpendDetail
-	epochChan chan *chainntnfs.BlockEpoch
+	epochChan chan *BlockEpoch
 	// epochCancel is notified whenever a block registration is cancelled.
 	epochCancel chan struct{}
 
@@ -34,7 +33,7 @@ func newMockBackend() *mockBackend {
 	return &mockBackend{
 		confChan:    make(chan *TxConfirmation, 1),
 		spendChan:   make(chan *SpendDetail, 1),
-		epochChan:   make(chan *chainntnfs.BlockEpoch, 10),
+		epochChan:   make(chan *BlockEpoch, 10),
 		epochCancel: make(chan struct{}, 10),
 		feeRate:     1000,
 		bestHeight:  100,
@@ -464,9 +463,10 @@ func TestChainSourceActorSubscribeBlocks(t *testing.T) {
 	}()
 
 	hash := chainhash.Hash{}
-	backend.epochChan <- &chainntnfs.BlockEpoch{
-		Height: 201,
-		Hash:   &hash,
+	backend.epochChan <- &BlockEpoch{
+		Height:    201,
+		Hash:      hash,
+		Timestamp: 0,
 	}
 
 	select {
@@ -848,9 +848,10 @@ func TestBlockEpochActorNotifyMode(t *testing.T) {
 	// Send a block from backend.
 	hash := chainhash.Hash{}
 	hash[0] = 0x01
-	backend.epochChan <- &chainntnfs.BlockEpoch{
-		Height: 150,
-		Hash:   &hash,
+	backend.epochChan <- &BlockEpoch{
+		Height:    150,
+		Hash:      hash,
+		Timestamp: 0,
 	}
 
 	// Wait for notification via the notify actor.
@@ -884,9 +885,10 @@ func TestBlockEpochActorIteratorMode(t *testing.T) {
 		hash := chainhash.Hash{}
 		hash[0] = byte(i)
 
-		backend.epochChan <- &chainntnfs.BlockEpoch{
-			Height: 100 + i,
-			Hash:   &hash,
+		backend.epochChan <- &BlockEpoch{
+			Height:    100 + i,
+			Hash:      hash,
+			Timestamp: 0,
 		}
 	}
 
@@ -946,9 +948,10 @@ func TestBlockEpochActorIteratorCancel(t *testing.T) {
 
 	hash := chainhash.Hash{}
 	hash[0] = 0x01
-	backend.epochChan <- &chainntnfs.BlockEpoch{
-		Height: 150,
-		Hash:   &hash,
+	backend.epochChan <- &BlockEpoch{
+		Height:    150,
+		Hash:      hash,
+		Timestamp: 0,
 	}
 
 	select {
