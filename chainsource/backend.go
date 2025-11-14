@@ -6,7 +6,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/chainntnfs"
 )
 
 // ChainBackend defines the interface that must be implemented by all
@@ -159,11 +158,11 @@ type SpendDetail struct {
 }
 
 // BlockRegistration encapsulates the channels and control functions for a
-// block subscription. This mirrors lnd's chainntnfs.BlockEpochEvent structure.
+// block subscription.
 type BlockRegistration struct {
 	// Epochs is a channel that sends an event for each new block connected
 	// to the chain. The channel is buffered to handle bursts of blocks.
-	Epochs <-chan *chainntnfs.BlockEpoch
+	Epochs <-chan *BlockEpoch
 
 	// Cancel is a function that can be called to cancel this registration
 	// and clean up resources.
