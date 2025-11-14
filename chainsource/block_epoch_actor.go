@@ -84,7 +84,7 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	a.notifyActor = req.NotifyActor
 	resp := &SubscribeBlocksResponse{}
 
-	// No we'll determine the notification mode: notify actor or iterator.
+	// Now we'll determine the notification mode: notify actor or iterator.
 	if req.NotifyActor.IsSome() {
 		// Actor mode: no channel needed.
 		resp.Cancel = a.cancel
@@ -174,15 +174,11 @@ func (a *BlockEpochActor) monitorBlocks() {
 				return
 			}
 
-			var timestamp int64
-			if epoch.BlockHeader != nil {
-				timestamp = epoch.BlockHeader.Timestamp.Unix()
-			}
-
+			// Forward the block epoch from the backend.
 			blockEpoch := BlockEpoch{
 				Height:    epoch.Height,
-				Hash:      *epoch.Hash,
-				Timestamp: timestamp,
+				Hash:      epoch.Hash,
+				Timestamp: epoch.Timestamp,
 			}
 
 			// If there's an epoch channel, then we're in iterator
