@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -123,10 +124,12 @@ func TestSqliteMigrationBackup(t *testing.T) {
 
 	// Create a new database without running migrations.
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
+	// For tests, use a simple logger that outputs to the test log.
+	log := btclog.Disabled
 	db, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   true,
-	})
+	}, log)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.DB.Close())
@@ -155,7 +158,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	db2, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   false,
-	})
+	}, log)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db2.DB.Close())
@@ -198,10 +201,12 @@ func TestDirtySqliteVersion(t *testing.T) {
 
 	// Create a new SQLite test db but skip migrations initially.
 	dbFileName := filepath.Join(t.TempDir(), "test.db")
+	// For tests, use a simple logger that outputs to the test log.
+	log := btclog.Disabled
 	db, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   true,
-	})
+	}, log)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.DB.Close())
@@ -209,7 +214,7 @@ func TestDirtySqliteVersion(t *testing.T) {
 
 	// Attempt to execute migrations with a failing callback.
 	err = db.ExecuteMigrations(db.backupAndMigrate, WithPostStepCallbacks(
-		makePostStepCallbacks(db, testPostMigrationChecks),
+		makePostStepCallbacks(db, log, testPostMigrationChecks),
 	))
 	require.ErrorIs(t, err, testError)
 
