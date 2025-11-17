@@ -7,6 +7,7 @@ import (
 	prand "math/rand"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 )
 
@@ -202,13 +203,15 @@ type TransactionExecutor[Query any] struct {
 	createQuery QueryCreator[Query]
 
 	opts *txExecutorOptions
+
+	log btclog.Logger
 }
 
 // NewTransactionExecutor creates a new instance of a TransactionExecutor given
 // a Querier query object and a concrete type for the type of transactions the
 // Querier understands.
 func NewTransactionExecutor[Querier any](db BatchedQuerier,
-	createQuery QueryCreator[Querier],
+	createQuery QueryCreator[Querier], log btclog.Logger,
 	opts ...TxExecutorOption) *TransactionExecutor[Querier] {
 
 	txOpts := defaultTxExecutorOptions()
@@ -220,6 +223,7 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 		BatchedQuerier: db,
 		createQuery:    createQuery,
 		opts:           txOpts,
+		log:            log,
 	}
 }
 
@@ -235,7 +239,7 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	waitBeforeRetry := func(attemptNumber int) {
 		retryDelay := t.opts.randRetryDelay(attemptNumber)
 
-		log.Tracef("Retrying transaction due to tx serialization or "+
+		t.log.Tracef("Retrying transaction due to tx serialization or "+
 			"deadlock error, attempt_number=%v, delay=%v",
 			attemptNumber, retryDelay)
 

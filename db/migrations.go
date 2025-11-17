@@ -134,7 +134,8 @@ func (m *migrationLogger) Verbose() bool {
 // system under the given path, using the passed database driver and database
 // name, up to or down to the given target version.
 func applyMigrations(fs fs.FS, driver database.Driver, path, dbName string,
-	targetVersion MigrationTarget, opts *migrateOptions) error {
+	targetVersion MigrationTarget, opts *migrateOptions,
+	log btclog.Logger) error {
 
 	// With the migrate instance open, we'll create a new migration source
 	// using the embedded file system stored in sqlSchemas. The library

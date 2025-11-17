@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
@@ -39,7 +40,7 @@ type DatabaseBackend interface {
 // step callbacks that can be used with the migrate package. The keys of the map
 // are the migration versions, and the values are the callbacks that will be
 // executed after the migration with the corresponding version is applied.
-func makePostStepCallbacks(db DatabaseBackend,
+func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 	checks map[uint]postMigrationCheck) map[uint]migrate.PostStepCallback {
 
 	var (
@@ -47,7 +48,7 @@ func makePostStepCallbacks(db DatabaseBackend,
 		txDB = NewTransactionExecutor(
 			db, func(tx *sql.Tx) sqlc.Querier {
 				return db.WithTx(tx)
-			},
+			}, log,
 		)
 		writeTxOpts = WriteTxOption()
 	)
