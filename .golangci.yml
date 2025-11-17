@@ -5,11 +5,8 @@ run:
   timeout: 10m
 
   build-tags:
-    - dev
-    - kvdb_postgres
-    - kvdb_sqlite
-    - test_db_postgres
-    - test_db_sqlite
+    - test_postgres
+    - test_sqlite
 
 linters-settings:
   custom:
@@ -91,6 +88,8 @@ linters-settings:
     replace-allow-list:
       # Allow forked migrate package.
       - github.com/golang-migrate/migrate/v4
+      # Allow forked protobuf for hex display support.
+      - google.golang.org/protobuf
 
 
 linters:
@@ -238,6 +237,12 @@ issues:
         - dupl
         - forbidigo
         - godot
+
+    # Test harness has some special rules.
+    - path: harness
+      linters:
+        - forbidigo
+        - tagliatelle
 
     # Allow fmt.Printf() in commands.
     - path: cmd/.*/main\.go
