@@ -59,8 +59,10 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 		checkFn := check
 
 		runCheck := func(m *migrate.Migration, q sqlc.Querier) error {
-			log.Infof("Running post-migration check for version %d",
-				version)
+			log.InfoS(
+				ctx, "Running post-migration check",
+				"version", version,
+			)
 			start := time.Now()
 
 			err := checkFn(ctx, q)
@@ -70,8 +72,11 @@ func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 					"%w", version, err)
 			}
 
-			log.Infof("Post-migration check for version %d "+
-				"completed in %v", version, time.Since(start))
+			log.InfoS(
+				ctx, "Post-migration check completed",
+				"version", version,
+				"duration", time.Since(start),
+			)
 
 			return nil
 		}
