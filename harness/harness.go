@@ -448,6 +448,16 @@ func (h *Harness) setupDockerEnvironment() {
 	require.NoError(h.T, err, "failed to create network")
 	h.Logf("Docker network created: %s (id=%s)", h.network.Network.Name,
 		h.network.Network.ID)
+
+	// Verify network is actually accessible before proceeding. This helps
+	// catch race conditions where Docker reports success but the network
+	// isn't fully ready yet.
+	require.NoError(h.T, h.pool.Retry(func() error {
+		_, err := h.pool.Client.NetworkInfo(h.network.Network.ID)
+		return err
+	}), "failed to verify network exists")
+
+	h.Log("Docker network verified")
 }
 
 // createDataDirectories creates the necessary data directories for bitcoind,
