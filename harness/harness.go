@@ -56,7 +56,7 @@ const (
 
 	// networkPrefix is the prefix for private Docker networks created
 	// for each harness instance to ensure isolation between test runs.
-	networkPrefix = "ark-itest-"
+	networkPrefix = "ark-harness-"
 
 	// bitcoindRPCUser is the RPC username for bitcoind in regtest mode.
 	bitcoindRPCUser = "admin1"
@@ -440,7 +440,14 @@ func (h *Harness) setupDockerEnvironment() {
 	h.pool, err = dockertest.NewPool("")
 	require.NoError(h.T, err, "failed to init docker pool")
 
-	h.pruneStaleHarnessNetworks()
+	// Note: We used to call pruneStaleHarnessNetworks() here to clean up
+	// networks from previous failed runs, but it caused race conditions
+	// with parallel tests. Each harness now only cleans up its own
+	// network during shutdown. Stale networks from truly failed runs can
+	// be cleaned up with: docker network prune
+	//
+	// If automatic cleanup is needed, it should run with a large grace
+	// period (5+ minutes) to avoid interfering with active tests.
 
 	// Per-run isolation.
 	h.Log("Creating docker network...")
@@ -448,6 +455,16 @@ func (h *Harness) setupDockerEnvironment() {
 	require.NoError(h.T, err, "failed to create network")
 	h.Logf("Docker network created: %s (id=%s)", h.network.Network.Name,
 		h.network.Network.ID)
+
+	// Verify network is actually accessible before proceeding. This helps
+	// catch race conditions where Docker reports success but the network
+	// isn't fully ready yet.
+	require.NoError(h.T, h.pool.Retry(func() error {
+		_, err := h.pool.Client.NetworkInfo(h.network.Network.ID)
+		return err
+	}), "failed to verify network exists")
+
+	h.Log("Docker network verified")
 }
 
 // createDataDirectories creates the necessary data directories for bitcoind,
@@ -679,8 +696,13 @@ func (h *Harness) createNetworkUnique() (*dockertest.Network, error) {
 	return nil, lastErr
 }
 
-func (h *Harness) pruneStaleHarnessNetworks() {
-	// Best-effort, ignore errors.
+// PruneStaleHarnessNetworks performs best-effort cleanup of stale harness
+// Docker networks that are empty.
+//
+// NOTE: This function is no longer called automatically during tests to avoid
+// race conditions. It's kept here for manual cleanup if needed.
+func (h *Harness) PruneStaleHarnessNetworks() {
+	// Best-effort cleanup of empty harness networks.
 	nets, err := h.pool.Client.ListNetworks()
 	if err != nil {
 		h.Logf("[DEBUG] Failed to list networks for pruning: %v", err)
