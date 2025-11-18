@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	postgres_migrate "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -82,12 +83,14 @@ func (s *PostgresConfig) DSN(hidePassword bool) string {
 type PostgresStore struct {
 	cfg *PostgresConfig
 
+	log btclog.Logger
+
 	*BaseDB
 }
 
 // NewPostgresStore creates a new store that is backed by a Postgres database
 // backend.
-func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
+func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, error) {
 	log.Infof("Using SQL database '%s'", cfg.DSN(true))
 
 	rawDB, err := sql.Open("pgx", cfg.DSN(false))
@@ -123,6 +126,7 @@ func NewPostgresStore(cfg *PostgresConfig) (*PostgresStore, error) {
 	queries := sqlc.NewPostgres(rawDB)
 	s := &PostgresStore{
 		cfg: cfg,
+		log: log,
 		BaseDB: &BaseDB{
 			DB:      rawDB,
 			Queries: queries,
@@ -163,7 +167,7 @@ func (s *PostgresStore) ExecuteMigrations(target MigrationTarget,
 
 	return applyMigrations(
 		postgresFS, driver, "sqlc/migrations", s.cfg.DBName, target,
-		opts,
+		opts, s.log,
 	)
 }
 
@@ -175,7 +179,7 @@ func NewTestPostgresDB(t testing.TB) *PostgresStore {
 	t.Logf("Creating new Postgres DB for testing")
 
 	sqlFixture := NewTestPgFixture(t, DefaultPostgresFixtureLifetime, true)
-	store, err := NewPostgresStore(sqlFixture.GetConfig())
+	store, err := NewPostgresStore(sqlFixture.GetConfig(), btclog.Disabled)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -197,7 +201,7 @@ func NewTestPostgresDBWithVersion(t testing.TB, version uint) *PostgresStore {
 	storeCfg := sqlFixture.GetConfig()
 	storeCfg.SkipMigrations = true
 
-	store, err := NewPostgresStore(storeCfg)
+	store, err := NewPostgresStore(storeCfg, btclog.Disabled)
 	require.NoError(t, err)
 
 	err = store.ExecuteMigrations(TargetVersion(version))
