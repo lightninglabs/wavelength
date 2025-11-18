@@ -50,8 +50,8 @@ jobs:
           # repo and any private submodules (e.g., darepo-client).
           token: ${{ secrets.SUBMODULE_PAT }}
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
+      # - name: Clean up runner space
+      #  uses: ./.github/actions/cleanup-space
 
       - name: Setup Go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -117,8 +117,8 @@ jobs:
           # repo and any private submodules (e.g., darepo-client).
           token: ${{ secrets.SUBMODULE_PAT }}
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
+      # - name: Clean up runner space
+      #  uses: ./.github/actions/cleanup-space
 
       - name: setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -163,8 +163,8 @@ jobs:
           # repo and any private submodules (e.g., darepo-client).
           token: ${{ secrets.SUBMODULE_PAT }}
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
+      # - name: Clean up runner space
+      #  uses: ./.github/actions/cleanup-space
 
       - name: Setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
@@ -204,8 +204,8 @@ jobs:
           # repo and any private submodules (e.g., darepo-client).
           token: ${{ secrets.SUBMODULE_PAT }}
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
+      # - name: Clean up runner space
+      #   uses: ./.github/actions/cleanup-space
 
       - name: Fetch and rebase on ${{ github.base_ref }}
         if: github.event_name == 'pull_request'
