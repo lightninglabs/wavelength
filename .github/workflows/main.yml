@@ -235,3 +235,29 @@ jobs:
           flag-name: 'unit'
           format: 'golang'
           parallel: true
+
+      - name: Fix artifact permissions
+        if: always()
+        run: |
+          # Fix permissions for test artifacts (created in package directories)
+          # Run find with sudo so it can traverse directories owned by root
+          sudo find . -type d -name "test-artifacts" -exec chown -R "$(id -u):$(id -g)" {} + || true
+          sudo find . -type d -name "test-artifacts" -exec chmod -R a+r {} + || true
+
+      - name: Set artifact name
+        if: failure()
+        id: artifact-name
+        run: |
+          # Sanitize matrix.unit_type for use in artifact name
+          SAFE_NAME=$(echo "${{ matrix.unit_type }}" | sed 's/[^a-zA-Z0-9_-]/_/g')
+          echo "name=test-artifacts-${SAFE_NAME}-${{ github.run_id }}" >> $GITHUB_OUTPUT
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: |
+            **/test-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
