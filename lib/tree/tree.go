@@ -7,6 +7,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // Tree wraps a Node with additional context needed for operations.
@@ -256,4 +258,23 @@ func (t *Tree) NumTx() int {
 // PrettyPrint returns a human-readable string representation of the full tree.
 func (t *Tree) PrettyPrint() string {
 	return t.Root.PrettyPrint()
+}
+
+// NewTreeSignerSession creates a TreeSignerSession for this tree.
+// This is a convenience wrapper that sets up the session with the tree's
+// context.
+func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
+	signerKey *keychain.KeyDescriptor) (*SignerSession, error) {
+
+	// Create prev output fetcher.
+	prevOutFetcher, err := t.Root.PrevOutputFetcher(t.BatchOutput)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create prev output "+
+			"fetcher: %w", err)
+	}
+
+	return NewSignerSession(
+		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher,
+		t.Root,
+	)
 }
