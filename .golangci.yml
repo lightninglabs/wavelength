@@ -90,6 +90,9 @@ linters-settings:
       - github.com/golang-migrate/migrate/v4
       # Allow forked protobuf for hex display support.
       - google.golang.org/protobuf
+      # Allow forked taproot-assets packages.
+      - github.com/lightninglabs/taproot-assets
+      - github.com/lightninglabs/taproot-assets/taprpc
 
 
 linters:
