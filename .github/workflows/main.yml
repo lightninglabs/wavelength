@@ -44,8 +44,9 @@ jobs:
           # Needed for some checks.
           fetch-depth: 0
 
-      - name: Clean up runner space
-        uses: ./.github/actions/cleanup-space
+      # Uncomment this step if you want to enable cleanup of runner space.
+      #- name: Clean up runner space
+      #  uses: ./.github/actions/cleanup-space
 
       - name: Setup Go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
