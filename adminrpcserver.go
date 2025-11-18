@@ -104,6 +104,15 @@ func (a *AdminRPCServer) Stop() error {
 	return nil
 }
 
+// Addr returns the address the admin RPC server is listening on.
+func (a *AdminRPCServer) Addr() net.Addr {
+	if a.listener == nil {
+		return nil
+	}
+
+	return a.listener.Addr()
+}
+
 // Info returns basic information about the operator server.
 func (a *AdminRPCServer) Info(ctx context.Context,
 	req *adminrpc.InfoRequest) (*adminrpc.InfoResponse, error) {

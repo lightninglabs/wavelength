@@ -140,6 +140,15 @@ func (r *RPCServer) Stop() error {
 	return nil
 }
 
+// Addr returns the address the RPC server is listening on.
+func (r *RPCServer) Addr() net.Addr {
+	if r.listener == nil {
+		return nil
+	}
+
+	return r.listener.Addr()
+}
+
 // GetInfo returns basic information about the ark server.
 func (r *RPCServer) GetInfo(ctx context.Context,
 	req *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {

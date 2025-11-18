@@ -3,6 +3,7 @@ package darepo
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 
@@ -170,4 +171,24 @@ func (s *Server) stop(ctx context.Context) error {
 	s.log.Info("Shutdown complete")
 
 	return nil
+}
+
+// AdminRPCAddr returns the address the admin RPC server is listening on, or
+// nil if the server hasn't been started yet.
+func (s *Server) AdminRPCAddr() net.Addr {
+	if s.adminRPC == nil {
+		return nil
+	}
+
+	return s.adminRPC.Addr()
+}
+
+// RPCAddr returns the address the client RPC server is listening on, or nil
+// if the server hasn't been started yet.
+func (s *Server) RPCAddr() net.Addr {
+	if s.rpc == nil {
+		return nil
+	}
+
+	return s.rpc.Addr()
 }
