@@ -9,6 +9,7 @@ require (
 	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/btcec/v2 v2.3.5
 	github.com/btcsuite/btcd/btcutil v1.1.5
+	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
 	github.com/btcsuite/btcwallet v0.16.17
 	github.com/golang-migrate/migrate/v4 v4.17.0
@@ -37,7 +38,6 @@ require (
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.8 // indirect
-	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/btcsuite/btcd/v2transport v1.0.1 // indirect
 	github.com/btcsuite/btclog v0.0.0-20241003133417-09c4e92e319c // indirect
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.5 // indirect
