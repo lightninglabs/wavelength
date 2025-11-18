@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -186,9 +187,10 @@ func applyMigrations(fs fs.FS, driver database.Driver, path, dbName string,
 	if err != nil {
 		return fmt.Errorf("unable to get current db version: %w", err)
 	}
-	log.Infof("Attempting to apply migration(s) "+
-		"(current_db_version=%v, latest_migration_version=%v)",
-		currentDBVersion, opts.latestVersion)
+	log.InfoS(context.Background(), "Attempting to apply migration(s)",
+		"current_db_version", currentDBVersion,
+		"latest_migration_version", opts.latestVersion,
+	)
 
 	// Apply our local logger to the migration instance.
 	sqlMigrate.Log = &migrationLogger{log}
@@ -204,7 +206,9 @@ func applyMigrations(fs fs.FS, driver database.Driver, path, dbName string,
 	if err != nil {
 		return fmt.Errorf("unable to get current db version: %w", err)
 	}
-	log.Infof("Database version after migration: %v", currentDBVersion)
+	log.InfoS(context.Background(), "Database version after migration",
+		"current_db_version", currentDBVersion,
+	)
 
 	return nil
 }

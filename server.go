@@ -52,7 +52,7 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to setup logging: %w", err)
 	}
 
-	s.log.Infof("Constructing Ark operator server")
+	s.log.InfoS(ctx, "Constructing Ark operator server")
 
 	// Initialize database
 	var err error
@@ -65,7 +65,7 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	if cfg.DB.Backend == "postgres" {
 		backendName = "postgres"
 	}
-	s.log.Infof("Database initialized (backend: %s)", backendName)
+	s.log.InfoS(ctx, "Database initialized", "backend", backendName)
 
 	// Create admin RPC server
 	s.adminRPC, err = NewAdminRPCServer(
@@ -117,16 +117,16 @@ func (s *Server) start(ctx context.Context) error {
 	s.cancel = fn.Some(cancel)
 
 	// Start the admin RPC server
-	if err := s.adminRPC.Start(); err != nil {
+	if err := s.adminRPC.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start admin server: %w", err)
 	}
 
 	// Start the client RPC server
-	if err := s.rpc.Start(); err != nil {
+	if err := s.rpc.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start client RPC server: %w", err)
 	}
 
-	s.log.Info("Server started successfully")
+	s.log.InfoS(ctx, "Server started successfully")
 
 	return nil
 }
@@ -134,26 +134,26 @@ func (s *Server) start(ctx context.Context) error {
 // stop stops all the main server components and waits for all goroutines
 // to exit.
 func (s *Server) stop(ctx context.Context) error {
-	s.log.Info("Shutting down server...")
+	s.log.InfoS(ctx, "Shutting down server...")
 
 	// Stop the admin RPC server
 	if s.adminRPC != nil {
-		if err := s.adminRPC.Stop(); err != nil {
-			s.log.Errorf("Could not stop admin RPC server: %v", err)
+		if err := s.adminRPC.Stop(ctx); err != nil {
+			s.log.ErrorS(ctx, "Could not stop admin RPC server", err)
 		}
 	}
 
 	// Stop the client RPC server
 	if s.rpc != nil {
-		if err := s.rpc.Stop(); err != nil {
-			s.log.Errorf("Could not stop rpc server: %v", err)
+		if err := s.rpc.Stop(ctx); err != nil {
+			s.log.ErrorS(ctx, "Could not stop rpc server", err)
 		}
 	}
 
 	// Close database connection
 	if s.db != nil {
 		if err := s.db.Close(); err != nil {
-			s.log.Errorf("Could not close database: %v", err)
+			s.log.ErrorS(ctx, "Could not close database", err)
 		}
 	}
 
@@ -168,7 +168,7 @@ func (s *Server) stop(ctx context.Context) error {
 	// Wait for all goroutines to exit.
 	s.wg.Wait()
 
-	s.log.Info("Shutdown complete")
+	s.log.InfoS(ctx, "Shutdown complete")
 
 	return nil
 }

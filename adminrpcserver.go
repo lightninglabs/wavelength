@@ -65,23 +65,23 @@ func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 }
 
 // Start starts the admin RPC server.
-func (a *AdminRPCServer) Start() error {
+func (a *AdminRPCServer) Start(ctx context.Context) error {
 	if !atomic.CompareAndSwapUint32(&a.started, 0, 1) {
 		return nil
 	}
 
-	a.log.Infof("Starting Admin RPC server")
+	a.log.InfoS(ctx, "Starting Admin RPC server")
 
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 
-		a.log.Infof("Admin RPC server listening on %s",
-			a.listener.Addr())
+		a.log.InfoS(ctx, "Admin RPC server listening",
+			"addr", a.listener.Addr())
 
 		err := a.grpcServer.Serve(a.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			a.log.Errorf("Admin RPC server exited with error: %v",
+			a.log.ErrorS(ctx, "Admin RPC server exited with error",
 				err)
 		}
 	}()
@@ -90,12 +90,12 @@ func (a *AdminRPCServer) Start() error {
 }
 
 // Stop stops the admin RPC server.
-func (a *AdminRPCServer) Stop() error {
+func (a *AdminRPCServer) Stop(ctx context.Context) error {
 	if !atomic.CompareAndSwapUint32(&a.stopped, 0, 1) {
 		return nil
 	}
 
-	a.log.Info("Stopping admin RPC server")
+	a.log.InfoS(ctx, "Stopping admin RPC server")
 
 	close(a.quit)
 	a.grpcServer.Stop()

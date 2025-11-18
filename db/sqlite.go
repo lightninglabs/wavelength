@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -178,8 +179,10 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 		"%s.%d.backup", dbFullFilePath, timestamp,
 	)
 
-	log.Infof("Creating backup of database file: %v -> %v",
-		dbFullFilePath, backupFullFilePath)
+	log.InfoS(context.Background(), "Creating backup of database file",
+		"source", dbFullFilePath,
+		"backup", backupFullFilePath,
+	)
 
 	// Create the database backup.
 	vacuumIntoQuery := "VACUUM INTO ?;"
@@ -207,10 +210,11 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	// database version and the maximum migration version.
 	versionUpgradePending := currentDBVersion < int(maxMigrationVersion)
 	if !versionUpgradePending {
-		s.log.Infof("Current database version is up-to-date, skipping "+
-			"migration attempt and backup creation "+
-			"(current_db_version=%v, max_migration_version=%v)",
-			currentDBVersion, maxMigrationVersion)
+		s.log.InfoS(context.Background(), "Current database version "+
+			"is up-to-date, skipping migration attempt and backup "+
+			"creation", "current_db_version", currentDBVersion,
+			"max_migration_version", maxMigrationVersion,
+		)
 
 		return nil
 	}
@@ -218,19 +222,19 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	// At this point, we know that a database migration is necessary.
 	// Create a backup of the database before starting the migration.
 	if !s.cfg.SkipMigrationDBBackup {
-		s.log.Infof("Creating database backup (before applying " +
-			"migration(s))")
+		s.log.InfoS(context.Background(), "Creating database backup "+
+			"(before applying migration(s))")
 
 		err := backupSqliteDatabase(s.DB, s.cfg.DatabaseFileName, s.log)
 		if err != nil {
 			return err
 		}
 	} else {
-		s.log.Infof("Skipping database backup creation before applying " +
-			"migration(s)")
+		s.log.InfoS(context.Background(), "Skipping database backup "+
+			"creation before applying migration(s)")
 	}
 
-	s.log.Infof("Applying migrations to database")
+	s.log.InfoS(context.Background(), "Applying migrations to database")
 
 	return mig.Up()
 }

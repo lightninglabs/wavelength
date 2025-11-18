@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -91,7 +92,9 @@ type PostgresStore struct {
 // NewPostgresStore creates a new store that is backed by a Postgres database
 // backend.
 func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, error) {
-	log.Infof("Using SQL database '%s'", cfg.DSN(true))
+	log.InfoS(context.Background(), "Using SQL database",
+		"dsn", cfg.DSN(true),
+	)
 
 	rawDB, err := sql.Open("pgx", cfg.DSN(false))
 	if err != nil {
