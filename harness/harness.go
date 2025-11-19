@@ -26,6 +26,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/lightninglabs/darepo-client/chain"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
@@ -1259,6 +1260,17 @@ func (h *Harness) BitcoinRPCClient() (*rpcclient.Client, error) {
 	}
 
 	return rpcclient.New(connCfg, nil)
+}
+
+// BitcoindClient returns a chain.BitcoindRPCClient that wraps the bitcoind
+// RPC client with additional methods like SubmitPackage.
+func (h *Harness) BitcoindClient() (*chain.BitcoindRPCClient, error) {
+	rpcClient, err := h.BitcoinRPCClient()
+	if err != nil {
+		return nil, err
+	}
+
+	return chain.NewBitcoindRPCClient(rpcClient), nil
 }
 
 // bitcoinRPCCall makes a JSON-RPC call to bitcoind and returns the raw result
