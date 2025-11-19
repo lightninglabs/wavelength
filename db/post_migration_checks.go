@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -39,7 +40,7 @@ type DatabaseBackend interface {
 // step callbacks that can be used with the migrate package. The keys of the map
 // are the migration versions, and the values are the callbacks that will be
 // executed after the migration with the corresponding version is applied.
-func makePostStepCallbacks(db DatabaseBackend,
+func makePostStepCallbacks(db DatabaseBackend, log btclog.Logger,
 	checks map[uint]postMigrationCheck) map[uint]migrate.PostStepCallback {
 
 	var (
@@ -47,7 +48,7 @@ func makePostStepCallbacks(db DatabaseBackend,
 		txDB = NewTransactionExecutor(
 			db, func(tx *sql.Tx) sqlc.Querier {
 				return db.WithTx(tx)
-			},
+			}, log,
 		)
 		writeTxOpts = WriteTxOption()
 	)
@@ -58,8 +59,8 @@ func makePostStepCallbacks(db DatabaseBackend,
 		checkFn := check
 
 		runCheck := func(m *migrate.Migration, q sqlc.Querier) error {
-			log.Infof("Running post-migration check for version %d",
-				version)
+			log.InfoS(ctx, "Running post-migration check",
+				"version", version)
 			start := time.Now()
 
 			err := checkFn(ctx, q)
@@ -69,8 +70,9 @@ func makePostStepCallbacks(db DatabaseBackend,
 					"%w", version, err)
 			}
 
-			log.Infof("Post-migration check for version %d "+
-				"completed in %v", version, time.Since(start))
+			log.InfoS(ctx, "Post-migration check completed",
+				"version", version,
+				"duration", time.Since(start))
 
 			return nil
 		}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -126,7 +127,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	db, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   true,
-	})
+	}, btclog.Disabled)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.DB.Close())
@@ -155,7 +156,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	db2, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   false,
-	})
+	}, btclog.Disabled)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db2.DB.Close())
@@ -201,7 +202,7 @@ func TestDirtySqliteVersion(t *testing.T) {
 	db, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   true,
-	})
+	}, btclog.Disabled)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.DB.Close())
@@ -209,7 +210,7 @@ func TestDirtySqliteVersion(t *testing.T) {
 
 	// Attempt to execute migrations with a failing callback.
 	err = db.ExecuteMigrations(db.backupAndMigrate, WithPostStepCallbacks(
-		makePostStepCallbacks(db, testPostMigrationChecks),
+		makePostStepCallbacks(db, btclog.Disabled, testPostMigrationChecks),
 	))
 	require.ErrorIs(t, err, testError)
 

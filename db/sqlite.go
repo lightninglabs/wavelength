@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
 	sqlite_migrate "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -66,12 +68,14 @@ type SqliteConfig struct {
 type SqliteStore struct {
 	cfg *SqliteConfig
 
+	log btclog.Logger
+
 	*BaseDB
 }
 
 // NewSqliteStore attempts to open a new sqlite database based on the passed
 // config.
-func NewSqliteStore(cfg *SqliteConfig) (*SqliteStore, error) {
+func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) {
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
 	// enforced.
@@ -135,6 +139,7 @@ func NewSqliteStore(cfg *SqliteConfig) (*SqliteStore, error) {
 	queries := sqlc.NewSqlite(db)
 	s := &SqliteStore{
 		cfg: cfg,
+		log: log,
 		BaseDB: &BaseDB{
 			DB:      db,
 			Queries: queries,
@@ -155,7 +160,9 @@ func NewSqliteStore(cfg *SqliteConfig) (*SqliteStore, error) {
 }
 
 // backupSqliteDatabase creates a backup of the given SQLite database.
-func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string) error {
+func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
+	log btclog.Logger) error {
+
 	if srcDB == nil {
 		return fmt.Errorf("backup source database is nil")
 	}
@@ -172,8 +179,10 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string) error {
 		"%s.%d.backup", dbFullFilePath, timestamp,
 	)
 
-	log.Infof("Creating backup of database file: %v -> %v",
-		dbFullFilePath, backupFullFilePath)
+	log.InfoS(context.Background(), "Creating backup of database file",
+		"source", dbFullFilePath,
+		"backup", backupFullFilePath,
+	)
 
 	// Create the database backup.
 	vacuumIntoQuery := "VACUUM INTO ?;"
@@ -201,10 +210,11 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	// database version and the maximum migration version.
 	versionUpgradePending := currentDBVersion < int(maxMigrationVersion)
 	if !versionUpgradePending {
-		log.Infof("Current database version is up-to-date, skipping "+
-			"migration attempt and backup creation "+
-			"(current_db_version=%v, max_migration_version=%v)",
-			currentDBVersion, maxMigrationVersion)
+		s.log.InfoS(context.Background(), "Current database version "+
+			"is up-to-date, skipping migration attempt and backup "+
+			"creation", "current_db_version", currentDBVersion,
+			"max_migration_version", maxMigrationVersion,
+		)
 
 		return nil
 	}
@@ -212,19 +222,19 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 	// At this point, we know that a database migration is necessary.
 	// Create a backup of the database before starting the migration.
 	if !s.cfg.SkipMigrationDBBackup {
-		log.Infof("Creating database backup (before applying " +
-			"migration(s))")
+		s.log.InfoS(context.Background(), "Creating database backup "+
+			"(before applying migration(s))")
 
-		err := backupSqliteDatabase(s.DB, s.cfg.DatabaseFileName)
+		err := backupSqliteDatabase(s.DB, s.cfg.DatabaseFileName, s.log)
 		if err != nil {
 			return err
 		}
 	} else {
-		log.Infof("Skipping database backup creation before applying " +
-			"migration(s)")
+		s.log.InfoS(context.Background(), "Skipping database backup "+
+			"creation before applying migration(s)")
 	}
 
-	log.Infof("Applying migrations to database")
+	s.log.InfoS(context.Background(), "Applying migrations to database")
 
 	return mig.Up()
 }
@@ -250,6 +260,7 @@ func (s *SqliteStore) ExecuteMigrations(target MigrationTarget,
 
 	return applyMigrations(
 		sqliteFS, driver, "sqlc/migrations", "sqlite", target, opts,
+		s.log,
 	)
 }
 
@@ -274,7 +285,7 @@ func NewTestSqliteDBHandleFromPath(t testing.TB, dbPath string) *SqliteStore {
 	sqlDB, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbPath,
 		SkipMigrations:   false,
-	})
+	}, btclog.Disabled)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
@@ -298,7 +309,7 @@ func NewTestSqliteDBWithVersion(t testing.TB, version uint) *SqliteStore {
 	sqlDB, err := NewSqliteStore(&SqliteConfig{
 		DatabaseFileName: dbFileName,
 		SkipMigrations:   true,
-	})
+	}, btclog.Disabled)
 	require.NoError(t, err)
 
 	err = sqlDB.ExecuteMigrations(TargetVersion(version))

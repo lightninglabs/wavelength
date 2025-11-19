@@ -104,7 +104,7 @@ func DefaultPostgresConfig() *PostgresConfig {
 func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 	switch cfg.Backend {
 	case "sqlite":
-		sqliteStore, err := NewSqliteStore(cfg.Sqlite)
+		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create sqlite "+
 				"store: %w", err)
@@ -116,7 +116,7 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 		), nil
 
 	case "postgres":
-		pgStore, err := NewPostgresStore(cfg.Postgres)
+		pgStore, err := NewPostgresStore(cfg.Postgres, log)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create postgres "+
 				"store: %w", err)

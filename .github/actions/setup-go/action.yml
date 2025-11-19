@@ -57,7 +57,7 @@ runs:
         #   caches from the same environment.
         # - The unique part is the `hashFiles('**/go.sum')`, which calculates a
         #   hash (a fingerprint) of the go.sum file.
-        key: ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-${{ hashFiles('go.sum') }}
 
         # The restore-keys provides a list of fallback keys. If no cache
         # matches the key exactly, the action will look for a cache where the
@@ -80,7 +80,7 @@ runs:
         # Just the module download cache.
         path: |
           ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-no-build-cache-${{ hashFiles('**/go.sum') }}
+        key: ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-no-build-cache-${{ hashFiles('go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-${{ inputs.go-version }}-${{ inputs.key-prefix }}-no-build-cache-
 

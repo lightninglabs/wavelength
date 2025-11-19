@@ -258,9 +258,9 @@ func sanitizeConnectionError(err error) error {
 	// Check if the error message contains connection parameters that could
 	// leak sensitive information.
 	if isConnectionError(err.Error()) {
-		// Log the original error for debugging purposes, but return a
-		// sanitized version to prevent information leakage.
-		log.Errorf("Database connection error (sanitized): %v", err)
+		// Return a sanitized version to prevent information
+		// leakage. The original error is stored in the DBError
+		// field for debugging purposes when needed.
 		return &ErrDatabaseConnectionError{
 			DBError: err,
 		}

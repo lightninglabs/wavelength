@@ -76,7 +76,7 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 		port: int(port),
 	}
 	databaseURL := fixture.GetDSN()
-	log.Infof("Connecting to Postgres fixture: %v\n", databaseURL)
+	t.Logf("Connecting to Postgres fixture: %v\n", databaseURL)
 
 	// Tell docker to hard kill the container in "expiry" seconds.
 	require.NoError(t, resource.Expire(uint(expiry.Seconds())))

@@ -101,23 +101,23 @@ func NewRPCServer(cfg *RPCConfig, operator *Server, logger btclog.Logger,
 }
 
 // Start starts the RPC server.
-func (r *RPCServer) Start() error {
+func (r *RPCServer) Start(ctx context.Context) error {
 	if !atomic.CompareAndSwapUint32(&r.started, 0, 1) {
 		return nil
 	}
 
-	r.log.Infof("Starting Client RPC server")
+	r.log.InfoS(ctx, "Starting Client RPC server")
 
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 
-		r.log.Infof("Client RPC server listening on %s",
-			r.listener.Addr())
+		r.log.InfoS(ctx, "Client RPC server listening",
+			"addr", r.listener.Addr())
 
 		err := r.grpcServer.Serve(r.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			r.log.Errorf("Client RPC server exited with error: %v",
+			r.log.ErrorS(ctx, "Client RPC server exited with error",
 				err)
 		}
 	}()
@@ -126,18 +126,27 @@ func (r *RPCServer) Start() error {
 }
 
 // Stop stops the RPC server.
-func (r *RPCServer) Stop() error {
+func (r *RPCServer) Stop(ctx context.Context) error {
 	if !atomic.CompareAndSwapUint32(&r.stopped, 0, 1) {
 		return nil
 	}
 
-	r.log.Info("Stopping client RPC server")
+	r.log.InfoS(ctx, "Stopping client RPC server")
 
 	close(r.quit)
 	r.grpcServer.Stop()
 	r.wg.Wait()
 
 	return nil
+}
+
+// Addr returns the address the RPC server is listening on.
+func (r *RPCServer) Addr() net.Addr {
+	if r.listener == nil {
+		return nil
+	}
+
+	return r.listener.Addr()
 }
 
 // GetInfo returns basic information about the ark server.
