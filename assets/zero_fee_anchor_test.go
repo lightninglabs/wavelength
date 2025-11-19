@@ -109,7 +109,7 @@ func TestAssetZeroValueBTCAnchorPackage(t *testing.T) {
 		},
 	}
 
-	err := builder.AddInput(assets.InputConfig{
+	err := builder.AddAssetInput(assets.InputConfig{
 		ProofFile: f.boardingProof.RawProofFile,
 		AnchorKey: assets.AnchorKeySpec{
 			Mode:   assets.AnchorKeyModeMuSig2,
@@ -125,7 +125,7 @@ func TestAssetZeroValueBTCAnchorPackage(t *testing.T) {
 		f.operatorClient.DeriveNewKeys(t.Context())
 	require.NoError(t, err)
 
-	err = builder.AddOutput(assets.OutputConfig{
+	err = builder.AddAssetOutput(assets.OutputConfig{
 		Amount: f.asset.Amount,
 		AnchorKey: assets.AnchorKeySpec{
 			Mode: assets.AnchorKeyModeStatic,

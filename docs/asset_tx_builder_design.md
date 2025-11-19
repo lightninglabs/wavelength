@@ -29,6 +29,10 @@ the virtual transaction and *anchor* to the Bitcoin layer.
   optional tapscript closures for that input.
 - `OutputConfig` declares the amount, anchor metadata, and the asset-level
   script to commit in the vpacket.
+- `BtcInputSpec` and `BtcOutputSpec` capture BTC-only inputs and outputs
+  that accompany the asset transfer (for example connectors used in ARK
+  forfeits). These never touch the virtual transaction but are inserted into the
+  anchor PSBT so downstream code can rebuild the connector tree.
 
 Every closure can either wrap an `arklib/script` closure or supply a raw script
 and a custom witness constructor.  This keeps the builder detached from higher
@@ -63,8 +67,9 @@ spends.  Script-path witnesses remain the caller’s job.
 
 ## Execution Flow
 
-1. **AddInput / AddOutput** – validate configs and store a copy of the proof
-   blob.  The proof is needed later to compute the Taproot Asset root.
+1. **AddAssetInput / AddAssetOutput / AddBtcInput / AddBtcOutput** – validate
+   configs and store a copy of the proof blob.  Asset inputs and outputs affect
+   the virtual packet, while the BTC variants only touch the on-chain PSBT.
 2. **Compile** – decode the proof file, build the `tappsbt.VPacket`, prime the
    witness plans, and persist the script witness map.
 3. **Commit** – call `CommitVirtualPsbts`, capture the response, and keep a copy

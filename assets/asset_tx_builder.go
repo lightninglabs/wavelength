@@ -179,6 +179,14 @@ type AssetTxPlan struct {
 	// output.
 	OutputPlans []AnchorPlan
 
+	// BtcInputs enumerates BTC-only inputs that will be attached to the
+	// anchor PSBT.
+	BtcInputs []BtcInputPlan
+
+	// BtcOutputs lists BTC-only outputs that the builder will append to
+	// the anchor PSBT.
+	BtcOutputs []BtcOutputPlan
+
 	// BTCAnchors lists any BTC-only anchors the builder will append to the
 	// PSBT after Commit().
 	BTCAnchors []BTCAnchorPlan
@@ -312,6 +320,87 @@ type BTCAnchorPlan struct {
 	// ControlBlock is the serialized control block for the tapscript
 	// branch.
 	ControlBlock []byte
+}
+
+// BtcInputSpec describes a Bitcoin-only input that should be attached to the
+// anchor PSBT alongside the asset inputs. These inputs do not carry Taproot
+// Assets state but must appear in the on-chain transaction (for example,
+// connectors that fund forfeit paths).
+type BtcInputSpec struct {
+	// Description is an optional human readable label for the input.
+	Description string
+
+	// Outpoint identifies the UTXO consumed by the anchor transaction.
+	Outpoint wire.OutPoint
+
+	// WitnessUtxo is the previous output referenced by Outpoint.
+	WitnessUtxo *wire.TxOut
+
+	// Sequence optionally overrides the default MaxTxInSequenceNum. A zero
+	// value requests the default.
+	Sequence uint32
+
+	// SighashType optionally overrides the default SigHashDefault.
+	SighashType *txscript.SigHashType
+
+	// TaprootLeafScript enumerates tapscript branches committed to the
+	// referenced UTXO. This mirrors psbt.PInput.TaprootLeafScript.
+	TaprootLeafScript []*psbt.TaprootTapLeafScript
+
+	// TaprootBip32Derivation mirrors psbt.PInput.TaprootBip32Derivation.
+	TaprootBip32Derivation []*psbt.TaprootBip32Derivation
+
+	// Bip32Derivation mirrors psbt.PInput.Bip32Derivation.
+	Bip32Derivation []*psbt.Bip32Derivation
+}
+
+// BtcInputPlan records the normalized data for a BTC-only input that was
+// attached to the anchor PSBT.
+type BtcInputPlan struct {
+	// Description echoes the caller supplied label.
+	Description string
+
+	// Outpoint references the consumed UTXO.
+	Outpoint wire.OutPoint
+
+	// WitnessUtxo is the previous output committed in the PSBT.
+	WitnessUtxo *wire.TxOut
+
+	// Sequence records the sequence number applied when the input was
+	// written to the anchor transaction.
+	Sequence uint32
+}
+
+// BtcOutputSpec declares a Bitcoin-only anchor output that should be added
+// to the PSBT after the asset virtual transaction commits. This is useful for
+// modelling connector trees or other Ark-specific anchoring scripts that do
+// not carry Taproot Assets state.
+type BtcOutputSpec struct {
+	// Description is an optional human readable label for the output.
+	Description string
+
+	// ValueSat is the satoshi amount assigned to the output.
+	ValueSat int64
+
+	// PkScript is the Bitcoin script committed to the output.
+	PkScript []byte
+}
+
+// BtcOutputPlan captures the PSBT level metadata for a BTC-only anchor
+// output.
+type BtcOutputPlan struct {
+	// Description echoes the spec label.
+	Description string
+
+	// ValueSat mirrors the satoshi amount assigned to the output.
+	ValueSat int64
+
+	// PkScript is the Bitcoin script committed to the output.
+	PkScript []byte
+
+	// OutputIndex records the final PSBT output index assigned after
+	// Commit().
+	OutputIndex int
 }
 
 // OpTrueScriptDetails exposes the pre-built artifacts for OP_TRUE scripts.
@@ -667,6 +756,18 @@ type AssetTxBuilder struct {
 	// btcAnchorPlans mirror btcAnchors while tracking PSBT indices.
 	btcAnchorPlans []BTCAnchorPlan
 
+	// btcInputs stores BTC-only inputs configured by the caller.
+	btcInputs []btcInputEntry
+
+	// btcOutputs stores BTC-only outputs configured by the caller.
+	btcOutputs []btcOutputEntry
+
+	// btcInputPlans mirror btcInputs in plan form.
+	btcInputPlans []BtcInputPlan
+
+	// btcOutputPlans mirror btcOutputs while tracking PSBT indices.
+	btcOutputPlans []BtcOutputPlan
+
 	// skipWalletFinalize instructs FinalizeAnchor to bypass wallet signing.
 	skipWalletFinalize bool
 
@@ -687,6 +788,18 @@ type inputSpec struct {
 
 type outputSpec struct {
 	cfg OutputConfig
+}
+
+type btcInputEntry struct {
+	plan                   BtcInputPlan
+	sighashType            txscript.SigHashType
+	taprootLeafScript      []*psbt.TaprootTapLeafScript
+	taprootBip32Derivation []*psbt.TaprootBip32Derivation
+	bip32Derivation        []*psbt.Bip32Derivation
+}
+
+type btcOutputEntry struct {
+	plan BtcOutputPlan
 }
 
 func validateAnchorKey(spec AnchorKeySpec) error {
@@ -920,6 +1033,10 @@ func NewAssetTxBuilder(assetID asset.ID,
 	return &AssetTxBuilder{
 		assetID:         assetID,
 		params:          params,
+		btcInputs:       make([]btcInputEntry, 0),
+		btcOutputs:      make([]btcOutputEntry, 0),
+		btcInputPlans:   make([]BtcInputPlan, 0),
+		btcOutputPlans:  make([]BtcOutputPlan, 0),
 		scriptWitnesses: make(map[int]wire.TxWitness),
 		anchorWitnesses: make(map[int]wire.TxWitness),
 	}
@@ -1000,8 +1117,89 @@ func (b *AssetTxBuilder) AddBTCAnchor(spec BTCAnchorSpec) error {
 	return nil
 }
 
-// AddInput queues an asset input proof for the builder.
-func (b *AssetTxBuilder) AddInput(cfg InputConfig) error {
+// AddBtcInput appends a BTC-only input specification that will be inserted
+// into the anchor PSBT. These inputs are not part of the Taproot Assets
+// virtual transaction but must be consumed by the on-chain transaction (for
+// example connector leaves used in ARK forfeits).
+func (b *AssetTxBuilder) AddBtcInput(spec BtcInputSpec) error {
+	if spec.WitnessUtxo == nil {
+		return errors.New("anchor input witness utxo missing")
+	}
+
+	if len(spec.WitnessUtxo.PkScript) == 0 {
+		return errors.New("anchor input witness utxo script missing")
+	}
+
+	var zeroHash chainhash.Hash
+	if spec.Outpoint.Hash == zeroHash && spec.Outpoint.Index == 0 {
+		return errors.New("anchor input outpoint missing")
+	}
+
+	sequence := spec.Sequence
+	if sequence == 0 {
+		sequence = wire.MaxTxInSequenceNum
+	}
+
+	sighash := txscript.SigHashDefault
+	if spec.SighashType != nil {
+		sighash = *spec.SighashType
+	}
+
+	plan := BtcInputPlan{
+		Description: spec.Description,
+		Outpoint:    spec.Outpoint,
+		WitnessUtxo: cloneTxOut(spec.WitnessUtxo),
+		Sequence:    sequence,
+	}
+
+	inputSpec := btcInputEntry{
+		plan:        plan,
+		sighashType: sighash,
+		taprootLeafScript: cloneTaprootLeafScripts(
+			spec.TaprootLeafScript,
+		),
+		taprootBip32Derivation: cloneTaprootBip32(
+			spec.TaprootBip32Derivation,
+		),
+		bip32Derivation: cloneBip32(
+			spec.Bip32Derivation,
+		),
+	}
+
+	b.btcInputs = append(b.btcInputs, inputSpec)
+	b.btcInputPlans = append(b.btcInputPlans, cloneBtcInputPlan(plan))
+
+	return nil
+}
+
+// AddBtcOutput appends a BTC-only anchor output that does not carry Taproot
+// Assets state. The output is materialised in the PSBT after Commit() runs.
+func (b *AssetTxBuilder) AddBtcOutput(spec BtcOutputSpec) error {
+	if spec.ValueSat < 0 {
+		return errors.New("anchor output value must be non-negative")
+	}
+
+	if len(spec.PkScript) == 0 {
+		return errors.New("anchor output script missing")
+	}
+
+	plan := BtcOutputPlan{
+		Description: spec.Description,
+		ValueSat:    spec.ValueSat,
+		PkScript:    append([]byte(nil), spec.PkScript...),
+		OutputIndex: -1,
+	}
+
+	b.btcOutputs = append(b.btcOutputs, btcOutputEntry{
+		plan: plan,
+	})
+	b.btcOutputPlans = append(b.btcOutputPlans, cloneBtcOutputPlan(plan))
+
+	return nil
+}
+
+// AddAssetInput queues an asset input proof for the builder.
+func (b *AssetTxBuilder) AddAssetInput(cfg InputConfig) error {
 	if len(cfg.ProofFile) == 0 {
 		return errors.New("input proof file missing")
 	}
@@ -1022,8 +1220,8 @@ func (b *AssetTxBuilder) AddInput(cfg InputConfig) error {
 	return nil
 }
 
-// AddOutput queues an asset anchor output for the builder.
-func (b *AssetTxBuilder) AddOutput(cfg OutputConfig) error {
+// AddAssetOutput queues an asset anchor output for the builder.
+func (b *AssetTxBuilder) AddAssetOutput(cfg OutputConfig) error {
 	if cfg.Amount == 0 {
 		return errors.New("output amount must be greater than zero")
 	}
@@ -1231,9 +1429,21 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 	b.skipWalletFinalize = false
 	b.scriptWitnesses = scriptWitnesses
 
+	btcInputs := make([]BtcInputPlan, len(b.btcInputPlans))
+	for i, plan := range b.btcInputPlans {
+		btcInputs[i] = cloneBtcInputPlan(plan)
+	}
+
+	btcOutputs := make([]BtcOutputPlan, len(b.btcOutputPlans))
+	for i, plan := range b.btcOutputPlans {
+		btcOutputs[i] = cloneBtcOutputPlan(plan)
+	}
+
 	plan := &AssetTxPlan{
 		Packet:      vpkt,
 		OutputPlans: outputPlans,
+		BtcInputs:   btcInputs,
+		BtcOutputs:  btcOutputs,
 		BTCAnchors:  append([]BTCAnchorPlan(nil), btcPlans...),
 	}
 
@@ -1304,6 +1514,42 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 						SerializeCompressed(),
 				},
 			}
+	}
+
+	if len(b.btcInputs) > 0 {
+		for _, spec := range b.btcInputs {
+			anchorPkt.UnsignedTx.TxIn = append(
+				anchorPkt.UnsignedTx.TxIn, &wire.TxIn{
+					PreviousOutPoint: spec.plan.Outpoint,
+					Sequence:         spec.plan.Sequence,
+				},
+			)
+
+			input := psbt.PInput{
+				WitnessUtxo: cloneTxOut(spec.plan.WitnessUtxo),
+				SighashType: spec.sighashType,
+			}
+
+			if len(spec.taprootLeafScript) > 0 {
+				input.TaprootLeafScript =
+					cloneTaprootLeafScripts(
+						spec.taprootLeafScript,
+					)
+			}
+			if len(spec.taprootBip32Derivation) > 0 {
+				input.TaprootBip32Derivation =
+					cloneTaprootBip32(
+						spec.taprootBip32Derivation,
+					)
+			}
+			if len(spec.bip32Derivation) > 0 {
+				input.Bip32Derivation = cloneBip32(
+					spec.bip32Derivation,
+				)
+			}
+
+			anchorPkt.Inputs = append(anchorPkt.Inputs, input)
+		}
 	}
 
 	// Attach any pre-leased UTXOs to the anchor template so the wallet
@@ -1430,6 +1676,30 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 				index := len(anchorPsbt.UnsignedTx.TxOut) - 1
 				b.btcAnchorPlans[i].OutputIndex = index
 				b.btcAnchorPlans[i].ScriptType = scriptType
+			}
+		}
+	}
+
+	if len(b.btcOutputs) > 0 {
+		for i, spec := range b.btcOutputs {
+			txOut := wire.NewTxOut(
+				spec.plan.ValueSat,
+				append([]byte(nil), spec.plan.PkScript...),
+			)
+
+			anchorPsbt.UnsignedTx.TxOut = append(
+				anchorPsbt.UnsignedTx.TxOut, txOut,
+			)
+			anchorPsbt.Outputs = append(
+				anchorPsbt.Outputs, psbt.POutput{},
+			)
+
+			index := len(anchorPsbt.UnsignedTx.TxOut) - 1
+			if i < len(b.btcOutputPlans) {
+				b.btcOutputPlans[i].OutputIndex = index
+			}
+			if i < len(b.btcOutputs) {
+				b.btcOutputs[i].plan.OutputIndex = index
 			}
 		}
 	}
@@ -2337,6 +2607,28 @@ func (b *AssetTxBuilder) BTCAnchors() []BTCAnchorPlan {
 	return anchors
 }
 
+// BtcInputs returns a copy of the BTC-only anchor input plans configured on
+// the builder.
+func (b *AssetTxBuilder) BtcInputs() []BtcInputPlan {
+	inputs := make([]BtcInputPlan, len(b.btcInputPlans))
+	for i, plan := range b.btcInputPlans {
+		inputs[i] = cloneBtcInputPlan(plan)
+	}
+
+	return inputs
+}
+
+// BtcOutputs returns a copy of the BTC-only anchor output plans recorded on
+// the builder. Output indices are populated after Commit().
+func (b *AssetTxBuilder) BtcOutputs() []BtcOutputPlan {
+	outputs := make([]BtcOutputPlan, len(b.btcOutputPlans))
+	for i, plan := range b.btcOutputPlans {
+		outputs[i] = cloneBtcOutputPlan(plan)
+	}
+
+	return outputs
+}
+
 // Dependencies kept abstract for easier unit testing.
 type assetWalletClient interface {
 	CommitVirtualPsbts(context.Context,
@@ -2353,4 +2645,126 @@ type WalletClient interface {
 
 	FinalizePsbt(ctx context.Context, packet *psbt.Packet, account string) (
 		*psbt.Packet, *wire.MsgTx, error)
+}
+
+func cloneTxOut(txOut *wire.TxOut) *wire.TxOut {
+	if txOut == nil {
+		return nil
+	}
+
+	return &wire.TxOut{
+		Value:    txOut.Value,
+		PkScript: append([]byte(nil), txOut.PkScript...),
+	}
+}
+
+func cloneTaprootLeafScripts(
+	scripts []*psbt.TaprootTapLeafScript) []*psbt.TaprootTapLeafScript {
+
+	if len(scripts) == 0 {
+		return nil
+	}
+
+	clones := make([]*psbt.TaprootTapLeafScript, len(scripts))
+	for i, leaf := range scripts {
+		if leaf == nil {
+			continue
+		}
+
+		clones[i] = &psbt.TaprootTapLeafScript{
+			LeafVersion:  leaf.LeafVersion,
+			ControlBlock: append([]byte(nil), leaf.ControlBlock...),
+			Script:       append([]byte(nil), leaf.Script...),
+		}
+	}
+
+	return clones
+}
+
+func cloneTaprootBip32(
+	src []*psbt.TaprootBip32Derivation) []*psbt.TaprootBip32Derivation {
+
+	if len(src) == 0 {
+		return nil
+	}
+
+	clones := make([]*psbt.TaprootBip32Derivation, len(src))
+	for i, derivation := range src {
+		if derivation == nil {
+			continue
+		}
+
+		clone := &psbt.TaprootBip32Derivation{
+			XOnlyPubKey: append(
+				[]byte(nil), derivation.XOnlyPubKey...,
+			),
+			MasterKeyFingerprint: derivation.MasterKeyFingerprint,
+			Bip32Path: append(
+				[]uint32(nil), derivation.Bip32Path...,
+			),
+		}
+
+		if len(derivation.LeafHashes) > 0 {
+			clone.LeafHashes = make(
+				[][]byte, len(derivation.LeafHashes),
+			)
+			for idx, hash := range derivation.LeafHashes {
+				clone.LeafHashes[idx] = append(
+					[]byte(nil), hash...,
+				)
+			}
+		}
+
+		clones[i] = clone
+	}
+
+	return clones
+}
+
+func cloneBip32(src []*psbt.Bip32Derivation) []*psbt.Bip32Derivation {
+	if len(src) == 0 {
+		return nil
+	}
+
+	clones := make([]*psbt.Bip32Derivation, len(src))
+	for i, derivation := range src {
+		if derivation == nil {
+			continue
+		}
+
+		clones[i] = &psbt.Bip32Derivation{
+			PubKey: append(
+				[]byte(nil), derivation.PubKey...,
+			),
+			MasterKeyFingerprint: derivation.MasterKeyFingerprint,
+			Bip32Path: append(
+				[]uint32(nil), derivation.Bip32Path...,
+			),
+		}
+	}
+
+	return clones
+}
+
+func cloneBtcInputPlan(plan BtcInputPlan) BtcInputPlan {
+	cloned := BtcInputPlan{
+		Description: plan.Description,
+		Outpoint:    plan.Outpoint,
+		Sequence:    plan.Sequence,
+	}
+
+	if plan.WitnessUtxo != nil {
+		cloned.WitnessUtxo = cloneTxOut(plan.WitnessUtxo)
+	}
+
+	return cloned
+}
+
+func cloneBtcOutputPlan(plan BtcOutputPlan) BtcOutputPlan {
+	return BtcOutputPlan{
+		Description: plan.Description,
+		ValueSat:    plan.ValueSat,
+		PkScript:    append([]byte(nil), plan.PkScript...),
+		OutputIndex: plan.OutputIndex,
+	}
 }
