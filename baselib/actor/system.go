@@ -112,6 +112,17 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 	behavior ActorBehavior[M, R],
 ) ActorRef[M, R] {
 
+	if as.ctx.Err() != nil {
+		// To avoid returning nil and causing a panic, we can create and
+		// return a reference to a dummy actor that is already stopped.
+		// This ensures that any calls to the returned ref will fail
+		// with ErrActorTerminated.
+		dummyCfg := ActorConfig[M, R]{ID: id}
+		dummyActor := NewActor(dummyCfg)
+		dummyActor.Stop()
+		return dummyActor.Ref()
+	}
+
 	actorCfg := ActorConfig[M, R]{
 		ID:          id,
 		Behavior:    behavior,
