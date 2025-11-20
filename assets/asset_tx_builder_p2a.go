@@ -272,3 +272,116 @@ func adjustChangeForAnchor(packet *psbt.Packet, parentTx *wire.MsgTx,
 
 	return nil
 }
+
+// BuildAnchorChildForTx assembles a CPFP child transaction that spends the
+// zero-value anchor output at anchorIndex of parentTx. This helper is intended
+// for callers that already have a signed parent transaction and just need a
+// fee-paying child.
+func BuildAnchorChildForTx(ctx context.Context, wallet AnchorFundingWallet,
+	parentTx *wire.MsgTx, anchorIndex int,
+	opts AnchorChildOptions) (*psbt.Packet, *wire.MsgTx, error) {
+
+	if wallet == nil {
+		return nil, nil, errors.New("funding wallet missing")
+	}
+	if opts.ChangeAddress == nil {
+		return nil, nil, errors.New("change address missing")
+	}
+	if opts.FeeRate <= 0 {
+		return nil, nil, errors.New("fee rate must be greater than " +
+			"zero")
+	}
+	if parentTx == nil {
+		return nil, nil, errors.New("parent tx missing")
+	}
+	if anchorIndex < 0 || anchorIndex >= len(parentTx.TxOut) {
+		return nil, nil, fmt.Errorf("anchor index %d out of range",
+			anchorIndex)
+	}
+
+	plan := &EphemeralAnchorPlan{
+		OutputIndex: anchorIndex,
+	}
+
+	child := &psbt.Packet{UnsignedTx: wire.NewMsgTx(3)}
+	changeScript, err := txscript.PayToAddrScript(opts.ChangeAddress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("change address script: %w", err)
+	}
+	child.UnsignedTx.AddTxOut(wire.NewTxOut(1, changeScript))
+	child.Outputs = append(child.Outputs, psbt.POutput{})
+
+	changeIndex := len(child.Outputs) - 1
+	funded, err := wallet.FundPsbt(ctx, child, changeIndex, opts.FeeRate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fund child psbt: %w", err)
+	}
+	funded.UnsignedTx.Version = 3
+	for i := range funded.UnsignedTx.TxIn {
+		funded.UnsignedTx.TxIn[i].Sequence = wire.MaxTxInSequenceNum - 2
+	}
+
+	if changeIndex < 0 || changeIndex >= len(funded.UnsignedTx.TxOut) {
+		return nil, nil, fmt.Errorf("wallet returned invalid change "+
+			"index %d", changeIndex)
+	}
+	funded.UnsignedTx.TxOut[changeIndex].PkScript = append(
+		[]byte(nil), changeScript...,
+	)
+
+	if err := adjustChangeForAnchor(
+		funded, parentTx, plan, changeIndex, opts.FeeRate,
+	); err != nil {
+		return nil, nil, err
+	}
+
+	walletInputCount := len(funded.Inputs)
+	addTRUCInput(funded.UnsignedTx, wire.OutPoint{
+		Hash:  parentTx.TxHash(),
+		Index: uint32(plan.OutputIndex),
+	})
+	anchorOut := parentTx.TxOut[plan.OutputIndex]
+	funded.Inputs = append(
+		funded.Inputs, buildEphemeralAnchorInput(anchorOut),
+	)
+
+	signed, err := wallet.SignPsbt(ctx, funded)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sign child psbt: %w", err)
+	}
+
+	for i := 0; i < walletInputCount; i++ {
+		if len(signed.Inputs[i].FinalScriptWitness) == 0 &&
+			len(signed.Inputs[i].TaprootKeySpendSig) > 0 {
+
+			sig := append(
+				[]byte(nil),
+				signed.Inputs[i].TaprootKeySpendSig...,
+			)
+			if err := applyWitness(
+				signed, i, wire.TxWitness{sig},
+			); err != nil {
+				return nil, nil, fmt.Errorf("serialize wallet "+
+					"witness: %w", err)
+			}
+		}
+	}
+
+	// P2A anchor requires an empty witness.
+	emptyWitness := wire.TxWitness{}
+	anchorIdx := walletInputCount
+	if err := applyWitness(signed, anchorIdx, emptyWitness); err != nil {
+		return nil, nil, fmt.Errorf("serialize anchor witness: %w", err)
+	}
+
+	if err := psbt.MaybeFinalizeAll(signed); err != nil {
+		return nil, nil, fmt.Errorf("finalize child psbt: %w", err)
+	}
+
+	childTx, err := psbt.Extract(signed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extract child tx: %w", err)
+	}
+
+	return signed, childTx, nil
+}
