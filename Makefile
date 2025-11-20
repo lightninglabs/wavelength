@@ -2,7 +2,7 @@
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
-.PHONY: build rpc install help
+.PHONY: build rpc install help clean-networks
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -322,6 +322,15 @@ release: #? Cross compile for all supported platforms
 		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/merge-sql-schemas-$$sys ./cmd/merge-sql-schemas; \
 		echo; \
 	done
+
+# ============
+# CLEANUP
+# ============
+
+clean-networks: #? Remove stale harness Docker networks (use when address pools exhausted)
+	@$(call print, "Removing stale ark-harness Docker networks...")
+	@docker network ls --filter "name=ark-harness-" -q | xargs -r docker network rm || true
+	@echo "Done. Networks removed."
 
 # ============
 # HELP
