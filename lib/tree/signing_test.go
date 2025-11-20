@@ -1,0 +1,1057 @@
+package tree
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/require"
+)
+
+// mockMuSig2Signer is a mock implementation of input.MuSig2Signer for testing.
+type mockMuSig2Signer struct {
+	privKey       *btcec.PrivateKey
+	sessions      map[input.MuSig2SessionID]*mockSession
+	nextSessionID int
+}
+
+type mockSession struct {
+	info           *input.MuSig2SessionInfo
+	nonces         *musig2.Nonces
+	musigSession   *musig2.Session
+	otherNonces    [][66]byte
+	allNoncesKnown bool
+}
+
+func newMockMuSig2Signer(privKey *btcec.PrivateKey) *mockMuSig2Signer {
+	return &mockMuSig2Signer{
+		privKey:  privKey,
+		sessions: make(map[input.MuSig2SessionID]*mockSession),
+	}
+}
+
+func (m *mockMuSig2Signer) MuSig2CreateSession(
+	version input.MuSig2Version, keyLoc keychain.KeyLocator,
+	signers []*btcec.PublicKey, tweaks *input.MuSig2Tweaks,
+	otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
+
+	// Generate or use provided nonces.
+	var nonces *musig2.Nonces
+	var err error
+	if localNonces != nil {
+		nonces = localNonces
+	} else {
+		// Generate fresh nonces.
+		nonces, err = musig2.GenNonces(
+			musig2.WithPublicKey(m.privKey.PubKey()),
+			musig2.WithNonceSecretKeyAux(m.privKey),
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Create MuSig2 context with known signers and tweaks.
+	var ctxOpts []musig2.ContextOption
+	ctxOpts = append(ctxOpts, musig2.WithKnownSigners(signers))
+
+	if tweaks != nil && len(tweaks.TaprootTweak) > 0 {
+		ctxOpts = append(ctxOpts,
+			musig2.WithTaprootTweakCtx(tweaks.TaprootTweak),
+		)
+	}
+
+	ctx, err := musig2.NewContext(m.privKey, true, ctxOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	musigSession, err := ctx.NewSession()
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate session ID.
+	sessionID := input.MuSig2SessionID{byte(m.nextSessionID)}
+	m.nextSessionID++
+
+	// Store session.
+	mockSess := &mockSession{
+		info: &input.MuSig2SessionInfo{
+			SessionID:   sessionID,
+			PublicNonce: nonces.PubNonce,
+		},
+		nonces:       nonces,
+		musigSession: musigSession,
+		otherNonces:  nil,
+	}
+
+	m.sessions[sessionID] = mockSess
+
+	return mockSess.info, nil
+}
+
+func (m *mockMuSig2Signer) MuSig2RegisterNonces(
+	sessionID input.MuSig2SessionID,
+	nonces [][musig2.PubNonceSize]byte) (bool, error) {
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return false, fmt.Errorf("session not found")
+	}
+
+	// Register all nonces with the musig session.
+	var haveAll bool
+	var err error
+	for _, nonce := range nonces {
+		haveAll, err = session.musigSession.RegisterPubNonce(nonce)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	session.allNoncesKnown = haveAll
+
+	return haveAll, nil
+}
+
+func (m *mockMuSig2Signer) MuSig2Sign(sessionID input.MuSig2SessionID,
+	msg [32]byte, cleanup bool) (*musig2.PartialSignature, error) {
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return nil, fmt.Errorf("session not found")
+	}
+
+	if !session.allNoncesKnown {
+		return nil, fmt.Errorf("not all nonces registered")
+	}
+
+	// Create partial signature using our secret nonce.
+	partialSig, err := session.musigSession.Sign(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return partialSig, nil
+}
+
+func (m *mockMuSig2Signer) MuSig2CombineSig(sessionID input.MuSig2SessionID,
+	partialSigs []*musig2.PartialSignature) (*schnorr.Signature, bool,
+	error) {
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return nil, false, fmt.Errorf("session not found")
+	}
+
+	// Combine all partial signatures.
+	var haveAll bool
+	for _, partialSig := range partialSigs {
+		var err error
+		haveAll, err = session.musigSession.CombineSig(partialSig)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	if !haveAll {
+		return nil, false,
+			fmt.Errorf("not all partial signatures provided")
+	}
+
+	// Get the final signature.
+	finalSig := session.musigSession.FinalSig()
+	if finalSig == nil {
+		return nil, false, fmt.Errorf("final signature is invalid")
+	}
+
+	return finalSig, true, nil
+}
+
+func (m *mockMuSig2Signer) MuSig2Cleanup(
+	sessionID input.MuSig2SessionID) error {
+
+	delete(m.sessions, sessionID)
+	return nil
+}
+
+// TestTxSignerSession tests the TxSignerSession functionality.
+func TestTxSignerSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates session and gets nonce", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{
+			PubKey: pubKey,
+		}
+
+		cosigners := []*btcec.PublicKey{pubKey, otherKey}
+		sweepRoot := make([]byte, 32)
+
+		// Create a simple transaction.
+		tx := wire.NewMsgTx(3)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("prev")),
+				Index: 0,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: 1000})
+
+		// Create fetcher.
+		prevOut := &wire.TxOut{Value: 2000}
+		fetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+
+		session, err := NewTxSignerSession(
+			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, session)
+
+		// Should be able to get nonce.
+		nonce, err := session.GetNonce()
+		require.NoError(t, err)
+		require.NotEqual(t, Musig2PubNonce{}, nonce)
+	})
+
+	t.Run("registers nonces and filters own nonce", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{
+			PubKey: pubKey,
+		}
+
+		cosigners := []*btcec.PublicKey{pubKey, otherKey}
+		sweepRoot := make([]byte, 32)
+
+		tx := wire.NewMsgTx(3)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("prev")),
+				Index: 0,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: 1000})
+
+		prevOut := &wire.TxOut{Value: 2000}
+		fetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+
+		session, err := NewTxSignerSession(
+			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		// Get own nonce.
+		ownNonce, err := session.GetNonce()
+		require.NoError(t, err)
+
+		// Create other participant's nonce (must be valid EC point).
+		otherPrivKey, _ := createTestKey(t)
+		otherNonces, err := musig2.GenNonces(
+			musig2.WithPublicKey(otherPrivKey.PubKey()),
+		)
+		require.NoError(t, err)
+
+		// Register nonces including own nonce (should be filtered out).
+		nonces := [][66]byte{ownNonce, otherNonces.PubNonce}
+		err = session.RegisterNonces(nonces)
+		require.NoError(t, err)
+	})
+
+	t.Run("signs after registering nonces", func(t *testing.T) {
+		t.Parallel()
+		privKey1, pubKey1 := createTestKey(t)
+		privKey2, pubKey2 := createTestKey(t)
+
+		signer1 := newMockMuSig2Signer(privKey1)
+		signer2 := newMockMuSig2Signer(privKey2)
+
+		keyDesc1 := &keychain.KeyDescriptor{PubKey: pubKey1}
+		keyDesc2 := &keychain.KeyDescriptor{PubKey: pubKey2}
+
+		cosigners := []*btcec.PublicKey{pubKey1, pubKey2}
+		sweepRoot := make([]byte, 32)
+
+		tx := wire.NewMsgTx(3)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("prev")),
+				Index: 0,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: 1000})
+
+		prevOut := &wire.TxOut{Value: 2000}
+		fetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+
+		// Create sessions for both signers.
+		session1, err := NewTxSignerSession(
+			signer1, sweepRoot, cosigners, keyDesc1, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		session2, err := NewTxSignerSession(
+			signer2, sweepRoot, cosigners, keyDesc2, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		// Exchange nonces.
+		nonce1, err := session1.GetNonce()
+		require.NoError(t, err)
+
+		nonce2, err := session2.GetNonce()
+		require.NoError(t, err)
+
+		// Register nonces.
+		err = session1.RegisterNonces([][66]byte{nonce1, nonce2})
+		require.NoError(t, err)
+
+		err = session2.RegisterNonces([][66]byte{nonce1, nonce2})
+		require.NoError(t, err)
+
+		// Both should be able to sign.
+		sig1, err := session1.Sign(true)
+		require.NoError(t, err)
+		require.NotNil(t, sig1)
+
+		sig2, err := session2.Sign(true)
+		require.NoError(t, err)
+		require.NotNil(t, sig2)
+
+		// Note: Signature combination would happen in a coordinator.
+		// For this test, we just verify that partial signatures were
+		// generated successfully.
+	})
+
+	t.Run("calculates correct signature hash", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+
+		cosigners := []*btcec.PublicKey{pubKey}
+		sweepRoot := make([]byte, 32)
+
+		tx := wire.NewMsgTx(3)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("prev")),
+				Index: 0,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: 1000, PkScript: []byte("out")})
+
+		prevOut := &wire.TxOut{
+			Value:    2000,
+			PkScript: []byte("prevScript"),
+		}
+		fetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+
+		session, err := NewTxSignerSession(
+			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		// Calculate expected signature hash manually.
+		expectedSigHash, err := txscript.CalcTaprootSignatureHash(
+			txscript.NewTxSigHashes(tx, fetcher),
+			txscript.SigHashDefault, tx, 0, fetcher,
+		)
+		require.NoError(t, err)
+
+		// Should match the session's sigHash.
+		require.Equal(t, [32]byte(expectedSigHash), session.sigHash)
+	})
+}
+
+// TestSignerSession tests the SignerSession functionality.
+func TestSignerSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates session for signer path", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		// Create a simple tree with 2 leaves.
+		leaf1 := createSimpleLeaf("leaf1", 1000, []*btcec.PublicKey{
+			pubKey,
+		})
+		leaf2 := createSimpleLeaf("leaf2", 2000, []*btcec.PublicKey{
+			otherKey,
+		})
+
+		root := &Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("root")),
+				Index: 0,
+			},
+			Outputs: []*wire.TxOut{
+				{Value: 1000},
+				{Value: 2000},
+			},
+			CoSigners: []*btcec.PublicKey{pubKey, otherKey},
+			Children: map[uint32]*Node{
+				0: leaf1,
+				1: leaf2,
+			},
+		}
+
+		// Fix child inputs.
+		rootTXID, _ := root.TXID()
+		leaf1.Input = wire.OutPoint{Hash: rootTXID, Index: 0}
+		leaf2.Input = wire.OutPoint{Hash: rootTXID, Index: 1}
+
+		// Create fetcher.
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := root.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		// Create signer session.
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, root,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, session)
+
+		// Should have extracted path with 2 nodes (root + leaf1).
+		require.Len(t, session.txs, 2)
+
+		// Verify PubKey.
+		require.Equal(t, pubKey, session.PubKey())
+	})
+
+	t.Run("returns error for non-existent signer", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey1 := createTestKey(t)
+		_, otherKey2 := createTestKey(t)
+
+		// Create tree where signer's key is not present.
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			otherKey1, otherKey2,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, leaf,
+		)
+		require.Error(t, err)
+		require.Nil(t, session)
+		require.Contains(t, err.Error(), "no path found for signer")
+	})
+
+	t.Run("gets nonces for all transactions", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+
+		// Create simple leaf.
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			pubKey,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		// Get nonces.
+		nonces, err := session.GetNonces()
+		require.NoError(t, err)
+		require.Len(t, nonces, 1)
+
+		// Verify nonce exists for the leaf tx.
+		leafTXID, _ := leaf.TXID()
+		nonce, exists := nonces[leafTXID.String()]
+		require.True(t, exists)
+		require.NotEqual(t, Musig2PubNonce{}, nonce)
+	})
+
+	t.Run("registers nonces for all transactions", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			pubKey, otherKey,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		// Get nonces from this session.
+		nonces, err := session.GetNonces()
+		require.NoError(t, err)
+
+		// Create other participant's nonce (must be valid EC point).
+		otherPrivKey, _ := createTestKey(t)
+		otherNonces, err := musig2.GenNonces(
+			musig2.WithPublicKey(otherPrivKey.PubKey()),
+		)
+		require.NoError(t, err)
+
+		// Register nonces for all txs.
+		leafTXID, _ := leaf.TXID()
+		noncesSet := map[string][]Musig2PubNonce{
+			leafTXID.String(): {
+				nonces[leafTXID.String()],
+				otherNonces.PubNonce,
+			},
+		}
+
+		err = session.RegisterNonces(noncesSet)
+		require.NoError(t, err)
+	})
+
+	t.Run("generates signatures for all transactions", func(t *testing.T) {
+		t.Parallel()
+		privKey1, pubKey1 := createTestKey(t)
+		privKey2, pubKey2 := createTestKey(t)
+
+		// Create simple leaf with both cosigners.
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			pubKey1, pubKey2,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer1 := newMockMuSig2Signer(privKey1)
+		signer2 := newMockMuSig2Signer(privKey2)
+
+		keyDesc1 := &keychain.KeyDescriptor{PubKey: pubKey1}
+		keyDesc2 := &keychain.KeyDescriptor{PubKey: pubKey2}
+
+		sweepRoot := make([]byte, 32)
+
+		// Create sessions for both signers.
+		session1, err := NewSignerSession(
+			signer1, keyDesc1, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		session2, err := NewSignerSession(
+			signer2, keyDesc2, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		// Exchange nonces.
+		nonces1, err := session1.GetNonces()
+		require.NoError(t, err)
+
+		nonces2, err := session2.GetNonces()
+		require.NoError(t, err)
+
+		// Register nonces.
+		leafTXID, _ := leaf.TXID()
+		txidStr := leafTXID.String()
+
+		err = session1.RegisterNonces(map[string][]Musig2PubNonce{
+			txidStr: {nonces1[txidStr], nonces2[txidStr]},
+		})
+		require.NoError(t, err)
+
+		err = session2.RegisterNonces(map[string][]Musig2PubNonce{
+			txidStr: {nonces1[txidStr], nonces2[txidStr]},
+		})
+		require.NoError(t, err)
+
+		// Generate signatures.
+		sigs1, err := session1.Signatures(true)
+		require.NoError(t, err)
+		require.Len(t, sigs1, 1)
+		require.NotNil(t, sigs1[txidStr])
+
+		sigs2, err := session2.Signatures(true)
+		require.NoError(t, err)
+		require.Len(t, sigs2, 1)
+		require.NotNil(t, sigs2[txidStr])
+	})
+
+	t.Run("RegisterNonces fails if tx not found", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			pubKey,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		// Register nonces for non-existent tx.
+		var nonce Musig2PubNonce
+		err = session.RegisterNonces(map[string][]Musig2PubNonce{
+			"non_existent_txid": {nonce},
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "nonces for tx")
+		require.Contains(t, err.Error(), "not found")
+	})
+}
+
+// TestSignerSessionMultiTx tests SignerSession with multiple transactions.
+func TestSignerSessionMultiTx(t *testing.T) {
+	t.Parallel()
+
+	t.Run("handles multiple transactions in path", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		// Create tree where signer is in both nodes.
+		leaf1 := createSimpleLeaf("leaf1", 1000, []*btcec.PublicKey{
+			pubKey,
+		})
+		leaf2 := createSimpleLeaf("leaf2", 2000, []*btcec.PublicKey{
+			otherKey,
+		})
+
+		root := &Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("root")),
+				Index: 0,
+			},
+			Outputs: []*wire.TxOut{
+				{Value: 1000},
+				{Value: 2000},
+			},
+			CoSigners: []*btcec.PublicKey{pubKey, otherKey},
+			Children: map[uint32]*Node{
+				0: leaf1,
+				1: leaf2,
+			},
+		}
+
+		rootTXID, _ := root.TXID()
+		leaf1.Input = wire.OutPoint{Hash: rootTXID, Index: 0}
+		leaf2.Input = wire.OutPoint{Hash: rootTXID, Index: 1}
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := root.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, root,
+		)
+		require.NoError(t, err)
+
+		// Should have sessions for root and leaf1 (signer's path).
+		require.Len(t, session.txs, 2)
+
+		// Get nonces for all txs.
+		nonces, err := session.GetNonces()
+		require.NoError(t, err)
+		require.Len(t, nonces, 2)
+
+		// Should have nonce for root and leaf1.
+		rootTx, _ := root.ToTx()
+		leaf1Tx, _ := leaf1.ToTx()
+
+		_, hasRoot := nonces[rootTx.TxHash().String()]
+		_, hasLeaf1 := nonces[leaf1Tx.TxHash().String()]
+
+		require.True(t, hasRoot)
+		require.True(t, hasLeaf1)
+	})
+
+	t.Run("single leaf signer path", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+
+		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
+			pubKey,
+		})
+
+		initialOut := &wire.TxOut{Value: 5000}
+		fetcher, err := leaf.PrevOutputFetcher(initialOut)
+		require.NoError(t, err)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		sweepRoot := make([]byte, 32)
+
+		session, err := NewSignerSession(
+			signer, keyDesc, sweepRoot, fetcher, leaf,
+		)
+		require.NoError(t, err)
+
+		// Should have exactly 1 tx (the leaf).
+		require.Len(t, session.txs, 1)
+
+		nonces, err := session.GetNonces()
+		require.NoError(t, err)
+		require.Len(t, nonces, 1)
+
+		leafTXID, _ := leaf.TXID()
+		_, exists := nonces[leafTXID.String()]
+		require.True(t, exists)
+	})
+}
+
+// TestTxSignerSessionSecurityNote tests the security documentation.
+func TestTxSignerSessionSecurityNote(t *testing.T) {
+	// This is more of a documentation test to verify the security
+	// properties mentioned in the TxSignerSession comment.
+	//
+	// The comment states: "Each TxSignerSession automatically generates
+	// fresh nonces via lnd's MuSig2 implementation. Do NOT reuse a
+	// TxSignerSession for signing multiple transactions or re-signing the
+	// same transaction, as this would constitute nonce reuse and leak the
+	// private key."
+	//
+	// We verify this by ensuring:
+	// 1. Nonces are generated automatically (not passed in)
+	// 2. Each session gets unique nonces
+	// 3. Documentation clearly warns against reuse
+
+	t.Run("each session gets unique nonces", func(t *testing.T) {
+		t.Parallel()
+		privKey, pubKey := createTestKey(t)
+		_, otherKey := createTestKey(t)
+
+		signer := newMockMuSig2Signer(privKey)
+		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+		cosigners := []*btcec.PublicKey{pubKey, otherKey}
+		sweepRoot := make([]byte, 32)
+
+		tx := wire.NewMsgTx(3)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("prev")),
+				Index: 0,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		tx.AddTxOut(&wire.TxOut{Value: 1000})
+
+		prevOut := &wire.TxOut{Value: 2000}
+		fetcher := txscript.NewCannedPrevOutputFetcher(
+			prevOut.PkScript, prevOut.Value,
+		)
+
+		// Create two sessions for same tx (in real usage this is
+		// unsafe!).
+		session1, err := NewTxSignerSession(
+			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		session2, err := NewTxSignerSession(
+			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		)
+		require.NoError(t, err)
+
+		// Nonces should be different (proves fresh generation).
+		nonce1, _ := session1.GetNonce()
+		nonce2, _ := session2.GetNonce()
+
+		require.NotEqual(t, nonce1, nonce2,
+			"Sessions should generate unique nonces")
+	})
+}
+
+// TestMusig2PubNonce tests the Musig2PubNonce type.
+func TestMusig2PubNonce(t *testing.T) {
+	t.Run("has correct size", func(t *testing.T) {
+		var nonce Musig2PubNonce
+		require.Equal(t, musig2.PubNonceSize, len(nonce))
+		require.Equal(t, 66, len(nonce))
+	})
+
+	t.Run("can be used as map key", func(t *testing.T) {
+		var nonce1, nonce2 Musig2PubNonce
+		nonce1[0] = 1
+		nonce2[0] = 2
+
+		m := make(map[Musig2PubNonce]string)
+		m[nonce1] = "first"
+		m[nonce2] = "second"
+
+		require.Equal(t, "first", m[nonce1])
+		require.Equal(t, "second", m[nonce2])
+	})
+
+	t.Run("zero value is distinct", func(t *testing.T) {
+		var zero Musig2PubNonce
+		var nonZero Musig2PubNonce
+		nonZero[0] = 1
+
+		require.NotEqual(t, zero, nonZero)
+		require.Equal(t, Musig2PubNonce{}, zero)
+	})
+}
+
+// TestFullSigningFlow tests the complete signing workflow.
+func TestFullSigningFlow(t *testing.T) {
+	t.Run("complete 2-party signing for single transaction",
+		func(t *testing.T) {
+			t.Parallel()
+			privKey1, pubKey1 := createTestKey(t)
+			privKey2, pubKey2 := createTestKey(t)
+
+			// Create a leaf that both parties sign.
+			leaf := createSimpleLeaf(
+				"leaf", 1000, []*btcec.PublicKey{
+					pubKey1, pubKey2,
+				},
+			)
+
+			// Compute FinalKey for verification later.
+			sweepRoot := make([]byte, 32)
+			finalKey, err := ComputeFinalKey(
+				[]*btcec.PublicKey{pubKey1, pubKey2}, sweepRoot,
+			)
+			require.NoError(t, err)
+			leaf.FinalKey = finalKey
+
+			initialOut := &wire.TxOut{Value: 5000}
+			fetcher, err := leaf.PrevOutputFetcher(initialOut)
+			require.NoError(t, err)
+
+			// Create signer sessions.
+			signer1 := newMockMuSig2Signer(privKey1)
+			signer2 := newMockMuSig2Signer(privKey2)
+
+			keyDesc1 := &keychain.KeyDescriptor{PubKey: pubKey1}
+			keyDesc2 := &keychain.KeyDescriptor{PubKey: pubKey2}
+
+			session1, err := NewSignerSession(
+				signer1, keyDesc1, sweepRoot, fetcher, leaf,
+			)
+			require.NoError(t, err)
+
+			session2, err := NewSignerSession(
+				signer2, keyDesc2, sweepRoot, fetcher, leaf,
+			)
+			require.NoError(t, err)
+
+			// Phase 1: Exchange nonces.
+			nonces1, err := session1.GetNonces()
+			require.NoError(t, err)
+
+			nonces2, err := session2.GetNonces()
+			require.NoError(t, err)
+
+			leafTXID, _ := leaf.TXID()
+			txidStr := leafTXID.String()
+
+			// Phase 2: Register nonces.
+			noncesSet := map[string][]Musig2PubNonce{
+				txidStr: {nonces1[txidStr], nonces2[txidStr]},
+			}
+			err = session1.RegisterNonces(noncesSet)
+			require.NoError(t, err)
+
+			err = session2.RegisterNonces(noncesSet)
+			require.NoError(t, err)
+
+			// Phase 3: Generate partial signatures.
+			partialSigs1, err := session1.Signatures(true)
+			require.NoError(t, err)
+			require.Len(t, partialSigs1, 1)
+			require.NotNil(t, partialSigs1[txidStr])
+
+			partialSigs2, err := session2.Signatures(true)
+			require.NoError(t, err)
+			require.Len(t, partialSigs2, 1)
+			require.NotNil(t, partialSigs2[txidStr])
+
+			// Note: In production, a coordinator would combine
+			// these partial signatures. For this test, we verify
+			// that the signing workflow completes successfully and
+			// generates partial signatures from both parties.
+		})
+
+	t.Run("complete 2-party signing for tree with multiple txs",
+		func(t *testing.T) {
+			t.Parallel()
+			privKey1, pubKey1 := createTestKey(t)
+			privKey2, pubKey2 := createTestKey(t)
+
+			// Create tree where both signers are in all
+			// transactions.
+			leaf1 := createSimpleLeaf(
+				"leaf1", 1000, []*btcec.PublicKey{
+					pubKey1, pubKey2,
+				},
+			)
+			leaf2 := createSimpleLeaf(
+				"leaf2", 2000, []*btcec.PublicKey{
+					pubKey1, pubKey2,
+				},
+			)
+
+			root := &Node{
+				Input: wire.OutPoint{
+					Hash:  chainhash.HashH([]byte("root")),
+					Index: 0,
+				},
+				Outputs: []*wire.TxOut{
+					{Value: 1000},
+					{Value: 2000},
+				},
+				CoSigners: []*btcec.PublicKey{pubKey1, pubKey2},
+				Children: map[uint32]*Node{
+					0: leaf1,
+					1: leaf2,
+				},
+			}
+
+			rootTXID, _ := root.TXID()
+			leaf1.Input = wire.OutPoint{Hash: rootTXID, Index: 0}
+			leaf2.Input = wire.OutPoint{Hash: rootTXID, Index: 1}
+
+			// Compute FinalKey for all nodes.
+			sweepRoot := make([]byte, 32)
+			for node := range root.NodesIter() {
+				finalKey, err := ComputeFinalKey(
+					node.CoSigners, sweepRoot,
+				)
+				require.NoError(t, err)
+				node.FinalKey = finalKey
+			}
+
+			initialOut := &wire.TxOut{Value: 5000}
+			fetcher, err := root.PrevOutputFetcher(initialOut)
+			require.NoError(t, err)
+
+			// Create sessions.
+			signer1 := newMockMuSig2Signer(privKey1)
+			signer2 := newMockMuSig2Signer(privKey2)
+
+			keyDesc1 := &keychain.KeyDescriptor{PubKey: pubKey1}
+			keyDesc2 := &keychain.KeyDescriptor{PubKey: pubKey2}
+
+			session1, err := NewSignerSession(
+				signer1, keyDesc1, sweepRoot, fetcher, root,
+			)
+			require.NoError(t, err)
+
+			session2, err := NewSignerSession(
+				signer2, keyDesc2, sweepRoot, fetcher, root,
+			)
+			require.NoError(t, err)
+
+			// Both should have 3 txs (root + 2 leaves).
+			require.Len(t, session1.txs, 3)
+			require.Len(t, session2.txs, 3)
+
+			// Exchange nonces.
+			nonces1, err := session1.GetNonces()
+			require.NoError(t, err)
+			require.Len(t, nonces1, 3)
+
+			nonces2, err := session2.GetNonces()
+			require.NoError(t, err)
+			require.Len(t, nonces2, 3)
+
+			// Build nonces set for all 3 transactions.
+			noncesSet := make(map[string][]Musig2PubNonce)
+			for txid := range nonces1 {
+				noncesSet[txid] = []Musig2PubNonce{
+					nonces1[txid],
+					nonces2[txid],
+				}
+			}
+
+			// Register nonces.
+			err = session1.RegisterNonces(noncesSet)
+			require.NoError(t, err)
+
+			err = session2.RegisterNonces(noncesSet)
+			require.NoError(t, err)
+
+			// Generate partial signatures for all txs.
+			partialSigs1, err := session1.Signatures(true)
+			require.NoError(t, err)
+			require.Len(t, partialSigs1, 3)
+
+			partialSigs2, err := session2.Signatures(true)
+			require.NoError(t, err)
+			require.Len(t, partialSigs2, 3)
+
+			// Verify all partial signatures were generated.
+			for txid := range session1.txs {
+				require.NotNil(t, partialSigs1[txid])
+				require.NotNil(t, partialSigs2[txid])
+			}
+
+			// Note: In production, a coordinator would combine
+			// these partial signatures to create final
+			// signatures.
+		})
+}

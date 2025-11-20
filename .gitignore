@@ -2,3 +2,32 @@
 /arkd
 **/test-artifacts
 merge-sql-schemas
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with 'go test -c'
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+**/build/
+**/log/
+**/data/
+**/datadir/
+**/.cache/
+**/.gocache/
+
+DS_Store
+._.DS_Store
+**/.DS_Store
+**/._.DS_Store
+
+.vscode/
+.idea
+.serena/
