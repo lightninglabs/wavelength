@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -35,6 +36,13 @@ type Node struct {
 	// Children maps output index to child Node.
 	// Empty for leaf nodes.
 	Children map[uint32]*Node
+
+	// Amount is the total BTC value for this node. For leaf nodes, this
+	// is the leaf's BTC amount. For branch nodes, this is the sum of all
+	// descendant leaf amounts (subtree total). This is set during
+	// structure building and used during materialization to determine
+	// output values.
+	Amount btcutil.Amount
 
 	// Signature is the final aggregated MuSig2 signature for the input.
 	// This is populated after signing is complete.

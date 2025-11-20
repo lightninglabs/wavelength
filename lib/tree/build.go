@@ -1,111 +1,37 @@
 package tree
 
 import (
-	"fmt"
-
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/wire"
+	"sort"
 )
 
-// workItem represents a unit of work in the tree building queue.
-type workItem struct {
-	input    wire.OutPoint
-	leaves   []LeafDescriptor
-	parent   *Node
-	outIndex uint32
+// PartitionWeightFunc returns the weight used to balance leaves during tree
+// construction. When nil, leaves are partitioned purely by count.
+type PartitionWeightFunc func(LeafDescriptor) int64
+
+// WeightByBtcAmount is a partition function that simply prefers the BTC amount.
+func WeightByBtcAmount() PartitionWeightFunc {
+	return func(l LeafDescriptor) int64 {
+		return int64(l.Amount)
+	}
 }
 
-// buildTreeBFS builds the tree using breadth-first search with a work queue.
-func buildTreeBFS(rootInput wire.OutPoint, leaves []LeafDescriptor,
-	operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte,
-	radix int) (*Node, error) {
+// partitionLeaves divides leaves into balanced groups. When a weight function
+// is provided, groups are balanced by cumulative weight; otherwise, leaves are
+// distributed purely by count (legacy behavior).
+func partitionLeaves(leaves []LeafDescriptor, radix int,
+	weightFn PartitionWeightFunc) [][]LeafDescriptor {
 
-	// Initialize queue with root work item.
-	queue := NewQueue[workItem]()
-	queue.Enqueue(workItem{
-		input:    rootInput,
-		leaves:   leaves,
-		parent:   nil,
-		outIndex: 0,
-	})
-
-	var root *Node
-
-	// Process queue iteratively (BFS).
-	for !queue.IsEmpty() {
-		work, ok := queue.Dequeue()
-		if !ok {
-			return nil, fmt.Errorf("unexpected empty queue")
-		}
-
-		var node *Node
-		var err error
-
-		// Base case: single leaf creates a leaf transaction.
-		if len(work.leaves) == 1 {
-			node, err = NewLeafNode(
-				work.input, work.leaves[0], operatorKey,
-				sweepTapscriptRoot,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create "+
-					"leaf node: %w", err)
-			}
-		} else {
-			// Partition leaves into balanced groups.
-			groups := partitionLeaves(work.leaves, radix)
-
-			// Create branch transaction.
-			node, err = NewBranchNode(
-				work.input, groups, operatorKey,
-				sweepTapscriptRoot,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create "+
-					"branch node: %w", err)
-			}
-
-			// Enqueue children for processing.
-			parentTxHash, err := node.TXID()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get "+
-					"parent TXID: %w", err)
-			}
-
-			for i, group := range groups {
-				if len(group) == 0 {
-					continue
-				}
-
-				childInput := wire.OutPoint{
-					Hash:  parentTxHash,
-					Index: uint32(i),
-				}
-
-				queue.Enqueue(workItem{
-					input:    childInput,
-					leaves:   group,
-					parent:   node,
-					outIndex: uint32(i),
-				})
-			}
-		}
-
-		// Link to parent.
-		if work.parent != nil {
-			work.parent.Children[work.outIndex] = node
-		} else {
-			root = node
-		}
+	if weightFn == nil {
+		return partitionLeavesByCount(leaves, radix)
 	}
 
-	return root, nil
+	return partitionLeavesByWeight(leaves, radix, weightFn)
 }
 
-// partitionLeaves divides leaves into balanced groups using round-robin
-// assignment. It ensures even distribution of items across groups to create a
-// balanced tree.
-func partitionLeaves(leaves []LeafDescriptor, radix int) [][]LeafDescriptor {
+// partitionLeavesByCount distributes leaves evenly by count.
+func partitionLeavesByCount(leaves []LeafDescriptor,
+	radix int) [][]LeafDescriptor {
+
 	M := len(leaves)
 
 	if M <= radix {
@@ -161,6 +87,65 @@ func partitionLeaves(leaves []LeafDescriptor, radix int) [][]LeafDescriptor {
 		// Fallback: split in half to guarantee progress.
 		mid := M / 2
 		return [][]LeafDescriptor{leaves[:mid], leaves[mid:]}
+	}
+
+	return nonEmpty
+}
+
+// partitionLeavesByWeight balances groups by cumulative weight using a greedy
+// assignment of sorted leaves.
+func partitionLeavesByWeight(leaves []LeafDescriptor, radix int,
+	weightFn PartitionWeightFunc) [][]LeafDescriptor {
+
+	type weightedLeaf struct {
+		leaf   LeafDescriptor
+		weight int64
+		index  int
+	}
+
+	weighted := make([]weightedLeaf, len(leaves))
+	for i, leaf := range leaves {
+		w := weightFn(leaf)
+		if w < 0 {
+			w = 0
+		}
+		weighted[i] = weightedLeaf{
+			leaf:   leaf,
+			weight: w,
+			index:  i,
+		}
+	}
+
+	sort.SliceStable(weighted, func(i, j int) bool {
+		if weighted[i].weight == weighted[j].weight {
+			return weighted[i].index < weighted[j].index
+		}
+
+		return weighted[i].weight > weighted[j].weight
+	})
+
+	groups := make([][]LeafDescriptor, radix)
+	groupWeights := make([]int64, radix)
+
+	for _, wl := range weighted {
+		// Assign to the group with the smallest cumulative weight.
+		minIdx := 0
+		for i := 1; i < radix; i++ {
+			if groupWeights[i] < groupWeights[minIdx] {
+				minIdx = i
+			}
+		}
+
+		groups[minIdx] = append(groups[minIdx], wl.leaf)
+		groupWeights[minIdx] += wl.weight
+	}
+
+	// Drop empty groups to preserve existing expectations.
+	nonEmpty := make([][]LeafDescriptor, 0, radix)
+	for _, g := range groups {
+		if len(g) > 0 {
+			nonEmpty = append(nonEmpty, g)
+		}
 	}
 
 	return nonEmpty
