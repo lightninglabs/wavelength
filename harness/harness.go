@@ -279,7 +279,7 @@ func DefaultOptions() Options {
 
 	return Options{
 		BitcoindImage:       "lightninglabs/bitcoin-core:29",
-		LNDImage:            "lightninglabs/lnd:v0.19.3-beta",
+		LNDImage:            "lightninglabs/lnd:v0.20.0-beta",
 		TapdImage:           "lightninglabs/taproot-assets:v0.7.0-rc1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
@@ -637,12 +637,9 @@ func (h *Harness) purgeDockerResources() {
 	h.purgeResource(h.lnd, "lnd")
 	h.purgeResource(h.bitcoind, "bitcoind")
 
-	if h.network != nil {
-		err := h.network.Close()
-		if err != nil {
-			h.Logf("failed to close network: %v", err)
-		}
-	}
+	// Use force removal to ensure the network is cleaned up even if some
+	// containers are still connected (e.g., due to a test panic).
+	h.forceRemoveNetwork()
 }
 
 // purgeResource removes a single Docker container resource.
@@ -726,6 +723,53 @@ func (h *Harness) PruneStaleHarnessNetworks() {
 				)
 			}
 		}
+	}
+}
+
+// forceRemoveNetwork forcefully removes a Docker network by first
+// disconnecting any containers that are still connected to it. This is used
+// during test teardown to ensure networks are cleaned up even if some
+// containers failed to stop properly.
+func (h *Harness) forceRemoveNetwork() {
+	if h.network == nil {
+		return
+	}
+
+	networkID := h.network.Network.ID
+
+	// Get the network details to find connected containers.
+	network, err := h.pool.Client.NetworkInfo(networkID)
+	if err != nil {
+		h.Logf("[DEBUG] Failed to get network info: %v", err)
+
+		// Try to remove anyway.
+		_ = h.pool.Client.RemoveNetwork(networkID)
+
+		return
+	}
+
+	// Disconnect all containers from the network.
+	for containerID := range network.Containers {
+		err := h.pool.Client.DisconnectNetwork(
+			networkID,
+			docker.NetworkConnectionOptions{
+				Container: containerID,
+				Force:     true,
+			},
+		)
+		if err != nil {
+			h.Logf(
+				"[DEBUG] Failed to disconnect container %s "+
+					"from network: %v",
+				containerID[:12], err,
+			)
+		}
+	}
+
+	// Now remove the network.
+	err = h.pool.Client.RemoveNetwork(networkID)
+	if err != nil {
+		h.Logf("[DEBUG] Failed to remove network: %v", err)
 	}
 }
 
