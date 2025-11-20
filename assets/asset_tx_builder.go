@@ -84,6 +84,11 @@ type MuSig2Tweaks struct {
 	// TaprootBIP0086Tweak applies the standard BIP-0086 tweak during
 	// aggregation.
 	TaprootBIP0086Tweak bool
+
+	// TaprootTweak is the taproot script root used for key tweaking. When
+	// set, the MuSig2 aggregate key is tweaked with this value instead of
+	// using BIP-0086. This is mutually exclusive with TaprootBIP0086Tweak.
+	TaprootTweak []byte
 }
 
 // ScriptClosure describes an alternative tapscript spending branch. Closures
@@ -142,6 +147,60 @@ func (c ScriptClosure) Witness(controlBlock []byte, args map[string][]byte) (
 	return c.Closure.Witness(controlBlock, args)
 }
 
+// closuresToSiblingPreimage builds a tapscript sibling preimage from the
+// provided closures. When there's a single closure, returns a leaf preimage.
+// For multiple closures, constructs a branch preimage.
+func closuresToSiblingPreimage(
+	closures []ScriptClosure) (*commitment.TapscriptPreimage, error) {
+
+	if len(closures) == 0 {
+		return nil, nil
+	}
+
+	// Single closure: create a leaf preimage.
+	if len(closures) == 1 {
+		tapLeaf, err := closures[0].TapLeaf()
+		if err != nil {
+			return nil, fmt.Errorf("get tap leaf: %w", err)
+		}
+
+		preimage, err := commitment.NewPreimageFromLeaf(tapLeaf)
+		if err != nil {
+			return nil, fmt.Errorf("create leaf preimage: %w", err)
+		}
+
+		return preimage, nil
+	}
+
+	// Multiple closures: build a tapscript tree from all leaves and return
+	// a branch preimage. We use AssembleTaprootScriptTree to construct the
+	// tree which handles optimal node placement.
+	leaves := make([]txscript.TapLeaf, 0, len(closures))
+	for _, c := range closures {
+		tapLeaf, err := c.TapLeaf()
+		if err != nil {
+			return nil, fmt.Errorf("get tap leaf for %q: %w",
+				c.ID, err)
+		}
+		leaves = append(leaves, tapLeaf)
+	}
+
+	// Build tree from leaves.
+	tapTree := txscript.AssembleTaprootScriptTree(leaves...)
+	rootNode := tapTree.RootNode
+
+	// Get the root as a branch. The root is always a branch when there are
+	// 2+ leaves.
+	branch, ok := rootNode.(txscript.TapBranch)
+	if !ok {
+		return nil, fmt.Errorf("expected branch node, got %T", rootNode)
+	}
+
+	preimage := commitment.NewPreimageFromBranch(branch)
+
+	return &preimage, nil
+}
+
 // InputConfig associates a proof chain with anchor metadata.
 type InputConfig struct {
 	// ProofFile is the raw proof blob exported from tapd.
@@ -152,12 +211,25 @@ type InputConfig struct {
 
 	// Closures lists optional tapscript branches attached to the anchor.
 	Closures []ScriptClosure
+
+	// Sequence optionally sets the input sequence number. A zero value
+	// uses the default (MaxTxInSequenceNum). For CSV script path spends,
+	// this must be set to the CSV delay value.
+	Sequence uint32
 }
 
 // OutputConfig defines the anchor we are assembling.
 type OutputConfig struct {
 	// Amount is the asset amount assigned to the output.
 	Amount uint64
+
+	// Type selects the virtual output type. Defaults to
+	// tappsbt.TypeSimple when unset.
+	Type tappsbt.VOutputType
+
+	// Interactive controls whether the output is spent interactively by
+	// the recipient (defaults to true when nil).
+	Interactive *bool
 
 	// AnchorKey describes how the anchor output can be spent.
 	AnchorKey AnchorKeySpec
@@ -179,6 +251,12 @@ type AssetTxPlan struct {
 	// output.
 	OutputPlans []AnchorPlan
 
+	// AnchorOutputs lists the BTC anchor transaction outputs corresponding
+	// to each asset output in Packet order. This is populated after Commit
+	// when the anchor PSBT is available. Entries may be nil if anchors
+	// were not committed.
+	AnchorOutputs []*wire.TxOut
+
 	// BtcInputs enumerates BTC-only inputs that will be attached to the
 	// anchor PSBT.
 	BtcInputs []BtcInputPlan
@@ -190,6 +268,18 @@ type AssetTxPlan struct {
 	// BTCAnchors lists any BTC-only anchors the builder will append to the
 	// PSBT after Commit().
 	BTCAnchors []BTCAnchorPlan
+}
+
+// FirstAnchorOutput returns the first recorded anchor output, useful for
+// single-asset-output flows. It returns nil if no anchors were recorded.
+func (p *AssetTxPlan) FirstAnchorOutput() *wire.TxOut {
+	for _, out := range p.AnchorOutputs {
+		if out != nil {
+			return cloneTxOut(out)
+		}
+	}
+
+	return nil
 }
 
 // AssetScriptSpec describes how to construct the asset-level script for a
@@ -519,6 +609,53 @@ func (s *OpTrueScriptSpec) Prepare(anchorKey AnchorKeySpec,
 	}, nil
 }
 
+// OpTrueUniqueScript returns an AssetScriptSpec that creates a unique OP_TRUE
+// script key by using the provided internal key to tweak the script key. This
+// allows multiple outputs to have distinct script keys while still being
+// spendable via the OP_TRUE tapscript path.
+//
+// Unlike OpTrueScript which uses NUMS and produces the same script key for all
+// outputs, this function produces unique script keys based on the internal key.
+// The TweakedScriptKey info is properly populated for proof verification.
+func OpTrueUniqueScript(internalKey *btcec.PublicKey) AssetScriptSpec {
+	return &OpTrueUniqueScriptSpec{InternalKey: internalKey}
+}
+
+// OpTrueUniqueScriptSpec implements AssetScriptSpec for OP_TRUE with unique
+// script keys per output.
+type OpTrueUniqueScriptSpec struct {
+	InternalKey *btcec.PublicKey
+}
+
+func (s *OpTrueUniqueScriptSpec) Prepare(anchorKey AnchorKeySpec,
+	params *address.ChainParams) (*AssetScriptArtifacts, error) {
+
+	if s.InternalKey == nil {
+		return nil, errors.New("op_true unique spec requires " +
+			"internal key")
+	}
+
+	// Build OP_TRUE artifacts with the internal key for uniqueness.
+	// This creates a unique script key per output while maintaining
+	// proper TweakedScriptKey info for proof verification.
+	opTrue, err := BuildOpTrueArtifactsWithKey(s.InternalKey)
+	if err != nil {
+		return nil, fmt.Errorf("build op_true artifacts with key: %w",
+			err)
+	}
+
+	return &AssetScriptArtifacts{
+		ScriptKey:        &opTrue.ScriptKey,
+		TapscriptSibling: opTrue.SiblingPreimage,
+		AnchorInternal:   s.InternalKey, // Anchor internal key.
+		Witness:          opTrue.Witness,
+		OutputKey:        opTrue.OutputKey,
+		Details: &OpTrueScriptDetails{
+			Artifacts: opTrue,
+		},
+	}, nil
+}
+
 // DirectWalletScript constructs a spec that uses the provided wallet-derived
 // taproot key directly with no additional script tweaks.
 func DirectWalletScript(scriptKey *asset.ScriptKey) AssetScriptSpec {
@@ -571,6 +708,24 @@ type CommitOptions struct {
 	// LockDuration determines how long newly locked anchor inputs remain
 	// held.
 	LockDuration time.Duration
+
+	// SkipZeroFeeBalance disables the automatic zero-fee balancing output
+	// that is normally added when skipping wallet funding. Use this when
+	// the caller will manually adjust output values after commit.
+	SkipZeroFeeBalance bool
+
+	// AssetOutputValues optionally specifies custom BTC values for asset
+	// outputs. The map key is the anchor output index and value is the
+	// desired satoshi amount. When provided, these values are applied to
+	// the anchor template BEFORE calling CommitVirtualPsbts, ensuring that
+	// proofs reference the correct transaction hash. This is essential for
+	// zero-fee tree propagation where outputs need specific BTC values.
+	AssetOutputValues map[uint32]int64
+
+	// NoChangeOutput disables the automatic change output that tapd adds
+	// during CommitVirtualPsbts. Use this when the transaction already has
+	// exact balance (all input BTC goes to asset outputs + fee).
+	NoChangeOutput bool
 }
 
 // PublishOptions controls how Publish behaves.
@@ -750,6 +905,10 @@ type AssetTxBuilder struct {
 	// anchorPsbt is the Bitcoin PSBT template returned by tapd.
 	anchorPsbt *psbt.Packet
 
+	// anchorOutputs caches the anchor transaction outputs for asset
+	// outputs. Populated after Commit().
+	anchorOutputs []*wire.TxOut
+
 	// btcAnchors are optional BTC-only anchors appended after commit.
 	btcAnchors []BTCAnchorSpec
 
@@ -776,6 +935,24 @@ type AssetTxBuilder struct {
 
 	// anchorWitnesses caches script-path anchor witnesses per PSBT input.
 	anchorWitnesses map[int]wire.TxWitness
+}
+
+// AssetWalletClient is the exported alias for the internal wallet client
+// interface used during Commit/Publish.
+type AssetWalletClient interface {
+	assetWalletClient
+}
+
+// ActivePackets returns the committed active virtual packets, if any. A
+// shallow copy is returned to avoid exposing internal slices to mutation.
+func (b *AssetTxBuilder) ActivePackets() []*tappsbt.VPacket {
+	if len(b.activePkts) == 0 {
+		return nil
+	}
+
+	out := make([]*tappsbt.VPacket, len(b.activePkts))
+	copy(out, b.activePkts)
+	return out
 }
 
 type inputSpec struct {
@@ -848,8 +1025,13 @@ func tapBranchHashBytes(left, right []byte) [32]byte {
 // We do this once during Compile() so later calls can simply look up the cached
 // control block, tapleaf and tweak material instead of reconstructing the
 // merkle tree from scratch.
+//
+// The prf parameter is used to determine the output key parity from the actual
+// on-chain output. This is necessary because the original output's tapscript
+// tree structure may differ from the tree we're constructing here.
 func buildScriptSpendPlans(internalKey *btcec.PublicKey, assetRoot [32]byte,
-	closures []ScriptClosure) (map[string]*scriptSpendPlan, error) {
+	closures []ScriptClosure, prf *proof.Proof) (map[string]*scriptSpendPlan,
+	error) {
 
 	if internalKey == nil {
 		return nil, errors.New("internal key required for script " +
@@ -876,11 +1058,24 @@ func buildScriptSpendPlans(internalKey *btcec.PublicKey, assetRoot [32]byte,
 	var scriptRoot [32]byte
 	copy(scriptRoot[:], scriptRootHash[:])
 
+	// Note: The proof's TapSiblingPreimage in CommitmentProof is the asset
+	// script sibling (e.g., OP_TRUE), not the anchor script sibling (e.g.,
+	// CSV closure). We cannot validate anchor closures against this field
+	// as they exist at different layers of the taproot structure.
+	//
+	// The anchor script tree structure is:
+	//   OutputKey = tweak(InternalKey, hash(assetCommitment || anchorScriptRoot))
+	//
+	// The asset script tree structure (in CommitmentProof.TapSiblingPreimage):
+	//   AssetScriptKey = tweak(NUMS, hash(OP_TRUE || assetTweak))
+	//
+	// These are independent and should not be compared.
+
 	plans := make(map[string]*scriptSpendPlan, len(closures))
 	for idx, closure := range closures {
-		proof := scriptTree.LeafMerkleProofs[idx]
+		merkleProof := scriptTree.LeafMerkleProofs[idx]
 
-		inclusionProof := append([]byte(nil), proof.InclusionProof...)
+		inclusionProof := append([]byte(nil), merkleProof.InclusionProof...)
 		inclusionProof = append(inclusionProof, assetRoot[:]...)
 
 		rootHash := tapBranchHashBytes(scriptRootHash[:], assetRoot[:])
@@ -890,7 +1085,7 @@ func buildScriptSpendPlans(internalKey *btcec.PublicKey, assetRoot [32]byte,
 
 		controlBlock := &txscript.ControlBlock{
 			InternalKey:    internalKey,
-			LeafVersion:    proof.TapLeaf.LeafVersion,
+			LeafVersion:    merkleProof.TapLeaf.LeafVersion,
 			InclusionProof: inclusionProof,
 		}
 		if outputKey.SerializeCompressed()[0] ==
@@ -912,7 +1107,7 @@ func buildScriptSpendPlans(internalKey *btcec.PublicKey, assetRoot [32]byte,
 
 		plans[closure.ID] = &scriptSpendPlan{
 			closure:        closure,
-			tapLeaf:        proof.TapLeaf,
+			tapLeaf:        merkleProof.TapLeaf,
 			controlBlock:   controlBlockBytes,
 			outputKey:      outputKey,
 			assetRoot:      assetRoot,
@@ -944,6 +1139,16 @@ func (b *AssetTxBuilder) buildVOutput(index int, version asset.Version,
 			"no script key")
 	}
 
+	outputType := cfg.Type
+	if outputType == 0 {
+		outputType = tappsbt.TypeSimple
+	}
+
+	interactive := true
+	if cfg.Interactive != nil {
+		interactive = *cfg.Interactive
+	}
+
 	anchorInternal := artifacts.AnchorInternal
 	if anchorInternal == nil && artifacts.ScriptKey.PubKey != nil {
 		anchorInternal = artifacts.ScriptKey.PubKey
@@ -952,8 +1157,8 @@ func (b *AssetTxBuilder) buildVOutput(index int, version asset.Version,
 	vOut := &tappsbt.VOutput{
 		Amount:            cfg.Amount,
 		AssetVersion:      version,
-		Type:              tappsbt.TypeSimple,
-		Interactive:       true,
+		Type:              outputType,
+		Interactive:       interactive,
 		AnchorOutputIndex: uint32(index),
 	}
 	vOut.ScriptKey = *artifacts.ScriptKey
@@ -961,7 +1166,20 @@ func (b *AssetTxBuilder) buildVOutput(index int, version asset.Version,
 	if anchorInternal != nil {
 		vOut.AnchorOutputInternalKey = anchorInternal
 	}
-	if artifacts.TapscriptSibling != nil {
+
+	// Determine the anchor-level tapscript sibling. When closures are
+	// present, they form the sibling of the asset commitment in the anchor
+	// tapscript tree. Without closures, use the asset script's sibling
+	// (typically OP_TRUE).
+	if len(cfg.Closures) > 0 {
+		closureSibling, err := closuresToSiblingPreimage(cfg.Closures)
+		if err != nil {
+			return AnchorPlan{}, nil, fmt.Errorf("build closure "+
+				"sibling preimage: %w", err)
+		}
+
+		vOut.AnchorOutputTapscriptSibling = closureSibling
+	} else if artifacts.TapscriptSibling != nil {
 		vOut.AnchorOutputTapscriptSibling = artifacts.TapscriptSibling
 	}
 
@@ -1198,6 +1416,91 @@ func (b *AssetTxBuilder) AddBtcOutput(spec BtcOutputSpec) error {
 	return nil
 }
 
+// tapdAssetOutputDust is the default dust value tapd assigns to each asset
+// output when committing virtual transactions.
+const tapdAssetOutputDust = int64(1000)
+
+// ensureZeroFeeAnchor balances the anchor PSBT by adding or adjusting a BTC
+// output so total inputs equal total outputs. This is useful when callers
+// skip wallet funding but still need a dust-safe, fee-neutral anchor tx.
+func (b *AssetTxBuilder) ensureZeroFeeAnchor() error {
+	// If caller already provided BTC outputs, assume they manage balance.
+	if len(b.btcOutputs) > 0 {
+		return nil
+	}
+
+	// Sum BTC value from asset proofs.
+	var totalInputValue int64
+	for _, in := range b.inputs {
+		if len(in.proof) == 0 {
+			continue
+		}
+
+		lastProof := in.proof[len(in.proof)-1]
+		if lastProof == nil || lastProof.AnchorTx.TxOut == nil ||
+			len(lastProof.AnchorTx.TxOut) == 0 {
+
+			return errors.New("missing anchor tx in proof")
+		}
+
+		outIdx := lastProof.InclusionProof.OutputIndex
+		if int(outIdx) >= len(lastProof.AnchorTx.TxOut) {
+			return fmt.Errorf("proof output index %d out of range",
+				outIdx)
+		}
+
+		totalInputValue += lastProof.AnchorTx.TxOut[outIdx].Value
+	}
+
+	if totalInputValue == 0 {
+		return nil
+	}
+
+	// Subtract the dust value tapd will assign to each asset output. This
+	// ensures the auto-balance output correctly compensates so the
+	// transaction has zero fee.
+	assetOutputDust := int64(len(b.outputs)) * tapdAssetOutputDust
+	balanceValue := totalInputValue - assetOutputDust
+	if balanceValue < 0 {
+		balanceValue = 0
+	}
+
+	// If the balance would be zero or negative, don't add an auto-balance
+	// output - the asset output dust will consume the input value.
+	if balanceValue == 0 {
+		return nil
+	}
+
+	// Pick the first available internal key from proofs as the balancing
+	// destination.
+	var changeKey *btcec.PublicKey
+	for _, in := range b.inputs {
+		if len(in.proof) == 0 {
+			continue
+		}
+
+		lastProof := in.proof[len(in.proof)-1]
+		if lastProof != nil && lastProof.InclusionProof.InternalKey != nil {
+			changeKey = lastProof.InclusionProof.InternalKey
+			break
+		}
+	}
+	if changeKey == nil {
+		return errors.New("no internal key found for balancing output")
+	}
+
+	pkScript, err := txscript.PayToTaprootScript(changeKey)
+	if err != nil {
+		return fmt.Errorf("build balancing script: %w", err)
+	}
+
+	return b.AddBtcOutput(BtcOutputSpec{
+		Description: "auto-balance",
+		ValueSat:    balanceValue,
+		PkScript:    pkScript,
+	})
+}
+
 // AddAssetInput queues an asset input proof for the builder.
 func (b *AssetTxBuilder) AddAssetInput(cfg InputConfig) error {
 	if len(cfg.ProofFile) == 0 {
@@ -1222,7 +1525,7 @@ func (b *AssetTxBuilder) AddAssetInput(cfg InputConfig) error {
 
 // AddAssetOutput queues an asset anchor output for the builder.
 func (b *AssetTxBuilder) AddAssetOutput(cfg OutputConfig) error {
-	if cfg.Amount == 0 {
+	if cfg.Amount == 0 && cfg.Type != tappsbt.TypeSplitRoot {
 		return errors.New("output amount must be greater than zero")
 	}
 
@@ -1294,6 +1597,19 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 				"%d: %w", lastProofIdx, idx, err)
 		}
 
+		// If the asset has a SplitCommitment in its witness, strip it.
+		// The SplitCommitment is added by proof generation to link
+		// split outputs back to the split root, but it's not part of
+		// the on-chain commitment (the output was created without it).
+		// tapd's ValidateAnchorInputs will recompute the commitment
+		// from the input assets, so we need to remove the
+		// SplitCommitment to match the original on-chain script.
+		if len(pr.Asset.PrevWitnesses) == 1 &&
+			pr.Asset.PrevWitnesses[0].SplitCommitment != nil {
+
+			pr.Asset.PrevWitnesses[0].SplitCommitment = nil
+		}
+
 		id := pr.Asset.ID()
 		if id != b.assetID {
 			return nil, fmt.Errorf("input %d asset mismatch", idx)
@@ -1325,6 +1641,7 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 
 			plans, err := buildScriptSpendPlans(
 				internalKey, spec.assetRoot, spec.cfg.Closures,
+				pr,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("build script plans "+
@@ -1350,12 +1667,28 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 	// Reset outputs, the builder controls them explicitly.
 	vpkt.Outputs = nil
 
+	// Debug totals: track summed input amount for full-value send checks.
+	var debugInputAmt uint64
+	for _, in := range vpkt.Inputs {
+		assetIn := in.Asset()
+		if assetIn == nil {
+			continue
+		}
+		debugInputAmt += assetIn.Amount
+	}
+
 	outputPlans := make([]AnchorPlan, 0, len(b.outputs))
 	for index, out := range b.outputs {
 		plan, vOut, err := b.buildVOutput(index, assetVersion, out.cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build output %d: %w", index,
 				err)
+		}
+
+		if len(b.outputs) == 1 && debugInputAmt > 0 &&
+			vOut.Amount != debugInputAmt {
+
+			vOut.Amount = debugInputAmt
 		}
 
 		vpkt.Outputs = append(vpkt.Outputs, vOut)
@@ -1440,11 +1773,12 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 	}
 
 	plan := &AssetTxPlan{
-		Packet:      vpkt,
-		OutputPlans: outputPlans,
-		BtcInputs:   btcInputs,
-		BtcOutputs:  btcOutputs,
-		BTCAnchors:  append([]BTCAnchorPlan(nil), btcPlans...),
+		Packet:        vpkt,
+		OutputPlans:   outputPlans,
+		BtcInputs:     btcInputs,
+		BtcOutputs:    btcOutputs,
+		BTCAnchors:    append([]BTCAnchorPlan(nil), btcPlans...),
+		AnchorOutputs: cloneTxOuts(b.anchorOutputs),
 	}
 
 	return plan, nil
@@ -1472,6 +1806,12 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 	if skipWalletFunding && opts.FeeRate > 0 {
 		return errors.New("fee rate must be zero when skipping " +
 			"wallet funding")
+	}
+
+	if skipWalletFunding && !opts.SkipZeroFeeBalance {
+		if err := b.ensureZeroFeeAnchor(); err != nil {
+			return err
+		}
 	}
 
 	encodedVpkt, err := tappsbt.Encode(b.vpacket)
@@ -1569,6 +1909,49 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 		)
 	}
 
+	// Apply custom asset output values before serializing if specified.
+	// This ensures proofs generated by tapd reference the correct txid.
+	for idx, value := range opts.AssetOutputValues {
+		if int(idx) < len(anchorPkt.UnsignedTx.TxOut) {
+			anchorPkt.UnsignedTx.TxOut[idx].Value = value
+		}
+	}
+
+	// Append BTC-only anchors to the template BEFORE sending to tapd.
+	// This ensures proofs reference the correct txid including all outputs.
+	for i, spec := range b.btcAnchors {
+		scriptType := spec.ScriptType
+		if scriptType == 0 {
+			// Older callers populated the struct before ScriptType
+			// existed. Treat the zero value as "taproot anchor" to
+			// preserve backwards compatibility.
+			scriptType = BTCAnchorScriptTaproot
+		}
+
+		specCopy := spec
+		specCopy.ScriptType = scriptType
+		txOut, output, err := buildAnchorOutput(specCopy)
+		if err != nil {
+			return fmt.Errorf("build btc anchor script: %w", err)
+		}
+
+		anchorPkt.UnsignedTx.TxOut = append(
+			anchorPkt.UnsignedTx.TxOut, txOut,
+		)
+
+		anchorPkt.Outputs = append(anchorPkt.Outputs, output)
+
+		if i < len(b.btcAnchorPlans) {
+			index := len(anchorPkt.UnsignedTx.TxOut) - 1
+			b.btcAnchorPlans[i].OutputIndex = index
+			b.btcAnchorPlans[i].ScriptType = scriptType
+		}
+	}
+
+	// NOTE: BTC-only outputs (btcOutputs) are NOT included here because they
+	// may be P2TR outputs without internal key metadata, which tapd's proof
+	// generation requires. They are appended AFTER CommitVirtualPsbts returns.
+
 	var anchorBuf bytes.Buffer
 	if err := anchorPkt.Serialize(&anchorBuf); err != nil {
 		return fmt.Errorf("serialize anchor template: %w", err)
@@ -1577,13 +1960,24 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 	commitReq := &assetwalletrpc.CommitVirtualPsbtsRequest{
 		AnchorPsbt:   anchorBuf.Bytes(),
 		VirtualPsbts: [][]byte{encodedVpkt},
-		AnchorChangeOutput: &assetwalletrpc.
-			CommitVirtualPsbtsRequest_Add{
-			Add: true,
-		},
 	}
 
-	if opts.ChangeOutput != nil {
+	// Set up the change output handling based on options.
+	if opts.NoChangeOutput {
+		// Caller explicitly does not want a change output (tx is balanced
+		// or excess goes to fee). Point to a non-asset output (like the
+		// ephemeral anchor) to prevent tapd from adding a new change output.
+		// If there's an ephemeral anchor output, use that as the "change".
+		if len(b.btcAnchorPlans) > 0 {
+			commitReq.AnchorChangeOutput = &assetwalletrpc.
+				CommitVirtualPsbtsRequest_ExistingOutputIndex{
+				ExistingOutputIndex: int32(
+					b.btcAnchorPlans[0].OutputIndex,
+				),
+			}
+		}
+		// If no BTC anchor exists, leave AnchorChangeOutput nil/unset.
+	} else if opts.ChangeOutput != nil {
 		params := b.params
 		if params == nil || params.Params == nil {
 			return errors.New("chain params not configured for " +
@@ -1601,6 +1995,12 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 		commitReq.AnchorChangeOutput = &assetwalletrpc.
 			CommitVirtualPsbtsRequest_ExistingOutputIndex{
 			ExistingOutputIndex: int32(index),
+		}
+	} else {
+		// Default: let tapd add a change output automatically.
+		commitReq.AnchorChangeOutput = &assetwalletrpc.
+			CommitVirtualPsbtsRequest_Add{
+			Add: true,
 		}
 	}
 
@@ -1641,45 +2041,22 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 	}
 	anchorPsbt.UnsignedTx.Version = 3
 	for i := range anchorPsbt.UnsignedTx.TxIn {
-		anchorPsbt.UnsignedTx.TxIn[i].Sequence =
-			wire.MaxTxInSequenceNum - 2
-	}
-
-	// Append any BTC-only anchors to the PSBT now that we have the wallet
-	// template returned by tapd.
-	if len(b.btcAnchors) > 0 {
-		for i, spec := range b.btcAnchors {
-			scriptType := spec.ScriptType
-			if scriptType == 0 {
-				// Older callers populated the struct before
-				// ScriptType existed. Treat the zero value as
-				// "taproot anchor" to preserve backwards
-				// compatibility.
-				scriptType = BTCAnchorScriptTaproot
-			}
-
-			specCopy := spec
-			specCopy.ScriptType = scriptType
-			txOut, output, err := buildAnchorOutput(specCopy)
-			if err != nil {
-				return fmt.Errorf("build btc anchor script: %w",
-					err)
-			}
-
-			anchorPsbt.UnsignedTx.TxOut = append(
-				anchorPsbt.UnsignedTx.TxOut, txOut,
-			)
-
-			anchorPsbt.Outputs = append(anchorPsbt.Outputs, output)
-
-			if i < len(b.btcAnchorPlans) {
-				index := len(anchorPsbt.UnsignedTx.TxOut) - 1
-				b.btcAnchorPlans[i].OutputIndex = index
-				b.btcAnchorPlans[i].ScriptType = scriptType
-			}
+		// Check if the input has a custom sequence (for CSV spends).
+		// Otherwise use the default TRUC sequence.
+		if i < len(b.inputs) && b.inputs[i].cfg.Sequence != 0 {
+			anchorPsbt.UnsignedTx.TxIn[i].Sequence =
+				b.inputs[i].cfg.Sequence
+		} else {
+			anchorPsbt.UnsignedTx.TxIn[i].Sequence =
+				wire.MaxTxInSequenceNum - 2
 		}
 	}
+	b.anchorOutputs = cloneTxOuts(anchorPsbt.UnsignedTx.TxOut)
 
+	// BTC-only outputs (like change) are appended AFTER CommitVirtualPsbts
+	// returns. These may be P2TR outputs without internal key metadata that
+	// tapd's proof generation requires for exclusion proofs, so we add them
+	// after proofs are generated.
 	if len(b.btcOutputs) > 0 {
 		for i, spec := range b.btcOutputs {
 			txOut := wire.NewTxOut(
@@ -2062,7 +2439,8 @@ func (b *AssetTxBuilder) ApplyScriptSpend(details *ScriptSpendDetails,
 }
 
 // ApplyScriptPathWitness records a fully constructed tapscript witness for the
-// specified anchor input.
+// specified anchor input. The witness is set on the PSBT's FinalScriptWitness
+// immediately, marking this input as finalized.
 func (b *AssetTxBuilder) ApplyScriptPathWitness(inputIndex int,
 	witness wire.TxWitness) error {
 
@@ -2094,6 +2472,9 @@ func (b *AssetTxBuilder) ApplyScriptPathWitness(inputIndex int,
 }
 
 // FinalizeAnchor finalises the anchor PSBT using the operator wallet.
+// Inputs that already have FinalScriptWitness set (via ApplyScriptPathWitness)
+// are preserved. For other inputs, the wallet is used for signing and
+// finalization.
 func (b *AssetTxBuilder) FinalizeAnchor(ctx context.Context,
 	wallet WalletClient) (*psbt.Packet, error) {
 
@@ -2103,20 +2484,42 @@ func (b *AssetTxBuilder) FinalizeAnchor(ctx context.Context,
 
 	finalized := b.anchorPsbt
 	if !b.skipWalletFinalize {
-		signed, err := wallet.SignPsbt(ctx, b.anchorPsbt)
-		if err != nil {
-			return nil, fmt.Errorf("sign anchor psbt: %w", err)
+		// Check if all inputs are already finalized (have
+		// FinalScriptWitness). If so, skip wallet finalization
+		// entirely. This handles the case where all inputs are script
+		// path spends that we've already finalized via
+		// ApplyScriptPathWitness.
+		allFinalized := true
+		for _, input := range b.anchorPsbt.Inputs {
+			if len(input.FinalScriptWitness) == 0 {
+				allFinalized = false
+				break
+			}
 		}
 
-		finalizedPacket, _, err := wallet.FinalizePsbt(ctx, signed, "")
-		if err != nil {
-			return nil, fmt.Errorf("finalize anchor psbt: %w", err)
+		if !allFinalized {
+			signed, err := wallet.SignPsbt(ctx, b.anchorPsbt)
+			if err != nil {
+				return nil, fmt.Errorf("sign anchor psbt: %w",
+					err)
+			}
+
+			finalizedPacket, _, err := wallet.FinalizePsbt(
+				ctx, signed, "",
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"finalize anchor psbt: %w", err,
+				)
+			}
+			finalized = finalizedPacket
 		}
-		finalized = finalizedPacket
 	}
 
+	// Re-apply custom witnesses from anchorWitnesses. This ensures our
+	// witnesses are preserved even if wallet finalization overwrote them.
 	for idx, witness := range b.anchorWitnesses {
-		if idx >= len(finalized.Inputs) {
+		if idx >= len(finalized.Inputs) || len(witness) == 0 {
 			continue
 		}
 
@@ -2364,9 +2767,233 @@ func (b *AssetTxBuilder) BuildAnchorChild(ctx context.Context,
 	return signed, childTx, nil
 }
 
+// BuildAnchorChildForTx assembles a CPFP child transaction that spends the
+// zero-value anchor output at anchorIndex of parentTx. This helper is intended
+// for callers that already have a signed parent transaction and just need a
+// fee-paying child.
+func BuildAnchorChildForTx(ctx context.Context, wallet AnchorFundingWallet,
+	parentTx *wire.MsgTx, anchorIndex int,
+	opts AnchorChildOptions) (*psbt.Packet, *wire.MsgTx, error) {
+
+	if wallet == nil {
+		return nil, nil, errors.New("funding wallet missing")
+	}
+	if opts.ChangeAddress == nil {
+		return nil, nil, errors.New("change address missing")
+	}
+	if opts.FeeRate <= 0 {
+		return nil, nil, errors.New("fee rate must be greater than " +
+			"zero")
+	}
+	if parentTx == nil {
+		return nil, nil, errors.New("parent tx missing")
+	}
+	if anchorIndex < 0 || anchorIndex >= len(parentTx.TxOut) {
+		return nil, nil, fmt.Errorf("anchor index %d out of range",
+			anchorIndex)
+	}
+
+	scriptType := BTCAnchorScriptTaproot
+	if bytes.Equal(parentTx.TxOut[anchorIndex].PkScript, payToAnchorPkScript()) {
+		scriptType = BTCAnchorScriptPayToAnchor
+	}
+
+	plan := BTCAnchorPlan{
+		ScriptType:  scriptType,
+		ValueSat:    parentTx.TxOut[anchorIndex].Value,
+		OutputIndex: anchorIndex,
+	}
+	plans := []BTCAnchorPlan{plan}
+
+	child := &psbt.Packet{UnsignedTx: wire.NewMsgTx(3)}
+	changeScript, err := txscript.PayToAddrScript(opts.ChangeAddress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("change address script: %w", err)
+	}
+	child.UnsignedTx.AddTxOut(wire.NewTxOut(1, changeScript))
+	child.Outputs = append(child.Outputs, psbt.POutput{})
+
+	changeIndex := len(child.Outputs) - 1
+	funded, err := wallet.FundPsbt(ctx, child, changeIndex, opts.FeeRate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fund child psbt: %w", err)
+	}
+	funded.UnsignedTx.Version = 3
+	for i := range funded.UnsignedTx.TxIn {
+		funded.UnsignedTx.TxIn[i].Sequence = wire.MaxTxInSequenceNum - 2
+	}
+
+	if changeIndex < 0 || changeIndex >= len(funded.UnsignedTx.TxOut) {
+		return nil, nil, fmt.Errorf("wallet returned invalid change "+
+			"index %d", changeIndex)
+	}
+	funded.UnsignedTx.TxOut[changeIndex].PkScript = append(
+		[]byte(nil), changeScript...,
+	)
+
+	if err := adjustChangeForAnchors(
+		funded, parentTx, plans, changeIndex, opts.FeeRate,
+	); err != nil {
+		return nil, nil, err
+	}
+
+	walletInputCount := len(funded.Inputs)
+	addTRUCInput(funded.UnsignedTx, wire.OutPoint{
+		Hash:  parentTx.TxHash(),
+		Index: uint32(plan.OutputIndex),
+	})
+	anchorOut := parentTx.TxOut[plan.OutputIndex]
+	funded.Inputs = append(
+		funded.Inputs, buildAnchorInput(plan, anchorOut),
+	)
+
+	signed, err := wallet.SignPsbt(ctx, funded)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sign child psbt: %w", err)
+	}
+
+	for i := 0; i < walletInputCount; i++ {
+		if len(signed.Inputs[i].FinalScriptWitness) == 0 &&
+			len(signed.Inputs[i].TaprootKeySpendSig) > 0 {
+
+			sig := append(
+				[]byte(nil),
+				signed.Inputs[i].TaprootKeySpendSig...,
+			)
+			if err := applyWitness(
+				signed, i, wire.TxWitness{sig},
+			); err != nil {
+				return nil, nil, fmt.Errorf("serialize wallet "+
+					"witness: %w", err)
+			}
+		}
+	}
+
+	for range plans {
+		idx := walletInputCount
+		walletInputCount++
+		anchorWitness := wire.TxWitness{}
+		if err := applyWitness(signed, idx, anchorWitness); err != nil {
+			return nil, nil, fmt.Errorf("serialize anchor witness: %w",
+				err)
+		}
+	}
+
+	if err := psbt.MaybeFinalizeAll(signed); err != nil {
+		return nil, nil, fmt.Errorf("finalize child psbt: %w", err)
+	}
+
+	childTx, err := psbt.Extract(signed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extract child tx: %w", err)
+	}
+
+	return signed, childTx, nil
+}
+
 // AnchorPsbt returns the current anchor PSBT managed by the builder.
 func (b *AssetTxBuilder) AnchorPsbt() *psbt.Packet {
 	return b.anchorPsbt
+}
+
+// SetAnchorPsbt replaces the builder's anchor PSBT with the provided packet.
+// This is useful for injecting a pre-signed PSBT (e.g., when wallet signing
+// must be performed manually before FinalizeAnchor applies custom witnesses).
+func (b *AssetTxBuilder) SetAnchorPsbt(pkt *psbt.Packet) {
+	b.anchorPsbt = pkt
+}
+
+// SetInputOutpoint overrides the PrevID.OutPoint for the specified input in
+// the virtual packet. This must be called after Compile() and before Commit()
+// to ensure the proofs generated by tapd reference the correct parent outpoint.
+//
+// This is essential for tree structures where the parent node's tx hash isn't
+// known until signing, but proofs need to reference the actual parent outpoint
+// for universe lookups to work correctly.
+//
+// After updating the input outpoint, this function re-runs PrepareOutputAssets
+// to regenerate the output assets with the correct PrevWitnesses[].PrevID.
+func (b *AssetTxBuilder) SetInputOutpoint(ctx context.Context, inputIdx int,
+	outpoint wire.OutPoint) error {
+
+	if b.vpacket == nil {
+		return errors.New("vpacket not initialized; call Compile first")
+	}
+
+	if inputIdx < 0 || inputIdx >= len(b.vpacket.Inputs) {
+		return fmt.Errorf("input index %d out of range [0, %d)",
+			inputIdx, len(b.vpacket.Inputs))
+	}
+
+	b.vpacket.Inputs[inputIdx].PrevID.OutPoint = outpoint
+
+	// Re-run PrepareOutputAssets to regenerate output assets with the
+	// updated input outpoint. The output assets' PrevWitnesses[].PrevID
+	// are derived from the vpacket input's PrevID.
+	if err := tapsend.PrepareOutputAssets(ctx, b.vpacket); err != nil {
+		return fmt.Errorf("re-prepare output assets: %w", err)
+	}
+
+	return nil
+}
+
+// TransferData stores serialized data needed to call PublishAndLogTransfer
+// after broadcasting a transaction externally. This enables tapd to track the
+// transfer and generate proofs.
+type TransferData struct {
+	// AnchorPsbt is the serialized anchor PSBT (signed or finalized).
+	AnchorPsbt []byte
+
+	// VirtualPsbts are the serialized active virtual PSBTs with proofs.
+	VirtualPsbts [][]byte
+
+	// PassivePsbts are serialized passive virtual PSBTs (if any).
+	PassivePsbts [][]byte
+
+	// ChangeOutputIndex is the index of the change output, or -1 if none.
+	ChangeOutputIndex int32
+}
+
+// GetTransferData extracts the serialized data needed to call
+// PublishAndLogTransfer after broadcasting externally. This should be called
+// after Commit() and before or after signing.
+func (b *AssetTxBuilder) GetTransferData() (*TransferData, error) {
+	if b.anchorPsbt == nil || b.commitResp == nil {
+		return nil, errors.New("commit must be called before " +
+			"GetTransferData")
+	}
+
+	var anchorBuf bytes.Buffer
+	if err := b.anchorPsbt.Serialize(&anchorBuf); err != nil {
+		return nil, fmt.Errorf("serialize anchor psbt: %w", err)
+	}
+
+	virtualBytes := make([][]byte, len(b.activePkts))
+	for i := range b.activePkts {
+		encoded, err := tappsbt.Encode(b.activePkts[i])
+		if err != nil {
+			return nil, fmt.Errorf("encode active vpacket %d: %w",
+				i, err)
+		}
+		virtualBytes[i] = encoded
+	}
+
+	passiveBytes := make([][]byte, len(b.passivePkts))
+	for i := range b.passivePkts {
+		encoded, err := tappsbt.Encode(b.passivePkts[i])
+		if err != nil {
+			return nil, fmt.Errorf("encode passive vpacket %d: %w",
+				i, err)
+		}
+		passiveBytes[i] = encoded
+	}
+
+	return &TransferData{
+		AnchorPsbt:        anchorBuf.Bytes(),
+		VirtualPsbts:      virtualBytes,
+		PassivePsbts:      passiveBytes,
+		ChangeOutputIndex: b.commitResp.GetChangeOutputIndex(),
+	}, nil
 }
 
 func clonePsbt(packet *psbt.Packet) (*psbt.Packet, error) {
@@ -2629,6 +3256,559 @@ func (b *AssetTxBuilder) BtcOutputs() []BtcOutputPlan {
 	return outputs
 }
 
+// ProofParams contains the chain-level information needed to finalize a proof.
+// This is used by the Proof() method to construct a complete proof file after
+// the anchor transaction has been confirmed.
+type ProofParams struct {
+	// Block is the confirmed block containing the anchor transaction.
+	Block *wire.MsgBlock
+
+	// BlockHeight is the height of the confirmed block.
+	BlockHeight uint32
+
+	// TxIndex is the index of the anchor transaction within the block.
+	TxIndex int
+
+	// InternalKey optionally overrides the proof's InclusionProof.InternalKey.
+	// This is needed when the actual anchor output uses a different internal
+	// key than what tapd's virtual PSBT references (e.g., tree nodes with
+	// per-child MuSig2 keys).
+	InternalKey *btcec.PublicKey
+
+	// PrevOut optionally overrides the proof's PrevOut field. This is the
+	// outpoint that the proof's transaction is spending. Needed when the
+	// actual spent outpoint differs from what tapd's virtual PSBT expects.
+	PrevOut *wire.OutPoint
+
+	// TapSiblingPreimage optionally overrides the proof's TapSiblingPreimage.
+	// This is the preimage of the tapscript sibling (e.g., sweep script) that
+	// is hashed together with the asset commitment to form the taproot tree.
+	// Needed when the tree node uses a different sweep script than what tapd
+	// originally created.
+	TapSiblingPreimage *commitment.TapscriptPreimage
+}
+
+// Proof returns a complete proof file for the specified output index. This
+// method constructs a valid proof chain that can be imported into tapd's
+// universe for proof chain continuity.
+//
+// The method handles:
+//   - Extracting the proof suffix from the committed virtual packet
+//   - Updating PrevWitnesses with correct outpoints from input proofs
+//   - For V1 assets, populating missing TxWitnesses (strippable witnesses)
+//   - Appending to the base proof file from the first input
+//   - Including AdditionalInputs for multi-input transfers
+//   - Updating with confirmation data if ProofParams is provided
+//
+// This method must be called after Commit() and FinalizeAnchor(). If params
+// is nil, the proof will not include confirmation data (block, tx merkle
+// proof) and will need to be updated later via UpdateTransitionProof.
+func (b *AssetTxBuilder) Proof(outputIndex int,
+	params *ProofParams) ([]byte, error) {
+
+	// Validate builder state.
+	if len(b.activePkts) == 0 {
+		return nil, errors.New("no active packets - call Commit first")
+	}
+
+	if b.anchorPsbt == nil {
+		return nil, errors.New("anchor PSBT not set - call Commit first")
+	}
+
+	// Validate output index bounds.
+	if outputIndex < 0 || outputIndex >= len(b.activePkts[0].Outputs) {
+		return nil, fmt.Errorf("output index %d out of range [0, %d)",
+			outputIndex, len(b.activePkts[0].Outputs))
+	}
+
+	// Get the proof suffix for this output.
+	vOut := b.activePkts[0].Outputs[outputIndex]
+	if vOut.ProofSuffix == nil {
+		return nil, fmt.Errorf("output %d has no proof suffix",
+			outputIndex)
+	}
+
+	proofEntry := vOut.ProofSuffix
+
+	// Get the base proof file from the first input.
+	if len(b.inputs) == 0 || len(b.inputs[0].cfg.ProofFile) == 0 {
+		return nil, errors.New("no input proofs available")
+	}
+
+	baseProofFile, err := proof.DecodeFile(b.inputs[0].cfg.ProofFile)
+	if err != nil {
+		return nil, fmt.Errorf("decode base proof file: %w", err)
+	}
+
+	// Collect additional input proofs for multi-input transfers.
+	additionalInputs := make([]proof.File, 0, len(b.inputs)-1)
+	for i := 1; i < len(b.inputs); i++ {
+		if len(b.inputs[i].cfg.ProofFile) == 0 {
+			continue
+		}
+		decoded, err := proof.DecodeFile(b.inputs[i].cfg.ProofFile)
+		if err != nil {
+			return nil, fmt.Errorf("decode input proof %d: %w",
+				i, err)
+		}
+		additionalInputs = append(additionalInputs, *decoded)
+	}
+
+	// Copy the proof's asset so we can modify PrevWitnesses (for TxWitness).
+	// Note: We do NOT modify PrevID because:
+	// 1. For split outputs (ZeroPrevID), the PrevID was already correctly
+	//    set by NewSplitCommitment and modifying would break the leaf hash.
+	// 2. For all other outputs (including split roots), the PrevID was
+	//    already correctly set by tapd based on the input proofs.
+	// Modifying PrevID would cause a mismatch with the committed asset
+	// because the merkle proof in CommitmentProof was computed for the
+	// original PrevID values.
+	proofAsset := proofEntry.Asset.Copy()
+
+	// For V1 assets, populate any missing TxWitnesses. V1 assets have
+	// "strippable" witnesses (similar to SegWit) that are not included in
+	// the TAP commitment, so we can freely set them for VM validation.
+	//
+	// We need to determine the correct internal key for each input:
+	// - OpTrueScript outputs use NUMS as internal key
+	// - OpTrueUniqueScript outputs use the anchor's internal key
+	//
+	// Since TweakedScriptKey is not preserved in proofs, we detect which
+	// variant was used by checking if the script key matches NUMS-based
+	// OP_TRUE. If so, use NUMS; otherwise use the anchor internal key.
+	if proofAsset.Version == asset.V1 {
+		for i := range proofAsset.PrevWitnesses {
+			// For V1 assets with OP_TRUE scripts, always rebuild
+			// the witness based on the input's script key. Tapd
+			// may populate a witness that doesn't match the actual
+			// spending key (e.g., using anchor internal key instead
+			// of NUMS for standard OP_TRUE outputs).
+			var witness wire.TxWitness
+			if i < len(b.inputs) && len(b.inputs[i].cfg.ProofFile) > 0 {
+				inputFile, decErr := proof.DecodeFile(
+					b.inputs[i].cfg.ProofFile,
+				)
+				if decErr == nil {
+					inputPf, pfErr := inputFile.LastProof()
+					if pfErr == nil {
+						// Get the input's script key.
+						inputScriptKey :=
+							inputPf.Asset.ScriptKey.PubKey
+
+						// Build NUMS-based OP_TRUE and
+						// check if it matches.
+						numsArtifacts, numsErr :=
+							BuildOpTrueArtifacts()
+						if numsErr == nil &&
+							numsArtifacts.OutputKey.IsEqual(
+								inputScriptKey,
+							) {
+
+							// Input uses standard
+							// OP_TRUE (NUMS).
+							witness = numsArtifacts.Witness
+						} else if inputPf.InclusionProof.InternalKey != nil {
+							// Input uses
+							// OpTrueUniqueScript
+							// with anchor internal
+							// key.
+							internalKey :=
+								inputPf.InclusionProof.InternalKey
+							artifacts, artErr :=
+								BuildOpTrueArtifactsWithKey(
+									internalKey,
+								)
+							if artErr == nil {
+								witness = artifacts.Witness
+							}
+						}
+					}
+				}
+			}
+
+			// Fallback to standard OP_TRUE (NUMS) if we couldn't
+			// determine the correct witness.
+			if len(witness) == 0 {
+				opTrueArtifacts, err := BuildOpTrueArtifacts()
+				if err != nil {
+					return nil, fmt.Errorf(
+						"build OP_TRUE artifacts: %w", err,
+					)
+				}
+				witness = opTrueArtifacts.Witness
+			}
+
+			// Copy the witness.
+			cpy := make(wire.TxWitness, len(witness))
+			for j := range witness {
+				cpy[j] = append([]byte(nil), witness[j]...)
+			}
+			proofAsset.PrevWitnesses[i].TxWitness = cpy
+		}
+	}
+
+	// Extract the anchor transaction.
+	anchorTx, err := psbt.Extract(b.anchorPsbt)
+	if err != nil {
+		return nil, fmt.Errorf("extract anchor tx: %w", err)
+	}
+
+	// Update the proof entry with the patched asset.
+	proofEntry.Asset = *proofAsset
+	proofEntry.AdditionalInputs = additionalInputs
+	proofEntry.AnchorTx = *anchorTx
+
+	// Set the output index from the virtual output's anchor output index.
+	// This is critical for split transactions where each virtual output
+	// maps to a different anchor output. The proof suffix from tapd may
+	// have the virtual output index rather than the anchor output index.
+	proofEntry.InclusionProof.OutputIndex = vOut.AnchorOutputIndex
+
+	// Update with confirmation data if provided.
+	if params != nil {
+		err = proofEntry.UpdateTransitionProof(&proof.BaseProofParams{
+			Block:       params.Block,
+			BlockHeight: params.BlockHeight,
+			Tx:          anchorTx,
+			TxIndex:     params.TxIndex,
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"update transition proof: %w", err,
+			)
+		}
+	}
+
+	// Append to the base proof file.
+	if err := baseProofFile.AppendProof(*proofEntry); err != nil {
+		return nil, fmt.Errorf("append proof: %w", err)
+	}
+
+	// Encode the complete proof file.
+	var buf bytes.Buffer
+	if err := baseProofFile.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode proof file: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// BuildProofFromTransferData constructs a complete proof file from serialized
+// transfer data. This is useful for building proofs after a transaction has
+// been broadcast externally, when only the TransferData (from GetTransferData)
+// is available rather than the full builder state.
+//
+// Parameters:
+//   - td: The TransferData containing serialized VirtualPsbts and AnchorPsbt
+//   - inputProofs: Proof files for each input being spent (for PrevWitness
+//     outpoints)
+//   - outputIndex: Which output's proof to build (within the first virtual
+//     PSBT)
+//   - params: Optional confirmation data (block, height, tx index)
+//
+// The function handles the same proof construction as builder.Proof():
+//   - Extracting ProofSuffix from the virtual PSBT
+//   - Updating PrevWitnesses with correct outpoints
+//   - For V1 assets, populating missing TxWitnesses
+//   - Appending to the base proof file
+//   - Including confirmation data if provided
+func BuildProofFromTransferData(td *TransferData, inputProofs [][]byte,
+	outputIndex int, params *ProofParams) ([]byte, error) {
+
+	if td == nil {
+		return nil, errors.New("transfer data is nil")
+	}
+
+	if len(td.VirtualPsbts) == 0 {
+		return nil, errors.New("no virtual PSBTs in transfer data")
+	}
+
+	if len(inputProofs) == 0 {
+		return nil, errors.New("no input proofs provided")
+	}
+
+	// Decode the first virtual PSBT to get the proof suffix.
+	vPkt, err := tappsbt.Decode(td.VirtualPsbts[0])
+	if err != nil {
+		return nil, fmt.Errorf("decode virtual PSBT: %w", err)
+	}
+
+	// Validate output index.
+	if outputIndex < 0 || outputIndex >= len(vPkt.Outputs) {
+		return nil, fmt.Errorf("output index %d out of range [0, %d)",
+			outputIndex, len(vPkt.Outputs))
+	}
+
+	vOut := vPkt.Outputs[outputIndex]
+	if vOut.ProofSuffix == nil {
+		return nil, fmt.Errorf("output %d has no proof suffix",
+			outputIndex)
+	}
+
+	proofEntry := vOut.ProofSuffix
+
+	// Decode the base proof file from the first input.
+	baseProofFile, err := proof.DecodeFile(inputProofs[0])
+	if err != nil {
+		return nil, fmt.Errorf("decode base proof file: %w", err)
+	}
+
+	// Collect additional input proofs for multi-input transfers.
+	additionalInputs := make([]proof.File, 0, len(inputProofs)-1)
+	for i := 1; i < len(inputProofs); i++ {
+		if len(inputProofs[i]) == 0 {
+			continue
+		}
+		decoded, err := proof.DecodeFile(inputProofs[i])
+		if err != nil {
+			return nil, fmt.Errorf("decode input proof %d: %w",
+				i, err)
+		}
+		additionalInputs = append(additionalInputs, *decoded)
+	}
+
+	// Copy the proof's asset so we can modify PrevWitnesses (for TxWitness).
+	// Note: We do NOT modify PrevID because:
+	// 1. For split outputs (ZeroPrevID), the PrevID was already correctly
+	//    set by NewSplitCommitment and modifying would break the leaf hash.
+	// 2. For all other outputs (including split roots), the PrevID was
+	//    already correctly set by tapd based on the input proofs.
+	// Modifying PrevID would cause a mismatch with the committed asset
+	// because the merkle proof in CommitmentProof was computed for the
+	// original PrevID values.
+	proofAsset := proofEntry.Asset.Copy()
+
+	// For V1 assets, populate any missing TxWitnesses. V1 assets have
+	// "strippable" witnesses (similar to SegWit) that are not included in
+	// the TAP commitment, so we can freely set them for VM validation.
+	//
+	// We need to determine the correct internal key for each input:
+	// - OpTrueScript outputs use NUMS as internal key
+	// - OpTrueUniqueScript outputs use the anchor's internal key
+	//
+	// Since TweakedScriptKey is not preserved in proofs, we detect which
+	// variant was used by checking if the script key matches NUMS-based
+	// OP_TRUE. If so, use NUMS; otherwise use the anchor internal key.
+	//
+	// IMPORTANT: Skip witnesses that have SplitCommitment set - these are
+	// split output witnesses that should NOT have TxWitness. Setting
+	// TxWitness on them would break IsSplitCommitWitness() which checks
+	// len(TxWitness) == 0.
+	if proofAsset.Version == asset.V1 {
+		for i := range proofAsset.PrevWitnesses {
+			// Skip split output witnesses - they have
+			// SplitCommitment and must NOT have TxWitness for
+			// IsSplitCommitWitness() to return true.
+			if proofAsset.PrevWitnesses[i].SplitCommitment != nil {
+				continue
+			}
+
+			// For V1 assets with OP_TRUE scripts, always rebuild
+			// the witness based on the input's script key. Tapd
+			// may populate a witness that doesn't match the actual
+			// spending key (e.g., using anchor internal key instead
+			// of NUMS for standard OP_TRUE outputs).
+			var witness wire.TxWitness
+			if i < len(inputProofs) && len(inputProofs[i]) > 0 {
+				inputFile, decErr := proof.DecodeFile(inputProofs[i])
+				if decErr == nil {
+					inputPf, pfErr := inputFile.LastProof()
+					if pfErr == nil {
+						// Get the input's script key.
+						inputScriptKey :=
+							inputPf.Asset.ScriptKey.PubKey
+
+						// Build NUMS-based OP_TRUE and
+						// check if it matches.
+						numsArtifacts, numsErr :=
+							BuildOpTrueArtifacts()
+						if numsErr == nil &&
+							numsArtifacts.OutputKey.IsEqual(
+								inputScriptKey,
+							) {
+
+							// Input uses standard
+							// OP_TRUE (NUMS).
+							witness = numsArtifacts.Witness
+						} else if inputPf.InclusionProof.InternalKey != nil {
+							// Input uses
+							// OpTrueUniqueScript
+							// with anchor internal
+							// key.
+							internalKey :=
+								inputPf.InclusionProof.InternalKey
+							artifacts, artErr :=
+								BuildOpTrueArtifactsWithKey(
+									internalKey,
+								)
+							if artErr == nil {
+								witness = artifacts.Witness
+							}
+						}
+					}
+				}
+			}
+
+			// Fallback to standard OP_TRUE (NUMS) if we couldn't
+			// determine the correct witness.
+			if len(witness) == 0 {
+				opTrueArtifacts, err := BuildOpTrueArtifacts()
+				if err != nil {
+					return nil, fmt.Errorf(
+						"build OP_TRUE artifacts: %w", err,
+					)
+				}
+				witness = opTrueArtifacts.Witness
+			}
+
+			// Copy the witness.
+			cpy := make(wire.TxWitness, len(witness))
+			for j := range witness {
+				cpy[j] = append([]byte(nil), witness[j]...)
+			}
+			proofAsset.PrevWitnesses[i].TxWitness = cpy
+		}
+	}
+
+	// For split outputs (those with SplitCommitment), we also need to
+	// populate the TxWitness on the ROOT asset inside SplitCommitment.
+	// The verifier extracts the root asset and validates its witnesses.
+	if proofAsset.Version == asset.V1 &&
+		proofAsset.HasSplitCommitmentWitness() {
+
+		rootAsset := &proofAsset.PrevWitnesses[0].SplitCommitment.RootAsset
+		for i := range rootAsset.PrevWitnesses {
+			// The root asset witnesses need TxWitness populated.
+			// Use the same logic as above to determine the correct
+			// witness.
+			var witness wire.TxWitness
+			if i < len(inputProofs) && len(inputProofs[i]) > 0 {
+				inputFile, decErr := proof.DecodeFile(inputProofs[i])
+				if decErr == nil {
+					inputPf, pfErr := inputFile.LastProof()
+					if pfErr == nil {
+						inputScriptKey :=
+							inputPf.Asset.ScriptKey.PubKey
+
+						numsArtifacts, numsErr :=
+							BuildOpTrueArtifacts()
+						if numsErr == nil &&
+							numsArtifacts.OutputKey.IsEqual(
+								inputScriptKey,
+							) {
+							witness = numsArtifacts.Witness
+						} else if inputPf.InclusionProof.InternalKey != nil {
+							internalKey :=
+								inputPf.InclusionProof.InternalKey
+							artifacts, artErr :=
+								BuildOpTrueArtifactsWithKey(
+									internalKey,
+								)
+							if artErr == nil {
+								witness = artifacts.Witness
+							}
+						}
+					}
+				}
+			}
+
+			if len(witness) == 0 {
+				opTrueArtifacts, err := BuildOpTrueArtifacts()
+				if err != nil {
+					return nil, fmt.Errorf(
+						"build OP_TRUE artifacts: %w", err,
+					)
+				}
+				witness = opTrueArtifacts.Witness
+			}
+
+			cpy := make(wire.TxWitness, len(witness))
+			for j := range witness {
+				cpy[j] = append([]byte(nil), witness[j]...)
+			}
+			rootAsset.PrevWitnesses[i].TxWitness = cpy
+		}
+	}
+
+	// Extract the anchor transaction from the serialized PSBT.
+	anchorPsbt, err := psbt.NewFromRawBytes(
+		bytes.NewReader(td.AnchorPsbt), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decode anchor PSBT: %w", err)
+	}
+
+	anchorTx, err := psbt.Extract(anchorPsbt)
+	if err != nil {
+		return nil, fmt.Errorf("extract anchor tx: %w", err)
+	}
+
+	// Update the proof entry with the patched asset.
+	proofEntry.Asset = *proofAsset
+	proofEntry.AdditionalInputs = additionalInputs
+	proofEntry.AnchorTx = *anchorTx
+
+	// Set the output index from the virtual output's anchor output index.
+	// This is critical for split transactions where each virtual output
+	// maps to a different anchor output. The proof suffix from tapd may
+	// have the virtual output index rather than the anchor output index.
+	proofEntry.InclusionProof.OutputIndex = vOut.AnchorOutputIndex
+
+	// Override internal key if provided. This is critical for tree nodes
+	// where each child output has a different MuSig2 internal key based on
+	// its cosigners. Fall back to the virtual output's AnchorOutputInternalKey
+	// if no override is provided but the output has a custom internal key.
+	if params != nil && params.InternalKey != nil {
+		proofEntry.InclusionProof.InternalKey = params.InternalKey
+	} else if vOut.AnchorOutputInternalKey != nil {
+		proofEntry.InclusionProof.InternalKey = vOut.AnchorOutputInternalKey
+	}
+
+	// Override PrevOut if provided. This is the outpoint being spent, which
+	// may differ from what tapd's virtual PSBT expects when spending tree
+	// nodes.
+	if params != nil && params.PrevOut != nil {
+		proofEntry.PrevOut = *params.PrevOut
+	}
+
+	// Override TapSiblingPreimage if provided. This is needed when the tree
+	// node uses a different sweep script than what tapd originally created.
+	if params != nil && params.TapSiblingPreimage != nil {
+		if proofEntry.InclusionProof.CommitmentProof != nil {
+			proofEntry.InclusionProof.CommitmentProof.TapSiblingPreimage =
+				params.TapSiblingPreimage
+		}
+	}
+
+	// Update with confirmation data if provided.
+	if params != nil && params.Block != nil {
+		err = proofEntry.UpdateTransitionProof(&proof.BaseProofParams{
+			Block:       params.Block,
+			BlockHeight: params.BlockHeight,
+			Tx:          anchorTx,
+			TxIndex:     params.TxIndex,
+		})
+		if err != nil {
+			return nil, fmt.Errorf(
+				"update transition proof: %w", err,
+			)
+		}
+	}
+
+	// Append to the base proof file.
+	if err := baseProofFile.AppendProof(*proofEntry); err != nil {
+		return nil, fmt.Errorf("append proof: %w", err)
+	}
+
+	// Encode the complete proof file.
+	var buf bytes.Buffer
+	if err := baseProofFile.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode proof file: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
 // Dependencies kept abstract for easier unit testing.
 type assetWalletClient interface {
 	CommitVirtualPsbts(context.Context,
@@ -2656,6 +3836,19 @@ func cloneTxOut(txOut *wire.TxOut) *wire.TxOut {
 		Value:    txOut.Value,
 		PkScript: append([]byte(nil), txOut.PkScript...),
 	}
+}
+
+func cloneTxOuts(txOuts []*wire.TxOut) []*wire.TxOut {
+	if len(txOuts) == 0 {
+		return nil
+	}
+
+	cloned := make([]*wire.TxOut, len(txOuts))
+	for i, out := range txOuts {
+		cloned[i] = cloneTxOut(out)
+	}
+
+	return cloned
 }
 
 func cloneTaprootLeafScripts(

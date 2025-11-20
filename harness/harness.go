@@ -149,6 +149,10 @@ type Harness struct {
 	// PostgresHost is the host:port for postgres connection.
 	PostgresHost string
 
+	// clientTapds tracks per-client tapd/lnd harnesses so we can persist
+	// their container logs.
+	clientTapds []*TapdHarness
+
 	// bitcoindName is the canonical name LND uses to reach bitcoind in the
 	// same network.
 	bitcoindName string
@@ -279,7 +283,7 @@ func DefaultOptions() Options {
 
 	return Options{
 		BitcoindImage:       "lightninglabs/bitcoin-core:29",
-		LNDImage:            "lightninglabs/lnd:v0.19.3-beta",
+		LNDImage:            "lightninglabs/lnd:v0.20.0-beta",
 		TapdImage:           "lightninglabs/taproot-assets:v0.7.0-rc1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
@@ -637,12 +641,9 @@ func (h *Harness) purgeDockerResources() {
 	h.purgeResource(h.lnd, "lnd")
 	h.purgeResource(h.bitcoind, "bitcoind")
 
-	if h.network != nil {
-		err := h.network.Close()
-		if err != nil {
-			h.Logf("failed to close network: %v", err)
-		}
-	}
+	// Use force removal to ensure the network is cleaned up even if some
+	// containers are still connected (e.g., due to a test panic).
+	h.forceRemoveNetwork()
 }
 
 // purgeResource removes a single Docker container resource.
@@ -726,6 +727,53 @@ func (h *Harness) PruneStaleHarnessNetworks() {
 				)
 			}
 		}
+	}
+}
+
+// forceRemoveNetwork forcefully removes a Docker network by first
+// disconnecting any containers that are still connected to it. This is used
+// during test teardown to ensure networks are cleaned up even if some
+// containers failed to stop properly.
+func (h *Harness) forceRemoveNetwork() {
+	if h.network == nil {
+		return
+	}
+
+	networkID := h.network.Network.ID
+
+	// Get the network details to find connected containers.
+	network, err := h.pool.Client.NetworkInfo(networkID)
+	if err != nil {
+		h.Logf("[DEBUG] Failed to get network info for cleanup: %v", err)
+
+		// Try to remove anyway.
+		_ = h.pool.Client.RemoveNetwork(networkID)
+
+		return
+	}
+
+	// Disconnect all containers from the network.
+	for containerID := range network.Containers {
+		err := h.pool.Client.DisconnectNetwork(
+			networkID,
+			docker.NetworkConnectionOptions{
+				Container: containerID,
+				Force:     true,
+			},
+		)
+		if err != nil {
+			h.Logf(
+				"[DEBUG] Failed to disconnect container %s "+
+					"from network: %v",
+				containerID[:12], err,
+			)
+		}
+	}
+
+	// Now remove the network.
+	err = h.pool.Client.RemoveNetwork(networkID)
+	if err != nil {
+		h.Logf("[DEBUG] Failed to remove network after cleanup: %v", err)
 	}
 }
 
@@ -831,6 +879,23 @@ func (h *Harness) saveLogs() error {
 			_ = h.writeContainerLogsToFile(
 				inst.Resource,
 				filepath.Join(h.artifactsDir, name+".log"),
+			)
+		}
+	}
+
+	// Save logs for per-client tapd/lnd harnesses.
+	for _, th := range h.clientTapds {
+		if th == nil {
+			continue
+		}
+		if th.lnd != nil {
+			_ = h.writeContainerLogsToFile(
+				th.lnd, filepath.Join(h.artifactsDir, th.Name+"_lnd.log"),
+			)
+		}
+		if th.tapd != nil {
+			_ = h.writeContainerLogsToFile(
+				th.tapd, filepath.Join(h.artifactsDir, th.Name+"_tapd.log"),
 			)
 		}
 	}
@@ -1786,6 +1851,7 @@ func (h *Harness) startTapd() {
 	h.Log("Waiting for tapd to be ready and synced...")
 	h.waitForTapdReady()
 	h.Log("tapd is ready and synced")
+
 }
 
 // getLNDClientConn creates a gRPC connection to LND using TLS and macaroon

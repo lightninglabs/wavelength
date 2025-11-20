@@ -3,6 +3,7 @@ package assets
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -25,6 +26,10 @@ func TestOpTrueBTCAnchorSpec(t *testing.T) {
 	computed := txscript.ComputeTaprootOutputKey(
 		spec.InternalKey, tapHash[:],
 	)
+
+	// Normalize via schnorr serialization to match how BuildOpTrueArtifacts
+	// normalizes the output key (schnorr always returns even Y parity).
+	computed, _ = schnorr.ParsePubKey(schnorr.SerializePubKey(computed))
 	require.True(t, spec.OutputKey.IsEqual(computed))
 }
 

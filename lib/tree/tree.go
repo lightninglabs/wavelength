@@ -40,6 +40,33 @@ func NewTree(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
 	leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
 	sweepTapscriptRoot []byte, radix int) (*Tree, error) {
 
+	return NewTreeWithConfig(
+		rootOutpoint, rootOutput, leaves, operatorKey,
+		sweepTapscriptRoot, TreeBuildConfig{
+			Radix: radix,
+		},
+	)
+}
+
+// TreeBuildConfig configures tree construction.
+type TreeBuildConfig struct {
+	Radix int
+
+	// WeightFunc optionally overrides how leaves are balanced into groups.
+	// When nil, leaves are distributed purely by count.
+	WeightFunc PartitionWeightFunc
+
+	// Assembler optionally overrides how nodes are constructed. When nil,
+	// a BTC-only assembler is used.
+	Assembler NodeAssembler
+}
+
+// NewTreeWithConfig constructs a transaction tree from the given leaves using
+// BFS with the provided configuration.
+func NewTreeWithConfig(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
+	leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
+	sweepTapscriptRoot []byte, cfg TreeBuildConfig) (*Tree, error) {
+
 	// Validate inputs.
 	if rootOutput == nil {
 		return nil, fmt.Errorf("root output cannot be nil")
@@ -53,15 +80,15 @@ func NewTree(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
 		return nil, fmt.Errorf("at least one leaf required")
 	}
 
-	if radix < 2 {
+	if cfg.Radix < 2 {
 		return nil, fmt.Errorf("radix must be at least 2, got %d",
-			radix)
+			cfg.Radix)
 	}
 
-	// Build the tree using BFS.
 	root, err := buildTreeBFS(
-		rootOutpoint, leaves, operatorKey,
-		sweepTapscriptRoot, radix,
+		rootOutpoint, leaves, chooseAssembler(
+			cfg.Assembler, operatorKey, sweepTapscriptRoot,
+		), cfg.Radix, cfg.WeightFunc,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build tree: %w", err)
@@ -96,6 +123,18 @@ func (t *Tree) ExtractPathForCoSigner(targetKey *btcec.PublicKey) (*Tree,
 		BatchOutput:        t.BatchOutput,
 		SweepTapscriptRoot: t.SweepTapscriptRoot,
 	}, nil
+}
+
+// chooseAssembler resolves the assembler to use, defaulting to BTC-only when
+// callers do not provide one.
+func chooseAssembler(assembler NodeAssembler, operatorKey *btcec.PublicKey,
+	sweepTapscriptRoot []byte) NodeAssembler {
+
+	if assembler != nil {
+		return assembler
+	}
+
+	return newBTCAssembler(operatorKey, sweepTapscriptRoot)
 }
 
 // ExtractPathForIndex extracts the path to a specific leaf by its index.

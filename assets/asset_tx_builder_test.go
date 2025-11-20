@@ -24,6 +24,7 @@ import (
 	tapasset "github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
 	"github.com/lightninglabs/taproot-assets/taprpc"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/require"
@@ -306,43 +307,59 @@ func TestAssetBoardingMuSig2Sweep(t *testing.T) {
 	require.NoError(t, err)
 	t.Logf("taproot tweak root: %x", taprootRoot)
 
-	// Create MuSig2 signers for both parties.
-	// User signer knows user privkey + operator pubkey.
-	userSigner, err := assets.NewMuSig2Signer(
-		f.userKey, []*btcec.PublicKey{operatorPubKey}, taprootRoot,
+	// Set up the taproot tweak for MuSig2 signing.
+	allPubKeys := []*btcec.PublicKey{userPubKey, operatorPubKey}
+	tweaks := &input.MuSig2Tweaks{
+		TaprootBIP0086Tweak: false,
+		TaprootTweak:        taprootRoot,
+	}
+
+	// Create MuSig2 signers and sessions for both parties.
+	userSigner := assets.NewLocalMuSig2Signer(f.userKey)
+	userSession, err := userSigner.MuSig2CreateSession(
+		input.MuSig2Version100RC2, keychain.KeyLocator{},
+		allPubKeys, tweaks, nil, nil,
 	)
 	require.NoError(t, err)
 
-	// Operator signer knows operator privkey + user pubkey.
-	operatorSigner, err := assets.NewMuSig2Signer(
-		f.operatorKey, []*btcec.PublicKey{userPubKey}, taprootRoot,
+	operatorSigner := assets.NewLocalMuSig2Signer(f.operatorKey)
+	operatorSession, err := operatorSigner.MuSig2CreateSession(
+		input.MuSig2Version100RC2, keychain.KeyLocator{},
+		allPubKeys, tweaks, nil, nil,
 	)
 	require.NoError(t, err)
 
 	// Exchange nonces.
-	userNonce := userSigner.PublicNonce()
-	operatorNonce := operatorSigner.PublicNonce()
-
-	err = userSigner.ReceiveNonce(operatorPubKey, operatorNonce)
+	_, err = userSigner.MuSig2RegisterNonces(
+		userSession.SessionID,
+		[][musig2.PubNonceSize]byte{operatorSession.PublicNonce},
+	)
 	require.NoError(t, err)
 
-	err = operatorSigner.ReceiveNonce(userPubKey, userNonce)
+	_, err = operatorSigner.MuSig2RegisterNonces(
+		operatorSession.SessionID,
+		[][musig2.PubNonceSize]byte{userSession.PublicNonce},
+	)
 	require.NoError(t, err)
 
-	// Both parties create partial signatures.
-	userPartialSig, err := userSigner.Sign(digest)
+	// Both parties create partial signatures. MuSig2Sign registers the
+	// signature internally in the session.
+	_, err = userSigner.MuSig2Sign(userSession.SessionID, digest, false)
 	require.NoError(t, err)
 
-	operatorPartialSig, err := operatorSigner.Sign(digest)
+	operatorPartialSig, err := operatorSigner.MuSig2Sign(
+		operatorSession.SessionID, digest, false,
+	)
 	require.NoError(t, err)
 
 	// User side combines signatures to create final signature.
 	// (Operator side could also do this and produce the same result.)
-	finalSig, err := userSigner.CombineSignatures(
-		digest,
-		[]*musig2.PartialSignature{userPartialSig, operatorPartialSig},
+	finalSig, haveAll, err := userSigner.MuSig2CombineSig(
+		userSession.SessionID,
+		[]*musig2.PartialSignature{operatorPartialSig},
 	)
 	require.NoError(t, err)
+	require.True(t, haveAll)
 
 	require.NoError(
 		t, builder.ApplyKeySpendSignature(0, finalSig.Serialize()),

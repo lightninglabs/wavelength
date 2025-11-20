@@ -3,6 +3,7 @@ package assets
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/stretchr/testify/require"
 )
@@ -76,12 +77,21 @@ func TestBuildOpTrueArtifacts_ControlBlockStructure(t *testing.T) {
 	tapTree := txscript.AssembleTaprootScriptTree(tapLeaf)
 	rootHash := tapTree.RootNode.TapHash()
 
-	// Internal key is NUMS
+	// Internal key is NUMS. Compare X-coordinates only since the stored
+	// OutputKey is normalized to even Y parity via schnorr serialization.
 	reconstructedKey := txscript.ComputeTaprootOutputKey(
 		controlBlock.InternalKey, rootHash[:],
 	)
-	require.True(t,
-		artifacts.OutputKey.IsEqual(reconstructedKey),
-		"output key should match reconstructed key",
+
+	// Compare x-coordinates (schnorr serializes just the X).
+	require.Equal(t,
+		schnorr.SerializePubKey(artifacts.OutputKey),
+		schnorr.SerializePubKey(reconstructedKey),
+		"output key X-coordinate should match reconstructed key",
 	)
+
+	// Verify control block parity matches the actual output key parity.
+	actualParity := reconstructedKey.SerializeCompressed()[0] == 0x03
+	require.Equal(t, actualParity, controlBlock.OutputKeyYIsOdd,
+		"control block parity should match actual output key parity")
 }

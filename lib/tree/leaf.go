@@ -19,4 +19,8 @@ type LeafDescriptor struct {
 	// CoSignerKey is the public key of the leaf owner who must participate
 	// in signing this leaf's transaction along with the operator.
 	CoSignerKey *btcec.PublicKey
+
+	// Asset holds optional asset anchor/proof metadata for this leaf.
+	// BTC-only leaves leave this nil.
+	Asset *AssetMetadata
 }

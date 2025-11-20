@@ -136,6 +136,9 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 
 	h.Logf("TapdHarness %s is ready", name)
 
+	// Track this harness so we can persist its container logs.
+	h.clientTapds = append(h.clientTapds, th)
+
 	return th
 }
 

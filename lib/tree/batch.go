@@ -61,7 +61,11 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 
 // ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor.
 func (v VTXODescriptor) ToLeafDescriptor() LeafDescriptor {
-	return LeafDescriptor(v)
+	return LeafDescriptor{
+		PkScript:    v.PkScript,
+		Amount:      v.Amount,
+		CoSignerKey: v.CoSignerKey,
+	}
 }
 
 // ConnectorDescriptor defines the specification for a connector tree.

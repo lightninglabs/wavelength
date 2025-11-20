@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo-client/assets"
 	"github.com/lightninglabs/taproot-assets/taprpc"
 	"github.com/lightninglabs/taproot-assets/taprpc/mintrpc"
@@ -60,9 +61,10 @@ func (tc *TapClientHarness) MintAsset(name string, amount uint64,
 	// Create mint request.
 	mintReq := &mintrpc.MintAssetRequest{
 		Asset: &mintrpc.MintAsset{
-			AssetType: assetType,
-			Name:      name,
-			Amount:    amount,
+			AssetVersion: taprpc.AssetVersion_ASSET_VERSION_V1,
+			AssetType:    assetType,
+			Name:         name,
+			Amount:       amount,
 			AssetMeta: &taprpc.AssetMeta{
 				Data: []byte(fmt.Sprintf("%s metadata", name)),
 				Type: taprpc.AssetMetaType_META_TYPE_OPAQUE,
@@ -241,14 +243,30 @@ func (tc *TapClientHarness) SyncUniverse() {
 	}
 	require.NoError(tc.t, err)
 
-	// Now manually trigger a full sync.
-	_, err = tc.TapdClient.SyncUniverse(
-		ctx, &universerpc.SyncRequest{
-			UniverseHost: universeHost,
-			SyncMode:     universerpc.UniverseSyncMode_SYNC_FULL,
-		},
-	)
-	require.NoError(tc.t, err)
+	// Now manually trigger a full sync. Retry if sync is already in progress
+	// (can happen when multiple clients sync concurrently).
+	var syncErr error
+	for i := 0; i < 10; i++ {
+		_, syncErr = tc.TapdClient.SyncUniverse(
+			ctx, &universerpc.SyncRequest{
+				UniverseHost: universeHost,
+				SyncMode:     universerpc.UniverseSyncMode_SYNC_FULL,
+			},
+		)
+		if syncErr == nil {
+			break
+		}
+
+		// Retry on "sync is already in progress" error.
+		if strings.Contains(syncErr.Error(), "sync is already in progress") {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Non-retryable error, bail out.
+		break
+	}
+	require.NoError(tc.t, syncErr)
 
 	tc.h.Logf("%s: synced with universe %s", tc.name, universeHost)
 }
@@ -325,4 +343,17 @@ func (tc *TapClientHarness) WaitForTransfer(matcher TransferMatcher) (
 	}, defaultTimeout, pollInterval, "transfer not confirmed")
 
 	return foundTransfer, foundIndex
+}
+
+// PubKey returns the lnd node identity public key backing this tap client.
+func (tc *TapClientHarness) PubKey() (*btcec.PublicKey, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+
+	info, err := tc.h.LND.Client.GetInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return btcec.ParsePubKey(info.IdentityPubkey[:])
 }

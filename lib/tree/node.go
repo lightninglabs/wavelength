@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -43,6 +44,15 @@ type Node struct {
 	// that must sign this node's input. This is cached to avoid repeated
 	// MuSig2 aggregations during signature verification.
 	FinalKey *btcec.PublicKey
+
+	// TaprootTweak optionally records the tweak applied when deriving the
+	// FinalKey for this node. When nil, callers fall back to the global
+	// sweep tapscript root used in legacy VTXO trees.
+	TaprootTweak []byte
+
+	// Metadata carries optional bookkeeping for this node/subtree. It is
+	// ignored by signing and verification logic.
+	Metadata *NodeMetadata
 }
 
 // NewLeafNode creates a leaf node (transaction with leaf output).
@@ -52,8 +62,8 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 
 	// The cosigners for a leaf are the leaf owner and operator.
 	cosigners := []*btcec.PublicKey{
-		leaf.CoSignerKey,
 		operatorKey,
+		leaf.CoSignerKey,
 	}
 
 	outputs := []*wire.TxOut{
@@ -71,12 +81,17 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 	}
 
 	return &Node{
-		Input:     input,
-		Outputs:   outputs,
-		CoSigners: cosigners,
-		Children:  make(map[uint32]*Node),
-		Signature: nil,
-		FinalKey:  finalKey,
+		Input:        input,
+		Outputs:      outputs,
+		CoSigners:    cosigners,
+		TaprootTweak: sweepTapscriptRoot,
+		Children:     make(map[uint32]*Node),
+		Signature:    nil,
+		FinalKey:     finalKey,
+		Metadata: &NodeMetadata{
+			AssetProof: proofBytes(leaf.Asset),
+			Leaf:       leaf.Asset,
+		},
 	}, nil
 }
 
@@ -187,12 +202,14 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}
 
 	return &Node{
-		Input:     input,
-		Outputs:   outputs,
-		CoSigners: allCosigners,
-		Children:  make(map[uint32]*Node),
-		Signature: nil,
-		FinalKey:  finalKey,
+		Input:        input,
+		Outputs:      outputs,
+		CoSigners:    allCosigners,
+		TaprootTweak: sweepTapscriptRoot,
+		Children:     make(map[uint32]*Node),
+		Signature:    nil,
+		FinalKey:     finalKey,
+		Metadata:     aggregateBranchMetadata(groups),
 	}, nil
 }
 
@@ -200,6 +217,31 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 // This is a helper function that aggregates the cosigners and applies the
 // taproot tweak with the given sweep tapscript root. It handles both
 // single-key and multi-key cases.
+// ComputeInternalKey computes the MuSig2 aggregate key without any taproot
+// tweak. This is the "internal key" that should be passed to tapd, which will
+// then apply its own taproot tweak (including asset commitment).
+func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey, error) {
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("no cosigners provided")
+	}
+
+	// Single cosigner: just return the key.
+	if len(cosigners) == 1 {
+		return cosigners[0], nil
+	}
+
+	// Multi-key case: MuSig2 aggregation without tweak.
+	aggKey, _, _, err := musig2.AggregateKeys(cosigners, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
+	}
+
+	return aggKey.PreTweakedKey, nil
+}
+
+// ComputeFinalKey computes the final taproot output key from cosigners and a
+// taproot tweak. The tweak should be the combined taproot root (including
+// asset commitment for Taproot Asset outputs).
 func ComputeFinalKey(cosigners []*btcec.PublicKey,
 	sweepTapscriptRoot []byte) (*btcec.PublicKey, error) {
 
@@ -227,6 +269,37 @@ func ComputeFinalKey(cosigners []*btcec.PublicKey,
 	return aggKey.FinalKey, nil
 }
 
+// fundingAmount returns the BTC funding amount from asset metadata if present.
+func fundingAmount(meta *AssetMetadata) btcutil.Amount {
+	if meta == nil {
+		return 0
+	}
+
+	return meta.Funding.Amount
+}
+
+// proofBytes returns the input proof blob from asset metadata if present.
+func proofBytes(meta *AssetMetadata) []byte {
+	if meta == nil || len(meta.InputProof) == 0 {
+		return nil
+	}
+
+	proof := make([]byte, len(meta.InputProof))
+	copy(proof, meta.InputProof)
+
+	return proof
+}
+
+// aggregateBranchMetadata creates empty metadata for branch nodes.
+// AssetProof remains nil for branches.
+func aggregateBranchMetadata(groups [][]LeafDescriptor) *NodeMetadata {
+	if len(groups) == 0 {
+		return nil
+	}
+
+	return &NodeMetadata{}
+}
+
 // AddSignature sets the signature for this node's transaction.
 func (n *Node) AddSignature(sig *schnorr.Signature) {
 	n.Signature = sig
@@ -246,7 +319,7 @@ func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Add the single, unsigned input.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: n.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         wire.MaxTxInSequenceNum - 2,
 	})
 
 	// Add all outputs.
@@ -470,12 +543,14 @@ func (n *Node) ExtractPathForCoSigner(targetKey *btcec.PublicKey) *Node {
 
 	// Create a new node with the same basic info.
 	extracted := &Node{
-		Input:     n.Input,
-		CoSigners: n.CoSigners,
-		Outputs:   n.Outputs,
-		Signature: n.Signature,
-		FinalKey:  n.FinalKey,
-		Children:  make(map[uint32]*Node),
+		Input:        n.Input,
+		CoSigners:    n.CoSigners,
+		Outputs:      n.Outputs,
+		Signature:    n.Signature,
+		FinalKey:     n.FinalKey,
+		TaprootTweak: n.TaprootTweak,
+		Children:     make(map[uint32]*Node),
+		Metadata:     n.Metadata,
 	}
 
 	// Recursively extract relevant children.
@@ -533,12 +608,13 @@ func (n *Node) extractPathForIndexRecursive(
 		if currentIndex == targetIndex {
 			// Found our target leaf.
 			return &Node{
-				Input:     n.Input,
-				CoSigners: n.CoSigners,
-				Outputs:   n.Outputs,
-				Signature: n.Signature,
-				FinalKey:  n.FinalKey,
-				Children:  make(map[uint32]*Node),
+				Input:        n.Input,
+				CoSigners:    n.CoSigners,
+				Outputs:      n.Outputs,
+				Signature:    n.Signature,
+				FinalKey:     n.FinalKey,
+				TaprootTweak: n.TaprootTweak,
+				Children:     make(map[uint32]*Node),
 			}, currentIndex + 1
 		}
 
@@ -547,12 +623,13 @@ func (n *Node) extractPathForIndexRecursive(
 
 	// This is a branch node, check children.
 	extracted := &Node{
-		Input:     n.Input,
-		CoSigners: n.CoSigners,
-		Outputs:   n.Outputs,
-		Signature: n.Signature,
-		FinalKey:  n.FinalKey,
-		Children:  make(map[uint32]*Node),
+		Input:        n.Input,
+		CoSigners:    n.CoSigners,
+		Outputs:      n.Outputs,
+		Signature:    n.Signature,
+		FinalKey:     n.FinalKey,
+		TaprootTweak: n.TaprootTweak,
+		Children:     make(map[uint32]*Node),
 	}
 
 	leafIndex := currentIndex

@@ -27,9 +27,22 @@ type TxSignerSession struct {
 	sigHash     [32]byte
 }
 
+// TxSignerDebugInfo captures basic session parameters for debugging.
+// This is intentionally lightweight and avoids exposing mutable internals.
+type TxSignerDebugInfo struct {
+	// SessionID is the MuSig2 session identifier.
+	SessionID input.MuSig2SessionID
+
+	// SigHash is the digest being signed.
+	SigHash [32]byte
+
+	// CombinedKey is the tweaked MuSig2 aggregate key for the session.
+	CombinedKey *btcec.PublicKey
+}
+
 // NewTxSignerSession creates a new signing session for a single transaction.
 func NewTxSignerSession(signer input.MuSig2Signer,
-	sweepTapscriptRoot []byte, cosigners []*btcec.PublicKey,
+	taprootTweak []byte, cosigners []*btcec.PublicKey,
 	signerKey *keychain.KeyDescriptor, tx *wire.MsgTx,
 	fetcher txscript.PrevOutputFetcher) (*TxSignerSession, error) {
 
@@ -64,7 +77,7 @@ func NewTxSignerSession(signer input.MuSig2Signer,
 	musigSession, err := signer.MuSig2CreateSession(
 		input.MuSig2Version100RC2, signerKey.KeyLocator,
 		cosigners, &input.MuSig2Tweaks{
-			TaprootTweak: sweepTapscriptRoot,
+			TaprootTweak: taprootTweak,
 		}, nil, nil,
 	)
 	if err != nil {
@@ -124,6 +137,20 @@ func (s *TxSignerSession) Sign(cleanup bool) (*musig2.PartialSignature, error) {
 	)
 }
 
+// DebugInfo exposes immutable session parameters for introspection in tests.
+func (s *TxSignerSession) DebugInfo() TxSignerDebugInfo {
+	info := TxSignerDebugInfo{
+		SessionID: s.signSession.SessionID,
+		SigHash:   s.sigHash,
+	}
+
+	if s.signSession != nil {
+		info.CombinedKey = s.signSession.CombinedKey
+	}
+
+	return info
+}
+
 // SignerSession manages signing for all transactions in a client's path.
 // It automatically extracts the signer's path and creates TxSignerSession for
 // each transaction in that path.
@@ -133,6 +160,18 @@ type SignerSession struct {
 
 	// txs maps transaction IDs to their signing sessions.
 	txs map[string]*TxSignerSession
+}
+
+// DebugInfo returns per-transaction debug data for this signer. Intended for
+// testing and troubleshooting only.
+func (s *SignerSession) DebugInfo() map[string]TxSignerDebugInfo {
+	debug := make(map[string]TxSignerDebugInfo, len(s.txs))
+
+	for txid, txSession := range s.txs {
+		debug[txid] = txSession.DebugInfo()
+	}
+
+	return debug
 }
 
 // NewSignerSession creates a new signing session for a tree. It
@@ -171,9 +210,14 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
+		taprootTweak := sweepTapscriptRoot
+		if len(node.TaprootTweak) > 0 {
+			taprootTweak = node.TaprootTweak
+		}
+
 		session, err := NewTxSignerSession(
-			signer, sweepTapscriptRoot, node.CoSigners,
-			signerKey, tx, prevOuts,
+			signer, taprootTweak, node.CoSigners, signerKey, tx,
+			prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",
@@ -260,4 +304,17 @@ func (s *SignerSession) Signatures(cleanup bool) (
 	}
 
 	return sigs, nil
+}
+
+// SessionIDs returns the MuSig2 session IDs for each transaction managed by
+// the signer. This is intended for coordinating signature aggregation in
+// higher-level protocols/tests that need to combine partial signatures.
+func (s *SignerSession) SessionIDs() map[string]input.MuSig2SessionID {
+	ids := make(map[string]input.MuSig2SessionID, len(s.txs))
+
+	for txid, txSession := range s.txs {
+		ids[txid] = txSession.signSession.SessionID
+	}
+
+	return ids
 }

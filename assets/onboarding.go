@@ -308,11 +308,14 @@ func (k *OnboardingKit) NewOnboardingAddr(ctx context.Context,
 		},
 	}
 
-	// Create the onboarding address via tapd
+	// Create the onboarding address via tapd. We use V1 asset version for
+	// strippable witnesses, which allows the witness vector to be excluded
+	// from the TAP commitment (similar to SegWit in Bitcoin).
 	addr, err := tapdClient.NewAddr(ctx, &taprpc.NewAddrRequest{
-		AssetId:   k.AssetID[:],
-		Amt:       k.Amount,
-		ScriptKey: rpcutils.MarshalScriptKey(tapScriptKey),
+		AssetId:      k.AssetID[:],
+		Amt:          k.Amount,
+		AssetVersion: taprpc.AssetVersion_ASSET_VERSION_V1,
+		ScriptKey:    rpcutils.MarshalScriptKey(tapScriptKey),
 		InternalKey: &taprpc.KeyDescriptor{
 			RawKeyBytes: k.InternalKey.SerializeCompressed(),
 		},

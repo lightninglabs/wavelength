@@ -228,7 +228,7 @@ func TestNodeTransactionConversion(t *testing.T) {
 		require.Len(t, tx.TxOut, 2)
 		require.Equal(t, node.Input, tx.TxIn[0].PreviousOutPoint)
 		require.Equal(
-			t, wire.MaxTxInSequenceNum, tx.TxIn[0].Sequence,
+			t, wire.MaxTxInSequenceNum-2, tx.TxIn[0].Sequence,
 		)
 		require.Equal(t, int64(1000), tx.TxOut[0].Value)
 		require.Equal(t, int64(0), tx.TxOut[1].Value)
