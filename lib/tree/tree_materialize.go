@@ -5,12 +5,27 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/assets"
 )
 
 // MaterializeParams contains the parameters for materializing a single node.
 type MaterializeParams struct {
 	// Input is the outpoint this node spends.
 	Input wire.OutPoint
+
+	// InputBtcValue is the BTC value of the input being spent. Used by the
+	// asset materializer to set PSBT witness amounts; ignored by the BTC
+	// materializer (BTC amounts come from Node.Amount).
+	InputBtcValue int64
+
+	// ParentProof is the serialized proof for the parent's output.
+	// Used by asset materializer, ignored by BTC materializer.
+	ParentProof []byte
+
+	// ParentPlan is the anchor plan from the parent's output (for assembly
+	// path - provides InputAnchorKey).
+	// Used by asset materializer, ignored by BTC materializer.
+	ParentPlan *assets.AnchorPlan
 }
 
 // Materializer fills in transaction data for a tree structure. Different

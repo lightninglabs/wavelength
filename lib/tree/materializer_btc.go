@@ -60,7 +60,8 @@ func NewBTCMaterializer(operatorKey *btcec.PublicKey,
 // this involves computing the final key and building outputs.
 //
 // NOTE: BTC trees use Node.Amount (set during structure building) for output
-// values.
+// values. The ParentProof and ParentPlan fields in MaterializeParams are
+// ignored; those are for asset trees only.
 func (m *BTCMaterializer) MaterializeNode(_ context.Context, node *Node,
 	params MaterializeParams) (map[uint32]MaterializeParams, error) {
 

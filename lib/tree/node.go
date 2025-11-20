@@ -216,6 +216,31 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 // This is a helper function that aggregates the cosigners and applies the
 // taproot tweak with the given sweep tapscript root. It handles both
 // single-key and multi-key cases.
+// ComputeInternalKey computes the MuSig2 aggregate key without any taproot
+// tweak.
+func ComputeInternalKey(cosigners []*btcec.PublicKey) (*btcec.PublicKey,
+	error) {
+
+	if len(cosigners) == 0 {
+		return nil, fmt.Errorf("no cosigners provided")
+	}
+
+	// Single cosigner: just return the key.
+	if len(cosigners) == 1 {
+		return cosigners[0], nil
+	}
+
+	// Multi-key case: MuSig2 aggregation without tweak.
+	aggKey, _, _, err := musig2.AggregateKeys(cosigners, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to aggregate keys: %w", err)
+	}
+
+	return aggKey.PreTweakedKey, nil
+}
+
+// ComputeFinalKey computes the final taproot output key from cosigners and a
+// taproot tweak. The tweak should be the combined taproot root.
 func ComputeFinalKey(cosigners []*btcec.PublicKey,
 	sweepTapscriptRoot []byte) (*btcec.PublicKey, error) {
 
@@ -262,7 +287,7 @@ func (n *Node) ToTx() (*wire.MsgTx, error) {
 	// Add the single, unsigned input.
 	tx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: n.Input,
-		Sequence:         wire.MaxTxInSequenceNum,
+		Sequence:         wire.MaxTxInSequenceNum - 2,
 	})
 
 	// Add all outputs.
