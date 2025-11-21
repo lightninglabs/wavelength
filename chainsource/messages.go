@@ -271,6 +271,10 @@ type ConfirmationEvent struct {
 	// NumConfs is the actual number of confirmations at the time of this
 	// event.
 	NumConfs uint32
+
+	// Tx is the confirmed transaction. This allows consumers to inspect
+	// transaction outputs without making additional chain queries.
+	Tx *wire.MsgTx
 }
 
 // MessageType returns the message type identifier for logging and debugging.
