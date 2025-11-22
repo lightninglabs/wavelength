@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // OperatorTerms holds the information that the operator will share with
@@ -79,9 +80,11 @@ type VTXORequest struct {
 	// construction of the collaborative spend path of the VTXO.
 	OperatorKey *btcec.PublicKey
 
-	// SigningKey is the public key that the client will use in the building
-	// of the VTXO tree during Musig2 signing sessions.
-	SigningKey *btcec.PublicKey
+	// SigningKey is the key descriptor that the client will use in the
+	// building of the VTXO tree during Musig2 signing sessions. We use
+	// keychain.KeyDescriptor instead of just *btcec.PublicKey because we
+	// need the key locator for signing operations.
+	SigningKey keychain.KeyDescriptor
 }
 
 // BoardingRequest represents a request to board the Ark via a UTXO.
