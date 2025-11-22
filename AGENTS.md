@@ -15,8 +15,7 @@
 - `make sqlc` - Regenerate type-safe database queries (after schema/query changes)
 
 ### Testing Commands
-- Single package: `make unit pkg=<package> timeout=5m`
-- Debug with logs: `make unit-debug log="stdlog trace" pkg=$pkg case=$case timeout=10s`
+- Single package: `make unit pkg=<package> case=<test> timeout=5m`
 - Integration test: `make itest icase=$icase`
 
 ## Code Style Quick Reference
@@ -101,13 +100,12 @@ Strive for **near 90% test coverage** where practical.
 ### Before Committing
 **YOU MUST** run tests before every commit:
 
-1. Run unit tests: `make unit pkg=$pkg timeout=5m`
-2. Run with debug logs: `make unit-debug log="stdlog trace" pkg=$pkg case=$case timeout=10s`
-3. **Check logs carefully**:
+1. Run unit tests: `make unit pkg=$pkg case=$case timeout=5m`
+2. **Check logs carefully**:
    - Verify structured logging format is correct
    - Ensure no log spam
    - **No `[ERR]` lines should appear** unless testing error paths
-4. Run affected integration tests: `make itest icase=$icase`
+3. Run affected integration tests: `make itest icase=$icase`
 
 ## Development Workflow
 
