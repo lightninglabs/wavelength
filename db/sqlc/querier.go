@@ -9,8 +9,24 @@ import (
 )
 
 type Querier interface {
+	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
+	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
+	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
+	// Boarding address queries.
+	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
+	// Boarding intent queries.
+	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
+	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
+	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
+	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
+	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
+	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
+	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
+	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
+	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 }
 
