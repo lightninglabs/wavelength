@@ -72,7 +72,7 @@ func (s *StatefulCounterActor) Receive(ctx context.Context,
 // by a struct with methods, allowing it to maintain internal state.
 func ExampleActor_stateful() {
 	system := actor.NewActorSystem()
-	defer system.Shutdown()
+	defer system.Shutdown(context.Background())
 
 	counterServiceKey := actor.NewServiceKey[CounterMsg, CounterResponse](
 		"struct-counter-service",

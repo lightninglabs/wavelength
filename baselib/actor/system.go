@@ -54,6 +54,9 @@ type ActorSystem struct {
 
 	// cancel cancels the main system context.
 	cancel context.CancelFunc
+
+	// actorWg tracks running actor goroutines for deterministic shutdown.
+	actorWg sync.WaitGroup
 }
 
 // NewActorSystem creates a new actor system using the default configuration.
@@ -91,6 +94,7 @@ func NewActorSystemWithConfig(config SystemConfig) *ActorSystem {
 		Behavior:    deadLetterBehavior,
 		DLO:         nil,
 		MailboxSize: config.MailboxCapacity,
+		Wg:          &system.actorWg,
 	}
 	deadLetterRawActor := NewActor[Message, any](deadLetterActorCfg)
 	deadLetterRawActor.Start()
@@ -128,6 +132,7 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 		Behavior:    behavior,
 		DLO:         as.deadLetterActor,
 		MailboxSize: as.config.MailboxCapacity,
+		Wg:          &as.actorWg,
 	}
 	actorInstance := NewActor(actorCfg)
 	actorInstance.Start()
@@ -159,11 +164,12 @@ func (as *ActorSystem) DeadLetters() ActorRef[Message, any] {
 	return as.deadLetterActor
 }
 
-// Shutdown gracefully stops the actor system. It iterates through all managed
-// actors, including the dead letter actor, and calls their Stop method.
-// After initiating the stop for all actors, it cancels the main system context.
-// This method is safe for concurrent use.
-func (as *ActorSystem) Shutdown() error {
+// Shutdown gracefully stops the actor system and waits for all actors to
+// finish processing. It iterates through all managed actors, calls their Stop
+// method, and then blocks until all actor goroutines have exited or the
+// provided context expires. This ensures deterministic shutdown with guaranteed
+// resource cleanup. This method is safe for concurrent use.
+func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	// Create a slice of actors to stop. This avoids holding the lock while
 	// calling Stop() on each actor, and includes the dead letter actor.
 	var actorsToStop []stoppable
@@ -185,12 +191,27 @@ func (as *ActorSystem) Shutdown() error {
 	as.actors = nil
 	as.mu.Unlock()
 
-	// Finally cancel the main context
-	// This signals to any other components observing the system's context
-	// that shutdown has been initiated.
+	// Cancel the main system context to signal shutdown to any components
+	// observing it.
 	as.cancel()
 
-	return nil
+	// Wait for all actor goroutines to exit. Use a channel to make the
+	// WaitGroup wait interruptible by the context.
+	done := make(chan struct{})
+	go func() {
+		as.actorWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All actors have finished processing.
+		return nil
+	case <-ctx.Done():
+		// Context expired before all actors finished. Return the
+		// context error to indicate incomplete shutdown.
+		return ctx.Err()
+	}
 }
 
 // StopAndRemoveActor stops a specific actor by its ID and removes it from the

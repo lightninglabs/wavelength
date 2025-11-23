@@ -28,7 +28,7 @@ type RouterGreetingResponse struct {
 // key and using a router to dispatch messages to them.
 func ExampleRouter() {
 	system := actor.NewActorSystem()
-	defer system.Shutdown()
+	defer system.Shutdown(context.Background())
 
 	//nolint:ll
 	routerGreeterKey := actor.NewServiceKey[RouterGreetingMsg, RouterGreetingResponse](

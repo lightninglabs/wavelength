@@ -69,7 +69,7 @@ func (l *LoggerActorBehavior) GetLogs() []string {
 // messaging with an actor.
 func ExampleTellOnlyRef() {
 	system := actor.NewActorSystem()
-	defer system.Shutdown()
+	defer system.Shutdown(context.Background())
 
 	// The logger actor doesn't really have a response type for Ask, so we
 	// use 'any'.

@@ -24,6 +24,11 @@ type ActorConfig[M Message, R any] struct {
 
 	// MailboxSize defines the buffer capacity of the actor's mailbox.
 	MailboxSize int
+
+	// Wg is an optional WaitGroup for tracking actor lifecycle. If
+	// non-nil, the actor will call Add(1) when starting and Done() when
+	// its process loop exits. This enables deterministic shutdown.
+	Wg *sync.WaitGroup
 }
 
 // envelope wraps a message with its associated promise. This allows the sender
@@ -56,6 +61,10 @@ type Actor[M Message, R any] struct {
 	// dlo is a reference to the dead letter office for this actor system.
 	dlo ActorRef[Message, any]
 
+	// wg is an optional WaitGroup for tracking this actor's lifecycle. If
+	// non-nil, Done() is called when the process loop exits.
+	wg *sync.WaitGroup
+
 	// startOnce ensures the actor's processing loop is started only once.
 	startOnce sync.Once
 
@@ -86,6 +95,7 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 		ctx:      ctx,
 		cancel:   cancel,
 		dlo:      cfg.DLO,
+		wg:       cfg.Wg,
 	}
 
 	// Create and cache the actor's own reference.
@@ -97,16 +107,28 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 }
 
 // Start initiates the actor's message processing loop in a new goroutine. This
-// method should be called once after the actor is created.
+// method should be called once after the actor is created. If the actor was
+// configured with a WaitGroup, it increments the counter to track the running
+// goroutine.
 func (a *Actor[M, R]) Start() {
 	a.startOnce.Do(func() {
+		if a.wg != nil {
+			a.wg.Add(1)
+		}
 		go a.process()
 	})
 }
 
 // process is the main event loop for the actor. It receives messages from the
-// mailbox and processes them using the actor's behavior.
+// mailbox and processes them using the actor's behavior. If the actor was
+// configured with a WaitGroup, it signals completion when the loop exits.
 func (a *Actor[M, R]) process() {
+	// Decrement the WaitGroup counter when this goroutine exits, enabling
+	// deterministic shutdown.
+	if a.wg != nil {
+		defer a.wg.Done()
+	}
+
 	// Process messages from the mailbox using the iterator pattern. The
 	// iterator will stop when the actor's context is cancelled.
 	for env := range a.mailbox.Receive(a.ctx) {
