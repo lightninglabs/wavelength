@@ -353,19 +353,39 @@ func TestServiceKeyMethods(t *testing.T) {
 	foundAfter := FindInReceptionist(as.Receptionist(), key)
 	require.Empty(t, foundAfter)
 
+	// The actor should STILL be in the system's actors map because
+	// Unregister only removes from the receptionist, not from the system.
 	as.mu.RLock()
 	_, sysExistsAfter := as.actors[actorRef.ID()]
 	as.mu.RUnlock()
-	require.False(t, sysExistsAfter)
+	require.True(t, sysExistsAfter,
+		"Actor should still be in system after Unregister")
 
-	// If we try to send a message to the actor after unregistering it, then
-	// we should get an error.
+	// The actor should STILL respond to messages because it's still running.
 	future := actorRef.Ask(context.Background(), newTestMsg("ping"))
 	res := future.Await(context.Background())
-	require.True(t, res.IsErr() && errors.Is(res.Err(), ErrActorTerminated))
+	require.True(t, res.IsOk(), "Actor should still respond after Unregister")
 
+	// Unregistering again should return false (not found in receptionist).
 	successAgain := key.Unregister(as, actorRef)
 	require.False(t, successAgain)
+
+	// Now explicitly stop the actor.
+	stopped := as.StopAndRemoveActor(actorRef.ID())
+	require.True(t, stopped, "StopAndRemoveActor should succeed")
+
+	// Now the actor should be gone from the system.
+	as.mu.RLock()
+	_, sysExistsAfterStop := as.actors[actorRef.ID()]
+	as.mu.RUnlock()
+	require.False(t, sysExistsAfterStop,
+		"Actor should be removed after StopAndRemoveActor")
+
+	// And it should no longer respond.
+	futureAfterStop := actorRef.Ask(context.Background(), newTestMsg("ping"))
+	resAfterStop := futureAfterStop.Await(context.Background())
+	require.True(t, resAfterStop.IsErr() &&
+		errors.Is(resAfterStop.Err(), ErrActorTerminated))
 
 	otherSys := NewActorSystem() // Create a different actor system
 	defer func() {
@@ -431,9 +451,9 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 		)
 
 		// Unregister all for key1.
-		stoppedCountKey1 := key1.UnregisterAll(as)
+		unregisteredCountKey1 := key1.UnregisterAll(as)
 		require.Equal(
-			st, 2, stoppedCountKey1,
+			st, 2, unregisteredCountKey1,
 			"UnregisterAll for key1 returned incorrect count.",
 		)
 
@@ -447,45 +467,38 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 				"UnregisterAll.",
 		)
 
-		// Verify they are removed from system actors map.
+		// Verify they are STILL in the system actors map because
+		// UnregisterAll only removes from receptionist, not system.
 		as.mu.RLock()
 		_, actor1Key1ExistsAfter := as.actors[actor1Key1.ID()]
 		_, actor2Key1ExistsAfter := as.actors[actor2Key1.ID()]
 		as.mu.RUnlock()
-		require.False(
+		require.True(
 			st, actor1Key1ExistsAfter,
-			"Actor1 for key1 still in system actors "+
-				"map after UnregisterAll.",
+			"Actor1 for key1 should still be in system after "+
+				"UnregisterAll.",
 		)
-		require.False(
+		require.True(
 			st, actor2Key1ExistsAfter,
-			"Actor2 for key1 still in system actors "+
-				"map after UnregisterAll.",
+			"Actor2 for key1 should still be in system after "+
+				"UnregisterAll.",
 		)
 
-		// Verify actors are stopped.
+		// Verify actors are STILL running and responding.
 		resultActor1Key1 := actor1Key1.Ask(
 			context.Background(), newTestMsg("ping-k1-a1"),
 		).Await(context.Background())
 		require.True(
-			st, resultActor1Key1.IsErr(),
-			"Actor1 key1 Ask should fail after UnregisterAll.",
-		)
-		require.ErrorIs(
-			st, resultActor1Key1.Err(), ErrActorTerminated,
-			"Actor1 key1 not terminated with correct error.",
+			st, resultActor1Key1.IsOk(),
+			"Actor1 key1 should still respond after UnregisterAll.",
 		)
 
 		resultActor2Key1 := actor2Key1.Ask(
 			context.Background(), newTestMsg("ping-k1-a2"),
 		).Await(context.Background())
 		require.True(
-			st, resultActor2Key1.IsErr(),
-			"Actor2 key1 Ask should fail after UnregisterAll.",
-		)
-		require.ErrorIs(
-			st, resultActor2Key1.Err(), ErrActorTerminated,
-			"Actor2 key1 not terminated with correct error.",
+			st, resultActor2Key1.IsOk(),
+			"Actor2 key1 should still respond after UnregisterAll.",
 		)
 	})
 
@@ -527,9 +540,9 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 		)
 
 		// We'll start by unregistering all actors for keyA.
-		stoppedCountKeyA := keyA.UnregisterAll(as)
+		unregisteredCountKeyA := keyA.UnregisterAll(as)
 		require.Equal(
-			st, 2, stoppedCountKeyA,
+			st, 2, unregisteredCountKeyA,
 			"UnregisterAll for keyA returned incorrect count.",
 		)
 
@@ -552,45 +565,41 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 			"Wrong actor found for keyB.",
 		)
 
-		// Verify keyA actors are removed from system map, keyB actor
-		// remains.
+		// Verify keyA actors are STILL in system map (UnregisterAll
+		// doesn't stop actors), keyB actor remains.
 		as.mu.RLock()
 		_, actorA1ExistsAfterMixed := as.actors[actorA1.ID()]
 		_, actorA2ExistsAfterMixed := as.actors[actorA2.ID()]
 		_, actorB1ExistsAfterMixed := as.actors[actorB1.ID()]
 		as.mu.RUnlock()
-		require.False(
+		require.True(
 			st, actorA1ExistsAfterMixed,
-			"ActorA1 still in system actors map after "+
-				"mixed UnregisterAll.",
+			"ActorA1 should still be in system after UnregisterAll.",
 		)
-		require.False(
+		require.True(
 			st, actorA2ExistsAfterMixed,
-			"ActorA2 still in system actors map after "+
-				"mixed UnregisterAll.",
+			"ActorA2 should still be in system after UnregisterAll.",
 		)
 		require.True(
 			st, actorB1ExistsAfterMixed,
 			"ActorB1 removed from system actors map incorrectly.",
 		)
 
-		// Verify keyA actors are stopped, keyB actor is running.
+		// Verify ALL actors are still running (UnregisterAll doesn't stop).
 		resultActorA1Mixed := actorA1.Ask(
 			context.Background(), newTestMsg("ping-kA-a1"),
 		).Await(context.Background())
-		require.True(st, resultActorA1Mixed.IsErr())
-		require.ErrorIs(
-			st, resultActorA1Mixed.Err(), ErrActorTerminated,
-		)
+		require.True(st, resultActorA1Mixed.IsOk(),
+			"ActorA1 should still respond after UnregisterAll")
+		resultActorA1Mixed.WhenOk(func(s string) {
+			require.Equal(st, "echo: ping-kA-a1", s)
+		})
 
 		resultActorB1Mixed := actorB1.Ask(
 			context.Background(), newTestMsg("ping-kB-a1"),
 		).Await(context.Background())
-		require.False(
-			st, resultActorB1Mixed.IsErr(),
-			"ActorB1 terminated incorrectly (mixed test): %v",
-			resultActorB1Mixed.Err(),
-		)
+		require.True(st, resultActorB1Mixed.IsOk(),
+			"ActorB1 should still respond")
 		resultActorB1Mixed.WhenOk(func(s string) {
 			require.Equal(st, "echo: ping-kB-a1", s)
 		})
@@ -602,42 +611,43 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 		)
 		actorIdem := keyIdempotent.Spawn(as, "actor-idem-ua", beh)
 
-		// First call should unregister and stop.
-		stoppedCountFirstCall := keyIdempotent.UnregisterAll(as)
+		// First call should unregister.
+		unregisteredCountFirstCall := keyIdempotent.UnregisterAll(as)
 		require.Equal(
-			st, 1, stoppedCountFirstCall,
+			st, 1, unregisteredCountFirstCall,
 			"UnregisterAll (first call) incorrect count.",
 		)
 
 		// Second call should do nothing and return 0.
-		stoppedCountSecondCall := keyIdempotent.UnregisterAll(as)
+		unregisteredCountSecondCall := keyIdempotent.UnregisterAll(as)
 		require.Equal(
-			st, 0, stoppedCountSecondCall,
+			st, 0, unregisteredCountSecondCall,
 			"UnregisterAll (second call) incorrect count, not "+
 				"idempotent.",
 		)
 
-		// Verify actor is gone from receptionist and system map, and is
-		// stopped.
+		// Verify actor is gone from receptionist.
 		require.Empty(
 			st, FindInReceptionist(as.Receptionist(), keyIdempotent),
 			"Actors for keyIdempotent still in receptionist "+
 				"after calls.",
 		)
 
+		// Verify actor is STILL in system (UnregisterAll doesn't stop).
 		as.mu.RLock()
 		_, actorIdemExistsAfter := as.actors[actorIdem.ID()]
 		as.mu.RUnlock()
-		require.False(
+		require.True(
 			st, actorIdemExistsAfter,
-			"ActorIdem still in system actors map after calls.",
+			"ActorIdem should still be in system after UnregisterAll.",
 		)
 
+		// Verify actor is STILL responding.
 		resultActorIdem := actorIdem.Ask(
 			context.Background(), newTestMsg("ping-kidem-a1"),
 		).Await(context.Background())
-		require.True(st, resultActorIdem.IsErr())
-		require.ErrorIs(st, resultActorIdem.Err(), ErrActorTerminated)
+		require.True(st, resultActorIdem.IsOk(),
+			"ActorIdem should still respond after UnregisterAll")
 	})
 }
 
