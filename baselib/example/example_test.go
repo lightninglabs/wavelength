@@ -21,7 +21,7 @@ func ExampleActorStateMachine() {
 		MailboxCapacity: 10,
 	})
 	defer func() {
-		_ = system.Shutdown()
+		_ = system.Shutdown(context.Background())
 	}()
 
 	// Register ReviewService actor.

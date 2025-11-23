@@ -38,7 +38,7 @@ func TestActorSystemNewActorSystem(t *testing.T) {
 	)
 
 	// Shutdown the system to clean up resources.
-	err := as.Shutdown()
+	err := as.Shutdown(context.Background())
 	require.NoError(t, err, "actorSystem shutdown failed")
 }
 
@@ -49,7 +49,7 @@ func TestActorSystemRegisterWithSystem(t *testing.T) {
 
 	as := NewActorSystem()
 	defer func() {
-		err := as.Shutdown()
+		err := as.Shutdown(context.Background())
 		require.NoError(t, err)
 	}()
 
@@ -136,7 +136,7 @@ func TestActorSystemShutdown(t *testing.T) {
 
 	// Next, trigger a shutdown, and assert that the done channel gets
 	// closed.
-	err := as.Shutdown()
+	err := as.Shutdown(context.Background())
 	require.NoError(t, err, "actorSystem shutdown failed")
 
 	// Check if the system context is done using RecvOrTimeout with a zero
@@ -186,7 +186,7 @@ func TestActorSystemStopAndRemoveActor(t *testing.T) {
 
 	as := NewActorSystem()
 	defer func() {
-		err := as.Shutdown()
+		err := as.Shutdown(context.Background())
 		require.NoError(t, err)
 	}()
 
@@ -250,7 +250,7 @@ func TestReceptionist(t *testing.T) {
 
 	as := NewActorSystem()
 	defer func() {
-		err := as.Shutdown()
+		err := as.Shutdown(context.Background())
 		require.NoError(t, err)
 	}()
 	receptionist := as.Receptionist()
@@ -322,7 +322,7 @@ func TestServiceKeyMethods(t *testing.T) {
 
 	as := NewActorSystem()
 	defer func() {
-		err := as.Shutdown()
+		err := as.Shutdown(context.Background())
 		require.NoError(t, err)
 	}()
 
@@ -369,7 +369,7 @@ func TestServiceKeyMethods(t *testing.T) {
 
 	otherSys := NewActorSystem() // Create a different actor system
 	defer func() {
-		err := otherSys.Shutdown()
+		err := otherSys.Shutdown(context.Background())
 		require.NoError(t, err)
 	}()
 
@@ -395,7 +395,7 @@ func TestServiceKeyUnregisterAll(t *testing.T) {
 	// Common setup for all sub-tests.
 	as := NewActorSystem()
 	defer func() {
-		err := as.Shutdown()
+		err := as.Shutdown(context.Background())
 		require.NoError(t, err, "ActorSystem shutdown failed.")
 	}()
 
@@ -656,7 +656,7 @@ func newRouterTestHarness(t *testing.T) *routerTestHarness {
 	t.Helper()
 	system := NewActorSystem()
 	t.Cleanup(func() {
-		err := system.Shutdown()
+		err := system.Shutdown(context.Background())
 		require.NoError(t, err, "router test actor system shutdown failed")
 	})
 
