@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -77,6 +78,10 @@ type ActorConfig[M Message, R any] struct {
 	// non-nil, the actor will call Add(1) when starting and Done() when
 	// its process loop exits. This enables deterministic shutdown.
 	Wg *sync.WaitGroup
+
+	// CleanupTimeout specifies the maximum duration for OnStop cleanup.
+	// If None, a default of 5 seconds is used.
+	CleanupTimeout fn.Option[time.Duration]
 }
 
 // envelope wraps a message with its associated promise and caller context. This
@@ -115,6 +120,9 @@ type Actor[M Message, R any] struct {
 	// non-nil, Done() is called when the process loop exits.
 	wg *sync.WaitGroup
 
+	// cleanupTimeout is the maximum duration for OnStop cleanup.
+	cleanupTimeout time.Duration
+
 	// startOnce ensures the actor's processing loop is started only once.
 	startOnce sync.Once
 
@@ -139,13 +147,14 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 	}
 
 	actor := &Actor[M, R]{
-		id:       cfg.ID,
-		behavior: cfg.Behavior,
-		mailbox:  NewChannelMailbox[M, R](ctx, mailboxCapacity),
-		ctx:      ctx,
-		cancel:   cancel,
-		dlo:      cfg.DLO,
-		wg:       cfg.Wg,
+		id:             cfg.ID,
+		behavior:       cfg.Behavior,
+		mailbox:        NewChannelMailbox[M, R](ctx, mailboxCapacity),
+		ctx:            ctx,
+		cancel:         cancel,
+		dlo:            cfg.DLO,
+		wg:             cfg.Wg,
+		cleanupTimeout: cfg.CleanupTimeout.UnwrapOr(5 * time.Second),
 	}
 
 	// Create and cache the actor's own reference.
