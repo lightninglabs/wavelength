@@ -138,6 +138,18 @@ type Stoppable interface {
 	OnStop(ctx context.Context) error
 }
 
+// SystemContext defines the minimal interface for system capabilities needed
+// by actors and service keys. This narrow interface enables dependency
+// injection and unit testing without requiring a full ActorSystem instance.
+type SystemContext interface {
+	// Receptionist returns the system's receptionist for actor discovery.
+	Receptionist() *Receptionist
+
+	// DeadLetters returns a reference to the dead letter actor for
+	// undeliverable messages.
+	DeadLetters() ActorRef[Message, any]
+}
+
 // Mailbox defines the interface for an actor's message queue. This abstraction
 // allows different mailbox strategies to be plugged in, such as priority
 // queues, durable on-disk queues, or backpressure-aware mailboxes, without
