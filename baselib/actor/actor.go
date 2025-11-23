@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -212,6 +213,17 @@ func (a *Actor[M, R]) process() {
 		if env.promise != nil {
 			env.promise.Complete(fn.Err[R](ErrActorTerminated))
 		}
+	}
+
+	// If the behavior implements the Stoppable interface, call its OnStop
+	// hook to allow cleanup of external resources. Use a timeout to ensure
+	// cleanup doesn't hang indefinitely.
+	if stoppable, ok := a.behavior.(Stoppable); ok {
+		cleanupCtx, cancel := context.WithTimeout(
+			context.Background(), 5*time.Second,
+		)
+		_ = stoppable.OnStop(cleanupCtx)
+		cancel()
 	}
 }
 
