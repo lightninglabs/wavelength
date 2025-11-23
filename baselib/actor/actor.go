@@ -7,6 +7,49 @@ import (
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// mergeContexts creates a new context that cancels when either parent context
+// cancels. It preserves the shortest deadline between the two contexts.
+func mergeContexts(ctx1, ctx2 context.Context) (context.Context, context.CancelFunc) {
+	// Get deadlines from both contexts.
+	deadline1, hasDeadline1 := ctx1.Deadline()
+	deadline2, hasDeadline2 := ctx2.Deadline()
+
+	// Determine which context has the earliest deadline.
+	var baseCtx context.Context
+	if hasDeadline1 && hasDeadline2 {
+		if deadline1.Before(deadline2) {
+			baseCtx = ctx1
+		} else {
+			baseCtx = ctx2
+		}
+	} else if hasDeadline1 {
+		baseCtx = ctx1
+	} else if hasDeadline2 {
+		baseCtx = ctx2
+	} else {
+		// Neither has a deadline, use ctx1 as base.
+		baseCtx = ctx1
+	}
+
+	// Create a new context that will be cancelled explicitly.
+	mergedCtx, cancel := context.WithCancel(baseCtx)
+
+	// Watch both parent contexts and cancel the merged one when either
+	// parent cancels.
+	go func() {
+		select {
+		case <-ctx1.Done():
+			cancel()
+		case <-ctx2.Done():
+			cancel()
+		case <-mergedCtx.Done():
+			// Already cancelled.
+		}
+	}()
+
+	return mergedCtx, cancel
+}
+
 // ActorConfig holds the configuration parameters for creating a new Actor.
 // It is generic over M (Message type) and R (Response type) to accommodate
 // the actor's specific behavior.
@@ -31,12 +74,14 @@ type ActorConfig[M Message, R any] struct {
 	Wg *sync.WaitGroup
 }
 
-// envelope wraps a message with its associated promise. This allows the sender
-// of an "ask" message to await a response. If the promise is nil, it
-// signifies a "tell" operation (fire-and-forget).
+// envelope wraps a message with its associated promise and caller context. This
+// allows the sender of an "ask" message to await a response. If the promise is
+// nil, it signifies a "tell" operation (fire-and-forget). The callerCtx allows
+// actors to respect request-scoped deadlines and cancellation.
 type envelope[M Message, R any] struct {
-	message M
-	promise Promise[R]
+	message   M
+	promise   Promise[R]
+	callerCtx context.Context
 }
 
 // Actor represents a concrete actor implementation. It encapsulates a behavior,
@@ -132,7 +177,15 @@ func (a *Actor[M, R]) process() {
 	// Process messages from the mailbox using the iterator pattern. The
 	// iterator will stop when the actor's context is cancelled.
 	for env := range a.mailbox.Receive(a.ctx) {
-		result := a.behavior.Receive(a.ctx, env.message)
+		// Merge the actor's context with the caller's context. This
+		// allows the behavior to detect both actor shutdown and
+		// caller deadline expiration.
+		mergedCtx, cancel := mergeContexts(a.ctx, env.callerCtx)
+
+		result := a.behavior.Receive(mergedCtx, env.message)
+
+		// Cancel the merged context to free resources.
+		cancel()
 
 		// If a promise was provided (i.e., it was an "ask" operation),
 		// complete the promise with the result from the behavior.
@@ -185,7 +238,11 @@ type actorRefImpl[M Message, R any] struct {
 func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 	// Attempt to send the message to the mailbox. The mailbox's Send
 	// method handles context cancellation and actor termination internally.
-	env := envelope[M, R]{message: msg, promise: nil}
+	env := envelope[M, R]{
+		message:   msg,
+		promise:   nil,
+		callerCtx: ctx,
+	}
 	ok := ref.actor.mailbox.Send(ctx, env)
 
 	// If the send failed (mailbox closed, context cancelled, or actor
@@ -216,7 +273,11 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// Attempt to send the message with the promise to the mailbox. The
 	// mailbox's Send method handles context cancellation and actor
 	// termination internally.
-	env := envelope[M, R]{message: msg, promise: promise}
+	env := envelope[M, R]{
+		message:   msg,
+		promise:   promise,
+		callerCtx: ctx,
+	}
 	ok := ref.actor.mailbox.Send(ctx, env)
 
 	// If the send failed (mailbox closed, context cancelled, or actor

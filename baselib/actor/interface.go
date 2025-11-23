@@ -113,9 +113,11 @@ type ActorRef[M Message, R any] interface {
 // It is a strategy interface that encapsulates the actor's reaction to messages.
 type ActorBehavior[M Message, R any] interface {
 	// Receive processes a message and returns a Result. The provided
-	// context is the actor's internal context, which can be used to
-	// detect actor shutdown requests.
-	Receive(actorCtx context.Context, msg M) fn.Result[R]
+	// context merges the actor's lifecycle context with the caller's
+	// request context. It cancels when either the actor shuts down OR the
+	// caller's deadline expires, allowing actors to respect request-scoped
+	// timeouts while also detecting system shutdown.
+	Receive(ctx context.Context, msg M) fn.Result[R]
 }
 
 // Mailbox defines the interface for an actor's message queue. This abstraction
