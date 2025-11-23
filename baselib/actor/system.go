@@ -314,56 +314,66 @@ func (sk ServiceKey[M, R]) Spawn(as *ActorSystem, id string,
 }
 
 // Unregister removes an actor reference associated with this service key from
-// the ActorSystem's receptionist and also stops the actor.
-// It returns true if the actor was successfully unregistered from the
-// receptionist AND successfully stopped and removed from the system's
-// management. Otherwise, it returns false.
+// the ActorSystem's receptionist. The actor continues running and can still be
+// accessed through other service keys it may be registered under. To stop the
+// actor, use StopAndRemoveActor separately. This separation allows actors to
+// provide multiple services and gracefully degrade by stopping advertisement
+// on some interfaces while continuing to serve others.
+//
+// Returns true if the actor was found and unregistered, false otherwise.
 func (sk ServiceKey[M, R]) Unregister(as *ActorSystem,
 	refToRemove ActorRef[M, R]) bool {
 
-	unregisteredFromReceptionist := UnregisterFromReceptionist(
+	return UnregisterFromReceptionist(
 		as.Receptionist(), sk, refToRemove,
 	)
-
-	// If not found in receptionist, no need to try stopping.
-	if !unregisteredFromReceptionist {
-		return false
-	}
-
-	// Attempt to stop and remove the actor from the system.
-	stoppedAndRemoved := as.StopAndRemoveActor(refToRemove.ID())
-
-	return unregisteredFromReceptionist && stoppedAndRemoved
 }
 
-// UnregisterAll finds all actor references associated with this service key in
-// the ActorSystem's receptionist. For each found actor, it attempts to stop it
-// and remove it from system management, and also unregisters it from the
-// receptionist.
+// UnregisterAll removes all actor references associated with this service key
+// from the ActorSystem's receptionist. The actors continue running and can
+// still be accessed through other service keys. To stop the actors, use
+// StopAndRemoveActor separately for each actor reference.
+//
+// Returns the number of actors that were unregistered.
 func (sk ServiceKey[M, R]) UnregisterAll(as *ActorSystem) int {
-	// First find all the refs that match this service key.
-	refsFound := FindInReceptionist(as.Receptionist(), sk)
+	r := as.Receptionist()
 
-	actorsStoppedCount := 0
-	for _, ref := range refsFound {
-		// Attempt to stop and remove the actor from the system's active
-		// management. This is the primary action to deactivate the
-		// actor. If StopAndRemoveActor returns true, it means an active
-		// actor was found in the system's `actors` map and was stopped.
-		if as.StopAndRemoveActor(ref.ID()) {
-			actorsStoppedCount++
-		}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		// Regardless of whether the actor was actively managed by the
-		// system (i.e., found in as.actors), attempt to unregister its
-		// reference from the receptionist. This helps clean up any
-		// potentially stale entries in the receptionist if an actor was
-		// removed from the system's management without also being
-		// unregistered from the receptionist.
-		UnregisterFromReceptionist(as.Receptionist(), sk, ref)
+	currentRefs, exists := r.registrations[sk.name]
+	if !exists {
+		return 0
 	}
 
-	return actorsStoppedCount
+	// Build a new slice containing only references that don't match our
+	// service key's type. This handles the case where the same key name
+	// might have refs of different types registered.
+	newRefs := make([]any, 0, len(currentRefs))
+	unregisteredCount := 0
+
+	for _, item := range currentRefs {
+		if _, ok := item.(ActorRef[M, R]); ok {
+			// This ref matches our type, so we're unregistering it.
+			unregisteredCount++
+		} else {
+			// Different type, keep it.
+			newRefs = append(newRefs, item)
+		}
+	}
+
+	if unregisteredCount == 0 {
+		return 0
+	}
+
+	// Update or delete the registration entry.
+	if len(newRefs) == 0 {
+		delete(r.registrations, sk.name)
+	} else {
+		r.registrations[sk.name] = newRefs
+	}
+
+	return unregisteredCount
 }
 
 // Receptionist provides service discovery for actors. Actors can be registered
