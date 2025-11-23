@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -145,7 +146,21 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 
 	// Register the actor's reference with the receptionist under the given
 	// service key, making it discoverable by other parts of the system.
-	RegisterWithReceptionist(as.receptionist, key, actorInstance.Ref())
+	err := RegisterWithReceptionist(as.receptionist, key, actorInstance.Ref())
+	if err != nil {
+		// Type mismatch detected. Stop the actor we just created and
+		// return a dummy stopped actor to avoid nil panic.
+		actorInstance.Stop()
+		as.mu.Lock()
+		delete(as.actors, actorInstance.id)
+		as.mu.Unlock()
+
+		// Return a dummy stopped actor ref.
+		dummyCfg := ActorConfig[M, R]{ID: id}
+		dummyActor := NewActor(dummyCfg)
+		dummyActor.Stop()
+		return dummyActor.Ref()
+	}
 
 	return actorInstance.Ref()
 }
@@ -346,13 +361,23 @@ func (sk ServiceKey[M, R]) UnregisterAll(as *ActorSystem) int {
 	return unregisteredCount
 }
 
+// serviceTypeInfo captures the type signature of a service for validation.
+type serviceTypeInfo struct {
+	msgTypeName  string
+	respTypeName string
+}
+
 // Receptionist provides service discovery for actors. Actors can be registered
 // under a ServiceKey and later discovered by other actors or system components.
 type Receptionist struct {
 	// registrations stores ActorRef instances, keyed by ServiceKey.name.
 	registrations map[string][]any
 
-	// mu protects access to registrations.
+	// typeRegistry tracks the types registered under each service name to
+	// prevent type conflicts.
+	typeRegistry map[string]serviceTypeInfo
+
+	// mu protects access to registrations and typeRegistry.
 	mu sync.RWMutex
 }
 
@@ -360,17 +385,45 @@ type Receptionist struct {
 func newReceptionist() *Receptionist {
 	return &Receptionist{
 		registrations: make(map[string][]any),
+		typeRegistry:  make(map[string]serviceTypeInfo),
 	}
 }
 
 // RegisterWithReceptionist registers an actor with a service key in the given
 // receptionist. This is a package-level generic function because methods
 // cannot have their own type parameters in Go (as of the current version).
-// It appends the actor reference to the list associated with the key's name.
+// It validates that the service key types match any existing registrations
+// under the same name and returns an error if there's a type mismatch.
 func RegisterWithReceptionist[M Message, R any](
-	r *Receptionist, key ServiceKey[M, R], ref ActorRef[M, R]) {
+	r *Receptionist, key ServiceKey[M, R], ref ActorRef[M, R]) error {
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Get type names for validation.
+	var msgExample M
+	var respExample R
+	msgTypeName := fmt.Sprintf("%T", msgExample)
+	respTypeName := fmt.Sprintf("%T", respExample)
+
+	expectedTypes := serviceTypeInfo{
+		msgTypeName:  msgTypeName,
+		respTypeName: respTypeName,
+	}
+
+	// Check if this service name is already registered with different types.
+	if existingTypes, exists := r.typeRegistry[key.name]; exists {
+		if existingTypes != expectedTypes {
+			return fmt.Errorf("%w: service '%s' already registered "+
+				"with types (%s, %s), cannot register with (%s, %s)",
+				ErrServiceKeyTypeMismatch, key.name,
+				existingTypes.msgTypeName, existingTypes.respTypeName,
+				msgTypeName, respTypeName)
+		}
+	} else {
+		// First registration for this name, record the types.
+		r.typeRegistry[key.name] = expectedTypes
+	}
 
 	// Initialize the slice for this key if it's the first registration.
 	if _, exists := r.registrations[key.name]; !exists {
@@ -378,6 +431,8 @@ func RegisterWithReceptionist[M Message, R any](
 	}
 
 	r.registrations[key.name] = append(r.registrations[key.name], ref)
+
+	return nil
 }
 
 // FindInReceptionist returns all actors registered with a service key in the
