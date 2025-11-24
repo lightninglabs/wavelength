@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"fmt"
+	"iter"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -115,4 +116,48 @@ type ActorBehavior[M Message, R any] interface {
 	// context is the actor's internal context, which can be used to
 	// detect actor shutdown requests.
 	Receive(actorCtx context.Context, msg M) fn.Result[R]
+}
+
+// Mailbox defines the interface for an actor's message queue. This abstraction
+// allows different mailbox strategies to be plugged in, such as priority
+// queues, durable on-disk queues, or backpressure-aware mailboxes, without
+// changing the actor implementation.
+//
+// Thread Safety:
+//   - Send and TrySend may be called concurrently from multiple goroutines.
+//   - Receive should only be called from a single goroutine (the actor's
+//     process loop).
+//   - Close may be called concurrently with Send/TrySend and is idempotent.
+//   - IsClosed may be called concurrently from any goroutine.
+//   - Drain should only be called after Close and from a single goroutine.
+//   - Send and TrySend return false after Close has been called.
+type Mailbox[M Message, R any] interface {
+	// Send attempts to send an envelope to the mailbox, blocking until
+	// either the envelope is accepted, the provided context is cancelled,
+	// or the actor's context is cancelled. It returns true if the envelope
+	// was successfully sent, false otherwise.
+	Send(ctx context.Context, env envelope[M, R]) bool
+
+	// TrySend attempts to send an envelope to the mailbox without
+	// blocking. It returns true if the envelope was successfully sent,
+	// false if the mailbox is full or closed.
+	TrySend(env envelope[M, R]) bool
+
+	// Receive returns an iterator over envelopes in the mailbox. The
+	// iterator will block when the mailbox is empty and yield envelopes as
+	// they arrive. The iterator will stop when the provided context is
+	// cancelled or when the mailbox is closed.
+	Receive(ctx context.Context) iter.Seq[envelope[M, R]]
+
+	// Close closes the mailbox, preventing any further sends. After
+	// closing, Receive will yield any remaining envelopes and then stop.
+	Close()
+
+	// IsClosed returns true if the mailbox has been closed.
+	IsClosed() bool
+
+	// Drain returns an iterator over any remaining envelopes in the
+	// mailbox after it has been closed. This is useful for cleanup logic
+	// during actor shutdown.
+	Drain() iter.Seq[envelope[M, R]]
 }
