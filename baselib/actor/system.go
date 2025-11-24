@@ -174,6 +174,14 @@ func (as *ActorSystem) DeadLetters() ActorRef[Message, any] {
 // provided context expires. This ensures deterministic shutdown with guaranteed
 // resource cleanup. This method is safe for concurrent use.
 func (as *ActorSystem) Shutdown(ctx context.Context) error {
+	// Cancel the main system context first to prevent new actor
+	// registrations. Any RegisterWithSystem call that occurs after this
+	// point will see as.ctx.Err() != nil and return a dummy stopped actor.
+	// This ordering is critical to prevent a race where a new actor could
+	// be registered and increment the WaitGroup after we snapshot but
+	// before we wait, causing indefinite blocking.
+	as.cancel()
+
 	// Create a slice of actors to stop. This avoids holding the lock while
 	// calling Stop() on each actor, and includes the dead letter actor.
 	var actorsToStop []stoppable
@@ -197,10 +205,6 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	as.mu.Lock()
 	as.actors = nil
 	as.mu.Unlock()
-
-	// Cancel the main system context to signal shutdown to any components
-	// observing it.
-	as.cancel()
 
 	// Wait for all actor goroutines to exit. We launch a goroutine to wait
 	// on the WaitGroup so we can also respect the context deadline. If the
