@@ -16,6 +16,7 @@
 
 ### Testing Commands
 - Single package: `make unit pkg=<package> case=<test> timeout=5m`
+- Debug with logs: `make unit log="stdlog trace" pkg=<package> case=<test>`
 - Integration test: `make itest icase=$icase`
 
 ## Code Style Quick Reference
@@ -101,11 +102,12 @@ Strive for **near 90% test coverage** where practical.
 **YOU MUST** run tests before every commit:
 
 1. Run unit tests: `make unit pkg=$pkg case=$case timeout=5m`
-2. **Check logs carefully**:
+2. Run with debug logs: `make unit log="stdlog trace" pkg=$pkg case=$case`
+3. **Check logs carefully**:
    - Verify structured logging format is correct
    - Ensure no log spam
    - **No `[ERR]` lines should appear** unless testing error paths
-3. Run affected integration tests: `make itest icase=$icase`
+4. Run affected integration tests: `make itest icase=$icase`
 
 ## Development Workflow
 
