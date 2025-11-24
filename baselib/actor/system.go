@@ -54,6 +54,9 @@ type ActorSystem struct {
 
 	// cancel cancels the main system context.
 	cancel context.CancelFunc
+
+	// actorWg tracks running actor goroutines for deterministic shutdown.
+	actorWg sync.WaitGroup
 }
 
 // NewActorSystem creates a new actor system using the default configuration.
@@ -91,6 +94,7 @@ func NewActorSystemWithConfig(config SystemConfig) *ActorSystem {
 		Behavior:    deadLetterBehavior,
 		DLO:         nil,
 		MailboxSize: config.MailboxCapacity,
+		Wg:          &system.actorWg,
 	}
 	deadLetterRawActor := NewActor[Message, any](deadLetterActorCfg)
 	deadLetterRawActor.Start()
@@ -128,6 +132,7 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 		Behavior:    behavior,
 		DLO:         as.deadLetterActor,
 		MailboxSize: as.config.MailboxCapacity,
+		Wg:          &as.actorWg,
 	}
 	actorInstance := NewActor(actorCfg)
 	actorInstance.Start()
@@ -141,6 +146,10 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 	// Register the actor's reference with the receptionist under the given
 	// service key, making it discoverable by other parts of the system.
 	RegisterWithReceptionist(as.receptionist, key, actorInstance.Ref())
+
+	log.DebugS(as.ctx, "Actor registered with system",
+		"actor_id", id,
+		"service_key", key.name)
 
 	return actorInstance.Ref()
 }
@@ -159,11 +168,20 @@ func (as *ActorSystem) DeadLetters() ActorRef[Message, any] {
 	return as.deadLetterActor
 }
 
-// Shutdown gracefully stops the actor system. It iterates through all managed
-// actors, including the dead letter actor, and calls their Stop method.
-// After initiating the stop for all actors, it cancels the main system context.
-// This method is safe for concurrent use.
-func (as *ActorSystem) Shutdown() error {
+// Shutdown gracefully stops the actor system and waits for all actors to
+// finish processing. It iterates through all managed actors, calls their Stop
+// method, and then blocks until all actor goroutines have exited or the
+// provided context expires. This ensures deterministic shutdown with guaranteed
+// resource cleanup. This method is safe for concurrent use.
+func (as *ActorSystem) Shutdown(ctx context.Context) error {
+	// Cancel the main system context first to prevent new actor
+	// registrations. Any RegisterWithSystem call that occurs after this
+	// point will see as.ctx.Err() != nil and return a dummy stopped actor.
+	// This ordering is critical to prevent a race where a new actor could
+	// be registered and increment the WaitGroup after we snapshot but
+	// before we wait, causing indefinite blocking.
+	as.cancel()
+
 	// Create a slice of actors to stop. This avoids holding the lock while
 	// calling Stop() on each actor, and includes the dead letter actor.
 	var actorsToStop []stoppable
@@ -172,6 +190,9 @@ func (as *ActorSystem) Shutdown() error {
 		actorsToStop = append(actorsToStop, actor)
 	}
 	as.mu.RUnlock()
+
+	log.InfoS(ctx, "Actor system shutting down",
+		"num_actors", len(actorsToStop))
 
 	// Notify all managed actors to stop. Actor.Stop() is non-blocking.
 	// Each actor's Stop method will cancel its internal context, leading
@@ -185,12 +206,35 @@ func (as *ActorSystem) Shutdown() error {
 	as.actors = nil
 	as.mu.Unlock()
 
-	// Finally cancel the main context
-	// This signals to any other components observing the system's context
-	// that shutdown has been initiated.
-	as.cancel()
+	// Wait for all actor goroutines to exit. We launch a goroutine to wait
+	// on the WaitGroup so we can also respect the context deadline. If the
+	// context times out, this goroutine continues running until the
+	// WaitGroup reaches zero (which could be indefinite if actors are truly
+	// hung). This is acceptable since shutdown timeouts indicate abnormal
+	// conditions and the single goroutine overhead is negligible compared
+	// to potentially leaked actor goroutines.
+	done := make(chan struct{})
+	go func() {
+		as.actorWg.Wait()
+		close(done)
+	}()
 
-	return nil
+	select {
+	case <-done:
+		// All actors have finished processing.
+		log.InfoS(ctx, "Actor system shutdown completed")
+
+		return nil
+
+	case <-ctx.Done():
+		// Context expired before all actors finished—some goroutines
+		// are still running and may leak. This indicates either
+		// misbehaving actors or insufficient shutdown timeout.
+		log.ErrorS(ctx, "Actor system shutdown incomplete, "+
+			"some actors may have leaked", ctx.Err())
+
+		return ctx.Err()
+	}
 }
 
 // StopAndRemoveActor stops a specific actor by its ID and removes it from the
@@ -210,6 +254,9 @@ func (as *ActorSystem) StopAndRemoveActor(id string) bool {
 
 	// Remove from the system's management.
 	delete(as.actors, id)
+
+	log.DebugS(as.ctx, "Actor stopped and removed from system",
+		"actor_id", id)
 
 	return true
 }
@@ -288,56 +335,66 @@ func (sk ServiceKey[M, R]) Spawn(as *ActorSystem, id string,
 }
 
 // Unregister removes an actor reference associated with this service key from
-// the ActorSystem's receptionist and also stops the actor.
-// It returns true if the actor was successfully unregistered from the
-// receptionist AND successfully stopped and removed from the system's
-// management. Otherwise, it returns false.
+// the ActorSystem's receptionist. The actor continues running and can still be
+// accessed through other service keys it may be registered under. To stop the
+// actor, use StopAndRemoveActor separately. This separation allows actors to
+// provide multiple services and gracefully degrade by stopping advertisement
+// on some interfaces while continuing to serve others.
+//
+// Returns true if the actor was found and unregistered, false otherwise.
 func (sk ServiceKey[M, R]) Unregister(as *ActorSystem,
 	refToRemove ActorRef[M, R]) bool {
 
-	unregisteredFromReceptionist := UnregisterFromReceptionist(
+	return UnregisterFromReceptionist(
 		as.Receptionist(), sk, refToRemove,
 	)
-
-	// If not found in receptionist, no need to try stopping.
-	if !unregisteredFromReceptionist {
-		return false
-	}
-
-	// Attempt to stop and remove the actor from the system.
-	stoppedAndRemoved := as.StopAndRemoveActor(refToRemove.ID())
-
-	return unregisteredFromReceptionist && stoppedAndRemoved
 }
 
-// UnregisterAll finds all actor references associated with this service key in
-// the ActorSystem's receptionist. For each found actor, it attempts to stop it
-// and remove it from system management, and also unregisters it from the
-// receptionist.
+// UnregisterAll removes all actor references associated with this service key
+// from the ActorSystem's receptionist. The actors continue running and can
+// still be accessed through other service keys. To stop the actors, use
+// StopAndRemoveActor separately for each actor reference.
+//
+// Returns the number of actors that were unregistered.
 func (sk ServiceKey[M, R]) UnregisterAll(as *ActorSystem) int {
-	// First find all the refs that match this service key.
-	refsFound := FindInReceptionist(as.Receptionist(), sk)
+	r := as.Receptionist()
 
-	actorsStoppedCount := 0
-	for _, ref := range refsFound {
-		// Attempt to stop and remove the actor from the system's active
-		// management. This is the primary action to deactivate the
-		// actor. If StopAndRemoveActor returns true, it means an active
-		// actor was found in the system's `actors` map and was stopped.
-		if as.StopAndRemoveActor(ref.ID()) {
-			actorsStoppedCount++
-		}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		// Regardless of whether the actor was actively managed by the
-		// system (i.e., found in as.actors), attempt to unregister its
-		// reference from the receptionist. This helps clean up any
-		// potentially stale entries in the receptionist if an actor was
-		// removed from the system's management without also being
-		// unregistered from the receptionist.
-		UnregisterFromReceptionist(as.Receptionist(), sk, ref)
+	currentRefs, exists := r.registrations[sk.name]
+	if !exists {
+		return 0
 	}
 
-	return actorsStoppedCount
+	// Build a new slice containing only references that don't match our
+	// service key's type. This handles the case where the same key name
+	// might have refs of different types registered.
+	newRefs := make([]any, 0, len(currentRefs))
+	unregisteredCount := 0
+
+	for _, item := range currentRefs {
+		if _, ok := item.(ActorRef[M, R]); ok {
+			// This ref matches our type, so we're unregistering it.
+			unregisteredCount++
+		} else {
+			// Different type, keep it.
+			newRefs = append(newRefs, item)
+		}
+	}
+
+	if unregisteredCount == 0 {
+		return 0
+	}
+
+	// Update or delete the registration entry.
+	if len(newRefs) == 0 {
+		delete(r.registrations, sk.name)
+	} else {
+		r.registrations[sk.name] = newRefs
+	}
+
+	return unregisteredCount
 }
 
 // Receptionist provides service discovery for actors. Actors can be registered

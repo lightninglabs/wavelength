@@ -232,7 +232,7 @@ func main() {
 	system := actor.NewActorSystemWithConfig(actor.SystemConfig{
 		MailboxCapacity: 100,
 	})
-	defer system.Shutdown()
+	defer system.Shutdown(context.Background())
 
 	// Register shared actors.
 	storeActor := &StoreActorBehavior{store: NewStore()}
@@ -712,7 +712,7 @@ Test the full actor + FSM integration:
 func TestWorkflowIntegration(t *testing.T) {
 	ctx := context.Background()
 	system := actor.NewActorSystemWithConfig(actor.SystemConfig{})
-	defer system.Shutdown()
+	defer system.Shutdown(context.Background())
 
 	// Register actors.
 	actor.RegisterWithSystem(system, "store", StoreServiceKey, &StoreActorBehavior{})

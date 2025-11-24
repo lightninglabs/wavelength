@@ -487,14 +487,18 @@ func TestChannelMailboxReceiveStopsOnClose(t *testing.T) {
 func TestActorDrainToDLO(t *testing.T) {
 	t.Parallel()
 
-	// Create a DLO to capture drained messages.
-	dloMsgs := make(chan Message, 10)
+	const numQueuedMessages = 4
+	dloReceived := make(chan *testMessage, numQueuedMessages)
+
 	dloBehavior := NewFunctionBehavior(
 		func(_ context.Context, msg Message) fn.Result[any] {
-			dloMsgs <- msg
+			if tm, ok := msg.(*testMessage); ok {
+				dloReceived <- tm
+			}
 			return fn.Ok[any](nil)
 		},
 	)
+
 	dloActor := NewActor(ActorConfig[Message, any]{
 		ID:          "test-dlo",
 		Behavior:    dloBehavior,
@@ -503,69 +507,79 @@ func TestActorDrainToDLO(t *testing.T) {
 	dloActor.Start()
 	defer dloActor.Stop()
 
-	// Create a blocking behavior that will hold the actor busy.
-	blockCh := make(chan struct{})
+	var actorWg sync.WaitGroup
+	firstMsgProcessing := make(chan struct{})
+
 	blockingBehavior := NewFunctionBehavior(
-		func(ctx context.Context, _ *testMessage) fn.Result[string] {
-			select {
-			case <-blockCh:
-				return fn.Ok("done")
-			case <-ctx.Done():
-				return fn.Err[string](ctx.Err())
+		func(ctx context.Context, msg *testMessage) fn.Result[string] {
+			if msg.value == 0 {
+				close(firstMsgProcessing)
+				<-ctx.Done()
 			}
+			return fn.Ok("processed")
 		},
 	)
 
-	// Create the main actor with the DLO configured.
 	actor := NewActor(ActorConfig[*testMessage, string]{
 		ID:          "test-actor",
 		Behavior:    blockingBehavior,
 		DLO:         dloActor.Ref(),
 		MailboxSize: 10,
+		Wg:          &actorWg,
 	})
 	actor.Start()
 
 	ctx := context.Background()
 
-	// Send several messages. The first one will block the actor, causing
-	// subsequent messages to queue up in the mailbox.
-	numMessages := 5
-	for i := 0; i < numMessages; i++ {
+	// Send the blocking message and wait for it to start processing.
+	actor.Ref().Tell(ctx, &testMessage{value: 0})
+	<-firstMsgProcessing
+
+	// Now send messages that will queue up since message 0 is blocking.
+	for i := 1; i <= numQueuedMessages; i++ {
 		actor.Ref().Tell(ctx, &testMessage{value: i})
 	}
 
-	// Give messages time to queue up.
-	time.Sleep(50 * time.Millisecond)
-
-	// Stop the actor while messages are still queued. This should drain the
-	// queued messages to the DLO.
+	// Stop actor. With deterministic shutdown (context check before receive),
+	// message 0 returns, then Receive exits immediately, and messages 1-4
+	// are drained to DLO.
 	actor.Stop()
+	actorWg.Wait()
 
-	// The blocking message's context will be cancelled, and it won't be sent
-	// to DLO since it was being processed. The remaining queued messages
-	// should be drained to the DLO.
-	receivedCount := 0
+	// Collect all DLO messages with event-driven approach.
+	receivedValues := make([]int, 0, numQueuedMessages)
 	timeout := time.After(2 * time.Second)
-	for receivedCount < numMessages-1 {
+
+	for len(receivedValues) < numQueuedMessages {
 		select {
-		case msg := <-dloMsgs:
-			testMsg, ok := msg.(*testMessage)
-			require.True(t, ok, "DLO received unexpected message type")
-			t.Logf("DLO received message with value: %d", testMsg.value)
-			receivedCount++
+		case msg := <-dloReceived:
+			receivedValues = append(receivedValues, msg.value)
+			t.Logf("DLO received message with value: %d", msg.value)
 
 		case <-timeout:
-			t.Fatalf("Timed out waiting for DLO messages. "+
-				"Received %d, expected %d",
-				receivedCount, numMessages-1)
+			t.Fatalf(
+				"Timed out waiting for DLO messages. "+
+					"Received %d, expected %d: %v",
+				len(receivedValues), numQueuedMessages,
+				receivedValues,
+			)
 		}
 	}
 
-	// Verify we got the expected number of drained messages (all but the
-	// first one which was being processed).
-	require.Equal(t, numMessages-1, receivedCount,
-		"DLO should receive all queued messages except the one "+
-			"being processed")
+	require.Len(t, receivedValues, numQueuedMessages)
+
+	// Verify we got all the queued messages (1-4), not the blocking one (0).
+	for i := 1; i <= numQueuedMessages; i++ {
+		require.Contains(
+			t, receivedValues, i,
+			"DLO should have received message %d", i,
+		)
+	}
+
+	require.NotContains(
+		t, receivedValues, 0,
+		"DLO should not receive message 0 (it was being processed)",
+	)
 }
 
 // TestChannelMailboxWithPromises tests that envelopes with promises are

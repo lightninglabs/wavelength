@@ -113,9 +113,24 @@ type ActorRef[M Message, R any] interface {
 // It is a strategy interface that encapsulates the actor's reaction to messages.
 type ActorBehavior[M Message, R any] interface {
 	// Receive processes a message and returns a Result. The provided
-	// context is the actor's internal context, which can be used to
-	// detect actor shutdown requests.
-	Receive(actorCtx context.Context, msg M) fn.Result[R]
+	// context merges the actor's lifecycle context with the caller's
+	// request context. It cancels when either the actor shuts down OR the
+	// caller's deadline expires, allowing actors to respect request-scoped
+	// timeouts while also detecting system shutdown.
+	Receive(ctx context.Context, msg M) fn.Result[R]
+}
+
+// Stoppable is an optional interface that ActorBehavior implementations can
+// implement to perform cleanup when the actor is stopping. This is useful for
+// releasing external resources such as database connections, file handles, or
+// network listeners that the behavior manages.
+type Stoppable interface {
+	// OnStop is called during actor shutdown, after the message processing
+	// loop exits but before the actor's goroutine terminates. The provided
+	// context has a deadline for cleanup operations. Implementations should
+	// release resources and return promptly, respecting the context
+	// deadline to avoid blocking system shutdown.
+	OnStop(ctx context.Context) error
 }
 
 // Mailbox defines the interface for an actor's message queue. This abstraction
