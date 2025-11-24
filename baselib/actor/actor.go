@@ -114,6 +114,8 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 // exited before proceeding with resource cleanup.
 func (a *Actor[M, R]) Start() {
 	a.startOnce.Do(func() {
+		log.DebugS(a.ctx, "Starting actor", "actor_id", a.id)
+
 		if a.wg != nil {
 			a.wg.Add(1)
 		}
@@ -137,6 +139,11 @@ func (a *Actor[M, R]) process() {
 	// Process messages from the mailbox using the iterator pattern. The
 	// iterator will stop when the actor's context is cancelled.
 	for env := range a.mailbox.Receive(a.ctx) {
+		log.TraceS(a.ctx, "Actor processing message",
+			"actor_id", a.id,
+			"msg_type", env.message.MessageType(),
+			"is_ask", env.promise != nil)
+
 		result := a.behavior.Receive(a.ctx, env.message)
 
 		// If a promise was provided (i.e., it was an "ask" operation),
@@ -153,7 +160,15 @@ func (a *Actor[M, R]) process() {
 
 	// Drain any remaining messages that were enqueued before the mailbox
 	// was closed.
+	drainedCount := 0
 	for env := range a.mailbox.Drain() {
+		drainedCount++
+
+		log.TraceS(a.ctx, "Draining message from terminated actor",
+			"actor_id", a.id,
+			"msg_type", env.message.MessageType(),
+			"has_dlo", a.dlo != nil)
+
 		// If a DLO is configured, send the original message there for
 		// auditing or potential manual reprocessing.
 		if a.dlo != nil {
@@ -166,6 +181,10 @@ func (a *Actor[M, R]) process() {
 			env.promise.Complete(fn.Err[R](ErrActorTerminated))
 		}
 	}
+
+	log.DebugS(a.ctx, "Actor terminated",
+		"actor_id", a.id,
+		"drained_messages", drainedCount)
 }
 
 // Stop signals the actor to terminate its processing loop and shut down.
@@ -196,6 +215,10 @@ type actorRefImpl[M Message, R any] struct {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
+	log.TraceS(ctx, "Sending Tell message",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
 	// Attempt to send the message to the mailbox. The mailbox's Send
 	// method handles context cancellation and actor termination internally.
 	env := envelope[M, R]{message: msg, promise: nil}
@@ -208,7 +231,15 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 	// where caller-aborted messages are not revived via the DLO.
 	if !ok {
 		if ctx.Err() == nil || ref.actor.ctx.Err() != nil {
+			log.DebugS(ctx, "Tell failed, routing to DLO",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType())
+
 			ref.trySendToDLO(msg)
+		} else {
+			log.TraceS(ctx, "Tell failed, caller cancelled",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType())
 		}
 	}
 }
@@ -219,6 +250,10 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
+	log.TraceS(ctx, "Sending Ask message",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
 	// Create a new promise that will be fulfilled with the actor's
 	// response.
 	promise := NewPromise[R]()
@@ -227,6 +262,10 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// ErrActorTerminated and return immediately. This is the primary guard
 	// against trying to send to a stopped actor.
 	if ref.actor.ctx.Err() != nil {
+		log.DebugS(ctx, "Ask failed, actor already terminated",
+			"actor_id", ref.actor.id,
+			"msg_type", msg.MessageType())
+
 		promise.Complete(fn.Err[R](ErrActorTerminated))
 		return promise.Future()
 	}

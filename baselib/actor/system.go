@@ -147,6 +147,10 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 	// service key, making it discoverable by other parts of the system.
 	RegisterWithReceptionist(as.receptionist, key, actorInstance.Ref())
 
+	log.DebugS(as.ctx, "Actor registered with system",
+		"actor_id", id,
+		"service_key", key.name)
+
 	return actorInstance.Ref()
 }
 
@@ -178,6 +182,9 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 		actorsToStop = append(actorsToStop, actor)
 	}
 	as.mu.RUnlock()
+
+	log.InfoS(ctx, "Actor system shutting down",
+		"num_actors", len(actorsToStop))
 
 	// Notify all managed actors to stop. Actor.Stop() is non-blocking.
 	// Each actor's Stop method will cancel its internal context, leading
@@ -211,10 +218,17 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		// All actors have finished processing.
+		log.InfoS(ctx, "Actor system shutdown completed")
+
 		return nil
+
 	case <-ctx.Done():
-		// Context expired before all actors finished. Return the
-		// context error to indicate incomplete shutdown.
+		// Context expired before all actors finished—some goroutines
+		// are still running and may leak. This indicates either
+		// misbehaving actors or insufficient shutdown timeout.
+		log.ErrorS(ctx, "Actor system shutdown incomplete, "+
+			"some actors may have leaked", ctx.Err())
+
 		return ctx.Err()
 	}
 }
@@ -236,6 +250,9 @@ func (as *ActorSystem) StopAndRemoveActor(id string) bool {
 
 	// Remove from the system's management.
 	delete(as.actors, id)
+
+	log.DebugS(as.ctx, "Actor stopped and removed from system",
+		"actor_id", id)
 
 	return true
 }

@@ -83,12 +83,22 @@ func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
 	// and the actor's context for cancellation.
 	select {
 	case m.ch <- env:
+		log.TraceS(ctx, "Mailbox send succeeded",
+			"msg_type", env.message.MessageType(),
+			"queue_len", len(m.ch))
+
 		return true
 
 	case <-ctx.Done():
+		log.TraceS(ctx, "Mailbox send failed, caller context cancelled",
+			"msg_type", env.message.MessageType())
+
 		return false
 
 	case <-m.actorCtx.Done():
+		log.TraceS(ctx, "Mailbox send failed, actor context cancelled",
+			"msg_type", env.message.MessageType())
+
 		return false
 	}
 }
@@ -124,27 +134,33 @@ func (m *ChannelMailbox[M, R]) TrySend(env envelope[M, R]) bool {
 // Receive returns an iterator over envelopes in the mailbox. The iterator will
 // yield envelopes as they arrive and will stop when the provided context is
 // cancelled or when the mailbox is closed and drained.
+//
+// Context cancellation is checked before each receive attempt to ensure
+// deterministic shutdown behavior. This prevents the select statement from
+// racing between a ready channel and cancelled context.
 func (m *ChannelMailbox[M, R]) Receive(
 	ctx context.Context) iter.Seq[envelope[M, R]] {
 
 	return func(yield func(envelope[M, R]) bool) {
 		for {
+			// Check context first for deterministic shutdown. This
+			// ensures we stop receiving as soon as the context is
+			// cancelled, rather than racing in the select.
+			if ctx.Err() != nil {
+				return
+			}
+
 			select {
 			case env, ok := <-m.ch:
-				// Channel was closed, stop iteration.
 				if !ok {
 					return
 				}
 
-				// Yield the envelope to the consumer. If yield
-				// returns false, the consumer wants to stop
-				// iteration early.
 				if !yield(env) {
 					return
 				}
 
 			case <-ctx.Done():
-				// Context was cancelled, stop iteration.
 				return
 			}
 		}
@@ -158,6 +174,10 @@ func (m *ChannelMailbox[M, R]) Close() {
 	m.closeOnce.Do(func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+
+		remainingMsgs := len(m.ch)
+		log.DebugS(m.actorCtx, "Mailbox closing",
+			"remaining_messages", remainingMsgs)
 
 		m.closed.Store(true)
 		close(m.ch)
