@@ -1,3 +1,5 @@
+//go:build itest
+
 package harness_test
 
 import (
