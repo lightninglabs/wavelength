@@ -490,7 +490,7 @@ func TestBuildConnectorTree(t *testing.T) {
 
 		// Extract each connector by index.
 		for i := 0; i < 4; i++ {
-			extracted, err := tree.ExtractPathForIndex(i)
+			extracted, err := tree.ExtractPathForIndices(i)
 			require.NoError(t, err, "index %d", i)
 			require.NotNil(t, extracted, "index %d", i)
 

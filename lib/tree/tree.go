@@ -75,18 +75,25 @@ func NewTree(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
 	}, nil
 }
 
-// ExtractPathForCoSigner extracts the path relevant for a given cosigner and
-// returns a new Tree containing only the nodes where the cosigner's key is
-// present.
-func (t *Tree) ExtractPathForCoSigner(targetKey *btcec.PublicKey) (*Tree,
+// ExtractPathForCoSigners extracts the path relevant for one or more cosigners
+// and returns a new Tree containing only the nodes where any of the provided
+// cosigner keys are present. This is useful when a client has multiple VTXOs
+// with different keys in the same tree.
+func (t *Tree) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Tree,
 	error) {
 
-	if targetKey == nil {
-		return nil, fmt.Errorf("target key cannot be nil")
+	if len(targetKeys) == 0 {
+		return nil, fmt.Errorf("at least one target key required")
 	}
 
-	extractedRoot := t.Root.ExtractPathForCoSigner(targetKey)
-	if extractedRoot == nil {
+	for _, key := range targetKeys {
+		if key == nil {
+			return nil, fmt.Errorf("target key cannot be nil")
+		}
+	}
+
+	extractedRoot, ok := t.Root.ExtractPathForCoSigners(targetKeys...)
+	if !ok {
 		return nil, nil
 	}
 
@@ -98,17 +105,28 @@ func (t *Tree) ExtractPathForCoSigner(targetKey *btcec.PublicKey) (*Tree,
 	}, nil
 }
 
-// ExtractPathForIndex extracts the path to a specific leaf by its index.
-// The index is 0-based and refers to the leaf position in the tree's in-order
-// traversal. This is useful for connector trees where all leaves have the same
-// cosigner key, but clients need access to a specific leaf by index.
-func (t *Tree) ExtractPathForIndex(leafIndex int) (*Tree, error) {
-	extractedRoot, err := t.Root.ExtractPathForIndex(leafIndex)
+// ExtractPathForIndices extracts a minimal subtree containing all the paths to
+// the specified leaf indices. Accepts one or more indices as variadic
+// parameters. The returned tree will contain only the nodes necessary to reach
+// all target leaves.
+//
+// IMPORTANT: Indices are relative to the current tree structure. After
+// extraction, leaves in the returned subtree will be renumbered starting from
+// 0. This means ExtractPathForIndices is NOT idempotent - calling it twice
+// with the same indices will fail on the second call since the leaf positions
+// have changed. If you need stable identifiers across extractions, use
+// ExtractPathForCoSigners instead.
+func (t *Tree) ExtractPathForIndices(leafIndices ...int) (*Tree, error) {
+	if len(leafIndices) == 0 {
+		return nil, nil
+	}
+
+	extractedRoot, err := t.Root.ExtractPathForIndices(leafIndices...)
 	if err != nil {
 		return nil, err
 	}
 	if extractedRoot == nil {
-		return nil, nil
+		return nil, fmt.Errorf("no extracted root found")
 	}
 
 	return &Tree{
@@ -147,7 +165,7 @@ func (t *Tree) VerifyVTXOPath(coSignerKey *btcec.PublicKey,
 	}
 
 	// Extract path for cosigner.
-	extracted, err := t.ExtractPathForCoSigner(coSignerKey)
+	extracted, err := t.ExtractPathForCoSigners(coSignerKey)
 	if err != nil {
 		return fmt.Errorf("failed to extract path: %w", err)
 	}

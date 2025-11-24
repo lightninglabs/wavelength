@@ -735,9 +735,9 @@ func TestNodeLeafOperations(t *testing.T) {
 		})
 }
 
-// TestExtractPathForCoSigner tests extracting a tree path for a specific
+// TestExtractPathForCoSigners tests extracting a tree path for a specific
 // cosigner.
-func TestExtractPathForCoSigner(t *testing.T) {
+func TestExtractPathForCoSigners(t *testing.T) {
 	t.Parallel()
 
 	t.Run("extracts path for cosigner in simple tree", func(t *testing.T) {
@@ -745,7 +745,8 @@ func TestExtractPathForCoSigner(t *testing.T) {
 		root, leaf1, _, keys := createTestTree(t)
 
 		// Extract path for key1 (should get root -> leaf1).
-		extracted := root.ExtractPathForCoSigner(keys[0])
+		extracted, ok := root.ExtractPathForCoSigners(keys[0])
+		require.True(t, ok)
 		require.NotNil(t, extracted)
 
 		// Should have same root properties.
@@ -775,7 +776,8 @@ func TestExtractPathForCoSigner(t *testing.T) {
 
 		// Extract path for first leaf's cosigner.
 		targetKey := leaves[0].CoSigners[0]
-		extracted := deepRoot.ExtractPathForCoSigner(targetKey)
+		extracted, ok := deepRoot.ExtractPathForCoSigners(targetKey)
+		require.True(t, ok)
 		require.NotNil(t, extracted)
 
 		// Verify the extracted path reaches the target leaf.
@@ -794,7 +796,8 @@ func TestExtractPathForCoSigner(t *testing.T) {
 		root, _, _, _ := createTestTree(t)
 		_, unknownKey := createTestKey(t)
 
-		extracted := root.ExtractPathForCoSigner(unknownKey)
+		extracted, ok := root.ExtractPathForCoSigners(unknownKey)
+		require.False(t, ok)
 		require.Nil(t, extracted)
 	})
 
@@ -803,7 +806,8 @@ func TestExtractPathForCoSigner(t *testing.T) {
 		root, _, _, keys := createTestTree(t)
 
 		// Extract for key[0] which is only in leaf1.
-		extracted := root.ExtractPathForCoSigner(keys[0])
+		extracted, ok := root.ExtractPathForCoSigners(keys[0])
+		require.True(t, ok)
 		require.NotNil(t, extracted)
 
 		// Should only have 1 leaf in extracted tree.
@@ -815,15 +819,15 @@ func TestExtractPathForCoSigner(t *testing.T) {
 	})
 }
 
-// TestExtractPathForIndex tests extracting a tree path by leaf index.
-func TestExtractPathForIndex(t *testing.T) {
+// TestExtractPathForIndices tests extracting a tree path by leaf index.
+func TestExtractPathForIndices(t *testing.T) {
 	t.Parallel()
 
 	t.Run("extracts first leaf", func(t *testing.T) {
 		t.Parallel()
 		root, leaf1, _, _ := createTestTree(t)
 
-		extracted, err := root.ExtractPathForIndex(0)
+		extracted, err := root.ExtractPathForIndices(0)
 		require.NoError(t, err)
 		require.NotNil(t, extracted)
 
@@ -841,7 +845,7 @@ func TestExtractPathForIndex(t *testing.T) {
 		t.Parallel()
 		root, _, leaf2, _ := createTestTree(t)
 
-		extracted, err := root.ExtractPathForIndex(1)
+		extracted, err := root.ExtractPathForIndices(1)
 		require.NoError(t, err)
 		require.NotNil(t, extracted)
 
@@ -857,7 +861,7 @@ func TestExtractPathForIndex(t *testing.T) {
 
 		// Tree has 4 leaves, try extracting each.
 		for i := 0; i < 4; i++ {
-			extracted, err := deepRoot.ExtractPathForIndex(i)
+			extracted, err := deepRoot.ExtractPathForIndices(i)
 			require.NoError(t, err)
 			require.NotNil(
 				t, extracted, "failed to extract leaf %d", i,
@@ -872,12 +876,12 @@ func TestExtractPathForIndex(t *testing.T) {
 		}
 	})
 
-	t.Run("returns nil for out of bounds index", func(t *testing.T) {
+	t.Run("returns error for out of bounds index", func(t *testing.T) {
 		t.Parallel()
 		root, _, _, _ := createTestTree(t)
 
-		extracted, err := root.ExtractPathForIndex(999)
-		require.NoError(t, err)
+		extracted, err := root.ExtractPathForIndices(999)
+		require.Error(t, err)
 		require.Nil(t, extracted)
 	})
 
@@ -885,7 +889,7 @@ func TestExtractPathForIndex(t *testing.T) {
 		t.Parallel()
 		root, _, _, _ := createTestTree(t)
 
-		extracted, err := root.ExtractPathForIndex(-1)
+		extracted, err := root.ExtractPathForIndices(-1)
 		require.Error(t, err)
 		require.Nil(t, extracted)
 		require.Contains(t, err.Error(), "must be non-negative")
@@ -895,7 +899,7 @@ func TestExtractPathForIndex(t *testing.T) {
 		t.Parallel()
 		leaf := createSimpleLeaf("single", 1000, nil)
 
-		extracted, err := leaf.ExtractPathForIndex(0)
+		extracted, err := leaf.ExtractPathForIndices(0)
 		require.NoError(t, err)
 		require.NotNil(t, extracted)
 		require.Equal(t, leaf.Input, extracted.Input)

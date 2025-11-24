@@ -109,7 +109,7 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	connectorPath, err := connectorTree.ExtractPathForIndex(3)
+	connectorPath, err := connectorTree.ExtractPathForIndices(3)
 	require.NoError(t, err)
 	connectorLeaf := connectorPath.Root.GetLeafNodes()[0]
 

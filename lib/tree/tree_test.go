@@ -273,8 +273,8 @@ func TestTreeVerify(t *testing.T) {
 	})
 }
 
-// TestTreeExtractPathForCoSigner tests extracting tree paths for cosigners.
-func TestTreeExtractPathForCoSigner(t *testing.T) {
+// TestTreeExtractPathForCoSigners tests extracting tree paths for cosigners.
+func TestTreeExtractPathForCoSigners(t *testing.T) {
 	t.Parallel()
 
 	t.Run("extracts path for cosigner", func(t *testing.T) {
@@ -309,7 +309,7 @@ func TestTreeExtractPathForCoSigner(t *testing.T) {
 		require.NoError(t, err)
 
 		// Extract for key1.
-		extracted, err := tree.ExtractPathForCoSigner(key1)
+		extracted, err := tree.ExtractPathForCoSigners(key1)
 		require.NoError(t, err)
 		require.NotNil(t, extracted)
 
@@ -346,9 +346,74 @@ func TestTreeExtractPathForCoSigner(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForCoSigner(unknownKey)
+		extracted, err := tree.ExtractPathForCoSigners(unknownKey)
 		require.NoError(t, err)
 		require.Nil(t, extracted)
+	})
+
+	t.Run("extracts path for multiple cosigners", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+		_, key1 := createTestKey(t)
+		_, key2 := createTestKey(t)
+		_, key3 := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script1"),
+				Amount:      1000,
+				CoSignerKey: key1,
+			},
+			{
+				PkScript:    []byte("script2"),
+				Amount:      2000,
+				CoSignerKey: key2,
+			},
+			{
+				PkScript:    []byte("script3"),
+				Amount:      3000,
+				CoSignerKey: key3,
+			},
+		}
+
+		rootOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("batch")),
+			Index: 0,
+		}
+		rootOutput := &wire.TxOut{Value: 10000}
+
+		tree, err := NewTree(
+			rootOutpoint, rootOutput, leaves, operatorKey,
+			make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		// Extract for both key1 and key2 at once.
+		extracted, err := tree.ExtractPathForCoSigners(key1, key2)
+		require.NoError(t, err)
+		require.NotNil(t, extracted)
+
+		// Should have same batch context.
+		require.Equal(t, tree.BatchOutpoint, extracted.BatchOutpoint)
+		require.Equal(t, tree.BatchOutput, extracted.BatchOutput)
+		require.Equal(
+			t, tree.SweepTapscriptRoot,
+			extracted.SweepTapscriptRoot,
+		)
+
+		// Should have 2 leaves (key1 and key2, but not key3).
+		require.Equal(t, 2, extracted.NumLeaves())
+
+		// Verify both paths are valid.
+		err = extracted.VerifyVTXOPath(key1, []byte("script1"))
+		require.NoError(t, err)
+
+		err = extracted.VerifyVTXOPath(key2, []byte("script2"))
+		require.NoError(t, err)
+
+		// key3 should not be in the extracted tree.
+		err = extracted.VerifyVTXOPath(key3, []byte("script3"))
+		require.Error(t, err)
 	})
 
 	t.Run("rejects nil target key", func(t *testing.T) {
@@ -370,15 +435,40 @@ func TestTreeExtractPathForCoSigner(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForCoSigner(nil)
+		extracted, err := tree.ExtractPathForCoSigners(nil)
 		require.Error(t, err)
 		require.Nil(t, extracted)
 		require.Contains(t, err.Error(), "target key cannot be nil")
 	})
+
+	t.Run("rejects empty target keys", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 10000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		extracted, err := tree.ExtractPathForCoSigners()
+		require.Error(t, err)
+		require.Nil(t, extracted)
+		require.Contains(t, err.Error(), "at least one target key required")
+	})
 }
 
-// TestTreeExtractPathForIndex tests extracting tree paths by index.
-func TestTreeExtractPathForIndex(t *testing.T) {
+// TestTreeExtractPathForIndices tests extracting tree paths by index.
+func TestTreeExtractPathForIndices(t *testing.T) {
 	t.Parallel()
 
 	t.Run("extracts path for each leaf index", func(t *testing.T) {
@@ -405,14 +495,14 @@ func TestTreeExtractPathForIndex(t *testing.T) {
 
 		// Extract each leaf by index.
 		for i := 0; i < 4; i++ {
-			extracted, err := tree.ExtractPathForIndex(i)
+			extracted, err := tree.ExtractPathForIndices(i)
 			require.NoError(t, err)
 			require.NotNil(t, extracted, "failed for index %d", i)
 			require.Equal(t, 1, extracted.NumLeaves())
 		}
 	})
 
-	t.Run("returns nil for out of bounds index", func(t *testing.T) {
+	t.Run("returns error for out of bounds index", func(t *testing.T) {
 		t.Parallel()
 		_, operatorKey := createTestKey(t)
 		_, ownerKey := createTestKey(t)
@@ -431,8 +521,8 @@ func TestTreeExtractPathForIndex(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForIndex(999)
-		require.NoError(t, err)
+		extracted, err := tree.ExtractPathForIndices(999)
+		require.Error(t, err)
 		require.Nil(t, extracted)
 	})
 
@@ -455,9 +545,38 @@ func TestTreeExtractPathForIndex(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForIndex(-1)
+		extracted, err := tree.ExtractPathForIndices(-1)
 		require.Error(t, err)
 		require.Nil(t, extracted)
+	})
+
+	t.Run("extracts multiple indices", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+
+		// Create 4 leaves.
+		leaves := make([]LeafDescriptor, 4)
+		for i := range leaves {
+			_, key := createTestKey(t)
+			leaves[i] = LeafDescriptor{
+				PkScript:    []byte("script"),
+				Amount:      btcutil.Amount(1000 * (i + 1)),
+				CoSignerKey: key,
+			}
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
+			&wire.TxOut{Value: 10000}, leaves, operatorKey,
+			make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		// Extract leaves at index 1 and 3.
+		extracted, err := tree.ExtractPathForIndices(1, 3)
+		require.NoError(t, err)
+		require.NotNil(t, extracted)
+		require.Equal(t, 2, extracted.NumLeaves())
 	})
 }
 
