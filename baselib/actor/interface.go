@@ -12,6 +12,11 @@ import (
 // actor was terminated or in the process of shutting down.
 var ErrActorTerminated = fmt.Errorf("actor terminated")
 
+// ErrServiceKeyTypeMismatch indicates that a registration attempt failed
+// because the service key name is already registered with a different message
+// or response type.
+var ErrServiceKeyTypeMismatch = fmt.Errorf("service key type mismatch")
+
 // BaseMessage is a helper struct that can be embedded in message types defined
 // outside the actor package to satisfy the Message interface's unexported
 // messageMarker method.
