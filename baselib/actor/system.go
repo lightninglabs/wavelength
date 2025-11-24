@@ -300,11 +300,10 @@ func UnregisterFromReceptionist[M Message, R any](r *Receptionist,
 
 	// Build a new slice containing only the references that are not the one
 	// to be removed.
-	newRefs := make([]any, 0, len(refs)-1) // Pre-allocate assuming one removal
-	for _, itemInSlice := range refs {     // itemInSlice is of type 'any'
-		// Try to assert the item from the slice to the specific
-		// ActorRef[M,R] type we are trying to remove.
-		if specificActorRef, ok := itemInSlice.(ActorRef[M, R]); ok {
+	newRefs := make([]BaseActorRef, 0, len(refs)-1)
+	for _, baseRef := range refs {
+		// Try to assert the base ref to the specific ActorRef[M,R] type.
+		if specificActorRef, ok := baseRef.(ActorRef[M, R]); ok {
 			// If the type assertion is successful and it's the one
 			// we want to remove, mark as found and skip adding it
 			// to newRefs.
@@ -313,7 +312,7 @@ func UnregisterFromReceptionist[M Message, R any](r *Receptionist,
 				continue // Don't add to newRefs, effectively removing it.
 			}
 		}
-		newRefs = append(newRefs, itemInSlice)
+		newRefs = append(newRefs, baseRef)
 	}
 
 	if !found {
@@ -356,15 +355,44 @@ func (sk ServiceKey[M, R]) Spawn(as *ActorSystem, id string,
 	return RegisterWithSystem(as, id, sk, behavior)
 }
 
+// RouterOption is a functional option for configuring a router.
+type RouterOption[M Message, R any] func(*routerConfig[M, R])
+
+// routerConfig holds configuration for router creation.
+type routerConfig[M Message, R any] struct {
+	strategy RoutingStrategy[M, R]
+}
+
+// WithStrategy specifies a custom routing strategy for the router.
+func WithStrategy[M Message, R any](strategy RoutingStrategy[M, R]) RouterOption[M, R] {
+	return func(cfg *routerConfig[M, R]) {
+		cfg.strategy = strategy
+	}
+}
+
 // Ref returns a virtual ActorRef (Router) that automatically load-balances
 // messages across all actors registered under this service key. This is the
 // recommended way for components to interact with services, as it provides
 // location transparency and automatic failover. The router uses round-robin
-// strategy by default.
-func (sk ServiceKey[M, R]) Ref(sys SystemContext) ActorRef[M, R] {
-	strategy := NewRoundRobinStrategy[M, R]()
+// strategy by default, but can be customized with functional options.
+//
+// Example:
+//
+//	ref := key.Ref(system)  // Round-robin (default)
+//	ref := key.Ref(system, WithStrategy(customStrategy))  // Custom
+func (sk ServiceKey[M, R]) Ref(sys SystemContext, opts ...RouterOption[M, R]) ActorRef[M, R] {
+	// Apply default configuration.
+	cfg := &routerConfig[M, R]{
+		strategy: NewRoundRobinStrategy[M, R](),
+	}
+
+	// Apply functional options.
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	return NewRouter(
-		sys.Receptionist(), sk, strategy, sys.DeadLetters(),
+		sys.Receptionist(), sk, cfg.strategy, sys.DeadLetters(),
 	)
 }
 
@@ -384,29 +412,29 @@ func (sk ServiceKey[M, R]) Broadcast(sys SystemContext, ctx context.Context, msg
 }
 
 // Unregister removes an actor reference associated with this service key from
-// the ActorSystem's receptionist. The actor continues running and can still be
-// accessed through other service keys it may be registered under. To stop the
-// actor, use StopAndRemoveActor separately. This separation allows actors to
-// provide multiple services and gracefully degrade by stopping advertisement
-// on some interfaces while continuing to serve others.
+// the receptionist. The actor continues running and can still be accessed
+// through other service keys it may be registered under. To stop the actor,
+// use StopAndRemoveActor separately. This separation allows actors to provide
+// multiple services and gracefully degrade by stopping advertisement on some
+// interfaces while continuing to serve others.
 //
 // Returns true if the actor was found and unregistered, false otherwise.
-func (sk ServiceKey[M, R]) Unregister(as *ActorSystem,
+func (sk ServiceKey[M, R]) Unregister(sys SystemContext,
 	refToRemove ActorRef[M, R]) bool {
 
 	return UnregisterFromReceptionist(
-		as.Receptionist(), sk, refToRemove,
+		sys.Receptionist(), sk, refToRemove,
 	)
 }
 
 // UnregisterAll removes all actor references associated with this service key
-// from the ActorSystem's receptionist. The actors continue running and can
-// still be accessed through other service keys. To stop the actors, use
-// StopAndRemoveActor separately for each actor reference.
+// from the receptionist. The actors continue running and can still be accessed
+// through other service keys. To stop the actors, use StopAndRemoveActor
+// separately for each actor reference.
 //
 // Returns the number of actors that were unregistered.
-func (sk ServiceKey[M, R]) UnregisterAll(as *ActorSystem) int {
-	r := as.Receptionist()
+func (sk ServiceKey[M, R]) UnregisterAll(sys SystemContext) int {
+	r := sys.Receptionist()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -458,8 +486,9 @@ type serviceTypeInfo struct {
 // Receptionist provides service discovery for actors. Actors can be registered
 // under a ServiceKey and later discovered by other actors or system components.
 type Receptionist struct {
-	// registrations stores ActorRef instances, keyed by ServiceKey.name.
-	registrations map[string][]any
+	// registrations stores ActorRef instances as BaseActorRef, keyed by
+	// ServiceKey.name.
+	registrations map[string][]BaseActorRef
 
 	// typeRegistry tracks the types registered under each service name to
 	// prevent type conflicts.
@@ -472,7 +501,7 @@ type Receptionist struct {
 // newReceptionist creates a new Receptionist instance.
 func newReceptionist() *Receptionist {
 	return &Receptionist{
-		registrations: make(map[string][]any),
+		registrations: make(map[string][]BaseActorRef),
 		typeRegistry:  make(map[string]serviceTypeInfo),
 	}
 }
@@ -515,7 +544,7 @@ func RegisterWithReceptionist[M Message, R any](
 
 	// Initialize the slice for this key if it's the first registration.
 	if _, exists := r.registrations[key.name]; !exists {
-		r.registrations[key.name] = make([]interface{}, 0)
+		r.registrations[key.name] = make([]BaseActorRef, 0)
 	}
 
 	r.registrations[key.name] = append(r.registrations[key.name], ref)
@@ -525,21 +554,20 @@ func RegisterWithReceptionist[M Message, R any](
 
 // FindInReceptionist returns all actors registered with a service key in the
 // given receptionist. This is a package-level generic function because methods
-// cannot have their own type parameters. It performs a type assertion to ensure
-// that only ActorRefs matching the ServiceKey's generic types (M, R) are
-// returned, providing type safety.
+// cannot have their own type parameters. It performs a type assertion from
+// BaseActorRef to the specific ActorRef[M, R] type to ensure type safety.
 func FindInReceptionist[M Message, R any](
 	r *Receptionist, key ServiceKey[M, R]) []ActorRef[M, R] {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if refs, exists := r.registrations[key.name]; exists {
-		typedRefs := make([]ActorRef[M, R], 0, len(refs))
-		for _, ref := range refs {
-			// Make sure that the reference is of the correct type.
-			// This type assertion is crucial for type safety, ensuring
+	if baseRefs, exists := r.registrations[key.name]; exists {
+		typedRefs := make([]ActorRef[M, R], 0, len(baseRefs))
+		for _, baseRef := range baseRefs {
+			// Assert from BaseActorRef to the specific ActorRef[M, R]
+			// type. This type assertion provides type safety, ensuring
 			// that the returned ActorRefs match the expected M and R.
-			if typedRef, ok := ref.(ActorRef[M, R]); ok {
+			if typedRef, ok := baseRef.(ActorRef[M, R]); ok {
 				typedRefs = append(typedRefs, typedRef)
 			}
 		}
