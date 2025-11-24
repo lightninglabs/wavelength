@@ -61,8 +61,29 @@ endif
 COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
 COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
 
+# Default: list all packages for testing.
+GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" ./...
+
+# If specific package is being unit tested, construct the full name of the
+# subpackage and narrow GOLIST to just that package.
+ifneq ($(pkg),)
+UNITPKG := $(PKG)/$(pkg)
+GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" $(UNITPKG)
+COVER_PKG = $(PKG)/$(pkg)
+COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/$(pkg)
+endif
+
+# If a specific unit test case is being targeted, construct test.run filter.
+ifneq ($(case),)
+TEST_FLAGS += -test.run=$(case)
+endif
+
+# If a timeout is specified, add it to test flags.
+ifneq ($(timeout),)
+TEST_FLAGS += -timeout=$(timeout)
+endif
+
 # Test commands.
-GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
 UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
 UNIT_RACE := $(UNIT) -race
 UNIT_COVER := $(GOTEST) $(COVER_FLAGS) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(COVER_PKG)
