@@ -356,6 +356,33 @@ func (sk ServiceKey[M, R]) Spawn(as *ActorSystem, id string,
 	return RegisterWithSystem(as, id, sk, behavior)
 }
 
+// Ref returns a virtual ActorRef (Router) that automatically load-balances
+// messages across all actors registered under this service key. This is the
+// recommended way for components to interact with services, as it provides
+// location transparency and automatic failover. The router uses round-robin
+// strategy by default.
+func (sk ServiceKey[M, R]) Ref(sys SystemContext) ActorRef[M, R] {
+	strategy := NewRoundRobinStrategy[M, R]()
+	return NewRouter(
+		sys.Receptionist(), sk, strategy, sys.DeadLetters(),
+	)
+}
+
+// Broadcast sends a message to ALL actors registered under this service key.
+// This is useful for fan-out notifications, cache invalidation, or coordinated
+// shutdown signals. The context applies to all send operations. Returns the
+// number of actors the message was sent to. Note that this is a fire-and-forget
+// operation and does not guarantee delivery or processing.
+func (sk ServiceKey[M, R]) Broadcast(sys SystemContext, ctx context.Context, msg M) int {
+	refs := FindInReceptionist(sys.Receptionist(), sk)
+
+	for _, ref := range refs {
+		ref.Tell(ctx, msg)
+	}
+
+	return len(refs)
+}
+
 // Unregister removes an actor reference associated with this service key from
 // the ActorSystem's receptionist. The actor continues running and can still be
 // accessed through other service keys it may be registered under. To stop the
@@ -392,7 +419,7 @@ func (sk ServiceKey[M, R]) UnregisterAll(as *ActorSystem) int {
 	// Build a new slice containing only references that don't match our
 	// service key's type. This handles the case where the same key name
 	// might have refs of different types registered.
-	newRefs := make([]any, 0, len(currentRefs))
+	newRefs := make([]BaseActorRef, 0, len(currentRefs))
 	unregisteredCount := 0
 
 	for _, item := range currentRefs {

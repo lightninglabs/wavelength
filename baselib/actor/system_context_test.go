@@ -35,7 +35,7 @@ type mockSystemContext struct {
 	deadLetters  ActorRef[Message, any]
 }
 
-func newMockSystemContext() *mockSystemContext {
+func newMockSystemContext(t *testing.T) *mockSystemContext {
 	// Create a minimal DLO for the mock.
 	dloBehavior := NewFunctionBehavior(
 		func(ctx context.Context, msg Message) fn.Result[any] {
@@ -50,6 +50,7 @@ func newMockSystemContext() *mockSystemContext {
 	}
 	dloActor := NewActor(dloCfg)
 	dloActor.Start()
+	t.Cleanup(dloActor.Stop)
 
 	return &mockSystemContext{
 		receptionist: newReceptionist(),
@@ -71,7 +72,7 @@ func TestMockSystemContextForUnitTesting(t *testing.T) {
 	t.Parallel()
 
 	// Create a mock system context for testing.
-	mockSys := newMockSystemContext()
+	mockSys := newMockSystemContext(t)
 
 	// Components can accept SystemContext instead of *ActorSystem.
 	testComponent := func(sys SystemContext) *Receptionist {
@@ -116,7 +117,7 @@ func TestSystemContextEnablesDecoupling(t *testing.T) {
 	require.NotNil(t, consumer.sys.Receptionist())
 
 	// Or with mock for isolated testing.
-	mockSys := newMockSystemContext()
+	mockSys := newMockSystemContext(t)
 	mockConsumer := newActorConsumer(mockSys)
 	require.NotNil(t, mockConsumer.sys.Receptionist())
 }
