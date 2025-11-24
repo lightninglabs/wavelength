@@ -24,6 +24,11 @@ type ActorConfig[M Message, R any] struct {
 
 	// MailboxSize defines the buffer capacity of the actor's mailbox.
 	MailboxSize int
+
+	// Wg is an optional WaitGroup for tracking actor lifecycle. If
+	// non-nil, the actor will call Add(1) when starting and Done() when
+	// its process loop exits. This enables deterministic shutdown.
+	Wg *sync.WaitGroup
 }
 
 // envelope wraps a message with its associated promise. This allows the sender
@@ -56,6 +61,10 @@ type Actor[M Message, R any] struct {
 	// dlo is a reference to the dead letter office for this actor system.
 	dlo ActorRef[Message, any]
 
+	// wg is an optional WaitGroup for tracking this actor's lifecycle. If
+	// non-nil, Done() is called when the process loop exits.
+	wg *sync.WaitGroup
+
 	// startOnce ensures the actor's processing loop is started only once.
 	startOnce sync.Once
 
@@ -86,6 +95,7 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 		ctx:      ctx,
 		cancel:   cancel,
 		dlo:      cfg.DLO,
+		wg:       cfg.Wg,
 	}
 
 	// Create and cache the actor's own reference.
@@ -96,20 +106,44 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 	return actor
 }
 
-// Start initiates the actor's message processing loop in a new goroutine. This
-// method should be called once after the actor is created.
+// Start initiates the actor's message processing loop in a new goroutine.
+// This method should be called exactly once after actor creation; repeated
+// calls are safe but have no effect (enforced via startOnce). When a WaitGroup
+// is configured, we increment it here to enable deterministic shutdown—the
+// system can block on wg.Wait() to ensure all actor goroutines have fully
+// exited before proceeding with resource cleanup.
 func (a *Actor[M, R]) Start() {
 	a.startOnce.Do(func() {
+		log.DebugS(a.ctx, "Starting actor", "actor_id", a.id)
+
+		if a.wg != nil {
+			a.wg.Add(1)
+		}
 		go a.process()
 	})
 }
 
-// process is the main event loop for the actor. It receives messages from the
-// mailbox and processes them using the actor's behavior.
+// process is the main event loop that drives actor message handling. We iterate
+// over the mailbox using the receive iterator pattern, which automatically stops
+// when the actor's context is cancelled during shutdown. The deferred Done()
+// call (when wg is non-nil) ensures the WaitGroup counter is decremented even if
+// the behavior panics, enabling the system to detect when all actors have
+// terminated.
 func (a *Actor[M, R]) process() {
+	// Decrement the WaitGroup counter when this goroutine exits. Using defer
+	// ensures this runs even if the behavior panics.
+	if a.wg != nil {
+		defer a.wg.Done()
+	}
+
 	// Process messages from the mailbox using the iterator pattern. The
 	// iterator will stop when the actor's context is cancelled.
 	for env := range a.mailbox.Receive(a.ctx) {
+		log.TraceS(a.ctx, "Actor processing message",
+			"actor_id", a.id,
+			"msg_type", env.message.MessageType(),
+			"is_ask", env.promise != nil)
+
 		result := a.behavior.Receive(a.ctx, env.message)
 
 		// If a promise was provided (i.e., it was an "ask" operation),
@@ -126,7 +160,15 @@ func (a *Actor[M, R]) process() {
 
 	// Drain any remaining messages that were enqueued before the mailbox
 	// was closed.
+	drainedCount := 0
 	for env := range a.mailbox.Drain() {
+		drainedCount++
+
+		log.TraceS(a.ctx, "Draining message from terminated actor",
+			"actor_id", a.id,
+			"msg_type", env.message.MessageType(),
+			"has_dlo", a.dlo != nil)
+
 		// If a DLO is configured, send the original message there for
 		// auditing or potential manual reprocessing.
 		if a.dlo != nil {
@@ -139,6 +181,10 @@ func (a *Actor[M, R]) process() {
 			env.promise.Complete(fn.Err[R](ErrActorTerminated))
 		}
 	}
+
+	log.DebugS(a.ctx, "Actor terminated",
+		"actor_id", a.id,
+		"drained_messages", drainedCount)
 }
 
 // Stop signals the actor to terminate its processing loop and shut down.
@@ -169,6 +215,10 @@ type actorRefImpl[M Message, R any] struct {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
+	log.TraceS(ctx, "Sending Tell message",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
 	// Attempt to send the message to the mailbox. The mailbox's Send
 	// method handles context cancellation and actor termination internally.
 	env := envelope[M, R]{message: msg, promise: nil}
@@ -181,7 +231,15 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 	// where caller-aborted messages are not revived via the DLO.
 	if !ok {
 		if ctx.Err() == nil || ref.actor.ctx.Err() != nil {
+			log.DebugS(ctx, "Tell failed, routing to DLO",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType())
+
 			ref.trySendToDLO(msg)
+		} else {
+			log.TraceS(ctx, "Tell failed, caller cancelled",
+				"actor_id", ref.actor.id,
+				"msg_type", msg.MessageType())
 		}
 	}
 }
@@ -192,6 +250,10 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
+	log.TraceS(ctx, "Sending Ask message",
+		"actor_id", ref.actor.id,
+		"msg_type", msg.MessageType())
+
 	// Create a new promise that will be fulfilled with the actor's
 	// response.
 	promise := NewPromise[R]()
@@ -200,6 +262,10 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// ErrActorTerminated and return immediately. This is the primary guard
 	// against trying to send to a stopped actor.
 	if ref.actor.ctx.Err() != nil {
+		log.DebugS(ctx, "Ask failed, actor already terminated",
+			"actor_id", ref.actor.id,
+			"msg_type", msg.MessageType())
+
 		promise.Complete(fn.Err[R](ErrActorTerminated))
 		return promise.Future()
 	}
