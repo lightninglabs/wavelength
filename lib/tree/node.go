@@ -555,16 +555,20 @@ func (n *Node) ExtractPathForIndices(targetIndices ...int) (*Node, error) {
 	targetSet := fn.NewSet(targetIndices...)
 
 	// Find the paths to all target leaves.
-	extracted, _ := n.extractPathForIndicesRecursive(targetSet, 0)
+	extracted, _, found := n.extractPathForIndicesRecursive(targetSet, 0)
+	if !found {
+		return nil, fmt.Errorf("no paths found for target indices")
+	}
 
 	return extracted, nil
 }
 
 // extractPathForIndicesRecursive recursively extracts paths to multiple target
-// leaf indices. Returns the extracted node and the number of leaves consumed in
-// this subtree.
-func (n *Node) extractPathForIndicesRecursive(
-	targetSet fn.Set[int], currentIndex int) (*Node, int) {
+// leaf indices. Returns the extracted node, the number of leaves consumed in
+// this subtree, and a boolean indicating whether any target indices were found
+// in this subtree.
+func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
+	currentIndex int) (*Node, int, bool) {
 
 	// If this is a leaf node.
 	if n.IsLeaf() {
@@ -577,10 +581,10 @@ func (n *Node) extractPathForIndicesRecursive(
 				Signature: n.Signature,
 				FinalKey:  n.FinalKey,
 				Children:  make(map[uint32]*Node),
-			}, currentIndex + 1
+			}, currentIndex + 1, true
 		}
 
-		return nil, currentIndex + 1
+		return nil, currentIndex + 1, false
 	}
 
 	// This is a branch node, check children.
@@ -603,10 +607,11 @@ func (n *Node) extractPathForIndicesRecursive(
 			continue
 		}
 
-		childExtracted, newLeafIndex :=
-			child.extractPathForIndicesRecursive(targetSet, leafIndex)
-
-		if childExtracted != nil {
+		childExtracted, newLeafIndex, found :=
+			child.extractPathForIndicesRecursive(
+				targetSet, leafIndex,
+			)
+		if found {
 			extracted.Children[i] = childExtracted
 			foundAnyTarget = true
 		}
@@ -615,10 +620,10 @@ func (n *Node) extractPathForIndicesRecursive(
 	}
 
 	if foundAnyTarget {
-		return extracted, leafIndex
+		return extracted, leafIndex, true
 	}
 
-	return nil, leafIndex
+	return nil, leafIndex, false
 }
 
 // PrevOutputFetcher creates a PrevOutputFetcher that can provide transaction
