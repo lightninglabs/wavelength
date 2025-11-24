@@ -24,7 +24,7 @@ type BasicGreetingResponse struct {
 }
 
 // ExampleActor demonstrates creating a single actor, sending it a message
-// directly using Ask, and then unregistering and stopping it.
+// directly using Ask, and then unregistering it from service discovery.
 func ExampleActor() {
 	system := actor.NewActorSystem()
 	defer system.Shutdown(context.Background())
@@ -73,10 +73,12 @@ func ExampleActor() {
 		fmt.Printf("Received: %s\n", response.Greeting)
 	})
 
-	// Unregister the actor. This also stops the actor.
+	// Unregister the actor from the receptionist. This removes it from
+	// service discovery but does NOT stop the actor. To stop the actor,
+	// use StopAndRemoveActor or let Shutdown handle it.
 	unregistered := greeterKey.Unregister(system, greeterRef)
 	if unregistered {
-		fmt.Printf("Actor %s unregistered and stopped.\n",
+		fmt.Printf("Actor %s unregistered from receptionist.\n",
 			greeterRef.ID())
 	} else {
 		fmt.Printf("Failed to unregister actor %s.\n", greeterRef.ID())
@@ -89,9 +91,12 @@ func ExampleActor() {
 	fmt.Printf("Actors for key '%s' after unregister: %d\n",
 		"basic-greeter", len(refsAfterUnregister))
 
+	// The deferred system.Shutdown() will stop all actors when this
+	// function returns.
+
 	// Output:
 	// Actor my-greeter spawned.
 	// Received: Hello, World from my-greeter
-	// Actor my-greeter unregistered and stopped.
+	// Actor my-greeter unregistered from receptionist.
 	// Actors for key 'basic-greeter' after unregister: 0
 }
