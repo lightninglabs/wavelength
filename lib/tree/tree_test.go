@@ -435,10 +435,8 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForCoSigners(nil)
-		require.Error(t, err)
-		require.Nil(t, extracted)
-		require.Contains(t, err.Error(), "target key cannot be nil")
+		_, err = tree.ExtractPathForCoSigners(nil)
+		require.ErrorContains(t, err, "target key cannot be nil")
 	})
 
 	t.Run("rejects empty target keys", func(t *testing.T) {
@@ -460,10 +458,9 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		extracted, err := tree.ExtractPathForCoSigners()
-		require.Error(t, err)
-		require.Nil(t, extracted)
-		require.Contains(t, err.Error(), "at least one target key required")
+		_, err = tree.ExtractPathForCoSigners()
+		require.ErrorContains(t, err, "at least one target key "+
+			"required")
 	})
 }
 
