@@ -419,9 +419,6 @@ func (ref *actorRefImpl[M, R]) ID() string {
 	return ref.actor.id
 }
 
-// baseActorRefMarker implements the BaseActorRef sealed interface marker.
-func (ref *actorRefImpl[M, R]) baseActorRefMarker() {}
-
 // Ref returns an ActorRef for this actor. This allows clients to interact with
 // the actor (send messages) without having direct access to the Actor struct
 // itself, promoting encapsulation and location transparency.

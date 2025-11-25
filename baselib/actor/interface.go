@@ -93,13 +93,14 @@ type Promise[T any] interface {
 // enables stronger typing in data structures that store heterogeneous actor
 // references, such as the Receptionist's registration map. All ActorRef
 // instances implement this interface.
+//
+// Type safety is enforced through generic type parameters on TellOnlyRef and
+// ActorRef, plus the Receptionist's type registry which validates that service
+// keys with the same name always have matching message and response types.
+// External packages can implement this interface for testing purposes.
 type BaseActorRef interface {
 	// ID returns the unique identifier for this actor.
 	ID() string
-
-	// baseActorRefMarker is an unexported method that seals this
-	// interface, preventing external implementations.
-	baseActorRefMarker()
 }
 
 // TellOnlyRef is a reference to an actor that only supports "tell" operations.
