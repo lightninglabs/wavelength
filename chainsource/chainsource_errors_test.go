@@ -275,3 +275,88 @@ func TestBlockEpochActorBackendError(t *testing.T) {
 		t, result.Err().Error(), "failed to register for blocks",
 	)
 }
+
+// TestConfActorDuplicateSubscription tests that ConfActor rejects duplicate
+// subscriptions on the same actor instance.
+func TestConfActorDuplicateSubscription(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	ctx := t.Context()
+	confActor := NewConfActor(backend, ctx)
+	defer confActor.Stop()
+
+	// First subscription should succeed.
+	result1 := confActor.Receive(ctx, &RegisterConfRequest{
+		CallerID:    "test-duplicate-1",
+		Txid:        &chainhash.Hash{},
+		PkScript:    []byte{0x00, 0x14},
+		TargetConfs: 1,
+	})
+	require.True(t, result1.IsOk(), "first subscription should succeed")
+
+	// Second subscription on same actor should fail.
+	result2 := confActor.Receive(ctx, &RegisterConfRequest{
+		CallerID:    "test-duplicate-2",
+		Txid:        &chainhash.Hash{},
+		PkScript:    []byte{0x00, 0x14},
+		TargetConfs: 1,
+	})
+	require.True(t, result2.IsErr(), "second subscription should fail")
+	require.Contains(t, result2.Err().Error(),
+		"actor already has an active subscription")
+}
+
+// TestSpendActorDuplicateSubscription tests that SpendActor rejects duplicate
+// subscriptions on the same actor instance.
+func TestSpendActorDuplicateSubscription(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	ctx := t.Context()
+	spendActor := NewSpendActor(backend, ctx)
+	defer spendActor.Stop()
+
+	// First subscription should succeed.
+	result1 := spendActor.Receive(ctx, &RegisterSpendRequest{
+		CallerID: "test-spend-duplicate-1",
+		Outpoint: &wire.OutPoint{},
+		PkScript: []byte{0x00, 0x14},
+	})
+	require.True(t, result1.IsOk(), "first subscription should succeed")
+
+	// Second subscription on same actor should fail.
+	result2 := spendActor.Receive(ctx, &RegisterSpendRequest{
+		CallerID: "test-spend-duplicate-2",
+		Outpoint: &wire.OutPoint{},
+		PkScript: []byte{0x00, 0x14},
+	})
+	require.True(t, result2.IsErr(), "second subscription should fail")
+	require.Contains(t, result2.Err().Error(),
+		"actor already has an active subscription")
+}
+
+// TestBlockEpochActorDuplicateSubscription tests that BlockEpochActor rejects
+// duplicate subscriptions on the same actor instance.
+func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	ctx := t.Context()
+	epochActor := NewBlockEpochActor(backend, ctx)
+	defer epochActor.Stop()
+
+	// First subscription should succeed.
+	result1 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
+		CallerID: "test-epoch-duplicate-1",
+	})
+	require.True(t, result1.IsOk(), "first subscription should succeed")
+
+	// Second subscription on same actor should fail.
+	result2 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
+		CallerID: "test-epoch-duplicate-2",
+	})
+	require.True(t, result2.IsErr(), "second subscription should fail")
+	require.Contains(t, result2.Err().Error(),
+		"actor already has an active subscription")
+}

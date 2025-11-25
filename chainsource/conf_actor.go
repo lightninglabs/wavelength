@@ -87,6 +87,13 @@ func (a *ConfActor) Receive(actorCtx context.Context,
 func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	req *RegisterConfRequest) fn.Result[ConfResp] {
 
+	// Each ConfActor instance serves exactly one subscription. Reject
+	// duplicate registrations.
+	if a.registration != nil {
+		return fn.Err[ConfResp](fmt.Errorf(
+			"actor already has an active subscription"))
+	}
+
 	// Do some basic validation of the request parameters.
 	if req.Txid == nil && len(req.PkScript) == 0 {
 		return fn.Err[ConfResp](fmt.Errorf(

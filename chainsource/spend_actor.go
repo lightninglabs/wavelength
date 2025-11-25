@@ -88,6 +88,13 @@ func (a *SpendActor) Receive(actorCtx context.Context,
 func (a *SpendActor) handleRegisterSpend(actorCtx context.Context,
 	req *RegisterSpendRequest) fn.Result[SpendResp] {
 
+	// Each SpendActor instance serves exactly one subscription. Reject
+	// duplicate registrations.
+	if a.registration != nil {
+		return fn.Err[SpendResp](fmt.Errorf(
+			"actor already has an active subscription"))
+	}
+
 	// Validate request parameters.
 	if req.Outpoint == nil && len(req.PkScript) == 0 {
 		return fn.Err[SpendResp](fmt.Errorf(

@@ -1000,8 +1000,13 @@ func TestBlockEpochActorIteratorCancel(t *testing.T) {
 		t.Fatalf("expected backend cancel signal")
 	}
 
-	// Second subscription: explicit Cancel() without consuming blocks.
-	result2 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
+	// Second subscription requires a new actor (each actor serves exactly
+	// one subscription). This tests explicit Cancel() without consuming
+	// blocks.
+	epochActor2 := NewBlockEpochActor(backend, ctx)
+	defer epochActor2.Stop()
+
+	result2 := epochActor2.Receive(ctx, &SubscribeBlocksRequest{
 		CallerID: "test-epoch-cancel-2",
 	})
 	require.True(t, result2.IsOk())

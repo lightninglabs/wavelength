@@ -81,6 +81,13 @@ func (a *BlockEpochActor) Receive(actorCtx context.Context,
 func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	req *SubscribeBlocksRequest) fn.Result[EpochResp] {
 
+	// Each BlockEpochActor instance serves exactly one subscription. Reject
+	// duplicate registrations.
+	if a.registration != nil {
+		return fn.Err[EpochResp](fmt.Errorf(
+			"actor already has an active subscription"))
+	}
+
 	// Configure the actor with request parameters.
 	a.notifyActor = req.NotifyActor
 	resp := &SubscribeBlocksResponse{}
