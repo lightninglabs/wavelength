@@ -57,11 +57,17 @@ jobs:
       ########################
       # Check code format
       ########################
+      # Disable go.work so CI tests modules as external consumers would see them.
+      # The workspace is for developer convenience only.
       - name: Check code format
         run: make fmt-check
+        env:
+          GOWORK: off
 
       - name: Check go modules tidiness
         run: make tidy-module-check
+        env:
+          GOWORK: off
 
       ########################
       # SQLC code gen check

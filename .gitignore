@@ -31,3 +31,6 @@ DS_Store
 .vscode/
 .idea
 .serena/
+
+# Go workspace sum file - regenerated locally as needed.
+go.work.sum

@@ -66,6 +66,7 @@ GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" ./...
 
 # If specific package is being unit tested, construct the full name of the
 # subpackage and narrow GOLIST to just that package.
+# NOTE: Submodules (e.g., baselib/) require go.work to resolve from root.
 ifneq ($(pkg),)
 UNITPKG := $(PKG)/$(pkg)
 GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" $(UNITPKG)
@@ -87,6 +88,9 @@ endif
 UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
 UNIT_RACE := $(UNIT) -race
 UNIT_COVER := $(GOTEST) $(COVER_FLAGS) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(COVER_PKG)
+
+# Discover submodules (directories with go.mod, excluding tools/).
+SUBMODULES := $(shell find . -mindepth 2 -name 'go.mod' -not -path './tools/*' -not -path './vendor/*' | xargs -I{} dirname {} | sed 's|^\./||')
 
 # Linting uses a lot of memory, so keep it under control by limiting the number
 # of workers if requested.
@@ -217,9 +221,16 @@ check-go-version-yaml:
 # TESTING
 # =======
 
-unit: #? Run unit tests
+unit: #? Run unit tests (root module and all submodules unless pkg= specified)
 	@$(call print, "Running unit tests.")
 	$(UNIT)
+ifeq ($(pkg),)
+	@$(call print, "Running submodule tests: $(SUBMODULES)")
+	@for mod in $(SUBMODULES); do \
+		echo "$(GREEN)>>> Testing submodule: $$mod$(NC)"; \
+		(cd $$mod && $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) ./...) || { echo "FAILED: $$mod"; exit 1; }; \
+	done
+endif
 
 unit-cover: #? Run unit tests with coverage
 	@$(call print, "Running unit coverage tests.")
