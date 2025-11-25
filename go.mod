@@ -17,6 +17,7 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
+	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightninglabs/lndclient v1.0.1-0.20251120145443-a0342758fc5b
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
 	github.com/lightningnetwork/lnd v0.20.0-beta
@@ -183,3 +184,6 @@ require (
 )
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
+
+// Use local baselib for development and CI.
+replace github.com/lightninglabs/darepo-client/baselib => ./baselib
