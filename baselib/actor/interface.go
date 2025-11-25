@@ -89,17 +89,29 @@ type Promise[T any] interface {
 	Complete(result fn.Result[T]) bool
 }
 
+// BaseActorRef is a non-generic base interface for all actor references. This
+// enables stronger typing in data structures that store heterogeneous actor
+// references, such as the Receptionist's registration map. All ActorRef
+// instances implement this interface.
+type BaseActorRef interface {
+	// ID returns the unique identifier for this actor.
+	ID() string
+
+	// baseActorRefMarker is an unexported method that seals this
+	// interface, preventing external implementations.
+	baseActorRefMarker()
+}
+
 // TellOnlyRef is a reference to an actor that only supports "tell" operations.
 // This is useful for scenarios where only fire-and-forget message passing is
 // needed, or to restrict capabilities.
 type TellOnlyRef[M Message] interface {
+	BaseActorRef
+
 	// Tell sends a message without waiting for a response. If the
 	// context is cancelled before the message can be sent to the actor's
 	// mailbox, the message may be dropped.
 	Tell(ctx context.Context, msg M)
-
-	// ID returns the unique identifier for this actor.
-	ID() string
 }
 
 // ActorRef is a reference to an actor that supports both "tell" and "ask"
@@ -136,6 +148,18 @@ type Stoppable interface {
 	// release resources and return promptly, respecting the context
 	// deadline to avoid blocking system shutdown.
 	OnStop(ctx context.Context) error
+}
+
+// SystemContext defines the minimal interface for system capabilities needed
+// by actors and service keys. This narrow interface enables dependency
+// injection and unit testing without requiring a full ActorSystem instance.
+type SystemContext interface {
+	// Receptionist returns the system's receptionist for actor discovery.
+	Receptionist() *Receptionist
+
+	// DeadLetters returns a reference to the dead letter actor for
+	// undeliverable messages.
+	DeadLetters() ActorRef[Message, any]
 }
 
 // Mailbox defines the interface for an actor's message queue. This abstraction

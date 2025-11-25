@@ -141,3 +141,6 @@ func (r *Router[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 func (r *Router[M, R]) ID() string {
 	return "router(" + r.serviceKey.name + ")"
 }
+
+// baseActorRefMarker implements the BaseActorRef sealed interface marker.
+func (r *Router[M, R]) baseActorRefMarker() {}
