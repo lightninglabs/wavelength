@@ -114,8 +114,17 @@ func VTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey,
 		return nil, err
 	}
 
-	return input.TapscriptFullTree(&ARKNUMSKey, collabLeaf, timeoutLeaf),
-		nil
+	tapscript := input.TapscriptFullTree(
+		&ARKNUMSKey, collabLeaf, timeoutLeaf,
+	)
+
+	// Compute and set the root hash since TapscriptFullTree doesn't
+	// populate it. Callers need this to construct taproot addresses.
+	tree := txscript.AssembleTaprootScriptTree(tapscript.Leaves...)
+	rootHash := tree.RootNode.TapHash()
+	tapscript.RootHash = rootHash[:]
+
+	return tapscript, nil
 }
 
 // VTXOTapKey computes the taproot output key for a standard VTXO tapscript.
@@ -132,10 +141,9 @@ func VTXOTapKey(ownerKey, cosignerKey *btcec.PublicKey,
 	}
 
 	// Compute the taproot output key from the internal key and tree root.
-	tree := txscript.AssembleTaprootScriptTree(vtxoTapscript.Leaves...)
-	rootHash := tree.RootNode.TapHash()
 	outputKey := txscript.ComputeTaprootOutputKey(
-		vtxoTapscript.ControlBlock.InternalKey, rootHash[:],
+		vtxoTapscript.ControlBlock.InternalKey,
+		vtxoTapscript.RootHash,
 	)
 
 	return outputKey, nil
