@@ -227,8 +227,8 @@ unit: #? Run unit tests (root module and all submodules unless pkg= specified)
 ifeq ($(pkg),)
 	@$(call print, "Running submodule tests: $(SUBMODULES)")
 	@for mod in $(SUBMODULES); do \
-		echo "Testing $$mod..."; \
-		(cd $$mod && $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) ./...) || exit 1; \
+		echo "$(GREEN)>>> Testing submodule: $$mod$(NC)"; \
+		(cd $$mod && $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) ./...) || { echo "FAILED: $$mod"; exit 1; }; \
 	done
 endif
 
