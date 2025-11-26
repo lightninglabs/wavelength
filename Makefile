@@ -57,6 +57,13 @@ ifneq ($(tags),)
 DEV_TAGS += ${tags}
 endif
 
+# Logging tags - can be overridden with log= parameter.
+# Examples: make unit log="stdlog trace"
+# This enables stdout logging with trace level for debugging tests.
+ifneq ($(log),)
+LOG_TAGS := $(log)
+endif
+
 # Coverage settings.
 COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
 COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
