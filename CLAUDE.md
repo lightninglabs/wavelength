@@ -36,6 +36,43 @@
 - Spacing between switch/select cases
 - When wrapping function calls, put closing paren on its own line with all args on new lines
 
+### ast-grep for Code Search and Linting
+
+This project uses ast-grep (`sg`) for AST-level code search and style enforcement.
+
+**Code Search (prefer over grep for Go patterns):**
+- Use `sg run -p 'pattern' -l go` for structural code search
+- ast-grep understands Go syntax, so `sg run -p 'func $NAME($$$ARGS)' -l go` finds all functions
+- For simple text search, grep is fine; for code patterns, use ast-grep
+
+**Pattern examples:**
+- Find all function calls: `sg run -p '$FUNC($$$ARGS)' -l go`
+- Find method calls: `sg run -p '$OBJ.$METHOD($$$ARGS)' -l go`
+- Find error returns: `sg run -p 'return $ERR' -l go`
+- Find struct literals: `sg run -p '&$TYPE{$$$FIELDS}' -l go`
+
+**Linting commands:**
+- `make ast-lint` - Check for style issues (use `pkg=<dir>` to focus on a directory)
+- `make ast-grep-fix` - Auto-fix safe issues (use `pkg=<dir>` to focus on a directory)
+- `sg scan --interactive` - Review fixes one by one
+
+**Rules enforced:**
+
+*Formatting (go-formatting.yml):*
+- `struct-literal-asymmetric-close`: Multi-line struct literals need closing `}` on its own line
+- `func-call-asymmetric-wrap`: Multi-line function calls need symmetric wrapping (excludes log/error calls)
+- `log-error-expanded-form`: Log/error calls should use compact form, not expanded
+- `switch-case-needs-spacing`: Switch cases should be separated by blank lines
+- `select-case-needs-spacing`: Select cases should be separated by blank lines
+
+*Function definitions (go-func-def.yml):*
+- `func-def-dangling-param-comma`: Function params should not end with dangling comma
+- `func-def-dangling-return-paren`: Return types should not start on a new line with `(`
+
+**Note:** Structured logging calls (`InfoS`, `DebugS`, etc.) are correctly formatted with closing `)` on the same line as the last attribute per the development guidelines.
+
+See `rules/` directory for full rule definitions.
+
 ### Structured Logging
 **YOU MUST** use structured log methods (ending in `S`) with static messages:
 - First parameter: `context.Context`

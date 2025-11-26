@@ -69,9 +69,9 @@ func TestMigrationSteps(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the new entry exists.
-	err = db.QueryRowContext(ctx, `
-		SELECT chain_name FROM chain_info WHERE id = 2
-	`).Scan(&chainName)
+	err = db.QueryRowContext(
+		ctx, `SELECT chain_name FROM chain_info WHERE id = 2`,
+	).Scan(&chainName)
 	require.NoError(t, err)
 	require.Equal(t, "testnet", chainName)
 }
@@ -166,9 +166,9 @@ func TestSqliteMigrationBackup(t *testing.T) {
 
 	// Verify the data is still present in the database.
 	var chainName string
-	err = db2.QueryRowContext(ctx, `
-		SELECT chain_name FROM chain_info WHERE id = 2
-	`).Scan(&chainName)
+	err = db2.QueryRowContext(
+		ctx, `SELECT chain_name FROM chain_info WHERE id = 2`,
+	).Scan(&chainName)
 	require.NoError(t, err)
 	require.Equal(t, "regtest", chainName)
 
@@ -176,8 +176,10 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	// created. This test verifies the backup logic works correctly by
 	// NOT creating a backup when unnecessary.
 	dbBackupFilePath := findDBBackupFilePath(t, dbFileName)
-	require.Empty(t, dbBackupFilePath, "no backup should be created "+
-		"when already at latest version")
+	require.Empty(
+		t, dbBackupFilePath,
+		"no backup should be created when already at latest version",
+	)
 }
 
 // TestDirtySqliteVersion tests that if a migration fails and leaves a SQLite
@@ -213,9 +215,11 @@ func TestDirtySqliteVersion(t *testing.T) {
 	})
 
 	// Attempt to execute migrations with a failing callback.
-	err = db.ExecuteMigrations(db.backupAndMigrate, WithPostStepCallbacks(
-		makePostStepCallbacks(db, log, testPostMigrationChecks),
-	))
+	err = db.ExecuteMigrations(
+		db.backupAndMigrate, WithPostStepCallbacks(
+			makePostStepCallbacks(db, log, testPostMigrationChecks),
+		),
+	)
 	require.ErrorIs(t, err, testError)
 
 	// If we now attempt to execute migrations again, it should fail with an

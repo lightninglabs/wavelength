@@ -229,8 +229,9 @@ func (s *SqliteStore) backupAndMigrate(mig *migrate.Migrate,
 			"Creating database backup (before applying migration(s))",
 		)
 
-		err := backupSqliteDatabase(s.DB, s.cfg.DatabaseFileName,
-			s.log)
+		err := backupSqliteDatabase(
+			s.DB, s.cfg.DatabaseFileName, s.log,
+		)
 		if err != nil {
 			return err
 		}
