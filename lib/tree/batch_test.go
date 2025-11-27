@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/darepo-client/lib/closure"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
@@ -48,17 +49,19 @@ func TestBuildVTXOTree(t *testing.T) {
 	}
 
 	t.Run("single VTXO tree", func(t *testing.T) {
-		// Create VTXO script.
-		vtxoScript, err := txscript.PayToTaprootScript(user1PubKey)
+		sweepDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 144,
+		}
+
+		// Create VTXO descriptor using the new constructor.
+		vtxoDesc, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(5000), user1PubKey, operatorPubKey,
+			sweepDelay,
+		)
 		require.NoError(t, err)
 
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    vtxoScript,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1PubKey,
-			},
-		}
+		vtxos := []VTXODescriptor{*vtxoDesc}
 
 		tree, err := BuildVTXOTree(
 			batchOutpoint,
@@ -66,8 +69,8 @@ func TestBuildVTXOTree(t *testing.T) {
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
-			144, // sweep delay
-			2,   // radix
+			sweepDelay,
+			2, // radix
 		)
 		require.NoError(t, err)
 		require.NotNil(t, tree)
@@ -85,7 +88,11 @@ func TestBuildVTXOTree(t *testing.T) {
 		// Should have VTXO output + anchor output.
 		require.Len(t, tree.Root.Outputs, 2)
 		require.Equal(t, int64(5000), tree.Root.Outputs[0].Value)
-		require.Equal(t, vtxoScript, tree.Root.Outputs[0].PkScript)
+
+		// Verify output script matches derived PkScript.
+		expectedPkScript, err := vtxoDesc.PkScript()
+		require.NoError(t, err)
+		require.Equal(t, expectedPkScript, tree.Root.Outputs[0].PkScript)
 		require.Equal(t, int64(0), tree.Root.Outputs[1].Value)
 
 		// Should have operator + user1 as cosigners.
@@ -95,24 +102,24 @@ func TestBuildVTXOTree(t *testing.T) {
 	})
 
 	t.Run("two VTXO tree", func(t *testing.T) {
-		vtxo1Script, err := txscript.PayToTaprootScript(user1PubKey)
-		require.NoError(t, err)
-
-		vtxo2Script, err := txscript.PayToTaprootScript(user2PubKey)
-		require.NoError(t, err)
-
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    vtxo1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1PubKey,
-			},
-			{
-				PkScript:    vtxo2Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user2PubKey,
-			},
+		sweepDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 144,
 		}
+
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(5000), user1PubKey, operatorPubKey,
+			sweepDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(3000), user2PubKey, operatorPubKey,
+			sweepDelay,
+		)
+		require.NoError(t, err)
+
+		vtxos := []VTXODescriptor{*vtxo1, *vtxo2}
 
 		tree, err := BuildVTXOTree(
 			batchOutpoint,
@@ -120,7 +127,7 @@ func TestBuildVTXOTree(t *testing.T) {
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
-			144,
+			sweepDelay,
 			2,
 		)
 		require.NoError(t, err)
@@ -164,20 +171,23 @@ func TestBuildVTXOTree(t *testing.T) {
 	})
 
 	t.Run("five VTXO tree with radix 2", func(t *testing.T) {
+		sweepDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 144,
+		}
+
 		// Create 5 VTXOs with different amounts.
 		vtxos := make([]VTXODescriptor, 5)
 		for i := 0; i < 5; i++ {
 			key, err := btcec.NewPrivateKey()
 			require.NoError(t, err)
 
-			script, err := txscript.PayToTaprootScript(key.PubKey())
+			vtxo, err := NewDefaultVTXODescriptor(
+				btcutil.Amount(1000*(5-i)), key.PubKey(),
+				operatorPubKey, sweepDelay,
+			)
 			require.NoError(t, err)
-
-			vtxos[i] = VTXODescriptor{
-				PkScript:    script,
-				Amount:      btcutil.Amount(1000 * (5 - i)),
-				CoSignerKey: key.PubKey(),
-			}
+			vtxos[i] = *vtxo
 		}
 
 		tree, err := BuildVTXOTree(
@@ -186,7 +196,7 @@ func TestBuildVTXOTree(t *testing.T) {
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
-			144,
+			sweepDelay,
 			2,
 		)
 		require.NoError(t, err)
@@ -214,20 +224,23 @@ func TestBuildVTXOTree(t *testing.T) {
 	})
 
 	t.Run("error cases", func(t *testing.T) {
-		vtxoScript, err := txscript.PayToTaprootScript(user1PubKey)
-		require.NoError(t, err)
-
-		validVTXO := VTXODescriptor{
-			PkScript:    vtxoScript,
-			Amount:      btcutil.Amount(1000),
-			CoSignerKey: user1PubKey,
+		sweepDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 144,
 		}
+
+		validVTXOPtr, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(1000), user1PubKey, operatorPubKey,
+			sweepDelay,
+		)
+		require.NoError(t, err)
+		validVTXO := *validVTXOPtr
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
 				[]VTXODescriptor{},
-				operatorPubKey, sweepPubKey, 144, 2,
+				operatorPubKey, sweepPubKey, sweepDelay, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -239,7 +252,7 @@ func TestBuildVTXOTree(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
 				[]VTXODescriptor{validVTXO},
-				operatorPubKey, sweepPubKey, 144, 1,
+				operatorPubKey, sweepPubKey, sweepDelay, 1,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -251,7 +264,7 @@ func TestBuildVTXOTree(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
 				[]VTXODescriptor{validVTXO},
-				nil, sweepPubKey, 144, 2,
+				nil, sweepPubKey, sweepDelay, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -262,7 +275,7 @@ func TestBuildVTXOTree(t *testing.T) {
 			tree, err := BuildVTXOTree(
 				batchOutpoint, batchOutput,
 				[]VTXODescriptor{validVTXO},
-				operatorPubKey, nil, 144, 2,
+				operatorPubKey, nil, sweepDelay, 2,
 			)
 			require.Error(t, err)
 			require.Nil(t, tree)
@@ -283,37 +296,41 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 	}
 	batchOutput := &wire.TxOut{Value: 10000, PkScript: []byte("batch")}
 
+	sweepDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
+
 	// Create 3 VTXOs with SAME amount but different scripts.
-	// The scripts are intentionally out of lexicographic order.
-	key10, _ := testutils.CreateKey(10)
-	script1, _ := txscript.PayToTaprootScript(key10)
-
-	key20, _ := testutils.CreateKey(20)
-	script2, _ := txscript.PayToTaprootScript(key20)
-
-	key30, _ := testutils.CreateKey(30)
-	script3, _ := txscript.PayToTaprootScript(key30)
-
 	coSigner1, _ := testutils.CreateKey(101)
 	coSigner2, _ := testutils.CreateKey(102)
 	coSigner3, _ := testutils.CreateKey(103)
 
-	vtxos := []VTXODescriptor{
-		{PkScript: script3, Amount: 1000, CoSignerKey: coSigner3},
-		{PkScript: script1, Amount: 1000, CoSignerKey: coSigner1},
-		{PkScript: script2, Amount: 1000, CoSignerKey: coSigner2},
-	}
+	vtxo1, err := NewDefaultVTXODescriptor(1000, coSigner1, operatorKey,
+		sweepDelay)
+	require.NoError(t, err)
+
+	vtxo2, err := NewDefaultVTXODescriptor(1000, coSigner2, operatorKey,
+		sweepDelay)
+	require.NoError(t, err)
+
+	vtxo3, err := NewDefaultVTXODescriptor(1000, coSigner3, operatorKey,
+		sweepDelay)
+	require.NoError(t, err)
+
+	// Order intentionally mixed.
+	vtxos := []VTXODescriptor{*vtxo3, *vtxo1, *vtxo2}
 
 	// Build tree multiple times - should be identical.
 	tree1, err := BuildVTXOTree(
-		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey, 144,
-		2,
+		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey,
+		sweepDelay, 2,
 	)
 	require.NoError(t, err)
 
 	tree2, err := BuildVTXOTree(
-		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey, 144,
-		2,
+		batchOutpoint, batchOutput, vtxos, operatorKey, sweepKey,
+		sweepDelay, 2,
 	)
 	require.NoError(t, err)
 
@@ -596,22 +613,21 @@ func TestBuildBatchOutput(t *testing.T) {
 	sweepKey, _ := testutils.CreateKey(2)
 
 	user1Key, _ := testutils.CreateKey(10)
-	user1Script, _ := txscript.PayToTaprootScript(user1Key)
-
 	user2Key, _ := testutils.CreateKey(20)
-	user2Script, _ := txscript.PayToTaprootScript(user2Key)
+
+	sweepDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
 
 	t.Run("single VTXO", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1Key,
-			},
-		}
+		vtxo, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(5000), user1Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
 
 		output, err := BuildBatchOutput(
-			vtxos, operatorKey, sweepKey, 144,
+			[]VTXODescriptor{*vtxo}, operatorKey, sweepKey, sweepDelay,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, output)
@@ -624,21 +640,19 @@ func TestBuildBatchOutput(t *testing.T) {
 	})
 
 	t.Run("multiple VTXOs", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1Key,
-			},
-			{
-				PkScript:    user2Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user2Key,
-			},
-		}
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(5000), user1Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(3000), user2Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
 
 		output, err := BuildBatchOutput(
-			vtxos, operatorKey, sweepKey, 144,
+			[]VTXODescriptor{*vtxo1, *vtxo2}, operatorKey, sweepKey,
+			sweepDelay,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, output)
@@ -652,21 +666,19 @@ func TestBuildBatchOutput(t *testing.T) {
 
 	t.Run("duplicate cosigners handled", func(t *testing.T) {
 		// Same user has 2 VTXOs.
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(2000),
-				CoSignerKey: user1Key,
-			},
-			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user1Key, // Same key!
-			},
-		}
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(2000), user1Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(3000), user1Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
 
 		output, err := BuildBatchOutput(
-			vtxos, operatorKey, sweepKey, 144,
+			[]VTXODescriptor{*vtxo1, *vtxo2}, operatorKey, sweepKey,
+			sweepDelay,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, output)
@@ -676,16 +688,16 @@ func TestBuildBatchOutput(t *testing.T) {
 	})
 
 	t.Run("error cases", func(t *testing.T) {
-		validVTXO := VTXODescriptor{
-			PkScript:    user1Script,
-			Amount:      btcutil.Amount(1000),
-			CoSignerKey: user1Key,
-		}
+		validVTXOPtr, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(1000), user1Key, operatorKey, sweepDelay,
+		)
+		require.NoError(t, err)
+		validVTXO := *validVTXOPtr
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
 				[]VTXODescriptor{},
-				operatorKey, sweepKey, 144,
+				operatorKey, sweepKey, sweepDelay,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -695,7 +707,7 @@ func TestBuildBatchOutput(t *testing.T) {
 		t.Run("nil operator key fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
 				[]VTXODescriptor{validVTXO},
-				nil, sweepKey, 144,
+				nil, sweepKey, sweepDelay,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -705,7 +717,7 @@ func TestBuildBatchOutput(t *testing.T) {
 		t.Run("nil sweep key fails", func(t *testing.T) {
 			output, err := BuildBatchOutput(
 				[]VTXODescriptor{validVTXO},
-				operatorKey, nil, 144,
+				operatorKey, nil, sweepDelay,
 			)
 			require.Error(t, err)
 			require.Nil(t, output)
@@ -798,49 +810,44 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	require.NoError(t, err)
 	key3Pub := key3.PubKey()
 
-	// Create a valid taproot script for testing.
-	validTaprootScript, err := txscript.PayToTaprootScript(key1Pub)
+	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	operatorPub := operatorKey.PubKey()
+
+	exitDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
 
 	t.Run("valid single VTXO", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
-			},
-		}
+		vtxo, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(10000), key1Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err := ValidateVTXODescriptors(vtxos)
+		err = ValidateVTXODescriptors([]VTXODescriptor{*vtxo})
 		require.NoError(t, err)
 	})
 
 	t.Run("valid multiple VTXOs", func(t *testing.T) {
-		script2, err := txscript.PayToTaprootScript(key2Pub)
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(10000), key1Pub, operatorPub, exitDelay,
+		)
 		require.NoError(t, err)
 
-		script3, err := txscript.PayToTaprootScript(key3Pub)
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(20000), key2Pub, operatorPub, exitDelay,
+		)
 		require.NoError(t, err)
 
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
-			},
-			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key2Pub,
-			},
-			{
-				PkScript:    script3,
-				Amount:      btcutil.Amount(30000),
-				CoSignerKey: key3Pub,
-			},
-		}
+		vtxo3, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(30000), key3Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err = ValidateVTXODescriptors(vtxos)
+		err = ValidateVTXODescriptors([]VTXODescriptor{
+			*vtxo1, *vtxo2, *vtxo3,
+		})
 		require.NoError(t, err)
 	})
 
@@ -857,37 +864,37 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	})
 
 	t.Run("zero amount fails", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(0),
-				CoSignerKey: key1Pub,
-			},
-		}
+		vtxo, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(1000), key1Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err := ValidateVTXODescriptors(vtxos)
+		// Manually set amount to 0 to test validation.
+		vtxo.Amount = 0
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{*vtxo})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid amount")
 	})
 
 	t.Run("negative amount fails", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(-1000),
-				CoSignerKey: key1Pub,
-			},
-		}
+		vtxo, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(1000), key1Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err := ValidateVTXODescriptors(vtxos)
+		// Manually set amount to negative to test validation.
+		vtxo.Amount = btcutil.Amount(-1000)
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{*vtxo})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid amount")
 	})
 
-	t.Run("empty PkScript fails", func(t *testing.T) {
+	t.Run("empty Scripts fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    []byte{},
+				Scripts:     []string{},
 				Amount:      btcutil.Amount(10000),
 				CoSignerKey: key1Pub,
 			},
@@ -895,13 +902,13 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		err := ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "empty PkScript")
+		require.Contains(t, err.Error(), "empty Scripts")
 	})
 
-	t.Run("nil PkScript fails", func(t *testing.T) {
+	t.Run("nil Scripts fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    nil,
+				Scripts:     nil,
 				Amount:      btcutil.Amount(10000),
 				CoSignerKey: key1Pub,
 			},
@@ -909,21 +916,13 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		err := ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "empty PkScript")
+		require.Contains(t, err.Error(), "empty Scripts")
 	})
 
-	t.Run("non-taproot script fails", func(t *testing.T) {
-		// Create a P2WPKH script (not taproot).
-		p2wpkhScript := []byte{
-			0x00, 0x14, // OP_0 + 20 bytes
-			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-			0x11, 0x12, 0x13, 0x14,
-		}
-
+	t.Run("invalid script hex fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    p2wpkhScript,
+				Scripts:     []string{"not_valid_hex"},
 				Amount:      btcutil.Amount(10000),
 				CoSignerKey: key1Pub,
 			},
@@ -931,71 +930,64 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		err := ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid taproot script")
+		require.Contains(t, err.Error(), "invalid scripts")
 	})
 
 	t.Run("nil co-signer key fails", func(t *testing.T) {
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: nil,
-			},
-		}
+		vtxo, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(10000), key1Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err := ValidateVTXODescriptors(vtxos)
+		// Manually set CoSignerKey to nil.
+		vtxo.CoSignerKey = nil
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{*vtxo})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "nil co-signer key")
 	})
 
 	t.Run("duplicate co-signer keys fail", func(t *testing.T) {
-		script2, err := txscript.PayToTaprootScript(key2Pub)
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(10000), key1Pub, operatorPub, exitDelay,
+		)
 		require.NoError(t, err)
 
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
-			},
-			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key1Pub, // Duplicate!
-			},
-		}
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(20000), key2Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err = ValidateVTXODescriptors(vtxos)
+		// Set the second VTXO to use the same cosigner key.
+		vtxo2.CoSignerKey = key1Pub
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{*vtxo1, *vtxo2})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "duplicate co-signer key")
 	})
 
 	t.Run("duplicate detection multiple VTXOs", func(t *testing.T) {
-		script2, err := txscript.PayToTaprootScript(key2Pub)
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(10000), key1Pub, operatorPub, exitDelay,
+		)
 		require.NoError(t, err)
 
-		script3, err := txscript.PayToTaprootScript(key3Pub)
+		vtxo2, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(20000), key2Pub, operatorPub, exitDelay,
+		)
 		require.NoError(t, err)
 
-		vtxos := []VTXODescriptor{
-			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
-			},
-			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key2Pub,
-			},
-			{
-				PkScript:    script3,
-				Amount:      btcutil.Amount(30000),
-				CoSignerKey: key2Pub, // Duplicate of second!
-			},
-		}
+		vtxo3, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(30000), key3Pub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
 
-		err = ValidateVTXODescriptors(vtxos)
+		// Set the third VTXO to use key2's cosigner key.
+		vtxo3.CoSignerKey = key2Pub
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{
+			*vtxo1, *vtxo2, *vtxo3,
+		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "duplicate co-signer key")
 	})
@@ -1101,58 +1093,398 @@ func TestValidateConnectorDescriptor(t *testing.T) {
 	})
 }
 
-// TestMakeVTXODescriptor tests the VTXO descriptor construction helper.
+// TestMakeVTXODescriptor tests the VTXO descriptor construction helpers.
 func TestMakeVTXODescriptor(t *testing.T) {
-	timeoutKey, _ := testutils.CreateKey(1)
+	ownerKey, _ := testutils.CreateKey(1)
 	cosignerKey, _ := testutils.CreateKey(2)
 
-	t.Run("creates valid descriptor", func(t *testing.T) {
-		desc, err := NewVTXODescriptor(
+	exitDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
+
+	t.Run("NewDefaultVTXODescriptor creates valid descriptor", func(t *testing.T) {
+		desc, err := NewDefaultVTXODescriptor(
 			btcutil.Amount(5000),
-			timeoutKey,
+			ownerKey,
 			cosignerKey,
-			144, // exit delay
+			exitDelay,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, desc)
 
 		// Verify descriptor fields.
 		require.Equal(t, btcutil.Amount(5000), desc.Amount)
-		require.Equal(t, timeoutKey, desc.CoSignerKey)
+		require.Equal(t, ownerKey, desc.CoSignerKey)
+		require.NotEmpty(t, desc.Scripts)
 
-		// Verify PkScript is valid taproot.
-		require.NotEmpty(t, desc.PkScript)
-		require.True(t, txscript.IsPayToTaproot(desc.PkScript))
+		// Verify PkScript() derives valid taproot.
+		pkScript, err := desc.PkScript()
+		require.NoError(t, err)
+		require.NotEmpty(t, pkScript)
+		require.True(t, txscript.IsPayToTaproot(pkScript))
+
+		// Verify VtxoScript() parses correctly.
+		vtxoScript, err := desc.VtxoScript()
+		require.NoError(t, err)
+		require.Len(t, vtxoScript.Closures, 2) // Exit + Collab
 
 		// Verify descriptor passes validation.
 		err = ValidateVTXODescriptors([]VTXODescriptor{*desc})
 		require.NoError(t, err)
 	})
 
+	t.Run("NewVTXODescriptor accepts custom closures", func(t *testing.T) {
+		// Create a custom VTXO script with only an exit closure.
+		customScript := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				&closure.CSVSigClosure{
+					PubKey:   ownerKey,
+					Locktime: exitDelay,
+				},
+			},
+		}
+
+		desc, err := NewVTXODescriptor(
+			btcutil.Amount(3000), customScript, ownerKey,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, desc)
+
+		// Verify closure was preserved.
+		vtxoScript, err := desc.VtxoScript()
+		require.NoError(t, err)
+		require.Len(t, vtxoScript.Closures, 1)
+
+		// Verify it's a CSVSigClosure.
+		_, ok := vtxoScript.Closures[0].(*closure.CSVSigClosure)
+		require.True(t, ok)
+	})
+
 	t.Run("integrates with scripts package", func(t *testing.T) {
 		// Create multiple VTXOs with different cosigner keys.
 		cosigner1, _ := testutils.CreateKey(10)
 		operator, _ := testutils.CreateKey(20)
-		desc1, err := NewVTXODescriptor(
+		desc1, err := NewDefaultVTXODescriptor(
 			btcutil.Amount(1000),
 			cosigner1,
 			operator,
-			144,
+			exitDelay,
 		)
 		require.NoError(t, err)
 
-		cosigner2, _ := testutils.CreateKey(20)
-		desc2, err := NewVTXODescriptor(
+		cosigner2, _ := testutils.CreateKey(30)
+		desc2, err := NewDefaultVTXODescriptor(
 			btcutil.Amount(2000),
 			cosigner2,
 			operator,
-			144,
+			exitDelay,
 		)
 		require.NoError(t, err)
 
 		// Both should be valid and have unique cosigners.
 		err = ValidateVTXODescriptors([]VTXODescriptor{*desc1, *desc2})
 		require.NoError(t, err)
+	})
+
+	t.Run("error cases", func(t *testing.T) {
+		t.Run("nil vtxo script fails", func(t *testing.T) {
+			_, err := NewVTXODescriptor(
+				btcutil.Amount(1000), nil, ownerKey,
+			)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "vtxo script cannot be nil")
+		})
+
+		t.Run("nil cosigner key fails", func(t *testing.T) {
+			customScript := &closure.TapscriptsVtxoScript{
+				Closures: []closure.Closure{
+					&closure.CSVSigClosure{
+						PubKey:   ownerKey,
+						Locktime: exitDelay,
+					},
+				},
+			}
+			_, err := NewVTXODescriptor(
+				btcutil.Amount(1000), customScript, nil,
+			)
+			require.Error(t, err)
+			require.Contains(t, err.Error(),
+				"cosigner key cannot be nil")
+		})
+	})
+}
+
+// TestBuildVTXOTreeWithCustomClosures tests that the VTXO tree can be built
+// with non-default closure configurations, verifying that custom VTXODescriptors
+// created via NewVTXODescriptor work correctly and that the closure roundtrip
+// through VtxoScript() preserves the original closure structure.
+func TestBuildVTXOTreeWithCustomClosures(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, _ := testutils.CreateKey(1)
+	sweepKey, _ := testutils.CreateKey(2)
+
+	batchOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("custom_closures_test")),
+		Index: 0,
+	}
+	batchOutput := &wire.TxOut{
+		Value:    20000,
+		PkScript: []byte("batch_script"),
+	}
+
+	sweepDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
+
+	t.Run("CSVMultisigClosure exit with MultisigClosure collab", func(t *testing.T) {
+		client1Key, _ := testutils.CreateKey(10)
+		client2Key, _ := testutils.CreateKey(11)
+
+		exitDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 100,
+		}
+
+		// Create a custom VTXO script with CSVMultisigClosure for exit.
+		customScript := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				// Exit: 2-of-2 multisig after CSV delay.
+				&closure.CSVMultisigClosure{
+					MultisigClosure: closure.MultisigClosure{
+						PubKeys: []*btcec.PublicKey{
+							client1Key, client2Key,
+						},
+						Type: closure.MultisigTypeChecksig,
+					},
+					Locktime: exitDelay,
+				},
+				// Collab: all three parties.
+				&closure.MultisigClosure{
+					PubKeys: []*btcec.PublicKey{
+						client1Key, client2Key, operatorKey,
+					},
+					Type: closure.MultisigTypeChecksig,
+				},
+			},
+		}
+
+		// Create VTXO descriptor with custom closures.
+		vtxoDesc, err := NewVTXODescriptor(
+			btcutil.Amount(5000), customScript, client1Key,
+		)
+		require.NoError(t, err)
+
+		// Verify roundtrip: VtxoScript() should reconstruct closures.
+		roundtrip, err := vtxoDesc.VtxoScript()
+		require.NoError(t, err)
+		require.Len(t, roundtrip.Closures, 2)
+
+		// Verify first closure is CSVMultisigClosure.
+		csvMultisig, ok := roundtrip.Closures[0].(*closure.CSVMultisigClosure)
+		require.True(t, ok, "first closure should be CSVMultisigClosure")
+		require.Len(t, csvMultisig.PubKeys, 2)
+		require.Equal(t, exitDelay.Value, csvMultisig.Locktime.Value)
+
+		// Verify second closure is MultisigClosure.
+		multisig, ok := roundtrip.Closures[1].(*closure.MultisigClosure)
+		require.True(t, ok, "second closure should be MultisigClosure")
+		require.Len(t, multisig.PubKeys, 3)
+
+		// Build tree with custom VTXO.
+		tree, err := BuildVTXOTree(
+			batchOutpoint, batchOutput,
+			[]VTXODescriptor{*vtxoDesc},
+			operatorKey, sweepKey, sweepDelay, 2,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, tree)
+
+		// Verify tree structure.
+		require.True(t, tree.Root.IsLeaf())
+		require.Len(t, tree.Root.Outputs, 2) // VTXO + anchor
+
+		// Verify PkScript matches the custom script.
+		expectedPkScript, err := vtxoDesc.PkScript()
+		require.NoError(t, err)
+		require.Equal(t, expectedPkScript, tree.Root.Outputs[0].PkScript)
+	})
+
+	t.Run("exit-only VTXO (single closure, no collab)", func(t *testing.T) {
+		clientKey, _ := testutils.CreateKey(20)
+
+		exitDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 50,
+		}
+
+		// VTXO with only a single exit closure - no collaborative path.
+		customScript := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				&closure.CSVSigClosure{
+					PubKey:   clientKey,
+					Locktime: exitDelay,
+				},
+			},
+		}
+
+		vtxoDesc, err := NewVTXODescriptor(
+			btcutil.Amount(3000), customScript, clientKey,
+		)
+		require.NoError(t, err)
+
+		// Verify roundtrip preserves the single closure.
+		roundtrip, err := vtxoDesc.VtxoScript()
+		require.NoError(t, err)
+		require.Len(t, roundtrip.Closures, 1)
+
+		csvSig, ok := roundtrip.Closures[0].(*closure.CSVSigClosure)
+		require.True(t, ok, "closure should be CSVSigClosure")
+		require.Equal(t, exitDelay.Value, csvSig.Locktime.Value)
+
+		// Build tree with exit-only VTXO.
+		tree, err := BuildVTXOTree(
+			batchOutpoint, batchOutput,
+			[]VTXODescriptor{*vtxoDesc},
+			operatorKey, sweepKey, sweepDelay, 2,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, tree)
+
+		// Verify output script.
+		expectedPkScript, err := vtxoDesc.PkScript()
+		require.NoError(t, err)
+		require.Equal(t, expectedPkScript, tree.Root.Outputs[0].PkScript)
+	})
+
+	t.Run("multiple VTXOs with different closure configurations", func(t *testing.T) {
+		user1Key, _ := testutils.CreateKey(30)
+		user2Key, _ := testutils.CreateKey(31)
+		user3Key, _ := testutils.CreateKey(32)
+
+		exitDelay := closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: 100,
+		}
+
+		// First VTXO: default configuration.
+		vtxo1, err := NewDefaultVTXODescriptor(
+			btcutil.Amount(1000), user1Key, operatorKey, exitDelay,
+		)
+		require.NoError(t, err)
+
+		// Second VTXO: custom 2-of-2 exit.
+		customScript2 := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				&closure.CSVMultisigClosure{
+					MultisigClosure: closure.MultisigClosure{
+						PubKeys: []*btcec.PublicKey{
+							user2Key, operatorKey,
+						},
+						Type: closure.MultisigTypeChecksig,
+					},
+					Locktime: exitDelay,
+				},
+				&closure.MultisigClosure{
+					PubKeys: []*btcec.PublicKey{
+						user2Key, operatorKey,
+					},
+					Type: closure.MultisigTypeChecksig,
+				},
+			},
+		}
+		vtxo2, err := NewVTXODescriptor(
+			btcutil.Amount(2000), customScript2, user2Key,
+		)
+		require.NoError(t, err)
+
+		// Third VTXO: exit-only.
+		customScript3 := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				&closure.CSVSigClosure{
+					PubKey:   user3Key,
+					Locktime: exitDelay,
+				},
+			},
+		}
+		vtxo3, err := NewVTXODescriptor(
+			btcutil.Amount(3000), customScript3, user3Key,
+		)
+		require.NoError(t, err)
+
+		// Build tree with mixed VTXO types.
+		tree, err := BuildVTXOTree(
+			batchOutpoint, batchOutput,
+			[]VTXODescriptor{*vtxo1, *vtxo2, *vtxo3},
+			operatorKey, sweepKey, sweepDelay, 2,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, tree)
+
+		// Verify all leaves are present.
+		leaves := tree.Root.GetLeafNodes()
+		require.Len(t, leaves, 3)
+
+		// Verify total amount is preserved.
+		var totalAmount int64
+		for _, leaf := range leaves {
+			totalAmount += leaf.Outputs[0].Value
+		}
+		require.Equal(t, int64(6000), totalAmount)
+	})
+
+	t.Run("CLTVMultisigClosure for absolute timelock", func(t *testing.T) {
+		clientKey, _ := testutils.CreateKey(40)
+
+		// CLTV absolute locktime (block height).
+		cltvLocktime := closure.AbsoluteLocktime(850000)
+
+		// VTXO with CLTVMultisigClosure for absolute timelock exit.
+		customScript := &closure.TapscriptsVtxoScript{
+			Closures: []closure.Closure{
+				// Exit: after CLTV block height.
+				&closure.CLTVMultisigClosure{
+					MultisigClosure: closure.MultisigClosure{
+						PubKeys: []*btcec.PublicKey{clientKey},
+						Type:    closure.MultisigTypeChecksig,
+					},
+					Locktime: cltvLocktime,
+				},
+				// Collab path.
+				&closure.MultisigClosure{
+					PubKeys: []*btcec.PublicKey{
+						clientKey, operatorKey,
+					},
+					Type: closure.MultisigTypeChecksig,
+				},
+			},
+		}
+
+		vtxoDesc, err := NewVTXODescriptor(
+			btcutil.Amount(4000), customScript, clientKey,
+		)
+		require.NoError(t, err)
+
+		// Verify roundtrip.
+		roundtrip, err := vtxoDesc.VtxoScript()
+		require.NoError(t, err)
+		require.Len(t, roundtrip.Closures, 2)
+
+		cltvMultisig, ok := roundtrip.Closures[0].(*closure.CLTVMultisigClosure)
+		require.True(t, ok, "first closure should be CLTVMultisigClosure")
+		require.Equal(t, cltvLocktime, cltvMultisig.Locktime)
+
+		// Build tree.
+		tree, err := BuildVTXOTree(
+			batchOutpoint, batchOutput,
+			[]VTXODescriptor{*vtxoDesc},
+			operatorKey, sweepKey, sweepDelay, 2,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, tree)
+		require.True(t, tree.Root.IsLeaf())
 	})
 }
 
@@ -1164,7 +1496,10 @@ func TestNewBranchSweepSpendInfo(t *testing.T) {
 
 	internalKey, _ := testutils.CreateKey(5)
 	sweepKey, _ := testutils.CreateKey(6)
-	csvDelay := uint32(144)
+	csvDelay := closure.RelativeLocktime{
+		Type:  closure.LocktimeTypeBlock,
+		Value: 144,
+	}
 
 	spendInfo, err := NewBranchSweepSpendInfo(
 		internalKey, sweepKey, csvDelay,
@@ -1174,7 +1509,7 @@ func TestNewBranchSweepSpendInfo(t *testing.T) {
 	require.NotEmpty(t, spendInfo.WitnessScript)
 	require.NotEmpty(t, spendInfo.ControlBlock)
 
-	timeoutLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	timeoutLeaf, err := scripts.CSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	require.NoError(t, err)

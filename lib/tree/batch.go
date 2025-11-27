@@ -13,15 +13,19 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/closure"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
 
 // VTXODescriptor defines the complete specification for a single VTXO leaf.
+// It stores the underlying tapscript closures as hex-encoded strings, allowing
+// the full closure information to be preserved and retrieved.
 type VTXODescriptor struct {
-	// PkScript is the P2TR script for the VTXO output. This is typically
-	// generated using scripts.VTXOTapKey which creates a taproot script
-	// with both keyspend (collaborative) and scriptspend (timeout) paths.
-	PkScript []byte
+	// Scripts contains the hex-encoded tapscript leaves for this VTXO.
+	// These can be decoded into Closure objects using closure.ParseVtxoScript().
+	// The scripts define the spending conditions (exit paths, collab paths,
+	// etc.) for this VTXO.
+	Scripts []string
 
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
@@ -31,37 +35,82 @@ type VTXODescriptor struct {
 	CoSignerKey *btcec.PublicKey
 }
 
-// NewVTXODescriptor constructs a VTXODescriptor by building the VTXO taproot
-// script using the scripts package. This is a convenience helper for clients to
-// easily create VTXO descriptors for tree construction.
-func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
-	cosignerKey *btcec.PublicKey, exitDelay uint32) (*VTXODescriptor,
-	error) {
-
-	// Use scripts package to compute the VTXO output key.
-	outputKey, err := scripts.VTXOTapKey(ownerKey, cosignerKey, exitDelay)
+// PkScript derives the P2TR output script from the stored tapscripts.
+func (v *VTXODescriptor) PkScript() ([]byte, error) {
+	vtxoScript, err := closure.ParseVtxoScript(v.Scripts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compute VTXO tap key: %w",
-			err)
+		return nil, fmt.Errorf("failed to parse vtxo scripts: %w", err)
 	}
 
-	// Create the P2TR script.
-	pkScript, err := txscript.PayToTaprootScript(outputKey)
+	key, _, err := vtxoScript.TapTree()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create taproot script: %w",
-			err)
+		return nil, fmt.Errorf("failed to compute tap tree: %w", err)
+	}
+
+	return txscript.PayToTaprootScript(key)
+}
+
+// VtxoScript parses the stored scripts into a TapscriptsVtxoScript.
+func (v *VTXODescriptor) VtxoScript() (*closure.TapscriptsVtxoScript, error) {
+	return closure.ParseVtxoScript(v.Scripts)
+}
+
+// NewVTXODescriptor creates a descriptor from a TapscriptsVtxoScript.
+// The vtxoScript closures are encoded to hex strings for storage, allowing
+// the full closure information to be preserved and retrieved later.
+func NewVTXODescriptor(amount btcutil.Amount,
+	vtxoScript *closure.TapscriptsVtxoScript,
+	coSignerKey *btcec.PublicKey) (*VTXODescriptor, error) {
+
+	if vtxoScript == nil {
+		return nil, fmt.Errorf("vtxo script cannot be nil")
+	}
+
+	if coSignerKey == nil {
+		return nil, fmt.Errorf("cosigner key cannot be nil")
+	}
+
+	// Encode closures to hex strings for storage.
+	scripts, err := vtxoScript.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode vtxo scripts: %w", err)
 	}
 
 	return &VTXODescriptor{
-		PkScript:    pkScript,
+		Scripts:     scripts,
 		Amount:      amount,
-		CoSignerKey: ownerKey,
+		CoSignerKey: coSignerKey,
 	}, nil
 }
 
-// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor.
-func (v VTXODescriptor) ToLeafDescriptor() LeafDescriptor {
-	return LeafDescriptor(v)
+// NewDefaultVTXODescriptor creates a descriptor with the standard exit + collab
+// closures. This is a convenience function for creating VTXOs with the default
+// structure: owner can exit after CSV delay, or owner + cosigner can spend
+// collaboratively.
+func NewDefaultVTXODescriptor(amount btcutil.Amount, ownerKey,
+	cosignerKey *btcec.PublicKey,
+	exitDelay closure.RelativeLocktime) (*VTXODescriptor, error) {
+
+	vtxoScript := closure.NewDefaultVtxoScript(
+		ownerKey, cosignerKey, exitDelay,
+	)
+
+	return NewVTXODescriptor(amount, vtxoScript, ownerKey)
+}
+
+// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor by
+// deriving the PkScript from the stored tapscripts.
+func (v *VTXODescriptor) ToLeafDescriptor() (LeafDescriptor, error) {
+	pkScript, err := v.PkScript()
+	if err != nil {
+		return LeafDescriptor{}, err
+	}
+
+	return LeafDescriptor{
+		PkScript:    pkScript,
+		Amount:      v.Amount,
+		CoSignerKey: v.CoSignerKey,
+	}, nil
 }
 
 // ConnectorDescriptor defines the specification for a connector tree.
@@ -90,19 +139,32 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 
 	seen := make(map[string]struct{})
 
-	for i, vtxo := range vtxos {
+	for i := range vtxos {
+		vtxo := &vtxos[i]
+
 		if vtxo.Amount <= 0 {
 			return fmt.Errorf("VTXO %d has invalid amount: %d", i,
 				vtxo.Amount)
 		}
-		if len(vtxo.PkScript) == 0 {
-			return fmt.Errorf("VTXO %d has empty PkScript", i)
+
+		if len(vtxo.Scripts) == 0 {
+			return fmt.Errorf("VTXO %d has empty Scripts", i)
 		}
-		if !txscript.IsPayToTaproot(vtxo.PkScript) {
+
+		// Validate that scripts can be parsed and produce valid
+		// taproot output.
+		pkScript, err := vtxo.PkScript()
+		if err != nil {
+			return fmt.Errorf("VTXO %d has invalid scripts: %w",
+				i, err)
+		}
+
+		if !txscript.IsPayToTaproot(pkScript) {
 			return fmt.Errorf(
 				"VTXO %d has invalid taproot script", i,
 			)
 		}
+
 		if vtxo.CoSignerKey == nil {
 			return fmt.Errorf("VTXO %d has nil co-signer key", i)
 		}
@@ -173,7 +235,7 @@ func BuildVTXOTree(
 	vtxos []VTXODescriptor,
 	operatorCoSignKey *btcec.PublicKey,
 	sweepKey *btcec.PublicKey,
-	sweepDelay uint32,
+	sweepDelay closure.RelativeLocktime,
 	radix int,
 ) (*Tree, error) {
 
@@ -196,8 +258,12 @@ func BuildVTXOTree(
 
 	// Convert to generic leaf descriptors.
 	leaves := make([]LeafDescriptor, len(vtxos))
-	for i, v := range vtxos {
-		leaves[i] = v.ToLeafDescriptor()
+	for i := range vtxos {
+		leaf, err := vtxos[i].ToLeafDescriptor()
+		if err != nil {
+			return nil, fmt.Errorf("VTXO %d: %w", i, err)
+		}
+		leaves[i] = leaf
 	}
 
 	// Sort leaves by amount (descending) using LPT (Longest Processing
@@ -214,9 +280,7 @@ func BuildVTXOTree(
 	})
 
 	// Compute the sweep tap leaf for branch tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
-		sweepKey, sweepDelay,
-	)
+	sweepTapLeaf, err := scripts.CSVTimeoutTapLeaf(sweepKey, sweepDelay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sweep tap leaf: %w",
 			err)
@@ -276,7 +340,7 @@ func BuildConnectorTree(
 // total amount is simply the sum of all VTXO amounts.
 func BuildBatchOutput(vtxos []VTXODescriptor,
 	operatorMuSigKey *btcec.PublicKey, sweepKey *btcec.PublicKey,
-	sweepDelay uint32) (*wire.TxOut, error) {
+	sweepDelay closure.RelativeLocktime) (*wire.TxOut, error) {
 
 	if len(vtxos) == 0 {
 		return nil, fmt.Errorf("batch output requires at least " +
@@ -292,9 +356,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	}
 
 	// Compute the sweep tap leaf for tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
-		sweepKey, sweepDelay,
-	)
+	sweepTapLeaf, err := scripts.CSVTimeoutTapLeaf(sweepKey, sweepDelay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sweep tap leaf: %w",
 			err)
@@ -398,7 +460,8 @@ func BuildConnectorOutput(
 // sweep path that is committed to in branch transactions. The internalKey
 // parameter must be the pre-tweaked MuSig2 aggregate key for the branch output.
 func NewBranchSweepSpendInfo(
-	internalKey, sweepKey *btcec.PublicKey, csvDelay uint32,
+	internalKey, sweepKey *btcec.PublicKey,
+	csvDelay closure.RelativeLocktime,
 ) (*scripts.VTXOSpendData, error) {
 
 	if internalKey == nil {
@@ -409,9 +472,7 @@ func NewBranchSweepSpendInfo(
 		return nil, fmt.Errorf("sweep key cannot be nil")
 	}
 
-	sweepLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
-		sweepKey, csvDelay,
-	)
+	sweepLeaf, err := scripts.CSVTimeoutTapLeaf(sweepKey, csvDelay)
 	if err != nil {
 		return nil, err
 	}

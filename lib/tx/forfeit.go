@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/closure"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -30,9 +30,9 @@ type VTXOSpendContext struct {
 	// amount.
 	Output *wire.TxOut
 
-	// TapScript contains the taproot script details for the VTXO,
-	// including the internal key and all script paths.
-	TapScript *waddrmgr.Tapscript
+	// VtxoScript contains the closure-based tapscript for the VTXO,
+	// including all script paths (exit and forfeit closures).
+	VtxoScript *closure.TapscriptsVtxoScript
 }
 
 // ConnectorSpendContext describes the connector input being spent.
@@ -107,20 +107,18 @@ func NewForfeitPrevOutFetcher(vtxo *VTXOSpendContext,
 }
 
 // NewVTXOCollabSignDescriptor returns the sign descriptor + spend info for a
-// collaborative VTXO spend.
+// collaborative (forfeit) VTXO spend.
 func NewVTXOCollabSignDescriptor(vtxo *VTXOSpendContext,
 	keyDesc keychain.KeyDescriptor, inputIndex int,
 	sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher) (*input.SignDescriptor,
 	*scripts.VTXOSpendData, error) {
 
-	if vtxo == nil || vtxo.TapScript == nil {
-		return nil, nil, fmt.Errorf("vtxo tapscript must be provided")
+	if vtxo == nil || vtxo.VtxoScript == nil {
+		return nil, nil, fmt.Errorf("vtxo script must be provided")
 	}
 
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		vtxo.TapScript, scripts.VTXOCollabPathLeaf,
-	)
+	spendInfo, err := scripts.VtxoCollabSpendInfo(vtxo.VtxoScript)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to derive collaborative "+
 			"spend info: %w", err)

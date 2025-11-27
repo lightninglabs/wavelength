@@ -1,41 +1,58 @@
 package scripts
 
-// VTXO Taproot Tree Structure:
+// VTXO Closure System:
 //
-// - The "Owner" is the participant who is able to unilaterally recover funds
-//   after the CSV delay expires.
-// - The "Cosigner" is the participant who collaborates with the owner to spend
-//   the output at any time.
+// A VTXO (Virtual Transaction Output) is a taproot output built from a
+// collection of closures. Each closure defines a spend condition as a
+// tapscript leaf. The closure system is flexible - VTXOs can have any number
+// of closures, enabling various spend paths and conditions.
+//
+// Closure Types:
+//   - CSVSigClosure: Exit path with CSV timelock, single owner key
+//   - CSVMultisigClosure: Exit path with CSV timelock, multiple keys
+//   - MultisigClosure: Collaborative path requiring multiple signatures
+//   - CLTVMultisigClosure: Collaborative path with absolute timelock
+//   - ConditionMultisigClosure: Collaborative path with custom conditions
+//
+// Key Requirement:
+//   Every VTXO MUST have at least one exit closure (CSVSigClosure or
+//   CSVMultisigClosure) to ensure the owner can always unilaterally recover
+//   funds after the timeout.
+//
+// NOTE: The exit vs collaborative distinction is semantic, not structural.
+// Exit closures contain only owner key(s) - owner can spend unilaterally.
+// Collaborative closures include signer key - require signer cooperation.
+// The type-based categorization (ExitClosures/ForfeitClosures) is a
+// simplification that works for the standard VTXO structure.
+//
+// Default VTXO Structure (created by NewDefaultVtxoScript):
 //
 //	                    Taproot Output
 //	                   (NUMS Key Path)
 //	                         |
 //	            +------------+------------+
 //	            |                         |
-//	    [Collaborative Path]      [Timeout Path]
-//	    (Leaf Index: 0)           (Leaf Index: 1)
+//	    [Exit Closure]           [Collab Closure]
+//	    CSVSigClosure            MultisigClosure
 //	            |                         |
 //	  +-------------------+     +--------------------+
-//	  | Owner PK          |     | Owner PK          |
-//	  | OP_CHECKSIGVERIFY |     | OP_CHECKSIG        |
-//	  | Cosigner PK       |     | <exit_delay>       |
-//	  | OP_CHECKSIG       |     | OP_CSV             |
-//	  +-------------------+     | OP_DROP            |
-//	                            +--------------------+
+//	  | <exit_delay>       |     | Owner PK          |
+//	  | OP_CSV             |     | OP_CHECKSIGVERIFY |
+//	  | OP_DROP            |     | Cosigner PK       |
+//	  | Owner PK           |     | OP_CHECKSIG       |
+//	  | OP_CHECKSIG        |     +--------------------+
+//	  +-------------------+
 //
-// Spending Paths:
-//   - Collaborative: Both owner and cosigner signatures required (anytime)
-//   - Timeout: Owner signature only (after CSV delay expires)
-//   - Key Path: Unspendable (NUMS point with no known discrete log)
+// Custom VTXOs can include additional closures with different conditions,
+// multiple exit paths with varying delays, or conditional spend paths.
 
 import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/closure"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -56,98 +73,17 @@ const (
 	//
 	// 1 + 64 bytes for owner signature + length byte.
 	UnilateralTimeoutLeafWitnessSize = lntypes.WeightUnit(1 + 64)
-
-	// vtxoCollabPathLeafIndex is the index of the collaborative multisig
-	// path leaf in the VTXO tapscript tree.
-	vtxoCollabPathLeafIndex = 0
-
-	// vtxoTimeoutPathLeafIndex is the index of the timeout path leaf in the
-	// VTXO tapscript tree.
-	vtxoTimeoutPathLeafIndex = 1
 )
 
-// VTXOLeafType is an enum-like type to identify the different leaves in a VTXO
-// tapscript tree.
-type VTXOLeafType int
+var (
+	// ErrNoExitClosure is returned when a VTXO script has no exit closure.
+	ErrNoExitClosure = fmt.Errorf("no exit closure found in vtxo script")
 
-const (
-	// VTXOCollabPathLeaf is the leaf type for the collaborative multisig
-	// path in a VTXO tapscript tree.
-	VTXOCollabPathLeaf VTXOLeafType = iota
-
-	// VTXOTimeoutPathLeaf is the leaf type for the timeout path in a VTXO
-	// tapscript tree.
-	VTXOTimeoutPathLeaf
+	// ErrNoCollabClosure is returned when a VTXO script has no
+	// collaborative closure.
+	ErrNoCollabClosure = fmt.Errorf("no collaborative closure found in " +
+		"vtxo script")
 )
-
-// LeafIndex returns the index of the VTXO leaf type in the tapscript tree.
-func (l VTXOLeafType) LeafIndex() (int, error) {
-	switch l {
-	case VTXOCollabPathLeaf:
-		return vtxoCollabPathLeafIndex, nil
-
-	case VTXOTimeoutPathLeaf:
-		return vtxoTimeoutPathLeafIndex, nil
-
-	default:
-		return 0, fmt.Errorf("unknown VTXO leaf type: %d", l)
-	}
-}
-
-// VTXOTapScript constructs the full tapscript for a VTXO type output. This
-// output structure is used for both boarding UTXOs as well as VTXOs. The tree
-// consists of:
-//   - an unspendable NUMS keypath.
-//   - Collaborative spend path between owner and cosigner.
-//   - Timeout path allowing the owner to recover funds after a CSV exit delay.
-func VTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey,
-	exitDelay uint32) (*waddrmgr.Tapscript, error) {
-
-	collabLeaf, err := MultiSigCollabTapLeaf(ownerKey, cosignerKey)
-	if err != nil {
-		return nil, err
-	}
-
-	// Timeout path is always controlled by the owner.
-	timeoutLeaf, err := UnilateralCSVTimeoutTapLeaf(ownerKey, exitDelay)
-	if err != nil {
-		return nil, err
-	}
-
-	tapscript := input.TapscriptFullTree(
-		&ARKNUMSKey, collabLeaf, timeoutLeaf,
-	)
-
-	// Compute and set the root hash since TapscriptFullTree doesn't
-	// populate it. Callers need this to construct taproot addresses.
-	tree := txscript.AssembleTaprootScriptTree(tapscript.Leaves...)
-	rootHash := tree.RootNode.TapHash()
-	tapscript.RootHash = rootHash[:]
-
-	return tapscript, nil
-}
-
-// VTXOTapKey computes the taproot output key for a standard VTXO tapscript.
-// The timeout path is controlled by the owner key.
-func VTXOTapKey(ownerKey, cosignerKey *btcec.PublicKey,
-	exitDelay uint32) (*btcec.PublicKey, error) {
-
-	vtxoTapscript, err := VTXOTapScript(
-		ownerKey, cosignerKey, exitDelay,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create VTXO tapscript: %w",
-			err)
-	}
-
-	// Compute the taproot output key from the internal key and tree root.
-	outputKey := txscript.ComputeTaprootOutputKey(
-		vtxoTapscript.ControlBlock.InternalKey,
-		vtxoTapscript.RootHash,
-	)
-
-	return outputKey, nil
-}
 
 // VTXOSpendData houses the necessary information needed to spend a VTXO
 // output via either the collaborative multisig path or the timeout path.
@@ -159,45 +95,141 @@ type VTXOSpendData struct {
 	ControlBlock []byte
 }
 
-// NewVTXOSpendInfo derives the spend information for the specified leaf
-// type from the provided tapscript.
-func NewVTXOSpendInfo(tapscript *waddrmgr.Tapscript,
-	leaf VTXOLeafType) (*VTXOSpendData, error) {
+// NewVtxoScript creates a VTXO script from the provided closures.
+// Note: Callers should ensure at least one CSVMultisigClosure (exit closure)
+// is included to allow unilateral recovery.
+func NewVtxoScript(closures []closure.Closure) *closure.TapscriptsVtxoScript {
+	return &closure.TapscriptsVtxoScript{Closures: closures}
+}
 
-	leafIndex, err := leaf.LeafIndex()
+// HasExitClosure returns true if the VTXO script contains at least one exit
+// closure (CSVMultisigClosure). Every valid VTXO must have an exit closure.
+func HasExitClosure(vtxoScript *closure.TapscriptsVtxoScript) bool {
+	return len(vtxoScript.ExitClosures()) > 0
+}
+
+// NewDefaultVtxoScript creates a standard VTXO script with exit (CSV timeout)
+// and collaborative (multisig) paths using the closure system.
+func NewDefaultVtxoScript(owner, cosigner *btcec.PublicKey,
+	exitDelay closure.RelativeLocktime) *closure.TapscriptsVtxoScript {
+
+	return closure.NewDefaultVtxoScript(owner, cosigner, exitDelay)
+}
+
+// VtxoTapKey computes the taproot output key for a standard VTXO tapscript.
+func VtxoTapKey(owner, cosigner *btcec.PublicKey,
+	exitDelay closure.RelativeLocktime) (*btcec.PublicKey, error) {
+
+	vtxoScript := closure.NewDefaultVtxoScript(owner, cosigner, exitDelay)
+	key, _, err := vtxoScript.TapTree()
+	return key, err
+}
+
+// VtxoPkScript returns the P2TR script for a VTXO.
+func VtxoPkScript(owner, cosigner *btcec.PublicKey,
+	exitDelay closure.RelativeLocktime) ([]byte, error) {
+
+	key, err := VtxoTapKey(owner, cosigner, exitDelay)
 	if err != nil {
 		return nil, err
 	}
 
-	// Ensure the leaf index is within bounds before accessing.
-	if len(tapscript.Leaves) <= leafIndex {
-		return nil, fmt.Errorf("leaf index %d out of bounds, "+
-			"tapscript has %d leaves", leafIndex,
-			len(tapscript.Leaves))
-	}
+	return txscript.PayToTaprootScript(key)
+}
 
-	// Get the leaf.
-	targetLeaf := tapscript.Leaves[leafIndex]
+// NewVtxoSpendInfo derives the spend information for the specified closure
+// index from the provided VTXO script.
+func NewVtxoSpendInfo(vtxoScript *closure.TapscriptsVtxoScript,
+	closureIndex int) (*VTXOSpendData, error) {
 
-	// Derive the full tap tree to extract the control block for the
-	// target leaf.
-	tapTree := txscript.AssembleTaprootScriptTree(tapscript.Leaves...)
-	if len(tapTree.LeafMerkleProofs) <= leafIndex {
-		return nil, fmt.Errorf("missing taproot proof for vtxo leaf")
-	}
-
-	leafProof := tapTree.LeafMerkleProofs[leafIndex]
-
-	controlBlock := leafProof.ToControlBlock(&ARKNUMSKey)
-	ctrlBytes, err := controlBlock.ToBytes()
+	proof, err := vtxoScript.GetSpendInfo(closureIndex)
 	if err != nil {
 		return nil, err
 	}
 
 	return &VTXOSpendData{
-		WitnessScript: targetLeaf.Script,
-		ControlBlock:  ctrlBytes,
+		WitnessScript: proof.Script,
+		ControlBlock:  proof.ControlBlock,
 	}, nil
+}
+
+// VtxoExitSpendInfo returns the spend info for the first exit (CSV timeout)
+// closure found in the VTXO script. Returns ErrNoExitClosure if no exit
+// closure exists. Exit closures include CSVSigClosure (single-sig) and
+// CSVMultisigClosure (multi-sig).
+func VtxoExitSpendInfo(vtxoScript *closure.TapscriptsVtxoScript) (*VTXOSpendData,
+	error) {
+
+	// Find the first exit closure by scanning all closures. Both
+	// CSVSigClosure and CSVMultisigClosure are valid exit closures.
+	for i, c := range vtxoScript.Closures {
+		switch c.(type) {
+		case *closure.CSVSigClosure, *closure.CSVMultisigClosure:
+			return NewVtxoSpendInfo(vtxoScript, i)
+		}
+	}
+
+	return nil, ErrNoExitClosure
+}
+
+// VtxoCollabSpendInfo returns the spend info for the first collaborative
+// closure found in the VTXO script. Collaborative closures include
+// MultisigClosure, CLTVMultisigClosure, and ConditionMultisigClosure.
+// Returns ErrNoCollabClosure if no collaborative closure exists.
+func VtxoCollabSpendInfo(vtxoScript *closure.TapscriptsVtxoScript) (
+	*VTXOSpendData, error) {
+
+	// Find the first collaborative closure by scanning all closures.
+	for i, c := range vtxoScript.Closures {
+		switch c.(type) {
+		case *closure.MultisigClosure, *closure.CLTVMultisigClosure,
+			*closure.ConditionMultisigClosure:
+
+			return NewVtxoSpendInfo(vtxoScript, i)
+		}
+	}
+
+	return nil, ErrNoCollabClosure
+}
+
+// CSVTimeoutTapLeaf constructs the tap leaf used as the timeout (exit) path
+// for boarding or VTXO outputs using the closure system.
+func CSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
+	csvDelay closure.RelativeLocktime) (txscript.TapLeaf, error) {
+
+	csvClosure := &closure.CSVMultisigClosure{
+		MultisigClosure: closure.MultisigClosure{
+			PubKeys: []*btcec.PublicKey{timeoutKey},
+			Type:    closure.MultisigTypeChecksig,
+		},
+		Locktime: csvDelay,
+	}
+
+	script, err := csvClosure.Script()
+	if err != nil {
+		return txscript.TapLeaf{}, err
+	}
+
+	return txscript.NewBaseTapLeaf(script), nil
+}
+
+// MultisigCollabTapLeaf returns the full tapscript leaf for the collaborative
+// multisig script spend path between owner and cosigner using the closure
+// system.
+func MultisigCollabTapLeaf(ownerKey,
+	cosignerKey *btcec.PublicKey) (txscript.TapLeaf, error) {
+
+	multisigClosure := &closure.MultisigClosure{
+		PubKeys: []*btcec.PublicKey{ownerKey, cosignerKey},
+		Type:    closure.MultisigTypeChecksig,
+	}
+
+	script, err := multisigClosure.Script()
+	if err != nil {
+		return txscript.TapLeaf{}, err
+	}
+
+	return txscript.NewBaseTapLeaf(script), nil
 }
 
 // VTXOSignDesc returns the sign descriptor needed to sign for any leaf path
@@ -220,9 +252,9 @@ func VTXOSignDesc(keyDesc keychain.KeyDescriptor, output *wire.TxOut,
 	}
 }
 
-// VTXOTimeoutSpendWitness constructs the witness stack needed to spend the
-// timeout path of a VTXO output.
-func VTXOTimeoutSpendWitness(signer input.Signer,
+// VtxoExitSpendWitness constructs the witness stack needed to spend the
+// exit (timeout) path of a VTXO output.
+func VtxoExitSpendWitness(signer input.Signer,
 	signDesc *input.SignDescriptor, sweepTx *wire.MsgTx) (wire.TxWitness,
 	error) {
 
@@ -254,8 +286,9 @@ func VTXOTimeoutSpendWitness(signer input.Signer,
 	return witnessStack, nil
 }
 
-// SignVTXOCollabInput signs the collaborative multisig input of a VTXO output.
-func SignVTXOCollabInput(signer input.Signer, tx *wire.MsgTx,
+// SignVtxoCollabInput signs the collaborative multisig input of a VTXO
+// output.
+func SignVtxoCollabInput(signer input.Signer, tx *wire.MsgTx,
 	inputIndex int, spendInfo *VTXOSpendData,
 	keyDesc *keychain.KeyDescriptor, output *wire.TxOut,
 	sigHashes *txscript.TxSigHashes,
@@ -268,9 +301,9 @@ func SignVTXOCollabInput(signer input.Signer, tx *wire.MsgTx,
 	return signer.SignOutputRaw(tx, signDesc)
 }
 
-// VTXOCollabSpendWitness constructs the witness stack needed to spend the
-// collaborative path of a VTXO output.
-func VTXOCollabSpendWitness(ownerSig, cosignerSig input.Signature,
+// VtxoCollabSpendWitness constructs the witness stack needed to spend the
+// collaborative (multisig) path of a VTXO output.
+func VtxoCollabSpendWitness(ownerSig, cosignerSig input.Signature,
 	spendInfo *VTXOSpendData) (wire.TxWitness, error) {
 
 	if ownerSig == nil || cosignerSig == nil {
@@ -292,62 +325,6 @@ func VTXOCollabSpendWitness(ownerSig, cosignerSig input.Signature,
 	witnessStack[3] = spendInfo.ControlBlock
 
 	return witnessStack, nil
-}
-
-// UnilateralCSVTimeoutTapLeaf constructs the tap leaf used as the timeout path
-// for boarding or VTXO outputs.
-//
-// The final script used is:
-//
-//	<timeout_key> OP_CHECKSIG
-//	<exit_delay>  OP_CHECKSEQUENCEVERIFY OP_DROP
-func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
-	csvDelay uint32) (txscript.TapLeaf, error) {
-
-	// Use ScriptTemplate to construct the timeout script. This script
-	// ensures the proper party can sign for this output, and that the CSV
-	// delay has been upheld.
-	secondLevelLeafScript, err := txscript.ScriptTemplate(`
-		{{ hex .ExitKey }} OP_CHECKSIG
-		{{.CSVDelay}} OP_CHECKSEQUENCEVERIFY OP_DROP`,
-		txscript.WithScriptTemplateParams(map[string]interface{}{
-			"ExitKey":  schnorr.SerializePubKey(timeoutKey),
-			"CSVDelay": int64(csvDelay),
-		}),
-	)
-	if err != nil {
-		return txscript.TapLeaf{}, err
-	}
-
-	return txscript.NewBaseTapLeaf(secondLevelLeafScript), nil
-}
-
-// MultiSigCollabTapLeaf returns the full tapscript leaf for the collaborative
-// multisig script spend path between owner and cosigner. This is used for both
-// boarding and VTXO outputs.
-//
-// The final script used is:
-//
-//	<owner_key>    OP_CHECKSIGVERIFY
-//	<cosigner_key> OP_CHECKSIG
-func MultiSigCollabTapLeaf(ownerKey,
-	cosignerKey *btcec.PublicKey) (txscript.TapLeaf, error) {
-
-	// Use ScriptTemplate to construct the collaborative multisig script.
-	// This script requires both owner and cosigner signatures to spend.
-	timeoutLeafScript, err := txscript.ScriptTemplate(`
-		{{ hex .OwnerKey }} OP_CHECKSIGVERIFY
-		{{ hex .CosignerKey }} OP_CHECKSIG`,
-		txscript.WithScriptTemplateParams(map[string]interface{}{
-			"OwnerKey":    schnorr.SerializePubKey(ownerKey),
-			"CosignerKey": schnorr.SerializePubKey(cosignerKey),
-		}),
-	)
-	if err != nil {
-		return txscript.TapLeaf{}, err
-	}
-
-	return txscript.NewBaseTapLeaf(timeoutLeafScript), nil
 }
 
 // maybeAppendSighashType appends a sighash type to the end of a signature if
