@@ -4,6 +4,36 @@
 
 package sqlc
 
+type BoardingAddress struct {
+	PkScript            []byte
+	AddressString       string
+	ClientPubkey        []byte
+	ClientKeyFamily     int32
+	ClientKeyIndex      int32
+	OperatorPubkey      []byte
+	ExitDelay           int32
+	LastConfirmedHeight int32
+	CreationTime        int64
+}
+
+type BoardingIntent struct {
+	OutpointHash   []byte
+	OutpointIndex  int32
+	PkScript       []byte
+	Amount         int64
+	ConfHeight     int32
+	ConfHash       []byte
+	ConfTx         []byte
+	Status         string
+	CreationTime   int64
+	LastUpdateTime int64
+}
+
+type BoardingStatus struct {
+	ID         int64
+	StatusName string
+}
+
 type ChainInfo struct {
 	ID          int64
 	ChainName   string

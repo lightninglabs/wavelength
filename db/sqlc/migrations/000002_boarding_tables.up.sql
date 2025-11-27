@@ -1,4 +1,29 @@
-CREATE TABLE boarding_addresses (
+-- Boarding tables migration.
+-- This migration creates tables for boarding address and boarding intent management.
+
+-- Enum-like table for boarding intent lifecycle states.
+-- From the wallet's perspective, intents start in 'confirmed' state since they
+-- are only created after a UTXO has been confirmed on-chain.
+CREATE TABLE IF NOT EXISTS boarding_statuses (
+    id BIGINT PRIMARY KEY,
+    status_name TEXT UNIQUE NOT NULL
+);
+
+-- Populate the possible boarding statuses.
+INSERT INTO boarding_statuses (id, status_name) VALUES
+    (0, 'confirmed'),
+    (1, 'adopted'),
+    (2, 'failed'),
+    (3, 'expired'),
+    (4, 'swept');
+
+-- Create table to store boarding addresses.
+-- Boarding addresses are taproot addresses that clients generate to receive
+-- boarding funds. Each address includes the keys and CSV timelock parameters
+-- needed to construct collaborative and timeout spending paths.
+-- The tapscript is reconstructed on read from the stored component fields
+-- (client_pubkey, operator_pubkey, exit_delay) using scripts.VTXOTapScript().
+CREATE TABLE IF NOT EXISTS boarding_addresses (
     -- pk_script is the raw output script (P2TR script) and serves as the
     -- primary key since it uniquely identifies an address.
     pk_script BLOB PRIMARY KEY NOT NULL,
@@ -33,7 +58,20 @@ CREATE TABLE boarding_addresses (
     creation_time BIGINT NOT NULL
 );
 
-CREATE TABLE boarding_intents (
+-- Create index on last_confirmed_height for efficient queries during startup.
+CREATE INDEX IF NOT EXISTS idx_boarding_addresses_last_confirmed
+    ON boarding_addresses(last_confirmed_height DESC);
+
+-- Create index on creation_time for chronological queries.
+CREATE INDEX IF NOT EXISTS idx_boarding_addresses_creation_time
+    ON boarding_addresses(creation_time DESC);
+
+-- Create table to store boarding intents.
+-- Boarding intents track the lifecycle of a specific boarding attempt from
+-- on-chain confirmation through round completion. Intents are only created
+-- after the boarding UTXO has been confirmed on-chain, so conf_height and
+-- conf_hash are always present.
+CREATE TABLE IF NOT EXISTS boarding_intents (
     -- outpoint_hash and outpoint_index form the composite primary key,
     -- uniquely identifying the boarding UTXO.
     outpoint_hash BLOB NOT NULL,
@@ -70,32 +108,18 @@ CREATE TABLE boarding_intents (
     FOREIGN KEY (status) REFERENCES boarding_statuses(status_name)
 );
 
-CREATE TABLE boarding_statuses (
-    id BIGINT PRIMARY KEY,
-    status_name TEXT UNIQUE NOT NULL
-);
-
-CREATE TABLE chain_info (
-    id BIGINT PRIMARY KEY,
-    chain_name TEXT NOT NULL UNIQUE,
-    genesis_hash BLOB NOT NULL
-);
-
-CREATE INDEX idx_boarding_addresses_creation_time
-    ON boarding_addresses(creation_time DESC);
-
-CREATE INDEX idx_boarding_addresses_last_confirmed
-    ON boarding_addresses(last_confirmed_height DESC);
-
-CREATE INDEX idx_boarding_intents_conf_height
-    ON boarding_intents(conf_height DESC);
-
-CREATE INDEX idx_boarding_intents_creation_time
-    ON boarding_intents(creation_time DESC);
-
-CREATE INDEX idx_boarding_intents_pk_script
+-- Create index on pk_script for efficient lookup of intents by address.
+CREATE INDEX IF NOT EXISTS idx_boarding_intents_pk_script
     ON boarding_intents(pk_script);
 
-CREATE INDEX idx_boarding_intents_status
+-- Create index on status for efficient queries by lifecycle stage.
+CREATE INDEX IF NOT EXISTS idx_boarding_intents_status
     ON boarding_intents(status);
 
+-- Create index on conf_height for efficient range queries and startup backlog.
+CREATE INDEX IF NOT EXISTS idx_boarding_intents_conf_height
+    ON boarding_intents(conf_height DESC);
+
+-- Create index on creation_time for chronological queries.
+CREATE INDEX IF NOT EXISTS idx_boarding_intents_creation_time
+    ON boarding_intents(creation_time DESC);

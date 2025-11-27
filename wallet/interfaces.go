@@ -1,0 +1,284 @@
+package wallet
+
+import (
+	"context"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightningnetwork/lnd/keychain"
+)
+
+// Ask documents a request-response message pair. The Req type is sent via
+// actor.Ask, and the Resp type is returned. This is used purely for
+// documentation to provide a quick reference of available operations.
+type Ask[Req WalletMsg, Resp WalletResp] struct{}
+
+// Tell documents a fire-and-forget message. The Msg type is sent via
+// actor.Tell with no response expected. This is used purely for documentation.
+type Tell[Msg WalletMsg] struct{}
+
+// MessageSpec documents all message types supported by the boarding wallet
+// actor. This provides a quick reference similar to a protobuf service
+// definition, showing request/response pairs and events at a glance.
+//
+// Request-response operations use Ask, which returns a Future:
+//
+//	future := walletRef.Ask(ctx, &CreateBoardingAddressRequest{...})
+//	result := future.Await(ctx)
+//
+// Fire-and-forget messages use Tell:
+//
+//	walletRef.Tell(ctx, BlockEpochNotification{...})
+var MessageSpec = struct {
+	// CreateBoardingAddress derives a new boarding address with the given
+	// operator key and exit delay.
+	CreateBoardingAddress Ask[
+		*CreateBoardingAddressRequest,
+		*CreateBoardingAddressResponse,
+	]
+
+	// GetActiveBoardingAddresses returns all boarding addresses currently
+	// being monitored by the wallet.
+	GetActiveBoardingAddresses Ask[
+		*GetActiveBoardingAddressesRequest,
+		*GetActiveBoardingAddressesResponse,
+	]
+
+	// GetBoardingBalance returns the total balance across all confirmed
+	// boarding UTXOs.
+	GetBoardingBalance Ask[
+		*GetBoardingBalanceRequest,
+		*GetBoardingBalanceResponse,
+	]
+
+	// RegisterConfirmationNotifier subscribes an actor to receive
+	// BoardingUtxoConfirmedEvent notifications when new UTXOs confirm.
+	RegisterConfirmationNotifier Ask[
+		*RegisterConfirmationNotifierRequest,
+		*RegisterConfirmationNotifierResponse,
+	]
+
+	// UnregisterConfirmationNotifier removes a previously registered
+	// confirmation notifier subscription.
+	UnregisterConfirmationNotifier Ask[
+		*UnregisterConfirmationNotifierRequest,
+		*UnregisterConfirmationNotifierResponse,
+	]
+
+	// BlockEpochNotification is received from the chain source when a new
+	// block is connected. Triggers UTXO polling and confirmation checks.
+	BlockEpochNotification Tell[BlockEpochNotification]
+
+	// BoardingUtxoConfirmedEvent is sent TO registered notifiers (not to
+	// this actor) when a boarding UTXO confirms. Included here for
+	// completeness of the message surface.
+	BoardingUtxoConfirmedEvent Tell[BoardingUtxoConfirmedEvent]
+}{}
+
+// BoardingBackend abstracts the operations needed to interact with the
+// underlying LND wallet for boarding address management. This interface
+// provides key derivation, address import, and UTXO enumeration capabilities.
+type BoardingBackend interface {
+	// DeriveNextKey derives the next key in the specified key family. This
+	// is used to generate new client keys for boarding addresses. The key
+	// descriptor includes both the public key and its derivation path,
+	// enabling later signing operations.
+	DeriveNextKey(
+		ctx context.Context, key keychain.KeyFamily,
+	) (*keychain.KeyDescriptor, error)
+
+	// ImportTaprootScript imports a constructed taproot script into the
+	// LND wallet. After import, LND will track UTXOs paying to this script
+	// and include them in ListUnspent queries. The script contains both
+	// collaborative (2-of-2) and timeout (CSV) spending paths.
+	ImportTaprootScript(
+		ctx context.Context, script *waddrmgr.Tapscript,
+	) (btcutil.Address, error)
+
+	// ListUnspent returns all UTXOs known to the wallet with confirmation
+	// counts between minConfs and maxConfs (inclusive). This is used to
+	// poll for new boarding UTXOs on each block.
+	ListUnspent(
+		ctx context.Context, minConfs, maxConfs int32,
+	) ([]*Utxo, error)
+}
+
+// Utxo represents an unspent transaction output returned by ListUnspent. This
+// is a simplified representation focused on the information needed for
+// boarding UTXO detection.
+type Utxo struct {
+	// Outpoint uniquely identifies this UTXO.
+	Outpoint wire.OutPoint
+
+	// PkScript is the output script this UTXO pays to.
+	PkScript []byte
+
+	// Amount is the value of this UTXO in satoshis.
+	Amount btcutil.Amount
+
+	// Confirmations is the number of confirmations this UTXO has.
+	Confirmations int32
+}
+
+// UtxoKey is used as a key in fn.Set to track which UTXOs we've already
+// processed. This enables efficient deduplication when polling ListUnspent
+// repeatedly.
+type UtxoKey = wire.OutPoint
+
+// NewUtxoKey creates a UtxoKey from a wire.OutPoint.
+func NewUtxoKey(op wire.OutPoint) UtxoKey {
+	return op
+}
+
+// BoardingStatus captures lifecycle of a boarding intent. Intents are only
+// created after the boarding UTXO has been confirmed on-chain, so there is no
+// "pending" or "waiting" status.
+type BoardingStatus uint8
+
+const (
+	// BoardingStatusConfirmed indicates that the boarding UTXO has been
+	// confirmed and the intent is ready to be included in a round
+	// registration.
+	BoardingStatusConfirmed BoardingStatus = 0
+
+	// BoardingStatusAdopted indicates that the boarding intent has been
+	// included in a round that has been frozen/finalized on disk. The
+	// intent can no longer be used in other rounds.
+	BoardingStatusAdopted BoardingStatus = 1
+
+	// BoardingStatusFailed indicates that the boarding process failed for
+	// this intent. This could be due to validation errors, server
+	// rejection, or round failure. Recovery may be possible via CSV
+	// timeout path.
+	BoardingStatusFailed BoardingStatus = 2
+
+	// BoardingStatusExpired indicates that the boarding UTXO's CSV timeout
+	// has elapsed. The client can now spend via the unilateral timeout path
+	// to recover funds.
+	BoardingStatusExpired BoardingStatus = 3
+
+	// BoardingStatusSwept indicates that the boarding UTXO has been spent
+	// via the CSV timeout path to recover funds.
+	BoardingStatusSwept BoardingStatus = 4
+)
+
+// BoardingAddress represents a derived boarding address with all the
+// information needed to monitor and spend from it. This type holds both the
+// on-chain address and the cryptographic material (keys, scripts) used to
+// construct collaborative and timeout spending paths.
+type BoardingAddress struct {
+	// Address is the bech32m taproot address that can receive funds.
+	Address btcutil.Address
+
+	// Tapscript contains the full taproot script tree with both
+	// collaborative (multisig) and timeout (CSV) spending paths.
+	Tapscript *waddrmgr.Tapscript
+
+	// KeyDesc is the client's key descriptor used in both spending paths.
+	// Contains both the public key and its derivation path.
+	KeyDesc keychain.KeyDescriptor
+
+	// OperatorKey is the operator's public key used in the collaborative
+	// spending path.
+	OperatorKey *btcec.PublicKey
+
+	// ExitDelay is the CSV delay (in blocks) that must expire before the
+	// client can spend unilaterally via the timeout path.
+	ExitDelay uint32
+}
+
+// BoardingChainInfo tracks the chain related information for a given boarding
+// intent.
+type BoardingChainInfo struct {
+	// ConfHeight is the confirmation height of the boarding output.
+	ConfHeight int32
+
+	// ConfHash is the confirmation block hash of the boarding output.
+	ConfHash chainhash.Hash
+
+	// ConfTx is the confirmation transaction of the boarding output.
+	ConfTx *wire.MsgTx
+
+	// OutPoint is the boarding output outpoint.
+	OutPoint wire.OutPoint
+
+	// Amount is the boarding output amount.
+	Amount btcutil.Amount
+}
+
+// BoardingIntent captures one confirmed boarding input. Intents are only
+// created once a boarding UTXO has been confirmed on-chain.
+type BoardingIntent struct {
+	// Address is the boarding address details. This includes which keys
+	// were used, the CSV time lock, etc.
+	Address BoardingAddress
+
+	// Outpoint is the outpoint of the boarding UTXO.
+	Outpoint wire.OutPoint
+
+	// ChainInfo captures the on-chain status of the boarding input.
+	// This is always populated since intents are only created after
+	// confirmation.
+	ChainInfo BoardingChainInfo
+
+	// Status is the current status of the boarding intent.
+	Status BoardingStatus
+}
+
+// BoardingStore defines the storage interface for boarding addresses and
+// intents used by the wallet actor.
+type BoardingStore interface {
+	// InsertBoardingAddress persists a boarding address when it is first
+	// created. This method is idempotent.
+	InsertBoardingAddress(
+		ctx context.Context, addr *BoardingAddress) error
+
+	// LookupBoardingAddress retrieves a boarding address by its pkScript.
+	// Returns an error if the address is not found.
+	LookupBoardingAddress(
+		ctx context.Context, pkScript []byte,
+	) (*BoardingAddress, error)
+
+	// ListAllBoardingAddresses returns all persisted boarding addresses.
+	ListAllBoardingAddresses(
+		ctx context.Context,
+	) ([]*BoardingAddress, error)
+
+	// InsertBoardingIntents persists one or more boarding intents.
+	InsertBoardingIntents(ctx context.Context,
+		intents ...BoardingIntent) error
+
+	// FetchBoardingIntents returns all boarding intents that are currently
+	// in progress (not yet completed).
+	FetchBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
+
+	// FetchBoardingIntentOutpoints returns just the outpoints of all
+	// boarding intents. This is more efficient than FetchBoardingIntents
+	// when only the outpoints are needed.
+	FetchBoardingIntentOutpoints(
+		ctx context.Context,
+	) ([]wire.OutPoint, error)
+
+	// FetchBoardingIntentsByStatus returns all boarding intents matching
+	// the given status.
+	FetchBoardingIntentsByStatus(ctx context.Context,
+		status BoardingStatus) ([]BoardingIntent, error)
+
+	// FetchBoardingIntentsByStatusAndMinHeight returns all boarding intents
+	// matching the given status with confirmation height >= minHeight.
+	FetchBoardingIntentsByStatusAndMinHeight(
+		ctx context.Context, status BoardingStatus, minHeight int32,
+	) ([]BoardingIntent, error)
+
+	// GetIntent retrieves a boarding intent by its outpoint (primary key).
+	GetIntent(ctx context.Context,
+		outpoint wire.OutPoint) (*BoardingIntent, error)
+
+	// LookupIntentByScript returns the stored intent associated with a
+	// boarding pkScript.
+	LookupIntentByScript(ctx context.Context,
+		pkScript []byte) (*BoardingIntent, error)
+}
