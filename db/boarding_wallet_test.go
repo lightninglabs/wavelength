@@ -42,7 +42,7 @@ func newBoardingStoreForTest(
 }
 
 // createTestBoardingAddress creates a test boarding address with proper
-// tapscript construction using scripts.VTXOTapScript.
+// tapscript construction using scripts.DefaultVTXOTapScript.
 func createTestBoardingAddress(t *testing.T,
 	keyIndex uint32) (*wallet.BoardingAddress, *btcec.PrivateKey) {
 
@@ -57,7 +57,7 @@ func createTestBoardingAddress(t *testing.T,
 	exitDelay := uint32(144)
 
 	// Build the tapscript using the proper VTXO construction.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := scripts.DefaultVTXOTapScript(
 		clientPubKey, operatorPubKey, exitDelay,
 	)
 	require.NoError(t, err)

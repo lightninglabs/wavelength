@@ -460,7 +460,7 @@ func (b *BoardingWalletStore) LookupIntentByScript(ctx context.Context,
 // dbAddrToDomainAddr converts a sqlc BoardingAddress to a
 // wallet.BoardingAddress. The tapscript is reconstructed from the stored
 // component fields (client pubkey, operator pubkey, exit delay) using
-// scripts.VTXOTapScript().
+// scripts.DefaultVTXOTapScript().
 func dbAddrToDomainAddr(chainParams *chaincfg.Params,
 	dbAddr BoardingAddrRow) (*wallet.BoardingAddress, error) {
 
@@ -472,7 +472,7 @@ func dbAddrToDomainAddr(chainParams *chaincfg.Params,
 	if err != nil {
 		return nil, fmt.Errorf("parse operator pubkey: %w", err)
 	}
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := scripts.DefaultVTXOTapScript(
 		clientPubkey, operatorPubkey, uint32(dbAddr.ExitDelay),
 	)
 	if err != nil {

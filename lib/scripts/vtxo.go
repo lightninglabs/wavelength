@@ -52,6 +52,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/closure"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -93,6 +94,64 @@ type VTXOSpendData struct {
 
 	// ControlBlock is the control block for the leaf being spent.
 	ControlBlock []byte
+}
+
+// DefaultVTXOTapScript constructs the full tapscript for a standard VTXO type
+// output. This output structure is used for both boarding UTXOs as well as
+// default VTXOs. The tree consists of:
+//   - an unspendable NUMS keypath.
+//   - Collaborative spend path between owner and cosigner.
+//   - Timeout path allowing the owner to recover funds after a CSV exit delay.
+//
+// For custom VTXO scripts with additional closures, use the closure package
+// directly.
+func DefaultVTXOTapScript(ownerKey, cosignerKey *btcec.PublicKey,
+	exitDelay uint32) (*waddrmgr.Tapscript, error) {
+
+	// Create the closure-based VTXO script.
+	vtxoScript := closure.NewDefaultVtxoScript(
+		ownerKey, cosignerKey,
+		closure.RelativeLocktime{
+			Type:  closure.LocktimeTypeBlock,
+			Value: exitDelay,
+		},
+	)
+
+	// Build the tap leaves from the closures.
+	leaves := make([]txscript.TapLeaf, len(vtxoScript.Closures))
+	for i, c := range vtxoScript.Closures {
+		script, err := c.Script()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get script for "+
+				"closure %d: %w", i, err)
+		}
+		leaves[i] = txscript.NewBaseTapLeaf(script)
+	}
+
+	// Build the tapscript tree and compute the root hash.
+	tapTree := txscript.AssembleTaprootScriptTree(leaves...)
+	rootHash := tapTree.RootNode.TapHash()
+
+	// Get the internal key (NUMS key).
+	internalKey := closure.UnspendableKey()
+
+	// Compute the output key and parity for the control block.
+	outputKey := txscript.ComputeTaprootOutputKey(internalKey, rootHash[:])
+	outputKeyYIsOdd := outputKey.SerializeCompressed()[0] == 0x03
+
+	// Create the waddrmgr.Tapscript structure.
+	tapscript := &waddrmgr.Tapscript{
+		Type: waddrmgr.TapscriptTypeFullTree,
+		ControlBlock: &txscript.ControlBlock{
+			InternalKey:     internalKey,
+			OutputKeyYIsOdd: outputKeyYIsOdd,
+			LeafVersion:     txscript.BaseLeafVersion,
+		},
+		Leaves:   leaves,
+		RootHash: rootHash[:],
+	}
+
+	return tapscript, nil
 }
 
 // NewVtxoScript creates a VTXO script from the provided closures.

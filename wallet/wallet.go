@@ -490,7 +490,7 @@ func buildBoardingTapscript(clientKey, operatorKey *btcec.PublicKey,
 	// VTXOs use the same script structure. The client is the "owner" who
 	// can recover funds after the CSV delay, and the operator is the
 	// "cosigner" who collaborates with the client for immediate spends.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := scripts.DefaultVTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	if err != nil {

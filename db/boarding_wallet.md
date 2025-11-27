@@ -99,7 +99,7 @@ UTXO at this address, used for restart recovery to resume monitoring from the
 last known checkpoint
 
 **Tapscript reconstruction**: The tapscript is not stored directly. Instead, it
-is reconstructed on read using `scripts.VTXOTapScript(clientPubkey,
+is reconstructed on read using `scripts.DefaultVTXOTapScript(clientPubkey,
 operatorPubkey, exitDelay)`. This avoids JSON serialization complexity and
 ensures the tapscript is always consistent with the stored parameters.
 
@@ -160,7 +160,7 @@ enable progressive updates. When an intent is re-inserted:
 
 1. Wallet actor derives a new key using `DeriveNextKey(family=42)`
 2. Constructs 2-of-2 tapscript with operator key and CSV timelock using
-   `scripts.VTXOTapScript`
+   `scripts.DefaultVTXOTapScript`
 3. Imports tapscript into LND via `ImportTaprootScript`
 4. Persists to `boarding_addresses` with `last_confirmed_height=0`
 5. Returns address to caller

@@ -22,7 +22,7 @@ INSERT INTO boarding_statuses (id, status_name) VALUES
 -- boarding funds. Each address includes the keys and CSV timelock parameters
 -- needed to construct collaborative and timeout spending paths.
 -- The tapscript is reconstructed on read from the stored component fields
--- (client_pubkey, operator_pubkey, exit_delay) using scripts.VTXOTapScript().
+-- (client_pubkey, operator_pubkey, exit_delay) using scripts.DefaultVTXOTapScript().
 CREATE TABLE IF NOT EXISTS boarding_addresses (
     -- pk_script is the raw output script (P2TR script) and serves as the
     -- primary key since it uniquely identifies an address.
