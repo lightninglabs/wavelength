@@ -11,6 +11,73 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// Ask documents a request-response message pair. The Req type is sent via
+// actor.Ask, and the Resp type is returned. This is used purely for
+// documentation to provide a quick reference of available operations.
+type Ask[Req WalletMsg, Resp WalletResp] struct{}
+
+// Tell documents a fire-and-forget message. The Msg type is sent via
+// actor.Tell with no response expected. This is used purely for documentation.
+type Tell[Msg WalletMsg] struct{}
+
+// MessageSpec documents all message types supported by the boarding wallet
+// actor. This provides a quick reference similar to a protobuf service
+// definition, showing request/response pairs and events at a glance.
+//
+// Request-response operations use Ask, which returns a Future:
+//
+//	future := walletRef.Ask(ctx, &CreateBoardingAddressRequest{...})
+//	result := future.Await(ctx)
+//
+// Fire-and-forget messages use Tell:
+//
+//	walletRef.Tell(ctx, BlockEpochNotification{...})
+var MessageSpec = struct {
+	// CreateBoardingAddress derives a new boarding address with the given
+	// operator key and exit delay.
+	CreateBoardingAddress Ask[
+		*CreateBoardingAddressRequest,
+		*CreateBoardingAddressResponse,
+	]
+
+	// GetActiveBoardingAddresses returns all boarding addresses currently
+	// being monitored by the wallet.
+	GetActiveBoardingAddresses Ask[
+		*GetActiveBoardingAddressesRequest,
+		*GetActiveBoardingAddressesResponse,
+	]
+
+	// GetBoardingBalance returns the total balance across all confirmed
+	// boarding UTXOs.
+	GetBoardingBalance Ask[
+		*GetBoardingBalanceRequest,
+		*GetBoardingBalanceResponse,
+	]
+
+	// RegisterConfirmationNotifier subscribes an actor to receive
+	// BoardingUtxoConfirmedEvent notifications when new UTXOs confirm.
+	RegisterConfirmationNotifier Ask[
+		*RegisterConfirmationNotifierRequest,
+		*RegisterConfirmationNotifierResponse,
+	]
+
+	// UnregisterConfirmationNotifier removes a previously registered
+	// confirmation notifier subscription.
+	UnregisterConfirmationNotifier Ask[
+		*UnregisterConfirmationNotifierRequest,
+		*UnregisterConfirmationNotifierResponse,
+	]
+
+	// BlockEpochNotification is received from the chain source when a new
+	// block is connected. Triggers UTXO polling and confirmation checks.
+	BlockEpochNotification Tell[BlockEpochNotification]
+
+	// BoardingUtxoConfirmedEvent is sent TO registered notifiers (not to
+	// this actor) when a boarding UTXO confirms. Included here for
+	// completeness of the message surface.
+	BoardingUtxoConfirmedEvent Tell[BoardingUtxoConfirmedEvent]
+}{}
+
 // BoardingBackend abstracts the operations needed to interact with the
 // underlying LND wallet for boarding address management. This interface
 // provides key derivation, address import, and UTXO enumeration capabilities.
@@ -83,8 +150,9 @@ const (
 	BoardingStatusAdopted BoardingStatus = 1
 
 	// BoardingStatusFailed indicates that the boarding process failed for
-	// this intent. This could be due to validation errors, server rejection,
-	// or round failure. Recovery may be possible via CSV timeout path.
+	// this intent. This could be due to validation errors, server
+	// rejection, or round failure. Recovery may be possible via CSV
+	// timeout path.
 	BoardingStatusFailed BoardingStatus = 2
 
 	// BoardingStatusExpired indicates that the boarding UTXO's CSV timeout
@@ -190,7 +258,9 @@ type BoardingStore interface {
 	// FetchBoardingIntentOutpoints returns just the outpoints of all
 	// boarding intents. This is more efficient than FetchBoardingIntents
 	// when only the outpoints are needed.
-	FetchBoardingIntentOutpoints(ctx context.Context) ([]wire.OutPoint, error)
+	FetchBoardingIntentOutpoints(
+		ctx context.Context,
+	) ([]wire.OutPoint, error)
 
 	// FetchBoardingIntentsByStatus returns all boarding intents matching
 	// the given status.
@@ -199,8 +269,9 @@ type BoardingStore interface {
 
 	// FetchBoardingIntentsByStatusAndMinHeight returns all boarding intents
 	// matching the given status with confirmation height >= minHeight.
-	FetchBoardingIntentsByStatusAndMinHeight(ctx context.Context,
-		status BoardingStatus, minHeight int32) ([]BoardingIntent, error)
+	FetchBoardingIntentsByStatusAndMinHeight(
+		ctx context.Context, status BoardingStatus, minHeight int32,
+	) ([]BoardingIntent, error)
 
 	// GetIntent retrieves a boarding intent by its outpoint (primary key).
 	GetIntent(ctx context.Context,
