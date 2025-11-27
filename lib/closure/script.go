@@ -1,0 +1,177 @@
+package closure
+
+import (
+	"encoding/hex"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+)
+
+const (
+	OP_INSPECTOUTPUTSCRIPTPUBKEY = 0xd1
+	OP_INSPECTOUTPUTVALUE        = 0xcf
+	OP_PUSHCURRENTINPUTINDEX     = 0xcd
+	OP_INSPECTINPUTVALUE         = 0xc9
+	OP_SUB64                     = 0xd8
+)
+
+type MultisigType int
+
+const (
+	MultisigTypeChecksig MultisigType = iota
+	MultisigTypeChecksigAdd
+)
+
+var ConditionWitnessKey = "condition"
+
+// forbiddenOpcodes are opcodes that are not allowed in a condition script
+var forbiddenOpcodes = []byte{
+	txscript.OP_CHECKMULTISIG,
+	txscript.OP_CHECKSIG,
+	txscript.OP_CHECKSIGVERIFY,
+	txscript.OP_CHECKSIGADD,
+	txscript.OP_CHECKMULTISIGVERIFY,
+	txscript.OP_CHECKLOCKTIMEVERIFY,
+	txscript.OP_CHECKSEQUENCEVERIFY,
+}
+
+// EvaluateScriptToBool executes the script with the provided witness as
+// argument and returns a boolean result that can be evaluated by OP_IF /
+// OP_NOIF opcodes.
+func EvaluateScriptToBool(script []byte, witness wire.TxWitness) (bool, error) {
+	// make sure the script doesn't contain any introspections opcodes
+	// (sig or locktime)
+	tokenizer := txscript.MakeScriptTokenizer(0, script)
+	for tokenizer.Next() {
+		for _, opcode := range forbiddenOpcodes {
+			if tokenizer.OpcodePosition() != -1 && tokenizer.Opcode() == opcode {
+				return false, fmt.Errorf("forbidden opcode %x", opcode)
+			}
+		}
+	}
+
+	// Create a fake transaction with minimal required fields
+	// this is needed to instantiate the script engine without a tx
+	// as we don't validate any tx data, we just need to have a valid tx
+	// structure
+	fakeTx := &wire.MsgTx{
+		Version: 2,
+		TxIn:    []*wire.TxIn{{Sequence: 0xffffffff}}, // At least one input required
+		TxOut:   []*wire.TxOut{{Value: 0}},            // At least one output required
+	}
+
+	// Create a new script engine with the fake tx
+	vm, err := txscript.NewEngine(
+		script,
+		fakeTx,
+		0, // Input index
+		txscript.ScriptVerifyTaproot,
+		nil,
+		nil,
+		0,
+		nil,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to create script engine: %w", err)
+	}
+
+	vm.SetStack(witness)
+
+	// Execute the script with the provided witness
+	if err := vm.Execute(); err != nil {
+		if scriptError, ok := err.(txscript.Error); ok {
+			if scriptError.ErrorCode == txscript.ErrEvalFalse {
+				return false, nil
+			}
+		}
+		return false, err
+	}
+
+	finalStack := vm.GetStack()
+
+	if len(finalStack) != 0 {
+		return false, fmt.Errorf(
+			"script must return zero value on the stack, got %d",
+			len(finalStack),
+		)
+	}
+
+	return true, nil
+}
+
+// arkNUMSHex is the hex encoded version of the ARK NUMS key. This is a NUMS
+// key (nothing up my sleeves number) that has no known private key, generated
+// using seed phrase "Ark Protocol NUMS".
+const arkNUMSHex = "02372f225b3caee8213096de3229ee4335306b07c3c169438461b5d4749884ec65"
+
+// UnspendableKey returns the NUMS (nothing up my sleeves) key used as the
+// internal key for taproot outputs where the key path should be unspendable.
+func UnspendableKey() *btcec.PublicKey {
+	pubBytes, _ := hex.DecodeString(arkNUMSHex)
+	pub, _ := btcec.ParsePubKey(pubBytes)
+	return pub
+}
+
+// P2TRScript returns a pay-to-taproot script for the given taproot key.
+func P2TRScript(taprootKey *btcec.PublicKey) ([]byte, error) {
+	return txscript.NewScriptBuilder().
+		AddOp(txscript.OP_1).
+		AddData(schnorr.SerializePubKey(taprootKey)).
+		Script()
+}
+
+// SubDustScript returns an OP_RETURN script with the taproot key as data.
+func SubDustScript(taprootKey *btcec.PublicKey) ([]byte, error) {
+	return txscript.NewScriptBuilder().
+		AddOp(txscript.OP_RETURN).
+		AddData(schnorr.SerializePubKey(taprootKey)).
+		Script()
+}
+
+// IsSubDustScript returns true if the script is a sub-dust OP_RETURN script.
+func IsSubDustScript(script []byte) bool {
+	return len(script) == 32+1+1 &&
+		script[0] == txscript.OP_RETURN &&
+		script[1] == 0x20
+}
+
+// EncodeTaprootSignature encodes a signature with the given sighash type.
+func EncodeTaprootSignature(sig []byte, sigHashType txscript.SigHashType) []byte {
+	if sigHashType == txscript.SigHashDefault {
+		return sig
+	}
+
+	return append(sig, byte(sigHashType))
+}
+
+// ParseTaprootSignature parses a raw signature into its signature and sighash
+// type components.
+func ParseTaprootSignature(rawSig []byte) (*schnorr.Signature, txscript.SigHashType, error) {
+	// If the signature is exactly 64 bytes, then we know we're using the
+	// implicit SIGHASH_DEFAULT sighash type.
+	if len(rawSig) == schnorr.SignatureSize {
+		sig, err := schnorr.ParseSignature(rawSig)
+		if err != nil {
+			return nil, 0, err
+		}
+		return sig, txscript.SigHashDefault, nil
+	}
+
+	// Otherwise, if this is a signature, with a sighash looking byte
+	// appended that isn't all zero, then we'll extract the sighash from
+	// the end of the signature.
+	if len(rawSig) == schnorr.SignatureSize+1 && rawSig[schnorr.SignatureSize] != 0 {
+		sigHashType := txscript.SigHashType(rawSig[schnorr.SignatureSize])
+
+		sig, err := schnorr.ParseSignature(rawSig[:schnorr.SignatureSize])
+		if err != nil {
+			return nil, 0, err
+		}
+		return sig, sigHashType, nil
+	}
+
+	return nil, 0, fmt.Errorf("invalid sig len: %v", len(rawSig))
+}
