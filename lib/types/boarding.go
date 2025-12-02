@@ -6,6 +6,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/taproot-assets/proof"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -105,6 +107,14 @@ type BoardingRequest struct {
 	// path of the boarding output. This must be at least the operator's
 	// minimum boarding exit delay.
 	ExitDelay uint32
+
+	// TxProof is the SPV proof that the boarding UTXO exists in a
+	// confirmed block. This allows the server to verify the UTXO without
+	// querying its own chain source. The proof includes the transaction,
+	// block header, merkle proof, and the taproot output construction
+	// details (internal key and merkle root). None if the server will
+	// verify via its own chain source.
+	TxProof fn.Option[proof.TxProof]
 }
 
 // BoardingInputSignature represents the client's signature for a boarding
