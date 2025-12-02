@@ -33,6 +33,10 @@ type ConfActor struct {
 	// heightHint is the earliest block that could contain the transaction.
 	heightHint uint32
 
+	// includeBlock indicates whether to include the full block in the
+	// confirmation event. This is needed for constructing merkle proofs.
+	includeBlock bool
+
 	// promise is used in Future mode to complete the future when the
 	// confirmation is detected.
 	promise fn.Option[actor.Promise[ConfirmationEvent]]
@@ -108,6 +112,7 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	a.pkScript = req.PkScript
 	a.targetConfs = req.TargetConfs
 	a.heightHint = req.HeightHint
+	a.includeBlock = req.IncludeBlock
 	a.notifyActor = req.NotifyActor
 
 	// We're either in future or iterator mode, set the promise
@@ -125,6 +130,7 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	// the caller if registration fails.
 	registration, err := a.backend.RegisterConf(
 		a.ctx, a.txid, a.pkScript, a.targetConfs, a.heightHint,
+		a.includeBlock,
 	)
 	if err != nil {
 		return fn.Err[ConfResp](fmt.Errorf(
@@ -236,6 +242,8 @@ func buildConfirmationEvent(details *TxConfirmation,
 		BlockHeight: int32(details.BlockHeight),
 		BlockHash:   *details.BlockHash,
 		NumConfs:    watch.targetConfs,
+		Tx:          details.Tx,
+		Block:       details.Block,
 	}
 
 	return event, nil

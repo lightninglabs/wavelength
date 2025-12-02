@@ -15,14 +15,12 @@ import (
 
 // mockBackend implements ChainBackend for testing.
 type mockBackend struct {
-	// Channels for controlling mock behavior.
 	confChan  chan *TxConfirmation
 	spendChan chan *SpendDetail
 	epochChan chan *BlockEpoch
-	// epochCancel is notified whenever a block registration is cancelled.
+
 	epochCancel chan struct{}
 
-	// Stored values for direct queries.
 	feeRate    btcutil.Amount
 	bestHeight int32
 	bestHash   chainhash.Hash
@@ -40,38 +38,33 @@ func newMockBackend() *mockBackend {
 	}
 }
 
-// EstimateFee implements ChainBackend.
 func (m *mockBackend) EstimateFee(ctx context.Context,
 	targetConf uint32) (btcutil.Amount, error) {
 
 	return m.feeRate, nil
 }
 
-// BestBlock implements ChainBackend.
 func (m *mockBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	error) {
 
 	return m.bestHeight, m.bestHash, nil
 }
 
-// TestMempoolAccept implements ChainBackend.
 func (m *mockBackend) TestMempoolAccept(ctx context.Context,
 	tx *wire.MsgTx) (bool, string, error) {
 
 	return true, "", nil
 }
 
-// BroadcastTx implements ChainBackend.
 func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	label string) error {
 
 	return nil
 }
 
-// RegisterConf implements ChainBackend.
 func (m *mockBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32) (*ConfRegistration, error) {
+	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {
 
 	return &ConfRegistration{
 		Confirmed: m.confChan,
@@ -79,7 +72,6 @@ func (m *mockBackend) RegisterConf(ctx context.Context,
 	}, nil
 }
 
-// RegisterSpend implements ChainBackend.
 func (m *mockBackend) RegisterSpend(ctx context.Context,
 	outpoint *wire.OutPoint, pkScript []byte,
 	heightHint uint32) (*SpendRegistration, error) {
@@ -90,7 +82,6 @@ func (m *mockBackend) RegisterSpend(ctx context.Context,
 	}, nil
 }
 
-// RegisterBlocks implements ChainBackend.
 func (m *mockBackend) RegisterBlocks(
 	ctx context.Context) (*BlockRegistration, error) {
 
@@ -105,12 +96,10 @@ func (m *mockBackend) RegisterBlocks(
 	}, nil
 }
 
-// Start implements ChainBackend.
 func (m *mockBackend) Start() error {
 	return nil
 }
 
-// Stop implements ChainBackend.
 func (m *mockBackend) Stop() error {
 	close(m.confChan)
 	close(m.spendChan)
@@ -247,12 +236,14 @@ func TestChainSourceActorRegisterConf(t *testing.T) {
 
 	ctx := t.Context()
 	txHash := chainhash.Hash{}
-	result := ref.Ask(ctx, &RegisterConfRequest{
-		CallerID:    "test-chainsource-conf",
-		Txid:        &txHash,
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	}).Await(ctx)
+	result := ref.Ask(
+		ctx, &RegisterConfRequest{
+			CallerID:    "test-chainsource-conf",
+			Txid:        &txHash,
+			PkScript:    []byte{0x00, 0x14},
+			TargetConfs: 1,
+		},
+	).Await(ctx)
 	require.True(t, result.IsOk())
 
 	resp, err := result.Unpack()
@@ -296,11 +287,13 @@ func TestChainSourceActorRegisterSpend(t *testing.T) {
 	ref := ChainSourceKey.Spawn(system, "chainsource-spend", chainSource)
 
 	ctx := t.Context()
-	result := ref.Ask(ctx, &RegisterSpendRequest{
-		CallerID: "test-chainsource-spend",
-		Outpoint: &wire.OutPoint{},
-		PkScript: []byte{0x00, 0x14},
-	}).Await(ctx)
+	result := ref.Ask(
+		ctx, &RegisterSpendRequest{
+			CallerID: "test-chainsource-spend",
+			Outpoint: &wire.OutPoint{},
+			PkScript: []byte{0x00, 0x14},
+		},
+	).Await(ctx)
 	require.True(t, result.IsOk())
 
 	resp, err := result.Unpack()
@@ -348,22 +341,24 @@ func TestChainSourceActorUnregisterConf(t *testing.T) {
 	ctx := t.Context()
 	txHash := chainhash.Hash{}
 
-	// First, register a confirmation.
-	regResult := ref.Ask(ctx, &RegisterConfRequest{
-		CallerID:    "test-unreg-conf",
-		Txid:        &txHash,
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	}).Await(ctx)
+	regResult := ref.Ask(
+		ctx, &RegisterConfRequest{
+			CallerID:    "test-unreg-conf",
+			Txid:        &txHash,
+			PkScript:    []byte{0x00, 0x14},
+			TargetConfs: 1,
+		},
+	).Await(ctx)
 	require.True(t, regResult.IsOk())
 
-	// Now unregister it.
-	unregResult := ref.Ask(ctx, &UnregisterConfRequest{
-		CallerID:    "test-unreg-conf",
-		Txid:        &txHash,
-		PkScript:    []byte{0x00, 0x14},
-		TargetConfs: 1,
-	}).Await(ctx)
+	unregResult := ref.Ask(
+		ctx, &UnregisterConfRequest{
+			CallerID:    "test-unreg-conf",
+			Txid:        &txHash,
+			PkScript:    []byte{0x00, 0x14},
+			TargetConfs: 1,
+		},
+	).Await(ctx)
 	require.True(t, unregResult.IsOk())
 
 	resp, err := unregResult.Unpack()
@@ -389,20 +384,22 @@ func TestChainSourceActorUnregisterSpend(t *testing.T) {
 	ctx := t.Context()
 	outpoint := &wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}
 
-	// First, register a spend.
-	regResult := ref.Ask(ctx, &RegisterSpendRequest{
-		CallerID: "test-unreg-spend",
-		Outpoint: outpoint,
-		PkScript: []byte{0x00, 0x14},
-	}).Await(ctx)
+	regResult := ref.Ask(
+		ctx, &RegisterSpendRequest{
+			CallerID: "test-unreg-spend",
+			Outpoint: outpoint,
+			PkScript: []byte{0x00, 0x14},
+		},
+	).Await(ctx)
 	require.True(t, regResult.IsOk())
 
-	// Now unregister it.
-	unregResult := ref.Ask(ctx, &UnregisterSpendRequest{
-		CallerID: "test-unreg-spend",
-		Outpoint: outpoint,
-		PkScript: []byte{0x00, 0x14},
-	}).Await(ctx)
+	unregResult := ref.Ask(
+		ctx, &UnregisterSpendRequest{
+			CallerID: "test-unreg-spend",
+			Outpoint: outpoint,
+			PkScript: []byte{0x00, 0x14},
+		},
+	).Await(ctx)
 	require.True(t, unregResult.IsOk())
 
 	resp, err := unregResult.Unpack()
@@ -427,16 +424,18 @@ func TestChainSourceActorUnsubscribeBlocks(t *testing.T) {
 
 	ctx := t.Context()
 
-	// First, subscribe to blocks.
-	subResult := ref.Ask(ctx, &SubscribeBlocksRequest{
-		CallerID: "test-unsub-blocks",
-	}).Await(ctx)
+	subResult := ref.Ask(
+		ctx, &SubscribeBlocksRequest{
+			CallerID: "test-unsub-blocks",
+		},
+	).Await(ctx)
 	require.True(t, subResult.IsOk())
 
-	// Now unsubscribe.
-	unsubResult := ref.Ask(ctx, &UnsubscribeBlocksRequest{
-		CallerID: "test-unsub-blocks",
-	}).Await(ctx)
+	unsubResult := ref.Ask(
+		ctx, &UnsubscribeBlocksRequest{
+			CallerID: "test-unsub-blocks",
+		},
+	).Await(ctx)
 	require.True(t, unsubResult.IsOk())
 
 	resp, err := unsubResult.Unpack()
@@ -458,9 +457,11 @@ func TestChainSourceActorSubscribeBlocks(t *testing.T) {
 	ref := ChainSourceKey.Spawn(system, "chainsource-epoch", chainSource)
 
 	ctx := t.Context()
-	result := ref.Ask(ctx, &SubscribeBlocksRequest{
-		CallerID: "test-chainsource-epoch",
-	}).Await(ctx)
+	result := ref.Ask(
+		ctx, &SubscribeBlocksRequest{
+			CallerID: "test-chainsource-epoch",
+		},
+	).Await(ctx)
 	require.True(t, result.IsOk())
 
 	resp, err := result.Unpack()
@@ -528,7 +529,6 @@ func TestConfActorFutureMode(t *testing.T) {
 		Tx:          tx,
 	}
 
-	// Wait for confirmation event we just sent above.
 	eventCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -684,7 +684,6 @@ func TestSpendActorFutureMode(t *testing.T) {
 	txHash := chainhash.Hash{}
 	outpoint := wire.OutPoint{Hash: txHash, Index: 0}
 
-	// Register for spend in Future mode.
 	result := spendActor.Receive(ctx, &RegisterSpendRequest{
 		CallerID: "test-spend-future",
 		Outpoint: &outpoint,
@@ -698,7 +697,6 @@ func TestSpendActorFutureMode(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, spendResp.Future)
 
-	// Send spend from backend.
 	spendingTx := wire.NewMsgTx(2)
 	spendingHash := spendingTx.TxHash()
 	backend.spendChan <- &SpendDetail{
@@ -709,7 +707,6 @@ func TestSpendActorFutureMode(t *testing.T) {
 		SpendingHeight:    102,
 	}
 
-	// Wait for spend event.
 	eventCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -753,7 +750,6 @@ func TestSpendActorNotifyMode(t *testing.T) {
 	// In notify mode, Future should not be set (it's the zero value).
 	require.True(t, spendResp.Future == nil)
 
-	// Send spend from backend.
 	spendingTx := wire.NewMsgTx(2)
 	spendingHash := spendingTx.TxHash()
 	backend.spendChan <- &SpendDetail{
@@ -876,7 +872,6 @@ func TestBlockEpochActorNotifyMode(t *testing.T) {
 	require.Nil(t, epochResp.Iterator)
 	require.NotNil(t, epochResp.Cancel)
 
-	// Send a block from backend.
 	hash := chainhash.Hash{}
 	hash[0] = 0x01
 	backend.epochChan <- &BlockEpoch{
@@ -913,7 +908,6 @@ func TestBlockEpochActorIteratorMode(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, epochResp.Iterator)
 
-	// Send a few blocks from backend.
 	for i := int32(1); i <= 3; i++ {
 		hash := chainhash.Hash{}
 		hash[0] = byte(i)
@@ -925,7 +919,6 @@ func TestBlockEpochActorIteratorMode(t *testing.T) {
 		}
 	}
 
-	// Collect blocks from iterator.
 	var blocks []BlockEpoch
 	iterCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -1160,6 +1153,116 @@ func TestOutpointOrScriptKey(t *testing.T) {
 					require.Contains(t, key, substr)
 				}
 			}
+		})
+	}
+}
+
+// TestConfActorIncludeBlock verifies that the IncludeBlock option controls
+// whether the full block is returned in the confirmation event.
+func TestConfActorIncludeBlock(t *testing.T) {
+	t.Parallel()
+
+	// Use multiple transactions so we can verify TxIndex points to the
+	// correct one when the full block is returned.
+	testBlock := &wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version: 1,
+			Nonce:   12345,
+		},
+		Transactions: []*wire.MsgTx{
+			wire.NewMsgTx(2),
+			wire.NewMsgTx(2),
+		},
+	}
+
+	testCases := []struct {
+		name string
+
+		includeBlock bool
+		//
+		// backendBlock is what the backend returns; nil when
+		// IncludeBlock was not requested.
+		backendBlock *wire.MsgBlock
+
+		expectBlock bool
+	}{
+		{
+			name:         "include block",
+			includeBlock: true,
+			backendBlock: testBlock,
+			expectBlock:  true,
+		},
+		{
+			name:         "exclude block",
+			includeBlock: false,
+			backendBlock: nil,
+			expectBlock:  false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			backend := newMockBackend()
+			confActor := NewConfActor(backend, ctx)
+
+			// Send a register conf request directly into the
+			// actor.
+			txHash := chainhash.Hash{0x01, 0x02}
+			result := confActor.Receive(ctx, &RegisterConfRequest{
+				CallerID:     "test-include-block",
+				Txid:         &txHash,
+				PkScript:     []byte{0x00, 0x14},
+				TargetConfs:  1,
+				IncludeBlock: tc.includeBlock,
+			})
+			require.True(t, result.IsOk())
+
+			resp, err := result.Unpack()
+			require.NoError(t, err)
+			confResp, ok := resp.(*RegisterConfResponse)
+			require.True(t, ok)
+			require.NotNil(t, confResp.Future)
+
+			// We'll now send in a confirmation from the backend,
+			// including the block based on our rquest.
+			blockHash := chainhash.Hash{0xaa, 0xbb}
+			backend.confChan <- &TxConfirmation{
+				BlockHash:   &blockHash,
+				BlockHeight: 200,
+				TxIndex:     1,
+				Tx:          testBlock.Transactions[1],
+				Block:       tc.backendBlock,
+			}
+
+			eventCtx, cancel := context.WithTimeout(
+				ctx, 5*time.Second,
+			)
+			defer cancel()
+			eventResult := confResp.Future.Await(eventCtx)
+			require.True(t, eventResult.IsOk())
+
+			event, err := eventResult.Unpack()
+			require.NoError(t, err)
+
+			// Assert that the block is, or isn't included as
+			// expected.
+			if tc.expectBlock {
+				require.NotNil(t, event.Block)
+				require.Equal(
+					t, testBlock.Header.Nonce,
+					event.Block.Header.Nonce,
+				)
+				require.Len(t, event.Block.Transactions, 2)
+			} else {
+				require.Nil(t, event.Block)
+			}
+
+			require.Equal(t, blockHash, event.BlockHash)
+			require.Equal(t, int32(200), event.BlockHeight)
+			require.NotNil(t, event.Tx)
 		})
 	}
 }

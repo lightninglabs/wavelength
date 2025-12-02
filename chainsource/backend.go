@@ -52,12 +52,14 @@ type ChainBackend interface {
 	//   - pkScript: The public key script to watch for
 	//   - numConfs: Target number of confirmations
 	//   - heightHint: Earliest block containing the tx (0 if unknown)
+	//   - includeBlock: If true, include the full block in the confirmation
+	//     event for merkle proof construction
 	//
 	// The returned ConfRegistration must have buffered channels and a
 	// Cancel function for cleanup.
 	RegisterConf(ctx context.Context, txid *chainhash.Hash,
 		pkScript []byte, numConfs uint32,
-		heightHint uint32) (*ConfRegistration, error)
+		heightHint uint32, includeBlock bool) (*ConfRegistration, error)
 
 	// RegisterSpend registers for spend notifications of a transaction
 	// output. The registration returns a SpendRegistration that provides
@@ -121,6 +123,11 @@ type TxConfirmation struct {
 
 	// Tx is the confirmed transaction itself.
 	Tx *wire.MsgTx
+
+	// Block is the full block containing the transaction. Only populated
+	// when the confirmation was registered with IncludeBlock=true. This
+	// matches lnd's chainntnfs behavior.
+	Block *wire.MsgBlock
 }
 
 // SpendRegistration encapsulates the channels and control functions for a
