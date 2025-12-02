@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightningnetwork/lnd/actor"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -70,10 +70,10 @@ func (m *SendClientEventResponse) serverConnRespSealed() {}
 // decouples the client FSM from the transport layer.
 //
 // The actor maintains a connection to the server and handles:
-// - Converting FSM events to proto messages
-// - Sending messages over gRPC
-// - Handling connection failures and retries (TODO)
-// - Notifying the client actor of server responses (TODO)
+//   - Converting FSM events to proto messages.
+//   - Sending messages over gRPC.
+//   - Handling connection failures and retries (TODO).
+//   - Notifying the client actor of server responses (TODO).
 type ServerConnectionActor struct {
 	// TODO: Add gRPC client connection
 	// grpcClient pb.ArkServiceClient
@@ -110,13 +110,12 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	// Convert the message to proto using the ServerMessage interface.
 	protoMsg := req.Message.ToProto()
 
-	// TODO: Send the proto message via gRPC. For now, just log.
+	// TODO: Send the proto message via gRPC. For now, this is a no-op.
 	// In production, this would:
-	// 1. Type switch on protoMsg to determine which gRPC method to call
-	// 2. Call the appropriate grpcClient method (e.g., grpcClient.JoinRound)
-	// 3. Handle the response and potentially notify the client actor
-	fmt.Printf("ServerConnActor: would send proto message of type %T\n",
-		protoMsg)
+	//  1. Type switch on protoMsg to determine gRPC method.
+	//  2. Call the appropriate grpcClient method.
+	//  3. Handle response and notify the client actor.
+	_ = protoMsg
 
 	return fn.Ok[ServerConnResp](&SendClientEventResponse{
 		Success: true,
