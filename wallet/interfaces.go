@@ -8,6 +8,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/taproot-assets/proof"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -207,6 +209,13 @@ type BoardingChainInfo struct {
 
 	// Amount is the boarding output amount.
 	Amount btcutil.Amount
+
+	// TxProof is the SPV proof that the boarding transaction exists in a
+	// confirmed block. This includes the merkle proof, block header, and
+	// output construction details needed for server verification without
+	// querying its own chain source. None if the proof hasn't been
+	// constructed yet (e.g., block data not available).
+	TxProof fn.Option[proof.TxProof]
 }
 
 // BoardingIntent captures one confirmed boarding input. Intents are only
