@@ -1,0 +1,580 @@
+package round
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+// confEventNotifier is a type alias for confirmation event notifiers.
+type confEventNotifier = actor.TellOnlyRef[chainsource.ConfirmationEvent]
+
+// mockServerConnRef captures all messages sent to the server for test
+// verification, implementing actor.TellOnlyRef[serverconn.ServerConnMsg].
+type mockServerConnRef struct {
+	t        *testing.T
+	id       string
+	messages []serverconn.ServerConnMsg
+	mu       sync.Mutex
+}
+
+func newMockServerConnRef(t *testing.T) *mockServerConnRef {
+	return &mockServerConnRef{
+		t:        t,
+		id:       "mock-server-conn",
+		messages: make([]serverconn.ServerConnMsg, 0),
+	}
+}
+
+func (m *mockServerConnRef) ID() string {
+	return m.id
+}
+
+func (m *mockServerConnRef) Tell(
+	_ context.Context, msg serverconn.ServerConnMsg,
+) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, msg)
+}
+
+func (m *mockServerConnRef) clearMessages() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = m.messages[:0]
+}
+
+// assertMessageSent checks that a message of the given type was sent.
+func (m *mockServerConnRef) assertMessageSent(t *testing.T, msgType string) {
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, msg := range m.messages {
+		if msg.MessageType() == msgType {
+			return
+		}
+	}
+
+	t.Fatalf("expected message of type %q, but none found in %d messages",
+		msgType, len(m.messages))
+}
+
+// mockChainSourceRef captures chain registration requests for test
+// verification, implementing actor.TellOnlyRef[chainsource.ChainSourceMsg].
+type mockChainSourceRef struct {
+	t             *testing.T
+	id            string
+	registrations []*chainsource.RegisterConfRequest
+	mu            sync.Mutex
+
+	// notifiers stores mapped actor refs, enabling the test to inject
+	// confirmations back to the actor being tested.
+	notifiers map[string]confEventNotifier
+}
+
+func newMockChainSourceRef(t *testing.T) *mockChainSourceRef {
+	return &mockChainSourceRef{
+		t:             t,
+		id:            "mock-chain-source",
+		registrations: make([]*chainsource.RegisterConfRequest, 0),
+		notifiers:     make(map[string]confEventNotifier),
+	}
+}
+
+func (m *mockChainSourceRef) ID() string {
+	return m.id
+}
+
+func (m *mockChainSourceRef) Tell(
+	_ context.Context, msg chainsource.ChainSourceMsg,
+) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if req, ok := msg.(*chainsource.RegisterConfRequest); ok {
+		m.registrations = append(m.registrations, req)
+
+		// Store the notifier so tests can inject confirmations back
+		// to the actor.
+		if req.NotifyActor.IsSome() {
+			notifier := req.NotifyActor.UnwrapOrFail(m.t)
+			m.notifiers[req.CallerID] = notifier
+		}
+	}
+}
+
+// mockWalletActorRef captures registration requests and enables tests to
+// inject boarding confirmations back to the actor under test.
+type mockWalletActorRef struct {
+	t  *testing.T
+	id string
+	mu sync.Mutex
+
+	// registeredNotifier holds the actor ref provided during registration,
+	// enabling tests to send boarding confirmations.
+	registeredNotifier actor.TellOnlyRef[wallet.BoardingUtxoConfirmedEvent]
+}
+
+func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
+	return &mockWalletActorRef{
+		t:  t,
+		id: "mock-wallet-actor",
+	}
+}
+
+func (m *mockWalletActorRef) ID() string {
+	return m.id
+}
+
+func (m *mockWalletActorRef) Tell(_ context.Context, msg wallet.WalletMsg) {
+	// WalletActor uses Ask pattern for registration, so Tell is unused in
+	// these tests.
+}
+
+func (m *mockWalletActorRef) Ask(_ context.Context,
+	msg wallet.WalletMsg) actor.Future[wallet.WalletResp] {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if req, ok := msg.(*wallet.RegisterConfirmationNotifierRequest); ok {
+		m.registeredNotifier = req.NotifyActor
+
+		resp := &wallet.RegisterConfirmationNotifierResponse{
+			Success: true,
+		}
+
+		return newImmediateFuture[wallet.WalletResp](resp)
+	}
+
+	return newImmediateFuture[wallet.WalletResp](nil)
+}
+
+// sendBoardingConfirmation simulates a boarding UTXO confirmation from wallet.
+func (m *mockWalletActorRef) sendBoardingConfirmation(ctx context.Context,
+	intent *wallet.BoardingIntent) {
+
+	m.mu.Lock()
+	notifier := m.registeredNotifier
+	m.mu.Unlock()
+
+	if notifier == nil {
+		m.t.Fatal("no notifier registered for boarding confirmations")
+	}
+
+	event := wallet.BoardingUtxoConfirmedEvent{
+		BoardingIntent: intent,
+	}
+	notifier.Tell(ctx, event)
+}
+
+// mockSelfRef captures messages that the round actor sends to itself,
+// enabling tests to intercept and verify self-notifications.
+type mockSelfRef struct {
+	t        *testing.T
+	id       string
+	messages []ClientMsg
+	msgChan  chan ClientMsg
+	mu       sync.Mutex
+}
+
+func newMockSelfRef(t *testing.T) *mockSelfRef {
+	return &mockSelfRef{
+		t:        t,
+		id:       "mock-self-ref",
+		messages: make([]ClientMsg, 0),
+		msgChan:  make(chan ClientMsg, 100),
+	}
+}
+
+func (m *mockSelfRef) ID() string {
+	return m.id
+}
+
+func (m *mockSelfRef) Tell(_ context.Context, msg ClientMsg) {
+	m.mu.Lock()
+	m.messages = append(m.messages, msg)
+	m.mu.Unlock()
+
+	// Also send to channel for blocking receives in test assertions.
+	select {
+	case m.msgChan <- msg:
+	default:
+	}
+}
+
+// waitForMessage blocks until a message arrives or the timeout expires,
+// enabling synchronous test assertions on asynchronous actor messages.
+func (m *mockSelfRef) waitForMessage(timeout time.Duration) (ClientMsg, bool) {
+	select {
+	case msg := <-m.msgChan:
+		return msg, true
+	case <-time.After(timeout):
+		return nil, false
+	}
+}
+
+// immediateFuture provides a synchronous Future implementation for tests,
+// avoiding the complexity of async futures when the result is already known.
+type immediateFuture[T any] struct {
+	result fn.Result[T]
+}
+
+func newImmediateFuture[T any](val T) actor.Future[T] {
+	return &immediateFuture[T]{result: fn.Ok(val)}
+}
+
+func (f *immediateFuture[T]) Await(_ context.Context) fn.Result[T] {
+	return f.result
+}
+
+func (f *immediateFuture[T]) ThenApply(ctx context.Context,
+	fn func(T) T) actor.Future[T] {
+
+	val, err := f.result.Unpack()
+	if err != nil {
+		return f
+	}
+
+	return newImmediateFuture[T](fn(val))
+}
+
+func (f *immediateFuture[T]) OnComplete(_ context.Context,
+	callback func(fn.Result[T])) {
+
+	callback(f.result)
+}
+
+// actorTestHarness provides end-to-end testing of RoundClientActor by
+// wrapping it with mock dependencies that capture outgoing messages and enable
+// injection of incoming events, allowing tests to verify full actor workflows
+// without real network or blockchain interactions.
+//
+//nolint:containedctx
+type actorTestHarness struct {
+	t   *testing.T
+	ctx context.Context
+
+	actor *RoundClientActor
+
+	serverConn  *mockServerConnRef
+	chainSource *mockChainSourceRef
+	walletActor *mockWalletActorRef
+	selfRef     *mockSelfRef
+
+	roundStore *MockRoundStore
+	vtxoStore  *MockVTXOStore
+	wallet     *MockClientWallet
+
+	clientPrivKey   *btcec.PrivateKey
+	operatorPrivKey *btcec.PrivateKey
+	clientPubKey    *btcec.PublicKey
+	operatorPubKey  *btcec.PublicKey
+
+	operatorTerms *OperatorTerms
+}
+
+func newActorTestHarness(t *testing.T) *actorTestHarness {
+	t.Helper()
+
+	clientPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientPubKey := clientPrivKey.PubKey()
+	operatorPubKey := operatorPrivKey.PubKey()
+
+	serverConn := newMockServerConnRef(t)
+	chainSource := newMockChainSourceRef(t)
+	walletActor := newMockWalletActorRef(t)
+	selfRef := newMockSelfRef(t)
+
+	roundStore := &MockRoundStore{}
+	vtxoStore := &MockVTXOStore{}
+	walletMock := &MockClientWallet{}
+
+	operatorTerms := &OperatorTerms{
+		OperatorTerms: &types.OperatorTerms{
+			PubKey:            operatorPubKey,
+			BoardingExitDelay: 144,
+			VTXOExitDelay:     144,
+		},
+		SweepKey:         operatorPubKey,
+		SweepDelay:       1008,
+		MinConfirmations: 1,
+	}
+
+	cfg := &RoundClientConfig{
+		Name:          "test-round-actor",
+		Wallet:        walletMock,
+		RoundStore:    roundStore,
+		VTXOStore:     vtxoStore,
+		OperatorTerms: operatorTerms,
+		ServerConn:    serverConn,
+		ChainSource:   chainSource,
+		WalletActor:   walletActor,
+		SelfRef:       selfRef,
+		ChainParams:   &chaincfg.MainNetParams,
+	}
+
+	actorResult := NewRoundClientActor(cfg)
+	require.True(
+		t, actorResult.IsOk(), "failed to create actor: %v",
+		actorResult.Err(),
+	)
+
+	actor := actorResult.UnwrapOrFail(t)
+
+	return &actorTestHarness{
+		t:               t,
+		ctx:             t.Context(),
+		actor:           actor,
+		serverConn:      serverConn,
+		chainSource:     chainSource,
+		walletActor:     walletActor,
+		selfRef:         selfRef,
+		roundStore:      roundStore,
+		vtxoStore:       vtxoStore,
+		wallet:          walletMock,
+		clientPrivKey:   clientPrivKey,
+		operatorPrivKey: operatorPrivKey,
+		clientPubKey:    clientPubKey,
+		operatorPubKey:  operatorPubKey,
+		operatorTerms:   operatorTerms,
+	}
+}
+
+// setupMockRoundStoreForStart configures the RoundStore mock to return no
+// active rounds, simulating a fresh start with no recovery needed.
+func (h *actorTestHarness) setupMockRoundStoreForStart() {
+	h.t.Helper()
+
+	h.roundStore.On("ListActiveRounds").Return([]*Round{}, nil)
+}
+
+// start initializes the actor by calling Start().
+func (h *actorTestHarness) start() error {
+	return h.actor.Start(h.ctx)
+}
+
+// receive sends a message to the actor and returns the response.
+func (h *actorTestHarness) receive(msg ClientMsg) fn.Result[ClientResp] {
+	return h.actor.Receive(h.ctx, msg)
+}
+
+// sendWalletConfirmation simulates a boarding UTXO confirmation event from the
+// wallet actor, then forwards the self-notification back to the actor to
+// complete the round-trip.
+func (h *actorTestHarness) sendWalletConfirmation(
+	intent *wallet.BoardingIntent) {
+
+	h.walletActor.sendBoardingConfirmation(h.ctx, intent)
+
+	msg, ok := h.selfRef.waitForMessage(time.Second)
+	require.True(h.t, ok, "expected WalletBoardingConfirmed message")
+
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
+}
+
+// sendServerMessage wraps a server event in a notification and delivers it to
+// the actor, simulating server-to-client communication.
+func (h *actorTestHarness) sendServerMessage(event ClientEvent) {
+	msg := &ServerMessageNotification{Message: event}
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
+}
+
+// queryState retrieves the current FSM states for test assertions.
+func (h *actorTestHarness) queryState() map[string]FSMStateInfo {
+	result := h.receive(&GetClientStateRequest{})
+	require.True(h.t, result.IsOk())
+
+	resp, _ := result.Unpack()
+	stateResp, ok := resp.(*GetClientStateResponse)
+	require.True(h.t, ok, "expected GetClientStateResponse")
+
+	return stateResp.States
+}
+
+// newTestBoardingIntent creates a complete boarding intent with proper
+// tapscript and chain info for testing.
+func (h *actorTestHarness) newTestBoardingIntent() *wallet.BoardingIntent {
+	return h.newTestBoardingIntentWithSuffix("")
+}
+
+// newTestBoardingIntentWithSuffix creates a unique boarding intent, using the
+// suffix to generate distinct outpoints when multiple intents are needed.
+func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
+	suffix string) *wallet.BoardingIntent {
+
+	h.t.Helper()
+
+	hash := chainhash.HashH([]byte(h.t.Name() + "-intent" + suffix))
+	outpoint := wire.OutPoint{Hash: hash, Index: 0}
+
+	tapscript, err := scripts.VTXOTapScript(
+		h.clientPubKey, h.operatorPubKey, h.operatorTerms.VTXOExitDelay,
+	)
+	require.NoError(h.t, err)
+
+	taprootKey, err := tapscript.TaprootKey()
+	require.NoError(h.t, err)
+
+	addr, err := btcutil.NewAddressTaproot(
+		taprootKey.SerializeCompressed()[1:], &chaincfg.MainNetParams,
+	)
+	require.NoError(h.t, err)
+
+	keyDesc := keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
+	}
+
+	boardingAddr := wallet.BoardingAddress{
+		Address:     addr,
+		Tapscript:   tapscript,
+		KeyDesc:     keyDesc,
+		OperatorKey: h.operatorPubKey,
+		ExitDelay:   h.operatorTerms.VTXOExitDelay,
+	}
+
+	pkScript, err := txscript.PayToAddrScript(addr)
+	require.NoError(h.t, err)
+
+	confTx := wire.NewMsgTx(2)
+	confTx.AddTxOut(&wire.TxOut{
+		Value:    50000,
+		PkScript: pkScript,
+	})
+
+	return &wallet.BoardingIntent{
+		Address:  boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 100,
+			OutPoint:   outpoint,
+			Amount:     btcutil.Amount(50000),
+			ConfTx:     confTx,
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+}
+
+// simulateRoundJoined injects a RoundJoined server event to the actor,
+// simulating successful round enrollment.
+func (h *actorTestHarness) simulateRoundJoined(roundID string) {
+	h.t.Helper()
+
+	event := &RoundJoined{
+		RoundID:     roundID,
+		SessionInfo: map[string][]byte{},
+	}
+	h.sendServerMessage(event)
+}
+
+// assertFSMState verifies the primary FSM is in the expected state type.
+func (h *actorTestHarness) assertFSMState(expectedStateType string) {
+	h.t.Helper()
+
+	states := h.queryState()
+	primaryState, exists := states["primary"]
+	require.True(h.t, exists, "expected primary FSM state")
+
+	stateName := fmt.Sprintf("%T", primaryState.State)
+	require.Contains(
+		h.t, stateName, expectedStateType,
+		"expected state %s, got %s", expectedStateType, stateName,
+	)
+}
+
+// assertServerMessageSent verifies a message of the given type was sent to
+// the server.
+func (h *actorTestHarness) assertServerMessageSent(msgType string) {
+	h.t.Helper()
+	h.serverConn.assertMessageSent(h.t, msgType)
+}
+
+// clearServerMessages resets the captured server messages, allowing tests to
+// verify only new messages sent after this point.
+func (h *actorTestHarness) clearServerMessages() {
+	h.serverConn.clearMessages()
+}
+
+// newTestRound creates a test Round with a unique commitment transaction,
+// using the roundID in the script to ensure distinct transaction hashes.
+func (h *actorTestHarness) newTestRound(roundID string) *Round {
+	h.t.Helper()
+
+	commitmentTx := wire.NewMsgTx(2)
+
+	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID)...)
+	commitmentTx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: uniqueScript,
+	})
+
+	return &Round{
+		RoundID:      roundID,
+		CommitmentTx: fn.Some(commitmentTx),
+	}
+}
+
+// setupMockRoundStoreForRecovery configures the RoundStore mock to return
+// active rounds for recovery on Start(), using PartialSigsSentState which is
+// stable and won't immediately transition on recovery.
+func (h *actorTestHarness) setupMockRoundStoreForRecovery(rounds []*Round) {
+	h.t.Helper()
+
+	h.roundStore.On("ListActiveRounds").Return(rounds, nil)
+
+	for _, round := range rounds {
+		h.roundStore.On(
+			"FetchState", mock.Anything, round.RoundID,
+		).Return(
+			round,
+			&PartialSigsSentState{RoundID: round.RoundID},
+			nil,
+		)
+	}
+}
+
+// unknownClientMsg is a test message type not handled by the actor, used to
+// test error handling for unrecognized message types.
+type unknownClientMsg struct {
+	actor.BaseMessage
+}
+
+func (m *unknownClientMsg) MessageType() string { return "UnknownClientMsg" }
+func (m *unknownClientMsg) clientMsgSealed()    {}
