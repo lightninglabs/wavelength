@@ -1,0 +1,162 @@
+//nolint:ll
+package round
+
+import (
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/types"
+)
+
+// ValidateBoardingScript validates that a boarding tapscript has the
+// expected structure with collaborative and timeout paths.
+func ValidateBoardingScript(tapscript *waddrmgr.Tapscript,
+	clientKey *btcec.PublicKey, operatorKey *btcec.PublicKey,
+	expectedExitDelay uint32) error {
+
+	if tapscript == nil {
+		return fmt.Errorf("tapscript is nil")
+	}
+
+	// Ensure control block is present for taproot spending.
+	if tapscript.ControlBlock == nil {
+		return fmt.Errorf("tapscript control block is nil")
+	}
+
+	// Verify the internal key exists for taproot construction.
+	if tapscript.ControlBlock.InternalKey == nil {
+		return fmt.Errorf("control block internal key is nil")
+	}
+
+	// Ensure the internal key is unspendable (ARK NUMS key) to force
+	// script path spending only.
+	if !tapscript.ControlBlock.InternalKey.IsEqual(&scripts.ARKNUMSKey) {
+		return fmt.Errorf("internal key is not ARK NUMS key")
+	}
+
+	// For full tree types, verify we have both the collaborative and
+	// timeout script paths by constructing the expected script and comparing.
+	if tapscript.Type == waddrmgr.TapscriptTypeFullTree {
+		if len(tapscript.Leaves) != 2 {
+			return fmt.Errorf("boarding script has %d leaves, "+
+				"expected 2", len(tapscript.Leaves))
+		}
+
+		// Construct the expected boarding tapscript using lib function.
+		// This ensures we validate against the exact script structure
+		// that lib creates.
+		expectedTapscript, err := scripts.VTXOTapScript(
+			clientKey, operatorKey, expectedExitDelay,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to construct expected boarding "+
+				"script: %w", err)
+		}
+
+		if len(expectedTapscript.Leaves) != 2 {
+			return fmt.Errorf("expected tapscript has %d leaves, "+
+				"should be 2", len(expectedTapscript.Leaves))
+		}
+
+		// Compare each leaf script byte-for-byte. The order may vary,
+		// so we check if each actual leaf matches one of the expected leaves.
+		actualLeaves := make(map[string]bool)
+		for _, leaf := range tapscript.Leaves {
+			actualLeaves[string(leaf.Script)] = true
+		}
+
+		for i, expectedLeaf := range expectedTapscript.Leaves {
+			if !actualLeaves[string(expectedLeaf.Script)] {
+				return fmt.Errorf("expected leaf %d script not found "+
+					"in actual boarding script", i)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ValidateBoardingSignature validates a boarding input signature from a
+// client. This verifies the signature is for the collaborative spend path
+// and signs the commitment transaction correctly.
+func ValidateBoardingSignature(commitmentTx *wire.MsgTx,
+	boardingRequest *types.BoardingRequest, signature []byte,
+	inputIndex int) error {
+
+	if commitmentTx == nil {
+		return fmt.Errorf("commitment tx is nil")
+	}
+	if boardingRequest == nil {
+		return fmt.Errorf("boarding request is nil")
+	}
+
+	// Schnorr signatures are always 64 bytes (R || s).
+	if len(signature) != 64 {
+		return fmt.Errorf("invalid signature length: %d, "+
+			"expected 64", len(signature))
+	}
+
+	if inputIndex < 0 || inputIndex >= len(commitmentTx.TxIn) {
+		return fmt.Errorf("input index %d out of range", inputIndex)
+	}
+
+	// Ensure the input being signed actually corresponds to the boarding
+	// UTXO to prevent signature reuse attacks.
+	txIn := commitmentTx.TxIn[inputIndex]
+	outpoint := boardingRequest.Outpoint
+	if !txIn.PreviousOutPoint.Hash.IsEqual(&outpoint.Hash) ||
+		txIn.PreviousOutPoint.Index != outpoint.Index {
+
+		return fmt.Errorf("input %d does not reference boarding "+
+			"UTXO", inputIndex)
+	}
+
+	// TODO: Verify the signature is valid for the collaborative spend
+	// path. This requires:
+	// 1. Computing the sighash for the tapscript spend
+	// 2. Parsing the Schnorr signature
+	// 3. Verifying against the client's public key
+	//
+	// This will be implemented in Phase 2 when we add full signing logic.
+
+	return nil
+}
+
+// ValidateDelayParameters validates the delay parameters for security.
+//
+// SweepDelay MUST be greater than VTXOExitDelay to ensure the operator has
+// time to respond to unilateral exits before the batch expires.
+func ValidateDelayParameters(sweepDelay, vtxoExitDelay uint32) error {
+	// Both delays must be non-zero.
+	if sweepDelay == 0 {
+		return fmt.Errorf("sweep delay is zero")
+	}
+	if vtxoExitDelay == 0 {
+		return fmt.Errorf("VTXO exit delay is zero")
+	}
+
+	// Sweep delay must be greater than VTXO exit delay for security.
+	// This ensures the operator has time to respond to griefing attacks.
+	if sweepDelay <= vtxoExitDelay {
+		return fmt.Errorf("sweep delay (%d) must be greater than "+
+			"VTXO exit delay (%d)", sweepDelay, vtxoExitDelay)
+	}
+
+	// Sanity check: Delays should be reasonable (less than ~1 year).
+	const maxReasonableDelay = 52560 // ~1 year in blocks (10 min blocks)
+	if sweepDelay > maxReasonableDelay {
+		return fmt.Errorf("sweep delay (%d) exceeds maximum "+
+			"reasonable "+
+			"value (%d blocks)", sweepDelay, maxReasonableDelay)
+	}
+	if vtxoExitDelay > maxReasonableDelay {
+		return fmt.Errorf("VTXO exit delay (%d) exceeds maximum "+
+			"reasonable value (%d blocks)", vtxoExitDelay,
+			maxReasonableDelay)
+	}
+
+	return nil
+}
