@@ -1,0 +1,1744 @@
+package round
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"fmt"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+// MockRoundStore implements RoundStore using mock.Mock for testing.
+type MockRoundStore struct {
+	mock.Mock
+}
+
+func (m *MockRoundStore) CommitState(ctx context.Context, round *Round,
+	state ClientState) error {
+
+	args := m.Called(ctx, round, state)
+	return args.Error(0)
+}
+
+//nolint:forcetypeassert
+func (m *MockRoundStore) FetchState(ctx context.Context,
+	roundID string) (*Round, ClientState, error) {
+
+	args := m.Called(ctx, roundID)
+
+	var round *Round
+	if args.Get(0) != nil {
+		round = args.Get(0).(*Round)
+	}
+
+	var state ClientState
+	if args.Get(1) != nil {
+		state = args.Get(1).(ClientState)
+	}
+
+	return round, state, args.Error(2)
+}
+
+//nolint:forcetypeassert
+func (m *MockRoundStore) LookupRoundByCommitmentTx(
+	txid chainhash.Hash) (*Round, error) {
+
+	args := m.Called(txid)
+
+	var round *Round
+	if args.Get(0) != nil {
+		round = args.Get(0).(*Round)
+	}
+
+	return round, args.Error(1)
+}
+
+//nolint:forcetypeassert
+func (m *MockRoundStore) ListActiveRounds() ([]*Round, error) {
+	args := m.Called()
+
+	var rounds []*Round
+	if args.Get(0) != nil {
+		rounds = args.Get(0).([]*Round)
+	}
+
+	return rounds, args.Error(1)
+}
+
+func (m *MockRoundStore) FinalizeRound(roundID string,
+	txid chainhash.Hash) error {
+
+	args := m.Called(roundID, txid)
+	return args.Error(0)
+}
+
+// Compile-time check that MockRoundStore implements RoundStore.
+var _ RoundStore = (*MockRoundStore)(nil)
+
+// MockVTXOStore implements VTXOStore using mock.Mock for testing.
+type MockVTXOStore struct {
+	mock.Mock
+}
+
+func (m *MockVTXOStore) SaveVTXOs(vtxos []*ClientVTXO) error {
+	args := m.Called(vtxos)
+	return args.Error(0)
+}
+
+//nolint:forcetypeassert
+func (m *MockVTXOStore) ListVTXOs() ([]*ClientVTXO, error) {
+	args := m.Called()
+
+	var vtxos []*ClientVTXO
+	if args.Get(0) != nil {
+		vtxos = args.Get(0).([]*ClientVTXO)
+	}
+
+	return vtxos, args.Error(1)
+}
+
+//nolint:forcetypeassert
+func (m *MockVTXOStore) GetVTXO(outpoint wire.OutPoint) (*ClientVTXO, error) {
+	args := m.Called(outpoint)
+
+	var vtxo *ClientVTXO
+	if args.Get(0) != nil {
+		vtxo = args.Get(0).(*ClientVTXO)
+	}
+
+	return vtxo, args.Error(1)
+}
+
+func (m *MockVTXOStore) MarkVTXOSpent(outpoint wire.OutPoint) error {
+	args := m.Called(outpoint)
+	return args.Error(0)
+}
+
+// Compile-time check that MockVTXOStore implements VTXOStore.
+var _ VTXOStore = (*MockVTXOStore)(nil)
+
+// MockClientWallet implements ClientWallet (input.MuSig2Signer + input.Signer)
+// using mock.Mock for testing.
+type MockClientWallet struct {
+	mock.Mock
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) MuSig2CreateSession(
+	version input.MuSig2Version,
+	keyLoc keychain.KeyLocator,
+	signers []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks,
+	otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces,
+) (*input.MuSig2SessionInfo, error) {
+
+	args := m.Called(
+		version, keyLoc, signers, tweaks, otherNonces, localNonces,
+	)
+
+	var info *input.MuSig2SessionInfo
+	if args.Get(0) != nil {
+		info = args.Get(0).(*input.MuSig2SessionInfo)
+	}
+
+	return info, args.Error(1)
+}
+
+func (m *MockClientWallet) MuSig2RegisterNonces(
+	sessionID input.MuSig2SessionID,
+	nonces [][musig2.PubNonceSize]byte,
+) (bool, error) {
+
+	args := m.Called(sessionID, nonces)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockClientWallet) MuSig2RegisterCombinedNonce(
+	sessionID input.MuSig2SessionID,
+	nonce [musig2.PubNonceSize]byte,
+) error {
+
+	args := m.Called(sessionID, nonce)
+	return args.Error(0)
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) MuSig2GetCombinedNonce(
+	sessionID input.MuSig2SessionID,
+) ([musig2.PubNonceSize]byte, error) {
+
+	args := m.Called(sessionID)
+
+	var nonce [musig2.PubNonceSize]byte
+	if args.Get(0) != nil {
+		nonce = args.Get(0).([musig2.PubNonceSize]byte)
+	}
+
+	return nonce, args.Error(1)
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) MuSig2Sign(
+	sessionID input.MuSig2SessionID,
+	message [sha256.Size]byte,
+	cleanup bool,
+) (*musig2.PartialSignature, error) {
+
+	args := m.Called(sessionID, message, cleanup)
+
+	var sig *musig2.PartialSignature
+	if args.Get(0) != nil {
+		sig = args.Get(0).(*musig2.PartialSignature)
+	}
+
+	return sig, args.Error(1)
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) MuSig2CombineSig(
+	sessionID input.MuSig2SessionID,
+	otherPartials []*musig2.PartialSignature,
+) (*schnorr.Signature, bool, error) {
+
+	args := m.Called(sessionID, otherPartials)
+
+	var sig *schnorr.Signature
+	if args.Get(0) != nil {
+		sig = args.Get(0).(*schnorr.Signature)
+	}
+
+	return sig, args.Bool(1), args.Error(2)
+}
+
+func (m *MockClientWallet) MuSig2Cleanup(
+	sessionID input.MuSig2SessionID) error {
+
+	args := m.Called(sessionID)
+	return args.Error(0)
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) SignOutputRaw(
+	tx *wire.MsgTx,
+	signDesc *input.SignDescriptor,
+) (input.Signature, error) {
+
+	args := m.Called(tx, signDesc)
+
+	var sig input.Signature
+	if args.Get(0) != nil {
+		sig = args.Get(0).(input.Signature)
+	}
+
+	return sig, args.Error(1)
+}
+
+//nolint:forcetypeassert
+func (m *MockClientWallet) ComputeInputScript(
+	tx *wire.MsgTx,
+	signDesc *input.SignDescriptor,
+) (*input.Script, error) {
+
+	args := m.Called(tx, signDesc)
+
+	var script *input.Script
+	if args.Get(0) != nil {
+		script = args.Get(0).(*input.Script)
+	}
+
+	return script, args.Error(1)
+}
+
+// Compile-time check that MockClientWallet implements ClientWallet.
+var _ ClientWallet = (*MockClientWallet)(nil)
+
+// boardingTestHarness is the central test harness housing all common setup,
+// mocks, fixtures, and helper functions for boarding FSM tests.
+//
+//nolint:containedctx
+type boardingTestHarness struct {
+	t      *testing.T
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Mocks for FSM dependencies.
+	roundStore *MockRoundStore
+	vtxoStore  *MockVTXOStore
+	wallet     *MockClientWallet
+
+	// Environment for FSM.
+	env *ClientEnvironment
+
+	// Real cryptographic keys for signature testing.
+	clientPrivKey   *btcec.PrivateKey
+	clientPubKey    *btcec.PublicKey
+	operatorPrivKey *btcec.PrivateKey
+	operatorPubKey  *btcec.PublicKey
+
+	// Runtime state tracking for assertions.
+	currentState   ClientState
+	lastTransition *ClientStateTransition
+	outboxMessages []ClientOutMsg
+}
+
+// newTestHarness creates a new test harness with default mock configuration.
+func newTestHarness(t *testing.T) *boardingTestHarness {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	clientPrivKey, clientPubKey := generateTestKeyPair(t)
+	operatorPrivKey, operatorPubKey := generateTestKeyPair(t)
+
+	roundStore := &MockRoundStore{}
+	vtxoStore := &MockVTXOStore{}
+	wallet := &MockClientWallet{}
+
+	terms := &types.OperatorTerms{
+		PubKey:            operatorPubKey,
+		SweepKey:          operatorPubKey,
+		SweepDelay:        1008, // ~1 week in blocks.
+		DustLimit:         546,
+		MinBoardingAmount: 10000,
+		MaxBoardingAmount: 100000000, // 1 BTC.
+		FeeRate:           10,
+		MinConfirmations:  3,
+	}
+
+	env := NewClientEnvironment(
+		roundStore, vtxoStore, wallet, terms,
+		&chaincfg.RegressionNetParams,
+	)
+
+	h := &boardingTestHarness{
+		t:               t,
+		ctx:             ctx,
+		cancel:          cancel,
+		roundStore:      roundStore,
+		vtxoStore:       vtxoStore,
+		wallet:          wallet,
+		env:             env,
+		clientPrivKey:   clientPrivKey,
+		clientPubKey:    clientPubKey,
+		operatorPrivKey: operatorPrivKey,
+		operatorPubKey:  operatorPubKey,
+		currentState:    &Idle{},
+		outboxMessages:  make([]ClientOutMsg, 0),
+	}
+
+	t.Cleanup(func() {
+		cancel()
+	})
+
+	return h
+}
+
+// withState sets the current state for the harness.
+func (h *boardingTestHarness) withState(
+	state ClientState) *boardingTestHarness {
+
+	h.currentState = state
+	return h
+}
+
+// sendEvent sends an event to the current state, captures the transition, and
+// updates internal state tracking for subsequent assertions.
+func (h *boardingTestHarness) sendEvent(
+	event ClientEvent) (*ClientStateTransition, error) {
+
+	h.t.Helper()
+
+	transition, err := h.currentState.ProcessEvent(h.ctx, event, h.env)
+	if err != nil {
+		return nil, err
+	}
+
+	h.lastTransition = transition
+
+	if transition != nil {
+		if nextState, ok := transition.NextState.(ClientState); ok {
+			h.currentState = nextState
+		}
+
+		transition.NewEvents.WhenSome(func(emitted ClientEmittedEvent) {
+			h.outboxMessages = append(
+				h.outboxMessages, emitted.Outbox...,
+			)
+		})
+	}
+
+	return transition, nil
+}
+
+// assertStateType asserts the current state is of the expected type and
+// returns it cast to that type.
+func assertStateType[T ClientState](h *boardingTestHarness) T {
+	h.t.Helper()
+
+	state, ok := h.currentState.(T)
+	require.True(h.t, ok, "current state is not of expected type")
+
+	return state
+}
+
+func (h *boardingTestHarness) newTestOutpoint() wire.OutPoint {
+	h.t.Helper()
+
+	var hash chainhash.Hash
+	_, err := rand.Read(hash[:])
+	require.NoError(h.t, err)
+
+	return wire.OutPoint{
+		Hash:  hash,
+		Index: 0,
+	}
+}
+
+func (h *boardingTestHarness) newTestBoardingAddress() wallet.BoardingAddress {
+	h.t.Helper()
+
+	return wallet.BoardingAddress{
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  0,
+			},
+		},
+		OperatorKey: h.operatorPubKey,
+		ExitDelay:   144, // ~1 day in blocks.
+	}
+}
+
+func (h *boardingTestHarness) newTestBoardingIntent() BoardingIntent {
+	h.t.Helper()
+
+	outpoint := h.newTestOutpoint()
+	address := h.newTestBoardingAddress()
+
+	pkScript, err := txscript.PayToTaprootScript(h.clientPubKey)
+	require.NoError(h.t, err)
+
+	signingKey := keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
+	}
+
+	return BoardingIntent{
+		BoardingIntent: wallet.BoardingIntent{
+			Address:  address,
+			Outpoint: outpoint,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: 100,
+				OutPoint:   outpoint,
+				Amount:     btcutil.Amount(50000),
+			},
+			Status: wallet.BoardingStatusConfirmed,
+		},
+		BoardingRequest: types.BoardingRequest{
+			Outpoint:    &outpoint,
+			ClientKey:   h.clientPubKey,
+			OperatorKey: h.operatorPubKey,
+		},
+		VtxoTemplate: []types.VTXORequest{
+			{
+				Amount:      50000,
+				PkScript:    pkScript,
+				Expiry:      testExitDelay,
+				ClientKey:   h.clientPubKey,
+				OperatorKey: h.operatorPubKey,
+				SigningKey:  signingKey,
+			},
+		},
+	}
+}
+
+// newTestCommitmentTx creates a commitment transaction with the given inputs.
+// Uses version 3 for BIP 431 ephemeral anchor compatibility.
+func (h *boardingTestHarness) newTestCommitmentTx(
+	inputs []wire.OutPoint) *wire.MsgTx {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(3)
+
+	for _, input := range inputs {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: input,
+		})
+	}
+
+	tx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: make([]byte, 34),
+	})
+
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
+	})
+
+	return tx
+}
+
+func generateTestKeyPair(t *testing.T) (*btcec.PrivateKey, *btcec.PublicKey) {
+	t.Helper()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return privKey, privKey.PubKey()
+}
+
+func (h *boardingTestHarness) newBoardingUTXOConfirmedEvent(
+	intent BoardingIntent) *BoardingUTXOConfirmed {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(2)
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(intent.VtxoTemplate[0].Amount),
+		PkScript: intent.VtxoTemplate[0].PkScript,
+	})
+
+	var blockHash chainhash.Hash
+	_, err := rand.Read(blockHash[:])
+	require.NoError(h.t, err)
+
+	return &BoardingUTXOConfirmed{
+		Outpoint:      intent.Outpoint,
+		Address:       intent.Address,
+		BlockHeight:   intent.ChainInfo.ConfHeight,
+		BlockHash:     blockHash,
+		Confirmations: 6,
+		Tx:            tx,
+	}
+}
+
+const (
+	testExitDelay = uint32(144) // 1 day in blocks.
+)
+
+// newTestVTXOTree creates a minimal valid VTXT tree for testing by
+// delegating to lib/tree.NewTree() which handles all internal construction
+// including proper Taproot tweaking and node structure.
+func (h *boardingTestHarness) newTestVTXOTree(
+	numLeaves int) (*tree.Tree, []tree.LeafDescriptor) {
+
+	h.t.Helper()
+
+	const leafAmount = btcutil.Amount(50000)
+
+	leaves := make([]tree.LeafDescriptor, numLeaves)
+	for i := 0; i < numLeaves; i++ {
+		vtxoScript, err := txscript.PayToTaprootScript(h.clientPubKey)
+		require.NoError(h.t, err)
+
+		leaves[i] = tree.LeafDescriptor{
+			PkScript:    vtxoScript,
+			Amount:      leafAmount,
+			CoSignerKey: h.clientPubKey,
+		}
+	}
+
+	batchOutpoint := h.newTestOutpoint()
+
+	batchPkScript, err := txscript.PayToTaprootScript(h.operatorPubKey)
+	require.NoError(h.t, err)
+
+	// Batch output value must equal the sum of all leaf amounts.
+	batchOutput := &wire.TxOut{
+		Value:    int64(leafAmount) * int64(numLeaves),
+		PkScript: batchPkScript,
+	}
+
+	sweepRoot := sha256.Sum256([]byte("test-sweep-root"))
+
+	vtxtTree, err := tree.NewTree(
+		batchOutpoint, batchOutput, leaves,
+		h.operatorPubKey, sweepRoot[:], 2,
+	)
+	require.NoError(h.t, err)
+
+	return vtxtTree, leaves
+}
+
+// newTestVTXOTreeForIntent creates a VTXT tree configured for a specific
+// boarding intent, deriving leaves from the intent's VTXO template to ensure
+// amounts and keys match what the client expects to receive.
+func (h *boardingTestHarness) newTestVTXOTreeForIntent(
+	intent BoardingIntent) *tree.Tree {
+
+	h.t.Helper()
+
+	leaves := make([]tree.LeafDescriptor, len(intent.VtxoTemplate))
+	for i, vtxoReq := range intent.VtxoTemplate {
+		leaves[i] = tree.LeafDescriptor{
+			PkScript:    vtxoReq.PkScript,
+			Amount:      vtxoReq.Amount,
+			CoSignerKey: h.clientPubKey,
+		}
+	}
+
+	batchOutpoint := h.newTestOutpoint()
+
+	batchPkScript, err := txscript.PayToTaprootScript(h.operatorPubKey)
+	require.NoError(h.t, err)
+
+	batchOutput := &wire.TxOut{
+		Value:    int64(intent.ChainInfo.Amount),
+		PkScript: batchPkScript,
+	}
+
+	sweepRoot := sha256.Sum256([]byte("test-sweep-root"))
+
+	vtxtTree, err := tree.NewTree(
+		batchOutpoint, batchOutput, leaves,
+		h.operatorPubKey, sweepRoot[:], 2,
+	)
+	require.NoError(h.t, err)
+
+	return vtxtTree
+}
+
+// newCommitmentTxBuiltEvent creates a CommitmentTxBuilt event simulating what
+// the server sends after building the commitment transaction with all boarding
+// inputs and the batch VTXT tree output.
+func (h *boardingTestHarness) newCommitmentTxBuiltEvent(
+	roundID string,
+	intents []BoardingIntent,
+	vtxtTree *tree.Tree) *CommitmentTxBuilt {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(3)
+	for _, intent := range intents {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: intent.Outpoint,
+		})
+	}
+
+	tx.AddTxOut(vtxtTree.BatchOutput)
+
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
+	})
+
+	return &CommitmentTxBuilt{
+		CommitmentTxBuiltEvent: CommitmentTxBuiltEvent{
+			RoundID:  roundID,
+			Tx:       tx,
+			VTXTTree: vtxtTree,
+		},
+	}
+}
+
+// newNoncesAggregatedEvent creates aggregated nonces for all tree nodes,
+// simulating what the server sends after collecting and combining nonces from
+// all round participants for the MuSig2 signing protocol.
+func (h *boardingTestHarness) newNoncesAggregatedEvent(
+	roundID string, vtxtTree *tree.Tree) *NoncesAggregated {
+
+	h.t.Helper()
+
+	aggNonces := make(map[chainhash.Hash][]byte)
+	err := vtxtTree.Root.ForEach(func(node *tree.Node) error {
+		txid, err := node.TXID()
+		if err != nil {
+			return err
+		}
+
+		nonce := make([]byte, musig2.PubNonceSize)
+		_, err = rand.Read(nonce)
+		if err != nil {
+			return err
+		}
+
+		aggNonces[txid] = nonce
+
+		return nil
+	})
+	require.NoError(h.t, err)
+
+	return &NoncesAggregated{
+		NoncesAggregatedEvent: NoncesAggregatedEvent{
+			RoundID:          roundID,
+			AggregatedNonces: aggNonces,
+		},
+	}
+}
+
+// newOperatorSignedEvent creates operator signatures for the tree, simulating
+// what the server sends after combining all partial signatures into final
+// Schnorr signatures for each tree node.
+//
+//nolint:unused
+func (h *boardingTestHarness) newOperatorSignedEvent(
+	roundID string, vtxtTree *tree.Tree) *OperatorSigned {
+
+	h.t.Helper()
+
+	var txCount int
+	err := vtxtTree.Root.ForEach(func(_ *tree.Node) error {
+		txCount++
+		return nil
+	})
+	require.NoError(h.t, err)
+
+	sigs := make([][]byte, txCount)
+	for i := range sigs {
+		sigs[i] = make([]byte, schnorr.SignatureSize)
+		_, err := rand.Read(sigs[i])
+		require.NoError(h.t, err)
+	}
+
+	return &OperatorSigned{
+		OperatorSignedEvent: OperatorSignedEvent{
+			RoundID:    roundID,
+			Signatures: sigs,
+		},
+	}
+}
+
+// newCommitmentTxReceivedState creates a CommitmentTxReceivedState ready for
+// validation testing with a pre-built commitment transaction and VTXT tree.
+func (h *boardingTestHarness) newCommitmentTxReceivedState(
+	roundID string, intents []BoardingIntent) *CommitmentTxReceivedState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(
+		extractOutpoints(intents),
+	)
+
+	return &CommitmentTxReceivedState{
+		RoundID:      roundID,
+		CommitmentTx: commitmentTx,
+		TxID:         commitmentTx.TxHash(),
+		VTXTTree:     vtxtTree,
+		Intents:      intents,
+		ClientTrees:  make(map[SignerKey]*tree.Tree),
+	}
+}
+
+// newCommitmentTxValidatedState creates a CommitmentTxValidatedState ready
+// for nonce generation, with boarding input indices pre-mapped for efficient
+// input signature placement during the signing phase.
+func (h *boardingTestHarness) newCommitmentTxValidatedState(
+	roundID string, intents []BoardingIntent) *CommitmentTxValidatedState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(extractOutpoints(intents))
+
+	boardingInputIndices := make(map[wire.OutPoint]int)
+	for i, intent := range intents {
+		boardingInputIndices[intent.Outpoint] = i
+	}
+
+	return &CommitmentTxValidatedState{
+		RoundID:              roundID,
+		CommitmentTx:         commitmentTx,
+		VTXTTree:             vtxtTree,
+		Intents:              intents,
+		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		BoardingInputIndices: boardingInputIndices,
+	}
+}
+
+func extractOutpoints(intents []BoardingIntent) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, len(intents))
+	for i, intent := range intents {
+		outpoints[i] = intent.Outpoint
+	}
+
+	return outpoints
+}
+
+// MockSignerSession is a mock implementation of tree.SignerSession for
+// testing error injection in the MuSig2 signing flow without requiring
+// real cryptographic operations.
+type MockSignerSession struct {
+	mock.Mock
+
+	pubKey *btcec.PublicKey
+}
+
+// NewMockSignerSession creates a new MockSignerSession with the given public
+// key.
+func NewMockSignerSession(pubKey *btcec.PublicKey) *MockSignerSession {
+	return &MockSignerSession{
+		pubKey: pubKey,
+	}
+}
+
+//nolint:forcetypeassert
+func (m *MockSignerSession) GetNonces() (
+	map[string]tree.Musig2PubNonce, error) {
+
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	return args.Get(0).(map[string]tree.Musig2PubNonce), args.Error(1)
+}
+
+func (m *MockSignerSession) RegisterNonces(
+	nonces map[string][]tree.Musig2PubNonce) error {
+
+	args := m.Called(nonces)
+	return args.Error(0)
+}
+
+//nolint:forcetypeassert
+func (m *MockSignerSession) Signatures(cleanup bool) (
+	map[string]*musig2.PartialSignature, error) {
+
+	args := m.Called(cleanup)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	return args.Get(0).(map[string]*musig2.PartialSignature), args.Error(1)
+}
+
+func (m *MockSignerSession) PubKey() *btcec.PublicKey {
+	return m.pubKey
+}
+
+//nolint:unused
+func (h *boardingTestHarness) newBoardingConfirmedEvent(
+	commitmentTx *wire.MsgTx, blockHeight int32) *BoardingConfirmed {
+
+	h.t.Helper()
+
+	return &BoardingConfirmed{
+		TxID:          commitmentTx.TxHash(),
+		BlockHeight:   blockHeight,
+		Confirmations: 6,
+	}
+}
+
+//nolint:unused
+func (h *boardingTestHarness) newBoardingFailedEvent(
+	reason string, recoverable bool) *BoardingFailed {
+
+	h.t.Helper()
+
+	return &BoardingFailed{
+		Reason:      reason,
+		Recoverable: recoverable,
+	}
+}
+
+// setupMockWalletForMuSig2 configures all MuSig2 mock methods needed for tree
+// signing flows: session creation, nonce registration (both individual and
+// combined), and partial signature generation.
+func (h *boardingTestHarness) setupMockWalletForMuSig2() {
+	h.t.Helper()
+
+	// Session creation mock.
+	var sessionID input.MuSig2SessionID
+	_, err := rand.Read(sessionID[:])
+	require.NoError(h.t, err)
+
+	var pubNonce [musig2.PubNonceSize]byte
+	_, err = rand.Read(pubNonce[:])
+	require.NoError(h.t, err)
+
+	sessionInfo := &input.MuSig2SessionInfo{
+		SessionID:   sessionID,
+		PublicNonce: pubNonce,
+		CombinedKey: h.clientPubKey,
+	}
+
+	h.wallet.On(
+		"MuSig2CreateSession", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	).Return(sessionInfo, nil)
+
+	// Nonce registration mocks (individual and combined/aggregated).
+	h.wallet.On(
+		"MuSig2RegisterNonces", mock.Anything, mock.Anything,
+	).Return(true, nil)
+
+	h.wallet.On(
+		"MuSig2RegisterCombinedNonce", mock.Anything, mock.Anything,
+	).Return(nil)
+
+	// Signing mock.
+	var scalarBytes [32]byte
+	_, err = rand.Read(scalarBytes[:])
+	require.NoError(h.t, err)
+
+	var scalar btcec.ModNScalar
+	scalar.SetBytes(&scalarBytes)
+
+	partialSig := &musig2.PartialSignature{
+		S: &scalar,
+	}
+
+	h.wallet.On(
+		"MuSig2Sign", mock.Anything, mock.Anything, mock.Anything,
+	).Return(partialSig, nil)
+}
+
+//nolint:unused
+func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
+	h.t.Helper()
+
+	sig := &schnorr.Signature{}
+
+	h.wallet.On("SignOutputRaw", mock.Anything, mock.Anything).Return(
+		sig, nil,
+	)
+}
+
+//nolint:unused
+func (h *boardingTestHarness) setupMockRoundStoreForCheckpoint() {
+	h.t.Helper()
+
+	h.roundStore.On(
+		"CommitState",
+		mock.Anything, // ctx
+		mock.Anything, // round
+		mock.Anything, // state
+	).Return(nil)
+}
+
+func (h *boardingTestHarness) setupMockVTXOStoreForSave() {
+	h.t.Helper()
+
+	h.vtxoStore.On(
+		"SaveVTXOs",
+		mock.Anything, // vtxos
+	).Return(nil)
+}
+
+//nolint:unused
+func (h *boardingTestHarness) newNoncesSentState(
+	roundID string, intents []BoardingIntent) *NoncesSentState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(extractOutpoints(intents))
+
+	boardingInputIndices := make(map[wire.OutPoint]int)
+	for i, intent := range intents {
+		boardingInputIndices[intent.Outpoint] = i
+	}
+
+	musig2Sessions := make(map[SignerKey]*tree.SignerSession)
+
+	return &NoncesSentState{
+		RoundID:              roundID,
+		CommitmentTx:         commitmentTx,
+		VTXTTree:             vtxtTree,
+		Intents:              intents,
+		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		Musig2Sessions:       musig2Sessions,
+		BoardingInputIndices: boardingInputIndices,
+	}
+}
+
+//nolint:unused
+func (h *boardingTestHarness) newNoncesAggregatedState(
+	roundID string, intents []BoardingIntent) *NoncesAggregatedState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(extractOutpoints(intents))
+
+	boardingInputIndices := make(map[wire.OutPoint]int)
+	for i, intent := range intents {
+		boardingInputIndices[intent.Outpoint] = i
+	}
+
+	aggNonces := make(map[chainhash.Hash][]byte)
+	err := vtxtTree.Root.ForEach(func(node *tree.Node) error {
+		txid, err := node.TXID()
+		if err != nil {
+			return err
+		}
+
+		nonce := make([]byte, musig2.PubNonceSize)
+		_, err = rand.Read(nonce)
+		if err != nil {
+			return err
+		}
+
+		aggNonces[txid] = nonce
+
+		return nil
+	})
+	require.NoError(h.t, err)
+
+	return &NoncesAggregatedState{
+		RoundID:              roundID,
+		CommitmentTx:         commitmentTx,
+		VTXTTree:             vtxtTree,
+		Intents:              intents,
+		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
+		AggregatedNonces:     aggNonces,
+		BoardingInputIndices: boardingInputIndices,
+	}
+}
+
+//nolint:unused
+func (h *boardingTestHarness) newPartialSigsSentState(
+	roundID string, intents []BoardingIntent) *PartialSigsSentState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(extractOutpoints(intents))
+
+	boardingInputIndices := make(map[wire.OutPoint]int)
+	for i, intent := range intents {
+		boardingInputIndices[intent.Outpoint] = i
+	}
+
+	return &PartialSigsSentState{
+		RoundID:              roundID,
+		CommitmentTx:         commitmentTx,
+		VTXTTree:             vtxtTree,
+		Intents:              intents,
+		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
+		BoardingInputIndices: boardingInputIndices,
+	}
+}
+
+func (h *boardingTestHarness) newInputSigSentState(
+	roundID string, intents []BoardingIntent) *InputSigSentState {
+
+	h.t.Helper()
+
+	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
+	commitmentTx := h.newTestCommitmentTx(extractOutpoints(intents))
+
+	inputSigs := make([][]byte, len(intents))
+	for i := range inputSigs {
+		inputSigs[i] = make([]byte, schnorr.SignatureSize)
+		_, err := rand.Read(inputSigs[i])
+		require.NoError(h.t, err)
+	}
+
+	clientTrees := make(map[SignerKey]*tree.Tree)
+	for _, intent := range intents {
+		for _, vtxoReq := range intent.VtxoTemplate {
+			signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
+			clientTrees[signerKey] = vtxtTree
+		}
+	}
+
+	return &InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: commitmentTx,
+		VTXTTree:     vtxtTree,
+		Intents:      intents,
+		ClientTrees:  clientTrees,
+		InputSigs:    inputSigs,
+	}
+}
+
+func (h *boardingTestHarness) assertOutboxContainsType(msgType string) {
+	h.t.Helper()
+
+	found := false
+	for _, msg := range h.outboxMessages {
+		typeName := fmt.Sprintf("%T", msg)
+		if typeName == msgType || typeName == "*round."+msgType {
+			found = true
+			break
+		}
+	}
+	require.True(
+		h.t, found, "outbox does not contain message of type %s",
+		msgType,
+	)
+}
+
+//nolint:unused
+func assertOutboxContains[T ClientEvent](h *boardingTestHarness) T {
+	h.t.Helper()
+
+	for _, msg := range h.outboxMessages {
+		if typed, ok := msg.(T); ok {
+			return typed
+		}
+	}
+
+	var zero T
+	h.t.Fatalf("outbox does not contain event of type %T", zero)
+
+	return zero
+}
+
+func (h *boardingTestHarness) assertOutboxLen(expected int) {
+	h.t.Helper()
+
+	require.Len(
+		h.t, h.outboxMessages, expected,
+		"outbox has %d messages, expected %d",
+		len(h.outboxMessages), expected,
+	)
+}
+
+func (h *boardingTestHarness) clearOutbox() {
+	h.outboxMessages = nil
+}
+
+// assertTransitionEmitsInternalEvent verifies the transition emitted an
+// internal event of the expected type, used for testing FSM event propagation.
+func assertTransitionEmitsInternalEvent[T ClientEvent](
+	h *boardingTestHarness, transition *ClientStateTransition) {
+
+	h.t.Helper()
+
+	require.True(
+		h.t, transition.NewEvents.IsSome(),
+		"transition should emit events",
+	)
+
+	var found bool
+	transition.NewEvents.WhenSome(func(emitted ClientEmittedEvent) {
+		for _, evt := range emitted.InternalEvent {
+			if _, ok := evt.(T); ok {
+				found = true
+				break
+			}
+		}
+	})
+
+	var zero T
+	require.True(
+		h.t, found, "transition does not emit internal event of "+
+			"type %T", zero,
+	)
+}
+
+// realMuSig2Signer provides real MuSig2 cryptographic operations for testing
+// instead of mocks, allowing tests to verify actual signature validity and
+// protocol correctness.
+type realMuSig2Signer struct {
+	privKey       *btcec.PrivateKey
+	sessions      map[input.MuSig2SessionID]*realSession
+	nextSessionID int
+}
+
+// realSession maintains cryptographic state for an active MuSig2 signing
+// session, tracking nonces and partial signatures until finalization.
+type realSession struct {
+	info           *input.MuSig2SessionInfo
+	nonces         *musig2.Nonces
+	musigSession   *musig2.Session
+	allNoncesKnown bool
+}
+
+func newRealMuSig2Signer(privKey *btcec.PrivateKey) *realMuSig2Signer {
+	return &realMuSig2Signer{
+		privKey:  privKey,
+		sessions: make(map[input.MuSig2SessionID]*realSession),
+	}
+}
+
+// MuSig2CreateSession creates a new MuSig2 session with real nonce generation.
+func (r *realMuSig2Signer) MuSig2CreateSession(
+	version input.MuSig2Version, keyLoc keychain.KeyLocator,
+	signers []*btcec.PublicKey, tweaks *input.MuSig2Tweaks,
+	otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces) (*input.MuSig2SessionInfo, error) {
+
+	var nonces *musig2.Nonces
+	var err error
+	if localNonces != nil {
+		nonces = localNonces
+	} else {
+		nonces, err = musig2.GenNonces(
+			musig2.WithPublicKey(r.privKey.PubKey()),
+			musig2.WithNonceSecretKeyAux(r.privKey),
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var ctxOpts []musig2.ContextOption
+	ctxOpts = append(ctxOpts, musig2.WithKnownSigners(signers))
+
+	if tweaks != nil && len(tweaks.TaprootTweak) > 0 {
+		twkCtx := musig2.WithTaprootTweakCtx(tweaks.TaprootTweak)
+		ctxOpts = append(ctxOpts, twkCtx)
+	}
+
+	ctx, err := musig2.NewContext(r.privKey, true, ctxOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	musigSession, err := ctx.NewSession()
+	if err != nil {
+		return nil, err
+	}
+
+	sessionID := input.MuSig2SessionID{byte(r.nextSessionID)}
+	r.nextSessionID++
+
+	sess := &realSession{
+		info: &input.MuSig2SessionInfo{
+			SessionID:   sessionID,
+			PublicNonce: nonces.PubNonce,
+		},
+		nonces:       nonces,
+		musigSession: musigSession,
+	}
+
+	r.sessions[sessionID] = sess
+
+	return sess.info, nil
+}
+
+// MuSig2RegisterNonces registers nonces from other signers, accumulating them
+// until all participants have contributed their public nonces.
+func (r *realMuSig2Signer) MuSig2RegisterNonces(
+	sessionID input.MuSig2SessionID,
+	nonces [][musig2.PubNonceSize]byte) (bool, error) {
+
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return false, fmt.Errorf("session not found: %v", sessionID)
+	}
+
+	var haveAll bool
+	var err error
+	for _, nonce := range nonces {
+		haveAll, err = session.musigSession.RegisterPubNonce(nonce)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	session.allNoncesKnown = haveAll
+
+	return haveAll, nil
+}
+
+// MuSig2RegisterCombinedNonce registers a pre-aggregated combined nonce for
+// the session. This is an alternative to MuSig2RegisterNonces and is used
+// when a coordinator has already aggregated all individual nonces.
+func (r *realMuSig2Signer) MuSig2RegisterCombinedNonce(
+	sessionID input.MuSig2SessionID,
+	nonce [musig2.PubNonceSize]byte,
+) error {
+
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %v", sessionID)
+	}
+
+	// Register the combined nonce as if it's from all other participants.
+	haveAll, err := session.musigSession.RegisterPubNonce(nonce)
+	if err != nil {
+		return err
+	}
+
+	session.allNoncesKnown = haveAll
+
+	return nil
+}
+
+// MuSig2GetCombinedNonce retrieves the combined nonce for the session. This
+// will be available after all individual nonces have been registered or a
+// combined nonce has been registered.
+func (r *realMuSig2Signer) MuSig2GetCombinedNonce(
+	sessionID input.MuSig2SessionID,
+) ([musig2.PubNonceSize]byte, error) {
+
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return [musig2.PubNonceSize]byte{}, fmt.Errorf(
+			"session not found: %v", sessionID,
+		)
+	}
+
+	if !session.allNoncesKnown {
+		return [musig2.PubNonceSize]byte{}, fmt.Errorf(
+			"combined nonce not available: nonces not registered",
+		)
+	}
+
+	// The combined nonce is available after all nonces are registered.
+	// Return the session's public nonce as a proxy.
+	return session.nonces.PubNonce, nil
+}
+
+// MuSig2Sign creates a partial signature for the given message using
+// the session's secret nonce. Requires all participant nonces to be
+// registered first.
+func (r *realMuSig2Signer) MuSig2Sign(sessionID input.MuSig2SessionID,
+	msg [32]byte, cleanup bool) (*musig2.PartialSignature, error) {
+
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return nil, fmt.Errorf("session not found: %v", sessionID)
+	}
+
+	if !session.allNoncesKnown {
+		return nil, fmt.Errorf("not all nonces registered")
+	}
+
+	partialSig, err := session.musigSession.Sign(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return partialSig, nil
+}
+
+// MuSig2CombineSig combines all participants' partial signatures into a final
+// Schnorr signature that validates against the aggregate public key.
+func (r *realMuSig2Signer) MuSig2CombineSig(sessionID input.MuSig2SessionID,
+	partialSigs []*musig2.PartialSignature) (*schnorr.Signature, bool,
+	error) {
+
+	session, ok := r.sessions[sessionID]
+	if !ok {
+		return nil, false, fmt.Errorf(
+			"session not found: %v", sessionID,
+		)
+	}
+
+	var haveAll bool
+	for _, partialSig := range partialSigs {
+		var err error
+		haveAll, err = session.musigSession.CombineSig(partialSig)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	if !haveAll {
+		return nil, false, fmt.Errorf(
+			"not all partial signatures provided",
+		)
+	}
+
+	finalSig := session.musigSession.FinalSig()
+	if finalSig == nil {
+		return nil, false, fmt.Errorf("final signature is invalid")
+	}
+
+	return finalSig, true, nil
+}
+
+func (r *realMuSig2Signer) MuSig2Cleanup(
+	sessionID input.MuSig2SessionID) error {
+
+	delete(r.sessions, sessionID)
+	return nil
+}
+
+// Compile-time check that realMuSig2Signer implements input.MuSig2Signer.
+var _ input.MuSig2Signer = (*realMuSig2Signer)(nil)
+
+// realSigningTestHarness extends boardingTestHarness with real MuSig2
+// signers for both client and operator roles, enabling full end-to-end
+// signature testing.
+type realSigningTestHarness struct {
+	*boardingTestHarness
+
+	clientSigner   *realMuSig2Signer
+	operatorSigner *realMuSig2Signer
+}
+
+func newRealSigningTestHarness(t *testing.T) *realSigningTestHarness {
+	t.Helper()
+
+	base := newTestHarness(t)
+
+	return &realSigningTestHarness{
+		boardingTestHarness: base,
+		clientSigner:        newRealMuSig2Signer(base.clientPrivKey),
+		operatorSigner:      newRealMuSig2Signer(base.operatorPrivKey),
+	}
+}
+
+// setupMockWalletForBoardingSigning configures the wallet mock to return valid
+// Schnorr signatures for boarding inputs, using the client's real private key
+// to ensure signature correctness.
+func (h *realSigningTestHarness) setupMockWalletForBoardingSigning() {
+	h.t.Helper()
+
+	msgHash := sha256.Sum256([]byte("test-boarding-sig"))
+	sig, err := schnorr.Sign(h.clientPrivKey, msgHash[:])
+	require.NoError(h.t, err)
+
+	h.wallet.On("SignOutputRaw", mock.Anything, mock.Anything).Return(
+		sig, nil,
+	)
+}
+
+func (h *realSigningTestHarness) setupMockRoundStoreForCommit() {
+	h.t.Helper()
+
+	h.roundStore.On(
+		"CommitState", mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil)
+}
+
+// newTestBoardingIntentWithTapscript creates a boarding intent with real
+// collaborative/unilateral spend paths for proper VTXO spending tests.
+//
+//nolint:ll
+func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIntent {
+	h.t.Helper()
+
+	outpoint := h.newTestOutpoint()
+
+	// Create the VTXO tapscript with collaborative and timeout paths.
+	tapscript, err := scripts.VTXOTapScript(
+		h.clientPubKey, h.operatorPubKey, testExitDelay,
+	)
+	require.NoError(h.t, err)
+
+	// Derive the taproot output key from the tapscript.
+	taprootKey, err := tapscript.TaprootKey()
+	require.NoError(h.t, err)
+
+	// Create the bech32m address from the taproot key.
+	addr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams,
+	)
+	require.NoError(h.t, err)
+
+	// Create signing key descriptor matching the boarding address.
+	signingKey := keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
+	}
+
+	// Build the complete boarding address with Tapscript.
+	boardingAddr := wallet.BoardingAddress{
+		Address:     addr,
+		Tapscript:   tapscript,
+		KeyDesc:     signingKey,
+		OperatorKey: h.operatorPubKey,
+		ExitDelay:   testExitDelay,
+	}
+
+	// Create the P2TR pkScript for the VTXO template output.
+	pkScript, err := txscript.PayToTaprootScript(h.clientPubKey)
+	require.NoError(h.t, err)
+
+	return BoardingIntent{
+		BoardingIntent: wallet.BoardingIntent{
+			Address:  boardingAddr,
+			Outpoint: outpoint,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: 100,
+				OutPoint:   outpoint,
+				Amount:     btcutil.Amount(50000),
+			},
+			Status: wallet.BoardingStatusConfirmed,
+		},
+		BoardingRequest: types.BoardingRequest{
+			Outpoint:    &outpoint,
+			ClientKey:   h.clientPubKey,
+			OperatorKey: h.operatorPubKey,
+		},
+		VtxoTemplate: []types.VTXORequest{
+			{
+				Amount:      50000,
+				PkScript:    pkScript,
+				Expiry:      testExitDelay,
+				ClientKey:   h.clientPubKey,
+				OperatorKey: h.operatorPubKey,
+				SigningKey:  signingKey,
+			},
+		},
+	}
+}
+
+// newCommitmentTxForIntents builds a commitment TX with inputs from boarding
+// intents in the exact order needed for boardingInputIndices mapping.
+func (h *realSigningTestHarness) newCommitmentTxForIntents(
+	intents []BoardingIntent, vtxtTree *tree.Tree) *wire.MsgTx {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(3)
+
+	// Add inputs from intents in order.
+	for _, intent := range intents {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: intent.Outpoint,
+		})
+	}
+
+	// Add batch output matching tree.
+	tx.AddTxOut(vtxtTree.BatchOutput)
+
+	// Add ephemeral anchor (BIP 431).
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
+	})
+
+	return tx
+}
+
+// generateValidTreeSignatures creates valid Schnorr signatures for nodes.
+//
+// This is a simplified implementation for testing. In production, signatures
+// are generated by a coordinator (server) that combines client + operator
+// partials. For tests, we simulate this by:
+//
+// 1. Creating manual MuSig2 sessions for each tree node.
+// 2. Going through the full nonce exchange and signing protocol.
+// 3. Combining partials to produce final Schnorr signatures.
+func (h *realSigningTestHarness) generateValidTreeSignatures(
+	vtxtTree *tree.Tree) ([][]byte, error) {
+
+	h.t.Helper()
+
+	sweepRoot := vtxtTree.SweepTapscriptRoot
+
+	// Collect all nodes in ForEach order (this is the order
+	// ValidateVTXTSignatures expects signatures).
+	type nodeInfo struct {
+		txid    string
+		sigHash [32]byte
+	}
+	var nodes []nodeInfo
+
+	fetcher, err := vtxtTree.Root.PrevOutputFetcher(vtxtTree.BatchOutput)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create prev output fetcher: %w", err,
+		)
+	}
+
+	err = vtxtTree.Root.ForEach(func(node *tree.Node) error {
+		tx, txErr := node.ToTx()
+		if txErr != nil {
+			return txErr
+		}
+
+		sigHash, sigErr := computeTreeNodeSigHash(node, tx, fetcher)
+		if sigErr != nil {
+			return sigErr
+		}
+
+		nodes = append(nodes, nodeInfo{
+			txid:    tx.TxHash().String(),
+			sigHash: sigHash,
+		})
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to collect node info: %w", err)
+	}
+
+	// Reset signers for fresh sessions.
+	h.clientSigner = newRealMuSig2Signer(h.clientPrivKey)
+	h.operatorSigner = newRealMuSig2Signer(h.operatorPrivKey)
+
+	// Process each node independently.
+	finalSigs := make([][]byte, len(nodes))
+	for i, ni := range nodes {
+		sig, sigErr := h.generateSignatureForNode(
+			ni.sigHash, sweepRoot,
+		)
+		if sigErr != nil {
+			return nil, fmt.Errorf("failed to sign node %s: %w",
+				ni.txid, sigErr)
+		}
+		finalSigs[i] = sig.Serialize()
+	}
+
+	return finalSigs, nil
+}
+
+// generateSignatureForNode creates a complete MuSig2 signature for a single
+// tree node by going through the full 2-party signing protocol.
+func (h *realSigningTestHarness) generateSignatureForNode(
+	sigHash [32]byte, sweepRoot []byte) (*schnorr.Signature, error) {
+
+	cosigners := []*btcec.PublicKey{h.clientPubKey, h.operatorPubKey}
+
+	// Generate nonces upfront for both parties.
+	clientNonces, err := musig2.GenNonces(
+		musig2.WithPublicKey(h.clientPrivKey.PubKey()),
+		musig2.WithNonceSecretKeyAux(h.clientPrivKey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("client gen nonces: %w", err)
+	}
+
+	operatorNonces, err := musig2.GenNonces(
+		musig2.WithPublicKey(h.operatorPrivKey.PubKey()),
+		musig2.WithNonceSecretKeyAux(h.operatorPrivKey),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("operator gen nonces: %w", err)
+	}
+
+	// Create context options for both parties.
+	ctxOpts := []musig2.ContextOption{
+		musig2.WithKnownSigners(cosigners),
+	}
+	if len(sweepRoot) > 0 {
+		ctxOpts = append(ctxOpts, musig2.WithTaprootTweakCtx(sweepRoot))
+	}
+
+	// Create contexts for both parties.
+	clientCtx, err := musig2.NewContext(h.clientPrivKey, true, ctxOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("client context: %w", err)
+	}
+
+	operatorCtx, err := musig2.NewContext(
+		h.operatorPrivKey, true, ctxOpts...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("operator context: %w", err)
+	}
+
+	// Create sessions with pre-generated nonces.
+	clientSession, err := clientCtx.NewSession(
+		musig2.WithPreGeneratedNonce(clientNonces),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("client session: %w", err)
+	}
+
+	operatorSession, err := operatorCtx.NewSession(
+		musig2.WithPreGeneratedNonce(operatorNonces),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("operator session: %w", err)
+	}
+
+	// Exchange and register nonces.
+	haveAll, err := clientSession.RegisterPubNonce(operatorNonces.PubNonce)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"client register operator nonce: %w", err,
+		)
+	}
+	if !haveAll {
+		return nil, fmt.Errorf(
+			"client missing nonces after registration",
+		)
+	}
+
+	haveAll, err = operatorSession.RegisterPubNonce(clientNonces.PubNonce)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"operator register client nonce: %w", err,
+		)
+	}
+	if !haveAll {
+		return nil, fmt.Errorf(
+			"operator missing nonces after registration",
+		)
+	}
+
+	// Both parties sign the same message.
+	clientPartial, err := clientSession.Sign(sigHash)
+	if err != nil {
+		return nil, fmt.Errorf("client sign: %w", err)
+	}
+
+	operatorPartial, err := operatorSession.Sign(sigHash)
+	if err != nil {
+		return nil, fmt.Errorf("operator sign: %w", err)
+	}
+
+	// Combine partial signatures on client side.
+	// After Sign(), the client's own partial is already combined.
+	haveAll, err = clientSession.CombineSig(operatorPartial)
+	if err != nil {
+		return nil, fmt.Errorf("combine operator partial: %w", err)
+	}
+	if !haveAll {
+		return nil, fmt.Errorf(
+			"incomplete after combining operator partial",
+		)
+	}
+
+	finalSig := clientSession.FinalSig()
+	if finalSig == nil {
+		// Try combining on operator side instead.
+		haveAll, err = operatorSession.CombineSig(clientPartial)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"combine client partial: %w", err,
+			)
+		}
+		if !haveAll {
+			return nil, fmt.Errorf(
+				"incomplete after combining client partial",
+			)
+		}
+		finalSig = operatorSession.FinalSig()
+	}
+
+	if finalSig == nil {
+		return nil, fmt.Errorf("final signature is invalid")
+	}
+
+	return finalSig, nil
+}
+
+// computeTreeNodeSigHash computes the Taproot signature hash for a tree node.
+func computeTreeNodeSigHash(node *tree.Node, tx *wire.MsgTx,
+	fetcher txscript.PrevOutputFetcher) ([32]byte, error) {
+
+	sigHashes := txscript.NewTxSigHashes(tx, fetcher)
+
+	hashBytes, err := txscript.CalcTaprootSignatureHash(
+		sigHashes, txscript.SigHashDefault, tx, 0, fetcher,
+	)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	var result [32]byte
+	copy(result[:], hashBytes)
+
+	return result, nil
+}
