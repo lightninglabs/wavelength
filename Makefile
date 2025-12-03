@@ -74,12 +74,29 @@ ifneq ($(workers),)
 LINT_WORKERS = --concurrency=$(workers)
 endif
 
-# Apply the optimized cache mounting from PR #10202.
+# Docker cache mounting strategy:
+# - CI (GitHub Actions): Use bind mounts to host paths that GA caches persist.
+# - Local: Use Docker named volumes (much faster on macOS/Windows due to
+#   avoiding slow host-syncing overhead).
+ifdef CI
+# CI mode: bind mount to host paths that GitHub Actions caches.
 DOCKER_TOOLS = docker run \
   --rm \
-  -v $(shell bash -c "mkdir -p /tmp/go-build-cache; echo /tmp/go-build-cache"):/root/.cache/go-build \
-  -v $(shell bash -c "mkdir -p /tmp/go-lint-cache; echo /tmp/go-lint-cache"):/root/.cache/golangci-lint \
+  -v $${HOME}/.cache/go-build:/root/.cache/go-build \
+  -v $${HOME}/.cache/golangci-lint:/root/.cache/golangci-lint \
+  -v $${HOME}/go/pkg/mod:/go/pkg/mod \
+  -e GOPATH=/go \
   -v $$(pwd):/build darepo-tools
+else
+# Local mode: Docker named volumes for fast macOS/Windows performance.
+DOCKER_TOOLS = docker run \
+  --rm \
+  -v darepo-go-build-cache:/root/.cache/go-build \
+  -v darepo-go-lint-cache:/root/.cache/golangci-lint \
+  -v darepo-go-mod-cache:/go/pkg/mod \
+  -e GOPATH=/go \
+  -v $$(pwd):/build darepo-tools
+endif
 
 GREEN := "\\033[0;32m"
 NC := "\\033[0m"
