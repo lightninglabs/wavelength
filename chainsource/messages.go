@@ -212,6 +212,12 @@ type RegisterConfRequest struct {
 	// light clients. Set to 0 if unknown.
 	HeightHint uint32
 
+	// IncludeBlock indicates whether the confirmation event should include
+	// the full block containing the transaction. This is needed for
+	// constructing merkle proofs. When true, the ConfirmationEvent.Block
+	// field will be populated.
+	IncludeBlock bool
+
 	// NotifyActor is an optional actor reference. If Some, confirmation
 	// events will be sent to this actor asynchronously. If None, a Future
 	// is returned in the response for blocking await.
@@ -271,6 +277,15 @@ type ConfirmationEvent struct {
 	// NumConfs is the actual number of confirmations at the time of this
 	// event.
 	NumConfs uint32
+
+	// Tx is the confirmed transaction. This allows consumers to inspect
+	// transaction outputs without making additional chain queries.
+	Tx *wire.MsgTx
+
+	// Block is the full block containing the confirmed transaction. This
+	// is only populated when the confirmation was registered with
+	// IncludeBlock=true. Used for constructing merkle proofs.
+	Block *wire.MsgBlock
 }
 
 // MessageType returns the message type identifier for logging and debugging.

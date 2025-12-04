@@ -128,7 +128,7 @@ func (b *errorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 
 func (b *errorBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32) (*ConfRegistration, error) {
+	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {
 
 	return nil, b.err
 }
@@ -179,9 +179,11 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	)
 
 	tx := wire.NewMsgTx(2)
-	mempoolResult := ref.Ask(ctx, &TestMempoolAcceptRequest{
-		Tx: tx,
-	}).Await(ctx)
+	mempoolResult := ref.Ask(
+		ctx, &TestMempoolAcceptRequest{
+			Tx: tx,
+		},
+	).Await(ctx)
 
 	require.True(t, mempoolResult.IsErr())
 	require.Contains(
@@ -189,9 +191,11 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 		"failed to test mempool accept",
 	)
 
-	broadcastResult := ref.Ask(ctx, &BroadcastTxRequest{
-		Tx: tx,
-	}).Await(ctx)
+	broadcastResult := ref.Ask(
+		ctx, &BroadcastTxRequest{
+			Tx: tx,
+		},
+	).Await(ctx)
 	require.True(t, broadcastResult.IsErr())
 	require.Contains(
 		t, broadcastResult.Err().Error(),
@@ -277,7 +281,9 @@ func TestBlockEpochActorBackendError(t *testing.T) {
 }
 
 // TestConfActorDuplicateSubscription tests that ConfActor rejects duplicate
-// subscriptions on the same actor instance.
+// subscriptions on the same actor instance. Each actor is designed to handle
+// exactly one subscription for resource isolation and simpler lifecycle
+// management.
 func TestConfActorDuplicateSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -286,7 +292,6 @@ func TestConfActorDuplicateSubscription(t *testing.T) {
 	confActor := NewConfActor(backend, ctx)
 	defer confActor.Stop()
 
-	// First subscription should succeed.
 	result1 := confActor.Receive(ctx, &RegisterConfRequest{
 		CallerID:    "test-duplicate-1",
 		Txid:        &chainhash.Hash{},
@@ -295,7 +300,7 @@ func TestConfActorDuplicateSubscription(t *testing.T) {
 	})
 	require.True(t, result1.IsOk(), "first subscription should succeed")
 
-	// Second subscription on same actor should fail.
+	// Attempting a second subscription must fail to enforce single-use.
 	result2 := confActor.Receive(ctx, &RegisterConfRequest{
 		CallerID:    "test-duplicate-2",
 		Txid:        &chainhash.Hash{},
@@ -308,7 +313,9 @@ func TestConfActorDuplicateSubscription(t *testing.T) {
 }
 
 // TestSpendActorDuplicateSubscription tests that SpendActor rejects duplicate
-// subscriptions on the same actor instance.
+// subscriptions on the same actor instance. Each actor is designed to handle
+// exactly one subscription for resource isolation and simpler lifecycle
+// management.
 func TestSpendActorDuplicateSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -317,7 +324,6 @@ func TestSpendActorDuplicateSubscription(t *testing.T) {
 	spendActor := NewSpendActor(backend, ctx)
 	defer spendActor.Stop()
 
-	// First subscription should succeed.
 	result1 := spendActor.Receive(ctx, &RegisterSpendRequest{
 		CallerID: "test-spend-duplicate-1",
 		Outpoint: &wire.OutPoint{},
@@ -325,7 +331,7 @@ func TestSpendActorDuplicateSubscription(t *testing.T) {
 	})
 	require.True(t, result1.IsOk(), "first subscription should succeed")
 
-	// Second subscription on same actor should fail.
+	// Attempting a second subscription must fail to enforce single-use.
 	result2 := spendActor.Receive(ctx, &RegisterSpendRequest{
 		CallerID: "test-spend-duplicate-2",
 		Outpoint: &wire.OutPoint{},
@@ -337,7 +343,9 @@ func TestSpendActorDuplicateSubscription(t *testing.T) {
 }
 
 // TestBlockEpochActorDuplicateSubscription tests that BlockEpochActor rejects
-// duplicate subscriptions on the same actor instance.
+// duplicate subscriptions on the same actor instance. Each actor is designed to
+// handle exactly one subscription for resource isolation and simpler lifecycle
+// management.
 func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -346,13 +354,12 @@ func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
 	epochActor := NewBlockEpochActor(backend, ctx)
 	defer epochActor.Stop()
 
-	// First subscription should succeed.
 	result1 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
 		CallerID: "test-epoch-duplicate-1",
 	})
 	require.True(t, result1.IsOk(), "first subscription should succeed")
 
-	// Second subscription on same actor should fail.
+	// Attempting a second subscription must fail to enforce single-use.
 	result2 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
 		CallerID: "test-epoch-duplicate-2",
 	})

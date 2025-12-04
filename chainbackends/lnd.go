@@ -138,11 +138,18 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 // receiving confirmation events.
 func (b *LNDBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
-	heightHint uint32) (*chainsource.ConfRegistration, error) {
+	heightHint uint32,
+	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
-	// Register with lnd's notifier.
+	// Build options for lnd's notifier. If includeBlock is true, we use
+	// WithIncludeBlock() to request the full block in the confirmation.
+	var opts []chainntnfs.NotifierOption
+	if includeBlock {
+		opts = append(opts, chainntnfs.WithIncludeBlock())
+	}
+
 	event, err := b.notifier.RegisterConfirmationsNtfn(
-		txid, pkScript, numConfs, heightHint,
+		txid, pkScript, numConfs, heightHint, opts...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register confirmation: %w",
@@ -152,7 +159,6 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 	// Create a channel to convert lnd's TxConfirmation to our type.
 	confChan := make(chan *chainsource.TxConfirmation, 1)
 
-	// Start a goroutine to convert and forward the confirmation.
 	go func() {
 		defer close(confChan)
 		defer event.Cancel()
@@ -163,12 +169,12 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 				return
 			}
 
-			// Convert to our type.
 			conf := &chainsource.TxConfirmation{
 				BlockHash:   lndConf.BlockHash,
 				BlockHeight: lndConf.BlockHeight,
 				TxIndex:     lndConf.TxIndex,
 				Tx:          lndConf.Tx,
+				Block:       lndConf.Block,
 			}
 
 			confChan <- conf
@@ -277,7 +283,6 @@ func (b *LNDBackend) RegisterBlocks(
 					timestamp = ts.Unix()
 				}
 
-				// Convert to our type.
 				epoch := &chainsource.BlockEpoch{
 					Hash:      *lndEpoch.Hash,
 					Height:    lndEpoch.Height,
