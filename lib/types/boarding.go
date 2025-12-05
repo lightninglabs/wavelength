@@ -31,6 +31,27 @@ type OperatorTerms struct {
 	// penalty output in forfeit transactions. This allows the server to
 	// claim forfeited funds.
 	ForfeitScript []byte
+
+	// SweepKey is the operator key used in VTXT sweep paths.
+	SweepKey *btcec.PublicKey
+
+	// SweepDelay is the batch-wide absolute timelock (blocks).
+	SweepDelay uint32
+
+	// DustLimit enforces minimum output value for boarding/funding flows.
+	DustLimit btcutil.Amount
+
+	// MinBoardingAmount is the minimum amount clients must contribute.
+	MinBoardingAmount btcutil.Amount
+
+	// MaxBoardingAmount caps the amount accepted per request (optional).
+	MaxBoardingAmount btcutil.Amount
+
+	// FeeRate reflects the operator's target package feerate (sat/vByte).
+	FeeRate btcutil.Amount
+
+	// MinConfirmations is the minimum confs required on boarding inputs.
+	MinConfirmations uint32
 }
 
 // JoinRoundRequest represents a participant's request to join a round.
