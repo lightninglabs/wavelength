@@ -978,3 +978,237 @@ func TestTreePrettyPrint(t *testing.T) {
 		require.Contains(t, output, "Transaction Tree")
 	})
 }
+
+// TestValidatePath tests the ValidatePath method.
+func TestValidatePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		var tree *Tree
+		_, err := tree.ValidatePath(nil, LeafDescriptor{}, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+
+	t.Run("nil signing key returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		expectedLeaf := LeafDescriptor{
+			PkScript:    []byte("script"),
+			Amount:      1000,
+			CoSignerKey: ownerKey,
+		}
+		_, err = tree.ValidatePath(nil, expectedLeaf, operatorKey)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "cosigner key cannot be nil")
+	})
+
+	t.Run("valid path returns client tree", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+		vtxoScript := []byte("vtxo_script")
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    vtxoScript,
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		expectedLeaf := LeafDescriptor{
+			PkScript:    vtxoScript,
+			Amount:      1000,
+			CoSignerKey: ownerKey,
+		}
+		clientTree, err := tree.ValidatePath(
+			ownerKey, expectedLeaf, operatorKey,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, clientTree)
+
+		// Verify client tree has exactly one leaf.
+		leafNodes := clientTree.Root.GetLeafNodes()
+		require.Len(t, leafNodes, 1)
+	})
+
+	t.Run("amount mismatch returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+		vtxoScript := []byte("vtxo_script")
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    vtxoScript,
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		// Use wrong amount to trigger validation error.
+		expectedLeaf := LeafDescriptor{
+			PkScript:    vtxoScript,
+			Amount:      2000,
+			CoSignerKey: ownerKey,
+		}
+		_, err = tree.ValidatePath(ownerKey, expectedLeaf, operatorKey)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "VTXO output value")
+	})
+
+	t.Run("missing operator key returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+		_, wrongOperatorKey := createTestKey(t)
+		vtxoScript := []byte("vtxo_script")
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    vtxoScript,
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{Hash: chainhash.HashH([]byte("batch"))},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		expectedLeaf := LeafDescriptor{
+			PkScript:    vtxoScript,
+			Amount:      1000,
+			CoSignerKey: ownerKey,
+		}
+
+		// Use wrong operator key to trigger validation error.
+		_, err = tree.ValidatePath(
+			ownerKey, expectedLeaf, wrongOperatorKey,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "operator key")
+	})
+}
+
+// TestValidateAndSubmitSignatures tests the ValidateAndSubmitSignatures method.
+func TestValidateAndSubmitSignatures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		fakeTxid := chainhash.HashH([]byte("fake-tx"))
+		var tree *Tree
+		err := tree.ValidateAndSubmitSignatures(
+			map[chainhash.Hash][]byte{fakeTxid: {0x01}},
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+
+	t.Run("empty signatures returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		emptySigs := map[chainhash.Hash][]byte{}
+		err = tree.ValidateAndSubmitSignatures(emptySigs)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no signatures provided")
+	})
+
+	t.Run("nil signatures returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		err = tree.ValidateAndSubmitSignatures(nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no signatures provided")
+	})
+}
+
+// TestValidateAnchors tests the ValidateAnchors method.
+func TestValidateAnchors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		var tree *Tree
+		err := tree.ValidateAnchors()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+}

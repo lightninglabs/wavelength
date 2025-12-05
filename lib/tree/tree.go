@@ -6,7 +6,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -313,4 +315,163 @@ func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher,
 		t.Root,
 	)
+}
+
+// ValidatePath validates the tree path from the batch output to the client's
+// VTXO for a given signing key. Each signing key maps to exactly one VTXO,
+// providing a unique identifier for the VTXO and keeping MuSig2 signing simple.
+//
+// The client MUST validate the complete path before signing the boarding UTXO.
+// This ensures they can recover their funds even if the operator disappears.
+//
+// Returns the extracted client sub-tree on success.
+func (t *Tree) ValidatePath(signingKey *btcec.PublicKey,
+	expectedLeaf LeafDescriptor,
+	operatorKey *btcec.PublicKey) (*Tree, error) {
+
+	if t == nil {
+		return nil, fmt.Errorf("tree is nil")
+	}
+
+	// Use VerifyVTXOPath for core validation: script match, exactly 1 leaf
+	// per signing key, anchor output, and cosigner presence in all nodes.
+	if err := t.VerifyVTXOPath(
+		signingKey, expectedLeaf.PkScript,
+	); err != nil {
+		return nil, fmt.Errorf("VTXO path verification failed: %w", err)
+	}
+
+	// Extract the client's sub-tree for additional validation and to
+	// return to caller.
+	clientTree, err := t.ExtractPathForCoSigners(signingKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract client path: %w", err)
+	}
+
+	// Get the single leaf node (VerifyVTXOPath already enforced exactly 1).
+	leaves := clientTree.Root.GetLeafNodes()
+	leaf := leaves[0]
+	vtxoOutput := leaf.Outputs[0]
+
+	// Ensure the VTXO amount matches the request to prevent value
+	// extraction by the operator.
+	if vtxoOutput.Value != int64(expectedLeaf.Amount) {
+		return nil, fmt.Errorf("VTXO output value %d != expected %d",
+			vtxoOutput.Value, expectedLeaf.Amount)
+	}
+
+	// Confirm operator key is present as co-signer to enable collaborative
+	// spending path.
+	if !ContainsCosigner(leaf.CoSigners, operatorKey) {
+		return nil, fmt.Errorf("leaf does not include operator key " +
+			"in co-signers")
+	}
+
+	return clientTree, nil
+}
+
+// ValidateAndSubmitSignatures validates and submits the complete VTXT
+// signatures to the tree. This must be called BEFORE the client signs the
+// boarding UTXO input.
+//
+// The signatures are provided as a map from transaction ID to raw signature
+// bytes. Each entry corresponds to a transaction in the VTXT.
+//
+// The client MUST NOT sign the boarding UTXO until the VTXT is fully signed
+// and validated. Otherwise, the operator could include the boarding UTXO in a
+// commitment tx without providing valid VTXOs.
+func (t *Tree) ValidateAndSubmitSignatures(
+	signatures map[chainhash.Hash][]byte) error {
+
+	if t == nil {
+		return fmt.Errorf("tree is nil")
+	}
+	if len(signatures) == 0 {
+		return fmt.Errorf("no signatures provided")
+	}
+
+	// Parse each raw signature into a Schnorr signature structure.
+	sigMap := make(map[TxID]*schnorr.Signature, len(signatures))
+	for txid, sigBytes := range signatures {
+		sig, err := schnorr.ParseSignature(sigBytes)
+		if err != nil {
+			return fmt.Errorf("failed to parse signature for "+
+				"tx %s: %w", txid, err)
+		}
+		sigMap[txid] = sig
+	}
+
+	// Submit and validate all signatures atomically to ensure the entire
+	// tree is properly signed.
+	if err := t.SubmitTreeSigs(sigMap); err != nil {
+		return fmt.Errorf("failed to submit tree signatures: %w", err)
+	}
+
+	// Perform cryptographic verification of all signatures to guarantee
+	// the operator has properly co-signed the VTXT.
+	if err := t.VerifySigned(); err != nil {
+		return fmt.Errorf("tree signature verification failed: %w",
+			err)
+	}
+
+	return nil
+}
+
+// ValidateAnchors validates that all transactions in the tree have valid
+// ephemeral anchor outputs for CPFP fee bumping (BIP 431).
+//
+// Without valid anchors, the client cannot broadcast the VTXT chain for
+// unilateral exit, resulting in fund loss.
+func (t *Tree) ValidateAnchors() error {
+	if t == nil {
+		return fmt.Errorf("tree is nil")
+	}
+
+	// Validate anchors in all tree nodes recursively.
+	return t.Root.ForEach(func(node *Node) error {
+		if node == nil {
+			return fmt.Errorf("tree node is nil")
+		}
+
+		// Convert node to transaction to check version and outputs.
+		tx, err := node.ToTx()
+		if err != nil {
+			return fmt.Errorf("failed to convert node "+
+				"to tx: %w", err)
+		}
+
+		// Verify transaction version is 3 for BIP 431 ephemeral
+		// anchors.
+		if tx.Version != 3 {
+			return fmt.Errorf("transaction version is "+
+				"%d, expected 3 for BIP 431 ephemeral anchors",
+				tx.Version)
+		}
+
+		// All virtual transactions must have at least one output
+		// (anchor).
+		if len(node.Outputs) == 0 {
+			return fmt.Errorf("transaction has no outputs")
+		}
+
+		// The last output must be the ephemeral anchor.
+		anchorIdx := len(node.Outputs) - 1
+		anchorOutput := node.Outputs[anchorIdx]
+
+		// Anchor must have zero value.
+		if anchorOutput.Value != 0 {
+			return fmt.Errorf("anchor output at index %d "+
+				"has value %d, expected 0", anchorIdx,
+				anchorOutput.Value)
+		}
+
+		// Anchor script must match the standard ephemeral anchor
+		// script.
+		if !bytes.Equal(anchorOutput.PkScript, scripts.AnchorPkScript) {
+			return fmt.Errorf("anchor output at index %d has "+
+				"invalid script", anchorIdx)
+		}
+
+		return nil
+	})
 }
