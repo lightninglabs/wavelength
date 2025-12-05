@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/taproot-assets/proof"
@@ -220,3 +221,43 @@ func (e *RecoveryInitiated) clientEventSealed() {}
 type RoundComplete struct{}
 
 func (e *RoundComplete) clientEventSealed() {}
+
+// RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
+// expiry and needs to be refreshed in a new round. The round actor should
+// queue this VTXO for inclusion in the next batch swap.
+type RefreshVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to refresh.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+}
+
+func (e *RefreshVTXORequest) clientEventSealed()   {}
+func (e *RefreshVTXORequest) roundActorMsgSealed() {}
+func (e *RefreshVTXORequest) MessageType() string  { return "RefreshVTXORequest" }
+
+// ForfeitSignatureResponse is sent from a VTXO actor with its signature for
+// the forfeit transaction. This is the response to a forfeit request during
+// a batch swap round.
+type ForfeitSignatureResponse struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO being forfeited.
+	VTXOOutpoint wire.OutPoint
+
+	// RoundID is the round where the forfeit is being processed.
+	RoundID string
+
+	// ForfeitTx is the built forfeit transaction.
+	ForfeitTx *wire.MsgTx
+
+	// Signature is the client's signature for the forfeit tx.
+	Signature []byte
+}
+
+func (e *ForfeitSignatureResponse) clientEventSealed()   {}
+func (e *ForfeitSignatureResponse) roundActorMsgSealed() {}
+func (e *ForfeitSignatureResponse) MessageType() string  { return "ForfeitSignatureResponse" }
