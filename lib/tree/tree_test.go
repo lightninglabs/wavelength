@@ -978,3 +978,120 @@ func TestTreePrettyPrint(t *testing.T) {
 		require.Contains(t, output, "Transaction Tree")
 	})
 }
+
+// TestValidatePath tests the ValidatePath method.
+func TestValidatePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		var tree *Tree
+		_, err := tree.ValidatePath(nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+
+	t.Run("nil signing key returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		_, err = tree.ValidatePath(nil, nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "signing key is nil")
+	})
+}
+
+// TestValidateAndSubmitSignatures tests the ValidateAndSubmitSignatures method.
+func TestValidateAndSubmitSignatures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		var tree *Tree
+		err := tree.ValidateAndSubmitSignatures([][]byte{{0x01}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+
+	t.Run("empty signatures returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		err = tree.ValidateAndSubmitSignatures([][]byte{})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no signatures provided")
+	})
+
+	t.Run("nil signatures returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{}, &wire.TxOut{Value: 1000}, leaves,
+			operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		err = tree.ValidateAndSubmitSignatures(nil)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no signatures provided")
+	})
+}
+
+// TestValidateAnchors tests the ValidateAnchors method.
+func TestValidateAnchors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns error", func(t *testing.T) {
+		t.Parallel()
+
+		var tree *Tree
+		err := tree.ValidateAnchors()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "tree is nil")
+	})
+}
