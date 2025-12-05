@@ -26,6 +26,11 @@ type OperatorTerms struct {
 	// delay will give the server time to respond to unilateral spends of
 	// a VTXO that has been forfeit or spent.
 	VTXOExitDelay uint32
+
+	// ForfeitScript is the output script that clients must use for the
+	// penalty output in forfeit transactions. This allows the server to
+	// claim forfeited funds.
+	ForfeitScript []byte
 }
 
 // JoinRoundRequest represents a participant's request to join a round.
@@ -140,23 +145,18 @@ type ForfeitTxSig struct {
 	ClientVTXOSig *schnorr.Signature
 }
 
-// ConnectorOutputInfo contains the information about a connector output
-// in the batch transaction. A batch transaction can have multiple connector
-// outputs, each with its own connector VTX tree.
-type ConnectorOutputInfo struct {
-	// Idx is the index of this connector output in the batch transaction.
-	Idx int
+// ConnectorLeafInfo contains information about a connector leaf assigned to a
+// specific forfeit request.
+type ConnectorLeafInfo struct {
+	// LeafOutpoint is the outpoint of the connector leaf that the forfeit
+	// transaction should spend. This is the actual outpoint from the leaf
+	// transaction in the connector tree.
+	LeafOutpoint wire.OutPoint
 
-	// NumLeaves is the number of leaves in the connector VTX tree for this
-	// connector output.
-	NumLeaves int
-
-	// ConnectorKey is the key that the operator will use as its key for
-	// each output in the connector VTX tree.
-	ConnectorKey *btcec.PublicKey
-
-	// Tree is the connector VTX tree for this connector output.
-	Tree *tree.Tree
+	// LeafOutput is the transaction output for the connector leaf. This
+	// contains the value and pkScript needed to construct the forfeit
+	// transaction witness.
+	LeafOutput *wire.TxOut
 }
 
 // BatchOutputInfo contains the information about a batch output in the
@@ -194,8 +194,8 @@ type ClientBatchInfo struct {
 	// match the number of VTXO requests made by the client.
 	BatchOutputs []*BatchOutputInfo
 
-	// ConnectorOutputs contains the connector output info for each
-	// connector output that is relevant to the client. The number of
-	// connector leaves should match the number of connector requests.
-	ConnectorOutputs []*ConnectorOutputInfo
+	// ConnectorLeafMap maps each forfeited VTXO outpoint to its assigned
+	// connector leaf information. This allows the client to determine which
+	// connector leaf corresponds to each of their forfeit requests.
+	ConnectorLeafMap map[wire.OutPoint]*ConnectorLeafInfo
 }

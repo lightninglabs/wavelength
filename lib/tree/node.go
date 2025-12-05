@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // Node represents a single transaction in a virtual transaction tree.
@@ -458,14 +459,25 @@ func (n *Node) NumTx() int {
 	return count
 }
 
-// ExtractPathForCoSigner takes a Node and extracts the path that is relevant
-// for a given cosigner. It returns a new Node that contains only the nodes and
-// children where the cosigner's key is present in the CoSigners list from root
-// to leaf.
-func (n *Node) ExtractPathForCoSigner(targetKey *btcec.PublicKey) *Node {
-	// Check if the target key is in this node's cosigners.
-	if !ContainsCosigner(n.CoSigners, targetKey) {
-		return nil
+// ExtractPathForCoSigners takes a Node and extracts the path that is relevant
+// for one or more cosigners. It returns a new Node that contains only the nodes
+// and children where any of the provided cosigner keys are present in the
+// CoSigners list from root to leaf. The boolean return value indicates whether
+// any matching cosigners were found in this subtree.
+func (n *Node) ExtractPathForCoSigners(targetKeys ...*btcec.PublicKey) (*Node,
+	bool) {
+
+	// Check if any of the target keys are in this node's cosigners.
+	hasMatch := false
+	for _, targetKey := range targetKeys {
+		if ContainsCosigner(n.CoSigners, targetKey) {
+			hasMatch = true
+			break
+		}
+	}
+
+	if !hasMatch {
+		return nil, false
 	}
 
 	// Create a new node with the same basic info.
@@ -480,33 +492,17 @@ func (n *Node) ExtractPathForCoSigner(targetKey *btcec.PublicKey) *Node {
 
 	// Recursively extract relevant children.
 	for outputIndex, child := range n.Children {
-		extractedChild := child.ExtractPathForCoSigner(targetKey)
-		if extractedChild != nil {
-			extracted.Children[outputIndex] = extractedChild
+		extractedChild, ok := child.ExtractPathForCoSigners(
+			targetKeys...,
+		)
+		if !ok {
+			continue
 		}
+
+		extracted.Children[outputIndex] = extractedChild
 	}
 
-	return extracted
-}
-
-// ExtractPathForIndex extracts the path to a specific leaf by its index.
-// Returns nil if the index is out of bounds.
-func (n *Node) ExtractPathForIndex(targetIndex int) (*Node, error) {
-	if targetIndex < 0 {
-		return nil, fmt.Errorf("leaf index must be non-negative, "+
-			"got %d", targetIndex)
-	}
-
-	// First, count total leaves to validate index.
-	totalLeaves := n.countLeaves()
-	if targetIndex >= totalLeaves {
-		return nil, nil // Index out of bounds, return nil (no error).
-	}
-
-	// Find the path to the target leaf.
-	extracted, _ := n.extractPathForIndexRecursive(targetIndex, 0)
-
-	return extracted, nil
+	return extracted, true
 }
 
 // countLeaves returns the total number of leaf nodes in this subtree.
@@ -523,15 +519,61 @@ func (n *Node) countLeaves() int {
 	return count
 }
 
-// extractPathForIndexRecursive recursively extracts the path to the
-// target leaf index. Returns the extracted node and the number of leaves
-// consumed in this subtree.
-func (n *Node) extractPathForIndexRecursive(
-	targetIndex, currentIndex int) (*Node, int) {
+// ExtractPathForIndices extracts the minimal subtree containing paths to all
+// specified leaf indices. Accepts one or more indices as variadic parameters.
+// This is useful when a client has multiple leaves in the same tree (e.g.,
+// multiple connector leaves for multiple forfeit requests).
+//
+// IMPORTANT: Indices are relative to the current tree structure. After
+// extraction, leaves in the returned subtree will be renumbered starting from
+// 0. This means ExtractPathForIndices is NOT idempotent - calling it twice
+// with the same indices will fail on the second call since the leaf positions
+// have changed. If you need stable identifiers across extractions, use
+// ExtractPathForCoSigners instead.
+func (n *Node) ExtractPathForIndices(targetIndices ...int) (*Node, error) {
+	if len(targetIndices) == 0 {
+		return nil, fmt.Errorf("no target indices provided")
+	}
+
+	// Validate the indices.
+	totalLeaves := n.countLeaves()
+	for _, idx := range targetIndices {
+		// Check for negative or out-of-bounds indices.
+		if idx < 0 {
+			return nil, fmt.Errorf("leaf index must be "+
+				"non-negative, got %d", idx)
+		}
+		if idx >= totalLeaves {
+			// At least one index is out of bounds, return nil (no
+			// error).
+			return nil, fmt.Errorf("leaf index %d out of bounds "+
+				"(total leaves: %d)", idx, totalLeaves)
+		}
+	}
+
+	// Create a set of target indices for efficient lookup.
+	targetSet := fn.NewSet(targetIndices...)
+
+	// Find the paths to all target leaves.
+	extracted, _, found := n.extractPathForIndicesRecursive(targetSet, 0)
+	if !found {
+		return nil, fmt.Errorf("no paths found for target indices")
+	}
+
+	return extracted, nil
+}
+
+// extractPathForIndicesRecursive recursively extracts paths to multiple target
+// leaf indices. Returns the extracted node, the number of leaves consumed in
+// this subtree, and a boolean indicating whether any target indices were found
+// in this subtree.
+func (n *Node) extractPathForIndicesRecursive(targetSet fn.Set[int],
+	currentIndex int) (*Node, int, bool) {
+
 	// If this is a leaf node.
 	if n.IsLeaf() {
-		if currentIndex == targetIndex {
-			// Found our target leaf.
+		if targetSet.Contains(currentIndex) {
+			// This is one of our target leaves.
 			return &Node{
 				Input:     n.Input,
 				CoSigners: n.CoSigners,
@@ -539,10 +581,10 @@ func (n *Node) extractPathForIndexRecursive(
 				Signature: n.Signature,
 				FinalKey:  n.FinalKey,
 				Children:  make(map[uint32]*Node),
-			}, currentIndex + 1
+			}, currentIndex + 1, true
 		}
 
-		return nil, currentIndex + 1
+		return nil, currentIndex + 1, false
 	}
 
 	// This is a branch node, check children.
@@ -556,7 +598,7 @@ func (n *Node) extractPathForIndexRecursive(
 	}
 
 	leafIndex := currentIndex
-	foundTarget := false
+	foundAnyTarget := false
 
 	// Process children in sorted order for consistent indexing.
 	for i := uint32(0); i < uint32(len(n.Outputs)-1); i++ {
@@ -565,24 +607,23 @@ func (n *Node) extractPathForIndexRecursive(
 			continue
 		}
 
-		childExtracted, newLeafIndex :=
-			child.extractPathForIndexRecursive(
-				targetIndex, leafIndex,
+		childExtracted, newLeafIndex, found :=
+			child.extractPathForIndicesRecursive(
+				targetSet, leafIndex,
 			)
-
-		if childExtracted != nil {
+		if found {
 			extracted.Children[i] = childExtracted
-			foundTarget = true
+			foundAnyTarget = true
 		}
 
 		leafIndex = newLeafIndex
 	}
 
-	if foundTarget {
-		return extracted, leafIndex
+	if foundAnyTarget {
+		return extracted, leafIndex, true
 	}
 
-	return nil, leafIndex
+	return nil, leafIndex, false
 }
 
 // PrevOutputFetcher creates a PrevOutputFetcher that can provide transaction

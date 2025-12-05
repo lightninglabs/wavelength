@@ -157,8 +157,8 @@ func NewSignerSession(signer input.MuSig2Signer,
 	}
 
 	// Extract the path for this cosigner only.
-	signerPath := tree.ExtractPathForCoSigner(signerKey.PubKey)
-	if signerPath == nil {
+	signerPath, ok := tree.ExtractPathForCoSigners(signerKey.PubKey)
+	if !ok {
 		return nil, fmt.Errorf("no path found for signer")
 	}
 
