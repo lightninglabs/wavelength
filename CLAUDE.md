@@ -30,11 +30,33 @@
 
 **IMPORTANT**: Editors must be configured with **tab = 8 spaces** for correct formatting.
 
-### Function Comments
-- Every function must have a comment starting with the function name
+### Function and Method Comments
+- **Every function and method** (including unexported ones) must have a comment
+  starting with the function/method name
+- This includes interface implementation methods (e.g., `MessageType()`, sealed
+  interface markers)
 - Comments should explain **how/why**, not just what
 - Use literate programming style—comments should be additive and insightful
 - All exported functions need detailed documentation
+
+**Examples:**
+```go
+// CORRECT: All methods have comments
+// MessageType returns the type of this message.
+func (m *ScheduleTimeoutRequest) MessageType() string {
+	return "ScheduleTimeoutRequest"
+}
+
+// timeoutMsgSealed marks this as implementing the sealed Msg interface.
+func (m *ScheduleTimeoutRequest) timeoutMsgSealed() {}
+
+// WRONG: Missing comments
+func (m *ScheduleTimeoutRequest) MessageType() string {
+	return "ScheduleTimeoutRequest"
+}
+
+func (m *ScheduleTimeoutRequest) timeoutMsgSealed() {}
+```
 
 ### Code Organization and Spacing
 - 80-character line limit (best effort)
