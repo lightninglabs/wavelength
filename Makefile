@@ -1,5 +1,6 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
@@ -180,6 +181,20 @@ lint-source: docker-tools
 	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
 
 lint: check-go-version lint-source #? Run static code analysis
+
+# Globs to exclude generated files from ast-grep.
+AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'
+
+# Optional directory/package filter for ast-grep (e.g., make ast-lint pkg=wallet).
+AST_GREP_PATH := $(if $(pkg),$(pkg),.)
+
+ast-lint: #? Run ast-grep style checks (requires ast-grep/sg installed). Use pkg=<dir> to focus on a specific directory.
+	@$(call print, "Running ast-grep style checks.")
+	sg scan $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
+
+ast-grep-fix: #? Auto-fix ast-grep style issues (requires ast-grep/sg installed). Use pkg=<dir> to focus on a specific directory.
+	@$(call print, "Auto-fixing ast-grep style issues.")
+	sg scan --update-all $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
 
 fmt: $(GOIMPORTS_BIN) #? Format code and fix imports
 	@$(call print, "Fixing imports.")
