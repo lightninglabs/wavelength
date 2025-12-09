@@ -44,8 +44,6 @@ DB_CONNECTIONSTRING ?= sqlite://./darepo.db
 
 # Build tags.
 DEV_TAGS := dev
-LOG_TAGS := nolog
-TEST_FLAGS :=
 RELEASE_TAGS :=
 
 # Build flags for debug builds (similar to lnd).
@@ -63,11 +61,8 @@ endif
 COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
 COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
 
-# Test commands.
-GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
-UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
-UNIT_RACE := $(UNIT) -race
-UNIT_COVER := $(GOTEST) $(COVER_FLAGS) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(COVER_PKG)
+# Include testing flags and variable definitions.
+include make/testing_flags.mk
 
 # Linting uses a lot of memory, so keep it under control by limiting the number
 # of workers if requested.
@@ -233,6 +228,10 @@ unit: #? Run unit tests
 	@$(call print, "Running unit tests.")
 	$(UNIT)
 
+unit-debug: #? Run unit tests with verbose output
+	@$(call print, "Running unit tests with verbose output.")
+	$(UNIT_DEBUG)
+
 unit-cover: #? Run unit tests with coverage
 	@$(call print, "Running unit coverage tests.")
 	$(UNIT_COVER)
@@ -322,5 +321,8 @@ help: #? Show this help message
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make rpc"
+	@echo "  make unit"
+	@echo "  make unit pkg=db timeout=5m"
+	@echo "  make unit-debug log=\"stdlog trace\" pkg=db case=TestFoo timeout=10s"
 	@echo "  make unit tags=\"test_db_postgres\""
 	@echo "  make migrate-create patchname=add_users_table"
