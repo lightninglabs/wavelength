@@ -67,7 +67,7 @@ This project uses ast-grep (`sg`) for AST-level code search and style enforcemen
 
 *Formatting (go-formatting.yml):*
 - `struct-literal-asymmetric-close`: Multi-line struct literals need closing `}` on its own line
-- `func-call-asymmetric-wrap`: Multi-line function calls need symmetric wrapping (excludes log/error calls)
+- `func-call-asymmetric-wrap`: Multi-line function calls need symmetric wrapping (excludes log/error/test assertion calls)
 - `log-error-expanded-form`: Log/error calls should use compact form, not expanded
 - `switch-case-needs-spacing`: Switch cases should be separated by blank lines
 - `select-case-needs-spacing`: Select cases should be separated by blank lines
