@@ -112,16 +112,22 @@ func (m *migrationLogger) Printf(format string, v ...interface{}) {
 	switch m.log.Level() {
 	case btclog.LevelTrace:
 		m.log.Tracef(format, v...)
+
 	case btclog.LevelDebug:
 		m.log.Debugf(format, v...)
+
 	case btclog.LevelInfo:
 		m.log.Infof(format, v...)
+
 	case btclog.LevelWarn:
 		m.log.Warnf(format, v...)
+
 	case btclog.LevelError:
 		m.log.Errorf(format, v...)
+
 	case btclog.LevelCritical:
 		m.log.Criticalf(format, v...)
+
 	case btclog.LevelOff:
 	}
 }

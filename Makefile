@@ -1,5 +1,6 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
 .PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
@@ -43,8 +44,6 @@ DB_CONNECTIONSTRING ?= sqlite://./darepo.db
 
 # Build tags.
 DEV_TAGS := dev
-LOG_TAGS := nolog
-TEST_FLAGS :=
 RELEASE_TAGS :=
 
 # Build flags for debug builds (similar to lnd).
@@ -62,11 +61,8 @@ endif
 COVER_PKG = $$($(GOCC) list -deps -tags="$(DEV_TAGS)" ./... | grep '$(PKG)')
 COVER_FLAGS = -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(PKG)/...
 
-# Test commands.
-GOLIST := $(GOCC) list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
-UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
-UNIT_RACE := $(UNIT) -race
-UNIT_COVER := $(GOTEST) $(COVER_FLAGS) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(COVER_PKG)
+# Include testing flags and variable definitions.
+include make/testing_flags.mk
 
 # Linting uses a lot of memory, so keep it under control by limiting the number
 # of workers if requested.
@@ -181,6 +177,20 @@ lint-source: docker-tools
 
 lint: check-go-version lint-source #? Run static code analysis
 
+# Globs to exclude generated files from ast-grep.
+AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'
+
+# Optional directory/package filter for ast-grep (e.g., make ast-lint pkg=wallet).
+AST_GREP_PATH := $(if $(pkg),$(pkg),.)
+
+ast-lint: #? Run ast-grep style checks (requires ast-grep/sg installed). Use pkg=<dir> to focus on a specific directory.
+	@$(call print, "Running ast-grep style checks.")
+	sg scan $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
+
+ast-grep-fix: #? Auto-fix ast-grep style issues (requires ast-grep/sg installed). Use pkg=<dir> to focus on a specific directory.
+	@$(call print, "Auto-fixing ast-grep style issues.")
+	sg scan --update-all $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
+
 fmt: $(GOIMPORTS_BIN) #? Format code and fix imports
 	@$(call print, "Fixing imports.")
 	gosimports -w $(GOFILES_NOVENDOR)
@@ -217,6 +227,10 @@ check-go-version-yaml:
 unit: #? Run unit tests
 	@$(call print, "Running unit tests.")
 	$(UNIT)
+
+unit-debug: #? Run unit tests with verbose output
+	@$(call print, "Running unit tests with verbose output.")
+	$(UNIT_DEBUG)
 
 unit-cover: #? Run unit tests with coverage
 	@$(call print, "Running unit coverage tests.")
@@ -307,5 +321,8 @@ help: #? Show this help message
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make rpc"
+	@echo "  make unit"
+	@echo "  make unit pkg=db timeout=5m"
+	@echo "  make unit-debug log=\"stdlog trace\" pkg=db case=TestFoo timeout=10s"
 	@echo "  make unit tags=\"test_db_postgres\""
 	@echo "  make migrate-create patchname=add_users_table"

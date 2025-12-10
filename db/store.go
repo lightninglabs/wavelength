@@ -89,13 +89,16 @@ func DefaultSqliteConfig(dataDir string) *SqliteConfig {
 // DefaultPostgresConfig returns default Postgres configuration.
 func DefaultPostgresConfig() *PostgresConfig {
 	return &PostgresConfig{
-		Host:               "localhost",
-		Port:               5432,
-		User:               "postgres",
-		Password:           "",
-		DBName:             "arkd",
-		MaxOpenConnections: 0, // Use default
-		MaxIdleConnections: 0, // Use default
+		Host:     "localhost",
+		Port:     5432,
+		User:     "postgres",
+		Password: "",
+		DBName:   "arkd",
+		// Use the default value for max open connections.
+		MaxOpenConnections: 0,
+
+		// Use the default value for max idle connections.
+		MaxIdleConnections: 0,
 		RequireSSL:         false,
 	}
 }
