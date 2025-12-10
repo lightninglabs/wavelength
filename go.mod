@@ -6,6 +6,8 @@ go 1.25
 replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2
 
 require (
+	github.com/btcsuite/btcd v0.25.0
+	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
 	github.com/golang-migrate/migrate/v4 v4.17.0
@@ -16,6 +18,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client v0.0.0
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
+	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f
 	github.com/lightningnetwork/lnd/fn v1.2.3
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
 	github.com/ory/dockertest/v3 v3.12.0
@@ -35,8 +38,6 @@ require (
 	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/btcsuite/btcd v0.25.0 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.3.6 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.10 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/btcsuite/btcd/v2transport v1.0.1 // indirect
@@ -103,7 +104,6 @@ require (
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11 // indirect
 	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9 // indirect
-	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f // indirect
 	github.com/lightningnetwork/lnd/clock v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
