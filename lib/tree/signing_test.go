@@ -28,6 +28,7 @@ type mockSession struct {
 	musigSession   *musig2.Session
 	otherNonces    [][66]byte
 	allNoncesKnown bool
+	combinedNonce  *[66]byte
 }
 
 func newMockMuSig2Signer(privKey *btcec.PrivateKey) *mockMuSig2Signer {
@@ -121,6 +122,44 @@ func (m *mockMuSig2Signer) MuSig2RegisterNonces(
 	session.allNoncesKnown = haveAll
 
 	return haveAll, nil
+}
+
+func (m *mockMuSig2Signer) MuSig2RegisterCombinedNonce(
+	sessionID input.MuSig2SessionID,
+	aggNonce [musig2.PubNonceSize]byte) error {
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+
+	// Store the combined nonce.
+	session.combinedNonce = &aggNonce
+
+	// Register the aggregated nonce with the musig session.
+	haveAll, err := session.musigSession.RegisterPubNonce(aggNonce)
+	if err != nil {
+		return err
+	}
+
+	session.allNoncesKnown = haveAll
+
+	return nil
+}
+
+func (m *mockMuSig2Signer) MuSig2GetCombinedNonce(
+	sessionID input.MuSig2SessionID) ([66]byte, error) {
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return [66]byte{}, fmt.Errorf("session not found")
+	}
+
+	if session.combinedNonce == nil {
+		return [66]byte{}, fmt.Errorf("combined nonce not set")
+	}
+
+	return *session.combinedNonce, nil
 }
 
 func (m *mockMuSig2Signer) MuSig2Sign(sessionID input.MuSig2SessionID,
@@ -230,7 +269,7 @@ func TestTxSignerSession(t *testing.T) {
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
 
-	t.Run("registers nonces and filters own nonce", func(t *testing.T) {
+	t.Run("registers aggregated nonce", func(t *testing.T) {
 		t.Parallel()
 		privKey, pubKey := createTestKey(t)
 		_, otherKey := createTestKey(t)
@@ -274,9 +313,14 @@ func TestTxSignerSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		// Register nonces including own nonce (should be filtered out).
-		nonces := [][66]byte{ownNonce, otherNonces.PubNonce}
-		err = session.RegisterNonces(nonces)
+		// Aggregate nonces using AggregateNonces.
+		aggNonce, err := musig2.AggregateNonces([][66]byte{
+			ownNonce, otherNonces.PubNonce,
+		})
+		require.NoError(t, err)
+
+		// Register aggregated nonce.
+		err = session.RegisterAggNonce(aggNonce)
 		require.NoError(t, err)
 	})
 
@@ -327,11 +371,17 @@ func TestTxSignerSession(t *testing.T) {
 		nonce2, err := session2.GetNonce()
 		require.NoError(t, err)
 
-		// Register nonces.
-		err = session1.RegisterNonces([][66]byte{nonce1, nonce2})
+		// Aggregate nonces.
+		aggNonce, err := musig2.AggregateNonces([][66]byte{
+			nonce1, nonce2,
+		})
 		require.NoError(t, err)
 
-		err = session2.RegisterNonces([][66]byte{nonce1, nonce2})
+		// Register aggregated nonce.
+		err = session1.RegisterAggNonce(aggNonce)
+		require.NoError(t, err)
+
+		err = session2.RegisterAggNonce(aggNonce)
 		require.NoError(t, err)
 
 		// Both should be able to sign.
@@ -515,51 +565,58 @@ func TestSignerSession(t *testing.T) {
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
 
-	t.Run("registers nonces for all transactions", func(t *testing.T) {
-		t.Parallel()
-		privKey, pubKey := createTestKey(t)
-		_, otherKey := createTestKey(t)
+	t.Run("registers aggregated nonces for all transactions",
+		func(t *testing.T) {
+			t.Parallel()
+			privKey, pubKey := createTestKey(t)
+			_, otherKey := createTestKey(t)
 
-		leaf := createSimpleLeaf("leaf", 1000, []*btcec.PublicKey{
-			pubKey, otherKey,
-		})
+			leaf := createSimpleLeaf(
+				"leaf", 1000, []*btcec.PublicKey{
+					pubKey, otherKey,
+				},
+			)
 
-		initialOut := &wire.TxOut{Value: 5000}
-		fetcher, err := leaf.PrevOutputFetcher(initialOut)
-		require.NoError(t, err)
+			initialOut := &wire.TxOut{Value: 5000}
+			fetcher, err := leaf.PrevOutputFetcher(initialOut)
+			require.NoError(t, err)
 
-		signer := newMockMuSig2Signer(privKey)
-		keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
-		sweepRoot := make([]byte, 32)
+			signer := newMockMuSig2Signer(privKey)
+			keyDesc := &keychain.KeyDescriptor{PubKey: pubKey}
+			sweepRoot := make([]byte, 32)
 
-		session, err := NewSignerSession(
-			signer, keyDesc, sweepRoot, fetcher, leaf,
-		)
-		require.NoError(t, err)
+			session, err := NewSignerSession(
+				signer, keyDesc, sweepRoot, fetcher, leaf,
+			)
+			require.NoError(t, err)
 
-		// Get nonces from this session.
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+			// Get nonces from this session.
+			nonces, err := session.GetNonces()
+			require.NoError(t, err)
 
-		// Create other participant's nonce (must be valid EC point).
-		otherPrivKey, _ := createTestKey(t)
-		otherNonces, err := musig2.GenNonces(
-			musig2.WithPublicKey(otherPrivKey.PubKey()),
-		)
-		require.NoError(t, err)
+			// Create other participant's nonce (must be valid EC
+			// point).
+			otherPrivKey, _ := createTestKey(t)
+			otherNonces, err := musig2.GenNonces(
+				musig2.WithPublicKey(otherPrivKey.PubKey()),
+			)
+			require.NoError(t, err)
 
-		// Register nonces for all txs.
-		leafTXID, _ := leaf.TXID()
-		noncesSet := map[string][]Musig2PubNonce{
-			leafTXID.String(): {
+			// Aggregate nonces and register for all txs.
+			leafTXID, _ := leaf.TXID()
+			aggNonce, err := musig2.AggregateNonces([][66]byte{
 				nonces[leafTXID.String()],
 				otherNonces.PubNonce,
-			},
-		}
+			})
+			require.NoError(t, err)
 
-		err = session.RegisterNonces(noncesSet)
-		require.NoError(t, err)
-	})
+			aggNonceSet := map[string]Musig2PubNonce{
+				leafTXID.String(): aggNonce,
+			}
+
+			err = session.RegisterAggNonces(aggNonceSet)
+			require.NoError(t, err)
+		})
 
 	t.Run("generates signatures for all transactions", func(t *testing.T) {
 		t.Parallel()
@@ -601,17 +658,22 @@ func TestSignerSession(t *testing.T) {
 		nonces2, err := session2.GetNonces()
 		require.NoError(t, err)
 
-		// Register nonces.
+		// Aggregate and register nonces.
 		leafTXID, _ := leaf.TXID()
 		txidStr := leafTXID.String()
 
-		err = session1.RegisterNonces(map[string][]Musig2PubNonce{
-			txidStr: {nonces1[txidStr], nonces2[txidStr]},
+		aggNonce, err := musig2.AggregateNonces([][66]byte{
+			nonces1[txidStr], nonces2[txidStr],
 		})
 		require.NoError(t, err)
 
-		err = session2.RegisterNonces(map[string][]Musig2PubNonce{
-			txidStr: {nonces1[txidStr], nonces2[txidStr]},
+		err = session1.RegisterAggNonces(map[string]Musig2PubNonce{
+			txidStr: aggNonce,
+		})
+		require.NoError(t, err)
+
+		err = session2.RegisterAggNonces(map[string]Musig2PubNonce{
+			txidStr: aggNonce,
 		})
 		require.NoError(t, err)
 
@@ -627,7 +689,7 @@ func TestSignerSession(t *testing.T) {
 		require.NotNil(t, sigs2[txidStr])
 	})
 
-	t.Run("RegisterNonces fails if tx not found", func(t *testing.T) {
+	t.Run("RegisterAggNonces fails if tx not found", func(t *testing.T) {
 		t.Parallel()
 		privKey, pubKey := createTestKey(t)
 
@@ -648,13 +710,13 @@ func TestSignerSession(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		// Register nonces for non-existent tx.
+		// Register aggregated nonce for non-existent tx.
 		var nonce Musig2PubNonce
-		err = session.RegisterNonces(map[string][]Musig2PubNonce{
-			"non_existent_txid": {nonce},
+		err = session.RegisterAggNonces(map[string]Musig2PubNonce{
+			"non_existent_txid": nonce,
 		})
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "nonces for tx")
+		require.Contains(t, err.Error(), "aggregated nonce for tx")
 		require.Contains(t, err.Error(), "not found")
 	})
 }
@@ -909,14 +971,19 @@ func TestFullSigningFlow(t *testing.T) {
 			leafTXID, _ := leaf.TXID()
 			txidStr := leafTXID.String()
 
-			// Phase 2: Register nonces.
-			noncesSet := map[string][]Musig2PubNonce{
-				txidStr: {nonces1[txidStr], nonces2[txidStr]},
-			}
-			err = session1.RegisterNonces(noncesSet)
+			// Phase 2: Aggregate and register nonces.
+			aggNonce, err := musig2.AggregateNonces([][66]byte{
+				nonces1[txidStr], nonces2[txidStr],
+			})
 			require.NoError(t, err)
 
-			err = session2.RegisterNonces(noncesSet)
+			aggNonceSet := map[string]Musig2PubNonce{
+				txidStr: aggNonce,
+			}
+			err = session1.RegisterAggNonces(aggNonceSet)
+			require.NoError(t, err)
+
+			err = session2.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
 
 			// Phase 3: Generate partial signatures.
@@ -1019,20 +1086,24 @@ func TestFullSigningFlow(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, nonces2, 3)
 
-			// Build nonces set for all 3 transactions.
-			noncesSet := make(map[string][]Musig2PubNonce)
+			// Aggregate nonces for all 3 transactions.
+			aggNonceSet := make(map[string]Musig2PubNonce)
 			for txid := range nonces1 {
-				noncesSet[txid] = []Musig2PubNonce{
-					nonces1[txid],
-					nonces2[txid],
-				}
+				aggNonce, err := musig2.AggregateNonces(
+					[][66]byte{
+						nonces1[txid],
+						nonces2[txid],
+					},
+				)
+				require.NoError(t, err)
+				aggNonceSet[txid] = aggNonce
 			}
 
-			// Register nonces.
-			err = session1.RegisterNonces(noncesSet)
+			// Register aggregated nonces.
+			err = session1.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
 
-			err = session2.RegisterNonces(noncesSet)
+			err = session2.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
 
 			// Generate partial signatures for all txs.
