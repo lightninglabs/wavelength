@@ -7,7 +7,7 @@ replace github.com/golang-migrate/migrate/v4 => github.com/lightninglabs/migrate
 
 require (
 	github.com/btcsuite/btcd v0.25.0
-	github.com/btcsuite/btcd/btcec/v2 v2.3.5
+	github.com/btcsuite/btcd/btcec/v2 v2.3.6
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
@@ -21,7 +21,7 @@ require (
 	github.com/lightninglabs/lndclient v1.0.1-0.20251120145443-a0342758fc5b
 	github.com/lightninglabs/taproot-assets v0.7.0
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
-	github.com/lightningnetwork/lnd v0.20.0-beta
+	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
 	github.com/ory/dockertest/v3 v3.12.0
@@ -115,7 +115,7 @@ require (
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/sqldb v1.0.11 // indirect
+	github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tlv v1.3.2 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect

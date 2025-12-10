@@ -84,36 +84,13 @@ func (s *TxSignerSession) GetNonce() (Musig2PubNonce, error) {
 	return s.signSession.PublicNonce, nil
 }
 
-// RegisterNonces registers other participants' nonces with this session.
-// It filters out the signer's own nonce before registration.
-//
-// TODO: once lnd's MuSig2RegisterNonces supports submitting the aggregate nonce
-// instead of having to submit all individual nonces, we can update this method
-// to do the same.
-func (s *TxSignerSession) RegisterNonces(
-	nonces [][musig2.PubNonceSize]byte) error {
+// RegisterAggNonce registers the aggregated nonce for this signing session.
+func (s *TxSignerSession) RegisterAggNonce(
+	aggNonce [musig2.PubNonceSize]byte) error {
 
-	// Filter out this signer's own nonce.
-	var filteredNonces [][66]byte
-	for _, n := range nonces {
-		if n == s.signSession.PublicNonce {
-			continue
-		}
-		filteredNonces = append(filteredNonces, n)
-	}
-
-	ok, err := s.signer.MuSig2RegisterNonces(
-		s.signSession.SessionID, filteredNonces,
+	return s.signer.MuSig2RegisterCombinedNonce(
+		s.signSession.SessionID, aggNonce,
 	)
-	if err != nil {
-		return fmt.Errorf("failed to register nonces: %w", err)
-	}
-
-	if !ok {
-		return fmt.Errorf("not all nonces registered successfully")
-	}
-
-	return nil
 }
 
 // Sign generates the partial signature for this transaction.
@@ -217,26 +194,22 @@ func (s *SignerSession) GetNonces() (
 	return nonces, nil
 }
 
-// RegisterNonces registers aggregated nonces for all transactions in the
+// RegisterAggNonces registers the aggregated nonce for each transaction in the
 // signer's path.
-func (s *SignerSession) RegisterNonces(
-	noncesSet map[string][]Musig2PubNonce) error {
+func (s *SignerSession) RegisterAggNonces(
+	nonceSet map[string]Musig2PubNonce) error {
 
 	for txid, txSession := range s.txs {
-		nonces, ok := noncesSet[txid]
+		nonce, ok := nonceSet[txid]
 		if !ok {
-			return fmt.Errorf("nonces for tx %s not found", txid)
+			return fmt.Errorf("aggregated nonce for tx %s not "+
+				"found", txid)
 		}
 
-		ns := make([][musig2.PubNonceSize]byte, len(nonces))
-		for i, n := range nonces {
-			ns[i] = n
-		}
-
-		err := txSession.RegisterNonces(ns)
+		err := txSession.RegisterAggNonce(nonce)
 		if err != nil {
-			return fmt.Errorf("failed to register nonces for "+
-				"tx %s: %w", txid, err)
+			return fmt.Errorf("failed to register aggregated "+
+				"nonce for tx %s: %w", txid, err)
 		}
 	}
 
