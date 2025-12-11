@@ -230,7 +230,7 @@ func (t *Tree) VerifySigned() error {
 // SubmitTreeSigs stores signatures in the tree nodes. This method does NOT
 // validate the signatures cryptographically - it only stores them. Use
 // VerifySigned after calling this method to validate signatures.
-func (t *Tree) SubmitTreeSigs(sigs map[string]*schnorr.Signature) error {
+func (t *Tree) SubmitTreeSigs(sigs map[TxID]*schnorr.Signature) error {
 	if sigs == nil {
 		return fmt.Errorf("signatures map cannot be nil")
 	}
@@ -241,7 +241,7 @@ func (t *Tree) SubmitTreeSigs(sigs map[string]*schnorr.Signature) error {
 			return fmt.Errorf("failed to get TXID: %w", err)
 		}
 
-		sig, exists := sigs[txid.String()]
+		sig, exists := sigs[txid]
 		if !exists {
 			return fmt.Errorf("signature not found for "+
 				"transaction %s", txid.String())

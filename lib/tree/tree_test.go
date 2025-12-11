@@ -764,10 +764,10 @@ func TestSubmitTreeSigs(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create signatures for all transactions.
-		sigs := make(map[string]*schnorr.Signature)
+		sigs := make(map[TxID]*schnorr.Signature)
 		for node := range tree.Root.NodesIter() {
 			txid, _ := node.TXID()
-			sigs[txid.String()] = createTestSignature(t)
+			sigs[txid] = createTestSignature(t)
 		}
 
 		// Initially no signatures.
@@ -831,7 +831,7 @@ func TestSubmitTreeSigs(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create signatures for only some transactions.
-		sigs := make(map[string]*schnorr.Signature)
+		sigs := make(map[TxID]*schnorr.Signature)
 		// Leave one transaction without signature.
 
 		err = tree.SubmitTreeSigs(sigs)

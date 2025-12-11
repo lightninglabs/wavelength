@@ -5,11 +5,17 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// TxID is a type alias for chainhash.Hash, used as a key for maps that index
+// by transaction ID. Using the raw hash type instead of strings improves type
+// safety and avoids unnecessary string conversions.
+type TxID = chainhash.Hash
 
 // Musig2PubNonce is a public nonce for MuSig2 signing.
 type Musig2PubNonce [musig2.PubNonceSize]byte
@@ -109,7 +115,7 @@ type SignerSession struct {
 	signerKey *keychain.KeyDescriptor
 
 	// txs maps transaction IDs to their signing sessions.
-	txs map[string]*TxSignerSession
+	txs map[TxID]*TxSignerSession
 }
 
 // NewSignerSession creates a new signing session for a tree. It
@@ -140,7 +146,7 @@ func NewSignerSession(signer input.MuSig2Signer,
 	}
 
 	// Create signing sessions for each transaction in the path.
-	txs := make(map[string]*TxSignerSession)
+	txs := make(map[TxID]*TxSignerSession)
 
 	err := signerPath.ForEach(func(node *Node) error {
 		tx, err := node.ToTx()
@@ -157,7 +163,7 @@ func NewSignerSession(signer input.MuSig2Signer,
 				err)
 		}
 
-		txs[tx.TxHash().String()] = session
+		txs[tx.TxHash()] = session
 
 		return nil
 	})
@@ -177,10 +183,8 @@ func (s *SignerSession) PubKey() *btcec.PublicKey {
 }
 
 // GetNonces returns nonces for all transactions in the signer's path.
-func (s *SignerSession) GetNonces() (
-	map[string]Musig2PubNonce, error) {
-
-	nonces := make(map[string]Musig2PubNonce, len(s.txs))
+func (s *SignerSession) GetNonces() (map[TxID]Musig2PubNonce, error) {
+	nonces := make(map[TxID]Musig2PubNonce, len(s.txs))
 	for txid, txSession := range s.txs {
 		nonce, err := txSession.GetNonce()
 		if err != nil {
@@ -197,7 +201,7 @@ func (s *SignerSession) GetNonces() (
 // RegisterAggNonces registers the aggregated nonce for each transaction in the
 // signer's path.
 func (s *SignerSession) RegisterAggNonces(
-	nonceSet map[string]Musig2PubNonce) error {
+	nonceSet map[TxID]Musig2PubNonce) error {
 
 	for txid, txSession := range s.txs {
 		nonce, ok := nonceSet[txid]
@@ -219,9 +223,9 @@ func (s *SignerSession) RegisterAggNonces(
 // Signatures generates partial signatures for all transactions in the signer's
 // path. If cleanup is true, the signing sessions are cleaned up after signing.
 func (s *SignerSession) Signatures(cleanup bool) (
-	map[string]*musig2.PartialSignature, error) {
+	map[TxID]*musig2.PartialSignature, error) {
 
-	sigs := make(map[string]*musig2.PartialSignature, len(s.txs))
+	sigs := make(map[TxID]*musig2.PartialSignature, len(s.txs))
 	for txid, txSession := range s.txs {
 		sig, err := txSession.Sign(cleanup)
 		if err != nil {

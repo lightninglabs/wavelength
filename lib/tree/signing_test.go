@@ -560,7 +560,7 @@ func TestSignerSession(t *testing.T) {
 
 		// Verify nonce exists for the leaf tx.
 		leafTXID, _ := leaf.TXID()
-		nonce, exists := nonces[leafTXID.String()]
+		nonce, exists := nonces[leafTXID]
 		require.True(t, exists)
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
@@ -605,13 +605,13 @@ func TestSignerSession(t *testing.T) {
 			// Aggregate nonces and register for all txs.
 			leafTXID, _ := leaf.TXID()
 			aggNonce, err := musig2.AggregateNonces([][66]byte{
-				nonces[leafTXID.String()],
+				nonces[leafTXID],
 				otherNonces.PubNonce,
 			})
 			require.NoError(t, err)
 
-			aggNonceSet := map[string]Musig2PubNonce{
-				leafTXID.String(): aggNonce,
+			aggNonceSet := map[TxID]Musig2PubNonce{
+				leafTXID: aggNonce,
 			}
 
 			err = session.RegisterAggNonces(aggNonceSet)
@@ -660,20 +660,19 @@ func TestSignerSession(t *testing.T) {
 
 		// Aggregate and register nonces.
 		leafTXID, _ := leaf.TXID()
-		txidStr := leafTXID.String()
 
 		aggNonce, err := musig2.AggregateNonces([][66]byte{
-			nonces1[txidStr], nonces2[txidStr],
+			nonces1[leafTXID], nonces2[leafTXID],
 		})
 		require.NoError(t, err)
 
-		err = session1.RegisterAggNonces(map[string]Musig2PubNonce{
-			txidStr: aggNonce,
+		err = session1.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			leafTXID: aggNonce,
 		})
 		require.NoError(t, err)
 
-		err = session2.RegisterAggNonces(map[string]Musig2PubNonce{
-			txidStr: aggNonce,
+		err = session2.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			leafTXID: aggNonce,
 		})
 		require.NoError(t, err)
 
@@ -681,12 +680,12 @@ func TestSignerSession(t *testing.T) {
 		sigs1, err := session1.Signatures(true)
 		require.NoError(t, err)
 		require.Len(t, sigs1, 1)
-		require.NotNil(t, sigs1[txidStr])
+		require.NotNil(t, sigs1[leafTXID])
 
 		sigs2, err := session2.Signatures(true)
 		require.NoError(t, err)
 		require.Len(t, sigs2, 1)
-		require.NotNil(t, sigs2[txidStr])
+		require.NotNil(t, sigs2[leafTXID])
 	})
 
 	t.Run("RegisterAggNonces fails if tx not found", func(t *testing.T) {
@@ -712,8 +711,9 @@ func TestSignerSession(t *testing.T) {
 
 		// Register aggregated nonce for non-existent tx.
 		var nonce Musig2PubNonce
-		err = session.RegisterAggNonces(map[string]Musig2PubNonce{
-			"non_existent_txid": nonce,
+		nonExistentTxID := chainhash.HashH([]byte("non_existent"))
+		err = session.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			nonExistentTxID: nonce,
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "aggregated nonce for tx")
@@ -783,8 +783,8 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		rootTx, _ := root.ToTx()
 		leaf1Tx, _ := leaf1.ToTx()
 
-		_, hasRoot := nonces[rootTx.TxHash().String()]
-		_, hasLeaf1 := nonces[leaf1Tx.TxHash().String()]
+		_, hasRoot := nonces[rootTx.TxHash()]
+		_, hasLeaf1 := nonces[leaf1Tx.TxHash()]
 
 		require.True(t, hasRoot)
 		require.True(t, hasLeaf1)
@@ -819,7 +819,7 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		require.Len(t, nonces, 1)
 
 		leafTXID, _ := leaf.TXID()
-		_, exists := nonces[leafTXID.String()]
+		_, exists := nonces[leafTXID]
 		require.True(t, exists)
 	})
 }
@@ -969,16 +969,15 @@ func TestFullSigningFlow(t *testing.T) {
 			require.NoError(t, err)
 
 			leafTXID, _ := leaf.TXID()
-			txidStr := leafTXID.String()
 
 			// Phase 2: Aggregate and register nonces.
 			aggNonce, err := musig2.AggregateNonces([][66]byte{
-				nonces1[txidStr], nonces2[txidStr],
+				nonces1[leafTXID], nonces2[leafTXID],
 			})
 			require.NoError(t, err)
 
-			aggNonceSet := map[string]Musig2PubNonce{
-				txidStr: aggNonce,
+			aggNonceSet := map[TxID]Musig2PubNonce{
+				leafTXID: aggNonce,
 			}
 			err = session1.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
@@ -990,12 +989,12 @@ func TestFullSigningFlow(t *testing.T) {
 			partialSigs1, err := session1.Signatures(true)
 			require.NoError(t, err)
 			require.Len(t, partialSigs1, 1)
-			require.NotNil(t, partialSigs1[txidStr])
+			require.NotNil(t, partialSigs1[leafTXID])
 
 			partialSigs2, err := session2.Signatures(true)
 			require.NoError(t, err)
 			require.Len(t, partialSigs2, 1)
-			require.NotNil(t, partialSigs2[txidStr])
+			require.NotNil(t, partialSigs2[leafTXID])
 
 			// Note: In production, a coordinator would combine
 			// these partial signatures. For this test, we verify
@@ -1087,7 +1086,7 @@ func TestFullSigningFlow(t *testing.T) {
 			require.Len(t, nonces2, 3)
 
 			// Aggregate nonces for all 3 transactions.
-			aggNonceSet := make(map[string]Musig2PubNonce)
+			aggNonceSet := make(map[TxID]Musig2PubNonce)
 			for txid := range nonces1 {
 				aggNonce, err := musig2.AggregateNonces(
 					[][66]byte{
