@@ -7,7 +7,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -33,10 +32,10 @@ type TxSignerSession struct {
 	sigHash     [32]byte
 }
 
-// NewTxSignerSession creates a new signing session for a single transaction.
-func NewTxSignerSession(signer input.MuSig2Signer,
-	sweepTapscriptRoot []byte, cosigners []*btcec.PublicKey,
-	signerKey *keychain.KeyDescriptor, tx *wire.MsgTx,
+// NewTxSignerSession creates a new signing session for signing the node's
+// transaction input.
+func (n *Node) NewTxSignerSession(signer input.MuSig2Signer,
+	sweepTapscriptRoot []byte, signerKey *keychain.KeyDescriptor,
 	fetcher txscript.PrevOutputFetcher) (*TxSignerSession, error) {
 
 	// Validate inputs.
@@ -48,12 +47,9 @@ func NewTxSignerSession(signer input.MuSig2Signer,
 		return nil, fmt.Errorf("signer key cannot be nil")
 	}
 
-	if len(cosigners) == 0 {
-		return nil, fmt.Errorf("cosigners cannot be empty")
-	}
-
-	if tx == nil {
-		return nil, fmt.Errorf("transaction cannot be nil")
+	tx, err := n.ToTx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx: %w", err)
 	}
 
 	// Calculate signature hash.
@@ -68,10 +64,8 @@ func NewTxSignerSession(signer input.MuSig2Signer,
 
 	// Create MuSig2 session.
 	musigSession, err := signer.MuSig2CreateSession(
-		input.MuSig2Version100RC2, signerKey.KeyLocator,
-		cosigners, &input.MuSig2Tweaks{
-			TaprootTweak: sweepTapscriptRoot,
-		}, nil, nil,
+		input.MuSig2Version100RC2, signerKey.KeyLocator, n.CoSigners,
+		&input.MuSig2Tweaks{TaprootTweak: sweepTapscriptRoot}, nil, nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MuSig2 session: %w",
@@ -154,9 +148,8 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
-		session, err := NewTxSignerSession(
-			signer, sweepTapscriptRoot, node.CoSigners,
-			signerKey, tx, prevOuts,
+		session, err := node.NewTxSignerSession(
+			signer, sweepTapscriptRoot, signerKey, prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",

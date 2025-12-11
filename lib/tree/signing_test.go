@@ -240,16 +240,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		// Create a simple transaction.
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		// Create fetcher.
 		prevOut := &wire.TxOut{Value: 2000}
@@ -257,8 +249,8 @@ func TestTxSignerSession(t *testing.T) {
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, session)
@@ -282,23 +274,16 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
@@ -338,15 +323,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey1, pubKey2}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
@@ -354,13 +332,13 @@ func TestTxSignerSession(t *testing.T) {
 		)
 
 		// Create sessions for both signers.
-		session1, err := NewTxSignerSession(
-			signer1, sweepRoot, cosigners, keyDesc1, tx, fetcher,
+		session1, err := node.NewTxSignerSession(
+			signer1, sweepRoot, keyDesc1, fetcher,
 		)
 		require.NoError(t, err)
 
-		session2, err := NewTxSignerSession(
-			signer2, sweepRoot, cosigners, keyDesc2, tx, fetcher,
+		session2, err := node.NewTxSignerSession(
+			signer2, sweepRoot, keyDesc2, fetcher,
 		)
 		require.NoError(t, err)
 
@@ -408,15 +386,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000, PkScript: []byte("out")})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{
 			Value:    2000,
@@ -426,9 +397,13 @@ func TestTxSignerSession(t *testing.T) {
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
+		require.NoError(t, err)
+
+		// Get the tx that the node generates internally.
+		tx, err := node.ToTx()
 		require.NoError(t, err)
 
 		// Calculate expected signature hash manually.
@@ -850,30 +825,23 @@ func TestTxSignerSessionSecurityNote(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		// Create two sessions for same tx (in real usage this is
+		// Create two sessions for same node (in real usage this is
 		// unsafe!).
-		session1, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session1, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
-		session2, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session2, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
