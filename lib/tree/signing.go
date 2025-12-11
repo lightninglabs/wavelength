@@ -81,8 +81,8 @@ func (n *Node) NewTxSignerSession(signer input.MuSig2Signer,
 }
 
 // GetNonce returns the public nonce for this signing session.
-func (s *TxSignerSession) GetNonce() (Musig2PubNonce, error) {
-	return s.signSession.PublicNonce, nil
+func (s *TxSignerSession) GetNonce() Musig2PubNonce {
+	return s.signSession.PublicNonce
 }
 
 // RegisterAggNonce registers the aggregated nonce for this signing session.
@@ -183,19 +183,13 @@ func (s *SignerSession) PubKey() *btcec.PublicKey {
 // GetNonces returns nonces for all transactions in the signer's path.
 // This is used after all signers have shared their public nonces and the
 // aggregated nonce has been computed for each transaction.
-func (s *SignerSession) GetNonces() (map[TxID]Musig2PubNonce, error) {
+func (s *SignerSession) GetNonces() map[TxID]Musig2PubNonce {
 	nonces := make(map[TxID]Musig2PubNonce, len(s.txs))
 	for txid, txSession := range s.txs {
-		nonce, err := txSession.GetNonce()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get nonce for "+
-				"tx %s: %w", txid, err)
-		}
-
-		nonces[txid] = nonce
+		nonces[txid] = txSession.GetNonce()
 	}
 
-	return nonces, nil
+	return nonces
 }
 
 // RegisterAggNonces registers the aggregated nonce for each transaction in the

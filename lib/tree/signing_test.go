@@ -256,8 +256,7 @@ func TestTxSignerSession(t *testing.T) {
 		require.NotNil(t, session)
 
 		// Should be able to get nonce.
-		nonce, err := session.GetNonce()
-		require.NoError(t, err)
+		nonce := session.GetNonce()
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
 
@@ -288,8 +287,7 @@ func TestTxSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get own nonce.
-		ownNonce, err := session.GetNonce()
-		require.NoError(t, err)
+		ownNonce := session.GetNonce()
 
 		// Create other participant's nonce (must be valid EC point).
 		otherPrivKey, _ := createTestKey(t)
@@ -343,11 +341,8 @@ func TestTxSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Exchange nonces.
-		nonce1, err := session1.GetNonce()
-		require.NoError(t, err)
-
-		nonce2, err := session2.GetNonce()
-		require.NoError(t, err)
+		nonce1 := session1.GetNonce()
+		nonce2 := session2.GetNonce()
 
 		// Aggregate nonces.
 		aggNonce, err := musig2.AggregateNonces([][66]byte{
@@ -529,8 +524,7 @@ func TestSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get nonces.
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 1)
 
 		// Verify nonce exists for the leaf tx.
@@ -566,8 +560,7 @@ func TestSignerSession(t *testing.T) {
 			require.NoError(t, err)
 
 			// Get nonces from this session.
-			nonces, err := session.GetNonces()
-			require.NoError(t, err)
+			nonces := session.GetNonces()
 
 			// Create other participant's nonce (must be valid EC
 			// point).
@@ -627,11 +620,8 @@ func TestSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Exchange nonces.
-		nonces1, err := session1.GetNonces()
-		require.NoError(t, err)
-
-		nonces2, err := session2.GetNonces()
-		require.NoError(t, err)
+		nonces1 := session1.GetNonces()
+		nonces2 := session2.GetNonces()
 
 		// Aggregate and register nonces.
 		leafTXID, _ := leaf.TXID()
@@ -750,8 +740,7 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		require.Len(t, session.txs, 2)
 
 		// Get nonces for all txs.
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 2)
 
 		// Should have nonce for root and leaf1.
@@ -789,8 +778,7 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		// Should have exactly 1 tx (the leaf).
 		require.Len(t, session.txs, 1)
 
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 1)
 
 		leafTXID, _ := leaf.TXID()
@@ -846,8 +834,8 @@ func TestTxSignerSessionSecurityNote(t *testing.T) {
 		require.NoError(t, err)
 
 		// Nonces should be different (proves fresh generation).
-		nonce1, _ := session1.GetNonce()
-		nonce2, _ := session2.GetNonce()
+		nonce1 := session1.GetNonce()
+		nonce2 := session2.GetNonce()
 
 		require.NotEqual(t, nonce1, nonce2,
 			"Sessions should generate unique nonces")
@@ -930,11 +918,8 @@ func TestFullSigningFlow(t *testing.T) {
 			require.NoError(t, err)
 
 			// Phase 1: Exchange nonces.
-			nonces1, err := session1.GetNonces()
-			require.NoError(t, err)
-
-			nonces2, err := session2.GetNonces()
-			require.NoError(t, err)
+			nonces1 := session1.GetNonces()
+			nonces2 := session2.GetNonces()
 
 			leafTXID, _ := leaf.TXID()
 
@@ -1045,12 +1030,10 @@ func TestFullSigningFlow(t *testing.T) {
 			require.Len(t, session2.txs, 3)
 
 			// Exchange nonces.
-			nonces1, err := session1.GetNonces()
-			require.NoError(t, err)
+			nonces1 := session1.GetNonces()
 			require.Len(t, nonces1, 3)
 
-			nonces2, err := session2.GetNonces()
-			require.NoError(t, err)
+			nonces2 := session2.GetNonces()
 			require.Len(t, nonces2, 3)
 
 			// Aggregate nonces for all 3 transactions.
