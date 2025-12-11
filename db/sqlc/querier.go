@@ -10,23 +10,58 @@ import (
 
 type Querier interface {
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
+	CountUnspentVTXOs(ctx context.Context) (int64, error)
+	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
+	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	GetAllRoundVtxoTemplates(ctx context.Context, roundID string) ([]RoundVtxoTemplate, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
+	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
+	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
+	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	GetRound(ctx context.Context, roundID string) (Round, error)
+	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
+	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
+	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
+	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
+	GetRoundVtxoTemplates(ctx context.Context, arg GetRoundVtxoTemplatesParams) ([]RoundVtxoTemplate, error)
+	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
 	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
+	// Client tree txids queries.
+	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
+	// Round queries.
+	InsertRound(ctx context.Context, arg InsertRoundParams) error
+	// Round boarding intents queries.
+	InsertRoundBoardingIntent(ctx context.Context, arg InsertRoundBoardingIntentParams) error
+	// Client trees queries.
+	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
+	// Round VTXO templates queries.
+	InsertRoundVtxoTemplate(ctx context.Context, arg InsertRoundVtxoTemplateParams) error
+	// VTXO queries.
+	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
+	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListBoardingIntentOutpoints(ctx context.Context) ([]ListBoardingIntentOutpointsRow, error)
 	ListBoardingIntentsByConfHeight(ctx context.Context, confHeight int32) ([]BoardingIntent, error)
 	ListBoardingIntentsByPkScript(ctx context.Context, pkScript []byte) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
+	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
+	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
+	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
+	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
+	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 }
 
