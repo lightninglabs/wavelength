@@ -1,0 +1,250 @@
+package batch
+
+import (
+	"encoding/hex"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+)
+
+// TxID is an alias for tree.TxID (chainhash.Hash), used as a key in maps.
+type TxID = tree.TxID
+
+// TxSignerCoordinator coordinates MuSig2 signing for a single transaction.
+// It embeds the operator's signing session and collects nonces and partial
+// signatures from other cosigners, producing the final schnorr signature.
+type TxSignerCoordinator struct {
+	// signer is the MuSig2 signer interface.
+	signer input.MuSig2Signer
+
+	// signingKey is the operator's key for this musig session.
+	signingKey *btcec.PublicKey
+
+	// sessionInfo is the operator's MuSig2 session info for this tx.
+	sessionInfo *input.MuSig2SessionInfo
+
+	// sigHash is the data that will be signed.
+	sigHash [32]byte
+
+	// cosigners is the map of expected cosigners (hex key -> pubkey).
+	cosigners map[string]*btcec.PublicKey
+
+	// finalSig stores the final combined signature once all partial
+	// signatures have been received and combined.
+	finalSig *schnorr.Signature
+}
+
+// NewTxSignerCoordinator creates a new coordinator for signing a single
+// transaction. It creates the operator's MuSig2 session internally for
+// automatic operator nonce and signature management.
+func NewTxSignerCoordinator(operatorSigner input.MuSig2Signer,
+	operatorKey *keychain.KeyDescriptor, node *tree.Node,
+	sweepTapscriptRoot []byte,
+	prevOutFetcher txscript.PrevOutputFetcher) (*TxSignerCoordinator,
+	error) {
+
+	// Build map of expected cosigners.
+	cosignerMap := make(map[string]*btcec.PublicKey, len(node.CoSigners))
+	for _, pk := range node.CoSigners {
+		cosignerMap[toHexKey(pk)] = pk
+	}
+
+	// Ensure that the cosigners were unique.
+	if len(cosignerMap) != len(node.CoSigners) {
+		return nil, fmt.Errorf("duplicate cosigner public keys found")
+	}
+
+	// Verify operator key is in the cosigner set.
+	if _, ok := cosignerMap[toHexKey(operatorKey.PubKey)]; !ok {
+		return nil, fmt.Errorf("operator key not found in cosigners")
+	}
+
+	sigHash, err := node.SigHash(prevOutFetcher)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute sighash: %w", err)
+	}
+
+	signerSess, err := node.NewSignerSession(
+		operatorKey, operatorSigner, sweepTapscriptRoot,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create operator sign "+
+			"session: %w", err)
+	}
+
+	return &TxSignerCoordinator{
+		signer:      operatorSigner,
+		signingKey:  operatorKey.PubKey,
+		sessionInfo: signerSess,
+		sigHash:     [32]byte(sigHash),
+		cosigners:   cosignerMap,
+	}, nil
+}
+
+// toHexKey converts a public key to its hex string representation for use as
+// a map key.
+func toHexKey(pk *btcec.PublicKey) string {
+	return hex.EncodeToString(pk.SerializeCompressed())
+}
+
+// sessionID returns the MuSig2 session ID for this transaction.
+func (c *TxSignerCoordinator) sessionID() [32]byte {
+	return c.sessionInfo.SessionID
+}
+
+// AddNonce adds a nonce from a non-operator cosigner and registers it with
+// the MuSig2 session. Returns an error if the signer is the operator or not
+// part of expected cosigners.
+func (c *TxSignerCoordinator) AddNonce(signer *btcec.PublicKey,
+	nonce tree.Musig2PubNonce) error {
+
+	hexKey := toHexKey(signer)
+
+	// Reject operator nonces (operator's nonce is automatic).
+	if signer.IsEqual(c.signingKey) {
+		return fmt.Errorf("operator nonce is managed automatically")
+	}
+
+	if _, ok := c.cosigners[hexKey]; !ok {
+		return fmt.Errorf("signer %x not part of expected cosigners",
+			signer.SerializeCompressed())
+	}
+
+	// Register nonce with the MuSig2 session. The session handles
+	// tracking and duplicate detection. The return value indicates whether
+	// all nonces have now been registered.
+	haveAll, err := c.signer.MuSig2RegisterNonces(
+		c.sessionID(), [][musig2.PubNonceSize]byte{nonce},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to register nonce: %w", err)
+	}
+
+	// Update our tracking of whether all nonces have been received.
+	c.sessionInfo.HaveAllNonces = haveAll
+
+	return nil
+}
+
+// GetNonce returns the operator's public nonce for this transaction's
+// MuSig2 session.
+func (c *TxSignerCoordinator) GetNonce() tree.Musig2PubNonce {
+	return c.sessionInfo.PublicNonce
+}
+
+// HasAllNonces returns true if nonces have been received from all non-operator
+// cosigners. The operator's nonce is managed automatically. This field is
+// updated based on the return value from MuSig2RegisterNonces.
+func (c *TxSignerCoordinator) HasAllNonces() bool {
+	return c.sessionInfo.HaveAllNonces
+}
+
+// AggregateNonces returns the aggregated nonce from the MuSig2 session.
+// Returns an error if not all non-operator nonces have been received yet.
+func (c *TxSignerCoordinator) AggregateNonces() (
+	tree.Musig2PubNonce, error) {
+
+	if !c.HasAllNonces() {
+		return tree.Musig2PubNonce{}, fmt.Errorf("not all nonces " +
+			"have been received")
+	}
+
+	// Get the combined nonce from the session. The session automatically
+	// aggregates nonces as they're registered.
+	aggNonce, err := c.signer.MuSig2GetCombinedNonce(c.sessionID())
+	if err != nil {
+		return tree.Musig2PubNonce{}, fmt.Errorf("failed to get "+
+			"combined nonce: %w", err)
+	}
+
+	return aggNonce, nil
+}
+
+// AddPartialSignature adds a partial signature from a non-operator cosigner
+// and combines it with the MuSig2 session. The operator's signature is managed
+// automatically via the embedded session.
+func (c *TxSignerCoordinator) AddPartialSignature(signer *btcec.PublicKey,
+	sig *musig2.PartialSignature) error {
+
+	hexKey := toHexKey(signer)
+
+	// Reject operator signatures (operator signs via session).
+	if signer.IsEqual(c.signingKey) {
+		return fmt.Errorf("operator signature is managed automatically")
+	}
+
+	if _, ok := c.cosigners[hexKey]; !ok {
+		return fmt.Errorf("signer %x not part of expected cosigners",
+			signer.SerializeCompressed())
+	}
+
+	// Cannot accept partial signature before nonces have been received.
+	if !c.HasAllNonces() {
+		return fmt.Errorf("not all nonces have been received")
+	}
+
+	// Combine this signature with the session. The session handles
+	// tracking and validation. If this is the last signature, the final
+	// combined signature is returned.
+	finalSig, complete, err := c.signer.MuSig2CombineSig(
+		c.sessionID(), []*musig2.PartialSignature{sig},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to combine signature: %w", err)
+	}
+
+	// Store the final signature if all signatures have been collected.
+	if complete {
+		if finalSig == nil {
+			return fmt.Errorf("final signature should not be " +
+				"nil when the musig session is complete")
+		}
+
+		c.finalSig = finalSig
+	}
+
+	return nil
+}
+
+// FullySigned returns true if partial signatures have been received from all
+// non-operator cosigners and the final signature has been computed. The
+// operator's signature is managed automatically.
+func (c *TxSignerCoordinator) FullySigned() bool {
+	return c.finalSig != nil
+}
+
+// Sign generates the operator's partial signature for this
+// transaction using the embedded session. This should be called after all
+// non-operator nonces have been received and aggregated.
+func (c *TxSignerCoordinator) Sign() error {
+	// Generate operator's partial signature using the session.
+	// Don't clean up yet since we need to combine with client signatures.
+	_, err := c.signer.MuSig2Sign(c.sessionID(), c.sigHash, false)
+
+	return err
+}
+
+// AggregateSig returns the final combined schnorr signature. The signature is
+// computed and stored when the last partial signature is added via
+// AddPartialSignature. Returns an error if not all partial signatures have
+// been received.
+//
+// Note: This method does NOT verify the signature cryptographically. Callers
+// should use Tree.VerifySigned() after storing signatures to validate them
+// properly within the tree context.
+func (c *TxSignerCoordinator) AggregateSig() (*schnorr.Signature, error) {
+	if !c.FullySigned() {
+		return nil, fmt.Errorf("not all partial signatures received")
+	}
+
+	// Clean up the session.
+	_ = c.signer.MuSig2Cleanup(c.sessionID())
+
+	return c.finalSig, nil
+}
