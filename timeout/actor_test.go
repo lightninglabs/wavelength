@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockCallbackRef implements actor.TellOnlyRef[Msg] for testing. It captures
-// all ExpiredMsg messages sent to it.
+// mockCallbackRef implements actor.TellOnlyRef[*ExpiredMsg] for testing.
+// It captures all ExpiredMsg messages sent to it.
 type mockCallbackRef struct {
 	t        *testing.T
 	id       string
@@ -31,13 +31,11 @@ func (m *mockCallbackRef) ID() string {
 	return m.id
 }
 
-func (m *mockCallbackRef) Tell(_ context.Context, msg Msg) {
+func (m *mockCallbackRef) Tell(_ context.Context, msg *ExpiredMsg) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if expired, ok := msg.(*ExpiredMsg); ok {
-		m.messages = append(m.messages, *expired)
-	}
+	m.messages = append(m.messages, *msg)
 }
 
 // getMessages returns a copy of all received messages.
