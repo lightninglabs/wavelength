@@ -8,13 +8,13 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/lightninglabs/darepo-client/lib/tree"
+	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// TxID is an alias for tree.TxID (chainhash.Hash), used as a key in maps.
-type TxID = tree.TxID
+// TxID is an alias for treepkg.TxID (chainhash.Hash), used as a key in maps.
+type TxID = treepkg.TxID
 
 // TxSignerCoordinator coordinates MuSig2 signing for a single transaction.
 // It embeds the operator's signing session and collects nonces and partial
@@ -44,7 +44,7 @@ type TxSignerCoordinator struct {
 // transaction. It creates the operator's MuSig2 session internally for
 // automatic operator nonce and signature management.
 func NewTxSignerCoordinator(operatorSigner input.MuSig2Signer,
-	operatorKey *keychain.KeyDescriptor, node *tree.Node,
+	operatorKey *keychain.KeyDescriptor, node *treepkg.Node,
 	sweepTapscriptRoot []byte,
 	prevOutFetcher txscript.PrevOutputFetcher) (*TxSignerCoordinator,
 	error) {
@@ -102,7 +102,7 @@ func (c *TxSignerCoordinator) sessionID() [32]byte {
 // the MuSig2 session. Returns an error if the signer is the operator or not
 // part of expected cosigners.
 func (c *TxSignerCoordinator) AddNonce(signer *btcec.PublicKey,
-	nonce tree.Musig2PubNonce) error {
+	nonce treepkg.Musig2PubNonce) error {
 
 	hexKey := toHexKey(signer)
 
@@ -134,7 +134,7 @@ func (c *TxSignerCoordinator) AddNonce(signer *btcec.PublicKey,
 
 // GetNonce returns the operator's public nonce for this transaction's
 // MuSig2 session.
-func (c *TxSignerCoordinator) GetNonce() tree.Musig2PubNonce {
+func (c *TxSignerCoordinator) GetNonce() treepkg.Musig2PubNonce {
 	return c.sessionInfo.PublicNonce
 }
 
@@ -148,10 +148,10 @@ func (c *TxSignerCoordinator) HasAllNonces() bool {
 // AggregateNonces returns the aggregated nonce from the MuSig2 session.
 // Returns an error if not all non-operator nonces have been received yet.
 func (c *TxSignerCoordinator) AggregateNonces() (
-	tree.Musig2PubNonce, error) {
+	treepkg.Musig2PubNonce, error) {
 
 	if !c.HasAllNonces() {
-		return tree.Musig2PubNonce{}, fmt.Errorf("not all nonces " +
+		return treepkg.Musig2PubNonce{}, fmt.Errorf("not all nonces " +
 			"have been received")
 	}
 
@@ -159,7 +159,7 @@ func (c *TxSignerCoordinator) AggregateNonces() (
 	// aggregates nonces as they're registered.
 	aggNonce, err := c.signer.MuSig2GetCombinedNonce(c.sessionID())
 	if err != nil {
-		return tree.Musig2PubNonce{}, fmt.Errorf("failed to get "+
+		return treepkg.Musig2PubNonce{}, fmt.Errorf("failed to get "+
 			"combined nonce: %w", err)
 	}
 
@@ -236,8 +236,8 @@ func (c *TxSignerCoordinator) Sign() error {
 // been received.
 //
 // Note: This method does NOT verify the signature cryptographically. Callers
-// should use Tree.VerifySigned() after storing signatures to validate them
-// properly within the tree context.
+// should use treepkg.VerifySigned() after storing signatures to validate them
+// properly within the treepkg context.
 func (c *TxSignerCoordinator) AggregateSig() (*schnorr.Signature, error) {
 	if !c.FullySigned() {
 		return nil, fmt.Errorf("not all partial signatures received")
@@ -247,4 +247,319 @@ func (c *TxSignerCoordinator) AggregateSig() (*schnorr.Signature, error) {
 	_ = c.signer.MuSig2Cleanup(c.sessionID())
 
 	return c.finalSig, nil
+}
+
+// TreeSignCoordinator coordinates MuSig2 signing for all transactions in a
+// tree. Each TxSignerCoordinator manages its own operator MuSig2 session.
+type TreeSignCoordinator struct {
+	// signer is the MuSig2 signer for the operator.
+	signer input.MuSig2Signer
+
+	// txSigners maps transaction IDs to their signing coordinators.
+	txSigners map[TxID]*TxSignerCoordinator
+
+	// signerTxIndex is a reverse index mapping each cosigner key (hex) to
+	// the list of transaction IDs they're involved in. Built once in the
+	// constructor for fast lookup in GetAggNoncesForSigners and
+	// GetFinalSigsForSigners.
+	signerTxIndex map[string][]TxID
+}
+
+// NewTreeSignCoordinator creates a new coordinator for signing an entire
+// tree. The operator's per-transaction MuSig2 sessions are created for all
+// transactions in the tree automatically.
+func NewTreeSignCoordinator(signer input.MuSig2Signer,
+	operatorKey *keychain.KeyDescriptor,
+	tree *treepkg.Tree) (*TreeSignCoordinator, error) {
+
+	// Validate inputs.
+	if signer == nil {
+		return nil, fmt.Errorf("operator signer cannot be nil")
+	}
+
+	if operatorKey == nil || operatorKey.PubKey == nil {
+		return nil, fmt.Errorf("operator key cannot be nil")
+	}
+
+	if tree == nil {
+		return nil, fmt.Errorf("tree cannot be nil")
+	}
+
+	prevOutFetcher, err := tree.Root.PrevOutputFetcher(tree.BatchOutput)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create prev output "+
+			"fetcher: %w", err)
+	}
+
+	// Initialize per-transaction coordinators and build reverse index
+	// mapping each cosigner to their transactions. Each coordinator creates
+	// its own operator MuSig2 session internally.
+	signers := make(map[TxID]*TxSignerCoordinator, tree.NumTx())
+	signerTxIndex := make(map[string][]TxID)
+
+	err = tree.Root.ForEach(func(node *treepkg.Node) error {
+		txid, err := node.TXID()
+		if err != nil {
+			return fmt.Errorf("failed to get TXID: %w", err)
+		}
+
+		// Create tx coordinator. It will create the operator's MuSig2
+		// session internally.
+		coordinator, err := NewTxSignerCoordinator(
+			signer, operatorKey, node,
+			tree.SweepTapscriptRoot, prevOutFetcher,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create tx coordinator: %w",
+				err)
+		}
+
+		signers[txid] = coordinator
+
+		// Build reverse index: for each cosigner in this transaction,
+		// add this txid to their list.
+		for _, cosigner := range node.CoSigners {
+			keyHex := toHexKey(cosigner)
+			signerTxIndex[keyHex] = append(
+				signerTxIndex[keyHex], txid,
+			)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &TreeSignCoordinator{
+		signer:        signer,
+		txSigners:     signers,
+		signerTxIndex: signerTxIndex,
+	}, nil
+}
+
+// AddNonces adds nonces from a signer for their transactions. Returns the
+// number of nonces successfully added. Nonces for transactions this signer
+// isn't involved in are silently skipped (using the precomputed signerTxIndex).
+// Returns an error if a nonce fails to register for a transaction where this
+// signer IS expected to be a cosigner.
+func (c *TreeSignCoordinator) AddNonces(signer *btcec.PublicKey,
+	nonces map[TxID]treepkg.Musig2PubNonce) (int, error) {
+
+	// Build set of expected txids for this signer from the index.
+	expectedTxIDs := c.signerTxIndex[toHexKey(signer)]
+	expectedSet := make(map[TxID]struct{}, len(expectedTxIDs))
+	for _, txid := range expectedTxIDs {
+		expectedSet[txid] = struct{}{}
+	}
+
+	acceptedCount := 0
+	for txid, nonce := range nonces {
+		// Skip nonces for transactions this signer isn't involved in.
+		if _, expected := expectedSet[txid]; !expected {
+			continue
+		}
+
+		txCoordinator := c.txSigners[txid]
+		err := txCoordinator.AddNonce(signer, nonce)
+		if err != nil {
+			return acceptedCount, fmt.Errorf("failed to add "+
+				"nonce for tx %s: %w", txid, err)
+		}
+
+		acceptedCount++
+	}
+
+	return acceptedCount, nil
+}
+
+// HasAllNonces returns true if all transactions have received all nonces.
+func (c *TreeSignCoordinator) HasAllNonces() bool {
+	for _, txCoordinator := range c.txSigners {
+		if !txCoordinator.HasAllNonces() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// OperatorNonces returns the operator's nonces for all transactions.
+// These should be distributed to client signers along with the tree structure.
+func (c *TreeSignCoordinator) OperatorNonces() map[TxID]treepkg.Musig2PubNonce {
+	nonces := make(
+		map[TxID]treepkg.Musig2PubNonce, len(c.txSigners),
+	)
+	for txid, coordinator := range c.txSigners {
+		nonces[txid] = coordinator.GetNonce()
+	}
+
+	return nonces
+}
+
+func (c *TreeSignCoordinator) GetAggregatedNonces() (
+	map[TxID]treepkg.Musig2PubNonce, error) {
+
+	aggNonces := make(map[TxID]treepkg.Musig2PubNonce, len(c.txSigners))
+	for txid, txCoordinator := range c.txSigners {
+		aggNonce, err := txCoordinator.AggregateNonces()
+		if err != nil {
+			return nil, fmt.Errorf("failed to aggregate nonces "+
+				"for tx %s: %w", txid.String(), err)
+		}
+
+		aggNonces[txid] = aggNonce
+	}
+
+	return aggNonces, nil
+}
+
+// GetAggNoncesForSigners returns AGGREGATED nonces for transactions where the
+// given signing keys are cosigners. This is used to send a client only the
+// aggregated nonces they need for the transactions they're signing, allowing
+// them to register via MuSig2RegisterCombinedNonce.
+func (c *TreeSignCoordinator) GetAggNoncesForSigners(
+	signingKeys []*btcec.PublicKey) (map[TxID]treepkg.Musig2PubNonce,
+	error) {
+
+	result := make(map[TxID]treepkg.Musig2PubNonce)
+
+	// Use the precomputed reverse index to find transactions for these
+	// signing keys. This is O(num_keys * num_txs_per_key) instead of
+	// O(num_txs * num_cosigners).
+	for _, key := range signingKeys {
+		keyHex := toHexKey(key)
+		txids := c.signerTxIndex[keyHex]
+
+		for _, txid := range txids {
+			// Skip if we've already added this transaction's nonce
+			// (multiple keys might be cosigners for the same tx).
+			if _, exists := result[txid]; exists {
+				continue
+			}
+
+			txCoordinator := c.txSigners[txid]
+			aggNonce, err := txCoordinator.AggregateNonces()
+			if err != nil {
+				return nil, fmt.Errorf("failed to aggregate "+
+					"nonces for tx %s: %w", txid, err,
+				)
+			}
+
+			result[txid] = aggNonce
+		}
+	}
+
+	return result, nil
+}
+
+// GetFinalSigsForSigners returns final aggregated signatures for transactions
+// where any of the given signing keys is a cosigner. This is used to send a
+// client only the signatures they need for the transactions they're signing.
+func (c *TreeSignCoordinator) GetFinalSigsForSigners(
+	signingKeys []*btcec.PublicKey) (map[TxID]*schnorr.Signature, error) {
+
+	result := make(map[TxID]*schnorr.Signature)
+
+	// Use the precomputed reverse index to find transactions for these
+	// signing keys. This is O(num_keys * num_txs_per_key) instead of
+	// O(num_txs * num_cosigners).
+	for _, key := range signingKeys {
+		keyHex := toHexKey(key)
+		txids := c.signerTxIndex[keyHex]
+
+		for _, txid := range txids {
+			// Skip if we've already added this transaction's
+			// signature (multiple keys might be cosigners for the
+			// same tx).
+			if _, exists := result[txid]; exists {
+				continue
+			}
+
+			txCoordinator := c.txSigners[txid]
+			sig, err := txCoordinator.AggregateSig()
+			if err != nil {
+				return nil, fmt.Errorf("failed to sign tx "+
+					"%s: %w", txid, err)
+			}
+
+			result[txid] = sig
+		}
+	}
+
+	return result, nil
+}
+
+// AddPartialSignatures adds partial signatures from a signer for their
+// transactions.
+func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
+	sigs map[TxID]*musig2.PartialSignature) error {
+
+	for txid, sig := range sigs {
+		txCoordinator, ok := c.txSigners[txid]
+		if !ok {
+			return fmt.Errorf("tx %s not found in coordinator",
+				txid)
+		}
+
+		err := txCoordinator.AddPartialSignature(signer, sig)
+		if err != nil {
+			return fmt.Errorf("failed to add partial signature "+
+				"for tx %s: %w", txid, err)
+		}
+	}
+
+	return nil
+}
+
+// FullySigned returns true if all transactions have received all partial
+// signatures.
+func (c *TreeSignCoordinator) FullySigned() bool {
+	for _, txCoordinator := range c.txSigners {
+		if !txCoordinator.FullySigned() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Sign generates the operator's partial signatures for all
+// transactions. MuSig2Sign automatically adds the operator's signature to the
+// session, so no need to call MuSig2CombineSig for the operator's signature.
+// This should be called after all non-operator nonces have been received and
+// nonces have been aggregated.
+func (c *TreeSignCoordinator) Sign() error {
+	// Generate operator's partial signatures for all transactions.
+	// MuSig2Sign automatically adds the signature to the session.
+	for txid, coordinator := range c.txSigners {
+		// Generate operator's partial signature. This automatically
+		// adds it to the session.
+		err := coordinator.Sign()
+		if err != nil {
+			return fmt.Errorf("failed to sign tx %s: %w",
+				txid.String(), err)
+		}
+	}
+
+	return nil
+}
+
+// AggregateSigs combines all partial signatures and returns the final schnorr
+// signatures for all transactions.
+func (c *TreeSignCoordinator) AggregateSigs() (map[TxID]*schnorr.Signature,
+	error) {
+
+	sigs := make(map[TxID]*schnorr.Signature, len(c.txSigners))
+	for txid, txCoordinator := range c.txSigners {
+		sig, err := txCoordinator.AggregateSig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign tx %s: %w",
+				txid.String(), err)
+		}
+
+		sigs[txid] = sig
+	}
+
+	return sigs, nil
 }
