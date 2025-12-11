@@ -32,8 +32,18 @@ type TxSignerSession struct {
 	sigHash     [32]byte
 }
 
-// NewTxSignerSession creates a new signing session for signing the node's
-// transaction input.
+// NewTxSignerSession creates a new signing session for a single transaction
+// in a virtual transaction tree. The point of the session is to facilitate
+// the MuSig2 signing process for a specific transaction. Each transaction has
+// signs the key-spend path of the previous transaction. The parameters are:
+//
+//   - signer: The MuSig2Signer interface to use creating the session and
+//     signing.
+//   - sweepTapscriptRoot: The tapscript root used for tweaking the keyspend
+//     path.
+//   - signerKey: The key descriptor of the signer.
+//   - fetcher: The PrevOutputFetcher to retrieve the output being spent by this
+//     node's transaction.
 func (n *Node) NewTxSignerSession(signer input.MuSig2Signer,
 	sweepTapscriptRoot []byte, signerKey *keychain.KeyDescriptor,
 	fetcher txscript.PrevOutputFetcher) (*TxSignerSession, error) {
@@ -92,9 +102,11 @@ func (s *TxSignerSession) Sign(cleanup bool) (*musig2.PartialSignature, error) {
 	)
 }
 
-// SignerSession manages signing for all transactions in a client's path.
-// It automatically extracts the signer's path and creates TxSignerSession for
-// each transaction in that path.
+// SignerSession manages signing for all transactions in a client's path in a
+// tree for a given signing key. It automatically extracts the signer's path
+// and creates TxSignerSession for each transaction in that path. If a client
+// has multiple vtxo's in the tree, they will have a SignerSession for each
+// vtxo's signing key.
 type SignerSession struct {
 	// signerKey is the key descriptor for the signer.
 	signerKey *keychain.KeyDescriptor
@@ -133,6 +145,8 @@ func NewSignerSession(signer input.MuSig2Signer,
 	// Create signing sessions for each transaction in the path.
 	txs := make(map[TxID]*TxSignerSession)
 
+	// For each transaction in the signer's path, create a TxSignerSession
+	// which will help facilitate MuSig2 signing for that transaction.
 	err := signerPath.ForEach(func(node *Node) error {
 		tx, err := node.ToTx()
 		if err != nil {
@@ -167,6 +181,8 @@ func (s *SignerSession) PubKey() *btcec.PublicKey {
 }
 
 // GetNonces returns nonces for all transactions in the signer's path.
+// This is used after all signers have shared their public nonces and the
+// aggregated nonce has been computed for each transaction.
 func (s *SignerSession) GetNonces() (map[TxID]Musig2PubNonce, error) {
 	nonces := make(map[TxID]Musig2PubNonce, len(s.txs))
 	for txid, txSession := range s.txs {
@@ -206,6 +222,8 @@ func (s *SignerSession) RegisterAggNonces(
 
 // Signatures generates partial signatures for all transactions in the signer's
 // path. If cleanup is true, the signing sessions are cleaned up after signing.
+// This is used in the second round of MuSig2 signing where each signer
+// generates their partial signatures.
 func (s *SignerSession) Signatures(cleanup bool) (
 	map[TxID]*musig2.PartialSignature, error) {
 
