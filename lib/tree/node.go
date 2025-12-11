@@ -15,7 +15,14 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// inputIndex is the index of the input being signed in each transaction.
+// Each node tx in a tree has a single input at index 0 which spends the
+// key-spend path of its parent output.
+const inputIndex = 0
 
 // Node represents a single transaction in a virtual transaction tree.
 type Node struct {
@@ -777,13 +784,9 @@ func (n *Node) verifyNodeSignature(
 	}
 
 	// Calculate the signature hash.
-	sigHash, err := txscript.CalcTaprootSignatureHash(
-		txscript.NewTxSigHashes(tx, prevOutFetcher),
-		txscript.SigHashDefault, tx, 0, prevOutFetcher,
-	)
+	sigHash, err := n.SigHash(prevOutFetcher)
 	if err != nil {
-		return fmt.Errorf("failed to calculate signature hash: %w",
-			err)
+		return fmt.Errorf("failed to calculate signature hash: %w", err)
 	}
 
 	// Verify the signature against the cached final key.
@@ -793,6 +796,36 @@ func (n *Node) verifyNodeSignature(
 	}
 
 	return nil
+}
+
+// SigHash computes the signature hash for this node's transaction.
+func (n *Node) SigHash(prevOutFetcher txscript.PrevOutputFetcher) ([]byte,
+	error) {
+
+	// Create the transaction to verify.
+	tx, err := n.ToTx()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Calculate the signature hash.
+	return txscript.CalcTaprootSignatureHash(
+		txscript.NewTxSigHashes(tx, prevOutFetcher),
+		txscript.SigHashDefault, tx, inputIndex, prevOutFetcher,
+	)
+}
+
+// NewSignerSession creates a new MuSig2 signing session for this node.
+func (n *Node) NewSignerSession(signerKey *keychain.KeyDescriptor,
+	signer input.MuSig2Signer,
+	sweepTapscriptRoot []byte) (*input.MuSig2SessionInfo, error) {
+
+	return signer.MuSig2CreateSession(
+		input.MuSig2Version100RC2, signerKey.KeyLocator,
+		n.CoSigners, &input.MuSig2Tweaks{
+			TaprootTweak: sweepTapscriptRoot,
+		}, nil, nil,
+	)
 }
 
 // ContainsCosigner checks if a target key is present in the cosigners list.

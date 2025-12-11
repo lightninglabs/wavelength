@@ -47,25 +47,16 @@ func (n *Node) NewTxSignerSession(signer input.MuSig2Signer,
 		return nil, fmt.Errorf("signer key cannot be nil")
 	}
 
-	tx, err := n.ToTx()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tx: %w", err)
-	}
-
 	// Calculate signature hash.
-	message, err := txscript.CalcTaprootSignatureHash(
-		txscript.NewTxSigHashes(tx, fetcher),
-		txscript.SigHashDefault, tx, 0, fetcher,
-	)
+	sigHash, err := n.SigHash(fetcher)
 	if err != nil {
-		return nil, fmt.Errorf("failed to calculate signature hash: %w",
-			err)
+		return nil, fmt.Errorf("failed to calculate sig hash: %w", err)
 	}
 
-	// Create MuSig2 session.
-	musigSession, err := signer.MuSig2CreateSession(
-		input.MuSig2Version100RC2, signerKey.KeyLocator, n.CoSigners,
-		&input.MuSig2Tweaks{TaprootTweak: sweepTapscriptRoot}, nil, nil,
+	// Create MuSig2 session for signing the transaction input via the
+	// keyspend path.
+	musigSession, err := n.NewSignerSession(
+		signerKey, signer, sweepTapscriptRoot,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create MuSig2 session: %w",
@@ -75,7 +66,7 @@ func (n *Node) NewTxSignerSession(signer input.MuSig2Signer,
 	return &TxSignerSession{
 		signer:      signer,
 		signSession: musigSession,
-		sigHash:     [32]byte(message),
+		sigHash:     [32]byte(sigHash),
 	}, nil
 }
 
