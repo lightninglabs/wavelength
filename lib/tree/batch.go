@@ -61,7 +61,16 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 
 // ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor.
 func (v VTXODescriptor) ToLeafDescriptor() LeafDescriptor {
-	return LeafDescriptor(v)
+	pkScript := make([]byte, len(v.PkScript))
+	copy(pkScript, v.PkScript)
+
+	cosignerKey := *v.CoSignerKey
+
+	return LeafDescriptor{
+		PkScript:    pkScript,
+		Amount:      v.Amount,
+		CoSignerKey: &cosignerKey,
+	}
 }
 
 // ConnectorDescriptor defines the specification for a connector tree.
@@ -165,17 +174,12 @@ func (c ConnectorDescriptor) ToLeafDescriptors(
 }
 
 // BuildVTXOTree constructs a complete transaction tree from VTXO descriptors
-// using a BFS (breadth-first search) algorithm. It returns a Tree with all
-// transactions fully constructed and linked.
-func BuildVTXOTree(
-	batchOutpoint wire.OutPoint,
-	batchOutput *wire.TxOut,
-	vtxos []VTXODescriptor,
-	operatorCoSignKey *btcec.PublicKey,
-	sweepKey *btcec.PublicKey,
-	sweepDelay uint32,
-	radix int,
-) (*Tree, error) {
+// using a two-phase approach (structure building + materialization). It returns
+// a Tree with all transactions fully constructed and linked.
+func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
+	vtxos []VTXODescriptor, operatorCoSignKey *btcec.PublicKey,
+	sweepKey *btcec.PublicKey, sweepDelay uint32, radix int) (*Tree,
+	error) {
 
 	// Validate inputs.
 	if err := ValidateVTXODescriptors(vtxos); err != nil {
@@ -223,16 +227,21 @@ func BuildVTXOTree(
 	}
 	sweepTapRoot := sweepTapLeaf.TapHash()
 
-	return NewTree(
-		batchOutpoint, batchOutput, leaves,
-		operatorCoSignKey, sweepTapRoot[:], radix,
-	)
+	// Use BTCTreeAssembler for two-phase tree construction.
+	assembler := NewTreeAssembler(TreeConfig{
+		OperatorKey:        operatorCoSignKey,
+		SweepTapscriptRoot: sweepTapRoot[:],
+		Radix:              radix,
+	})
+
+	return assembler.BuildTree(batchOutpoint, batchOutput, leaves)
 }
 
-// BuildConnectorTree constructs a connector tree from a connector descriptor.
-// Unlike VTXO trees, connector trees have identical leaves (same script, same
-// amount) and are signed only by the operator. This is used for forfeit
-// transaction inputs.
+// BuildConnectorTree constructs a connector tree from a connector descriptor
+// using a two-phase approach (structure building + materialization). Unlike
+// VTXO trees, connector trees have identical leaves (same script, same amount)
+// and are signed only by the operator. This is used for forfeit transaction
+// inputs.
 func BuildConnectorTree(
 	batchOutpoint wire.OutPoint,
 	batchOutput *wire.TxOut,
@@ -257,10 +266,15 @@ func BuildConnectorTree(
 	// Convert to leaf descriptors (creates unique keys for each).
 	leaves := connector.ToLeafDescriptors(operatorKey)
 
-	return NewTree(
-		batchOutpoint, batchOutput, leaves,
-		operatorKey, nil, radix,
-	)
+	// Use the Bitcoin only TreeAssembler for two-phase tree construction.
+	// Connector trees have no sweep script (nil SweepTapscriptRoot).
+	assembler := NewTreeAssembler(TreeConfig{
+		OperatorKey:        operatorKey,
+		SweepTapscriptRoot: nil,
+		Radix:              radix,
+	})
+
+	return assembler.BuildTree(batchOutpoint, batchOutput, leaves)
 }
 
 // BuildBatchOutput computes the pkscript and output amount for a batch output

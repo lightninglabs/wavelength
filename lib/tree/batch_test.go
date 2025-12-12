@@ -60,9 +60,15 @@ func TestBuildVTXOTree(t *testing.T) {
 			},
 		}
 
+		// Batch output value should match the sum of VTXO amounts.
+		singleBatchOutput := &wire.TxOut{
+			Value:    5000,
+			PkScript: []byte("batch_script"),
+		}
+
 		tree, err := BuildVTXOTree(
 			batchOutpoint,
-			batchOutput,
+			singleBatchOutput,
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
@@ -74,7 +80,7 @@ func TestBuildVTXOTree(t *testing.T) {
 
 		// Verify tree context.
 		require.Equal(t, batchOutpoint, tree.BatchOutpoint)
-		require.Equal(t, batchOutput, tree.BatchOutput)
+		require.Equal(t, singleBatchOutput, tree.BatchOutput)
 		require.NotNil(t, tree.SweepTapscriptRoot)
 
 		// Root should be a leaf transaction.
@@ -114,9 +120,16 @@ func TestBuildVTXOTree(t *testing.T) {
 			},
 		}
 
+		// Batch output value should match sum of VTXOs:
+		// 5000 + 3000 = 8000.
+		twoBatchOutput := &wire.TxOut{
+			Value:    8000,
+			PkScript: []byte("batch_script"),
+		}
+
 		tree, err := BuildVTXOTree(
 			batchOutpoint,
-			batchOutput,
+			twoBatchOutput,
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
@@ -165,6 +178,7 @@ func TestBuildVTXOTree(t *testing.T) {
 
 	t.Run("five VTXO tree with radix 2", func(t *testing.T) {
 		// Create 5 VTXOs with different amounts.
+		// Total: 5000+4000+3000+2000+1000 = 15000
 		vtxos := make([]VTXODescriptor, 5)
 		for i := 0; i < 5; i++ {
 			key, err := btcec.NewPrivateKey()
@@ -180,9 +194,15 @@ func TestBuildVTXOTree(t *testing.T) {
 			}
 		}
 
+		// Batch output should match total VTXO amounts.
+		fiveBatchOutput := &wire.TxOut{
+			Value:    15000,
+			PkScript: []byte("batch_script"),
+		}
+
 		tree, err := BuildVTXOTree(
 			batchOutpoint,
-			batchOutput,
+			fiveBatchOutput,
 			vtxos,
 			operatorPubKey,
 			sweepPubKey,
@@ -281,7 +301,9 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 		Hash:  chainhash.HashH([]byte("commitment")),
 		Index: 0,
 	}
-	batchOutput := &wire.TxOut{Value: 10000, PkScript: []byte("batch")}
+
+	// Batch output value must match sum of VTXOs: 3 * 1000 = 3000.
+	batchOutput := &wire.TxOut{Value: 3000, PkScript: []byte("batch")}
 
 	// Create 3 VTXOs with SAME amount but different scripts.
 	// The scripts are intentionally out of lexicographic order.
@@ -368,9 +390,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			Amount:    btcutil.Amount(330),
 		}
 
+		// Batch output must match the connector amount for single leaf.
+		singleBatchOutput := &wire.TxOut{
+			Value:    330,
+			PkScript: []byte("connector_batch_script"),
+		}
+
 		tree, err := BuildConnectorTree(
 			batchOutpoint,
-			batchOutput,
+			singleBatchOutput,
 			connector,
 			operatorPubKey,
 			4, // radix
@@ -401,9 +429,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			Amount:    btcutil.Amount(330),
 		}
 
+		// Batch output = 4 * 330 = 1320.
+		fourBatchOutput := &wire.TxOut{
+			Value:    1320,
+			PkScript: []byte("connector_batch_script"),
+		}
+
 		tree, err := BuildConnectorTree(
 			batchOutpoint,
-			batchOutput,
+			fourBatchOutput,
 			connector,
 			operatorPubKey,
 			4,
@@ -421,7 +455,7 @@ func TestBuildConnectorTree(t *testing.T) {
 			require.True(t, exists, "child %d", i)
 			require.True(t, child.IsLeaf(), "child %d", i)
 
-			// Verify connector output is identical.
+			// Verify connector output is identical (1320/4 = 330).
 			require.Equal(t, int64(330), child.Outputs[0].Value)
 			require.Equal(t, connectorScript,
 				child.Outputs[0].PkScript)
@@ -446,9 +480,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			Amount:    btcutil.Amount(330),
 		}
 
+		// Batch output = 8 * 330 = 2640.
+		eightBatchOutput := &wire.TxOut{
+			Value:    2640,
+			PkScript: []byte("connector_batch_script"),
+		}
+
 		tree, err := BuildConnectorTree(
 			batchOutpoint,
-			batchOutput,
+			eightBatchOutput,
 			connector,
 			operatorPubKey,
 			4,
@@ -479,9 +519,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			Amount:    btcutil.Amount(330),
 		}
 
+		// Batch output = 4 * 330 = 1320.
+		extractBatchOutput := &wire.TxOut{
+			Value:    1320,
+			PkScript: []byte("connector_batch_script"),
+		}
+
 		tree, err := BuildConnectorTree(
 			batchOutpoint,
-			batchOutput,
+			extractBatchOutput,
 			connector,
 			operatorPubKey,
 			2,
@@ -559,9 +605,15 @@ func TestBuildConnectorTree(t *testing.T) {
 			Amount:    btcutil.Amount(330),
 		}
 
+		// Batch output = 4 * 330 = 1320.
+		identicalBatchOutput := &wire.TxOut{
+			Value:    1320,
+			PkScript: []byte("connector_batch_script"),
+		}
+
 		tree, err := BuildConnectorTree(
 			batchOutpoint,
-			batchOutput,
+			identicalBatchOutput,
 			connector,
 			operatorPubKey,
 			2,

@@ -34,7 +34,7 @@ func TestPartitionLeaves(t *testing.T) {
 
 		// 3 leaves with radix 5 should create 3 groups of 1 leaf each.
 		leaves := createLeaves(3)
-		groups := partitionLeaves(leaves, 5)
+		groups := partitionLeaves(leaves, 5, nil)
 
 		require.Len(t, groups, 3)
 		for i, group := range groups {
@@ -50,7 +50,7 @@ func TestPartitionLeaves(t *testing.T) {
 
 		// 4 leaves with radix 4 should create 4 groups of 1 leaf each.
 		leaves := createLeaves(4)
-		groups := partitionLeaves(leaves, 4)
+		groups := partitionLeaves(leaves, 4, nil)
 
 		require.Len(t, groups, 4)
 		for i, group := range groups {
@@ -67,7 +67,7 @@ func TestPartitionLeaves(t *testing.T) {
 		// 8 leaves with radix 4 should create 4 groups of 2 leaves
 		// each.
 		leaves := createLeaves(8)
-		groups := partitionLeaves(leaves, 4)
+		groups := partitionLeaves(leaves, 4, nil)
 
 		require.Len(t, groups, 4)
 		for i, group := range groups {
@@ -85,7 +85,7 @@ func TestPartitionLeaves(t *testing.T) {
 		// - 2 groups with 3 leaves (10 % 4 = 2 extra).
 		// - 2 groups with 2 leaves (10 / 4 = 2 base).
 		leaves := createLeaves(10)
-		groups := partitionLeaves(leaves, 4)
+		groups := partitionLeaves(leaves, 4, nil)
 
 		require.Len(t, groups, 4)
 
@@ -114,7 +114,7 @@ func TestPartitionLeaves(t *testing.T) {
 		t.Parallel()
 
 		leaves := createLeaves(1)
-		groups := partitionLeaves(leaves, 4)
+		groups := partitionLeaves(leaves, 4, nil)
 
 		require.Len(t, groups, 1)
 		require.Len(t, groups[0], 1)
@@ -124,7 +124,7 @@ func TestPartitionLeaves(t *testing.T) {
 		t.Parallel()
 
 		leaves := createLeaves(2)
-		groups := partitionLeaves(leaves, 4)
+		groups := partitionLeaves(leaves, 4, nil)
 
 		// Should create 2 groups with 1 leaf each.
 		require.Len(t, groups, 2)
@@ -140,7 +140,7 @@ func TestPartitionLeaves(t *testing.T) {
 		// algorithm should prevent this, the fallback provides defense
 		// in depth.
 		leaves := createLeaves(2)
-		groups := partitionLeaves(leaves, 100)
+		groups := partitionLeaves(leaves, 100, nil)
 
 		// Should have exactly 2 groups (fallback split in half).
 		require.Len(t, groups, 2)
@@ -155,7 +155,7 @@ func TestPartitionLeaves(t *testing.T) {
 		// - Group 0: 4 leaves (7 / 2 = 3 base + 1 extra).
 		// - Group 1: 3 leaves (7 / 2 = 3 base).
 		leaves := createLeaves(7)
-		groups := partitionLeaves(leaves, 2)
+		groups := partitionLeaves(leaves, 2, nil)
 
 		require.Len(t, groups, 2)
 		require.Len(t, groups[0], 4)
@@ -167,7 +167,7 @@ func TestPartitionLeaves(t *testing.T) {
 
 		// 100 leaves with radix 10.
 		leaves := createLeaves(100)
-		groups := partitionLeaves(leaves, 10)
+		groups := partitionLeaves(leaves, 10, nil)
 
 		require.Len(t, groups, 10)
 
@@ -184,7 +184,7 @@ func TestPartitionLeaves(t *testing.T) {
 		t.Parallel()
 
 		leaves := createLeaves(17)
-		groups := partitionLeaves(leaves, 5)
+		groups := partitionLeaves(leaves, 5, nil)
 
 		// Count total leaves across all groups.
 		totalLeaves := 0
@@ -195,9 +195,40 @@ func TestPartitionLeaves(t *testing.T) {
 		require.Equal(t, 17, totalLeaves,
 			"all leaves should be assigned to groups")
 	})
+
+	t.Run("weighted partition prefers heavy leaf alone", func(t *testing.T) { //nolint:ll
+		t.Parallel()
+
+		// Test that weighted partitioning groups leaves by BTC amount.
+		// The heavy leaf (10000 sats) should go to its own group while
+		// the two light leaves (1000 sats each) share the other group,
+		// balancing total weight across groups.
+		leaves := []LeafDescriptor{
+			{
+				PkScript: []byte("heavy"),
+				Amount:   10_000,
+			},
+			{
+				PkScript: []byte("light1"),
+				Amount:   1000,
+			},
+			{
+				PkScript: []byte("light2"),
+				Amount:   1000,
+			},
+		}
+
+		weightFn := WeightByBtcAmount()
+
+		groups := partitionLeaves(leaves, 2, weightFn)
+
+		require.Len(t, groups, 2)
+		require.Len(t, groups[0], 1)
+		require.Len(t, groups[1], 2)
+	})
 }
 
-// TestBuildTreeBFS tests the buildTreeBFS function.
+// TestBuildTreeBFS tests the BTCTreeAssembler.BuildTree function.
 func TestBuildTreeBFS(t *testing.T) {
 	t.Parallel()
 
@@ -234,6 +265,32 @@ func TestBuildTreeBFS(t *testing.T) {
 		return privKey.PubKey()
 	}
 
+	// runBuild is a helper to build a tree using BTCTreeAssembler.
+	runBuild := func(t *testing.T, input wire.OutPoint,
+		leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
+		sweepRoot []byte, radix int,
+		weight PartitionWeightFunc) (*Node, error) {
+
+		assembler := NewTreeAssembler(TreeConfig{
+			OperatorKey:        operatorKey,
+			SweepTapscriptRoot: sweepRoot,
+			Radix:              radix,
+			WeightFn:           weight,
+		})
+
+		rootOutput := &wire.TxOut{
+			Value:    1000 * int64(len(leaves)),
+			PkScript: []byte("root"),
+		}
+
+		tree, err := assembler.BuildTree(input, rootOutput, leaves)
+		if err != nil {
+			return nil, err
+		}
+
+		return tree.Root, nil
+	}
+
 	t.Run("single leaf creates leaf node", func(t *testing.T) {
 		t.Parallel()
 
@@ -242,8 +299,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 4,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 4, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -270,8 +327,9 @@ func TestBuildTreeBFS(t *testing.T) {
 			input := createTestInput()
 			sweepRoot := make([]byte, 32)
 
-			root, err := buildTreeBFS(
-				input, leaves, operatorKey, sweepRoot, 4,
+			root, err := runBuild(
+				t, input, leaves, operatorKey, sweepRoot, 4,
+				nil,
 			)
 			require.NoError(t, err)
 			require.NotNil(t, root)
@@ -302,8 +360,9 @@ func TestBuildTreeBFS(t *testing.T) {
 			input := createTestInput()
 			sweepRoot := make([]byte, 32)
 
-			root, err := buildTreeBFS(
-				input, leaves, operatorKey, sweepRoot, 2,
+			root, err := runBuild(
+				t, input, leaves, operatorKey, sweepRoot, 2,
+				nil,
 			)
 			require.NoError(t, err)
 			require.NotNil(t, root)
@@ -358,8 +417,9 @@ func TestBuildTreeBFS(t *testing.T) {
 			input := createTestInput()
 			sweepRoot := make([]byte, 32)
 
-			root, err := buildTreeBFS(
-				input, leaves, operatorKey, sweepRoot, 4,
+			root, err := runBuild(
+				t, input, leaves, operatorKey, sweepRoot, 4,
+				nil,
 			)
 			require.NoError(t, err)
 			require.NotNil(t, root)
@@ -416,8 +476,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 4,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 4, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -448,8 +508,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 3,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 3, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -467,8 +527,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 2,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 2, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -494,8 +554,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 10,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 10, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -520,8 +580,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 4,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 4, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -548,8 +608,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 2,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 2, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -581,8 +641,8 @@ func TestBuildTreeBFS(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		root, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 4,
+		root, err := runBuild(
+			t, input, leaves, operatorKey, sweepRoot, 4, nil,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, root)
@@ -614,6 +674,33 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		}
 	}
 
+	// runBuild is a helper to build a tree using BTCTreeAssembler.
+	runBuild := func(t *testing.T, input wire.OutPoint,
+		leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
+		sweepRoot []byte, radix int) (*Node, error) {
+
+		assembler := NewTreeAssembler(TreeConfig{
+			OperatorKey:        operatorKey,
+			SweepTapscriptRoot: sweepRoot,
+			Radix:              radix,
+			// Use the default weight function.
+			WeightFn: nil,
+		})
+
+		// Create a mock root output for the assembler.
+		rootOutput := &wire.TxOut{
+			Value:    1000 * int64(len(leaves)),
+			PkScript: []byte("root"),
+		}
+
+		tree, err := assembler.BuildTree(input, rootOutput, leaves)
+		if err != nil {
+			return nil, err
+		}
+
+		return tree.Root, nil
+	}
+
 	t.Run("nil operator key fails in leaf creation", func(t *testing.T) {
 		t.Parallel()
 
@@ -634,14 +721,12 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		// creation.
 		leaves = append(leaves, leaves[0])
 
-		_, err := buildTreeBFS(
-			input, leaves, nil, sweepRoot, 4,
-		)
+		_, err := runBuild(t, input, leaves, nil, sweepRoot, 4)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "operator key cannot be nil")
 	})
 
-	t.Run("nil leaf cosigner key fails", func(t *testing.T) {
+	t.Run("nil leaf cosigner key returns error", func(t *testing.T) {
 		t.Parallel()
 
 		leaves := []LeafDescriptor{
@@ -660,9 +745,8 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		input := createTestInput()
 		sweepRoot := make([]byte, 32)
 
-		_, err := buildTreeBFS(
-			input, leaves, operatorKey, sweepRoot, 4,
-		)
+		// Nil cosigner keys should cause an error during tree building.
+		_, err := runBuild(t, input, leaves, operatorKey, sweepRoot, 4)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "cosigner key cannot be nil")
 	})
@@ -690,8 +774,8 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 
 		// Test with different radix values.
 		for _, radix := range []int{2, 3, 4, 5, 10} {
-			root, err := buildTreeBFS(
-				input, leaves, operatorKey, sweepRoot, radix,
+			root, err := runBuild(
+				t, input, leaves, operatorKey, sweepRoot, radix,
 			)
 			require.NoError(t, err)
 			require.NotNil(t, root)

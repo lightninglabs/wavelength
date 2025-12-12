@@ -40,6 +40,30 @@ func NewTree(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
 	leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
 	sweepTapscriptRoot []byte, radix int) (*Tree, error) {
 
+	return NewTreeWithConfig(
+		rootOutpoint, rootOutput, leaves, operatorKey,
+		sweepTapscriptRoot, TreeBuildConfig{
+			Radix: radix,
+		},
+	)
+}
+
+// TreeBuildConfig configures tree construction.
+type TreeBuildConfig struct {
+	// Radix is the branching factor of the tree.
+	Radix int
+
+	// WeightFunc optionally overrides how leaves are balanced into groups.
+	// When nil, leaves are distributed using WeightByBtcAmount().
+	WeightFunc PartitionWeightFunc
+}
+
+// NewTreeWithConfig constructs a transaction tree from the given leaves using
+// the two-pass approach with the provided configuration.
+func NewTreeWithConfig(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
+	leaves []LeafDescriptor, operatorKey *btcec.PublicKey,
+	sweepTapscriptRoot []byte, cfg TreeBuildConfig) (*Tree, error) {
+
 	// Validate inputs.
 	if rootOutput == nil {
 		return nil, fmt.Errorf("root output cannot be nil")
@@ -53,26 +77,20 @@ func NewTree(rootOutpoint wire.OutPoint, rootOutput *wire.TxOut,
 		return nil, fmt.Errorf("at least one leaf required")
 	}
 
-	if radix < 2 {
+	if cfg.Radix < 2 {
 		return nil, fmt.Errorf("radix must be at least 2, got %d",
-			radix)
+			cfg.Radix)
 	}
 
-	// Build the tree using BFS.
-	root, err := buildTreeBFS(
-		rootOutpoint, leaves, operatorKey,
-		sweepTapscriptRoot, radix,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build tree: %w", err)
-	}
-
-	return &Tree{
-		Root:               root,
-		BatchOutpoint:      rootOutpoint,
-		BatchOutput:        rootOutput,
+	// Use BTCTreeAssembler with the two-pass approach.
+	assembler := NewTreeAssembler(TreeConfig{
+		OperatorKey:        operatorKey,
 		SweepTapscriptRoot: sweepTapscriptRoot,
-	}, nil
+		Radix:              cfg.Radix,
+		WeightFn:           cfg.WeightFunc,
+	})
+
+	return assembler.BuildTree(rootOutpoint, rootOutput, leaves)
 }
 
 // ExtractPathForCoSigners extracts the path relevant for one or more cosigners
