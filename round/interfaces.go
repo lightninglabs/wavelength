@@ -192,14 +192,18 @@ type RoundStore interface {
 	// LookupRoundByCommitmentTx finds the round associated with a
 	// commitment transaction TXID. Used to route commitment tx
 	// confirmations to the correct round FSM.
-	LookupRoundByCommitmentTx(txid chainhash.Hash) (*Round, error)
+	LookupRoundByCommitmentTx(
+		ctx context.Context, txid chainhash.Hash,
+	) (*Round, error)
 
 	// ListActiveRounds returns all rounds that are in progress (commitment
 	// tx broadcast but not yet confirmed or expired).
-	ListActiveRounds() ([]*Round, error)
+	ListActiveRounds(ctx context.Context) ([]*Round, error)
 
 	// FinalizeRound marks a round as complete and archives it.
-	FinalizeRound(roundID string, txid chainhash.Hash) error
+	FinalizeRound(
+		ctx context.Context, roundID string, txid chainhash.Hash,
+	) error
 }
 
 // ClientVTXO represents a Virtual UTXO owned by the client, including all
@@ -243,18 +247,19 @@ type ClientVTXO struct {
 type VTXOStore interface {
 	// SaveVTXOs persists one or more VTXOs after a round confirms. Each
 	// VTXO includes its extracted tree path for unilateral exit.
-	SaveVTXOs(vtxos []*ClientVTXO) error
+	SaveVTXOs(ctx context.Context, vtxos []*ClientVTXO) error
 
 	// ListVTXOs returns all VTXOs currently owned by the client.
-	ListVTXOs() ([]*ClientVTXO, error)
+	ListVTXOs(ctx context.Context) ([]*ClientVTXO, error)
 
 	// GetVTXO retrieves a specific VTXO by its outpoint. Returns an error
 	// if not found.
-	GetVTXO(outpoint wire.OutPoint) (*ClientVTXO, error)
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*ClientVTXO, error)
 
 	// MarkVTXOSpent marks a VTXO as spent (either via OOR transaction or
 	// forfeit). This prevents double-spending.
-	MarkVTXOSpent(outpoint wire.OutPoint) error
+	MarkVTXOSpent(ctx context.Context, outpoint wire.OutPoint) error
 }
 
 // ClientWallet defines the interface for client wallet operations used by the

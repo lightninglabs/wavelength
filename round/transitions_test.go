@@ -1081,7 +1081,9 @@ func TestInputSigSentState(t *testing.T) {
 		require.Equal(t, int32(6), confirmedState.Confirmations)
 
 		h.assertOutboxLen(2)
-		h.vtxoStore.AssertCalled(t, "SaveVTXOs", mock.Anything)
+		h.vtxoStore.AssertCalled(
+			t, "SaveVTXOs", mock.Anything, mock.Anything,
+		)
 	})
 
 	t.Run("buildClientVTXOs_error", func(t *testing.T) {

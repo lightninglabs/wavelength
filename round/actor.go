@@ -289,7 +289,7 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 
 	// Load active rounds (commitment tx broadcast, not yet confirmed) and
 	// resume their FSMs.
-	activeRounds, err := a.cfg.RoundStore.ListActiveRounds()
+	activeRounds, err := a.cfg.RoundStore.ListActiveRounds(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load active rounds: %w", err)
 	}
@@ -538,13 +538,13 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 
 // onRoundComplete is called when a round finishes successfully. This removes
 // the round from active tracking and archives the round data.
-func (a *RoundClientActor) onRoundComplete(roundID string,
+func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID string,
 	txid chainhash.Hash) error {
 
 	delete(a.activeRounds, roundID)
 	delete(a.commitmentTxIndex, txid)
 
-	return a.cfg.RoundStore.FinalizeRound(roundID, txid)
+	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid)
 }
 
 // handleConfirmation processes a commitment transaction confirmation event
@@ -557,7 +557,7 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	event *ConfirmationEvent) fn.Result[ClientResp] {
 
 	// Look up the round by commitment transaction ID.
-	round, err := a.cfg.RoundStore.LookupRoundByCommitmentTx(event.Txid)
+	round, err := a.cfg.RoundStore.LookupRoundByCommitmentTx(ctx, event.Txid)
 	if err != nil {
 		// Not a commitment tx we're tracking. This shouldn't happen
 		// since we only register for commitment tx confirmations.
@@ -662,7 +662,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 		case *RoundCompletedNotification:
 			// Round FSM reached ConfirmedState. Perform actor
 			// cleanup.
-			err := a.onRoundComplete(m.RoundID, m.TxID)
+			err := a.onRoundComplete(ctx, m.RoundID, m.TxID)
 			if err != nil {
 				return fmt.Errorf("failed to complete "+
 					"round %s: %w", m.RoundID, err)

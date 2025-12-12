@@ -1021,7 +1021,7 @@ func buildClientVTXOs(intents []BoardingIntent,
 
 // ProcessEvent for InputSigSentState.
 func (s *InputSigSentState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -1051,7 +1051,7 @@ func (s *InputSigSentState) ProcessEvent(
 
 		// Persist VTXOs with their extracted tree paths for future
 		// spending.
-		if err := env.VTXOStore.SaveVTXOs(vtxos); err != nil {
+		if err := env.VTXOStore.SaveVTXOs(ctx, vtxos); err != nil {
 			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
 		}
 
