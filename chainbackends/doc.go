@@ -15,10 +15,21 @@
 // # Usage
 //
 // Backends are instantiated and passed to the ChainSource actor during
-// initialization:
+// initialization. For in-process lnd:
 //
-//	backend := chainbackends.NewLNDBackend(notifier, feeEstimator, wallet)
-//	chainSource := chainsource.NewChainSourceActor(backend, system)
+//	backend := chainbackends.NewLNDBackend(
+//		notifier, feeEstimator, broadcaster,
+//	)
+//	chainSource := chainsource.NewChainSourceActor(
+//		backend, system, ctx,
+//	)
+//
+// For remote lnd via lndclient:
+//
+//	backend := chainbackends.NewLNDBackendFromLndClient(lndServices)
+//	chainSource := chainsource.NewChainSourceActor(
+//		backend, system, ctx,
+//	)
 //
 // # Architecture
 //
