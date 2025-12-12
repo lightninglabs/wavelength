@@ -70,11 +70,38 @@ func (a *Actor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
+	case *RoundMsg:
+		return a.handleRoundEvent(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf(
 			"unknown message type: %T", m))
 	}
+}
+
+// handleRoundEvent processes RoundMsg messages by forwarding the contained
+// Event to the specified round's FSM.
+func (a *Actor) handleRoundEvent(ctx context.Context,
+	msg *RoundMsg) fn.Result[ActorResp] {
+
+	round := a.getRound(msg.RoundID)
+	if round == nil {
+		return fn.Err[ActorResp](fmt.Errorf("round %s not found",
+			msg.RoundID))
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, round.FSM, msg.Event)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing event: %w", err))
+	}
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// getRound returns the round FSM for the given round ID, or nil if not found.
+func (a *Actor) getRound(roundID RoundID) *RoundFSM {
+	return a.rounds[roundID]
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
