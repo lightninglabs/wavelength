@@ -6,9 +6,27 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// ConfActorConfig holds configuration for ConfActor.
+type ConfActorConfig struct {
+	// Backend is the blockchain backend used to monitor confirmations.
+	Backend ChainBackend
+
+	// Log is an optional logger for this actor instance. If None, the actor
+	// falls back to extracting a logger from context via LoggerFromContext,
+	// or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
+}
+
+// WithLogger returns a new config with the given logger set.
+func (c ConfActorConfig) WithLogger(log btclog.Logger) ConfActorConfig {
+	c.Log = fn.Some(log)
+	return c
+}
 
 // ConfActor is a single-subscription actor that monitors transaction
 // confirmations and delivers an event when the transaction reaches its target
@@ -18,8 +36,9 @@ import (
 // Actor mode for asynchronous event delivery. The actor exits after delivering
 // the confirmation event.
 type ConfActor struct {
-	// backend is the blockchain backend used to monitor confirmations.
-	backend ChainBackend
+	// cfg holds all actor configuration including backend and optional
+	// logger.
+	cfg ConfActorConfig
 
 	// txid is the transaction ID being monitored.
 	txid *chainhash.Hash
@@ -48,7 +67,8 @@ type ConfActor struct {
 	// registration is the backend registration for this watch.
 	registration *ConfRegistration
 
-	// ctx is the actor's context, cancelled when the actor stops.
+	// ctx is the actor's internal context for cancellation, created from
+	// context.Background() to ensure it outlives any request context.
 	//nolint:containedctx
 	ctx context.Context
 
@@ -59,16 +79,18 @@ type ConfActor struct {
 	wg sync.WaitGroup
 }
 
-// NewConfActor creates a new ConfActor instance with the given backend and
-// parent context. The actor waits for a RegisterConfRequest message to begin
-// monitoring.
-func NewConfActor(backend ChainBackend, parentCtx context.Context) *ConfActor {
-	ctx, cancel := context.WithCancel(parentCtx)
+// NewConfActor creates a new ConfActor instance with the given configuration.
+// The config must include Backend; use WithLogger() to inject a specific
+// logger.
+func NewConfActor(cfg ConfActorConfig) *ConfActor {
+	// Use background context for internal cancellation since the actor
+	// needs to outlive any request context. Logger is passed via config.
+	ctx, cancel := context.WithCancel(context.Background())
 
 	return &ConfActor{
-		backend: backend,
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:    cfg,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -128,7 +150,7 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	// Register with the backend to receive confirmation notifications. We
 	// do this before starting the goroutine so we can return an error to
 	// the caller if registration fails.
-	registration, err := a.backend.RegisterConf(
+	registration, err := a.cfg.Backend.RegisterConf(
 		a.ctx, a.txid, a.pkScript, a.targetConfs, a.heightHint,
 		a.includeBlock,
 	)

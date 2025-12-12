@@ -3,11 +3,31 @@ package chainsource
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightninglabs/darepo-client/build"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// BlockEpochConfig holds configuration for BlockEpochActor.
+type BlockEpochConfig struct {
+	// Backend is the blockchain backend used to monitor blocks.
+	Backend ChainBackend
+
+	// Log is an optional logger for this actor instance. If None, the actor
+	// falls back to extracting a logger from context via LoggerFromContext,
+	// or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
+}
+
+// WithLogger returns a new config with the given logger set.
+func (c BlockEpochConfig) WithLogger(log btclog.Logger) BlockEpochConfig {
+	c.Log = fn.Some(log)
+	return c
+}
 
 // BlockEpochActor is a single-subscription actor that monitors new blocks and
 // delivers block epoch events. Each instance serves exactly one subscription.
@@ -16,8 +36,9 @@ import (
 // iteration, and Actor mode for asynchronous event delivery to a registered
 // actor. Each actor creates its own backend registration (no sharing).
 type BlockEpochActor struct {
-	// backend is the blockchain backend used to monitor blocks.
-	backend ChainBackend
+	// cfg holds all actor configuration including backend and optional
+	// logger.
+	cfg BlockEpochConfig
 
 	// notifyActor is used in Actor mode to send events. None in Iterator
 	// mode.
@@ -30,7 +51,8 @@ type BlockEpochActor struct {
 	// registration is the backend registration for this actor.
 	registration *BlockRegistration
 
-	// ctx is the actor's context, cancelled when the actor stops.
+	// ctx is the actor's internal context for cancellation, created from
+	// context.Background() to ensure it outlives any request context.
 	//nolint:containedctx
 	ctx context.Context
 
@@ -48,18 +70,24 @@ type BlockEpochActor struct {
 }
 
 // NewBlockEpochActor creates a new BlockEpochActor instance with the given
-// backend and parent context. The actor waits for a SubscribeBlocksRequest
-// message to begin monitoring.
-func NewBlockEpochActor(backend ChainBackend,
-	parentCtx context.Context) *BlockEpochActor {
-
-	ctx, cancel := context.WithCancel(parentCtx)
+// configuration. The config must include Backend; use WithLogger() to inject
+// a specific logger.
+func NewBlockEpochActor(cfg BlockEpochConfig) *BlockEpochActor {
+	// Use background context for internal cancellation since the actor
+	// needs to outlive any request context. Logger is passed via config.
+	ctx, cancel := context.WithCancel(context.Background())
 
 	return &BlockEpochActor{
-		backend: backend,
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:    cfg,
+		ctx:    ctx,
+		cancel: cancel,
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *BlockEpochActor) logger(ctx context.Context) btclog.Logger {
+	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Receive processes incoming messages for the BlockEpochActor.
@@ -149,7 +177,7 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 	// Register with the backend to receive block notifications. We do this
 	// before starting the goroutine so we can return an error to the
 	// caller if registration fails.
-	registration, err := a.backend.RegisterBlocks(a.ctx)
+	registration, err := a.cfg.Backend.RegisterBlocks(a.ctx)
 	if err != nil {
 		return fn.Err[EpochResp](fmt.Errorf(
 			"failed to register for blocks: %w", err))
@@ -168,8 +196,12 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 func (a *BlockEpochActor) monitorBlocks() {
 	defer a.wg.Done()
 
+	log := a.logger(a.ctx)
+	log.InfoS(a.ctx, "BlockEpochActor monitoring started")
+
 	// Make sure we clean up the registration on exit.
 	defer func() {
+		log.InfoS(a.ctx, "BlockEpochActor monitoring stopped")
 		if a.registration != nil {
 			a.registration.Cancel()
 		}
@@ -179,8 +211,12 @@ func (a *BlockEpochActor) monitorBlocks() {
 		select {
 		case epoch, ok := <-a.registration.Epochs:
 			if !ok {
+				log.InfoS(a.ctx, "Block epoch channel closed")
 				return
 			}
+
+			log.InfoS(a.ctx, "Received block from backend",
+				slog.Int("height", int(epoch.Height)))
 
 			// Forward the block epoch from the backend.
 			blockEpoch := BlockEpoch{
@@ -200,6 +236,9 @@ func (a *BlockEpochActor) monitorBlocks() {
 			} else {
 				// Otherwise, this is actor mode, so we'll
 				// deliver in the block epoch via a Tell.
+				log.InfoS(a.ctx, "Forwarding block to notify actor",
+					slog.Int("height", int(blockEpoch.Height)))
+
 				notifyRef := func(
 					ref actor.TellOnlyRef[BlockEpoch],
 				) {
@@ -210,6 +249,7 @@ func (a *BlockEpochActor) monitorBlocks() {
 			}
 
 		case <-a.ctx.Done():
+			log.InfoS(a.ctx, "BlockEpochActor context cancelled")
 			return
 		}
 	}

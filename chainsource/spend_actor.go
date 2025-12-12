@@ -8,9 +8,27 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
+
+// SpendActorConfig holds configuration for SpendActor.
+type SpendActorConfig struct {
+	// Backend is the blockchain backend used to monitor spends.
+	Backend ChainBackend
+
+	// Log is an optional logger for this actor instance. If None, the actor
+	// falls back to extracting a logger from context via LoggerFromContext,
+	// or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
+}
+
+// WithLogger returns a new config with the given logger set.
+func (c SpendActorConfig) WithLogger(log btclog.Logger) SpendActorConfig {
+	c.Log = fn.Some(log)
+	return c
+}
 
 // SpendActor is a single-subscription actor that monitors outpoint spends and
 // delivers events when outputs are consumed by confirmed transactions. Each
@@ -20,8 +38,9 @@ import (
 // (exits after first event), and Actor mode for asynchronous event delivery
 // (continues monitoring for re-orgs).
 type SpendActor struct {
-	// backend is the blockchain backend used to monitor spends.
-	backend ChainBackend
+	// cfg holds all actor configuration including backend and optional
+	// logger.
+	cfg SpendActorConfig
 
 	// outpoint is the output being monitored.
 	outpoint *wire.OutPoint
@@ -43,7 +62,8 @@ type SpendActor struct {
 	// registration is the backend registration for this watch.
 	registration *SpendRegistration
 
-	// ctx is the actor's context, cancelled when the actor stops.
+	// ctx is the actor's internal context for cancellation, created from
+	// context.Background() to ensure it outlives any request context.
 	//nolint:containedctx
 	ctx context.Context
 
@@ -54,18 +74,18 @@ type SpendActor struct {
 	wg sync.WaitGroup
 }
 
-// NewSpendActor creates a new SpendActor instance with the given backend and
-// parent context. The actor waits for a RegisterSpendRequest message to begin
-// monitoring.
-func NewSpendActor(backend ChainBackend,
-	parentCtx context.Context) *SpendActor {
-
-	ctx, cancel := context.WithCancel(parentCtx)
+// NewSpendActor creates a new SpendActor instance with the given configuration.
+// The config must include Backend; use WithLogger() to inject a specific
+// logger.
+func NewSpendActor(cfg SpendActorConfig) *SpendActor {
+	// Use background context for internal cancellation since the actor
+	// needs to outlive any request context. Logger is passed via config.
+	ctx, cancel := context.WithCancel(context.Background())
 
 	return &SpendActor{
-		backend: backend,
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:    cfg,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -121,7 +141,7 @@ func (a *SpendActor) handleRegisterSpend(actorCtx context.Context,
 	// Register with the backend to receive spend notifications. We do this
 	// before starting the goroutine so we can return an error to the
 	// caller if registration fails.
-	registration, err := a.backend.RegisterSpend(
+	registration, err := a.cfg.Backend.RegisterSpend(
 		a.ctx, a.outpoint, a.pkScript, a.heightHint,
 	)
 	if err != nil {

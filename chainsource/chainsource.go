@@ -6,8 +6,10 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightninglabs/darepo-client/build"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 const (
@@ -17,6 +19,27 @@ const (
 	epochChannelSize = 10
 )
 
+// ChainSourceConfig holds configuration for ChainSourceActor.
+type ChainSourceConfig struct {
+	// Backend is the blockchain backend used for all chain operations.
+	Backend ChainBackend
+
+	// System is the actor system for spawning sub-actors.
+	System *actor.ActorSystem
+
+	// Log is an optional logger for this actor instance. If None, the actor
+	// falls back to extracting a logger from context via LoggerFromContext,
+	// or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
+}
+
+// WithLogger returns a new config with the given logger set.
+func (c ChainSourceConfig) WithLogger(log btclog.Logger) ChainSourceConfig {
+	c.Log = fn.Some(log)
+
+	return c
+}
+
 // ChainSourceActor is a stateless factory actor that provides blockchain
 // interface functionality. It handles direct queries (fee estimation, best
 // height, mempool testing, transaction broadcasting) and spawns dedicated
@@ -25,22 +48,24 @@ const (
 // Each monitoring request spawns a new dedicated actor with a unique service
 // key, enabling deterministic cancellation and eliminating shared state.
 type ChainSourceActor struct {
-	// backend is the blockchain backend used for all chain operations.
-	backend ChainBackend
-
-	// system is the actor system for spawning sub-actors.
-	system *actor.ActorSystem
+	// cfg holds all actor configuration including backend, system, and
+	// optional logger.
+	cfg ChainSourceConfig
 }
 
 // NewChainSourceActor creates a new ChainSourceActor instance with the given
-// backend and actor system.
-func NewChainSourceActor(backend ChainBackend,
-	system *actor.ActorSystem) *ChainSourceActor {
-
+// configuration. The config must include Backend and System; use WithLogger()
+// to inject a specific logger.
+func NewChainSourceActor(cfg ChainSourceConfig) *ChainSourceActor {
 	return &ChainSourceActor{
-		backend: backend,
-		system:  system,
+		cfg: cfg,
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *ChainSourceActor) logger(ctx context.Context) btclog.Logger {
+	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Receive processes incoming messages for the ChainSourceActor. This handles
@@ -90,7 +115,7 @@ func (a *ChainSourceActor) Receive(actorCtx context.Context,
 func (a *ChainSourceActor) handleFeeEstimate(ctx context.Context,
 	req *FeeEstimateRequest) fn.Result[ChainSourceResp] {
 
-	feeRate, err := a.backend.EstimateFee(ctx, req.TargetConf)
+	feeRate, err := a.cfg.Backend.EstimateFee(ctx, req.TargetConf)
 	if err != nil {
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to "+
 			"estimate fee: %w", err))
@@ -106,7 +131,7 @@ func (a *ChainSourceActor) handleFeeEstimate(ctx context.Context,
 func (a *ChainSourceActor) handleBestHeight(ctx context.Context,
 	req *BestHeightRequest) fn.Result[ChainSourceResp] {
 
-	height, hash, err := a.backend.BestBlock(ctx)
+	height, hash, err := a.cfg.Backend.BestBlock(ctx)
 	if err != nil {
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to get "+
 			"best height: %w", err))
@@ -124,7 +149,7 @@ func (a *ChainSourceActor) handleBestHeight(ctx context.Context,
 func (a *ChainSourceActor) handleTestMempoolAccept(ctx context.Context,
 	req *TestMempoolAcceptRequest) fn.Result[ChainSourceResp] {
 
-	accepted, reason, err := a.backend.TestMempoolAccept(ctx, req.Tx)
+	accepted, reason, err := a.cfg.Backend.TestMempoolAccept(ctx, req.Tx)
 	if err != nil {
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to test "+
 			"mempool accept: %w", err))
@@ -141,7 +166,7 @@ func (a *ChainSourceActor) handleTestMempoolAccept(ctx context.Context,
 func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 	req *BroadcastTxRequest) fn.Result[ChainSourceResp] {
 
-	err := a.backend.BroadcastTx(ctx, req.Tx, req.Label)
+	err := a.cfg.Backend.BroadcastTx(ctx, req.Tx, req.Label)
 	if err != nil {
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to "+
 			"broadcast transaction: %w", err))
@@ -175,8 +200,12 @@ func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 		req.CallerID, keyPart, req.TargetConfs,
 	)
 
-	confActor := NewConfActor(a.backend, context.Background())
-	actorRef := serviceKey.Spawn(a.system, actorID, confActor)
+	confCfg := ConfActorConfig{
+		Backend: a.cfg.Backend,
+		Log:     fn.Some(a.logger(ctx)),
+	}
+	confActor := NewConfActor(confCfg)
+	actorRef := serviceKey.Spawn(a.cfg.System, actorID, confActor)
 
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
@@ -204,8 +233,12 @@ func (a *ChainSourceActor) handleRegisterSpend(ctx context.Context,
 		req.CallerID, keyPart,
 	)
 
-	spendActor := NewSpendActor(a.backend, context.Background())
-	actorRef := serviceKey.Spawn(a.system, actorID, spendActor)
+	spendCfg := SpendActorConfig{
+		Backend: a.cfg.Backend,
+		Log:     fn.Some(a.logger(ctx)),
+	}
+	spendActor := NewSpendActor(spendCfg)
+	actorRef := serviceKey.Spawn(a.cfg.System, actorID, spendActor)
 
 	// We block on this as we want to know if the subscription could be
 	// created or not, so we can notify the caller.
@@ -222,8 +255,13 @@ func (a *ChainSourceActor) handleSubscribeBlocks(ctx context.Context,
 	actorID := fmt.Sprintf("epoch.%s", req.CallerID)
 	serviceKey := epochActorServiceKey(req.CallerID)
 
-	epochActor := NewBlockEpochActor(a.backend, context.Background())
-	actorRef := serviceKey.Spawn(a.system, actorID, epochActor)
+	// Pass the backend and logger to the sub-actor via config.
+	epochCfg := BlockEpochConfig{
+		Backend: a.cfg.Backend,
+		Log:     fn.Some(a.logger(ctx)),
+	}
+	epochActor := NewBlockEpochActor(epochCfg)
+	actorRef := serviceKey.Spawn(a.cfg.System, actorID, epochActor)
 
 	return convertSubActorResult(
 		actorRef.Ask(ctx, req).Await(ctx), "subscribe blocks",
@@ -297,15 +335,16 @@ func (a *ChainSourceActor) handleUnsubscribeBlocks(ctx context.Context,
 func unregisterByServiceKey[Req, Resp actor.Message](
 	a *ChainSourceActor, serviceKey actor.ServiceKey[Req, Resp]) {
 
-	refs := actor.FindInReceptionist(a.system.Receptionist(), serviceKey)
+	receptionist := a.cfg.System.Receptionist()
+	refs := actor.FindInReceptionist(receptionist, serviceKey)
 	for _, ref := range refs {
 		// Unregister from receptionist.
-		serviceKey.Unregister(a.system, ref)
+		serviceKey.Unregister(a.cfg.System, ref)
 
 		// Stop the actor to prevent goroutine leak. The actor continues
 		// running even after being unregistered from the receptionist,
 		// so we must explicitly stop it.
-		a.system.StopAndRemoveActor(ref.ID())
+		a.cfg.System.StopAndRemoveActor(ref.ID())
 	}
 }
 

@@ -18,7 +18,7 @@ func TestConfActorValidationErrors(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	testCases := []struct {
@@ -66,7 +66,7 @@ func TestSpendActorValidationErrors(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	testCases := []struct {
@@ -163,7 +163,10 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(system, "test-chainsource", chainSource)
 
 	ctx := t.Context()
@@ -210,7 +213,7 @@ func TestConfActorBackendError(t *testing.T) {
 	testErr := errors.New("backend error")
 	backend := &errorBackend{err: testErr}
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	result := confActor.Receive(ctx, &RegisterConfRequest{
@@ -236,7 +239,7 @@ func TestSpendActorBackendError(t *testing.T) {
 	testErr := errors.New("backend error")
 	backend := &errorBackend{err: testErr}
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	result := spendActor.Receive(ctx, &RegisterSpendRequest{
@@ -263,7 +266,7 @@ func TestBlockEpochActorBackendError(t *testing.T) {
 	testErr := errors.New("backend error")
 	backend := &errorBackend{err: testErr}
 	ctx := t.Context()
-	epochActor := NewBlockEpochActor(backend, ctx)
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor.Stop()
 
 	result := epochActor.Receive(ctx, &SubscribeBlocksRequest{
@@ -289,7 +292,7 @@ func TestConfActorDuplicateSubscription(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	result1 := confActor.Receive(ctx, &RegisterConfRequest{
@@ -321,7 +324,7 @@ func TestSpendActorDuplicateSubscription(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	result1 := spendActor.Receive(ctx, &RegisterSpendRequest{
@@ -351,7 +354,7 @@ func TestBlockEpochActorDuplicateSubscription(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	epochActor := NewBlockEpochActor(backend, ctx)
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor.Stop()
 
 	result1 := epochActor.Receive(ctx, &SubscribeBlocksRequest{
