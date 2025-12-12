@@ -3,11 +3,14 @@ package rounds
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -19,6 +22,14 @@ type ActorConfig struct {
 	// ClientsConn is a reference to the ClientsConnectionActor for sending
 	// messages to registered clients.
 	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
+
+	// TimeoutActor is a reference to the timeout scheduling actor.
+	TimeoutActor actor.TellOnlyRef[timeout.Msg]
+
+	// SelfRef is a reference to this actor for receiving asynchronous
+	// notifications (e.g., timeout expirations). The actor uses this to
+	// create mapped references for callback registration.
+	SelfRef actor.TellOnlyRef[ActorMsg]
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -38,6 +49,31 @@ type Actor struct {
 	rounds map[RoundID]*RoundFSM
 
 	log btclog.Logger
+}
+
+// makeTimeoutID creates a composite timeout ID from a round ID and phase.
+// The format is "roundID:phase" which allows the actor to identify both which
+// round the timeout belongs to and which phase scheduled it.
+func makeTimeoutID(roundID RoundID, phase TimeoutPhase) timeout.ID {
+	return timeout.ID(fmt.Sprintf("%s:%s", roundID, phase))
+}
+
+// parseTimeoutID extracts the round ID and phase from a composite timeout ID.
+// Returns an error if the ID format is invalid.
+func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
+	parts := strings.SplitN(string(id), ":", 2)
+	if len(parts) != 2 {
+		return RoundID{}, "", fmt.Errorf("invalid timeout ID "+
+			"format: %s", id)
+	}
+
+	roundUUID, err := uuid.Parse(parts[0])
+	if err != nil {
+		return RoundID{}, "", fmt.Errorf("invalid round ID in "+
+			"timeout ID: %w", err)
+	}
+
+	return RoundID(roundUUID), TimeoutPhase(parts[1]), nil
 }
 
 // NewActor creates a new server rounds actor with the provided configuration.
@@ -76,6 +112,9 @@ func (a *Actor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
+	case *TimeoutMsg:
+		return a.handleTimeout(ctx, m)
+
 	case *RoundMsg:
 		return a.handleRoundEvent(ctx, m)
 
@@ -146,6 +185,43 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			}
 			a.cfg.ClientsConn.Tell(ctx, sendReq)
 
+		case *StartTimeoutReq:
+			// Create composite timeout ID that includes the phase.
+			// This allows us to identify which state scheduled the
+			// timeout when it expires.
+			compositeID := makeTimeoutID(m.RoundID, m.Phase)
+
+			// MapTimeoutExpired creates a callback that converts
+			// timeout.ExpiredMsg to our TimeoutMsg. The phase is
+			// encoded in the composite ID and will be parsed by
+			// handleTimeout.
+			callbackRef := timeout.MapTimeoutExpired(
+				a.cfg.SelfRef,
+				func(expired timeout.ExpiredMsg) ActorMsg {
+					return &TimeoutMsg{
+						TimeoutID: expired.ID,
+					}
+				},
+			)
+
+			// Send schedule request to timeout actor with
+			// composite ID.
+			req := &timeout.ScheduleTimeoutRequest{
+				ID:       compositeID,
+				Duration: m.Duration,
+				Callback: callbackRef,
+			}
+			a.cfg.TimeoutActor.Tell(ctx, req)
+
+		case *CancelTimeoutReq:
+			// Cancel timeout using composite ID constructed from
+			// round ID and phase.
+			compositeID := makeTimeoutID(m.RoundID, m.Phase)
+			cancelReq := &timeout.CancelTimeoutRequest{
+				ID: compositeID,
+			}
+			a.cfg.TimeoutActor.Tell(ctx, cancelReq)
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
@@ -184,4 +260,55 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		FSM:     &fsm,
 		RoundID: roundID,
 	}, nil
+}
+
+// handleTimeout processes a timeout message by parsing the composite timeout
+// ID to extract the round ID and phase, then sending the appropriate
+// phase-specific timeout event to the round's FSM.
+func (a *Actor) handleTimeout(ctx context.Context,
+	msg *TimeoutMsg) fn.Result[ActorResp] {
+
+	// Parse the composite timeout ID to get round ID and phase.
+	roundID, phase, err := parseTimeoutID(msg.TimeoutID)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to parse timeout ID", err,
+			"timeout_id", string(msg.TimeoutID))
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	// Find the round for this timeout.
+	round := a.getRound(roundID)
+	if round == nil {
+		// Stale timeout for unknown round, ignore.
+		a.log.DebugS(ctx, "Ignoring timeout for unknown round",
+			"round_id", roundID,
+			"phase", phase)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	// Create the appropriate phase-specific timeout event.
+	var timeoutEvent Event
+	switch phase {
+	case TimeoutPhaseRegistration:
+		timeoutEvent = &RegistrationTimeoutEvent{}
+
+	default:
+		// Unknown phase - log warning and ignore.
+		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,
+			"round_id", roundID,
+			"phase", phase)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	// Send the phase-specific timeout event to the FSM.
+	err = a.askEventAndProcessOutbox(ctx, round.FSM, timeoutEvent)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing %s timeout: %w", phase, err))
+	}
+
+	return fn.Ok[ActorResp](nil)
 }
