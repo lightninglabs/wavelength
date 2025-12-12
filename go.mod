@@ -36,7 +36,7 @@ require (
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/btcsuite/btcd v0.25.0 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.3.5 // indirect
+	github.com/btcsuite/btcd/btcec/v2 v2.3.6 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.10 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/btcsuite/btcd/v2transport v1.0.1 // indirect
@@ -103,12 +103,12 @@ require (
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11 // indirect
 	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9 // indirect
-	github.com/lightningnetwork/lnd v0.20.0-beta.rc1 // indirect
+	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f // indirect
 	github.com/lightningnetwork/lnd/clock v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/sqldb v1.0.11 // indirect
+	github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tlv v1.3.2 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect
