@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -13,6 +15,10 @@ import (
 type ActorConfig struct {
 	// Logger is used for logging.
 	Logger btclog.Logger
+
+	// ClientsConn is a reference to the ClientsConnectionActor for sending
+	// messages to registered clients.
+	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -132,6 +138,14 @@ func (a *Actor) askEventAndProcessOutbox(ctx context.Context, fsm *StateMachine,
 func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 	for _, msg := range outbox {
 		switch m := msg.(type) {
+		// Check if this message should be sent to client(s). All
+		// client-bound messages implement the ClientMessage interface.
+		case clientconn.ClientMessage:
+			sendReq := &clientconn.SendServerEventRequest{
+				Message: m,
+			}
+			a.cfg.ClientsConn.Tell(ctx, sendReq)
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
