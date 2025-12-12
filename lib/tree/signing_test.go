@@ -240,16 +240,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		// Create a simple transaction.
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		// Create fetcher.
 		prevOut := &wire.TxOut{Value: 2000}
@@ -257,15 +249,14 @@ func TestTxSignerSession(t *testing.T) {
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, session)
 
 		// Should be able to get nonce.
-		nonce, err := session.GetNonce()
-		require.NoError(t, err)
+		nonce := session.GetNonce()
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
 
@@ -282,29 +273,21 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
 		// Get own nonce.
-		ownNonce, err := session.GetNonce()
-		require.NoError(t, err)
+		ownNonce := session.GetNonce()
 
 		// Create other participant's nonce (must be valid EC point).
 		otherPrivKey, _ := createTestKey(t)
@@ -338,15 +321,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey1, pubKey2}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
@@ -354,22 +330,19 @@ func TestTxSignerSession(t *testing.T) {
 		)
 
 		// Create sessions for both signers.
-		session1, err := NewTxSignerSession(
-			signer1, sweepRoot, cosigners, keyDesc1, tx, fetcher,
+		session1, err := node.NewTxSignerSession(
+			signer1, sweepRoot, keyDesc1, fetcher,
 		)
 		require.NoError(t, err)
 
-		session2, err := NewTxSignerSession(
-			signer2, sweepRoot, cosigners, keyDesc2, tx, fetcher,
+		session2, err := node.NewTxSignerSession(
+			signer2, sweepRoot, keyDesc2, fetcher,
 		)
 		require.NoError(t, err)
 
 		// Exchange nonces.
-		nonce1, err := session1.GetNonce()
-		require.NoError(t, err)
-
-		nonce2, err := session2.GetNonce()
-		require.NoError(t, err)
+		nonce1 := session1.GetNonce()
+		nonce2 := session2.GetNonce()
 
 		// Aggregate nonces.
 		aggNonce, err := musig2.AggregateNonces([][66]byte{
@@ -408,15 +381,8 @@ func TestTxSignerSession(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000, PkScript: []byte("out")})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{
 			Value:    2000,
@@ -426,9 +392,13 @@ func TestTxSignerSession(t *testing.T) {
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		session, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
+		require.NoError(t, err)
+
+		// Get the tx that the node generates internally.
+		tx, err := node.ToTx()
 		require.NoError(t, err)
 
 		// Calculate expected signature hash manually.
@@ -554,13 +524,12 @@ func TestSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get nonces.
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 1)
 
 		// Verify nonce exists for the leaf tx.
 		leafTXID, _ := leaf.TXID()
-		nonce, exists := nonces[leafTXID.String()]
+		nonce, exists := nonces[leafTXID]
 		require.True(t, exists)
 		require.NotEqual(t, Musig2PubNonce{}, nonce)
 	})
@@ -591,8 +560,7 @@ func TestSignerSession(t *testing.T) {
 			require.NoError(t, err)
 
 			// Get nonces from this session.
-			nonces, err := session.GetNonces()
-			require.NoError(t, err)
+			nonces := session.GetNonces()
 
 			// Create other participant's nonce (must be valid EC
 			// point).
@@ -605,13 +573,13 @@ func TestSignerSession(t *testing.T) {
 			// Aggregate nonces and register for all txs.
 			leafTXID, _ := leaf.TXID()
 			aggNonce, err := musig2.AggregateNonces([][66]byte{
-				nonces[leafTXID.String()],
+				nonces[leafTXID],
 				otherNonces.PubNonce,
 			})
 			require.NoError(t, err)
 
-			aggNonceSet := map[string]Musig2PubNonce{
-				leafTXID.String(): aggNonce,
+			aggNonceSet := map[TxID]Musig2PubNonce{
+				leafTXID: aggNonce,
 			}
 
 			err = session.RegisterAggNonces(aggNonceSet)
@@ -652,28 +620,24 @@ func TestSignerSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Exchange nonces.
-		nonces1, err := session1.GetNonces()
-		require.NoError(t, err)
-
-		nonces2, err := session2.GetNonces()
-		require.NoError(t, err)
+		nonces1 := session1.GetNonces()
+		nonces2 := session2.GetNonces()
 
 		// Aggregate and register nonces.
 		leafTXID, _ := leaf.TXID()
-		txidStr := leafTXID.String()
 
 		aggNonce, err := musig2.AggregateNonces([][66]byte{
-			nonces1[txidStr], nonces2[txidStr],
+			nonces1[leafTXID], nonces2[leafTXID],
 		})
 		require.NoError(t, err)
 
-		err = session1.RegisterAggNonces(map[string]Musig2PubNonce{
-			txidStr: aggNonce,
+		err = session1.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			leafTXID: aggNonce,
 		})
 		require.NoError(t, err)
 
-		err = session2.RegisterAggNonces(map[string]Musig2PubNonce{
-			txidStr: aggNonce,
+		err = session2.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			leafTXID: aggNonce,
 		})
 		require.NoError(t, err)
 
@@ -681,12 +645,12 @@ func TestSignerSession(t *testing.T) {
 		sigs1, err := session1.Signatures(true)
 		require.NoError(t, err)
 		require.Len(t, sigs1, 1)
-		require.NotNil(t, sigs1[txidStr])
+		require.NotNil(t, sigs1[leafTXID])
 
 		sigs2, err := session2.Signatures(true)
 		require.NoError(t, err)
 		require.Len(t, sigs2, 1)
-		require.NotNil(t, sigs2[txidStr])
+		require.NotNil(t, sigs2[leafTXID])
 	})
 
 	t.Run("RegisterAggNonces fails if tx not found", func(t *testing.T) {
@@ -712,8 +676,9 @@ func TestSignerSession(t *testing.T) {
 
 		// Register aggregated nonce for non-existent tx.
 		var nonce Musig2PubNonce
-		err = session.RegisterAggNonces(map[string]Musig2PubNonce{
-			"non_existent_txid": nonce,
+		nonExistentTxID := chainhash.HashH([]byte("non_existent"))
+		err = session.RegisterAggNonces(map[TxID]Musig2PubNonce{
+			nonExistentTxID: nonce,
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "aggregated nonce for tx")
@@ -775,16 +740,15 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		require.Len(t, session.txs, 2)
 
 		// Get nonces for all txs.
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 2)
 
 		// Should have nonce for root and leaf1.
 		rootTx, _ := root.ToTx()
 		leaf1Tx, _ := leaf1.ToTx()
 
-		_, hasRoot := nonces[rootTx.TxHash().String()]
-		_, hasLeaf1 := nonces[leaf1Tx.TxHash().String()]
+		_, hasRoot := nonces[rootTx.TxHash()]
+		_, hasLeaf1 := nonces[leaf1Tx.TxHash()]
 
 		require.True(t, hasRoot)
 		require.True(t, hasLeaf1)
@@ -814,12 +778,11 @@ func TestSignerSessionMultiTx(t *testing.T) {
 		// Should have exactly 1 tx (the leaf).
 		require.Len(t, session.txs, 1)
 
-		nonces, err := session.GetNonces()
-		require.NoError(t, err)
+		nonces := session.GetNonces()
 		require.Len(t, nonces, 1)
 
 		leafTXID, _ := leaf.TXID()
-		_, exists := nonces[leafTXID.String()]
+		_, exists := nonces[leafTXID]
 		require.True(t, exists)
 	})
 }
@@ -850,36 +813,29 @@ func TestTxSignerSessionSecurityNote(t *testing.T) {
 		cosigners := []*btcec.PublicKey{pubKey, otherKey}
 		sweepRoot := make([]byte, 32)
 
-		tx := wire.NewMsgTx(3)
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("prev")),
-				Index: 0,
-			},
-			Sequence: wire.MaxTxInSequenceNum,
-		})
-		tx.AddTxOut(&wire.TxOut{Value: 1000})
+		// Create a node with the cosigners.
+		node := createSimpleLeaf("test", 1000, cosigners)
 
 		prevOut := &wire.TxOut{Value: 2000}
 		fetcher := txscript.NewCannedPrevOutputFetcher(
 			prevOut.PkScript, prevOut.Value,
 		)
 
-		// Create two sessions for same tx (in real usage this is
+		// Create two sessions for same node (in real usage this is
 		// unsafe!).
-		session1, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session1, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
-		session2, err := NewTxSignerSession(
-			signer, sweepRoot, cosigners, keyDesc, tx, fetcher,
+		session2, err := node.NewTxSignerSession(
+			signer, sweepRoot, keyDesc, fetcher,
 		)
 		require.NoError(t, err)
 
 		// Nonces should be different (proves fresh generation).
-		nonce1, _ := session1.GetNonce()
-		nonce2, _ := session2.GetNonce()
+		nonce1 := session1.GetNonce()
+		nonce2 := session2.GetNonce()
 
 		require.NotEqual(t, nonce1, nonce2,
 			"Sessions should generate unique nonces")
@@ -962,23 +918,19 @@ func TestFullSigningFlow(t *testing.T) {
 			require.NoError(t, err)
 
 			// Phase 1: Exchange nonces.
-			nonces1, err := session1.GetNonces()
-			require.NoError(t, err)
-
-			nonces2, err := session2.GetNonces()
-			require.NoError(t, err)
+			nonces1 := session1.GetNonces()
+			nonces2 := session2.GetNonces()
 
 			leafTXID, _ := leaf.TXID()
-			txidStr := leafTXID.String()
 
 			// Phase 2: Aggregate and register nonces.
 			aggNonce, err := musig2.AggregateNonces([][66]byte{
-				nonces1[txidStr], nonces2[txidStr],
+				nonces1[leafTXID], nonces2[leafTXID],
 			})
 			require.NoError(t, err)
 
-			aggNonceSet := map[string]Musig2PubNonce{
-				txidStr: aggNonce,
+			aggNonceSet := map[TxID]Musig2PubNonce{
+				leafTXID: aggNonce,
 			}
 			err = session1.RegisterAggNonces(aggNonceSet)
 			require.NoError(t, err)
@@ -990,12 +942,12 @@ func TestFullSigningFlow(t *testing.T) {
 			partialSigs1, err := session1.Signatures(true)
 			require.NoError(t, err)
 			require.Len(t, partialSigs1, 1)
-			require.NotNil(t, partialSigs1[txidStr])
+			require.NotNil(t, partialSigs1[leafTXID])
 
 			partialSigs2, err := session2.Signatures(true)
 			require.NoError(t, err)
 			require.Len(t, partialSigs2, 1)
-			require.NotNil(t, partialSigs2[txidStr])
+			require.NotNil(t, partialSigs2[leafTXID])
 
 			// Note: In production, a coordinator would combine
 			// these partial signatures. For this test, we verify
@@ -1078,16 +1030,14 @@ func TestFullSigningFlow(t *testing.T) {
 			require.Len(t, session2.txs, 3)
 
 			// Exchange nonces.
-			nonces1, err := session1.GetNonces()
-			require.NoError(t, err)
+			nonces1 := session1.GetNonces()
 			require.Len(t, nonces1, 3)
 
-			nonces2, err := session2.GetNonces()
-			require.NoError(t, err)
+			nonces2 := session2.GetNonces()
 			require.Len(t, nonces2, 3)
 
 			// Aggregate nonces for all 3 transactions.
-			aggNonceSet := make(map[string]Musig2PubNonce)
+			aggNonceSet := make(map[TxID]Musig2PubNonce)
 			for txid := range nonces1 {
 				aggNonce, err := musig2.AggregateNonces(
 					[][66]byte{
