@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -16,12 +18,26 @@ import (
 
 // ActorConfig contains the configuration parameters for the rounds actor.
 type ActorConfig struct {
+	// ChainParams are the Bitcoin network parameters.
+	ChainParams *chaincfg.Params
+
 	// Logger is used for logging.
 	Logger btclog.Logger
+
+	// Terms are the operator terms for the round.
+	Terms *batch.Terms
 
 	// ClientsConn is a reference to the ClientsConnectionActor for sending
 	// messages to registered clients.
 	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
+
+	// BoardingInputLocker provides global locking of boarding inputs
+	// across concurrent rounds.
+	BoardingInputLocker BoardingInputLocker
+
+	// ChainSource provides access to on-chain data. If not set, the FSM
+	// will not be able to validate UTXOs.
+	ChainSource ChainSource
 
 	// TimeoutActor is a reference to the timeout scheduling actor.
 	TimeoutActor actor.TellOnlyRef[timeout.Msg]
@@ -112,6 +128,9 @@ func (a *Actor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
+	case *JoinRoundRequest:
+		return a.handleJoinRoundRequest(ctx, m)
+
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
 
@@ -222,6 +241,22 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			}
 			a.cfg.TimeoutActor.Tell(ctx, cancelReq)
 
+		case *RoundSealedReq:
+			// Round has been sealed - create a new round for new
+			// registrations.
+			newRound, err := a.newRoundFSM(ctx)
+			if err != nil {
+				return fmt.Errorf(
+					"failed to create new round: %w", err)
+			}
+
+			a.currentRound = newRound
+			a.rounds[newRound.RoundID] = newRound
+
+			a.log.InfoS(ctx, "Created new round after sealing",
+				"sealed_round", m.SealedRoundID,
+				"new_round", newRound.RoundID)
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
@@ -244,8 +279,12 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
 
 	env := &Environment{
-		RoundID: roundID,
-		Log:     fsmLogger,
+		RoundID:             roundID,
+		Log:                 fsmLogger,
+		ChainParams:         a.cfg.ChainParams,
+		BoardingInputLocker: a.cfg.BoardingInputLocker,
+		ChainSource:         a.cfg.ChainSource,
+		Terms:               a.cfg.Terms,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -260,6 +299,26 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		FSM:     &fsm,
 		RoundID: roundID,
 	}, nil
+}
+
+// handleJoinRoundRequest processes a JoinRoundRequest message by forwarding it
+// to the current round FSM.
+func (a *Actor) handleJoinRoundRequest(ctx context.Context,
+	msg *JoinRoundRequest) fn.Result[ActorResp] {
+
+	// Convert the actor message to an FSM event.
+	joinEvent := &ClientJoinRequestEvent{
+		ClientID: msg.ClientID,
+		Request:  msg.Request,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, a.currentRound.FSM, joinEvent)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing join request: %w", err))
+	}
+
+	return fn.Ok[ActorResp](nil)
 }
 
 // handleTimeout processes a timeout message by parsing the composite timeout

@@ -2,6 +2,8 @@ package rounds
 
 import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
 )
 
@@ -63,3 +65,23 @@ func (m *RoundMsg) MessageType() string {
 
 // actorMsgSealed marks this message as part of the ActorMsg sealed interface.
 func (m *RoundMsg) actorMsgSealed() {}
+
+// JoinRoundRequest is sent by the RPC layer when a client wants to join a
+// round.
+type JoinRoundRequest struct {
+	actor.BaseMessage
+
+	// ClientID is the unique identifier for the client connection.
+	ClientID clientconn.ClientID
+
+	// Request contains the client's join round parameters.
+	Request *types.JoinRoundRequest
+}
+
+// MessageType returns the type name of this message.
+func (m *JoinRoundRequest) MessageType() string {
+	return "JoinRoundRequest"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *JoinRoundRequest) actorMsgSealed() {}

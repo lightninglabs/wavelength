@@ -66,6 +66,7 @@ Messages emitted by the FSM for the actor to process:
 | `ClientErrorResp`       | Send error response to client with error message.                     |
 | `LockBoardingInputsReq` | Request actor to lock boarding inputs for this round.                 |
 | `StartTimeoutReq`       | Request actor to start a phase timeout.                               |
+| `CancelTimeoutReq`      | Request actor to cancel a pending phase timeout.                      |
 | `RoundSealedReq`        | Notify actor that round is sealed (create new round for new clients). |
 
 ## Transition Details
@@ -106,10 +107,31 @@ BuildBatchTxEvent:
 
 ## Actor Integration
 
-The FSM is driven by the `RoundActor` which:
+The FSM is driven by the `Actor` which:
 
 1. Creates a new round FSM in `CreatedState`
 2. Routes client messages as `ClientJoinRequestEvent`
 3. Processes outbox messages (send responses, lock inputs, manage timeouts)
 4. Sends timeout events when timers expire
 5. Creates new rounds when current round is sealed
+
+### Actor Messages
+
+Messages that can be sent to the rounds actor:
+
+| Message            | Source        | Description                                              |
+|--------------------|---------------|----------------------------------------------------------|
+| `JoinRoundRequest` | RPC layer     | Client wants to join the current round.                  |
+| `TimeoutMsg`       | Timeout actor | A scheduled timeout has expired (contains composite ID). |
+| `RoundMsg`         | Internal      | Wrapper to route an FSM event to a specific round by ID. |
+
+### Timeout Management
+
+Timeouts use composite IDs in the format `roundID:phase` to identify both the
+round and the phase that scheduled the timeout. When a timeout expires, the
+actor parses this ID to route the appropriate phase-specific event (e.g.,
+`RegistrationTimeoutEvent`) to the correct round's FSM.
+
+| Phase          | Timeout Event              | Description                          |
+|----------------|----------------------------|--------------------------------------|
+| `registration` | `RegistrationTimeoutEvent` | Registration phase timer expired.    |
