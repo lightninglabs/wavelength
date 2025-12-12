@@ -3,6 +3,7 @@
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
+.PHONY: systest systest-verbose
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -278,6 +279,14 @@ unit-cover: #? Run unit tests with coverage
 unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
+
+systest: #? Run system integration tests (requires Docker for LND/bitcoind)
+	@$(call print, "Running system integration tests.")
+	$(GOTEST) -tags systest -v ./systest/... -timeout 10m
+
+systest-verbose: #? Run system integration tests with harness stdout logging
+	@$(call print, "Running system integration tests with verbose logging.")
+	$(GOTEST) -tags systest -v ./systest/... -timeout 10m -harness.logstdout
 
 # ============
 # RPC GENERATION
