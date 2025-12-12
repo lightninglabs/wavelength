@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -21,6 +22,15 @@ type Actor struct {
 	// cfg contains all the configuration for this actor.
 	cfg *ActorConfig
 
+	// currentRound is the current live round FSM instance managed by the
+	// actor. This is the round that is actively accepting new registrations.
+	currentRound *RoundFSM
+
+	// rounds is a map of all rounds being tracked by the actor, keyed by
+	// round ID. This includes the current round and any sealed rounds that
+	// are still being processed.
+	rounds map[RoundID]*RoundFSM
+
 	log btclog.Logger
 }
 
@@ -30,8 +40,9 @@ type Actor struct {
 // registrations.
 func NewActor(cfg *ActorConfig) fn.Result[*Actor] {
 	return fn.Ok(&Actor{
-		cfg: cfg,
-		log: cfg.Logger,
+		cfg:    cfg,
+		log:    cfg.Logger,
+		rounds: make(map[RoundID]*RoundFSM),
 	})
 }
 
@@ -39,7 +50,17 @@ func NewActor(cfg *ActorConfig) fn.Result[*Actor] {
 // registrations. In the future, it will also resume any existing rounds from
 // storage.
 func (a *Actor) Start(ctx context.Context) error {
-	// TODO: Create initial round FSM.
+	// TODO(elle): Load previous rounds from storage that still need to be
+	// managed (e.g., rounds awaiting confirmation).
+
+	round, err := a.newRoundFSM(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to create new round FSM: %w", err)
+	}
+
+	a.currentRound = round
+	a.rounds[round.RoundID] = round
+
 	return nil
 }
 
@@ -92,4 +113,30 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 	}
 
 	return nil
+}
+
+// newRoundFSM creates and starts a new round FSM instance with a unique round
+// ID and returns it.
+func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
+	roundID, err := NewRoundID()
+	if err != nil {
+		return nil, fmt.Errorf("unable to generate round ID: %w", err)
+	}
+
+	env := &Environment{
+		RoundID: roundID,
+	}
+
+	fsmCfg := StateMachineCfg{
+		InitialState: &CreatedState{},
+		Env:          env,
+		Logger:       a.log.WithPrefix(roundID.LogPrefix()),
+	}
+	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm.Start(ctx)
+
+	return &RoundFSM{
+		FSM:     &fsm,
+		RoundID: roundID,
+	}, nil
 }

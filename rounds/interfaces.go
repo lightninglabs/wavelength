@@ -1,6 +1,9 @@
 package rounds
 
 import (
+	"encoding/hex"
+	"fmt"
+
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -32,16 +35,24 @@ type StateMachineCfg = protofsm.StateMachineCfg[
 ]
 
 // RoundID is a type alias for round identifiers.
-type RoundID = string
+type RoundID uuid.UUID
 
 // NewRoundID generates a new unique RoundID using cryptographic randomness.
 func NewRoundID() (RoundID, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return "", err
+		return RoundID{}, err
 	}
 
-	return id.String(), nil
+	return RoundID(id), nil
+}
+
+// LogPrefix returns a short string representation of the RoundID for logging.
+// It uses the last 4 bytes (32 bits) of the UUIDv7, which are high-entropy
+// random bits.
+func (id RoundID) LogPrefix() string {
+	// Last 4 bytes = 32 bits of pure randomness.
+	return fmt.Sprintf("round(%v)", hex.EncodeToString(id[12:16]))
 }
 
 // RoundFSM wraps a state machine instance for a specific round.
