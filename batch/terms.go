@@ -1,6 +1,7 @@
 package batch
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -35,4 +36,13 @@ type Terms struct {
 	// MinBoardingConfirmations is the minimum confirmation requirement for
 	// boarding inputs.
 	MinBoardingConfirmations uint32
+
+	// MinVTXOAmount is the minimum amount for a VTXO request.
+	MinVTXOAmount btcutil.Amount
+
+	// MaxVTXOAmount is the maximum amount for a VTXO request.
+	MaxVTXOAmount btcutil.Amount
+
+	// VTXOExitDelay is the minimum exit delay for VTXO requests.
+	VTXOExitDelay uint32
 }

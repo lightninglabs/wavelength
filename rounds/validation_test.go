@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
 )
 
@@ -241,7 +245,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		// Mock ChainSource to return UTXO with wrong pkScript.
 		// The UTXO has a different script than what we expect.
-		utxo := &Utxo{
+		utxo := &UTXO{
 			Output: &wire.TxOut{
 				Value:    100000,
 				PkScript: []byte{0xde, 0xad, 0xbe, 0xef},
@@ -368,5 +372,279 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		h.boardingLocker.AssertExpectations(t)
 		h.chainSource.AssertExpectations(t)
+	})
+}
+
+// TestValidateVTXORequest tests VTXO request validation.
+func TestValidateVTXORequest(t *testing.T) {
+	t.Parallel()
+
+	clientPub, _ := testutils.CreateKey(2)
+	signingKey1, _ := testutils.CreateKey(10)
+	signingKey2, _ := testutils.CreateKey(11)
+
+	t.Run("valid VTXO request returns descriptor", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		// Build expected descriptor to get pkScript.
+		descriptor, err := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		req := &types.VTXORequest{
+			Amount:      10000,
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, req.Amount, result.Amount)
+		require.Equal(t, descriptor.PkScript, result.PkScript)
+	})
+
+	t.Run("amount below minimum rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			500, clientPub, h.operatorPub, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount:      500,
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrVTXOAmountTooLow)
+	})
+
+	t.Run("amount above maximum rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			2000000, clientPub, h.operatorPub, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount:      2000000,
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrVTXOAmountTooHigh)
+	})
+
+	t.Run("expiry below minimum rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 50,
+		)
+
+		req := &types.VTXORequest{
+			Amount:      10000,
+			PkScript:    descriptor.PkScript,
+			Expiry:      50,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrVTXOExpiryTooLow)
+	})
+
+	t.Run("wrong operator key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		wrongOpKey, _ := testutils.CreateKey(99)
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			10000, clientPub, wrongOpKey, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount:      10000,
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: wrongOpKey,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrOperatorKeyMismatch)
+	})
+
+	t.Run("duplicate signing key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor, _ := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 144,
+		)
+
+		req := &types.VTXORequest{
+			Amount:      10000,
+			PkScript:    descriptor.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		// Mark signingKey1 as already used.
+		usedKeys := map[SigningKeyHex]*btcec.PublicKey{
+			route.NewVertex(signingKey1): signingKey1,
+		}
+
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrSigningKeyNotUnique)
+	})
+
+	t.Run("wrong pkScript rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		req := &types.VTXORequest{
+			Amount: 10000,
+			// Wrong script.
+			PkScript:    []byte{0x00, 0x14},
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+		result, err := ValidateVTXORequest(h.env.Terms, req, usedKeys)
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrVTXOPkScriptMismatch)
+	})
+
+	t.Run("multiple unique signing keys accepted", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		descriptor1, _ := tree.NewVTXODescriptor(
+			10000, clientPub, h.operatorPub, 144,
+		)
+		descriptor2, _ := tree.NewVTXODescriptor(
+			20000, clientPub, h.operatorPub, 144,
+		)
+
+		req1 := &types.VTXORequest{
+			Amount:      10000,
+			PkScript:    descriptor1.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey1,
+			},
+		}
+
+		req2 := &types.VTXORequest{
+			Amount:      20000,
+			PkScript:    descriptor2.PkScript,
+			Expiry:      144,
+			ClientKey:   clientPub,
+			OperatorKey: h.operatorPub,
+			// Different signing key.
+			SigningKey: keychain.KeyDescriptor{
+				PubKey: signingKey2,
+			},
+		}
+
+		usedKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+
+		// First request should succeed.
+		result1, err := ValidateVTXORequest(h.env.Terms, req1, usedKeys)
+		require.NoError(t, err)
+		require.NotNil(t, result1)
+
+		// Track the first signing key.
+		key1Vertex := route.NewVertex(signingKey1)
+		usedKeys[key1Vertex] = signingKey1
+
+		// Second request with different signing key should succeed.
+		result2, err := ValidateVTXORequest(h.env.Terms, req2, usedKeys)
+		require.NoError(t, err)
+		require.NotNil(t, result2)
 	})
 }

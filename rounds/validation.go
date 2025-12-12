@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 var (
@@ -52,6 +56,33 @@ var (
 	// does not match the expected tapscript.
 	ErrPkScriptMismatch = errors.New("pkScript does not match expected " +
 		"tapscript")
+
+	// ErrVTXOAmountTooLow is returned when a VTXO amount is below the
+	// operator's minimum.
+	ErrVTXOAmountTooLow = errors.New("VTXO amount is below minimum")
+
+	// ErrVTXOAmountTooHigh is returned when a VTXO amount exceeds the
+	// operator's maximum.
+	ErrVTXOAmountTooHigh = errors.New("VTXO amount exceeds maximum")
+
+	// ErrVTXOExpiryTooLow is returned when a VTXO expiry is less than
+	// the operator's minimum VTXOExitDelay.
+	ErrVTXOExpiryTooLow = errors.New("VTXO expiry is below minimum")
+
+	// ErrSigningKeyNotUnique is returned when a signing key has already
+	// been used in the batch.
+	ErrSigningKeyNotUnique = errors.New("signing key is not unique")
+
+	// ErrVTXODescriptorConstruction is returned when creating a VTXO
+	// descriptor fails.
+	ErrVTXODescriptorConstruction = errors.New(
+		"failed to create VTXO descriptor",
+	)
+
+	// ErrVTXOPkScriptMismatch is returned when a VTXO's pkScript does not
+	// match the expected descriptor.
+	ErrVTXOPkScriptMismatch = errors.New("VTXO pkScript does not match " +
+		"expected descriptor")
 )
 
 // ValidateBoardingRequest validates a boarding request from a client. It
@@ -172,4 +203,66 @@ func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 	}
 
 	return pkScript, nil
+}
+
+// ValidateVTXORequest validates a single VTXO request from a client. It
+// verifies:
+//   - The amount is within the min/max bounds.
+//   - The expiry meets the minimum VTXOExitDelay.
+//   - The operator key matches this operator.
+//   - The signing key is unique (not already used in the batch).
+//   - The pkScript matches the expected VTXO descriptor.
+//
+// On success, returns the validated VTXO descriptor.
+func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
+	usedSigningKeys map[SigningKeyHex]*btcec.PublicKey) (
+	*tree.VTXODescriptor, error) {
+
+	// Validate amount is within bounds.
+	if req.Amount < terms.MinVTXOAmount {
+		return nil, fmt.Errorf("%w: got %v, want %v",
+			ErrVTXOAmountTooLow, req.Amount, terms.MinVTXOAmount)
+	}
+
+	if req.Amount > terms.MaxVTXOAmount {
+		return nil, fmt.Errorf("%w: got %v, want %v",
+			ErrVTXOAmountTooHigh, req.Amount, terms.MaxVTXOAmount)
+	}
+
+	// Validate expiry meets minimum requirement.
+	if req.Expiry < terms.VTXOExitDelay {
+		return nil, fmt.Errorf("%w: got %d, want %d",
+			ErrVTXOExpiryTooLow, req.Expiry, terms.VTXOExitDelay)
+	}
+
+	// Verify operator key matches this operator's key.
+	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
+		return nil, fmt.Errorf("%w: got %x, want %x",
+			ErrOperatorKeyMismatch,
+			req.OperatorKey.SerializeCompressed(),
+			terms.OperatorKey.PubKey.SerializeCompressed())
+	}
+
+	// Verify signing key is unique for this batch.
+	signingKeyVertex := route.NewVertex(req.SigningKey.PubKey)
+	if _, exists := usedSigningKeys[signingKeyVertex]; exists {
+		return nil, fmt.Errorf("%w: %x", ErrSigningKeyNotUnique,
+			req.SigningKey.PubKey.SerializeCompressed())
+	}
+
+	// Compute the expected VTXO descriptor.
+	expectedDescriptor, err := tree.NewVTXODescriptor(
+		req.Amount, req.ClientKey, req.OperatorKey, req.Expiry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
+			err)
+	}
+
+	// Verify the pkScript matches the expected descriptor.
+	if !bytes.Equal(req.PkScript, expectedDescriptor.PkScript) {
+		return nil, ErrVTXOPkScriptMismatch
+	}
+
+	return expectedDescriptor, nil
 }
