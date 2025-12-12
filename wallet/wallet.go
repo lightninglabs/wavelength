@@ -28,6 +28,9 @@ const (
 	// MaxConfsForListUnspent is the maximum confirmations parameter for
 	// ListUnspent queries.
 	MaxConfsForListUnspent = 9999999
+
+	// Subsystem is the log subsystem code for the boarding wallet actor.
+	Subsystem = "ARKW"
 )
 
 // notifierInfo holds the configuration for a registered confirmation notifier.
@@ -73,7 +76,8 @@ type Ark struct {
 	log btclog.Logger
 }
 
-// NewArk creates a new Ark wallet actor.
+// NewArk creates a new Ark wallet actor. The logger should already have the
+// subsystem set (e.g., created via handler.SubSystem(wallet.Subsystem)).
 func NewArk(backend BoardingBackend, store BoardingStore,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
 	log btclog.Logger) *Ark {
@@ -353,7 +357,7 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 func (a *Ark) handleBlockEpoch(ctx context.Context,
 	epoch chainsource.BlockEpoch) fn.Result[WalletResp] {
 
-	a.log.DebugS(ctx, "Processing new block",
+	a.log.InfoS(ctx, "Processing new block epoch",
 		slog.Int("height", int(epoch.Height)))
 
 	// A new block just arrived, we'll now poll ListUnspent for any new
@@ -369,6 +373,10 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		// again on the next block.
 		return fn.Ok[WalletResp](nil)
 	}
+
+	a.log.InfoS(ctx, "ListUnspent returned UTXOs",
+		slog.Int("height", int(epoch.Height)),
+		slog.Int("utxo_count", len(utxos)))
 
 	// For Each UTXO, we'll check if it's new and belongs to a fresh
 	// boarding intent, dispatching notifications if needed.
