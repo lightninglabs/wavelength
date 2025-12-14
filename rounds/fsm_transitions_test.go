@@ -427,11 +427,13 @@ func TestFSMRegistrationState(t *testing.T) {
 		// Should contain:
 		// 1. RoundSealedReq (from RegistrationState timeout)
 		// 2. ClientBatchInfo for client1
-		// 3. StartTimeoutReq for boarding signatures
+		// 3. ClientAwaitingBoardingSigsResp for client1
+		// 4. StartTimeoutReq for boarding signatures
 		var (
-			foundSealReq    bool
-			foundBatchInfo  bool
-			foundTimeoutReq bool
+			foundSealReq          bool
+			foundBatchInfo        bool
+			foundAwaitingBrdgSigs bool
+			foundTimeoutReq       bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -443,6 +445,10 @@ func TestFSMRegistrationState(t *testing.T) {
 				foundBatchInfo = true
 				require.Equal(t, ClientID("client1"), m.Client)
 				require.NotNil(t, m.BatchPSBT)
+
+			case *ClientAwaitingBoardingSigsResp:
+				foundAwaitingBrdgSigs = true
+				require.Equal(t, ClientID("client1"), m.Client)
 
 			case *StartTimeoutReq:
 				// Should be boarding signatures timeout.
@@ -456,6 +462,8 @@ func TestFSMRegistrationState(t *testing.T) {
 		}
 		require.True(t, foundSealReq, "RoundSealedReq emitted")
 		require.True(t, foundBatchInfo, "ClientBatchInfo emitted")
+		require.True(t, foundAwaitingBrdgSigs,
+			"ClientAwaitingBoardingSigsResp emitted")
 		require.True(
 			t, foundTimeoutReq, "boarding sig timeout should start",
 		)
@@ -514,16 +522,24 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t, awaitState.ClientRegistrations, ClientID("client2"),
 		)
 
-		// Verify both clients get batch info.
+		// Verify both clients get batch info and awaiting boarding sigs
+		// notification.
 		batchInfoCount := 0
+		awaitingBrdgSigsCount := 0
 		for _, msg := range h.outboxMessages {
 			if info, ok := msg.(*ClientBatchInfo); ok {
 				batchInfoCount++
 				require.NotNil(t, info.BatchPSBT)
 				require.NotNil(t, info.BatchPSBT.UnsignedTx)
 			}
+
+			if _, ok := msg.(*ClientAwaitingBoardingSigsResp); ok {
+				awaitingBrdgSigsCount++
+			}
 		}
 		require.Equal(t, 2, batchInfoCount, "both clients get batch")
+		require.Equal(t, 2, awaitingBrdgSigsCount,
+			"both clients get awaiting boarding sigs notification")
 	})
 
 	t.Run("stale timeout ignored during boarding sigs",

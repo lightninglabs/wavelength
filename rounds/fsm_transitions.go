@@ -337,6 +337,21 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 			})
 		}
 
+		// Notify clients with boarding inputs that we're ready for
+		// their signatures. This is separate from ClientBatchInfo
+		// because there may be VTXO signing phases between batch
+		// construction and boarding signature collection.
+		for clientID, reg := range s.ClientRegistrations {
+			if len(reg.BoardingInputs) > 0 {
+				outboxMsgs = append(
+					outboxMsgs,
+					&ClientAwaitingBoardingSigsResp{
+						Client: clientID,
+					},
+				)
+			}
+		}
+
 		// Add timeout for boarding signature collection.
 		outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
 			RoundID:  env.RoundID,
