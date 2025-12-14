@@ -318,6 +318,15 @@ func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
 		Return(nil).Once()
 }
 
+// setActiveRounds configures the round store mock to return the given rounds
+// when LoadPendingRounds is called.
+func (c *commonMockSetup) setActiveRounds(rounds []*Round) {
+	c.t.Helper()
+
+	c.roundStore.On("LoadPendingRounds", mock.Anything).
+		Return(rounds, nil).Once()
+}
+
 // setupBoardingInputWithUnlock sets up mocks for a boarding input that will
 // be unlocked later (used in failure test scenarios). This includes IsLocked,
 // Lock, Unlock, and UTXO mocks.
@@ -655,6 +664,19 @@ func (m *mockRoundStore) PersistRound(ctx context.Context,
 	args := m.Called(ctx, round)
 
 	return args.Error(0)
+}
+
+// LoadPendingRounds is a mock implementation of RoundStore.LoadPendingRounds.
+func (m *mockRoundStore) LoadPendingRounds(ctx context.Context) ([]*Round,
+	error) {
+
+	args := m.Called(ctx)
+
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	return args.Get(0).([]*Round), args.Error(1) //nolint:forcetypeassert
 }
 
 // createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with

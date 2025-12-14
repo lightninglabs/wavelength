@@ -126,13 +126,17 @@ func NewActor(cfg *ActorConfig) fn.Result[*Actor] {
 	})
 }
 
-// Start initializes the actor. It creates a new live round FSM to accept
-// registrations. In the future, it will also resume any existing rounds from
-// storage.
+// Start initializes the actor. It loads any pending rounds from storage that
+// need to be tracked until confirmation, then creates a new live round FSM to
+// accept registrations.
 func (a *Actor) Start(ctx context.Context) error {
-	// TODO(elle): Load previous rounds from storage that still need to be
-	// managed (e.g., rounds awaiting confirmation).
+	// Load previous rounds from storage that still need to be managed
+	// (e.g., rounds awaiting confirmation).
+	if err := a.loadPendingRounds(ctx); err != nil {
+		return fmt.Errorf("unable to load pending rounds: %w", err)
+	}
 
+	// Create a new round to accept registrations.
 	round, err := a.newRoundFSM(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to create new round FSM: %w", err)
@@ -142,6 +146,73 @@ func (a *Actor) Start(ctx context.Context) error {
 	a.rounds[round.RoundID] = round
 
 	return nil
+}
+
+// loadPendingRounds loads all pending rounds from storage and creates FSMs for
+// them. These are rounds that have been finalized but not yet confirmed
+// on-chain.
+func (a *Actor) loadPendingRounds(ctx context.Context) error {
+	rounds, err := a.cfg.RoundStore.LoadPendingRounds(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load pending rounds: %w", err)
+	}
+
+	for _, round := range rounds {
+		roundFSM, err := a.loadRoundFSM(ctx, round)
+		if err != nil {
+			return fmt.Errorf("failed to load round %s: %w",
+				round.RoundID, err)
+		}
+
+		a.rounds[round.RoundID] = roundFSM
+
+		a.log.InfoS(ctx, "Loaded pending round from storage",
+			"round_id", round.RoundID)
+	}
+
+	return nil
+}
+
+// loadRoundFSM creates a new FSM for a persisted round, starting in
+// FinalizedState. This is used to restore rounds that were finalized but not
+// yet confirmed on-chain.
+func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
+	error) {
+
+	env := &Environment{
+		RoundID:             round.RoundID,
+		ChainParams:         a.cfg.ChainParams,
+		BoardingInputLocker: a.cfg.BoardingInputLocker,
+		ChainSource:         a.cfg.ChainSource,
+		WalletController:    a.cfg.WalletController,
+		FeeEstimator:        a.cfg.FeeEstimator,
+		WalletAccount:       a.cfg.WalletAccount,
+		Terms:               a.cfg.Terms,
+	}
+
+	// Create the FSM starting in FinalizedState since the round was already
+	// signed and persisted.
+	initialState := &FinalizedState{
+		ClientRegistrations: round.ClientRegistrations,
+		FinalTx:             round.FinalTx,
+		VTXOTrees:           round.VTXOTrees,
+	}
+
+	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
+	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
+	fsmCfg := StateMachineCfg{
+		InitialState:  initialState,
+		Env:           env,
+		Logger:        fsmLogger,
+		ErrorReporter: newLoggingErrorReporter(fsmLogger),
+	}
+	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm.Start(ctx)
+
+	return &RoundFSM{
+		FSM:     &fsm,
+		RoundID: round.RoundID,
+	}, nil
 }
 
 // Receive processes an actor message and returns a response. This is the main

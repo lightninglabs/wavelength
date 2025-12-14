@@ -394,6 +394,7 @@ func TestActorStart(t *testing.T) {
 	t.Parallel()
 
 	h := newActorTestHarness(t)
+	h.setActiveRounds([]*Round{})
 	h.start(t.Context())
 
 	// Verify actor created a current round.
@@ -413,6 +414,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client harness.
@@ -464,6 +466,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a boarding request with a mismatched operator key.
@@ -524,6 +527,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -578,6 +582,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -637,6 +642,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Send timeout for a round that doesn't exist.
@@ -669,6 +675,7 @@ func TestActorFailureHandling(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -754,6 +761,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round with a boarding input.
@@ -842,6 +850,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Send signatures for a round that doesn't exist.
@@ -861,5 +870,71 @@ func TestActorBoardingSignatures(t *testing.T) {
 		_, err = result.Unpack()
 		require.Error(t, err, "unknown round should error")
 		require.Contains(t, err.Error(), "not found")
+	})
+}
+
+// TestActorLoadPendingRounds tests that the actor correctly loads pending rounds
+// from storage on startup.
+func TestActorLoadPendingRounds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("loads pending rounds on start", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a mock persisted round that should be loaded.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		persistedRound := &Round{
+			RoundID:             persistedRoundID,
+			FinalTx:             wire.NewMsgTx(2),
+			VTXOTrees:           nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Set the pending rounds before starting the actor.
+		h.setActiveRounds([]*Round{persistedRound})
+
+		// Start the actor - it should load the pending round.
+		h.start(h.ctx)
+
+		// Verify the loaded round is tracked (plus the new current
+		// round).
+		h.assertRoundCount(2)
+
+		// Verify the loaded round exists and is in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound,
+			"loaded round should be tracked")
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+
+		finalizedState, ok := currentState.(*FinalizedState)
+		require.True(t, ok,
+			"loaded round should be in FinalizedState, got %T",
+			currentState)
+
+		// Verify the state has the correct data.
+		require.Equal(t, persistedRound.FinalTx, finalizedState.FinalTx)
+		require.Len(t, finalizedState.ClientRegistrations, 1)
+	})
+
+	t.Run("starts with no pending rounds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Set no pending rounds - LoadPendingRounds returns empty.
+		h.setActiveRounds([]*Round{})
+		h.start(h.ctx)
+
+		// Should only have the new current round.
+		h.assertRoundCount(1)
+		h.assertCurrentRoundExists()
 	})
 }

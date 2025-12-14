@@ -134,6 +134,11 @@ type RoundStore interface {
 	// should be called after all signatures have been collected and the
 	// transaction is ready for broadcast.
 	PersistRound(ctx context.Context, round *Round) error
+
+	// LoadPendingRounds returns all rounds that have been finalized but not
+	// yet confirmed on-chain. These rounds need to be reloaded into memory
+	// on restart so we can continue tracking them until confirmation.
+	LoadPendingRounds(ctx context.Context) ([]*Round, error)
 }
 
 // Round contains all data needed to persist a completed round.
