@@ -497,12 +497,26 @@ func (th *TapdHarness) Stop() {
 	th.h.Logf("%s TapdHarness stopped", th.Name)
 }
 
-// NewTapClientHarness creates a TapClientHarness connected to this
-// TapdHarness's tapd instance. This is a stub for now as TapClientHarness
-// is not yet ported.
-func (th *TapdHarness) NewTapClientHarness() interface{} {
-	// TODO: Port TapClientHarness from tap-arktree when needed.
-	th.h.T.Fatal("NewTapClientHarness not yet implemented")
+// NewTapClient creates a TapClient connected to this TapdHarness's tapd
+// instance.
+func (th *TapdHarness) NewTapClientHarness() *TapClientHarness {
+	host := net.JoinHostPort("127.0.0.1", th.TapdGRPCPort)
 
-	return nil
+	return NewTapClientHarness(
+		th.h, th.Name, host, th.TapdTLSCert, th.TapdMacaroon,
+	)
+}
+
+// UniverseHost returns the universe host for this TapdHarness, suitable for
+// container-to-container communication.
+func (th *TapdHarness) UniverseHost() string {
+	// Get the container name (strip leading '/' if present).
+	tapdName := th.tapd.Container.Name
+	if len(tapdName) > 0 && tapdName[0] == '/' {
+		tapdName = tapdName[1:]
+	}
+
+	// Use container name with internal port for container-to-container
+	// communication.
+	return net.JoinHostPort(tapdName, "10029")
 }

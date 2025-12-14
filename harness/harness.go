@@ -2017,13 +2017,15 @@ func randSuffix() string {
 }
 
 // NewTapClientHarness creates a TapClientHarness connected to the harness's
-// main tapd instance. This is a stub for now as TapClientHarness is not yet
-// ported.
-func (h *Harness) NewTapClientHarness(name string) interface{} {
-	// TODO: Port TapClientHarness from tap-arktree when needed.
-	h.T.Fatal("NewTapClientHarness not yet implemented")
+// main tapd instance.
+func (h *Harness) NewTapClientHarness(name string) *TapClientHarness {
+	host := net.JoinHostPort("127.0.0.1", h.TapdGRPCPort)
+	tlsPath := filepath.Join(h.tapdDataDir, "tls.cert")
+	macPath := filepath.Join(
+		h.tapdDataDir, "data", "regtest", "admin.macaroon",
+	)
 
-	return nil
+	return NewTapClientHarness(h, name, host, tlsPath, macPath)
 }
 
 // SetPostgresEnabled allows tests to programmatically enable or disable
