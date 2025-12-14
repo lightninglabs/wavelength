@@ -427,6 +427,9 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseRegistration:
 		timeoutEvent = &RegistrationTimeoutEvent{}
 
+	case TimeoutPhaseBoardingSigs:
+		timeoutEvent = &BoardingSignaturesTimeoutEvent{}
+
 	default:
 		// Unknown phase - log warning and ignore.
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,

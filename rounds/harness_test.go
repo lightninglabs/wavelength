@@ -297,6 +297,8 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 
 // assertOutboxContains asserts that the outbox contains at least one message
 // of the given type and returns the first match.
+//
+//nolint:unused
 func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
 	h.Helper()
 

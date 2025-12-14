@@ -61,3 +61,11 @@ type PrepareClientNotificationsEvent struct{}
 // eventSealed marks PrepareClientNotificationsEvent as implementing the sealed
 // Event interface.
 func (e *PrepareClientNotificationsEvent) eventSealed() {}
+
+// BoardingSignaturesTimeoutEvent is sent when the boarding signature collection
+// timeout expires. Only AwaitingBoardingSigsState should handle this.
+type BoardingSignaturesTimeoutEvent struct{}
+
+// eventSealed marks BoardingSignaturesTimeoutEvent as implementing the sealed
+// Event interface.
+func (e *BoardingSignaturesTimeoutEvent) eventSealed() {}

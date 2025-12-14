@@ -342,14 +342,16 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 			Duration: env.Terms.SignatureCollectionTimeout,
 		})
 
-		// For now, stay in BatchBuiltState. In the future, this will
-		// transition to AwaitingBoardingSignaturesState or
-		// AwaitingVTXONoncesState depending on whether VTXOs exist.
-		//
-		// TODO(elle): Add proper state transitions for signature
-		//  collection phases.
+		// Transition to AwaitingBoardingSigsState.
+		// TODO(elle): If VTXOs exist, transition to
+		// AwaitingVTXONoncesState instead for VTXO signing first.
 		return &StateTransition{
-			NextState: s,
+			NextState: &AwaitingBoardingSigsState{
+				ClientRegistrations: s.ClientRegistrations,
+				PSBT:                s.PSBT,
+				ChangeOutputIndex:   s.ChangeOutputIndex,
+				VTXOTrees:           s.VTXOTrees,
+			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: outboxMsgs,
 			}),
@@ -417,6 +419,38 @@ func buildFailureTransition(env *Environment,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
 		}),
+	}
+}
+
+// ProcessEvent handles events in the AwaitingBoardingSigsState. This
+// state waits for clients to submit their boarding input signatures.
+//
+// TODO(elle): Implement ClientBoardingSignaturesEvent handling:
+//   - Validate signatures against expected boarding inputs
+//   - Track which clients have submitted signatures
+//   - When all signatures collected, transition to ServerSigningState
+func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	switch event.(type) {
+	case *BoardingSignaturesTimeoutEvent:
+		// Timeout expired - fail the round.
+		reason := "boarding signature collection timeout"
+
+		return buildFailureTransition(
+			env, s.ClientRegistrations, reason,
+		), nil
+
+	case *RegistrationTimeoutEvent:
+		// Ignore stale timeout from registration phase.
+		return &StateTransition{
+			NextState: s,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf(
+			"awaiting-boarding-sigs: unexpected event: %T", event,
+		)
 	}
 }
 

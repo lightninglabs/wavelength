@@ -159,6 +159,41 @@ func (s *BatchBuiltState) IsTerminal() bool {
 // stateSealed marks BatchBuiltState as implementing the sealed State interface.
 func (s *BatchBuiltState) stateSealed() {}
 
+// AwaitingBoardingSigsState waits for clients to submit their boarding
+// input signatures. Each client must sign their boarding inputs so the
+// commitment transaction can be finalized.
+type AwaitingBoardingSigsState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// ChangeOutputIndex is the index of the change output, or -1 if no
+	// change was created.
+	ChangeOutputIndex int32
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// This is nil if no VTXOs exist in the round.
+	VTXOTrees map[int]*tree.Tree
+}
+
+// String returns a human-readable representation of
+// AwaitingBoardingSigsState.
+func (s *AwaitingBoardingSigsState) String() string {
+	return "AwaitingBoardingSigsState"
+}
+
+// IsTerminal returns false as AwaitingBoardingSigsState is not a terminal
+// state.
+func (s *AwaitingBoardingSigsState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingBoardingSigsState as implementing the sealed
+// State interface.
+func (s *AwaitingBoardingSigsState) stateSealed() {}
+
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock
 // boarding inputs, and inform the actor of the failure.

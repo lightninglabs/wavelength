@@ -394,7 +394,6 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
-		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -407,9 +406,17 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10,
-		)
+		// Set up explicit mocks for this test.
+		h.allowBoardingInput(&outpoint)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -431,12 +438,57 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// The timeout should emit SealEvent (internal) which causes
 		// transition to BatchBuildingState, then BuildBatchTxEvent
-		// (internal) builds the PSBT and transitions to
-		// BatchBuiltState.
-		assertStateType[*BatchBuiltState](h)
+		// (internal) which builds the PSBT and transitions to
+		// BatchBuiltState, then PrepareClientNotificationsEvent
+		// (internal) sends batch info to clients and transitions to
+		// AwaitingBoardingSigsState.
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
 
-		// Verify RoundSealedReq was emitted.
-		assertOutboxContains[*RoundSealedReq](h)
+		// Verify the batch was built correctly.
+		require.NotNil(t, awaitState.PSBT)
+		require.Len(t, awaitState.ClientRegistrations, 1)
+		require.Contains(
+			t, awaitState.ClientRegistrations, ClientID("client1"),
+		)
+
+		// Verify outbox messages.
+		// Should contain:
+		// 1. RoundSealedReq (from RegistrationState timeout)
+		// 2. ClientBatchInfo for client1
+		// 3. StartTimeoutReq for boarding signatures
+		var (
+			foundSealReq    bool
+			foundBatchInfo  bool
+			foundTimeoutReq bool
+		)
+		for _, msg := range h.outboxMessages {
+			switch m := msg.(type) {
+			case *RoundSealedReq:
+				foundSealReq = true
+				require.Equal(t, h.env.RoundID, m.SealedRoundID)
+
+			case *ClientBatchInfo:
+				foundBatchInfo = true
+				require.Equal(t, ClientID("client1"), m.Client)
+				require.NotNil(t, m.BatchPSBT)
+
+			case *StartTimeoutReq:
+				// Should be boarding signatures timeout.
+				if m.Phase == TimeoutPhaseBoardingSigs {
+					foundTimeoutReq = true
+					require.Equal(
+						t, h.env.RoundID, m.RoundID,
+					)
+				}
+			}
+		}
+		require.True(t, foundSealReq, "RoundSealedReq emitted")
+		require.True(t, foundBatchInfo, "ClientBatchInfo emitted")
+		require.True(
+			t, foundTimeoutReq, "boarding sig timeout should start",
+		)
+
+		h.assertMockExpectations()
 	})
 }
 
@@ -509,16 +561,17 @@ func TestFSMBatchBuilding(t *testing.T) {
 		err = h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
-		// Should transition to BatchBuiltState after internal events.
-		builtState := assertStateType[*BatchBuiltState](h)
+		// Should transition to AwaitingBoardingSigsState after
+		// internal events.
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
 
 		// Verify both clients are in the batch.
-		require.Len(t, builtState.ClientRegistrations, 2)
+		require.Len(t, awaitState.ClientRegistrations, 2)
 		require.Contains(
-			t, builtState.ClientRegistrations, ClientID("client1"),
+			t, awaitState.ClientRegistrations, ClientID("client1"),
 		)
 		require.Contains(
-			t, builtState.ClientRegistrations, ClientID("client2"),
+			t, awaitState.ClientRegistrations, ClientID("client2"),
 		)
 
 		// Verify both clients get batch info.
@@ -535,53 +588,62 @@ func TestFSMBatchBuilding(t *testing.T) {
 		h.assertMockExpectations()
 	})
 
-	t.Run("stale timeout ignored in BatchBuiltState", func(t *testing.T) {
-		t.Parallel()
+	t.Run("stale timeout ignored in AwaitingBoardingSigs",
+		func(t *testing.T) {
+			t.Parallel()
 
-		// Set up the test harness.
-		h := newTestHarness(t)
-		h.setupPermissiveMocks()
+			// Set up the test harness.
+			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub, exitDelay,
+				expiry,
+			)
 
-		outpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("input1")),
-			Index: 0,
-		}
+			outpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("input1")),
+				Index: 0,
+			}
 
-		h.allowBoardingInput(&outpoint)
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+			h.allowBoardingInput(&outpoint)
+			h.mockBoardingUTXO(
+				outpoint, client.boardingKey, exitDelay, 10,
+			)
 
-		// Join to get to RegistrationState.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinReqEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+			// Join to get to RegistrationState.
+			boardingReq := client.createBoardingRequest(&outpoint)
+			joinReqEvent := client.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			)
+			err := h.sendEvent(joinReqEvent)
+			require.NoError(t, err)
 
-		// Seal via RegistrationTimeoutEvent.
-		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
-		require.NoError(t, err)
+			// Seal via RegistrationTimeoutEvent.
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
 
-		// Should be in BatchBuiltState.
-		builtState := assertStateType[*BatchBuiltState](h)
-		require.NotNil(t, builtState.PSBT)
+			// Should be in AwaitingBoardingSigsState.
+			//nolint:ll
+			awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+			require.NotNil(t, awaitState.PSBT)
 
-		// Clear outbox and send another stale RegistrationTimeoutEvent.
-		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
-		require.NoError(t, err)
+			// Clear outbox and send another stale
+			// RegistrationTimeoutEvent.
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
 
-		// Should remain in BatchBuiltState with no outbox messages.
-		assertStateType[*BatchBuiltState](h)
-		h.assertOutboxLen(0)
-	})
+			// Should remain in AwaitingBoardingSigsState with no
+			// outbox messages.
+			assertStateType[*AwaitingBoardingSigsState](h)
+			h.assertOutboxLen(0)
+
+			h.assertMockExpectations()
+		})
 }
 
 // TestFSMFailureScenarios tests the FSM failure handling and transitions to
@@ -678,6 +740,8 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundClientFailed, "client should be notified")
 		require.True(t, foundUnlock, "inputs should be unlocked")
 		require.True(t, foundRoundFailed, "actor should be notified")
+
+		h.assertMockExpectations()
 	})
 
 	t.Run("FailedState is terminal and ignores events", func(t *testing.T) {
@@ -745,5 +809,92 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.NoError(t, err)
 		assertStateType[*FailedState](h)
 		h.assertOutboxLen(0)
+
+		h.assertMockExpectations()
+	})
+
+	t.Run("boarding sig timeout goes to FailedState", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		// Set up explicit mocks for this test.
+		h.allowBoardingInput(&outpoint)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+
+		// Join to get to RegistrationState.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		joinReqEvent := client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Seal via RegistrationTimeoutEvent to get to
+		// AwaitingBoardingSigsState.
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should be in AwaitingBoardingSigsState.
+		assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Clear outbox.
+		h.outboxMessages = nil
+
+		// Send BoardingSignaturesTimeoutEvent.
+		err = h.sendEvent(&BoardingSignaturesTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should transition to FailedState.
+		failedState := assertStateType[*FailedState](h)
+		require.Contains(t, failedState.Reason, "timeout")
+
+		// Verify outbox messages.
+		var (
+			foundClientFailed bool
+			foundUnlock       bool
+			foundRoundFailed  bool
+		)
+		for _, msg := range h.outboxMessages {
+			switch m := msg.(type) {
+			case *ClientRoundFailedResp:
+				foundClientFailed = true
+				require.Equal(t, ClientID("client1"), m.Client)
+
+			case *UnlockBoardingInputsReq:
+				foundUnlock = true
+				require.Len(t, m.Outpoints, 1)
+
+			case *RoundFailedReq:
+				foundRoundFailed = true
+				require.Equal(t, h.env.RoundID, m.FailedRoundID)
+			}
+		}
+		require.True(t, foundClientFailed, "client notified of failure")
+		require.True(t, foundUnlock, "inputs should be unlocked")
+		require.True(t, foundRoundFailed, "actor notified of failure")
+
+		h.assertMockExpectations()
 	})
 }
