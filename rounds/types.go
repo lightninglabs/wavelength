@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -22,6 +23,10 @@ type SigningKeyHex = route.Vertex
 // TxID is an alias for tree.TxID (chainhash.Hash), used as a key in maps for
 // efficient lookups.
 type TxID = tree.TxID
+
+// BoardingSigsMap maps client IDs to their boarding input signatures.
+// This type alias improves readability in struct definitions.
+type BoardingSigsMap = map[ClientID][]*types.BoardingInputSignature
 
 // BoardingInput represents a validated boarding input that will be spent in
 // the batch transaction. It contains all the data needed to construct the

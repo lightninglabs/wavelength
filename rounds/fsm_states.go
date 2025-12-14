@@ -176,6 +176,16 @@ type AwaitingBoardingSigsState struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
+
+	// ClientsSubmitted tracks which clients have submitted their boarding
+	// signatures. Once all registered clients have submitted, the round
+	// transitions to ServerSigningState.
+	ClientsSubmitted map[clientconn.ClientID]struct{}
+
+	// CollectedSignatures stores the boarding signatures submitted by each
+	// client. These are validated but not yet applied to the PSBT - that
+	// happens during server signing.
+	CollectedSignatures BoardingSigsMap
 }
 
 // String returns a human-readable representation of
@@ -193,6 +203,66 @@ func (s *AwaitingBoardingSigsState) IsTerminal() bool {
 // stateSealed marks AwaitingBoardingSigsState as implementing the sealed
 // State interface.
 func (s *AwaitingBoardingSigsState) stateSealed() {}
+
+// allClientsSubmitted returns true if all registered clients with boarding
+// inputs have submitted their signatures.
+func (s *AwaitingBoardingSigsState) allClientsSubmitted() bool {
+	// Count clients that have boarding inputs and thus need to submit sigs.
+	clientsWithBoarding := 0
+	for _, reg := range s.ClientRegistrations {
+		if len(reg.BoardingInputs) > 0 {
+			clientsWithBoarding++
+		}
+	}
+
+	return len(s.ClientsSubmitted) >= clientsWithBoarding
+}
+
+// hasClientSubmitted checks if a client has already submitted their
+// signatures.
+func (s *AwaitingBoardingSigsState) hasClientSubmitted(
+	clientID clientconn.ClientID) bool {
+
+	_, exists := s.ClientsSubmitted[clientID]
+	return exists
+}
+
+// ServerSigningState is where the server signs its wallet inputs on the
+// commitment transaction. This occurs after all clients have submitted their
+// boarding input signatures.
+type ServerSigningState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// ChangeOutputIndex is the index of the change output, or -1 if no
+	// change was created.
+	ChangeOutputIndex int32
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// CollectedSignatures contains all validated client boarding
+	// signatures. These will be applied to the PSBT along with the
+	// server's signatures.
+	CollectedSignatures BoardingSigsMap
+}
+
+// String returns a human-readable representation of ServerSigningState.
+func (s *ServerSigningState) String() string {
+	return "ServerSigningState"
+}
+
+// IsTerminal returns false as ServerSigningState is not a terminal state.
+func (s *ServerSigningState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks ServerSigningState as implementing the sealed State
+// interface.
+func (s *ServerSigningState) stateSealed() {}
 
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock

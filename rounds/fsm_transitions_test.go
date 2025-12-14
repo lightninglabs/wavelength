@@ -588,7 +588,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 		h.assertMockExpectations()
 	})
 
-	t.Run("stale timeout ignored in AwaitingBoardingSigs",
+	t.Run("stale timeout ignored during boarding sigs",
 		func(t *testing.T) {
 			t.Parallel()
 
@@ -896,5 +896,416 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundRoundFailed, "actor notified of failure")
 
 		h.assertMockExpectations()
+	})
+}
+
+// TestFSMBoardingSignatures tests the boarding signature collection flow.
+func TestFSMBoardingSignatures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single client submits signatures", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+		h.allowBoardingInput(&outpoint)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		// Join to get to RegistrationState.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		joinReqEvent := client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Seal to get to AwaitingBoardingSigsState.
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		require.NotNil(t, awaitState.PSBT)
+
+		// Submit boarding signatures.
+		h.outboxMessages = nil
+		sigEvent := client.createBoardingSignaturesEvent(awaitState)
+		err = h.sendEvent(sigEvent)
+		require.NoError(t, err)
+
+		// Should transition to ServerSigningState since all clients
+		// have submitted.
+		serverState := assertStateType[*ServerSigningState](h)
+		require.NotNil(t, serverState.PSBT)
+		require.Len(t, serverState.ClientRegistrations, 1)
+
+		// Verify timeout was cancelled.
+		var foundCancelTimeout bool
+		for _, msg := range h.outboxMessages {
+			if cancel, ok := msg.(*CancelTimeoutReq); ok {
+				foundCancelTimeout = true
+				require.Equal(t, h.env.RoundID, cancel.RoundID)
+				require.Equal(
+					t, TimeoutPhaseBoardingSigs,
+					cancel.Phase,
+				)
+			}
+		}
+		require.True(
+			t, foundCancelTimeout, "timeout should be cancelled",
+		)
+	})
+
+	t.Run("multi-client signature collection", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client1 := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+		client2 := newClientHarness(
+			t, "client2", 20, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint1 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		outpoint2 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input2")),
+			Index: 0,
+		}
+
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
+			Return(false, RoundID{}, nil)
+
+		h.mockBoardingUTXO(
+			outpoint1, client1.boardingKey, exitDelay, 10,
+		)
+		h.allowBoardingInput(&outpoint1)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint1,
+			h.env.RoundID).Return(nil).Once()
+
+		h.mockBoardingUTXO(
+			outpoint2, client2.boardingKey, exitDelay, 10,
+		)
+		h.allowBoardingInput(&outpoint2)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
+			h.env.RoundID).Return(nil).Once()
+
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		// Both clients join.
+		boardingReq1 := client1.createBoardingRequest(&outpoint1)
+		err := h.sendEvent(client1.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq1},
+		))
+		require.NoError(t, err)
+
+		boardingReq2 := client2.createBoardingRequest(&outpoint2)
+		err = h.sendEvent(client2.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq2},
+		))
+		require.NoError(t, err)
+
+		// Seal to get to AwaitingBoardingSigsState.
+		h.outboxMessages = nil
+		err = h.sendEvent(&SealEvent{})
+		require.NoError(t, err)
+
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		require.Empty(t, awaitState.ClientsSubmitted)
+
+		// Client1 submits - should remain in AwaitingBoardingSigsState.
+		h.outboxMessages = nil
+		sig1Event := client1.createBoardingSignaturesEvent(awaitState)
+		err = h.sendEvent(sig1Event)
+		require.NoError(t, err)
+
+		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		require.Len(t, awaitState.ClientsSubmitted, 1)
+		require.True(t, awaitState.hasClientSubmitted("client1"))
+		require.False(t, awaitState.hasClientSubmitted("client2"))
+
+		// No outbox messages yet (no transition).
+		h.assertOutboxLen(0)
+
+		// Client2 submits - should transition to ServerSigningState.
+		sig2Event := client2.createBoardingSignaturesEvent(awaitState)
+		err = h.sendEvent(sig2Event)
+		require.NoError(t, err)
+
+		serverState := assertStateType[*ServerSigningState](h)
+		require.Len(t, serverState.ClientRegistrations, 2)
+
+		// Verify timeout was cancelled.
+		var foundCancelTimeout bool
+		for _, msg := range h.outboxMessages {
+			if cancel, ok := msg.(*CancelTimeoutReq); ok {
+				foundCancelTimeout = true
+				require.Equal(
+					t, TimeoutPhaseBoardingSigs,
+					cancel.Phase,
+				)
+			}
+		}
+		require.True(
+			t, foundCancelTimeout, "timeout should be cancelled",
+		)
+	})
+
+	t.Run("unknown client rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+		h.allowBoardingInput(&outpoint)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		// Join and seal.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		err := h.sendEvent(client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		))
+		require.NoError(t, err)
+
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Unknown client tries to submit.
+		h.outboxMessages = nil
+		unknownSigEvent := &ClientBoardingSignaturesEvent{
+			ClientID:   "unknown_client",
+			Signatures: nil,
+		}
+		err = h.sendEvent(unknownSigEvent)
+		require.NoError(t, err)
+
+		// Should remain in AwaitingBoardingSigsState.
+		assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Should have error response.
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("unknown_client"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "registered")
+
+		// Original client should still be able to submit.
+		_ = awaitState
+	})
+
+	t.Run("duplicate submission rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client1 := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+		client2 := newClientHarness(
+			t, "client2", 20, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint1 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		outpoint2 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input2")),
+			Index: 0,
+		}
+
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
+			Return(false, RoundID{}, nil)
+
+		h.mockBoardingUTXO(
+			outpoint1, client1.boardingKey, exitDelay, 10,
+		)
+		h.allowBoardingInput(&outpoint1)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint1,
+			h.env.RoundID).Return(nil).Once()
+
+		h.mockBoardingUTXO(
+			outpoint2, client2.boardingKey, exitDelay, 10,
+		)
+		h.allowBoardingInput(&outpoint2)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
+			h.env.RoundID).Return(nil).Once()
+
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		// Both clients join.
+		err := h.sendEvent(client1.createJoinRequest(
+			[]*types.BoardingRequest{
+				client1.createBoardingRequest(&outpoint1),
+			},
+		))
+		require.NoError(t, err)
+
+		err = h.sendEvent(client2.createJoinRequest(
+			[]*types.BoardingRequest{
+				client2.createBoardingRequest(&outpoint2),
+			},
+		))
+		require.NoError(t, err)
+
+		// Seal.
+		h.outboxMessages = nil
+		err = h.sendEvent(&SealEvent{})
+		require.NoError(t, err)
+
+		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Client1 submits first time - success.
+		h.outboxMessages = nil
+		sig1Event := client1.createBoardingSignaturesEvent(awaitState)
+		err = h.sendEvent(sig1Event)
+		require.NoError(t, err)
+
+		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		require.True(t, awaitState.hasClientSubmitted("client1"))
+
+		// Client1 tries to submit again - should be rejected.
+		h.outboxMessages = nil
+		sig1EventDup := client1.createBoardingSignaturesEvent(
+			awaitState,
+		)
+		err = h.sendEvent(sig1EventDup)
+		require.NoError(t, err)
+
+		// Should remain in same state.
+		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		require.Len(t, awaitState.ClientsSubmitted, 1)
+
+		// Should have error response.
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "already submitted")
+	})
+
+	t.Run("wrong signature count rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+		h.allowBoardingInput(&outpoint)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		// Join and seal.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		err := h.sendEvent(client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		))
+		require.NoError(t, err)
+
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Submit with no signatures (client has 1 input).
+		h.outboxMessages = nil
+		badSigEvent := &ClientBoardingSignaturesEvent{
+			ClientID:   "client1",
+			Signatures: []*types.BoardingInputSignature{},
+		}
+		err = h.sendEvent(badSigEvent)
+		require.NoError(t, err)
+
+		// Should remain in AwaitingBoardingSigsState.
+		assertStateType[*AwaitingBoardingSigsState](h)
+
+		// Should have error response.
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "expected 1 signatures")
 	})
 }

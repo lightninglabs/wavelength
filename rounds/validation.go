@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -449,4 +450,50 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 	}
 
 	return expectedDescriptor, nil
+}
+
+// ValidateBoardingSignature verifies a client's schnorr signature for a
+// boarding input. The signature is validated against the tapscript
+// collaborative spend path sighash and the client's public key.
+//
+// The boarding tapscript has a collaborative multisig leaf where:
+//   - The owner (client) signs with OP_CHECKSIGVERIFY
+//   - The cosigner (operator) signs with OP_CHECKSIG
+//
+// This function verifies the client's signature for the owner position.
+func ValidateBoardingSignature(boardingInput *BoardingInput,
+	sig *types.BoardingInputSignature, tx *wire.MsgTx,
+	prevOutFetcher txscript.PrevOutputFetcher) error {
+
+	// Get the collaborative leaf from the tapscript (index 0).
+	if len(boardingInput.Tapscript.Leaves) == 0 {
+		return fmt.Errorf("boarding input has no tapscript leaves")
+	}
+
+	collabLeaf := boardingInput.Tapscript.Leaves[0]
+
+	// Create the tap leaf for the collaborative spend path.
+	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Compute the tapscript signature hash for the collaborative spend
+	// path. This is different from keypath signing - we use
+	// CalcTapscriptSignaturehash which takes the TapLeaf directly.
+	sigHash, err := txscript.CalcTapscriptSignaturehash(
+		sigHashes, txscript.SigHashDefault, tx,
+		sig.InputIndex, prevOutFetcher, tapLeaf,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to compute sighash: %w", err)
+	}
+
+	// Verify the schnorr signature against the client's public key.
+	if !sig.ClientSignature.Verify(sigHash, boardingInput.ClientKey) {
+		return fmt.Errorf("invalid signature for input %d",
+			sig.InputIndex)
+	}
+
+	return nil
 }

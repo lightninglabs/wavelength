@@ -312,7 +312,8 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 	switch event.(type) {
 	case *PrepareClientNotificationsEvent:
 		// For each client, create a message with their personalized
-		// data.
+		// data. The PSBT contains WitnessUtxo for inputs, providing
+		// the prevout info clients need to compute sighashes.
 		var outboxMsgs []OutboxEvent
 		for clientID, reg := range s.ClientRegistrations {
 			// Extract VTXO tree paths for this client if they have
@@ -351,6 +352,10 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 				PSBT:                s.PSBT,
 				ChangeOutputIndex:   s.ChangeOutputIndex,
 				VTXOTrees:           s.VTXOTrees,
+				ClientsSubmitted: make(
+					map[clientconn.ClientID]struct{},
+				),
+				CollectedSignatures: make(BoardingSigsMap),
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: outboxMsgs,
@@ -360,17 +365,6 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 	default:
 		return unexpectedEvent(s, "batch-built", event, env), nil
 	}
-}
-
-// ProcessEvent handles the events from the FailedState state.
-// FailedState is a terminal state, so it ignores all events.
-func (s *FailedState) ProcessEvent(_ context.Context, _ Event,
-	_ *Environment) (*StateTransition, error) {
-
-	// Terminal state - remain in FailedState and emit no events.
-	return &StateTransition{
-		NextState: s,
-	}, nil
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
@@ -424,15 +418,13 @@ func buildFailureTransition(env *Environment,
 
 // ProcessEvent handles events in the AwaitingBoardingSigsState. This
 // state waits for clients to submit their boarding input signatures.
-//
-// TODO(elle): Implement ClientBoardingSignaturesEvent handling:
-//   - Validate signatures against expected boarding inputs
-//   - Track which clients have submitted signatures
-//   - When all signatures collected, transition to ServerSigningState
 func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
+	case *ClientBoardingSignaturesEvent:
+		return s.handleBoardingSignatures(evt, env)
+
 	case *BoardingSignaturesTimeoutEvent:
 		// Timeout expired - fail the round.
 		reason := "boarding signature collection timeout"
@@ -452,6 +444,200 @@ func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
 			"awaiting-boarding-sigs: unexpected event: %T", event,
 		)
 	}
+}
+
+// handleBoardingSignatures processes a client's boarding signature submission.
+// It validates the signatures cryptographically against the tapscript
+// collaborative spend path, stores them for later use, and tracks the client
+// as having submitted. When all clients have submitted, it transitions to
+// ServerSigningState.
+func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
+	evt *ClientBoardingSignaturesEvent,
+	env *Environment) (*StateTransition, error) {
+
+	clientID := evt.ClientID
+
+	// Check if client is registered in this round.
+	reg, exists := s.ClientRegistrations[clientID]
+	if !exists {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&ClientErrorResp{
+						Client:   clientID,
+						ErrorMsg: "not registered",
+					},
+				},
+			}),
+		}, nil
+	}
+
+	// Check if client already submitted.
+	if s.hasClientSubmitted(clientID) {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&ClientErrorResp{
+						Client:   clientID,
+						ErrorMsg: "already submitted",
+					},
+				},
+			}),
+		}, nil
+	}
+
+	// Verify signature count matches the number of boarding inputs.
+	if len(evt.Signatures) != len(reg.BoardingInputs) {
+		errMsg := fmt.Sprintf(
+			"expected %d signatures, got %d",
+			len(reg.BoardingInputs), len(evt.Signatures),
+		)
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&ClientErrorResp{
+						Client:   clientID,
+						ErrorMsg: errMsg,
+					},
+				},
+			}),
+		}, nil
+	}
+
+	// Build a map from outpoints to boarding inputs for quick lookup.
+	outpointToInput := make(map[wire.OutPoint]*BoardingInput)
+	for _, bi := range reg.BoardingInputs {
+		outpointToInput[*bi.Outpoint] = bi
+	}
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	tx := s.PSBT.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range s.PSBT.Inputs {
+		if pIn.WitnessUtxo != nil {
+			prevOutFetcher.AddPrevOut(
+				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+			)
+		}
+	}
+
+	// Validate each signature cryptographically.
+	for _, sig := range evt.Signatures {
+		// Look up the boarding input for this signature.
+		boardingInput, found := outpointToInput[sig.Outpoint]
+		if !found {
+			errMsg := fmt.Sprintf(
+				"unknown outpoint: %v", sig.Outpoint,
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						&ClientErrorResp{
+							Client:   clientID,
+							ErrorMsg: errMsg,
+						},
+					},
+				}),
+			}, nil
+		}
+
+		// Verify the input index is valid.
+		if sig.InputIndex < 0 || sig.InputIndex >= len(s.PSBT.Inputs) {
+			errMsg := fmt.Sprintf(
+				"invalid input index: %d", sig.InputIndex,
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						&ClientErrorResp{
+							Client:   clientID,
+							ErrorMsg: errMsg,
+						},
+					},
+				}),
+			}, nil
+		}
+
+		// Verify the schnorr signature against the sighash.
+		err := ValidateBoardingSignature(
+			boardingInput, sig, tx, prevOutFetcher,
+		)
+		if err != nil {
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						&ClientErrorResp{
+							Client:   clientID,
+							ErrorMsg: err.Error(),
+						},
+					},
+				}),
+			}, nil
+		}
+	}
+
+	// Mark client as having submitted and store their signatures.
+	newClientsSubmitted := make(map[clientconn.ClientID]struct{})
+	for id := range s.ClientsSubmitted {
+		newClientsSubmitted[id] = struct{}{}
+	}
+	newClientsSubmitted[clientID] = struct{}{}
+
+	// Copy collected signatures and add the new client's signatures.
+	newCollectedSigs := make(BoardingSigsMap)
+	for id, sigs := range s.CollectedSignatures {
+		newCollectedSigs[id] = sigs
+	}
+	newCollectedSigs[clientID] = evt.Signatures
+
+	// Create new state with updated tracking.
+	newState := &AwaitingBoardingSigsState{
+		ClientRegistrations: s.ClientRegistrations,
+		PSBT:                s.PSBT,
+		ChangeOutputIndex:   s.ChangeOutputIndex,
+		VTXOTrees:           s.VTXOTrees,
+		ClientsSubmitted:    newClientsSubmitted,
+		CollectedSignatures: newCollectedSigs,
+	}
+
+	// Check if all clients have submitted.
+	if newState.allClientsSubmitted() {
+		// Cancel the boarding signatures timeout and transition to
+		// ServerSigningState.
+		//
+		//nolint:ll
+		return &StateTransition{
+			NextState: &ServerSigningState{
+				ClientRegistrations: s.ClientRegistrations,
+				PSBT:                s.PSBT,
+				ChangeOutputIndex:   s.ChangeOutputIndex,
+				VTXOTrees:           s.VTXOTrees,
+				CollectedSignatures: newCollectedSigs,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&CancelTimeoutReq{
+						RoundID: env.RoundID,
+						Phase:   TimeoutPhaseBoardingSigs,
+					},
+				},
+			}),
+		}, nil
+	}
+
+	// Not all clients have submitted yet - remain in current state.
+	return &StateTransition{
+		NextState: newState,
+	}, nil
 }
 
 // buildCommitmentTx constructs the commitment transaction PSBT with boarding
@@ -594,4 +780,39 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 	}
 
 	return indices, nil
+}
+
+// ProcessEvent handles events in the ServerSigningState. This state signs the
+// server's wallet inputs on the commitment transaction.
+//
+// TODO(elle): Implement server signing:
+//   - Sign wallet inputs using WalletController.SignPsbt
+//   - Transition to FinalizedState after signing
+//   - Handle broadcast and persistence
+func (s *ServerSigningState) ProcessEvent(_ context.Context,
+	event Event, _ *Environment) (*StateTransition, error) {
+
+	switch event.(type) {
+	case *RegistrationTimeoutEvent, *BoardingSignaturesTimeoutEvent:
+		// Ignore stale timeouts from previous phases.
+		return &StateTransition{
+			NextState: s,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf(
+			"server-signing: unexpected event: %T", event,
+		)
+	}
+}
+
+// ProcessEvent handles the events from the FailedState state.
+// FailedState is a terminal state, so it ignores all events.
+func (s *FailedState) ProcessEvent(_ context.Context, _ Event,
+	_ *Environment) (*StateTransition, error) {
+
+	// Terminal state - remain in FailedState and emit no events.
+	return &StateTransition{
+		NextState: s,
+	}, nil
 }

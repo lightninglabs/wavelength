@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
@@ -398,8 +400,9 @@ type clientHarness struct {
 	// Client identity.
 	clientID ClientID
 
-	// Primary boarding key.
-	boardingKey *btcec.PublicKey
+	// Primary boarding key and signer (for creating valid signatures).
+	boardingKey    *btcec.PublicKey
+	boardingSigner input.Signer
 
 	// Key index for generating new keys.
 	nextKeyIndex int32
@@ -408,6 +411,10 @@ type clientHarness struct {
 	operatorKey *btcec.PublicKey
 	exitDelay   uint32
 	expiry      uint32
+
+	// submittedBoardingReqs stores boarding requests submitted via
+	// createJoinRequest so they can be used later for signature creation.
+	submittedBoardingReqs []*types.BoardingRequest
 }
 
 // newClientHarness creates a new client harness for testing.
@@ -416,16 +423,17 @@ func newClientHarness(t *testing.T, clientID ClientID, baseKeyIndex int32,
 
 	t.Helper()
 
-	boardingKey, _ := testutils.CreateKey(baseKeyIndex)
+	boardingKey, boardingSigner := testutils.CreateKey(baseKeyIndex)
 
 	return &clientHarness{
-		t:            t,
-		clientID:     clientID,
-		boardingKey:  boardingKey,
-		nextKeyIndex: baseKeyIndex + 1,
-		operatorKey:  operatorKey,
-		exitDelay:    exitDelay,
-		expiry:       expiry,
+		t:              t,
+		clientID:       clientID,
+		boardingKey:    boardingKey,
+		boardingSigner: boardingSigner,
+		nextKeyIndex:   baseKeyIndex + 1,
+		operatorKey:    operatorKey,
+		exitDelay:      exitDelay,
+		expiry:         expiry,
 	}
 }
 
@@ -445,11 +453,17 @@ func (c *clientHarness) createBoardingRequest(
 }
 
 // createJoinRequest creates a ClientJoinRequestEvent from the provided
-// boarding requests. This is used for FSM-level tests.
+// boarding requests. This is used for FSM-level tests. The boarding requests
+// are stored so they can be used later for signature creation.
 func (c *clientHarness) createJoinRequest(
 	boardingReqs []*types.BoardingRequest) *ClientJoinRequestEvent {
 
 	c.t.Helper()
+
+	// Store the boarding requests for later signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
 
 	return &ClientJoinRequestEvent{
 		ClientID: c.clientID,
@@ -484,4 +498,83 @@ func (m *mockWalletController) FundPsbt(ctx context.Context,
 	args := m.Called(ctx, packet, minConfs, feeRate, account)
 
 	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
+}
+
+// createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with
+// real signatures for the given boarding inputs. The client signs each input
+// using the tapscript collaborative spend path.
+func (c *clientHarness) createBoardingSignaturesEvent(
+	state *AwaitingBoardingSigsState) *ClientBoardingSignaturesEvent {
+
+	c.t.Helper()
+
+	// Get the client's registration to find their boarding inputs.
+	reg, exists := state.ClientRegistrations[c.clientID]
+	require.True(c.t, exists, "client %s not registered", c.clientID)
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	tx := state.PSBT.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range state.PSBT.Inputs {
+		if pIn.WitnessUtxo != nil {
+			prevOutFetcher.AddPrevOut(
+				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+			)
+		}
+	}
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Sign each boarding input.
+	var sigs []*types.BoardingInputSignature
+	for _, bi := range reg.BoardingInputs {
+		// Find the input index in the PSBT that matches this outpoint.
+		inputIdx := -1
+		for i, txIn := range tx.TxIn {
+			if txIn.PreviousOutPoint == *bi.Outpoint {
+				inputIdx = i
+				break
+			}
+		}
+		require.NotEqual(c.t, -1, inputIdx,
+			"boarding input not found in PSBT")
+
+		// Get the spend info for the collaborative path.
+		spendInfo, err := scripts.NewVTXOSpendInfo(
+			bi.Tapscript, scripts.VTXOCollabPathLeaf,
+		)
+		require.NoError(c.t, err, "failed to get spend info")
+
+		// Get the prevout for this input.
+		prevOut := state.PSBT.Inputs[inputIdx].WitnessUtxo
+		require.NotNil(c.t, prevOut, "missing WitnessUtxo for input")
+
+		// Create the key descriptor for signing.
+		keyDesc := keychain.KeyDescriptor{
+			PubKey: c.boardingKey,
+		}
+
+		// Sign the input using the collaborative spend path.
+		sig, err := scripts.SignVTXOCollabInput(
+			c.boardingSigner, tx, inputIdx, spendInfo,
+			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+		)
+		require.NoError(c.t, err, "failed to sign boarding input")
+
+		// Convert to schnorr.Signature.
+		schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+		require.NoError(c.t, err, "failed to parse signature")
+
+		sigs = append(sigs, &types.BoardingInputSignature{
+			InputIndex:      inputIdx,
+			Outpoint:        *bi.Outpoint,
+			ClientSignature: schnorrSig,
+		})
+	}
+
+	return &ClientBoardingSignaturesEvent{
+		ClientID:   c.clientID,
+		Signatures: sigs,
+	}
 }
