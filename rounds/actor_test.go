@@ -74,6 +74,33 @@ func (m *mockClientConnRef) clearMessages() {
 	m.messages = nil
 }
 
+// getClientBatchInfo extracts the ClientBatchInfo for a specific client from
+// the captured messages. Returns nil if not found.
+func (m *mockClientConnRef) getClientBatchInfo(
+	clientID ClientID) *ClientBatchInfo {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, msg := range m.messages {
+		sendReq, ok := msg.(*clientconn.SendServerEventRequest)
+		if !ok {
+			continue
+		}
+
+		batchInfo, ok := sendReq.Message.(*ClientBatchInfo)
+		if !ok {
+			continue
+		}
+
+		if batchInfo.Client == clientID {
+			return batchInfo
+		}
+	}
+
+	return nil
+}
+
 // actorRef wraps an Actor and implements actor.TellOnlyRef[ActorMsg] so that
 // the actor can receive asynchronous notifications during tests.
 type actorRef struct {
@@ -182,6 +209,27 @@ func (m *mockTimeoutActor) assertTimeoutScheduled(t *testing.T, roundID RoundID,
 
 	_, ok := m.scheduledIDs[id]
 	require.True(t, ok, "expected timeout scheduled for ID %s", id)
+}
+
+// assertTimeoutCancelled verifies that a timeout was cancelled for the given
+// round ID and phase.
+func (m *mockTimeoutActor) assertTimeoutCancelled(roundID RoundID,
+	phase TimeoutPhase) {
+
+	m.t.Helper()
+
+	id := makeTimeoutID(roundID, phase)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, cancelledID := range m.cancelledIDs {
+		if cancelledID == id {
+			return
+		}
+	}
+
+	m.t.Fatalf("expected timeout cancelled for ID %s", id)
 }
 
 // actorTestHarness provides test infrastructure for the rounds Actor.
@@ -383,6 +431,11 @@ func (c *actorClientHarness) createActorJoinRequest(
 	boardingReqs []*types.BoardingRequest) *JoinRoundRequest {
 
 	c.t.Helper()
+
+	// Store the boarding requests for later signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
 
 	return &JoinRoundRequest{
 		ClientID: c.clientID,
@@ -782,5 +835,132 @@ func TestActorFailureHandling(t *testing.T) {
 
 		// Verify Lock and Unlock were called as expected.
 		h.assertMockExpectations()
+	})
+}
+
+// TestActorBoardingSignatures tests the actor's handling of boarding signature
+// submissions via RoundMsg.
+func TestActorBoardingSignatures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid signatures transition to signing", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Create a client and join the round with a boarding input.
+		client := h.newClient("client1", 10)
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding-input")),
+			Index: 0,
+		}
+
+		// Record the round ID before join.
+		roundID := h.actor.currentRound.RoundID
+
+		// Set up expectation that Lock will be called when client
+		// joins.
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, roundID).
+			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		client.mockBoardingUTXO(outpoint, 10)
+		boardingReq := client.createBoardingRequest(&outpoint)
+		req := client.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+
+		err := h.sendJoinRequest(req)
+		require.NoError(t, err)
+
+		// Fire the registration timeout to seal and build the batch.
+		h.timeoutActor.FireTimeout(
+			h.ctx, roundID, TimeoutPhaseRegistration,
+		)
+
+		// Verify the round is now in AwaitingBoardingSigsState.
+		round := h.actor.getRound(roundID)
+		require.NotNil(t, round, "round should exist")
+
+		currentState, err := round.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*AwaitingBoardingSigsState)
+		require.True(t, ok, "should be in AwaitingBoardingSigsState")
+
+		// Verify boarding signatures timeout was scheduled.
+		h.timeoutActor.assertTimeoutScheduled(
+			t, roundID, TimeoutPhaseBoardingSigs,
+		)
+
+		// Get the ClientBatchInfo that was sent to the client. This
+		// mimics the real flow where the client receives the PSBT via
+		// the ClientBatchInfo message.
+		batchInfo := h.clients.getClientBatchInfo(client.clientID)
+		require.NotNil(t, batchInfo, "client should have received "+
+			"ClientBatchInfo")
+		require.NotNil(t, batchInfo.BatchPSBT, "BatchPSBT should not "+
+			"be nil")
+
+		// Create signatures using the PSBT from ClientBatchInfo. This
+		// mimics how a real client would create signatures using the
+		// batch info they received.
+		sigEvent := client.createBoardingSignaturesFromPSBT(
+			batchInfo.BatchPSBT,
+		)
+		roundMsg := &RoundMsg{
+			RoundID: roundID,
+			Event:   sigEvent,
+		}
+
+		result := h.actor.Receive(h.ctx, roundMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err, "submitting signatures should succeed")
+
+		// Verify the round transitioned to ServerSigningState.
+		newState, err := round.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok = newState.(*ServerSigningState)
+		require.True(t, ok,
+			"expected ServerSigningState, got %T", newState)
+
+		// Verify the boarding signatures timeout was cancelled.
+		h.timeoutActor.assertTimeoutCancelled(
+			roundID, TimeoutPhaseBoardingSigs,
+		)
+
+		// Verify Lock was called as expected.
+		h.locker.AssertExpectations(t)
+	})
+
+	t.Run("signatures for unknown round rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Send signatures for a round that doesn't exist.
+		unknownRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		sigEvent := &ClientBoardingSignaturesEvent{
+			ClientID:   "client1",
+			Signatures: nil,
+		}
+		roundMsg := &RoundMsg{
+			RoundID: unknownRoundID,
+			Event:   sigEvent,
+		}
+
+		result := h.actor.Receive(h.ctx, roundMsg)
+		_, err = result.Unpack()
+		require.Error(t, err, "unknown round should error")
+		require.Contains(t, err.Error(), "not found")
 	})
 }

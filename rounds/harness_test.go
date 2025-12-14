@@ -578,3 +578,90 @@ func (c *clientHarness) createBoardingSignaturesEvent(
 		Signatures: sigs,
 	}
 }
+
+// createBoardingSignaturesFromPSBT creates a ClientBoardingSignaturesEvent
+// using the PSBT received from ClientBatchInfo. This mimics the real client
+// flow where the client uses their stored boarding requests and the received
+// PSBT to create signatures.
+func (c *clientHarness) createBoardingSignaturesFromPSBT(
+	p *psbt.Packet) *ClientBoardingSignaturesEvent {
+
+	c.t.Helper()
+
+	require.NotEmpty(c.t, c.submittedBoardingReqs,
+		"no boarding requests stored - call createJoinRequest first")
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	tx := p.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range p.Inputs {
+		if pIn.WitnessUtxo != nil {
+			prevOutFetcher.AddPrevOut(
+				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+			)
+		}
+	}
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Sign each boarding input using the stored boarding requests.
+	var sigs []*types.BoardingInputSignature
+	for _, boardReq := range c.submittedBoardingReqs {
+		// Find the input index in the PSBT that matches this outpoint.
+		inputIdx := -1
+		for i, txIn := range tx.TxIn {
+			if txIn.PreviousOutPoint == *boardReq.Outpoint {
+				inputIdx = i
+
+				break
+			}
+		}
+		require.NotEqual(c.t, -1, inputIdx)
+
+		// Build the tapscript from the boarding request parameters.
+		tapscript, err := scripts.VTXOTapScript(
+			boardReq.ClientKey, boardReq.OperatorKey,
+			boardReq.ExitDelay,
+		)
+		require.NoError(c.t, err, "failed to create tapscript")
+
+		// Get the spend info for the collaborative path.
+		spendInfo, err := scripts.NewVTXOSpendInfo(
+			tapscript, scripts.VTXOCollabPathLeaf,
+		)
+		require.NoError(c.t, err, "failed to get spend info")
+
+		// Get the prevout for this input.
+		prevOut := p.Inputs[inputIdx].WitnessUtxo
+		require.NotNil(c.t, prevOut, "missing WitnessUtxo for input %d",
+			inputIdx)
+
+		// Create the key descriptor for signing.
+		keyDesc := keychain.KeyDescriptor{
+			PubKey: c.boardingKey,
+		}
+
+		// Sign the input using the collaborative spend path.
+		sig, err := scripts.SignVTXOCollabInput(
+			c.boardingSigner, tx, inputIdx, spendInfo,
+			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+		)
+		require.NoError(c.t, err, "failed to sign boarding input")
+
+		// Convert to schnorr.Signature.
+		schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+		require.NoError(c.t, err, "failed to parse signature")
+
+		sigs = append(sigs, &types.BoardingInputSignature{
+			InputIndex:      inputIdx,
+			Outpoint:        *boardReq.Outpoint,
+			ClientSignature: schnorrSig,
+		})
+	}
+
+	return &ClientBoardingSignaturesEvent{
+		ClientID:   c.clientID,
+		Signatures: sigs,
+	}
+}
