@@ -387,7 +387,7 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 		Index: 0,
 	}
 	batchOutput := &wire.TxOut{
-		Value:    15000,
+		Value:    10000,
 		PkScript: []byte("batch_output"),
 	}
 
