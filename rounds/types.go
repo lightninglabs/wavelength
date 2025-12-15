@@ -49,3 +49,22 @@ type BoardingInput struct {
 	// that corresponds to the operator key in the tapscript.
 	OperatorKeyDesc *keychain.KeyDescriptor
 }
+
+// ClientRegistration holds all validated data for a client's join request.
+// This is created after validation succeeds and stored in the FSM state.
+type ClientRegistration struct {
+	// ClientID is the unique identifier for this client.
+	ClientID ClientID
+
+	// BoardingInputs are the boarding UTXOs this client is contributing.
+	BoardingInputs []*BoardingInput
+
+	// LeaveOutputs are the leave request outputs for this client.
+	LeaveOutputs []*wire.TxOut
+
+	// VTXODescriptors maps signing key hex strings to their VTXO
+	// descriptors. Each VTXO request has a unique signing key.
+	VTXODescriptors map[SigningKeyHex]*tree.VTXODescriptor
+
+	// TODO(elle): Add ForfeitRequests when implemented.
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/batch"
 )
 
@@ -26,6 +27,9 @@ type Environment struct {
 
 	// Terms contains the operator's terms for this round.
 	Terms *batch.Terms
+
+	// Log is the logger for the FSM.
+	Log btclog.Logger
 }
 
 // Name returns the unique identifier for this FSM instance.

@@ -164,8 +164,12 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		return nil, fmt.Errorf("unable to generate round ID: %w", err)
 	}
 
+	fsmPrefix := roundID.LogPrefix()
+	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
+
 	env := &Environment{
 		RoundID: roundID,
+		Log:     fsmLogger,
 	}
 
 	fsmCfg := StateMachineCfg{

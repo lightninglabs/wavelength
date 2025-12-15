@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/input"
@@ -97,6 +98,26 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	return h
 }
 
+// allowBoardingInput sets up the boarding locker mock to allow the given
+// outpoint (i.e., it's not locked by any round).
+func (h *fsmTestHarness) allowBoardingInput(outpoint *wire.OutPoint) {
+	h.Helper()
+
+	h.boardingLocker.On("IsLocked", mock.Anything, outpoint).
+		Return(false, RoundID{}, nil)
+}
+
+// lockBoardingInput sets up the boarding locker mock to indicate the given
+// outpoint is already locked by another round.
+func (h *fsmTestHarness) lockBoardingInput(outpoint *wire.OutPoint,
+	lockedBy RoundID) {
+
+	h.Helper()
+
+	h.boardingLocker.On("IsLocked", mock.Anything, outpoint).
+		Return(true, lockedBy, nil)
+}
+
 // mockBoardingUTXO sets up a ChainSource mock for a boarding UTXO with the
 // specified parameters.
 func (h *fsmTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
@@ -116,6 +137,27 @@ func (h *fsmTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
 		Confirmations: confirmations,
 	}
 	h.chainSource.On("GetUTXO", outpoint).Return(utxo, nil)
+}
+
+// expectBoardingInputLock sets up the boarding locker mock to expect a Lock
+// call for the given outpoint.
+func (h *fsmTestHarness) expectBoardingInputLock(outpoint *wire.OutPoint) {
+	h.Helper()
+
+	h.boardingLocker.On("Lock", mock.Anything, outpoint, h.env.RoundID).
+		Return(nil)
+}
+
+// setupValidBoardingInput sets up both the boarding locker (allowed) and chain
+// source (valid UTXO) mocks for a boarding input that should pass validation.
+func (h *fsmTestHarness) setupValidBoardingInput(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64) {
+
+	h.Helper()
+
+	h.allowBoardingInput(outpoint)
+	h.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
+	h.expectBoardingInputLock(outpoint)
 }
 
 // buildExpectedPkScript builds the expected PkScript for a boarding input.
@@ -144,8 +186,6 @@ func buildExpectedPkScript(t *testing.T, clientKey *btcec.PublicKey,
 // messages. The state machine executor automatically handles dispatching
 // internal events, so this method simply awaits the result and captures
 // the accumulated outbox events.
-//
-//nolint:unused
 func (h *fsmTestHarness) sendEvent(event Event) error {
 	h.Helper()
 
@@ -198,8 +238,6 @@ func (h *fsmTestHarness) assertOutboxLen(n int) {
 
 // assertOutboxMessageType asserts that the outbox contains a message of the
 // given type at the specified index and returns it cast to that type.
-//
-//nolint:unused
 func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 	index int) T {
 
@@ -211,6 +249,36 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 	require.True(h, ok)
 
 	return msg
+}
+
+// assertOutboxContains asserts that the outbox contains at least one message
+// of the given type and returns the first match.
+func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
+	h.Helper()
+
+	var (
+		result T
+		found  bool
+	)
+
+	for _, msg := range h.outboxMessages {
+		if typed, ok := msg.(T); ok {
+			result = typed
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		require.Failf(
+			h,
+			"outbox missing message",
+			"expected outbox to contain %T",
+			result,
+		)
+	}
+
+	return result
 }
 
 // mockBoardingInputLocker is a mock implementation of BoardingInputLocker for
@@ -265,4 +333,73 @@ func (m *mockChainSource) GetUTXO(outpoint wire.OutPoint) (*UTXO, error) {
 	}
 
 	return args.Get(0).(*UTXO), args.Error(1) //nolint:forcetypeassert
+}
+
+// clientHarness helps simulate a client in tests. It tracks the client's keys
+// and can generate boarding and VTXO requests for FSM-level tests.
+type clientHarness struct {
+	t *testing.T
+
+	// Client identity.
+	clientID ClientID
+
+	// Primary boarding key.
+	boardingKey *btcec.PublicKey
+
+	// Key index for generating new keys.
+	nextKeyIndex int32
+
+	// Default values for requests.
+	operatorKey *btcec.PublicKey
+	exitDelay   uint32
+	expiry      uint32
+}
+
+// newClientHarness creates a new client harness for testing.
+func newClientHarness(t *testing.T, clientID ClientID, baseKeyIndex int32,
+	operatorKey *btcec.PublicKey, exitDelay, expiry uint32) *clientHarness {
+
+	t.Helper()
+
+	boardingKey, _ := testutils.CreateKey(baseKeyIndex)
+
+	return &clientHarness{
+		t:            t,
+		clientID:     clientID,
+		boardingKey:  boardingKey,
+		nextKeyIndex: baseKeyIndex + 1,
+		operatorKey:  operatorKey,
+		exitDelay:    exitDelay,
+		expiry:       expiry,
+	}
+}
+
+// createBoardingRequest creates a BoardingRequest for this client using the
+// boarding key and default operator key and exit delay.
+func (c *clientHarness) createBoardingRequest(
+	outpoint *wire.OutPoint) *types.BoardingRequest {
+
+	c.t.Helper()
+
+	return &types.BoardingRequest{
+		Outpoint:    outpoint,
+		ClientKey:   c.boardingKey,
+		OperatorKey: c.operatorKey,
+		ExitDelay:   c.exitDelay,
+	}
+}
+
+// createJoinRequest creates a ClientJoinRequestEvent from the provided
+// boarding requests. This is used for FSM-level tests.
+func (c *clientHarness) createJoinRequest(
+	boardingReqs []*types.BoardingRequest) *ClientJoinRequestEvent {
+
+	c.t.Helper()
+
+	return &ClientJoinRequestEvent{
+		ClientID: c.clientID,
+		Request: &types.JoinRoundRequest{
+			BoardingReqs: boardingReqs,
+		},
+	}
 }
