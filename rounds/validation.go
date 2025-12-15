@@ -8,11 +8,13 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -102,7 +104,134 @@ var (
 	// ErrLeaveAmountTooLow is returned when a leave request output value
 	// is below the operator's minimum.
 	ErrLeaveAmountTooLow = errors.New("leave amount is below minimum")
+
+	// ErrDuplicateBoardingRequest is returned when a join request contains
+	// duplicate boarding request outpoints.
+	ErrDuplicateBoardingRequest = errors.New(
+		"duplicate boarding request",
+	)
+
+	// ErrOutputExceedsInput is returned when the total output value (leave
+	// + VTXO) exceeds the total boarding input value.
+	ErrOutputExceedsInput = errors.New(
+		"output total exceeds boarding input total",
+	)
 )
+
+// JoinRequestResult holds the validated results from a join request.
+type JoinRequestResult struct {
+	// BoardingInputs contains the validated boarding inputs.
+	BoardingInputs []*BoardingInput
+
+	// RequiredOutputs contains the outputs from leave requests that must
+	// be included in the round transaction.
+	RequiredOutputs []*wire.TxOut
+
+	// VTXODescriptors maps signing key hex strings to their VTXO
+	// descriptors. The map key is the serialized public key.
+	VTXODescriptors map[SigningKeyHex]*tree.VTXODescriptor
+
+	// SigningKeys contains the unique signing keys from VTXO requests.
+	// These are used for MuSig2 signing sessions when building the VTXO
+	// tree. The map key is the serialized public key to ensure uniqueness.
+	SigningKeys map[SigningKeyHex]*btcec.PublicKey
+}
+
+// ValidateJoinRequest validates a client's join request for the round. It
+// verifies:
+//   - Each boarding request is valid (no duplicates, passes individual
+//     validation).
+//   - Each leave request is valid (non-nil output, positive value, non-empty
+//     pkScript).
+//   - Each VTXO request is valid (passes individual validation).
+//   - The total output value (leave + VTXO) does not exceed the total input
+//     value.
+//
+// TODO(elle): Add forfeit request validation.
+//
+// On success, returns JoinRequestResult containing all validated data.
+func ValidateJoinRequest(ctx context.Context, env *Environment,
+	req *types.JoinRoundRequest) (*JoinRequestResult, error) {
+
+	var (
+		boardingInputs  []*BoardingInput
+		requiredOutputs []*wire.TxOut
+		vtxoDescriptors = make(map[SigningKeyHex]*tree.VTXODescriptor)
+		signingKeys     = make(map[SigningKeyHex]*btcec.PublicKey)
+		totalInputValue btcutil.Amount
+		totalLeaveValue btcutil.Amount
+		totalVTXOValue  btcutil.Amount
+	)
+
+	// Validate each boarding request individually and also make sure that
+	// there are no duplicate inputs across all boarding requests.
+	boardReqs := fn.NewSet[wire.OutPoint]()
+	for _, boardReq := range req.BoardingReqs {
+		if boardReqs.Contains(*boardReq.Outpoint) {
+			return nil, fmt.Errorf("%w: %v",
+				ErrDuplicateBoardingRequest, boardReq.Outpoint)
+		}
+
+		boardingInput, err := ValidateBoardingRequest(
+			ctx, env, boardReq,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid boarding request "+
+				"for outpoint %v: %w", boardReq.Outpoint, err)
+		}
+
+		boardReqs.Add(*boardReq.Outpoint)
+		boardingInputs = append(boardingInputs, boardingInput)
+		totalInputValue += boardingInput.Value
+	}
+
+	// Validate each leave request.
+	for i, leaveReq := range req.LeaveReqs {
+		err := ValidateLeaveRequest(env.Terms, leaveReq)
+		if err != nil {
+			return nil, fmt.Errorf("invalid leave request "+
+				"at index %d: %w", i, err)
+		}
+
+		requiredOutputs = append(requiredOutputs, leaveReq.Output)
+		totalLeaveValue += btcutil.Amount(leaveReq.Output.Value)
+	}
+
+	// Validate each VTXO request.
+	for _, vtxoReq := range req.VTXOReqs {
+		descriptor, err := ValidateVTXORequest(
+			env.Terms, vtxoReq, signingKeys,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// Track this signing key as used and map it to the descriptor.
+		signingKeyVertex := route.NewVertex(vtxoReq.SigningKey.PubKey)
+		signingKeys[signingKeyVertex] = vtxoReq.SigningKey.PubKey
+		vtxoDescriptors[signingKeyVertex] = descriptor
+
+		totalVTXOValue += vtxoReq.Amount
+	}
+
+	// Ensure the client isn't asking for more output value than they are
+	// providing as input. This is a basic balance check - the client's
+	// leave request total + VTXO total cannot exceed their boarding input
+	// total.
+	totalOutputValue := totalLeaveValue + totalVTXOValue
+	if totalOutputValue > totalInputValue {
+		return nil, fmt.Errorf("%w: got %d sats, max %d sats",
+			ErrOutputExceedsInput, totalOutputValue,
+			totalInputValue)
+	}
+
+	return &JoinRequestResult{
+		BoardingInputs:  boardingInputs,
+		RequiredOutputs: requiredOutputs,
+		VTXODescriptors: vtxoDescriptors,
+		SigningKeys:     signingKeys,
+	}, nil
+}
 
 // ValidateLeaveRequest validates a single leave request. It verifies:
 //   - The output is not nil.

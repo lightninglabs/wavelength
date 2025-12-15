@@ -769,3 +769,340 @@ func TestValidateLeaveRequest(t *testing.T) {
 		require.ErrorIs(t, err, ErrLeaveOutputEmptyPkScript)
 	})
 }
+
+// TestValidateJoinRequest tests the ValidateJoinRequest validation function.
+func TestValidateJoinRequest(t *testing.T) {
+	t.Parallel()
+
+	clientPub, _ := testutils.CreateKey(2)
+
+	outpoint1 := wire.OutPoint{
+		Hash:  [32]byte{0x01},
+		Index: 0,
+	}
+
+	outpoint2 := wire.OutPoint{
+		Hash:  [32]byte{0x02},
+		Index: 1,
+	}
+
+	t.Run("multiple valid boarding requests", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Mock locker for both outpoints.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint2).
+			Return(false, RoundID{}, nil)
+
+		// Mock ChainSource for both outpoints.
+		exitDelay := uint32(144)
+		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.mockBoardingUTXO(outpoint2, clientPub, exitDelay, 10)
+
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{
+				{
+					Outpoint:    &outpoint1,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+				{
+					Outpoint:    &outpoint2,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+			},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.NoError(t, err)
+		require.Len(t, result.BoardingInputs, 2)
+		require.Equal(t, &outpoint1, result.BoardingInputs[0].Outpoint)
+		require.Equal(t, &outpoint2, result.BoardingInputs[1].Outpoint)
+
+		h.boardingLocker.AssertExpectations(t)
+	})
+
+	t.Run("duplicate boarding request outpoints", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Mock locker for outpoint1.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+
+		// Mock ChainSource for outpoint1.
+		exitDelay := uint32(144)
+		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+
+		// Create join request with duplicate outpoints.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{
+				{
+					Outpoint:    &outpoint1,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+				{
+					// Duplicate!
+					Outpoint:    &outpoint1,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+			},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrDuplicateBoardingRequest)
+	})
+
+	t.Run("invalid boarding request in join", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a RoundID for the lock.
+		otherRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		// Mock locker: first succeeds, second fails (already locked).
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint2).
+			Return(true, otherRoundID, nil)
+
+		// Mock ChainSource for outpoint1.
+		exitDelay := uint32(144)
+		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{
+				{
+					Outpoint:    &outpoint1,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+				{
+					Outpoint:    &outpoint2,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					ExitDelay:   exitDelay,
+				},
+			},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrBoardingInputLocked)
+	})
+
+	t.Run("valid leave request within balance", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Mock locker for outpoint1.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+
+		// Mock ChainSource for outpoint1 (100000 sats).
+		exitDelay := uint32(144)
+		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+
+		// Boarding input is 100000 sats, leave is 50000 sats.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   exitDelay,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    50000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.NoError(t, err)
+		require.Len(t, result.BoardingInputs, 1)
+		require.Len(t, result.RequiredOutputs, 1)
+		require.Equal(t, int64(50000), result.RequiredOutputs[0].Value)
+	})
+
+	t.Run("leave request exceeds boarding input", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Mock locker for outpoint1.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+
+		// Mock ChainSource for outpoint1 (100000 sats).
+		exitDelay := uint32(144)
+		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+
+		// Boarding input is 100000 sats, leave is 150000 sats.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   exitDelay,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    150000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrOutputExceedsInput)
+	})
+
+	t.Run("boarding with VTXO requests", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		// Mock boarding input with 100k sats.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.mockBoardingUTXO(outpoint1, clientPub, 144, 10)
+
+		// Create VTXO request descriptors.
+		vtxoKey1, _ := testutils.CreateKey(10)
+		vtxoKey2, _ := testutils.CreateKey(11)
+
+		desc1, err := tree.NewVTXODescriptor(
+			30000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		desc2, err := tree.NewVTXODescriptor(
+			40000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   144,
+			}},
+			VTXOReqs: []*types.VTXORequest{
+				{
+					Amount:      30000,
+					PkScript:    desc1.PkScript,
+					Expiry:      144,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					SigningKey: keychain.KeyDescriptor{
+						PubKey: vtxoKey1,
+					},
+				},
+				{
+					Amount:      40000,
+					PkScript:    desc2.PkScript,
+					Expiry:      144,
+					ClientKey:   clientPub,
+					OperatorKey: h.operatorPub,
+					SigningKey: keychain.KeyDescriptor{
+						PubKey: vtxoKey2,
+					},
+				},
+			},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.BoardingInputs, 1)
+		require.Len(t, result.VTXODescriptors, 2)
+		require.Len(t, result.SigningKeys, 2)
+
+		// Verify VTXO descriptors and signing keys tracked.
+		key1Vertex := route.NewVertex(vtxoKey1)
+		key2Vertex := route.NewVertex(vtxoKey2)
+		require.Contains(t, result.VTXODescriptors, key1Vertex)
+		require.Contains(t, result.VTXODescriptors, key2Vertex)
+		require.Equal(t, desc1.PkScript,
+			result.VTXODescriptors[key1Vertex].PkScript)
+		require.Equal(t, desc2.PkScript,
+			result.VTXODescriptors[key2Vertex].PkScript)
+		require.Contains(t, result.SigningKeys, key1Vertex)
+		require.Contains(t, result.SigningKeys, key2Vertex)
+	})
+
+	t.Run("VTXO output exceeds input rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinVTXOAmount = 1000
+		h.env.Terms.MaxVTXOAmount = 1000000
+		h.env.Terms.VTXOExitDelay = 100
+
+		// Mock boarding input with 100k sats.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.mockBoardingUTXO(outpoint1, clientPub, 144, 10)
+
+		vtxoKey, _ := testutils.CreateKey(10)
+
+		// Request VTXO for more than boarding input value.
+		desc, err := tree.NewVTXODescriptor(
+			150000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   144,
+			}},
+			VTXOReqs: []*types.VTXORequest{{
+				Amount:      150000,
+				PkScript:    desc.PkScript,
+				Expiry:      144,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				SigningKey: keychain.KeyDescriptor{
+					PubKey: vtxoKey,
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrOutputExceedsInput)
+	})
+}
