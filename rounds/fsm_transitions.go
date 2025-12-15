@@ -61,7 +61,6 @@ func lockBoardingInputs(ctx context.Context, env *Environment,
 			return fmt.Errorf("failed to lock boarding "+
 				"input %v: %v", input.Outpoint, err)
 		}
-		return err
 	}
 
 	return nil

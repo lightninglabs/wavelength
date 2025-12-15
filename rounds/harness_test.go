@@ -57,7 +57,8 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		PubKey: operatorPub,
 	}
 
-	// Create mocks.
+	// Create mocks. Don't use default expectations for FSM tests since
+	// they need precise control over mock behavior.
 	mockLocker := &mockBoardingInputLocker{}
 	mockChainSrc := &mockChainSource{}
 
@@ -285,6 +286,23 @@ func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
 // testing using testify/mock.
 type mockBoardingInputLocker struct {
 	mock.Mock
+}
+
+// newMockBoardingInputLocker creates a new mock boarding input locker with
+// default permissive expectations that allow it to work without explicit setup.
+func newMockBoardingInputLocker() *mockBoardingInputLocker {
+	m := &mockBoardingInputLocker{}
+
+	// Set up default permissive expectations that always succeed. These can
+	// be overridden by specific expectations in tests.
+	m.On("Lock", mock.Anything, mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+	m.On("Unlock", mock.Anything, mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+	m.On("IsLocked", mock.Anything, mock.Anything).
+		Return(false, RoundID{}, nil).Maybe()
+
+	return m
 }
 
 // Lock is a mock implementation of BoardingInputLocker.Lock.

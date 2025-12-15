@@ -71,7 +71,7 @@ type Actor struct {
 // The format is "roundID:phase" which allows the actor to identify both which
 // round the timeout belongs to and which phase scheduled it.
 func makeTimeoutID(roundID RoundID, phase TimeoutPhase) timeout.ID {
-	return timeout.ID(fmt.Sprintf("%s:%s", roundID, phase))
+	return timeout.ID(fmt.Sprintf("%s:%s", uuid.UUID(roundID), phase))
 }
 
 // parseTimeoutID extracts the round ID and phase from a composite timeout ID.
