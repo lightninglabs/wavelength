@@ -84,3 +84,19 @@ type BoardingInputLocker interface {
 	IsLocked(ctx context.Context,
 		outpoint *wire.OutPoint) (bool, RoundID, error)
 }
+
+// ChainSource provides access to blockchain data for UTXO validation.
+type ChainSource interface {
+	// GetUTXO fetches the UTXO for the given outpoint. Returns an error
+	// if the UTXO doesn't exist or has been spent.
+	GetUTXO(outpoint wire.OutPoint) (*UTXO, error)
+}
+
+// UTXO represents a UTXO along with its confirmation count.
+type UTXO struct {
+	// Output is the transaction output.
+	Output *wire.TxOut
+
+	// Confirmations is the number of confirmations for this UTXO.
+	Confirmations int64
+}

@@ -14,6 +14,9 @@ type Environment struct {
 	// BoardingInputLocker manages locks on boarding inputs to prevent
 	// double-spending across concurrent rounds.
 	BoardingInputLocker BoardingInputLocker
+
+	// ChainSource provides access to blockchain data for UTXO validation.
+	ChainSource ChainSource
 }
 
 // Name returns the unique identifier for this FSM instance.

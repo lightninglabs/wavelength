@@ -18,6 +18,7 @@ type fsmTestHarness struct {
 
 	// Mocks (testify/mock.Mock based).
 	boardingLocker *mockBoardingInputLocker
+	chainSource    *mockChainSource
 
 	// Environment for FSM.
 	env *Environment
@@ -40,10 +41,12 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 
 	// Create mocks.
 	mockLocker := &mockBoardingInputLocker{}
+	mockChainSrc := &mockChainSource{}
 
 	env := Environment{
 		RoundID:             roundID,
 		BoardingInputLocker: mockLocker,
+		ChainSource:         mockChainSrc,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -59,6 +62,7 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		env:            &env,
 		fsm:            &fsm,
 		boardingLocker: mockLocker,
+		chainSource:    mockChainSrc,
 		outboxMessages: make([]OutboxEvent, 0),
 	}
 
@@ -174,4 +178,20 @@ func (m *mockBoardingInputLocker) IsLocked(ctx context.Context,
 	}
 
 	return args.Bool(0), roundID, args.Error(2)
+}
+
+// mockChainSource mocks the ChainSource interface for testing.
+type mockChainSource struct {
+	mock.Mock
+}
+
+// GetUTXO is a mock implementation of ChainSource.GetUTXO.
+func (m *mockChainSource) GetUTXO(outpoint wire.OutPoint) (*UTXO, error) {
+	args := m.Called(outpoint)
+
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	return args.Get(0).(*UTXO), args.Error(1) //nolint:forcetypeassert
 }
