@@ -648,3 +648,124 @@ func TestValidateVTXORequest(t *testing.T) {
 		require.NotNil(t, result2)
 	})
 }
+
+// TestValidateLeaveRequest tests the ValidateLeaveRequest function.
+func TestValidateLeaveRequest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid leave request succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    50000,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.NoError(t, err)
+	})
+
+	t.Run("nil output rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: nil,
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.ErrorIs(t, err, ErrLeaveOutputNil)
+	})
+
+	t.Run("zero value rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    0,
+				PkScript: []byte{0x00, 0x14},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.ErrorIs(t, err, ErrLeaveOutputValueInvalid)
+	})
+
+	t.Run("negative value rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    -100,
+				PkScript: []byte{0x00, 0x14},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.ErrorIs(t, err, ErrLeaveOutputValueInvalid)
+	})
+
+	t.Run("amount below minimum rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    5000,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.ErrorIs(t, err, ErrLeaveAmountTooLow)
+	})
+
+	t.Run("amount at minimum succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    10000,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.NoError(t, err)
+	})
+
+	t.Run("empty pkScript rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.env.Terms.MinLeaveAmount = 10000
+
+		req := &types.LeaveRequest{
+			Output: &wire.TxOut{
+				Value:    50000,
+				PkScript: []byte{},
+			},
+		}
+
+		err := ValidateLeaveRequest(h.env.Terms, req)
+		require.ErrorIs(t, err, ErrLeaveOutputEmptyPkScript)
+	})
+}

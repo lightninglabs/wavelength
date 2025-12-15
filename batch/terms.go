@@ -45,4 +45,7 @@ type Terms struct {
 
 	// VTXOExitDelay is the minimum exit delay for VTXO requests.
 	VTXOExitDelay uint32
+
+	// MinLeaveAmount is the minimum amount for a leave request output.
+	MinLeaveAmount btcutil.Amount
 }

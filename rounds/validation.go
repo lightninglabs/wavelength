@@ -83,7 +83,57 @@ var (
 	// match the expected descriptor.
 	ErrVTXOPkScriptMismatch = errors.New("VTXO pkScript does not match " +
 		"expected descriptor")
+
+	// ErrLeaveOutputNil is returned when a leave request has a nil output.
+	ErrLeaveOutputNil = errors.New("leave request has nil output")
+
+	// ErrLeaveOutputValueInvalid is returned when a leave request output
+	// value is not positive.
+	ErrLeaveOutputValueInvalid = errors.New(
+		"leave request output value must be positive",
+	)
+
+	// ErrLeaveOutputEmptyPkScript is returned when a leave request output
+	// has an empty pkScript.
+	ErrLeaveOutputEmptyPkScript = errors.New(
+		"leave request output has empty pkScript",
+	)
+
+	// ErrLeaveAmountTooLow is returned when a leave request output value
+	// is below the operator's minimum.
+	ErrLeaveAmountTooLow = errors.New("leave amount is below minimum")
 )
+
+// ValidateLeaveRequest validates a single leave request. It verifies:
+//   - The output is not nil.
+//   - The output value is positive.
+//   - The output value meets the minimum amount requirement.
+//   - The pkScript is not empty.
+func ValidateLeaveRequest(terms *batch.Terms,
+	req *types.LeaveRequest) error {
+
+	if req.Output == nil {
+		return ErrLeaveOutputNil
+	}
+
+	if req.Output.Value <= 0 {
+		return fmt.Errorf("%w: got %d", ErrLeaveOutputValueInvalid,
+			req.Output.Value)
+	}
+
+	// Check that the output value meets the minimum requirement.
+	if btcutil.Amount(req.Output.Value) < terms.MinLeaveAmount {
+		return fmt.Errorf("%w: got %v, want %v", ErrLeaveAmountTooLow,
+			btcutil.Amount(req.Output.Value),
+			terms.MinLeaveAmount)
+	}
+
+	if len(req.Output.PkScript) == 0 {
+		return ErrLeaveOutputEmptyPkScript
+	}
+
+	return nil
+}
 
 // ValidateBoardingRequest validates a boarding request from a client. It
 // verifies:
