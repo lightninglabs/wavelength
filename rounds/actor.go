@@ -288,9 +288,10 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 	}
 
 	fsmCfg := StateMachineCfg{
-		InitialState: &CreatedState{},
-		Env:          env,
-		Logger:       a.log.WithPrefix(roundID.LogPrefix()),
+		InitialState:  &CreatedState{},
+		Env:           env,
+		Logger:        a.log.WithPrefix(fsmPrefix),
+		ErrorReporter: newLoggingErrorReporter(fsmLogger),
 	}
 	fsm := protofsm.NewStateMachine(fsmCfg)
 	fsm.Start(ctx)

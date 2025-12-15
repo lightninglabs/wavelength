@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -100,3 +101,23 @@ type UTXO struct {
 	// Confirmations is the number of confirmations for this UTXO.
 	Confirmations int64
 }
+
+// loggingErrorReporter implements protofsm.ErrorReporter by logging errors
+// using a given logger.
+type loggingErrorReporter struct {
+	log btclog.Logger
+}
+
+// newLoggingErrorReporter creates an error reporter that logs errors with the
+// given logger.
+func newLoggingErrorReporter(log btclog.Logger) *loggingErrorReporter {
+	return &loggingErrorReporter{log: log}
+}
+
+// ReportError logs the error using the configured logger.
+func (r *loggingErrorReporter) ReportError(err error) {
+	r.log.Errorf("FSM error: %v", err)
+}
+
+// Compile-time check that loggingErrorReporter implements ErrorReporter.
+var _ protofsm.ErrorReporter = (*loggingErrorReporter)(nil)
