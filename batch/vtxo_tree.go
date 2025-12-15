@@ -1,6 +1,7 @@
 package batch
 
 import (
+	"bytes"
 	"fmt"
 	"iter"
 
@@ -42,13 +43,16 @@ type TreeContext struct {
 	// terms holds the batch terms used to create the VTXO trees.
 	terms *Terms
 
-	// batches holds the VTXO descriptors for each batch/tree.
-	// The number of batches matches the number of outputs.
-	batches [][]tree.VTXODescriptor
+	// batches holds the VTXO descriptors and associated batch output for
+	// each VTXO tree.
+	batches []batchVtxoTree
+}
 
-	// outputs holds the batch outputs spending to the roots of each VTXO
-	// tree. The number of outputs matches the number of batches.
-	outputs []*wire.TxOut
+// batchVtxoTree is a helper struct that groups a batch output with its
+// corresponding VTXO descriptors.
+type batchVtxoTree struct {
+	output *wire.TxOut
+	vtxos  []tree.VTXODescriptor
 }
 
 // BuildTreeContext creates a TreeContext containing batch outputs for VTXO
@@ -65,38 +69,108 @@ type TreeContext struct {
 func BuildTreeContext(terms *Terms, vtxos []tree.VTXODescriptor) (*TreeContext,
 	error) {
 
-	var (
-		batchOutputs []*wire.TxOut
-		vtxoBatches  [][]tree.VTXODescriptor
-	)
-
-	batches, err := VTXOBatches(vtxos, terms.MaxVTXOsPerTree)
+	vtxoBatches, err := VTXOBatches(vtxos, terms.MaxVTXOsPerTree)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create VTXO batches: %w", err)
 	}
 
-	for idx, vtxos := range batches {
+	var batches []batchVtxoTree
+	for idx, vtxos := range vtxoBatches {
 		batchOutput, err := tree.BuildBatchOutput(
-			vtxos, terms.OperatorKey.PubKey,
-			terms.SweepKey.PubKey, terms.SweepDelay,
+			vtxos, terms.OperatorKey.PubKey, terms.SweepKey.PubKey,
+			terms.SweepDelay,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build batch output "+
 				"for batch %d: %w", idx, err)
 		}
 
-		batchOutputs = append(batchOutputs, batchOutput)
-		vtxoBatches = append(vtxoBatches, vtxos)
+		batches = append(batches, batchVtxoTree{
+			output: batchOutput,
+			vtxos:  vtxos,
+		})
 	}
 
 	return &TreeContext{
 		terms:   terms,
-		batches: vtxoBatches,
-		outputs: batchOutputs,
+		batches: batches,
 	}, nil
 }
 
 // Outputs returns the batch outputs that should be added to the commitment tx.
 func (c *TreeContext) Outputs() []*wire.TxOut {
-	return c.outputs
+	var outputs []*wire.TxOut
+	for _, batch := range c.batches {
+		outputs = append(outputs, batch.output)
+	}
+
+	return outputs
+}
+
+// BuildVTXOTreesForCommitmentTx builds the full VTXO trees for a commitment
+// transaction using explicit output indices. It creates trees for each batch
+// output, using the actual outpoints from the commitment transaction. The trees
+// are indexed by their output index in the commitment transaction.
+//
+// NOTE: BuildTreeContext would have returned the outputs to be added to the
+// commitment transaction and so the caller must ensure that the provided
+// batchOutputIndices correspond to those outputs in the commitment tx.
+func (c *TreeContext) BuildVTXOTreesForCommitmentTx(tx *wire.MsgTx,
+	batchOutputIndices []int) (map[int]*tree.Tree, error) {
+
+	if len(batchOutputIndices) != len(c.batches) {
+		return nil, fmt.Errorf("number of batch output indices %d "+
+			"does not match number of outputs %d",
+			len(batchOutputIndices), len(c.batches))
+	}
+
+	vtxoTrees := make(map[int]*tree.Tree)
+
+	for idx, batch := range c.batches {
+		outputIdx := batchOutputIndices[idx]
+
+		// Get the batch output from the commitment transaction.
+		if outputIdx >= len(tx.TxOut) {
+			return nil, fmt.Errorf("batch output index %d exceeds "+
+				"commitment tx outputs", outputIdx)
+		}
+		batchOutput := tx.TxOut[outputIdx]
+
+		// Sanity check: verify the output at this index matches what
+		// we expect. This catches mismatches where the caller provided
+		// incorrect indices.
+		expectedOutput := batch.output
+		pkScriptMatch := bytes.Equal(
+			batchOutput.PkScript, expectedOutput.PkScript,
+		)
+		if batchOutput.Value != expectedOutput.Value || !pkScriptMatch {
+			return nil, fmt.Errorf("output at index %d does not "+
+				"match expected batch output: got value=%d "+
+				"pkscript=%x, want value=%d pkscript=%x",
+				outputIdx, batchOutput.Value,
+				batchOutput.PkScript, expectedOutput.Value,
+				expectedOutput.PkScript)
+		}
+
+		// Create the batch outpoint from the commitment transaction.
+		batchOutpoint := wire.OutPoint{
+			Hash:  tx.TxHash(),
+			Index: uint32(outputIdx),
+		}
+
+		// Build the VTXO tree.
+		vtxoTree, err := tree.BuildVTXOTree(
+			batchOutpoint, batchOutput, batch.vtxos,
+			c.terms.OperatorKey.PubKey, c.terms.SweepKey.PubKey,
+			c.terms.SweepDelay, int(c.terms.TreeRadix),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build VTXO tree for "+
+				"output %d: %w", outputIdx, err)
+		}
+
+		vtxoTrees[outputIdx] = vtxoTree
+	}
+
+	return vtxoTrees, nil
 }

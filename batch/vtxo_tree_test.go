@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -195,4 +196,145 @@ func TestBuildTreeContext(t *testing.T) {
 			}
 		},
 	)
+}
+
+// TestTreeContextBuildVTXOTreesForCommitmentTx tests building VTXO trees from
+// a commitment transaction using explicit output indices.
+func TestTreeContextBuildVTXOTreesForCommitmentTx(t *testing.T) {
+	t.Parallel()
+
+	operatorPub, _ := testutils.CreateKey(1)
+	sweepPub, _ := testutils.CreateKey(2)
+
+	terms := &Terms{
+		OperatorKey:     keychain.KeyDescriptor{PubKey: operatorPub},
+		SweepKey:        keychain.KeyDescriptor{PubKey: sweepPub},
+		SweepDelay:      288,
+		TreeRadix:       4,
+		MaxVTXOsPerTree: 4,
+	}
+
+	t.Run("empty descriptors returns empty map", func(t *testing.T) {
+		ctx, err := BuildTreeContext(terms, nil)
+		require.NoError(t, err)
+
+		tx := wire.NewMsgTx(2)
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, nil)
+		require.NoError(t, err)
+		require.NotNil(t, trees)
+		require.Len(t, trees, 0)
+	})
+
+	t.Run("builds tree for single batch", func(t *testing.T) {
+		descriptors := makeVTXODescriptors(t, 2, 10000, operatorPub)
+
+		// Build batch context first.
+		ctx, err := BuildTreeContext(terms, descriptors)
+		require.NoError(t, err)
+		require.Len(t, ctx.Outputs(), 1)
+
+		// Create commitment tx with the batch output at index 0.
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(ctx.Outputs()[0])
+
+		// Build trees with explicit index.
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0})
+		require.NoError(t, err)
+		require.Len(t, trees, 1)
+		require.Contains(t, trees, 0)
+		require.NotNil(t, trees[0])
+
+		// Verify tree structure.
+		vtxoTree := trees[0]
+		require.NotNil(t, vtxoTree.Root)
+		require.Equal(t, 2, vtxoTree.NumLeaves())
+	})
+
+	t.Run("builds multiple trees for large batch", func(t *testing.T) {
+		descriptors := makeVTXODescriptors(t, 10, 5000, operatorPub)
+
+		// Build batch context.
+		ctx, err := BuildTreeContext(terms, descriptors)
+		require.NoError(t, err)
+		require.Len(t, ctx.Outputs(), 3)
+
+		// Create commitment tx with all batch outputs.
+		tx := wire.NewMsgTx(2)
+		for _, output := range ctx.Outputs() {
+			tx.AddTxOut(output)
+		}
+
+		// Build trees with explicit indices (0, 1, 2).
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(
+			tx, []int{0, 1, 2},
+		)
+		require.NoError(t, err)
+		require.Len(t, trees, 3)
+
+		// Verify all trees exist at correct indices.
+		require.Contains(t, trees, 0)
+		require.Contains(t, trees, 1)
+		require.Contains(t, trees, 2)
+
+		// Verify tree leaf counts.
+		require.Equal(t, 4, trees[0].NumLeaves())
+		require.Equal(t, 4, trees[1].NumLeaves())
+		require.Equal(t, 2, trees[2].NumLeaves())
+	})
+
+	t.Run("batch outputs start at offset index", func(t *testing.T) {
+		descriptors := makeVTXODescriptors(t, 2, 10000, operatorPub)
+
+		// Build batch context.
+		ctx, err := BuildTreeContext(terms, descriptors)
+		require.NoError(t, err)
+
+		// Create commitment tx with a leave output first, then batch.
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(&wire.TxOut{Value: 50000, PkScript: []byte{0}})
+		tx.AddTxOut(ctx.Outputs()[0])
+
+		// Build trees with explicit index 1 (after leave output).
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, []int{1})
+		require.NoError(t, err)
+		require.Len(t, trees, 1)
+		require.Contains(t, trees, 1)
+		require.NotContains(t, trees, 0)
+	})
+
+	t.Run("mismatched indices count returns error", func(t *testing.T) {
+		descriptors := makeVTXODescriptors(t, 2, 10000, operatorPub)
+
+		// Build batch context (produces 1 output).
+		ctx, err := BuildTreeContext(terms, descriptors)
+		require.NoError(t, err)
+		require.Len(t, ctx.Outputs(), 1)
+
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(ctx.Outputs()[0])
+		tx.AddTxOut(&wire.TxOut{Value: 50000, PkScript: []byte{0}})
+
+		// Provide 2 indices when only 1 output exists.
+		_, err = ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0, 1})
+		require.ErrorContains(t, err, "does not match")
+	})
+
+	t.Run("wrong output at index returns error", func(t *testing.T) {
+		descriptors := makeVTXODescriptors(t, 2, 10000, operatorPub)
+
+		// Build batch context (produces 1 output).
+		ctx, err := BuildTreeContext(terms, descriptors)
+		require.NoError(t, err)
+
+		// Create tx with a different output at index 0.
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(&wire.TxOut{
+			Value:    12345,
+			PkScript: []byte{0xde, 0xad},
+		})
+
+		// Index points to wrong output.
+		_, err = ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0})
+		require.ErrorContains(t, err, "does not match expected")
+	})
 }
