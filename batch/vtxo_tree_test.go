@@ -338,3 +338,137 @@ func TestTreeContextBuildVTXOTreesForCommitmentTx(t *testing.T) {
 		require.ErrorContains(t, err, "does not match expected")
 	})
 }
+
+// TestExtractClientVTXOPaths tests extracting client-specific paths from VTXO
+// trees.
+func TestExtractClientVTXOPaths(t *testing.T) {
+	t.Parallel()
+
+	operatorPub, _ := testutils.CreateKey(1)
+	sweepPub, _ := testutils.CreateKey(2)
+
+	terms := &Terms{
+		OperatorKey:     keychain.KeyDescriptor{PubKey: operatorPub},
+		SweepKey:        keychain.KeyDescriptor{PubKey: sweepPub},
+		SweepDelay:      288,
+		TreeRadix:       4,
+		MaxVTXOsPerTree: 4,
+	}
+
+	t.Run("empty trees returns empty", func(t *testing.T) {
+		paths, err := ExtractClientVTXOPaths(
+			make(map[int]*tree.Tree), nil,
+		)
+		require.NoError(t, err)
+		require.Empty(t, paths)
+	})
+
+	t.Run("extracts path for client with single VTXO", func(t *testing.T) {
+		descs, clientKeys := makeVTXODescriptorsWithKeys(
+			t, 1, 10000, operatorPub,
+		)
+
+		// Build batch context and tree.
+		ctx, err := BuildTreeContext(terms, descs)
+		require.NoError(t, err)
+
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(ctx.Outputs()[0])
+
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0})
+		require.NoError(t, err)
+
+		// Extract client paths.
+		paths, err := ExtractClientVTXOPaths(trees, clientKeys)
+		require.NoError(t, err)
+		require.Len(t, paths, 1)
+		require.Contains(t, paths, 0)
+		require.NotNil(t, paths[0])
+	})
+
+	t.Run("extracts paths for client with multiple VTXOs",
+		func(t *testing.T) {
+			// Create 2 VTXOs (both will be in same tree).
+			descs, clientKeys := makeVTXODescriptorsWithKeys(
+				t, 2, 10000, operatorPub,
+			)
+
+			// Build batch context and tree.
+			ctx, err := BuildTreeContext(terms, descs)
+			require.NoError(t, err)
+
+			tx := wire.NewMsgTx(2)
+			tx.AddTxOut(ctx.Outputs()[0])
+
+			trees, err := ctx.BuildVTXOTreesForCommitmentTx(
+				tx, []int{0},
+			)
+			require.NoError(t, err)
+
+			// Extract client paths.
+			paths, err := ExtractClientVTXOPaths(trees, clientKeys)
+			require.NoError(t, err)
+			require.Len(t, paths, 1)
+			require.Contains(t, paths, 0)
+
+			// Verify the path contains both client VTXOs.
+			require.Equal(t, 2, paths[0].NumLeaves())
+		},
+	)
+
+	t.Run("extracts paths across multiple trees", func(t *testing.T) {
+		// Create 6 VTXOs (will split into 2 trees: 4 + 2).
+		descs, clientKeys := makeVTXODescriptorsWithKeys(
+			t, 6, 5000, operatorPub,
+		)
+
+		// Build batch context and trees.
+		ctx, err := BuildTreeContext(terms, descs)
+		require.NoError(t, err)
+		require.Len(t, ctx.Outputs(), 2)
+
+		tx := wire.NewMsgTx(2)
+		for _, output := range ctx.Outputs() {
+			tx.AddTxOut(output)
+		}
+
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0, 1})
+		require.NoError(t, err)
+		require.Len(t, trees, 2)
+
+		// Extract client paths.
+		paths, err := ExtractClientVTXOPaths(trees, clientKeys)
+		require.NoError(t, err)
+		require.Len(t, paths, 2)
+		require.Contains(t, paths, 0)
+		require.Contains(t, paths, 1)
+
+		// Verify leaf counts (4 in first tree, 2 in second).
+		require.Equal(t, 4, paths[0].NumLeaves())
+		require.Equal(t, 2, paths[1].NumLeaves())
+	})
+
+	t.Run("returns nil path when client not in tree", func(t *testing.T) {
+		// Create a tree with VTXOs from other clients.
+		descs := makeVTXODescriptors(t, 1, 10000, operatorPub)
+
+		// Build tree.
+		ctx, err := BuildTreeContext(terms, descs)
+		require.NoError(t, err)
+
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(ctx.Outputs()[0])
+
+		trees, err := ctx.BuildVTXOTreesForCommitmentTx(tx, []int{0})
+		require.NoError(t, err)
+
+		// Client with different key not in the tree.
+		differentClientKey, _ := testutils.CreateKey(99)
+		clientKeys := []*btcec.PublicKey{differentClientKey}
+
+		// Extract paths - should be empty since client not in tree.
+		paths, err := ExtractClientVTXOPaths(trees, clientKeys)
+		require.NoError(t, err)
+		require.Empty(t, paths)
+	})
+}

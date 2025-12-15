@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 )
@@ -173,4 +174,32 @@ func (c *TreeContext) BuildVTXOTreesForCommitmentTx(tx *wire.MsgTx,
 	}
 
 	return vtxoTrees, nil
+}
+
+// ExtractClientVTXOPaths extracts the relevant VTXO tree paths for a client
+// based on their signing keys. For each tree, it identifies which of the
+// client's cosigner keys are present in that tree and extracts the minimal
+// path containing those keys. This is useful for when the server is
+// constructing the precise info to send a specific client.
+func ExtractClientVTXOPaths(vtxoTrees map[int]*tree.Tree,
+	clientKeys []*btcec.PublicKey) (map[int]*tree.Tree, error) {
+
+	// For each VTXO tree, extract the path for this client's cosigner keys.
+	clientPaths := make(map[int]*tree.Tree)
+	for treeIdx, vtxoTree := range vtxoTrees {
+		clientPath, err := vtxoTree.ExtractPathForCoSigners(
+			clientKeys...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("extract path for tree %d: %w",
+				treeIdx, err)
+		}
+
+		// If the client has a path in this tree, include it.
+		if clientPath != nil {
+			clientPaths[treeIdx] = clientPath
+		}
+	}
+
+	return clientPaths, nil
 }
