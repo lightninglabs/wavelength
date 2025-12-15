@@ -4,9 +4,16 @@ import (
 	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +22,10 @@ import (
 // mocks, fixtures, and helper functions for round FSM tests.
 type fsmTestHarness struct {
 	*testing.T
+
+	// Keys and signers for test identities.
+	operatorPub    *btcec.PublicKey
+	operatorSigner input.Signer
 
 	// Mocks (testify/mock.Mock based).
 	boardingLocker *mockBoardingInputLocker
@@ -39,14 +50,29 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	roundID, err := NewRoundID()
 	require.NoError(t, err)
 
+	// Generate deterministic test keys.
+	operatorPub, operatorSigner := testutils.CreateKey(1)
+	operatorKey := keychain.KeyDescriptor{
+		PubKey: operatorPub,
+	}
+
 	// Create mocks.
 	mockLocker := &mockBoardingInputLocker{}
 	mockChainSrc := &mockChainSource{}
 
 	env := Environment{
 		RoundID:             roundID,
+		ChainParams:         &chaincfg.RegressionNetParams,
 		BoardingInputLocker: mockLocker,
 		ChainSource:         mockChainSrc,
+		Terms: &batch.Terms{
+			OperatorKey:                   operatorKey,
+			BoardingExitDelay:             100,
+			BoardingExitDelaySafetyMargin: 6,
+			MinBoardingConfirmations:      1,
+			MaxVTXOsPerTree:               1024,
+			TreeRadix:                     4,
+		},
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -61,12 +87,57 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		T:              t,
 		env:            &env,
 		fsm:            &fsm,
+		operatorPub:    operatorPub,
+		operatorSigner: operatorSigner,
 		boardingLocker: mockLocker,
 		chainSource:    mockChainSrc,
 		outboxMessages: make([]OutboxEvent, 0),
 	}
 
 	return h
+}
+
+// mockBoardingUTXO sets up a ChainSource mock for a boarding UTXO with the
+// specified parameters.
+func (h *fsmTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
+	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64) {
+
+	h.Helper()
+
+	expectedPkScript := buildExpectedPkScript(
+		h.T, clientKey, h.operatorPub, exitDelay,
+	)
+
+	utxo := &UTXO{
+		Output: &wire.TxOut{
+			Value:    100000,
+			PkScript: expectedPkScript,
+		},
+		Confirmations: confirmations,
+	}
+	h.chainSource.On("GetUTXO", outpoint).Return(utxo, nil)
+}
+
+// buildExpectedPkScript builds the expected PkScript for a boarding input.
+func buildExpectedPkScript(t *testing.T, clientKey *btcec.PublicKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32) []byte {
+
+	t.Helper()
+
+	// Build the expected tapscript using the scripts package.
+	tapscript, err := scripts.VTXOTapScript(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	// Build the P2TR script from the tapscript.
+	outputKey, err := tapscript.TaprootKey()
+	require.NoError(t, err)
+
+	pkScript, err := input.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	return pkScript
 }
 
 // sendEvent sends an event to the state machine and accumulates outbox
