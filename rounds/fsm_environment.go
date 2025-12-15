@@ -10,6 +10,10 @@ import (
 type Environment struct {
 	// RoundID identifies this FSM instance.
 	RoundID RoundID
+
+	// BoardingInputLocker manages locks on boarding inputs to prevent
+	// double-spending across concurrent rounds.
+	BoardingInputLocker BoardingInputLocker
 }
 
 // Name returns the unique identifier for this FSM instance.

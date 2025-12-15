@@ -1,9 +1,11 @@
 package rounds
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -62,4 +64,23 @@ type RoundFSM struct {
 
 	// RoundID is the unique identifier for this round.
 	RoundID RoundID
+}
+
+// BoardingInputLocker provides thread-safe locking of boarding inputs
+// across concurrent rounds to prevent double-spending.
+type BoardingInputLocker interface {
+	// Lock attempts to lock a boarding input for the specified round.
+	// Returns an error if the input is already locked by another round.
+	Lock(ctx context.Context, outpoint *wire.OutPoint,
+		roundID RoundID) error
+
+	// Unlock releases the lock on a boarding input for the specified round.
+	// Only the round that locked the input can unlock it.
+	Unlock(ctx context.Context, outpoint *wire.OutPoint,
+		roundID RoundID) error
+
+	// IsLocked checks if an input is locked and returns the locking round
+	// ID if it is locked.
+	IsLocked(ctx context.Context,
+		outpoint *wire.OutPoint) (bool, RoundID, error)
 }

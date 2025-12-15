@@ -1,10 +1,13 @@
 package rounds
 
 import (
+	"context"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,6 +15,9 @@ import (
 // mocks, fixtures, and helper functions for round FSM tests.
 type fsmTestHarness struct {
 	*testing.T
+
+	// Mocks (testify/mock.Mock based).
+	boardingLocker *mockBoardingInputLocker
 
 	// Environment for FSM.
 	env *Environment
@@ -32,8 +38,12 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	roundID, err := NewRoundID()
 	require.NoError(t, err)
 
+	// Create mocks.
+	mockLocker := &mockBoardingInputLocker{}
+
 	env := Environment{
-		RoundID: roundID,
+		RoundID:             roundID,
+		BoardingInputLocker: mockLocker,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -48,6 +58,7 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		T:              t,
 		env:            &env,
 		fsm:            &fsm,
+		boardingLocker: mockLocker,
 		outboxMessages: make([]OutboxEvent, 0),
 	}
 
@@ -125,4 +136,42 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 	require.True(h, ok)
 
 	return msg
+}
+
+// mockBoardingInputLocker is a mock implementation of BoardingInputLocker for
+// testing using testify/mock.
+type mockBoardingInputLocker struct {
+	mock.Mock
+}
+
+// Lock is a mock implementation of BoardingInputLocker.Lock.
+func (m *mockBoardingInputLocker) Lock(ctx context.Context,
+	outpoint *wire.OutPoint, roundID RoundID) error {
+
+	args := m.Called(ctx, outpoint, roundID)
+
+	return args.Error(0)
+}
+
+// Unlock is a mock implementation of BoardingInputLocker.Unlock.
+func (m *mockBoardingInputLocker) Unlock(ctx context.Context,
+	outpoint *wire.OutPoint, roundID RoundID) error {
+
+	args := m.Called(ctx, outpoint, roundID)
+
+	return args.Error(0)
+}
+
+// IsLocked is a mock implementation of BoardingInputLocker.IsLocked.
+func (m *mockBoardingInputLocker) IsLocked(ctx context.Context,
+	outpoint *wire.OutPoint) (bool, RoundID, error) {
+
+	args := m.Called(ctx, outpoint)
+
+	var roundID RoundID
+	if args.Get(1) != nil {
+		roundID = args.Get(1).(RoundID) //nolint:forcetypeassert
+	}
+
+	return args.Bool(0), roundID, args.Error(2)
 }
