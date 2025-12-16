@@ -35,8 +35,8 @@ type ScheduleTimeoutRequest struct {
 	// Duration is how long to wait before the timeout expires.
 	Duration time.Duration
 
-	// Callback is the actor reference to notify when the timeout expires.
-	Callback actor.TellOnlyRef[Msg]
+	// The timeout actor will send *ExpiredMsg to this reference.
+	Callback actor.TellOnlyRef[*ExpiredMsg]
 }
 
 // MessageType returns the type of this message.

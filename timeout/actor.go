@@ -13,7 +13,7 @@ import (
 // timeoutEntry tracks a scheduled timeout and its associated timer.
 type timeoutEntry struct {
 	timer    *time.Timer
-	callback actor.TellOnlyRef[Msg]
+	callback actor.TellOnlyRef[*ExpiredMsg]
 }
 
 // Actor is the timeout scheduling actor. It manages timers and sends
