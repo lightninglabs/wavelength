@@ -555,6 +555,88 @@ type WitnessPlan struct {
 	ScriptPlans map[string]*ScriptWitnessPlan
 }
 
+// applyOpTrueInputWitnesses ensures V1 outputs carry the correct tapscript
+// witness stacks for OP_TRUE inputs.
+//
+// For V1 assets, TxWitness is "strippable", meaning it doesn't affect the asset
+// commitment leaf and can safely be re-attached after CommitVirtualPsbts.
+//
+// When spending OP_TRUE script keys, the witness is deterministic and can be
+// derived from the input proof chain. We populate missing witness stacks so
+// that proof materialization can succeed even if tapd omits them.
+func applyOpTrueInputWitnesses(pkt *tappsbt.VPacket,
+	inputs []inputSpec) error {
+
+	if pkt == nil {
+		return errors.New("vpacket is nil")
+	}
+
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	opTrueWitnesses := make([]wire.TxWitness, len(inputs))
+	haveOpTrue := false
+	for i := range inputs {
+		inputProof := inputs[i].cfg.ProofFile
+		if len(inputProof) == 0 {
+			continue
+		}
+
+		witness := opTrueWitnessFromProof(inputProof)
+		if len(witness) == 0 {
+			continue
+		}
+
+		opTrueWitnesses[i] = witness
+		haveOpTrue = true
+	}
+
+	if !haveOpTrue {
+		return nil
+	}
+
+	for outIdx := range pkt.Outputs {
+		vOut := pkt.Outputs[outIdx]
+		if vOut.Asset == nil || vOut.Asset.Version != asset.V1 {
+			continue
+		}
+
+		assetToPatch := vOut.Asset
+		if vOut.Asset.HasSplitCommitmentWitness() {
+			prevWits := vOut.Asset.PrevWitnesses
+			splitCommit := prevWits[0].SplitCommitment
+			if splitCommit == nil {
+				return fmt.Errorf("output %d missing split "+
+					"commitment", outIdx)
+			}
+
+			assetToPatch = &splitCommit.RootAsset
+		}
+
+		inputIndex := 0
+		for wIdx := range assetToPatch.PrevWitnesses {
+			prevWit := assetToPatch.PrevWitnesses[wIdx]
+			if prevWit.SplitCommitment != nil {
+				continue
+			}
+			if inputIndex >= len(opTrueWitnesses) {
+				break
+			}
+
+			witness := opTrueWitnesses[inputIndex]
+			if len(witness) > 0 && len(prevWit.TxWitness) == 0 {
+				assetToPatch.PrevWitnesses[wIdx].TxWitness =
+					copyWitness(witness)
+			}
+
+			inputIndex++
+		}
+	}
+
+	return nil
+}
+
 // ScriptWitnessPlan captures the static data required to assemble a tapscript
 // witness for a particular closure.
 type ScriptWitnessPlan struct {
@@ -1257,16 +1339,6 @@ func (b *AssetTxBuilder) Compile(ctx context.Context) (*AssetTxPlan, error) {
 			continue
 		}
 
-		vOut := vpkt.Outputs[index]
-		if vOut.Asset == nil {
-			return nil, fmt.Errorf("output %d missing asset "+
-				"payload", index)
-		}
-		if err := vOut.Asset.UpdateTxWitness(0, witness); err != nil {
-			return nil, fmt.Errorf("set output %d witness: %w",
-				index, err)
-		}
-
 		scriptWitnesses[index] = witness
 		outputPlans[index].Witness.Witness = witness
 	}
@@ -1589,6 +1661,10 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 			return fmt.Errorf("decode committed vpacket %d: %w", i,
 				err)
 		}
+		if err := applyOpTrueInputWitnesses(pkt, b.inputs); err != nil {
+			return fmt.Errorf("apply OP_TRUE witnesses "+
+				"(active pkt %d): %w", i, err)
+		}
 		newActive[i] = pkt
 	}
 
@@ -1614,24 +1690,6 @@ func (b *AssetTxBuilder) Commit(ctx context.Context, wallet assetWalletClient,
 
 	if len(newActive) > 0 {
 		b.vpacket = newActive[0]
-
-		// Ensure previously prepared witnesses are re-applied to the
-		// updated virtual packet representation returned by tapd.
-		for index, witness := range b.scriptWitnesses {
-			if index < len(b.vpacket.Outputs) &&
-				b.vpacket.Outputs[index].Asset != nil {
-
-				asset := b.vpacket.Outputs[index].Asset
-				err = asset.UpdateTxWitness(
-					0, witness,
-				)
-				if err != nil {
-					return fmt.Errorf("re-applying output "+
-						"%d witness failed: %w", index,
-						err)
-				}
-			}
-		}
 	}
 
 	return nil
@@ -1682,9 +1740,6 @@ func (b *AssetTxBuilder) SetScriptWitness(outputIndex int,
 	out := b.activePkts[0].Outputs[outputIndex]
 	if out.Asset == nil {
 		return errors.New("output asset missing")
-	}
-	if err := out.Asset.UpdateTxWitness(0, witness); err != nil {
-		return fmt.Errorf("update asset witness: %w", err)
 	}
 
 	b.scriptWitnesses[outputIndex] = witness
