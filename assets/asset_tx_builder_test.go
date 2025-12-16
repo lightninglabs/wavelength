@@ -6,10 +6,13 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/assets"
 	tapasset "github.com/lightninglabs/taproot-assets/asset"
 	"github.com/lightninglabs/taproot-assets/commitment"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -241,4 +244,84 @@ func TestScriptSpendWitness(t *testing.T) {
 	require.Len(t, witness, 4) // [sig2, sig1, script, control_block]
 
 	t.Logf("Witness stack length: %d", len(witness))
+}
+
+// TestAssetMuSig2Signing tests the MuSig2 signing flow with the builder,
+// using deterministic test keys.
+func TestAssetMuSig2Signing(t *testing.T) {
+	// This test verifies the MuSig2 signer integration without requiring
+	// custom anchor outputs. It tests the signing ceremony in isolation.
+
+	userPriv := unitTestKeyFromSeed(t, 0x01)
+	operatorPriv := unitTestKeyFromSeed(t, 0x02)
+	userPubKey := userPriv.PubKey()
+	operatorPubKey := operatorPriv.PubKey()
+
+	allPubKeys := []*btcec.PublicKey{userPubKey, operatorPubKey}
+
+	// Create MuSig2 signing sessions.
+	tweaks := &input.MuSig2Tweaks{
+		TaprootBIP0086Tweak: true,
+	}
+
+	userSigner := assets.NewLocalMuSig2Signer(userPriv)
+	userSession, err := userSigner.MuSig2CreateSession(
+		input.MuSig2Version100RC2, keychain.KeyLocator{},
+		allPubKeys, tweaks, nil, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, userSession)
+
+	operatorSigner := assets.NewLocalMuSig2Signer(operatorPriv)
+	operatorSession, err := operatorSigner.MuSig2CreateSession(
+		input.MuSig2Version100RC2, keychain.KeyLocator{},
+		allPubKeys, tweaks, nil, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, operatorSession)
+
+	// Combined keys should match.
+	require.Equal(t,
+		userSession.CombinedKey.SerializeCompressed(),
+		operatorSession.CombinedKey.SerializeCompressed(),
+	)
+	t.Logf("Combined key: %x",
+		userSession.CombinedKey.SerializeCompressed())
+
+	// Exchange nonces.
+	_, err = userSigner.MuSig2RegisterNonces(
+		userSession.SessionID,
+		[][musig2.PubNonceSize]byte{operatorSession.PublicNonce},
+	)
+	require.NoError(t, err)
+
+	_, err = operatorSigner.MuSig2RegisterNonces(
+		operatorSession.SessionID,
+		[][musig2.PubNonceSize]byte{userSession.PublicNonce},
+	)
+	require.NoError(t, err)
+
+	// Sign a test message.
+	testDigest := [32]byte{0xde, 0xad, 0xbe, 0xef}
+
+	_, err = userSigner.MuSig2Sign(userSession.SessionID, testDigest, false)
+	require.NoError(t, err)
+
+	operatorPartialSig, err := operatorSigner.MuSig2Sign(
+		operatorSession.SessionID, testDigest, false,
+	)
+	require.NoError(t, err)
+
+	// Combine signatures.
+	finalSig, haveAll, err := userSigner.MuSig2CombineSig(
+		userSession.SessionID,
+		[]*musig2.PartialSignature{operatorPartialSig},
+	)
+	require.NoError(t, err)
+	require.True(t, haveAll)
+	require.NotNil(t, finalSig)
+
+	// Verify signature length (64 bytes for Schnorr).
+	require.Len(t, finalSig.Serialize(), 64)
+	t.Logf("Final signature: %x", finalSig.Serialize())
 }
