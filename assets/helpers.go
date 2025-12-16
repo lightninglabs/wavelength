@@ -118,16 +118,29 @@ func GenTaprootRootFromProof(prf *proof.Proof) ([]byte, error) {
 		return nil, fmt.Errorf("derive by asset inclusion: %w", err)
 	}
 
-	// There should be exactly one commitment key.
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("no commitment keys derived")
 	}
 
-	// Get the first (and should be only) commitment.
-	var tapCommitment *commitment.TapCommitment
-	for _, c := range keys {
-		tapCommitment = c
-		break
+	// Get the actual on-chain output key from the proof's anchor tx so we
+	// can select the commitment that matches it.
+	outputIdx := prf.InclusionProof.OutputIndex
+	if int(outputIdx) >= len(prf.AnchorTx.TxOut) {
+		return nil, fmt.Errorf(
+			"output index %d out of range", outputIdx,
+		)
+	}
+	anchorOutput := prf.AnchorTx.TxOut[outputIdx]
+	if len(anchorOutput.PkScript) != 34 {
+		return nil, fmt.Errorf("anchor output not taproot (len=%d)",
+			len(anchorOutput.PkScript))
+	}
+	actualOutputKey := anchorOutput.PkScript[2:] // OP_1 + push
+
+	// Get the internal key from the proof.
+	internalKey := prf.InclusionProof.InternalKey
+	if internalKey == nil {
+		return nil, fmt.Errorf("proof missing internal key")
 	}
 
 	// Check if there's a tapscript sibling.
@@ -143,9 +156,33 @@ func GenTaprootRootFromProof(prf *proof.Proof) ([]byte, error) {
 		siblingHash = h
 	}
 
+	// Select the commitment that produces an output key matching the
+	// anchor tx. This is required when DeriveByAssetInclusion returns
+	// multiple commitments (for example with alt leaves or multiple
+	// assets).
+	var matchingCommitment *commitment.TapCommitment
+	for _, tc := range keys {
+		taprootRoot := tc.TapscriptRoot(siblingHash)
+		outputKey := txscript.ComputeTaprootOutputKey(
+			internalKey, taprootRoot[:],
+		)
+		outputKeyX := outputKey.SerializeCompressed()[1:]
+		if bytes.Equal(outputKeyX, actualOutputKey) {
+			matchingCommitment = tc
+			break
+		}
+	}
+
+	if matchingCommitment == nil {
+		for _, tc := range keys {
+			matchingCommitment = tc
+			break
+		}
+	}
+
 	// Compute the tapscript root. If there's a sibling, this combines the
 	// asset commitment leaf with the sibling hash via TapBranchHash.
-	taprootRoot := tapCommitment.TapscriptRoot(siblingHash)
+	taprootRoot := matchingCommitment.TapscriptRoot(siblingHash)
 
 	return taprootRoot[:], nil
 }
@@ -184,4 +221,37 @@ func GetSigHash(pkt *psbt.Packet, inputIndex int) ([32]byte, error) {
 	copy(sigHashArray[:], sigHash)
 
 	return sigHashArray, nil
+}
+
+// InputConfigFromProof creates an InputConfig for a tapd-managed asset output.
+// It extracts the internal key from the proof and sets the mode to
+// AnchorKeyModeTapdManaged, indicating that the builder should query tapd for
+// key derivation information so LND can sign the anchor transaction.
+//
+// This helper is intended for spending standard tapd outputs (received via
+// NewAddr). For custom script paths or MuSig2 configurations, construct
+// InputConfig manually with the appropriate AnchorKeyMode.
+func InputConfigFromProof(proofFile []byte) (InputConfig, error) {
+	file, err := proof.DecodeFile(proofFile)
+	if err != nil {
+		return InputConfig{}, fmt.Errorf("decode proof file: %w", err)
+	}
+
+	lastProof, err := file.LastProof()
+	if err != nil {
+		return InputConfig{}, fmt.Errorf("get last proof: %w", err)
+	}
+
+	internalKey := lastProof.InclusionProof.InternalKey
+	if internalKey == nil {
+		return InputConfig{}, fmt.Errorf("proof missing internal key")
+	}
+
+	return InputConfig{
+		ProofFile: proofFile,
+		AnchorKey: AnchorKeySpec{
+			Mode: AnchorKeyModeTapdManaged,
+			Key:  internalKey.SerializeCompressed(),
+		},
+	}, nil
 }

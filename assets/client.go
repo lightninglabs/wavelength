@@ -528,8 +528,29 @@ func (t *TapdClient) DeriveNewKeys(ctx context.Context) (asset.ScriptKey,
 	return *scriptKey, internalKeyLnd, nil
 }
 
-// ImportProof inserts the given proof to the local tapd instance's database.
-func (t *TapdClient) ImportProof(ctx context.Context, p *proof.Proof) error {
+// QueryInternalKey returns the key descriptor for a given internal key. This
+// can be used to retrieve the key locator (family/index) for keys that tapd
+// manages, which is required for LND to sign anchor PSBTs.
+func (t *TapdClient) QueryInternalKey(ctx context.Context,
+	internalKey []byte) (keychain.KeyDescriptor, error) {
+
+	resp, err := t.AssetWalletClient.QueryInternalKey(
+		ctx, &assetwalletrpc.QueryInternalKeyRequest{
+			InternalKey: internalKey,
+		},
+	)
+	if err != nil {
+		return keychain.KeyDescriptor{}, err
+	}
+
+	return rpcutils.UnmarshalKeyDescriptor(resp.InternalKey)
+}
+
+// InsertProofToUniverse inserts the given proof into the local tapd instance's
+// universe database.
+func (t *TapdClient) InsertProofToUniverse(ctx context.Context,
+	p *proof.Proof) error {
+
 	var proofBytes bytes.Buffer
 	err := p.Encode(&proofBytes)
 	if err != nil {
@@ -595,16 +616,47 @@ func (t *TapdClient) ImportProofFile(ctx context.Context, rawProofFile []byte) (
 
 	var lastProof *proof.Proof
 
+	// RegisterTransfer requires the proof to be available in the local
+	// universe first, so we insert the full proof file there.
 	for i := 0; i < proofFile.NumProofs(); i++ {
 		lastProof, err = proofFile.ProofAt(uint32(i))
 		if err != nil {
 			return nil, err
 		}
 
-		err = t.ImportProof(ctx, lastProof)
+		err = t.InsertProofToUniverse(ctx, lastProof)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if lastProof == nil {
+		return nil, fmt.Errorf("proof file contains no proofs")
+	}
+
+	// Now that the proof exists in our local universe, instruct tapd to
+	// detect and register the transfer as an inbound transfer it owns.
+	assetID := lastProof.Asset.ID()
+	outpoint := lastProof.AnchorTx.TxHash()
+
+	scriptKey := lastProof.Asset.ScriptKey.PubKey.SerializeCompressed()
+	outputIdx := lastProof.InclusionProof.OutputIndex
+	req := &taprpc.RegisterTransferRequest{
+		AssetId:   assetID[:],
+		ScriptKey: scriptKey,
+		Outpoint: &taprpc.OutPoint{
+			Txid:        outpoint[:],
+			OutputIndex: outputIdx,
+		},
+	}
+	if lastProof.Asset.GroupKey != nil {
+		req.GroupKey = lastProof.Asset.GroupKey.GroupPubKey.
+			SerializeCompressed()
+	}
+
+	_, err = t.RegisterTransfer(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	return lastProof, nil
