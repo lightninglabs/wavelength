@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -76,6 +78,11 @@ const (
 	// second to ensure reliable timing in tests that depend on block
 	// timestamps.
 	blockTimeCushion = 1000 * time.Millisecond
+
+	// maxPortBindRetries is the maximum number of times the harness retries
+	// starting a container when Docker fails to bind a randomly assigned
+	// host port due to a race with parallel test execution.
+	maxPortBindRetries = 15
 )
 
 var (
@@ -93,6 +100,11 @@ var (
 		"artifacts_base_dir", "",
 		"Directory where the harness stores artifacts.",
 	)
+
+	// fallbackJitterCounter is a best-effort entropy source for jitter if
+	// crypto/rand is unavailable. It is only used to desynchronize retries;
+	// it is not used for any security-sensitive purpose.
+	fallbackJitterCounter uint64
 
 	// harnessHTTPClient is a dedicated HTTP client for harness HTTP
 	// communication (bitcoind, electrs, etc.) with proper timeouts and
@@ -834,6 +846,128 @@ func (h *Harness) waitContainerRunning(res *dockertest.Resource) {
 		res.Container.Name)
 }
 
+// runWithPortBindRetry starts a container using run and retries if Docker
+// fails due to a host port bind conflict.
+func (h *Harness) runWithPortBindRetry(
+	containerName string,
+	run func() (*dockertest.Resource, error),
+) (*dockertest.Resource, error) {
+
+	var backoff time.Duration = 25 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxPortBindRetries; attempt++ {
+		res, err := run()
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+
+		// If it's not a port bind error, fail immediately.
+		if !isDockerPortBindError(err) {
+			return nil, err
+		}
+
+		// If this was the last attempt, break out to return the final
+		// error.
+		if attempt == maxPortBindRetries {
+			break
+		}
+
+		if h.opts != nil {
+			h.Logf("Port bind conflict for %s (attempt %d/%d): %v",
+				containerName, attempt, maxPortBindRetries, err)
+		}
+
+		// The failing start may leave a stopped container behind.
+		// Remove it so the retry can reuse the same name.
+		if h.pool != nil {
+			h.removeContainerByName(containerName)
+		}
+
+		// Add jitter so parallel harnesses don't synchronize retries.
+		jitter := randJitter(50 * time.Millisecond)
+		time.Sleep(backoff + jitter)
+
+		// Apply exponential backoff, capped at 2 seconds.
+		backoff *= 2
+		if backoff > 2*time.Second {
+			backoff = 2 * time.Second
+		}
+	}
+
+	return nil, fmt.Errorf("exhausted port bind retries for %s: %w",
+		containerName, lastErr)
+}
+
+// isDockerPortBindError returns true if err indicates that Docker failed to
+// publish a container port because the randomly chosen host port was already
+// in use.
+func isDockerPortBindError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := err.Error()
+	portBindErrors := []string{
+		"bind: address already in use",
+		"port is already allocated",
+		"Ports are not available",
+	}
+
+	for _, errStr := range portBindErrors {
+		if strings.Contains(msg, errStr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// randJitter returns a uniformly distributed duration in [0, maxJitter).
+func randJitter(maxJitter time.Duration) time.Duration {
+	if maxJitter <= 0 {
+		return 0
+	}
+
+	n, err := crand.Int(crand.Reader, big.NewInt(int64(maxJitter)))
+	if err != nil {
+		// Fallback path if crypto/rand is unavailable.
+		// This is only used to desynchronize retries; it is not used
+		// for any
+		// security-sensitive purpose.
+		seed := uint64(time.Now().UnixNano()) ^
+			atomic.AddUint64(&fallbackJitterCounter, 1)
+
+		// Avoid modulo bias by using rejection sampling.
+		//
+		// If we were to do `x % rangeMax`, low values get picked
+		// slightly more often unless `rangeMax` is a power of two.
+		rangeMax := uint64(maxJitter)
+		maxUint := ^uint64(0)
+		limit := maxUint - (maxUint % rangeMax)
+
+		state := seed
+		for {
+			x := splitmix64Next(&state)
+			if x < limit {
+				return time.Duration(x % rangeMax)
+			}
+		}
+	}
+
+	return time.Duration(n.Int64())
+}
+
+// splitmix64Next returns the next value from the SplitMix64 generator.
+func splitmix64Next(state *uint64) uint64 {
+	*state += 0x9e3779b97f4a7c15
+	z := *state
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+
+	return z ^ (z >> 31)
+}
+
 // saveLogs persists container logs to files in the artifacts directory.
 func (h *Harness) saveLogs() error {
 	if h.bitcoind != nil {
@@ -933,32 +1067,47 @@ func (h *Harness) startBitcoind() {
 	require.NoError(h.T, err, "failed to get absolute path "+
 		"for bitcoind data dir")
 
-	res, err := h.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: imageRepo(h.opts.BitcoindImage),
-		Tag:        imageTag(h.opts.BitcoindImage),
-		Cmd:        cmd,
-		Env:        []string{},
-		ExposedPorts: []string{
-			"18443/tcp", "28332/tcp", "28333/tcp",
-		},
-		Name:     h.containerName("bitcoin"),
-		Networks: []*dockertest.Network{h.network},
-		Labels: map[string]string{
-			"ark.harness":                h.group,
-			"com.docker.compose.project": h.group,
-		},
-		Mounts: []string{
-			fmt.Sprintf("%s:%s", btcHostDir,
-				"/home/bitcoin/.bitcoin"),
-		},
-	}, func(hc *docker.HostConfig) {
-		// Keep container for logs on failure; Purge() will clean up.
-		hc.AutoRemove = false
-		hc.PortBindings = map[docker.Port][]docker.PortBinding{
-			"18443/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-			"28332/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-			"28333/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-		}
+	res, err := h.runWithPortBindRetry(containerName, func() (
+		*dockertest.Resource, error) {
+
+		return h.pool.RunWithOptions(&dockertest.RunOptions{
+			Repository: imageRepo(h.opts.BitcoindImage),
+			Tag:        imageTag(h.opts.BitcoindImage),
+			Cmd:        cmd,
+			Env:        []string{},
+			ExposedPorts: []string{
+				"18443/tcp", "28332/tcp", "28333/tcp",
+			},
+			Name:     containerName,
+			Networks: []*dockertest.Network{h.network},
+			Labels: map[string]string{
+				"ark.harness":                h.group,
+				"com.docker.compose.project": h.group,
+			},
+			Mounts: []string{
+				fmt.Sprintf("%s:%s", btcHostDir,
+					"/home/bitcoin/.bitcoin"),
+			},
+		}, func(hc *docker.HostConfig) {
+			// Keep container for logs on failure; Purge() will
+			// clean up.
+			hc.AutoRemove = false
+			hc.PortBindings =
+				map[docker.Port][]docker.PortBinding{
+					"18443/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"28332/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"28333/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+				}
+		})
 	})
 	require.NoError(h.T, err, "failed to start bitcoind")
 	h.bitcoind = res
@@ -1025,31 +1174,45 @@ func (h *Harness) startElectrs() {
 	require.NoError(h.T, err, "failed to get absolute path "+
 		"for bitcoind data dir")
 
-	res, err := h.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository:   "mempool/electrs",
-		Tag:          "latest",
-		Cmd:          cmd,
-		Env:          []string{"RUST_BACKTRACE=1"},
-		ExposedPorts: []string{"3002/tcp", "60401/tcp"},
-		Name:         h.containerName("electrs"),
-		Networks:     []*dockertest.Network{h.network},
-		Labels: map[string]string{
-			"ark.harness":                h.group,
-			"com.docker.compose.project": h.group,
-		},
-		Mounts: []string{
-			fmt.Sprintf("%s:%s", btcHostDir, "/home/user/.bitcoin"),
-		},
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = false
-		hc.PortBindings = map[docker.Port][]docker.PortBinding{
-			"3002/tcp":  {{HostIP: "0.0.0.0", HostPort: ""}},
-			"60401/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-		}
-		// Ensure explicit bind mount.
-		hc.Binds = []string{
-			fmt.Sprintf("%s:%s", btcHostDir, "/home/user/.bitcoin"),
-		}
+	res, err := h.runWithPortBindRetry(containerName, func() (
+		*dockertest.Resource, error) {
+
+		return h.pool.RunWithOptions(&dockertest.RunOptions{
+			Repository:   "mempool/electrs",
+			Tag:          "latest",
+			Cmd:          cmd,
+			Env:          []string{"RUST_BACKTRACE=1"},
+			ExposedPorts: []string{"3002/tcp", "60401/tcp"},
+			Name:         containerName,
+			Networks:     []*dockertest.Network{h.network},
+			Labels: map[string]string{
+				"ark.harness":                h.group,
+				"com.docker.compose.project": h.group,
+			},
+			Mounts: []string{
+				fmt.Sprintf("%s:%s", btcHostDir,
+					"/home/user/.bitcoin"),
+			},
+		}, func(hc *docker.HostConfig) {
+			hc.AutoRemove = false
+			hc.PortBindings =
+				map[docker.Port][]docker.PortBinding{
+					"3002/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"60401/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+				}
+
+			// Ensure explicit bind mount.
+			hc.Binds = []string{
+				fmt.Sprintf("%s:%s", btcHostDir,
+					"/home/user/.bitcoin"),
+			}
+		})
 	})
 	require.NoError(h.T, err, "failed to start electrs")
 	h.Logf("electrs container id=%s name=%s", res.Container.ID,
@@ -1096,26 +1259,34 @@ func (h *Harness) startPostgres() {
 	containerName := h.containerName("postgres")
 	h.removeContainerByName(containerName)
 
-	res, err := h.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "postgres",
-		Tag:        "16-alpine",
-		Env: []string{
-			"POSTGRES_USER=ark",
-			"POSTGRES_PASSWORD=ark",
-			"POSTGRES_DB=ark",
-		},
-		ExposedPorts: []string{"5432/tcp"},
-		Name:         h.containerName("postgres"),
-		Networks:     []*dockertest.Network{h.network},
-		Labels: map[string]string{
-			"ark.harness":                h.group,
-			"com.docker.compose.project": h.group,
-		},
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = false
-		hc.PortBindings = map[docker.Port][]docker.PortBinding{
-			"5432/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-		}
+	res, err := h.runWithPortBindRetry(containerName, func() (
+		*dockertest.Resource, error) {
+
+		return h.pool.RunWithOptions(&dockertest.RunOptions{
+			Repository: "postgres",
+			Tag:        "16-alpine",
+			Env: []string{
+				"POSTGRES_USER=ark",
+				"POSTGRES_PASSWORD=ark",
+				"POSTGRES_DB=ark",
+			},
+			ExposedPorts: []string{"5432/tcp"},
+			Name:         containerName,
+			Networks:     []*dockertest.Network{h.network},
+			Labels: map[string]string{
+				"ark.harness":                h.group,
+				"com.docker.compose.project": h.group,
+			},
+		}, func(hc *docker.HostConfig) {
+			hc.AutoRemove = false
+			hc.PortBindings =
+				map[docker.Port][]docker.PortBinding{
+					"5432/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+				}
+		})
 	})
 	require.NoError(h.T, err, "failed to start postgres")
 	h.postgres = res
