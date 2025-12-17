@@ -734,7 +734,7 @@ func TestDeliveryHelperMethods(t *testing.T) {
 	askDelivery := &Delivery[*testTLVMsg, string]{
 		ID:          "ask-msg",
 		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(2))},
-		Promise:     NewPromise[string](), // Ask has promise.
+		Promise:     NewPromise[string](),             // Ask has promise.
 		LeaseUntil:  time.Now().Add(-1 * time.Second), // Expired.
 		Attempts:    10,
 		MaxAttempts: 10,

@@ -103,16 +103,21 @@ type BaseActorRef interface {
 	ID() string
 }
 
+// ErrMailboxFull indicates that the mailbox could not accept the message
+// because it is at capacity.
+var ErrMailboxFull = fmt.Errorf("mailbox full")
+
 // TellOnlyRef is a reference to an actor that only supports "tell" operations.
 // This is useful for scenarios where only fire-and-forget message passing is
 // needed, or to restrict capabilities.
 type TellOnlyRef[M Message] interface {
 	BaseActorRef
 
-	// Tell sends a message without waiting for a response. If the
-	// context is cancelled before the message can be sent to the actor's
-	// mailbox, the message may be dropped.
-	Tell(ctx context.Context, msg M)
+	// Tell sends a message without waiting for a response. Returns an error
+	// if the message could not be enqueued (e.g., context cancelled, actor
+	// stopped, or mailbox full). For durable mailboxes, a nil error indicates
+	// the message was durably persisted.
+	Tell(ctx context.Context, msg M) error
 }
 
 // ActorRef is a reference to an actor that supports both "tell" and "ask"
