@@ -979,6 +979,131 @@ func TestTreePrettyPrint(t *testing.T) {
 	})
 }
 
+// TestTreeExtractTxids tests Tree.ExtractTxids.
+func TestTreeExtractTxids(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil tree returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		var nilTree *Tree
+		entries, err := nilTree.ExtractTxids()
+		require.NoError(t, err)
+		require.Nil(t, entries)
+	})
+
+	t.Run("tree with nil root returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		emptyTree := &Tree{Root: nil}
+		entries, err := emptyTree.ExtractTxids()
+		require.NoError(t, err)
+		require.Nil(t, entries)
+	})
+
+	t.Run("single leaf tree returns one entry", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+		_, ownerKey := createTestKey(t)
+
+		leaves := []LeafDescriptor{
+			{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: ownerKey,
+			},
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)},
+			leaves, operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		entries, err := tree.ExtractTxids()
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+
+		// Single node should be at level 0.
+		require.Equal(t, 0, entries[0].TreeLevel)
+	})
+
+	t.Run("binary tree has correct levels", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+
+		// Create 4 leaves for a 3-level binary tree.
+		leaves := make([]LeafDescriptor, 4)
+		for i := range leaves {
+			_, key := createTestKey(t)
+			leaves[i] = LeafDescriptor{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: key,
+			}
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)},
+			leaves, operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		entries, err := tree.ExtractTxids()
+		require.NoError(t, err)
+
+		// Should have 7 entries (1 root + 2 branches + 4 leaves).
+		require.Len(t, entries, 7)
+
+		// Count nodes at each level.
+		levelCounts := make(map[int]int)
+		for _, e := range entries {
+			levelCounts[e.TreeLevel]++
+		}
+
+		// Level 0: 1 root, Level 1: 2 branches, Level 2: 4 leaves.
+		require.Equal(t, 1, levelCounts[0], "should have 1 root")
+		require.Equal(t, 2, levelCounts[1], "should have 2 branches")
+		require.Equal(t, 4, levelCounts[2], "should have 4 leaves")
+	})
+
+	t.Run("all txids are unique", func(t *testing.T) {
+		t.Parallel()
+		_, operatorKey := createTestKey(t)
+
+		leaves := make([]LeafDescriptor, 4)
+		for i := range leaves {
+			_, key := createTestKey(t)
+			leaves[i] = LeafDescriptor{
+				PkScript:    []byte("script"),
+				Amount:      1000,
+				CoSignerKey: key,
+			}
+		}
+
+		tree, err := NewTree(
+			wire.OutPoint{},
+			&wire.TxOut{Value: sumLeafAmounts(leaves)},
+			leaves, operatorKey, make([]byte, 32), 2,
+		)
+		require.NoError(t, err)
+
+		entries, err := tree.ExtractTxids()
+		require.NoError(t, err)
+
+		// Verify all txids are unique.
+		seen := make(map[string]bool)
+		for _, e := range entries {
+			txidStr := e.Txid.String()
+			require.False(t, seen[txidStr],
+				"duplicate txid found: %s", txidStr)
+			seen[txidStr] = true
+		}
+	})
+}
+
 // TestValidatePath tests the ValidatePath method.
 func TestValidatePath(t *testing.T) {
 	t.Parallel()
