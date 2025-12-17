@@ -36,10 +36,10 @@ func NewMapInputRef[In Message, Out Message](
 }
 
 // Tell transforms the incoming message using mapFn and forwards it to the
-// target reference.
-func (m *MapInputRef[In, Out]) Tell(ctx context.Context, msg In) {
+// target reference. Returns an error if the message could not be enqueued.
+func (m *MapInputRef[In, Out]) Tell(ctx context.Context, msg In) error {
 	transformed := m.mapFn(msg)
-	m.targetRef.Tell(ctx, transformed)
+	return m.targetRef.Tell(ctx, transformed)
 }
 
 // ID returns a composite identifier incorporating the target's ID.
