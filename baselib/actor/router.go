@@ -98,23 +98,21 @@ func (r *Router[M, R]) getActor() (ActorRef[M, R], error) {
 }
 
 // Tell sends a message to one of the actors managed by the router, selected by
-// the routing strategy. If no actors are available or the send context is
-// cancelled before the message can be enqueued in the target actor's mailbox,
-// the message may be dropped. Errors during actor selection (e.g.,
-// ErrNoActorsAvailable) are currently not propagated from Tell, aligning with
-// its fire-and-forget nature. Such errors could be logged internally if needed.
-func (r *Router[M, R]) Tell(ctx context.Context, msg M) {
+// the routing strategy. Returns an error if no actors are available or if the
+// message could not be enqueued.
+func (r *Router[M, R]) Tell(ctx context.Context, msg M) error {
 	selectedActor, err := r.getActor()
 	if err != nil {
 		// If no actors are available for the service, and a DLO is
 		// configured, forward the message there.
 		if errors.Is(err, ErrNoActorsAvailable) && r.dlo != nil {
-			r.dlo.Tell(context.Background(), msg)
+			_ = r.dlo.Tell(context.Background(), msg)
 		}
-		return
+
+		return err
 	}
 
-	selectedActor.Tell(ctx, msg)
+	return selectedActor.Tell(ctx, msg)
 }
 
 // Ask sends a message to one of the actors managed by the router, selected by
