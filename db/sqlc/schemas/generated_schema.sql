@@ -1,3 +1,23 @@
+CREATE TABLE ask_results (
+    -- promise_id links to the original Ask message.
+    promise_id TEXT PRIMARY KEY,
+
+    -- result_blob contains the TLV-encoded successful result.
+    -- NULL if the request failed with an error.
+    result_blob BLOB,
+
+    -- error_text contains the error message if the request failed.
+    -- NULL if the request succeeded.
+    error_text TEXT,
+
+    -- created_at is the unix timestamp when the result was persisted.
+    created_at INTEGER NOT NULL,
+
+    -- expires_at is the unix timestamp after which this result can be garbage
+    -- collected. Callers should retrieve results before expiry.
+    expires_at INTEGER NOT NULL
+);
+
 CREATE TABLE boarding_addresses (
     -- pk_script is the raw output script (P2TR script) and serves as the
     -- primary key since it uniquely identifies an address.
@@ -104,6 +124,53 @@ CREATE TABLE client_tree_txids (
         ON DELETE CASCADE
 );
 
+CREATE TABLE dead_letters (
+    -- id is the original message ID.
+    id TEXT PRIMARY KEY,
+
+    -- source indicates where the message originated: 'mailbox' or 'outbox'.
+    source TEXT NOT NULL,
+
+    -- actor_id identifies the target actor (for mailbox) or source (for outbox).
+    actor_id TEXT NOT NULL,
+
+    -- message_type is the type name for the failed message.
+    message_type TEXT NOT NULL,
+
+    -- payload contains the original TLV-encoded message data.
+    payload BLOB NOT NULL,
+
+    -- failure_reason describes why the message was dead-lettered.
+    failure_reason TEXT NOT NULL,
+
+    -- attempts is the number of delivery attempts before dead-lettering.
+    attempts INTEGER NOT NULL,
+
+    -- created_at is the unix timestamp when the message was dead-lettered.
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE fsm_checkpoints (
+    -- actor_id identifies the actor whose FSM state is checkpointed.
+    actor_id TEXT PRIMARY KEY,
+
+    -- state_type is the name of the current FSM state for quick lookup.
+    state_type TEXT NOT NULL,
+
+    -- state_data contains the TLV-encoded state snapshot.
+    state_data BLOB NOT NULL,
+
+    -- version is a monotonic counter incremented on each checkpoint.
+    -- Used for conflict detection and debugging.
+    version INTEGER NOT NULL DEFAULT 0,
+
+    -- updated_at is the unix timestamp of the last checkpoint.
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_ask_results_expires
+    ON ask_results(expires_at);
+
 CREATE INDEX idx_boarding_addresses_creation_time
     ON boarding_addresses(creation_time DESC);
 
@@ -128,6 +195,34 @@ CREATE INDEX idx_client_tree_txids_tree
 CREATE INDEX idx_client_tree_txids_txid
     ON client_tree_txids(txid);
 
+CREATE INDEX idx_dead_letters_actor
+    ON dead_letters(actor_id, created_at DESC);
+
+CREATE INDEX idx_dead_letters_source
+    ON dead_letters(source, created_at DESC);
+
+CREATE INDEX idx_mailbox_messages_available
+    ON mailbox_messages(mailbox_id, priority DESC, available_at ASC, created_at ASC);
+
+CREATE INDEX idx_mailbox_messages_lease
+    ON mailbox_messages(lease_until)
+    WHERE lease_until IS NOT NULL;
+
+CREATE INDEX idx_mailbox_messages_promise
+    ON mailbox_messages(promise_id)
+    WHERE promise_id IS NOT NULL;
+
+CREATE INDEX idx_outbox_messages_domain_key
+    ON outbox_messages(domain_key)
+    WHERE domain_key IS NOT NULL;
+
+CREATE INDEX idx_outbox_messages_pending
+    ON outbox_messages(status, created_at)
+    WHERE status = 'pending';
+
+CREATE INDEX idx_processed_messages_expires
+    ON processed_messages(expires_at);
+
 CREATE INDEX idx_round_boarding_intents_round_id
     ON round_boarding_intents(round_id);
 
@@ -151,6 +246,115 @@ CREATE INDEX idx_vtxos_spent
 
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
+
+CREATE TABLE mailbox_messages (
+    -- id is a ULID providing time-ordering and uniqueness.
+    id TEXT PRIMARY KEY,
+
+    -- mailbox_id identifies the target actor's mailbox.
+    mailbox_id TEXT NOT NULL,
+
+    -- message_type is the type name for deserialization dispatch.
+    message_type TEXT NOT NULL,
+
+    -- payload contains the TLV-encoded message data.
+    payload BLOB NOT NULL,
+
+    -- promise_id is set for Ask messages to track the response.
+    -- NULL for Tell (fire-and-forget) messages.
+    promise_id TEXT,
+
+    -- callback_actor_id is set for DurableAsk messages to route the response.
+    -- The response will be delivered to this actor's mailbox via outbox.
+    -- NULL for regular Ask/Tell messages.
+    callback_actor_id TEXT,
+
+    -- correlation_id links DurableAsk requests to their responses.
+    -- The response message will include this ID for matching.
+    -- NULL for regular Ask/Tell messages.
+    correlation_id TEXT,
+
+    -- priority determines processing order (higher = more important).
+    -- Used for restart messages which need front-of-queue processing.
+    priority INTEGER NOT NULL DEFAULT 0,
+
+    -- Lease management fields.
+    -- lease_token is an opaque token that must match for Ack/Nack to succeed.
+    -- This prevents stale acks from a previous lease holder after crash.
+    lease_token TEXT,
+
+    -- lease_until is the unix timestamp when the lease expires.
+    -- After expiry, the message becomes available for redelivery.
+    lease_until INTEGER,
+
+    -- Delivery tracking fields.
+    -- available_at is the unix timestamp when the message becomes available.
+    -- Used for scheduling initial delivery and retry delays after Nack.
+    available_at INTEGER NOT NULL,
+
+    -- attempts tracks how many times delivery has been attempted.
+    attempts INTEGER NOT NULL DEFAULT 0,
+
+    -- max_attempts is the maximum delivery attempts before dead-lettering.
+    max_attempts INTEGER NOT NULL DEFAULT 10,
+
+    -- created_at is the unix timestamp when the message was enqueued.
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE outbox_messages (
+    -- id is a ULID providing time-ordering and uniqueness.
+    id TEXT PRIMARY KEY,
+
+    -- source_actor_id identifies the actor that created this message.
+    source_actor_id TEXT NOT NULL,
+
+    -- target_actor_id identifies the destination actor's mailbox.
+    target_actor_id TEXT NOT NULL,
+
+    -- message_type is the type name for deserialization dispatch.
+    message_type TEXT NOT NULL,
+
+    -- payload contains the TLV-encoded message data.
+    payload BLOB NOT NULL,
+
+    -- domain_key is an optional natural idempotency key.
+    -- For example: "round:abc123:phase:nonces" ensures the same round/phase
+    -- combination is only processed once by the receiver.
+    domain_key TEXT,
+
+    -- version is a monotonic counter for ordering within a domain.
+    -- Higher versions supersede lower versions for the same domain_key.
+    version INTEGER NOT NULL DEFAULT 0,
+
+    -- status tracks the delivery lifecycle.
+    -- Values: 'pending', 'completed', 'dead_letter'
+    status TEXT NOT NULL DEFAULT 'pending',
+
+    -- delivery_attempts tracks how many times delivery was attempted.
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+
+    -- created_at is the unix timestamp when the message was enqueued.
+    created_at INTEGER NOT NULL,
+
+    -- completed_at is the unix timestamp when delivery completed (or failed).
+    completed_at INTEGER
+);
+
+CREATE TABLE processed_messages (
+    -- id is the message ID that was processed.
+    id TEXT PRIMARY KEY,
+
+    -- actor_id identifies which actor processed this message.
+    actor_id TEXT NOT NULL,
+
+    -- processed_at is the unix timestamp when processing completed.
+    processed_at INTEGER NOT NULL,
+
+    -- expires_at is the unix timestamp after which this entry can be deleted.
+    -- Should exceed the maximum possible redelivery window.
+    expires_at INTEGER NOT NULL
+);
 
 CREATE TABLE round_boarding_intents (
     -- round_id links to the parent round.
