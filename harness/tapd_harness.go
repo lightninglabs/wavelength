@@ -143,6 +143,7 @@ func (h *Harness) NewTapdHarness(name string) *TapdHarness {
 func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 	lndDirInContainer := "/data"
 	lndName := h.containerName(cfg.name)
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
 	// Remove any existing LND container with the same name.
 	h.removeContainerByName(lndName)
@@ -174,30 +175,44 @@ func (h *Harness) startLNDContainer(cfg lndConfig) *dockertest.Resource {
 		h.T, err, "failed to get absolute path for lnd data dir",
 	)
 
-	res, err := h.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository:   cfg.image,
-		Tag:          cfg.tag,
-		Cmd:          cmd,
-		ExposedPorts: []string{"10009/tcp", "8080/tcp"},
-		Name:         lndName,
-		Networks:     []*dockertest.Network{cfg.network},
-		User:         fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		Mounts: []string{
-			fmt.Sprintf("%s:%s", lndHostDir, lndDirInContainer),
-		},
-		Labels: map[string]string{
-			"ark.harness":                cfg.group,
-			"com.docker.compose.project": cfg.group,
-		},
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = false
-		hc.PortBindings = map[docker.Port][]docker.PortBinding{
-			"10009/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-			"8080/tcp":  {{HostIP: "0.0.0.0", HostPort: ""}},
-		}
-		hc.Binds = []string{
-			fmt.Sprintf("%s:%s", lndHostDir, lndDirInContainer),
-		}
+	res, err := h.runWithPortBindRetry(lndName, func() (
+		*dockertest.Resource, error) {
+
+		return h.pool.RunWithOptions(&dockertest.RunOptions{
+			Repository:   cfg.image,
+			Tag:          cfg.tag,
+			Cmd:          cmd,
+			ExposedPorts: []string{"10009/tcp", "8080/tcp"},
+			Name:         lndName,
+			Networks:     []*dockertest.Network{cfg.network},
+			User:         user,
+			Mounts: []string{
+				fmt.Sprintf("%s:%s", lndHostDir,
+					lndDirInContainer),
+			},
+			Labels: map[string]string{
+				"ark.harness":                cfg.group,
+				"com.docker.compose.project": cfg.group,
+			},
+		}, func(hc *docker.HostConfig) {
+			hc.AutoRemove = false
+			hc.PortBindings =
+				map[docker.Port][]docker.PortBinding{
+					"10009/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"8080/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+				}
+
+			hc.Binds = []string{
+				fmt.Sprintf("%s:%s", lndHostDir,
+					lndDirInContainer),
+			}
+		})
 	})
 	require.NoError(h.T, err, "failed to start lnd for "+cfg.name)
 
@@ -222,6 +237,7 @@ func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 	}
 
 	tapdName := h.containerName(cfg.name)
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
 	// Remove any existing tapd container with the same name.
 	h.removeContainerByName(tapdName)
@@ -255,35 +271,48 @@ func (h *Harness) startTapdContainer(cfg tapdConfig) *dockertest.Resource {
 		h.T, err, "failed to get absolute path for lnd data dir",
 	)
 
-	res, err := h.pool.RunWithOptions(&dockertest.RunOptions{
-		Repository:   cfg.image,
-		Tag:          cfg.tag,
-		Cmd:          cmd,
-		Env:          []string{"RUST_BACKTRACE=1"},
-		ExposedPorts: []string{"10029/tcp", "8089/tcp"},
-		Name:         tapdName,
-		Networks:     []*dockertest.Network{cfg.network},
-		// Run as current user to avoid permission issues with mounted
-		// volumes, matching the pattern used for LND containers.
-		User: fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		Mounts: []string{
-			fmt.Sprintf("%s:%s", tapdHostDir, tapdDirInContainer),
-			fmt.Sprintf("%s:%s:ro", lndHostDir, "/lnd"),
-		},
-		Labels: map[string]string{
-			"ark.harness":                cfg.group,
-			"com.docker.compose.project": cfg.group,
-		},
-	}, func(hc *docker.HostConfig) {
-		hc.AutoRemove = false
-		hc.PortBindings = map[docker.Port][]docker.PortBinding{
-			"10029/tcp": {{HostIP: "0.0.0.0", HostPort: ""}},
-			"8089/tcp":  {{HostIP: "0.0.0.0", HostPort: ""}},
-		}
-		hc.Binds = []string{
-			fmt.Sprintf("%s:%s", tapdHostDir, tapdDirInContainer),
-			fmt.Sprintf("%s:%s:ro", lndHostDir, "/lnd"),
-		}
+	res, err := h.runWithPortBindRetry(tapdName, func() (
+		*dockertest.Resource, error) {
+
+		return h.pool.RunWithOptions(&dockertest.RunOptions{
+			Repository:   cfg.image,
+			Tag:          cfg.tag,
+			Cmd:          cmd,
+			Env:          []string{"RUST_BACKTRACE=1"},
+			ExposedPorts: []string{"10029/tcp", "8089/tcp"},
+			Name:         tapdName,
+			Networks:     []*dockertest.Network{cfg.network},
+			// Run as current user to avoid permission issues.
+			User: user,
+			Mounts: []string{
+				fmt.Sprintf("%s:%s", tapdHostDir,
+					tapdDirInContainer),
+				fmt.Sprintf("%s:%s:ro", lndHostDir, "/lnd"),
+			},
+			Labels: map[string]string{
+				"ark.harness":                cfg.group,
+				"com.docker.compose.project": cfg.group,
+			},
+		}, func(hc *docker.HostConfig) {
+			hc.AutoRemove = false
+			hc.PortBindings =
+				map[docker.Port][]docker.PortBinding{
+					"10029/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"8089/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+				}
+
+			hc.Binds = []string{
+				fmt.Sprintf("%s:%s", tapdHostDir,
+					tapdDirInContainer),
+				fmt.Sprintf("%s:%s:ro", lndHostDir, "/lnd"),
+			}
+		})
 	})
 	require.NoError(h.T, err, "failed to start tapd for "+cfg.name)
 
