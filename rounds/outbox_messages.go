@@ -3,6 +3,9 @@ package rounds
 import (
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"google.golang.org/protobuf/proto"
 )
@@ -128,3 +131,94 @@ type CancelTimeoutReq struct {
 // outboxEventSealed marks CancelTimeoutReq as implementing the sealed
 // OutboxEvent interface.
 func (c *CancelTimeoutReq) outboxEventSealed() {}
+
+// ClientBatchInfo is an outbox message containing batch transaction data
+// to send to a client. The client needs this information to create signatures
+// for their boarding inputs and VTXO tree paths.
+type ClientBatchInfo struct {
+	// Client is the identifier of the client to send data to.
+	Client clientconn.ClientID
+
+	// BatchPSBT is the partially signed batch transaction. The client needs
+	// the full PSBT (including witness UTXOs and other metadata) to create
+	// their signatures for boarding inputs.
+	BatchPSBT *psbt.Packet
+
+	// VTXOTreePaths maps tree output indices to the extracted tree paths
+	// for this client. Each path contains only the transactions where the
+	// client is a cosigner. This is nil if the client has no VTXO requests.
+	VTXOTreePaths map[int]*tree.Tree
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (c *ClientBatchInfo) ClientID() clientconn.ClientID {
+	return c.Client
+}
+
+// ToProto converts ClientBatchInfo to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are available.
+func (c *ClientBatchInfo) ToProto() proto.Message {
+	return nil
+}
+
+// outboxEventSealed marks ClientBatchInfo as implementing the sealed
+// OutboxEvent interface.
+func (c *ClientBatchInfo) outboxEventSealed() {}
+
+// ClientRoundFailedResp is an outbox message emitted to notify a client that
+// the round they joined has failed. The client should discard any state
+// associated with this round.
+type ClientRoundFailedResp struct {
+	// Client is the identifier of the client to notify.
+	Client clientconn.ClientID
+
+	// RoundID is the identifier of the failed round.
+	RoundID RoundID
+
+	// Reason describes why the round failed.
+	Reason string
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (c *ClientRoundFailedResp) ClientID() clientconn.ClientID {
+	return c.Client
+}
+
+// ToProto converts ClientRoundFailedResp to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are available.
+func (c *ClientRoundFailedResp) ToProto() proto.Message {
+	return nil
+}
+
+// outboxEventSealed marks ClientRoundFailedResp as implementing the sealed
+// OutboxEvent interface.
+func (c *ClientRoundFailedResp) outboxEventSealed() {}
+
+// UnlockBoardingInputsReq is an outbox message emitted by the FSM to request
+// that the actor unlock boarding inputs that were previously locked for a
+// round. This is used when a round fails and the inputs should be released.
+type UnlockBoardingInputsReq struct {
+	// RoundID is the identifier of the round that locked these inputs.
+	RoundID RoundID
+
+	// Outpoints are the boarding input outpoints to unlock.
+	Outpoints []*wire.OutPoint
+}
+
+// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
+// OutboxEvent interface.
+func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
+
+// RoundFailedReq is emitted when a round has failed. The actor should clean up
+// any resources associated with the round and potentially create a new round.
+type RoundFailedReq struct {
+	// FailedRoundID is the ID of the round that failed.
+	FailedRoundID RoundID
+
+	// Reason describes why the round failed.
+	Reason string
+}
+
+// outboxEventSealed marks RoundFailedReq as implementing the sealed OutboxEvent
+// interface.
+func (r *RoundFailedReq) outboxEventSealed() {}

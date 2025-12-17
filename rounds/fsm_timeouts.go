@@ -8,4 +8,8 @@ type TimeoutPhase string
 const (
 	// TimeoutPhaseRegistration is the phase for registration timeouts.
 	TimeoutPhaseRegistration TimeoutPhase = "registration"
+
+	// TimeoutPhaseBoardingSigs is the phase for boarding signature
+	// collection timeouts.
+	TimeoutPhaseBoardingSigs TimeoutPhase = "boarding-signatures"
 )

@@ -53,3 +53,11 @@ type RegistrationTimeoutEvent struct{}
 // eventSealed marks RegistrationTimeoutEvent as implementing the sealed Event
 // interface.
 func (e *RegistrationTimeoutEvent) eventSealed() {}
+
+// PrepareClientNotificationsEvent is an internal event that triggers sending
+// batch information to clients. It is emitted after the PSBT is built.
+type PrepareClientNotificationsEvent struct{}
+
+// eventSealed marks PrepareClientNotificationsEvent as implementing the sealed
+// Event interface.
+func (e *PrepareClientNotificationsEvent) eventSealed() {}

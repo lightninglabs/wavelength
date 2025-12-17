@@ -1,7 +1,9 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 )
 
@@ -124,3 +126,56 @@ func (s *BatchBuildingState) IsTerminal() bool {
 // stateSealed marks BatchBuildingState as implementing the sealed State
 // interface.
 func (s *BatchBuildingState) stateSealed() {}
+
+// BatchBuiltState holds the funded PSBT after successful construction.
+// The PSBT contains boarding inputs and leave outputs, plus wallet inputs
+// and change added by FundPsbt. All inputs are unsigned at this point.
+type BatchBuiltState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// ChangeOutputIndex is the index of the change output, or -1 if no
+	// change was created.
+	ChangeOutputIndex int32
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// This is nil if no VTXOs exist in the round.
+	VTXOTrees map[int]*tree.Tree
+}
+
+// String returns a human-readable representation of BatchBuiltState.
+func (s *BatchBuiltState) String() string {
+	return "BatchBuiltState"
+}
+
+// IsTerminal returns false as BatchBuiltState is not a terminal state.
+func (s *BatchBuiltState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks BatchBuiltState as implementing the sealed State interface.
+func (s *BatchBuiltState) stateSealed() {}
+
+// FailedState is a terminal state indicating the round has failed. When
+// entering this state, the FSM emits events to notify clients, unlock
+// boarding inputs, and inform the actor of the failure.
+type FailedState struct {
+	// Reason describes why the round failed.
+	Reason string
+}
+
+// String returns a human-readable representation of FailedState.
+func (s *FailedState) String() string {
+	return "FailedState"
+}
+
+// IsTerminal returns true as FailedState is a terminal state.
+func (s *FailedState) IsTerminal() bool {
+	return true
+}
+
+// stateSealed marks FailedState as implementing the sealed State interface.
+func (s *FailedState) stateSealed() {}
