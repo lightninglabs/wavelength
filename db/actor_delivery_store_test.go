@@ -1,0 +1,701 @@
+package db
+
+import (
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightningnetwork/lnd/clock"
+	"github.com/stretchr/testify/require"
+	"pgregory.net/rapid"
+)
+
+// testActorDeliveryStore holds the store and clock for testing.
+type testActorDeliveryStore struct {
+	*ActorDeliveryStore
+	clock *clock.TestClock
+}
+
+// newActorDeliveryStoreForTest creates a new ActorDeliveryStore using the
+// transaction executor pattern for testing. Returns the store and a test clock
+// that can be manipulated to advance time.
+func newActorDeliveryStoreForTest(t *testing.T) *testActorDeliveryStore {
+	db := NewTestDB(t)
+
+	actorDB := NewTransactionExecutor(
+		db.BaseDB,
+		func(tx *sql.Tx) ActorDeliveryQueries {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	testClock := clock.NewTestClock(time.Now())
+
+	return &testActorDeliveryStore{
+		ActorDeliveryStore: NewActorDeliveryStore(actorDB, testClock),
+		clock:              testClock,
+	}
+}
+
+// generateTestID generates a random 16-byte hex-encoded ID for testing.
+func generateTestID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+
+	return hex.EncodeToString(b)
+}
+
+// TestActorDeliveryStoreEnqueueAndLease tests basic enqueue and lease
+// operations.
+func TestActorDeliveryStoreEnqueueAndLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue a message.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-001",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1, 2, 3, 4},
+		Priority:    5,
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	// Lease the message.
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-abc", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	require.Equal(t, "msg-001", leased.ID)
+	require.Equal(t, "actor-1", leased.MailboxID)
+	require.Equal(t, "test.Message", leased.MessageType)
+	require.Equal(t, []byte{1, 2, 3, 4}, leased.Payload)
+	require.Equal(t, 5, leased.Priority)
+	require.Equal(t, "token-abc", leased.LeaseToken)
+	require.Equal(t, 1, leased.Attempts)
+	require.Equal(t, 3, leased.MaxAttempts)
+
+	// Trying to lease again should return nil (no available messages).
+	leased2, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-xyz", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased2)
+}
+
+// TestActorDeliveryStoreAck tests message acknowledgement.
+func TestActorDeliveryStoreAck(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue and lease a message.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-ack",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-123", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	// Ack with correct token should succeed.
+	rows, err := store.AckMessage(ctx, "msg-ack", "token-123")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// Ack with wrong token should fail (0 rows affected).
+	rows, err = store.AckMessage(ctx, "msg-ack", "wrong-token")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rows)
+}
+
+// TestActorDeliveryStoreNack tests message negative acknowledgement.
+func TestActorDeliveryStoreNack(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue and lease a message.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-nack",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-456", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+
+	// Nack with correct token should succeed.
+	rows, err := store.NackMessage(ctx, "msg-nack", "token-456", 5*time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// Message should not be available yet (retry delay).
+	leased2, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token-789", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased2)
+}
+
+// TestActorDeliveryStoreExtendLease tests lease extension.
+func TestActorDeliveryStoreExtendLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue and lease a message.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-extend",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	_, err = store.LeaseNextMessage(
+		ctx, "actor-1", "token-extend", 30*time.Second,
+	)
+	require.NoError(t, err)
+
+	// Extend with correct token should succeed.
+	rows, err := store.ExtendLease(
+		ctx, "msg-extend", "token-extend", 60*time.Second,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+
+	// Extend with wrong token should fail.
+	rows, err = store.ExtendLease(
+		ctx, "msg-extend", "wrong-token", 60*time.Second,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), rows)
+}
+
+// TestActorDeliveryStoreMoveToDeadLetter tests dead letter functionality.
+func TestActorDeliveryStoreMoveToDeadLetter(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue a message.
+	err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-dead",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1, 2, 3},
+		AvailableAt: time.Now().Add(-time.Minute),
+		MaxAttempts: 1,
+	})
+	require.NoError(t, err)
+
+	// Move to dead letter.
+	err = store.MoveToDeadLetter(ctx, "msg-dead", "max attempts exceeded")
+	require.NoError(t, err)
+
+	// Verify it's in dead letters.
+	dl, err := store.GetDeadLetter(ctx, "msg-dead")
+	require.NoError(t, err)
+	require.NotNil(t, dl)
+
+	require.Equal(t, "msg-dead", dl.ID)
+	require.Equal(t, "mailbox", dl.Source)
+	require.Equal(t, "actor-1", dl.ActorID)
+	require.Equal(t, "max attempts exceeded", dl.FailureReason)
+
+	// Original message should be deleted.
+	leased, err := store.LeaseNextMessage(
+		ctx, "actor-1", "token", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.Nil(t, leased)
+}
+
+// TestActorDeliveryStorePriorityOrdering tests message priority ordering.
+func TestActorDeliveryStorePriorityOrdering(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	now := time.Now().Add(-time.Minute)
+
+	// Enqueue messages with different priorities.
+	msgs := []struct {
+		id       string
+		priority int
+	}{
+		{"low", 1},
+		{"high", 10},
+		{"medium", 5},
+	}
+
+	for _, m := range msgs {
+		err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+			ID:          m.id,
+			MailboxID:   "actor-1",
+			MessageType: "test.Message",
+			Payload:     []byte{1},
+			Priority:    m.priority,
+			AvailableAt: now,
+			MaxAttempts: 3,
+		})
+		require.NoError(t, err)
+	}
+
+	// Should receive in priority order: high, medium, low.
+	expected := []string{"high", "medium", "low"}
+	for i, exp := range expected {
+		leased, err := store.LeaseNextMessage(
+			ctx, "actor-1", "token-"+exp, 30*time.Second,
+		)
+		require.NoError(t, err, "iteration %d", i)
+		require.NotNil(t, leased, "iteration %d", i)
+		require.Equal(t, exp, leased.ID, "iteration %d", i)
+
+		// Ack to move to next.
+		_, err = store.AckMessage(ctx, leased.ID, "token-"+exp)
+		require.NoError(t, err)
+	}
+}
+
+// TestActorDeliveryStoreAskResult tests Ask result persistence.
+func TestActorDeliveryStoreAskResult(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Save a successful result.
+	err := store.SaveAskResult(ctx, actor.AskResultParams{
+		PromiseID:  "promise-123",
+		ResultBlob: []byte{1, 2, 3, 4},
+		ExpiresAt:  time.Now().Add(time.Hour),
+	})
+	require.NoError(t, err)
+
+	// Retrieve the result.
+	result, err := store.GetAskResult(ctx, "promise-123")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, "promise-123", result.PromiseID)
+	require.Equal(t, []byte{1, 2, 3, 4}, result.ResultBlob)
+	require.Empty(t, result.ErrorText)
+
+	// Delete the result.
+	err = store.DeleteAskResult(ctx, "promise-123")
+	require.NoError(t, err)
+
+	// Should be gone.
+	result, err = store.GetAskResult(ctx, "promise-123")
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
+
+// TestActorDeliveryStoreAskResultError tests Ask result with error.
+func TestActorDeliveryStoreAskResultError(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Save an error result.
+	err := store.SaveAskResult(ctx, actor.AskResultParams{
+		PromiseID: "promise-err",
+		ErrorText: "something went wrong",
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+	require.NoError(t, err)
+
+	// Retrieve the result.
+	result, err := store.GetAskResult(ctx, "promise-err")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Equal(t, "something went wrong", result.ErrorText)
+	require.Nil(t, result.ResultBlob)
+}
+
+// TestActorDeliveryStoreOutbox tests outbox operations.
+func TestActorDeliveryStoreOutbox(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Enqueue outbox messages.
+	for i := 0; i < 3; i++ {
+		err := store.EnqueueOutbox(ctx, actor.OutboxParams{
+			ID:            generateTestID(),
+			SourceActorID: "round-actor",
+			TargetActorID: "wallet-actor",
+			MessageType:   "round.SignRequest",
+			Payload:       []byte{byte(i)},
+			Version:       int64(i),
+		})
+		require.NoError(t, err)
+	}
+
+	// Claim a batch.
+	batch, err := store.ClaimOutboxBatch(ctx, 10)
+	require.NoError(t, err)
+	require.Len(t, batch, 3)
+
+	// Complete one.
+	err = store.CompleteOutbox(ctx, batch[0].ID)
+	require.NoError(t, err)
+
+	// Fail another.
+	err = store.FailOutbox(ctx, batch[1].ID)
+	require.NoError(t, err)
+}
+
+// TestActorDeliveryStoreDeduplication tests deduplication operations.
+func TestActorDeliveryStoreDeduplication(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Check if unprocessed message is processed.
+	processed, err := store.IsProcessed(ctx, "msg-new")
+	require.NoError(t, err)
+	require.False(t, processed)
+
+	// Mark as processed.
+	err = store.MarkProcessed(ctx, "msg-new", "actor-1", 24*time.Hour)
+	require.NoError(t, err)
+
+	// Now should be processed.
+	processed, err = store.IsProcessed(ctx, "msg-new")
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	// Marking again should be idempotent (ON CONFLICT DO NOTHING).
+	err = store.MarkProcessed(ctx, "msg-new", "actor-1", 24*time.Hour)
+	require.NoError(t, err)
+}
+
+// TestActorDeliveryStoreCheckpoint tests FSM checkpoint operations.
+func TestActorDeliveryStoreCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// No checkpoint initially.
+	cp, err := store.LoadCheckpoint(ctx, "round-actor-1")
+	require.NoError(t, err)
+	require.Nil(t, cp)
+
+	// Save a checkpoint.
+	err = store.SaveCheckpoint(ctx, actor.CheckpointParams{
+		ActorID:   "round-actor-1",
+		StateType: "AwaitingNonces",
+		StateData: []byte{1, 2, 3},
+		Version:   1,
+	})
+	require.NoError(t, err)
+
+	// Load the checkpoint.
+	cp, err = store.LoadCheckpoint(ctx, "round-actor-1")
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+
+	require.Equal(t, "round-actor-1", cp.ActorID)
+	require.Equal(t, "AwaitingNonces", cp.StateType)
+	require.Equal(t, []byte{1, 2, 3}, cp.StateData)
+	require.Equal(t, int64(1), cp.Version)
+
+	// Update the checkpoint.
+	err = store.SaveCheckpoint(ctx, actor.CheckpointParams{
+		ActorID:   "round-actor-1",
+		StateType: "AwaitingSignatures",
+		StateData: []byte{4, 5, 6},
+		Version:   2,
+	})
+	require.NoError(t, err)
+
+	// Load updated checkpoint.
+	cp, err = store.LoadCheckpoint(ctx, "round-actor-1")
+	require.NoError(t, err)
+	require.Equal(t, "AwaitingSignatures", cp.StateType)
+	require.Equal(t, int64(2), cp.Version)
+
+	// Delete the checkpoint.
+	err = store.DeleteCheckpoint(ctx, "round-actor-1")
+	require.NoError(t, err)
+
+	// Should be gone.
+	cp, err = store.LoadCheckpoint(ctx, "round-actor-1")
+	require.NoError(t, err)
+	require.Nil(t, cp)
+}
+
+// TestActorDeliveryStoreDeadLetterList tests dead letter listing.
+func TestActorDeliveryStoreDeadLetterList(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	// Create some messages and move them to dead letters.
+	for i := 0; i < 3; i++ {
+		id := generateTestID()
+
+		err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+			ID:          id,
+			MailboxID:   "actor-1",
+			MessageType: "test.Message",
+			Payload:     []byte{byte(i)},
+			AvailableAt: time.Now().Add(-time.Minute),
+			MaxAttempts: 1,
+		})
+		require.NoError(t, err)
+
+		err = store.MoveToDeadLetter(ctx, id, "test failure")
+		require.NoError(t, err)
+	}
+
+	// List dead letters.
+	dls, err := store.ListDeadLetters(ctx, "actor-1", 10)
+	require.NoError(t, err)
+	require.Len(t, dls, 3)
+
+	// Delete one.
+	err = store.DeleteDeadLetter(ctx, dls[0].ID)
+	require.NoError(t, err)
+
+	// Should have 2 left.
+	dls, err = store.ListDeadLetters(ctx, "actor-1", 10)
+	require.NoError(t, err)
+	require.Len(t, dls, 2)
+}
+
+// TestActorDeliveryStoreExpireLeases tests lease expiration.
+func TestActorDeliveryStoreExpireLeases(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	ts := newActorDeliveryStoreForTest(t)
+
+	// Enqueue a message (available in the past).
+	err := ts.EnqueueMessage(ctx, actor.EnqueueParams{
+		ID:          "msg-expire",
+		MailboxID:   "actor-1",
+		MessageType: "test.Message",
+		Payload:     []byte{1},
+		AvailableAt: ts.clock.Now().Add(-time.Hour),
+		MaxAttempts: 3,
+	})
+	require.NoError(t, err)
+
+	// Lease with 10 second duration.
+	_, err = ts.LeaseNextMessage(ctx, "actor-1", "token-old", 10*time.Second)
+	require.NoError(t, err)
+
+	// Advance time by 15 seconds so the lease has expired.
+	ts.clock.SetTime(ts.clock.Now().Add(15 * time.Second))
+
+	// Expire leases.
+	err = ts.ExpireLeases(ctx)
+	require.NoError(t, err)
+
+	// Should be able to lease again.
+	leased, err := ts.LeaseNextMessage(
+		ctx, "actor-1", "token-new", 30*time.Second,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, leased)
+	require.Equal(t, "token-new", leased.LeaseToken)
+	require.Equal(t, 2, leased.Attempts) // Incremented on second lease.
+}
+
+// TestActorDeliveryStoreMultipleEnqueueLease tests enqueueing and leasing
+// multiple messages.
+func TestActorDeliveryStoreMultipleEnqueueLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := newActorDeliveryStoreForTest(t)
+
+	mailboxID := "test-mailbox"
+
+	// Enqueue multiple messages.
+	var enqueued []string
+	for i := 0; i < 5; i++ {
+		id := generateTestID()
+		err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+			ID:          id,
+			MailboxID:   mailboxID,
+			MessageType: "test.Message",
+			Payload:     []byte{byte(i)},
+			Priority:    i,
+			AvailableAt: time.Now().Add(-time.Hour),
+			MaxAttempts: 10,
+		})
+		require.NoError(t, err)
+		enqueued = append(enqueued, id)
+	}
+
+	// Lease and ack all messages.
+	leased := 0
+	for {
+		msg, err := store.LeaseNextMessage(
+			ctx, mailboxID, generateTestID(), 30*time.Second,
+		)
+		require.NoError(t, err)
+
+		if msg == nil {
+			break
+		}
+
+		leased++
+		_, err = store.AckMessage(ctx, msg.ID, msg.LeaseToken)
+		require.NoError(t, err)
+	}
+
+	// Should have leased exactly what we enqueued.
+	require.Equal(t, len(enqueued), leased)
+}
+
+// TestActorDeliveryStoreRapidEnqueueLease is a property-based test for
+// enqueue/lease operations. The store is created once before rapid.Check
+// since NewTestDB requires *testing.T.
+func TestActorDeliveryStoreRapidEnqueueLease(t *testing.T) {
+	t.Parallel()
+
+	// Create store with outer testing.T since rapid.T doesn't satisfy
+	// testing.TB for NewTestDB.
+	store := newActorDeliveryStoreForTest(t)
+	ctx := t.Context()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		// Generate a unique mailbox for this iteration.
+		mailboxID := rapid.StringMatching(`[a-z]{5,10}`).Draw(rt, "mailboxID")
+		numMessages := rapid.IntRange(1, 5).Draw(rt, "numMessages")
+
+		var enqueued []string
+		for i := 0; i < numMessages; i++ {
+			id := rapid.StringMatching(`msg-[a-z0-9]{8}`).Draw(rt, "msgID")
+			payload := rapid.SliceOf(rapid.Byte()).Draw(rt, "payload")
+			priority := rapid.IntRange(0, 100).Draw(rt, "priority")
+
+			err := store.EnqueueMessage(ctx, actor.EnqueueParams{
+				ID:          id,
+				MailboxID:   mailboxID,
+				MessageType: "test.Message",
+				Payload:     payload,
+				Priority:    priority,
+				AvailableAt: time.Now().Add(-time.Hour),
+				MaxAttempts: 10,
+			})
+			if err == nil {
+				enqueued = append(enqueued, id)
+			}
+		}
+
+		// Lease and ack all messages.
+		leased := 0
+		for {
+			msg, err := store.LeaseNextMessage(
+				ctx, mailboxID, generateTestID(), 30*time.Second,
+			)
+			require.NoError(t, err)
+
+			if msg == nil {
+				break
+			}
+
+			leased++
+			_, err = store.AckMessage(ctx, msg.ID, msg.LeaseToken)
+			require.NoError(t, err)
+		}
+
+		// Should have leased exactly what we enqueued.
+		require.Equal(t, len(enqueued), leased)
+	})
+}
+
+// TestActorDeliveryStoreRapidCheckpoint is a property-based test for checkpoint
+// operations.
+func TestActorDeliveryStoreRapidCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	store := newActorDeliveryStoreForTest(t)
+	ctx := t.Context()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		actorID := rapid.StringMatching(`actor-[a-z0-9]{6}`).Draw(rt, "actorID")
+		stateType := rapid.StringMatching(
+			`[A-Z][a-zA-Z]{5,15}`,
+		).Draw(rt, "stateType")
+		stateData := rapid.SliceOf(rapid.Byte()).Draw(rt, "stateData")
+		version := rapid.Int64Range(1, 1000).Draw(rt, "version")
+
+		// Save checkpoint.
+		err := store.SaveCheckpoint(ctx, actor.CheckpointParams{
+			ActorID:   actorID,
+			StateType: stateType,
+			StateData: stateData,
+			Version:   version,
+		})
+		require.NoError(t, err)
+
+		// Load and verify.
+		cp, err := store.LoadCheckpoint(ctx, actorID)
+		require.NoError(t, err)
+		require.NotNil(t, cp)
+
+		require.Equal(t, actorID, cp.ActorID)
+		require.Equal(t, stateType, cp.StateType)
+		// SQLite returns nil for empty BLOBs, so compare lengths.
+		require.Equal(t, len(stateData), len(cp.StateData))
+		if len(stateData) > 0 {
+			require.Equal(t, stateData, cp.StateData)
+		}
+		require.Equal(t, version, cp.Version)
+
+		// Delete and verify gone.
+		err = store.DeleteCheckpoint(ctx, actorID)
+		require.NoError(t, err)
+
+		cp, err = store.LoadCheckpoint(ctx, actorID)
+		require.NoError(t, err)
+		require.Nil(t, cp)
+	})
+}
