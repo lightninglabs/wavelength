@@ -6,19 +6,87 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
+	// Acknowledge successful processing. Deletes the message.
+	// Validates lease_token to prevent stale acks.
+	AckMailboxMessage(ctx context.Context, arg AckMailboxMessageParams) (int64, error)
+	// Claim a batch of pending outbox messages for delivery.
+	// Updates status to 'pending' with incremented delivery_attempts.
+	// Returns messages ordered by creation time.
+	ClaimOutboxBatch(ctx context.Context, limit int32) ([]OutboxMessage, error)
+	// Delete completed outbox messages older than a threshold.
+	CleanupCompletedOutbox(ctx context.Context, completedAt sql.NullInt32) error
+	// Delete Ask results that have expired.
+	CleanupExpiredAskResults(ctx context.Context, expiresAt int32) error
+	// Delete expired deduplication entries.
+	CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int32) error
+	// Delete dead letters older than a threshold.
+	CleanupOldDeadLetters(ctx context.Context, createdAt int32) error
+	// Mark an outbox message as successfully delivered.
+	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
+	// Count total dead letters.
+	CountDeadLetters(ctx context.Context) (int64, error)
+	// Count pending messages for an actor's mailbox.
+	CountPendingMailboxMessages(ctx context.Context, arg CountPendingMailboxMessagesParams) (int64, error)
+	// Count pending outbox messages.
+	CountPendingOutboxMessages(ctx context.Context) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
+	// Delete an Ask result after retrieval.
+	DeleteAskResult(ctx context.Context, promiseID string) error
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
+	// Delete a dead letter after manual processing.
+	DeleteDeadLetter(ctx context.Context, id string) error
+	// Delete an FSM checkpoint (e.g., when actor terminates normally).
+	DeleteFSMCheckpoint(ctx context.Context, actorID string) error
+	// Delete a mailbox message by ID (used after moving to dead letter).
+	DeleteMailboxMessage(ctx context.Context, id string) error
+	// Delete an outbox message by ID (cleanup after completion or dead letter).
+	DeleteOutboxMessage(ctx context.Context, id string) error
+	// Durable mailbox queries.
+	// These queries support lease-based message delivery with exactly-once semantics.
+	// =============================================================================
+	// Mailbox Message Operations
+	// =============================================================================
+	// Enqueue a new message to an actor's mailbox.
+	EnqueueMailboxMessage(ctx context.Context, arg EnqueueMailboxMessageParams) error
+	// =============================================================================
+	// Outbox Operations (CDC Pattern)
+	// =============================================================================
+	// Enqueue a message to the transactional outbox.
+	// Called within the same transaction as FSM state changes.
+	EnqueueOutboxMessage(ctx context.Context, arg EnqueueOutboxMessageParams) error
+	// Release all expired leases so messages can be redelivered.
+	// Called periodically by a background cleanup task.
+	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt32) error
+	// Extend the lease for long-running message processing.
+	// Validates lease_token to prevent stale extensions.
+	ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLeaseParams) (int64, error)
+	// Mark an outbox message as failed (dead letter).
+	FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
+	// Retrieve the result of an Ask message.
+	GetAskResult(ctx context.Context, promiseID string) (AskResult, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	// =============================================================================
+	// Dead Letter Operations
+	// =============================================================================
+	// Get a specific dead letter by ID.
+	GetDeadLetter(ctx context.Context, id string) (DeadLetter, error)
+	// Load an FSM checkpoint for an actor.
+	GetFSMCheckpoint(ctx context.Context, actorID string) (FsmCheckpoint, error)
+	// Get a specific mailbox message by ID.
+	GetMailboxMessage(ctx context.Context, id string) (MailboxMessage, error)
+	// Get a specific outbox message by ID.
+	GetOutboxMessage(ctx context.Context, id string) (OutboxMessage, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
@@ -26,6 +94,11 @@ type Querier interface {
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
+	// =============================================================================
+	// Ask Result Operations
+	// =============================================================================
+	// Store the result of an Ask message for caller retrieval.
+	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -42,6 +115,12 @@ type Querier interface {
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
 	// VTXO queries.
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	// Check if a message has already been processed.
+	IsMessageProcessed(ctx context.Context, id string) (bool, error)
+	// Atomically claim the next available message for processing.
+	// Sets lease_token and lease_until, increments attempts.
+	// Returns NULL if no messages are available.
+	LeaseNextMailboxMessage(ctx context.Context, arg LeaseNextMailboxMessageParams) (MailboxMessage, error)
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
@@ -52,10 +131,38 @@ type Querier interface {
 	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	// List dead letters for a specific actor.
+	ListDeadLettersByActor(ctx context.Context, arg ListDeadLettersByActorParams) ([]DeadLetter, error)
+	// List dead letters by source type (mailbox or outbox).
+	ListDeadLettersBySource(ctx context.Context, arg ListDeadLettersBySourceParams) ([]DeadLetter, error)
+	// List all FSM checkpoints (for debugging/admin).
+	ListFSMCheckpoints(ctx context.Context) ([]FsmCheckpoint, error)
+	// List all messages for an actor's mailbox (for debugging).
+	ListMailboxMessagesByActor(ctx context.Context, mailboxID string) ([]MailboxMessage, error)
+	// List pending outbox messages for a specific target actor.
+	ListPendingOutboxByTarget(ctx context.Context, targetActorID string) ([]OutboxMessage, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
+	// =============================================================================
+	// Processed Messages (Deduplication)
+	// =============================================================================
+	// Record that a message has been processed for deduplication.
+	MarkMessageProcessed(ctx context.Context, arg MarkMessageProcessedParams) error
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
+	// Move a failed message to the dead letter queue.
+	MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error
+	// Move a failed outbox message to the dead letter queue.
+	MoveOutboxToDeadLetter(ctx context.Context, arg MoveOutboxToDeadLetterParams) error
+	// Release message for redelivery after retry delay.
+	// Clears lease and sets new available_at.
+	// Validates lease_token to prevent stale nacks.
+	NackMailboxMessage(ctx context.Context, arg NackMailboxMessageParams) (int64, error)
+	// =============================================================================
+	// FSM Checkpoints
+	// =============================================================================
+	// Save or update an FSM state checkpoint.
+	SaveFSMCheckpoint(ctx context.Context, arg SaveFSMCheckpointParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
