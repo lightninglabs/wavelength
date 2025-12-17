@@ -333,7 +333,6 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 	}
 }
 
-
 // Close closes the mailbox, preventing any further sends. After closing,
 // Receive will yield any remaining envelopes and then stop.
 func (m *DurableMailbox[M, R]) Close() {
