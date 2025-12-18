@@ -16,6 +16,8 @@ import (
 // receives funds, the BoardingIntent is persisted with full fidelity. This
 // verifies address creation, funding detection, and complete data integrity.
 func TestBoardingWalletIntentPersistence(t *testing.T) {
+	ParallelN(t)
+
 	f := NewBoardingWalletFixture(t)
 
 	// Create address and verify it's stored correctly.
@@ -44,6 +46,8 @@ func TestBoardingWalletIntentPersistence(t *testing.T) {
 // historical UTXOs) and real-time notifications (for new UTXOs). This
 // verifies the BacklogHeight parameter works correctly.
 func TestBoardingWalletBacklogNotifications(t *testing.T) {
+	ParallelN(t)
+
 	f := NewBoardingWalletFixture(t)
 	ctx := f.Context()
 
@@ -115,6 +119,8 @@ func TestBoardingWalletBacklogNotifications(t *testing.T) {
 // TestBoardingWalletAddressReuse tests that multiple credits to the SAME
 // boarding address are correctly tracked as separate intents.
 func TestBoardingWalletAddressReuse(t *testing.T) {
+	ParallelN(t)
+
 	f := NewBoardingWalletFixture(t)
 	ctx := f.Context()
 
@@ -188,6 +194,8 @@ func TestBoardingWalletAddressReuse(t *testing.T) {
 // TestBoardingWalletMultipleAddresses tests creating and funding multiple
 // addresses with different exit delays, verifying each is stored correctly.
 func TestBoardingWalletMultipleAddresses(t *testing.T) {
+	ParallelN(t)
+
 	f := NewBoardingWalletFixture(t)
 	ctx := f.Context()
 
