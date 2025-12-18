@@ -3,57 +3,44 @@
 package systest
 
 import (
+	"flag"
 	"os"
-	"sync"
 	"testing"
-
-	"github.com/lightninglabs/darepo-client/harness"
 )
 
 var (
-	// sharedHarness is the shared Docker harness for all systests.
-	sharedHarness *harness.Harness
+	// testParallelism controls how many systest tests can run in parallel.
+	// Each systest spawns its own Docker harness (bitcoind, lnd, etc.)
+	// which can be resource-intensive.
+	testParallelism = flag.Int(
+		"test.parallelism", 4,
+		"maximum number of systest tests to run in parallel",
+	)
 
-	// harnessOnce ensures the harness is only started once.
-	harnessOnce sync.Once
-
-	// harnessStarted tracks whether the harness was ever started.
-	harnessStarted bool
+	// testParallelismSem is a semaphore channel to limit parallel test
+	// execution based on testParallelism flag.
+	testParallelismSem chan struct{}
 )
 
-// TestMain is the entry point for the systest suite. It manages the shared
-// harness lifecycle - the harness is started lazily on the first test that
-// needs it, and stopped after all tests complete.
-func TestMain(m *testing.M) {
-	// Run all tests.
-	code := m.Run()
-
-	// Stop the harness after all tests complete (if it was started).
-	if harnessStarted && sharedHarness != nil {
-		sharedHarness.Stop()
-	}
-
-	os.Exit(code)
-}
-
-// GetSharedHarness returns the shared harness, starting it lazily on first
-// call. The harness is started using the first test's T for logging but
-// cleanup is handled by TestMain, not t.Cleanup.
-func GetSharedHarness(t *testing.T) *harness.Harness {
+// ParallelN acquires a slot from the parallelism semaphore and marks the test
+// as parallel. This allows controlling how many resource-intensive systest
+// tests run concurrently via the -test.parallelism flag.
+func ParallelN(t *testing.T) {
 	t.Helper()
 
-	harnessOnce.Do(func() {
-		opts := harness.DefaultOptions()
-		opts.StartTapd = false // Don't need tapd for boarding tests.
-		opts.GroupName = "systest"
+	t.Parallel()
 
-		sharedHarness = harness.NewHarness(t, &opts)
-		sharedHarness.Start()
-		harnessStarted = true
-
-		// NOTE: We intentionally do NOT register t.Cleanup here
-		// since TestMain handles harness cleanup after all tests.
+	testParallelismSem <- struct{}{}
+	t.Cleanup(func() {
+		<-testParallelismSem
 	})
+}
 
-	return sharedHarness
+// TestMain is the entry point for the systest suite. It handles flag parsing
+// and initializes the parallelism semaphore.
+func TestMain(m *testing.M) {
+	flag.Parse()
+	testParallelismSem = make(chan struct{}, *testParallelism)
+
+	os.Exit(m.Run())
 }

@@ -27,10 +27,11 @@ import (
 )
 
 // SysTestHarness wraps harness.Harness with per-test actor system and database.
-// The underlying Docker infrastructure (bitcoind, lnd) is shared across tests,
-// but each test gets its own isolated ActorSystem and database.
+// Each test gets its own isolated Docker infrastructure, ActorSystem, and
+// database. Use ParallelN(t) to run tests in parallel with controlled
+// concurrency.
 type SysTestHarness struct {
-	// Harness is the shared Docker harness for all systests.
+	// Harness is the per-test Docker harness.
 	Harness *harness.Harness
 
 	t *testing.T
@@ -52,13 +53,22 @@ type SysTestHarness struct {
 	cleanup []func()
 }
 
-// NewSysTestHarness creates a new test harness for a specific test. It uses
-// the shared Docker infrastructure but creates isolated actor system and
-// database resources.
+// NewSysTestHarness creates a new test harness for a specific test. Each test
+// gets its own Docker infrastructure (bitcoind, lnd), actor system, and
+// database for full isolation. Call ParallelN(t) before this to enable
+// parallel execution with controlled concurrency.
 func NewSysTestHarness(t *testing.T) *SysTestHarness {
 	t.Helper()
 
-	shared := GetSharedHarness(t)
+	// Create per-test Docker harness. We don't need tapd for boarding.
+	opts := harness.DefaultOptions()
+	opts.StartTapd = false
+	opts.GroupName = t.Name()
+
+	dockerHarness := harness.NewHarness(t, &opts)
+	t.Cleanup(dockerHarness.Stop)
+	dockerHarness.Start()
+
 	baseCtx, cancel := context.WithCancel(t.Context())
 
 	// Create a log handler for creating subsystem-specific loggers.
@@ -97,8 +107,8 @@ func NewSysTestHarness(t *testing.T) *SysTestHarness {
 		clock.NewDefaultClock(),
 	)
 
-	h := &SysTestHarness{
-		Harness:     shared,
+	sth := &SysTestHarness{
+		Harness:     dockerHarness,
 		t:           t,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -111,10 +121,10 @@ func NewSysTestHarness(t *testing.T) *SysTestHarness {
 
 	// Register cleanup.
 	t.Cleanup(func() {
-		h.Close()
+		sth.Close()
 	})
 
-	return h
+	return sth
 }
 
 // Context returns the test context.
