@@ -16,7 +16,9 @@ import (
 
 // happyOutboxHandler is a test stub that drives the OOR session FSM through the
 // successful path by turning outbox requests into success events.
-type happyOutboxHandler struct{}
+type happyOutboxHandler struct {
+	ark *psbt.Packet
+}
 
 // Handle executes the given outbox request and returns follow-up success
 // events.
@@ -52,6 +54,24 @@ func (h *happyOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
 		return []Event{&OperatorSignedEvent{}}, nil
 
 	case *ValidateFinalizeReq:
+		req, ok := outbox.(*ValidateFinalizeReq)
+		if !ok {
+			return nil, nil
+		}
+
+		// Validate finalize structurally: checkpoint set must match Ark
+		// inputs and include signature material.
+		err := oorlib.ValidateFinalizePackage(
+			h.ark, req.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return []Event{
+				&FinalizeFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
+
 		return []Event{&FinalizeValidatedEvent{}}, nil
 
 	case *FinalizeReq:
@@ -120,8 +140,10 @@ func TestActorHappyPath(t *testing.T) {
 	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
 	require.NoError(t, err)
 
+	checkpointPsbt.Inputs[0].FinalScriptWitness = []byte{0x01}
+
 	actor := NewActor(ActorCfg{
-		OutboxHandler: &happyOutboxHandler{},
+		OutboxHandler: &happyOutboxHandler{ark: arkPsbt},
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
