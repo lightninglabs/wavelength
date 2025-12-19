@@ -30,11 +30,17 @@ func (s *IdleState) IsTerminal() bool {
 // stateSealed marks IdleState as implementing the sealed State interface.
 func (s *IdleState) stateSealed() {}
 
-// AwaitingInputsLockState indicates a submit request has been accepted and the
-// FSM is waiting for the input lock side effect to complete.
-type AwaitingInputsLockState struct {
+// RequestedState indicates a submit request has been received and inputs are in
+// the process of being locked/validated.
+type RequestedState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
+
+	// InputsLocked indicates whether the input lock request has succeeded.
+	//
+	// Validation success is only accepted after this flag is true so submit
+	// processing cannot bypass the lock boundary.
+	InputsLocked bool
 
 	// ArkPSBT is the submitted Ark tx PSBT.
 	ArkPSBT *psbt.Packet
@@ -43,47 +49,18 @@ type AwaitingInputsLockState struct {
 	CheckpointPSBTs []*psbt.Packet
 }
 
-// String returns a human-readable representation of AwaitingInputsLockState.
-func (s *AwaitingInputsLockState) String() string {
-	return "AwaitingInputsLockState"
+// String returns a human-readable representation of RequestedState.
+func (s *RequestedState) String() string {
+	return "RequestedState"
 }
 
-// IsTerminal returns false as AwaitingInputsLockState is not terminal.
-func (s *AwaitingInputsLockState) IsTerminal() bool {
+// IsTerminal returns false as RequestedState is not terminal.
+func (s *RequestedState) IsTerminal() bool {
 	return false
 }
 
-// stateSealed marks AwaitingInputsLockState as implementing the sealed State
-// interface.
-func (s *AwaitingInputsLockState) stateSealed() {}
-
-// AwaitingSubmitValidationState indicates inputs are locked and the FSM is
-// waiting for submit package validation.
-type AwaitingSubmitValidationState struct {
-	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
-	Inputs []wire.OutPoint
-
-	// ArkPSBT is the submitted Ark tx PSBT.
-	ArkPSBT *psbt.Packet
-
-	// CheckpointPSBTs are the submitted checkpoint PSBTs.
-	CheckpointPSBTs []*psbt.Packet
-}
-
-// String returns a human-readable representation of
-// AwaitingSubmitValidationState.
-func (s *AwaitingSubmitValidationState) String() string {
-	return "AwaitingSubmitValidationState"
-}
-
-// IsTerminal returns false as AwaitingSubmitValidationState is not terminal.
-func (s *AwaitingSubmitValidationState) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks AwaitingSubmitValidationState as implementing the sealed
-// State interface.
-func (s *AwaitingSubmitValidationState) stateSealed() {}
+// stateSealed marks RequestedState as implementing the sealed State interface.
+func (s *RequestedState) stateSealed() {}
 
 // ValidatedState indicates validation has succeeded and the operator can sign.
 type ValidatedState struct {
@@ -112,9 +89,6 @@ func (s *ValidatedState) stateSealed() {}
 
 // CoSignedState indicates the operator has co-signed the package and the
 // session has reached its point-of-no-return.
-//
-// Finalize requests are accepted in this state. The finalize request provides
-// fully signed checkpoint PSBTs, and the next state validates that package.
 type CoSignedState struct{}
 
 // String returns a human-readable representation of CoSignedState.
@@ -130,24 +104,24 @@ func (s *CoSignedState) IsTerminal() bool {
 // stateSealed marks CoSignedState as implementing the sealed State interface.
 func (s *CoSignedState) stateSealed() {}
 
-// AwaitingFinalizeValidationState indicates finalize package validation is in
-// progress.
-type AwaitingFinalizeValidationState struct{}
+// AwaitingFinalCheckpointsState indicates we are waiting for the client to
+// submit fully signed checkpoint PSBTs.
+type AwaitingFinalCheckpointsState struct{}
 
 // String returns a human-readable representation of
-// AwaitingFinalizeValidationState.
-func (s *AwaitingFinalizeValidationState) String() string {
-	return "AwaitingFinalizeValidationState"
+// AwaitingFinalCheckpointsState.
+func (s *AwaitingFinalCheckpointsState) String() string {
+	return "AwaitingFinalCheckpointsState"
 }
 
-// IsTerminal returns false as AwaitingFinalizeValidationState is not terminal.
-func (s *AwaitingFinalizeValidationState) IsTerminal() bool {
+// IsTerminal returns false as AwaitingFinalCheckpointsState is not terminal.
+func (s *AwaitingFinalCheckpointsState) IsTerminal() bool {
 	return false
 }
 
-// stateSealed marks AwaitingFinalizeValidationState as implementing the sealed
+// stateSealed marks AwaitingFinalCheckpointsState as implementing the sealed
 // State interface.
-func (s *AwaitingFinalizeValidationState) stateSealed() {}
+func (s *AwaitingFinalCheckpointsState) stateSealed() {}
 
 // FinalizedState is the terminal success state.
 type FinalizedState struct{}

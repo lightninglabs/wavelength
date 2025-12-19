@@ -1,8 +1,8 @@
 package oor
 
 import (
-	"context"
 	"crypto/rand"
+	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -13,74 +13,6 @@ import (
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
-
-// happyOutboxHandler is a test stub that drives the OOR session FSM through the
-// successful path by turning outbox requests into success events.
-type happyOutboxHandler struct {
-	ark *psbt.Packet
-}
-
-// Handle executes the given outbox request and returns follow-up success
-// events.
-func (h *happyOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
-	outbox OutboxEvent) ([]Event, error) {
-
-	_ = ctx
-
-	switch req := outbox.(type) {
-	case *LockInputsReq:
-		return []Event{&InputsLockSucceededEvent{}}, nil
-
-	case *ValidateSubmitReq:
-		// Validate via the shared client library.
-		validated, err := oorlib.ValidateSubmitPackage(
-			req.ArkPSBT, req.CheckpointPSBTs,
-		)
-		if err != nil {
-			return []Event{
-				&SubmitFailedEvent{
-					Reason: err.Error(),
-				},
-			}, nil
-		}
-
-		return []Event{
-			&SubmitValidatedEvent{
-				ArkTxid: validated.ArkTxid,
-			},
-		}, nil
-
-	case *CoSignReq:
-		return []Event{&OperatorSignedEvent{}}, nil
-
-	case *ValidateFinalizeReq:
-		req, ok := outbox.(*ValidateFinalizeReq)
-		if !ok {
-			return nil, nil
-		}
-
-		// Validate finalize structurally: checkpoint set must match Ark
-		// inputs and include signature material.
-		err := oorlib.ValidateFinalizePackage(
-			h.ark, req.FinalCheckpointPSBTs,
-		)
-		if err != nil {
-			return []Event{
-				&FinalizeFailedEvent{
-					Reason: err.Error(),
-				},
-			}, nil
-		}
-
-		return []Event{&FinalizeValidatedEvent{}}, nil
-
-	case *FinalizeReq:
-		return []Event{&FinalizeSucceededEvent{}}, nil
-
-	default:
-		return nil, nil
-	}
-}
 
 // randomP2TRScript returns a P2TR pkScript with a random key.
 func randomP2TRScript(t *testing.T) []byte {
@@ -93,7 +25,8 @@ func randomP2TRScript(t *testing.T) []byte {
 	return append([]byte{txscript.OP_1, 0x20}, key[:]...)
 }
 
-// TestActorHappyPath exercises a submit and finalize flow through the actor.
+// TestActorHappyPath exercises a submit and finalize flow through the actor
+// using the in-process outbox driver.
 func TestActorHappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -142,8 +75,9 @@ func TestActorHappyPath(t *testing.T) {
 
 	checkpointPsbt.Inputs[0].FinalScriptWitness = []byte{0x01}
 
+	driver := NewInProcessOutboxDriver()
 	actor := NewActor(ActorCfg{
-		OutboxHandler: &happyOutboxHandler{ark: arkPsbt},
+		OutboxHandler: driver,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
@@ -164,4 +98,206 @@ func TestActorHappyPath(t *testing.T) {
 	state, err := actor.CurrentState(ctx, submitMsg.SessionID)
 	require.NoError(t, err)
 	require.IsType(t, &FinalizedState{}, state)
+}
+
+// TestActorSubmitMissingWitnessAssertsUnlock exercises a submit that fails
+// validation because the Ark PSBT input does not include a witness UTXO.
+func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 7,
+		},
+	})
+	checkpointTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTx.TxHash(),
+		Index: 0,
+	}
+
+	arkTx := wire.NewMsgTx(2)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: checkpointOutpoint,
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+	arkTx.AddTxOut(scripts.AnchorOutput())
+
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	encodedTapTree, err := oorlib.EncodeTapTree([][]byte{{0x51}})
+	require.NoError(t, err)
+
+	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
+	require.NoError(t, err)
+
+	driver := NewInProcessOutboxDriver()
+	actor := NewActor(ActorCfg{OutboxHandler: driver})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
+	})
+	require.True(t, submitResp.IsOk())
+
+	sessionID := SessionID(arkTx.TxHash())
+	state, err := actor.CurrentState(ctx, sessionID)
+	require.NoError(t, err)
+	require.IsType(t, &FailedState{}, state)
+
+	seen := strings.Join(driver.SeenOutboxTypes(), ",")
+	require.Contains(t, seen, "UnlockInputsReq")
+}
+
+// TestActorSubmitMissingTapTreeAssertsUnlock exercises a submit that fails
+// validation because the Ark PSBT input does not include tap tree metadata.
+func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 7,
+		},
+	})
+	checkpointTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTx.TxHash(),
+		Index: 0,
+	}
+
+	arkTx := wire.NewMsgTx(2)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: checkpointOutpoint,
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+	arkTx.AddTxOut(scripts.AnchorOutput())
+
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	// Submit validation requires witness utxo and taptree metadata. We
+	// only set witness utxo here to prove missing taptree triggers failure.
+	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
+
+	driver := NewInProcessOutboxDriver()
+	actor := NewActor(ActorCfg{OutboxHandler: driver})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
+	})
+	require.True(t, submitResp.IsOk())
+
+	sessionID := SessionID(arkTx.TxHash())
+	state, err := actor.CurrentState(ctx, sessionID)
+	require.NoError(t, err)
+	require.IsType(t, &FailedState{}, state)
+
+	seen := strings.Join(driver.SeenOutboxTypes(), ",")
+	require.Contains(t, seen, "UnlockInputsReq")
+}
+
+// TestActorFinalizeMissingSigDoesNotUnlock asserts that finalize failures after
+// the point-of-no-return do not emit an unlock request.
+func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 7,
+		},
+	})
+	checkpointTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+
+	checkpointOutpoint := wire.OutPoint{
+		Hash:  checkpointTx.TxHash(),
+		Index: 0,
+	}
+
+	arkTx := wire.NewMsgTx(2)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: checkpointOutpoint,
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: randomP2TRScript(t),
+	})
+	arkTx.AddTxOut(scripts.AnchorOutput())
+
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
+
+	encodedTapTree, err := oorlib.EncodeTapTree([][]byte{{0x51}})
+	require.NoError(t, err)
+
+	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
+	require.NoError(t, err)
+
+	driver := NewInProcessOutboxDriver()
+	actor := NewActor(ActorCfg{OutboxHandler: driver})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
+	})
+	require.True(t, submitResp.IsOk())
+
+	sessionID := SessionID(arkTx.TxHash())
+	state, err := actor.CurrentState(ctx, sessionID)
+	require.NoError(t, err)
+	require.IsType(t, &CoSignedState{}, state)
+
+	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
+		SessionID:            sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
+	})
+	require.True(t, finalizeResp.IsOk())
+
+	state, err = actor.CurrentState(ctx, sessionID)
+	require.NoError(t, err)
+	require.IsType(t, &FailedState{}, state)
+
+	seen := strings.Join(driver.SeenOutboxTypes(), ",")
+	require.NotContains(t, seen, "UnlockInputsReq")
 }

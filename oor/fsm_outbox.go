@@ -10,15 +10,6 @@ import (
 //
 // The coordinator actor should execute these requests and translate results
 // back into inbox events.
-//
-// Package vocabulary:
-//   - submit package: Ark PSBT + checkpoint PSBTs before finalize signatures,
-//   - finalize package: Ark PSBT + checkpoint PSBTs with client finalize
-//     signatures attached.
-//
-// We keep structural and policy/state-aware validation at this boundary so the
-// FSM orchestration remains deterministic and all retryable side effects follow
-// one pattern.
 type OutboxEvent interface {
 	// OutboxType returns a stable string identifier for this outbox event.
 	OutboxType() string

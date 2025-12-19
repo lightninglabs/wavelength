@@ -47,14 +47,16 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestSubmitValidatedBeforeInputsLockedIsIgnored asserts validation success is
-// ignored until lock success has transitioned the FSM into validation wait.
+// TestSubmitValidatedBeforeInputsLockedIsIgnored asserts that RequestedState
+// rejects early validation success before inputs are locked.
 func TestSubmitValidatedBeforeInputsLockedIsIgnored(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
-	state := &AwaitingInputsLockState{}
+	state := &RequestedState{
+		InputsLocked: false,
+	}
 
 	tr, err := state.ProcessEvent(ctx, &SubmitValidatedEvent{}, nil)
 	require.NoError(t, err)
@@ -65,22 +67,24 @@ func TestSubmitValidatedBeforeInputsLockedIsIgnored(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestInputsLockSucceededEventEnablesValidation asserts lock success
-// transitions into submit validation wait and emits submit validation.
-func TestInputsLockSucceededEventEnablesValidation(t *testing.T) {
+// TestInputsLockedEventEnablesValidation asserts that locking success marks the
+// requested state as lock-confirmed and emits submit validation.
+func TestInputsLockedEventEnablesValidation(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
-	state := &AwaitingInputsLockState{}
+	state := &RequestedState{
+		InputsLocked: false,
+	}
 
-	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{}, nil)
+	tr, err := state.ProcessEvent(ctx, &InputsLockedEvent{}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	next, ok := tr.NextState.(*AwaitingSubmitValidationState)
+	next, ok := tr.NextState.(*RequestedState)
 	require.True(t, ok)
-	require.Equal(t, state.Inputs, next.Inputs)
+	require.True(t, next.InputsLocked)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
@@ -100,13 +104,9 @@ func TestSubmitRequestedPopulatesLockInputs(t *testing.T) {
 	)
 
 	state := &IdleState{}
-	tr, err := state.ProcessEvent(
-		ctx,
-		&SubmitRequestedEvent{
-			CheckpointPSBTs: checkpoints,
-		},
-		nil,
-	)
+	tr, err := state.ProcessEvent(ctx, &SubmitRequestedEvent{
+		CheckpointPSBTs: checkpoints,
+	}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 

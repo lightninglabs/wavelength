@@ -12,7 +12,11 @@ import (
 //
 // We prefer this to returning an error because unexpected events can be a
 // normal consequence of retries, timeouts, or races at the actor boundary.
-func unexpectedEvent(state State) *StateTransition {
+func unexpectedEvent(state State, stateName string,
+	event Event) *StateTransition {
+
+	_ = stateName
+
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
@@ -34,8 +38,9 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingInputsLockState{
+			NextState: &RequestedState{
 				Inputs:          inputs,
+				InputsLocked:    false,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: evt.CheckpointPSBTs,
 			},
@@ -49,19 +54,19 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return unexpectedEvent(s, s.String(), event), nil
 	}
 }
 
-// ProcessEvent handles events for AwaitingInputsLockState.
-func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
+// ProcessEvent handles events for RequestedState.
+func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
 	_ = env
 
-	switch evt := event.(type) {
-	case *InputsLockSucceededEvent:
+	switch event.(type) {
+	case *InputsLockedEvent:
 		validateReq := &ValidateSubmitReq{
 			ArkPSBT: s.ArkPSBT,
 			CheckpointPSBTs: s.
@@ -69,8 +74,9 @@ func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingSubmitValidationState{
+			NextState: &RequestedState{
 				Inputs:          s.Inputs,
+				InputsLocked:    true,
 				ArkPSBT:         s.ArkPSBT,
 				CheckpointPSBTs: s.CheckpointPSBTs,
 			},
@@ -81,28 +87,15 @@ func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 			}),
 		}, nil
 
-	case *InputsLockFailedEvent:
-		return &StateTransition{
-			NextState: &FailedState{
-				Reason: evt.Reason,
-			},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	default:
-		return unexpectedEvent(s), nil
-	}
-}
-
-// ProcessEvent handles events for AwaitingSubmitValidationState.
-func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
-
-	_ = ctx
-	_ = env
-
-	switch evt := event.(type) {
 	case *SubmitValidatedEvent:
+		// Ignore validation success until locking has completed.
+		//
+		// The validate request is emitted only after InputsLockedEvent.
+		// This guard keeps the FSM robust against out-of-order actor
+		// deliveries.
+		if !s.InputsLocked {
+			return unexpectedEvent(s, s.String(), event), nil
+		}
 
 		return &StateTransition{
 			NextState: &ValidatedState{
@@ -118,19 +111,17 @@ func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
 	case *SubmitFailedEvent:
 		return &StateTransition{
 			NextState: &FailedState{
-				Reason: evt.Reason,
+				Reason: "submit failed",
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&UnlockInputsReq{
-						Inputs: s.Inputs,
-					},
-				},
+				Outbox: []OutboxEvent{&UnlockInputsReq{
+					Inputs: s.Inputs,
+				}},
 			}),
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return unexpectedEvent(s, s.String(), event), nil
 	}
 }
 
@@ -154,16 +145,14 @@ func (s *ValidatedState) ProcessEvent(ctx context.Context, event Event,
 				Reason: "sign failed",
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&UnlockInputsReq{
-						Inputs: s.Inputs,
-					},
-				},
+				Outbox: []OutboxEvent{&UnlockInputsReq{
+					Inputs: s.Inputs,
+				}},
 			}),
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return unexpectedEvent(s, s.String(), event), nil
 	}
 }
 
@@ -185,7 +174,7 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingFinalizeValidationState{},
+			NextState: &AwaitingFinalCheckpointsState{},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&ValidateFinalizeReq{
@@ -205,12 +194,12 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return unexpectedEvent(s, s.String(), event), nil
 	}
 }
 
-// ProcessEvent handles events for AwaitingFinalizeValidationState.
-func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
+// ProcessEvent handles events for AwaitingFinalCheckpointsState.
+func (s *AwaitingFinalCheckpointsState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	_ = ctx
@@ -240,7 +229,7 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return unexpectedEvent(s, s.String(), event), nil
 	}
 }
 
@@ -251,7 +240,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s), nil
+	return unexpectedEvent(s, s.String(), event), nil
 }
 
 // ProcessEvent handles events for FailedState.
@@ -261,5 +250,5 @@ func (s *FailedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s), nil
+	return unexpectedEvent(s, s.String(), event), nil
 }
