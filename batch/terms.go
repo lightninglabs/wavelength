@@ -1,6 +1,8 @@
 package batch
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -48,4 +50,8 @@ type Terms struct {
 
 	// MinLeaveAmount is the minimum amount for a leave request output.
 	MinLeaveAmount btcutil.Amount
+
+	// RegistrationTimeout is the duration to wait for client registrations
+	// before sealing a round.
+	RegistrationTimeout time.Duration
 }
