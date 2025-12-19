@@ -1,6 +1,7 @@
 package batch
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -22,4 +23,29 @@ type Terms struct {
 
 	// TreeRadix is the branching factor for VTXO trees.
 	TreeRadix uint32
+
+	// BoardingExitDelay is the minimum exit delay for boarding inputs.
+	BoardingExitDelay uint32
+
+	// BoardingExitDelaySafetyMargin is the number of blocks before the
+	// exit delay that we stop accepting boarding inputs. This ensures the
+	// operator has enough time to construct and broadcast the round
+	// transaction before the client can claim via the delay path.
+	BoardingExitDelaySafetyMargin uint32
+
+	// MinBoardingConfirmations is the minimum confirmation requirement for
+	// boarding inputs.
+	MinBoardingConfirmations uint32
+
+	// MinVTXOAmount is the minimum amount for a VTXO request.
+	MinVTXOAmount btcutil.Amount
+
+	// MaxVTXOAmount is the maximum amount for a VTXO request.
+	MaxVTXOAmount btcutil.Amount
+
+	// VTXOExitDelay is the minimum exit delay for VTXO requests.
+	VTXOExitDelay uint32
+
+	// MinLeaveAmount is the minimum amount for a leave request output.
+	MinLeaveAmount btcutil.Amount
 }

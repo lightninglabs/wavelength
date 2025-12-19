@@ -2,6 +2,9 @@ package rounds
 
 import (
 	"fmt"
+
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightninglabs/darepo/batch"
 )
 
 // Environment provides the round state machine with access to external systems
@@ -10,6 +13,19 @@ import (
 type Environment struct {
 	// RoundID identifies this FSM instance.
 	RoundID RoundID
+
+	// ChainParams specifies the Bitcoin network parameters.
+	ChainParams *chaincfg.Params
+
+	// BoardingInputLocker manages locks on boarding inputs to prevent
+	// double-spending across concurrent rounds.
+	BoardingInputLocker BoardingInputLocker
+
+	// ChainSource provides access to blockchain data for UTXO validation.
+	ChainSource ChainSource
+
+	// Terms contains the operator's terms for this round.
+	Terms *batch.Terms
 }
 
 // Name returns the unique identifier for this FSM instance.
