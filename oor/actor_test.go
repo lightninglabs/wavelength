@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,14 +25,26 @@ func (h *happyOutboxHandler) Handle(ctx context.Context, sessionID SessionID,
 
 	_ = ctx
 
-	switch outbox.(type) {
+	switch req := outbox.(type) {
 	case *LockInputsReq:
 		return []Event{&InputsLockSucceededEvent{}}, nil
 
 	case *ValidateSubmitReq:
+		// Validate via the shared client library.
+		validated, err := oorlib.ValidateSubmitPackage(
+			req.ArkPSBT, req.CheckpointPSBTs,
+		)
+		if err != nil {
+			return []Event{
+				&SubmitFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
+
 		return []Event{
 			&SubmitValidatedEvent{
-				ArkTxid: chainhash.Hash(sessionID),
+				ArkTxid: validated.ArkTxid,
 			},
 		}, nil
 
@@ -97,6 +110,14 @@ func TestActorHappyPath(t *testing.T) {
 	arkTx.AddTxOut(scripts.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
+
+	encodedTapTree, err := oorlib.EncodeTapTree([][]byte{{0x51}})
+	require.NoError(t, err)
+
+	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
 	require.NoError(t, err)
 
 	actor := NewActor(ActorCfg{
