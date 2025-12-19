@@ -141,6 +141,11 @@ type RoundClientConfig struct {
 	// avoid import cycle with vtxo package. Optional - if nil,
 	// notifications are not forwarded.
 	VTXOManager actor.TellOnlyRef[actor.Message]
+
+	// ActorSystem enables direct communication with VTXO actors via service
+	// keys. Used to send ForfeitRequestEvent, RefreshAcknowledgedEvent, and
+	// ForfeitConfirmedEvent to specific VTXO actors.
+	ActorSystem *actor.ActorSystem
 }
 
 // NewRoundClientActor creates a new client actor with the provided
