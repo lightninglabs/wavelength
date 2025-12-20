@@ -30,7 +30,7 @@ type StartTransferEvent struct {
 
 	// CheckpointInputs is the set of VTXO inputs to convert into
 	// checkpoints.
-	CheckpointInputs []oortx.CheckpointInput
+	CheckpointInputs []TransferInput
 
 	// RecipientOutputs are the Ark tx outputs to produce.
 	RecipientOutputs []oortx.RecipientOutput

@@ -20,8 +20,10 @@ type Input struct {
 	// SpentVTXO identifies and describes the VTXO output being spent.
 	SpentVTXO SpentVTXORef
 
-	// OwnerLeafScript is the owner-controlled collaborative leaf script.
-	// It should be committed to in the checkpoint output tap tree.
+	// OwnerLeafScript is the spent VTXO's collaborative leaf script.
+	//
+	// It is committed into the checkpoint output tap tree together with
+	// the operator timeout leaf.
 	//
 	// This is deliberately a raw script for the draft implementation. Once
 	// the closure system is canonical, higher layers should construct this
@@ -96,11 +98,14 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 		return nil, err
 	}
 
-	checkpointPkScript, err := scripts.CheckpointPkScript(
-		policy, in.OwnerLeafScript,
-	)
+	tapKey, err := tapscript.TaprootKey()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to compute taproot key: %w", err)
+	}
+
+	checkpointPkScript, err := txscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create p2tr script: %w", err)
 	}
 
 	tx := wire.NewMsgTx(arktx.TxVersion)

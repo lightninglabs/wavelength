@@ -226,7 +226,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 
 	tx.AddTxOut(scripts.AnchorOutput())
 
-	err := ValidateCanonicalArkTx(tx)
+	err := arktx.ValidateCanonicalTx(tx)
 	if err != nil {
 		return nil, fmt.Errorf("internal: built ark tx is not "+
 			"canonical: %w", err)

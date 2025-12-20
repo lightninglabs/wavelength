@@ -37,7 +37,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		inputOutpoints := make([]wire.OutPoint, 0, len(evt.CheckpointInputs))
 		for i := range evt.CheckpointInputs {
 			inputOutpoints = append(
-				inputOutpoints, evt.CheckpointInputs[i].Outpoint,
+				inputOutpoints, evt.CheckpointInputs[i].VTXO.Outpoint,
 			)
 		}
 
@@ -55,18 +55,22 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			return nil, err
 		}
 
+		submitReq := &SendSubmitPackageRequest{
+			ArkPSBT:         ark,
+			CheckpointPSBTs: checkpoints,
+			TransferInputs:  evt.CheckpointInputs,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingSubmitAccepted{
 				InputOutpoints:  inputOutpoints,
 				ArkPSBT:         ark,
 				CheckpointPSBTs: checkpoints,
+				TransferInputs:  evt.CheckpointInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&SendSubmitPackageRequest{
-						ArkPSBT:         ark,
-						CheckpointPSBTs: checkpoints,
-					},
+					submitReq,
 				},
 			}),
 		}, nil
@@ -115,21 +119,24 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		checkpoints := evt.CoSignedCheckpointPSBTs
 
 		// Signature material is produced outside the FSM.
-		// The actor boundary uses a wallet to finalize checkpoints.
+		// Ask the outbox boundary to finalize checkpoints.
+		signReq := &RequestCheckpointSignatures{
+			ArkPSBT:                 evt.ArkPSBT,
+			CoSignedCheckpointPSBTs: evt.CoSignedCheckpointPSBTs,
+			TransferInputs:          s.TransferInputs,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingCheckpointSignatures{
 				SessionID:               evt.SessionID,
 				InputOutpoints:          s.InputOutpoints,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
+				TransferInputs:          s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&RequestCheckpointSignatures{
-						ArkPSBT: evt.ArkPSBT,
-						CoSignedCheckpointPSBTs: evt.
-							CoSignedCheckpointPSBTs,
-					},
+					signReq,
 				},
 			}),
 		}, nil
@@ -293,7 +300,7 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
 // darepo-client lib/tx/oor primitives.
 func buildSubmitPackage(policy scripts.CheckpointPolicy,
-	inputs []oortx.CheckpointInput,
+	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet, error) {
 
 	if len(inputs) == 0 {
@@ -304,7 +311,14 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 	checkpointOuts := make([]oortx.CheckpointOutput, 0, len(inputs))
 
 	for i := range inputs {
-		result, err := oortx.BuildCheckpointPSBT(policy, inputs[i])
+		checkpointInput, err := inputs[i].CheckpointInput()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		result, err := oortx.BuildCheckpointPSBT(
+			policy, checkpointInput,
+		)
 		if err != nil {
 			return nil, nil, err
 		}

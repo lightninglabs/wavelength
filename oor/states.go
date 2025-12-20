@@ -52,6 +52,10 @@ type AwaitingSubmitAccepted struct {
 
 	// CheckpointPSBTs are the checkpoint tx PSBTs for this session.
 	CheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs are the vtxo descriptors and scripts needed later on
+	// to sign the checkpoint PSBTs.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -87,6 +91,9 @@ type AwaitingCheckpointSignatures struct {
 
 	// CoSignedCheckpointPSBTs are the operator co-signed checkpoint PSBTs.
 	CoSignedCheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the client-side VTXO signing context.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of
