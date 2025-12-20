@@ -34,6 +34,40 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	}
 }
 
+// failWithNotification creates a state transition to ClientFailedState and
+// emits a RoundFailedNotification. This is the standard pattern for handling
+// internal errors without returning an error to the FSM (which would halt it).
+func failWithNotification(reason string, err error, recoverable bool,
+	roundID string) *ClientStateTransition {
+
+	return &ClientStateTransition{
+		NextState: &ClientFailedState{
+			Reason:      reason,
+			Error:       err,
+			Recoverable: recoverable,
+		},
+		NewEvents: fn.Some(ClientEmittedEvent{
+			Outbox: []ClientOutMsg{
+				&RoundFailedNotification{
+					RoundID:       roundID,
+					Reason:        reason,
+					Recoverable:   recoverable,
+					OriginalError: err,
+				},
+			},
+		}),
+	}
+}
+
+// selfLoop creates a self-loop transition that stays in the current state
+// without emitting any events. Used for unknown events in non-terminal states
+// to avoid halting the FSM.
+func selfLoop(state ClientState) *ClientStateTransition {
+	return &ClientStateTransition{
+		NextState: state,
+	}
+}
+
 // ProcessEvent handles the events from the Idle state. In this state, we'll
 // receive boarding UTXO confirmations or resume existing boarding flows.
 func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
@@ -62,14 +96,23 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 		// persisted the intent; we just need to create an internal
 		// BoardingIntent and transition to PendingRoundAssembly.
 		if evt.Tx == nil {
-			return nil, fmt.Errorf("confirmation event " +
-				"missing transaction")
+			return failWithNotification(
+				"confirmation event missing transaction",
+				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
+				true, "",
+			), nil
 		}
 
 		// Extract the confirmed output value.
 		if int(evt.Outpoint.Index) >= len(evt.Tx.TxOut) {
-			return nil, fmt.Errorf("invalid outpoint index %d for "+
-				"tx %s", evt.Outpoint.Index, evt.Outpoint.Hash)
+			return failWithNotification(
+				fmt.Sprintf(
+					"invalid outpoint index %d for tx %s",
+					evt.Outpoint.Index, evt.Outpoint.Hash,
+				),
+				fmt.Errorf("outpoint index out of range"),
+				true, "",
+			), nil
 		}
 		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
 
@@ -132,7 +175,8 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("idle: unexpected event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -147,14 +191,23 @@ func (s *PendingRoundAssembly) ProcessEvent(
 	// we just add to our internal map.
 	case *BoardingUTXOConfirmed:
 		if evt.Tx == nil {
-			return nil, fmt.Errorf("confirmation event missing " +
-				"transaction")
+			return failWithNotification(
+				"confirmation event missing transaction",
+				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
+				true, "",
+			), nil
 		}
 
 		// Extract the confirmed output value.
 		if int(evt.Outpoint.Index) >= len(evt.Tx.TxOut) {
-			return nil, fmt.Errorf("invalid outpoint index %d for "+
-				"tx %s", evt.Outpoint.Index, evt.Outpoint.Hash)
+			return failWithNotification(
+				fmt.Sprintf(
+					"invalid outpoint index %d for tx %s",
+					evt.Outpoint.Index, evt.Outpoint.Hash,
+				),
+				fmt.Errorf("outpoint index out of range"),
+				true, "",
+			), nil
 		}
 		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
 
@@ -226,8 +279,11 @@ func (s *PendingRoundAssembly) ProcessEvent(
 		intentSlice := slices.Collect(maps.Values(s.Intents))
 		boardingReqs := fn.Map(intentSlice, buildBoardingRequest)
 		if len(boardingReqs) == 0 {
-			return nil, fmt.Errorf("no boarding requests " +
-				"to register")
+			return failWithNotification(
+				"no boarding requests to register",
+				fmt.Errorf("empty boarding requests"),
+				true, "",
+			), nil
 		}
 
 		// Next, we'll extract all the VTXO templates from the set of
@@ -240,7 +296,11 @@ func (s *PendingRoundAssembly) ProcessEvent(
 		)
 		vtxoReqs := fn.Flatten(vtxoReqLists)
 		if len(vtxoReqs) == 0 {
-			return nil, fmt.Errorf("no VTXO requests to register")
+			return failWithNotification(
+				"no VTXO requests to register",
+				fmt.Errorf("empty VTXO requests"),
+				true, "",
+			), nil
 		}
 
 		// With all this extract, we'll now send the JoinRoundRequest
@@ -269,8 +329,8 @@ func (s *PendingRoundAssembly) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("pending_round_assembly: "+
-			"unexpected event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -300,8 +360,8 @@ func (s *RegistrationSentState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("registration_sent: unexpected "+
-			"event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -336,8 +396,8 @@ func (s *RoundJoinedState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("round_joined: unexpected event: "+
-			"%T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -485,8 +545,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("commitment_tx_received: unexpected "+
-			"event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -583,8 +643,8 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("commitment_tx_validated: unexpected "+
-			"event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -652,8 +712,8 @@ func (s *NoncesSentState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("nonces_sent: unexpected event: %T",
-			event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -721,8 +781,8 @@ func (s *NoncesAggregatedState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("nonces_aggregated: unexpected "+
-			"event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -908,8 +968,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("partial_sigs_sent: unexpected "+
-			"event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -1014,8 +1074,8 @@ func (s *InputSigSentState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("input_sig_sent: unexpected event: %T",
-			event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
@@ -1042,7 +1102,11 @@ func (s *ConfirmedState) ProcessEvent(_ context.Context, event ClientEvent,
 	}
 }
 
-// ProcessEvent for ClientFailedState (terminal state).
+// ProcessEvent for ClientFailedState. This state is now recoverable and
+// accepts the same events as Idle (BoardingUTXOConfirmed,
+// ResumeBoardingIntents) to allow the FSM to restart the boarding process
+// after a failure. Instead of duplicating the Idle logic, we transition to
+// Idle and forward the event as an internal event for Idle to process.
 func (s *ClientFailedState) ProcessEvent(
 	_ context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
@@ -1060,12 +1124,34 @@ func (s *ClientFailedState) ProcessEvent(
 			},
 		}, nil
 
-	default:
-		// Stay in failed state for other events since no other
-		// transitions are valid from this terminal state.
+	case *ResumeBoardingIntents:
+		// Recovery path: transition to Idle and forward the event.
+		// If no intents are provided, stay in the current state.
+		if len(evt.Intents) == 0 {
+			return selfLoop(s), nil
+		}
+
 		return &ClientStateTransition{
-			NextState: s,
+			NextState: &Idle{},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{evt},
+			}),
 		}, nil
+
+	case *BoardingUTXOConfirmed:
+		// Recovery path: transition to Idle and forward the event
+		// to be processed there. This avoids duplicating the
+		// BoardingUTXOConfirmed handling logic.
+		return &ClientStateTransition{
+			NextState: &Idle{},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{evt},
+			}),
+		}, nil
+
+	default:
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 

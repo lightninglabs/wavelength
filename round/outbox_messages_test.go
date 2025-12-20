@@ -147,4 +147,15 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 		}
 		msg.clientOutMsgSealed()
 	})
+
+	t.Run("RoundFailedNotification", func(t *testing.T) {
+		t.Parallel()
+		msg := &RoundFailedNotification{
+			RoundID:       "round-001",
+			Reason:        "validation failed",
+			Recoverable:   true,
+			OriginalError: nil,
+		}
+		msg.clientOutMsgSealed()
+	})
 }

@@ -362,7 +362,9 @@ func (s *ClientFailedState) String() string {
 }
 
 func (s *ClientFailedState) IsTerminal() bool {
-	return true
+	// ClientFailedState is NOT terminal - it can recover by accepting the
+	// same events as Idle (BoardingUTXOConfirmed, ResumeBoardingIntents).
+	return false
 }
 
 func (s *ClientFailedState) clientStateSealed() {}

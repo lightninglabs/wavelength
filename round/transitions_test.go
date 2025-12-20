@@ -28,11 +28,6 @@ func TestStateProperties(t *testing.T) {
 				expected: "Confirmed",
 			},
 			{
-				name:     "ClientFailed",
-				state:    &ClientFailedState{Reason: "test"},
-				expected: "ClientFailed",
-			},
-			{
 				name: "RecoveryInitiated",
 				state: &RecoveryInitiatedState{
 					Reason: "CSV",
@@ -101,6 +96,11 @@ func TestStateProperties(t *testing.T) {
 				"InputSigSent", &InputSigSentState{},
 				"InputSigSent",
 			},
+			{
+				"ClientFailed",
+				&ClientFailedState{Reason: "test"},
+				"ClientFailed: test",
+			},
 		}
 
 		for _, tc := range tests {
@@ -114,8 +114,9 @@ func TestStateProperties(t *testing.T) {
 	})
 }
 
-// TestUnexpectedEventErrors verifies all states reject invalid events.
-func TestUnexpectedEventErrors(t *testing.T) {
+// TestUnexpectedEventSelfLoop verifies all states self-loop on unexpected
+// events instead of returning an error. This prevents FSM halt.
+func TestUnexpectedEventSelfLoop(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -124,14 +125,14 @@ func TestUnexpectedEventErrors(t *testing.T) {
 		event ClientEvent
 	}{
 		{
-			name: "Idle_rejects_RoundJoined",
+			name: "Idle_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				return &Idle{}
 			},
 			event: &RoundJoined{RoundID: "test"},
 		},
 		{
-			name: "PendingRoundAssembly_rejects_RoundComplete",
+			name: "PendingAssembly_self_loops_on_RoundComplete",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				intents := map[wire.OutPoint]BoardingIntent{
@@ -145,7 +146,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundComplete{},
 		},
 		{
-			name: "RegistrationSent_rejects_BoardingConfirmed",
+			name: "RegSent_self_loops_on_BoardingConfirmed",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return &RegistrationSentState{
@@ -155,7 +156,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &BoardingConfirmed{},
 		},
 		{
-			name: "RoundJoined_rejects_duplicate_RoundJoined",
+			name: "RoundJoined_self_loops_on_duplicate_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return &RoundJoinedState{
@@ -166,7 +167,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "CommitmentTxReceived_rejects_RoundJoined",
+			name: "CommitmentTxReceived_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return h.newCommitmentTxReceivedState(
@@ -176,7 +177,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "CommitmentTxValidated_rejects_RoundJoined",
+			name: "CommitmentTxValidated_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return h.newCommitmentTxValidatedState(
@@ -186,7 +187,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "NoncesSent_rejects_RoundJoined",
+			name: "NoncesSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
@@ -199,7 +200,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "NoncesAggregated_rejects_RoundJoined",
+			name: "NoncesAggregated_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
@@ -212,7 +213,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "PartialSigsSent_rejects_RoundJoined",
+			name: "PartialSigsSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
@@ -225,7 +226,7 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			event: &RoundJoined{RoundID: "another-round"},
 		},
 		{
-			name: "InputSigSent_rejects_RoundJoined",
+			name: "InputSigSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
@@ -237,6 +238,16 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			},
 			event: &RoundJoined{RoundID: "another-round"},
 		},
+		{
+			name: "ClientFailed_self_loops_on_unknown",
+			setup: func(h *boardingTestHarness) ClientState {
+				return &ClientFailedState{
+					Reason:      "previous failure",
+					Recoverable: true,
+				}
+			},
+			event: &RoundJoined{RoundID: "test"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -244,11 +255,19 @@ func TestUnexpectedEventErrors(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
-			h.withState(tc.setup(h))
+			initialState := tc.setup(h)
+			h.withState(initialState)
 
-			_, err := h.sendEvent(tc.event)
-			require.Error(t, err)
-			require.Contains(t, err.Error(), "unexpected")
+			transition, err := h.sendEvent(tc.event)
+			require.NoError(t, err)
+			require.NotNil(t, transition)
+
+			// Verify self-loop: state type unchanged.
+			require.Equal(
+				t,
+				initialState.String(),
+				h.currentState.String(),
+			)
 		})
 	}
 }
@@ -453,7 +472,7 @@ func TestIdleState(t *testing.T) {
 		_ = assertStateType[*Idle](h)
 	})
 
-	t.Run("nil_tx_error", func(t *testing.T) {
+	t.Run("nil_tx_transitions_to_failed", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
@@ -463,12 +482,15 @@ func TestIdleState(t *testing.T) {
 		event := h.newBoardingUTXOConfirmedEvent(intent)
 		event.Tx = nil
 
-		_, err := h.sendEvent(event)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "missing transaction")
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "missing transaction")
 	})
 
-	t.Run("invalid_outpoint_index_error", func(t *testing.T) {
+	t.Run("invalid_outpoint_transitions_to_failed", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
@@ -478,9 +500,12 @@ func TestIdleState(t *testing.T) {
 		event := h.newBoardingUTXOConfirmedEvent(intent)
 		event.Outpoint.Index = 999
 
-		_, err := h.sendEvent(event)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "invalid outpoint index")
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "invalid outpoint")
 	})
 }
 
@@ -533,7 +558,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Len(t, nextState.Intents, 1)
 	})
 
-	t.Run("no_intents_error", func(t *testing.T) {
+	t.Run("no_intents_transitions_to_failed", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
@@ -543,9 +568,12 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		event := &RegistrationRequested{Intents: []BoardingIntent{}}
 
-		_, err := h.sendEvent(event)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "no boarding requests")
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "no boarding requests")
 	})
 }
 

@@ -178,3 +178,27 @@ type RoundCheckpointedNotification struct {
 }
 
 func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
+
+// RoundFailedNotification is emitted when a round FSM transitions to
+// ClientFailedState. This notifies higher layers (actor, wallet) of the
+// failure so they can update UI, trigger recovery flows, or clean up
+// resources. The server may also be notified to abort the round.
+type RoundFailedNotification struct {
+	actor.BaseMessage
+
+	// RoundID identifies the failed round (if known). Empty if the failure
+	// occurred before a round was assigned.
+	RoundID string
+
+	// Reason is a human-readable description of the failure.
+	Reason string
+
+	// Recoverable indicates if the client can retry the round or if CSV
+	// recovery is needed.
+	Recoverable bool
+
+	// OriginalError contains the underlying error for logging/debugging.
+	OriginalError error
+}
+
+func (m *RoundFailedNotification) clientOutMsgSealed() {}
