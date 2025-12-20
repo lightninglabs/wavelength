@@ -8,49 +8,21 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/darepo-client/lib/tx/checkpoint"
 )
 
 // CheckpointInput describes the VTXO input being transformed into a checkpoint
 // output for an OOR transfer.
-type CheckpointInput struct {
-	// Outpoint is the outpoint of the VTXO output being spent.
-	Outpoint wire.OutPoint
-
-	// WitnessUtxo is the previous output being spent (value + pkScript).
-	//
-	// This must match the server's stored VTXO descriptor later, but at the
-	// primitive level we only need it so PSBT has enough material to be
-	// signed and validated structurally.
-	WitnessUtxo *wire.TxOut
-
-	// OwnerLeafScript is the VTXO-owner collaborative leaf script.
-	//
-	// "Owner" here means owner of the spent VTXO input, not owner of the
-	// checkpoint CSV timeout path.
-	//
-	// The script should be committed to in the checkpoint output tap tree.
-	//
-	// This is deliberately a raw script for the draft implementation. Once
-	// the closure system is canonical, higher layers should construct this
-	// leaf using closure helpers and pass the resulting script bytes here.
-	OwnerLeafScript []byte
-}
+//
+// "Owner" in the nested leaf script naming means owner of the spent VTXO
+// input, not owner of the checkpoint CSV timeout path.
+type CheckpointInput = checkpoint.Input
 
 // CheckpointResult is the result of building a checkpoint PSBT.
-type CheckpointResult struct {
-	// PSBT is the unsigned checkpoint transaction.
-	PSBT *psbt.Packet
-
-	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
-	//
-	// This is intended to be attached to the Ark tx PSBT inputs under the
-	// `taptree` unknown key so finalization can later copy it onto the
-	// checkpoint output metadata.
-	TapTreeEncoded []byte
-}
+type CheckpointResult = checkpoint.Result
 
 // RecipientOutput describes an Ark tx recipient output.
 type RecipientOutput struct {
@@ -74,62 +46,7 @@ type RecipientOutput struct {
 func BuildCheckpointPSBT(policy scripts.CheckpointPolicy,
 	in CheckpointInput) (*CheckpointResult, error) {
 
-	switch {
-	case in.WitnessUtxo == nil:
-		return nil, fmt.Errorf("witness utxo must be provided")
-
-	case in.WitnessUtxo.Value <= 0:
-		return nil, fmt.Errorf("witness utxo value must be " +
-			"positive")
-
-	case len(in.WitnessUtxo.PkScript) == 0:
-		return nil, fmt.Errorf("witness utxo pkScript must be " +
-			"provided")
-	}
-
-	tapscript, err := scripts.CheckpointTapScript(
-		policy, in.OwnerLeafScript,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	encodedTapTree, err := EncodeTapTree(tapLeafScripts(tapscript.Leaves))
-	if err != nil {
-		return nil, err
-	}
-
-	checkpointPkScript, err := scripts.CheckpointPkScript(
-		policy, in.OwnerLeafScript,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// Use v3 to be compatible with package relay policies (TRUC-style
-	// constraints) when these txs are eventually submitted as a package.
-	tx := wire.NewMsgTx(3)
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: in.Outpoint,
-		Sequence:         wire.MaxTxInSequenceNum,
-	})
-	tx.AddTxOut(&wire.TxOut{
-		Value:    in.WitnessUtxo.Value,
-		PkScript: checkpointPkScript,
-	})
-
-	pkt, err := psbt.NewFromUnsignedTx(tx)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create checkpoint psbt: %w",
-			err)
-	}
-
-	pkt.Inputs[0].WitnessUtxo = in.WitnessUtxo
-
-	return &CheckpointResult{
-		PSBT:           pkt,
-		TapTreeEncoded: encodedTapTree,
-	}, nil
+	return checkpoint.BuildPSBT(policy, in)
 }
 
 // CheckpointOutput describes a checkpoint output that will be spent by the Ark
@@ -168,6 +85,12 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		return nil, fmt.Errorf("recipient outputs must be provided")
 	}
 
+	// Sum inputs/outputs and enforce a fee-less OOR transfer in v0.
+	//
+	// For now we intentionally do not support operator fee outputs because
+	// they complicate minimum relay/dust constraints and also shift policy
+	// questions into the transfer flow. Fees can be introduced elsewhere
+	// (for example, cooperative exit).
 	var sumInputs btcutil.Amount
 	for _, cp := range checkpoints {
 		if cp.Output == nil {
@@ -209,8 +132,8 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 			"input/output sums")
 	}
 
-	// Sort checkpoint inputs by outpoint (BIP69-style) to ensure
-	// deterministic input order.
+	// Sort checkpoint inputs by outpoint (BIP69-style) to ensure a stable
+	// txid and stable session id across restarts and retries.
 	checkpointsSorted := make([]CheckpointOutput, len(checkpoints))
 	copy(checkpointsSorted, checkpoints)
 	sort.SliceStable(checkpointsSorted, func(i, j int) bool {
@@ -231,7 +154,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 	sort.SliceStable(recipientOuts, func(i, j int) bool {
 		a := recipientOuts[i]
 		b := recipientOuts[j]
-
+		// Output ordering follows BIP69 (amount, then pkScript).
 		if a.Value != b.Value {
 			return a.Value < b.Value
 		}
@@ -239,9 +162,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		return bytes.Compare(a.PkScript, b.PkScript) < 0
 	})
 
-	// Use v3 to be compatible with package relay policies (TRUC-style
-	// constraints) when this tx is submitted as part of a package.
-	tx := wire.NewMsgTx(3)
+	tx := wire.NewMsgTx(arktx.TxVersion)
 	for _, cp := range checkpointsSorted {
 		tx.AddTxIn(&wire.TxIn{
 			PreviousOutPoint: wire.OutPoint{
@@ -291,14 +212,4 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 	}
 
 	return pkt, nil
-}
-
-// tapLeafScripts extracts raw script bytes from a list of tap leaves.
-func tapLeafScripts(leaves []txscript.TapLeaf) [][]byte {
-	scripts := make([][]byte, 0, len(leaves))
-	for _, leaf := range leaves {
-		scripts = append(scripts, leaf.Script)
-	}
-
-	return scripts
 }
