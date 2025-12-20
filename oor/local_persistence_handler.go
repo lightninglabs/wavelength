@@ -67,8 +67,8 @@ type LocalPersistenceOutboxHandler struct {
 	// incoming recipient output.
 	ResolveIncomingClientKey IncomingClientKeyResolver
 
-	// ResolveIncomingMetadata resolves authoritative lineage/expiry metadata
-	// for each incoming recipient output.
+	// ResolveIncomingMetadata resolves authoritative lineage/expiry
+	// metadata for each incoming recipient output.
 	ResolveIncomingMetadata IncomingMetadataResolver
 }
 
@@ -128,7 +128,8 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 // handleMaterializeIncoming persists recipient VTXOs for an incoming transfer
 // before the receive FSM acknowledges the transfer to the server.
 func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
-	ctx context.Context, msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
+	ctx context.Context,
+	msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
 
 	if h.Store == nil {
 		return nil, fmt.Errorf("vtxo store must be provided")
@@ -139,11 +140,15 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	}
 
 	if h.ResolveIncomingClientKey == nil {
-		return nil, fmt.Errorf("incoming client key resolver must be provided")
+		return nil, fmt.Errorf(
+			"incoming client key resolver must be provided",
+		)
 	}
 
 	if h.ResolveIncomingMetadata == nil {
-		return nil, fmt.Errorf("incoming metadata resolver must be provided")
+		return nil, fmt.Errorf(
+			"incoming metadata resolver must be provided",
+		)
 	}
 
 	if len(msg.Recipients) == 0 {
@@ -192,9 +197,9 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 			continue
 		}
 
-		// SaveVTXO may fail for duplicates on retry/restart paths. Treat that
-		// case as idempotent only if the already-persisted descriptor matches
-		// the materialized recipient output.
+		// SaveVTXO may fail for duplicates on retry/restart paths.
+		// Treat that case as idempotent only if the already-persisted
+		// descriptor matches the materialized recipient output.
 		existing, getErr := h.Store.GetVTXO(ctx, desc.Outpoint)
 		if getErr != nil || existing == nil {
 			return nil, err
@@ -242,4 +247,3 @@ func (h *LocalPersistenceOutboxHandler) handleIncomingAck(
 }
 
 var _ OutboxHandler = (*LocalPersistenceOutboxHandler)(nil)
-

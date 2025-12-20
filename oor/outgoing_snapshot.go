@@ -123,8 +123,8 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 
 	switch s := state.(type) {
 	case *AwaitingArkSignatures:
-		// Snapshot the deterministic submit package before submit is sent so
-		// resume can re-drive Ark signing without rebuilding artifacts.
+		// Snapshot deterministic submit artifacts before submit.
+		// This lets resume re-drive Ark signing without rebuilding.
 		snap.Phase = OutgoingPhaseArkSignRequested
 
 		ark, err := psbtutil.Serialize(s.ArkPSBT)
@@ -218,8 +218,8 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 
 	case *AwaitingLocalVTXOUpdate:
 		// This phase is an off-chain bookkeeping step: after the server
-		// accepts finalize, the local wallet must update its VTXO store to
-		// reflect that the inputs are spent.
+		// accepts finalize, the local wallet must update local state.
+		// That update reflects that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
 		snap.InputOutpoints = s.InputOutpoints
 

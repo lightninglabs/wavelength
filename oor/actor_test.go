@@ -31,6 +31,15 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		// Ark signing is modeled as an outbox boundary.
+		// Unit tests treat this as a deterministic pass-through.
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		// The session ID is defined as the Ark txid, which means the
 		// client can reconstruct it deterministically from PSBT bytes.
@@ -84,8 +93,9 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 		}, nil
 
 	case *MarkInputsSpentRequest:
-		// Outgoing OOR transfers are off-chain. Once finalize is accepted,
-		// the local wallet must persist that its inputs are spent.
+		// Outgoing OOR transfers are off-chain.
+		// Once finalize is accepted, the local wallet must record
+		// that its inputs are spent.
 		_ = msg
 		return []Event{
 			&InputsMarkedSpentEvent{},
@@ -202,6 +212,13 @@ func (h *retrySubmitOutboxHandler) Handle(
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		h.submitAttempts++
 
@@ -311,7 +328,10 @@ func TestOORClientActorRetryBackoff(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-retry-backoff",
 	})
+	defer actor.Stop()
 
 	startResp := actor.Receive(ctx, &StartTransferRequest{
 		Policy:     policy,
