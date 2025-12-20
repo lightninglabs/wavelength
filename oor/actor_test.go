@@ -30,6 +30,15 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		// Ark signing is modeled as an outbox boundary. Unit tests treat
+		// this as a deterministic pass-through.
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		// The session ID is defined as the Ark txid, which means the
 		// client can reconstruct it deterministically from PSBT bytes.
@@ -192,6 +201,13 @@ func (h *retrySubmitOutboxHandler) Handle(
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		h.submitAttempts++
 

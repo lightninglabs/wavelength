@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReceiveSessionNotifiesAndAcks verifies the incoming-transfer FSM emits
-// notification, materialization and ack outbox messages for a canonical Ark
-// transfer.
-func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
+// TestReceiveSessionNotifiesThenMaterializes verifies the incoming-transfer FSM
+// emits notification/materialization first, deferring ack until after incoming
+// materialization is confirmed.
+func TestReceiveSessionNotifiesThenMaterializes(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -29,7 +29,7 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 	// session:
 	// - emits an application-facing notification
 	// - requests recipient materialization into local VTXO state
-	// - requests an ack back to the server (transport boundary)
+	// Ack is emitted only after materialization is confirmed.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -102,7 +102,7 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 
 	_, outbox, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
 	require.NoError(t, err)
-	require.Len(t, outbox, 3)
+	require.Len(t, outbox, 2)
 
 	_, ok := outbox[0].(*IncomingTransferNotification)
 	require.True(t, ok)
@@ -110,9 +110,6 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 	materializeMsg, ok := outbox[1].(*MaterializeIncomingVTXOsRequest)
 	require.True(t, ok)
 	require.NotEmpty(t, materializeMsg.Recipients)
-
-	_, ok = outbox[2].(*SendIncomingAckRequest)
-	require.True(t, ok)
 
 	desc, err := BuildIncomingVTXODescriptor(materializeMsg.ArkPSBT,
 		IncomingVTXOConfig{
@@ -122,10 +119,48 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 			},
 			OperatorKey: policy.OperatorKey,
 			ExitDelay:   exitDelay,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-test",
+				CommitmentTxID: inputs[0].SpentVTXO.Outpoint.Hash,
+				BatchExpiry:    100,
+				TreeDepth:      1,
+				CreatedHeight:  50,
+			},
 		},
 	)
 	require.NoError(t, err)
 	require.Equal(t, recipientPkScript, desc.PkScript)
 	require.Equal(t, inputValue, desc.Amount)
 	require.Equal(t, vtxo.VTXOStatusLive, desc.Status)
+}
+
+// TestReceiveSessionAcksAfterHandled asserts ack is emitted only after the
+// application confirms materialization completion.
+func TestReceiveSessionAcksAfterHandled(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, _, _, _, _ := buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	sess, outbox, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
+	require.NoError(t, err)
+	require.Len(t, outbox, 2)
+
+	fut := sess.FSM.AskEvent(ctx, &IncomingHandledEvent{})
+	result := fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	ackOutbox := result.UnwrapOr(nil)
+	require.Len(t, ackOutbox, 1)
+	require.IsType(t, &SendIncomingAckRequest{}, ackOutbox[0])
+
+	fut = sess.FSM.AskEvent(ctx, &IncomingAckSentEvent{})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	finalState, err := sess.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveCompleted{}, finalState)
 }

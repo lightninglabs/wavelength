@@ -59,36 +59,49 @@ func TestSessionHappyPath(t *testing.T) {
 	require.NotNil(t, session)
 	require.NotEmpty(t, outbox)
 
-	// Creating a new session always emits a submit outbox message. The FSM
-	// itself never calls the network; the caller must perform the side
-	// effect and then feed the result back as an event.
+	// Creating a new session first emits an Ark-sign outbox request.
+	// The FSM itself never calls the signer/network; the caller must perform
+	// the side effect and then feed the result back as an event.
 	require.Len(t, outbox, 1)
-	submit, ok := outbox[0].(*SendSubmitPackageRequest)
+	arkSignReq, ok := outbox[0].(*RequestArkSignatures)
 	require.True(t, ok)
-	require.NotNil(t, submit.ArkPSBT)
-	require.NotEmpty(t, submit.CheckpointPSBTs)
+	require.NotNil(t, arkSignReq.ArkPSBT)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
-	_, ok = state.(*AwaitingSubmitAccepted)
+	_, ok = state.(*AwaitingArkSignatures)
 	require.True(t, ok)
 
-	// Step 1: Server accepts submit and returns co-signed checkpoints.
-	fut := session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
-		SessionID:               session.ID,
-		ArkPSBT:                 submit.ArkPSBT,
-		CoSignedCheckpointPSBTs: submit.CheckpointPSBTs,
+	// Step 1: Ark signatures are attached before submit is sent.
+	fut := session.FSM.AskEvent(ctx, &ArkSignedEvent{
+		ArkPSBT: arkSignReq.ArkPSBT,
 	})
 	result := fut.Await(ctx)
 	require.False(t, result.IsErr())
 
 	submitOutbox := result.UnwrapOr(nil)
 	require.Len(t, submitOutbox, 1)
-	signReq, ok := submitOutbox[0].(*RequestCheckpointSignatures)
+	submit, ok := submitOutbox[0].(*SendSubmitPackageRequest)
+	require.True(t, ok)
+	require.NotNil(t, submit.ArkPSBT)
+	require.NotEmpty(t, submit.CheckpointPSBTs)
+
+	// Step 2: Server accepts submit and returns co-signed checkpoints.
+	fut = session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
+		SessionID:               session.ID,
+		ArkPSBT:                 submit.ArkPSBT,
+		CoSignedCheckpointPSBTs: submit.CheckpointPSBTs,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	signOutbox := result.UnwrapOr(nil)
+	require.Len(t, signOutbox, 1)
+	signReq, ok := signOutbox[0].(*RequestCheckpointSignatures)
 	require.True(t, ok)
 	require.NotEmpty(t, signReq.TransferInputs)
 
-	// Step 2: Wallet attaches client signatures to checkpoints.
+	// Step 3: Wallet attaches client signatures to checkpoints.
 	//
 	// This is the local signing boundary: no network calls are required,
 	// but the signing implementation is still modeled as a side effect
@@ -110,7 +123,7 @@ func TestSessionHappyPath(t *testing.T) {
 	_, ok = finalizeOutbox[0].(*SendFinalizePackageRequest)
 	require.True(t, ok)
 
-	// Step 3: Server accepts finalize and updates VTXO set.
+	// Step 4: Server accepts finalize and updates VTXO set.
 	fut = session.FSM.AskEvent(ctx, &FinalizeAcceptedEvent{})
 	result = fut.Await(ctx)
 	require.False(t, result.IsErr())
@@ -120,7 +133,7 @@ func TestSessionHappyPath(t *testing.T) {
 	_, ok = markOutbox[0].(*MarkInputsSpentRequest)
 	require.True(t, ok)
 
-	// Step 4: Client persists that inputs are spent.
+	// Step 5: Client persists that inputs are spent.
 	fut = session.FSM.AskEvent(ctx, &InputsMarkedSpentEvent{})
 	result = fut.Await(ctx)
 	require.False(t, result.IsErr())

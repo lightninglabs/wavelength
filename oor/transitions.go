@@ -68,6 +68,11 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		inputOutpoints := make([]wire.OutPoint, 0, len(evt.CheckpointInputs))
 		for i := range evt.CheckpointInputs {
+			if evt.CheckpointInputs[i].VTXO == nil {
+				return nil, fmt.Errorf("checkpoint input vtxo " +
+					"must be provided")
+			}
+
 			inputOutpoints = append(
 				inputOutpoints, evt.CheckpointInputs[i].VTXO.Outpoint,
 			)

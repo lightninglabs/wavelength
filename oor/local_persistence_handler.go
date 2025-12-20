@@ -242,4 +242,3 @@ func (h *LocalPersistenceOutboxHandler) handleIncomingAck(
 }
 
 var _ OutboxHandler = (*LocalPersistenceOutboxHandler)(nil)
-

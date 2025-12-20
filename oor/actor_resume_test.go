@@ -32,6 +32,13 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -96,6 +103,13 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -163,6 +177,13 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -238,6 +259,13 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -314,16 +342,20 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 
 var _ OutboxHandler = (*cosignedButDroppedHandler)(nil)
 
-// TestOORClientActorResumeFromSnapshot verifies the client actor can export a
-// snapshot, restore it into a new actor, and resume the workflow to completion.
-func TestOORClientActorResumeFromSnapshot(t *testing.T) {
-	t.Parallel()
+// resumeTestFixture bundles common deterministic transfer setup for resume
+// tests.
+type resumeTestFixture struct {
+	policy       scripts.CheckpointPolicy
+	inputs       []TransferInput
+	recipients   []oortx.RecipientOutput
+	clientSigner input.Signer
+}
 
-	ctx := t.Context()
+// newResumeTestFixture creates the common single-input transfer scenario used
+// by crash/resume tests.
+func newResumeTestFixture(t *testing.T) *resumeTestFixture {
+	t.Helper()
 
-	// Build a deterministic transfer with a mocked client signer. The
-	// outbox handler will pause on finalize to simulate a transport/UI
-	// interruption that requires an explicit resume.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -332,12 +364,10 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 		CSVDelay:    10,
 	}
 
-	inputValue := btcutil.Amount(10000)
+	const inputValue = btcutil.Amount(10000)
 
 	clientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -357,11 +387,31 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 		},
 	}
 
+	return &resumeTestFixture{
+		policy:       policy,
+		inputs:       inputs,
+		recipients:   recipients,
+		clientSigner: input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil),
+	}
+}
+
+// TestOORClientActorResumeFromSnapshot verifies the client actor can export a
+// snapshot, restore it into a new actor, and resume the workflow to completion.
+func TestOORClientActorResumeFromSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// Build a deterministic transfer with a mocked client signer. The
+	// outbox handler will pause on finalize to simulate a transport/UI
+	// interruption that requires an explicit resume.
+	fixture := newResumeTestFixture(t)
+
 	store := NewInMemoryOutgoingSessionStore()
 
 	handler := &pausedFinalizeHandler{
 		t:            t,
-		clientSigner: clientSigner,
+		clientSigner: fixture.clientSigner,
 	}
 
 	// Start a session and drive it until finalize is sent (but "dropped"
@@ -372,9 +422,9 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
 	})
 	require.True(t, startResp.IsOk())
 
@@ -451,43 +501,12 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 	//
 	// On resume, the client must send the exact same submit bytes and the
 	// server must return the same co-signed artifacts.
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := scripts.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
+	fixture := newResumeTestFixture(t)
 
 	store := NewInMemoryOutgoingSessionStore()
 	handler := &cosignedButDroppedHandler{
 		t:            t,
-		clientSigner: clientSigner,
+		clientSigner: fixture.clientSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -496,9 +515,9 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
 	})
 	require.True(t, startResp.IsOk())
 
@@ -565,43 +584,12 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 
 	ctx := t.Context()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := scripts.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
+	fixture := newResumeTestFixture(t)
 
 	store := NewInMemoryOutgoingSessionStore()
 	handler := &cosignedButDroppedHandler{
 		t:            t,
-		clientSigner: clientSigner,
+		clientSigner: fixture.clientSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -610,9 +598,9 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
 	})
 	require.True(t, startResp.IsOk())
 
@@ -662,43 +650,12 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	ctx := t.Context()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := scripts.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
+	fixture := newResumeTestFixture(t)
 
 	store := NewInMemoryOutgoingSessionStore()
 	handler := &pausedSubmitHandler{
 		t:            t,
-		clientSigner: clientSigner,
+		clientSigner: fixture.clientSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -707,9 +664,9 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
 	})
 	require.True(t, startResp.IsOk())
 
@@ -771,43 +728,12 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	ctx := t.Context()
 
-	operatorKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	policy := scripts.CheckpointPolicy{
-		OperatorKey: operatorKey.PubKey(),
-		CSVDelay:    10,
-	}
-
-	inputValue := btcutil.Amount(10000)
-
-	clientKey, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
-
-	inputs := []TransferInput{
-		newTestTransferInput(
-			t, clientKey, policy.OperatorKey,
-			wire.OutPoint{
-				Hash:  [32]byte{0x01},
-				Index: 0,
-			},
-			inputValue,
-		),
-	}
-
-	recipients := []oortx.RecipientOutput{
-		{
-			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
-			Value:    inputValue,
-		},
-	}
+	fixture := newResumeTestFixture(t)
 
 	store := NewInMemoryOutgoingSessionStore()
 	handler := &pausedCoSignedHandler{
 		t:            t,
-		clientSigner: clientSigner,
+		clientSigner: fixture.clientSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -816,9 +742,9 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 	})
 
 	startResp := actor1.Receive(ctx, &StartTransferRequest{
-		Policy:     policy,
-		Inputs:     inputs,
-		Recipients: recipients,
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
 	})
 	require.True(t, startResp.IsOk())
 
