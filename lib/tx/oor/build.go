@@ -21,8 +21,46 @@ import (
 // input, not owner of the checkpoint CSV timeout path.
 type CheckpointInput = checkpoint.Input
 
-// CheckpointResult is the result of building a checkpoint PSBT.
-type CheckpointResult = checkpoint.Result
+// SpentVTXORef groups the spent VTXO outpoint and output data used to build a
+// checkpoint input.
+type SpentVTXORef = checkpoint.SpentVTXORef
+
+// CheckpointArtifact is the submit-phase checkpoint artifact.
+//
+// The checkpoint tap tree metadata is carried as sidecar bytes in this phase.
+// During finalize, it is attached to checkpoint PSBT output metadata.
+type CheckpointArtifact struct {
+	// PSBT is the checkpoint transaction PSBT.
+	PSBT *psbt.Packet
+
+	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
+	TapTreeEncoded []byte
+}
+
+// ToCheckpointOutput projects this artifact into the Ark-builder checkpoint
+// input shape.
+func (a *CheckpointArtifact) ToCheckpointOutput() (CheckpointOutput, error) {
+	if a == nil || a.PSBT == nil || a.PSBT.UnsignedTx == nil {
+		return CheckpointOutput{}, fmt.Errorf(
+			"checkpoint psbt must be provided",
+		)
+	}
+
+	if len(a.PSBT.UnsignedTx.TxOut) == 0 {
+		return CheckpointOutput{}, fmt.Errorf(
+			"checkpoint output must be provided",
+		)
+	}
+
+	return CheckpointOutput{
+		Txid:           a.PSBT.UnsignedTx.TxHash(),
+		Output:         a.PSBT.UnsignedTx.TxOut[0],
+		TapTreeEncoded: a.TapTreeEncoded,
+	}, nil
+}
+
+// CheckpointResult is a backwards-compatible alias for CheckpointArtifact.
+type CheckpointResult = CheckpointArtifact
 
 // RecipientOutput describes an Ark tx recipient output.
 type RecipientOutput struct {
@@ -44,9 +82,17 @@ type RecipientOutput struct {
 // This function does not attempt to sign the checkpoint tx. It also does not
 // validate that the owner leaf is a canonical Ark closure (draft phase).
 func BuildCheckpointPSBT(policy scripts.CheckpointPolicy,
-	in CheckpointInput) (*CheckpointResult, error) {
+	in CheckpointInput) (*CheckpointArtifact, error) {
 
-	return checkpoint.BuildPSBT(policy, in)
+	result, err := checkpoint.BuildPSBT(policy, in)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CheckpointArtifact{
+		PSBT:           result.PSBT,
+		TapTreeEncoded: result.TapTreeEncoded,
+	}, nil
 }
 
 // CheckpointOutput describes a checkpoint output that will be spent by the Ark
@@ -182,7 +228,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 
 	tx.AddTxOut(scripts.AnchorOutput())
 
-	err := ValidateCanonicalArkTx(tx)
+	err := arktx.ValidateCanonicalTx(tx)
 	if err != nil {
 		return nil, fmt.Errorf("internal: built ark tx is not "+
 			"canonical: %w", err)
