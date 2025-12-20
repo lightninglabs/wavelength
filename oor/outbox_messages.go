@@ -36,6 +36,11 @@ type SendSubmitPackageRequest struct {
 	// In v0, client signing happens only after the server returns operator
 	// co-signed checkpoints.
 	CheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the VTXO descriptors and scripts for the inputs
+	// referenced by the checkpoint PSBTs. This is used by in-process test
+	// adaptors, and will later be mapped to RPC request fields.
+	TransferInputs []TransferInput
 }
 
 // outboxType returns a stable identifier for this outbox message.
@@ -67,6 +72,10 @@ type RequestCheckpointSignatures struct {
 	// PSBT input witness/signature fields and return finalized
 	// checkpoint PSBTs.
 	CoSignedCheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the client-side VTXO signing context. These are
+	// required to construct taproot script-spend signing descriptors.
+	TransferInputs []TransferInput
 }
 
 // outboxType returns a stable identifier for this outbox message.
