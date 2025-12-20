@@ -18,6 +18,9 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// Compile-time assertion that RoundClientActor implements actor.Stoppable.
+var _ actor.Stoppable = (*RoundClientActor)(nil)
+
 // RoundFSM wraps a state machine instance for a specific round.
 type RoundFSM struct {
 	// FSM is the state machine for this round. The baselib protofsm uses 3
@@ -233,6 +236,21 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// OnStop implements actor.Stoppable to gracefully shut down all FSMs when the
+// actor is stopping. This prevents goroutine leaks by stopping the primaryFSM
+// and all active round FSMs.
+func (a *RoundClientActor) OnStop(_ context.Context) error {
+	// Stop the primary FSM.
+	a.primaryFSM.Stop()
+
+	// Stop all active round FSMs.
+	for _, roundFSM := range a.activeRounds {
+		roundFSM.FSM.Stop()
 	}
 
 	return nil
