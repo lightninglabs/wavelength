@@ -104,3 +104,30 @@ type FailEvent struct {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *FailEvent) eventSealed() {}
+
+// IncomingTransferEvent notifies the client about an incoming OOR transfer.
+//
+// This event is intended to be delivered by some higher layer (RPC push,
+// polling, or push-notification wakeup) once the server has accepted and
+// finalized the transfer.
+//
+// The incoming transfer FSM is intentionally separate from the outgoing FSM so
+// applications can handle notifications and acknowledgements independently of
+// initiating transfers.
+type IncomingTransferEvent struct {
+	// SessionID is the stable v0 session identifier (Ark txid).
+	SessionID SessionID
+
+	// ArkPSBT is the canonical Ark tx PSBT for this transfer.
+	ArkPSBT *psbt.Packet
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *IncomingTransferEvent) eventSealed() {}
+
+// IncomingHandledEvent indicates the application/wallet has processed the
+// incoming transfer notification.
+type IncomingHandledEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *IncomingHandledEvent) eventSealed() {}
