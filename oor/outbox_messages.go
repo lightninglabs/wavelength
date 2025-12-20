@@ -268,8 +268,10 @@ type ScheduleRetryRequest struct {
 
 	actor.BaseMessage
 
+	// After is the minimum delay before the retry should be triggered.
 	After time.Duration
 
+	// Reason is a human-readable reason intended for logs and tests.
 	Reason string
 }
 

@@ -306,8 +306,8 @@ func (a *OORClientActor) driveOutbox(ctx context.Context, sessionID SessionID,
 	}
 
 	for _, msg := range outbox {
-		// The outbox boundary is the only place where I/O is allowed.
-		// The handler returns follow-up events for the FSM.
+		// Outbox handler is the I/O boundary.
+		// Handler errors become OutboxErrorEvents for retry policy.
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			followUps = []Event{
@@ -324,6 +324,10 @@ func (a *OORClientActor) driveOutbox(ctx context.Context, sessionID SessionID,
 				return err
 			}
 
+			// Persist after each transition.
+			// This enables crash resume.
+			//
+			// This matters most after server co-sign.
 			err = a.persistSession(ctx, sessionID, fsm)
 			if err != nil {
 				return err

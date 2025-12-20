@@ -261,6 +261,8 @@ func (s *Completed) stateSealed() {}
 
 // Failed is the terminal failure state for the OOR client transfer session.
 type Failed struct {
+	// Reason is a human-readable failure reason intended for logs and
+	// tests.
 	Reason string
 }
 

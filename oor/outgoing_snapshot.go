@@ -65,6 +65,8 @@ const (
 // NOTE: TransferInputs contains rich Go types (tapscript/key descriptors) and
 // is not currently encoded for cross-process durability. The durable actor work
 // in darepo-client will eventually provide a canonical encoding for these.
+//
+// TransferInputSnapshots is the portable encoding used for persistence.
 type OutgoingSnapshot struct {
 	// Version is the snapshot version.
 	Version uint8

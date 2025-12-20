@@ -262,6 +262,11 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		//
 		// Next it binds finalize metadata to the Ark PSBT and submits
 		// the finalize package.
+		//
+		// Binding finalize metadata is not a cosmetic step: it
+		// cryptographically links checkpoints to their Ark outputs and
+		// is part of the finalize validity rules enforced by the
+		// shared lib/tx/oor package.
 		if s.ArkPSBT == nil {
 			return nil, fmt.Errorf("internal: missing ark psbt")
 		}

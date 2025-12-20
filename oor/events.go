@@ -119,6 +119,8 @@ func (e *InputsMarkedSpentEvent) eventSealed() {}
 
 // FailEvent forces the session to enter a terminal failure state.
 type FailEvent struct {
+	// Reason is a human-readable failure reason intended for logs and
+	// tests.
 	Reason string
 }
 
@@ -134,9 +136,19 @@ func (e *FailEvent) eventSealed() {}
 // error) keeps the FSM deterministic and keeps all "should we retry" policy in
 // one place: the state transition logic.
 type OutboxErrorEvent struct {
-	OutboxType  string
-	Retryable   bool
-	RetryAfter  time.Duration
+	// OutboxType is the outbox event type that failed.
+	OutboxType string
+
+	// Retryable indicates whether the actor boundary considers the failure
+	// retryable.
+	Retryable bool
+
+	// RetryAfter specifies the minimum delay before retrying, if Retryable
+	// is true.
+	RetryAfter time.Duration
+
+	// ErrorReason is a human-readable failure reason intended for logs and
+	// tests.
 	ErrorReason string
 }
 

@@ -24,16 +24,17 @@ type ActorResp interface {
 type StartTransferRequest struct {
 	actor.BaseMessage
 
-	// Policy defines the checkpoint output tap tree policy.
+	// Policy defines the operator checkpoint policy used to build the
+	// transfer package.
 	Policy scripts.CheckpointPolicy
 
 	// Inputs are the VTXOs to transfer.
 	//
-	// Each input includes enough context for the outbox handler to request
+	// Each input includes enough context for the outbox boundary to request
 	// wallet signatures deterministically.
 	Inputs []TransferInput
 
-	// Recipients are the Ark tx recipient outputs.
+	// Recipients are the Ark tx output scripts/amounts.
 	Recipients []oortx.RecipientOutput
 }
 
@@ -67,7 +68,7 @@ func (m *StartTransferResponse) actorRespSealed() {}
 type DriveEventRequest struct {
 	actor.BaseMessage
 
-	// SessionID selects the session to drive.
+	// SessionID identifies the session to drive.
 	SessionID SessionID
 
 	// Event is the follow-up event produced by an outbox handler, or by a
@@ -100,7 +101,7 @@ func (m *DriveEventResponse) actorRespSealed() {}
 type GetStateRequest struct {
 	actor.BaseMessage
 
-	// SessionID selects the session to query.
+	// SessionID identifies the session to query.
 	SessionID SessionID
 }
 
@@ -116,6 +117,7 @@ func (m *GetStateRequest) actorMsgSealed() {}
 type GetStateResponse struct {
 	actor.BaseMessage
 
+	// State is the current session state machine state.
 	State State
 }
 

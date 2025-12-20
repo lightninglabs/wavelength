@@ -11,7 +11,10 @@ import (
 // The actor wrapper interprets this to mean it should feed an OutboxErrorEvent
 // into the FSM with Retryable=true rather than failing the call.
 type RetryableOutboxError struct {
-	Err        error
+	// Err is the underlying error.
+	Err error
+
+	// RetryAfter specifies the minimum delay before retrying.
 	RetryAfter time.Duration
 }
 

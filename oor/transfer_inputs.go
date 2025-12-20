@@ -15,11 +15,14 @@ import (
 // descriptor + tapscript). The OwnerLeafScript is the draft checkpoint output
 // leaf script committed to in the checkpoint output tap tree.
 type TransferInput struct {
-	// VTXO is the spendable VTXO being transferred.
+	// VTXO is the descriptor for the input VTXO being transferred.
 	VTXO *vtxo.Descriptor
 
-	// OwnerLeafScript is the collaborative leaf script to commit to in the
-	// checkpoint output tap tree (draft implementation).
+	// OwnerLeafScript is the leaf script committed to the checkpoint tap
+	// tree.
+	//
+	// This is currently a draft implementation, and may change as the
+	// checkpoint policy is refined.
 	OwnerLeafScript []byte
 }
 
