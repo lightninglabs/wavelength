@@ -18,29 +18,32 @@ import (
 // The goal is to persist enough information to reconstruct the VTXO tapscript
 // deterministically, without serializing Go wallet types directly.
 type TransferInputSnapshot struct {
-	// Outpoint is the VTXO outpoint being transferred.
+	// Outpoint identifies the input VTXO being transferred.
 	Outpoint wire.OutPoint
 
-	// AmountSat is the VTXO amount in satoshis.
+	// AmountSat is the input VTXO amount in satoshis.
 	AmountSat int64
 
-	// ClientKeyFamily is the keychain family for the recipient key.
+	// ClientKeyFamily is the key family for the client signing key.
 	ClientKeyFamily int32
 
-	// ClientKeyIndex is the keychain index for the recipient key.
+	// ClientKeyIndex is the key index for the client signing key.
 	ClientKeyIndex uint32
 
-	// ClientPubKey is the compressed recipient public key.
+	// ClientPubKey is the compressed client public key.
 	ClientPubKey []byte
 
 	// OperatorPubKey is the compressed operator public key.
 	OperatorPubKey []byte
 
-	// ExitDelay is the unilateral CSV delay for the timeout path.
+	// ExitDelay is the VTXO CSV delay used to derive the VTXO script.
 	ExitDelay uint32
 
-	// OwnerLeafScript is the checkpoint leaf script committed into the
-	// checkpoint output tap tree (draft implementation).
+	// OwnerLeafScript is the leaf script committed to the checkpoint tap
+	// tree.
+	//
+	// This is currently a draft implementation, and may change as the
+	// checkpoint policy is refined.
 	OwnerLeafScript []byte
 }
 
