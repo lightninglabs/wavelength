@@ -68,6 +68,10 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -129,6 +133,10 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 		return []Event{
 			&FinalizeAcceptedEvent{},
 		}, nil
+
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
 		return nil, nil
@@ -192,6 +200,10 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 		return []Event{
 			&FinalizeAcceptedEvent{},
 		}, nil
+
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
 
 	default:
 		return nil, nil
@@ -291,6 +303,10 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -305,6 +321,9 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	ctx := t.Context()
 
+	// Build a deterministic transfer with a mocked client signer. The
+	// outbox handler will pause on finalize to simulate a transport/UI
+	// interruption that requires an explicit resume.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -345,6 +364,8 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 		clientSigner: clientSigner,
 	}
 
+	// Start a session and drive it until finalize is sent (but "dropped"
+	// by the outbox handler).
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
 		SessionStore:  store,
@@ -370,6 +391,11 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
 
+	// Export a portable snapshot, then create a new actor and restore from
+	// it to simulate an app restart.
+	//
+	// The key property is that the snapshot contains enough information to
+	// re-emit the outbox work implied by the state (idempotently).
 	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
 		SessionID: startMsg.SessionID,
 	})
@@ -418,6 +444,13 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	ctx := t.Context()
 
+	// This test covers the "point of no return" edge:
+	//
+	// - The server has accepted the submit package and co-signed it.
+	// - The client did not receive SubmitAcceptedEvent.
+	//
+	// On resume, the client must send the exact same submit bytes and the
+	// server must return the same co-signed artifacts.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -508,6 +541,104 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
 	require.True(t, ok)
+
+	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
+		SessionID: restoreMsg.SessionID,
+	})
+	require.True(t, resumeResp.IsOk())
+
+	finalStateResp := actor2.Receive(ctx, &GetStateRequest{
+		SessionID: restoreMsg.SessionID,
+	})
+	require.True(t, finalStateResp.IsOk())
+
+	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
+}
+
+// TestOORClientActorResumeAfterServerCoSignedFromStore verifies the client can
+// resume after a crash using only the persisted snapshot (no explicit export)
+// even if the server already co-signed but the submit response was dropped.
+func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
+
+	store := NewInMemoryOutgoingSessionStore()
+	handler := &cosignedButDroppedHandler{
+		t:            t,
+		clientSigner: clientSigner,
+	}
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		SessionStore:  store,
+	})
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	// Simulate a crash by constructing a new actor and restoring from the
+	// persisted snapshot.
+	persistedSnap, err := store.GetOutgoing(ctx, startMsg.SessionID)
+	require.NoError(t, err)
+	require.NotNil(t, persistedSnap)
+	require.Equal(t, OutgoingPhaseSubmitSent, persistedSnap.Phase)
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		SessionStore:  store,
+	})
+
+	restoreResp := actor2.Receive(ctx, &RestoreSessionRequest{
+		Snapshot: persistedSnap,
+	})
+	require.True(t, restoreResp.IsOk())
+
+	restoreMsg, ok := restoreResp.UnwrapOr(nil).(*RestoreSessionResponse)
+	require.True(t, ok)
+	require.Equal(t, startMsg.SessionID, restoreMsg.SessionID)
 
 	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
 		SessionID: restoreMsg.SessionID,
