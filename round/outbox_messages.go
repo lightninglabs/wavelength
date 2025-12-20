@@ -162,6 +162,10 @@ type RoundCompletedNotification struct {
 
 	// TxID is the confirmed commitment transaction ID.
 	TxID chainhash.Hash
+
+	// ConfInfo contains the block height and hash at which the commitment
+	// tx was confirmed.
+	ConfInfo ConfInfo
 }
 
 func (m *RoundCompletedNotification) clientOutMsgSealed() {}

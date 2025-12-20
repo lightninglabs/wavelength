@@ -1055,10 +1055,16 @@ func (s *InputSigSentState) ProcessEvent(
 			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
 		}
 
+		confInfo := ConfInfo{
+			Height:    evt.BlockHeight,
+			BlockHash: evt.BlockHash,
+		}
+
 		return &ClientStateTransition{
 			NextState: &ConfirmedState{
 				TxID:          evt.TxID,
 				BlockHeight:   evt.BlockHeight,
+				BlockHash:     evt.BlockHash,
 				Confirmations: evt.Confirmations,
 				VTXOs:         vtxos,
 			},
@@ -1066,8 +1072,9 @@ func (s *InputSigSentState) ProcessEvent(
 				Outbox: []ClientOutMsg{
 					&VTXOCreatedNotification{VTXOs: vtxos},
 					&RoundCompletedNotification{
-						RoundID: s.RoundID,
-						TxID:    evt.TxID,
+						RoundID:  s.RoundID,
+						TxID:     evt.TxID,
+						ConfInfo: confInfo,
 					},
 				},
 			}),

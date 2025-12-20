@@ -539,12 +539,12 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 // onRoundComplete is called when a round finishes successfully. This removes
 // the round from active tracking and archives the round data.
 func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID string,
-	txid chainhash.Hash) error {
+	txid chainhash.Hash, confInfo ConfInfo) error {
 
 	delete(a.activeRounds, roundID)
 	delete(a.commitmentTxIndex, txid)
 
-	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid)
+	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid, confInfo)
 }
 
 // handleConfirmation processes a commitment transaction confirmation event
@@ -578,6 +578,7 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	confirmEvt := &BoardingConfirmed{
 		TxID:          event.Txid,
 		BlockHeight:   event.BlockHeight,
+		BlockHash:     event.BlockHash,
 		Confirmations: int32(event.Confirmations),
 	}
 
@@ -662,7 +663,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 		case *RoundCompletedNotification:
 			// Round FSM reached ConfirmedState. Perform actor
 			// cleanup.
-			err := a.onRoundComplete(ctx, m.RoundID, m.TxID)
+			err := a.onRoundComplete(
+				ctx, m.RoundID, m.TxID, m.ConfInfo,
+			)
 			if err != nil {
 				return fmt.Errorf("failed to complete "+
 					"round %s: %w", m.RoundID, err)

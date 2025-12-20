@@ -131,6 +131,17 @@ type BoardingIntent struct {
 	RoundID fn.Option[string]
 }
 
+// ConfInfo contains chain information about when a round's commitment
+// transaction was confirmed. This is populated after the commitment tx is
+// broadcast and confirmed on-chain.
+type ConfInfo struct {
+	// Height is the block height at which the commitment tx was confirmed.
+	Height int32
+
+	// BlockHash is the hash of the block containing the commitment tx.
+	BlockHash chainhash.Hash
+}
+
 // Round represents a complete Ark round from the client's perspective. A round
 // coordinates one or more actions (boarding, refresh, offboard) that are
 // batched together in a single commitment transaction.
@@ -138,6 +149,11 @@ type Round struct {
 	// RoundID is the unique identifier assigned by the server when the
 	// client joins this round.
 	RoundID string
+
+	// ConfInfo contains chain information about when the round's commitment
+	// transaction was confirmed. None until the commitment tx is confirmed
+	// on-chain.
+	ConfInfo fn.Option[ConfInfo]
 
 	// CommitmentTx is the commitment transaction as a PSBT that anchors all
 	// VTXOs. Using PSBT allows storing prevout info for all inputs. None
@@ -200,9 +216,12 @@ type RoundStore interface {
 	// tx broadcast but not yet confirmed or expired).
 	ListActiveRounds(ctx context.Context) ([]*Round, error)
 
-	// FinalizeRound marks a round as complete and archives it.
+	// FinalizeRound marks a round as complete and archives it. The ConfInfo
+	// contains the block height and hash at which the commitment tx was
+	// confirmed.
 	FinalizeRound(
 		ctx context.Context, roundID string, txid chainhash.Hash,
+		confInfo ConfInfo,
 	) error
 }
 

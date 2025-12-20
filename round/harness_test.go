@@ -86,9 +86,9 @@ func (m *MockRoundStore) ListActiveRounds(
 }
 
 func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID string,
-	txid chainhash.Hash) error {
+	txid chainhash.Hash, confInfo ConfInfo) error {
 
-	args := m.Called(ctx, roundID, txid)
+	args := m.Called(ctx, roundID, txid, confInfo)
 	return args.Error(0)
 }
 
@@ -897,13 +897,15 @@ func (m *MockSignerSession) PubKey() *btcec.PublicKey {
 
 //nolint:unused
 func (h *boardingTestHarness) newBoardingConfirmedEvent(
-	commitmentTx *wire.MsgTx, blockHeight int32) *BoardingConfirmed {
+	commitmentTx *wire.MsgTx, blockHeight int32,
+	blockHash chainhash.Hash) *BoardingConfirmed {
 
 	h.t.Helper()
 
 	return &BoardingConfirmed{
 		TxID:          commitmentTx.TxHash(),
 		BlockHeight:   blockHeight,
+		BlockHash:     blockHash,
 		Confirmations: 6,
 	}
 }

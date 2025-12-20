@@ -23,8 +23,13 @@ CREATE TABLE IF NOT EXISTS rounds (
     -- round_id is the unique identifier assigned by the server.
     round_id TEXT PRIMARY KEY NOT NULL,
 
-    -- creation_height is the block height when this round was created.
-    creation_height INTEGER NOT NULL,
+    -- confirmation_height is the block height at which the commitment tx
+    -- was confirmed. NULL until confirmed on-chain.
+    confirmation_height INTEGER,
+
+    -- confirmation_block_hash is the 32-byte hash of the block containing
+    -- the commitment transaction. NULL until confirmed on-chain.
+    confirmation_block_hash BLOB,
 
     -- commitment_tx is the serialized wire.MsgTx (binary).
     -- NULL until the server constructs the commitment transaction.

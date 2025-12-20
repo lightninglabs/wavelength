@@ -160,16 +160,17 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 
 		// Insert/update round. Status is always 'input_sig_sent' since
 		// we only persist at the "point of no return" after sending
-		// input signatures.
+		// input signatures. Confirmation info is None at this stage.
 		roundParams := InsertRoundParams{
-			RoundID:        r.RoundID,
-			CreationHeight: int32(r.CreationHeight),
-			CommitmentTx:   commitmentTxBytes,
-			CommitmentTxid: commitmentTxid,
-			VtxtTree:       vtxtTreeBytes,
-			Status:         "input_sig_sent",
-			CreationTime:   nowUnix,
-			LastUpdateTime: nowUnix,
+			RoundID:               r.RoundID,
+			ConfirmationHeight:    sql.NullInt32{},
+			ConfirmationBlockHash: nil,
+			CommitmentTx:          commitmentTxBytes,
+			CommitmentTxid:        commitmentTxid,
+			VtxtTree:              vtxtTreeBytes,
+			Status:                "input_sig_sent",
+			CreationTime:          nowUnix,
+			LastUpdateTime:        nowUnix,
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
@@ -247,7 +248,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 
 				treeParams := sqlc.InsertRoundClientTreeParams{
 					RoundID:   r.RoundID,
-					ClientKey: []byte(key),
+					ClientKey: key[:],
 					TreeData:  treeData,
 				}
 				err = q.InsertRoundClientTree(ctx, treeParams)
@@ -271,7 +272,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 					p := sqlc.InsertClientTreeTxidParams{
 						Txid:      entry.Txid[:],
 						RoundID:   r.RoundID,
-						ClientKey: []byte(key),
+						ClientKey: key[:],
 						TreeLevel: int32(
 							entry.TreeLevel,
 						),
@@ -435,9 +436,10 @@ func (s *RoundPersistenceStore) ListActiveRounds(
 	return result, err
 }
 
-// FinalizeRound marks a round as complete and archives it.
+// FinalizeRound marks a round as complete and archives it. The confInfo
+// contains the block height and hash at which the commitment tx was confirmed.
 func (s *RoundPersistenceStore) FinalizeRound(ctx context.Context,
-	roundID string, txid chainhash.Hash) error {
+	roundID string, txid chainhash.Hash, confInfo round.ConfInfo) error {
 
 	writeTxOpts := WriteTxOption()
 
@@ -445,7 +447,12 @@ func (s *RoundPersistenceStore) FinalizeRound(ctx context.Context,
 		params := sqlc.FinalizeRoundParams{
 			RoundID:        roundID,
 			CommitmentTxid: txid[:],
-			LastUpdateTime: s.clock.Now().Unix(),
+			ConfirmationHeight: sql.NullInt32{
+				Int32: confInfo.Height,
+				Valid: true,
+			},
+			ConfirmationBlockHash: confInfo.BlockHash[:],
+			LastUpdateTime:        s.clock.Now().Unix(),
 		}
 
 		return q.FinalizeRound(ctx, params)
@@ -564,8 +571,20 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	dbIntents []RoundBoardingIntentRow) (*round.Round, error) {
 
 	r := &round.Round{
-		RoundID:        dbRound.RoundID,
-		CreationHeight: uint32(dbRound.CreationHeight),
+		RoundID: dbRound.RoundID,
+	}
+
+	// Populate confirmation info if present.
+	if dbRound.ConfirmationHeight.Valid &&
+		len(dbRound.ConfirmationBlockHash) == chainhash.HashSize {
+
+		var blockHash chainhash.Hash
+		copy(blockHash[:], dbRound.ConfirmationBlockHash)
+
+		r.ConfInfo = fn.Some(round.ConfInfo{
+			Height:    dbRound.ConfirmationHeight.Int32,
+			BlockHash: blockHash,
+		})
 	}
 
 	// Deserialize commitment tx if present.
@@ -754,16 +773,16 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 
 // reconstructFSMState reconstructs the FSM state from relational data.
 //
-// NOTE: Only 'input_sig_sent' status is supported for reconstruction. This is
-// intentional per the "point of no return" persistence design:
+// NOTE: Only 'input_sig_sent' status is supported for full FSM reconstruction.
+// This is intentional per the "point of no return" persistence design:
 //   - Before sending input signatures, the client can safely abort and rejoin
 //     a new round with no data loss.
 //   - After sending input signatures (status='input_sig_sent'), the server may
 //     broadcast the commitment transaction at any time. The client must track
 //     confirmation to detect when VTXOs become spendable.
 //
-// All other statuses (confirmed, failed, archived) represent terminal states
-// that don't need FSM reconstruction. If we encounter an unknown status, it
+// Terminal statuses (confirmed, failed, archived) return minimal state objects
+// to indicate the round's final status. If we encounter an unknown status, it
 // indicates data corruption or a version mismatch that must be surfaced as an
 // error.
 func (s *RoundPersistenceStore) reconstructFSMState(ctx context.Context,
@@ -775,6 +794,30 @@ func (s *RoundPersistenceStore) reconstructFSMState(ctx context.Context,
 		return s.reconstructInputSigSentState(
 			ctx, q, dbRound, dbIntents, dbTrees,
 		)
+
+	case "confirmed":
+		// Confirmed rounds are terminal. Return a ConfirmedState with
+		// the confirmation info from the database.
+		var blockHash chainhash.Hash
+		if len(dbRound.ConfirmationBlockHash) == chainhash.HashSize {
+			copy(blockHash[:], dbRound.ConfirmationBlockHash)
+		}
+
+		var txid chainhash.Hash
+		if len(dbRound.CommitmentTxid) == chainhash.HashSize {
+			copy(txid[:], dbRound.CommitmentTxid)
+		}
+
+		return &round.ConfirmedState{
+			TxID:        txid,
+			BlockHeight: dbRound.ConfirmationHeight.Int32,
+			BlockHash:   blockHash,
+		}, nil
+
+	case "failed", "archived":
+		// Failed and archived rounds are terminal. Return nil state
+		// since no FSM reconstruction is needed.
+		return nil, nil
 
 	default:
 		return nil, fmt.Errorf(
@@ -792,7 +835,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 
 	state := &round.InputSigSentState{
 		RoundID:     dbRound.RoundID,
-		ClientTrees: make(map[string]*tree.Tree),
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
 	}
 
 	// Deserialize commitment tx.
@@ -850,7 +893,9 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 			)
 		}
 
-		state.ClientTrees[string(dbTree.ClientKey)] = clientTree
+		var signerKey round.SignerKey
+		copy(signerKey[:], dbTree.ClientKey)
+		state.ClientTrees[signerKey] = clientTree
 	}
 
 	return state, nil

@@ -53,14 +53,15 @@ type ClientTreeTxid struct {
 }
 
 type Round struct {
-	RoundID        string
-	CreationHeight int32
-	CommitmentTx   []byte
-	CommitmentTxid []byte
-	VtxtTree       []byte
-	Status         string
-	CreationTime   int64
-	LastUpdateTime int64
+	RoundID               string
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	CommitmentTx          []byte
+	CommitmentTxid        []byte
+	VtxtTree              []byte
+	Status                string
+	CreationTime          int64
+	LastUpdateTime        int64
 }
 
 type RoundBoardingIntent struct {

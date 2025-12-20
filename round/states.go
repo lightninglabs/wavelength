@@ -326,6 +326,9 @@ type ConfirmedState struct {
 	// BlockHeight is the height at which the transaction was confirmed.
 	BlockHeight int32
 
+	// BlockHash is the hash of the block containing the confirmation.
+	BlockHash chainhash.Hash
+
 	// Confirmations is the number of confirmations.
 	Confirmations int32
 

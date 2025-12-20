@@ -37,18 +37,30 @@ func (q *Queries) DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTre
 
 const FinalizeRound = `-- name: FinalizeRound :exec
 UPDATE rounds
-SET status = 'confirmed', commitment_txid = $2, last_update_time = $3
+SET status = 'confirmed',
+    commitment_txid = $2,
+    confirmation_height = $3,
+    confirmation_block_hash = $4,
+    last_update_time = $5
 WHERE round_id = $1
 `
 
 type FinalizeRoundParams struct {
-	RoundID        string
-	CommitmentTxid []byte
-	LastUpdateTime int64
+	RoundID               string
+	CommitmentTxid        []byte
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	LastUpdateTime        int64
 }
 
 func (q *Queries) FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error {
-	_, err := q.db.ExecContext(ctx, FinalizeRound, arg.RoundID, arg.CommitmentTxid, arg.LastUpdateTime)
+	_, err := q.db.ExecContext(ctx, FinalizeRound,
+		arg.RoundID,
+		arg.CommitmentTxid,
+		arg.ConfirmationHeight,
+		arg.ConfirmationBlockHash,
+		arg.LastUpdateTime,
+	)
 	return err
 }
 
@@ -165,7 +177,7 @@ func (q *Queries) GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxids
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, creation_height, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE round_id = $1
+SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
@@ -173,7 +185,8 @@ func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
 	var i Round
 	err := row.Scan(
 		&i.RoundID,
-		&i.CreationHeight,
+		&i.ConfirmationHeight,
+		&i.ConfirmationBlockHash,
 		&i.CommitmentTx,
 		&i.CommitmentTxid,
 		&i.VtxtTree,
@@ -222,7 +235,7 @@ func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) (
 }
 
 const GetRoundByCommitmentTxid = `-- name: GetRoundByCommitmentTxid :one
-SELECT round_id, creation_height, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE commitment_txid = $1
+SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE commitment_txid = $1
 `
 
 func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error) {
@@ -230,7 +243,8 @@ func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid [
 	var i Round
 	err := row.Scan(
 		&i.RoundID,
-		&i.CreationHeight,
+		&i.ConfirmationHeight,
+		&i.ConfirmationBlockHash,
 		&i.CommitmentTx,
 		&i.CommitmentTxid,
 		&i.VtxtTree,
@@ -395,10 +409,12 @@ func (q *Queries) InsertClientTreeTxid(ctx context.Context, arg InsertClientTree
 const InsertRound = `-- name: InsertRound :exec
 
 INSERT INTO rounds (
-    round_id, creation_height, commitment_tx, commitment_txid,
-    vtxt_tree, status, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    round_id, confirmation_height, confirmation_block_hash, commitment_tx,
+    commitment_txid, vtxt_tree, status, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (round_id) DO UPDATE SET
+    confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
+    confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
     commitment_tx = COALESCE(excluded.commitment_tx, rounds.commitment_tx),
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
@@ -407,21 +423,23 @@ ON CONFLICT (round_id) DO UPDATE SET
 `
 
 type InsertRoundParams struct {
-	RoundID        string
-	CreationHeight int32
-	CommitmentTx   []byte
-	CommitmentTxid []byte
-	VtxtTree       []byte
-	Status         string
-	CreationTime   int64
-	LastUpdateTime int64
+	RoundID               string
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	CommitmentTx          []byte
+	CommitmentTxid        []byte
+	VtxtTree              []byte
+	Status                string
+	CreationTime          int64
+	LastUpdateTime        int64
 }
 
 // Round queries.
 func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error {
 	_, err := q.db.ExecContext(ctx, InsertRound,
 		arg.RoundID,
-		arg.CreationHeight,
+		arg.ConfirmationHeight,
+		arg.ConfirmationBlockHash,
 		arg.CommitmentTx,
 		arg.CommitmentTxid,
 		arg.VtxtTree,
@@ -584,7 +602,7 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 }
 
 const ListActiveRounds = `-- name: ListActiveRounds :many
-SELECT round_id, creation_height, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
+SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
 `
 
 func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
@@ -598,7 +616,8 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 		var i Round
 		if err := rows.Scan(
 			&i.RoundID,
-			&i.CreationHeight,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
 			&i.CommitmentTx,
 			&i.CommitmentTxid,
 			&i.VtxtTree,
@@ -662,7 +681,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, creation_height, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = $1 ORDER BY creation_time DESC
+SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Round, error) {
@@ -676,7 +695,8 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 		var i Round
 		if err := rows.Scan(
 			&i.RoundID,
-			&i.CreationHeight,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
 			&i.CommitmentTx,
 			&i.CommitmentTxid,
 			&i.VtxtTree,

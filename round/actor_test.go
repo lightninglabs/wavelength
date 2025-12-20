@@ -413,12 +413,18 @@ func TestActorProcessOutbox(t *testing.T) {
 		roundID := "completing-round"
 		h.roundStore.On(
 			"FinalizeRound", mock.Anything, roundID, txid,
+			mock.Anything,
 		).Return(nil)
 
+		confInfo := ConfInfo{
+			Height:    100,
+			BlockHash: chainhash.Hash{0x01},
+		}
 		outbox := []ClientOutMsg{
 			&RoundCompletedNotification{
-				RoundID: "completing-round",
-				TxID:    txid,
+				RoundID:  "completing-round",
+				TxID:     txid,
+				ConfInfo: confInfo,
 			},
 		}
 
@@ -436,6 +442,7 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		h.roundStore.AssertCalled(
 			t, "FinalizeRound", mock.Anything, roundID, txid,
+			confInfo,
 		)
 	})
 

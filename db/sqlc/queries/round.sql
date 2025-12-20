@@ -2,10 +2,12 @@
 
 -- name: InsertRound :exec
 INSERT INTO rounds (
-    round_id, creation_height, commitment_tx, commitment_txid,
-    vtxt_tree, status, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    round_id, confirmation_height, confirmation_block_hash, commitment_tx,
+    commitment_txid, vtxt_tree, status, creation_time, last_update_time
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (round_id) DO UPDATE SET
+    confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
+    confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
     commitment_tx = COALESCE(excluded.commitment_tx, rounds.commitment_tx),
     commitment_txid = COALESCE(excluded.commitment_txid, rounds.commitment_txid),
     vtxt_tree = COALESCE(excluded.vtxt_tree, rounds.vtxt_tree),
@@ -31,7 +33,11 @@ WHERE round_id = $1;
 
 -- name: FinalizeRound :exec
 UPDATE rounds
-SET status = 'confirmed', commitment_txid = $2, last_update_time = $3
+SET status = 'confirmed',
+    commitment_txid = $2,
+    confirmation_height = $3,
+    confirmation_block_hash = $4,
+    last_update_time = $5
 WHERE round_id = $1;
 
 -- Round boarding intents queries.
