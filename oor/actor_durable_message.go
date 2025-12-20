@@ -259,6 +259,12 @@ func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
 		}, nil
 
 	case *DriveEventRequest:
+		if req == nil {
+			return nil, fmt.Errorf(
+				"drive event request must be provided",
+			)
+		}
+
 		raw, err := encodeDriveEventRequestPayload(
 			req.SessionID, req.Event,
 		)
