@@ -30,7 +30,6 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
@@ -53,6 +52,22 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		)
 		if err != nil {
 			return nil, err
+		}
+
+		// If the environment is already bound to a stable session id,
+		// verify the derived Ark txid matches. A mismatch indicates
+		// non-determinism in the builder or inconsistent state
+		// reconstruction.
+		if env != nil && env.SessionID != (SessionID{}) {
+			sessionID, err := sessionIDFromArk(ark)
+			if err != nil {
+				return nil, err
+			}
+
+			if sessionID != env.SessionID {
+				return nil, fmt.Errorf("ark txid mismatch " +
+					"with session id")
+			}
 		}
 
 		submitReq := &SendSubmitPackageRequest{
