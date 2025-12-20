@@ -71,7 +71,8 @@ func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 // finalized checkpoints attached to the incoming event.
 func DriveIncomingTransferWithCheckpoints(ctx context.Context,
 	sessionID SessionID, ark *psbt.Packet,
-	finalCheckpoints []*psbt.Packet) (*ReceiveSession, []OutboxEvent, error) {
+	finalCheckpoints []*psbt.Packet) (
+	*ReceiveSession, []OutboxEvent, error) {
 
 	sess, err := NewReceiveSession(ctx, ark, sessionID)
 	if err != nil {
