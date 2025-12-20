@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -71,7 +71,7 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 		//
 		// The goal is that all parties derive identical semantics from
 		// identical bytes.
-		err := oor.ValidateCanonicalArkPSBT(evt.ArkPSBT)
+		err := arktx.ValidateCanonicalPSBT(evt.ArkPSBT)
 		if err != nil {
 			return nil, err
 		}

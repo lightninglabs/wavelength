@@ -8,9 +8,12 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
 
+// TestSessionHappyPath exercises the outgoing transfer FSM without the actor
+// wrapper.
 func TestSessionHappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -26,22 +29,28 @@ func TestSessionHappyPath(t *testing.T) {
 
 	inputValue := btcutil.Amount(10000)
 
-	inputs := []oortx.CheckpointInput{{
-		Outpoint: wire.OutPoint{
-			Hash:  [32]byte{0x01},
-			Index: 0,
-		},
-		WitnessUtxo: &wire.TxOut{
-			Value:    int64(inputValue),
-			PkScript: []byte{0x51},
-		},
-		OwnerLeafScript: []byte{0x51},
-	}}
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
-	outputs := []oortx.RecipientOutput{{
-		PkScript: []byte{0x51},
-		Value:    inputValue,
-	}}
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
 
 	session, outbox, err := NewSession(ctx, policy, inputs, outputs)
 	require.NoError(t, err)
@@ -70,15 +79,19 @@ func TestSessionHappyPath(t *testing.T) {
 
 	submitOutbox := result.UnwrapOr(nil)
 	require.Len(t, submitOutbox, 1)
-	_, ok = submitOutbox[0].(*RequestCheckpointSignatures)
+	signReq, ok := submitOutbox[0].(*RequestCheckpointSignatures)
 	require.True(t, ok)
+	require.NotEmpty(t, signReq.TransferInputs)
 
 	// Step 2: Wallet attaches client signatures to checkpoints.
-	finalCheckpoints := submit.CheckpointPSBTs
-	finalCheckpoints[0].Inputs[0].TaprootKeySpendSig = []byte{0x01}
+	err = SignCheckpointPSBTs(
+		clientSigner, signReq.TransferInputs,
+		signReq.CoSignedCheckpointPSBTs,
+	)
+	require.NoError(t, err)
 
 	fut = session.FSM.AskEvent(ctx, &CheckpointsSignedEvent{
-		FinalCheckpointPSBTs: finalCheckpoints,
+		FinalCheckpointPSBTs: signReq.CoSignedCheckpointPSBTs,
 	})
 	result = fut.Await(ctx)
 	require.False(t, result.IsErr())
