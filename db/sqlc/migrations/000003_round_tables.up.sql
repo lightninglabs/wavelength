@@ -316,3 +316,30 @@ CREATE INDEX IF NOT EXISTS idx_vtxos_creation_time
 -- Index on status for efficient status-based queries (ListLiveVTXOs, etc.).
 CREATE INDEX IF NOT EXISTS idx_vtxos_status
     ON vtxos(status);
+
+-- OOR outgoing session snapshots.
+-- Persists client OOR FSM snapshots for restart-safe crash resume.
+CREATE TABLE IF NOT EXISTS oor_outgoing_sessions (
+    -- session_id is the Ark txid (32 bytes) for this outgoing session.
+    session_id BLOB PRIMARY KEY,
+
+    -- snapshot_version identifies the encoding/version of snapshot_blob.
+    snapshot_version INTEGER NOT NULL,
+
+    -- phase is the coarse outgoing transfer phase
+    -- (submit_sent/cosigned/finalize_sent/etc).
+    phase TEXT NOT NULL,
+
+    -- snapshot_blob is the serialized outgoing snapshot payload.
+    snapshot_blob BLOB NOT NULL,
+
+    -- created_at is the unix nano timestamp when this row was first created.
+    created_at BIGINT NOT NULL,
+
+    -- updated_at is the unix nano timestamp of the latest snapshot write.
+    updated_at BIGINT NOT NULL
+);
+
+-- Index on phase for operational queries and future resumable scans.
+CREATE INDEX IF NOT EXISTS idx_oor_outgoing_sessions_phase
+    ON oor_outgoing_sessions(phase);

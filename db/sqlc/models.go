@@ -96,6 +96,15 @@ type MailboxMessage struct {
 	CreatedAt       int64
 }
 
+type OorOutgoingSession struct {
+	SessionID       []byte
+	SnapshotVersion int32
+	Phase           string
+	SnapshotBlob    []byte
+	CreatedAt       int64
+	UpdatedAt       int64
+}
+
 type OutboxMessage struct {
 	ID               string
 	SourceActorID    string

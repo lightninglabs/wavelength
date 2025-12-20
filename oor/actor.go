@@ -26,6 +26,11 @@ type ClientActorCfg struct {
 
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
+
+	// SessionStore persists outgoing session snapshots after each state
+	// transition. This is optional and is primarily intended for mobile-style
+	// restart/resume semantics.
+	SessionStore OutgoingSessionStore
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in an actor interface.
@@ -66,6 +71,15 @@ func (a *OORClientActor) Receive(ctx context.Context,
 	case *GetStateRequest:
 		return a.handleGetState(ctx, m)
 
+	case *RestoreSessionRequest:
+		return a.handleRestoreSession(ctx, m)
+
+	case *ResumeSessionRequest:
+		return a.handleResumeSession(ctx, m)
+
+	case *ExportSnapshotRequest:
+		return a.handleExportSnapshot(ctx, m)
+
 	default:
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
 			m))
@@ -91,6 +105,11 @@ func (a *OORClientActor) handleStartTransfer(ctx context.Context,
 
 	handle := &sessionHandle{FSM: session.FSM}
 	a.sessions[session.ID] = handle
+
+	err = a.persistSession(ctx, session.ID, handle.FSM)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
 
 	err = a.driveOutbox(ctx, session.ID, handle.FSM, outbox)
 	if err != nil {
@@ -125,12 +144,112 @@ func (a *OORClientActor) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	err = a.persistSession(ctx, req.SessionID, handle.FSM)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
 	err = a.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// handleRestoreSession restores a session from an exported snapshot.
+func (a *OORClientActor) handleRestoreSession(ctx context.Context,
+	req *RestoreSessionRequest) fn.Result[ActorResp] {
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	if req.Snapshot == nil {
+		return fn.Err[ActorResp](
+			fmt.Errorf("snapshot must be provided"),
+		)
+	}
+
+	session, err := NewSessionFromSnapshot(ctx, req.Snapshot)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	a.sessions[session.ID] = &sessionHandle{FSM: session.FSM}
+
+	err = a.persistSession(ctx, session.ID, session.FSM)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&RestoreSessionResponse{
+		SessionID: session.ID,
+	})
+}
+
+// handleResumeSession re-emits the outbox implied by the session's current
+// state.
+func (a *OORClientActor) handleResumeSession(ctx context.Context,
+	req *ResumeSessionRequest) fn.Result[ActorResp] {
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	handle, ok := a.sessions[req.SessionID]
+	if !ok {
+		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
+			req.SessionID))
+	}
+
+	state, err := handle.currentState()
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	outbox, err := OutboxForState(state)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	err = a.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&ResumeSessionResponse{})
+}
+
+// handleExportSnapshot exports a snapshot for the requested session.
+func (a *OORClientActor) handleExportSnapshot(ctx context.Context,
+	req *ExportSnapshotRequest) fn.Result[ActorResp] {
+
+	_ = ctx
+
+	if req == nil {
+		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	}
+
+	handle, ok := a.sessions[req.SessionID]
+	if !ok {
+		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
+			req.SessionID))
+	}
+
+	state, err := handle.currentState()
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	snapshot, err := NewOutgoingSnapshot(req.SessionID, state)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	return fn.Ok[ActorResp](&ExportSnapshotResponse{
+		Snapshot: snapshot,
+	})
 }
 
 // handleGetState returns the current state for the requested session.
@@ -203,6 +322,11 @@ func (a *OORClientActor) driveOutbox(ctx context.Context, sessionID SessionID,
 				return err
 			}
 
+			err = a.persistSession(ctx, sessionID, fsm)
+			if err != nil {
+				return err
+			}
+
 			err = a.driveOutbox(ctx, sessionID, fsm, nextOutbox)
 			if err != nil {
 				return err
@@ -211,6 +335,38 @@ func (a *OORClientActor) driveOutbox(ctx context.Context, sessionID SessionID,
 	}
 
 	return nil
+}
+
+// persistSession persists an outgoing session snapshot if a store is
+// configured.
+func (a *OORClientActor) persistSession(ctx context.Context,
+	sessionID SessionID, fsm *StateMachine) error {
+
+	store := a.cfg.SessionStore
+	if store == nil {
+		return nil
+	}
+
+	if fsm == nil {
+		return fmt.Errorf("fsm must be provided")
+	}
+
+	current, err := fsm.CurrentState()
+	if err != nil {
+		return err
+	}
+
+	state, ok := current.(State)
+	if !ok {
+		return fmt.Errorf("unexpected state type: %T", current)
+	}
+
+	snapshot, err := NewOutgoingSnapshot(sessionID, state)
+	if err != nil {
+		return err
+	}
+
+	return store.UpsertOutgoing(ctx, snapshot)
 }
 
 // sessionHandle ties a session ID to its running state machine instance.

@@ -1,7 +1,10 @@
 package oor
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -56,6 +59,14 @@ type AwaitingSubmitAccepted struct {
 	// TransferInputs are the vtxo descriptors and scripts needed later on
 	// to sign the checkpoint PSBTs.
 	TransferInputs []TransferInput
+
+	// WaitForArkConfirmation enables an optional on-chain confirmation
+	// phase after finalize is accepted.
+	WaitForArkConfirmation bool
+
+	// ArkConfirmDepth is the minimum required confirmation depth when
+	// waiting for Ark tx confirmation.
+	ArkConfirmDepth uint32
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -94,6 +105,14 @@ type AwaitingCheckpointSignatures struct {
 
 	// TransferInputs carry the client-side VTXO signing context.
 	TransferInputs []TransferInput
+
+	// WaitForArkConfirmation enables an optional on-chain confirmation
+	// phase after finalize is accepted.
+	WaitForArkConfirmation bool
+
+	// ArkConfirmDepth is the minimum required confirmation depth when
+	// waiting for Ark tx confirmation.
+	ArkConfirmDepth uint32
 }
 
 // String returns a human-readable representation of
@@ -130,7 +149,77 @@ type AwaitingFinalizeAccepted struct {
 	// FinalCheckpointPSBTs are the final checkpoint PSBTs sent to the
 	// server.
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	// WaitForArkConfirmation enables an optional on-chain confirmation
+	// phase after finalize is accepted.
+	WaitForArkConfirmation bool
+
+	// ArkConfirmDepth is the minimum required confirmation depth when
+	// waiting for Ark tx confirmation.
+	ArkConfirmDepth uint32
 }
+
+// AwaitingArkConfirmation indicates the server accepted finalize and the
+// client is optionally waiting for the Ark tx to confirm on-chain.
+type AwaitingArkConfirmation struct {
+	// AwaitingArkConfirmation is an optional UX phase. It allows an
+	// application to provide stronger "done means confirmed" semantics,
+	// at the cost of waiting for on-chain confirmations.
+
+	// Txid is the Ark transaction txid.
+	Txid chainhash.Hash
+
+	// MinDepth is the minimum confirmation depth.
+	MinDepth uint32
+}
+
+// String returns a human-readable representation of AwaitingArkConfirmation.
+func (s *AwaitingArkConfirmation) String() string {
+	return "AwaitingArkConfirmation"
+}
+
+// IsTerminal returns false as AwaitingArkConfirmation is not terminal.
+func (s *AwaitingArkConfirmation) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingArkConfirmation as implementing the sealed State
+// interface.
+func (s *AwaitingArkConfirmation) stateSealed() {}
+
+// RetryBackoff indicates the client should wait before retrying the outbox
+// request implied by ResumeSnapshot.
+//
+// This state is intended to support retry/backoff without requiring durable
+// timers yet: the outbox boundary can implement ScheduleRetryRequest however it
+// wants (immediate in tests, time-based in apps).
+type RetryBackoff struct {
+	// RetryBackoff is a minimal "timer" state that models backoff without
+	// requiring a dedicated scheduler in the FSM runtime. A future durable
+	// actor runtime can replace this by persisting timers and wakeups.
+
+	// ResumeSnapshot captures the state to restore when the retry is due.
+	ResumeSnapshot *OutgoingSnapshot
+
+	// RetryAfter is the requested backoff delay.
+	RetryAfter time.Duration
+
+	// Reason is a human-readable error reason.
+	Reason string
+}
+
+// String returns a human-readable representation of RetryBackoff.
+func (s *RetryBackoff) String() string {
+	return "RetryBackoff"
+}
+
+// IsTerminal returns false as RetryBackoff is not terminal.
+func (s *RetryBackoff) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks RetryBackoff as implementing the sealed State interface.
+func (s *RetryBackoff) stateSealed() {}
 
 // String returns a human-readable representation of AwaitingFinalizeAccepted.
 func (s *AwaitingFinalizeAccepted) String() string {

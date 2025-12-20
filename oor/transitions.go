@@ -277,6 +277,44 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 	}
 }
 
+// ProcessEvent handles events for AwaitingArkConfirmation.
+func (s *AwaitingArkConfirmation) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *FailEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.Reason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedEvent(s, event), nil
+	}
+}
+
+// ProcessEvent handles events for RetryBackoff.
+func (s *RetryBackoff) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *FailEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.Reason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedEvent(s, event), nil
+	}
+}
+
 // ProcessEvent handles events for Completed.
 func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {

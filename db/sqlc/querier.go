@@ -93,6 +93,7 @@ type Querier interface {
 	GetFSMCheckpoint(ctx context.Context, actorID string) (FsmCheckpoint, error)
 	// Get a specific mailbox message by ID.
 	GetMailboxMessage(ctx context.Context, id string) (MailboxMessage, error)
+	GetOOROutgoingSession(ctx context.Context, sessionID []byte) (OorOutgoingSession, error)
 	// Get a specific outbox message by ID.
 	GetOutboxMessage(ctx context.Context, id string) (OutboxMessage, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
@@ -217,6 +218,7 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	UpsertOOROutgoingSession(ctx context.Context, arg UpsertOOROutgoingSessionParams) error
 }
 
 var _ Querier = (*Queries)(nil)

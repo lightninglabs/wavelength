@@ -7,6 +7,9 @@ DROP INDEX IF EXISTS idx_vtxos_spent;
 DROP INDEX IF EXISTS idx_vtxos_round_id;
 DROP TABLE IF EXISTS vtxos;
 
+DROP INDEX IF EXISTS idx_oor_outgoing_sessions_phase;
+DROP TABLE IF EXISTS oor_outgoing_sessions;
+
 DROP TABLE IF EXISTS round_client_trees;
 
 DROP TABLE IF EXISTS round_vtxo_requests;
