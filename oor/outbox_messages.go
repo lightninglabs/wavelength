@@ -131,3 +131,90 @@ func (m *MarkInputsSpentRequest) outboxSealed() {}
 func (m *MarkInputsSpentRequest) ToProto() proto.Message {
 	return nil
 }
+
+// IncomingTransferNotification is emitted when an incoming transfer has been
+// validated structurally and should be surfaced to the application layer.
+type IncomingTransferNotification struct {
+	// IncomingTransferNotification is an application-facing notification.
+	// It carries the canonical Ark PSBT and the derived recipients so the
+	// UI can display a stable summary of the transfer.
+
+	actor.BaseMessage
+
+	// SessionID is the stable v0 session identifier (Ark txid).
+	SessionID SessionID
+
+	// ArkPSBT is the canonical Ark tx PSBT.
+	ArkPSBT *psbt.Packet
+
+	// Recipients are the non-anchor recipient outputs in the Ark tx.
+	Recipients []ArkRecipientOutput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *IncomingTransferNotification) outboxType() string {
+	return "IncomingTransferNotification"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *IncomingTransferNotification) outboxSealed() {}
+
+// MaterializeIncomingVTXOsRequest asks the application/wallet layer to
+// materialize the incoming transfer into local VTXO records.
+//
+// This is the interface boundary where we eventually construct full VTXO
+// descriptors and hand them to the vtxo.Manager for lifecycle tracking.
+type MaterializeIncomingVTXOsRequest struct {
+	// MaterializeIncomingVTXOsRequest is the outbox boundary for updating
+	// local wallet/VTXO state as a result of an incoming transfer.
+
+	actor.BaseMessage
+
+	// SessionID identifies the incoming transfer session.
+	SessionID SessionID
+
+	// ArkPSBT is the canonical Ark tx PSBT.
+	ArkPSBT *psbt.Packet
+
+	// Recipients are the non-anchor recipient outputs in the Ark tx.
+	Recipients []ArkRecipientOutput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *MaterializeIncomingVTXOsRequest) outboxType() string {
+	return "MaterializeIncomingVTXOsRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *MaterializeIncomingVTXOsRequest) outboxSealed() {}
+
+// SendIncomingAckRequest requests the transport layer to ack receipt of the
+// incoming transfer to the server.
+//
+// In the future this becomes an RPC call. For now it is left as an interface
+// boundary so client-side FSMs can be tested without a transport.
+type SendIncomingAckRequest struct {
+	// SendIncomingAckRequest is best-effort: an app may retry it until the
+	// server confirms the ack was recorded, depending on the chosen
+	// transport semantics.
+
+	actor.BaseMessage
+
+	// SessionID identifies the transfer being acknowledged.
+	SessionID SessionID
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *SendIncomingAckRequest) outboxType() string {
+	return "SendIncomingAckRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *SendIncomingAckRequest) outboxSealed() {}
+
+// ToProto converts SendIncomingAckRequest to a protobuf message.
+//
+// TODO: Implement once OOR RPC definitions exist.
+func (m *SendIncomingAckRequest) ToProto() proto.Message {
+	return nil
+}
