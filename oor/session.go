@@ -22,8 +22,9 @@ type Session struct {
 // NewSession creates a new outgoing OOR transfer session and returns the first
 // outbox request produced by the FSM.
 //
-// This helper exists to ensure the FSM environment name is stable and derived
-// from the Ark txid, which is only known after building the Ark PSBT.
+// This helper lets the FSM build the submit package itself, then derives the
+// stable session ID from the resulting Ark txid before returning control to the
+// caller.
 //
 // The returned outbox contains the submit request and should be treated as the
 // only place where the caller performs I/O (transport, signing, timers). The
@@ -34,24 +35,12 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
-	// We construct the submit package once to derive the stable session id
-	// (Ark txid). We then pass the prebuilt package through the
-	// StartTransfer event so the FSM does not need to rebuild it.
-	ark, checkpoints, err := buildSubmitPackage(policy, inputs, outputs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	sessionID, err := sessionIDFromArk(ark)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	env := &Environment{SessionID: sessionID}
+	env := &Environment{}
+	startupID := SessionID{}
 
 	fsmCfg := StateMachineCfg{
-		Logger:        log.WithPrefix(sessionID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(ctx, sessionID.LogPrefix()),
+		Logger:        log.WithPrefix(startupID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(ctx, startupID.LogPrefix()),
 		InitialState:  &Idle{},
 		Env:           env,
 	}
@@ -60,17 +49,41 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	sm.Start(ctx)
 
 	fut := sm.AskEvent(ctx, &StartTransferEvent{
-		CheckpointInputs:        inputs,
-		RecipientOutputs:        outputs,
-		Policy:                  policy,
-		PrebuiltArkPSBT:         ark,
-		PrebuiltCheckpointPSBTs: checkpoints,
-		AnchorAmount:            0,
+		CheckpointInputs: inputs,
+		RecipientOutputs: outputs,
+		Policy:           policy,
 	})
 	result := fut.Await(ctx)
 	if result.IsErr() {
 		return nil, nil, result.Err()
 	}
+
+	currentState, err := sm.CurrentState()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var arkPSBT *psbt.Packet
+	switch s := currentState.(type) {
+	case *AwaitingArkSignatures:
+		arkPSBT = s.ArkPSBT
+
+	case *AwaitingSubmitAccepted:
+		arkPSBT = s.ArkPSBT
+
+	default:
+		return nil, nil, fmt.Errorf("unexpected start state: %T",
+			currentState)
+	}
+
+	sessionID, err := sessionIDFromArk(arkPSBT)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Bind the FSM environment to the stable session identifier only after
+	// StartTransfer has deterministically built the package.
+	env.SessionID = sessionID
 
 	return &Session{
 		ID:  sessionID,

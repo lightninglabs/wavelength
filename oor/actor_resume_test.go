@@ -407,7 +407,7 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorResumeAfterServerCoSigned verifies the client can resume
@@ -521,7 +521,7 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorResumeFromSnapshotSubmitSent verifies the client can resume
@@ -629,7 +629,7 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorResumeFromSnapshotCoSigned verifies the client can resume
@@ -738,5 +738,5 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }

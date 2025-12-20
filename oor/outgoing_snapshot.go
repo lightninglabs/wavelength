@@ -19,6 +19,11 @@ import (
 type OutgoingPhase string
 
 const (
+	// OutgoingPhaseArkSignRequested indicates the submit package has been
+	// built and the client must attach Ark signatures before submit can be
+	// sent.
+	OutgoingPhaseArkSignRequested OutgoingPhase = "ark_sign_requested"
+
 	// OutgoingPhaseSubmitSent indicates the client has built the submit
 	// package and is waiting for the server to accept/co-sign it.
 	OutgoingPhaseSubmitSent OutgoingPhase = "submit_sent"
@@ -31,8 +36,8 @@ const (
 	// checkpoints and is awaiting server acknowledgement.
 	OutgoingPhaseFinalizeSent OutgoingPhase = "finalize_sent"
 
-	// OutgoingPhaseLocalVTXOUpdate indicates the server accepted finalize and
-	// the client still needs to update local VTXO state.
+	// OutgoingPhaseLocalVTXOUpdate indicates the server accepted finalize
+	// and the client is updating its local VTXO persistence state.
 	OutgoingPhaseLocalVTXOUpdate OutgoingPhase = "local_vtxo_update"
 
 	// OutgoingPhaseAwaitingArkConfirmation indicates the client is waiting
@@ -85,17 +90,14 @@ type OutgoingSnapshot struct {
 	// TransferInputSnapshots are a portable encoding of TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
 
-	// WaitForArkConfirmation enables optional Ark confirmation monitoring.
-	WaitForArkConfirmation bool
-
-	// ArkConfirmDepth is the minimum required confirmation depth.
-	ArkConfirmDepth uint32
+	// InputOutpoints are the VTXO outpoints consumed by this session.
+	//
+	// This is required to support crash-resilient local persistence after
+	// the server accepts finalize.
+	InputOutpoints []wire.OutPoint
 
 	// ArkTxid is the Ark txid for confirmation waiting phases.
 	ArkTxid *chainhash.Hash
-
-	// InputOutpoints are the VTXO inputs consumed by this transfer session.
-	InputOutpoints []wire.OutPoint
 
 	// RetryAfter is the requested delay in retry backoff phases.
 	RetryAfter time.Duration
@@ -120,11 +122,34 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 	}
 
 	snap := &OutgoingSnapshot{
-		Version:   2,
+		Version:   3,
 		SessionID: sessionID,
 	}
 
 	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		// Snapshot the deterministic submit package before submit is sent so
+		// resume can re-drive Ark signing without rebuilding artifacts.
+		snap.Phase = OutgoingPhaseArkSignRequested
+
+		ark, err := psbtutil.Serialize(s.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+		snap.ArkPSBT = ark
+
+		cps, err := serializePSBTSlice(s.CheckpointPSBTs)
+		if err != nil {
+			return nil, err
+		}
+		snap.CheckpointPSBTs = cps
+		snap.TransferInputs = s.TransferInputs
+		inputSnaps, err := snapshotTransferInputs(s.TransferInputs)
+		if err == nil {
+			snap.TransferInputSnapshots = inputSnaps
+		}
+		snap.InputOutpoints = s.InputOutpoints
+
 	case *AwaitingSubmitAccepted:
 		// Snapshot the entire submit package because it is the
 		// canonical v0 payload, and the natural unit for idempotence.
@@ -151,8 +176,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err == nil {
 			snap.TransferInputSnapshots = inputSnaps
 		}
-		snap.WaitForArkConfirmation = s.WaitForArkConfirmation
-		snap.ArkConfirmDepth = s.ArkConfirmDepth
+		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingCheckpointSignatures:
 		// This is the "point-of-no-return" state from the client's
@@ -178,8 +202,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err == nil {
 			snap.TransferInputSnapshots = inputSnaps
 		}
-		snap.WaitForArkConfirmation = s.WaitForArkConfirmation
-		snap.ArkConfirmDepth = s.ArkConfirmDepth
+		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingFinalizeAccepted:
 		// Once finalize is sent, the client should only need the
@@ -198,22 +221,13 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		}
 		snap.CheckpointPSBTs = cps
 		snap.InputOutpoints = s.InputOutpoints
-		snap.WaitForArkConfirmation = s.WaitForArkConfirmation
-		snap.ArkConfirmDepth = s.ArkConfirmDepth
 
 	case *AwaitingLocalVTXOUpdate:
+		// This phase is an off-chain bookkeeping step: after the server
+		// accepts finalize, the local wallet must update its VTXO store to
+		// reflect that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
 		snap.InputOutpoints = s.InputOutpoints
-
-	case *AwaitingArkConfirmation:
-		// This is an optional phase used to provide
-		// "done means confirmed" semantics.
-		//
-		// It is safe to skip in v0 but useful for e2e tests and
-		// mobile UX.
-		snap.Phase = OutgoingPhaseAwaitingArkConfirmation
-		snap.ArkTxid = &s.Txid
-		snap.ArkConfirmDepth = s.MinDepth
 
 	case *Completed:
 		// Completed is a terminal state. There is no outbox implied by
@@ -235,7 +249,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		snap.ResumeSnapshot = s.ResumeSnapshot
 		snap.RetryAfter = s.RetryAfter
 		snap.FailReason = s.Reason
-
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
 			state)
@@ -287,6 +300,30 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 	}
 
 	switch snapshot.Phase {
+	case OutgoingPhaseArkSignRequested:
+		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
+			snapshot.CheckpointPSBTs)
+		if err != nil {
+			return nil, err
+		}
+
+		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
+		if err != nil {
+			return nil, err
+		}
+
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
+		}
+
+		return &AwaitingArkSignatures{
+			InputOutpoints:  snapshot.InputOutpoints,
+			ArkPSBT:         ark,
+			CheckpointPSBTs: cps,
+			TransferInputs:  inputs,
+		}, nil
+
 	case OutgoingPhaseSubmitSent:
 		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
 			snapshot.CheckpointPSBTs)
@@ -305,12 +342,10 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
+			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
-			WaitForArkConfirmation: snapshot.
-				WaitForArkConfirmation,
-			ArkConfirmDepth: snapshot.ArkConfirmDepth,
 		}, nil
 
 	case OutgoingPhaseCoSigned:
@@ -332,12 +367,10 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 		return &AwaitingCheckpointSignatures{
 			SessionID:               snapshot.SessionID,
+			InputOutpoints:          snapshot.InputOutpoints,
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
-			WaitForArkConfirmation: snapshot.
-				WaitForArkConfirmation,
-			ArkConfirmDepth: snapshot.ArkConfirmDepth,
 		}, nil
 
 	case OutgoingPhaseFinalizeSent:
@@ -357,30 +390,16 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			InputOutpoints:       snapshot.InputOutpoints,
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: cps,
-			WaitForArkConfirmation: snapshot.
-				WaitForArkConfirmation,
-			ArkConfirmDepth: snapshot.ArkConfirmDepth,
 		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
+		if len(snapshot.InputOutpoints) == 0 {
+			return nil, fmt.Errorf("input outpoints required")
+		}
+
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
 			InputOutpoints: snapshot.InputOutpoints,
-		}, nil
-
-	case OutgoingPhaseAwaitingArkConfirmation:
-		if snapshot.ArkTxid == nil {
-			return nil, fmt.Errorf("ark txid required")
-		}
-
-		minDepth := snapshot.ArkConfirmDepth
-		if minDepth == 0 {
-			minDepth = 1
-		}
-
-		return &AwaitingArkConfirmation{
-			Txid:     *snapshot.ArkTxid,
-			MinDepth: minDepth,
 		}, nil
 
 	case OutgoingPhaseRetryBackoff:

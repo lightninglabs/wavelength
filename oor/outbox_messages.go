@@ -1,6 +1,8 @@
 package oor
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -23,12 +25,34 @@ type OutboxEvent interface {
 	outboxSealed()
 }
 
+// RequestArkSignatures asks the signing layer to attach client signature
+// material for Ark inputs before submit.
+type RequestArkSignatures struct {
+	actor.BaseMessage
+
+	// ArkPSBT is the canonical Ark transfer PSBT to sign.
+	ArkPSBT *psbt.Packet
+
+	// TransferInputs carry client signing context needed to authorize Ark
+	// inputs.
+	TransferInputs []TransferInput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *RequestArkSignatures) outboxType() string {
+	return "RequestArkSignatures"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *RequestArkSignatures) outboxSealed() {}
+
 // SendSubmitPackageRequest asks the transport layer to send the submit package
 // (Ark PSBT + checkpoint PSBTs) to the server.
 type SendSubmitPackageRequest struct {
 	actor.BaseMessage
 
-	// ArkPSBT is the canonical unsigned Ark transfer PSBT.
+	// ArkPSBT is the canonical Ark transfer PSBT with client signature
+	// material already attached for submit.
 	ArkPSBT *psbt.Packet
 
 	// CheckpointPSBTs are unsigned checkpoint PSBTs for the submit phase.
@@ -185,6 +209,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// ArkPSBT is the canonical Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
+	// FinalCheckpointPSBTs are the finalized checkpoint packages associated
+	// with this Ark transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
 	// Recipients are the non-anchor recipient outputs in the Ark tx.
 	Recipients []ArkRecipientOutput
 }
@@ -225,5 +253,37 @@ func (m *SendIncomingAckRequest) outboxSealed() {}
 //
 // TODO: Implement once OOR RPC definitions exist.
 func (m *SendIncomingAckRequest) ToProto() proto.Message {
+	return nil
+}
+
+// ScheduleRetryRequest requests that the client schedules a RetryDueEvent after
+// the given delay.
+//
+// This outbox message is intended to be implemented by application code. Tests
+// can implement it by returning RetryDueEvent immediately to avoid sleeps.
+type ScheduleRetryRequest struct {
+	// ScheduleRetryRequest is a best-effort scheduling boundary. The FSM
+	// does not assume the timer will fire exactly on time; it only assumes
+	// that eventually a RetryDueEvent can be delivered.
+
+	actor.BaseMessage
+
+	After time.Duration
+
+	Reason string
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *ScheduleRetryRequest) outboxType() string {
+	return "ScheduleRetryRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *ScheduleRetryRequest) outboxSealed() {}
+
+// ToProto converts ScheduleRetryRequest to a protobuf message.
+//
+// TODO: Implement once OOR RPC definitions exist.
+func (m *ScheduleRetryRequest) ToProto() proto.Message {
 	return nil
 }

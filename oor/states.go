@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -89,14 +88,6 @@ type AwaitingSubmitAccepted struct {
 	// TransferInputs are the vtxo descriptors and scripts needed later on
 	// to sign the checkpoint PSBTs.
 	TransferInputs []TransferInput
-
-	// WaitForArkConfirmation enables an optional on-chain confirmation
-	// phase after finalize is accepted.
-	WaitForArkConfirmation bool
-
-	// ArkConfirmDepth is the minimum required confirmation depth when
-	// waiting for Ark tx confirmation.
-	ArkConfirmDepth uint32
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -135,14 +126,6 @@ type AwaitingCheckpointSignatures struct {
 
 	// TransferInputs carry the client-side VTXO signing context.
 	TransferInputs []TransferInput
-
-	// WaitForArkConfirmation enables an optional on-chain confirmation
-	// phase after finalize is accepted.
-	WaitForArkConfirmation bool
-
-	// ArkConfirmDepth is the minimum required confirmation depth when
-	// waiting for Ark tx confirmation.
-	ArkConfirmDepth uint32
 }
 
 // String returns a human-readable representation of
@@ -178,44 +161,25 @@ type AwaitingFinalizeAccepted struct {
 
 	// FinalCheckpointPSBTs are the final checkpoint PSBTs sent to the
 	// server.
+	//
+	// These are persisted so resume/unilateral-exit paths can reconstruct
+	// checkpoint lineage without depending on a fresh server response.
 	FinalCheckpointPSBTs []*psbt.Packet
-
-	// WaitForArkConfirmation enables an optional on-chain confirmation
-	// phase after finalize is accepted.
-	WaitForArkConfirmation bool
-
-	// ArkConfirmDepth is the minimum required confirmation depth when
-	// waiting for Ark tx confirmation.
-	ArkConfirmDepth uint32
 }
 
-// AwaitingArkConfirmation indicates the server accepted finalize and the
-// client is optionally waiting for the Ark tx to confirm on-chain.
-type AwaitingArkConfirmation struct {
-	// AwaitingArkConfirmation is an optional UX phase. It allows an
-	// application to provide stronger "done means confirmed" semantics,
-	// at the cost of waiting for on-chain confirmations.
-
-	// Txid is the Ark transaction txid.
-	Txid chainhash.Hash
-
-	// MinDepth is the minimum confirmation depth.
-	MinDepth uint32
+// String returns a human-readable representation of AwaitingFinalizeAccepted.
+func (s *AwaitingFinalizeAccepted) String() string {
+	return "AwaitingFinalizeAccepted"
 }
 
-// String returns a human-readable representation of AwaitingArkConfirmation.
-func (s *AwaitingArkConfirmation) String() string {
-	return "AwaitingArkConfirmation"
-}
-
-// IsTerminal returns false as AwaitingArkConfirmation is not terminal.
-func (s *AwaitingArkConfirmation) IsTerminal() bool {
+// IsTerminal returns false as AwaitingFinalizeAccepted is not terminal.
+func (s *AwaitingFinalizeAccepted) IsTerminal() bool {
 	return false
 }
 
-// stateSealed marks AwaitingArkConfirmation as implementing the sealed State
+// stateSealed marks AwaitingFinalizeAccepted as implementing the sealed State
 // interface.
-func (s *AwaitingArkConfirmation) stateSealed() {}
+func (s *AwaitingFinalizeAccepted) stateSealed() {}
 
 // RetryBackoff indicates the client should wait before retrying the outbox
 // request implied by ResumeSnapshot.
@@ -250,20 +214,6 @@ func (s *RetryBackoff) IsTerminal() bool {
 
 // stateSealed marks RetryBackoff as implementing the sealed State interface.
 func (s *RetryBackoff) stateSealed() {}
-
-// String returns a human-readable representation of AwaitingFinalizeAccepted.
-func (s *AwaitingFinalizeAccepted) String() string {
-	return "AwaitingFinalizeAccepted"
-}
-
-// IsTerminal returns false as AwaitingFinalizeAccepted is not terminal.
-func (s *AwaitingFinalizeAccepted) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks AwaitingFinalizeAccepted as implementing the sealed State
-// interface.
-func (s *AwaitingFinalizeAccepted) stateSealed() {}
 
 // AwaitingLocalVTXOUpdate indicates the server has accepted the finalize
 // package and the client must update its local VTXO persistence state.

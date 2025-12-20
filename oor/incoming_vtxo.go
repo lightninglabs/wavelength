@@ -7,13 +7,39 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// IncomingVTXOMetadata carries authoritative lineage/expiry metadata for an
+// incoming OOR VTXO. The receive path must not invent synthetic placeholders
+// for these fields because they drive expiry logic and unilateral-exit lineage.
+type IncomingVTXOMetadata struct {
+	// RoundID identifies the round lineage this VTXO belongs to.
+	RoundID string
+
+	// CommitmentTxID is the commitment transaction anchoring this VTXO
+	// lineage.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute batch expiry height.
+	BatchExpiry int32
+
+	// TreeDepth is the VTXO depth in the commitment tree.
+	TreeDepth int
+
+	// CreatedHeight is the block height at which the VTXO was created.
+	CreatedHeight int32
+
+	// TreePath is the minimal inclusion path used for unilateral exit.
+	TreePath *tree.Tree
+}
 
 // IncomingVTXOConfig describes how to materialize an Ark tx output into a
 // spendable local VTXO descriptor.
@@ -34,6 +60,9 @@ type IncomingVTXOConfig struct {
 	// ExitDelay is the unilateral CSV delay used by the timeout spend
 	// path.
 	ExitDelay uint32
+
+	// Metadata carries authoritative lineage and expiry attributes.
+	Metadata IncomingVTXOMetadata
 }
 
 // BuildIncomingVTXODescriptor constructs a VTXO descriptor for a recipient
@@ -54,6 +83,13 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	case cfg.OperatorKey == nil:
 		return nil, fmt.Errorf("operator key must be provided")
+
+	case cfg.Metadata.RoundID == "":
+		return nil, fmt.Errorf("round id must be provided")
+	}
+
+	if cfg.Metadata.CommitmentTxID == (chainhash.Hash{}) {
+		return nil, fmt.Errorf("commitment tx id must be provided")
 	}
 
 	err := arktx.ValidateCanonicalPSBT(ark)
@@ -109,9 +145,13 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		ClientKey:      cfg.ClientKey,
 		OperatorKey:    cfg.OperatorKey,
 		TapScript:      tapscript,
-		RoundID:        fmt.Sprintf("oor:%s", arkTxid),
-		CommitmentTxID: arkTxid,
+		TreePath:       cfg.Metadata.TreePath,
+		RoundID:        cfg.Metadata.RoundID,
+		CommitmentTxID: cfg.Metadata.CommitmentTxID,
+		BatchExpiry:    cfg.Metadata.BatchExpiry,
 		RelativeExpiry: cfg.ExitDelay,
+		TreeDepth:      cfg.Metadata.TreeDepth,
+		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
 	}, nil
 }

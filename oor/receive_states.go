@@ -52,6 +52,25 @@ func (s *ReceiveNotified) IsTerminal() bool {
 // receiveStateSealed marks ReceiveNotified as implementing ReceiveState.
 func (s *ReceiveNotified) receiveStateSealed() {}
 
+// ReceiveAwaitingAck indicates incoming VTXOs were materialized locally and the
+// client is waiting for ack transport completion.
+type ReceiveAwaitingAck struct {
+	SessionID SessionID
+}
+
+// String returns a human-readable representation of ReceiveAwaitingAck.
+func (s *ReceiveAwaitingAck) String() string {
+	return "ReceiveAwaitingAck"
+}
+
+// IsTerminal returns false as ReceiveAwaitingAck is not terminal.
+func (s *ReceiveAwaitingAck) IsTerminal() bool {
+	return false
+}
+
+// receiveStateSealed marks ReceiveAwaitingAck as implementing ReceiveState.
+func (s *ReceiveAwaitingAck) receiveStateSealed() {}
+
 // ReceiveCompleted is the terminal success state for an incoming transfer.
 type ReceiveCompleted struct{}
 

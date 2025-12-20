@@ -44,8 +44,9 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			ClientKey: keychain.KeyDescriptor{
 				PubKey: ownerKey.PubKey(),
 			},
-			OperatorKey: operatorKey,
-			TapScript:   tapscript,
+			OperatorKey:    operatorKey,
+			TapScript:      tapscript,
+			RelativeExpiry: exitDelay,
 		},
 		OwnerLeafScript: []byte{0x51},
 	}
