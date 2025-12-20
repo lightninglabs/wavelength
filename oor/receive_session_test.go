@@ -5,17 +5,31 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
+// TestReceiveSessionNotifiesAndAcks verifies the incoming-transfer FSM emits
+// notification, materialization and ack outbox messages for a canonical Ark
+// transfer.
 func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
+	// This test exercises the client-side incoming-transfer FSM.
+	//
+	// We construct an Ark PSBT that looks like a canonical v0 transfer
+	// (checkpoint input -> recipients + anchor), then verify the receive
+	// session:
+	// - emits an application-facing notification
+	// - requests recipient materialization into local VTXO state
+	// - requests an ack back to the server (transport boundary)
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -24,34 +38,64 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 		CSVDelay:    10,
 	}
 
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	exitDelay := uint32(10)
+
 	inputValue := btcutil.Amount(10000)
 
-	inputs := []oortx.CheckpointInput{{
-		Outpoint: wire.OutPoint{
-			Hash:  [32]byte{0x01},
-			Index: 0,
+	inputs := []oortx.CheckpointInput{
+		{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: wire.OutPoint{
+					Hash:  [32]byte{0x01},
+					Index: 0,
+				},
+				Output: &wire.TxOut{
+					Value: int64(inputValue),
+					PkScript: newTestTaprootPkScript(
+						t, operatorKey.PubKey(),
+					),
+				},
+			},
+			OwnerLeafScript: []byte{0x51},
 		},
-		WitnessUtxo: &wire.TxOut{
-			Value:    int64(inputValue),
-			PkScript: []byte{0x51},
-		},
-		OwnerLeafScript: []byte{0x51},
-	}}
+	}
 
-	outputs := []oortx.RecipientOutput{{
-		PkScript: []byte{0x51},
-		Value:    inputValue,
-	}}
+	vtxoTapKey, err := scripts.VTXOTapKey(
+		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	require.NoError(t, err)
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: recipientPkScript,
+			Value:    inputValue,
+		},
+	}
 
 	// Build a canonical Ark PSBT for the receive notification.
+	//
+	// The checkpoint PSBT is only used to derive a realistic Ark input:
+	// we are not testing checkpoint validity here, only the receive FSM's
+	// structural checks and outbox emission.
 	cp, err := oortx.BuildCheckpointPSBT(policy, inputs[0])
 	require.NoError(t, err)
 
-	arkPSBT, err := oortx.BuildArkPSBT([]oortx.CheckpointOutput{{
-		Txid:           cp.PSBT.UnsignedTx.TxHash(),
-		Output:         cp.PSBT.UnsignedTx.TxOut[0],
-		TapTreeEncoded: cp.TapTreeEncoded,
-	}}, outputs)
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{
+			{
+				Txid:           cp.PSBT.UnsignedTx.TxHash(),
+				Output:         cp.PSBT.UnsignedTx.TxOut[0],
+				TapTreeEncoded: cp.TapTreeEncoded,
+			},
+		},
+		outputs,
+	)
 	require.NoError(t, err)
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
@@ -63,9 +107,25 @@ func TestReceiveSessionNotifiesAndAcks(t *testing.T) {
 	_, ok := outbox[0].(*IncomingTransferNotification)
 	require.True(t, ok)
 
-	_, ok = outbox[1].(*MaterializeIncomingVTXOsRequest)
+	materializeMsg, ok := outbox[1].(*MaterializeIncomingVTXOsRequest)
 	require.True(t, ok)
+	require.NotEmpty(t, materializeMsg.Recipients)
 
 	_, ok = outbox[2].(*SendIncomingAckRequest)
 	require.True(t, ok)
+
+	desc, err := BuildIncomingVTXODescriptor(materializeMsg.ArkPSBT,
+		IncomingVTXOConfig{
+			OutputIndex: materializeMsg.Recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: policy.OperatorKey,
+			ExitDelay:   exitDelay,
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, recipientPkScript, desc.PkScript)
+	require.Equal(t, inputValue, desc.Amount)
+	require.Equal(t, vtxo.VTXOStatusLive, desc.Status)
 }

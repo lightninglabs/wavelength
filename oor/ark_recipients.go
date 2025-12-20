@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 )
 
 // ArkRecipientOutput is a non-anchor Ark tx output intended for the receiver.
@@ -34,7 +34,7 @@ func ExtractArkRecipients(ark *psbt.Packet) ([]ArkRecipientOutput, error) {
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
-	err := oortx.ValidateCanonicalArkPSBT(ark)
+	err := arktx.ValidateCanonicalPSBT(ark)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func ExtractArkRecipients(ark *psbt.Packet) ([]ArkRecipientOutput, error) {
 
 	recipients := make([]ArkRecipientOutput, 0, len(tx.TxOut))
 	for idx, out := range tx.TxOut {
-		if oortx.IsAnchorOutput(out) {
+		if arktx.IsAnchorOutput(out) {
 			continue
 		}
 

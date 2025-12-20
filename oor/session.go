@@ -32,7 +32,7 @@ type Session struct {
 //  1. execute outbox requests and turn results into follow-up events; and
 //  2. feed those events back into the session FSM.
 func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
-	inputs []oortx.CheckpointInput,
+	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
 	inputOutpoints := make([]wire.OutPoint, 0, len(inputs))
@@ -59,6 +59,7 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 			InputOutpoints:  inputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: checkpoints,
+			TransferInputs:  inputs,
 		},
 		Env: env,
 	}
@@ -70,6 +71,7 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 		&SendSubmitPackageRequest{
 			ArkPSBT:         ark,
 			CheckpointPSBTs: checkpoints,
+			TransferInputs:  inputs,
 		},
 	}
 
