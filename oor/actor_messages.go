@@ -27,8 +27,11 @@ type StartTransferRequest struct {
 	// Policy defines the checkpoint output tap tree policy.
 	Policy scripts.CheckpointPolicy
 
-	// Inputs are the VTXO inputs to convert into checkpoint txs.
-	Inputs []oortx.CheckpointInput
+	// Inputs are the VTXOs to transfer.
+	//
+	// Each input includes enough context for the outbox handler to request
+	// wallet signatures deterministically.
+	Inputs []TransferInput
 
 	// Recipients are the Ark tx recipient outputs.
 	Recipients []oortx.RecipientOutput
@@ -46,6 +49,7 @@ func (m *StartTransferRequest) actorMsgSealed() {}
 type StartTransferResponse struct {
 	actor.BaseMessage
 
+	// SessionID is the stable v0 session identifier (Ark txid).
 	SessionID SessionID
 }
 
@@ -96,6 +100,7 @@ func (m *DriveEventResponse) actorRespSealed() {}
 type GetStateRequest struct {
 	actor.BaseMessage
 
+	// SessionID selects the session to query.
 	SessionID SessionID
 }
 

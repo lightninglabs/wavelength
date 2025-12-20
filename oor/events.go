@@ -24,7 +24,7 @@ type Event interface {
 // package (checkpoint PSBTs + Ark PSBT).
 type StartTransferEvent struct {
 	// VTXOInputs is the set of VTXO inputs to convert into checkpoints.
-	VTXOInputs []oortx.CheckpointInput
+	VTXOInputs []TransferInput
 
 	// RecipientOutputs are the Ark tx outputs to produce.
 	RecipientOutputs []oortx.RecipientOutput
