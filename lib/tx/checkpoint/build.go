@@ -10,18 +10,15 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 )
 
+// MinCheckpointCSVDelay is the minimum acceptable checkpoint CSV delay for v0
+// OOR checkpoint policies.
+const MinCheckpointCSVDelay = uint32(10)
+
 // Input describes the VTXO input being transformed into a checkpoint output for
 // an OOR transfer.
 type Input struct {
-	// Outpoint is the outpoint of the VTXO output being spent.
-	Outpoint wire.OutPoint
-
-	// WitnessUtxo is the previous output being spent (value + pkScript).
-	//
-	// This must match the server's stored VTXO descriptor later, but at the
-	// primitive level we only need it so PSBT has enough material to be
-	// signed and validated structurally.
-	WitnessUtxo *wire.TxOut
+	// SpentVTXO identifies and describes the VTXO output being spent.
+	SpentVTXO SpentVTXORef
 
 	// OwnerLeafScript is the owner-controlled collaborative leaf script.
 	// It should be committed to in the checkpoint output tap tree.
@@ -30,6 +27,20 @@ type Input struct {
 	// the closure system is canonical, higher layers should construct this
 	// leaf using closure helpers and pass the resulting script bytes here.
 	OwnerLeafScript []byte
+}
+
+// SpentVTXORef groups the spent VTXO outpoint and output data in one value so
+// callers cannot accidentally mismatch identity and witness material.
+type SpentVTXORef struct {
+	// Outpoint is the outpoint of the VTXO output being spent.
+	Outpoint wire.OutPoint
+
+	// Output is the previous output being spent (value + pkScript).
+	//
+	// This must match the server's stored VTXO descriptor later, but at the
+	// primitive level we only need it so PSBT has enough material to be
+	// signed and validated structurally.
+	Output *wire.TxOut
 }
 
 // Result is the result of building a checkpoint PSBT.
@@ -57,15 +68,19 @@ type Result struct {
 // validate that the owner leaf is a canonical Ark closure (draft phase).
 func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 	switch {
-	case in.WitnessUtxo == nil:
-		return nil, fmt.Errorf("witness utxo must be provided")
+	case policy.CSVDelay < MinCheckpointCSVDelay:
+		return nil, fmt.Errorf("checkpoint csv delay %d below minimum %d",
+			policy.CSVDelay, MinCheckpointCSVDelay)
 
-	case in.WitnessUtxo.Value <= 0:
-		return nil, fmt.Errorf("witness utxo value must be " +
+	case in.SpentVTXO.Output == nil:
+		return nil, fmt.Errorf("spent output must be provided")
+
+	case in.SpentVTXO.Output.Value <= 0:
+		return nil, fmt.Errorf("spent output value must be " +
 			"positive")
 
-	case len(in.WitnessUtxo.PkScript) == 0:
-		return nil, fmt.Errorf("witness utxo pkScript must be " +
+	case len(in.SpentVTXO.Output.PkScript) == 0:
+		return nil, fmt.Errorf("spent output pkScript must be " +
 			"provided")
 	}
 
@@ -90,11 +105,11 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 
 	tx := wire.NewMsgTx(arktx.TxVersion)
 	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: in.Outpoint,
+		PreviousOutPoint: in.SpentVTXO.Outpoint,
 		Sequence:         wire.MaxTxInSequenceNum,
 	})
 	tx.AddTxOut(&wire.TxOut{
-		Value:    in.WitnessUtxo.Value,
+		Value:    in.SpentVTXO.Output.Value,
 		PkScript: checkpointPkScript,
 	})
 
@@ -104,7 +119,7 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 			err)
 	}
 
-	pkt.Inputs[0].WitnessUtxo = in.WitnessUtxo
+	pkt.Inputs[0].WitnessUtxo = in.SpentVTXO.Output
 
 	return &Result{
 		PSBT:           pkt,
