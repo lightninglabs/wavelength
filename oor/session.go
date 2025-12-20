@@ -35,9 +35,9 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
 	// We construct the submit package once to derive the stable session id
-	// (Ark txid). The FSM will rebuild the package when processing the
-	// StartTransferEvent. A mismatch indicates a bug or non-determinism.
-	ark, _, err := buildSubmitPackage(policy, inputs, outputs)
+	// (Ark txid). We then pass the prebuilt package through the
+	// StartTransfer event so the FSM does not need to rebuild it.
+	ark, checkpoints, err := buildSubmitPackage(policy, inputs, outputs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -60,10 +60,12 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	sm.Start(ctx)
 
 	fut := sm.AskEvent(ctx, &StartTransferEvent{
-		CheckpointInputs: inputs,
-		RecipientOutputs: outputs,
-		Policy:           policy,
-		AnchorAmount:     0,
+		CheckpointInputs:        inputs,
+		RecipientOutputs:        outputs,
+		Policy:                  policy,
+		PrebuiltArkPSBT:         ark,
+		PrebuiltCheckpointPSBTs: checkpoints,
+		AnchorAmount:            0,
 	})
 	result := fut.Await(ctx)
 	if result.IsErr() {

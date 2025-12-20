@@ -36,6 +36,36 @@ func (s *Idle) IsTerminal() bool {
 // stateSealed marks Idle as implementing the sealed State interface.
 func (s *Idle) stateSealed() {}
 
+// AwaitingArkSignatures indicates the submit package has been built and the
+// client must attach Ark signatures before submit can be sent.
+type AwaitingArkSignatures struct {
+	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
+	InputOutpoints []wire.OutPoint
+
+	// ArkPSBT is the canonical Ark tx PSBT.
+	ArkPSBT *psbt.Packet
+
+	// CheckpointPSBTs are unsigned checkpoint PSBTs for the submit phase.
+	CheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry client-side signing context.
+	TransferInputs []TransferInput
+}
+
+// String returns a human-readable representation of AwaitingArkSignatures.
+func (s *AwaitingArkSignatures) String() string {
+	return "AwaitingArkSignatures"
+}
+
+// IsTerminal returns false as AwaitingArkSignatures is not terminal.
+func (s *AwaitingArkSignatures) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingArkSignatures as implementing the sealed State
+// interface.
+func (s *AwaitingArkSignatures) stateSealed() {}
+
 // AwaitingSubmitAccepted is reached after the client has built a submit
 // package and emitted an outbox request to send it to the server.
 type AwaitingSubmitAccepted struct {

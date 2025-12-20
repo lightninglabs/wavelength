@@ -33,25 +33,41 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
+		// Use prebuilt PSBTs if provided.
+		// Otherwise build deterministically.
+		// The Ark txid is the stable session identifier.
+		ark := evt.PrebuiltArkPSBT
+		checkpoints := evt.PrebuiltCheckpointPSBTs
+
+		if ark == nil {
+			// Build a deterministic submit package:
+			// - checkpoint txs convert VTXOs into checkpoints
+			// - an Ark tx spends checkpoints and pays recipients
+			var err error
+			ark, checkpoints, err = buildSubmitPackage(
+				evt.Policy,
+				evt.CheckpointInputs,
+				evt.RecipientOutputs,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if ark == nil || ark.UnsignedTx == nil {
+			return nil, fmt.Errorf("ark psbt must be provided")
+		}
+
+		if len(checkpoints) == 0 {
+			return nil, fmt.Errorf("checkpoint psbts must be " +
+				"provided")
+		}
+
 		inputOutpoints := make([]wire.OutPoint, 0, len(evt.CheckpointInputs))
 		for i := range evt.CheckpointInputs {
 			inputOutpoints = append(
 				inputOutpoints, evt.CheckpointInputs[i].VTXO.Outpoint,
 			)
-		}
-
-		// Build a deterministic submit package:
-		// - checkpoint txs convert VTXOs into checkpoints
-		// - an Ark tx spends checkpoints and pays recipients
-		//
-		// The Ark txid becomes the stable session identifier.
-		ark, checkpoints, err := buildSubmitPackage(
-			evt.Policy,
-			evt.CheckpointInputs,
-			evt.RecipientOutputs,
-		)
-		if err != nil {
-			return nil, err
 		}
 
 		// If the environment is already bound to a stable session id,

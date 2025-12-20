@@ -38,6 +38,15 @@ type StartTransferEvent struct {
 	// Policy defines the checkpoint output tap tree policy.
 	Policy scripts.CheckpointPolicy
 
+	// PrebuiltArkPSBT is an optional prebuilt Ark PSBT. If provided, the
+	// FSM should use it instead of rebuilding the submit package.
+	PrebuiltArkPSBT *psbt.Packet
+
+	// PrebuiltCheckpointPSBTs are optional prebuilt checkpoint PSBTs. If
+	// provided together with PrebuiltArkPSBT, the FSM should use them
+	// instead of rebuilding the submit package.
+	PrebuiltCheckpointPSBTs []*psbt.Packet
+
 	// AnchorAmount is reserved for future extensions. v0 uses a fixed P2A
 	// anchor output with 0 sats.
 	AnchorAmount btcutil.Amount
@@ -45,6 +54,15 @@ type StartTransferEvent struct {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *StartTransferEvent) eventSealed() {}
+
+// ArkSignedEvent is emitted after the client signs the Ark PSBT.
+type ArkSignedEvent struct {
+	// ArkPSBT is the signed Ark PSBT.
+	ArkPSBT *psbt.Packet
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *ArkSignedEvent) eventSealed() {}
 
 // SubmitAcceptedEvent is emitted when the server accepts and co-signs the
 // submit package.
