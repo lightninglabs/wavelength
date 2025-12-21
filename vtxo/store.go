@@ -37,7 +37,7 @@ type Record struct {
 	Outpoint wire.OutPoint
 
 	// Value is the output amount in satoshis.
-	Value    int64
+	Value int64
 
 	// PkScript is the output script for this VTXO.
 	PkScript []byte
@@ -59,8 +59,12 @@ type Store interface {
 	// Get returns the record for outpoint, or (nil, nil) if none exists.
 	Get(ctx context.Context, outpoint wire.OutPoint) (*Record, error)
 
-	// Upsert inserts or replaces a record by outpoint.
-	Upsert(ctx context.Context, record *Record) error
+	// Create inserts a record for outpoint.
+	//
+	// This is idempotent for identical records.
+	// If a row already exists with conflicting fields, the call returns an
+	// error.
+	Create(ctx context.Context, record *Record) error
 
 	// MarkInFlight marks the outpoints in-flight for owner.
 	//
@@ -89,6 +93,22 @@ type InMemoryStore struct {
 	records map[wire.OutPoint]*Record
 }
 
+// ValidateUniqueOutpoints verifies the provided outpoint list has no
+// duplicates.
+func ValidateUniqueOutpoints(outpoints []wire.OutPoint) error {
+	seen := make(map[wire.OutPoint]struct{}, len(outpoints))
+	for _, op := range outpoints {
+		if _, exists := seen[op]; exists {
+			return fmt.Errorf("duplicate outpoint in request: "+
+				"%v", op)
+		}
+
+		seen[op] = struct{}{}
+	}
+
+	return nil
+}
+
 // NewInMemoryStore creates a new empty in-memory VTXO store.
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
@@ -114,8 +134,11 @@ func (s *InMemoryStore) Get(_ context.Context,
 	return &cpy, nil
 }
 
-// Upsert inserts or replaces a record by outpoint.
-func (s *InMemoryStore) Upsert(_ context.Context, record *Record) error {
+// Create inserts a record by outpoint.
+//
+// This is idempotent for identical records, and returns an error when a row
+// already exists with conflicting fields.
+func (s *InMemoryStore) Create(_ context.Context, record *Record) error {
 	if record == nil {
 		return fmt.Errorf("record must be provided")
 	}
@@ -134,6 +157,29 @@ func (s *InMemoryStore) Upsert(_ context.Context, record *Record) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if existing, ok := s.records[record.Outpoint]; ok {
+		if existing.Value != record.Value {
+			return fmt.Errorf("record %v already exists with "+
+				"different value", record.Outpoint)
+		}
+		if !bytes.Equal(existing.PkScript, record.PkScript) {
+			return fmt.Errorf("record %v already exists with "+
+				"different pkScript", record.Outpoint)
+		}
+		if existing.Status != record.Status {
+			return fmt.Errorf("record %v already exists with "+
+				"different status %s", record.Outpoint,
+				existing.Status)
+		}
+		if existing.InFlightOwner != record.InFlightOwner {
+			return fmt.Errorf("record %v already exists with "+
+				"different in-flight owner %s",
+				record.Outpoint, existing.InFlightOwner)
+		}
+
+		return nil
+	}
 
 	cpy := *record
 	cpy.PkScript = bytes.Clone(record.PkScript)
@@ -156,6 +202,11 @@ func (s *InMemoryStore) MarkInFlight(_ context.Context,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	err := ValidateUniqueOutpoints(outpoints)
+	if err != nil {
+		return err
+	}
 
 	// Validate all state transitions before mutating any record. This
 	// avoids partial updates if we discover an invalid outpoint or a
@@ -202,6 +253,11 @@ func (s *InMemoryStore) MarkSpent(_ context.Context,
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	err := ValidateUniqueOutpoints(outpoints)
+	if err != nil {
+		return err
+	}
 
 	// Validate first so the update appears atomic to callers.
 	for _, op := range outpoints {

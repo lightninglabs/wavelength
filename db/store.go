@@ -27,6 +27,13 @@ type Store struct {
 func NewStore(db *sql.DB, queries *sqlc.Queries, backend sqlc.BackendType,
 	log btclog.Logger, clk clock.Clock) *Store {
 
+	if log == nil {
+		log = btclog.Disabled
+	}
+	if clk == nil {
+		clk = clock.NewDefaultClock()
+	}
+
 	return &Store{
 		Queries: queries,
 		db:      db,
@@ -79,6 +86,11 @@ func (s *Store) NewRoundStore() *RoundStoreDB {
 // NewVTXOStore creates a VTXOStoreDB from this Store.
 func (s *Store) NewVTXOStore() *VTXOStoreDB {
 	return NewVTXOStoreDB(s)
+}
+
+// NewVTXORecordStore creates a VTXORecordStoreDB from this Store.
+func (s *Store) NewVTXORecordStore() *VTXORecordStoreDB {
+	return NewVTXORecordStoreDB(s)
 }
 
 // Config holds the configuration for the database store. It allows selecting
