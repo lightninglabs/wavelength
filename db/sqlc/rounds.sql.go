@@ -12,12 +12,18 @@ import (
 )
 
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, locked_by_round_id FROM vtxos
-WHERE locked_by_round_id = $1
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+WHERE lock_owner_kind = $1
+	AND lock_owner_id = $2
 `
 
-func (q *Queries) GetLockedVTXOs(ctx context.Context, lockedByRoundID []byte) ([]Vtxo, error) {
-	rows, err := q.db.QueryContext(ctx, GetLockedVTXOs, lockedByRoundID)
+type GetLockedVTXOsParams struct {
+	LockOwnerKind sql.NullString
+	LockOwnerID   []byte
+}
+
+func (q *Queries) GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, GetLockedVTXOs, arg.LockOwnerKind, arg.LockOwnerID)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +40,8 @@ func (q *Queries) GetLockedVTXOs(ctx context.Context, lockedByRoundID []byte) ([
 			&i.PkScript,
 			&i.CosignerKey,
 			&i.Status,
-			&i.LockedByRoundID,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -238,7 +245,7 @@ func (q *Queries) GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]Roun
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, locked_by_round_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -259,7 +266,8 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.PkScript,
 		&i.CosignerKey,
 		&i.Status,
-		&i.LockedByRoundID,
+		&i.LockOwnerKind,
+		&i.LockOwnerID,
 	)
 	return i, err
 }
@@ -391,8 +399,8 @@ const InsertVTXO = `-- name: InsertVTXO :exec
 
 INSERT INTO vtxos (
 	outpoint_hash, outpoint_index, round_id, batch_output_index,
-	amount, pk_script, cosigner_key, status, locked_by_round_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertVTXOParams struct {
@@ -404,7 +412,8 @@ type InsertVTXOParams struct {
 	PkScript         []byte
 	CosignerKey      []byte
 	Status           string
-	LockedByRoundID  []byte
+	LockOwnerKind    sql.NullString
+	LockOwnerID      []byte
 }
 
 // VTXOStore queries.
@@ -418,7 +427,8 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.PkScript,
 		arg.CosignerKey,
 		arg.Status,
-		arg.LockedByRoundID,
+		arg.LockOwnerKind,
+		arg.LockOwnerID,
 	)
 	return err
 }
@@ -464,7 +474,7 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, locked_by_round_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE round_id = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -487,7 +497,8 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 			&i.PkScript,
 			&i.CosignerKey,
 			&i.Status,
-			&i.LockedByRoundID,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -503,7 +514,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 }
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, locked_by_round_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -526,7 +537,8 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 			&i.PkScript,
 			&i.CosignerKey,
 			&i.Status,
-			&i.LockedByRoundID,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
 		); err != nil {
 			return nil, err
 		}
@@ -543,20 +555,27 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 
 const LockVTXO = `-- name: LockVTXO :execrows
 UPDATE vtxos
-SET status = 'locked', locked_by_round_id = $3
+SET status = 'in_flight', lock_owner_kind = $3, lock_owner_id = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 	AND status = 'live'
-	AND (locked_by_round_id IS NULL OR locked_by_round_id = $3)
+	AND ((lock_owner_kind IS NULL AND lock_owner_id IS NULL) OR
+		(lock_owner_kind = $3 AND lock_owner_id = $4))
 `
 
 type LockVTXOParams struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	LockedByRoundID []byte
+	OutpointHash  []byte
+	OutpointIndex int32
+	LockOwnerKind sql.NullString
+	LockOwnerID   []byte
 }
 
 func (q *Queries) LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, LockVTXO, arg.OutpointHash, arg.OutpointIndex, arg.LockedByRoundID)
+	result, err := q.db.ExecContext(ctx, LockVTXO,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.LockOwnerKind,
+		arg.LockOwnerID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -565,9 +584,10 @@ func (q *Queries) LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, erro
 
 const UnlockAllLockedVTXOs = `-- name: UnlockAllLockedVTXOs :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
-WHERE status = 'locked'
-	AND locked_by_round_id IS NOT NULL
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL
 `
 
 func (q *Queries) UnlockAllLockedVTXOs(ctx context.Context) (int64, error) {
@@ -580,10 +600,11 @@ func (q *Queries) UnlockAllLockedVTXOs(ctx context.Context) (int64, error) {
 
 const UnlockStaleVTXOs = `-- name: UnlockStaleVTXOs :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
-WHERE status = 'locked'
-	AND locked_by_round_id IS NOT NULL
-	AND locked_by_round_id NOT IN ($1)
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL
+	AND lock_owner_id NOT IN ($1)
 `
 
 func (q *Queries) UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte) (int64, error) {
@@ -606,20 +627,27 @@ func (q *Queries) UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte
 
 const UnlockVTXO = `-- name: UnlockVTXO :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE outpoint_hash = $1 AND outpoint_index = $2
-	AND status = 'locked'
-	AND locked_by_round_id = $3
+	AND status = 'in_flight'
+	AND lock_owner_kind = $3
+	AND lock_owner_id = $4
 `
 
 type UnlockVTXOParams struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	LockedByRoundID []byte
+	OutpointHash  []byte
+	OutpointIndex int32
+	LockOwnerKind sql.NullString
+	LockOwnerID   []byte
 }
 
 func (q *Queries) UnlockVTXO(ctx context.Context, arg UnlockVTXOParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, UnlockVTXO, arg.OutpointHash, arg.OutpointIndex, arg.LockedByRoundID)
+	result, err := q.db.ExecContext(ctx, UnlockVTXO,
+		arg.OutpointHash,
+		arg.OutpointIndex,
+		arg.LockOwnerKind,
+		arg.LockOwnerID,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -674,7 +702,7 @@ func (q *Queries) UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusPara
 
 const UpdateVTXOsLiveByRound = `-- name: UpdateVTXOsLiveByRound :exec
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE round_id = $1 AND status = 'pending'
 `
 

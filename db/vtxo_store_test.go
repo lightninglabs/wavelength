@@ -248,7 +248,7 @@ func TestVTXOStoreLocking(t *testing.T) {
 	// Verify it's locked.
 	loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, "locked", string(loaded.Status))
+	require.Equal(t, "in_flight", string(loaded.Status))
 
 	// Unlock the VTXO.
 	err = vtxoStore.UnlockVTXO(ctx, lockingRound, vtxo.Outpoint)
@@ -312,7 +312,7 @@ func TestVTXOStoreConcurrentLocking(t *testing.T) {
 	// Verify the VTXO is locked.
 	loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, "locked", string(loaded.Status))
+	require.Equal(t, "in_flight", string(loaded.Status))
 }
 
 // TestVTXOStoreLockIdempotency tests that locking by the same round is
@@ -341,7 +341,7 @@ func TestVTXOStoreLockIdempotency(t *testing.T) {
 	// Verify it's still locked.
 	loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, "locked", string(loaded.Status))
+	require.Equal(t, "in_flight", string(loaded.Status))
 }
 
 // TestVTXOStoreLockNonLiveVTXO tests that locking a non-live VTXO fails.
@@ -437,7 +437,7 @@ func TestVTXOStoreMultipleLocks(t *testing.T) {
 	for _, vtxo := range []*rounds.VTXO{vtxo1, vtxo2, vtxo3} {
 		loaded, err := vtxoStore.GetVTXO(ctx, vtxo.Outpoint)
 		require.NoError(t, err)
-		require.Equal(t, "locked", string(loaded.Status))
+		require.Equal(t, "in_flight", string(loaded.Status))
 	}
 
 	// Unlock all three at once.

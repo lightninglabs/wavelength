@@ -7,11 +7,11 @@ CREATE TABLE IF NOT EXISTS vtxo_statuses (
 );
 
 -- Populate the possible VTXO statuses.
--- VTXOs follow a state machine: pending → live → locked → (forfeited|spent).
+-- VTXOs follow a state machine: pending → live → in_flight → (forfeited|spent).
 INSERT INTO vtxo_statuses (status) VALUES
 	('pending'),    -- Commitment tx broadcast but not yet confirmed
 	('live'),       -- Commitment tx confirmed, VTXO is spendable
-	('locked'),     -- Reserved for a spend operation (forfeit or out-of-round)
+	('in_flight'),  -- Reserved for a spend operation (forfeit or out-of-round)
 	('forfeited'),  -- Forfeited back to operator
 	('spent')       -- Spent in out-of-round transaction
 ON CONFLICT DO NOTHING;
@@ -43,19 +43,27 @@ CREATE TABLE IF NOT EXISTS vtxos (
 	pk_script BLOB NOT NULL,
 
 	-- cosigner_key is the 33-byte compressed public key of the VTXO owner.
+	--
+	-- This key is always required for spend path reconstruction.
 	cosigner_key BLOB NOT NULL,
 
-	-- status tracks VTXO lifecycle (pending, live, locked, forfeited, spent).
+	-- status tracks VTXO lifecycle (pending, live, in_flight, forfeited, spent).
 	status TEXT NOT NULL DEFAULT 'pending',
 
-	-- locked_by_round_id tracks which round/operation has locked this VTXO.
-	-- NULL when unlocked, populated when status='locked'.
-	-- Prevents concurrent forfeits across multiple rounds.
-	locked_by_round_id BLOB,
+	-- lock_owner_kind identifies who owns the in-flight lock.
+	-- NULL when unlocked.
+	lock_owner_kind TEXT,
+
+	-- lock_owner_id identifies the lock owner instance within the kind.
+	-- NULL when unlocked.
+	lock_owner_id BLOB,
 
 	PRIMARY KEY (outpoint_hash, outpoint_index),
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id),
-	FOREIGN KEY (status) REFERENCES vtxo_statuses(status)
+	FOREIGN KEY (status) REFERENCES vtxo_statuses(status),
+	CHECK (lock_owner_kind IS NULL OR lock_owner_kind IN ('round', 'oor')),
+	CHECK ((lock_owner_kind IS NULL) = (lock_owner_id IS NULL)),
+	CHECK ((status = 'in_flight') = (lock_owner_kind IS NOT NULL))
 );
 
 -- Index on round_id for listing VTXOs by round.
@@ -66,10 +74,10 @@ CREATE INDEX IF NOT EXISTS idx_vtxos_round
 CREATE INDEX IF NOT EXISTS idx_vtxos_status
 	ON vtxos(status);
 
--- Partial index on locked_by_round_id for tracking locked VTXOs.
--- Only indexes rows where locked_by_round_id IS NOT NULL for efficiency.
+-- Partial index on lock owner for tracking in-flight VTXOs.
+-- Only indexes rows where lock_owner_id IS NOT NULL for efficiency.
 CREATE INDEX IF NOT EXISTS idx_vtxos_locked
-	ON vtxos(locked_by_round_id) WHERE locked_by_round_id IS NOT NULL;
+	ON vtxos(lock_owner_kind, lock_owner_id) WHERE lock_owner_id IS NOT NULL;
 
 -- Forfeit info table.
 -- Stores ForfeitInfo metadata (map[wire.OutPoint]*ForfeitInfo) for each round.
