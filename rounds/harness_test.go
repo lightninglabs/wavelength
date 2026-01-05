@@ -109,6 +109,11 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		outboxMessages:   make([]OutboxEvent, 0),
 	}
 
+	// Register cleanup to automatically assert mock expectations.
+	t.Cleanup(func() {
+		h.assertMockExpectations()
+	})
+
 	return h
 }
 
@@ -324,23 +329,6 @@ type mockBoardingInputLocker struct {
 	mock.Mock
 }
 
-// newMockBoardingInputLocker creates a new mock boarding input locker with
-// default permissive expectations that allow it to work without explicit setup.
-func newMockBoardingInputLocker() *mockBoardingInputLocker {
-	m := &mockBoardingInputLocker{}
-
-	// Set up default permissive expectations that always succeed. These can
-	// be overridden by specific expectations in tests.
-	m.On("Lock", mock.Anything, mock.Anything, mock.Anything).
-		Return(nil).Maybe()
-	m.On("Unlock", mock.Anything, mock.Anything, mock.Anything).
-		Return(nil).Maybe()
-	m.On("IsLocked", mock.Anything, mock.Anything).
-		Return(false, RoundID{}, nil).Maybe()
-
-	return m
-}
-
 // Lock is a mock implementation of BoardingInputLocker.Lock.
 func (m *mockBoardingInputLocker) Lock(ctx context.Context,
 	outpoint *wire.OutPoint, roundID RoundID) error {
@@ -387,6 +375,15 @@ func (m *mockChainSource) GetUTXO(outpoint wire.OutPoint) (*UTXO, error) {
 	}
 
 	return args.Get(0).(*UTXO), args.Error(1) //nolint:forcetypeassert
+}
+
+// assertMockExpectations asserts that all mocks received their expected calls.
+// This should be called at the end of each test to verify mock expectations.
+func (h *fsmTestHarness) assertMockExpectations() {
+	h.Helper()
+
+	h.boardingLocker.AssertExpectations(h)
+	h.chainSource.AssertExpectations(h)
 }
 
 // clientHarness helps simulate a client in tests. It tracks the client's keys

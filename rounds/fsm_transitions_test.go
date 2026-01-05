@@ -111,9 +111,6 @@ func TestFSMCreatedState(t *testing.T) {
 		timeoutReq := assertOutboxMessageType[*StartTimeoutReq](h, 1)
 		require.Equal(t, h.env.RoundID, timeoutReq.RoundID)
 		require.Equal(t, TimeoutPhaseRegistration, timeoutReq.Phase)
-
-		// Verify that Lock was called on the boarding input.
-		h.boardingLocker.AssertExpectations(t)
 	})
 }
 
@@ -189,9 +186,6 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		successResp := assertOutboxMessageType[*ClientSuccessResp](h, 0)
 		require.Equal(t, "client2", string(successResp.Client))
-
-		// Verify that Lock was called on both boarding inputs.
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("duplicate client rejected", func(t *testing.T) {
@@ -256,8 +250,6 @@ func TestFSMRegistrationState(t *testing.T) {
 		errorResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, "client1", string(errorResp.Client))
 		require.Contains(t, errorResp.ErrorMsg, "already registered")
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("lock failure rejects client but allows others",
@@ -388,8 +380,6 @@ func TestFSMRegistrationState(t *testing.T) {
 			//nolint:ll
 			successResp := assertOutboxMessageType[*ClientSuccessResp](h, 0)
 			require.Equal(t, "client3", string(successResp.Client))
-
-			h.boardingLocker.AssertExpectations(t)
 		},
 	)
 
