@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -877,10 +878,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.NoError(t, err)
 
 		// Mock locker: first succeeds, second fails (already locked).
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint2).
-			Return(true, otherRoundID, nil)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
+			Return(false, RoundID{}, nil).Once()
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
+			Return(true, otherRoundID, nil).Once()
 
 		// Mock ChainSource for outpoint1.
 		exitDelay := uint32(144)

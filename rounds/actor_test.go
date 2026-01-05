@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -195,6 +196,7 @@ type actorTestHarness struct {
 	locker       *mockBoardingInputLocker
 	clients      *mockClientConnRef
 	chainSource  *mockChainSource
+	feeEstimator *chainfee.MockEstimator
 	timeoutActor *mockTimeoutActor
 
 	// operatorPub is the operator public key for this test harness.
@@ -212,8 +214,20 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	chainSource := &mockChainSource{}
 	timeoutActor := newMockTimeoutActor(t)
 
+	// Set up fee estimator to return 1000 sat/kw for conf target 6.
+	mockFeeEstimator := &chainfee.MockEstimator{}
+	mockFeeEstimator.On("EstimateFeePerKW", uint32(6)).
+		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
+
 	// Set up operator key.
-	operatorPub, _ := testutils.CreateKey(1)
+	operatorPub, operatorSigner := testutils.CreateKey(1)
+
+	// Set up wallet controller to return success for FundPsbt.
+	// Returns change index -1 (no change output).
+	mockWalletController := newMockWalletController(operatorSigner)
+	mockWalletController.On("FundPsbt", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything).
+		Return(int32(-1), nil).Maybe()
 
 	cfg := &ActorConfig{
 		ChainParams:         &chaincfg.RegressionNetParams,
@@ -222,16 +236,19 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		BoardingInputLocker: locker,
 		ChainSource:         chainSource,
 		TimeoutActor:        timeoutActor,
+		FeeEstimator:        mockFeeEstimator,
+		WalletController:    mockWalletController,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: operatorPub,
 			},
-			BoardingExitDelay:        100,
-			MinBoardingConfirmations: 1,
-			MinVTXOAmount:            1000,
-			MaxVTXOAmount:            10000000,
-			VTXOExitDelay:            100,
-			RegistrationTimeout:      30 * time.Second,
+			BoardingExitDelay:          100,
+			MinBoardingConfirmations:   1,
+			MinVTXOAmount:              1000,
+			MaxVTXOAmount:              10000000,
+			VTXOExitDelay:              100,
+			RegistrationTimeout:        30 * time.Second,
+			SignatureCollectionTimeout: 30 * time.Second,
 		},
 	}
 

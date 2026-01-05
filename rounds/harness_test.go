@@ -3,8 +3,10 @@ package rounds
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -15,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -29,8 +32,10 @@ type fsmTestHarness struct {
 	operatorSigner input.Signer
 
 	// Mocks (testify/mock.Mock based).
-	boardingLocker *mockBoardingInputLocker
-	chainSource    *mockChainSource
+	boardingLocker   *mockBoardingInputLocker
+	chainSource      *mockChainSource
+	feeEstimator     *chainfee.MockEstimator
+	walletController *mockWalletController
 
 	// Environment for FSM.
 	env *Environment
@@ -57,22 +62,28 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		PubKey: operatorPub,
 	}
 
-	// Create mocks. Don't use default expectations for FSM tests since
-	// they need precise control over mock behavior.
+	// Create mocks without default expectations. Tests that need
+	// permissive defaults can call setupPermissiveMocks().
 	mockLocker := &mockBoardingInputLocker{}
 	mockChainSrc := &mockChainSource{}
+	mockFeeEstimator := &chainfee.MockEstimator{}
+	mockWalletController := newMockWalletController(operatorSigner)
 
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
 		BoardingInputLocker: mockLocker,
 		ChainSource:         mockChainSrc,
+		FeeEstimator:        mockFeeEstimator,
+		Log:                 btclog.Disabled,
+		WalletController:    mockWalletController,
 		Terms: &batch.Terms{
 			OperatorKey:                   operatorKey,
 			BoardingExitDelay:             100,
 			BoardingExitDelaySafetyMargin: 6,
 			MinBoardingConfirmations:      1,
 			MaxVTXOsPerTree:               1024,
+			SignatureCollectionTimeout:    30 * time.Second,
 			TreeRadix:                     4,
 		},
 	}
@@ -86,17 +97,42 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	fsm.Start(t.Context())
 
 	h := &fsmTestHarness{
-		T:              t,
-		env:            &env,
-		fsm:            &fsm,
-		operatorPub:    operatorPub,
-		operatorSigner: operatorSigner,
-		boardingLocker: mockLocker,
-		chainSource:    mockChainSrc,
-		outboxMessages: make([]OutboxEvent, 0),
+		T:                t,
+		env:              &env,
+		fsm:              &fsm,
+		operatorPub:      operatorPub,
+		operatorSigner:   operatorSigner,
+		boardingLocker:   mockLocker,
+		chainSource:      mockChainSrc,
+		feeEstimator:     mockFeeEstimator,
+		walletController: mockWalletController,
+		outboxMessages:   make([]OutboxEvent, 0),
 	}
 
 	return h
+}
+
+// setupPermissiveMocks sets up permissive `.Maybe()` expectations on all mocks.
+// This is useful for FSM tests that don't need precise mock control.
+func (h *fsmTestHarness) setupPermissiveMocks() {
+	h.Helper()
+
+	// Set up permissive boarding locker expectations.
+	h.boardingLocker.On("Lock", mock.Anything, mock.Anything,
+		mock.Anything).Return(nil).Maybe()
+	h.boardingLocker.On("Unlock", mock.Anything, mock.Anything,
+		mock.Anything).Return(nil).Maybe()
+	h.boardingLocker.On("IsLocked", mock.Anything, mock.Anything).
+		Return(false, RoundID{}, nil).Maybe()
+
+	// Set up permissive fee estimator expectation.
+	h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
+
+	// Set up permissive wallet controller expectation.
+	h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything).
+		Return(int32(-1), nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
@@ -420,4 +456,31 @@ func (c *clientHarness) createJoinRequest(
 			BoardingReqs: boardingReqs,
 		},
 	}
+}
+
+// mockWalletController is a mock implementation of WalletController for
+// testing.
+type mockWalletController struct {
+	mock.Mock
+
+	input.Signer
+}
+
+// newMockWalletController creates a new mock wallet controller with the
+// provided private key for signing.
+func newMockWalletController(signer input.Signer) *mockWalletController {
+	return &mockWalletController{
+		Signer: signer,
+	}
+}
+
+// FundPsbt is a mock implementation of WalletController.FundPsbt.
+func (m *mockWalletController) FundPsbt(ctx context.Context,
+	packet *psbt.Packet, minConfs int32,
+	feeRate chainfee.SatPerKWeight,
+	account string) (int32, error) {
+
+	args := m.Called(ctx, packet, minConfs, feeRate, account)
+
+	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // ActorConfig contains the configuration parameters for the rounds actor.
@@ -46,6 +47,17 @@ type ActorConfig struct {
 	// notifications (e.g., timeout expirations). The actor uses this to
 	// create mapped references for callback registration.
 	SelfRef actor.TellOnlyRef[ActorMsg]
+
+	// WalletController provides access to wallet operations for batch
+	// building.
+	WalletController WalletController
+
+	// FeeEstimator provides fee rate estimation for transactions.
+	FeeEstimator chainfee.Estimator
+
+	// WalletAccount is the wallet account to use for funding batch
+	// transactions.
+	WalletAccount string
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -285,6 +297,9 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		BoardingInputLocker: a.cfg.BoardingInputLocker,
 		ChainSource:         a.cfg.ChainSource,
 		Terms:               a.cfg.Terms,
+		WalletController:    a.cfg.WalletController,
+		FeeEstimator:        a.cfg.FeeEstimator,
+		WalletAccount:       a.cfg.WalletAccount,
 	}
 
 	fsmCfg := StateMachineCfg{

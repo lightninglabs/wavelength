@@ -54,4 +54,8 @@ type Terms struct {
 	// RegistrationTimeout is the duration to wait for client registrations
 	// before sealing a round.
 	RegistrationTimeout time.Duration
+
+	// SignatureCollectionTimeout is the duration to wait for collecting
+	// vtxo nonces, vtxo signatures and boarding signatures from clients.
+	SignatureCollectionTimeout time.Duration
 }
