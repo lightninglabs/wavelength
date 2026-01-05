@@ -293,6 +293,11 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 
 	terms := env.Terms
 
+	if req.OperatorKey == nil {
+		return nil, fmt.Errorf("%w: operator key is nil",
+			ErrOperatorKeyMismatch)
+	}
+
 	// Check that the boarding request's operator key matches this
 	// operator's key.
 	if !req.OperatorKey.IsEqual(terms.OperatorKey.PubKey) {
