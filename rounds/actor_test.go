@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -66,8 +67,6 @@ func (m *mockClientConnRef) getMessages() []clientconn.ClientConnMsg {
 }
 
 // clearMessages clears all captured messages.
-//
-//nolint:unused
 func (m *mockClientConnRef) clearMessages() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -215,14 +214,11 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	chainSource := &mockChainSource{}
 	timeoutActor := newMockTimeoutActor(t)
 
-	// Set up fee estimator to return 1000 sat/kw for conf target 6.
+	// Set up fee estimator. Tests should set up explicit expectations.
 	mockFeeEstimator := &chainfee.MockEstimator{}
 
 	// Set up operator key.
 	operatorPub, operatorSigner := testutils.CreateKey(1)
-
-	// Set up wallet controller to return success for FundPsbt.
-	// Returns change index -1 (no change output).
 	mockWalletController := newMockWalletController(operatorSigner)
 
 	cfg := &ActorConfig{
@@ -326,31 +322,6 @@ func (h *actorTestHarness) sendJoinRequest(req *JoinRoundRequest) error {
 	return err
 }
 
-// mockBoardingUTXO sets up the chain source mock to return a UTXO for the
-// given outpoint.
-//
-//nolint:unused
-func (h *actorTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
-	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32,
-	confirmations int64) {
-
-	h.t.Helper()
-
-	pkScript := buildExpectedPkScript(
-		h.t, clientKey, operatorKey, exitDelay,
-	)
-
-	h.chainSource.On("GetUTXO", outpoint).Return(
-		&UTXO{
-			Output: &wire.TxOut{
-				Value:    int64(btcutil.Amount(100000)),
-				PkScript: pkScript,
-			},
-			Confirmations: confirmations,
-		}, nil,
-	)
-}
-
 // newClient creates a new clientHarness for testing.
 func (h *actorTestHarness) newClient(clientID string,
 	baseKeyIndex int32) *actorClientHarness {
@@ -435,6 +406,8 @@ func TestActorStart(t *testing.T) {
 
 	// Verify round ID is set.
 	require.NotEmpty(t, h.actor.currentRound.RoundID)
+
+	h.assertMockExpectations()
 }
 
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest
@@ -546,6 +519,8 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		require.True(t, ok, "expected ClientErrorResp message")
 		require.Equal(t, "client1", string(clientMsg.Client))
 		require.Contains(t, clientMsg.ErrorMsg, "does not match")
+
+		h.assertMockExpectations()
 	})
 }
 
@@ -612,6 +587,8 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		originalRound := h.actor.getRound(originalRoundID)
 		require.NotNil(t, originalRound,
 			"original round should still be tracked")
+
+		h.assertMockExpectations()
 	})
 
 	t.Run("duplicate timeout same phase ignored", func(t *testing.T) {
@@ -677,6 +654,8 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		h.assertRoundCount(2)
 		require.Equal(t, newRoundID, h.actor.currentRound.RoundID,
 			"current round should be unchanged after duplicate")
+
+		h.assertMockExpectations()
 	})
 
 	t.Run("timeout for unknown round ignored", func(t *testing.T) {
@@ -703,5 +682,105 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify no state changes.
 		h.assertRoundCount(1)
+
+		h.assertMockExpectations()
+	})
+}
+
+// TestActorFailureHandling tests the actor's handling of round failures,
+// including unlocking boarding inputs and creating new rounds.
+func TestActorFailureHandling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("batch failure unlocks inputs", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Create a client and join the round.
+		client := h.newClient("client1", 10)
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("test-input")),
+			Index: 0,
+		}
+
+		// Record the original round ID before join.
+		originalRoundID := h.actor.currentRound.RoundID
+
+		// Set up expectations for Lock, IsLocked, and Unlock.
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
+			Return(nil).Once()
+		h.locker.On(
+			"Unlock", mock.Anything, &outpoint, originalRoundID,
+		).Return(nil).Once()
+
+		client.mockBoardingUTXO(outpoint, 10)
+		boardingReq := client.createBoardingRequest(&outpoint)
+		req := client.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+
+		err := h.sendJoinRequest(req)
+		require.NoError(t, err)
+
+		// Clear client messages from successful join.
+		h.clients.clearMessages()
+
+		// Set up expectations for batch building.
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(0), fmt.Errorf("insufficient funds")).
+			Once()
+
+		// Fire the registration timeout to trigger batch building.
+		h.timeoutActor.FireTimeout(
+			h.ctx, originalRoundID, TimeoutPhaseRegistration,
+		)
+
+		// Verify client received failure notification.
+		msgs := h.clients.getMessages()
+		require.GreaterOrEqual(t, len(msgs), 1,
+			"expected at least one message to client")
+
+		// Find the failure notification.
+		var failureFound bool
+		for _, msg := range msgs {
+			sendReq, ok := msg.(*clientconn.SendServerEventRequest)
+			if !ok {
+				continue
+			}
+
+			failResp, ok := sendReq.Message.(*ClientRoundFailedResp)
+			if ok {
+				require.Equal(t, "client1",
+					string(failResp.Client))
+				require.Equal(t, originalRoundID,
+					failResp.RoundID)
+				require.Contains(t, failResp.Reason,
+					"insufficient funds")
+				failureFound = true
+
+				break
+			}
+		}
+		require.True(t, failureFound, "expected failure resp")
+
+		// Verify failed round was removed and new round created.
+		require.Nil(t, h.actor.getRound(originalRoundID),
+			"failed round should be removed")
+		newRoundID := h.actor.currentRound.RoundID
+		require.NotEqual(t, originalRoundID, newRoundID,
+			"new round should have different ID")
+
+		// Should still have 1 round (old one removed, new one created).
+		h.assertRoundCount(1)
+
+		// Verify Lock and Unlock were called as expected.
+		h.assertMockExpectations()
 	})
 }

@@ -276,6 +276,55 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				"sealed_round", m.SealedRoundID,
 				"new_round", newRound.RoundID)
 
+		case *UnlockBoardingInputsReq:
+			// Unlock boarding inputs that were locked for a failed
+			// round.
+			for _, outpoint := range m.Outpoints {
+				err := a.cfg.BoardingInputLocker.Unlock(
+					ctx, outpoint, m.RoundID,
+				)
+				if err != nil {
+					// Log warning but continue - input may
+					// already be unlocked.
+					a.log.WarnS(ctx, "Failed to unlock "+
+						"boarding input",
+						err,
+						"outpoint", outpoint,
+						"round_id", m.RoundID)
+				}
+			}
+
+		case *RoundFailedReq:
+			// Round has failed - clean up and create a new round if
+			// this was the current round.
+			a.log.ErrorS(ctx, "Round failed",
+				fmt.Errorf("round failed: %s", m.Reason),
+				"round_id", m.FailedRoundID,
+				"reason", m.Reason)
+
+			// Remove the failed round from tracking.
+			delete(a.rounds, m.FailedRoundID)
+
+			// If this was the current round, create a new one.
+			if a.currentRound != nil &&
+				a.currentRound.RoundID == m.FailedRoundID {
+
+				newRound, err := a.newRoundFSM(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to create "+
+						"new round after failure: %w",
+						err)
+				}
+
+				a.currentRound = newRound
+				a.rounds[newRound.RoundID] = newRound
+
+				a.log.InfoS(ctx, "Created new round after "+
+					"failure",
+					"failed_round", m.FailedRoundID,
+					"new_round", newRound.RoundID)
+			}
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
