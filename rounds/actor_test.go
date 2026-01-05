@@ -190,14 +190,15 @@ type actorTestHarness struct {
 	t *testing.T
 
 	//nolint:containedctx
-	ctx          context.Context
-	actor        *Actor
-	cfg          *ActorConfig
-	locker       *mockBoardingInputLocker
-	clients      *mockClientConnRef
-	chainSource  *mockChainSource
-	feeEstimator *chainfee.MockEstimator
-	timeoutActor *mockTimeoutActor
+	ctx              context.Context
+	actor            *Actor
+	cfg              *ActorConfig
+	locker           *mockBoardingInputLocker
+	clients          *mockClientConnRef
+	chainSource      *mockChainSource
+	feeEstimator     *chainfee.MockEstimator
+	walletController *mockWalletController
+	timeoutActor     *mockTimeoutActor
 
 	// operatorPub is the operator public key for this test harness.
 	operatorPub *btcec.PublicKey
@@ -233,6 +234,8 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		TimeoutActor:        timeoutActor,
 		FeeEstimator:        mockFeeEstimator,
 		WalletController:    mockWalletController,
+		ConfTarget:          6,
+		MinConfs:            1,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: operatorPub,
@@ -256,15 +259,17 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	cfg.SelfRef = &actorRef{actor: actor}
 
 	h := &actorTestHarness{
-		t:            t,
-		ctx:          ctx,
-		actor:        actor,
-		cfg:          cfg,
-		locker:       locker,
-		clients:      clients,
-		chainSource:  chainSource,
-		timeoutActor: timeoutActor,
-		operatorPub:  operatorPub,
+		t:                t,
+		ctx:              ctx,
+		actor:            actor,
+		cfg:              cfg,
+		locker:           locker,
+		clients:          clients,
+		chainSource:      chainSource,
+		feeEstimator:     mockFeeEstimator,
+		walletController: mockWalletController,
+		timeoutActor:     timeoutActor,
+		operatorPub:      operatorPub,
 	}
 
 	// Register cleanup to automatically assert mock expectations.
@@ -292,6 +297,8 @@ func (h *actorTestHarness) assertMockExpectations() {
 
 	h.locker.AssertExpectations(h.t)
 	h.chainSource.AssertExpectations(h.t)
+	h.feeEstimator.AssertExpectations(h.t)
+	h.walletController.AssertExpectations(h.t)
 }
 
 // assertRoundCount verifies the actor is tracking the expected number of
@@ -321,6 +328,8 @@ func (h *actorTestHarness) sendJoinRequest(req *JoinRoundRequest) error {
 
 // mockBoardingUTXO sets up the chain source mock to return a UTXO for the
 // given outpoint.
+//
+//nolint:unused
 func (h *actorTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
 	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32,
 	confirmations int64) {
@@ -564,6 +573,12 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Return(false, RoundID{}, nil).Once()
 		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
 			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On(
+			"FundPsbt", mock.Anything, mock.Anything, int32(1),
+			chainfee.SatPerKWeight(1000), mock.Anything,
+		).Return(int32(-1), nil).Once()
 
 		client.mockBoardingUTXO(outpoint, 10)
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -618,6 +633,12 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Return(false, RoundID{}, nil).Once()
 		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
 			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On(
+			"FundPsbt", mock.Anything, mock.Anything, int32(1),
+			chainfee.SatPerKWeight(1000), mock.Anything,
+		).Return(int32(-1), nil).Once()
 
 		client.mockBoardingUTXO(outpoint, 10)
 		boardingReq := client.createBoardingRequest(&outpoint)

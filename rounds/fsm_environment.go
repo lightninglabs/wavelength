@@ -41,6 +41,13 @@ type Environment struct {
 	// WalletAccount is the lnd wallet account name to use for coin
 	// selection.
 	WalletAccount string
+
+	// ConfTarget is the confirmation target to use for fee estimation.
+	ConfTarget uint32
+
+	// MinConfs is the minimum number of confirmations required for wallet
+	// UTXOs to be used for funding.
+	MinConfs int32
 }
 
 // Name returns the unique identifier for this FSM instance.

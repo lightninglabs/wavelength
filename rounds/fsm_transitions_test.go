@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +21,7 @@ func TestFSMCreatedState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("bad")),
@@ -65,6 +67,7 @@ func TestFSMCreatedState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -123,6 +126,7 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -193,6 +197,7 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -300,7 +305,8 @@ func TestFSMRegistrationState(t *testing.T) {
 				outpoint2, client2.boardingKey, exitDelay, 10,
 			)
 			h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
-				h.env.RoundID).Return(fmt.Errorf("lock failed"))
+				h.env.RoundID).
+				Return(fmt.Errorf("lock failed")).Once()
 
 			h.setupValidBoardingInput(
 				&outpoint3, client3.boardingKey, exitDelay, 10,
@@ -388,6 +394,7 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -424,10 +431,319 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// The timeout should emit SealEvent (internal) which causes
 		// transition to BatchBuildingState, then BuildBatchTxEvent
-		// (internal). For now, BatchBuildingState just stays in place.
-		assertStateType[*BatchBuildingState](h)
+		// (internal) builds the PSBT and transitions to
+		// BatchBuiltState.
+		assertStateType[*BatchBuiltState](h)
 
 		// Verify RoundSealedReq was emitted.
 		assertOutboxContains[*RoundSealedReq](h)
+	})
+}
+
+// TestFSMBatchBuilding tests the batch building states and transitions.
+func TestFSMBatchBuilding(t *testing.T) {
+	t.Parallel()
+
+	const (
+		exitDelay = 144
+		expiry    = 144
+	)
+
+	t.Run("multi-client batch building", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+		h.setupPermissiveMocks()
+
+		client1 := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+		client2 := newClientHarness(
+			t, "client2", 20, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint1 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		outpoint2 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input2")),
+			Index: 0,
+		}
+
+		// Allow both inputs.
+		h.allowBoardingInput(&outpoint1)
+		h.allowBoardingInput(&outpoint2)
+
+		h.mockBoardingUTXO(
+			outpoint1, client1.boardingKey, exitDelay, 10,
+		)
+		h.mockBoardingUTXO(
+			outpoint2, client2.boardingKey, exitDelay, 10,
+		)
+
+		// First client joins.
+		boardingReq1 := client1.createBoardingRequest(&outpoint1)
+		joinReqEvent1 := client1.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq1},
+		)
+		err := h.sendEvent(joinReqEvent1)
+		require.NoError(t, err)
+
+		// Second client joins.
+		h.outboxMessages = nil
+		boardingReq2 := client2.createBoardingRequest(&outpoint2)
+		joinReqEvent2 := client2.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq2},
+		)
+		err = h.sendEvent(joinReqEvent2)
+		require.NoError(t, err)
+
+		// Assert both clients registered.
+		regState := assertStateType[*RegistrationState](h)
+		require.Len(t, regState.ClientRegistrations, 2)
+
+		// Seal via manual SealEvent.
+		h.outboxMessages = nil
+		err = h.sendEvent(&SealEvent{})
+		require.NoError(t, err)
+
+		// Should transition to BatchBuiltState after internal events.
+		builtState := assertStateType[*BatchBuiltState](h)
+
+		// Verify both clients are in the batch.
+		require.Len(t, builtState.ClientRegistrations, 2)
+		require.Contains(
+			t, builtState.ClientRegistrations, ClientID("client1"),
+		)
+		require.Contains(
+			t, builtState.ClientRegistrations, ClientID("client2"),
+		)
+
+		// Verify both clients get batch info.
+		batchInfoCount := 0
+		for _, msg := range h.outboxMessages {
+			if info, ok := msg.(*ClientBatchInfo); ok {
+				batchInfoCount++
+				require.NotNil(t, info.BatchPSBT)
+				require.NotNil(t, info.BatchPSBT.UnsignedTx)
+			}
+		}
+		require.Equal(t, 2, batchInfoCount, "both clients get batch")
+
+		h.assertMockExpectations()
+	})
+
+	t.Run("stale timeout ignored in BatchBuiltState", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+		h.setupPermissiveMocks()
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		h.allowBoardingInput(&outpoint)
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+
+		// Join to get to RegistrationState.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		joinReqEvent := client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Seal via RegistrationTimeoutEvent.
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should be in BatchBuiltState.
+		builtState := assertStateType[*BatchBuiltState](h)
+		require.NotNil(t, builtState.PSBT)
+
+		// Clear outbox and send another stale RegistrationTimeoutEvent.
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in BatchBuiltState with no outbox messages.
+		assertStateType[*BatchBuiltState](h)
+		h.assertOutboxLen(0)
+	})
+}
+
+// TestFSMFailureScenarios tests the FSM failure handling and transitions to
+// FailedState.
+func TestFSMFailureScenarios(t *testing.T) {
+	t.Parallel()
+
+	t.Run("batch building failure goes to FailedState", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+
+		h.allowBoardingInput(&outpoint)
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+
+		// Set up explicit mocks for this test.
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+
+		// Configure wallet to fail on funding.
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(0), fmt.Errorf("insufficient funds")).
+			Once()
+
+		// Join to get to RegistrationState.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		joinReqEvent := client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Assert we're in RegistrationState.
+		assertStateType[*RegistrationState](h)
+
+		// Clear outbox.
+		h.outboxMessages = nil
+
+		// Seal the round - this should trigger batch building which
+		// will fail due to wallet funding error.
+		err = h.sendEvent(&SealEvent{})
+		require.NoError(t, err)
+
+		// Should transition to FailedState.
+		failedState := assertStateType[*FailedState](h)
+		require.Contains(t, failedState.Reason, "insufficient funds")
+
+		// Verify outbox messages:
+		// 1. ClientRoundFailedResp for client1
+		// 2. UnlockBoardingInputsReq for the outpoint
+		// 3. RoundFailedReq for the actor
+		var (
+			foundClientFailed bool
+			foundUnlock       bool
+			foundRoundFailed  bool
+		)
+		for _, msg := range h.outboxMessages {
+			switch m := msg.(type) {
+			case *ClientRoundFailedResp:
+				foundClientFailed = true
+				require.Equal(t, ClientID("client1"), m.Client)
+				require.Equal(t, h.env.RoundID, m.RoundID)
+				require.Contains(t, m.Reason, "insufficient "+
+					"funds")
+
+			case *UnlockBoardingInputsReq:
+				foundUnlock = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+				require.Len(t, m.Outpoints, 1)
+				require.Equal(t, &outpoint, m.Outpoints[0])
+
+			case *RoundFailedReq:
+				foundRoundFailed = true
+				require.Equal(t, h.env.RoundID, m.FailedRoundID)
+				require.Contains(t, m.Reason, "insufficient "+
+					"funds")
+			}
+		}
+		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlock, "inputs should be unlocked")
+		require.True(t, foundRoundFailed, "actor should be notified")
+	})
+
+	t.Run("FailedState is terminal and ignores events", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness and drive it to FailedState by
+		// causing a batch building failure.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		outpoint := wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
+		h.allowBoardingInput(&outpoint)
+		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+
+		// Set up explicit mocks for this test.
+		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
+			h.env.RoundID).Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+
+		// Configure wallet to fail on funding.
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(0), fmt.Errorf("insufficient funds")).
+			Once()
+
+		// Join client.
+		boardingReq := client.createBoardingRequest(&outpoint)
+		joinEvent := client.createJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+		err := h.sendEvent(joinEvent)
+		require.NoError(t, err)
+
+		// Trigger seal which will cause batch building to fail.
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should now be in FailedState.
+		assertStateType[*FailedState](h)
+
+		// Clear outbox messages from the failure.
+		h.outboxMessages = nil
+
+		// Try to send various events - all should be ignored.
+		err = h.sendEvent(&ClientJoinRequestEvent{
+			ClientID: ClientID("client2"),
+			Request:  joinEvent.Request,
+		})
+		require.NoError(t, err)
+		assertStateType[*FailedState](h)
+		h.assertOutboxLen(0)
+
+		err = h.sendEvent(&SealEvent{})
+		require.NoError(t, err)
+		assertStateType[*FailedState](h)
+		h.assertOutboxLen(0)
+
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+		assertStateType[*FailedState](h)
+		h.assertOutboxLen(0)
 	})
 }

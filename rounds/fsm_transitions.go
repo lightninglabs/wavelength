@@ -1,9 +1,15 @@
 package rounds
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -233,19 +239,325 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 }
 
 // ProcessEvent handles the events from the BatchBuildingState state.
-// This is a placeholder that will be fully implemented later.
-func (s *BatchBuildingState) ProcessEvent(_ context.Context, event Event,
+func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	switch event.(type) {
 	case *BuildBatchTxEvent:
-		// TODO: Implement batch building logic.
-		// For now, just stay in this state.
+		// Collect all boarding inputs, leave outputs, and VTXO
+		// descriptors from client registrations.
+		var (
+			allBoardingInputs  []*BoardingInput
+			allLeaveOutputs    []*wire.TxOut
+			allVTXODescriptors []tree.VTXODescriptor
+		)
+
+		for _, reg := range s.ClientRegistrations {
+			allBoardingInputs = append(
+				allBoardingInputs, reg.BoardingInputs...,
+			)
+			allLeaveOutputs = append(
+				allLeaveOutputs, reg.LeaveOutputs...,
+			)
+
+			// Collect all VTXO descriptors from the map.
+			for _, desc := range reg.VTXODescriptors {
+				allVTXODescriptors = append(
+					allVTXODescriptors, *desc,
+				)
+			}
+		}
+
+		// Build the commitment transaction PSBT.
+		psbtPacket, changeIdx, vtxoTrees, err := buildCommitmentTx(
+			ctx, env, allBoardingInputs, allLeaveOutputs,
+			allVTXODescriptors,
+		)
+		if err != nil {
+			// Batch building failed - transition to FailedState.
+			reason := fmt.Sprintf("build commitment tx: %v", err)
+
+			return buildFailureTransition(
+				env, s.ClientRegistrations, reason,
+			), nil
+		}
+
+		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
-			NextState: s,
+			NextState: &BatchBuiltState{
+				ClientRegistrations: s.ClientRegistrations,
+				PSBT:                psbtPacket,
+				ChangeOutputIndex:   changeIdx,
+				VTXOTrees:           vtxoTrees,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				// Emit the internal event to prepare client
+				// notifications. This event is handled in
+				// BatchBuiltState.
+				InternalEvent: []Event{
+					&PrepareClientNotificationsEvent{},
+				},
+			}),
 		}, nil
 
 	default:
 		return unexpectedEvent(s, "batch-building", event, env), nil
 	}
+}
+
+// ProcessEvent handles the events from the BatchBuiltState state.
+func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	switch event.(type) {
+	case *PrepareClientNotificationsEvent:
+		// For each client, create a message with their personalized
+		// data.
+		var outboxMsgs []OutboxEvent
+		for clientID, reg := range s.ClientRegistrations {
+			// Extract VTXO tree paths for this client if they have
+			// VTXO requests.
+			var vtxoTreePaths map[int]*tree.Tree
+			hasVTXOs := len(reg.VTXODescriptors) > 0
+			if hasVTXOs && len(s.VTXOTrees) > 0 {
+				// For now, give the client the full trees if
+				// they have VTXOs.
+				//
+				// TODO(elle): Send the client only their paths.
+				//  This will be done in a follow up commit.
+				vtxoTreePaths = s.VTXOTrees
+			}
+
+			outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
+				Client:        clientID,
+				BatchPSBT:     s.PSBT,
+				VTXOTreePaths: vtxoTreePaths,
+			})
+		}
+
+		// Add timeout for boarding signature collection.
+		outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
+			RoundID:  env.RoundID,
+			Phase:    TimeoutPhaseBoardingSigs,
+			Duration: env.Terms.SignatureCollectionTimeout,
+		})
+
+		// For now, stay in BatchBuiltState. In the future, this will
+		// transition to AwaitingBoardingSignaturesState or
+		// AwaitingVTXONoncesState depending on whether VTXOs exist.
+		//
+		// TODO(elle): Add proper state transitions for signature
+		//  collection phases.
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outboxMsgs,
+			}),
+		}, nil
+
+	default:
+		return unexpectedEvent(s, "batch-built", event, env), nil
+	}
+}
+
+// ProcessEvent handles the events from the FailedState state.
+// FailedState is a terminal state, so it ignores all events.
+func (s *FailedState) ProcessEvent(_ context.Context, _ Event,
+	_ *Environment) (*StateTransition, error) {
+
+	// Terminal state - remain in FailedState and emit no events.
+	return &StateTransition{
+		NextState: s,
+	}, nil
+}
+
+// buildFailureTransition creates a state transition to FailedState with all
+// the necessary outbox events to notify clients, unlock boarding inputs, and
+// inform the actor of the failure.
+func buildFailureTransition(env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration,
+	reason string) *StateTransition {
+
+	var outboxMsgs []OutboxEvent
+
+	// Collect all boarding input outpoints for unlocking.
+	var allOutpoints []*wire.OutPoint
+	for clientID, reg := range clientRegs {
+		// Notify each client that the round has failed.
+		outboxMsgs = append(outboxMsgs, &ClientRoundFailedResp{
+			Client:  clientID,
+			RoundID: env.RoundID,
+			Reason:  reason,
+		})
+
+		// Collect outpoints from this client's boarding inputs.
+		for _, bi := range reg.BoardingInputs {
+			allOutpoints = append(allOutpoints, bi.Outpoint)
+		}
+	}
+
+	// Request unlocking of all boarding inputs.
+	if len(allOutpoints) > 0 {
+		outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
+			RoundID:   env.RoundID,
+			Outpoints: allOutpoints,
+		})
+	}
+
+	// Notify the actor that the round has failed.
+	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
+		FailedRoundID: env.RoundID,
+		Reason:        reason,
+	})
+
+	return &StateTransition{
+		NextState: &FailedState{
+			Reason: reason,
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outboxMsgs,
+		}),
+	}
+}
+
+// buildCommitmentTx constructs the commitment transaction PSBT with boarding
+// inputs, required outputs (leaves), and VTXO tree outputs. It funds the
+// transaction using the wallet and builds VTXO trees if needed.
+//
+// TODO(elle): Add connector outputs (forfeit trees) when implemented.
+func buildCommitmentTx(ctx context.Context, env *Environment,
+	boardingInputs []*BoardingInput, requiredOutputs []*wire.TxOut,
+	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
+	map[int]*tree.Tree, error) {
+
+	// Step 1: Create unsigned transaction with boarding inputs and
+	// required outputs.
+	tx := wire.NewMsgTx(2)
+
+	// Add boarding inputs.
+	for _, bi := range boardingInputs {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: *bi.Outpoint,
+			Sequence:         wire.MaxTxInSequenceNum,
+		})
+	}
+
+	// Add required outputs (leave requests).
+	for _, output := range requiredOutputs {
+		tx.AddTxOut(output)
+	}
+
+	// Add batch outputs (VTXO tree roots). We'll record their indices
+	// after FundPsbt reorders the transaction.
+	var vtxoTreeCtx *batch.TreeContext
+	if len(vtxoDescriptors) > 0 {
+		var err error
+		vtxoTreeCtx, err = batch.BuildTreeContext(
+			env.Terms, vtxoDescriptors,
+		)
+		if err != nil {
+			return nil, -1, nil, fmt.Errorf("build batch "+
+				"outputs: %w", err)
+		}
+
+		for _, output := range vtxoTreeCtx.Outputs() {
+			tx.AddTxOut(output)
+		}
+	}
+
+	// Step 2: Convert to PSBT.
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	if err != nil {
+		return nil, -1, nil, fmt.Errorf("create psbt: %w", err)
+	}
+
+	// Step 3: Add UTXO information for boarding inputs so FundPsbt can
+	// calculate fees correctly.
+	for i, bi := range boardingInputs {
+		packet.Inputs[i].WitnessUtxo = &wire.TxOut{
+			Value:    int64(bi.Value),
+			PkScript: bi.PkScript,
+		}
+
+		// Note: Boarding inputs use collaborative tapscript leaf path,
+		// not key spend. However, for fee estimation purposes, we set
+		// SigHashDefault.
+		packet.Inputs[i].SighashType = txscript.SigHashDefault
+	}
+
+	// Step 4: Get fee rate from estimator.
+	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
+	if err != nil {
+		return nil, -1, nil, fmt.Errorf("estimate fee: %w", err)
+	}
+
+	// Step 5: Call FundPsbt to add wallet inputs and change.
+	//
+	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
+	// before this call will be invalid.
+	changeIdx, err := env.WalletController.FundPsbt(
+		ctx, packet, env.MinConfs, feeRate, env.WalletAccount,
+	)
+	if err != nil {
+		return nil, -1, nil, fmt.Errorf("fund psbt: %w", err)
+	}
+
+	// Step 6: Build VTXO trees if VTXOs exist.
+	var vtxoTrees map[int]*tree.Tree
+	if vtxoTreeCtx != nil {
+		// After FundPsbt reordering, find the VTXO tree root outputs
+		// by matching their PkScripts.
+		//
+		// TODO(elle): write a test that covers this reordering once
+		// we add tests covering this code-path.
+		batchOutputs := vtxoTreeCtx.Outputs()
+		batchOutputIndices, err := findOutputIndices(
+			batchOutputs, packet.UnsignedTx,
+		)
+		if err != nil {
+			return nil, -1, nil, fmt.Errorf("find batch "+
+				"outputs: %w", err)
+		}
+
+		// Build VTXO trees using the post-FundPsbt batch output
+		// indices.
+		vtxoTrees, err = vtxoTreeCtx.BuildVTXOTreesForCommitmentTx(
+			packet.UnsignedTx, batchOutputIndices,
+		)
+		if err != nil {
+			return nil, -1, nil, fmt.Errorf("build VTXO trees: %w",
+				err)
+		}
+	}
+
+	return packet, changeIdx, vtxoTrees, nil
+}
+
+// findOutputIndices finds the indices of the given outputs in the transaction
+// by matching their PkScripts. This is used after FundPsbt reorders the
+// transaction to locate specific outputs by their script.
+func findOutputIndices(expectedOutputs []*wire.TxOut,
+	tx *wire.MsgTx) ([]int, error) {
+
+	indices := make([]int, len(expectedOutputs))
+
+	for i, expectedOut := range expectedOutputs {
+		found := false
+		for j, txOut := range tx.TxOut {
+			if !bytes.Equal(expectedOut.PkScript, txOut.PkScript) {
+				continue
+			}
+
+			indices[i] = j
+			found = true
+
+			break
+		}
+
+		if !found {
+			return nil, fmt.Errorf("output %d not found in tx", i)
+		}
+	}
+
+	return indices, nil
 }

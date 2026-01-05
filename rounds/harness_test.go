@@ -77,6 +77,8 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		FeeEstimator:        mockFeeEstimator,
 		Log:                 btclog.Disabled,
 		WalletController:    mockWalletController,
+		ConfTarget:          6,
+		MinConfs:            1,
 		Terms: &batch.Terms{
 			OperatorKey:                   operatorKey,
 			BoardingExitDelay:             100,

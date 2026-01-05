@@ -58,6 +58,13 @@ type ActorConfig struct {
 	// WalletAccount is the wallet account to use for funding batch
 	// transactions.
 	WalletAccount string
+
+	// ConfTarget is the confirmation target to use for fee estimation.
+	ConfTarget uint32
+
+	// MinConfs is the minimum number of confirmations required for wallet
+	// UTXOs to be used for funding.
+	MinConfs int32
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -300,6 +307,8 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		WalletController:    a.cfg.WalletController,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,
+		ConfTarget:          a.cfg.ConfTarget,
+		MinConfs:            a.cfg.MinConfs,
 	}
 
 	fsmCfg := StateMachineCfg{
