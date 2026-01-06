@@ -431,16 +431,9 @@ func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
 			env, s.ClientRegistrations, reason,
 		), nil
 
-	case *RegistrationTimeoutEvent:
-		// Ignore stale timeout from registration phase.
-		return &StateTransition{
-			NextState: s,
-		}, nil
-
 	default:
-		return nil, fmt.Errorf(
-			"awaiting-boarding-sigs: unexpected event: %T", event,
-		)
+		return unexpectedEvent(s, "awaiting-boarding-sigs", event, env),
+			nil
 	}
 }
 
@@ -786,20 +779,9 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 //   - Transition to FinalizedState after signing
 //   - Handle broadcast and persistence
 func (s *ServerSigningState) ProcessEvent(_ context.Context,
-	event Event, _ *Environment) (*StateTransition, error) {
+	event Event, env *Environment) (*StateTransition, error) {
 
-	switch event.(type) {
-	case *RegistrationTimeoutEvent, *BoardingSignaturesTimeoutEvent:
-		// Ignore stale timeouts from previous phases.
-		return &StateTransition{
-			NextState: s,
-		}, nil
-
-	default:
-		return nil, fmt.Errorf(
-			"server-signing: unexpected event: %T", event,
-		)
-	}
+	return unexpectedEvent(s, "server-signing", event, env), nil
 }
 
 // ProcessEvent handles the events from the FailedState state.
