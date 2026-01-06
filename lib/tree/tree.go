@@ -299,8 +299,13 @@ func (t *Tree) PrettyPrint() string {
 // NewTreeSignerSession creates a TreeSignerSession for this tree.
 // This is a convenience wrapper that sets up the session with the tree's
 // context.
+//
+// The tweakLookup parameter is an optional function that returns the taproot
+// tweak for each node. For asset trees, use TweakLookupFromAssetContext.
+// For BTC-only trees, pass nil.
 func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
-	signerKey *keychain.KeyDescriptor) (*SignerSession, error) {
+	signerKey *keychain.KeyDescriptor,
+	tweakLookup TaprootTweakLookup) (*SignerSession, error) {
 
 	// Create prev output fetcher.
 	prevOutFetcher, err := t.Root.PrevOutputFetcher(t.BatchOutput)
@@ -311,6 +316,6 @@ func (t *Tree) NewTreeSignerSession(wallet input.MuSig2Signer,
 
 	return NewSignerSession(
 		wallet, signerKey, t.SweepTapscriptRoot, prevOutFetcher,
-		t.Root,
+		t.Root, tweakLookup,
 	)
 }

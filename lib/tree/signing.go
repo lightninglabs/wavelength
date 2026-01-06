@@ -118,10 +118,20 @@ type SignerSession struct {
 // NewSignerSession creates a new signing session for a tree. It
 // automatically extracts the path for the given signer and creates sessions
 // for each transaction in that path.
+//
+// The tweakLookup parameter is an optional function that returns the taproot
+// tweak for each node. When nil, the sweepTapscriptRoot is used as the tweak
+// for all nodes. When provided, the lookup function is called for each node
+// and its return value is used as the tweak (if non-nil), otherwise falling
+// back to sweepTapscriptRoot.
+//
+// For asset trees, use TweakLookupFromAssetContext(assetCtx) to create a lookup
+// function that retrieves tweaks from the asset context map. For BTC-only
+// trees, pass nil for tweakLookup.
 func NewSignerSession(signer input.MuSig2Signer,
 	signerKey *keychain.KeyDescriptor, sweepTapscriptRoot []byte,
-	prevOuts txscript.PrevOutputFetcher, tree *Node) (*SignerSession,
-	error) {
+	prevOuts txscript.PrevOutputFetcher, tree *Node,
+	tweakLookup TaprootTweakLookup) (*SignerSession, error) {
 
 	// Validate inputs.
 	if signer == nil {
@@ -153,8 +163,18 @@ func NewSignerSession(signer input.MuSig2Signer,
 			return fmt.Errorf("failed to create tx: %w", err)
 		}
 
+		// Determine the taproot tweak for this node. Priority:
+		// 1. tweakLookup function if provided
+		// 2. sweepTapscriptRoot (default for BTC-only trees)
+		taprootTweak := sweepTapscriptRoot
+		if tweakLookup != nil {
+			if nodeTweak := tweakLookup(node); len(nodeTweak) > 0 {
+				taprootTweak = nodeTweak
+			}
+		}
+
 		session, err := node.NewTxSignerSession(
-			signer, sweepTapscriptRoot, signerKey, prevOuts,
+			signer, taprootTweak, signerKey, prevOuts,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create tx session: %w",
@@ -233,4 +253,17 @@ func (s *SignerSession) Signatures(cleanup bool) (
 	}
 
 	return sigs, nil
+}
+
+// SessionIDs returns the MuSig2 session IDs for each transaction managed by
+// the signer. This is intended for coordinating signature aggregation in
+// higher-level protocols/tests that need to combine partial signatures.
+func (s *SignerSession) SessionIDs() map[TxID]input.MuSig2SessionID {
+	ids := make(map[TxID]input.MuSig2SessionID, len(s.txs))
+
+	for txid, txSession := range s.txs {
+		ids[txid] = txSession.signSession.SessionID
+	}
+
+	return ids
 }
