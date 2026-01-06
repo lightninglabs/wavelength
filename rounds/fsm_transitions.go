@@ -269,7 +269,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		// Build the commitment transaction PSBT.
-		psbtPacket, changeIdx, vtxoTrees, err := buildCommitmentTx(
+		psbtPacket, _, vtxoTrees, err := buildCommitmentTx(
 			ctx, env, allBoardingInputs, allLeaveOutputs,
 			allVTXODescriptors,
 		)

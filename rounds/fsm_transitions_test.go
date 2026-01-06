@@ -7,8 +7,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,7 +80,7 @@ func TestFSMCreatedState(t *testing.T) {
 
 		// Set up mocks to allow the boarding input to pass validation.
 		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10,
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
 		)
 
 		// Assert the initial state is CreatedState.
@@ -149,9 +147,11 @@ func TestFSMRegistrationState(t *testing.T) {
 		// Set up mocks for both clients' boarding inputs.
 		h.setupValidBoardingInput(
 			&outpoint1, client1.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
 		h.setupValidBoardingInput(
 			&outpoint2, client2.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
 
 		// First client joins from CreatedState.
@@ -218,6 +218,7 @@ func TestFSMRegistrationState(t *testing.T) {
 		// won't be validated when a duplicate client is rejected.
 		h.setupValidBoardingInput(
 			&outpoint1, client.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
 
 		// First client joins.
@@ -296,20 +297,22 @@ func TestFSMRegistrationState(t *testing.T) {
 			// but client2's lock will fail.
 			h.setupValidBoardingInput(
 				&outpoint1, client1.boardingKey, exitDelay, 10,
+				h.roundID,
 			)
 
 			// For client2, set up validation to succeed but lock to
 			// fail.
-			h.allowBoardingInput(&outpoint2)
-			h.mockBoardingUTXO(
-				outpoint2, client2.boardingKey, exitDelay, 10,
+			h.setupBoardingInputValidationOnly(
+				&outpoint2, client2.boardingKey, exitDelay, 10,
 			)
-			h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
-				h.env.RoundID).
-				Return(fmt.Errorf("lock failed")).Once()
+			h.expectFailedLock(
+				&outpoint2, h.roundID,
+				fmt.Errorf("lock failed"),
+			)
 
 			h.setupValidBoardingInput(
 				&outpoint3, client3.boardingKey, exitDelay, 10,
+				h.roundID,
 			)
 
 			// First client joins successfully from CreatedState.
@@ -406,17 +409,11 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up explicit mocks for this test.
-		h.allowBoardingInput(&outpoint)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
-
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+		// Set up mocks for successful registration and batch building.
+		h.setupValidBoardingInput(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
+		h.setupBatchBuildingMocks()
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -487,8 +484,6 @@ func TestFSMRegistrationState(t *testing.T) {
 		require.True(
 			t, foundTimeoutReq, "boarding sig timeout should start",
 		)
-
-		h.assertMockExpectations()
 	})
 }
 
@@ -584,8 +579,6 @@ func TestFSMBatchBuilding(t *testing.T) {
 			}
 		}
 		require.Equal(t, 2, batchInfoCount, "both clients get batch")
-
-		h.assertMockExpectations()
 	})
 
 	t.Run("stale timeout ignored during boarding sigs",
@@ -641,8 +634,6 @@ func TestFSMBatchBuilding(t *testing.T) {
 			// outbox messages.
 			assertStateType[*AwaitingBoardingSigsState](h)
 			h.assertOutboxLen(0)
-
-			h.assertMockExpectations()
 		})
 }
 
@@ -668,20 +659,12 @@ func TestFSMFailureScenarios(t *testing.T) {
 			Index: 0,
 		}
 
-		h.allowBoardingInput(&outpoint)
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
-
-		// Set up explicit mocks for this test.
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-
-		// Configure wallet to fail on funding.
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(0), fmt.Errorf("insufficient funds")).
-			Once()
+		// Set up mocks for successful registration but failing batch
+		// building.
+		h.setupValidBoardingInput(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
+		h.setupBatchBuildingFailure(fmt.Errorf("insufficient funds"))
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -740,8 +723,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundClientFailed, "client should be notified")
 		require.True(t, foundUnlock, "inputs should be unlocked")
 		require.True(t, foundRoundFailed, "actor should be notified")
-
-		h.assertMockExpectations()
 	})
 
 	t.Run("FailedState is terminal and ignores events", func(t *testing.T) {
@@ -758,20 +739,13 @@ func TestFSMFailureScenarios(t *testing.T) {
 		)
 
 		outpoint := wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
-		h.allowBoardingInput(&outpoint)
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
 
-		// Set up explicit mocks for this test.
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-
-		// Configure wallet to fail on funding.
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(0), fmt.Errorf("insufficient funds")).
-			Once()
+		// Set up mocks for successful registration but failing batch
+		// building.
+		h.setupValidBoardingInput(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
+		h.setupBatchBuildingFailure(fmt.Errorf("insufficient funds"))
 
 		// Join client.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -809,8 +783,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.NoError(t, err)
 		assertStateType[*FailedState](h)
 		h.assertOutboxLen(0)
-
-		h.assertMockExpectations()
 	})
 
 	t.Run("boarding sig timeout goes to FailedState", func(t *testing.T) {
@@ -830,17 +802,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up explicit mocks for this test.
-		h.allowBoardingInput(&outpoint)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
-
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
+		// Set up mocks for successful registration and batch building.
+		h.setupValidBoardingInput(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
+		h.setupBatchBuildingMocks()
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -894,8 +860,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundClientFailed, "client notified of failure")
 		require.True(t, foundUnlock, "inputs should be unlocked")
 		require.True(t, foundRoundFailed, "actor notified of failure")
-
-		h.assertMockExpectations()
 	})
 }
 
@@ -920,17 +884,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
-		h.allowBoardingInput(&outpoint)
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
+		// Set up complete registration flow (join + batch building).
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -1001,30 +958,17 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
-			Return(false, RoundID{}, nil)
-
-		h.mockBoardingUTXO(
-			outpoint1, client1.boardingKey, exitDelay, 10,
+		// Set up complete registration flow for both clients. Batch
+		// building mocks are only set up once since there's only one
+		// batch built.
+		h.setupCompleteRegistrationFlow(
+			&outpoint1, client1.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
-		h.allowBoardingInput(&outpoint1)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint1,
-			h.env.RoundID).Return(nil).Once()
-
-		h.mockBoardingUTXO(
-			outpoint2, client2.boardingKey, exitDelay, 10,
+		h.setupValidBoardingInput(
+			&outpoint2, client2.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
-		h.allowBoardingInput(&outpoint2)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
-			h.env.RoundID).Return(nil).Once()
-
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
 
 		// Both clients join.
 		boardingReq1 := client1.createBoardingRequest(&outpoint1)
@@ -1102,17 +1046,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
-		h.allowBoardingInput(&outpoint)
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
+		// Set up complete registration flow.
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
 
 		// Join and seal.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -1173,30 +1110,15 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
-			Return(false, RoundID{}, nil)
-
-		h.mockBoardingUTXO(
-			outpoint1, client1.boardingKey, exitDelay, 10,
+		// Set up complete registration flow for both clients.
+		h.setupCompleteRegistrationFlow(
+			&outpoint1, client1.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
-		h.allowBoardingInput(&outpoint1)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint1,
-			h.env.RoundID).Return(nil).Once()
-
-		h.mockBoardingUTXO(
-			outpoint2, client2.boardingKey, exitDelay, 10,
+		h.setupValidBoardingInput(
+			&outpoint2, client2.boardingKey, exitDelay, 10,
+			h.roundID,
 		)
-		h.allowBoardingInput(&outpoint2)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint2,
-			h.env.RoundID).Return(nil).Once()
-
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
 
 		// Both clients join.
 		err := h.sendEvent(client1.createJoinRequest(
@@ -1265,17 +1187,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.mockBoardingUTXO(outpoint, client.boardingKey, exitDelay, 10)
-		h.allowBoardingInput(&outpoint)
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("Lock", mock.Anything, &outpoint,
-			h.env.RoundID).Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
+		// Set up complete registration flow.
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		)
 
 		// Join and seal.
 		boardingReq := client.createBoardingRequest(&outpoint)

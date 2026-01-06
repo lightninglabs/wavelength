@@ -24,12 +24,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fsmTestHarness is the central test harness housing all common setup,
-// mocks, fixtures, and helper functions for round FSM tests.
-type fsmTestHarness struct {
-	*testing.T
+// commonMockSetup contains mocks and static test data shared between FSM
+// and actor tests. This reduces code duplication. Only roundID is kept
+// separate as it changes across actor tests.
+type commonMockSetup struct {
+	t *testing.T
 
-	// Keys and signers for test identities.
+	// Operator keys for test identities (static across tests).
 	operatorPub    *btcec.PublicKey
 	operatorSigner input.Signer
 
@@ -38,6 +39,48 @@ type fsmTestHarness struct {
 	chainSource      *mockChainSource
 	feeEstimator     *chainfee.MockEstimator
 	walletController *mockWalletController
+}
+
+// newCommonMockSetup creates a new common mock setup with default
+// configuration and deterministic operator keys.
+func newCommonMockSetup(t *testing.T) *commonMockSetup {
+	t.Helper()
+
+	// Generate deterministic test keys.
+	operatorPub, operatorSigner := testutils.CreateKey(1)
+
+	// Create mocks without default expectations.
+	mockLocker := &mockBoardingInputLocker{}
+	mockChainSrc := &mockChainSource{}
+	mockFeeEstimator := &chainfee.MockEstimator{}
+	mockWalletController := newMockWalletController(operatorSigner)
+
+	m := &commonMockSetup{
+		t:                t,
+		operatorPub:      operatorPub,
+		operatorSigner:   operatorSigner,
+		boardingLocker:   mockLocker,
+		chainSource:      mockChainSrc,
+		feeEstimator:     mockFeeEstimator,
+		walletController: mockWalletController,
+	}
+
+	// Register cleanup to automatically assert mock expectations.
+	t.Cleanup(func() {
+		m.assertMockExpectations()
+	})
+
+	return m
+}
+
+// fsmTestHarness is the central test harness housing all common setup,
+// mocks, fixtures, and helper functions for round FSM tests.
+type fsmTestHarness struct {
+	*testing.T
+	*commonMockSetup
+
+	// roundID for the FSM under test.
+	roundID RoundID
 
 	// Environment for FSM.
 	env *Environment
@@ -58,27 +101,21 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	roundID, err := NewRoundID()
 	require.NoError(t, err)
 
-	// Generate deterministic test keys.
-	operatorPub, operatorSigner := testutils.CreateKey(1)
-	operatorKey := keychain.KeyDescriptor{
-		PubKey: operatorPub,
-	}
+	// Create common mock setup.
+	common := newCommonMockSetup(t)
 
-	// Create mocks without default expectations. Tests that need
-	// permissive defaults can call setupPermissiveMocks().
-	mockLocker := &mockBoardingInputLocker{}
-	mockChainSrc := &mockChainSource{}
-	mockFeeEstimator := &chainfee.MockEstimator{}
-	mockWalletController := newMockWalletController(operatorSigner)
+	operatorKey := keychain.KeyDescriptor{
+		PubKey: common.operatorPub,
+	}
 
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
-		BoardingInputLocker: mockLocker,
-		ChainSource:         mockChainSrc,
-		FeeEstimator:        mockFeeEstimator,
+		BoardingInputLocker: common.boardingLocker,
+		ChainSource:         common.chainSource,
+		FeeEstimator:        common.feeEstimator,
 		Log:                 btclog.Disabled,
-		WalletController:    mockWalletController,
+		WalletController:    common.walletController,
 		ConfTarget:          6,
 		MinConfs:            1,
 		Terms: &batch.Terms{
@@ -101,78 +138,80 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	fsm.Start(t.Context())
 
 	h := &fsmTestHarness{
-		T:                t,
-		env:              &env,
-		fsm:              &fsm,
-		operatorPub:      operatorPub,
-		operatorSigner:   operatorSigner,
-		boardingLocker:   mockLocker,
-		chainSource:      mockChainSrc,
-		feeEstimator:     mockFeeEstimator,
-		walletController: mockWalletController,
-		outboxMessages:   make([]OutboxEvent, 0),
+		T:               t,
+		commonMockSetup: common,
+		roundID:         roundID,
+		env:             &env,
+		fsm:             &fsm,
+		outboxMessages:  make([]OutboxEvent, 0),
 	}
-
-	// Register cleanup to automatically assert mock expectations.
-	t.Cleanup(func() {
-		h.assertMockExpectations()
-	})
 
 	return h
 }
 
 // setupPermissiveMocks sets up permissive `.Maybe()` expectations on all mocks.
-// This is useful for FSM tests that don't need precise mock control.
-func (h *fsmTestHarness) setupPermissiveMocks() {
-	h.Helper()
+// This is useful for tests that don't need precise mock control.
+func (c *commonMockSetup) setupPermissiveMocks() {
+	c.t.Helper()
 
 	// Set up permissive boarding locker expectations.
-	h.boardingLocker.On("Lock", mock.Anything, mock.Anything,
+	c.boardingLocker.On("Lock", mock.Anything, mock.Anything,
 		mock.Anything).Return(nil).Maybe()
-	h.boardingLocker.On("Unlock", mock.Anything, mock.Anything,
+	c.boardingLocker.On("Unlock", mock.Anything, mock.Anything,
 		mock.Anything).Return(nil).Maybe()
-	h.boardingLocker.On("IsLocked", mock.Anything, mock.Anything).
+	c.boardingLocker.On("IsLocked", mock.Anything, mock.Anything).
 		Return(false, RoundID{}, nil).Maybe()
 
 	// Set up permissive fee estimator expectation.
-	h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
 
 	// Set up permissive wallet controller expectation.
-	h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything).
 		Return(int32(-1), nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
-// outpoint (i.e., it's not locked by any round).
-func (h *fsmTestHarness) allowBoardingInput(outpoint *wire.OutPoint) {
-	h.Helper()
+// outpoint to be used. This sets up IsLocked to return false (not locked) and
+// Lock to succeed. If roundID is provided, Lock expectation is also set up;
+// otherwise only IsLocked is configured.
+func (c *commonMockSetup) allowBoardingInput(outpoint *wire.OutPoint,
+	roundID ...RoundID) {
 
-	h.boardingLocker.On("IsLocked", mock.Anything, outpoint).
+	c.t.Helper()
+
+	c.boardingLocker.On("IsLocked", mock.Anything, outpoint).
 		Return(false, RoundID{}, nil)
+
+	// If roundID provided, also set up Lock expectation.
+	if len(roundID) > 0 {
+		c.boardingLocker.On(
+			"Lock", mock.Anything, outpoint, roundID[0],
+		).Return(nil)
+	}
 }
 
 // lockBoardingInput sets up the boarding locker mock to indicate the given
 // outpoint is already locked by another round.
-func (h *fsmTestHarness) lockBoardingInput(outpoint *wire.OutPoint,
+func (c *commonMockSetup) lockBoardingInput(outpoint *wire.OutPoint,
 	lockedBy RoundID) {
 
-	h.Helper()
+	c.t.Helper()
 
-	h.boardingLocker.On("IsLocked", mock.Anything, outpoint).
+	c.boardingLocker.On("IsLocked", mock.Anything, outpoint).
 		Return(true, lockedBy, nil)
 }
 
 // mockBoardingUTXO sets up a ChainSource mock for a boarding UTXO with the
 // specified parameters.
-func (h *fsmTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
+func (c *commonMockSetup) mockBoardingUTXO(outpoint wire.OutPoint,
 	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64) {
 
-	h.Helper()
+	c.t.Helper()
 
 	expectedPkScript := buildExpectedPkScript(
-		h.T, clientKey, h.operatorPub, exitDelay,
+		c.t, clientKey, c.operatorPub, exitDelay,
 	)
 
 	utxo := &UTXO{
@@ -182,28 +221,111 @@ func (h *fsmTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
 		},
 		Confirmations: confirmations,
 	}
-	h.chainSource.On("GetUTXO", outpoint).Return(utxo, nil)
+	c.chainSource.On("GetUTXO", outpoint).Return(utxo, nil)
 }
 
-// expectBoardingInputLock sets up the boarding locker mock to expect a Lock
-// call for the given outpoint.
-func (h *fsmTestHarness) expectBoardingInputLock(outpoint *wire.OutPoint) {
-	h.Helper()
+// setupValidBoardingInput sets up both the boarding locker (allowed + lock)
+// and chain source (valid UTXO) mocks for a boarding input that should pass
+// validation.
+func (c *commonMockSetup) setupValidBoardingInput(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64,
+	roundID RoundID) {
 
-	h.boardingLocker.On("Lock", mock.Anything, outpoint, h.env.RoundID).
-		Return(nil)
+	c.t.Helper()
+
+	c.allowBoardingInput(outpoint, roundID)
+	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
 }
 
-// setupValidBoardingInput sets up both the boarding locker (allowed) and chain
-// source (valid UTXO) mocks for a boarding input that should pass validation.
-func (h *fsmTestHarness) setupValidBoardingInput(outpoint *wire.OutPoint,
-	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64) {
+// setupBoardingInputValidationOnly sets up mocks for boarding input validation
+// without setting up lock expectations. This is useful for tests that want to
+// control lock behavior explicitly (e.g., testing lock failures).
+func (c *commonMockSetup) setupBoardingInputValidationOnly(
+	outpoint *wire.OutPoint, clientKey *btcec.PublicKey, exitDelay uint32,
+	confirmations int64) {
 
-	h.Helper()
+	c.t.Helper()
 
-	h.allowBoardingInput(outpoint)
-	h.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
-	h.expectBoardingInputLock(outpoint)
+	c.allowBoardingInput(outpoint)
+	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
+}
+
+// expectFailedLock sets up the boarding locker mock to expect a lock call that
+// fails with the given error.
+func (c *commonMockSetup) expectFailedLock(outpoint *wire.OutPoint,
+	roundID RoundID, err error) {
+
+	c.t.Helper()
+
+	c.boardingLocker.On("Lock", mock.Anything, outpoint, roundID).
+		Return(err).Once()
+}
+
+// setupBatchBuildingMocks sets up the mocks needed for successful batch
+// building (fee estimation and PSBT funding). This should be called before
+// sealing a round that will build a batch.
+func (c *commonMockSetup) setupBatchBuildingMocks() {
+	c.t.Helper()
+
+	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+		Return(chainfee.SatPerKWeight(1000), nil).Once()
+	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything).
+		Return(int32(-1), nil).Once()
+}
+
+// setupBatchBuildingFailure sets up the mocks for batch building to fail with
+// the given error. This is useful for testing failure scenarios.
+func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
+	c.t.Helper()
+
+	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+		Return(chainfee.SatPerKWeight(1000), nil).Once()
+	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything).
+		Return(int32(0), err).Once()
+}
+
+// setupCompleteRegistrationFlow sets up all mocks needed for a client to
+// successfully join and proceed through batch building. This combines:
+// - IsLocked check (not locked) and Lock
+// - Boarding input validation (UTXO)
+// - Batch building mocks (fee + funding).
+func (c *commonMockSetup) setupCompleteRegistrationFlow(
+	outpoint *wire.OutPoint, clientKey *btcec.PublicKey, exitDelay uint32,
+	confirmations int64, roundID RoundID) {
+
+	c.t.Helper()
+
+	c.allowBoardingInput(outpoint, roundID)
+	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
+	c.setupBatchBuildingMocks()
+}
+
+// setupBoardingInputWithUnlock sets up mocks for a boarding input that will
+// be unlocked later (used in failure test scenarios). This includes IsLocked,
+// Lock, Unlock, and UTXO mocks.
+func (c *commonMockSetup) setupBoardingInputWithUnlock(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, exitDelay uint32, confirmations int64,
+	roundID RoundID) {
+
+	c.t.Helper()
+
+	c.allowBoardingInput(outpoint, roundID)
+	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
+		Return(nil).Once()
+	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
+}
+
+// assertMockExpectations asserts that all mocks received their expected calls.
+// This should be called at the end of each test to verify mock expectations.
+func (c *commonMockSetup) assertMockExpectations() {
+	c.t.Helper()
+
+	c.boardingLocker.AssertExpectations(c.t)
+	c.chainSource.AssertExpectations(c.t)
+	c.feeEstimator.AssertExpectations(c.t)
+	c.walletController.AssertExpectations(c.t)
 }
 
 // buildExpectedPkScript builds the expected PkScript for a boarding input.
@@ -381,15 +503,6 @@ func (m *mockChainSource) GetUTXO(outpoint wire.OutPoint) (*UTXO, error) {
 	}
 
 	return args.Get(0).(*UTXO), args.Error(1) //nolint:forcetypeassert
-}
-
-// assertMockExpectations asserts that all mocks received their expected calls.
-// This should be called at the end of each test to verify mock expectations.
-func (h *fsmTestHarness) assertMockExpectations() {
-	h.Helper()
-
-	h.boardingLocker.AssertExpectations(h)
-	h.chainSource.AssertExpectations(h)
 }
 
 // clientHarness helps simulate a client in tests. It tracks the client's keys

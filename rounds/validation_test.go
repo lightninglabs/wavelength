@@ -11,7 +11,6 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,13 +33,11 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock: no locks on this input.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource to return valid UTXO with script.
+		// Set up validation mocks.
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
 
 		req := &types.BoardingRequest{
 			Outpoint:    &outpoint1,
@@ -73,8 +70,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		require.NoError(t, err)
 
 		// Mock: input is already locked by another round.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(true, otherRoundID, nil)
+		h.lockBoardingInput(&outpoint1, otherRoundID)
 
 		req := &types.BoardingRequest{
 			Outpoint:    &outpoint1,
@@ -119,8 +115,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h := newTestHarness(t)
 
 		// Mock: no locks on this input.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
+		h.allowBoardingInput(&outpoint1)
 
 		req := &types.BoardingRequest{
 			Outpoint:  &outpoint1,
@@ -146,8 +141,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.env.Terms.BoardingExitDelay = 200
 
 		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
+		h.allowBoardingInput(&outpoint1)
 
 		req := &types.BoardingRequest{
 			Outpoint:    &outpoint1,
@@ -170,8 +164,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h := newTestHarness(t)
 
 		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
+		h.allowBoardingInput(&outpoint1)
 
 		// Mock ChainSource to return error (UTXO doesn't exist).
 		h.chainSource.On("GetUTXO", outpoint1).
@@ -198,13 +191,11 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h.env.Terms.BoardingExitDelay = 100
 		h.env.Terms.MinBoardingConfirmations = 10
 
-		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource to return UTXO with few confirmations.
+		// Set up validation mocks with insufficient confirmations.
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 5)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 5,
+		)
 
 		req := &types.BoardingRequest{
 			Outpoint:    &outpoint1,
@@ -226,8 +217,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		h := newTestHarness(t)
 
 		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
+		h.allowBoardingInput(&outpoint1)
 
 		// Mock ChainSource to return UTXO with wrong pkScript.
 		// The UTXO has a different script than what we expect.
@@ -259,17 +249,13 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
 		// Exit delay is 100, safety margin is 6, so max safe is 94.
 		// Set confirmations to exactly 94 (at the boundary).
 		exitDelay := uint32(100)
 		safetyMargin := h.env.Terms.BoardingExitDelaySafetyMargin
 		confirmations := int64(exitDelay - safetyMargin)
-		h.mockBoardingUTXO(
-			outpoint1, clientPub, exitDelay, confirmations,
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, confirmations,
 		)
 
 		req := &types.BoardingRequest{
@@ -291,16 +277,12 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
 		// Exit delay is 100, set confirmations to 98 (well past
 		// safety margin).
 		exitDelay := uint32(100)
 		confirmations := int64(98)
-		h.mockBoardingUTXO(
-			outpoint1, clientPub, exitDelay, confirmations,
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, confirmations,
 		)
 
 		req := &types.BoardingRequest{
@@ -322,16 +304,12 @@ func TestValidateBoardingRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock: no locks.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
 		// Exit delay is 100, safety margin is 6, so max safe is 94.
 		// Set confirmations to 93 (just below the threshold).
 		exitDelay := uint32(100)
 		confirmations := int64(93)
-		h.mockBoardingUTXO(
-			outpoint1, clientPub, exitDelay, confirmations,
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, confirmations,
 		)
 
 		req := &types.BoardingRequest{
@@ -765,16 +743,14 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock locker for both outpoints.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint2).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource for both outpoints.
+		// Set up validation mocks for both outpoints.
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
-		h.mockBoardingUTXO(outpoint2, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
+		h.setupBoardingInputValidationOnly(
+			&outpoint2, clientPub, exitDelay, 10,
+		)
 
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{
@@ -806,13 +782,11 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock locker for outpoint1.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource for outpoint1.
+		// Set up validation mocks for outpoint1.
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
 
 		// Create join request with duplicate outpoints.
 		req := &types.JoinRoundRequest{
@@ -848,15 +822,12 @@ func TestValidateJoinRequest(t *testing.T) {
 		otherRoundID, err := NewRoundID()
 		require.NoError(t, err)
 
-		// Mock locker: first succeeds, second fails (already locked).
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
-			Return(false, RoundID{}, nil).Once()
-		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
-			Return(true, otherRoundID, nil).Once()
-
-		// Mock ChainSource for outpoint1.
+		// Set up: first succeeds, second fails (already locked).
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
+		h.lockBoardingInput(&outpoint2, otherRoundID)
 
 		req := &types.JoinRoundRequest{
 			BoardingReqs: []*types.BoardingRequest{
@@ -886,13 +857,11 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock locker for outpoint1.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource for outpoint1 (100000 sats).
+		// Set up validation mocks for outpoint1 (100000 sats).
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
 
 		// Boarding input is 100000 sats, leave is 50000 sats.
 		req := &types.JoinRoundRequest{
@@ -923,13 +892,11 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		h := newTestHarness(t)
 
-		// Mock locker for outpoint1.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-
-		// Mock ChainSource for outpoint1 (100000 sats).
+		// Set up validation mocks for outpoint1 (100000 sats).
 		exitDelay := uint32(144)
-		h.mockBoardingUTXO(outpoint1, clientPub, exitDelay, 10)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
 
 		// Boarding input is 100000 sats, leave is 150000 sats.
 		req := &types.JoinRoundRequest{
@@ -961,10 +928,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		h.env.Terms.MaxVTXOAmount = 1000000
 		h.env.Terms.VTXOExitDelay = 100
 
-		// Mock boarding input with 100k sats.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.mockBoardingUTXO(outpoint1, clientPub, 144, 10)
+		// Set up validation mocks for boarding input with 100k sats.
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, 144, 10,
+		)
 
 		// Create VTXO request descriptors.
 		vtxoKey1, _ := testutils.CreateKey(10)
@@ -1040,10 +1007,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		h.env.Terms.MaxVTXOAmount = 1000000
 		h.env.Terms.VTXOExitDelay = 100
 
-		// Mock boarding input with 100k sats.
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.mockBoardingUTXO(outpoint1, clientPub, 144, 10)
+		// Set up validation mocks for boarding input with 100k sats.
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, 144, 10,
+		)
 
 		vtxoKey, _ := testutils.CreateKey(10)
 
