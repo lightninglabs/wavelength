@@ -3,9 +3,13 @@ package rounds
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
@@ -15,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -29,8 +34,10 @@ type fsmTestHarness struct {
 	operatorSigner input.Signer
 
 	// Mocks (testify/mock.Mock based).
-	boardingLocker *mockBoardingInputLocker
-	chainSource    *mockChainSource
+	boardingLocker   *mockBoardingInputLocker
+	chainSource      *mockChainSource
+	feeEstimator     *chainfee.MockEstimator
+	walletController *mockWalletController
 
 	// Environment for FSM.
 	env *Environment
@@ -57,22 +64,30 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		PubKey: operatorPub,
 	}
 
-	// Create mocks. Don't use default expectations for FSM tests since
-	// they need precise control over mock behavior.
+	// Create mocks without default expectations. Tests that need
+	// permissive defaults can call setupPermissiveMocks().
 	mockLocker := &mockBoardingInputLocker{}
 	mockChainSrc := &mockChainSource{}
+	mockFeeEstimator := &chainfee.MockEstimator{}
+	mockWalletController := newMockWalletController(operatorSigner)
 
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
 		BoardingInputLocker: mockLocker,
 		ChainSource:         mockChainSrc,
+		FeeEstimator:        mockFeeEstimator,
+		Log:                 btclog.Disabled,
+		WalletController:    mockWalletController,
+		ConfTarget:          6,
+		MinConfs:            1,
 		Terms: &batch.Terms{
 			OperatorKey:                   operatorKey,
 			BoardingExitDelay:             100,
 			BoardingExitDelaySafetyMargin: 6,
 			MinBoardingConfirmations:      1,
 			MaxVTXOsPerTree:               1024,
+			SignatureCollectionTimeout:    30 * time.Second,
 			TreeRadix:                     4,
 		},
 	}
@@ -86,17 +101,47 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 	fsm.Start(t.Context())
 
 	h := &fsmTestHarness{
-		T:              t,
-		env:            &env,
-		fsm:            &fsm,
-		operatorPub:    operatorPub,
-		operatorSigner: operatorSigner,
-		boardingLocker: mockLocker,
-		chainSource:    mockChainSrc,
-		outboxMessages: make([]OutboxEvent, 0),
+		T:                t,
+		env:              &env,
+		fsm:              &fsm,
+		operatorPub:      operatorPub,
+		operatorSigner:   operatorSigner,
+		boardingLocker:   mockLocker,
+		chainSource:      mockChainSrc,
+		feeEstimator:     mockFeeEstimator,
+		walletController: mockWalletController,
+		outboxMessages:   make([]OutboxEvent, 0),
 	}
 
+	// Register cleanup to automatically assert mock expectations.
+	t.Cleanup(func() {
+		h.assertMockExpectations()
+	})
+
 	return h
+}
+
+// setupPermissiveMocks sets up permissive `.Maybe()` expectations on all mocks.
+// This is useful for FSM tests that don't need precise mock control.
+func (h *fsmTestHarness) setupPermissiveMocks() {
+	h.Helper()
+
+	// Set up permissive boarding locker expectations.
+	h.boardingLocker.On("Lock", mock.Anything, mock.Anything,
+		mock.Anything).Return(nil).Maybe()
+	h.boardingLocker.On("Unlock", mock.Anything, mock.Anything,
+		mock.Anything).Return(nil).Maybe()
+	h.boardingLocker.On("IsLocked", mock.Anything, mock.Anything).
+		Return(false, RoundID{}, nil).Maybe()
+
+	// Set up permissive fee estimator expectation.
+	h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
+
+	// Set up permissive wallet controller expectation.
+	h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything).
+		Return(int32(-1), nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
@@ -254,6 +299,8 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 
 // assertOutboxContains asserts that the outbox contains at least one message
 // of the given type and returns the first match.
+//
+//nolint:unused
 func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
 	h.Helper()
 
@@ -286,23 +333,6 @@ func assertOutboxContains[T OutboxEvent](h *fsmTestHarness) T {
 // testing using testify/mock.
 type mockBoardingInputLocker struct {
 	mock.Mock
-}
-
-// newMockBoardingInputLocker creates a new mock boarding input locker with
-// default permissive expectations that allow it to work without explicit setup.
-func newMockBoardingInputLocker() *mockBoardingInputLocker {
-	m := &mockBoardingInputLocker{}
-
-	// Set up default permissive expectations that always succeed. These can
-	// be overridden by specific expectations in tests.
-	m.On("Lock", mock.Anything, mock.Anything, mock.Anything).
-		Return(nil).Maybe()
-	m.On("Unlock", mock.Anything, mock.Anything, mock.Anything).
-		Return(nil).Maybe()
-	m.On("IsLocked", mock.Anything, mock.Anything).
-		Return(false, RoundID{}, nil).Maybe()
-
-	return m
 }
 
 // Lock is a mock implementation of BoardingInputLocker.Lock.
@@ -353,6 +383,15 @@ func (m *mockChainSource) GetUTXO(outpoint wire.OutPoint) (*UTXO, error) {
 	return args.Get(0).(*UTXO), args.Error(1) //nolint:forcetypeassert
 }
 
+// assertMockExpectations asserts that all mocks received their expected calls.
+// This should be called at the end of each test to verify mock expectations.
+func (h *fsmTestHarness) assertMockExpectations() {
+	h.Helper()
+
+	h.boardingLocker.AssertExpectations(h)
+	h.chainSource.AssertExpectations(h)
+}
+
 // clientHarness helps simulate a client in tests. It tracks the client's keys
 // and can generate boarding and VTXO requests for FSM-level tests.
 type clientHarness struct {
@@ -361,8 +400,9 @@ type clientHarness struct {
 	// Client identity.
 	clientID ClientID
 
-	// Primary boarding key.
-	boardingKey *btcec.PublicKey
+	// Primary boarding key and signer (for creating valid signatures).
+	boardingKey    *btcec.PublicKey
+	boardingSigner input.Signer
 
 	// Key index for generating new keys.
 	nextKeyIndex int32
@@ -371,6 +411,10 @@ type clientHarness struct {
 	operatorKey *btcec.PublicKey
 	exitDelay   uint32
 	expiry      uint32
+
+	// submittedBoardingReqs stores boarding requests submitted via
+	// createJoinRequest so they can be used later for signature creation.
+	submittedBoardingReqs []*types.BoardingRequest
 }
 
 // newClientHarness creates a new client harness for testing.
@@ -379,16 +423,17 @@ func newClientHarness(t *testing.T, clientID ClientID, baseKeyIndex int32,
 
 	t.Helper()
 
-	boardingKey, _ := testutils.CreateKey(baseKeyIndex)
+	boardingKey, boardingSigner := testutils.CreateKey(baseKeyIndex)
 
 	return &clientHarness{
-		t:            t,
-		clientID:     clientID,
-		boardingKey:  boardingKey,
-		nextKeyIndex: baseKeyIndex + 1,
-		operatorKey:  operatorKey,
-		exitDelay:    exitDelay,
-		expiry:       expiry,
+		t:              t,
+		clientID:       clientID,
+		boardingKey:    boardingKey,
+		boardingSigner: boardingSigner,
+		nextKeyIndex:   baseKeyIndex + 1,
+		operatorKey:    operatorKey,
+		exitDelay:      exitDelay,
+		expiry:         expiry,
 	}
 }
 
@@ -408,16 +453,215 @@ func (c *clientHarness) createBoardingRequest(
 }
 
 // createJoinRequest creates a ClientJoinRequestEvent from the provided
-// boarding requests. This is used for FSM-level tests.
+// boarding requests. This is used for FSM-level tests. The boarding requests
+// are stored so they can be used later for signature creation.
 func (c *clientHarness) createJoinRequest(
 	boardingReqs []*types.BoardingRequest) *ClientJoinRequestEvent {
 
 	c.t.Helper()
+
+	// Store the boarding requests for later signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
 
 	return &ClientJoinRequestEvent{
 		ClientID: c.clientID,
 		Request: &types.JoinRoundRequest{
 			BoardingReqs: boardingReqs,
 		},
+	}
+}
+
+// mockWalletController is a mock implementation of WalletController for
+// testing.
+type mockWalletController struct {
+	mock.Mock
+
+	input.Signer
+}
+
+// newMockWalletController creates a new mock wallet controller with the
+// provided private key for signing.
+func newMockWalletController(signer input.Signer) *mockWalletController {
+	return &mockWalletController{
+		Signer: signer,
+	}
+}
+
+// FundPsbt is a mock implementation of WalletController.FundPsbt.
+func (m *mockWalletController) FundPsbt(ctx context.Context,
+	packet *psbt.Packet, minConfs int32,
+	feeRate chainfee.SatPerKWeight,
+	account string) (int32, error) {
+
+	args := m.Called(ctx, packet, minConfs, feeRate, account)
+
+	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
+}
+
+// createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with
+// real signatures for the given boarding inputs. The client signs each input
+// using the tapscript collaborative spend path.
+func (c *clientHarness) createBoardingSignaturesEvent(
+	state *AwaitingBoardingSigsState) *ClientBoardingSignaturesEvent {
+
+	c.t.Helper()
+
+	// Get the client's registration to find their boarding inputs.
+	reg, exists := state.ClientRegistrations[c.clientID]
+	require.True(c.t, exists, "client %s not registered", c.clientID)
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	tx := state.PSBT.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range state.PSBT.Inputs {
+		if pIn.WitnessUtxo != nil {
+			prevOutFetcher.AddPrevOut(
+				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+			)
+		}
+	}
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Sign each boarding input.
+	var sigs []*types.BoardingInputSignature
+	for _, bi := range reg.BoardingInputs {
+		// Find the input index in the PSBT that matches this outpoint.
+		inputIdx := -1
+		for i, txIn := range tx.TxIn {
+			if txIn.PreviousOutPoint == *bi.Outpoint {
+				inputIdx = i
+				break
+			}
+		}
+		require.NotEqual(c.t, -1, inputIdx,
+			"boarding input not found in PSBT")
+
+		// Get the spend info for the collaborative path.
+		spendInfo, err := scripts.NewVTXOSpendInfo(
+			bi.Tapscript, scripts.VTXOCollabPathLeaf,
+		)
+		require.NoError(c.t, err, "failed to get spend info")
+
+		// Get the prevout for this input.
+		prevOut := state.PSBT.Inputs[inputIdx].WitnessUtxo
+		require.NotNil(c.t, prevOut, "missing WitnessUtxo for input")
+
+		// Create the key descriptor for signing.
+		keyDesc := keychain.KeyDescriptor{
+			PubKey: c.boardingKey,
+		}
+
+		// Sign the input using the collaborative spend path.
+		sig, err := scripts.SignVTXOCollabInput(
+			c.boardingSigner, tx, inputIdx, spendInfo,
+			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+		)
+		require.NoError(c.t, err, "failed to sign boarding input")
+
+		// Convert to schnorr.Signature.
+		schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+		require.NoError(c.t, err, "failed to parse signature")
+
+		sigs = append(sigs, &types.BoardingInputSignature{
+			InputIndex:      inputIdx,
+			Outpoint:        *bi.Outpoint,
+			ClientSignature: schnorrSig,
+		})
+	}
+
+	return &ClientBoardingSignaturesEvent{
+		ClientID:   c.clientID,
+		Signatures: sigs,
+	}
+}
+
+// createBoardingSignaturesFromPSBT creates a ClientBoardingSignaturesEvent
+// using the PSBT received from ClientBatchInfo. This mimics the real client
+// flow where the client uses their stored boarding requests and the received
+// PSBT to create signatures.
+func (c *clientHarness) createBoardingSignaturesFromPSBT(
+	p *psbt.Packet) *ClientBoardingSignaturesEvent {
+
+	c.t.Helper()
+
+	require.NotEmpty(c.t, c.submittedBoardingReqs,
+		"no boarding requests stored - call createJoinRequest first")
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	tx := p.UnsignedTx
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range p.Inputs {
+		if pIn.WitnessUtxo != nil {
+			prevOutFetcher.AddPrevOut(
+				tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+			)
+		}
+	}
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Sign each boarding input using the stored boarding requests.
+	var sigs []*types.BoardingInputSignature
+	for _, boardReq := range c.submittedBoardingReqs {
+		// Find the input index in the PSBT that matches this outpoint.
+		inputIdx := -1
+		for i, txIn := range tx.TxIn {
+			if txIn.PreviousOutPoint == *boardReq.Outpoint {
+				inputIdx = i
+
+				break
+			}
+		}
+		require.NotEqual(c.t, -1, inputIdx)
+
+		// Build the tapscript from the boarding request parameters.
+		tapscript, err := scripts.VTXOTapScript(
+			boardReq.ClientKey, boardReq.OperatorKey,
+			boardReq.ExitDelay,
+		)
+		require.NoError(c.t, err, "failed to create tapscript")
+
+		// Get the spend info for the collaborative path.
+		spendInfo, err := scripts.NewVTXOSpendInfo(
+			tapscript, scripts.VTXOCollabPathLeaf,
+		)
+		require.NoError(c.t, err, "failed to get spend info")
+
+		// Get the prevout for this input.
+		prevOut := p.Inputs[inputIdx].WitnessUtxo
+		require.NotNil(c.t, prevOut, "missing WitnessUtxo for input %d",
+			inputIdx)
+
+		// Create the key descriptor for signing.
+		keyDesc := keychain.KeyDescriptor{
+			PubKey: c.boardingKey,
+		}
+
+		// Sign the input using the collaborative spend path.
+		sig, err := scripts.SignVTXOCollabInput(
+			c.boardingSigner, tx, inputIdx, spendInfo,
+			&keyDesc, prevOut, sigHashes, prevOutFetcher,
+		)
+		require.NoError(c.t, err, "failed to sign boarding input")
+
+		// Convert to schnorr.Signature.
+		schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+		require.NoError(c.t, err, "failed to parse signature")
+
+		sigs = append(sigs, &types.BoardingInputSignature{
+			InputIndex:      inputIdx,
+			Outpoint:        *boardReq.Outpoint,
+			ClientSignature: schnorrSig,
+		})
+	}
+
+	return &ClientBoardingSignaturesEvent{
+		ClientID:   c.clientID,
+		Signatures: sigs,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // Environment provides the round state machine with access to external systems
@@ -30,6 +31,23 @@ type Environment struct {
 
 	// Log is the logger for the FSM.
 	Log btclog.Logger
+
+	// WalletController provides PSBT funding and signing operations.
+	WalletController WalletController
+
+	// FeeEstimator provides fee rate estimation for transactions.
+	FeeEstimator chainfee.Estimator
+
+	// WalletAccount is the lnd wallet account name to use for coin
+	// selection.
+	WalletAccount string
+
+	// ConfTarget is the confirmation target to use for fee estimation.
+	ConfTarget uint32
+
+	// MinConfs is the minimum number of confirmations required for wallet
+	// UTXOs to be used for funding.
+	MinConfs int32
 }
 
 // Name returns the unique identifier for this FSM instance.

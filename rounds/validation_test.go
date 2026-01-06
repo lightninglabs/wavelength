@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,9 +61,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		require.NotNil(t, boardingInput.Tapscript)
 		require.NotNil(t, boardingInput.PkScript)
 		require.NotNil(t, boardingInput.OperatorKeyDesc)
-
-		h.boardingLocker.AssertExpectations(t)
-		h.chainSource.AssertExpectations(t)
 	})
 
 	t.Run("boarding input already locked", func(t *testing.T) {
@@ -90,8 +88,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrBoardingInputLocked)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("is locked check fails", func(t *testing.T) {
@@ -115,8 +111,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrCheckLockFailed)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("operator key mismatch", func(t *testing.T) {
@@ -141,8 +135,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrOperatorKeyMismatch)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("exit delay below minimum", func(t *testing.T) {
@@ -170,8 +162,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrExitDelayTooLow)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("utxo not found or spent", func(t *testing.T) {
@@ -199,8 +189,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrFetchUTXO)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("utxo confirmations below minimum", func(t *testing.T) {
@@ -230,8 +218,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrInsufficientConfirmations)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("pkscript mismatch", func(t *testing.T) {
@@ -266,9 +252,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrPkScriptMismatch)
-
-		h.boardingLocker.AssertExpectations(t)
-		h.chainSource.AssertExpectations(t)
 	})
 
 	t.Run("delay path too close - at safety margin", func(t *testing.T) {
@@ -301,9 +284,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrDelayPathTooClose)
-
-		h.boardingLocker.AssertExpectations(t)
-		h.chainSource.AssertExpectations(t)
 	})
 
 	t.Run("delay path too close - past safety margin", func(t *testing.T) {
@@ -335,9 +315,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrDelayPathTooClose)
-
-		h.boardingLocker.AssertExpectations(t)
-		h.chainSource.AssertExpectations(t)
 	})
 
 	t.Run("valid confirmations within safety margin", func(t *testing.T) {
@@ -369,9 +346,6 @@ func TestValidateBoardingRequest(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NotNil(t, boardingInput)
-
-		h.boardingLocker.AssertExpectations(t)
-		h.chainSource.AssertExpectations(t)
 	})
 }
 
@@ -825,8 +799,6 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.Len(t, result.BoardingInputs, 2)
 		require.Equal(t, &outpoint1, result.BoardingInputs[0].Outpoint)
 		require.Equal(t, &outpoint2, result.BoardingInputs[1].Outpoint)
-
-		h.boardingLocker.AssertExpectations(t)
 	})
 
 	t.Run("duplicate boarding request outpoints", func(t *testing.T) {
@@ -877,10 +849,10 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.NoError(t, err)
 
 		// Mock locker: first succeeds, second fails (already locked).
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
-			Return(false, RoundID{}, nil)
-		h.boardingLocker.On("IsLocked", t.Context(), &outpoint2).
-			Return(true, otherRoundID, nil)
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint1).
+			Return(false, RoundID{}, nil).Once()
+		h.boardingLocker.On("IsLocked", mock.Anything, &outpoint2).
+			Return(true, otherRoundID, nil).Once()
 
 		// Mock ChainSource for outpoint1.
 		exitDelay := uint32(144)

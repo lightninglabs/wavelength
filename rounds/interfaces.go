@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // StateTransition is a type alias for the verbose protofsm.StateTransition
@@ -100,6 +103,21 @@ type UTXO struct {
 
 	// Confirmations is the number of confirmations for this UTXO.
 	Confirmations int64
+}
+
+// WalletController provides PSBT funding and signing operations. This
+// interface wraps the subset of lnd's WalletController that we need for
+// commitment transaction construction. It also embeds input.Signer for signing
+// individual inputs like boarding inputs with operator keys.
+type WalletController interface {
+	input.Signer
+
+	// FundPsbt performs coin selection and adds wallet inputs to fund the
+	// outputs in the PSBT. It also adds a change output if needed.
+	// Returns the change output index (-1 if no change).
+	FundPsbt(ctx context.Context, packet *psbt.Packet,
+		minConfs int32, feeRate chainfee.SatPerKWeight,
+		account string) (changeIndex int32, err error)
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

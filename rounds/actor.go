@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // ActorConfig contains the configuration parameters for the rounds actor.
@@ -46,6 +47,24 @@ type ActorConfig struct {
 	// notifications (e.g., timeout expirations). The actor uses this to
 	// create mapped references for callback registration.
 	SelfRef actor.TellOnlyRef[ActorMsg]
+
+	// WalletController provides access to wallet operations for batch
+	// building.
+	WalletController WalletController
+
+	// FeeEstimator provides fee rate estimation for transactions.
+	FeeEstimator chainfee.Estimator
+
+	// WalletAccount is the wallet account to use for funding batch
+	// transactions.
+	WalletAccount string
+
+	// ConfTarget is the confirmation target to use for fee estimation.
+	ConfTarget uint32
+
+	// MinConfs is the minimum number of confirmations required for wallet
+	// UTXOs to be used for funding.
+	MinConfs int32
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -257,6 +276,55 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				"sealed_round", m.SealedRoundID,
 				"new_round", newRound.RoundID)
 
+		case *UnlockBoardingInputsReq:
+			// Unlock boarding inputs that were locked for a failed
+			// round.
+			for _, outpoint := range m.Outpoints {
+				err := a.cfg.BoardingInputLocker.Unlock(
+					ctx, outpoint, m.RoundID,
+				)
+				if err != nil {
+					// Log warning but continue - input may
+					// already be unlocked.
+					a.log.WarnS(ctx, "Failed to unlock "+
+						"boarding input",
+						err,
+						"outpoint", outpoint,
+						"round_id", m.RoundID)
+				}
+			}
+
+		case *RoundFailedReq:
+			// Round has failed - clean up and create a new round if
+			// this was the current round.
+			a.log.ErrorS(ctx, "Round failed",
+				fmt.Errorf("round failed: %s", m.Reason),
+				"round_id", m.FailedRoundID,
+				"reason", m.Reason)
+
+			// Remove the failed round from tracking.
+			delete(a.rounds, m.FailedRoundID)
+
+			// If this was the current round, create a new one.
+			if a.currentRound != nil &&
+				a.currentRound.RoundID == m.FailedRoundID {
+
+				newRound, err := a.newRoundFSM(ctx)
+				if err != nil {
+					return fmt.Errorf("failed to create "+
+						"new round after failure: %w",
+						err)
+				}
+
+				a.currentRound = newRound
+				a.rounds[newRound.RoundID] = newRound
+
+				a.log.InfoS(ctx, "Created new round after "+
+					"failure",
+					"failed_round", m.FailedRoundID,
+					"new_round", newRound.RoundID)
+			}
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
@@ -285,6 +353,11 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		BoardingInputLocker: a.cfg.BoardingInputLocker,
 		ChainSource:         a.cfg.ChainSource,
 		Terms:               a.cfg.Terms,
+		WalletController:    a.cfg.WalletController,
+		FeeEstimator:        a.cfg.FeeEstimator,
+		WalletAccount:       a.cfg.WalletAccount,
+		ConfTarget:          a.cfg.ConfTarget,
+		MinConfs:            a.cfg.MinConfs,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -353,6 +426,9 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	switch phase {
 	case TimeoutPhaseRegistration:
 		timeoutEvent = &RegistrationTimeoutEvent{}
+
+	case TimeoutPhaseBoardingSigs:
+		timeoutEvent = &BoardingSignaturesTimeoutEvent{}
 
 	default:
 		// Unknown phase - log warning and ignore.

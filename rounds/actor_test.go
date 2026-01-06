@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -65,13 +67,38 @@ func (m *mockClientConnRef) getMessages() []clientconn.ClientConnMsg {
 }
 
 // clearMessages clears all captured messages.
-//
-//nolint:unused
 func (m *mockClientConnRef) clearMessages() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.messages = nil
+}
+
+// getClientBatchInfo extracts the ClientBatchInfo for a specific client from
+// the captured messages. Returns nil if not found.
+func (m *mockClientConnRef) getClientBatchInfo(
+	clientID ClientID) *ClientBatchInfo {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, msg := range m.messages {
+		sendReq, ok := msg.(*clientconn.SendServerEventRequest)
+		if !ok {
+			continue
+		}
+
+		batchInfo, ok := sendReq.Message.(*ClientBatchInfo)
+		if !ok {
+			continue
+		}
+
+		if batchInfo.Client == clientID {
+			return batchInfo
+		}
+	}
+
+	return nil
 }
 
 // actorRef wraps an Actor and implements actor.TellOnlyRef[ActorMsg] so that
@@ -184,18 +211,41 @@ func (m *mockTimeoutActor) assertTimeoutScheduled(t *testing.T, roundID RoundID,
 	require.True(t, ok, "expected timeout scheduled for ID %s", id)
 }
 
+// assertTimeoutCancelled verifies that a timeout was cancelled for the given
+// round ID and phase.
+func (m *mockTimeoutActor) assertTimeoutCancelled(roundID RoundID,
+	phase TimeoutPhase) {
+
+	m.t.Helper()
+
+	id := makeTimeoutID(roundID, phase)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, cancelledID := range m.cancelledIDs {
+		if cancelledID == id {
+			return
+		}
+	}
+
+	m.t.Fatalf("expected timeout cancelled for ID %s", id)
+}
+
 // actorTestHarness provides test infrastructure for the rounds Actor.
 type actorTestHarness struct {
 	t *testing.T
 
 	//nolint:containedctx
-	ctx          context.Context
-	actor        *Actor
-	cfg          *ActorConfig
-	locker       *mockBoardingInputLocker
-	clients      *mockClientConnRef
-	chainSource  *mockChainSource
-	timeoutActor *mockTimeoutActor
+	ctx              context.Context
+	actor            *Actor
+	cfg              *ActorConfig
+	locker           *mockBoardingInputLocker
+	clients          *mockClientConnRef
+	chainSource      *mockChainSource
+	feeEstimator     *chainfee.MockEstimator
+	walletController *mockWalletController
+	timeoutActor     *mockTimeoutActor
 
 	// operatorPub is the operator public key for this test harness.
 	operatorPub *btcec.PublicKey
@@ -207,13 +257,17 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	t.Helper()
 
 	ctx := t.Context()
-	locker := newMockBoardingInputLocker()
+	locker := &mockBoardingInputLocker{}
 	clients := newMockClientConnRef(t)
 	chainSource := &mockChainSource{}
 	timeoutActor := newMockTimeoutActor(t)
 
+	// Set up fee estimator. Tests should set up explicit expectations.
+	mockFeeEstimator := &chainfee.MockEstimator{}
+
 	// Set up operator key.
-	operatorPub, _ := testutils.CreateKey(1)
+	operatorPub, operatorSigner := testutils.CreateKey(1)
+	mockWalletController := newMockWalletController(operatorSigner)
 
 	cfg := &ActorConfig{
 		ChainParams:         &chaincfg.RegressionNetParams,
@@ -222,16 +276,21 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		BoardingInputLocker: locker,
 		ChainSource:         chainSource,
 		TimeoutActor:        timeoutActor,
+		FeeEstimator:        mockFeeEstimator,
+		WalletController:    mockWalletController,
+		ConfTarget:          6,
+		MinConfs:            1,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: operatorPub,
 			},
-			BoardingExitDelay:        100,
-			MinBoardingConfirmations: 1,
-			MinVTXOAmount:            1000,
-			MaxVTXOAmount:            10000000,
-			VTXOExitDelay:            100,
-			RegistrationTimeout:      30 * time.Second,
+			BoardingExitDelay:          100,
+			MinBoardingConfirmations:   1,
+			MinVTXOAmount:              1000,
+			MaxVTXOAmount:              10000000,
+			VTXOExitDelay:              100,
+			RegistrationTimeout:        30 * time.Second,
+			SignatureCollectionTimeout: 30 * time.Second,
 		},
 	}
 
@@ -243,17 +302,26 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	// Done after creation since we need the actor instance.
 	cfg.SelfRef = &actorRef{actor: actor}
 
-	return &actorTestHarness{
-		t:            t,
-		ctx:          ctx,
-		actor:        actor,
-		cfg:          cfg,
-		locker:       locker,
-		clients:      clients,
-		chainSource:  chainSource,
-		timeoutActor: timeoutActor,
-		operatorPub:  operatorPub,
+	h := &actorTestHarness{
+		t:                t,
+		ctx:              ctx,
+		actor:            actor,
+		cfg:              cfg,
+		locker:           locker,
+		clients:          clients,
+		chainSource:      chainSource,
+		feeEstimator:     mockFeeEstimator,
+		walletController: mockWalletController,
+		timeoutActor:     timeoutActor,
+		operatorPub:      operatorPub,
 	}
+
+	// Register cleanup to automatically assert mock expectations.
+	t.Cleanup(func() {
+		h.assertMockExpectations()
+	})
+
+	return h
 }
 
 // start initializes the actor by calling Start.
@@ -262,6 +330,19 @@ func (h *actorTestHarness) start(ctx context.Context) {
 
 	err := h.actor.Start(ctx)
 	require.NoError(h.t, err)
+}
+
+// assertMockExpectations asserts that all mocks received their expected calls.
+// This should be called at the end of each test to verify mock expectations.
+// Note: mockClientConnRef and mockTimeoutActor are custom mocks that don't use
+// testify/mock, so they don't have AssertExpectations methods.
+func (h *actorTestHarness) assertMockExpectations() {
+	h.t.Helper()
+
+	h.locker.AssertExpectations(h.t)
+	h.chainSource.AssertExpectations(h.t)
+	h.feeEstimator.AssertExpectations(h.t)
+	h.walletController.AssertExpectations(h.t)
 }
 
 // assertRoundCount verifies the actor is tracking the expected number of
@@ -287,29 +368,6 @@ func (h *actorTestHarness) sendJoinRequest(req *JoinRoundRequest) error {
 	_, err := result.Unpack()
 
 	return err
-}
-
-// mockBoardingUTXO sets up the chain source mock to return a UTXO for the
-// given outpoint.
-func (h *actorTestHarness) mockBoardingUTXO(outpoint wire.OutPoint,
-	clientKey, operatorKey *btcec.PublicKey, exitDelay uint32,
-	confirmations int64) {
-
-	h.t.Helper()
-
-	pkScript := buildExpectedPkScript(
-		h.t, clientKey, operatorKey, exitDelay,
-	)
-
-	h.chainSource.On("GetUTXO", outpoint).Return(
-		&UTXO{
-			Output: &wire.TxOut{
-				Value:    int64(btcutil.Amount(100000)),
-				PkScript: pkScript,
-			},
-			Confirmations: confirmations,
-		}, nil,
-	)
 }
 
 // newClient creates a new clientHarness for testing.
@@ -374,6 +432,11 @@ func (c *actorClientHarness) createActorJoinRequest(
 
 	c.t.Helper()
 
+	// Store the boarding requests for later signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
+
 	return &JoinRoundRequest{
 		ClientID: c.clientID,
 		Request: &types.JoinRoundRequest{
@@ -396,6 +459,8 @@ func TestActorStart(t *testing.T) {
 
 	// Verify round ID is set.
 	require.NotEmpty(t, h.actor.currentRound.RoundID)
+
+	h.assertMockExpectations()
 }
 
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest
@@ -418,6 +483,13 @@ func TestActorJoinRoundRequest(t *testing.T) {
 			Index: 0,
 		}
 
+		// Set up explicit mock expectations.
+		roundID := h.actor.currentRound.RoundID
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, roundID).
+			Return(nil).Once()
+
 		// Mock the UTXO and create the boarding request.
 		client.mockBoardingUTXO(outpoint, 10)
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -428,12 +500,6 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		// Send the valid request.
 		err := h.sendJoinRequest(req)
 		require.NoError(t, err)
-
-		// Verify Lock was called for this outpoint and round.
-		roundID := h.actor.currentRound.RoundID
-		h.locker.AssertCalled(
-			t, "Lock", mock.Anything, &outpoint, roundID,
-		)
 
 		// Verify success response was sent to client.
 		msgs := h.clients.getMessages()
@@ -451,8 +517,6 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		h.timeoutActor.assertTimeoutScheduled(
 			t, roundID, TimeoutPhaseRegistration,
 		)
-
-		h.chainSource.AssertExpectations(t)
 	})
 
 	t.Run("invalid request sends error", func(t *testing.T) {
@@ -470,11 +534,10 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		wrongOperatorPub, _ := testutils.CreateKey(999)
 		clientKey, _ := testutils.CreateKey(2)
 
-		// Mock the UTXO so validation can proceed to operator key
-		// check.
-		h.mockBoardingUTXO(
-			outpoint, clientKey, wrongOperatorPub, 144, 10,
-		)
+		// Set up IsLocked expectation so validation can proceed to
+		// operator key check, which will fail.
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
 
 		req := &JoinRoundRequest{
 			ClientID: "client1",
@@ -509,6 +572,8 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		require.True(t, ok, "expected ClientErrorResp message")
 		require.Equal(t, "client1", string(clientMsg.Client))
 		require.Contains(t, clientMsg.ErrorMsg, "does not match")
+
+		h.assertMockExpectations()
 	})
 }
 
@@ -530,6 +595,19 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Index: 0,
 		}
 
+		// Set up explicit mock expectations.
+		originalRoundID := h.actor.currentRound.RoundID
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
+			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On(
+			"FundPsbt", mock.Anything, mock.Anything, int32(1),
+			chainfee.SatPerKWeight(1000), mock.Anything,
+		).Return(int32(-1), nil).Once()
+
 		client.mockBoardingUTXO(outpoint, 10)
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
@@ -538,9 +616,6 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		err := h.sendJoinRequest(req)
 		require.NoError(t, err)
-
-		// Record the current round ID before timeout.
-		originalRoundID := h.actor.currentRound.RoundID
 
 		// Verify timeout was scheduled.
 		h.timeoutActor.assertTimeoutScheduled(
@@ -565,6 +640,8 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		originalRound := h.actor.getRound(originalRoundID)
 		require.NotNil(t, originalRound,
 			"original round should still be tracked")
+
+		h.assertMockExpectations()
 	})
 
 	t.Run("duplicate timeout same phase ignored", func(t *testing.T) {
@@ -580,6 +657,19 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Index: 0,
 		}
 
+		// Set up explicit mock expectations.
+		originalRoundID := h.actor.currentRound.RoundID
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
+			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On(
+			"FundPsbt", mock.Anything, mock.Anything, int32(1),
+			chainfee.SatPerKWeight(1000), mock.Anything,
+		).Return(int32(-1), nil).Once()
+
 		client.mockBoardingUTXO(outpoint, 10)
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
@@ -588,9 +678,6 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		err := h.sendJoinRequest(req)
 		require.NoError(t, err)
-
-		// Record the current round ID before timeout.
-		originalRoundID := h.actor.currentRound.RoundID
 
 		// Manually create and store a callback (simulating what happens
 		// when the timeout is scheduled).
@@ -620,6 +707,8 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		h.assertRoundCount(2)
 		require.Equal(t, newRoundID, h.actor.currentRound.RoundID,
 			"current round should be unchanged after duplicate")
+
+		h.assertMockExpectations()
 	})
 
 	t.Run("timeout for unknown round ignored", func(t *testing.T) {
@@ -646,5 +735,232 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify no state changes.
 		h.assertRoundCount(1)
+
+		h.assertMockExpectations()
+	})
+}
+
+// TestActorFailureHandling tests the actor's handling of round failures,
+// including unlocking boarding inputs and creating new rounds.
+func TestActorFailureHandling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("batch failure unlocks inputs", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Create a client and join the round.
+		client := h.newClient("client1", 10)
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("test-input")),
+			Index: 0,
+		}
+
+		// Record the original round ID before join.
+		originalRoundID := h.actor.currentRound.RoundID
+
+		// Set up expectations for Lock, IsLocked, and Unlock.
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
+			Return(nil).Once()
+		h.locker.On(
+			"Unlock", mock.Anything, &outpoint, originalRoundID,
+		).Return(nil).Once()
+
+		client.mockBoardingUTXO(outpoint, 10)
+		boardingReq := client.createBoardingRequest(&outpoint)
+		req := client.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+
+		err := h.sendJoinRequest(req)
+		require.NoError(t, err)
+
+		// Clear client messages from successful join.
+		h.clients.clearMessages()
+
+		// Set up expectations for batch building.
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(0), fmt.Errorf("insufficient funds")).
+			Once()
+
+		// Fire the registration timeout to trigger batch building.
+		h.timeoutActor.FireTimeout(
+			h.ctx, originalRoundID, TimeoutPhaseRegistration,
+		)
+
+		// Verify client received failure notification.
+		msgs := h.clients.getMessages()
+		require.GreaterOrEqual(t, len(msgs), 1,
+			"expected at least one message to client")
+
+		// Find the failure notification.
+		var failureFound bool
+		for _, msg := range msgs {
+			sendReq, ok := msg.(*clientconn.SendServerEventRequest)
+			if !ok {
+				continue
+			}
+
+			failResp, ok := sendReq.Message.(*ClientRoundFailedResp)
+			if ok {
+				require.Equal(t, "client1",
+					string(failResp.Client))
+				require.Equal(t, originalRoundID,
+					failResp.RoundID)
+				require.Contains(t, failResp.Reason,
+					"insufficient funds")
+				failureFound = true
+
+				break
+			}
+		}
+		require.True(t, failureFound, "expected failure resp")
+
+		// Verify failed round was removed and new round created.
+		require.Nil(t, h.actor.getRound(originalRoundID),
+			"failed round should be removed")
+		newRoundID := h.actor.currentRound.RoundID
+		require.NotEqual(t, originalRoundID, newRoundID,
+			"new round should have different ID")
+
+		// Should still have 1 round (old one removed, new one created).
+		h.assertRoundCount(1)
+
+		// Verify Lock and Unlock were called as expected.
+		h.assertMockExpectations()
+	})
+}
+
+// TestActorBoardingSignatures tests the actor's handling of boarding signature
+// submissions via RoundMsg.
+func TestActorBoardingSignatures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid signatures transition to signing", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Create a client and join the round with a boarding input.
+		client := h.newClient("client1", 10)
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding-input")),
+			Index: 0,
+		}
+
+		// Record the round ID before join.
+		roundID := h.actor.currentRound.RoundID
+
+		// Set up expectation that Lock will be called when client
+		// joins.
+		h.locker.On("IsLocked", mock.Anything, &outpoint).
+			Return(false, RoundID{}, nil).Once()
+		h.locker.On("Lock", mock.Anything, &outpoint, roundID).
+			Return(nil).Once()
+		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+			Return(chainfee.SatPerKWeight(1000), nil).Once()
+		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
+			mock.Anything, mock.Anything, mock.Anything).
+			Return(int32(-1), nil).Once()
+
+		client.mockBoardingUTXO(outpoint, 10)
+		boardingReq := client.createBoardingRequest(&outpoint)
+		req := client.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReq},
+		)
+
+		err := h.sendJoinRequest(req)
+		require.NoError(t, err)
+
+		// Fire the registration timeout to seal and build the batch.
+		h.timeoutActor.FireTimeout(
+			h.ctx, roundID, TimeoutPhaseRegistration,
+		)
+
+		// Verify the round is now in AwaitingBoardingSigsState.
+		round := h.actor.getRound(roundID)
+		require.NotNil(t, round, "round should exist")
+
+		currentState, err := round.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*AwaitingBoardingSigsState)
+		require.True(t, ok, "should be in AwaitingBoardingSigsState")
+
+		// Verify boarding signatures timeout was scheduled.
+		h.timeoutActor.assertTimeoutScheduled(
+			t, roundID, TimeoutPhaseBoardingSigs,
+		)
+
+		// Get the ClientBatchInfo that was sent to the client. This
+		// mimics the real flow where the client receives the PSBT via
+		// the ClientBatchInfo message.
+		batchInfo := h.clients.getClientBatchInfo(client.clientID)
+		require.NotNil(t, batchInfo, "client should have received "+
+			"ClientBatchInfo")
+		require.NotNil(t, batchInfo.BatchPSBT, "BatchPSBT should not "+
+			"be nil")
+
+		// Create signatures using the PSBT from ClientBatchInfo. This
+		// mimics how a real client would create signatures using the
+		// batch info they received.
+		sigEvent := client.createBoardingSignaturesFromPSBT(
+			batchInfo.BatchPSBT,
+		)
+		roundMsg := &RoundMsg{
+			RoundID: roundID,
+			Event:   sigEvent,
+		}
+
+		result := h.actor.Receive(h.ctx, roundMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err, "submitting signatures should succeed")
+
+		// Verify the round transitioned to ServerSigningState.
+		newState, err := round.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok = newState.(*ServerSigningState)
+		require.True(t, ok,
+			"expected ServerSigningState, got %T", newState)
+
+		// Verify the boarding signatures timeout was cancelled.
+		h.timeoutActor.assertTimeoutCancelled(
+			roundID, TimeoutPhaseBoardingSigs,
+		)
+
+		// Verify Lock was called as expected.
+		h.locker.AssertExpectations(t)
+	})
+
+	t.Run("signatures for unknown round rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.start(h.ctx)
+
+		// Send signatures for a round that doesn't exist.
+		unknownRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		sigEvent := &ClientBoardingSignaturesEvent{
+			ClientID:   "client1",
+			Signatures: nil,
+		}
+		roundMsg := &RoundMsg{
+			RoundID: unknownRoundID,
+			Event:   sigEvent,
+		}
+
+		result := h.actor.Receive(h.ctx, roundMsg)
+		_, err = result.Unpack()
+		require.Error(t, err, "unknown round should error")
+		require.Contains(t, err.Error(), "not found")
 	})
 }

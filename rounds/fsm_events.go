@@ -53,3 +53,36 @@ type RegistrationTimeoutEvent struct{}
 // eventSealed marks RegistrationTimeoutEvent as implementing the sealed Event
 // interface.
 func (e *RegistrationTimeoutEvent) eventSealed() {}
+
+// PrepareClientNotificationsEvent is an internal event that triggers sending
+// batch information to clients. It is emitted after the PSBT is built.
+type PrepareClientNotificationsEvent struct{}
+
+// eventSealed marks PrepareClientNotificationsEvent as implementing the sealed
+// Event interface.
+func (e *PrepareClientNotificationsEvent) eventSealed() {}
+
+// BoardingSignaturesTimeoutEvent is sent when the boarding signature collection
+// timeout expires. Only AwaitingBoardingSigsState should handle this.
+type BoardingSignaturesTimeoutEvent struct{}
+
+// eventSealed marks BoardingSignaturesTimeoutEvent as implementing the sealed
+// Event interface.
+func (e *BoardingSignaturesTimeoutEvent) eventSealed() {}
+
+// ClientBoardingSignaturesEvent is sent when a client submits their signatures
+// for their boarding inputs. Each client must sign all their boarding inputs
+// before the round can proceed.
+type ClientBoardingSignaturesEvent struct {
+	// ClientID identifies which client is submitting signatures.
+	ClientID clientconn.ClientID
+
+	// Signatures contains the client's schnorr signatures for their
+	// boarding inputs. Each signature is for the collaborative tapscript
+	// spending path.
+	Signatures []*types.BoardingInputSignature
+}
+
+// eventSealed marks ClientBoardingSignaturesEvent as implementing the sealed
+// Event interface.
+func (e *ClientBoardingSignaturesEvent) eventSealed() {}
