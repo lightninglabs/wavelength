@@ -888,9 +888,9 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		require.NoError(t, err)
 
 		persistedRound := &Round{
-			RoundID:             persistedRoundID,
-			FinalTx:             wire.NewMsgTx(2),
-			VTXOTrees:           nil,
+			RoundID:   persistedRoundID,
+			FinalTx:   wire.NewMsgTx(2),
+			VTXOTrees: nil,
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},

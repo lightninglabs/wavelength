@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -123,18 +124,8 @@ func TestFSMRegistrationState(t *testing.T) {
 	t.Run("second client joins successfully", func(t *testing.T) {
 		t.Parallel()
 
-		// Set up the test harness.
-		h := newTestHarness(t)
-		h.setupPermissiveMocks()
-
 		const exitDelay = 144
 		const expiry = 144
-		client1 := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-		client2 := newClientHarness(
-			t, "client2", 20, h.operatorPub, exitDelay, expiry,
-		)
 
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
@@ -145,38 +136,33 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up mocks for both clients' boarding inputs.
-		h.setupValidBoardingInput(
-			&outpoint1, client1.boardingKey, exitDelay, 10,
-			h.roundID,
+		// Create a RegistrationState with client1 already registered.
+		client1Reg := buildTestClientRegistration(
+			"client1",
+			&BoardingInput{Outpoint: &outpoint1},
+		)
+		regState := &RegistrationState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			},
+		}
+
+		h := newTestHarness(t, regState)
+
+		client2 := newClientHarness(
+			t, "client2", 20, h.operatorPub, exitDelay, expiry,
 		)
 		h.setupValidBoardingInput(
 			&outpoint2, client2.boardingKey, exitDelay, 10,
 			h.roundID,
 		)
 
-		// First client joins from CreatedState.
-		boardingReq1 := client1.createBoardingRequest(&outpoint1)
-		joinReqEvent1 := client1.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq1},
-		)
-		err := h.sendEvent(joinReqEvent1)
-		require.NoError(t, err)
-
-		// Assert we transitioned to RegistrationState.
-		regState := assertStateType[*RegistrationState](h)
-		require.Len(t, regState.getAllBoardingInputs(), 1)
-		require.True(t, regState.isClientRegistered("client1"))
-
-		// Clear outbox for next test.
-		h.outboxMessages = nil
-
 		// Second client joins from RegistrationState.
 		boardingReq2 := client2.createBoardingRequest(&outpoint2)
 		joinReqEvent2 := client2.createJoinRequest(
 			[]*types.BoardingRequest{boardingReq2},
 		)
-		err = h.sendEvent(joinReqEvent2)
+		err := h.sendEvent(joinReqEvent2)
 		require.NoError(t, err)
 
 		// Assert we remain in RegistrationState with both clients.
@@ -196,15 +182,8 @@ func TestFSMRegistrationState(t *testing.T) {
 	t.Run("duplicate client rejected", func(t *testing.T) {
 		t.Parallel()
 
-		// Set up the test harness.
-		h := newTestHarness(t)
-		h.setupPermissiveMocks()
-
 		const exitDelay = 144
 		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
 
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
@@ -215,34 +194,29 @@ func TestFSMRegistrationState(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up mocks. Only outpoint1 is needed since outpoint2
-		// won't be validated when a duplicate client is rejected.
-		h.setupValidBoardingInput(
-			&outpoint1, client.boardingKey, exitDelay, 10,
-			h.roundID,
+		// Create a RegistrationState with client1 already registered.
+		client1Reg := buildTestClientRegistration(
+			"client1",
+			&BoardingInput{Outpoint: &outpoint1},
 		)
+		regState := &RegistrationState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			},
+		}
 
-		// First client joins.
-		boardingReq1 := client.createBoardingRequest(&outpoint1)
-		joinReqEvent1 := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq1},
+		h := newTestHarness(t, regState)
+
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
 		)
-		err := h.sendEvent(joinReqEvent1)
-		require.NoError(t, err)
-
-		// Assert we transitioned to RegistrationState.
-		regState := assertStateType[*RegistrationState](h)
-		require.Len(t, regState.getAllBoardingInputs(), 1)
-
-		// Clear outbox for next test.
-		h.outboxMessages = nil
 
 		// Same client attempts to join again with different inputs.
 		boardingReq2 := client.createBoardingRequest(&outpoint2)
 		joinReqEvent2 := client.createJoinRequest(
 			[]*types.BoardingRequest{boardingReq2},
 		)
-		err = h.sendEvent(joinReqEvent2)
+		err := h.sendEvent(joinReqEvent2)
 		require.NoError(t, err)
 
 		// Assert we remain in RegistrationState with only client1 and
@@ -492,25 +466,10 @@ func TestFSMRegistrationState(t *testing.T) {
 func TestFSMBatchBuilding(t *testing.T) {
 	t.Parallel()
 
-	const (
-		exitDelay = 144
-		expiry    = 144
-	)
-
 	t.Run("multi-client batch building", func(t *testing.T) {
 		t.Parallel()
 
-		// Set up the test harness.
-		h := newTestHarness(t)
-		h.setupPermissiveMocks()
-
-		client1 := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-		client2 := newClientHarness(
-			t, "client2", 20, h.operatorPub, exitDelay, expiry,
-		)
-
+		// Create RegistrationState with two clients already registered.
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
@@ -520,41 +479,26 @@ func TestFSMBatchBuilding(t *testing.T) {
 			Index: 0,
 		}
 
-		// Allow both inputs.
-		h.allowBoardingInput(&outpoint1)
-		h.allowBoardingInput(&outpoint2)
-
-		h.mockBoardingUTXO(
-			outpoint1, client1.boardingKey, exitDelay, 10,
+		client1Reg := buildTestClientRegistration(
+			"client1",
+			&BoardingInput{Outpoint: &outpoint1},
 		)
-		h.mockBoardingUTXO(
-			outpoint2, client2.boardingKey, exitDelay, 10,
+		client2Reg := buildTestClientRegistration(
+			"client2",
+			&BoardingInput{Outpoint: &outpoint2},
 		)
+		regState := &RegistrationState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+				"client2": client2Reg,
+			},
+		}
 
-		// First client joins.
-		boardingReq1 := client1.createBoardingRequest(&outpoint1)
-		joinReqEvent1 := client1.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq1},
-		)
-		err := h.sendEvent(joinReqEvent1)
-		require.NoError(t, err)
-
-		// Second client joins.
-		h.outboxMessages = nil
-		boardingReq2 := client2.createBoardingRequest(&outpoint2)
-		joinReqEvent2 := client2.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq2},
-		)
-		err = h.sendEvent(joinReqEvent2)
-		require.NoError(t, err)
-
-		// Assert both clients registered.
-		regState := assertStateType[*RegistrationState](h)
-		require.Len(t, regState.ClientRegistrations, 2)
+		h := newTestHarness(t, regState)
+		h.setupBatchBuildingMocks()
 
 		// Seal via manual SealEvent.
-		h.outboxMessages = nil
-		err = h.sendEvent(&SealEvent{})
+		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
 		// Should transition to AwaitingBoardingSigsState after
@@ -586,49 +530,32 @@ func TestFSMBatchBuilding(t *testing.T) {
 		func(t *testing.T) {
 			t.Parallel()
 
-			// Set up the test harness.
-			h := newTestHarness(t)
-			h.setupPermissiveMocks()
-
-			const exitDelay = 144
-			const expiry = 144
-			client := newClientHarness(
-				t, "client1", 10, h.operatorPub, exitDelay,
-				expiry,
-			)
-
+			// Create an AwaitingBoardingSigsState to start from.
 			outpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("input1")),
 				Index: 0,
 			}
-
-			h.allowBoardingInput(&outpoint)
-			h.mockBoardingUTXO(
-				outpoint, client.boardingKey, exitDelay, 10,
+			client1Reg := buildTestClientRegistration(
+				"client1",
+				&BoardingInput{Outpoint: &outpoint},
 			)
+			awaitState := &AwaitingBoardingSigsState{
+				//nolint:ll
+				ClientRegistrations: map[ClientID]*ClientRegistration{
+					"client1": client1Reg,
+				},
+				PSBT: &psbt.Packet{
+					UnsignedTx: wire.NewMsgTx(2),
+				},
+				VTXOTrees:           map[int]*tree.Tree{},
+				ClientsSubmitted:    map[ClientID]struct{}{},
+				CollectedSignatures: BoardingSigsMap{},
+			}
 
-			// Join to get to RegistrationState.
-			boardingReq := client.createBoardingRequest(&outpoint)
-			joinReqEvent := client.createJoinRequest(
-				[]*types.BoardingRequest{boardingReq},
-			)
-			err := h.sendEvent(joinReqEvent)
-			require.NoError(t, err)
+			h := newTestHarness(t, awaitState)
 
-			// Seal via RegistrationTimeoutEvent.
-			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
-			require.NoError(t, err)
-
-			// Should be in AwaitingBoardingSigsState.
-			//nolint:ll
-			awaitState := assertStateType[*AwaitingBoardingSigsState](h)
-			require.NotNil(t, awaitState.PSBT)
-
-			// Clear outbox and send another stale
-			// RegistrationTimeoutEvent.
-			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			// Send stale RegistrationTimeoutEvent.
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			// Should remain in AwaitingBoardingSigsState with no
@@ -729,47 +656,16 @@ func TestFSMFailureScenarios(t *testing.T) {
 	t.Run("FailedState is terminal and ignores events", func(t *testing.T) {
 		t.Parallel()
 
-		// Set up the test harness and drive it to FailedState by
-		// causing a batch building failure.
-		h := newTestHarness(t)
+		// Create a FailedState to start from.
+		failedState := &FailedState{
+			Reason: "test failure reason",
+		}
 
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-
-		outpoint := wire.OutPoint{Hash: chainhash.Hash{1}, Index: 0}
-
-		// Set up mocks for successful registration but failing batch
-		// building.
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
-		)
-		h.setupBatchBuildingFailure(fmt.Errorf("insufficient funds"))
-
-		// Join client.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		)
-		err := h.sendEvent(joinEvent)
-		require.NoError(t, err)
-
-		// Trigger seal which will cause batch building to fail.
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
-		require.NoError(t, err)
-
-		// Should now be in FailedState.
-		assertStateType[*FailedState](h)
-
-		// Clear outbox messages from the failure.
-		h.outboxMessages = nil
+		h := newTestHarness(t, failedState)
 
 		// Try to send various events - all should be ignored.
-		err = h.sendEvent(&ClientJoinRequestEvent{
+		err := h.sendEvent(&ClientJoinRequestEvent{
 			ClientID: ClientID("client2"),
-			Request:  joinEvent.Request,
 		})
 		require.NoError(t, err)
 		assertStateType[*FailedState](h)

@@ -453,6 +453,18 @@ func assertOutboxMessageType[T OutboxEvent](h *fsmTestHarness,
 	return msg
 }
 
+// buildTestClientRegistration creates a simple ClientRegistration for testing.
+// This is useful when starting tests directly in RegistrationState or later
+// states without going through the full join flow.
+func buildTestClientRegistration(clientID ClientID,
+	boardingInputs ...*BoardingInput) *ClientRegistration {
+
+	return &ClientRegistration{
+		ClientID:       clientID,
+		BoardingInputs: boardingInputs,
+	}
+}
+
 // assertOutboxContains asserts that the outbox contains at least one message
 // of the given type and returns the first match.
 //
