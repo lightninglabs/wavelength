@@ -839,8 +839,14 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			FinalTx:             finalTx,
 			VTXOTrees:           s.VTXOTrees,
 		},
-		// TODO(elle): emit a BroadcastRoundReq to indicate to the
-		//  actor that the round is ready for broadcast.
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&BroadcastRoundReq{
+					RoundID:  env.RoundID,
+					SignedTx: finalTx,
+				},
+			},
+		}),
 	}, nil
 }
 
@@ -973,23 +979,41 @@ func serializeWitness(witness wire.TxWitness) ([]byte, error) {
 }
 
 // ProcessEvent handles events in the FinalizedState. This state holds the
-// fully signed transaction ready for broadcast. It ignores stale timeouts
-// from previous phases.
+// fully signed transaction ready for broadcast.
 //
-// TODO(elle): handle batch tx confirmation and re-broadcast logic.
+// TODO(elle): handle re-broadcast logic.
 func (s *FinalizedState) ProcessEvent(_ context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
-	return unexpectedEvent(s, "finalised", event, env), nil
+	switch e := event.(type) {
+	case *TransactionConfirmedEvent:
+		return &StateTransition{
+			NextState: &ConfirmedState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             s.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				BlockHeight:         e.BlockHeight,
+				BlockHash:           e.BlockHash,
+			},
+		}, nil
+
+	default:
+		return unexpectedEvent(s, "finalised", event, env), nil
+	}
 }
 
 // ProcessEvent handles the events from the FailedState state.
 // FailedState is a terminal state, so it ignores all events.
-func (s *FailedState) ProcessEvent(_ context.Context, _ Event,
-	_ *Environment) (*StateTransition, error) {
+func (s *FailedState) ProcessEvent(_ context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
-	// Terminal state - remain in FailedState and emit no events.
-	return &StateTransition{
-		NextState: s,
-	}, nil
+	return unexpectedEvent(s, "failed", event, env), nil
+}
+
+// ProcessEvent handles events in the ConfirmedState. This is a terminal state,
+// so all events are ignored.
+func (s *ConfirmedState) ProcessEvent(_ context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	return unexpectedEvent(s, "confirmed", event, env), nil
 }

@@ -873,8 +873,8 @@ func TestActorBoardingSignatures(t *testing.T) {
 	})
 }
 
-// TestActorLoadPendingRounds tests that the actor correctly loads pending rounds
-// from storage on startup.
+// TestActorLoadPendingRounds tests that the actor correctly loads
+// pending rounds from storage on startup.
 func TestActorLoadPendingRounds(t *testing.T) {
 	t.Parallel()
 

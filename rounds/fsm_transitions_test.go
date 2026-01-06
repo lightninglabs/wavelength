@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/stretchr/testify/require"
 )
@@ -1242,5 +1243,125 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "expected 1 signatures")
+	})
+}
+
+// TestFSMFinalizedState tests the FSM transitions from FinalizedState.
+func TestFSMFinalizedState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("confirmation transitions to ConfirmedState", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a FinalizedState to start from.
+		finalTx := wire.NewMsgTx(2)
+		finalState := &FinalizedState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+			FinalTx:   finalTx,
+			VTXOTrees: map[int]*tree.Tree{},
+		}
+
+		h := newTestHarness(t, finalState)
+
+		// Send TransactionConfirmedEvent.
+		blockHash := chainhash.HashH([]byte("test-block"))
+		confirmEvent := &TransactionConfirmedEvent{
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    6,
+		}
+
+		err := h.sendEvent(confirmEvent)
+		require.NoError(t, err)
+
+		// Should transition to ConfirmedState.
+		confirmedState := assertStateType[*ConfirmedState](h)
+		require.Equal(t, int32(100), confirmedState.BlockHeight)
+		require.Equal(t, blockHash, confirmedState.BlockHash)
+		require.Equal(t, finalTx, confirmedState.FinalTx)
+		require.Len(t, confirmedState.ClientRegistrations, 1)
+
+		// No outbox messages emitted.
+		h.assertOutboxLen(0)
+	})
+
+	t.Run("stale timeout ignored", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a FinalizedState to start from.
+		finalState := &FinalizedState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+			FinalTx:   wire.NewMsgTx(2),
+			VTXOTrees: map[int]*tree.Tree{},
+		}
+
+		h := newTestHarness(t, finalState)
+
+		// Send stale RegistrationTimeoutEvent - should be ignored.
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in FinalizedState.
+		assertStateType[*FinalizedState](h)
+		h.assertOutboxLen(0)
+
+		// Send stale BoardingSignaturesTimeoutEvent - should be
+		// ignored.
+		err = h.sendEvent(&BoardingSignaturesTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in FinalizedState.
+		assertStateType[*FinalizedState](h)
+		h.assertOutboxLen(0)
+	})
+
+	t.Run("ConfirmedState is terminal", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a ConfirmedState to start from.
+		originalBlockHeight := int32(100)
+		originalBlockHash := chainhash.HashH([]byte("test-block"))
+		confirmedState := &ConfirmedState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+			FinalTx:     wire.NewMsgTx(2),
+			VTXOTrees:   map[int]*tree.Tree{},
+			BlockHeight: originalBlockHeight,
+			BlockHash:   originalBlockHash,
+		}
+
+		h := newTestHarness(t, confirmedState)
+
+		// Try to send various events - all should be ignored.
+		err := h.sendEvent(&ClientJoinRequestEvent{})
+		require.NoError(t, err)
+		assertStateType[*ConfirmedState](h)
+		h.assertOutboxLen(0)
+
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+		assertStateType[*ConfirmedState](h)
+		h.assertOutboxLen(0)
+
+		// Another confirmation event should also be ignored.
+		err = h.sendEvent(&TransactionConfirmedEvent{
+			BlockHeight: 200,
+			BlockHash:   chainhash.HashH([]byte("another-block")),
+			NumConfs:    10,
+		})
+		require.NoError(t, err)
+
+		// Should remain in same ConfirmedState with original data.
+		confirmedState = assertStateType[*ConfirmedState](h)
+		require.Equal(
+			t, originalBlockHeight, confirmedState.BlockHeight,
+		)
+		require.Equal(t, originalBlockHash, confirmedState.BlockHash)
+		h.assertOutboxLen(0)
 	})
 }

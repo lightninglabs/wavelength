@@ -97,8 +97,10 @@ type fsmTestHarness struct {
 }
 
 // newTestHarness creates a new test harness with default configuration.
-// It initializes and starts a new state machine for testing.
-func newTestHarness(t *testing.T) *fsmTestHarness {
+// It initializes and starts a new state machine for testing. If an initial
+// state is provided, the FSM will start in that state; otherwise it starts
+// in CreatedState.
+func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	t.Helper()
 
 	roundID, err := NewRoundID()
@@ -133,8 +135,14 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		},
 	}
 
+	// Determine initial state: use provided state or default to CreatedState.
+	var startState State = &CreatedState{}
+	if len(initialState) > 0 {
+		startState = initialState[0]
+	}
+
 	fsmCfg := StateMachineCfg{
-		InitialState: &CreatedState{},
+		InitialState: startState,
 		Env:          &env,
 		Logger:       btclog.Disabled,
 	}

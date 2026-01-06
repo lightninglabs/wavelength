@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 )
@@ -95,3 +96,20 @@ type ServerSignInputsEvent struct{}
 // eventSealed marks ServerSignInputsEvent as implementing the sealed Event
 // interface.
 func (e *ServerSignInputsEvent) eventSealed() {}
+
+// TransactionConfirmedEvent is sent when the commitment transaction has been
+// confirmed on-chain with the required number of confirmations.
+type TransactionConfirmedEvent struct {
+	// BlockHeight is the height of the block containing the transaction.
+	BlockHeight int32
+
+	// BlockHash is the hash of the block containing the transaction.
+	BlockHash chainhash.Hash
+
+	// NumConfs is the number of confirmations at the time of notification.
+	NumConfs uint32
+}
+
+// eventSealed marks TransactionConfirmedEvent as implementing the sealed Event
+// interface.
+func (e *TransactionConfirmedEvent) eventSealed() {}

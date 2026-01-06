@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -302,3 +303,36 @@ func (s *FailedState) IsTerminal() bool {
 
 // stateSealed marks FailedState as implementing the sealed State interface.
 func (s *FailedState) stateSealed() {}
+
+// ConfirmedState is a terminal state reached after the commitment transaction
+// has been confirmed on-chain with the required number of confirmations.
+type ConfirmedState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// This is nil if no VTXOs exist in the round.
+	VTXOTrees map[int]*tree.Tree
+
+	// BlockHeight is the height of the block containing the transaction.
+	BlockHeight int32
+
+	// BlockHash is the hash of the block containing the transaction.
+	BlockHash chainhash.Hash
+}
+
+// String returns a human-readable representation of ConfirmedState.
+func (s *ConfirmedState) String() string {
+	return "ConfirmedState"
+}
+
+// IsTerminal returns true as ConfirmedState is a terminal state.
+func (s *ConfirmedState) IsTerminal() bool {
+	return true
+}
+
+// stateSealed marks ConfirmedState as implementing the sealed State interface.
+func (s *ConfirmedState) stateSealed() {}

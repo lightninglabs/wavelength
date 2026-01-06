@@ -222,3 +222,17 @@ type RoundFailedReq struct {
 // outboxEventSealed marks RoundFailedReq as implementing the sealed OutboxEvent
 // interface.
 func (r *RoundFailedReq) outboxEventSealed() {}
+
+// BroadcastRoundReq requests the actor to broadcast the signed commitment
+// transaction to the network and subscribe to its confirmation.
+type BroadcastRoundReq struct {
+	// RoundID is the identifier of the round to broadcast.
+	RoundID RoundID
+
+	// SignedTx is the fully signed commitment transaction to broadcast.
+	SignedTx *wire.MsgTx
+}
+
+// outboxEventSealed marks BroadcastRoundReq as implementing the sealed
+// OutboxEvent interface.
+func (b *BroadcastRoundReq) outboxEventSealed() {}
