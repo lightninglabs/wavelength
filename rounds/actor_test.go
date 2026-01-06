@@ -770,6 +770,10 @@ func TestActorBoardingSignatures(t *testing.T) {
 			roundID,
 		)
 
+		// We expect the round building and signing to succeed and
+		// therefore for the round to be persisted.
+		h.expectRoundFinalized(wire.NewMsgTx(2))
+
 		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
@@ -822,12 +826,11 @@ func TestActorBoardingSignatures(t *testing.T) {
 		_, err = result.Unpack()
 		require.NoError(t, err, "submitting signatures should succeed")
 
-		// Verify the round transitioned to ServerSigningState.
+		// Verify the round transitioned through ServerSigningState to
+		// FinalizedState.
 		newState, err := round.FSM.CurrentState()
 		require.NoError(t, err)
-		_, ok = newState.(*ServerSigningState)
-		require.True(t, ok,
-			"expected ServerSigningState, got %T", newState)
+		require.IsType(t, &FinalizedState{}, newState)
 
 		// Verify the boarding signatures timeout was cancelled.
 		h.timeoutActor.assertTimeoutCancelled(

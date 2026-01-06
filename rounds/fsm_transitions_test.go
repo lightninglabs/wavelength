@@ -889,6 +889,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
 		)
 
+		// We expect the round building and signing to succeed and
+		// therefore for the round to be finalized and persisted.
+		h.expectRoundFinalized(wire.NewMsgTx(2))
+
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		joinReqEvent := client.createJoinRequest(
@@ -911,11 +915,12 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(sigEvent)
 		require.NoError(t, err)
 
-		// Should transition to ServerSigningState since all clients
-		// have submitted.
-		serverState := assertStateType[*ServerSigningState](h)
-		require.NotNil(t, serverState.PSBT)
-		require.Len(t, serverState.ClientRegistrations, 1)
+		// Should transition through ServerSigningState to
+		// FinalizedState since all clients have submitted and signing
+		// completes.
+		finalState := assertStateType[*FinalizedState](h)
+		require.NotNil(t, finalState.FinalTx)
+		require.Len(t, finalState.ClientRegistrations, 1)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -970,6 +975,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			h.roundID,
 		)
 
+		// We expect the round building and signing to succeed and
+		// therefore for the round to be persisted.
+		h.expectRoundFinalized(wire.NewMsgTx(2))
+
 		// Both clients join.
 		boardingReq1 := client1.createBoardingRequest(&outpoint1)
 		err := h.sendEvent(client1.createJoinRequest(
@@ -1005,13 +1014,14 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		// No outbox messages yet (no transition).
 		h.assertOutboxLen(0)
 
-		// Client2 submits - should transition to ServerSigningState.
+		// Client2 submits - should transition through
+		// ServerSigningState to FinalizedState.
 		sig2Event := client2.createBoardingSignaturesEvent(awaitState)
 		err = h.sendEvent(sig2Event)
 		require.NoError(t, err)
 
-		serverState := assertStateType[*ServerSigningState](h)
-		require.Len(t, serverState.ClientRegistrations, 2)
+		finalState := assertStateType[*FinalizedState](h)
+		require.Len(t, finalState.ClientRegistrations, 2)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -1051,6 +1061,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
 		)
 
+		// We expect the round building and signing to succeed and
+		// therefore for the round to be persisted.
+		h.expectRoundFinalized(wire.NewMsgTx(2))
+
 		// Join and seal.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		err := h.sendEvent(client.createJoinRequest(
@@ -1082,8 +1096,14 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.Equal(t, ClientID("unknown_client"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "registered")
 
-		// Original client should still be able to submit.
-		_ = awaitState
+		// Original client should still be able to submit its valid sig.
+		h.outboxMessages = nil
+		sigEvent := client.createBoardingSignaturesEvent(awaitState)
+		err = h.sendEvent(sigEvent)
+		require.NoError(t, err)
+
+		finalState := assertStateType[*FinalizedState](h)
+		require.Len(t, finalState.ClientRegistrations, 1)
 	})
 
 	t.Run("duplicate submission rejected", func(t *testing.T) {

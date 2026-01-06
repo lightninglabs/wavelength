@@ -8,7 +8,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -602,7 +604,8 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 	// Check if all clients have submitted.
 	if newState.allClientsSubmitted() {
 		// Cancel the boarding signatures timeout and transition to
-		// ServerSigningState.
+		// ServerSigningState. Emit ServerSignInputsEvent to trigger
+		// server signing.
 		//
 		//nolint:ll
 		return &StateTransition{
@@ -613,6 +616,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				CollectedSignatures: newCollectedSigs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
+				InternalEvent: []Event{
+					&ServerSignInputsEvent{},
+				},
 				Outbox: []OutboxEvent{
 					&CancelTimeoutReq{
 						RoundID: env.RoundID,
@@ -773,15 +779,208 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 
 // ProcessEvent handles events in the ServerSigningState. This state signs the
 // server's wallet inputs on the commitment transaction.
-//
-// TODO(elle): Implement server signing:
-//   - Sign wallet inputs using WalletController.SignPsbt
-//   - Transition to FinalizedState after signing
-//   - Handle broadcast and persistence
-func (s *ServerSigningState) ProcessEvent(_ context.Context,
+func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
-	return unexpectedEvent(s, "server-signing", event, env), nil
+	switch event.(type) {
+	case *ServerSignInputsEvent:
+		return s.handleServerSigning(ctx, env)
+	default:
+		return unexpectedEvent(s, "server-signing", event, env), nil
+	}
+}
+
+// handleServerSigning performs server-side signing of all inputs in the PSBT.
+// For boarding inputs, it adds the operator's signature to complete the
+// collaborative spend path. For wallet inputs, it calls FinalizePsbt.
+func (s *ServerSigningState) handleServerSigning(ctx context.Context,
+	env *Environment) (*StateTransition, error) {
+
+	// First, sign and finalize all boarding inputs with the collected
+	// client signatures and the operator's signatures.
+	err := s.signBoardingInputs(env)
+	if err != nil {
+		return buildFailureTransition(
+			env, s.ClientRegistrations,
+			fmt.Sprintf("failed to sign boarding inputs: %v", err),
+		), nil
+	}
+
+	// Now finalize the PSBT which signs all wallet-controlled inputs.
+	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
+	if err != nil {
+		return buildFailureTransition(
+			env, s.ClientRegistrations,
+			fmt.Sprintf("failed to finalize PSBT: %v", err),
+		), nil
+	}
+
+	// Persist the round to storage.
+	round := &Round{
+		RoundID:             env.RoundID,
+		FinalTx:             finalTx,
+		VTXOTrees:           s.VTXOTrees,
+		ClientRegistrations: s.ClientRegistrations,
+	}
+
+	err = env.RoundStore.PersistRound(ctx, round)
+	if err != nil {
+		return buildFailureTransition(
+			env, s.ClientRegistrations,
+			fmt.Sprintf("failed to persist round: %v", err),
+		), nil
+	}
+
+	env.Log.InfoS(ctx, "Persisted round", "round_id", env.RoundID)
+
+	return &StateTransition{
+		NextState: &FinalizedState{
+			ClientRegistrations: s.ClientRegistrations,
+			FinalTx:             finalTx,
+			VTXOTrees:           s.VTXOTrees,
+		},
+		// TODO(elle): emit a BroadcastRoundReq to indicate to the
+		//  actor that the round is ready for broadcast.
+	}, nil
+}
+
+// signBoardingInputs signs all boarding inputs with both the client's
+// signature (from CollectedSignatures) and the operator's signature.
+func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
+	tx := s.PSBT.UnsignedTx
+
+	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for i, pIn := range s.PSBT.Inputs {
+		if pIn.WitnessUtxo == nil {
+			return fmt.Errorf("missing WitnessUtxo for input %d", i)
+		}
+
+		prevOutFetcher.AddPrevOut(
+			tx.TxIn[i].PreviousOutPoint, pIn.WitnessUtxo,
+		)
+	}
+
+	// Create signature hashes for the transaction.
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Process each client's boarding inputs.
+	for clientID, clientSigs := range s.CollectedSignatures {
+		reg, exists := s.ClientRegistrations[clientID]
+		if !exists {
+			return fmt.Errorf("client %s not found in "+
+				"registrations", clientID)
+		}
+
+		// Sign each boarding input for this client.
+		for _, clientSig := range clientSigs {
+			err := s.signSingleBoardingInput(
+				env, reg, clientSig, tx, sigHashes,
+				prevOutFetcher,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to sign input %d: %w",
+					clientSig.InputIndex, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// signSingleBoardingInput signs a single boarding input with both the client's
+// and operator's signatures, then sets the final script witness on the PSBT.
+func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
+	reg *ClientRegistration, clientSig *types.BoardingInputSignature,
+	tx *wire.MsgTx, sigHashes *txscript.TxSigHashes,
+	prevOutFetcher txscript.PrevOutputFetcher) error {
+
+	// Find the boarding input that matches this signature's outpoint.
+	var boardingInput *BoardingInput
+	for _, bi := range reg.BoardingInputs {
+		if *bi.Outpoint == clientSig.Outpoint {
+			boardingInput = bi
+
+			break
+		}
+	}
+
+	if boardingInput == nil {
+		return fmt.Errorf("boarding input not found for outpoint %v",
+			clientSig.Outpoint)
+	}
+
+	// Get the spend info for the collaborative path.
+	spendInfo, err := scripts.NewVTXOSpendInfo(
+		boardingInput.Tapscript, scripts.VTXOCollabPathLeaf,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get spend info: %w", err)
+	}
+
+	inputIdx := clientSig.InputIndex
+
+	if inputIdx < 0 || inputIdx >= len(s.PSBT.Inputs) {
+		return fmt.Errorf("invalid input index: %d", inputIdx)
+	}
+
+	input := s.PSBT.Inputs[inputIdx]
+
+	// Get the prevout for this input.
+	prevOut := input.WitnessUtxo
+	if prevOut == nil {
+		return fmt.Errorf("missing WitnessUtxo for input %d", inputIdx)
+	}
+
+	// Sign with the operator's key.
+	operatorSig, err := scripts.SignVTXOCollabInput(
+		env.WalletController, tx, inputIdx, spendInfo,
+		boardingInput.OperatorKeyDesc, prevOut, sigHashes,
+		prevOutFetcher,
+	)
+	if err != nil {
+		return fmt.Errorf("operator signing failed: %w", err)
+	}
+
+	// Build the witness stack with both signatures.
+	witness, err := scripts.VTXOCollabSpendWitness(
+		clientSig.ClientSignature, operatorSig, spendInfo,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to build witness: %w", err)
+	}
+
+	// Set the final script witness on the PSBT input.
+	input.FinalScriptWitness, err = serializeWitness(witness)
+	if err != nil {
+		return fmt.Errorf("failed to serialize witness: %w", err)
+	}
+
+	return nil
+}
+
+// serializeWitness serializes a witness stack to the wire format expected by
+// FinalScriptWitness.
+func serializeWitness(witness wire.TxWitness) ([]byte, error) {
+	var buf bytes.Buffer
+
+	err := psbt.WriteTxWitness(&buf, witness)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// ProcessEvent handles events in the FinalizedState. This state holds the
+// fully signed transaction ready for broadcast. It ignores stale timeouts
+// from previous phases.
+//
+// TODO(elle): handle batch tx confirmation and re-broadcast logic.
+func (s *FinalizedState) ProcessEvent(_ context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	return unexpectedEvent(s, "finalised", event, env), nil
 }
 
 // ProcessEvent handles the events from the FailedState state.

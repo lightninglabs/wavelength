@@ -86,3 +86,12 @@ type ClientBoardingSignaturesEvent struct {
 // eventSealed marks ClientBoardingSignaturesEvent as implementing the sealed
 // Event interface.
 func (e *ClientBoardingSignaturesEvent) eventSealed() {}
+
+// ServerSignInputsEvent is an internal event that triggers the server to sign
+// all inputs in the PSBT. This includes signing the operator's part of the
+// collaborative spend path for boarding inputs, and finalizing wallet inputs.
+type ServerSignInputsEvent struct{}
+
+// eventSealed marks ServerSignInputsEvent as implementing the sealed Event
+// interface.
+func (e *ServerSignInputsEvent) eventSealed() {}

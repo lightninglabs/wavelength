@@ -306,6 +306,18 @@ func (c *commonMockSetup) setupCompleteRegistrationFlow(
 	c.setupBatchBuildingMocks()
 }
 
+// expectRoundFinalized sets up the round store mock to expect a PersistRound
+// call that succeeds and for the wallet to finalise the PSBT.
+func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
+	c.t.Helper()
+
+	c.walletController.On("FinalizePsbt", mock.Anything, mock.Anything).
+		Return(tx, nil).Once()
+
+	c.roundStore.On("PersistRound", mock.Anything, mock.Anything).
+		Return(nil).Once()
+}
+
 // setupBoardingInputWithUnlock sets up mocks for a boarding input that will
 // be unlocked later (used in failure test scenarios). This includes IsLocked,
 // Lock, Unlock, and UTXO mocks.

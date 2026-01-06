@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -251,6 +252,35 @@ func (s *ServerSigningState) IsTerminal() bool {
 // stateSealed marks ServerSigningState as implementing the sealed State
 // interface.
 func (s *ServerSigningState) stateSealed() {}
+
+// FinalizedState holds the fully signed transaction ready for broadcast. The
+// transaction has all boarding input signatures (client + operator) and wallet
+// input signatures applied.
+type FinalizedState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction ready for
+	// broadcast.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+}
+
+// String returns a human-readable representation of FinalizedState.
+func (s *FinalizedState) String() string {
+	return "FinalizedState"
+}
+
+// IsTerminal returns false as FinalizedState is not a terminal state. The
+// round waits for confirmation before completing.
+func (s *FinalizedState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks FinalizedState as implementing the sealed State interface.
+func (s *FinalizedState) stateSealed() {}
 
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock
