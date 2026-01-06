@@ -10,6 +10,8 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -118,6 +120,35 @@ type WalletController interface {
 	FundPsbt(ctx context.Context, packet *psbt.Packet,
 		minConfs int32, feeRate chainfee.SatPerKWeight,
 		account string) (changeIndex int32, err error)
+
+	// FinalizePsbt signs all wallet-controlled inputs and finalizes the
+	// PSBT, making it ready for broadcast. Returns the finalized raw
+	// transaction.
+	FinalizePsbt(ctx context.Context,
+		packet *psbt.Packet) (*wire.MsgTx, error)
+}
+
+// RoundStore provides persistent storage for rounds.
+type RoundStore interface {
+	// PersistRound saves a completed round to persistent storage. This
+	// should be called after all signatures have been collected and the
+	// transaction is ready for broadcast.
+	PersistRound(ctx context.Context, round *Round) error
+}
+
+// Round contains all data needed to persist a completed round.
+type Round struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// ClientRegistrations contains client registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

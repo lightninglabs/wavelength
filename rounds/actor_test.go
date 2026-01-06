@@ -264,6 +264,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		TimeoutActor:        timeoutActor,
 		FeeEstimator:        common.feeEstimator,
 		WalletController:    common.walletController,
+		RoundStore:          common.roundStore,
 		ConfTarget:          6,
 		MinConfs:            1,
 		Terms: &batch.Terms{

@@ -65,6 +65,9 @@ type ActorConfig struct {
 	// MinConfs is the minimum number of confirmations required for wallet
 	// UTXOs to be used for funding.
 	MinConfs int32
+
+	// RoundStore provides persistent storage for rounds.
+	RoundStore RoundStore
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -358,6 +361,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		WalletAccount:       a.cfg.WalletAccount,
 		ConfTarget:          a.cfg.ConfTarget,
 		MinConfs:            a.cfg.MinConfs,
+		RoundStore:          a.cfg.RoundStore,
 	}
 
 	fsmCfg := StateMachineCfg{

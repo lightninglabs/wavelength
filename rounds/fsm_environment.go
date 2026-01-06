@@ -48,6 +48,9 @@ type Environment struct {
 	// MinConfs is the minimum number of confirmations required for wallet
 	// UTXOs to be used for funding.
 	MinConfs int32
+
+	// RoundStore provides persistent storage for rounds.
+	RoundStore RoundStore
 }
 
 // Name returns the unique identifier for this FSM instance.

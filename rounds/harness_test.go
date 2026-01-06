@@ -39,6 +39,7 @@ type commonMockSetup struct {
 	chainSource      *mockChainSource
 	feeEstimator     *chainfee.MockEstimator
 	walletController *mockWalletController
+	roundStore       *mockRoundStore
 }
 
 // newCommonMockSetup creates a new common mock setup with default
@@ -54,6 +55,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockChainSrc := &mockChainSource{}
 	mockFeeEstimator := &chainfee.MockEstimator{}
 	mockWalletController := newMockWalletController(operatorSigner)
+	mockRoundStore := &mockRoundStore{}
 
 	m := &commonMockSetup{
 		t:                t,
@@ -63,6 +65,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		chainSource:      mockChainSrc,
 		feeEstimator:     mockFeeEstimator,
 		walletController: mockWalletController,
+		roundStore:       mockRoundStore,
 	}
 
 	// Register cleanup to automatically assert mock expectations.
@@ -116,6 +119,7 @@ func newTestHarness(t *testing.T) *fsmTestHarness {
 		FeeEstimator:        common.feeEstimator,
 		Log:                 btclog.Disabled,
 		WalletController:    common.walletController,
+		RoundStore:          common.roundStore,
 		ConfTarget:          6,
 		MinConfs:            1,
 		Terms: &batch.Terms{
@@ -326,6 +330,7 @@ func (c *commonMockSetup) assertMockExpectations() {
 	c.chainSource.AssertExpectations(c.t)
 	c.feeEstimator.AssertExpectations(c.t)
 	c.walletController.AssertExpectations(c.t)
+	c.roundStore.AssertExpectations(c.t)
 }
 
 // buildExpectedPkScript builds the expected PkScript for a boarding input.
@@ -611,6 +616,33 @@ func (m *mockWalletController) FundPsbt(ctx context.Context,
 	args := m.Called(ctx, packet, minConfs, feeRate, account)
 
 	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
+}
+
+// FinalizePsbt is a mock implementation of WalletController.FinalizePsbt.
+func (m *mockWalletController) FinalizePsbt(ctx context.Context,
+	packet *psbt.Packet) (*wire.MsgTx, error) {
+
+	args := m.Called(ctx, packet)
+
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	return args.Get(0).(*wire.MsgTx), args.Error(1) //nolint:forcetypeassert
+}
+
+// mockRoundStore is a mock implementation of RoundStore for testing.
+type mockRoundStore struct {
+	mock.Mock
+}
+
+// PersistRound is a mock implementation of RoundStore.PersistRound.
+func (m *mockRoundStore) PersistRound(ctx context.Context,
+	round *Round) error {
+
+	args := m.Called(ctx, round)
+
+	return args.Error(0)
 }
 
 // createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with
