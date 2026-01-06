@@ -13,11 +13,13 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightninglabs/darepo/timeout"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -235,11 +237,12 @@ type actorTestHarness struct {
 	*commonMockSetup
 
 	//nolint:containedctx
-	ctx          context.Context
-	actor        *Actor
-	cfg          *ActorConfig
-	clients      *mockClientConnRef
-	timeoutActor *mockTimeoutActor
+	ctx              context.Context
+	actor            *Actor
+	cfg              *ActorConfig
+	clients          *mockClientConnRef
+	timeoutActor     *mockTimeoutActor
+	chainSourceActor *mockChainSourceActor
 }
 
 // newActorTestHarness creates a new actor test harness with default
@@ -254,6 +257,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 
 	clients := newMockClientConnRef(t)
 	timeoutActor := newMockTimeoutActor(t)
+	chainSourceActor := newMockChainSourceActor()
 
 	cfg := &ActorConfig{
 		ChainParams:         &chaincfg.RegressionNetParams,
@@ -265,8 +269,10 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		FeeEstimator:        common.feeEstimator,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
+		ChainSourceActor:    chainSourceActor,
 		ConfTarget:          6,
 		MinConfs:            1,
+		ConfirmationTarget:  1,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,
@@ -290,13 +296,14 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	cfg.SelfRef = &actorRef{actor: actor}
 
 	h := &actorTestHarness{
-		T:               t,
-		commonMockSetup: common,
-		ctx:             ctx,
-		actor:           actor,
-		cfg:             cfg,
-		clients:         clients,
-		timeoutActor:    timeoutActor,
+		T:                t,
+		commonMockSetup:  common,
+		ctx:              ctx,
+		actor:            actor,
+		cfg:              cfg,
+		clients:          clients,
+		timeoutActor:     timeoutActor,
+		chainSourceActor: chainSourceActor,
 	}
 
 	return h
@@ -752,6 +759,92 @@ func TestActorFailureHandling(t *testing.T) {
 	})
 }
 
+// mockChainSourceActor implements actor.ActorRef for testing transaction
+// broadcasting and confirmation subscriptions. It records all requests made
+// to it so tests can verify the actor's behavior.
+type mockChainSourceActor struct {
+	mu sync.Mutex
+
+	// broadcastReqs stores all broadcast requests received via Ask.
+	broadcastReqs []*chainsource.BroadcastTxRequest
+
+	// confReqs stores all confirmation subscription requests received via
+	// Tell.
+	confReqs []*chainsource.RegisterConfRequest
+}
+
+// newMockChainSourceActor creates a new mock chain source actor.
+func newMockChainSourceActor() *mockChainSourceActor {
+	return &mockChainSourceActor{
+		broadcastReqs: make([]*chainsource.BroadcastTxRequest, 0),
+		confReqs:      make([]*chainsource.RegisterConfRequest, 0),
+	}
+}
+
+// ID returns the ID of this mock actor.
+func (m *mockChainSourceActor) ID() string {
+	return "mock-chain-source-actor"
+}
+
+// Ask handles broadcast requests and returns success.
+func (m *mockChainSourceActor) Ask(_ context.Context,
+	msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req, ok := msg.(*chainsource.BroadcastTxRequest)
+	if ok {
+		m.broadcastReqs = append(m.broadcastReqs, req)
+
+		// Return success response.
+		promise := actor.NewPromise[chainsource.ChainSourceResp]()
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.BroadcastTxResponse{},
+		))
+
+		return promise.Future()
+	}
+
+	// Unexpected message type.
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+	promise.Complete(fn.Err[chainsource.ChainSourceResp](
+		fmt.Errorf("unexpected message type: %T", msg),
+	))
+
+	return promise.Future()
+}
+
+// Tell handles confirmation subscription requests.
+func (m *mockChainSourceActor) Tell(_ context.Context,
+	msg chainsource.ChainSourceMsg) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req, ok := msg.(*chainsource.RegisterConfRequest)
+	if ok {
+		m.confReqs = append(m.confReqs, req)
+	}
+}
+
+// getBroadcastReqs returns a copy of all broadcast requests.
+func (m *mockChainSourceActor) getBroadcastReqs() []*chainsource.BroadcastTxRequest { //nolint:ll
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]*chainsource.BroadcastTxRequest{}, m.broadcastReqs...)
+}
+
+// getConfReqs returns a copy of all confirmation subscription requests.
+func (m *mockChainSourceActor) getConfReqs() []*chainsource.RegisterConfRequest { //nolint:ll
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]*chainsource.RegisterConfRequest{}, m.confReqs...)
+}
+
 // TestActorBoardingSignatures tests the actor's handling of boarding signature
 // submissions via RoundMsg.
 func TestActorBoardingSignatures(t *testing.T) {
@@ -780,7 +873,12 @@ func TestActorBoardingSignatures(t *testing.T) {
 
 		// We expect the round building and signing to succeed and
 		// therefore for the round to be persisted.
-		h.expectRoundFinalized(wire.NewMsgTx(2))
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+		h.expectRoundFinalized(finalTx)
 
 		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -887,9 +985,15 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		persistedRoundID, err := NewRoundID()
 		require.NoError(t, err)
 
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
 		persistedRound := &Round{
 			RoundID:   persistedRoundID,
-			FinalTx:   wire.NewMsgTx(2),
+			FinalTx:   finalTx,
 			VTXOTrees: nil,
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
@@ -936,5 +1040,150 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		// Should only have the new current round.
 		h.assertRoundCount(1)
 		h.assertCurrentRoundExists()
+	})
+}
+
+// TestActorBroadcastAndConfirmation tests the actor's handling of transaction
+// broadcast and confirmation flow.
+func TestActorBroadcastAndConfirmation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("finalized round broadcasts and subscribes", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a round in FinalizedState with a signed transaction.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID:   persistedRoundID,
+			FinalTx:   finalTx,
+			VTXOTrees: nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Set the round in storage and start the actor. This will
+		// trigger loadRoundFSM which calls broadcastAndSubscribe.
+		h.setActiveRounds([]*Round{persistedRound})
+		h.start(h.ctx)
+
+		// Verify the round is loaded and in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound)
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*FinalizedState)
+		require.True(t, ok)
+
+		// Verify broadcast was requested.
+		broadcastReqs := h.chainSourceActor.getBroadcastReqs()
+		require.Len(t, broadcastReqs, 1)
+		require.Equal(t, finalTx, broadcastReqs[0].Tx)
+
+		// Verify confirmation subscription was registered.
+		confReqs := h.chainSourceActor.getConfReqs()
+		require.Len(t, confReqs, 1)
+		require.Equal(
+			t, persistedRoundID.String(), confReqs[0].CallerID,
+		)
+		require.Equal(t, uint32(1), confReqs[0].TargetConfs)
+	})
+
+	t.Run("confirmation transitions to ConfirmedState", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a round in FinalizedState.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID:   persistedRoundID,
+			FinalTx:   finalTx,
+			VTXOTrees: nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Load the round and start the actor.
+		h.setActiveRounds([]*Round{persistedRound})
+		h.start(h.ctx)
+
+		// Verify round is in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound)
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*FinalizedState)
+		require.True(t, ok)
+
+		// Send a confirmation message directly to the actor.
+		blockHash := chainhash.HashH([]byte("test-block"))
+		confMsg := &ConfirmationMsg{
+			RoundID:     persistedRoundID,
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    1,
+		}
+
+		result := h.actor.Receive(h.ctx, confMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify round transitioned to ConfirmedState.
+		confirmedState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+
+		confirmed, ok := confirmedState.(*ConfirmedState)
+		require.True(t, ok)
+		require.Equal(t, int32(100), confirmed.BlockHeight)
+		require.Equal(t, blockHash, confirmed.BlockHash)
+	})
+
+	t.Run("confirmation for unknown round ignored", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
+		h.start(h.ctx)
+
+		// Send confirmation for a round that doesn't exist.
+		unknownRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		blockHash := chainhash.HashH([]byte("test-block"))
+		confMsg := &ConfirmationMsg{
+			RoundID:     unknownRoundID,
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    1,
+		}
+
+		result := h.actor.Receive(h.ctx, confMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify state is unchanged - still just the current round.
+		h.assertRoundCount(1)
 	})
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
@@ -68,6 +69,16 @@ type ActorConfig struct {
 
 	// RoundStore provides persistent storage for rounds.
 	RoundStore RoundStore
+
+	// ChainSourceActor is a reference to the chain source actor for
+	// broadcasting transactions and subscribing to confirmations.
+	ChainSourceActor actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+
+	// ConfirmationTarget is the number of confirmations required before
+	// transitioning a round to the confirmed state.
+	ConfirmationTarget uint32
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -175,7 +186,8 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 
 // loadRoundFSM creates a new FSM for a persisted round, starting in
 // FinalizedState. This is used to restore rounds that were finalized but not
-// yet confirmed on-chain.
+// yet confirmed on-chain. After creating the FSM, it re-subscribes to
+// confirmation notifications for the round's transaction.
 func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	error) {
 
@@ -209,6 +221,16 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	fsm := protofsm.NewStateMachine(fsmCfg)
 	fsm.Start(ctx)
 
+	// Re-subscribe to confirmation notifications.
+	broadcastReq := &BroadcastRoundReq{
+		RoundID:  round.RoundID,
+		SignedTx: round.FinalTx,
+	}
+	if err := a.broadcastAndSubscribe(ctx, broadcastReq); err != nil {
+		return nil, fmt.Errorf("failed to re-subscribe to "+
+			"confirmation: %w", err)
+	}
+
 	return &RoundFSM{
 		FSM:     &fsm,
 		RoundID: round.RoundID,
@@ -229,6 +251,9 @@ func (a *Actor) Receive(ctx context.Context,
 
 	case *RoundMsg:
 		return a.handleRoundEvent(ctx, m)
+
+	case *ConfirmationMsg:
+		return a.handleConfirmation(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf(
@@ -399,6 +424,19 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 					"new_round", newRound.RoundID)
 			}
 
+		case *BroadcastRoundReq:
+			// Broadcast the transaction and subscribe to
+			// confirmation.
+			//
+			// TODO(elle): Handle broadcast failures - if broadcast
+			// fails, we should retry, fee bump or transition to a
+			// failed state.
+			err := a.broadcastAndSubscribe(ctx, m)
+			if err != nil {
+				return fmt.Errorf("failed to broadcast "+
+					"round %s: %w", m.RoundID, err)
+			}
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
@@ -522,4 +560,106 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](nil)
+}
+
+// handleConfirmation processes a ConfirmationMsg by forwarding a
+// TransactionConfirmedEvent to the appropriate round's FSM.
+func (a *Actor) handleConfirmation(ctx context.Context,
+	msg *ConfirmationMsg) fn.Result[ActorResp] {
+
+	// Find the round for this confirmation.
+	round := a.getRound(msg.RoundID)
+	if round == nil {
+		// Round no longer tracked - this can happen if the round was
+		// cleaned up before the confirmation arrived.
+		a.log.WarnS(ctx, "Ignoring confirmation for unknown round", nil,
+			"round_id", msg.RoundID)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	// Forward the confirmation event to the FSM.
+	confirmedEvent := &TransactionConfirmedEvent{
+		BlockHeight: msg.BlockHeight,
+		BlockHash:   msg.BlockHash,
+		NumConfs:    msg.NumConfs,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, round.FSM, confirmedEvent)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing confirmation: %w", err))
+	}
+
+	a.log.InfoS(ctx, "Round transaction confirmed",
+		"round_id", msg.RoundID,
+		"block_height", msg.BlockHeight,
+		"num_confs", msg.NumConfs)
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// broadcastAndSubscribe broadcasts the round's signed transaction and
+// subscribes to confirmation notifications.
+func (a *Actor) broadcastAndSubscribe(ctx context.Context,
+	req *BroadcastRoundReq) error {
+
+	// Skip if ChainSourceActor is not configured (e.g., in tests).
+	if a.cfg.ChainSourceActor == nil {
+		a.log.DebugS(ctx, "Skipping broadcast - no chain source actor",
+			"round_id", req.RoundID)
+
+		return nil
+	}
+
+	// Step 1: Broadcast the transaction.
+	txHash := req.SignedTx.TxHash()
+	broadcastReq := &chainsource.BroadcastTxRequest{
+		Tx:    req.SignedTx,
+		Label: fmt.Sprintf("round-%s", req.RoundID),
+	}
+
+	broadcastFuture := a.cfg.ChainSourceActor.Ask(ctx, broadcastReq)
+	broadcastResult := broadcastFuture.Await(ctx)
+	if _, err := broadcastResult.Unpack(); err != nil {
+		return fmt.Errorf("broadcast failed: %w", err)
+	}
+
+	a.log.InfoS(ctx, "Broadcast round transaction",
+		"round_id", req.RoundID,
+		"txid", txHash.String())
+
+	// Step 2: Subscribe to confirmation using actor mode. Create a mapped
+	// reference that transforms ConfirmationEvent to ConfirmationMsg.
+	// We use Tell (fire-and-forget) since we handle the confirmation
+	// asynchronously via ConfirmationMsg.
+	callbackRef := chainsource.MapConfirmationEvent(
+		a.cfg.SelfRef,
+		func(event chainsource.ConfirmationEvent) ActorMsg {
+			return &ConfirmationMsg{
+				RoundID:     req.RoundID,
+				BlockHeight: event.BlockHeight,
+				BlockHash:   event.BlockHash,
+				NumConfs:    event.NumConfs,
+			}
+		},
+	)
+
+	// Use the round ID as the caller ID for deterministic cancellation.
+	confReq := &chainsource.RegisterConfRequest{
+		CallerID:    req.RoundID.String(),
+		Txid:        &txHash,
+		TargetConfs: a.cfg.ConfirmationTarget,
+		HeightHint:  0,
+		NotifyActor: fn.Some(callbackRef),
+	}
+
+	a.cfg.ChainSourceActor.Tell(ctx, confReq)
+
+	a.log.DebugS(ctx, "Subscribed to transaction confirmation",
+		"round_id", req.RoundID,
+		"txid", txHash.String(),
+		"target_confs", a.cfg.ConfirmationTarget)
+
+	return nil
 }

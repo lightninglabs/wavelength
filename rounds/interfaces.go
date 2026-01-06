@@ -55,6 +55,11 @@ func NewRoundID() (RoundID, error) {
 	return RoundID(id), nil
 }
 
+// String returns the full string representation of the RoundID.
+func (id RoundID) String() string {
+	return uuid.UUID(id).String()
+}
+
 // LogPrefix returns a short string representation of the RoundID for logging.
 // It uses the last 4 bytes (32 bits) of the UUIDv7, which are high-entropy
 // random bits.

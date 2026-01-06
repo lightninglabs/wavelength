@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -85,3 +86,30 @@ func (m *JoinRoundRequest) MessageType() string {
 
 // actorMsgSealed marks this message as part of the ActorMsg sealed interface.
 func (m *JoinRoundRequest) actorMsgSealed() {}
+
+// ConfirmationMsg is sent to the actor when a round's commitment transaction
+// has been confirmed on-chain. The actor forwards this as a
+// TransactionConfirmedEvent to the appropriate round's FSM.
+type ConfirmationMsg struct {
+	actor.BaseMessage
+
+	// RoundID identifies which round was confirmed.
+	RoundID RoundID
+
+	// BlockHeight is the height of the block containing the transaction.
+	BlockHeight int32
+
+	// BlockHash is the hash of the block containing the transaction.
+	BlockHash chainhash.Hash
+
+	// NumConfs is the number of confirmations at the time of notification.
+	NumConfs uint32
+}
+
+// MessageType returns the type name of this message.
+func (m *ConfirmationMsg) MessageType() string {
+	return "ConfirmationMsg"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *ConfirmationMsg) actorMsgSealed() {}
