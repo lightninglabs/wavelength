@@ -585,7 +585,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					newClientErrorResp(clientID, errMsg),
+					newClientErrorResp(
+						clientID, errMsg,
+					),
 				},
 			}),
 		}, nil
@@ -622,7 +624,8 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
 						newClientErrorResp(
-							clientID, errMsg,
+							clientID,
+							errMsg,
 						),
 					},
 				}),
@@ -640,7 +643,8 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
 						newClientErrorResp(
-							clientID, errMsg,
+							clientID,
+							errMsg,
 						),
 					},
 				}),
@@ -925,7 +929,6 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		}, nil
 	}
 
-	// Check if client has already submitted nonces.
 	if s.hasClientSubmittedNonces(clientID) {
 		return &StateTransition{
 			NextState: s,
@@ -940,13 +943,25 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		}, nil
 	}
 
-	// Add nonces to each tree coordinator.
-	for idx, coordinator := range s.TreeSignCoordinators {
-		_, err := coordinator.AddNonces(evt.SigningKey, evt.Nonces)
-		if err != nil {
+	if len(evt.Nonces) == 0 {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID, "no nonces provided",
+					),
+				},
+			}),
+		}, nil
+	}
+
+	// Verify client submitted nonces for all their signing keys.
+	for keyHex := range reg.VTXODescriptors {
+		if _, ok := evt.Nonces[keyHex]; !ok {
 			errMsg := fmt.Sprintf(
-				"failed to add nonces for tree %d: %v",
-				idx, err,
+				"missing nonces for signing key %x",
+				keyHex[:],
 			)
 
 			return &StateTransition{
@@ -954,7 +969,8 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
 						newClientErrorResp(
-							clientID, errMsg,
+							clientID,
+							errMsg,
 						),
 					},
 				}),
@@ -962,10 +978,55 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		}
 	}
 
+	for signingKeyHex, nonces := range evt.Nonces {
+		desc := reg.VTXODescriptors[signingKeyHex]
+		if desc == nil || desc.CoSignerKey == nil ||
+			nonces == nil {
+
+			errMsg := fmt.Sprintf(
+				"unknown signing key %x", signingKeyHex[:],
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						newClientErrorResp(
+							clientID,
+							errMsg,
+						),
+					},
+				}),
+			}, nil
+		}
+
+		for idx, coordinator := range s.TreeSignCoordinators {
+			_, err := coordinator.AddNonces(desc.CoSignerKey, nonces) //nolint:ll
+			if err != nil {
+				errMsg := fmt.Sprintf(
+					"failed to add nonces for tree %d: %v",
+					idx, err,
+				)
+
+				return &StateTransition{
+					NextState: s,
+					NewEvents: fn.Some(EmittedEvent{
+						Outbox: []OutboxEvent{
+							newClientErrorResp(
+								clientID,
+								errMsg,
+							),
+						},
+					}),
+				}, nil
+			}
+		}
+	}
+
 	// Track that this client has submitted nonces.
 	newClientsWithNonces := make(map[clientconn.ClientID]struct{})
-	for k, v := range s.ClientsWithNonces {
-		newClientsWithNonces[k] = v
+	for cid := range s.ClientsWithNonces {
+		newClientsWithNonces[cid] = struct{}{}
 	}
 	newClientsWithNonces[clientID] = struct{}{}
 
@@ -1144,7 +1205,20 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		}, nil
 	}
 
-	// Check if client has already submitted signatures.
+	if len(evt.Signatures) == 0 {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID,
+						"no signatures provided",
+					),
+				},
+			}),
+		}, nil
+	}
+
 	if s.hasClientSubmittedSignatures(clientID) {
 		return &StateTransition{
 			NextState: s,
@@ -1159,15 +1233,12 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		}, nil
 	}
 
-	// Add partial signatures to each tree coordinator.
-	for idx, coordinator := range s.TreeSignCoordinators {
-		err := coordinator.AddPartialSignatures(
-			evt.SigningKey, evt.Signatures,
-		)
-		if err != nil {
+	// Verify client submitted signatures for all their signing keys.
+	for keyHex := range reg.VTXODescriptors {
+		if _, ok := evt.Signatures[keyHex]; !ok {
 			errMsg := fmt.Sprintf(
-				"failed to add sigs for tree %d: %v",
-				idx, err,
+				"missing signatures for signing key %x",
+				keyHex[:],
 			)
 
 			return &StateTransition{
@@ -1175,7 +1246,8 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
 						newClientErrorResp(
-							clientID, errMsg,
+							clientID,
+							errMsg,
 						),
 					},
 				}),
@@ -1183,10 +1255,57 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		}
 	}
 
+	for signingKeyHex, sigs := range evt.Signatures {
+		desc := reg.VTXODescriptors[signingKeyHex]
+		if desc == nil || desc.CoSignerKey == nil ||
+			sigs == nil {
+
+			errMsg := fmt.Sprintf(
+				"unknown signing key %x", signingKeyHex[:],
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						newClientErrorResp(
+							clientID,
+							errMsg,
+						),
+					},
+				}),
+			}, nil
+		}
+
+		for idx, coordinator := range s.TreeSignCoordinators {
+			err := coordinator.AddPartialSignatures(
+				desc.CoSignerKey, sigs,
+			)
+			if err != nil {
+				errMsg := fmt.Sprintf(
+					"failed to add sigs for tree %d: %v",
+					idx, err,
+				)
+
+				return &StateTransition{
+					NextState: s,
+					NewEvents: fn.Some(EmittedEvent{
+						Outbox: []OutboxEvent{
+							newClientErrorResp(
+								clientID,
+								errMsg,
+							),
+						},
+					}),
+				}, nil
+			}
+		}
+	}
+
 	// Track that this client has submitted signatures.
 	newClientsWithSignatures := make(map[clientconn.ClientID]struct{})
-	for k, v := range s.ClientsWithSignatures {
-		newClientsWithSignatures[k] = v
+	for cid := range s.ClientsWithSignatures {
+		newClientsWithSignatures[cid] = struct{}{}
 	}
 	newClientsWithSignatures[clientID] = struct{}{}
 

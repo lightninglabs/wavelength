@@ -1,7 +1,6 @@
 package rounds
 
 import (
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -100,19 +99,14 @@ type VTXONoncesTimeoutEvent struct{}
 func (e *VTXONoncesTimeoutEvent) eventSealed() {}
 
 // ClientVTXONoncesEvent is sent when a client submits their MuSig2 nonces for
-// VTXO tree transactions. Each client with VTXOs must submit nonces for all
-// transactions where they are a cosigner.
+// VTXO tree transactions. Nonces are grouped by signing key so a client can
+// submit all of its keys in a single message.
 type ClientVTXONoncesEvent struct {
 	// ClientID identifies which client is submitting nonces.
 	ClientID clientconn.ClientID
 
-	// SigningKey is the public key the client uses for signing. This is
-	// used to identify which transactions the client is a cosigner for.
-	SigningKey *btcec.PublicKey
-
-	// Nonces maps transaction IDs to the client's public nonces for those
-	// transactions.
-	Nonces map[tree.TxID]tree.Musig2PubNonce
+	// Nonces maps signing key hex -> txid -> public nonce.
+	Nonces map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce
 }
 
 // eventSealed marks ClientVTXONoncesEvent as implementing the sealed Event
@@ -128,19 +122,14 @@ type VTXOSignaturesTimeoutEvent struct{}
 func (e *VTXOSignaturesTimeoutEvent) eventSealed() {}
 
 // ClientVTXOPartialSigsEvent is sent when a client submits their MuSig2 partial
-// signatures for VTXO tree transactions. Each client with VTXOs must submit
-// partial signatures for all transactions where they are a cosigner.
+// signatures for VTXO tree transactions. Signatures are grouped by signing key
+// so a client can submit all of its keys in a single message.
 type ClientVTXOPartialSigsEvent struct {
 	// ClientID identifies which client is submitting signatures.
 	ClientID clientconn.ClientID
 
-	// SigningKey is the public key the client uses for signing. This is
-	// used to identify which transactions the client is a cosigner for.
-	SigningKey *btcec.PublicKey
-
-	// Signatures maps transaction IDs to the client's partial signatures
-	// for those transactions.
-	Signatures map[tree.TxID]*musig2.PartialSignature
+	// Signatures maps signing key hex -> txid -> partial signature.
+	Signatures map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature
 }
 
 // eventSealed marks ClientVTXOPartialSigsEvent as implementing the sealed Event

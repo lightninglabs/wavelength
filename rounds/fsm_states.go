@@ -241,7 +241,7 @@ type AwaitingVTXONoncesState struct {
 	// signature collection for one VTXO tree.
 	TreeSignCoordinators map[int]*batch.TreeSignCoordinator
 
-	// ClientsWithNonces tracks which clients have submitted their nonces.
+	// ClientsWithNonces tracks which clients have submitted nonces.
 	ClientsWithNonces map[clientconn.ClientID]struct{}
 }
 
@@ -262,18 +262,20 @@ func (s *AwaitingVTXONoncesState) stateSealed() {}
 // allClientsSubmittedNonces returns true if all registered clients with VTXOs
 // have submitted their nonces.
 func (s *AwaitingVTXONoncesState) allClientsSubmittedNonces() bool {
-	clientsWithVTXOs := 0
-	for _, reg := range s.ClientRegistrations {
-		if len(reg.VTXODescriptors) > 0 {
-			clientsWithVTXOs++
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) == 0 {
+			continue
+		}
+
+		if !s.hasClientSubmittedNonces(clientID) {
+			return false
 		}
 	}
 
-	return len(s.ClientsWithNonces) >= clientsWithVTXOs
+	return true
 }
 
-// hasClientSubmittedNonces checks if a client has already submitted their
-// nonces.
+// hasClientSubmittedNonces checks if a client has submitted any nonces.
 func (s *AwaitingVTXONoncesState) hasClientSubmittedNonces(
 	clientID clientconn.ClientID) bool {
 
@@ -326,17 +328,20 @@ func (s *AwaitingVTXOSignaturesState) stateSealed() {}
 // allClientsSubmittedSignatures returns true if all registered clients with
 // VTXOs have submitted their partial signatures.
 func (s *AwaitingVTXOSignaturesState) allClientsSubmittedSignatures() bool {
-	clientsWithVTXOs := 0
-	for _, reg := range s.ClientRegistrations {
-		if len(reg.VTXODescriptors) > 0 {
-			clientsWithVTXOs++
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) == 0 {
+			continue
+		}
+
+		if !s.hasClientSubmittedSignatures(clientID) {
+			return false
 		}
 	}
 
-	return len(s.ClientsWithSignatures) >= clientsWithVTXOs
+	return true
 }
 
-// hasClientSubmittedSignatures checks if a client has already submitted their
+// hasClientSubmittedSignatures checks if a client has already submitted any
 // partial signatures.
 func (s *AwaitingVTXOSignaturesState) hasClientSubmittedSignatures(
 	clientID clientconn.ClientID) bool {
