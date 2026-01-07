@@ -247,6 +247,28 @@ func (a *SpendActor) Stop() {
 	a.wg.Wait()
 }
 
+// OnStop implements actor.Stoppable for proper cleanup when stopped via actor
+// system. This is called after the actor's message loop exits.
+func (a *SpendActor) OnStop(ctx context.Context) error {
+	// Cancel internal context to signal background goroutine.
+	a.cancel()
+
+	// Wait for goroutine with timeout from cleanup context.
+	done := make(chan struct{})
+	go func() {
+		a.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // buildSpendEvent converts the backend SpendDetail into a SpendEvent,
 // filling in missing fields where possible.
 func buildSpendEvent(spend *SpendDetail,

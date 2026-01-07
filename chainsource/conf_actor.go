@@ -244,6 +244,28 @@ func (a *ConfActor) Stop() {
 	a.wg.Wait()
 }
 
+// OnStop implements actor.Stoppable for proper cleanup when stopped via actor
+// system. This is called after the actor's message loop exits.
+func (a *ConfActor) OnStop(ctx context.Context) error {
+	// Cancel internal context to signal background goroutine.
+	a.cancel()
+
+	// Wait for goroutine with timeout from cleanup context.
+	done := make(chan struct{})
+	go func() {
+		a.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // buildConfirmationEvent converts the backend TxConfirmation into a
 // ConfirmationEvent, filling in missing fields where possible.
 func buildConfirmationEvent(details *TxConfirmation,
