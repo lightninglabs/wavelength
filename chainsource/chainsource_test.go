@@ -117,7 +117,10 @@ func TestChainSourceActorFeeEstimate(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-1", chainSource,
 	)
@@ -144,7 +147,10 @@ func TestChainSourceActorTestMempoolAccept(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(system, "chainsource-mempool", chainSource)
 
 	ctx := t.Context()
@@ -171,7 +177,10 @@ func TestChainSourceActorBroadcastTx(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-broadcast", chainSource,
 	)
@@ -203,7 +212,10 @@ func TestChainSourceActorBestHeight(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-1", chainSource,
 	)
@@ -231,7 +243,10 @@ func TestChainSourceActorRegisterConf(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(system, "chainsource-conf", chainSource)
 
 	ctx := t.Context()
@@ -283,7 +298,10 @@ func TestChainSourceActorRegisterSpend(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(system, "chainsource-spend", chainSource)
 
 	ctx := t.Context()
@@ -333,7 +351,10 @@ func TestChainSourceActorUnregisterConf(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-unreg-conf", chainSource,
 	)
@@ -376,7 +397,10 @@ func TestChainSourceActorUnregisterSpend(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-unreg-spend", chainSource,
 	)
@@ -417,7 +441,10 @@ func TestChainSourceActorUnsubscribeBlocks(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(
 		system, "chainsource-unsub-blocks", chainSource,
 	)
@@ -453,7 +480,10 @@ func TestChainSourceActorSubscribeBlocks(t *testing.T) {
 	system := actor.NewActorSystem()
 	defer func() { _ = system.Shutdown(t.Context()) }()
 
-	chainSource := NewChainSourceActor(backend, system)
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
 	ref := ChainSourceKey.Spawn(system, "chainsource-epoch", chainSource)
 
 	ctx := t.Context()
@@ -500,7 +530,7 @@ func TestConfActorFutureMode(t *testing.T) {
 	backend := newMockBackend()
 
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	txHash := chainhash.Hash{}
@@ -548,7 +578,7 @@ func TestConfActorNotifyMode(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	txHash := chainhash.Hash{}
@@ -598,7 +628,7 @@ func TestConfActorHandlesNilTx(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	//nolint:ll
@@ -644,7 +674,7 @@ func TestConfActorHandlesClosedChannel(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	confActor := NewConfActor(backend, ctx)
+	confActor := NewConfActor(ConfActorConfig{Backend: backend})
 	defer confActor.Stop()
 
 	txHash := chainhash.Hash{}
@@ -678,7 +708,7 @@ func TestSpendActorFutureMode(t *testing.T) {
 	backend := newMockBackend()
 
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	txHash := chainhash.Hash{}
@@ -726,7 +756,7 @@ func TestSpendActorNotifyMode(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	txHash := chainhash.Hash{}
@@ -774,7 +804,7 @@ func TestSpendActorHandlesMissingTxHash(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	outpoint := &wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}
@@ -818,7 +848,7 @@ func TestSpendActorHandlesClosedChannel(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	spendActor := NewSpendActor(backend, ctx)
+	spendActor := NewSpendActor(SpendActorConfig{Backend: backend})
 	defer spendActor.Stop()
 
 	outpoint := &wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}
@@ -851,7 +881,7 @@ func TestBlockEpochActorNotifyMode(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	epochActor := NewBlockEpochActor(backend, ctx)
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor.Stop()
 
 	notifier := actor.NewChannelTellOnlyRef[BlockEpoch]("test-notify", 10)
@@ -894,7 +924,7 @@ func TestBlockEpochActorIteratorMode(t *testing.T) {
 	backend := newMockBackend()
 
 	ctx := t.Context()
-	epochActor := NewBlockEpochActor(backend, ctx)
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor.Stop()
 
 	result := epochActor.Receive(ctx, &SubscribeBlocksRequest{
@@ -948,7 +978,7 @@ func TestBlockEpochActorIteratorCancel(t *testing.T) {
 
 	backend := newMockBackend()
 	ctx := t.Context()
-	epochActor := NewBlockEpochActor(backend, ctx)
+	epochActor := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor.Stop()
 
 	// Subscription that stops after the first block.
@@ -996,7 +1026,7 @@ func TestBlockEpochActorIteratorCancel(t *testing.T) {
 	// Second subscription requires a new actor (each actor serves exactly
 	// one subscription). This tests explicit Cancel() without consuming
 	// blocks.
-	epochActor2 := NewBlockEpochActor(backend, ctx)
+	epochActor2 := NewBlockEpochActor(BlockEpochConfig{Backend: backend})
 	defer epochActor2.Stop()
 
 	result2 := epochActor2.Receive(ctx, &SubscribeBlocksRequest{
@@ -1206,7 +1236,8 @@ func TestConfActorIncludeBlock(t *testing.T) {
 
 			ctx := t.Context()
 			backend := newMockBackend()
-			confActor := NewConfActor(backend, ctx)
+			cfg := ConfActorConfig{Backend: backend}
+			confActor := NewConfActor(cfg)
 
 			// Send a register conf request directly into the
 			// actor.

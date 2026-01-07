@@ -28,6 +28,9 @@ const (
 	// MaxConfsForListUnspent is the maximum confirmations parameter for
 	// ListUnspent queries.
 	MaxConfsForListUnspent = 9999999
+
+	// Subsystem is the log subsystem code for the boarding wallet actor.
+	Subsystem = "ARKW"
 )
 
 // notifierInfo holds the configuration for a registered confirmation notifier.
@@ -69,11 +72,21 @@ type Ark struct {
 	// wg tracks background goroutines spawned by the wallet actor.
 	wg sync.WaitGroup
 
+	// ctx is the wallet's internal context, cancelled on shutdown. Used for
+	// background goroutines that should respect wallet lifecycle.
+	//
+	//nolint:containedctx
+	ctx context.Context
+
+	// cancel cancels the internal context on shutdown.
+	cancel context.CancelFunc
+
 	// log is the logger for this actor.
 	log btclog.Logger
 }
 
-// NewArk creates a new Ark wallet actor.
+// NewArk creates a new Ark wallet actor. The logger should already have the
+// subsystem set (e.g., created via handler.SubSystem(wallet.Subsystem)).
 func NewArk(backend BoardingBackend, store BoardingStore,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
 	log btclog.Logger) *Ark {
@@ -93,6 +106,10 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 // notifications from the chainsource actor.
 func (a *Ark) Start(ctx context.Context,
 	selfRef actor.TellOnlyRef[WalletMsg]) error {
+
+	// Create an internal context for background goroutines that outlive
+	// request contexts but should respect wallet shutdown.
+	a.ctx, a.cancel = context.WithCancel(context.Background())
 
 	// Load existing addresses from database to populate seenUtxos for
 	// restart recovery.
@@ -150,6 +167,11 @@ func (a *Ark) Start(ctx context.Context,
 // notifications and waiting for any in-flight backlog deliveries to complete.
 func (a *Ark) Stop(ctx context.Context) {
 	a.log.InfoS(ctx, "Stopping boarding wallet actor")
+
+	// Cancel the internal context to signal background goroutines to stop.
+	if a.cancel != nil {
+		a.cancel()
+	}
 
 	a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
 		CallerID: "boarding-wallet",
@@ -316,10 +338,12 @@ func (a *Ark) handleRegisterNotifier(ctx context.Context,
 	)
 
 	// If a backlog is needed, send it asynchronously so we don't block
-	// the registration response.
+	// the registration response. We use the wallet's internal context since
+	// the request context will be cancelled after Ask returns, but we still
+	// want the backlog goroutine to respect wallet shutdown.
 	req.BacklogHeight.WhenSome(func(height int32) {
 		a.wg.Go(func() {
-			a.sendBacklog(ctx, req.NotifyActor, height)
+			a.sendBacklog(a.ctx, req.NotifyActor, height)
 		})
 	})
 
@@ -353,7 +377,7 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 func (a *Ark) handleBlockEpoch(ctx context.Context,
 	epoch chainsource.BlockEpoch) fn.Result[WalletResp] {
 
-	a.log.DebugS(ctx, "Processing new block",
+	a.log.InfoS(ctx, "Processing new block epoch",
 		slog.Int("height", int(epoch.Height)))
 
 	// A new block just arrived, we'll now poll ListUnspent for any new
@@ -369,6 +393,10 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		// again on the next block.
 		return fn.Ok[WalletResp](nil)
 	}
+
+	a.log.InfoS(ctx, "ListUnspent returned UTXOs",
+		slog.Int("height", int(epoch.Height)),
+		slog.Int("utxo_count", len(utxos)))
 
 	// For Each UTXO, we'll check if it's new and belongs to a fresh
 	// boarding intent, dispatching notifications if needed.

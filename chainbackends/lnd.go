@@ -10,9 +10,18 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
+
+// TxBroadcaster is a minimal interface for broadcasting transactions. This
+// allows LNDBackend to work with both lnwallet.WalletController (in-process
+// lnd) and lndclient wrappers (remote lnd via gRPC).
+type TxBroadcaster interface {
+	// PublishTransaction broadcasts the given transaction to the network.
+	// The label parameter is optional and may be used for wallet tracking.
+	PublishTransaction(ctx context.Context, tx *wire.MsgTx,
+		label string) error
+}
 
 // LNDBackend implements the chainsource.ChainBackend interface by wrapping
 // lnd's chain notification and fee estimation interfaces. This backend provides
@@ -28,20 +37,20 @@ type LNDBackend struct {
 	// feeEstimator provides fee estimation services from lnd.
 	feeEstimator chainfee.Estimator
 
-	// wallet provides transaction broadcasting capabilities.
-	wallet lnwallet.WalletController
+	// broadcaster provides transaction broadcasting capabilities.
+	broadcaster TxBroadcaster
 }
 
 // NewLNDBackend creates a new LNDBackend instance with the given lnd
 // components. All parameters must be non-nil.
 func NewLNDBackend(notifier chainntnfs.ChainNotifier,
 	feeEstimator chainfee.Estimator,
-	wallet lnwallet.WalletController) *LNDBackend {
+	broadcaster TxBroadcaster) *LNDBackend {
 
 	return &LNDBackend{
 		notifier:     notifier,
 		feeEstimator: feeEstimator,
-		wallet:       wallet,
+		broadcaster:  broadcaster,
 	}
 }
 
@@ -120,12 +129,12 @@ func (b *LNDBackend) TestMempoolAccept(ctx context.Context,
 		"LND backend")
 }
 
-// BroadcastTx broadcasts a transaction to the network using lnd's wallet
-// controller.
+// BroadcastTx broadcasts a transaction to the network using the configured
+// broadcaster.
 func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	label string) error {
 
-	err := b.wallet.PublishTransaction(tx, label)
+	err := b.broadcaster.PublishTransaction(ctx, tx, label)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
