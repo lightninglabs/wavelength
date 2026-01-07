@@ -28,7 +28,7 @@ evaluating scripts in an ad-hoc VM context.
 
 ## PR Scope (what #58 will do)
 PR #58 MUST implement, at minimum:
-- A `lib/arkscript` (name TBD) package that defines:
+- A `client/lib/arkscript` package that defines:
   - the Closure AST node set in this RFC,
   - validation for VTXO and checkpoint policies, and
   - canonical compilation (leaf encoding + canonical tree construction).
@@ -39,6 +39,32 @@ PR #58 MUST implement, at minimum:
 - A tap tree encoding suitable for PSBT metadata for OOR finalization (see
   “PSBT extensions”).
 - Tests covering canonicalization, invariants, and tx-context derivation.
+
+### Repo anchors (where this lands)
+PR #58 MUST:
+- Add the new implementation under `client/lib/arkscript/`.
+- Keep `client/lib/scripts/` as the stable public surface for other
+  repositories (notably `darepo` imports `github.com/lightninglabs/darepo-client/lib/scripts`).
+- Make `client/lib/scripts/vtxo.go` a thin wrapper over `client/lib/arkscript`
+  for default VTXO construction and spend metadata, keeping existing exported
+  function signatures stable where feasible.
+- Reuse the existing NUMS/unspendable key machinery in `client/lib/scripts/nums.go`
+  as the default internal key provider.
+
+PR #58 SHOULD document and/or update these call sites to use the new package
+internally:
+- `client/lib/scripts/*` (default VTXO tapscripts and spend info helpers).
+- Any checkpoint and assets integration entry points, if present in this repo
+  at the time of implementation, otherwise expose library APIs ready for those
+  packages to adopt.
+
+### Compatibility contract (default VTXO template)
+To avoid breaking deterministic addresses and on-chain expectations, PR #58
+MUST preserve the standard VTXO template behavior:
+- The default VTXO output key, leaf scripts, and control blocks MUST be
+  byte-for-byte identical to the current behavior produced by
+  `client/lib/scripts/VTXOTapScript` for the same `(owner, operator, delay)`.
+- This MUST be enforced via golden tests derived from the current implementation.
 
 PR #58 MAY additionally:
 - include a minimal “policy composition” hook for Taproot Assets (attach Ark
@@ -120,6 +146,8 @@ Canonical encoding:
 This RFC standardizes N-of-N only (all keys must sign).
 
 Two encodings are allowed; implementations MUST support at least one.
+PR #58 MUST standardize on the `checksig` (CHECKSIGVERIFY-chain) encoding for
+v1 to match current Ark VTXO scripts.
 
 **Type: `checksig` (CHECKSIGVERIFY chain)**
 For keys `k[0..n-1]`:
@@ -222,6 +250,21 @@ depend on a secret scalar known to any party.
 
 ## Validation rules
 
+### Structural constraints (to make tx-context derivation unambiguous)
+PR #58 MUST restrict timelock composition per leaf:
+- Each leaf MUST contain at most one effective CSV lock and at most one
+  effective CLTV lock.
+- Timelocks MUST apply to the entire spending condition: conceptually, CSV and
+  CLTV are treated as outer gates that wrap the leaf’s inner expression.
+- If both CSV and CLTV are present, compilation MUST treat them as a gate-set
+  and emit the canonical ordering:
+  - CLTV prefix (if present),
+  - inner expression,
+  - CSV suffix (if present).
+
+This constraint ensures `RequiredSequence`/`RequiredLockTime` are derived
+unambiguously and consistently.
+
 ### Locktime policy
 Validation MUST enforce:
 - CSV locktimes are valid BIP-68 encodings.
@@ -271,6 +314,9 @@ For a compiled leaf, derive:
   - if the leaf contains `CLTV(lock, ...)`, this MUST be `lock`,
   - else it MUST be `0`.
 
+If both CSV and CLTV are present in the same leaf, CSV determines
+`RequiredSequence` (already non-final) and CLTV determines `RequiredLockTime`.
+
 ### Transaction-wide rules
 Given inputs `i=0..k-1`, each with selected leaf requirements:
 - `nLockTime` MUST be the maximum `RequiredLockTime` across all inputs.
@@ -282,6 +328,9 @@ Given inputs `i=0..k-1`, each with selected leaf requirements:
 ### Tap tree encoding
 Implementations MAY persist taproot leaf lists in PSBT unknowns to ensure the
 same leaf set can be reconstructed during finalization (OOR).
+
+PR #58 MUST define this as a per-input PSBT unknown (not global), because the
+tap tree is an input-spend concern.
 
 If used, the key SHOULD be namespaced (e.g., `ark/taptree`). For compatibility
 with existing Ark tooling, the un-namespaced key `taptree` MAY be used while
@@ -296,11 +345,18 @@ Encoding MUST be:
   - script bytes.
 
 Depth MUST be measured against the canonical tree construction in this RFC.
+Leaf order in the encoding MUST be the canonical leaf order defined in “Leaf
+ordering”.
+
+Compact size integers MUST follow Bitcoin varint rules; implementations SHOULD
+use the existing btcd/wire varint helpers to avoid divergence.
 
 ### Condition witness encoding
 For hashlock leaves that require a preimage witness element, implementations
 MAY persist witness material in PSBT unknowns under a stable key (e.g.,
 `ark/condition`) using standard witness serialization.
+
+PR #58 MUST define this as a per-input PSBT unknown.
 
 ## Assets composition (Taproot Assets)
 Taproot Assets introduces additional roots (asset commitment roots) that must
@@ -316,6 +372,14 @@ PR #58 MUST define a composition API that can:
 PR #58 SHOULD treat full tapd proof reproduction as out-of-scope for v1, but
 MUST keep the hash-level composition deterministic and testable.
 
+Internal key requirements for composed outputs:
+- The internal key MUST still be unspendable (no keypath spend).
+- For BTC-only policies, the default internal key SHOULD remain the existing
+  NUMS/unspendable key.
+- For assets-composed outputs, the API MUST allow the caller to provide an
+  unspendable internal key when required to reproduce external proofs, while
+  still enforcing “unspendable” as the invariant.
+
 ## API surface (informative)
 The implementation SHOULD expose:
 - typed builders for standard VTXO and checkpoint templates,
@@ -328,6 +392,54 @@ The implementation SHOULD expose:
 Parsing arbitrary tapscript is out-of-scope. If parsing is provided, it MUST be
 limited to scripts previously produced by this compiler or a tightly-scoped
 legacy subset with canonical re-encoding.
+
+### Witness conventions (tapscript stack)
+To avoid cross-implementation divergence, PR #58 MUST specify witness stack
+conventions for the supported nodes. Unless explicitly noted, the “witness
+stack” below refers to the elements before the final `script` and
+`controlBlock` elements required by taproot script-path spends.
+
+`Checksig(key)`:
+- witness stack: `[sig]`
+
+`Multisig([k0..kn-1], checksig)` (CHECKSIGVERIFY-chain):
+- witness stack: signatures MUST be provided in reverse key order so the first
+  script check consumes the signature at the top of stack:
+  - `[sig(kn-1), ..., sig(k1), sig(k0)]`
+
+`HashLock(algo, hash, inner)`:
+- witness stack: `inner_witness + [preimage]`
+  - signatures (and any other inner elements) come first
+  - preimage MUST be last (top of stack) so `OP_HASH*` consumes it
+
+If a leaf requires both signatures and a hash preimage, the preimage MUST be
+the top-most element and signatures MUST be ordered according to the `inner`
+node requirements.
+
+### Leaf version
+PR #58 MUST use the base tapleaf version (BIP-341) for all compiled leaves.
+Implementations SHOULD use the btcd constant (e.g., `txscript.BaseLeafVersion`)
+and MUST reject non-base versions for v1.
+
+### Error taxonomy
+PR #58 MUST provide exported, comparable error classes for:
+- validation failures (expected, user-controlled): include a stable code and
+  human-readable message (e.g., `ErrMissingExit`, `ErrMissingCollab`,
+  `ErrBypassUngated`, `ErrExitRoleViolation`, `ErrUnsupportedOpcode`),
+- internal/compiler errors (unexpected): wrap with context and treat as
+  programming errors.
+
+Callers MUST be able to distinguish “invalid policy” from “internal error”.
+
+## PR checklist (review mapping)
+This section is non-normative and exists to make review mechanical.
+
+PR #58 should visibly include:
+- `client/lib/arkscript/`: AST + validation + canonical compiler + tx-context
+  derivation.
+- `client/lib/scripts/vtxo.go`: wrapper delegating to `client/lib/arkscript`.
+- Golden tests proving default VTXO outputs are unchanged.
+- Unit/rapid tests for invariants + canonicalization + PSBT encoding helpers.
 
 ## Implementation plan (incremental)
 1) Implement AST nodes + canonical script encoder.
