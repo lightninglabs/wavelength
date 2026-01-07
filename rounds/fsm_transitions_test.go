@@ -4,11 +4,17 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1376,6 +1382,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		// Send nonces from unregistered client2.
 		err := h.sendEvent(&ClientVTXONoncesEvent{
 			ClientID: "client2",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				route.NewVertex(h.operatorPub): {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1399,6 +1408,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		// Send nonces from client1 who has no VTXOs.
 		err := h.sendEvent(&ClientVTXONoncesEvent{
 			ClientID: "client1",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				route.NewVertex(h.operatorPub): {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1424,9 +1436,19 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		)
 		h := newTestHarness(t, awaitState)
 
+		var signingKey SigningKeyHex
+		for _, desc := range awaitState.ClientRegistrations["client1"].
+			VTXODescriptors {
+			signingKey = route.NewVertex(desc.CoSignerKey)
+			break
+		}
+
 		// Send duplicate nonces from client1.
 		err := h.sendEvent(&ClientVTXONoncesEvent{
 			ClientID: "client1",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				signingKey: {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1437,6 +1459,404 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		require.Equal(t, ClientID("client1"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "already submitted")
 	})
+
+	t.Run("partial key submission rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create client with multiple signing keys.
+		key1, _ := testutils.CreateKey(100)
+		key2, _ := testutils.CreateKey(101)
+		keyHex1 := route.NewVertex(key1)
+		keyHex2 := route.NewVertex(key2)
+
+		awaitState := &AwaitingVTXONoncesState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
+					},
+				},
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees:            map[int]*tree.Tree{},
+			TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{}, //nolint:ll
+			ClientsWithNonces:    make(map[ClientID]struct{}),
+		}
+
+		h := newTestHarness(t, awaitState)
+
+		// Submit nonces for only one of the two keys.
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client1",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				keyHex1: {},
+			},
+		})
+		require.NoError(t, err)
+
+		// Should reject and remain in same state.
+		assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "missing nonces")
+		require.Contains(t, errResp.ErrorMsg, "signing key")
+	})
+}
+
+// TestFSMVTXOSigningFlowE2ERealSigs exercises the full VTXO signing flow with
+// real MuSig2 signing and validates the aggregated signatures against the
+// constructed VTXO tree.
+func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		t, "client1", 10, h.operatorPub, exitDelay, expiry,
+	)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("input1")),
+		Index: 0,
+	}
+
+	// Allow the boarding input and set up funding/signing expectations.
+	h.setupCompleteRegistrationFlow(
+		&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	)
+
+	finalTx := wire.NewMsgTx(2)
+	h.expectRoundFinalized(finalTx)
+
+	boardingReq := client.createBoardingRequest(&outpoint)
+	vtxoReq := client.createVTXORequest(btcutil.Amount(50000))
+
+	err := h.sendEvent(client.createJoinRequestWithVTXOs(
+		[]*types.BoardingRequest{boardingReq},
+		[]*types.VTXORequest{vtxoReq},
+	))
+	require.NoError(t, err)
+	assertStateType[*RegistrationState](h)
+
+	// Seal via timeout to start nonce collection.
+	h.outboxMessages = nil
+	err = h.sendEvent(&RegistrationTimeoutEvent{})
+	require.NoError(t, err)
+
+	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
+	require.NotNil(t, awaitNonces.PSBT)
+	require.NotEmpty(t, awaitNonces.VTXOTrees)
+
+	batchInfo := h.getClientBatchInfo(client.clientID)
+	require.NotNil(t, batchInfo)
+	require.NotNil(t, batchInfo.BatchPSBT)
+	require.NotEmpty(t, batchInfo.VTXOTreePaths)
+
+	keys := client.vtxoSigningKeys()
+	require.NotEmpty(t, keys)
+
+	// Client submits real MuSig2 nonces.
+	h.outboxMessages = nil
+	nonceEvent := client.createVTXONoncesEvent(
+		keys[0], batchInfo.VTXOTreePaths,
+	)
+	err = h.sendEvent(nonceEvent)
+	require.NoError(t, err)
+
+	awaitSigs := assertStateType[*AwaitingVTXOSignaturesState](h)
+	require.NotEmpty(t, awaitSigs.TreeSignCoordinators)
+
+	aggNonces := h.getClientVTXOAggNonces(client.clientID)
+	require.NotNil(t, aggNonces)
+	require.NotEmpty(t, aggNonces.AggNonces)
+
+	// Client registers aggregated nonces and submits partial signatures.
+	h.outboxMessages = nil
+	sigEvent := client.createVTXOPartialSigsEvent(
+		keys[0], batchInfo.VTXOTreePaths, aggNonces.AggNonces,
+	)
+	err = h.sendEvent(sigEvent)
+	require.NoError(t, err)
+
+	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+
+	aggSigs := h.getClientVTXOAggSigs(client.clientID)
+	require.NotNil(t, aggSigs)
+	require.NotEmpty(t, aggSigs.AggSigs)
+
+	// Validate aggregated signatures against the tree.
+	for _, vtxoTree := range awaitBoarding.VTXOTrees {
+		err := vtxoTree.SubmitTreeSigs(aggSigs.AggSigs)
+		require.NoError(t, err)
+		require.NoError(t, vtxoTree.VerifySigned())
+	}
+
+	// Client submits boarding signatures to finalize.
+	h.outboxMessages = nil
+	boardingSigEvent := client.createBoardingSignaturesEvent(
+		awaitBoarding,
+	)
+	err = h.sendEvent(boardingSigEvent)
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	require.NotNil(t, finalState.FinalTx)
+	require.Len(t, finalState.ClientRegistrations, 1)
+
+	var foundBroadcast bool
+	for _, msg := range h.outboxMessages {
+		if m, ok := msg.(*BroadcastRoundReq); ok {
+			foundBroadcast = true
+			require.Equal(t, finalTx, m.SignedTx)
+		}
+	}
+
+	require.True(t, foundBroadcast, "broadcast should be requested")
+}
+
+// TestFSMVTXOMultiClientRealSigs covers two clients each with a VTXO, ensuring
+// real MuSig2 nonces/signatures flow correctly across clients.
+func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	const exitDelay = 144
+	const expiry = 144
+
+	client1 := newClientHarness(
+		t, "client1", 10, h.operatorPub, exitDelay, expiry,
+	)
+	client2 := newClientHarness(
+		t, "client2", 20, h.operatorPub, exitDelay, expiry,
+	)
+
+	outpoint1 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("input1")),
+		Index: 0,
+	}
+	outpoint2 := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("input2")),
+		Index: 0,
+	}
+
+	// Prepare mocks: fund once, validate both boarding inputs.
+	h.setupCompleteRegistrationFlow(
+		&outpoint1, client1.boardingKey, exitDelay, 10, h.roundID,
+	)
+	h.setupValidBoardingInput(
+		&outpoint2, client2.boardingKey, exitDelay, 10, h.roundID,
+	)
+
+	finalTx := wire.NewMsgTx(2)
+	h.expectRoundFinalized(finalTx)
+
+	// Both clients join with boarding + VTXO requests.
+	err := h.sendEvent(client1.createJoinRequestWithVTXOs(
+		[]*types.BoardingRequest{
+			client1.createBoardingRequest(&outpoint1),
+		},
+		[]*types.VTXORequest{
+			client1.createVTXORequest(btcutil.Amount(50_000)),
+		},
+	))
+	require.NoError(t, err)
+
+	err = h.sendEvent(client2.createJoinRequestWithVTXOs(
+		[]*types.BoardingRequest{
+			client2.createBoardingRequest(&outpoint2),
+		},
+		[]*types.VTXORequest{
+			client2.createVTXORequest(btcutil.Amount(60_000)),
+		},
+	))
+	require.NoError(t, err)
+
+	// Seal to move into nonce collection.
+	h.outboxMessages = nil
+	err = h.sendEvent(&SealEvent{})
+	require.NoError(t, err)
+
+	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
+	require.NotEmpty(t, awaitNonces.VTXOTrees)
+
+	batchInfo1 := h.getClientBatchInfo(client1.clientID)
+	batchInfo2 := h.getClientBatchInfo(client2.clientID)
+	require.NotNil(t, batchInfo1)
+	require.NotNil(t, batchInfo2)
+
+	// Client1 submits nonces.
+	h.outboxMessages = nil
+	key1 := client1.vtxoSigningKeys()[0]
+	err = h.sendEvent(client1.createVTXONoncesEvent(
+		key1, batchInfo1.VTXOTreePaths,
+	))
+	require.NoError(t, err)
+
+	// Still waiting on client2.
+	assertStateType[*AwaitingVTXONoncesState](h)
+
+	// Client2 submits nonces; should transition to AwaitingVTXOSignatures.
+	key2 := client2.vtxoSigningKeys()[0]
+	err = h.sendEvent(client2.createVTXONoncesEvent(
+		key2, batchInfo2.VTXOTreePaths,
+	))
+	require.NoError(t, err)
+
+	awaitSigs := assertStateType[*AwaitingVTXOSignaturesState](h)
+	require.Empty(t, awaitSigs.ClientsWithSignatures)
+
+	aggNonces1 := h.getClientVTXOAggNonces(client1.clientID)
+	aggNonces2 := h.getClientVTXOAggNonces(client2.clientID)
+	require.NotNil(t, aggNonces1)
+	require.NotNil(t, aggNonces2)
+
+	// Client1 submits partial sigs; still waiting on client2.
+	h.outboxMessages = nil
+	err = h.sendEvent(client1.createVTXOPartialSigsEvent(
+		key1, batchInfo1.VTXOTreePaths, aggNonces1.AggNonces,
+	))
+	require.NoError(t, err)
+	assertStateType[*AwaitingVTXOSignaturesState](h)
+
+	// Client2 submits partial sigs; transition to boarding sigs.
+	err = h.sendEvent(client2.createVTXOPartialSigsEvent(
+		key2, batchInfo2.VTXOTreePaths, aggNonces2.AggNonces,
+	))
+	require.NoError(t, err)
+
+	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+
+	aggSigs1 := h.getClientVTXOAggSigs(client1.clientID)
+	aggSigs2 := h.getClientVTXOAggSigs(client2.clientID)
+	require.NotNil(t, aggSigs1)
+	require.NotNil(t, aggSigs2)
+
+	combinedSigs := make(map[tree.TxID]*schnorr.Signature)
+	for txid, sig := range aggSigs1.AggSigs {
+		combinedSigs[txid] = sig
+	}
+	for txid, sig := range aggSigs2.AggSigs {
+		combinedSigs[txid] = sig
+	}
+
+	// Validate aggregated signatures once against the tree set.
+	for _, vtxoTree := range awaitBoarding.VTXOTrees {
+		err := vtxoTree.SubmitTreeSigs(combinedSigs)
+		require.NoError(t, err)
+		require.NoError(t, vtxoTree.VerifySigned())
+	}
+
+	// Both clients submit boarding signatures.
+	h.outboxMessages = nil
+	err = h.sendEvent(client1.createBoardingSignaturesEvent(
+		awaitBoarding,
+	))
+	require.NoError(t, err)
+
+	awaitBoarding = assertStateType[*AwaitingBoardingSigsState](h)
+	err = h.sendEvent(client2.createBoardingSignaturesEvent(
+		awaitBoarding,
+	))
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	require.NotNil(t, finalState.FinalTx)
+	require.Len(t, finalState.ClientRegistrations, 2)
+}
+
+// TestFSMVTXOMultiKeyPerClientRealSigs ensures a single client with multiple
+// VTXO signing keys can complete the signing flow.
+func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		t, "client1", 10, h.operatorPub, exitDelay, expiry,
+	)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("input-multi")),
+		Index: 0,
+	}
+
+	h.setupCompleteRegistrationFlow(
+		&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	)
+
+	finalTx := wire.NewMsgTx(2)
+	h.expectRoundFinalized(finalTx)
+
+	// Two VTXO requests with distinct signing keys.
+	vtxoReq1 := client.createVTXORequest(btcutil.Amount(40_000))
+	vtxoReq2 := client.createVTXORequest(btcutil.Amount(50_000))
+
+	err := h.sendEvent(client.createJoinRequestWithVTXOs(
+		[]*types.BoardingRequest{
+			client.createBoardingRequest(&outpoint),
+		},
+		[]*types.VTXORequest{vtxoReq1, vtxoReq2},
+	))
+	require.NoError(t, err)
+
+	h.outboxMessages = nil
+	err = h.sendEvent(&RegistrationTimeoutEvent{})
+	require.NoError(t, err)
+
+	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
+	require.NotEmpty(t, awaitNonces.VTXOTrees)
+
+	batchInfo := h.getClientBatchInfo(client.clientID)
+	require.NotNil(t, batchInfo)
+
+	keys := client.vtxoSigningKeys()
+	require.Len(t, keys, 2)
+
+	// Submit all nonces in a single message.
+	err = h.sendEvent(client.createVTXONoncesEventAll(
+		batchInfo.VTXOTreePaths,
+	))
+	require.NoError(t, err)
+
+	assertStateType[*AwaitingVTXOSignaturesState](h)
+	aggNonces := h.getClientVTXOAggNonces(client.clientID)
+	require.NotNil(t, aggNonces)
+
+	// Submit all partial signatures in a single message.
+	err = h.sendEvent(client.createVTXOPartialSigsEventAll(
+		batchInfo.VTXOTreePaths, aggNonces.AggNonces,
+	))
+	require.NoError(t, err)
+
+	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+
+	aggSigs := h.getClientVTXOAggSigs(client.clientID)
+	require.NotNil(t, aggSigs)
+
+	for _, vtxoTree := range awaitBoarding.VTXOTrees {
+		err := vtxoTree.SubmitTreeSigs(aggSigs.AggSigs)
+		require.NoError(t, err)
+		require.NoError(t, vtxoTree.VerifySigned())
+	}
+
+	// Finish boarding signatures.
+	h.outboxMessages = nil
+	err = h.sendEvent(client.createBoardingSignaturesEvent(awaitBoarding))
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	require.NotNil(t, finalState.FinalTx)
+	require.Len(t, finalState.ClientRegistrations, 1)
 }
 
 // TestFSMBatchBuiltState tests the FSM transitions from BatchBuiltState.
@@ -1677,6 +2097,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		// Send partial sigs from unregistered client2.
 		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
 			ClientID: "client2",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				route.NewVertex(h.operatorPub): {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1702,6 +2125,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		// Send partial sigs from client1 who has no VTXOs.
 		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
 			ClientID: "client1",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				route.NewVertex(h.operatorPub): {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1727,9 +2153,19 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		)
 		h := newTestHarness(t, awaitState)
 
+		var signingKey SigningKeyHex
+		for _, desc := range awaitState.ClientRegistrations["client1"].
+			VTXODescriptors {
+			signingKey = route.NewVertex(desc.CoSignerKey)
+			break
+		}
+
 		// Send duplicate partial sigs from client1.
 		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
 			ClientID: "client1",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				signingKey: {},
+			},
 		})
 		require.NoError(t, err)
 
@@ -1739,5 +2175,52 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "already submitted")
+	})
+
+	t.Run("partial key submission rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create client with multiple signing keys.
+		key1, _ := testutils.CreateKey(100)
+		key2, _ := testutils.CreateKey(101)
+		keyHex1 := route.NewVertex(key1)
+		keyHex2 := route.NewVertex(key2)
+
+		awaitState := &AwaitingVTXOSignaturesState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
+					},
+				},
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees:             map[int]*tree.Tree{},
+			TreeSignCoordinators:  map[int]*batch.TreeSignCoordinator{}, //nolint:ll
+			ClientsWithSignatures: make(map[ClientID]struct{}),
+		}
+
+		h := newTestHarness(t, awaitState)
+
+		// Submit signatures for only one of the two keys.
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client1",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				keyHex1: {},
+			},
+		})
+		require.NoError(t, err)
+
+		// Should reject and remain in same state.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "missing signatures")
+		require.Contains(t, errResp.ErrorMsg, "signing key")
 	})
 }
