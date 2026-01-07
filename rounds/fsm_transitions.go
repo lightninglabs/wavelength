@@ -3,6 +3,7 @@ package rounds
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -1479,6 +1480,27 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		), nil
 	}
 
+	// Persist VTXOs in unconfirmed state before broadcast.
+	if len(s.VTXOTrees) > 0 && env.VTXOStore != nil {
+		vtxos, err := collectVTXOs(
+			env.RoundID, s.VTXOTrees, s.ClientRegistrations,
+		)
+		if err != nil {
+			return buildFailureTransition(
+				env, s.ClientRegistrations,
+				fmt.Sprintf("collect VTXOs: %v", err),
+			), nil
+		}
+
+		err = env.VTXOStore.PersistVTXOs(ctx, vtxos)
+		if err != nil {
+			return buildFailureTransition(
+				env, s.ClientRegistrations,
+				fmt.Sprintf("persist VTXOs: %v", err),
+			), nil
+		}
+	}
+
 	env.Log.InfoS(ctx, "Persisted round", "round_id", env.RoundID)
 
 	return &StateTransition{
@@ -1626,15 +1648,84 @@ func serializeWitness(witness wire.TxWitness) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// collectVTXOs builds a slice of VTXOs from the constructed VTXO trees for
+// persistence. Each leaf in the tree corresponds to a VTXO.
+func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) ([]*VTXO,
+	error) {
+
+	const leafMissingMsg = "leaf missing outputs or cosigners"
+
+	// Build an index of descriptors keyed by PkScript for fast lookup when
+	// traversing leaves. Each VTXO descriptor has a unique script derived
+	// from its signing keys.
+	descriptorIndex := make(map[string]*tree.VTXODescriptor)
+	for _, reg := range clientRegs {
+		for _, desc := range reg.VTXODescriptors {
+			key := hex.EncodeToString(desc.PkScript)
+			descriptorIndex[key] = desc
+		}
+	}
+
+	var vtxos []*VTXO
+
+	for outputIdx, vtxoTree := range vtxoTrees {
+		err := vtxoTree.Root.ForEachLeaf(
+			func(node *tree.Node) error {
+				if len(node.Outputs) == 0 ||
+					len(node.CoSigners) == 0 {
+
+					return fmt.Errorf(leafMissingMsg)
+				}
+
+				pkScript := node.Outputs[0].PkScript
+				key := hex.EncodeToString(pkScript)
+				desc, ok := descriptorIndex[key]
+				if !ok {
+					return fmt.Errorf(
+						"no descriptor for leaf %x",
+						pkScript,
+					)
+				}
+
+				vtxos = append(vtxos, &VTXO{
+					RoundID:          roundID,
+					BatchOutputIndex: outputIdx,
+					Descriptor:       desc,
+					Status:           VTXOStatusUnconfirmed,
+				})
+
+				return nil
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return vtxos, nil
+}
+
 // ProcessEvent handles events in the FinalizedState. This state holds the
 // fully signed transaction ready for broadcast.
 //
 // TODO(elle): handle re-broadcast logic.
-func (s *FinalizedState) ProcessEvent(_ context.Context,
+func (s *FinalizedState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch e := event.(type) {
 	case *TransactionConfirmedEvent:
+		// Mark VTXOs live upon confirmation.
+		if len(s.VTXOTrees) > 0 && env.VTXOStore != nil {
+			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
+			if err != nil {
+				return buildFailureTransition(
+					env, s.ClientRegistrations,
+					fmt.Sprintf("mark VTXOs live: %v", err),
+				), nil
+			}
+		}
+
 		return &StateTransition{
 			NextState: &ConfirmedState{
 				ClientRegistrations: s.ClientRegistrations,

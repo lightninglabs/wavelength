@@ -1537,6 +1537,7 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 
 	boardingReq := client.createBoardingRequest(&outpoint)
 	vtxoReq := client.createVTXORequest(btcutil.Amount(50000))
+	h.expectPersistVTXOs(client.vtxoPkScripts()...)
 
 	err := h.sendEvent(client.createJoinRequestWithVTXOs(
 		[]*types.BoardingRequest{boardingReq},
@@ -1658,13 +1659,19 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	finalTx := wire.NewMsgTx(2)
 	h.expectRoundFinalized(finalTx)
 
+	vtxoReq1 := client1.createVTXORequest(btcutil.Amount(50_000))
+	vtxoReq2 := client2.createVTXORequest(btcutil.Amount(60_000))
+	h.expectPersistVTXOs(
+		append(client1.vtxoPkScripts(), client2.vtxoPkScripts()...)...,
+	)
+
 	// Both clients join with boarding + VTXO requests.
 	err := h.sendEvent(client1.createJoinRequestWithVTXOs(
 		[]*types.BoardingRequest{
 			client1.createBoardingRequest(&outpoint1),
 		},
 		[]*types.VTXORequest{
-			client1.createVTXORequest(btcutil.Amount(50_000)),
+			vtxoReq1,
 		},
 	))
 	require.NoError(t, err)
@@ -1674,7 +1681,7 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 			client2.createBoardingRequest(&outpoint2),
 		},
 		[]*types.VTXORequest{
-			client2.createVTXORequest(btcutil.Amount(60_000)),
+			vtxoReq2,
 		},
 	))
 	require.NoError(t, err)
@@ -1800,6 +1807,7 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	// Two VTXO requests with distinct signing keys.
 	vtxoReq1 := client.createVTXORequest(btcutil.Amount(40_000))
 	vtxoReq2 := client.createVTXORequest(btcutil.Amount(50_000))
+	h.expectPersistVTXOs(client.vtxoPkScripts()...)
 
 	err := h.sendEvent(client.createJoinRequestWithVTXOs(
 		[]*types.BoardingRequest{

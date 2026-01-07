@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -44,6 +45,7 @@ type commonMockSetup struct {
 	feeEstimator     *chainfee.MockEstimator
 	walletController *mockWalletController
 	roundStore       *mockRoundStore
+	vtxoStore        *mockVTXOStore
 }
 
 // newCommonMockSetup creates a new common mock setup with default
@@ -60,6 +62,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockFeeEstimator := &chainfee.MockEstimator{}
 	mockWalletController := newMockWalletController(operatorSigner)
 	mockRoundStore := &mockRoundStore{}
+	mockVTXOStore := &mockVTXOStore{}
 
 	m := &commonMockSetup{
 		t:                t,
@@ -70,6 +73,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		feeEstimator:     mockFeeEstimator,
 		walletController: mockWalletController,
 		roundStore:       mockRoundStore,
+		vtxoStore:        mockVTXOStore,
 	}
 
 	// Register cleanup to automatically assert mock expectations.
@@ -129,6 +133,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		Log:                 btclog.Disabled,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
+		VTXOStore:           common.vtxoStore,
 		ConfTarget:          6,
 		MinConfs:            1,
 		Terms: &batch.Terms{
@@ -338,6 +343,45 @@ func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
 		Return(nil).Once()
 }
 
+// expectPersistVTXOs sets up the VTXO store mock to expect a PersistVTXOs call
+// with VTXOs matching the provided pkScripts.
+func (c *commonMockSetup) expectPersistVTXOs(pkScripts ...[]byte) {
+	c.t.Helper()
+
+	expected := make(map[string]int)
+	for _, pk := range pkScripts {
+		expected[hex.EncodeToString(pk)]++
+	}
+
+	c.vtxoStore.On(
+		"PersistVTXOs", mock.Anything,
+		mock.MatchedBy(func(v []*VTXO) bool {
+			if len(v) != len(pkScripts) {
+				return false
+			}
+
+			actual := make(map[string]int)
+			for _, item := range v {
+				if item == nil || item.Descriptor == nil {
+					return false
+				}
+
+				actual[hex.EncodeToString(
+					item.Descriptor.PkScript,
+				)]++
+			}
+
+			for key, expectedCount := range expected {
+				if actual[key] != expectedCount {
+					return false
+				}
+			}
+
+			return true
+		}),
+	).Return(nil).Once()
+}
+
 // setActiveRounds configures the round store mock to return the given rounds
 // when LoadPendingRounds is called.
 func (c *commonMockSetup) setActiveRounds(rounds []*Round) {
@@ -372,6 +416,7 @@ func (c *commonMockSetup) assertMockExpectations() {
 	c.feeEstimator.AssertExpectations(c.t)
 	c.walletController.AssertExpectations(c.t)
 	c.roundStore.AssertExpectations(c.t)
+	c.vtxoStore.AssertExpectations(c.t)
 }
 
 // buildExpectedPkScript builds the expected PkScript for a boarding input.
@@ -764,6 +809,9 @@ type clientHarness struct {
 	// signature generation to avoid nonce reuse.
 	vtxoSessions map[SigningKeyHex]*clientMuSigSession
 
+	// vtxoDescriptors stores the built VTXO descriptors per signing key.
+	vtxoDescriptors map[SigningKeyHex]*tree.VTXODescriptor
+
 	// vtxoKeyOrder preserves insertion order of signing keys to allow
 	// deterministic iteration in tests.
 	vtxoKeyOrder []SigningKeyHex
@@ -791,6 +839,9 @@ func newClientHarness(t *testing.T, clientID ClientID, baseKeyIndex int32,
 			map[SigningKeyHex]input.MuSig2Signer,
 		),
 		vtxoSessions: make(map[SigningKeyHex]*clientMuSigSession),
+		vtxoDescriptors: make(
+			map[SigningKeyHex]*tree.VTXODescriptor,
+		),
 		vtxoKeyOrder: make([]SigningKeyHex, 0),
 	}
 }
@@ -840,6 +891,7 @@ func (c *clientHarness) createVTXORequest(
 	)
 	require.NoError(c.t, err, "failed to build vtxo descriptor")
 
+	c.vtxoDescriptors[keyVertex] = desc
 	c.vtxoKeyOrder = append(c.vtxoKeyOrder, keyVertex)
 
 	return &types.VTXORequest{
@@ -960,6 +1012,29 @@ func (m *mockRoundStore) LoadPendingRounds(ctx context.Context) ([]*Round,
 	}
 
 	return args.Get(0).([]*Round), args.Error(1) //nolint:forcetypeassert
+}
+
+// mockVTXOStore is a mock implementation of VTXOStore for testing.
+type mockVTXOStore struct {
+	mock.Mock
+}
+
+// PersistVTXOs is a mock implementation of VTXOStore.PersistVTXOs.
+func (m *mockVTXOStore) PersistVTXOs(ctx context.Context,
+	vtxos []*VTXO) error {
+
+	args := m.Called(ctx, vtxos)
+
+	return args.Error(0)
+}
+
+// MarkVTXOsLive is a mock implementation of VTXOStore.MarkVTXOsLive.
+func (m *mockVTXOStore) MarkVTXOsLive(ctx context.Context,
+	roundID RoundID) error {
+
+	args := m.Called(ctx, roundID)
+
+	return args.Error(0)
 }
 
 // clientMuSigSession holds the MuSig2 signing sessions for a client's VTXO
@@ -1142,6 +1217,24 @@ func (c *clientHarness) vtxoSigningKeys() []SigningKeyHex {
 	copy(keys, c.vtxoKeyOrder)
 
 	return keys
+}
+
+// vtxoPkScripts returns the pkScripts for all VTXO requests made by this
+// client in insertion order.
+func (c *clientHarness) vtxoPkScripts() [][]byte {
+	scripts := make([][]byte, 0, len(c.vtxoKeyOrder))
+	for _, key := range c.vtxoKeyOrder {
+		desc := c.vtxoDescriptors[key]
+		if desc == nil {
+			continue
+		}
+
+		pk := make([]byte, len(desc.PkScript))
+		copy(pk, desc.PkScript)
+		scripts = append(scripts, pk)
+	}
+
+	return scripts
 }
 
 // buildOrGetMuSigSession builds MuSig2 signing sessions for the provided tree
