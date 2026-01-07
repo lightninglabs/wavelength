@@ -800,6 +800,29 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 	return indices, nil
 }
 
+// ProcessEvent handles events in the AwaitingVTXONoncesState. This state waits
+// for clients with VTXOs to submit their MuSig2 nonces.
+func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	switch event.(type) {
+	case *ClientVTXONoncesEvent:
+		// TODO(elle): handle client nonce submission.
+		return nil, fmt.Errorf("not yet implemented")
+
+	case *VTXONoncesTimeoutEvent:
+		// The timeout was reached before all nonces were collected.
+		return buildFailureTransition(
+			env, s.ClientRegistrations,
+			"VTXO nonce collection timeout",
+		), nil
+
+	default:
+		return unexpectedEvent(s, "awaiting-vtxo-nonces", event, env),
+			nil
+	}
+}
+
 // ProcessEvent handles events in the ServerSigningState. This state signs the
 // server's wallet inputs on the commitment transaction.
 func (s *ServerSigningState) ProcessEvent(ctx context.Context,
@@ -808,6 +831,7 @@ func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 	switch event.(type) {
 	case *ServerSignInputsEvent:
 		return s.handleServerSigning(ctx, env)
+
 	default:
 		return unexpectedEvent(s, "server-signing", event, env), nil
 	}

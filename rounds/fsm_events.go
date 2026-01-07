@@ -1,7 +1,9 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 )
@@ -87,6 +89,34 @@ type ClientBoardingSignaturesEvent struct {
 // eventSealed marks ClientBoardingSignaturesEvent as implementing the sealed
 // Event interface.
 func (e *ClientBoardingSignaturesEvent) eventSealed() {}
+
+// VTXONoncesTimeoutEvent is sent when the VTXO nonce collection timeout
+// expires. Only AwaitingVTXONoncesState should handle this.
+type VTXONoncesTimeoutEvent struct{}
+
+// eventSealed marks VTXONoncesTimeoutEvent as implementing the sealed Event
+// interface.
+func (e *VTXONoncesTimeoutEvent) eventSealed() {}
+
+// ClientVTXONoncesEvent is sent when a client submits their MuSig2 nonces for
+// VTXO tree transactions. Each client with VTXOs must submit nonces for all
+// transactions where they are a cosigner.
+type ClientVTXONoncesEvent struct {
+	// ClientID identifies which client is submitting nonces.
+	ClientID clientconn.ClientID
+
+	// SigningKey is the public key the client uses for signing. This is
+	// used to identify which transactions the client is a cosigner for.
+	SigningKey *btcec.PublicKey
+
+	// Nonces maps transaction IDs to the client's public nonces for those
+	// transactions.
+	Nonces map[tree.TxID]tree.Musig2PubNonce
+}
+
+// eventSealed marks ClientVTXONoncesEvent as implementing the sealed Event
+// interface.
+func (e *ClientVTXONoncesEvent) eventSealed() {}
 
 // ServerSignInputsEvent is an internal event that triggers the server to sign
 // all inputs in the PSBT. This includes signing the operator's part of the

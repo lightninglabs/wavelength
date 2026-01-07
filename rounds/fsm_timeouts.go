@@ -12,4 +12,8 @@ const (
 	// TimeoutPhaseBoardingSigs is the phase for boarding signature
 	// collection timeouts.
 	TimeoutPhaseBoardingSigs TimeoutPhase = "boarding-signatures"
+
+	// TimeoutPhaseVTXONonces is the phase for VTXO nonce collection
+	// timeouts.
+	TimeoutPhaseVTXONonces TimeoutPhase = "vtxo-nonces"
 )

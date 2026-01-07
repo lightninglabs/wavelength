@@ -543,6 +543,9 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseBoardingSigs:
 		timeoutEvent = &BoardingSignaturesTimeoutEvent{}
 
+	case TimeoutPhaseVTXONonces:
+		timeoutEvent = &VTXONoncesTimeoutEvent{}
+
 	default:
 		// Unknown phase - log warning and ignore.
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,

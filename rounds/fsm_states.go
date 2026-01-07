@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 )
 
@@ -220,6 +221,43 @@ func (s *AwaitingBoardingSigsState) hasClientSubmitted(
 	_, exists := s.ClientsSubmitted[clientID]
 	return exists
 }
+
+// AwaitingVTXONoncesState waits for clients to submit their MuSig2 nonces for
+// VTXO tree transactions. This state is only entered if the round has VTXOs.
+// Once all clients with VTXOs have submitted nonces, the FSM transitions to
+// AwaitingVTXOSignaturesState for partial signature collection.
+type AwaitingVTXONoncesState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// TreeSignCoordinators maps commitment tx output indices to their
+	// MuSig2 signing coordinators. Each coordinator manages nonce and
+	// signature collection for one VTXO tree.
+	TreeSignCoordinators map[int]*batch.TreeSignCoordinator
+
+	// ClientsWithNonces tracks which clients have submitted their nonces.
+	ClientsWithNonces map[clientconn.ClientID]struct{}
+}
+
+// String returns a human-readable representation of AwaitingVTXONoncesState.
+func (s *AwaitingVTXONoncesState) String() string {
+	return "AwaitingVTXONoncesState"
+}
+
+// IsTerminal returns false as AwaitingVTXONoncesState is not a terminal state.
+func (s *AwaitingVTXONoncesState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingVTXONoncesState as implementing the sealed State
+// interface.
+func (s *AwaitingVTXONoncesState) stateSealed() {}
 
 // ServerSigningState is where the server signs its wallet inputs on the
 // commitment transaction. This occurs after all clients have submitted their
