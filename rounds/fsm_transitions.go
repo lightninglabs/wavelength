@@ -312,74 +312,82 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 
 	switch event.(type) {
 	case *PrepareClientNotificationsEvent:
-		// For each client, create a message with their personalized
-		// data. The PSBT contains WitnessUtxo for inputs, providing
-		// the prevout info clients need to compute sighashes.
-		var outboxMsgs []OutboxEvent
-		for clientID, reg := range s.ClientRegistrations {
-			// Extract VTXO tree paths for this client if they have
-			// VTXO requests.
-			var vtxoTreePaths map[int]*tree.Tree
-			hasVTXOs := len(reg.VTXODescriptors) > 0
-			if hasVTXOs && len(s.VTXOTrees) > 0 {
-				// For now, give the client the full trees if
-				// they have VTXOs.
-				//
-				// TODO(elle): Send the client only their paths.
-				//  This will be done in a follow up commit.
-				vtxoTreePaths = s.VTXOTrees
-			}
-
-			outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
-				Client:        clientID,
-				BatchPSBT:     s.PSBT,
-				VTXOTreePaths: vtxoTreePaths,
-			})
-		}
-
-		// Notify clients with boarding inputs that we're ready for
-		// their signatures. This is separate from ClientBatchInfo
-		// because there may be VTXO signing phases between batch
-		// construction and boarding signature collection.
-		for clientID, reg := range s.ClientRegistrations {
-			if len(reg.BoardingInputs) > 0 {
-				outboxMsgs = append(
-					outboxMsgs,
-					&ClientAwaitingBoardingSigsResp{
-						Client: clientID,
-					},
-				)
-			}
-		}
-
-		// Add timeout for boarding signature collection.
-		outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
-			RoundID:  env.RoundID,
-			Phase:    TimeoutPhaseBoardingSigs,
-			Duration: env.Terms.SignatureCollectionTimeout,
-		})
-
-		// Transition to AwaitingBoardingSigsState.
-		// TODO(elle): If VTXOs exist, transition to
-		// AwaitingVTXONoncesState instead for VTXO signing first.
-		return &StateTransition{
-			NextState: &AwaitingBoardingSigsState{
-				ClientRegistrations: s.ClientRegistrations,
-				PSBT:                s.PSBT,
-				VTXOTrees:           s.VTXOTrees,
-				ClientsSubmitted: make(
-					map[clientconn.ClientID]struct{},
-				),
-				CollectedSignatures: make(BoardingSigsMap),
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: outboxMsgs,
-			}),
-		}, nil
+		return s.handlePrepareClientNotifications(env)
 
 	default:
 		return unexpectedEvent(s, "batch-built", event, env), nil
 	}
+}
+
+// handlePrepareClientNotifications prepares client notifications with batch
+// data and transitions to either AwaitingVTXONoncesState (if VTXOs exist) or
+// AwaitingBoardingSigsState (if no VTXOs).
+func (s *BatchBuiltState) handlePrepareClientNotifications(
+	env *Environment) (*StateTransition, error) {
+
+	// For each client, create a message with their personalized data. The
+	// PSBT contains WitnessUtxo for inputs, providing the prevout info
+	// clients need to compute sighashes.
+	var outboxMsgs []OutboxEvent
+	for clientID, reg := range s.ClientRegistrations {
+		// Extract VTXO tree paths for this client if they have VTXO
+		// requests.
+		var vtxoTreePaths map[int]*tree.Tree
+		hasVTXOs := len(reg.VTXODescriptors) > 0
+		if hasVTXOs && len(s.VTXOTrees) > 0 {
+			// For now, give the client the full trees if they have
+			// VTXOs.
+			//
+			// TODO(elle): Send the client only their paths. This
+			//  will be done in a follow up commit.
+			vtxoTreePaths = s.VTXOTrees
+		}
+
+		outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
+			Client:        clientID,
+			BatchPSBT:     s.PSBT,
+			VTXOTreePaths: vtxoTreePaths,
+		})
+	}
+
+	// Notify clients with boarding inputs that we're ready for their
+	// signatures. This is separate from ClientBatchInfo because there may
+	// be VTXO signing phases between batch construction and boarding
+	// signature collection.
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.BoardingInputs) == 0 {
+			continue
+		}
+
+		outboxMsgs = append(outboxMsgs, &ClientAwaitingBoardingSigsResp{
+			Client: clientID,
+		})
+	}
+
+	// Add timeout for boarding signature collection.
+	outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
+		RoundID:  env.RoundID,
+		Phase:    TimeoutPhaseBoardingSigs,
+		Duration: env.Terms.SignatureCollectionTimeout,
+	})
+
+	// Transition to AwaitingBoardingSigsState.
+	// TODO(elle): If VTXOs exist, transition to AwaitingVTXONoncesState
+	//  instead for VTXO signing first.
+	return &StateTransition{
+		NextState: &AwaitingBoardingSigsState{
+			ClientRegistrations: s.ClientRegistrations,
+			PSBT:                s.PSBT,
+			VTXOTrees:           s.VTXOTrees,
+			ClientsSubmitted: make(
+				map[clientconn.ClientID]struct{},
+			),
+			CollectedSignatures: make(BoardingSigsMap),
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outboxMsgs,
+		}),
+	}, nil
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
