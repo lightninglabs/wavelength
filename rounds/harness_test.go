@@ -536,6 +536,7 @@ func buildAwaitingVTXOSignaturesState(
 	opts map[ClientID]vtxoNoncesStateOpts) *AwaitingVTXOSignaturesState {
 
 	regs := make(map[ClientID]*ClientRegistration)
+	submitted := make(map[ClientID]struct{})
 	keyIdx := int32(300)
 
 	for clientID, clientOpts := range opts {
@@ -555,6 +556,10 @@ func buildAwaitingVTXOSignaturesState(
 		}
 
 		regs[clientID] = reg
+
+		if clientOpts.alreadySubmitted {
+			submitted[clientID] = struct{}{}
+		}
 	}
 
 	return &AwaitingVTXOSignaturesState{
@@ -564,7 +569,7 @@ func buildAwaitingVTXOSignaturesState(
 		},
 		VTXOTrees:             map[int]*tree.Tree{},
 		TreeSignCoordinators:  map[int]*batch.TreeSignCoordinator{},
-		ClientsWithSignatures: make(map[ClientID]struct{}),
+		ClientsWithSignatures: submitted,
 	}
 }
 

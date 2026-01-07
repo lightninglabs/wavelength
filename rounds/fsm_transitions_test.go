@@ -1644,4 +1644,100 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		assertStateType[*AwaitingVTXOSignaturesState](h)
 		h.assertOutboxLen(0)
 	})
+
+	t.Run("stale registration timeout ignored", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state.
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send stale RegistrationTimeoutEvent - should be ignored.
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in AwaitingVTXOSignaturesState.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(0)
+	})
+
+	t.Run("sigs from unregistered client rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with only client1 registered.
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {withVTXOs: true},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send partial sigs from unregistered client2.
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client2",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client2"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "not registered")
+	})
+
+	t.Run("sigs from client without VTXOs rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with client1 registered but no VTXOs.
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {withVTXOs: false},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send partial sigs from client1 who has no VTXOs.
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client1",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no VTXOs")
+	})
+
+	t.Run("duplicate sigs submission rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with client1 having VTXOs and already submitted.
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {
+					withVTXOs:        true,
+					alreadySubmitted: true,
+				},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send duplicate partial sigs from client1.
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client1",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "already submitted")
+	})
 }

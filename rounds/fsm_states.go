@@ -323,6 +323,28 @@ func (s *AwaitingVTXOSignaturesState) IsTerminal() bool {
 // State interface.
 func (s *AwaitingVTXOSignaturesState) stateSealed() {}
 
+// allClientsSubmittedSignatures returns true if all registered clients with
+// VTXOs have submitted their partial signatures.
+func (s *AwaitingVTXOSignaturesState) allClientsSubmittedSignatures() bool {
+	clientsWithVTXOs := 0
+	for _, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) > 0 {
+			clientsWithVTXOs++
+		}
+	}
+
+	return len(s.ClientsWithSignatures) >= clientsWithVTXOs
+}
+
+// hasClientSubmittedSignatures checks if a client has already submitted their
+// partial signatures.
+func (s *AwaitingVTXOSignaturesState) hasClientSubmittedSignatures(
+	clientID clientconn.ClientID) bool {
+
+	_, exists := s.ClientsWithSignatures[clientID]
+	return exists
+}
+
 // ServerSigningState is where the server signs its wallet inputs on the
 // commitment transaction. This occurs after all clients have submitted their
 // boarding input signatures.
