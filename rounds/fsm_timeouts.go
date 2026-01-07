@@ -16,4 +16,8 @@ const (
 	// TimeoutPhaseVTXONonces is the phase for VTXO nonce collection
 	// timeouts.
 	TimeoutPhaseVTXONonces TimeoutPhase = "vtxo-nonces"
+
+	// TimeoutPhaseVTXOSignatures is the phase for VTXO partial signature
+	// collection timeouts.
+	TimeoutPhaseVTXOSignatures TimeoutPhase = "vtxo-signatures"
 )

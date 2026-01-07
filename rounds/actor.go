@@ -546,6 +546,9 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseVTXONonces:
 		timeoutEvent = &VTXONoncesTimeoutEvent{}
 
+	case TimeoutPhaseVTXOSignatures:
+		timeoutEvent = &VTXOSignaturesTimeoutEvent{}
+
 	default:
 		// Unknown phase - log warning and ignore.
 		a.log.WarnS(ctx, "Ignoring timeout with unknown phase", nil,

@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -117,6 +118,34 @@ type ClientVTXONoncesEvent struct {
 // eventSealed marks ClientVTXONoncesEvent as implementing the sealed Event
 // interface.
 func (e *ClientVTXONoncesEvent) eventSealed() {}
+
+// VTXOSignaturesTimeoutEvent is sent when the VTXO partial signature collection
+// timeout expires. Only AwaitingVTXOSignaturesState should handle this.
+type VTXOSignaturesTimeoutEvent struct{}
+
+// eventSealed marks VTXOSignaturesTimeoutEvent as implementing the sealed Event
+// interface.
+func (e *VTXOSignaturesTimeoutEvent) eventSealed() {}
+
+// ClientVTXOPartialSigsEvent is sent when a client submits their MuSig2 partial
+// signatures for VTXO tree transactions. Each client with VTXOs must submit
+// partial signatures for all transactions where they are a cosigner.
+type ClientVTXOPartialSigsEvent struct {
+	// ClientID identifies which client is submitting signatures.
+	ClientID clientconn.ClientID
+
+	// SigningKey is the public key the client uses for signing. This is
+	// used to identify which transactions the client is a cosigner for.
+	SigningKey *btcec.PublicKey
+
+	// Signatures maps transaction IDs to the client's partial signatures
+	// for those transactions.
+	Signatures map[tree.TxID]*musig2.PartialSignature
+}
+
+// eventSealed marks ClientVTXOPartialSigsEvent as implementing the sealed Event
+// interface.
+func (e *ClientVTXOPartialSigsEvent) eventSealed() {}
 
 // ServerSignInputsEvent is an internal event that triggers the server to sign
 // all inputs in the PSBT. This includes signing the operator's part of the

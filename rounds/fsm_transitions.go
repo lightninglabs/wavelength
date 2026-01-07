@@ -1002,6 +1002,31 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 	}, nil
 }
 
+// ProcessEvent handles events in the AwaitingVTXOSignaturesState. This state
+// waits for clients with VTXOs to submit their MuSig2 partial signatures.
+func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	switch event.(type) {
+	case *ClientVTXOPartialSigsEvent:
+		// TODO(elle): implement.
+		return nil, fmt.Errorf("not yet implemented")
+
+	case *VTXOSignaturesTimeoutEvent:
+		// Timeout expired - fail the round.
+		reason := "VTXO signature collection timeout"
+
+		return buildFailureTransition(
+			env, s.ClientRegistrations, reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting-vtxo-signatures", event, env,
+		), nil
+	}
+}
+
 // ProcessEvent handles events in the ServerSigningState. This state signs the
 // server's wallet inputs on the commitment transaction.
 func (s *ServerSigningState) ProcessEvent(ctx context.Context,

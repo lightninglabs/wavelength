@@ -3,6 +3,7 @@ package rounds
 import (
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -106,6 +107,62 @@ func (c *ClientAwaitingBoardingSigsResp) ToProto() proto.Message {
 // sealed OutboxEvent interface.
 func (c *ClientAwaitingBoardingSigsResp) outboxEventSealed() {}
 
+// ClientVTXOAggNonces is an outbox message sent to clients with VTXOs after all
+// nonces have been collected and aggregated. The client uses these aggregated
+// nonces to generate their partial signatures.
+type ClientVTXOAggNonces struct {
+	// Client is the identifier of the client to send nonces to.
+	Client clientconn.ClientID
+
+	// AggNonces maps transaction IDs to the aggregated public nonces for
+	// those transactions. Only includes transactions where this client is
+	// a cosigner.
+	AggNonces map[tree.TxID]tree.Musig2PubNonce
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (c *ClientVTXOAggNonces) ClientID() clientconn.ClientID {
+	return c.Client
+}
+
+// ToProto converts ClientVTXOAggNonces to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are available.
+func (c *ClientVTXOAggNonces) ToProto() proto.Message {
+	return nil
+}
+
+// outboxEventSealed marks ClientVTXOAggNonces as implementing the sealed
+// OutboxEvent interface.
+func (c *ClientVTXOAggNonces) outboxEventSealed() {}
+
+// ClientVTXOAggSigs is an outbox message sent to clients with VTXOs after all
+// partial signatures have been collected and aggregated into final schnorr
+// signatures. The client stores these signatures for their VTXOs.
+type ClientVTXOAggSigs struct {
+	// Client is the identifier of the client to send signatures to.
+	Client clientconn.ClientID
+
+	// AggSigs maps transaction IDs to the final aggregated schnorr
+	// signatures. Only includes transactions where this client is a
+	// cosigner.
+	AggSigs map[tree.TxID]*schnorr.Signature
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (c *ClientVTXOAggSigs) ClientID() clientconn.ClientID {
+	return c.Client
+}
+
+// ToProto converts ClientVTXOAggSigs to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are available.
+func (c *ClientVTXOAggSigs) ToProto() proto.Message {
+	return nil
+}
+
+// outboxEventSealed marks ClientVTXOAggSigs as implementing the sealed
+// OutboxEvent interface.
+func (c *ClientVTXOAggSigs) outboxEventSealed() {}
+
 // RoundSealedReq is emitted when a round has been sealed (registration closed).
 // The actor should create a new round to accept new registrations.
 type RoundSealedReq struct {
@@ -143,8 +200,14 @@ func (s *StartTimeoutReq) outboxEventSealed() {}
 func newStartTimeoutReq(env *Environment, phase TimeoutPhase) *StartTimeoutReq {
 	var duration time.Duration
 
-	if phase == TimeoutPhaseRegistration {
+	switch phase {
+	case TimeoutPhaseRegistration:
 		duration = env.Terms.RegistrationTimeout
+
+	case TimeoutPhaseBoardingSigs, TimeoutPhaseVTXONonces,
+		TimeoutPhaseVTXOSignatures:
+
+		duration = env.Terms.SignatureCollectionTimeout
 	}
 
 	return &StartTimeoutReq{

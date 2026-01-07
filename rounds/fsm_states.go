@@ -281,6 +281,48 @@ func (s *AwaitingVTXONoncesState) hasClientSubmittedNonces(
 	return exists
 }
 
+// AwaitingVTXOSignaturesState waits for clients to submit their MuSig2 partial
+// signatures for VTXO tree transactions. This state is entered after all
+// clients with VTXOs have submitted their nonces and the aggregated nonces have
+// been distributed. Once all clients have submitted partial signatures, the
+// final signatures are aggregated and distributed, then the FSM transitions to
+// AwaitingBoardingSigsState.
+type AwaitingVTXOSignaturesState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// TreeSignCoordinators maps commitment tx output indices to their
+	// MuSig2 signing coordinators. Each coordinator manages signature
+	// collection for one VTXO tree.
+	TreeSignCoordinators map[int]*batch.TreeSignCoordinator
+
+	// ClientsWithSignatures tracks which clients have submitted their
+	// partial signatures.
+	ClientsWithSignatures map[clientconn.ClientID]struct{}
+}
+
+// String returns a human-readable representation of
+// AwaitingVTXOSignaturesState.
+func (s *AwaitingVTXOSignaturesState) String() string {
+	return "AwaitingVTXOSignaturesState"
+}
+
+// IsTerminal returns false as AwaitingVTXOSignaturesState is not a terminal
+// state.
+func (s *AwaitingVTXOSignaturesState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingVTXOSignaturesState as implementing the sealed
+// State interface.
+func (s *AwaitingVTXOSignaturesState) stateSealed() {}
+
 // ServerSigningState is where the server signs its wallet inputs on the
 // commitment transaction. This occurs after all clients have submitted their
 // boarding input signatures.
