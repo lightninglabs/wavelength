@@ -1,259 +1,365 @@
-# VTXO AST: Doc-First Design
+# RFC: Ark Closure AST and Canonical Taproot Policies (PR #58)
 
-## Overview
-- **Title:** VTXO AST: structural scripts, validation, codegen
-- **Owners:** (fill)
-- **Status:** Draft
-- **Related:** PRs/issues (fill)
+## Status
+- Draft
+- Normative keywords: MUST, MUST NOT, SHOULD, SHOULD NOT, MAY.
 
-This PR introduces a VTXO scripting model built around a typed AST plus a
-compiler-style pipeline: parse (optional) → validate → codegen. The key outcome
-is that both the operator and receivers can mechanically verify that a VTXO’s
-spend paths satisfy Ark requirements (checkpointing, OOR handling) without
-executing scripts in a fake VM context.
+This document is both:
+1) a specification for Ark taproot policies compiled from a restricted, typed
+   Closure AST, and
+2) the contract for what PR #58 will implement (doc-first; code follows).
 
-## Problem & Motivation
-Ark needs strong, auditable guarantees about what spend paths exist in a VTXO
-and what they allow:
-- **Checkpointing** requires a collaborative path that necessarily includes the
-  operator/signer, otherwise operator-driven transitions can stall or be
-  bypassed.
-- **OOR flows** and safety exits require a provably present, CSV-gated exit path
-  that cannot be “shadowed” or invalidated by additional ungated paths.
+## Abstract
+Ark uses taproot script-path spends to enforce protocol-level spend policies
+for:
+- BTC-only VTXOs (operator-involving cooperative spends vs CSV-gated exits),
+- checkpoint outputs used in OOR coordination, and
+- future swap/submarine-style flows that rely on hashlocks and CLTV/CSV.
 
-Past approaches that “evaluate conditions” by running scripts in an ad-hoc VM
-are brittle: correct results depend on transaction context (sequence, locktime,
-prevout amounts/scripts), and partial evaluation cannot prove protocol-level
-properties (e.g., “the signer key is required on every collab path”).
+This RFC specifies a structural Closure AST and deterministic compilation
+pipeline:
+1) construct AST (no general-purpose script evaluation),
+2) validate policy invariants,
+3) compile to canonical tapscript leaves + canonical taproot tree, and
+4) derive deterministic transaction-context requirements (sequence/locktime).
 
-### Non-goals
-- No new on-chain protocol changes.
-- No new covenant/introspection opcode support.
-- No attempt to support arbitrary raw-script “escape hatches” that cannot be
-  structurally validated.
+The key property is auditability: parties can verify policy structure without
+evaluating scripts in an ad-hoc VM context.
 
-## Scope
-### In scope
-- A new `lib/vtxoast` package for:
-  - AST node types for the supported tapscript subset.
-  - Validation rules for Ark-required invariants.
-  - Codegen for tapscript leaves and taproot tree materialization helpers.
-  - Spend metadata (`SpendInfo`) for signing/witness assembly.
-- A default VTXO builder (exit + collab) backed by the AST.
-- A structured API for adding custom paths while preserving Ark invariants.
-- Tests that prove correctness via roundtrips, invariants, and known-good
-  vectors.
+## PR Scope (what #58 will do)
+PR #58 MUST implement, at minimum:
+- A `lib/arkscript` (name TBD) package that defines:
+  - the Closure AST node set in this RFC,
+  - validation for VTXO and checkpoint policies, and
+  - canonical compilation (leaf encoding + canonical tree construction).
+- A `SpendInfo` API that returns per-leaf script + control block + derived tx
+  context requirements.
+- Canonicalization rules pinned in-code (leaf ordering + tree shape) so output
+  keys are reproducible across implementations.
+- A tap tree encoding suitable for PSBT metadata for OOR finalization (see
+  “PSBT extensions”).
+- Tests covering canonicalization, invariants, and tx-context derivation.
 
-### Out of scope
-- Refactoring unrelated wallet/tx code.
-- Broad, generic script execution or arbitrary script evaluation helpers.
+PR #58 MAY additionally:
+- include a minimal “policy composition” hook for Taproot Assets (attach Ark
+  policy root as a sibling to an externally provided root), but MUST keep this
+  behind a small API surface and MUST NOT attempt full tapd proof handling in
+  v1.
 
-## Requirements & Constraints
-### Functional requirements
-- Both operator and receivers can validate a VTXO script before accepting it.
-- A VTXO always has:
-  - at least one **exit** path, CSV-gated, owner-only keys.
-  - at least one **collab** path that requires the operator/signer key.
-- Custom paths are supported but cannot remove or bypass required Ark paths.
+PR #58 MUST NOT:
+- implement a fake “EvaluateScriptToBool” VM helper,
+- accept arbitrary raw scripts that bypass validation, or
+- depend on library heuristics for taproot tree construction.
 
-### Security and compatibility
-- No keypath “escape hatch”: internal key is fixed to a NUMS/unspendable key so
-  all spends go through validated script paths.
-- Reject unknown/unsupported opcodes unless explicitly modeled in the AST.
-- Ensure deterministic encoding and stable taproot output keys.
+## Terminology
+- **Policy**: a set of role-tagged leaves plus an internal key. Compiles to one
+  P2TR output key and pkScript.
+- **Leaf**/**Closure**: one tapscript leaf (script bytes + leaf version).
+- **Operator key**: pubkey required for cooperative paths (Ark signer).
+- **Owner key(s)**: non-operator keys that own the value being controlled.
+- **Exit leaf**: CSV-gated leaf spendable without the operator key.
+- **Collab leaf**: leaf that requires the operator key.
 
-## High-Level Approach
-Model VTXO scripts as role-tagged leaves in an AST. Validation is a structural
-pass over the AST that enforces Ark invariants. Codegen materializes tapscript
-and the taproot tree, returning spend metadata for each leaf so witness
-construction is mechanical.
+## Goals
+- Deterministically reproduce taproot output keys across implementations.
+- Enforce Ark invariants structurally (no raw-script escape hatches).
+- Make CLTV/CSV spending requirements machine-readable and deterministic.
+- Support swap-style policies via multiple leaves (no `IF/ELSE` required).
 
-This replaces “try to interpret script behavior” with “prove the required
-structure exists and cannot be bypassed”.
+## Non-goals
+- General-purpose Miniscript replacement.
+- Covenant/introspection opcode support.
+- Parsing of arbitrary tapscript (parsing is optional and limited).
 
-## Design Details
+## Model
 
-### Path roles
-Every leaf declares a role:
-- `exit`: a user safety exit (must be CSV-gated; owner-only keys).
-- `collab`: a collaborative path (must include signer key).
-- `custom`: an application-specific path. By default it must be CSV-wrapped and
-  must not bypass required `exit`/`collab` invariants.
+### Policy families and roles
+Roles are interpreted within a policy family.
 
-Role rules are strict:
-- At least one `exit` and one `collab` leaf are required.
-- Multiple exits are allowed only if each satisfies exit constraints.
-- Any leaf missing a role or violating its role constraints fails validation.
+**VTXO family roles**
+- `collab`: MUST require the operator key.
+- `exit`: MUST be CSV-gated and MUST NOT require the operator key.
+- `custom`: additional leaves, subject to safety constraints.
 
-### AST API (creation)
-The AST models a restricted, explicit tapscript subset.
+**Checkpoint family roles**
+- `unroll`: operator-controlled CSV leaf for checkpoint unroll.
+- `owner`: owner leaf used to spend checkpoint outputs into an Ark tx.
+- `custom`: discouraged in v1.
 
-```go
-package vtxoast
+### Expression nodes (Closure AST)
+The node set below MUST be sufficient to express required Ark policies:
+- `Checksig(key)`: one schnorr signature required.
+- `Multisig(keys, type)`: N-of-N schnorr signatures required.
+- `CSV(lock, inner)`: relative timelock gate (BIP-68 + OP_CSV).
+- `CLTV(lock, inner)`: absolute timelock gate (BIP-65 + OP_CLTV).
+- `HashLock(algo, hash, inner)`: preimage gate (HASH160/SHA256).
 
-type Role uint8
+Branching (`IF/ELSE`) is intentionally omitted. Swap-style semantics MUST be
+modeled as multiple leaves.
 
-const (
-	RoleExit Role = iota
-	RoleCollab
-	RoleCustom
-)
+## Canonical script encoding
 
-type Script struct {
-	InternalKey *btcec.PublicKey
-	Leaves      []Leaf
-}
+### Common requirements
+Encoders MUST:
+- use x-only pubkeys (32 bytes) for schnorr checks,
+- use minimal script-number encodings, and
+- reject ambiguous encodings that would allow multiple byte strings to encode
+  the same AST.
 
-type Leaf struct {
-	Name string
-	Role Role
-	Expr Expr
-}
+Parsers (if implemented) MAY accept a limited set of equivalent legacy opcode
+arrangements, but compilation MUST emit exactly one canonical arrangement per
+node type.
 
-type Expr interface{ expr() }
-
-// Gates.
-type CSV struct {
-	Locktime RelativeLocktime
-	Inner    Expr
-}
-
-type CLTV struct {
-	Locktime AbsoluteLocktime
-	Inner    Expr
-}
-
-// Spend policy nodes.
-type Multisig struct {
-	Keys []*btcec.PublicKey
-	Type MultisigType
-}
-
-type Checksig struct{ Key *btcec.PublicKey }
-
-// Conditions are typed (no raw "evaluate to bool" VM helper).
-// PreimageHash160 is an example condition node.
-type PreimageHash160 struct{ Hash20 [20]byte }
-
-// Default VTXO: CSV(owner) exit + (owner+signer) collab.
-func NewDefaultVTXO(owner, signer *btcec.PublicKey,
-	exitDelay RelativeLocktime) *Script
-
-// Optional: parse a leaf script into an AST subtree for inspection.
-func ParseExpr(script []byte) (Expr, error)
-
-// Codegen for a leaf subtree.
-func ScriptBytes(expr Expr) ([]byte, error)
+### `Checksig`
+Canonical encoding:
+```
+<xonly_pubkey> OP_CHECKSIG
 ```
 
-Developer ergonomics:
-- Provide helpers for common patterns (default VTXO, CSV-wrapped custom leaf).
-- Custom leaves are built from typed nodes; if parsing existing scripts is
-  needed, `ParseExpr` converts a supported subset into AST for validation.
+### `Multisig`
+This RFC standardizes N-of-N only (all keys must sign).
 
-### AST API (validation)
-Validation is a separate pass that does not execute scripts.
+Two encodings are allowed; implementations MUST support at least one.
 
-```go
-type ValidateParams struct {
-	SignerKey    *btcec.PublicKey
-	MinExitDelay RelativeLocktime
-}
-
-func (s *Script) Validate(params ValidateParams) error
+**Type: `checksig` (CHECKSIGVERIFY chain)**
+For keys `k[0..n-1]`:
+```
+<k0> OP_CHECKSIGVERIFY
+<k1> OP_CHECKSIGVERIFY
+...
+<k[n-2]> OP_CHECKSIGVERIFY
+<k[n-1]> OP_CHECKSIG
 ```
 
-Validation enforces:
-- Required roles exist (≥1 exit, ≥1 collab).
-- `exit` leaves:
-  - must be CSV-gated.
-  - must only use owner keys (no signer key).
-  - must meet `MinExitDelay`.
-- `collab` leaves:
-  - must include `SignerKey` in their required keys.
-- `custom` leaves:
-  - must be CSV-gated by default.
-  - must not create an ungated spend that bypasses required roles.
-- Opcode policy: only AST-modeled opcode forms are allowed.
-
-### Spend metadata for signing/witness generation
-Codegen returns spend metadata per leaf so signing remains mechanical and
-independent of any fake VM evaluation.
-
-```go
-type SpendInfo struct {
-	Script       []byte
-	ControlBlock []byte
-	LeafHash     []byte
-	LeafVersion  byte
-	LeafIndex    int
-
-	// Derived requirements to set on the spending tx/input.
-	Sequence uint32 // if CSV applies
-	LockTime uint32 // if CLTV applies
-}
-
-func (s *Script) SpendInfo(name string) (*SpendInfo, error)
+**Type: `checksigadd` (CHECKSIGADD + NUMEQUAL)**
+For keys `k[0..n-1]`:
+```
+<k0> OP_CHECKSIG
+<k1> OP_CHECKSIGADD
+...
+<k[n-1]> OP_CHECKSIGADD
+<n> OP_NUMEQUAL
 ```
 
-Witness construction then becomes “fill tx context (sequence/locktime), compute
-sighash, sign, assemble witness stack” using the returned `Script` and
-`ControlBlock`.
+Key order is significant. For interoperability, key order MUST be specified by
+the policy template.
 
-### Operator/receiver verification UX
-The operator and receiver should both be able to:
-- Run `Validate(params)` and get a descriptive failure if the script violates
-  Ark invariants.
-- Produce a short, human-readable summary of the script roles/keys/locktimes
-  (printer/inspector) for auditing.
+### `CSV`
+`CSV(lock, inner)` MUST compile to:
+```
+<inner>
+<lock> OP_CHECKSEQUENCEVERIFY OP_DROP
+```
 
-## Implementation Strategy
-1) Add `lib/vtxoast` types and minimal codegen for default VTXO.
-2) Implement validation rules and error taxonomy.
-3) Implement spend info materialization (taproot tree building + per-leaf
-   control blocks + derived sequence/locktime).
-4) Add inspector/printer output for audits.
-5) Wire default-VTXO call sites to the AST builder and validator.
-6) Add optional parsing for supported leaf subsets if needed for custom scripts.
+The lock value MUST encode a valid BIP-68 relative locktime when interpreted as
+an input sequence value.
 
-If implementation learning changes scope or rules, update this document first
-in a `[Document] ...` commit.
+### `CLTV`
+`CLTV(lock, inner)` MUST compile to:
+```
+<lock> OP_CHECKLOCKTIMEVERIFY OP_DROP
+<inner>
+```
 
-## Testing Strategy
+### `HashLock`
+`HashLock(algo, hash, inner)` MUST compile to:
+
+**HASH160**
+```
+OP_HASH160 <20-byte-hash> OP_EQUALVERIFY
+<inner>
+```
+
+**SHA256**
+```
+OP_SHA256 <32-byte-hash> OP_EQUALVERIFY
+<inner>
+```
+
+## Canonical policy compilation
+
+### Leaf ordering
+To compile a policy deterministically, implementations MUST:
+1) compile each leaf expression into leaf script bytes,
+2) sort leaves into a canonical order, then
+3) build a canonical taproot tree from that ordered list.
+
+Leaf ordering MUST be:
+- primary: `family_role_rank`,
+- secondary: lexicographic ordering of `leaf_script_bytes`.
+
+Role ranks are pinned as:
+- VTXO: `collab`=0, `exit`=1, `custom`=2.
+- Checkpoint: `unroll`=0, `owner`=1, `custom`=2.
+
+Leaf names are for selection/audit. Leaf names MUST NOT be required to derive
+the same taproot output key.
+
+### Tree construction
+Canonical tree shape MUST be deterministic and independent of library
+heuristics.
+
+Define `BuildTree(leaves)` recursively over the canonical leaf list:
+- If `n == 1`: the root is the single leaf hash.
+- If `n > 1`:
+  - split `left = leaves[0:n/2]`, `right = leaves[n/2:n]`,
+  - compute `L = BuildTree(left)`, `R = BuildTree(right)`,
+  - compute `root = TapBranchHash(min(L,R), max(L,R))`.
+
+Leaf hashes MUST be BIP-341 tapleaf hashes using the base leaf version.
+
+### Output key derivation
+Given internal key `P` (x-only) and merkle root `m`, the taproot output key
+MUST be `Q = TapTweak(P, m)` per BIP-341.
+
+Key-path spends SHOULD be disabled. The invariant is:
+- **Keypath must be unspendable** for Ark-controlled outputs.
+
+PR #58 MUST implement a default unspendable internal key. PR #58 MAY also
+support per-output unspendable internal keys when external proofs require
+uniqueness, but any such scheme MUST be public, deterministic, and MUST NOT
+depend on a secret scalar known to any party.
+
+## Validation rules
+
+### Locktime policy
+Validation MUST enforce:
+- CSV locktimes are valid BIP-68 encodings.
+- If seconds-based relative locktimes are used, values MUST be multiples of 512
+  seconds (BIP-68 granularity).
+- Mixed CLTV types (height vs time) MUST be rejected for a single transaction
+  when deriving tx-wide `nLockTime`.
+
+### VTXO policy invariants
+A VTXO policy MUST:
+- contain at least one `collab` leaf that requires the operator key, and
+- contain at least one `exit` leaf that:
+  - is CSV-gated, and
+  - does not require the operator key.
+
+If multiple exit leaves exist, the minimum exit delay across them MUST meet the
+protocol’s `MinExitDelay` requirement.
+
+Custom leaves MUST NOT introduce an ungated spend path that is spendable
+without the operator key, unless the policy explicitly validates it as an
+approved swap-claim pattern.
+
+### Checkpoint policy invariants (OOR)
+A checkpoint output policy MUST:
+- contain exactly one `unroll` leaf that:
+  - is CSV-gated by the checkpoint unroll delay, and
+  - is spendable only by the operator (or a dedicated unroll key), and
+- contain at least one `owner` leaf that is in the approved AST subset.
+
+## Deterministic transaction-context derivation
+Script satisfaction depends on transaction fields:
+- CSV depends on the spending input sequence (BIP-68).
+- CLTV depends on the spending transaction locktime (BIP-65) and on the
+  spending input sequence being non-final.
+
+Builders MUST deterministically set per-input `nSequence` and tx-wide
+`nLockTime` based on selected leaves.
+
+### Per-leaf requirements
+For a compiled leaf, derive:
+- `RequiredSequence`:
+  - if the leaf contains `CSV(lock, ...)`, this MUST be the exact BIP-68
+    sequence encoding for `lock`,
+  - else if the leaf contains `CLTV(...)`, this MUST be `0xfffffffe`,
+  - else this SHOULD be `0xffffffff`.
+- `RequiredLockTime`:
+  - if the leaf contains `CLTV(lock, ...)`, this MUST be `lock`,
+  - else it MUST be `0`.
+
+### Transaction-wide rules
+Given inputs `i=0..k-1`, each with selected leaf requirements:
+- `nLockTime` MUST be the maximum `RequiredLockTime` across all inputs.
+- Any input that requires CLTV MUST have a non-final `nSequence`.
+- Mixed CLTV types (height vs time) MUST be rejected.
+
+## PSBT extensions (profile)
+
+### Tap tree encoding
+Implementations MAY persist taproot leaf lists in PSBT unknowns to ensure the
+same leaf set can be reconstructed during finalization (OOR).
+
+If used, the key SHOULD be namespaced (e.g., `ark/taptree`). For compatibility
+with existing Ark tooling, the un-namespaced key `taptree` MAY be used while
+transitioning.
+
+Encoding MUST be:
+- leaf count (compact size uint),
+- for each leaf:
+  - depth (1 byte),
+  - leaf version (1 byte),
+  - script length (compact size uint),
+  - script bytes.
+
+Depth MUST be measured against the canonical tree construction in this RFC.
+
+### Condition witness encoding
+For hashlock leaves that require a preimage witness element, implementations
+MAY persist witness material in PSBT unknowns under a stable key (e.g.,
+`ark/condition`) using standard witness serialization.
+
+## Assets composition (Taproot Assets)
+Taproot Assets introduces additional roots (asset commitment roots) that must
+be combined with Ark spend-policy leaves to reproduce on-chain taproot keys.
+
+PR #58 MUST define a composition API that can:
+- compile an Ark policy into a policy root, and
+- combine it as a sibling with an externally provided root:
+  - `combined = TapBranchHash(min(policyRoot, extRoot),
+    max(policyRoot, extRoot))`,
+  - output key tweak uses `combined` as the merkle root.
+
+PR #58 SHOULD treat full tapd proof reproduction as out-of-scope for v1, but
+MUST keep the hash-level composition deterministic and testable.
+
+## API surface (informative)
+The implementation SHOULD expose:
+- typed builders for standard VTXO and checkpoint templates,
+- `Compile()` returning:
+  - P2TR pkScript/output key,
+  - ordered leaf list,
+  - per-leaf `SpendInfo` (script, control block, tx-context requirements),
+- an optional `CompileWithSiblingRoot(extRoot)` for assets composition.
+
+Parsing arbitrary tapscript is out-of-scope. If parsing is provided, it MUST be
+limited to scripts previously produced by this compiler or a tightly-scoped
+legacy subset with canonical re-encoding.
+
+## Implementation plan (incremental)
+1) Implement AST nodes + canonical script encoder.
+2) Implement canonical leaf ordering + canonical tree builder (with control
+   blocks).
+3) Implement VTXO and checkpoint validators.
+4) Implement tx-context derivation + `SpendInfo`.
+5) Implement PSBT tap tree encoding helpers (writer/reader).
+6) Add assets composition hook (root sibling combination).
+7) Add tests + golden vectors.
+
+## Testing plan
 Unit tests:
-- AST → script determinism for known inputs.
-- Validation:
-  - missing exit/collab rejected.
-  - exits must be CSV-gated and owner-only.
-  - collab must include signer key.
-  - custom must not create ungated bypasses.
-- Spend info:
-  - correct leaf hashes/control blocks for each leaf.
-  - derived sequence/locktime matches the AST.
+- Canonical script encoding per node type.
+- Leaf ordering and canonical tree shape (root + per-leaf control blocks).
+- Validation for VTXO + checkpoint invariants.
+- Tx-context derivation: per-leaf requirements + tx-wide aggregation rules.
 
 Property tests (rapid):
-- ASTs that satisfy invariants roundtrip and validate.
-- ASTs that violate invariants fail with the expected error class.
+- Policies that satisfy invariants compile deterministically and validate.
+- Policies that violate invariants fail with expected error classes.
 
-Integration tests:
-- Existing tree/tx/wallet flows continue to work when using AST-backed helpers.
+Golden tests:
+- Known-good vectors for the standard VTXO template (output key + leaf scripts).
+- Stable tap tree encoding bytes for OOR PSBT metadata.
 
 Commands:
-- `make unit pkg=./lib/... timeout=5m`
+- `make unit pkg=./... timeout=5m`
 - `make lint`
 
-## Rollout & Ops
-- No runtime flags expected; this is library-side validation/codegen.
-- Backout: revert to prior builder if needed (documented by API boundaries).
-
-## Risks & Open Questions
-- What is the minimal supported script subset for custom paths (typed nodes
-  only vs allow parsing an approved subset)?
-- Do we require every `custom` path to include the signer key, or only those
-  declared collaborative? (default: signer required if role is `collab`.)
-
-## Acceptance Criteria
-- `lib/vtxoast` exists with the creation/validation/codegen APIs above.
-- All validation invariants are enforced and covered by tests.
-- `SpendInfo` is sufficient to construct witnesses without ad-hoc script eval.
-- Unit + property tests pass; integration tests remain green.
+## Security considerations
+- Keypath spends SHOULD be disabled via an unspendable internal key.
+- Unsupported opcodes MUST be rejected in parsed inputs.
+- Custom leaves are dangerous; the allowed custom subset SHOULD remain small
+  and structurally validated.
