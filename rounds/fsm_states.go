@@ -137,10 +137,6 @@ type BatchBuiltState struct {
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
 
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
-
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
@@ -168,10 +164,6 @@ type AwaitingBoardingSigsState struct {
 
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
-
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
@@ -236,10 +228,6 @@ type ServerSigningState struct {
 
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
-
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree

@@ -287,7 +287,6 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			NextState: &BatchBuiltState{
 				ClientRegistrations: s.ClientRegistrations,
 				PSBT:                psbtPacket,
-				ChangeOutputIndex:   changeIdx,
 				VTXOTrees:           vtxoTrees,
 			},
 			NewEvents: fn.Some(EmittedEvent{
@@ -350,7 +349,6 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 			NextState: &AwaitingBoardingSigsState{
 				ClientRegistrations: s.ClientRegistrations,
 				PSBT:                s.PSBT,
-				ChangeOutputIndex:   s.ChangeOutputIndex,
 				VTXOTrees:           s.VTXOTrees,
 				ClientsSubmitted: make(
 					map[clientconn.ClientID]struct{},
@@ -603,7 +601,6 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 	newState := &AwaitingBoardingSigsState{
 		ClientRegistrations: s.ClientRegistrations,
 		PSBT:                s.PSBT,
-		ChangeOutputIndex:   s.ChangeOutputIndex,
 		VTXOTrees:           s.VTXOTrees,
 		ClientsSubmitted:    newClientsSubmitted,
 		CollectedSignatures: newCollectedSigs,
@@ -619,7 +616,6 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 			NextState: &ServerSigningState{
 				ClientRegistrations: s.ClientRegistrations,
 				PSBT:                s.PSBT,
-				ChangeOutputIndex:   s.ChangeOutputIndex,
 				VTXOTrees:           s.VTXOTrees,
 				CollectedSignatures: newCollectedSigs,
 			},
