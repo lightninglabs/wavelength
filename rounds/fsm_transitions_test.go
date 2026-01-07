@@ -1291,13 +1291,13 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
 		}
-		client1Reg := buildTestClientRegistration(
-			"client1",
-			&BoardingInput{Outpoint: &outpoint},
-		)
 		awaitState := buildAwaitingVTXONoncesState(
-			map[ClientID]*ClientRegistration{
-				"client1": client1Reg,
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {
+					boardingInputs: []*BoardingInput{
+						{Outpoint: &outpoint},
+					},
+				},
 			},
 		)
 
@@ -1351,11 +1351,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 
 		// Create an AwaitingVTXONoncesState.
 		awaitState := buildAwaitingVTXONoncesState(
-			map[ClientID]*ClientRegistration{
-				"client1": {},
-			},
+			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
 		)
-
 		h := newTestHarness(t, awaitState)
 
 		// Send stale RegistrationTimeoutEvent - should be ignored.
@@ -1365,6 +1362,80 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		// Should remain in AwaitingVTXONoncesState.
 		assertStateType[*AwaitingVTXONoncesState](h)
 		h.assertOutboxLen(0)
+	})
+
+	t.Run("nonces from unregistered client rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with only client1 registered.
+		awaitState := buildAwaitingVTXONoncesState(
+			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send nonces from unregistered client2.
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client2",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client2"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "not registered")
+	})
+
+	t.Run("nonces from client without VTXOs rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with client1 registered but no VTXOs.
+		awaitState := buildAwaitingVTXONoncesState(
+			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send nonces from client1 who has no VTXOs.
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client1",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no VTXOs")
+	})
+
+	t.Run("duplicate nonces submission rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with client1 having VTXOs and already submitted.
+		awaitState := buildAwaitingVTXONoncesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {
+					withVTXOs:        true,
+					alreadySubmitted: true,
+				},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send duplicate nonces from client1.
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client1",
+		})
+		require.NoError(t, err)
+
+		// Should remain in same state and send error to client.
+		assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "already submitted")
 	})
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -474,11 +475,49 @@ func buildTestClientRegistration(clientID ClientID,
 	}
 }
 
+// vtxoNoncesStateOpts configures buildAwaitingVTXONoncesState.
+type vtxoNoncesStateOpts struct {
+	// withVTXOs marks this client as having VTXODescriptors.
+	withVTXOs bool
+
+	// alreadySubmitted marks this client as having already submitted.
+	alreadySubmitted bool
+
+	// boardingInputs are boarding inputs to attach to the registration.
+	boardingInputs []*BoardingInput
+}
+
 // buildAwaitingVTXONoncesState creates an AwaitingVTXONoncesState for testing.
-// This is useful when starting tests directly in this state without going
-// through the full registration and batch building flow.
+// The opts map keys are client IDs, values configure each client's state.
 func buildAwaitingVTXONoncesState(
-	regs map[ClientID]*ClientRegistration) *AwaitingVTXONoncesState {
+	opts map[ClientID]vtxoNoncesStateOpts) *AwaitingVTXONoncesState {
+
+	regs := make(map[ClientID]*ClientRegistration)
+	submitted := make(map[ClientID]struct{})
+	keyIdx := int32(200)
+
+	for clientID, clientOpts := range opts {
+		reg := &ClientRegistration{
+			ClientID:       clientID,
+			BoardingInputs: clientOpts.boardingInputs,
+		}
+
+		if clientOpts.withVTXOs {
+			testKey, _ := testutils.CreateKey(keyIdx)
+			keyIdx++
+			keyVertex := route.NewVertex(testKey)
+			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
+				keyVertex: {},
+			}
+			reg.VTXODescriptors = vtxoDescs
+		}
+
+		regs[clientID] = reg
+
+		if clientOpts.alreadySubmitted {
+			submitted[clientID] = struct{}{}
+		}
+	}
 
 	return &AwaitingVTXONoncesState{
 		ClientRegistrations: regs,
@@ -487,7 +526,7 @@ func buildAwaitingVTXONoncesState(
 		},
 		VTXOTrees:            map[int]*tree.Tree{},
 		TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{},
-		ClientsWithNonces:    map[ClientID]struct{}{},
+		ClientsWithNonces:    submitted,
 	}
 }
 

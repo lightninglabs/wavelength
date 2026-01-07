@@ -45,10 +45,7 @@ func clientErrorTransition(state State, clientID ClientID,
 		NextState: state,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
-				&ClientErrorResp{
-					Client:   clientID,
-					ErrorMsg: errMsg,
-				},
+				newClientErrorResp(clientID, errMsg),
 			},
 		}),
 	}
@@ -554,10 +551,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&ClientErrorResp{
-						Client:   clientID,
-						ErrorMsg: "not registered",
-					},
+					newClientErrorResp(
+						clientID, "not registered",
+					),
 				},
 			}),
 		}, nil
@@ -569,10 +565,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&ClientErrorResp{
-						Client:   clientID,
-						ErrorMsg: "already submitted",
-					},
+					newClientErrorResp(
+						clientID, "already submitted",
+					),
 				},
 			}),
 		}, nil
@@ -589,10 +584,7 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&ClientErrorResp{
-						Client:   clientID,
-						ErrorMsg: errMsg,
-					},
+					newClientErrorResp(clientID, errMsg),
 				},
 			}),
 		}, nil
@@ -628,10 +620,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				NextState: s,
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
-						&ClientErrorResp{
-							Client:   clientID,
-							ErrorMsg: errMsg,
-						},
+						newClientErrorResp(
+							clientID, errMsg,
+						),
 					},
 				}),
 			}, nil
@@ -647,10 +638,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				NextState: s,
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
-						&ClientErrorResp{
-							Client:   clientID,
-							ErrorMsg: errMsg,
-						},
+						newClientErrorResp(
+							clientID, errMsg,
+						),
 					},
 				}),
 			}, nil
@@ -665,10 +655,9 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				NextState: s,
 				NewEvents: fn.Some(EmittedEvent{
 					Outbox: []OutboxEvent{
-						&ClientErrorResp{
-							Client:   clientID,
-							ErrorMsg: err.Error(),
-						},
+						newClientErrorResp(
+							clientID, err.Error(),
+						),
 					},
 				}),
 			}, nil
@@ -879,10 +868,9 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *ClientVTXONoncesEvent:
-		// TODO(elle): handle client nonce submission.
-		return nil, fmt.Errorf("not yet implemented")
+		return s.handleClientNonces(env, evt)
 
 	case *VTXONoncesTimeoutEvent:
 		// The timeout was reached before all nonces were collected.
@@ -895,6 +883,123 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
 		return unexpectedEvent(s, "awaiting-vtxo-nonces", event, env),
 			nil
 	}
+}
+
+// handleClientNonces processes nonces submitted by a client, adding them to
+// the tree coordinators. If all clients have submitted nonces, it transitions
+// to the next state AwaitingVTXOSignaturesState.
+func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
+	evt *ClientVTXONoncesEvent) (*StateTransition, error) {
+
+	clientID := evt.ClientID
+
+	// Check if client is registered in this round.
+	reg, exists := s.ClientRegistrations[clientID]
+	if !exists {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID,
+						"not registered in this round",
+					),
+				},
+			}),
+		}, nil
+	}
+
+	// Check if client has VTXOs (should only accept nonces from VTXO
+	// clients).
+	if len(reg.VTXODescriptors) == 0 {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID, "client has no VTXOs",
+					),
+				},
+			}),
+		}, nil
+	}
+
+	// Check if client has already submitted nonces.
+	if s.hasClientSubmittedNonces(clientID) {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID,
+						"already submitted nonces",
+					),
+				},
+			}),
+		}, nil
+	}
+
+	// Add nonces to each tree coordinator.
+	for idx, coordinator := range s.TreeSignCoordinators {
+		_, err := coordinator.AddNonces(evt.SigningKey, evt.Nonces)
+		if err != nil {
+			errMsg := fmt.Sprintf(
+				"failed to add nonces for tree %d: %v",
+				idx, err,
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						newClientErrorResp(
+							clientID, errMsg,
+						),
+					},
+				}),
+			}, nil
+		}
+	}
+
+	// Track that this client has submitted nonces.
+	newClientsWithNonces := make(map[clientconn.ClientID]struct{})
+	for k, v := range s.ClientsWithNonces {
+		newClientsWithNonces[k] = v
+	}
+	newClientsWithNonces[clientID] = struct{}{}
+
+	// Create new state with updated tracking.
+	newState := &AwaitingVTXONoncesState{
+		ClientRegistrations:  s.ClientRegistrations,
+		PSBT:                 s.PSBT,
+		VTXOTrees:            s.VTXOTrees,
+		TreeSignCoordinators: s.TreeSignCoordinators,
+		ClientsWithNonces:    newClientsWithNonces,
+	}
+
+	// Check if all clients have submitted nonces.
+	if newState.allClientsSubmittedNonces() {
+		// TODO(elle): Transition to AwaitingVTXOSignaturesState for
+		// partial signature collection. For now, we'll just stay in
+		// this state until the next commit adds that state.
+		// Cancel the nonces timeout.
+		return &StateTransition{
+			NextState: newState,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&CancelTimeoutReq{
+						RoundID: env.RoundID,
+						Phase:   TimeoutPhaseVTXONonces,
+					},
+				},
+			}),
+		}, nil
+	}
+
+	// Not all clients have submitted yet - remain in current state.
+	return &StateTransition{
+		NextState: newState,
+	}, nil
 }
 
 // ProcessEvent handles events in the ServerSigningState. This state signs the

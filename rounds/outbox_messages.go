@@ -30,6 +30,16 @@ type ClientErrorResp struct {
 	ErrorMsg string
 }
 
+// newClientErrorResp creates a new ClientErrorResp for the given client.
+func newClientErrorResp(clientID clientconn.ClientID,
+	msg string) *ClientErrorResp {
+
+	return &ClientErrorResp{
+		Client:   clientID,
+		ErrorMsg: msg,
+	}
+}
+
 // ClientID returns the identifier of the client to send the message to.
 func (c *ClientErrorResp) ClientID() clientconn.ClientID {
 	return c.Client

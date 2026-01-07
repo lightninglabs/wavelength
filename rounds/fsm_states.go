@@ -259,6 +259,28 @@ func (s *AwaitingVTXONoncesState) IsTerminal() bool {
 // interface.
 func (s *AwaitingVTXONoncesState) stateSealed() {}
 
+// allClientsSubmittedNonces returns true if all registered clients with VTXOs
+// have submitted their nonces.
+func (s *AwaitingVTXONoncesState) allClientsSubmittedNonces() bool {
+	clientsWithVTXOs := 0
+	for _, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) > 0 {
+			clientsWithVTXOs++
+		}
+	}
+
+	return len(s.ClientsWithNonces) >= clientsWithVTXOs
+}
+
+// hasClientSubmittedNonces checks if a client has already submitted their
+// nonces.
+func (s *AwaitingVTXONoncesState) hasClientSubmittedNonces(
+	clientID clientconn.ClientID) bool {
+
+	_, exists := s.ClientsWithNonces[clientID]
+	return exists
+}
+
 // ServerSigningState is where the server signs its wallet inputs on the
 // commitment transaction. This occurs after all clients have submitted their
 // boarding input signatures.
