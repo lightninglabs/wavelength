@@ -1277,3 +1277,219 @@ func TestFSMFinalizedState(t *testing.T) {
 		h.assertOutboxLen(0)
 	})
 }
+
+// TestFSMAwaitingVTXONoncesState tests the FSM transitions from
+// AwaitingVTXONoncesState.
+func TestFSMAwaitingVTXONoncesState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("timeout transitions to FailedState", func(t *testing.T) {
+		t.Parallel()
+
+		// Create an AwaitingVTXONoncesState with one client registered.
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		client1Reg := buildTestClientRegistration(
+			"client1",
+			&BoardingInput{Outpoint: &outpoint},
+		)
+		awaitState := buildAwaitingVTXONoncesState(
+			map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			},
+		)
+
+		h := newTestHarness(t, awaitState)
+
+		// Send VTXONoncesTimeoutEvent.
+		err := h.sendEvent(&VTXONoncesTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should transition to FailedState.
+		failedState := assertStateType[*FailedState](h)
+		require.Contains(t, failedState.Reason, "VTXO nonce collection")
+		require.Contains(t, failedState.Reason, "timeout")
+
+		// Verify outbox messages:
+		// 1. ClientRoundFailedResp for client1
+		// 2. UnlockBoardingInputsReq for the outpoint
+		// 3. RoundFailedReq for the actor
+		var (
+			foundClientFailed bool
+			foundUnlock       bool
+			foundRoundFailed  bool
+		)
+		for _, msg := range h.outboxMessages {
+			switch m := msg.(type) {
+			case *ClientRoundFailedResp:
+				foundClientFailed = true
+				require.Equal(t, ClientID("client1"), m.Client)
+				require.Equal(t, h.env.RoundID, m.RoundID)
+				require.Contains(t, m.Reason, "VTXO nonce")
+
+			case *UnlockBoardingInputsReq:
+				foundUnlock = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+				require.Len(t, m.Outpoints, 1)
+				require.Equal(t, &outpoint, m.Outpoints[0])
+
+			case *RoundFailedReq:
+				foundRoundFailed = true
+				require.Equal(t, h.env.RoundID, m.FailedRoundID)
+				require.Contains(t, m.Reason, "VTXO nonce")
+			}
+		}
+		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlock, "inputs should be unlocked")
+		require.True(t, foundRoundFailed, "actor should be notified")
+	})
+
+	t.Run("stale registration timeout ignored", func(t *testing.T) {
+		t.Parallel()
+
+		// Create an AwaitingVTXONoncesState.
+		awaitState := buildAwaitingVTXONoncesState(
+			map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		)
+
+		h := newTestHarness(t, awaitState)
+
+		// Send stale RegistrationTimeoutEvent - should be ignored.
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in AwaitingVTXONoncesState.
+		assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(0)
+	})
+}
+
+// TestFSMBatchBuiltState tests the FSM transitions from BatchBuiltState.
+func TestFSMBatchBuiltState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("without VTXOs transitions to AwaitingBoardingSigsState",
+		func(t *testing.T) {
+			t.Parallel()
+
+			// Create a BatchBuiltState with no VTXOs.
+			outpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("input1")),
+				Index: 0,
+			}
+			client1Reg := buildTestClientRegistration(
+				"client1",
+				&BoardingInput{Outpoint: &outpoint},
+			)
+
+			regs := map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+			}
+			batchBuiltState := &BatchBuiltState{
+				ClientRegistrations: regs,
+				PSBT: &psbt.Packet{
+					UnsignedTx: wire.NewMsgTx(2),
+				},
+				VTXOTrees: nil,
+			}
+
+			h := newTestHarness(t, batchBuiltState)
+
+			// Send PrepareClientNotificationsEvent.
+			err := h.sendEvent(&PrepareClientNotificationsEvent{})
+			require.NoError(t, err)
+
+			// Should transition to AwaitingBoardingSigsState.
+			bs := assertStateType[*AwaitingBoardingSigsState](h)
+			require.NotNil(t, bs.PSBT)
+			require.Len(t, bs.ClientRegistrations, 1)
+
+			// Verify outbox messages.
+			var foundBatch, foundBrdgSigs, foundTimeout bool
+			client1ID := ClientID("client1")
+			for _, msg := range h.outboxMessages {
+				switch m := msg.(type) {
+				case *ClientBatchInfo:
+					foundBatch = true
+					require.Equal(t, client1ID, m.Client)
+					require.Empty(t, m.VTXOTreePaths)
+
+				case *ClientAwaitingBoardingSigsResp:
+					foundBrdgSigs = true
+					require.Equal(t, client1ID, m.Client)
+
+				case *StartTimeoutReq:
+					if m.Phase == TimeoutPhaseBoardingSigs {
+						foundTimeout = true
+					}
+				}
+			}
+			require.True(t, foundBatch)
+			require.True(t, foundBrdgSigs)
+			require.True(t, foundTimeout)
+		},
+	)
+
+	t.Run("sends batch info to each client", func(t *testing.T) {
+		t.Parallel()
+
+		// Create BatchBuiltState with two clients.
+		outpoint1 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		outpoint2 := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input2")),
+			Index: 0,
+		}
+		client1Reg := buildTestClientRegistration(
+			"client1", &BoardingInput{Outpoint: &outpoint1},
+		)
+		client2Reg := buildTestClientRegistration(
+			"client2", &BoardingInput{Outpoint: &outpoint2},
+		)
+
+		batchBuiltState := &BatchBuiltState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": client1Reg,
+				"client2": client2Reg,
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees: nil,
+		}
+
+		h := newTestHarness(t, batchBuiltState)
+
+		// Send PrepareClientNotificationsEvent.
+		err := h.sendEvent(&PrepareClientNotificationsEvent{})
+		require.NoError(t, err)
+
+		// Both clients should receive ClientBatchInfo.
+		client1Info := findClientBatchInfo(h.outboxMessages, "client1")
+		client2Info := findClientBatchInfo(h.outboxMessages, "client2")
+		require.NotNil(t, client1Info, "client1 should get batch info")
+		require.NotNil(t, client2Info, "client2 should get batch info")
+	})
+}
+
+// findClientBatchInfo searches the outbox messages for a ClientBatchInfo
+// message for the specified client.
+func findClientBatchInfo(msgs []OutboxEvent,
+	clientID ClientID) *ClientBatchInfo {
+
+	for _, msg := range msgs {
+		if info, ok := msg.(*ClientBatchInfo); ok {
+			if info.Client == clientID {
+				return info
+			}
+		}
+	}
+
+	return nil
+}

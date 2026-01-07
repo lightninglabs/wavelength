@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
@@ -113,6 +114,9 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		PubKey: common.operatorPub,
 	}
 
+	// Generate a sweep key for VTXO trees.
+	sweepKey, _ := testutils.CreateKey(2)
+
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
@@ -126,12 +130,17 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		MinConfs:            1,
 		Terms: &batch.Terms{
 			OperatorKey:                   operatorKey,
+			SweepKey:                      keychain.KeyDescriptor{PubKey: sweepKey},
+			SweepDelay:                    288,
 			BoardingExitDelay:             100,
 			BoardingExitDelaySafetyMargin: 6,
 			MinBoardingConfirmations:      1,
 			MaxVTXOsPerTree:               1024,
 			SignatureCollectionTimeout:    30 * time.Second,
 			TreeRadix:                     4,
+			MinVTXOAmount:                 1000,
+			MaxVTXOAmount:                 100000000,
+			VTXOExitDelay:                 100,
 		},
 	}
 
@@ -462,6 +471,23 @@ func buildTestClientRegistration(clientID ClientID,
 	return &ClientRegistration{
 		ClientID:       clientID,
 		BoardingInputs: boardingInputs,
+	}
+}
+
+// buildAwaitingVTXONoncesState creates an AwaitingVTXONoncesState for testing.
+// This is useful when starting tests directly in this state without going
+// through the full registration and batch building flow.
+func buildAwaitingVTXONoncesState(
+	regs map[ClientID]*ClientRegistration) *AwaitingVTXONoncesState {
+
+	return &AwaitingVTXONoncesState{
+		ClientRegistrations: regs,
+		PSBT: &psbt.Packet{
+			UnsignedTx: wire.NewMsgTx(2),
+		},
+		VTXOTrees:            map[int]*tree.Tree{},
+		TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{},
+		ClientsWithNonces:    map[ClientID]struct{}{},
 	}
 }
 
