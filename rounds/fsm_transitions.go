@@ -979,26 +979,104 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 
 	// Check if all clients have submitted nonces.
 	if newState.allClientsSubmittedNonces() {
-		// TODO(elle): Transition to AwaitingVTXOSignaturesState for
-		// partial signature collection. For now, we'll just stay in
-		// this state until the next commit adds that state.
-		// Cancel the nonces timeout.
-		return &StateTransition{
-			NextState: newState,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&CancelTimeoutReq{
-						RoundID: env.RoundID,
-						Phase:   TimeoutPhaseVTXONonces,
-					},
-				},
-			}),
-		}, nil
+		return newState.transitionToVTXOSignatures(env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
 	return &StateTransition{
 		NextState: newState,
+	}, nil
+}
+
+// transitionToVTXOSignatures handles the transition from
+// AwaitingVTXONoncesState to AwaitingVTXOSignaturesState. It generates the
+// operator's partial signatures, aggregates nonces, and sends aggregated
+// nonces to each client.
+func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
+	env *Environment) (*StateTransition, error) {
+
+	// Generate operator's partial signatures for all trees. This must be
+	// done after all client nonces are collected.
+	for idx, coordinator := range s.TreeSignCoordinators {
+		err := coordinator.Sign()
+		if err != nil {
+			return buildFailureTransition(
+				env, s.ClientRegistrations,
+				fmt.Sprintf("operator sign for tree %d: %v",
+					idx, err),
+			), nil
+		}
+	}
+
+	// Prepare outbox messages with aggregated nonces for each client.
+	var outboxMsgs []OutboxEvent
+
+	// Cancel the nonces timeout.
+	outboxMsgs = append(outboxMsgs, &CancelTimeoutReq{
+		RoundID: env.RoundID,
+		Phase:   TimeoutPhaseVTXONonces,
+	})
+
+	// Send aggregated nonces to each client with VTXOs.
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) == 0 {
+			continue
+		}
+
+		// Collect signing keys for this client.
+		clientKeys := make(
+			[]*btcec.PublicKey, 0, len(reg.VTXODescriptors),
+		)
+		for _, desc := range reg.VTXODescriptors {
+			clientKeys = append(clientKeys, desc.CoSignerKey)
+		}
+
+		// Aggregate nonces from all coordinators for this client.
+		aggNonces := make(map[tree.TxID]tree.Musig2PubNonce)
+		for _, coordinator := range s.TreeSignCoordinators {
+			clientAggNonces, err := coordinator.
+				GetAggNoncesForSigners(clientKeys)
+			if err != nil {
+				return buildFailureTransition(
+					env, s.ClientRegistrations,
+					fmt.Sprintf("get agg nonces for %s: %v",
+						clientID, err),
+				), nil
+			}
+
+			// Merge nonces from this coordinator into the
+			// aggregated map.
+			for txid, nonce := range clientAggNonces {
+				aggNonces[txid] = nonce
+			}
+		}
+
+		outboxMsgs = append(outboxMsgs, &ClientVTXOAggNonces{
+			Client:    clientID,
+			AggNonces: aggNonces,
+		})
+	}
+
+	// Start timeout for VTXO signature collection.
+	outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
+		RoundID:  env.RoundID,
+		Phase:    TimeoutPhaseVTXOSignatures,
+		Duration: env.Terms.SignatureCollectionTimeout,
+	})
+
+	return &StateTransition{
+		NextState: &AwaitingVTXOSignaturesState{
+			ClientRegistrations:  s.ClientRegistrations,
+			PSBT:                 s.PSBT,
+			VTXOTrees:            s.VTXOTrees,
+			TreeSignCoordinators: s.TreeSignCoordinators,
+			ClientsWithSignatures: make(
+				map[clientconn.ClientID]struct{},
+			),
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: outboxMsgs,
+		}),
 	}, nil
 }
 

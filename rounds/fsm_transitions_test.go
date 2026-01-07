@@ -1564,3 +1564,84 @@ func findClientBatchInfo(msgs []OutboxEvent,
 
 	return nil
 }
+
+// TestFSMAwaitingVTXOSignaturesState tests FSM transitions from
+// AwaitingVTXOSignaturesState.
+func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("timeout transitions to FailedState", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state with one client with boarding inputs.
+		outpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input1")),
+			Index: 0,
+		}
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {
+					boardingInputs: []*BoardingInput{
+						{Outpoint: &outpoint},
+					},
+				},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send VTXOSignaturesTimeoutEvent.
+		err := h.sendEvent(&VTXOSignaturesTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should transition to FailedState.
+		failedState := assertStateType[*FailedState](h)
+		require.Contains(t, failedState.Reason, "VTXO signature")
+		require.Contains(t, failedState.Reason, "timeout")
+
+		// Verify outbox messages.
+		var (
+			foundClientFailed bool
+			foundUnlock       bool
+			foundRoundFailed  bool
+		)
+		for _, msg := range h.outboxMessages {
+			switch m := msg.(type) {
+			case *ClientRoundFailedResp:
+				foundClientFailed = true
+				require.Equal(t, ClientID("client1"), m.Client)
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
+			case *UnlockBoardingInputsReq:
+				foundUnlock = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+				require.Len(t, m.Outpoints, 1)
+				require.Equal(t, &outpoint, m.Outpoints[0])
+
+			case *RoundFailedReq:
+				foundRoundFailed = true
+				require.Equal(t, h.env.RoundID, m.FailedRoundID)
+			}
+		}
+		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlock, "inputs should be unlocked")
+		require.True(t, foundRoundFailed, "actor should be notified")
+	})
+
+	t.Run("stale nonces timeout ignored", func(t *testing.T) {
+		t.Parallel()
+
+		// Create state.
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{"client1": {}},
+		)
+		h := newTestHarness(t, awaitState)
+
+		// Send stale VTXONoncesTimeoutEvent - should be ignored.
+		err := h.sendEvent(&VTXONoncesTimeoutEvent{})
+		require.NoError(t, err)
+
+		// Should remain in AwaitingVTXOSignaturesState.
+		assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(0)
+	})
+}

@@ -530,6 +530,44 @@ func buildAwaitingVTXONoncesState(
 	}
 }
 
+// buildAwaitingVTXOSignaturesState creates an AwaitingVTXOSignaturesState for
+// testing. The opts map keys are client IDs, values configure each client.
+func buildAwaitingVTXOSignaturesState(
+	opts map[ClientID]vtxoNoncesStateOpts) *AwaitingVTXOSignaturesState {
+
+	regs := make(map[ClientID]*ClientRegistration)
+	keyIdx := int32(300)
+
+	for clientID, clientOpts := range opts {
+		reg := &ClientRegistration{
+			ClientID:       clientID,
+			BoardingInputs: clientOpts.boardingInputs,
+		}
+
+		if clientOpts.withVTXOs {
+			testKey, _ := testutils.CreateKey(keyIdx)
+			keyIdx++
+			keyVertex := route.NewVertex(testKey)
+			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
+				keyVertex: {},
+			}
+			reg.VTXODescriptors = vtxoDescs
+		}
+
+		regs[clientID] = reg
+	}
+
+	return &AwaitingVTXOSignaturesState{
+		ClientRegistrations: regs,
+		PSBT: &psbt.Packet{
+			UnsignedTx: wire.NewMsgTx(2),
+		},
+		VTXOTrees:             map[int]*tree.Tree{},
+		TreeSignCoordinators:  map[int]*batch.TreeSignCoordinator{},
+		ClientsWithSignatures: make(map[ClientID]struct{}),
+	}
+}
+
 // assertOutboxContains asserts that the outbox contains at least one message
 // of the given type and returns the first match.
 //
