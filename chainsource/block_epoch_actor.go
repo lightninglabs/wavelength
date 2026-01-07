@@ -62,9 +62,6 @@ type BlockEpochActor struct {
 	// cancelFunc is the custom cancel function returned in the response.
 	cancelFunc func()
 
-	// closeOnce ensures the epochChan is only closed once.
-	closeOnce sync.Once
-
 	// wg tracks background goroutines for graceful shutdown.
 	wg sync.WaitGroup
 }
@@ -130,17 +127,11 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 		// us consume block epochs as the iterator may block.
 		a.epochChan = make(chan BlockEpoch, epochChannelSize)
 
-		// Create an iter.Seq that reads from the channel.
+		// Create an iter.Seq that reads from the channel. The sender
+		// (monitorBlocks) is responsible for closing the channel, so we
+		// only cancel the context here to signal shutdown.
 		iterator := func(yield func(BlockEpoch) bool) {
-			defer func() {
-				// Close the channel when iterator finishes.
-				a.closeOnce.Do(func() {
-					if a.epochChan != nil {
-						close(a.epochChan)
-					}
-				})
-				a.cancel()
-			}()
+			defer a.cancel()
 
 			for {
 				select {
@@ -159,19 +150,9 @@ func (a *BlockEpochActor) handleSubscribeBlocks(actorCtx context.Context,
 			}
 		}
 
-		// Wrap Cancel to also clean up properly.
-		cancelFunc := func() {
-			a.closeOnce.Do(func() {
-				if a.epochChan != nil {
-					close(a.epochChan)
-				}
-			})
-			a.cancel()
-		}
-
 		resp.Iterator = iterator
-		resp.Cancel = cancelFunc
-		a.cancelFunc = cancelFunc
+		resp.Cancel = a.cancel
+		a.cancelFunc = a.cancel
 	}
 
 	// Register with the backend to receive block notifications. We do this
@@ -198,6 +179,15 @@ func (a *BlockEpochActor) monitorBlocks() {
 
 	log := a.logger(a.ctx)
 	log.InfoS(a.ctx, "BlockEpochActor monitoring started")
+
+	// In iterator mode, the sender (this goroutine) is responsible for
+	// closing the channel to signal the receiver that no more values will
+	// be sent. This follows Go's channel ownership semantics.
+	defer func() {
+		if a.epochChan != nil {
+			close(a.epochChan)
+		}
+	}()
 
 	// Make sure we clean up the registration on exit.
 	defer func() {
@@ -261,4 +251,26 @@ func (a *BlockEpochActor) Stop() {
 	a.cancel()
 
 	a.wg.Wait()
+}
+
+// OnStop implements actor.Stoppable for proper cleanup when stopped via actor
+// system. This is called after the actor's message loop exits.
+func (a *BlockEpochActor) OnStop(ctx context.Context) error {
+	// Cancel internal context to signal background goroutine.
+	a.cancel()
+
+	// Wait for goroutine with timeout from cleanup context.
+	done := make(chan struct{})
+	go func() {
+		a.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
