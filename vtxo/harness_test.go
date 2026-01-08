@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -15,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -674,4 +676,110 @@ func assertOutboxContainsReal[T VTXOOutMsg](h *realVTXOSigningHarness) T {
 	h.t.Fatalf("outbox does not contain message of type %T", zero)
 
 	return zero
+}
+
+// mockRoundActorRef captures messages sent to the round actor for test
+// verification. Implements actor.TellOnlyRef[round.ClientMsg].
+type mockRoundActorRef struct {
+	t        *testing.T
+	messages []round.ClientMsg
+	mu       sync.Mutex
+}
+
+func newMockRoundActorRef(t *testing.T) *mockRoundActorRef {
+	return &mockRoundActorRef{
+		t:        t,
+		messages: make([]round.ClientMsg, 0),
+	}
+}
+
+func (m *mockRoundActorRef) ID() string {
+	return "mock-round-actor"
+}
+
+func (m *mockRoundActorRef) Tell(_ context.Context, msg round.ClientMsg) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, msg)
+}
+
+func (m *mockRoundActorRef) getMessages() []round.ClientMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]round.ClientMsg, len(m.messages))
+	copy(result, m.messages)
+
+	return result
+}
+
+// mockManagerRef captures messages sent to the manager for test verification.
+type mockManagerRef struct {
+	t        *testing.T
+	messages []ManagerMsg
+	mu       sync.Mutex
+}
+
+func newMockManagerRef(t *testing.T) *mockManagerRef {
+	return &mockManagerRef{
+		t:        t,
+		messages: make([]ManagerMsg, 0),
+	}
+}
+
+func (m *mockManagerRef) ID() string {
+	return "mock-manager"
+}
+
+func (m *mockManagerRef) Tell(_ context.Context, msg ManagerMsg) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, msg)
+}
+
+func (m *mockManagerRef) getMessages() []ManagerMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]ManagerMsg, len(m.messages))
+	copy(result, m.messages)
+
+	return result
+}
+
+// mockChainResolverRef captures expiring notifications for test verification.
+type mockChainResolverRef struct {
+	t        *testing.T
+	messages []ExpiringNotification
+	mu       sync.Mutex
+}
+
+func newMockChainResolverRef(t *testing.T) *mockChainResolverRef {
+	return &mockChainResolverRef{
+		t:        t,
+		messages: make([]ExpiringNotification, 0),
+	}
+}
+
+func (m *mockChainResolverRef) ID() string {
+	return "mock-chain-resolver"
+}
+
+func (m *mockChainResolverRef) Tell(
+	_ context.Context, msg ExpiringNotification,
+) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, msg)
+}
+
+func (m *mockChainResolverRef) getMessages() []ExpiringNotification {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]ExpiringNotification, len(m.messages))
+	copy(result, m.messages)
+
+	return result
 }
