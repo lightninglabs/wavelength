@@ -1,0 +1,796 @@
+# ARK-06: Wire Protocol and Message Formats
+
+## Abstract
+
+This document specifies the wire protocol for client-operator communication in the Ark protocol. It defines the transport layer, message framing, all request/response message formats, and error handling.
+
+## Status
+
+This specification is a working draft.
+
+## Table of Contents
+
+1. [Introduction](#introduction)
+2. [Transport Layer](#transport-layer)
+3. [Message Framing](#message-framing)
+4. [Message Types](#message-types)
+5. [Operator Information Messages](#operator-information-messages)
+6. [Round Participation Messages](#round-participation-messages)
+7. [OOR Transaction Messages](#oor-transaction-messages)
+8. [Subscription Messages](#subscription-messages)
+9. [Error Handling](#error-handling)
+10. [Protocol Negotiation](#protocol-negotiation)
+
+## Introduction
+
+### Purpose
+
+The wire protocol enables communication between Ark clients and operators. It supports:
+
+- Querying operator capabilities and terms
+- Participating in rounds
+- Executing OOR transactions
+- Subscribing to events
+
+### Design Principles
+
+1. **Simplicity**: Clear message structures with minimal ambiguity.
+2. **Efficiency**: Compact encoding for bandwidth efficiency.
+3. **Extensibility**: Version negotiation and optional fields for future growth.
+4. **Security**: Authentication and encryption at transport layer.
+
+## Transport Layer
+
+### Connection Requirements
+
+1. **TLS**: All connections MUST use TLS 1.3 or later.
+2. **Certificate verification**: Clients SHOULD verify operator certificates.
+3. **Persistent connections**: Connections SHOULD be long-lived for subscriptions.
+
+### Connection Establishment
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as Operator
+
+    C->>O: TCP connection
+    C->>O: TLS handshake
+    O->>C: Server certificate
+    C->>C: Verify certificate
+
+    Note over C,O: Encrypted channel established
+
+    C->>O: GetInfo request
+    O->>C: GetInfo response
+
+    Note over C,O: Protocol version negotiated
+```
+
+### Authentication
+
+#### Operator Authentication
+
+- Operators MUST present a valid TLS certificate.
+- Clients SHOULD verify the certificate against known operator identity.
+- Operators MAY use domain-validated or extended-validation certificates.
+
+#### Client Authentication (Optional)
+
+- Operators MAY require client authentication.
+- Client authentication MAY use:
+  - TLS client certificates
+  - Challenge-response with client pubkey
+  - External authentication tokens
+
+### Recommended Transport
+
+This specification RECOMMENDS gRPC over TLS as the transport layer:
+
+- Well-defined service/method model
+- Built-in streaming support for subscriptions
+- Automatic code generation for multiple languages
+- Established security practices
+
+Alternative transports MAY be used if they satisfy the security requirements.
+
+## Message Framing
+
+### Encoding
+
+Messages SHOULD be encoded using Protocol Buffers (protobuf) for:
+
+- Compact binary representation
+- Strong typing
+- Cross-language support
+- Schema evolution
+
+### Message Structure
+
+All messages follow this general structure:
+
+```protobuf
+message ArkMessage {
+    // Message type identifier
+    uint32 type = 1;
+
+    // Protocol version
+    uint32 version = 2;
+
+    // Request ID for correlation
+    bytes request_id = 3;
+
+    // Payload (one of the message types)
+    oneof payload {
+        GetInfoRequest get_info_request = 10;
+        GetInfoResponse get_info_response = 11;
+        // ... other message types
+    }
+}
+```
+
+### Request/Response Pattern
+
+Most interactions follow request/response:
+
+1. Client sends request with unique `request_id`.
+2. Operator processes request.
+3. Operator returns response with matching `request_id`.
+
+### Streaming Pattern
+
+Subscriptions use server-side streaming:
+
+1. Client sends subscription request.
+2. Operator sends stream of events.
+3. Client cancels subscription when done.
+
+## Message Types
+
+### Message Type Registry
+
+| Type ID | Name | Direction | Description |
+|---------|------|-----------|-------------|
+| 1 | GetInfo | C→O | Query operator information |
+| 2 | GetInfoResponse | O→C | Operator information |
+| 10 | RegisterRound | C→O | Register for round participation |
+| 11 | RegisterRoundResponse | O→C | Registration acknowledgment |
+| 12 | GetRoundState | C→O | Query current round state |
+| 13 | RoundState | O→C | Current round state |
+| 20 | SubmitBoardingRequest | C→O | Submit boarding request |
+| 21 | SubmitLeaveRequest | C→O | Submit leave request |
+| 22 | SubmitBatchSwapRequest | C→O | Submit batch swap request |
+| 23 | RequestResponse | O→C | Generic request acknowledgment |
+| 30 | RoundProposal | O→C | Commitment TX and VTXT path |
+| 31 | SubmitNonces | C→O | Submit MuSig2 nonces |
+| 32 | AggregateNonces | O→C | Aggregated nonces |
+| 33 | SubmitPartialSigs | C→O | Submit partial signatures |
+| 34 | FinalSignatures | O→C | Final VTXT signatures |
+| 35 | SubmitInputSigs | C→O | Submit input signatures |
+| 40 | SubmitArkTx | C→O | Submit OOR transaction |
+| 41 | ArkTxResponse | O→C | OOR transaction response |
+| 42 | SubmitCheckpointSig | C→O | Submit checkpoint signature |
+| 50 | SubscribeRounds | C→O | Subscribe to round events |
+| 51 | RoundEvent | O→C | Round event notification |
+| 52 | SubscribeVTXOs | C→O | Subscribe to VTXO events |
+| 53 | VTXOEvent | O→C | VTXO event notification |
+| 255 | Error | O→C | Error response |
+
+## Operator Information Messages
+
+### GetInfo
+
+Query operator capabilities and current terms.
+
+**Request:**
+```protobuf
+message GetInfoRequest {
+    // Client's supported protocol versions
+    repeated uint32 supported_versions = 1;
+}
+```
+
+**Response:**
+```protobuf
+message GetInfoResponse {
+    // Operator identity
+    bytes operator_pubkey = 1;
+
+    // Protocol versions
+    repeated uint32 supported_versions = 2;
+    uint32 preferred_version = 3;
+
+    // Current operator terms
+    OperatorTerms terms = 4;
+
+    // Operator status
+    OperatorStatus status = 5;
+}
+
+message OperatorTerms {
+    // Timelock parameters
+    uint32 vtxo_csv_delay = 1;        // Blocks
+    uint32 boarding_timeout = 2;       // Blocks
+    uint32 checkpoint_timeout = 3;     // Blocks
+    uint32 batch_expiry_delta = 4;     // Blocks from creation
+
+    // Fee parameters
+    uint64 min_relay_fee_rate = 5;     // sats/vbyte
+    uint64 round_fee_rate = 6;         // sats/vbyte
+    uint64 oor_fee_per_vtxo = 7;       // sats per VTXO
+
+    // Limits
+    uint32 max_vtxos_per_round = 8;
+    uint32 max_vtxt_depth = 9;
+    uint32 vtxt_radix = 10;
+    uint32 connector_radix = 11;
+    uint32 max_oor_chain_depth = 12;
+
+    // Round schedule
+    uint32 round_interval_seconds = 13;
+    uint32 round_timeout_seconds = 14;
+}
+
+message OperatorStatus {
+    // Current activity
+    bool accepting_requests = 1;
+    bytes current_round_id = 2;
+    uint32 current_round_phase = 3;
+
+    // Statistics
+    uint32 active_batches = 4;
+    uint64 total_vtxo_value = 5;
+}
+```
+
+## Round Participation Messages
+
+### RegisterRound
+
+Register intent to participate in the next round.
+
+**Request:**
+```protobuf
+message RegisterRoundRequest {
+    // Client session key for this round
+    bytes session_pubkey = 1;
+
+    // Types of requests the client intends to submit
+    repeated RequestType intended_requests = 2;
+}
+
+enum RequestType {
+    REQUEST_TYPE_BOARDING = 0;
+    REQUEST_TYPE_LEAVE = 1;
+    REQUEST_TYPE_BATCH_SWAP = 2;
+}
+```
+
+**Response:**
+```protobuf
+message RegisterRoundResponse {
+    // Round identifier
+    bytes round_id = 1;
+
+    // Expected timeline
+    uint64 collection_deadline = 2;    // Unix timestamp
+    uint32 expected_expiry_height = 3;
+}
+```
+
+### SubmitBoardingRequest
+
+Submit a boarding request to the current round.
+
+**Request:**
+```protobuf
+message SubmitBoardingRequest {
+    // Round identifier
+    bytes round_id = 1;
+
+    // Boarding UTXO details
+    bytes boarding_txid = 2;
+    uint32 boarding_vout = 3;
+    uint64 boarding_value = 4;
+    bytes boarding_script = 5;
+
+    // Boarding proof
+    bytes boarding_pubkey = 6;
+    bytes ownership_proof = 7;  // Signature proving ownership
+
+    // Requested VTXOs
+    repeated VTXORequest vtxo_requests = 8;
+
+    // Session key for VTXT signing
+    bytes session_pubkey = 9;
+}
+
+message VTXORequest {
+    bytes owner_pubkey = 1;
+    uint64 value = 2;
+}
+```
+
+### SubmitLeaveRequest
+
+Submit a leave (exit) request.
+
+**Request:**
+```protobuf
+message SubmitLeaveRequest {
+    bytes round_id = 1;
+
+    // VTXO being forfeited
+    VTXOReference vtxo_ref = 2;
+    bytes ownership_proof = 3;
+
+    // Destination
+    bytes destination_script = 4;
+    uint64 destination_amount = 5;
+}
+
+message VTXOReference {
+    bytes vtxo_id = 1;  // Hash identifier
+    bytes outpoint_txid = 2;
+    uint32 outpoint_vout = 3;
+    bytes owner_pubkey = 4;
+}
+```
+
+### SubmitBatchSwapRequest
+
+Submit a batch swap request.
+
+**Request:**
+```protobuf
+message SubmitBatchSwapRequest {
+    bytes round_id = 1;
+
+    // VTXOs being forfeited
+    repeated VTXOReference vtxo_refs = 2;
+    repeated bytes ownership_proofs = 3;
+
+    // New VTXOs requested
+    repeated VTXORequest vtxo_requests = 4;
+
+    // Session key for VTXT signing
+    bytes session_pubkey = 5;
+}
+```
+
+### RoundProposal
+
+Operator sends the constructed round to participants.
+
+**Message:**
+```protobuf
+message RoundProposal {
+    bytes round_id = 1;
+
+    // Unsigned commitment transaction
+    bytes commitment_tx = 2;
+
+    // VTXT path for this participant
+    repeated bytes vtxt_transactions = 3;
+
+    // Connector path (for forfeits)
+    repeated bytes connector_transactions = 4;
+
+    // Forfeit transaction template (for leave/swap)
+    bytes forfeit_tx_template = 5;
+
+    // Signing instructions
+    repeated SigningInstruction signing_instructions = 6;
+}
+
+message SigningInstruction {
+    bytes txid = 1;
+    uint32 input_index = 2;
+    bytes sighash = 3;
+    repeated bytes cosigner_pubkeys = 4;
+}
+```
+
+### SubmitNonces
+
+Submit MuSig2 nonces for VTXT signing.
+
+**Request:**
+```protobuf
+message SubmitNoncesRequest {
+    bytes round_id = 1;
+
+    // Nonces for each transaction that needs signing
+    repeated TransactionNonces tx_nonces = 2;
+}
+
+message TransactionNonces {
+    bytes txid = 1;
+    uint32 input_index = 2;
+    bytes pubnonce = 3;  // BIP-327 public nonce
+}
+```
+
+### AggregateNonces
+
+Operator returns aggregated nonces.
+
+**Response:**
+```protobuf
+message AggregateNoncesResponse {
+    bytes round_id = 1;
+
+    repeated AggregatedNonce agg_nonces = 2;
+}
+
+message AggregatedNonce {
+    bytes txid = 1;
+    uint32 input_index = 2;
+    bytes aggregate_pubnonce = 3;
+}
+```
+
+### SubmitPartialSigs
+
+Submit partial signatures for VTXT.
+
+**Request:**
+```protobuf
+message SubmitPartialSigsRequest {
+    bytes round_id = 1;
+
+    repeated TransactionPartialSig partial_sigs = 2;
+}
+
+message TransactionPartialSig {
+    bytes txid = 1;
+    uint32 input_index = 2;
+    bytes partial_sig = 3;  // BIP-327 partial signature
+}
+```
+
+### FinalSignatures
+
+Operator returns final aggregated signatures.
+
+**Response:**
+```protobuf
+message FinalSignaturesResponse {
+    bytes round_id = 1;
+
+    // Fully signed transactions
+    repeated SignedTransaction signed_txs = 2;
+}
+
+message SignedTransaction {
+    bytes txid = 1;
+    bytes signed_tx = 2;  // Complete signed transaction
+}
+```
+
+### SubmitInputSigs
+
+Submit signatures for commitment transaction inputs.
+
+**Request:**
+```protobuf
+message SubmitInputSigsRequest {
+    bytes round_id = 1;
+
+    // For boarding inputs: partial signature
+    repeated BoardingInputSig boarding_sigs = 2;
+
+    // For forfeits: complete signed forfeit transaction
+    repeated SignedTransaction forfeit_txs = 3;
+}
+
+message BoardingInputSig {
+    bytes boarding_outpoint_txid = 1;
+    uint32 boarding_outpoint_vout = 2;
+    bytes partial_sig = 3;
+}
+```
+
+## OOR Transaction Messages
+
+### SubmitArkTx
+
+Submit an OOR/Ark transaction for processing.
+
+**Request:**
+```protobuf
+message SubmitArkTxRequest {
+    // Checkpoint transactions (one per input VTXO)
+    repeated bytes checkpoint_txs = 1;
+
+    // Ark transaction
+    bytes ark_tx = 2;
+
+    // Sender's partial signatures
+    repeated PartialSignature sender_sigs = 3;
+
+    // Sender's public nonces
+    repeated TransactionNonces sender_nonces = 4;
+}
+
+message PartialSignature {
+    bytes txid = 1;
+    uint32 input_index = 2;
+    bytes partial_sig = 3;
+}
+```
+
+**Response:**
+```protobuf
+message SubmitArkTxResponse {
+    // Operator's partial signatures for checkpoints and ark tx
+    repeated PartialSignature operator_sigs = 1;
+
+    // Operator's public nonces
+    repeated TransactionNonces operator_nonces = 2;
+
+    // Status
+    bool accepted = 3;
+
+    // New VTXO details
+    repeated VTXOInfo new_vtxos = 4;
+}
+
+message VTXOInfo {
+    bytes vtxo_id = 1;
+    bytes outpoint_txid = 2;
+    uint32 outpoint_vout = 3;
+    uint64 value = 4;
+    bytes owner_pubkey = 5;
+    uint32 effective_expiry = 6;
+}
+```
+
+### SubmitCheckpointSig
+
+Submit the client's checkpoint signature to finalize OOR.
+
+**Request:**
+```protobuf
+message SubmitCheckpointSigRequest {
+    // Reference to the OOR transaction
+    bytes ark_tx_id = 1;
+
+    // Client's signatures for checkpoint transactions
+    repeated PartialSignature checkpoint_sigs = 2;
+}
+```
+
+**Response:**
+```protobuf
+message SubmitCheckpointSigResponse {
+    bool success = 1;
+
+    // Final VTXO status
+    repeated VTXOInfo finalized_vtxos = 2;
+}
+```
+
+## Subscription Messages
+
+### SubscribeRounds
+
+Subscribe to round lifecycle events.
+
+**Request:**
+```protobuf
+message SubscribeRoundsRequest {
+    // Filter by round (empty = all rounds)
+    bytes round_id = 1;
+
+    // Event types to receive
+    repeated RoundEventType event_types = 2;
+}
+
+enum RoundEventType {
+    ROUND_STARTED = 0;
+    ROUND_COLLECTION_ENDED = 1;
+    ROUND_CONSTRUCTION_COMPLETE = 2;
+    ROUND_SIGNING_STARTED = 3;
+    ROUND_SIGNED = 4;
+    ROUND_BROADCAST = 5;
+    ROUND_CONFIRMED = 6;
+    ROUND_ABORTED = 7;
+}
+```
+
+**Event Stream:**
+```protobuf
+message RoundEvent {
+    bytes round_id = 1;
+    RoundEventType event_type = 2;
+    uint64 timestamp = 3;
+
+    // Event-specific data
+    oneof event_data {
+        RoundStartedData round_started = 10;
+        RoundConfirmedData round_confirmed = 11;
+        RoundAbortedData round_aborted = 12;
+    }
+}
+
+message RoundStartedData {
+    uint64 collection_deadline = 1;
+}
+
+message RoundConfirmedData {
+    bytes commitment_txid = 1;
+    uint32 confirmation_height = 2;
+}
+
+message RoundAbortedData {
+    string reason = 1;
+}
+```
+
+### SubscribeVTXOs
+
+Subscribe to VTXO state changes.
+
+**Request:**
+```protobuf
+message SubscribeVTXOsRequest {
+    // Filter by VTXO IDs (empty = all)
+    repeated bytes vtxo_ids = 1;
+
+    // Filter by owner pubkey
+    bytes owner_pubkey = 2;
+
+    // Event types
+    repeated VTXOEventType event_types = 3;
+}
+
+enum VTXOEventType {
+    VTXO_CREATED = 0;
+    VTXO_LIVE = 1;
+    VTXO_SPENT = 2;
+    VTXO_FORFEIT = 3;
+    VTXO_UNROLLED = 4;
+    VTXO_EXPIRED = 5;
+}
+```
+
+**Event Stream:**
+```protobuf
+message VTXOEvent {
+    bytes vtxo_id = 1;
+    VTXOEventType event_type = 2;
+    uint64 timestamp = 3;
+
+    // VTXO details
+    VTXOInfo vtxo_info = 4;
+
+    // Event-specific data
+    oneof event_data {
+        VTXOCreatedData created = 10;
+        VTXOSpentData spent = 11;
+    }
+}
+
+message VTXOCreatedData {
+    bytes round_id = 1;
+    bool is_confirmed = 2;  // True if from VTXT, false if from OOR
+}
+
+message VTXOSpentData {
+    bytes spending_tx_id = 1;  // Ark TX ID or forfeit
+}
+```
+
+## Error Handling
+
+### Error Response
+
+**Message:**
+```protobuf
+message ErrorResponse {
+    // Request that caused the error
+    bytes request_id = 1;
+
+    // Error code
+    uint32 error_code = 2;
+
+    // Human-readable message
+    string message = 3;
+
+    // Additional details
+    map<string, string> details = 4;
+}
+```
+
+### Error Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| 1000 | UNKNOWN | Unknown error |
+| 1001 | INVALID_REQUEST | Malformed request |
+| 1002 | UNAUTHORIZED | Authentication required |
+| 1003 | FORBIDDEN | Operation not permitted |
+| 1004 | NOT_FOUND | Resource not found |
+| 1005 | TIMEOUT | Operation timed out |
+| 1006 | INTERNAL_ERROR | Server internal error |
+| 2000 | ROUND_NOT_ACTIVE | No active round |
+| 2001 | ROUND_PHASE_INVALID | Wrong phase for operation |
+| 2002 | ROUND_FULL | Round capacity reached |
+| 2003 | ROUND_ABORTED | Round was aborted |
+| 3000 | VTXO_NOT_FOUND | VTXO doesn't exist |
+| 3001 | VTXO_LOCKED | VTXO is locked |
+| 3002 | VTXO_SPENT | VTXO already spent |
+| 3003 | VTXO_EXPIRED | VTXO batch expired |
+| 3004 | VTXO_INVALID_PROOF | Invalid ownership proof |
+| 4000 | BOARDING_NOT_FOUND | Boarding UTXO not found |
+| 4001 | BOARDING_UNCONFIRMED | Insufficient confirmations |
+| 4002 | BOARDING_INVALID_SCRIPT | Invalid boarding script |
+| 5000 | SIGNATURE_INVALID | Invalid signature |
+| 5001 | NONCE_INVALID | Invalid nonce |
+| 5002 | VALUE_MISMATCH | Value doesn't match |
+| 6000 | POLICY_VIOLATION | Policy limit exceeded |
+| 6001 | FEE_INSUFFICIENT | Insufficient fee |
+
+### Error Handling Recommendations
+
+Clients SHOULD:
+
+1. **Retry transient errors**: Network timeouts, internal errors.
+2. **Don't retry permanent errors**: Invalid requests, not found.
+3. **Backoff on rate limits**: Exponential backoff for 429-style errors.
+4. **Log errors**: Maintain logs for debugging.
+
+## Protocol Negotiation
+
+### Version Negotiation
+
+On connection:
+
+1. Client sends `GetInfo` with supported versions.
+2. Operator returns supported and preferred versions.
+3. Client selects highest common version.
+4. All subsequent messages use negotiated version.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant O as Operator
+
+    C->>O: GetInfo(versions=[1,2,3])
+    O->>C: GetInfoResponse(supported=[1,2], preferred=2)
+    Note over C: Select version 2
+    C->>O: All messages use version 2
+```
+
+### Feature Negotiation
+
+Operators MAY advertise optional features:
+
+```protobuf
+message OperatorFeatures {
+    bool supports_cross_batch_oor = 1;
+    bool supports_client_auth = 2;
+    bool supports_instant_finality = 3;
+    // Future extensions
+}
+```
+
+Clients MUST NOT use features not advertised by the operator.
+
+## References
+
+1. Protocol Buffers - https://developers.google.com/protocol-buffers
+2. gRPC - https://grpc.io/
+3. BIP-327: MuSig2 - https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
+4. ARK-00: Protocol Overview and Terminology
+5. ARK-02: Round Lifecycle Protocol
+6. ARK-03: Out-of-Round Transactions
+
+## Authors
+
+This specification was authored by the Lightning Labs team.
+
+## Copyright
+
+This document is licensed under CC0.
