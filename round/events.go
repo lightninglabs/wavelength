@@ -330,7 +330,6 @@ type RefreshVTXORequest struct {
 }
 
 func (e *RefreshVTXORequest) clientEventSealed() {}
-func (e *RefreshVTXORequest) clientMsgSealed()   {}
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (e *RefreshVTXORequest) RoundReceivable() {}
@@ -360,7 +359,6 @@ type ForfeitSignatureResponse struct {
 }
 
 func (e *ForfeitSignatureResponse) clientEventSealed() {}
-func (e *ForfeitSignatureResponse) clientMsgSealed()   {}
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (e *ForfeitSignatureResponse) RoundReceivable() {}

@@ -5,15 +5,16 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// ClientMsg is the sealed interface for all messages that can be sent to a
-// RoundClientActor.
+// ClientMsg embeds actormsg.RoundReceivable for messages that can be sent to a
+// RoundClientActor. Both round-internal messages and messages from other actors
+// (vtxo, wallet) implement the RoundReceivable marker method.
 type ClientMsg interface {
-	actor.Message
-	clientMsgSealed()
+	actormsg.RoundReceivable
 }
 
 // ClientResp is the sealed interface for all response messages from a
@@ -39,7 +40,8 @@ func (m *WalletBoardingConfirmed) MessageType() string {
 	return "WalletBoardingConfirmed"
 }
 
-func (m *WalletBoardingConfirmed) clientMsgSealed() {}
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *WalletBoardingConfirmed) RoundReceivable() {}
 
 // ServerMessageNotification delivers a server FSM outbox message to the client.
 type ServerMessageNotification struct {
@@ -54,7 +56,8 @@ func (m *ServerMessageNotification) MessageType() string {
 	return "ServerMessageNotification"
 }
 
-func (m *ServerMessageNotification) clientMsgSealed() {}
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *ServerMessageNotification) RoundReceivable() {}
 
 // ServerMessageResponse acknowledges receipt of a server message.
 type ServerMessageResponse struct {
@@ -79,7 +82,8 @@ func (m *GetClientStateRequest) MessageType() string {
 	return "GetClientStateRequest"
 }
 
-func (m *GetClientStateRequest) clientMsgSealed() {}
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *GetClientStateRequest) RoundReceivable() {}
 
 // FSMStateInfo contains information about a single FSM's current state.
 type FSMStateInfo struct {
@@ -125,7 +129,8 @@ func (m *CancelRoundRequest) MessageType() string {
 	return "CancelRoundRequest"
 }
 
-func (m *CancelRoundRequest) clientMsgSealed() {}
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *CancelRoundRequest) RoundReceivable() {}
 
 // CancelRoundResponse confirms cancellation.
 type CancelRoundResponse struct {
@@ -154,8 +159,8 @@ func (m *RegisterVTXORequestsRequest) MessageType() string {
 	return "RegisterVTXORequestsRequest"
 }
 
-// clientMsgSealed marks this as a client message.
-func (m *RegisterVTXORequestsRequest) clientMsgSealed() {}
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *RegisterVTXORequestsRequest) RoundReceivable() {}
 
 // RegisterVTXORequestsResponse acknowledges the request.
 type RegisterVTXORequestsResponse struct {
@@ -199,11 +204,8 @@ func (m *ConfirmationEvent) MessageType() string {
 	return "ConfirmationEvent"
 }
 
-func (m *ConfirmationEvent) clientMsgSealed() {}
-
-// ============================================================================
-// Server Actor Messages
-// ============================================================================
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *ConfirmationEvent) RoundReceivable() {}
 
 // ServerMsg is the sealed interface for all messages that can be sent to a
 // RoundServerActor.
