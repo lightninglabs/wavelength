@@ -1,9 +1,12 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,13 +32,13 @@ type SubmitNoncesRequest struct {
 	actor.BaseMessage
 
 	// RoundID identifies the round.
-	RoundID string
+	RoundID RoundID
 
-	// Nonces maps transaction IDs to signing keys to their MuSig2 public
-	// nonces. The outer map is keyed by transaction ID, and the inner map
-	// is keyed by signing key. Each signing key (VTXO) contributes its own
-	// nonce for each transaction in its path.
-	Nonces map[chainhash.Hash]map[SignerKey][]byte
+	// Nonces maps signing keys to their per-transaction MuSig2 public
+	// nonces. The outer map is keyed by signing key (one per VTXO), and
+	// the inner map is keyed by transaction ID. This structure matches
+	// the server's expected format where nonces are grouped by cosigner.
+	Nonces map[SignerKey]map[tree.TxID]tree.Musig2PubNonce
 }
 
 func (m *SubmitNoncesRequest) clientOutMsgSealed() {}
@@ -46,11 +49,13 @@ type SubmitPartialSigRequest struct {
 	actor.BaseMessage
 
 	// RoundID identifies the round.
-	RoundID string
+	RoundID RoundID
 
-	// PartialSigs maps transaction IDs to their MuSig2 partial signatures.
-	// Each entry corresponds to a transaction in the client's VTXT path.
-	PartialSigs map[chainhash.Hash][]byte
+	// Signatures maps signing keys to their per-transaction MuSig2 partial
+	// signatures. The outer map is keyed by signing key (one per VTXO), and
+	// the inner map is keyed by transaction ID. This structure matches the
+	// server's expected format where signatures are grouped by cosigner.
+	Signatures map[SignerKey]map[tree.TxID]*musig2.PartialSignature
 }
 
 func (m *SubmitPartialSigRequest) clientOutMsgSealed() {}
@@ -61,11 +66,12 @@ type SubmitForfeitSigRequest struct {
 	actor.BaseMessage
 
 	// RoundID identifies the round.
-	RoundID string
+	RoundID RoundID
 
-	// ForfeitSigs contains the signature for the boarding UTXO input in the
-	// commitment transaction.
-	ForfeitSigs [][]byte
+	// Signatures contains structured boarding input signatures. Each
+	// signature includes the input index, outpoint, and schnorr signature
+	// for the collaborative tapscript spend path.
+	Signatures []*types.BoardingInputSignature
 }
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
@@ -158,7 +164,7 @@ type RoundCompletedNotification struct {
 	actor.BaseMessage
 
 	// RoundID identifies the completed round.
-	RoundID string
+	RoundID RoundID
 
 	// TxID is the confirmed commitment transaction ID.
 	TxID chainhash.Hash
@@ -178,7 +184,7 @@ type RoundCheckpointedNotification struct {
 	actor.BaseMessage
 
 	// RoundID identifies the checkpointed round to migrate.
-	RoundID string
+	RoundID RoundID
 }
 
 func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
@@ -190,9 +196,9 @@ func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
 type RoundFailedNotification struct {
 	actor.BaseMessage
 
-	// RoundID identifies the failed round (if known). Empty if the failure
-	// occurred before a round was assigned.
-	RoundID string
+	// RoundID identifies the failed round. None if the failure occurred
+	// before a round was assigned.
+	RoundID fn.Option[RoundID]
 
 	// Reason is a human-readable description of the failure.
 	Reason string
