@@ -2,12 +2,15 @@ package round
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -46,12 +49,48 @@ type ClientStateMachineCfg = protofsm.StateMachineCfg[
 // Musig2PubNonce is an alias for the MuSig2 public nonce type from lib.
 type Musig2PubNonce = tree.Musig2PubNonce
 
-// RoundID is a type alias for round identifiers.
-type RoundID = string
+// RoundID is a unique identifier for rounds, using UUID v7 for time-ordering.
+type RoundID uuid.UUID
+
+// NewRoundID generates a new unique RoundID using cryptographic randomness.
+func NewRoundID() (RoundID, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return RoundID{}, err
+	}
+
+	return RoundID(id), nil
+}
+
+// String returns the full string representation of the RoundID.
+func (id RoundID) String() string {
+	return uuid.UUID(id).String()
+}
+
+// LogPrefix returns a short string representation of the RoundID for logging.
+// It uses the last 4 bytes (32 bits) of the UUIDv7, which are high-entropy
+// random bits.
+func (id RoundID) LogPrefix() string {
+	return fmt.Sprintf("round(%v)", hex.EncodeToString(id[12:16]))
+}
+
+// ParseRoundID parses a RoundID from its string representation.
+func ParseRoundID(s string) (RoundID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return RoundID{}, err
+	}
+
+	return RoundID(id), nil
+}
 
 // SignerKey is the 33-byte compressed public key used to identify a signer
 // in MuSig2 sessions and client tree mappings.
 type SignerKey = [33]byte
+
+// SigningKeyHex is an alias for SignerKey, compatible with the server's
+// route.Vertex type which is also a 33-byte compressed public key.
+type SigningKeyHex = SignerKey
 
 // NewSignerKey creates a SignerKey from a public key.
 func NewSignerKey(pk *btcec.PublicKey) SignerKey {
@@ -128,7 +167,7 @@ type BoardingIntent struct {
 
 	// RoundID is the identifier of the round this intent was assigned to.
 	// None until the client joins a round.
-	RoundID fn.Option[string]
+	RoundID fn.Option[RoundID]
 }
 
 // ConfInfo contains chain information about when a round's commitment
@@ -148,7 +187,7 @@ type ConfInfo struct {
 type Round struct {
 	// RoundID is the unique identifier assigned by the server when the
 	// client joins this round.
-	RoundID string
+	RoundID RoundID
 
 	// ConfInfo contains chain information about when the round's commitment
 	// transaction was confirmed. None until the commitment tx is confirmed
@@ -160,12 +199,12 @@ type Round struct {
 	// until the server constructs it.
 	CommitmentTx fn.Option[*psbt.Packet]
 
-	// VTXTTree is the client's extracted sub-tree from the Virtual
-	// Transaction Tree. This contains only the minimal path needed to
-	// reach the client's VTXO leaves, not the full tree. This is ephemeral
-	// and only kept in memory during signing. After confirmation, only
-	// per-VTXO paths are persisted for unilateral exit.
-	VTXTTree fn.Option[*tree.Tree]
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	// Each path contains only the minimal tree needed to reach the client's
+	// VTXO leaves. This is ephemeral and only kept in memory during
+	// signing. After confirmation, only per-VTXO paths are persisted for
+	// unilateral exit.
+	VTXOTreePaths fn.Option[map[int]*tree.Tree]
 
 	// BoardingIntents contains all boarding intents participating in this
 	// round.
@@ -201,7 +240,7 @@ type RoundStore interface {
 	// together to ensure consistency.
 	//
 	// Returns error if round doesn't exist.
-	FetchState(ctx context.Context, roundID string) (
+	FetchState(ctx context.Context, roundID RoundID) (
 		*Round, ClientState, error,
 	)
 
@@ -220,7 +259,7 @@ type RoundStore interface {
 	// contains the block height and hash at which the commitment tx was
 	// confirmed.
 	FinalizeRound(
-		ctx context.Context, roundID string, txid chainhash.Hash,
+		ctx context.Context, roundID RoundID, txid chainhash.Hash,
 		confInfo ConfInfo,
 	) error
 }
