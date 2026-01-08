@@ -112,6 +112,15 @@ type VTXOStatusUpdate struct {
 
 	// NewStatus is the new status to set.
 	NewStatus VTXOStatus
+
+	// RoundID is the round ID for forfeiting state transitions. Empty for
+	// other status updates.
+	RoundID string
+
+	// ForfeitTx is the signed forfeit transaction for forfeiting state
+	// transitions. Nil for other status updates. Persisted for crash
+	// recovery.
+	ForfeitTx *wire.MsgTx
 }
 
 func (m *VTXOStatusUpdate) vtxoOutMsgSealed() {}
