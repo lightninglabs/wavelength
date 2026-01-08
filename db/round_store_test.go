@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -14,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -25,6 +27,14 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
+
+// testRoundIDDB creates a deterministic RoundID from a string seed for tests.
+func testRoundIDDB(seed string) round.RoundID {
+	h := chainhash.HashH([]byte(seed))
+	id, _ := uuid.FromBytes(h[:16])
+
+	return round.RoundID(id)
+}
 
 // newRoundStoreForTest creates a new RoundPersistenceStore for testing.
 func newRoundStoreForTest(t *testing.T) (*RoundPersistenceStore, *BaseDB) {
@@ -47,7 +57,7 @@ func newRoundStoreForTest(t *testing.T) (*RoundPersistenceStore, *BaseDB) {
 }
 
 // createTestRound creates a test round with minimal data.
-func createTestRound(t *testing.T, roundID string) *round.Round {
+func createTestRound(t *testing.T, roundID round.RoundID) *round.Round {
 	// Create a simple commitment transaction as a PSBT.
 	tx := wire.NewMsgTx(2)
 	tx.AddTxIn(&wire.TxIn{
@@ -91,15 +101,15 @@ func createTestRound(t *testing.T, roundID string) *round.Round {
 	}
 
 	return &round.Round{
-		RoundID:      roundID,
-		CommitmentTx: fn.Some(commitTx),
-		VTXTTree:     fn.Some(vtxtTree),
+		RoundID:       roundID,
+		CommitmentTx:  fn.Some(commitTx),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
 	}
 }
 
 // createTestClientVTXO creates a test ClientVTXO.
 func createTestClientVTXO(
-	t *testing.T, roundID string, idx int,
+	t *testing.T, roundID round.RoundID, idx int,
 ) *round.ClientVTXO {
 
 	privKey, err := btcec.NewPrivateKey()
@@ -136,7 +146,7 @@ func createTestClientVTXO(
 				Children:  make(map[uint32]*tree.Node),
 			},
 		},
-		RoundID: fn.Some(roundID),
+		RoundID: fn.Some[round.RoundID](roundID),
 	}
 }
 
@@ -148,7 +158,7 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	ctx := t.Context()
 
 	// Create a test round.
-	testRound := createTestRound(t, "test-round-1")
+	testRound := createTestRound(t, testRoundIDDB("test-round-1"))
 
 	// Create a test FSM state.
 	state := &round.InputSigSentState{
@@ -158,8 +168,8 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
 		state.CommitmentTx = packet
 	})
-	testRound.VTXTTree.WhenSome(func(t *tree.Tree) {
-		state.VTXTTree = t
+	testRound.VTXOTreePaths.WhenSome(func(treePaths map[int]*tree.Tree) {
+		state.VTXOTreePaths = treePaths
 	})
 
 	// Commit the state.
@@ -208,7 +218,7 @@ func TestRoundStoreLookupByTxid(t *testing.T) {
 	ctx := t.Context()
 
 	// Create and commit a test round.
-	testRound := createTestRound(t, "test-round-txid")
+	testRound := createTestRound(t, testRoundIDDB("test-round-txid"))
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
@@ -239,7 +249,7 @@ func TestRoundStoreListActiveRounds(t *testing.T) {
 
 	// Create and commit multiple rounds.
 	for i := 0; i < 3; i++ {
-		roundID := "test-round-" + string(rune('a'+i))
+		roundID := testRoundIDDB("test-round-" + string(rune('a'+i)))
 		testRound := createTestRound(t, roundID)
 		state := &round.InputSigSentState{
 			RoundID:     testRound.RoundID,
@@ -264,7 +274,7 @@ func TestRoundStoreFinalizeRound(t *testing.T) {
 	ctx := t.Context()
 
 	// Create and commit a test round.
-	testRound := createTestRound(t, "test-round-finalize")
+	testRound := createTestRound(t, testRoundIDDB("test-round-finalize"))
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
@@ -312,7 +322,7 @@ func TestVTXOStoreSaveAndList(t *testing.T) {
 	ctx := t.Context()
 
 	// First, create a round to satisfy foreign key constraint.
-	roundID := "test-round-vtxo"
+	roundID := testRoundIDDB("test-round-vtxo")
 	testRound := createTestRound(t, roundID)
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
@@ -352,7 +362,7 @@ func TestVTXOStoreGetVTXO(t *testing.T) {
 	ctx := t.Context()
 
 	// First, create a round to satisfy foreign key constraint.
-	roundID := "test-round-get"
+	roundID := testRoundIDDB("test-round-get")
 	testRound := createTestRound(t, roundID)
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
@@ -382,7 +392,7 @@ func TestVTXOStoreMarkSpent(t *testing.T) {
 	ctx := t.Context()
 
 	// First, create a round to satisfy foreign key constraint.
-	roundID := "test-round-spent"
+	roundID := testRoundIDDB("test-round-spent")
 	testRound := createTestRound(t, roundID)
 	state := &round.InputSigSentState{
 		RoundID:     testRound.RoundID,
@@ -422,7 +432,7 @@ type boardingIntentFixture struct {
 	roundIntent   round.BoardingIntent
 	outpoint      wire.OutPoint
 	pkScript      []byte
-	inputSig      []byte
+	inputSig      *types.BoardingInputSignature
 	clientTreeKey round.SignerKey
 	clientTree    *tree.Tree
 }
@@ -431,7 +441,7 @@ type boardingIntentFixture struct {
 // all wallet-layer dependencies. The index parameter is used to generate unique
 // keys and outpoints for each fixture.
 func createBoardingIntentFixture(
-	t *testing.T, roundID string, idx int,
+	t *testing.T, roundID round.RoundID, idx int,
 ) *boardingIntentFixture {
 
 	// Create unique keys for this intent.
@@ -544,11 +554,20 @@ func createBoardingIntentFixture(
 		BoardingIntent:  walletIntent,
 		BoardingRequest: boardingRequest,
 		VtxoTemplate:    vtxoTemplates,
-		RoundID:         fn.Some(roundID),
+		RoundID:         fn.Some[round.RoundID](roundID),
 	}
 
-	// Create input signature using bytes.Repeat with unique byte.
-	inputSig := bytes.Repeat([]byte{byte(0xab + idx)}, 64)
+	// Create input signature as a BoardingInputSignature.
+	var sigBytes [64]byte
+	copy(sigBytes[:], bytes.Repeat([]byte{byte(0xab + idx)}, 64))
+	sig, err := schnorr.ParseSignature(sigBytes[:])
+	require.NoError(t, err)
+
+	inputSig := &types.BoardingInputSignature{
+		InputIndex:      idx,
+		Outpoint:        intentOutpoint,
+		ClientSignature: sig,
+	}
 
 	// Create client tree using the actual tree builder with multiple
 	// leaves.
@@ -601,7 +620,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	t.Parallel()
 
 	const numIntents = 2
-	const roundID = "test-round-boarding"
+	roundID := testRoundIDDB("test-round-boarding")
 
 	ctx := t.Context()
 	roundStore, db := newRoundStoreForTest(t)
@@ -641,7 +660,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Build the round's boarding group from the fixtures.
 	roundIntents := make([]round.BoardingIntent, numIntents)
-	inputSigs := make([][]byte, numIntents)
+	inputSigs := make([]*types.BoardingInputSignature, numIntents)
 	clientTrees := make(map[round.SignerKey]*tree.Tree)
 	for i, f := range fixtures {
 		roundIntents[i] = f.roundIntent
@@ -691,18 +710,18 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	testRound := &round.Round{
 		RoundID:         roundID,
 		CommitmentTx:    fn.Some(commitTx),
-		VTXTTree:        fn.Some(vtxtTree),
+		VTXOTreePaths:   fn.Some(map[int]*tree.Tree{0: vtxtTree}),
 		BoardingIntents: roundIntents,
 	}
 
 	// Create the FSM state with all intents, signatures, and client trees.
 	state := &round.InputSigSentState{
-		RoundID:      roundID,
-		CommitmentTx: commitTx,
-		VTXTTree:     vtxtTree,
-		Intents:      roundIntents,
-		ClientTrees:  clientTrees,
-		InputSigs:    inputSigs,
+		RoundID:       roundID,
+		CommitmentTx:  commitTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents:       roundIntents,
+		ClientTrees:   clientTrees,
+		InputSigs:     inputSigs,
 	}
 
 	// Commit the state.
@@ -773,7 +792,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		// Query the stored txids from the database.
 		storedTxids, err := db.GetClientTreeTxids(
 			ctx, sqlc.GetClientTreeTxidsParams{
-				RoundID:   roundID,
+				RoundID:   roundID.String(),
 				ClientKey: f.clientTreeKey[:],
 			},
 		)
@@ -817,7 +836,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 				ctx, expected.Txid[:],
 			)
 			require.NoError(t, err)
-			require.Equal(t, roundID, treeByTxid.RoundID)
+			require.Equal(t, roundID.String(), treeByTxid.RoundID)
 			require.Equal(t, f.clientTreeKey[:],
 				treeByTxid.ClientKey)
 		}
