@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -159,9 +160,43 @@ type CommitmentTxBuilt struct {
 	// sufficient for the client to verify their VTXOs and perform
 	// unilateral exit if needed.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// ForfeitMappings maps each VTXO outpoint to its connector leaf info.
+	// This allows VTXO actors to find their connector output and construct
+	// the forfeit transaction. Only set when refresh requests are present.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
+
+	// ServerForfeitPkScript is the operator's taproot script where all
+	// forfeited VTXO values are paid. The forfeit transaction output uses
+	// this script.
+	ServerForfeitPkScript []byte
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}
+
+// ConnectorLeafInfo contains the information needed to construct a forfeit
+// transaction for a specific VTXO. The forfeit tx spends the VTXO and its
+// connector output, paying the VTXO value to the operator's forfeit address.
+type ConnectorLeafInfo struct {
+	// LeafIndex is the position of this connector in the connector tree.
+	LeafIndex int
+
+	// ConnectorOutpoint is the outpoint of the connector output in the
+	// commitment transaction that this forfeit tx must spend.
+	ConnectorOutpoint wire.OutPoint
+
+	// ConnectorPkScript is the scriptPubKey of the connector output.
+	ConnectorPkScript []byte
+
+	// ConnectorAmount is the value of the connector output in satoshis.
+	// Connectors typically have minimal value (dust limit).
+	ConnectorAmount int64
+
+	// VTXOAmount is the value of the VTXO being forfeited. The forfeit tx's
+	// penalty output must equal this amount. This field enables validation
+	// that prevents value theft by ensuring the correct amount is forfeited.
+	VTXOAmount btcutil.Amount
+}
 
 // CommitmentTxValidated is emitted after the client successfully validates
 // the commitment transaction and VTXT path. This is a critical security
