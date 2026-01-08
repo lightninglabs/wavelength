@@ -2,6 +2,7 @@ package round
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -82,7 +83,8 @@ type RegistrationRequested struct {
 	Intents []BoardingIntent
 
 	// RoundID allows resuming a previously assigned round when rejoining.
-	RoundID string
+	// None for new registrations.
+	RoundID fn.Option[RoundID]
 }
 
 func (e *RegistrationRequested) clientEventSealed() {}
@@ -92,32 +94,33 @@ func (e *RegistrationRequested) clientEventSealed() {}
 // server FSM.
 type RoundJoined struct {
 	// RoundID is the unique identifier for the round.
-	RoundID string
+	RoundID RoundID
 }
 
 func (e *RoundJoined) clientEventSealed() {}
 
 // CommitmentTxBuilt is emitted when the server sends the commitment
-// transaction and VTXT path to the client. This event arrives via the Outbox
+// transaction and VTXT paths to the client. This event arrives via the Outbox
 // from the server FSM after building the transaction that commits all boarding
 // UTXOs.
 type CommitmentTxBuilt struct {
 	// RoundID identifies which round this commitment transaction belongs
 	// to.
-	RoundID string
+	RoundID RoundID
 
 	// Tx is the unsigned commitment transaction as a PSBT. Using PSBT
 	// allows the server to include WitnessUtxo for all inputs, which is
 	// required for correct Taproot sighash computation (BIP341).
 	Tx *psbt.Packet
 
-	// VTXTTree contains the client's extracted sub-tree from the virtual
-	// transaction tree. The server sends only the minimal path containing
-	// the transactions needed to reach this client's VTXO leaves, not the
-	// full tree (which may contain hundreds of transactions for all
-	// participants). This sub-tree is sufficient for the client to verify
-	// their VTXOs and perform unilateral exit if needed.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment transaction output indices to the
+	// client's extracted sub-tree from the virtual transaction tree. The
+	// server sends only the minimal paths containing transactions needed to
+	// reach this client's VTXO leaves, not the full tree (which may contain
+	// hundreds of transactions for all participants). Each sub-tree is
+	// sufficient for the client to verify their VTXOs and perform
+	// unilateral exit if needed.
+	VTXOTreePaths map[int]*tree.Tree
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}
@@ -149,12 +152,12 @@ func (e *GenerateNonces) clientEventSealed() {}
 // the next phase of the MuSig2 signing protocol.
 type NoncesAggregated struct {
 	// RoundID identifies which round these aggregated nonces belong to.
-	RoundID string
+	RoundID RoundID
 
-	// AggregatedNonces maps transaction IDs to their aggregated MuSig2
+	// AggNonces maps transaction IDs to their aggregated MuSig2 public
 	// nonces. Each entry corresponds to a transaction in the VTXT that
 	// requires signing.
-	AggregatedNonces map[chainhash.Hash][]byte
+	AggNonces map[tree.TxID]tree.Musig2PubNonce
 }
 
 func (e *NoncesAggregated) clientEventSealed() {}
@@ -180,19 +183,24 @@ func (e *GeneratePartialSigs) clientEventSealed() {}
 // signatures for each transaction in the VTXT.
 type OperatorSigned struct {
 	// RoundID identifies which round these signatures belong to.
-	RoundID string
+	RoundID RoundID
 
-	// Signatures maps transaction IDs to their complete aggregated Schnorr
+	// AggSigs maps transaction IDs to their complete aggregated Schnorr
 	// signatures. Each entry corresponds to a transaction in the VTXT.
-	Signatures map[chainhash.Hash][]byte
-
-	// SignedVTXT optionally contains the fully signed virtual transaction
-	// tree in serialized form. This may be omitted and reconstructed from
-	// the signatures if needed.
-	SignedVTXT []byte
+	AggSigs map[tree.TxID]*schnorr.Signature
 }
 
 func (e *OperatorSigned) clientEventSealed() {}
+
+// AwaitingBoardingSigs is emitted when the server signals it is ready to
+// receive boarding signatures from the client. This occurs after VTXO nonce
+// aggregation and partial signature collection phases complete.
+type AwaitingBoardingSigs struct {
+	// RoundID identifies which round is awaiting boarding signatures.
+	RoundID RoundID
+}
+
+func (e *AwaitingBoardingSigs) clientEventSealed() {}
 
 // BoardingConfirmed is emitted when the commitment transaction has been
 // confirmed on-chain with sufficient confirmations.
