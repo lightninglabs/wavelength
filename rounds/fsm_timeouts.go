@@ -9,9 +9,9 @@ const (
 	// TimeoutPhaseRegistration is the phase for registration timeouts.
 	TimeoutPhaseRegistration TimeoutPhase = "registration"
 
-	// TimeoutPhaseBoardingSigs is the phase for boarding signature
+	// TimeoutPhaseInputSigs is the phase for input signature
 	// collection timeouts.
-	TimeoutPhaseBoardingSigs TimeoutPhase = "boarding-signatures"
+	TimeoutPhaseInputSigs TimeoutPhase = "boarding-signatures"
 
 	// TimeoutPhaseVTXONonces is the phase for VTXO nonce collection
 	// timeouts.

@@ -1073,7 +1073,7 @@ type clientMuSigSession struct {
 // real signatures for the given boarding inputs. The client signs each input
 // using the tapscript collaborative spend path.
 func (c *clientHarness) createBoardingSignaturesEvent(
-	state *AwaitingBoardingSigsState) *ClientBoardingSignaturesEvent {
+	state *AwaitingInputSigsState) *ClientBoardingSignaturesEvent {
 
 	c.t.Helper()
 

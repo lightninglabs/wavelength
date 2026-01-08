@@ -81,31 +81,31 @@ func (c *ClientSuccessResp) ToProto() proto.Message {
 // OutboxEvent interface.
 func (c *ClientSuccessResp) outboxEventSealed() {}
 
-// ClientAwaitingBoardingSigsResp is an outbox message sent to clients with
+// ClientAwaitingInputSigsResp is an outbox message sent to clients with
 // boarding inputs when the server is ready to receive their boarding
 // signatures. This is sent separately from ClientBatchInfo because there may
 // be VTXO signing phases between batch construction and boarding signature
 // collection.
-type ClientAwaitingBoardingSigsResp struct {
+type ClientAwaitingInputSigsResp struct {
 	// Client is the identifier of the client to notify.
 	Client clientconn.ClientID
 }
 
 // ClientID returns the identifier of the client to send the message to.
-func (c *ClientAwaitingBoardingSigsResp) ClientID() clientconn.ClientID {
+func (c *ClientAwaitingInputSigsResp) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientAwaitingBoardingSigsResp to a protobuf message.
+// ToProto converts ClientAwaitingInputSigsResp to a protobuf message.
 // TODO: Implement actual proto conversion once proto definitions are
 // available.
-func (c *ClientAwaitingBoardingSigsResp) ToProto() proto.Message {
+func (c *ClientAwaitingInputSigsResp) ToProto() proto.Message {
 	return nil
 }
 
-// outboxEventSealed marks ClientAwaitingBoardingSigsResp as implementing the
+// outboxEventSealed marks ClientAwaitingInputSigsResp as implementing the
 // sealed OutboxEvent interface.
-func (c *ClientAwaitingBoardingSigsResp) outboxEventSealed() {}
+func (c *ClientAwaitingInputSigsResp) outboxEventSealed() {}
 
 // ClientVTXOAggNonces is an outbox message sent to clients with VTXOs after all
 // nonces have been collected and aggregated. The client uses these aggregated
@@ -204,7 +204,7 @@ func newStartTimeoutReq(env *Environment, phase TimeoutPhase) *StartTimeoutReq {
 	case TimeoutPhaseRegistration:
 		duration = env.Terms.RegistrationTimeout
 
-	case TimeoutPhaseBoardingSigs, TimeoutPhaseVTXONonces,
+	case TimeoutPhaseInputSigs, TimeoutPhaseVTXONonces,
 		TimeoutPhaseVTXOSignatures:
 
 		duration = env.Terms.SignatureCollectionTimeout

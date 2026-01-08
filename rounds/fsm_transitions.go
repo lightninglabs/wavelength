@@ -321,7 +321,7 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 
 // handlePrepareClientNotifications prepares client notifications with batch
 // data and transitions to either AwaitingVTXONoncesState (if VTXOs exist) or
-// AwaitingBoardingSigsState (if no VTXOs).
+// AwaitingInputSigsState (if no VTXOs).
 func (s *BatchBuiltState) handlePrepareClientNotifications(
 	env *Environment) (*StateTransition, error) {
 
@@ -373,7 +373,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 	}
 
 	// No VTXOs - go directly to boarding signatures.
-	return s.transitionToBoardingSigs(env, outboxMsgs)
+	return s.transitionToInputSigs(env, outboxMsgs)
 }
 
 // transitionToVTXONonces creates TreeSignCoordinators for each VTXO tree and
@@ -421,9 +421,9 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 	}, nil
 }
 
-// transitionToBoardingSigs transitions directly to AwaitingBoardingSigsState
+// transitionToInputSigs transitions directly to AwaitingInputSigsState
 // when there are no VTXOs in the batch.
-func (s *BatchBuiltState) transitionToBoardingSigs(env *Environment,
+func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
 	outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
 	// Notify clients with boarding inputs that we're ready for their
@@ -435,27 +435,27 @@ func (s *BatchBuiltState) transitionToBoardingSigs(env *Environment,
 			continue
 		}
 
-		outboxMsgs = append(outboxMsgs, &ClientAwaitingBoardingSigsResp{
+		outboxMsgs = append(outboxMsgs, &ClientAwaitingInputSigsResp{
 			Client: clientID,
 		})
 	}
 
-	// Add timeout for boarding signature collection.
+	// Add timeout for input signature collection.
 	outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
 		RoundID:  env.RoundID,
-		Phase:    TimeoutPhaseBoardingSigs,
+		Phase:    TimeoutPhaseInputSigs,
 		Duration: env.Terms.SignatureCollectionTimeout,
 	})
 
 	return &StateTransition{
-		NextState: &AwaitingBoardingSigsState{
+		NextState: &AwaitingInputSigsState{
 			ClientRegistrations: s.ClientRegistrations,
 			PSBT:                s.PSBT,
 			VTXOTrees:           s.VTXOTrees,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
-			CollectedSignatures: make(BoardingSigsMap),
+			CollectedSignatures: make(InputSigsMap),
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -512,25 +512,25 @@ func buildFailureTransition(env *Environment,
 	}
 }
 
-// ProcessEvent handles events in the AwaitingBoardingSigsState. This
+// ProcessEvent handles events in the AwaitingInputSigsState. This
 // state waits for clients to submit their boarding input signatures.
-func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
+func (s *AwaitingInputSigsState) ProcessEvent(_ context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ClientBoardingSignaturesEvent:
 		return s.handleBoardingSignatures(evt, env)
 
-	case *BoardingSignaturesTimeoutEvent:
+	case *InputSignaturesTimeoutEvent:
 		// Timeout expired - fail the round.
-		reason := "boarding signature collection timeout"
+		reason := "input signature collection timeout"
 
 		return buildFailureTransition(
 			env, s.ClientRegistrations, reason,
 		), nil
 
 	default:
-		return unexpectedEvent(s, "awaiting-boarding-sigs", event, env),
+		return unexpectedEvent(s, "awaiting-input-sigs", event, env),
 			nil
 	}
 }
@@ -540,7 +540,7 @@ func (s *AwaitingBoardingSigsState) ProcessEvent(_ context.Context,
 // collaborative spend path, stores them for later use, and tracks the client
 // as having submitted. When all clients have submitted, it transitions to
 // ServerSigningState.
-func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
+func (s *AwaitingInputSigsState) handleBoardingSignatures(
 	evt *ClientBoardingSignaturesEvent,
 	env *Environment) (*StateTransition, error) {
 
@@ -678,14 +678,14 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 	newClientsSubmitted[clientID] = struct{}{}
 
 	// Copy collected signatures and add the new client's signatures.
-	newCollectedSigs := make(BoardingSigsMap)
+	newCollectedSigs := make(InputSigsMap)
 	for id, sigs := range s.CollectedSignatures {
 		newCollectedSigs[id] = sigs
 	}
 	newCollectedSigs[clientID] = evt.Signatures
 
 	// Create new state with updated tracking.
-	newState := &AwaitingBoardingSigsState{
+	newState := &AwaitingInputSigsState{
 		ClientRegistrations: s.ClientRegistrations,
 		PSBT:                s.PSBT,
 		VTXOTrees:           s.VTXOTrees,
@@ -695,11 +695,10 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 
 	// Check if all clients have submitted.
 	if newState.allClientsSubmitted() {
-		// Cancel the boarding signatures timeout and transition to
+		// Cancel the input signatures timeout and transition to
 		// ServerSigningState. Emit ServerSignInputsEvent to trigger
 		// server signing.
 		//
-		//nolint:ll
 		return &StateTransition{
 			NextState: &ServerSigningState{
 				ClientRegistrations: s.ClientRegistrations,
@@ -714,7 +713,7 @@ func (s *AwaitingBoardingSigsState) handleBoardingSignatures(
 				Outbox: []OutboxEvent{
 					&CancelTimeoutReq{
 						RoundID: env.RoundID,
-						Phase:   TimeoutPhaseBoardingSigs,
+						Phase:   TimeoutPhaseInputSigs,
 					},
 				},
 			}),
@@ -1206,7 +1205,7 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
 // handleClientPartialSigs processes partial signatures submitted by a client,
 // adding them to the tree coordinators. If all clients have submitted
 // signatures, it aggregates the final signatures and transitions to
-// AwaitingBoardingSigsState.
+// AwaitingInputSigsState.
 func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 	evt *ClientVTXOPartialSigsEvent) (*StateTransition, error) {
 
@@ -1395,7 +1394,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 
 	// Check if all clients have submitted signatures.
 	if newState.allClientsSubmittedSignatures() {
-		return newState.transitionToBoardingSigs(env)
+		return newState.transitionToInputSigs(env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
@@ -1404,10 +1403,10 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 	}, nil
 }
 
-// transitionToBoardingSigs handles the transition from
-// AwaitingVTXOSignaturesState to AwaitingBoardingSigsState. It aggregates final
+// transitionToInputSigs handles the transition from
+// AwaitingVTXOSignaturesState to AwaitingInputSigsState. It aggregates final
 // signatures and sends them to each client with VTXOs.
-func (s *AwaitingVTXOSignaturesState) transitionToBoardingSigs(
+func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 	env *Environment) (*StateTransition, error) {
 
 	var outboxMsgs []OutboxEvent
@@ -1469,29 +1468,29 @@ func (s *AwaitingVTXOSignaturesState) transitionToBoardingSigs(
 		if len(reg.BoardingInputs) > 0 {
 			outboxMsgs = append(
 				outboxMsgs,
-				&ClientAwaitingBoardingSigsResp{
+				&ClientAwaitingInputSigsResp{
 					Client: clientID,
 				},
 			)
 		}
 	}
 
-	// Start timeout for boarding signature collection.
+	// Start timeout for input signature collection.
 	outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
 		RoundID:  env.RoundID,
-		Phase:    TimeoutPhaseBoardingSigs,
+		Phase:    TimeoutPhaseInputSigs,
 		Duration: env.Terms.SignatureCollectionTimeout,
 	})
 
 	return &StateTransition{
-		NextState: &AwaitingBoardingSigsState{
+		NextState: &AwaitingInputSigsState{
 			ClientRegistrations: s.ClientRegistrations,
 			PSBT:                s.PSBT,
 			VTXOTrees:           s.VTXOTrees,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
-			CollectedSignatures: make(BoardingSigsMap),
+			CollectedSignatures: make(InputSigsMap),
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,

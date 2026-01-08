@@ -420,8 +420,8 @@ func TestFSMRegistrationState(t *testing.T) {
 		// (internal) which builds the PSBT and transitions to
 		// BatchBuiltState, then PrepareClientNotificationsEvent
 		// (internal) sends batch info to clients and transitions to
-		// AwaitingBoardingSigsState.
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		// AwaitingInputSigsState.
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
 		// Verify the batch was built correctly.
 		require.NotNil(t, awaitState.PSBT)
@@ -434,7 +434,7 @@ func TestFSMRegistrationState(t *testing.T) {
 		// Should contain:
 		// 1. RoundSealedReq (from RegistrationState timeout)
 		// 2. ClientBatchInfo for client1
-		// 3. ClientAwaitingBoardingSigsResp for client1
+		// 3. ClientAwaitingInputSigsResp for client1
 		// 4. StartTimeoutReq for boarding signatures
 		var (
 			foundSealReq          bool
@@ -453,13 +453,13 @@ func TestFSMRegistrationState(t *testing.T) {
 				require.Equal(t, ClientID("client1"), m.Client)
 				require.NotNil(t, m.BatchPSBT)
 
-			case *ClientAwaitingBoardingSigsResp:
+			case *ClientAwaitingInputSigsResp:
 				foundAwaitingBrdgSigs = true
 				require.Equal(t, ClientID("client1"), m.Client)
 
 			case *StartTimeoutReq:
 				// Should be boarding signatures timeout.
-				if m.Phase == TimeoutPhaseBoardingSigs {
+				if m.Phase == TimeoutPhaseInputSigs {
 					foundTimeoutReq = true
 					require.Equal(
 						t, h.env.RoundID, m.RoundID,
@@ -470,7 +470,7 @@ func TestFSMRegistrationState(t *testing.T) {
 		require.True(t, foundSealReq, "RoundSealedReq emitted")
 		require.True(t, foundBatchInfo, "ClientBatchInfo emitted")
 		require.True(t, foundAwaitingBrdgSigs,
-			"ClientAwaitingBoardingSigsResp emitted")
+			"ClientAwaitingInputSigsResp emitted")
 		require.True(
 			t, foundTimeoutReq, "boarding sig timeout should start",
 		)
@@ -516,9 +516,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
-		// Should transition to AwaitingBoardingSigsState after
+		// Should transition to AwaitingInputSigsState after
 		// internal events.
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
 		// Verify both clients are in the batch.
 		require.Len(t, awaitState.ClientRegistrations, 2)
@@ -540,7 +540,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				require.NotNil(t, info.BatchPSBT.UnsignedTx)
 			}
 
-			if _, ok := msg.(*ClientAwaitingBoardingSigsResp); ok {
+			if _, ok := msg.(*ClientAwaitingInputSigsResp); ok {
 				awaitingBrdgSigsCount++
 			}
 		}
@@ -553,7 +553,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 		func(t *testing.T) {
 			t.Parallel()
 
-			// Create an AwaitingBoardingSigsState to start from.
+			// Create an AwaitingInputSigsState to start from.
 			outpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("input1")),
 				Index: 0,
@@ -562,7 +562,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				"client1",
 				&BoardingInput{Outpoint: &outpoint},
 			)
-			awaitState := &AwaitingBoardingSigsState{
+			awaitState := &AwaitingInputSigsState{
 				//nolint:ll
 				ClientRegistrations: map[ClientID]*ClientRegistration{
 					"client1": client1Reg,
@@ -572,7 +572,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				},
 				VTXOTrees:           map[int]*tree.Tree{},
 				ClientsSubmitted:    map[ClientID]struct{}{},
-				CollectedSignatures: BoardingSigsMap{},
+				CollectedSignatures: InputSigsMap{},
 			}
 
 			h := newTestHarness(t, awaitState)
@@ -581,9 +581,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			// Should remain in AwaitingBoardingSigsState with no
+			// Should remain in AwaitingInputSigsState with no
 			// outbox messages.
-			assertStateType[*AwaitingBoardingSigsState](h)
+			assertStateType[*AwaitingInputSigsState](h)
 			h.assertOutboxLen(0)
 		})
 }
@@ -737,19 +737,19 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.NoError(t, err)
 
 		// Seal via RegistrationTimeoutEvent to get to
-		// AwaitingBoardingSigsState.
+		// AwaitingInputSigsState.
 		h.outboxMessages = nil
 		err = h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		// Should be in AwaitingBoardingSigsState.
-		assertStateType[*AwaitingBoardingSigsState](h)
+		// Should be in AwaitingInputSigsState.
+		assertStateType[*AwaitingInputSigsState](h)
 
 		// Clear outbox.
 		h.outboxMessages = nil
 
-		// Send BoardingSignaturesTimeoutEvent.
-		err = h.sendEvent(&BoardingSignaturesTimeoutEvent{})
+		// Send InputSignaturesTimeoutEvent.
+		err = h.sendEvent(&InputSignaturesTimeoutEvent{})
 		require.NoError(t, err)
 
 		// Should transition to FailedState.
@@ -821,12 +821,12 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err := h.sendEvent(joinReqEvent)
 		require.NoError(t, err)
 
-		// Seal to get to AwaitingBoardingSigsState.
+		// Seal to get to AwaitingInputSigsState.
 		h.outboxMessages = nil
 		err = h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.NotNil(t, awaitState.PSBT)
 
 		// Submit boarding signatures.
@@ -849,7 +849,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				foundCancelTimeout = true
 				require.Equal(t, h.env.RoundID, cancel.RoundID)
 				require.Equal(
-					t, TimeoutPhaseBoardingSigs,
+					t, TimeoutPhaseInputSigs,
 					cancel.Phase,
 				)
 			}
@@ -912,21 +912,21 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		))
 		require.NoError(t, err)
 
-		// Seal to get to AwaitingBoardingSigsState.
+		// Seal to get to AwaitingInputSigsState.
 		h.outboxMessages = nil
 		err = h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.Empty(t, awaitState.ClientsSubmitted)
 
-		// Client1 submits - should remain in AwaitingBoardingSigsState.
+		// Client1 submits - should remain in AwaitingInputSigsState.
 		h.outboxMessages = nil
 		sig1Event := client1.createBoardingSignaturesEvent(awaitState)
 		err = h.sendEvent(sig1Event)
 		require.NoError(t, err)
 
-		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState = assertStateType[*AwaitingInputSigsState](h)
 		require.Len(t, awaitState.ClientsSubmitted, 1)
 		require.True(t, awaitState.hasClientSubmitted("client1"))
 		require.False(t, awaitState.hasClientSubmitted("client2"))
@@ -949,7 +949,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			if cancel, ok := msg.(*CancelTimeoutReq); ok {
 				foundCancelTimeout = true
 				require.Equal(
-					t, TimeoutPhaseBoardingSigs,
+					t, TimeoutPhaseInputSigs,
 					cancel.Phase,
 				)
 			}
@@ -996,7 +996,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
 		// Unknown client tries to submit.
 		h.outboxMessages = nil
@@ -1007,8 +1007,8 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(unknownSigEvent)
 		require.NoError(t, err)
 
-		// Should remain in AwaitingBoardingSigsState.
-		assertStateType[*AwaitingBoardingSigsState](h)
+		// Should remain in AwaitingInputSigsState.
+		assertStateType[*AwaitingInputSigsState](h)
 
 		// Should have error response.
 		h.assertOutboxLen(1)
@@ -1080,7 +1080,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
-		awaitState := assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
 		// Client1 submits first time - success.
 		h.outboxMessages = nil
@@ -1088,7 +1088,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(sig1Event)
 		require.NoError(t, err)
 
-		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState = assertStateType[*AwaitingInputSigsState](h)
 		require.True(t, awaitState.hasClientSubmitted("client1"))
 
 		// Client1 tries to submit again - should be rejected.
@@ -1100,7 +1100,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should remain in same state.
-		awaitState = assertStateType[*AwaitingBoardingSigsState](h)
+		awaitState = assertStateType[*AwaitingInputSigsState](h)
 		require.Len(t, awaitState.ClientsSubmitted, 1)
 
 		// Should have error response.
@@ -1143,7 +1143,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		assertStateType[*AwaitingBoardingSigsState](h)
+		assertStateType[*AwaitingInputSigsState](h)
 
 		// Submit with no signatures (client has 1 input).
 		h.outboxMessages = nil
@@ -1154,8 +1154,8 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(badSigEvent)
 		require.NoError(t, err)
 
-		// Should remain in AwaitingBoardingSigsState.
-		assertStateType[*AwaitingBoardingSigsState](h)
+		// Should remain in AwaitingInputSigsState.
+		assertStateType[*AwaitingInputSigsState](h)
 
 		// Should have error response.
 		h.assertOutboxLen(1)
@@ -1228,9 +1228,9 @@ func TestFSMFinalizedState(t *testing.T) {
 		assertStateType[*FinalizedState](h)
 		h.assertOutboxLen(0)
 
-		// Send stale BoardingSignaturesTimeoutEvent - should be
+		// Send stale InputSignaturesTimeoutEvent - should be
 		// ignored.
-		err = h.sendEvent(&BoardingSignaturesTimeoutEvent{})
+		err = h.sendEvent(&InputSignaturesTimeoutEvent{})
 		require.NoError(t, err)
 
 		// Should remain in FinalizedState.
@@ -1683,7 +1683,7 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	err = h.sendEvent(sigEvent)
 	require.NoError(t, err)
 
-	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
 
 	aggSigs := h.getClientVTXOAggSigs(client.clientID)
 	require.NotNil(t, aggSigs)
@@ -1853,7 +1853,7 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	))
 	require.NoError(t, err)
 
-	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
 
 	aggSigs1 := h.getClientVTXOAggSigs(client1.clientID)
 	aggSigs2 := h.getClientVTXOAggSigs(client2.clientID)
@@ -1882,7 +1882,7 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	))
 	require.NoError(t, err)
 
-	awaitBoarding = assertStateType[*AwaitingBoardingSigsState](h)
+	awaitBoarding = assertStateType[*AwaitingInputSigsState](h)
 	err = h.sendEvent(client2.createBoardingSignaturesEvent(
 		awaitBoarding,
 	))
@@ -1960,7 +1960,7 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	))
 	require.NoError(t, err)
 
-	awaitBoarding := assertStateType[*AwaitingBoardingSigsState](h)
+	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
 
 	aggSigs := h.getClientVTXOAggSigs(client.clientID)
 	require.NotNil(t, aggSigs)
@@ -1985,7 +1985,7 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 func TestFSMBatchBuiltState(t *testing.T) {
 	t.Parallel()
 
-	t.Run("without VTXOs transitions to AwaitingBoardingSigsState",
+	t.Run("without VTXOs transitions to AwaitingInputSigsState",
 		func(t *testing.T) {
 			t.Parallel()
 
@@ -2016,8 +2016,8 @@ func TestFSMBatchBuiltState(t *testing.T) {
 			err := h.sendEvent(&PrepareClientNotificationsEvent{})
 			require.NoError(t, err)
 
-			// Should transition to AwaitingBoardingSigsState.
-			bs := assertStateType[*AwaitingBoardingSigsState](h)
+			// Should transition to AwaitingInputSigsState.
+			bs := assertStateType[*AwaitingInputSigsState](h)
 			require.NotNil(t, bs.PSBT)
 			require.Len(t, bs.ClientRegistrations, 1)
 
@@ -2031,12 +2031,12 @@ func TestFSMBatchBuiltState(t *testing.T) {
 					require.Equal(t, client1ID, m.Client)
 					require.Empty(t, m.VTXOTreePaths)
 
-				case *ClientAwaitingBoardingSigsResp:
+				case *ClientAwaitingInputSigsResp:
 					foundBrdgSigs = true
 					require.Equal(t, client1ID, m.Client)
 
 				case *StartTimeoutReq:
-					if m.Phase == TimeoutPhaseBoardingSigs {
+					if m.Phase == TimeoutPhaseInputSigs {
 						foundTimeout = true
 					}
 				}

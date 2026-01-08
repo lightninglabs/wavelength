@@ -65,13 +65,13 @@ type PrepareClientNotificationsEvent struct{}
 // Event interface.
 func (e *PrepareClientNotificationsEvent) eventSealed() {}
 
-// BoardingSignaturesTimeoutEvent is sent when the boarding signature collection
-// timeout expires. Only AwaitingBoardingSigsState should handle this.
-type BoardingSignaturesTimeoutEvent struct{}
+// InputSignaturesTimeoutEvent is sent when the input signature collection
+// timeout expires. Only AwaitingInputSigsState should handle this.
+type InputSignaturesTimeoutEvent struct{}
 
-// eventSealed marks BoardingSignaturesTimeoutEvent as implementing the sealed
+// eventSealed marks InputSignaturesTimeoutEvent as implementing the sealed
 // Event interface.
-func (e *BoardingSignaturesTimeoutEvent) eventSealed() {}
+func (e *InputSignaturesTimeoutEvent) eventSealed() {}
 
 // ClientBoardingSignaturesEvent is sent when a client submits their signatures
 // for their boarding inputs. Each client must sign all their boarding inputs

@@ -546,8 +546,8 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	case TimeoutPhaseRegistration:
 		timeoutEvent = &RegistrationTimeoutEvent{}
 
-	case TimeoutPhaseBoardingSigs:
-		timeoutEvent = &BoardingSignaturesTimeoutEvent{}
+	case TimeoutPhaseInputSigs:
+		timeoutEvent = &InputSignaturesTimeoutEvent{}
 
 	case TimeoutPhaseVTXONonces:
 		timeoutEvent = &VTXONoncesTimeoutEvent{}
