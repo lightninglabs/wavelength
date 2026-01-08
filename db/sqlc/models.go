@@ -4,6 +4,10 @@
 
 package sqlc
 
+import (
+	"database/sql"
+)
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
@@ -38,4 +42,79 @@ type ChainInfo struct {
 	ID          int64
 	ChainName   string
 	GenesisHash []byte
+}
+
+type ClientTreeTxid struct {
+	Txid        []byte
+	RoundID     string
+	ClientKey   []byte
+	TreeLevel   int32
+	OutputIndex int32
+}
+
+type Round struct {
+	RoundID               string
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	CommitmentTx          []byte
+	CommitmentTxid        []byte
+	VtxtTree              []byte
+	Status                string
+	CreationTime          int64
+	LastUpdateTime        int64
+}
+
+type RoundBoardingIntent struct {
+	RoundID        string
+	OutpointHash   []byte
+	OutpointIndex  int32
+	ClientKey      []byte
+	OperatorKey    []byte
+	ExitDelay      int32
+	TxProof        []byte
+	InputIndex     sql.NullInt32
+	InputSignature []byte
+}
+
+type RoundClientTree struct {
+	RoundID   string
+	ClientKey []byte
+	TreeData  []byte
+}
+
+type RoundStatus struct {
+	ID         int64
+	StatusName string
+}
+
+type RoundVtxoTemplate struct {
+	RoundID          string
+	OutpointHash     []byte
+	OutpointIndex    int32
+	TemplateIndex    int32
+	Amount           int64
+	PkScript         []byte
+	Expiry           int32
+	ClientPubkey     []byte
+	OperatorPubkey   []byte
+	SigningKeyFamily int32
+	SigningKeyIndex  int32
+	SigningPubkey    []byte
+}
+
+type Vtxo struct {
+	OutpointHash    []byte
+	OutpointIndex   int32
+	RoundID         string
+	Amount          int64
+	PkScript        []byte
+	Expiry          int32
+	ClientKeyFamily int32
+	ClientKeyIndex  int32
+	ClientPubkey    []byte
+	OperatorPubkey  []byte
+	TreePath        []byte
+	Spent           bool
+	CreationTime    int64
+	LastUpdateTime  int64
 }

@@ -58,10 +58,10 @@ func (m *MockRoundStore) FetchState(ctx context.Context,
 }
 
 //nolint:forcetypeassert
-func (m *MockRoundStore) LookupRoundByCommitmentTx(
+func (m *MockRoundStore) LookupRoundByCommitmentTx(ctx context.Context,
 	txid chainhash.Hash) (*Round, error) {
 
-	args := m.Called(txid)
+	args := m.Called(ctx, txid)
 
 	var round *Round
 	if args.Get(0) != nil {
@@ -72,8 +72,10 @@ func (m *MockRoundStore) LookupRoundByCommitmentTx(
 }
 
 //nolint:forcetypeassert
-func (m *MockRoundStore) ListActiveRounds() ([]*Round, error) {
-	args := m.Called()
+func (m *MockRoundStore) ListActiveRounds(
+	ctx context.Context) ([]*Round, error) {
+
+	args := m.Called(ctx)
 
 	var rounds []*Round
 	if args.Get(0) != nil {
@@ -83,10 +85,10 @@ func (m *MockRoundStore) ListActiveRounds() ([]*Round, error) {
 	return rounds, args.Error(1)
 }
 
-func (m *MockRoundStore) FinalizeRound(roundID string,
-	txid chainhash.Hash) error {
+func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID string,
+	txid chainhash.Hash, confInfo ConfInfo) error {
 
-	args := m.Called(roundID, txid)
+	args := m.Called(ctx, roundID, txid, confInfo)
 	return args.Error(0)
 }
 
@@ -98,14 +100,16 @@ type MockVTXOStore struct {
 	mock.Mock
 }
 
-func (m *MockVTXOStore) SaveVTXOs(vtxos []*ClientVTXO) error {
-	args := m.Called(vtxos)
+func (m *MockVTXOStore) SaveVTXOs(ctx context.Context,
+	vtxos []*ClientVTXO) error {
+
+	args := m.Called(ctx, vtxos)
 	return args.Error(0)
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOStore) ListVTXOs() ([]*ClientVTXO, error) {
-	args := m.Called()
+func (m *MockVTXOStore) ListVTXOs(ctx context.Context) ([]*ClientVTXO, error) {
+	args := m.Called(ctx)
 
 	var vtxos []*ClientVTXO
 	if args.Get(0) != nil {
@@ -116,8 +120,10 @@ func (m *MockVTXOStore) ListVTXOs() ([]*ClientVTXO, error) {
 }
 
 //nolint:forcetypeassert
-func (m *MockVTXOStore) GetVTXO(outpoint wire.OutPoint) (*ClientVTXO, error) {
-	args := m.Called(outpoint)
+func (m *MockVTXOStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*ClientVTXO, error) {
+
+	args := m.Called(ctx, outpoint)
 
 	var vtxo *ClientVTXO
 	if args.Get(0) != nil {
@@ -127,8 +133,10 @@ func (m *MockVTXOStore) GetVTXO(outpoint wire.OutPoint) (*ClientVTXO, error) {
 	return vtxo, args.Error(1)
 }
 
-func (m *MockVTXOStore) MarkVTXOSpent(outpoint wire.OutPoint) error {
-	args := m.Called(outpoint)
+func (m *MockVTXOStore) MarkVTXOSpent(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoint)
 	return args.Error(0)
 }
 
@@ -889,13 +897,15 @@ func (m *MockSignerSession) PubKey() *btcec.PublicKey {
 
 //nolint:unused
 func (h *boardingTestHarness) newBoardingConfirmedEvent(
-	commitmentTx *wire.MsgTx, blockHeight int32) *BoardingConfirmed {
+	commitmentTx *wire.MsgTx, blockHeight int32,
+	blockHash chainhash.Hash) *BoardingConfirmed {
 
 	h.t.Helper()
 
 	return &BoardingConfirmed{
 		TxID:          commitmentTx.TxHash(),
 		BlockHeight:   blockHeight,
+		BlockHash:     blockHash,
 		Confirmations: 6,
 	}
 }
@@ -992,6 +1002,7 @@ func (h *boardingTestHarness) setupMockVTXOStoreForSave() {
 
 	h.vtxoStore.On(
 		"SaveVTXOs",
+		mock.Anything, // ctx
 		mock.Anything, // vtxos
 	).Return(nil)
 }

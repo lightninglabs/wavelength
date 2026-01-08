@@ -1,0 +1,825 @@
+package db
+
+import (
+	"bytes"
+	"database/sql"
+	"sort"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/require"
+)
+
+// newRoundStoreForTest creates a new RoundPersistenceStore for testing.
+func newRoundStoreForTest(t *testing.T) (*RoundPersistenceStore, *BaseDB) {
+	db := NewTestDB(t)
+
+	roundDB := NewTransactionExecutor(
+		db.BaseDB,
+		func(tx *sql.Tx) RoundStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+
+	store := NewRoundPersistenceStore(
+		roundDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	return store, db.BaseDB
+}
+
+// createTestRound creates a test round with minimal data.
+func createTestRound(t *testing.T, roundID string) *round.Round {
+	// Create a simple commitment transaction as a PSBT.
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x01},
+			Index: 0,
+		},
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    1000000,
+		PkScript: []byte{0x51, 0x20, 0xab, 0xcd},
+	})
+
+	commitTx, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Create a simple tree.
+	pubKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	vtxtTree := &tree.Tree{
+		BatchOutpoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x02},
+			Index: 0,
+		},
+		BatchOutput: &wire.TxOut{
+			Value:    1000000,
+			PkScript: []byte{0x51, 0x20},
+		},
+		Root: &tree.Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.Hash{0x03},
+				Index: 0,
+			},
+			Outputs: []*wire.TxOut{
+				{Value: 500000, PkScript: []byte{0x00, 0x14}},
+			},
+			CoSigners: []*btcec.PublicKey{pubKey.PubKey()},
+			Children:  make(map[uint32]*tree.Node),
+		},
+	}
+
+	return &round.Round{
+		RoundID:      roundID,
+		CommitmentTx: fn.Some(commitTx),
+		VTXTTree:     fn.Some(vtxtTree),
+	}
+}
+
+// createTestClientVTXO creates a test ClientVTXO.
+func createTestClientVTXO(
+	t *testing.T, roundID string, idx int,
+) *round.ClientVTXO {
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	var hash chainhash.Hash
+	hash[0] = byte(idx)
+
+	return &round.ClientVTXO{
+		Outpoint: wire.OutPoint{
+			Hash:  hash,
+			Index: uint32(idx),
+		},
+		Amount:   btcutil.Amount(100000 * (idx + 1)),
+		PkScript: []byte{0x51, 0x20, byte(idx)},
+		Expiry:   144,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: privKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(0),
+				Index:  uint32(idx),
+			},
+		},
+		OperatorKey: operatorKey.PubKey(),
+		TreePath: &tree.Tree{
+			BatchOutpoint: wire.OutPoint{Hash: hash, Index: 0},
+			Root: &tree.Node{
+				Input:     wire.OutPoint{Hash: hash, Index: 0},
+				Outputs:   []*wire.TxOut{},
+				CoSigners: []*btcec.PublicKey{},
+				Children:  make(map[uint32]*tree.Node),
+			},
+		},
+		RoundID: fn.Some(roundID),
+	}
+}
+
+// TestRoundStoreCommitAndFetch tests the basic commit and fetch flow.
+func TestRoundStoreCommitAndFetch(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create a test round.
+	testRound := createTestRound(t, "test-round-1")
+
+	// Create a test FSM state.
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		state.CommitmentTx = packet
+	})
+	testRound.VTXTTree.WhenSome(func(t *tree.Tree) {
+		state.VTXTTree = t
+	})
+
+	// Commit the state.
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Fetch the state.
+	fetchedRound, fetchedState, err := store.FetchState(
+		ctx, testRound.RoundID,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedRound)
+	require.NotNil(t, fetchedState)
+
+	// Verify round fields.
+	require.Equal(t, testRound.RoundID, fetchedRound.RoundID)
+
+	// ConfInfo is None at commit time (not yet confirmed).
+	require.True(t, fetchedRound.ConfInfo.IsNone())
+
+	// Verify commitment tx.
+	require.True(t, fetchedRound.CommitmentTx.IsSome())
+	fetchedRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		testRound.CommitmentTx.WhenSome(
+			func(expectedPacket *psbt.Packet) {
+				require.Equal(
+					t,
+					expectedPacket.UnsignedTx.TxHash(),
+					packet.UnsignedTx.TxHash(),
+				)
+			},
+		)
+	})
+
+	// Verify FSM state type.
+	inputSigState, ok := fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Equal(t, testRound.RoundID, inputSigState.RoundID)
+}
+
+// TestRoundStoreLookupByTxid tests looking up a round by commitment txid.
+func TestRoundStoreLookupByTxid(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create and commit a test round.
+	testRound := createTestRound(t, "test-round-txid")
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Get the commitment txid.
+	var txid chainhash.Hash
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		txid = packet.UnsignedTx.TxHash()
+	})
+
+	// Lookup by txid.
+	foundRound, err := store.LookupRoundByCommitmentTx(ctx, txid)
+	require.NoError(t, err)
+	require.NotNil(t, foundRound)
+	require.Equal(t, testRound.RoundID, foundRound.RoundID)
+}
+
+// TestRoundStoreListActiveRounds tests listing active rounds.
+func TestRoundStoreListActiveRounds(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create and commit multiple rounds.
+	for i := 0; i < 3; i++ {
+		roundID := "test-round-" + string(rune('a'+i))
+		testRound := createTestRound(t, roundID)
+		state := &round.InputSigSentState{
+			RoundID:     testRound.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+
+		err := store.CommitState(ctx, testRound, state)
+		require.NoError(t, err)
+	}
+
+	// List active rounds.
+	activeRounds, err := store.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, activeRounds, 3)
+}
+
+// TestRoundStoreFinalizeRound tests finalizing a round.
+func TestRoundStoreFinalizeRound(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create and commit a test round.
+	testRound := createTestRound(t, "test-round-finalize")
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Finalize the round with confirmation info.
+	var txid chainhash.Hash
+	testRound.CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+		txid = packet.UnsignedTx.TxHash()
+	})
+
+	confInfo := round.ConfInfo{
+		Height:    12345,
+		BlockHash: chainhash.Hash{0xab, 0xcd, 0xef},
+	}
+	err = store.FinalizeRound(ctx, testRound.RoundID, txid, confInfo)
+	require.NoError(t, err)
+
+	// List active rounds - should be empty now.
+	activeRounds, err := store.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, activeRounds, 0)
+
+	// Fetch the round and verify ConfInfo was persisted.
+	fetchedRound, _, err := store.FetchState(ctx, testRound.RoundID)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedRound)
+
+	// After finalization, ConfInfo should be populated.
+	require.True(t, fetchedRound.ConfInfo.IsSome())
+	fetchedRound.ConfInfo.WhenSome(func(ci round.ConfInfo) {
+		require.Equal(t, confInfo.Height, ci.Height)
+		require.Equal(t, confInfo.BlockHash, ci.BlockHash)
+	})
+}
+
+// TestVTXOStoreSaveAndList tests saving and listing VTXOs.
+func TestVTXOStoreSaveAndList(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// First, create a round to satisfy foreign key constraint.
+	roundID := "test-round-vtxo"
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Create test VTXOs.
+	vtxos := make([]*round.ClientVTXO, 3)
+	for i := 0; i < 3; i++ {
+		vtxos[i] = createTestClientVTXO(t, roundID, i)
+	}
+
+	// Save VTXOs.
+	err = store.SaveVTXOs(ctx, vtxos)
+	require.NoError(t, err)
+
+	// List VTXOs.
+	listedVTXOs, err := store.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listedVTXOs, 3)
+
+	// Verify amounts.
+	for _, vtxo := range listedVTXOs {
+		require.NotZero(t, vtxo.Amount)
+		require.NotNil(t, vtxo.ClientKey.PubKey)
+		require.NotNil(t, vtxo.OperatorKey)
+	}
+}
+
+// TestVTXOStoreGetVTXO tests getting a specific VTXO by outpoint.
+func TestVTXOStoreGetVTXO(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// First, create a round to satisfy foreign key constraint.
+	roundID := "test-round-get"
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Create and save a test VTXO.
+	vtxo := createTestClientVTXO(t, roundID, 42)
+	err = store.SaveVTXOs(ctx, []*round.ClientVTXO{vtxo})
+	require.NoError(t, err)
+
+	// Get the VTXO.
+	fetchedVTXO, err := store.GetVTXO(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedVTXO)
+	require.Equal(t, vtxo.Outpoint, fetchedVTXO.Outpoint)
+	require.Equal(t, vtxo.Amount, fetchedVTXO.Amount)
+}
+
+// TestVTXOStoreMarkSpent tests marking a VTXO as spent.
+func TestVTXOStoreMarkSpent(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// First, create a round to satisfy foreign key constraint.
+	roundID := "test-round-spent"
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := store.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Create and save a test VTXO.
+	vtxo := createTestClientVTXO(t, roundID, 99)
+	err = store.SaveVTXOs(ctx, []*round.ClientVTXO{vtxo})
+	require.NoError(t, err)
+
+	// Verify it's in the list.
+	listedVTXOs, err := store.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listedVTXOs, 1)
+
+	// Mark as spent.
+	err = store.MarkVTXOSpent(ctx, vtxo.Outpoint)
+	require.NoError(t, err)
+
+	// Verify it's no longer in the unspent list.
+	listedVTXOs, err = store.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listedVTXOs, 0)
+}
+
+// boardingIntentFixture holds all the data needed for a single boarding
+// intent in tests, including the wallet-layer objects needed to satisfy
+// FK constraints.
+type boardingIntentFixture struct {
+	clientPubKey  *btcec.PublicKey
+	operatorKey   *btcec.PublicKey
+	boardingAddr  *wallet.BoardingAddress
+	walletIntent  wallet.BoardingIntent
+	roundIntent   round.BoardingIntent
+	outpoint      wire.OutPoint
+	pkScript      []byte
+	inputSig      []byte
+	clientTreeKey round.SignerKey
+	clientTree    *tree.Tree
+}
+
+// createBoardingIntentFixture creates a complete boarding intent fixture with
+// all wallet-layer dependencies. The index parameter is used to generate unique
+// keys and outpoints for each fixture.
+func createBoardingIntentFixture(
+	t *testing.T, roundID string, idx int,
+) *boardingIntentFixture {
+
+	// Create unique keys for this intent.
+	clientPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientPubKey := clientPrivKey.PubKey()
+
+	operatorPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	operatorPubKey := operatorPrivKey.PubKey()
+
+	exitDelay := uint32(144)
+
+	// Build the tapscript.
+	tapscript, err := scripts.VTXOTapScript(
+		clientPubKey, operatorPubKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	// Create the taproot address.
+	taprootKey := txscript.ComputeTaprootOutputKey(
+		&scripts.ARKNUMSKey, tapscript.RootHash,
+	)
+	address, err := btcutil.NewAddressTaproot(
+		taprootKey.SerializeCompressed()[1:],
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	keyDesc := keychain.KeyDescriptor{
+		PubKey: clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(42),
+			Index:  uint32(idx),
+		},
+	}
+
+	boardingAddr := &wallet.BoardingAddress{
+		Address:     address,
+		Tapscript:   tapscript,
+		KeyDesc:     keyDesc,
+		OperatorKey: operatorPubKey,
+		ExitDelay:   exitDelay,
+	}
+
+	// Create unique outpoint for this intent.
+	intentOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xaa, 0xbb, byte(idx)},
+		Index: uint32(idx),
+	}
+
+	// Create confirmation tx.
+	confHash := chainhash.Hash{0xdd, 0xee, byte(idx)}
+	confTx := wire.NewMsgTx(2)
+	confTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x11, byte(idx)},
+			Index: 0,
+		},
+	})
+	confTx.AddTxOut(&wire.TxOut{
+		Value:    int64(100000 * (idx + 1)),
+		PkScript: pkScript,
+	})
+
+	walletIntent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: intentOutpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: int32(100 + idx),
+			ConfHash:   confHash,
+			ConfTx:     confTx,
+			OutPoint:   intentOutpoint,
+			Amount:     btcutil.Amount(100000 * (idx + 1)),
+		},
+		Status: wallet.BoardingStatusConfirmed,
+	}
+
+	// Create multiple VTXO templates per intent.
+	vtxoTemplates := make([]types.VTXORequest, 2)
+	for j := 0; j < 2; j++ {
+		signingKey := keychain.KeyDescriptor{
+			PubKey: clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(43),
+				Index:  uint32(idx*10 + j),
+			},
+		}
+		vtxoTemplates[j] = types.VTXORequest{
+			Amount:      btcutil.Amount(45000 * (j + 1)),
+			PkScript:    pkScript,
+			Expiry:      exitDelay,
+			ClientKey:   clientPubKey,
+			OperatorKey: operatorPubKey,
+			SigningKey:  signingKey,
+		}
+	}
+
+	boardingRequest := types.BoardingRequest{
+		Outpoint:    &intentOutpoint,
+		ClientKey:   clientPubKey,
+		OperatorKey: operatorPubKey,
+		ExitDelay:   exitDelay,
+	}
+
+	roundIntent := round.BoardingIntent{
+		BoardingIntent:  walletIntent,
+		BoardingRequest: boardingRequest,
+		VtxoTemplate:    vtxoTemplates,
+		RoundID:         fn.Some(roundID),
+	}
+
+	// Create input signature using bytes.Repeat with unique byte.
+	inputSig := bytes.Repeat([]byte{byte(0xab + idx)}, 64)
+
+	// Create client tree using the actual tree builder with multiple
+	// leaves.
+	clientTreeKey := round.NewSignerKey(clientPubKey)
+	rootOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0xc1, 0x1e, byte(idx)},
+		Index: uint32(idx),
+	}
+	rootOutput := &wire.TxOut{
+		Value:    int64(90000 * (idx + 1)),
+		PkScript: pkScript,
+	}
+	leaves := []tree.LeafDescriptor{
+		{
+			PkScript:    pkScript,
+			Amount:      btcutil.Amount(45000 * (idx + 1)),
+			CoSignerKey: clientPubKey,
+		},
+		{
+			PkScript:    pkScript,
+			Amount:      btcutil.Amount(45000 * (idx + 1)),
+			CoSignerKey: clientPubKey,
+		},
+	}
+	clientTree, err := tree.NewTree(
+		rootOutpoint, rootOutput, leaves, operatorPubKey, nil, 2,
+	)
+	require.NoError(t, err)
+
+	return &boardingIntentFixture{
+		clientPubKey:  clientPubKey,
+		operatorKey:   operatorPubKey,
+		boardingAddr:  boardingAddr,
+		walletIntent:  walletIntent,
+		roundIntent:   roundIntent,
+		outpoint:      intentOutpoint,
+		pkScript:      pkScript,
+		inputSig:      inputSig,
+		clientTreeKey: clientTreeKey,
+		clientTree:    clientTree,
+	}
+}
+
+// TestRoundStoreWithBoardingGroup verifies that rounds with boarding intents
+// can be persisted and recovered correctly. This is critical because boarding
+// intents link on-chain UTXOs to virtual transaction outputs - losing this
+// mapping after a checkpoint would leave the client unable to prove ownership
+// of VTXOs created from their boarding funds.
+func TestRoundStoreWithBoardingGroup(t *testing.T) {
+	t.Parallel()
+
+	const numIntents = 2
+	const roundID = "test-round-boarding"
+
+	ctx := t.Context()
+	roundStore, db := newRoundStoreForTest(t)
+
+	// The round store queries the base boarding tables (boarding_addresses,
+	// boarding_intents) when reconstructing rounds, so we need to populate
+	// those first to satisfy foreign key constraints.
+	boardingDB := NewTransactionExecutor(
+		db,
+		func(tx *sql.Tx) BoardingStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	// Create multiple boarding intent fixtures with their wallet-layer
+	// dependencies.
+	fixtures := make([]*boardingIntentFixture, numIntents)
+	for i := 0; i < numIntents; i++ {
+		fixtures[i] = createBoardingIntentFixture(t, roundID, i)
+
+		// Insert wallet-layer objects to satisfy FK constraints.
+		err := boardingStore.InsertBoardingAddress(
+			ctx, fixtures[i].boardingAddr,
+		)
+		require.NoError(t, err)
+
+		err = boardingStore.InsertBoardingIntents(
+			ctx, fixtures[i].walletIntent,
+		)
+		require.NoError(t, err)
+	}
+
+	// Build the round's boarding group from the fixtures.
+	roundIntents := make([]round.BoardingIntent, numIntents)
+	inputSigs := make([][]byte, numIntents)
+	clientTrees := make(map[round.SignerKey]*tree.Tree)
+	for i, f := range fixtures {
+		roundIntents[i] = f.roundIntent
+		inputSigs[i] = f.inputSig
+		clientTrees[f.clientTreeKey] = f.clientTree
+	}
+
+	// Create the commitment tx with inputs from all boarding intents.
+	tx := wire.NewMsgTx(2)
+	for _, f := range fixtures {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: f.outpoint,
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    190000,
+		PkScript: fixtures[0].pkScript,
+	})
+	commitTx, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Create the VTXT tree using the actual tree builder.
+	vtxtTreeOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x02},
+		Index: 0,
+	}
+	vtxtTreeOutput := &wire.TxOut{
+		Value:    180000,
+		PkScript: fixtures[0].pkScript,
+	}
+	vtxtLeaves := make([]tree.LeafDescriptor, 0, numIntents*2)
+	for _, f := range fixtures {
+		for range f.roundIntent.VtxoTemplate {
+			vtxtLeaves = append(vtxtLeaves, tree.LeafDescriptor{
+				PkScript:    f.pkScript,
+				Amount:      45000,
+				CoSignerKey: f.clientPubKey,
+			})
+		}
+	}
+	vtxtTree, err := tree.NewTree(
+		vtxtTreeOutpoint, vtxtTreeOutput, vtxtLeaves,
+		fixtures[0].operatorKey, nil, 2,
+	)
+	require.NoError(t, err)
+
+	testRound := &round.Round{
+		RoundID:         roundID,
+		CommitmentTx:    fn.Some(commitTx),
+		VTXTTree:        fn.Some(vtxtTree),
+		BoardingIntents: roundIntents,
+	}
+
+	// Create the FSM state with all intents, signatures, and client trees.
+	state := &round.InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: commitTx,
+		VTXTTree:     vtxtTree,
+		Intents:      roundIntents,
+		ClientTrees:  clientTrees,
+		InputSigs:    inputSigs,
+	}
+
+	// Commit the state.
+	err = roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Fetch the state back.
+	fetchedRound, fetchedState, err := roundStore.FetchState(ctx, roundID)
+	require.NoError(t, err)
+	require.NotNil(t, fetchedRound)
+	require.NotNil(t, fetchedState)
+
+	// Verify round fields.
+	require.Equal(t, roundID, fetchedRound.RoundID)
+
+	// ConfInfo is None at commit time (not yet confirmed).
+	require.True(t, fetchedRound.ConfInfo.IsNone())
+
+	// Verify boarding intents were persisted with all intents.
+	require.Len(t, fetchedRound.BoardingIntents, numIntents)
+	for i, f := range fixtures {
+		fetchedIntent := fetchedRound.BoardingIntents[i]
+		require.Equal(t, f.outpoint, fetchedIntent.Outpoint)
+
+		// Verify VTXO templates were persisted.
+		require.Len(t, fetchedIntent.VtxoTemplate, 2)
+	}
+
+	// Verify FSM state type.
+	inputSigState, ok := fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Equal(t, roundID, inputSigState.RoundID)
+
+	// Verify all input signatures were persisted and recovered.
+	require.Len(t, inputSigState.InputSigs, numIntents)
+	for i, f := range fixtures {
+		require.Equal(t, f.inputSig, inputSigState.InputSigs[i])
+	}
+
+	// Verify all client trees were persisted and recovered.
+	require.Len(t, inputSigState.ClientTrees, numIntents)
+	for _, f := range fixtures {
+		fetchedTree, ok := inputSigState.ClientTrees[f.clientTreeKey]
+		require.True(t, ok, "client tree not found for key")
+		require.Equal(
+			t, f.clientTree.BatchOutpoint,
+			fetchedTree.BatchOutpoint,
+		)
+		require.Equal(
+			t, f.clientTree.Root.Input, fetchedTree.Root.Input,
+		)
+
+		// Verify tree structure was preserved. The number of outputs
+		// should match: one per leaf group + 1 anchor output (P2A).
+		// Each fixture creates 2 leaves in the client tree.
+		numLeaves := 2
+		expectedOutputs := numLeaves + 1
+		require.Len(t, fetchedTree.Root.Outputs, expectedOutputs)
+	}
+
+	// Verify client tree txids were populated in the index table.
+	for _, f := range fixtures {
+		// Extract expected txids from the original client tree.
+		expectedTxids, err := f.clientTree.ExtractTxids()
+		require.NoError(t, err)
+		require.NotEmpty(t, expectedTxids)
+
+		// Query the stored txids from the database.
+		storedTxids, err := db.GetClientTreeTxids(
+			ctx, sqlc.GetClientTreeTxidsParams{
+				RoundID:   roundID,
+				ClientKey: f.clientTreeKey[:],
+			},
+		)
+		require.NoError(t, err)
+
+		// Verify the count matches.
+		require.Len(t, storedTxids, len(expectedTxids),
+			"txid count mismatch for client tree")
+
+		// Sort both lists by txid for deterministic comparison. The
+		// order within a level may differ due to map iteration order.
+		sort.Slice(expectedTxids, func(i, j int) bool {
+			return bytes.Compare(
+				expectedTxids[i].Txid[:],
+				expectedTxids[j].Txid[:],
+			) < 0
+		})
+		sort.Slice(storedTxids, func(i, j int) bool {
+			return bytes.Compare(
+				storedTxids[i].Txid,
+				storedTxids[j].Txid,
+			) < 0
+		})
+
+		// Verify each txid was stored with correct level.
+		for i, expected := range expectedTxids {
+			stored := storedTxids[i]
+			require.Equal(t, expected.Txid[:], stored.Txid,
+				"txid mismatch at index %d", i)
+
+			expLevel := int32(expected.TreeLevel)
+			require.Equal(
+				t, expLevel, stored.TreeLevel,
+				"tree level mismatch for txid",
+			)
+		}
+
+		// Verify we can lookup the client tree by any of its txids.
+		for _, expected := range expectedTxids {
+			treeByTxid, err := db.GetClientTreeByTxid(
+				ctx, expected.Txid[:],
+			)
+			require.NoError(t, err)
+			require.Equal(t, roundID, treeByTxid.RoundID)
+			require.Equal(t, f.clientTreeKey[:],
+				treeByTxid.ClientKey)
+		}
+	}
+}

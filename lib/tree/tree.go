@@ -475,3 +475,67 @@ func (t *Tree) ValidateAnchors() error {
 		return nil
 	})
 }
+
+// TxidEntry holds information about a single transaction in a tree, including
+// its txid, level in the tree, and which parent output it spends.
+type TxidEntry struct {
+	// Txid is the transaction hash for this tree node.
+	Txid chainhash.Hash
+
+	// TreeLevel is the depth of this node (0 = root, increasing toward
+	// leaves).
+	TreeLevel int
+
+	// OutputIndex is which output of the parent transaction this node
+	// spends.
+	OutputIndex uint32
+}
+
+// ExtractTxids walks the tree using BFS and returns all transaction IDs with
+// their tree level and output index. This is useful for building indexes that
+// map txids to trees for efficient lookup when chain events occur.
+func (t *Tree) ExtractTxids() ([]TxidEntry, error) {
+	if t == nil || t.Root == nil {
+		return nil, nil
+	}
+
+	var entries []TxidEntry
+
+	// Use BFS to traverse the tree level by level. We track each node with
+	// its level.
+	type nodeWithLevel struct {
+		node  *Node
+		level int
+	}
+
+	queue := NewQueue[nodeWithLevel]()
+	queue.Enqueue(nodeWithLevel{node: t.Root, level: 0})
+
+	for !queue.IsEmpty() {
+		item, _ := queue.Dequeue()
+		node, level := item.node, item.level
+
+		// Get this node's txid.
+		txid, err := node.TXID()
+		if err != nil {
+			return nil, fmt.Errorf("get txid at level %d: %w",
+				level, err)
+		}
+
+		entries = append(entries, TxidEntry{
+			Txid:        txid,
+			TreeLevel:   level,
+			OutputIndex: node.Input.Index,
+		})
+
+		// Enqueue children for next level.
+		for _, child := range node.Children {
+			queue.Enqueue(nodeWithLevel{
+				node:  child,
+				level: level + 1,
+			})
+		}
+	}
+
+	return entries, nil
+}

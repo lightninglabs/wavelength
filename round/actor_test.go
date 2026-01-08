@@ -221,9 +221,9 @@ func TestActorConfirmation(t *testing.T) {
 		require.Contains(t, h.actor.activeRounds, "test-round-001")
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
-		h.roundStore.On("LookupRoundByCommitmentTx", txid).Return(
-			round, nil,
-		)
+		h.roundStore.On(
+			"LookupRoundByCommitmentTx", mock.Anything, txid,
+		).Return(round, nil)
 
 		confTx := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx
 		confEvent := &ConfirmationEvent{
@@ -251,7 +251,7 @@ func TestActorConfirmation(t *testing.T) {
 		// Simulate an unknown txid so the lookup fails gracefully.
 		unknownTxid := chainhash.HashH([]byte("nil-tx-test"))
 		h.roundStore.On(
-			"LookupRoundByCommitmentTx", unknownTxid,
+			"LookupRoundByCommitmentTx", mock.Anything, unknownTxid,
 		).Return(nil, fmt.Errorf("round not found"))
 
 		// Confirmation events with nil Tx should be handled gracefully
@@ -278,7 +278,7 @@ func TestActorConfirmation(t *testing.T) {
 
 		unknownTxid := chainhash.HashH([]byte("unknown-tx"))
 		h.roundStore.On(
-			"LookupRoundByCommitmentTx", unknownTxid,
+			"LookupRoundByCommitmentTx", mock.Anything, unknownTxid,
 		).Return(nil, fmt.Errorf("round not found"))
 
 		confEvent := &ConfirmationEvent{
@@ -310,9 +310,9 @@ func TestActorConfirmation(t *testing.T) {
 		// error rather than silently ignored.
 		round := h.newTestRound("orphan-round")
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
-		h.roundStore.On("LookupRoundByCommitmentTx", txid).Return(
-			round, nil,
-		)
+		h.roundStore.On(
+			"LookupRoundByCommitmentTx", mock.Anything, txid,
+		).Return(round, nil)
 
 		packet := round.CommitmentTx.UnwrapOrFail(t)
 		confEvent := &ConfirmationEvent{
@@ -410,14 +410,21 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.Contains(t, h.actor.activeRounds, "completing-round")
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
+		roundID := "completing-round"
 		h.roundStore.On(
-			"FinalizeRound", "completing-round", txid,
+			"FinalizeRound", mock.Anything, roundID, txid,
+			mock.Anything,
 		).Return(nil)
 
+		confInfo := ConfInfo{
+			Height:    100,
+			BlockHash: chainhash.Hash{0x01},
+		}
 		outbox := []ClientOutMsg{
 			&RoundCompletedNotification{
-				RoundID: "completing-round",
-				TxID:    txid,
+				RoundID:  "completing-round",
+				TxID:     txid,
+				ConfInfo: confInfo,
 			},
 		}
 
@@ -434,7 +441,8 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.False(t, exists)
 
 		h.roundStore.AssertCalled(
-			t, "FinalizeRound", "completing-round", txid,
+			t, "FinalizeRound", mock.Anything, roundID, txid,
+			confInfo,
 		)
 	})
 

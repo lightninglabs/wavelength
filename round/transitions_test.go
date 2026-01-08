@@ -1066,9 +1066,11 @@ func TestInputSigSentState(t *testing.T) {
 		)
 		h.withState(state)
 
+		blockHash := chainhash.Hash{0x01, 0x02}
 		event := &BoardingConfirmed{
 			TxID:          state.CommitmentTx.UnsignedTx.TxHash(),
 			BlockHeight:   101,
+			BlockHash:     blockHash,
 			Confirmations: 6,
 		}
 
@@ -1078,10 +1080,13 @@ func TestInputSigSentState(t *testing.T) {
 
 		confirmedState := assertStateType[*ConfirmedState](h)
 		require.Equal(t, int32(101), confirmedState.BlockHeight)
+		require.Equal(t, blockHash, confirmedState.BlockHash)
 		require.Equal(t, int32(6), confirmedState.Confirmations)
 
 		h.assertOutboxLen(2)
-		h.vtxoStore.AssertCalled(t, "SaveVTXOs", mock.Anything)
+		h.vtxoStore.AssertCalled(
+			t, "SaveVTXOs", mock.Anything, mock.Anything,
+		)
 	})
 
 	t.Run("buildClientVTXOs_error", func(t *testing.T) {
@@ -1104,6 +1109,7 @@ func TestInputSigSentState(t *testing.T) {
 		event := &BoardingConfirmed{
 			TxID:          vtxtTree.BatchOutpoint.Hash,
 			BlockHeight:   101,
+			BlockHash:     chainhash.Hash{0x01},
 			Confirmations: 6,
 		}
 

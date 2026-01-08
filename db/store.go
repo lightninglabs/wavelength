@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
 )
 
 // Store is the unified SQL-based storage implementation that wraps all
@@ -133,4 +135,48 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 		return nil, fmt.Errorf("unsupported database backend: %s",
 			cfg.Backend)
 	}
+}
+
+// BaseDB returns the underlying BaseDB for creating transaction executors.
+func (s *Store) BaseDB() *BaseDB {
+	return &BaseDB{
+		DB:      s.db,
+		Queries: s.queries,
+	}
+}
+
+// NewRoundStore creates a new RoundPersistenceStore using the transaction
+// executor pattern.
+func (s *Store) NewRoundStore(chainParams *chaincfg.Params,
+	clk clock.Clock) *RoundPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	roundDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) RoundStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewRoundPersistenceStore(roundDB, chainParams, clk)
+}
+
+// NewBoardingStore creates a new BoardingWalletStore using the transaction
+// executor pattern.
+func (s *Store) NewBoardingStore(chainParams *chaincfg.Params,
+	clk clock.Clock) *BoardingWalletStore {
+
+	baseDB := s.BaseDB()
+
+	boardingDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) BoardingStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewBoardingWalletStore(boardingDB, chainParams, clk)
 }

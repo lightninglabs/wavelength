@@ -372,7 +372,9 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 func (h *actorTestHarness) setupMockRoundStoreForStart() {
 	h.t.Helper()
 
-	h.roundStore.On("ListActiveRounds").Return([]*Round{}, nil)
+	h.roundStore.On(
+		"ListActiveRounds", mock.Anything,
+	).Return([]*Round{}, nil)
 }
 
 // start initializes the actor by calling Start().
@@ -558,7 +560,7 @@ func (h *actorTestHarness) newTestRound(roundID string) *Round {
 func (h *actorTestHarness) setupMockRoundStoreForRecovery(rounds []*Round) {
 	h.t.Helper()
 
-	h.roundStore.On("ListActiveRounds").Return(rounds, nil)
+	h.roundStore.On("ListActiveRounds", mock.Anything).Return(rounds, nil)
 
 	for _, round := range rounds {
 		h.roundStore.On(

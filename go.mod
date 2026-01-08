@@ -25,6 +25,7 @@ require (
 	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
+	github.com/lightningnetwork/lnd/tlv v1.3.2
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6
@@ -32,6 +33,7 @@ require (
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/macaroon.v2 v2.1.0
 	modernc.org/sqlite v1.40.0
+	pgregory.net/rapid v1.2.0
 )
 
 require (
@@ -117,7 +119,6 @@ require (
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/tlv v1.3.2 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -193,7 +194,6 @@ require (
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	pgregory.net/rapid v1.2.0 // indirect
 	sigs.k8s.io/yaml v1.2.0 // indirect
 )
 
