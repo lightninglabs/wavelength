@@ -1052,7 +1052,6 @@ func (h *boardingTestHarness) setupMockWalletForMuSig2() {
 	).Return(partialSig, nil)
 }
 
-//nolint:unused
 func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
 	h.t.Helper()
 
@@ -1063,7 +1062,6 @@ func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
 	)
 }
 
-//nolint:unused
 func (h *boardingTestHarness) setupMockRoundStoreForCheckpoint() {
 	h.t.Helper()
 
@@ -1944,4 +1942,149 @@ func computeTreeNodeSigHash(node *tree.Node, tx *wire.MsgTx,
 	copy(result[:], hashBytes)
 
 	return result, nil
+}
+
+// newTestForfeitTx creates a minimal valid forfeit transaction structure.
+// The forfeit tx has 2 inputs (VTXO + connector) and 2 outputs (penalty +
+// anchor).
+func (h *boardingTestHarness) newTestForfeitTx(
+	vtxoOutpoint, connectorOutpoint wire.OutPoint,
+	serverForfeitScript []byte) *wire.MsgTx {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(2)
+
+	// Input 0: VTXO being forfeited.
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: vtxoOutpoint,
+	})
+
+	// Input 1: Connector output.
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: connectorOutpoint,
+	})
+
+	// Output 0: Penalty to server.
+	tx.AddTxOut(&wire.TxOut{
+		Value:    50000,
+		PkScript: serverForfeitScript,
+	})
+
+	// Output 1: Standard P2A anchor (scripts.AnchorPkScript).
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: scripts.AnchorPkScript,
+	})
+
+	return tx
+}
+
+// newForfeitCollectingState creates a ForfeitSignaturesCollectingState with
+// the given parameters for testing forfeit signature collection.
+func (h *boardingTestHarness) newForfeitCollectingState(
+	roundID RoundID,
+	intents Intents,
+	expectedForfeits map[wire.OutPoint]*ConnectorLeafInfo,
+	serverForfeitScript []byte) *ForfeitSignaturesCollectingState {
+
+	h.t.Helper()
+
+	vtxtTree, _ := h.newTestVTXOTree(1)
+	commitmentTx := h.newTestCommitmentTx(intents.Boarding)
+
+	boardingInputIndices := make(map[wire.OutPoint]int)
+	for i, intent := range intents.Boarding {
+		boardingInputIndices[intent.Outpoint] = i
+	}
+
+	return &ForfeitSignaturesCollectingState{
+		RoundID:               roundID,
+		CommitmentTx:          commitmentTx,
+		VTXOTreePaths:         map[int]*tree.Tree{0: vtxtTree},
+		Intents:               intents,
+		ClientTrees:           make(map[SignerKey]*tree.Tree),
+		BoardingInputIndices:  boardingInputIndices,
+		ExpectedForfeits:      expectedForfeits,
+		ServerForfeitPkScript: serverForfeitScript,
+		CollectedForfeits: make(
+			map[wire.OutPoint]*ForfeitSignatureResponse,
+		),
+	}
+}
+
+// newTestCommitmentTxWithInputs creates a test commitment tx with the
+// specified number of inputs. Used for testing refresh-only rounds where there
+// are no boarding inputs.
+func (h *boardingTestHarness) newTestCommitmentTxWithInputs(
+	numInputs int) *psbt.Packet {
+
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(3)
+
+	// Add the specified number of inputs.
+	for i := 0; i < numInputs; i++ {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: h.newTestOutpoint(),
+		})
+	}
+
+	// Add a standard output.
+	tx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: make([]byte, 34),
+	})
+
+	// Add OP_RETURN output.
+	tx.AddTxOut(&wire.TxOut{
+		Value:    0,
+		PkScript: []byte{txscript.OP_TRUE, txscript.OP_RETURN},
+	})
+
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(h.t, err)
+
+	return packet
+}
+
+// newMinimalVTXOTree creates a minimal valid VTXO tree for testing. This is
+// used for refresh-only rounds where we need a valid tree structure but don't
+// have specific VTXO requests from boarding intents.
+func (h *boardingTestHarness) newMinimalVTXOTree() *tree.Tree {
+	h.t.Helper()
+
+	// Create a minimal tree with one leaf.
+	const leafAmount = btcutil.Amount(50000)
+
+	vtxoScript, err := txscript.PayToTaprootScript(h.clientPubKey)
+	require.NoError(h.t, err)
+
+	leaves := []tree.LeafDescriptor{
+		{
+			PkScript:    vtxoScript,
+			Amount:      leafAmount,
+			CoSignerKey: h.clientPubKey,
+		},
+	}
+
+	batchOutpoint := h.newTestOutpoint()
+
+	batchPkScript, err := txscript.PayToTaprootScript(h.operatorPubKey)
+	require.NoError(h.t, err)
+
+	batchOutput := &wire.TxOut{
+		Value:    int64(leafAmount),
+		PkScript: batchPkScript,
+	}
+
+	sweepRoot := sha256.Sum256([]byte("test-sweep-root"))
+
+	vtxtTree, err := tree.NewTree(
+		batchOutpoint, batchOutput, leaves,
+		h.operatorPubKey, sweepRoot[:], 2,
+	)
+	require.NoError(h.t, err)
+
+	return vtxtTree
 }

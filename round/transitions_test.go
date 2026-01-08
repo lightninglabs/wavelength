@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/stretchr/testify/mock"
@@ -1723,4 +1724,589 @@ func TestBoardingFlowFailureAndRecovery(t *testing.T) {
 
 	recoveryState := assertStateType[*RecoveryInitiatedState](h)
 	require.Equal(t, intent.Outpoint, recoveryState.Outpoint)
+}
+
+// TestForfeitSignaturesCollectingState tests the forfeit signature collection
+// flow which is used when VTXOs are being refreshed in a batch swap round.
+func TestForfeitSignaturesCollectingState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single_forfeit_collection", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.setupMockWalletForBoardingSigning()
+		h.setupMockRoundStoreForCheckpoint()
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		serverForfeitScript := []byte{0x51, 0x20}
+
+		// Build a valid forfeit tx structure for validation.
+		forfeitTx := h.newTestForfeitTx(
+			vtxoOutpoint, connectorOutpoint, serverForfeitScript,
+		)
+
+		roundID := testRoundIDTr("round-forfeit-001")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			serverForfeitScript,
+		)
+		h.withState(state)
+
+		// Send forfeit signature response.
+		event := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint,
+			RoundID:      roundID.String(),
+			ForfeitTx:    forfeitTx,
+			Signature:    make([]byte, 64),
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		// Should transition to InputSigSentState. In the new flow,
+		// forfeit collection happens AFTER VTXO tree signing, so
+		// completing forfeits goes directly to InputSigSentState.
+		inputSigState := assertStateType[*InputSigSentState](h)
+		require.Equal(t, roundID, inputSigState.RoundID)
+		require.Len(t, inputSigState.ForfeitedVTXOs, 1)
+		require.Equal(t, vtxoOutpoint, inputSigState.ForfeitedVTXOs[0])
+
+		// Should emit SubmitVTXOForfeitSigsToServer and
+		// SubmitForfeitSigRequest (boarding input signatures).
+		forfeitType := "*round.SubmitVTXOForfeitSigsToServer"
+		h.assertOutboxContainsType(forfeitType)
+		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
+	})
+
+	t.Run("multiple_forfeits_wait_for_all", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.setupMockWalletForBoardingSigning()
+		h.setupMockRoundStoreForCheckpoint()
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint1 := h.newTestOutpoint()
+		vtxoOutpoint2 := h.newTestOutpoint()
+		connectorOutpoint1 := h.newTestOutpoint()
+		connectorOutpoint2 := h.newTestOutpoint()
+		serverForfeitScript := []byte{0x51, 0x20}
+
+		roundID := testRoundIDTr("round-forfeit-002")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint1: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint1,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+				vtxoOutpoint2: {
+					LeafIndex:         1,
+					ConnectorOutpoint: connectorOutpoint2,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			serverForfeitScript,
+		)
+		h.withState(state)
+
+		// Send first forfeit - should stay in state.
+		forfeitTx1 := h.newTestForfeitTx(
+			vtxoOutpoint1, connectorOutpoint1, serverForfeitScript,
+		)
+		event1 := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint1,
+			RoundID:      roundID.String(),
+			ForfeitTx:    forfeitTx1,
+			Signature:    make([]byte, 64),
+		}
+
+		_, err := h.sendEvent(event1)
+		require.NoError(t, err)
+
+		// Should still be in ForfeitSignaturesCollectingState.
+		//nolint:ll
+		collectingState := assertStateType[*ForfeitSignaturesCollectingState](h)
+		require.Len(t, collectingState.CollectedForfeits, 1)
+
+		// Send second forfeit - should transition.
+		forfeitTx2 := h.newTestForfeitTx(
+			vtxoOutpoint2, connectorOutpoint2, serverForfeitScript,
+		)
+		event2 := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint2,
+			RoundID:      roundID.String(),
+			ForfeitTx:    forfeitTx2,
+			Signature:    make([]byte, 64),
+		}
+
+		transition, err := h.sendEvent(event2)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		// Now should transition to InputSigSentState.
+		inputSigState := assertStateType[*InputSigSentState](h)
+		require.Len(t, inputSigState.ForfeitedVTXOs, 2)
+	})
+
+	t.Run("duplicate_forfeit_ignored", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		serverForfeitScript := []byte{0x51, 0x20}
+
+		// We need 2 expected forfeits to stay in state after first.
+		vtxoOutpoint2 := h.newTestOutpoint()
+		connectorOutpoint2 := h.newTestOutpoint()
+
+		roundID := testRoundIDTr("round-forfeit-003")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+				vtxoOutpoint2: {
+					LeafIndex:         1,
+					ConnectorOutpoint: connectorOutpoint2,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			serverForfeitScript,
+		)
+		h.withState(state)
+
+		forfeitTx := h.newTestForfeitTx(
+			vtxoOutpoint, connectorOutpoint, serverForfeitScript,
+		)
+		event := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint,
+			RoundID:      roundID.String(),
+			ForfeitTx:    forfeitTx,
+			Signature:    make([]byte, 64),
+		}
+
+		// First response.
+		_, err := h.sendEvent(event)
+		require.NoError(t, err)
+
+		//nolint:ll
+		collectingState := assertStateType[*ForfeitSignaturesCollectingState](h)
+		require.Len(t, collectingState.CollectedForfeits, 1)
+
+		// Duplicate response - should be ignored.
+		_, err = h.sendEvent(event)
+		require.NoError(t, err)
+
+		//nolint:ll
+		collectingState = assertStateType[*ForfeitSignaturesCollectingState](h)
+		require.Len(t, collectingState.CollectedForfeits, 1)
+	})
+
+	t.Run("unexpected_forfeit_error", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		serverForfeitScript := []byte{0x51, 0x20}
+
+		roundID := testRoundIDTr("round-forfeit-004")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			serverForfeitScript,
+		)
+		h.withState(state)
+
+		// Send forfeit for unknown VTXO.
+		unknownOutpoint := h.newTestOutpoint()
+		event := &ForfeitSignatureResponse{
+			VTXOOutpoint: unknownOutpoint,
+			RoundID:      roundID.String(),
+			Signature:    make([]byte, 64),
+		}
+
+		_, err := h.sendEvent(event)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "unexpected forfeit")
+	})
+
+	t.Run("boarding_failed_transitions", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+
+		roundID := testRoundIDTr("round-forfeit-005")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			[]byte{0x51, 0x20},
+		)
+		h.withState(state)
+
+		event := &BoardingFailed{
+			Reason:      "server disconnected",
+			Recoverable: true,
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Equal(t, "server disconnected", failedState.Reason)
+		require.True(t, failedState.Recoverable)
+	})
+
+	t.Run("forfeit_amount_mismatch_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		serverForfeitScript := []byte{0x51, 0x20}
+
+		// Create forfeit tx with 40000 sats (mismatch).
+		forfeitTx := wire.NewMsgTx(2)
+		forfeitTx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: vtxoOutpoint,
+		})
+		forfeitTx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: connectorOutpoint,
+		})
+		forfeitTx.AddTxOut(&wire.TxOut{
+			Value:    40000, // Wrong amount - expected 50000.
+			PkScript: serverForfeitScript,
+		})
+		forfeitTx.AddTxOut(&wire.TxOut{
+			Value:    0,
+			PkScript: scripts.AnchorPkScript,
+		})
+
+		// Create state expecting 50000 sats.
+		roundID := testRoundIDTr("round-forfeit-amount")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			serverForfeitScript,
+		)
+		h.withState(state)
+
+		event := &ForfeitSignatureResponse{
+			VTXOOutpoint: vtxoOutpoint,
+			RoundID:      roundID.String(),
+			ForfeitTx:    forfeitTx,
+			Signature:    make([]byte, 64),
+		}
+
+		_, err := h.sendEvent(event)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "forfeit tx penalty output")
+		require.Contains(t, err.Error(), "amount")
+	})
+}
+
+// TestForfeitMappingsCarriedThroughSigningStates verifies that ForfeitMappings
+// is carried through NoncesSent, NoncesAggregated, and PartialSigsSent states
+// so that forfeit signature collection can happen after VTXO tree signing.
+func TestForfeitMappingsCarriedThroughSigningStates(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.setupMockWalletForMuSig2()
+
+	intent := h.newTestBoardingIntent()
+	vtxoOutpoint := h.newTestOutpoint()
+	connectorOutpoint := h.newTestOutpoint()
+	serverForfeitScript := []byte{0x51, 0x20}
+
+	// Build forfeit mappings for a refresh round.
+	forfeitMappings := map[wire.OutPoint]*ConnectorLeafInfo{
+		vtxoOutpoint: {
+			LeafIndex:         0,
+			ConnectorOutpoint: connectorOutpoint,
+			ConnectorPkScript: []byte{0x51, 0x20},
+			ConnectorAmount:   546,
+			VTXOAmount:        50000,
+		},
+	}
+
+	// Start from CommitmentTxValidatedState with ForfeitMappings populated.
+	roundID := testRoundID("round-carry-001")
+	validatedState := h.newCommitmentTxValidatedState(
+		roundID, []BoardingIntent{intent},
+	)
+	validatedState.ForfeitMappings = forfeitMappings
+	validatedState.ServerForfeitPkScript = serverForfeitScript
+	h.withState(validatedState)
+
+	// Generate nonces.
+	_, err := h.sendEvent(&GenerateNonces{})
+	require.NoError(t, err)
+	h.clearOutbox()
+
+	// Check NoncesSentState has ForfeitMappings.
+	noncesSentState := assertStateType[*NoncesSentState](h)
+	require.Len(t, noncesSentState.ForfeitMappings, 1)
+	require.Contains(t, noncesSentState.ForfeitMappings, vtxoOutpoint)
+
+	// Send aggregated nonces.
+	aggEvent := h.newNoncesAggregatedEvent(
+		roundID, noncesSentState.VTXOTreePaths[0],
+	)
+	_, err = h.sendEvent(aggEvent)
+	require.NoError(t, err)
+	h.clearOutbox()
+
+	// Check NoncesAggregatedState has ForfeitMappings.
+	noncesAggState := assertStateType[*NoncesAggregatedState](h)
+	require.Len(t, noncesAggState.ForfeitMappings, 1)
+	require.Contains(t, noncesAggState.ForfeitMappings, vtxoOutpoint)
+}
+
+// TestInputSigSentStateEmitsForfeitConfirmed verifies that when
+// BoardingConfirmed is received in InputSigSentState, ForfeitConfirmedToVTXO
+// messages are emitted for all forfeited VTXOs.
+func TestInputSigSentStateEmitsForfeitConfirmed(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.setupMockVTXOStoreForSave()
+
+	intent := h.newTestBoardingIntent()
+	vtxoOutpoint1 := h.newTestOutpoint()
+	vtxoOutpoint2 := h.newTestOutpoint()
+
+	roundID := testRoundID("round-forfeit-confirm")
+	state := h.newInputSigSentState(roundID, []BoardingIntent{intent})
+	state.ForfeitedVTXOs = []wire.OutPoint{vtxoOutpoint1, vtxoOutpoint2}
+	h.withState(state)
+
+	event := &BoardingConfirmed{
+		TxID:          state.CommitmentTx.UnsignedTx.TxHash(),
+		BlockHeight:   101,
+		Confirmations: 6,
+	}
+
+	_, err := h.sendEvent(event)
+	require.NoError(t, err)
+
+	_ = assertStateType[*ConfirmedState](h)
+
+	// Should emit ForfeitConfirmedToVTXO for each forfeited VTXO.
+	forfeitConfirmCount := 0
+	for _, msg := range h.outboxMessages {
+		if forfeitMsg, ok := msg.(*ForfeitConfirmedToVTXO); ok {
+			forfeitConfirmCount++
+			require.Equal(t, int32(101), forfeitMsg.BlockHeight)
+		}
+	}
+	require.Equal(t, 2, forfeitConfirmCount)
+}
+
+// TestStatePropertiesForfeitState verifies ForfeitSignaturesCollectingState
+// properties.
+func TestStatePropertiesForfeitState(t *testing.T) {
+	t.Parallel()
+
+	state := &ForfeitSignaturesCollectingState{
+		RoundID: testRoundID("round-001"),
+	}
+
+	require.False(t, state.IsTerminal())
+	require.Equal(t, "ForfeitSignaturesCollecting", state.String())
+}
+
+// TestForfeitCollectionStateImmutability verifies that when a forfeit
+// signature response is received, the FSM creates a new state object rather
+// than mutating the existing one. This is important for FSM correctness.
+func TestForfeitCollectionStateImmutability(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	intent := h.newTestBoardingIntent()
+	vtxoOutpoint1 := h.newTestOutpoint()
+	vtxoOutpoint2 := h.newTestOutpoint()
+	connectorOutpoint1 := h.newTestOutpoint()
+	connectorOutpoint2 := h.newTestOutpoint()
+	serverForfeitScript := []byte{0x51, 0x20}
+
+	roundID := testRoundIDTr("round-immut-001")
+	state := h.newForfeitCollectingState(
+		roundID,
+		Intents{Boarding: []BoardingIntent{intent}},
+		map[wire.OutPoint]*ConnectorLeafInfo{
+			vtxoOutpoint1: {
+				LeafIndex:         0,
+				ConnectorOutpoint: connectorOutpoint1,
+				ConnectorPkScript: []byte{0x51, 0x20},
+				ConnectorAmount:   546,
+				VTXOAmount:        50000,
+			},
+			vtxoOutpoint2: {
+				LeafIndex:         1,
+				ConnectorOutpoint: connectorOutpoint2,
+				ConnectorPkScript: []byte{0x51, 0x20},
+				ConnectorAmount:   546,
+				VTXOAmount:        50000,
+			},
+		},
+		serverForfeitScript,
+	)
+
+	// Save original state's CollectedForfeits map reference.
+	originalMap := state.CollectedForfeits
+	originalMapLen := len(originalMap)
+	h.withState(state)
+
+	// Send first forfeit - should NOT mutate original state's map.
+	forfeitTx1 := h.newTestForfeitTx(
+		vtxoOutpoint1, connectorOutpoint1, serverForfeitScript,
+	)
+	event1 := &ForfeitSignatureResponse{
+		VTXOOutpoint: vtxoOutpoint1,
+		RoundID:      "round-immut-001",
+		ForfeitTx:    forfeitTx1,
+		Signature:    make([]byte, 64),
+	}
+
+	_, err := h.sendEvent(event1)
+	require.NoError(t, err)
+
+	// The ORIGINAL state's map should NOT have been modified.
+	require.Len(
+		t, originalMap, originalMapLen,
+		"original state's CollectedForfeits map was mutated",
+	)
+
+	// The NEW state should have the collected forfeit.
+	newState := assertStateType[*ForfeitSignaturesCollectingState](h)
+	require.Len(t, newState.CollectedForfeits, 1)
+
+	// Verify the new state is a different object by checking it has the
+	// updated forfeit while the original doesn't.
+	_, hasInNew := newState.CollectedForfeits[vtxoOutpoint1]
+	require.True(t, hasInNew, "new state should have the forfeit")
+
+	_, hasInOriginal := originalMap[vtxoOutpoint1]
+	require.False(t, hasInOriginal, "original map should not have forfeit")
+}
+
+// TestRefreshOnlyRoundValidation verifies that rounds containing only refresh
+// requests (no boarding intents) can successfully pass commitment validation.
+func TestRefreshOnlyRoundValidation(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	// Create a state with NO boarding intents (refresh-only round).
+	emptyIntents := Intents{Boarding: []BoardingIntent{}}
+	roundID := testRoundIDTr("round-refresh-001")
+
+	// Create a minimal commitment tx with no boarding inputs.
+	commitmentTx := h.newTestCommitmentTxWithInputs(0)
+
+	// Create a VTXT tree. For refresh-only rounds, this would contain
+	// VTXOs for the refreshed amounts, but we need a minimal valid tree.
+	vtxtTree := h.newMinimalVTXOTree()
+
+	state := &CommitmentTxReceivedState{
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		TxID:          commitmentTx.UnsignedTx.TxHash(),
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents:       emptyIntents,
+		ClientTrees:   make(map[SignerKey]*tree.Tree),
+	}
+	h.withState(state)
+
+	// No forfeit mappings for this simple test - just validating the
+	// round can proceed without boarding intents.
+	event := &CommitmentTxBuilt{
+		RoundID:       roundID,
+		Tx:            commitmentTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+	}
+
+	transition, err := h.sendEvent(event)
+	require.NoError(t, err)
+	require.NotNil(t, transition)
+
+	// Should transition to CommitmentTxValidatedState, not fail.
+	validatedState := assertStateType[*CommitmentTxValidatedState](h)
+	require.Equal(t, roundID, validatedState.RoundID)
+
+	// BoardingInputIndices should be empty (no boarding inputs).
+	require.Empty(t, validatedState.BoardingInputIndices)
+
+	// Should emit GenerateNonces internal event.
+	assertTransitionEmitsInternalEvent[*GenerateNonces](h, transition)
 }
