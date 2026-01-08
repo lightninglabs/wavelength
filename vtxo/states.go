@@ -82,6 +82,10 @@ type ForfeitingState struct {
 	// ForfeitTxID is the txid of the forfeit transaction (set after
 	// signing).
 	ForfeitTxID chainhash.Hash
+
+	// ForfeitTx is the signed forfeit transaction. Persisted for crash
+	// recovery so we can re-broadcast if the round doesn't confirm.
+	ForfeitTx *wire.MsgTx
 }
 
 // String returns a human-readable state name.
