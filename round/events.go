@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ClientEvent is a sealed interface for all events that can be processed by
@@ -298,6 +299,10 @@ func (e *RoundComplete) clientEventSealed() {}
 // RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
+//
+// This request contains all information needed to build both the server's
+// RefreshRequest (for the connector tree) and a VTXORequest (for the new VTXO
+// in the VTXT). The same client key is typically reused for the new VTXO.
 type RefreshVTXORequest struct {
 	actor.BaseMessage
 
@@ -306,6 +311,22 @@ type RefreshVTXORequest struct {
 
 	// Amount is the VTXO value in satoshis.
 	Amount int64
+
+	// NewVTXOKey is the client's public key for the new VTXO. This is
+	// typically the same as the old VTXO's key but could be fresh.
+	NewVTXOKey *btcec.PublicKey
+
+	// PkScript is the output script for the new VTXO.
+	PkScript []byte
+
+	// OperatorKey is the operator's public key for the new VTXO.
+	OperatorKey *btcec.PublicKey
+
+	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
+	Expiry uint32
+
+	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	SigningKey keychain.KeyDescriptor
 }
 
 func (e *RefreshVTXORequest) clientEventSealed() {}
