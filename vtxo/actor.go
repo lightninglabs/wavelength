@@ -10,19 +10,19 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// VTXOActorServiceKey constructs a service key for a VTXO actor based on its
-// outpoint. This enables the round actor to send messages directly to specific
-// VTXO actors without routing through the manager.
+// VTXOActorServiceKey returns the service key for looking up a VTXO actor.
+// This delegates to actormsg.VTXOActorServiceKey to ensure both packages use
+// the same key for registration and lookup, avoiding type mismatches.
 func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
-	VTXOEvent, VTXOActorResponse,
+	actormsg.VTXOActorMsg, actormsg.VTXOActorResp,
 ] {
-	return actor.NewServiceKey[VTXOEvent, VTXOActorResponse](
-		fmt.Sprintf("vtxo.%s", outpoint.String()),
-	)
+
+	return actormsg.VTXOActorServiceKey(outpoint)
 }
 
 // VTXOActorConfig holds configuration for a single VTXO actor.
@@ -56,11 +56,13 @@ type VTXOActor struct {
 	state VTXOState
 	env   *VTXOEnvironment
 
-	selfRef actor.TellOnlyRef[VTXOEvent]
+	selfRef actor.TellOnlyRef[actormsg.VTXOActorMsg]
 }
 
-// NewVTXOActor creates a new VTXO actor with the given configuration.
-func NewVTXOActor(cfg *VTXOActorConfig) *VTXOActor {
+// NewVTXOActor creates a new VTXO actor with the given configuration. For
+// actors being recovered from storage (e.g., in forfeiting state), this
+// fetches persisted data like the forfeit tx.
+func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
 	actorID := fmt.Sprintf("vtxo.%s", cfg.VTXO.Outpoint.String())
 	env := NewVTXOEnvironment(
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
@@ -69,14 +71,14 @@ func NewVTXOActor(cfg *VTXOActorConfig) *VTXOActor {
 
 	return &VTXOActor{
 		cfg:   cfg,
-		state: statusToState(cfg.VTXO),
+		state: statusToState(ctx, cfg.VTXO, cfg.Store, cfg.Logger),
 		env:   env,
 	}
 }
 
 // Start initializes the actor and subscribes to block epochs.
 func (a *VTXOActor) Start(ctx context.Context,
-	selfRef actor.TellOnlyRef[VTXOEvent]) error {
+	selfRef actor.TellOnlyRef[actormsg.VTXOActorMsg]) error {
 
 	a.selfRef = selfRef
 
@@ -94,12 +96,23 @@ func (a *VTXOActor) Stop(ctx context.Context) {
 }
 
 // Receive processes incoming events and returns outbox messages for dispatch.
+// The return type is actormsg.VTXOActorResp (interface) which VTXOActorResponse
+// implements via the VTXOActorResp() marker method.
 func (a *VTXOActor) Receive(ctx context.Context,
-	event VTXOEvent) fn.Result[VTXOActorResponse] {
+	event actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
-	transition, err := a.state.ProcessEvent(ctx, event, a.env)
+	vtxoEvent, ok := event.(VTXOEvent)
+	if !ok {
+		return fn.Err[actormsg.VTXOActorResp](
+			fmt.Errorf("unexpected event type: %T", event),
+		)
+	}
+
+	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
-		return fn.Err[VTXOActorResponse](fmt.Errorf("process event: %w", err))
+		return fn.Err[actormsg.VTXOActorResp](
+			fmt.Errorf("process event: %w", err),
+		)
 	}
 
 	priorState := a.state
@@ -107,7 +120,7 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	// Type assert the next state to VTXOState.
 	nextState, ok := transition.NextState.(VTXOState)
 	if !ok {
-		return fn.Err[VTXOActorResponse](fmt.Errorf(
+		return fn.Err[actormsg.VTXOActorResp](fmt.Errorf(
 			"unexpected state type: %T", transition.NextState,
 		))
 	}
@@ -127,7 +140,7 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	// Process persistence updates immediately.
 	a.processOutbox(ctx, outbox)
 
-	return fn.Ok(VTXOActorResponse{
+	return fn.Ok[actormsg.VTXOActorResp](VTXOActorResponse{
 		PriorState: priorState,
 		NewState:   a.state,
 		Outbox:     outbox,
@@ -141,7 +154,23 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 	for _, msg := range outbox {
 		switch m := msg.(type) {
 		case *VTXOStatusUpdate:
-			err := a.cfg.Store.UpdateVTXOStatus(ctx, m.Outpoint, m.NewStatus)
+			// For forfeiting status with a forfeit tx, use
+			// MarkForfeiting to persist both status and the signed
+			// tx for crash recovery.
+			var err error
+			isForfeitingWithTx :=
+				m.NewStatus == VTXOStatusForfeiting &&
+					m.ForfeitTx != nil
+
+			if isForfeitingWithTx {
+				err = a.cfg.Store.MarkForfeiting(
+					ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
+				)
+			} else {
+				err = a.cfg.Store.UpdateVTXOStatus(
+					ctx, m.Outpoint, m.NewStatus,
+				)
+			}
 			if err != nil {
 				a.cfg.Logger.ErrorS(ctx,
 					"Failed to update VTXO status", err,
@@ -151,11 +180,20 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			}
 
 		case *RefreshRequest:
-			// Route refresh request to round actor.
+			// Route refresh request to round actor. Include all
+			// fields needed to build the server's RefreshRequest
+			// and VTXORequest. We reuse the same client key for the
+			// new VTXO.
 			if a.cfg.RoundActor != nil {
+				vtxo := a.cfg.VTXO
 				a.cfg.RoundActor.Tell(ctx, &round.RefreshVTXORequest{
 					VTXOOutpoint: m.VTXOOutpoint,
 					Amount:       m.Amount,
+					NewVTXOKey:   vtxo.ClientKey.PubKey,
+					PkScript:     vtxo.PkScript,
+					OperatorKey:  vtxo.OperatorKey,
+					Expiry:       vtxo.RelativeExpiry,
+					SigningKey:   vtxo.ClientKey,
 				})
 				a.cfg.Logger.InfoS(ctx, "Sent refresh request",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
@@ -209,7 +247,7 @@ func (a *VTXOActor) subscribeBlockEpochs(ctx context.Context) error {
 	callerID := fmt.Sprintf("vtxo.%s", a.cfg.VTXO.Outpoint.String())
 
 	epochRef := chainsource.MapBlockEpoch(a.selfRef,
-		func(epoch chainsource.BlockEpoch) VTXOEvent {
+		func(epoch chainsource.BlockEpoch) actormsg.VTXOActorMsg {
 			return &BlockEpochEvent{
 				Height:    epoch.Height,
 				Hash:      epoch.Hash,
@@ -259,8 +297,15 @@ type VTXOActorResponse struct {
 	Outbox     []VTXOOutMsg
 }
 
+// VTXOActorResp implements actormsg.VTXOActorResp marker interface.
+func (VTXOActorResponse) VTXOActorResp() {}
+
 // statusToState converts a persisted VTXOStatus to the appropriate FSM state.
-func statusToState(vtxo *Descriptor) VTXOState {
+// For forfeiting state, it fetches the persisted forfeit tx for crash recovery.
+func statusToState(
+	ctx context.Context, vtxo *Descriptor, store VTXOStore, logger btclog.Logger,
+) VTXOState {
+
 	switch vtxo.Status {
 	case VTXOStatusLive:
 		return &LiveState{
@@ -272,7 +317,24 @@ func statusToState(vtxo *Descriptor) VTXOState {
 		return &RefreshRequestedState{VTXO: vtxo, RequestedAtHeight: 0}
 
 	case VTXOStatusForfeiting:
-		return &ForfeitingState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
+		// Fetch the persisted forfeit tx for crash recovery.
+		var forfeitTx *wire.MsgTx
+		if store != nil {
+			tx, err := store.GetForfeitTx(ctx, vtxo.Outpoint)
+			if err != nil && logger != nil {
+				logger.WarnS(
+					ctx, "Could not get forfeit tx", err,
+					slog.String("outpoint", vtxo.Outpoint.String()),
+				)
+			}
+			forfeitTx = tx
+		}
+
+		return &ForfeitingState{
+			VTXO:       vtxo,
+			NewRoundID: vtxo.RoundID,
+			ForfeitTx:  forfeitTx,
+		}
 
 	case VTXOStatusForfeited:
 		return &ForfeitedState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
