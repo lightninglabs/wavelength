@@ -1,15 +1,14 @@
 package round
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"maps"
 	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -38,7 +37,7 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
 func failWithNotification(reason string, err error, recoverable bool,
-	roundID string) *ClientStateTransition {
+	roundID fn.Option[RoundID]) *ClientStateTransition {
 
 	return &ClientStateTransition{
 		NextState: &ClientFailedState{
@@ -99,7 +98,7 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 			return failWithNotification(
 				"confirmation event missing transaction",
 				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 
@@ -111,7 +110,7 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 					evt.Outpoint.Index, evt.Outpoint.Hash,
 				),
 				fmt.Errorf("outpoint index out of range"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
@@ -162,7 +161,7 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 			BoardingIntent:  walletIntent,
 			BoardingRequest: boardingRequest,
 			VtxoTemplate:    vtxoTemplate,
-			RoundID:         fn.None[string](),
+			RoundID:         fn.None[RoundID](),
 		}
 
 		intentMap := make(map[wire.OutPoint]BoardingIntent)
@@ -194,7 +193,7 @@ func (s *PendingRoundAssembly) ProcessEvent(
 			return failWithNotification(
 				"confirmation event missing transaction",
 				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 
@@ -206,7 +205,7 @@ func (s *PendingRoundAssembly) ProcessEvent(
 					evt.Outpoint.Index, evt.Outpoint.Hash,
 				),
 				fmt.Errorf("outpoint index out of range"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
@@ -256,7 +255,7 @@ func (s *PendingRoundAssembly) ProcessEvent(
 			BoardingIntent:  walletIntent,
 			BoardingRequest: boardingRequest,
 			VtxoTemplate:    vtxoTemplate,
-			RoundID:         fn.None[string](),
+			RoundID:         fn.None[RoundID](),
 		}
 
 		// Add the newly confirmed intent to our map.
@@ -282,7 +281,7 @@ func (s *PendingRoundAssembly) ProcessEvent(
 			return failWithNotification(
 				"no boarding requests to register",
 				fmt.Errorf("empty boarding requests"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 
@@ -299,12 +298,12 @@ func (s *PendingRoundAssembly) ProcessEvent(
 			return failWithNotification(
 				"no VTXO requests to register",
 				fmt.Errorf("empty VTXO requests"),
-				true, "",
+				true, fn.None[RoundID](),
 			), nil
 		}
 
-		// With all this extract, we'll now send the JoinRoundRequest
-		// to kick off the singing process.
+		// With all this extracted, we'll now send the JoinRoundRequest
+		// to kick off the signing process.
 		return &ClientStateTransition{
 			NextState: &RegistrationSentState{
 				Intents: intentSlice,
@@ -374,12 +373,12 @@ func (s *RoundJoinedState) ProcessEvent(
 	case *CommitmentTxBuilt:
 		return &ClientStateTransition{
 			NextState: &CommitmentTxReceivedState{
-				RoundID:      evt.RoundID,
-				CommitmentTx: evt.Tx,
-				TxID:         evt.Tx.UnsignedTx.TxHash(),
-				VTXTTree:     evt.VTXTTree,
-				Intents:      slices.Clone(s.Intents),
-				ClientTrees:  make(map[SignerKey]*tree.Tree),
+				RoundID:       evt.RoundID,
+				CommitmentTx:  evt.Tx,
+				TxID:          evt.Tx.UnsignedTx.TxHash(),
+				VTXOTreePaths: evt.VTXOTreePaths,
+				Intents:       slices.Clone(s.Intents),
+				ClientTrees:   make(map[SignerKey]*tree.Tree),
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{evt},
@@ -459,7 +458,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
 		// Next, we'll make sure that each of the VTXO requests that we
-		// originally requested are actually present in the VTXT tree
+		// originally requested are actually present in the VTXT trees
 		// that the server sent us.
 		vtxoRequests := fn.Map(
 			s.Intents,
@@ -475,11 +474,21 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 				CoSignerKey: vtxoReq.SigningKey.PubKey,
 			}
 
-			clientTree, err := s.VTXTTree.ValidatePath(
-				vtxoReq.SigningKey.PubKey, expectedLeaf,
-				env.OperatorTerms.PubKey,
-			)
-			if err != nil {
+			// Search through all VTXO trees to find the one
+			// containing this VTXO request.
+			var clientTree *tree.Tree
+			var validateErr error
+			for _, vtxoTree := range s.VTXOTreePaths {
+				clientTree, validateErr = vtxoTree.ValidatePath(
+					vtxoReq.SigningKey.PubKey, expectedLeaf,
+					env.OperatorTerms.PubKey,
+				)
+				if validateErr == nil {
+					// Found the VTXO in this tree.
+					break
+				}
+			}
+			if validateErr != nil {
 				return &ClientStateTransition{
 					NextState: &ClientFailedState{
 						Reason: fmt.Sprintf(
@@ -487,7 +496,24 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 								"failed for VTXO "+
 								"request %d", i,
 						),
-						Error:       err,
+						Error:       validateErr,
+						Recoverable: false,
+					},
+				}, nil
+			}
+
+			// Ensure we actually found a client tree. This handles the
+			// edge case where VTXOTreePaths is empty.
+			if clientTree == nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: fmt.Sprintf(
+							"no client tree found "+
+								"for VTXO request %d", i,
+						),
+						Error: fmt.Errorf(
+							"VTXO tree not found",
+						),
 						Recoverable: false,
 					},
 				}, nil
@@ -495,22 +521,27 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 
 			// Now that we know this VTXO request was properly
 			// included in the tree, we'll store the client-tree
-			// (travesal path from the root to this vtox leaf).
+			// (traversal path from the root to this vtxo leaf).
 			signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
 			clientTrees[signerKey] = clientTree
 		}
 
-		// Make sure all anchor outputs are valid in the tree, if they
+		// Make sure all anchor outputs are valid in each tree. If they
 		// aren't we may not be able to go on chain.
-		if err := s.VTXTTree.ValidateAnchors(); err != nil {
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason: "anchor output " +
-						"validation failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+		for outputIdx, vtxoTree := range s.VTXOTreePaths {
+			if err := vtxoTree.ValidateAnchors(); err != nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: fmt.Sprintf(
+							"anchor output validation "+
+								"failed for output %d",
+							outputIdx,
+						),
+						Error:       err,
+						Recoverable: false,
+					},
+				}, nil
+			}
 		}
 
 		// TODO(roasbeef): for refresh and off boarding, need extra
@@ -525,7 +556,7 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 			NextState: &CommitmentTxValidatedState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
-				VTXTTree:             s.VTXTTree,
+				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              slices.Clone(s.Intents),
 				ClientTrees:          clientTrees,
 				BoardingInputIndices: boardingInputIndices,
@@ -557,21 +588,6 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 
 	switch event.(type) {
 	case *GenerateNonces:
-		// Get sweep tapscript root from the validated tree. This was
-		// set when the operator built the tree.
-		sweepTweak := s.VTXTTree.SweepTapscriptRoot
-
-		// Build the prev output fetcher for signing. The batch output
-		// is needed so the root transaction can look up the output it
-		// spends from the commitment transaction.
-		prevOutFetcher, err := s.VTXTTree.Root.PrevOutputFetcher(
-			s.VTXTTree.BatchOutput,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create prev output "+
-				"fetcher: %w", err)
-		}
-
 		// At this point, all the basic validation checks have passed.
 		// So now we'll generate a musig2 session to create nonces to
 		// sign the VTXO tree. Each VTXO that we created will
@@ -583,12 +599,35 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 					vtxoReq.SigningKey.PubKey,
 				)
 
+				// Get the client tree for this signer key.
+				// The sweep tweak and batch output are
+				// properties of the tree that were set when
+				// the operator built it.
+				clientTree := s.ClientTrees[signerKey]
+				if clientTree == nil {
+					return nil, fmt.Errorf(
+						"no client tree for signer "+
+							"key %x", signerKey[:],
+					)
+				}
+
+				sweepTweak := clientTree.SweepTapscriptRoot
+				prevOutFetcher, err := clientTree.Root.PrevOutputFetcher( //nolint:ll
+					clientTree.BatchOutput,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("failed to "+
+						"create prev output fetcher "+
+						"for signer %x: %w",
+						signerKey[:], err)
+				}
+
 				// TODO(roasbeef): actually use the interface
 				// in front of this?
 				session, err := tree.NewSignerSession(
 					env.Wallet, &vtxoReq.SigningKey,
 					sweepTweak, prevOutFetcher,
-					s.VTXTTree.Root,
+					clientTree.Root,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("failed to "+
@@ -602,22 +641,14 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 		}
 
 		// Now that we have all our sessions created, we'll have each
-		// of them generate nonces to use in tree signing. We collect
-		// all nonces into a nested map: txid -> signerKey -> nonce.
-		// Each signing key (VTXO) contributes its own nonce for each
-		// transaction in its path.
-		allNonces := make(map[chainhash.Hash]map[SignerKey][]byte)
+		// of them generate nonces to use in tree signing. The server
+		// expects nonces grouped by signer key first, then by txid.
+		allNonces := make(
+			map[SignerKey]map[tree.TxID]tree.Musig2PubNonce,
+		)
 		for signerKey, session := range musig2Sessions {
 			nonces := session.GetNonces()
-
-			for txid, nonce := range nonces {
-				if allNonces[txid] == nil {
-					allNonces[txid] = make(
-						map[SignerKey][]byte,
-					)
-				}
-				allNonces[txid][signerKey] = nonce[:]
-			}
+			allNonces[signerKey] = nonces
 		}
 
 		// MuSig2 nonces have been generated locally. Send them to the
@@ -631,7 +662,7 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			NextState: &NoncesSentState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
-				VTXTTree:             s.VTXTTree,
+				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              slices.Clone(s.Intents),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       musig2Sessions,
@@ -664,13 +695,8 @@ func (s *NoncesSentState) ProcessEvent(
 		// The server has already aggregated all participants' nonces
 		// using MuSig2 nonce aggregation.
 		//
-		// Convert the raw bytes to Musig2PubNonce for registration.
-		aggNoncesMap := make(map[tree.TxID]tree.Musig2PubNonce)
-		for txid, nonceBytes := range evt.AggregatedNonces {
-			var nonce tree.Musig2PubNonce
-			copy(nonce[:], nonceBytes)
-			aggNoncesMap[txid] = nonce
-		}
+		// The event now contains properly typed nonces directly.
+		aggNoncesMap := evt.AggNonces
 
 		// With the nonces grouped, we need to register the nonces with
 		// each client session.
@@ -688,11 +714,11 @@ func (s *NoncesSentState) ProcessEvent(
 			NextState: &NoncesAggregatedState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
-				VTXTTree:             s.VTXTTree,
+				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              slices.Clone(s.Intents),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
-				AggregatedNonces:     evt.AggregatedNonces,
+				AggNonces:            evt.AggNonces,
 				BoardingInputIndices: s.BoardingInputIndices,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
@@ -726,10 +752,13 @@ func (s *NoncesAggregatedState) ProcessEvent(
 	case *GeneratePartialSigs:
 		// At this stage, the nonces have been aggregated for each
 		// client, so now we'll generate and send our partial
-		// signatures.
-		var submitPartialSigs []ClientOutMsg
+		// signatures. The server expects signatures grouped by signer
+		// key first, then by transaction ID.
+		allSignatures := make(
+			map[SignerKey]map[tree.TxID]*musig2.PartialSignature,
+		)
 
-		for _, musig2Session := range s.Musig2Sessions {
+		for signerKey, musig2Session := range s.Musig2Sessions {
 			// Generate partial signatures for all transactions in
 			// our path. The map is keyed by transaction ID.
 			partialSigs, err := musig2Session.Signatures(true)
@@ -738,27 +767,14 @@ func (s *NoncesAggregatedState) ProcessEvent(
 					"partial signatures: %w", err)
 			}
 
-			// Encode each partial signature, preserving the txid
-			// association.
-			partialSigBytes := make(
-				map[chainhash.Hash][]byte, len(partialSigs),
-			)
-			for txid, sig := range partialSigs {
-				var buf bytes.Buffer
-				if err := sig.Encode(&buf); err != nil {
-					return nil, fmt.Errorf("failed to "+
-						"encode partial sig for "+
-						"tx %s: %w", txid, err)
-				}
-				partialSigBytes[txid] = buf.Bytes()
-			}
+			allSignatures[signerKey] = partialSigs
+		}
 
-			submitPartialSigs = append(
-				submitPartialSigs, &SubmitPartialSigRequest{
-					RoundID:     s.RoundID,
-					PartialSigs: partialSigBytes,
-				},
-			)
+		// Create a single message with all signatures grouped by signer
+		// key.
+		submitPartialSigsMsg := &SubmitPartialSigRequest{
+			RoundID:    s.RoundID,
+			Signatures: allSignatures,
 		}
 
 		// Partial MuSig2 signatures have been generated using the
@@ -768,15 +784,14 @@ func (s *NoncesAggregatedState) ProcessEvent(
 			NextState: &PartialSigsSentState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
-				VTXTTree:             s.VTXTTree,
+				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              slices.Clone(s.Intents),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
 				BoardingInputIndices: s.BoardingInputIndices,
 			},
-			// TODO(roasbeef): group into a single message?
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: submitPartialSigs,
+				Outbox: []ClientOutMsg{submitPartialSigsMsg},
 			}),
 		}, nil
 
@@ -797,19 +812,31 @@ func (s *PartialSigsSentState) ProcessEvent(
 		// server after the operator aggregated all partial signatures.
 		//
 		// Now, we'll validate that the aggregated signatures are valid
-		// for the VTXT before proceeding. This prevents the operator
+		// for each VTXT before proceeding. This prevents the operator
 		// from providing invalid signatures that would make our VTXOs
 		// unspendable.
-		err := s.VTXTTree.ValidateAndSubmitSignatures(evt.Signatures)
-		if err != nil {
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason: "VTXT signature " +
-						"validation failed",
-					Error:       err,
-					Recoverable: false,
-				},
-			}, nil
+		//
+		// Convert the typed signatures to raw bytes for validation.
+		sigBytes := make(map[tree.TxID][]byte, len(evt.AggSigs))
+		for txid, sig := range evt.AggSigs {
+			sigBytes[txid] = sig.Serialize()
+		}
+		for outputIdx, vtxoTree := range s.VTXOTreePaths {
+			err := vtxoTree.ValidateAndSubmitSignatures(sigBytes)
+			if err != nil {
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: fmt.Sprintf(
+							"VTXT signature "+
+								"validation "+
+								"failed: %d",
+							outputIdx,
+						),
+						Error:       err,
+						Recoverable: false,
+					},
+				}, nil
+			}
 		}
 
 		// Now that we know all the signatures are valid, we'll sign
@@ -830,7 +857,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 		prevOutFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
 		sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
 
-		var boardingSigs []*schnorr.Signature
+		// Build structured boarding input signatures for each intent.
+		var boardingInputSigs []*types.BoardingInputSignature
 		for _, boardingIntent := range s.Intents {
 			outpoint := boardingIntent.BoardingRequest.Outpoint
 			inputIdx, found := s.BoardingInputIndices[*outpoint]
@@ -877,38 +905,41 @@ func (s *PartialSigsSentState) ProcessEvent(
 				return nil, fmt.Errorf("signature is not a " +
 					"schnorr signature")
 			}
-			boardingSigs = append(boardingSigs, schnorrSig)
+
+			// Build the structured boarding input signature.
+			inputSig := &types.BoardingInputSignature{
+				InputIndex:      inputIdx,
+				Outpoint:        *outpoint,
+				ClientSignature: schnorrSig,
+			}
+			boardingInputSigs = append(
+				boardingInputSigs, inputSig,
+			)
 		}
 
-		sigBytes := make([][]byte, len(boardingSigs))
-		for i, sig := range boardingSigs {
-			sigBytes[i] = sig.Serialize()
-		}
-		if len(sigBytes) != len(s.Intents) {
-			return nil, fmt.Errorf("signature count %d != intent "+
-				"count %d", len(sigBytes), len(s.Intents))
+		numSigs := len(boardingInputSigs)
+		if numSigs != len(s.Intents) {
+			return nil, fmt.Errorf("signature count %d != "+
+				"intent count %d", numSigs, len(s.Intents))
 		}
 
-		outboxMsgs := make([]ClientOutMsg, 0, len(sigBytes))
-		for i, intent := range s.Intents {
-			if intent.Address.Address == nil {
-				return nil, fmt.Errorf("intent %d missing "+
-					"boarding address", i)
-			}
-			forfeitSig := &SubmitForfeitSigRequest{
-				RoundID:     s.RoundID,
-				ForfeitSigs: [][]byte{sigBytes[i]},
-			}
-			outboxMsgs = append(outboxMsgs, forfeitSig)
+		// Create a single forfeit signature request with all
+		// signatures.
+		forfeitSigReq := &SubmitForfeitSigRequest{
+			RoundID:    s.RoundID,
+			Signatures: boardingInputSigs,
 		}
 
 		txid := tx.TxHash()
 		callerID := fmt.Sprintf("commitment-%s", txid.String())
-		outboxMsgs = append(outboxMsgs, &RegisterConfirmationRequest{
-			CallerID:    callerID,
-			Txid:        &txid,
-			TargetConfs: env.OperatorTerms.MinConfirmations,
-		})
+		outboxMsgs := []ClientOutMsg{
+			forfeitSigReq,
+			&RegisterConfirmationRequest{
+				CallerID:    callerID,
+				Txid:        &txid,
+				TargetConfs: env.OperatorTerms.MinConfirmations,
+			},
+		}
 
 		// Checkpoint the round state at the "point of no return".
 		// After sending boarding input signatures, the server may
@@ -926,7 +957,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 		round := &Round{
 			RoundID:         s.RoundID,
 			CommitmentTx:    fn.Some(s.CommitmentTx),
-			VTXTTree:        fn.Some(s.VTXTTree),
+			VTXOTreePaths:   fn.Some(s.VTXOTreePaths),
 			BoardingIntents: adoptedIntents,
 		}
 
@@ -934,14 +965,14 @@ func (s *PartialSigsSentState) ProcessEvent(
 		// of no return". The next state is persisted so restart can
 		// recover to InputSigSentState.
 		nextState := &InputSigSentState{
-			RoundID:      s.RoundID,
-			CommitmentTx: s.CommitmentTx,
-			VTXTTree:     s.VTXTTree,
-			Intents:      slices.Clone(s.Intents),
-			ClientTrees:  s.ClientTrees,
-			InputSigs:    sigBytes,
+			RoundID:       s.RoundID,
+			CommitmentTx:  s.CommitmentTx,
+			VTXOTreePaths: s.VTXOTreePaths,
+			Intents:       slices.Clone(s.Intents),
+			ClientTrees:   s.ClientTrees,
+			InputSigs:     boardingInputSigs,
 		}
-		err = env.RoundStore.CommitState(ctx, round, nextState)
+		err := env.RoundStore.CommitState(ctx, round, nextState)
 		if err != nil {
 			return nil, fmt.Errorf("failed to commit round "+
 				"state: %w", err)
@@ -975,16 +1006,16 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 // buildClientVTXOs constructs ClientVTXO instances from the boarding intents
 // and client trees.
-func buildClientVTXOs(intents []BoardingIntent,
-	trees map[SignerKey]*tree.Tree, roundID string) ([]*ClientVTXO, error) {
+func buildClientVTXOs(intents []BoardingIntent, trees map[SignerKey]*tree.Tree,
+	roundID RoundID) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, intent := range intents {
 		// Each intent has a VTXO template with one or more requests.
 		for _, req := range intent.VtxoTemplate {
 			signerKey := NewSignerKey(req.SigningKey.PubKey)
-			tree := trees[signerKey]
-			if tree == nil {
+			clientTree := trees[signerKey]
+			if clientTree == nil {
 				return nil, fmt.Errorf("missing client tree " +
 					"for signing key")
 			}
@@ -993,7 +1024,7 @@ func buildClientVTXOs(intents []BoardingIntent,
 			// address.
 			clientKeyDesc := intent.Address.KeyDesc
 
-			leaves := tree.Root.GetLeafNodes()
+			leaves := clientTree.Root.GetLeafNodes()
 
 			for _, leaf := range leaves {
 				outpoint, err := leaf.GetNonAnchorOutpoint()
@@ -1009,7 +1040,7 @@ func buildClientVTXOs(intents []BoardingIntent,
 					Expiry:      req.Expiry,
 					ClientKey:   clientKeyDesc,
 					OperatorKey: req.OperatorKey,
-					TreePath:    tree,
+					TreePath:    clientTree,
 					RoundID:     fn.Some(roundID),
 				})
 			}
