@@ -172,6 +172,19 @@ type VTXOStore interface {
 		ctx context.Context, outpoint wire.OutPoint, status VTXOStatus,
 	) error
 
+	// MarkForfeiting transitions a VTXO to forfeiting state and persists
+	// the signed forfeit transaction for crash recovery. Called when
+	// entering the forfeit flow before the new round's commitment confirms.
+	MarkForfeiting(ctx context.Context, outpoint wire.OutPoint,
+		roundID string, forfeitTx *wire.MsgTx) error
+
+	// GetForfeitTx retrieves the persisted forfeit transaction for a VTXO.
+	// Used during recovery to restore the ForfeitingState with its tx.
+	// Returns nil if no forfeit tx is stored for this outpoint.
+	GetForfeitTx(ctx context.Context, outpoint wire.OutPoint) (
+		*wire.MsgTx, error,
+	)
+
 	// MarkForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID. This is called when the new round's commitment
 	// transaction confirms.
