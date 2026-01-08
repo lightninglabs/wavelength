@@ -10,12 +10,18 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// VTXOActorRef is the actor reference type for VTXO actors.
-type VTXOActorRef = actor.ActorRef[VTXOEvent, VTXOActorResponse]
+// VTXOActorRef is the actor reference type for VTXO actors. Uses
+// actormsg.VTXOActorMsg as the message type to enable both round and vtxo
+// packages to use the same service key for registration and lookup.
+type VTXOActorRef = actor.ActorRef[
+	actormsg.VTXOActorMsg, actormsg.VTXOActorResp,
+]
 
 // ManagerConfig holds configuration for the VTXO Manager.
 type ManagerConfig struct {
@@ -112,10 +118,10 @@ func (m *Manager) Receive(ctx context.Context,
 	msg ManagerMsg) fn.Result[ManagerResp] {
 
 	switch req := msg.(type) {
-	case *VTXOCreatedMsg:
+	case *round.VTXOCreatedNotification:
 		return m.handleVTXOCreated(ctx, req)
 
-	case *VTXOTerminatedMsg:
+	case *round.VTXOTerminatedMsg:
 		return m.handleVTXOTerminated(ctx, req)
 
 	case *GetActiveVTXOCountRequest:
@@ -132,7 +138,7 @@ func (m *Manager) Receive(ctx context.Context,
 
 // handleVTXOCreated spawns a new VTXO actor for each created VTXO.
 func (m *Manager) handleVTXOCreated(ctx context.Context,
-	msg *VTXOCreatedMsg) fn.Result[ManagerResp] {
+	msg *round.VTXOCreatedNotification) fn.Result[ManagerResp] {
 
 	for _, clientVTXO := range msg.VTXOs {
 		outpoint := clientVTXO.Outpoint
@@ -146,7 +152,16 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 			continue
 		}
 
-		descriptor := clientVTXOToDescriptor(clientVTXO, msg)
+		result := clientVTXOToDescriptor(clientVTXO, msg)
+		descriptor, err := result.Unpack()
+		if err != nil {
+			m.cfg.Logger.ErrorS(ctx,
+				"Failed to build descriptor", err,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			continue
+		}
 
 		if err := m.cfg.Store.SaveVTXO(ctx, descriptor); err != nil {
 			m.cfg.Logger.ErrorS(ctx, "Failed to save VTXO", err,
@@ -177,9 +192,10 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 	return fn.Ok[ManagerResp](&VTXOCreatedResp{})
 }
 
-// handleVTXOTerminated removes a VTXO actor from tracking.
+// handleVTXOTerminated removes a VTXO actor from tracking when it reaches
+// a terminal state (Forfeited, Failed, etc.).
 func (m *Manager) handleVTXOTerminated(ctx context.Context,
-	msg *VTXOTerminatedMsg) fn.Result[ManagerResp] {
+	msg *round.VTXOTerminatedMsg) fn.Result[ManagerResp] {
 
 	delete(m.actors, msg.Outpoint)
 
@@ -211,7 +227,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 		Manager:       m.managerRef,
 	}
 
-	vtxoActor := NewVTXOActor(actorCfg)
+	vtxoActor := NewVTXOActor(ctx, actorCfg)
 	ref := serviceKey.Spawn(m.cfg.ActorSystem, actorID, vtxoActor)
 
 	// Start the actor to subscribe to block epochs. ActorRef embeds
@@ -227,24 +243,44 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 	return ref, nil
 }
 
-// clientVTXOToDescriptor converts a round.ClientVTXO to a Descriptor.
+// clientVTXOToDescriptor converts a round.ClientVTXO to a Descriptor using
+// metadata from the VTXOCreatedNotification. TreeDepth and TapScript are
+// computed from the VTXO data since each VTXO may be at a different depth.
 func clientVTXOToDescriptor(cv *round.ClientVTXO,
-	msg *VTXOCreatedMsg) *Descriptor {
+	msg *round.VTXOCreatedNotification) fn.Result[*Descriptor] {
 
-	return &Descriptor{
+	// Compute tree depth from the VTXO's path. Each VTXO may be at a
+	// different depth in the commitment tree.
+	var treeDepth int
+	if cv.TreePath != nil {
+		treeDepth = cv.TreePath.Depth()
+	}
+
+	// Construct the TapScript from the client and operator keys. This is
+	// the standard VTXO tapscript with collaborative and timeout paths.
+	tapscript, err := scripts.VTXOTapScript(
+		cv.ClientKey.PubKey, cv.OperatorKey, cv.Expiry,
+	)
+	if err != nil {
+		return fn.Err[*Descriptor](
+			fmt.Errorf("build tapscript: %w", err),
+		)
+	}
+
+	return fn.Ok(&Descriptor{
 		Outpoint:       cv.Outpoint,
 		Amount:         cv.Amount,
 		PkScript:       cv.PkScript,
 		ClientKey:      cv.ClientKey,
 		OperatorKey:    cv.OperatorKey,
-		TapScript:      msg.TapScript,
+		TapScript:      tapscript,
 		TreePath:       cv.TreePath,
 		RoundID:        msg.RoundID,
 		CommitmentTxID: msg.CommitmentTxID,
 		BatchExpiry:    msg.BatchExpiry,
 		RelativeExpiry: cv.Expiry,
-		TreeDepth:      msg.TreeDepth,
+		TreeDepth:      treeDepth,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,
-	}
+	})
 }
