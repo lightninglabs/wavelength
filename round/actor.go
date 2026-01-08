@@ -18,6 +18,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -608,6 +609,12 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *ConfirmationEvent:
 		return a.handleConfirmation(ctx, m)
+
+	case *RefreshVTXORequest:
+		return a.handleRefreshVTXORequest(ctx, m)
+
+	case *ForfeitSignatureResponse:
+		return a.handleForfeitSignatureResponse(ctx, m)
 
 	default:
 		return fn.Err[ClientResp](fmt.Errorf(
@@ -1250,6 +1257,46 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				slog.String("reason", m.Reason),
 				slog.Bool("recoverable", m.Recoverable))
 
+		case *ForfeitRequestToVTXO:
+			// Route forfeit request to VTXO actor via service key.
+			// The VTXO actor will sign the forfeit tx and respond
+			// with ForfeitSignatureResponse.
+			if a.cfg.ActorSystem != nil {
+				serviceKey := actormsg.VTXOActorServiceKey(
+					m.VTXOOutpoint,
+				)
+				serviceKey.Ref(a.cfg.ActorSystem).Tell(
+					ctx, &ForfeitRequestEvent{
+						RoundID:               m.RoundID,
+						ConnectorOutpoint:     m.ConnectorOutpoint,
+						ConnectorPkScript:     m.ConnectorPkScript,
+						ConnectorAmount:       m.ConnectorAmount,
+						ServerForfeitPkScript: m.ServerForfeitPkScript,
+					},
+				)
+				log.InfoS(ctx, "Sent forfeit request to VTXO actor",
+					"outpoint", m.VTXOOutpoint.String(),
+					"round_id", m.RoundID)
+			}
+
+		case *ForfeitConfirmedToVTXO:
+			// Notify VTXO actor that forfeit is confirmed. The old
+			// VTXO is now permanently forfeited.
+			if a.cfg.ActorSystem != nil {
+				serviceKey := actormsg.VTXOActorServiceKey(
+					m.VTXOOutpoint,
+				)
+				serviceKey.Ref(a.cfg.ActorSystem).Tell(
+					ctx, &ForfeitConfirmedEvent{
+						CommitmentTxID: m.CommitmentTxID,
+						BlockHeight:    m.BlockHeight,
+					},
+				)
+				log.InfoS(ctx, "Sent forfeit confirmation to VTXO actor",
+					"outpoint", m.VTXOOutpoint.String(),
+					"commitment_txid", m.CommitmentTxID.String())
+			}
+
 		default:
 			// Unknown outbox message type. Log for debugging.
 			a.log.DebugS(ctx, "Ignoring unknown outbox message type",
@@ -1259,4 +1306,85 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 	}
 
 	return nil
+}
+
+// handleRefreshVTXORequest processes a refresh request from a VTXO actor.
+// The VTXO is approaching expiry and needs to be included in the next batch
+// swap round. The request is forwarded to a pending round FSM which tracks it
+// alongside boarding intents.
+func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
+	req *RefreshVTXORequest) fn.Result[ClientResp] {
+
+	// Find a pending round or create one if none exists.
+	roundFSM := a.findPendingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"failed to create round for refresh: %w", err,
+			))
+		}
+	}
+
+	// Forward to the round FSM. The FSM tracks refreshing VTXOs in its
+	// state (similar to how it tracks boarding intents).
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing refresh request: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Queued VTXO for refresh",
+		slog.String("outpoint", req.VTXOOutpoint.String()),
+		slog.Int64("amount", req.Amount))
+
+	// Send acknowledgment back to the VTXO actor using Router pattern.
+	// The RoundID is empty since we haven't assigned it to a round yet.
+	if a.cfg.ActorSystem != nil {
+		serviceKey := actormsg.VTXOActorServiceKey(req.VTXOOutpoint)
+		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &RefreshAcknowledgedEvent{
+			RoundID: "",
+		})
+	}
+
+	return fn.Ok[ClientResp](nil)
+}
+
+// handleForfeitSignatureResponse processes a forfeit signature from a VTXO
+// actor. The VTXO actor has signed the forfeit transaction as part of a batch
+// swap round. The signature is forwarded to the round's FSM for tracking.
+func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
+	resp *ForfeitSignatureResponse) fn.Result[ClientResp] {
+
+	roundIDStr := resp.RoundID
+
+	// Look up the round by its RoundID key string.
+	keyStr := RoundKeyStr(roundIDStr)
+	roundFSM, exists := a.rounds[keyStr]
+	if !exists {
+		a.log.WarnS(ctx, "Forfeit signature for unknown round", nil,
+			slog.String("outpoint", resp.VTXOOutpoint.String()),
+			slog.String("round_id", roundIDStr))
+
+		return fn.Err[ClientResp](fmt.Errorf(
+			"unknown round %s for forfeit signature", roundIDStr,
+		))
+	}
+
+	// Forward to round FSM. The FSM tracks collected signatures and emits
+	// a server message when all expected signatures are collected.
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, resp)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing forfeit signature: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Collected forfeit signature",
+		slog.String("outpoint", resp.VTXOOutpoint.String()),
+		slog.String("round_id", roundIDStr))
+
+	return fn.Ok[ClientResp](nil)
 }
