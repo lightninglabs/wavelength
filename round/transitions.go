@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -14,6 +15,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -174,6 +176,21 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			},
 		}, nil
 
+	case *RefreshVTXORequest:
+		// A VTXO actor requested refresh. Start assembling a round with
+		// this refresh request. Similar to boarding intents, we track
+		// refreshing VTXOs in the PendingRoundAssembly state.
+		refreshMap := make(map[wire.OutPoint]*RefreshVTXORequest)
+		refreshMap[evt.VTXOOutpoint] = evt
+
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding:        nil,
+				VTXOs:           nil,
+				RefreshingVTXOs: refreshMap,
+			},
+		}, nil
+
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
@@ -182,6 +199,8 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 // ProcessEvent for PendingRoundAssembly tracks confirmed boarding intents and
 // transitions to registration once all are ready.
+//
+//nolint:funlen
 func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 	event ClientEvent, env *ClientEnvironment) (*ClientStateTransition,
 	error) {
@@ -267,8 +286,9 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding: updatedBoardingIntents,
-				VTXOs:    slices.Clone(s.VTXOs),
+				Boarding:        updatedBoardingIntents,
+				VTXOs:           slices.Clone(s.VTXOs),
+				RefreshingVTXOs: s.RefreshingVTXOs,
 			},
 		}, nil
 
@@ -284,8 +304,28 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding: slices.Clone(s.Boarding),
-				VTXOs:    updatedVTXOIntents,
+				Boarding:        slices.Clone(s.Boarding),
+				VTXOs:           updatedVTXOIntents,
+				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
+			},
+		}, nil
+
+	case *RefreshVTXORequest:
+		// A VTXO actor requested refresh. Add to our refreshing map.
+		// We stay in this state and accumulate refresh requests.
+		updatedRefreshing := maps.Clone(s.RefreshingVTXOs)
+		if updatedRefreshing == nil {
+			updatedRefreshing = make(
+				map[wire.OutPoint]*RefreshVTXORequest,
+			)
+		}
+		updatedRefreshing[evt.VTXOOutpoint] = evt
+
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding:        slices.Clone(s.Boarding),
+				VTXOs:           slices.Clone(s.VTXOs),
+				RefreshingVTXOs: updatedRefreshing,
 			},
 		}, nil
 
@@ -297,11 +337,6 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			slog.Int("boarding_intent_count", len(s.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.VTXOs)))
 
-		intent := Intents{
-			Boarding: slices.Clone(s.Boarding),
-			VTXOs:    slices.Clone(s.VTXOs),
-		}
-
 		// Calculate total input amount from all boarding intents.
 		var totalInput btcutil.Amount
 		for _, boarding := range s.Boarding {
@@ -312,6 +347,13 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		var totalOutput btcutil.Amount
 		for _, vtxo := range s.VTXOs {
 			totalOutput += vtxo.Amount
+		}
+
+		// Include refresh amounts in inputs only. The forfeited VTXO
+		// value contributes to totalInput. Outputs are determined by
+		// VTXOReqs and LeaveReqs (not assumed 1:1 with refresh).
+		for _, req := range s.RefreshingVTXOs {
+			totalInput += btcutil.Amount(req.Amount)
 		}
 
 		// Validate that we have outputs to create.
@@ -362,9 +404,30 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
+		// Build refresh requests for VTXOs being refreshed. The actual
+		// VTXO outputs are specified via VTXOReqs (not assumed 1:1).
+		numRefresh := len(s.RefreshingVTXOs)
+		refreshReqs := make([]*RefreshRequest, 0, numRefresh)
+		for _, req := range s.RefreshingVTXOs {
+			refreshReqs = append(refreshReqs, &RefreshRequest{
+				VTXOOutpoint: req.VTXOOutpoint,
+				Amount:       btcutil.Amount(req.Amount),
+				NewVTXOKey:   req.NewVTXOKey,
+			})
+		}
+
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
-			slog.Int("vtxo_requests", len(vtxoReqs)))
+			slog.Int("vtxo_requests", len(vtxoReqs)),
+			slog.Int("refresh_requests", len(refreshReqs)))
+
+		// Build Intents with all VTXOs and refreshes for downstream
+		// validation.
+		intent := Intents{
+			Boarding:  slices.Clone(s.Boarding),
+			VTXOs:     vtxoReqs,
+			Refreshes: refreshReqs,
+		}
 
 		// With all this extracted, we'll now send the JoinRoundRequest
 		// to kick off the signing process.
@@ -377,6 +440,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 					&JoinRoundRequest{
 						BoardingRequests: boardingReqs,
 						VTXORequests:     vtxoReqs,
+						RefreshRequests:  refreshReqs,
 					},
 				},
 			}),
@@ -519,23 +583,29 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
 
-		// First, well make sure that all boarding UTXOs are present
-		// in the round transaction and build the outpoint-to-index map.
-		boardingInputIndices, err := validateBoardingInputs(
-			s.CommitmentTx.UnsignedTx, s.Intents.Boarding,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Commitment tx validation failed", err,
-				slog.String("round_id", s.RoundID.String()))
+		// Validate boarding inputs if we have any boarding intents.
+		// Refresh-only rounds have no boarding inputs to validate.
+		var boardingInputIndices map[wire.OutPoint]int
+		if len(s.Intents.Boarding) > 0 {
+			var err error
+			boardingInputIndices, err = validateBoardingInputs(
+				s.CommitmentTx.UnsignedTx, s.Intents.Boarding,
+			)
+			if err != nil {
+				env.Log.WarnS(ctx, "Commitment tx validation failed", err,
+					slog.String("round_id", s.RoundID.String()))
 
-			return &ClientStateTransition{
-				NextState: &ClientFailedState{
-					Reason: "commitment tx " +
-						"validation failed",
-					Error:       err,
-					Recoverable: true,
-				},
-			}, nil
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "commitment tx " +
+							"validation failed",
+						Error:       err,
+						Recoverable: true,
+					},
+				}, nil
+			}
+		} else {
+			boardingInputIndices = make(map[wire.OutPoint]int)
 		}
 
 		env.Log.DebugS(ctx, "Validated boarding inputs in commitment tx",
@@ -624,27 +694,26 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 			}
 		}
 
-		// TODO(roasbeef): for refresh and off boarding, need extra
-		// validation for:
-		//   * connector tree
-		//   * outputs on commit, etc
-
 		env.Log.InfoS(ctx, "Commitment transaction validated successfully",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("client_trees", len(clientTrees)),
 			slog.Int("vtxo_tree_count", len(s.VTXOTreePaths)))
 
-		// We'll now transition to the CommitmentTxValidatedState, and
-		// emit an internal generate nonces event so we can propagate
-		// the state.
+		// Proceed to nonce generation. Forfeit mappings (if any) are
+		// carried forward through the MuSig2 signing states. Forfeit
+		// signatures are collected AFTER VTXO tree signing is complete,
+		// ensuring clients only forfeit old VTXOs after verifying new
+		// VTXOs are properly signed.
 		return &ClientStateTransition{
 			NextState: &CommitmentTxValidatedState{
-				RoundID:              s.RoundID,
-				CommitmentTx:         s.CommitmentTx,
-				VTXOTreePaths:        s.VTXOTreePaths,
-				Intents:              s.Intents.Clone(),
-				ClientTrees:          clientTrees,
-				BoardingInputIndices: boardingInputIndices,
+				RoundID:               s.RoundID,
+				CommitmentTx:          s.CommitmentTx,
+				VTXOTreePaths:         s.VTXOTreePaths,
+				Intents:               s.Intents.Clone(),
+				ClientTrees:           clientTrees,
+				BoardingInputIndices:  boardingInputIndices,
+				ForfeitMappings:       evt.ForfeitMappings,
+				ServerForfeitPkScript: evt.ServerForfeitPkScript,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{&GenerateNonces{}},
@@ -753,13 +822,15 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 
 		return &ClientStateTransition{
 			NextState: &NoncesSentState{
-				RoundID:              s.RoundID,
-				CommitmentTx:         s.CommitmentTx,
-				VTXOTreePaths:        s.VTXOTreePaths,
-				Intents:              s.Intents.Clone(),
-				ClientTrees:          s.ClientTrees,
-				Musig2Sessions:       musig2Sessions,
-				BoardingInputIndices: s.BoardingInputIndices,
+				RoundID:               s.RoundID,
+				CommitmentTx:          s.CommitmentTx,
+				VTXOTreePaths:         s.VTXOTreePaths,
+				Intents:               s.Intents.Clone(),
+				ClientTrees:           s.ClientTrees,
+				Musig2Sessions:        musig2Sessions,
+				BoardingInputIndices:  s.BoardingInputIndices,
+				ForfeitMappings:       s.ForfeitMappings,
+				ServerForfeitPkScript: s.ServerForfeitPkScript,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{nonceMsg},
@@ -769,6 +840,249 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
+	}
+}
+
+// ProcessEvent for ForfeitSignaturesCollectingState. This state handles the
+// collection of forfeit signatures from VTXO actors after VTXO tree signing
+// is complete. Each VTXO actor signs its forfeit transaction and sends a
+// ForfeitSignatureResponse. Once all expected signatures are collected, we
+// sign boarding inputs, submit all signatures to the server, and transition
+// to InputSigSentState.
+//
+//nolint:funlen
+func (s *ForfeitSignaturesCollectingState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *ForfeitSignatureResponse:
+		// Validate this is a response we're expecting.
+		connectorInfo, expected := s.ExpectedForfeits[evt.VTXOOutpoint]
+		if !expected {
+			return nil, fmt.Errorf("unexpected forfeit signature "+
+				"for VTXO %s", evt.VTXOOutpoint)
+		}
+
+		// Validate the forfeit transaction structure using lib/tx. The
+		// VTXOAmount check ensures the penalty output equals the
+		// forfeited VTXO value, preventing value theft.
+		params := tx.ForfeitTxParams{
+			VTXOOutpoint:        evt.VTXOOutpoint,
+			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
+			ServerForfeitScript: s.ServerForfeitPkScript,
+			ExpectedAmount:      connectorInfo.VTXOAmount,
+		}
+		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
+		if err != nil {
+			return nil, fmt.Errorf("invalid forfeit tx for VTXO "+
+				"%s: %w", evt.VTXOOutpoint, err)
+		}
+
+		// Check for duplicate response.
+		_, already := s.CollectedForfeits[evt.VTXOOutpoint]
+		if already {
+			// Already have this signature, ignore duplicate.
+			return &ClientStateTransition{NextState: s}, nil
+		}
+
+		// Add to collected signatures in an immutable way. FSM states
+		// should be treated as immutable to prevent side effects.
+		updatedForfeits := maps.Clone(s.CollectedForfeits)
+		updatedForfeits[evt.VTXOOutpoint] = evt
+
+		// Check if all forfeit signatures have been collected.
+		if len(updatedForfeits) < len(s.ExpectedForfeits) {
+			// Still waiting for more signatures - return new state
+			// with explicit struct to ensure immutability.
+			return &ClientStateTransition{
+				//nolint:ll
+				NextState: &ForfeitSignaturesCollectingState{
+					RoundID:               s.RoundID,
+					CommitmentTx:          s.CommitmentTx,
+					VTXOTreePaths:         s.VTXOTreePaths,
+					Intents:               s.Intents.Clone(),
+					ClientTrees:           s.ClientTrees,
+					BoardingInputIndices:  s.BoardingInputIndices,
+					ExpectedForfeits:      s.ExpectedForfeits,
+					CollectedForfeits:     updatedForfeits,
+					ServerForfeitPkScript: s.ServerForfeitPkScript,
+				},
+			}, nil
+		}
+
+		// All forfeit signatures collected! Build the submission.
+		forfeitSigs := make(map[wire.OutPoint][]byte)
+		forfeitTxs := make(map[wire.OutPoint]*wire.MsgTx)
+		forfeitedVTXOs := make([]wire.OutPoint, 0, len(updatedForfeits))
+		for outpoint, resp := range updatedForfeits {
+			forfeitSigs[outpoint] = resp.Signature
+			forfeitTxs[outpoint] = resp.ForfeitTx
+			forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
+		}
+
+		env.Log.InfoS(ctx, "All forfeit signatures collected, signing boarding inputs",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("forfeit_count", len(forfeitedVTXOs)),
+			slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
+
+		// Now sign boarding inputs. Build PrevOutputFetcher from PSBT.
+		commitTx := s.CommitmentTx.UnsignedTx
+		prevOuts := make(map[wire.OutPoint]*wire.TxOut)
+		for i, pIn := range s.CommitmentTx.Inputs {
+			if pIn.WitnessUtxo == nil {
+				return nil, fmt.Errorf("PSBT input %d missing "+
+					"WitnessUtxo", i)
+			}
+			outpoint := commitTx.TxIn[i].PreviousOutPoint
+			prevOuts[outpoint] = pIn.WitnessUtxo
+		}
+		prevOutFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+		sigHashes := txscript.NewTxSigHashes(commitTx, prevOutFetcher)
+
+		// Build boarding input signatures.
+		var boardingInputSigs []*types.BoardingInputSignature
+		for _, boardingIntent := range s.Intents.Boarding {
+			outpoint := boardingIntent.Request.Outpoint
+			inputIdx, found := s.BoardingInputIndices[*outpoint]
+			if !found {
+				return nil, fmt.Errorf("no input index "+
+					"found for boarding outpoint %s",
+					outpoint)
+			}
+
+			spendInfo, err := scripts.NewVTXOSpendInfo(
+				boardingIntent.Address.Tapscript,
+				scripts.VTXOCollabPathLeaf,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			chainInfo := boardingIntent.ChainInfo
+			addr := boardingIntent.Address.Address
+			amt := chainInfo.Amount
+
+			pkScript, err := txscript.PayToAddrScript(addr)
+			if err != nil {
+				return nil, fmt.Errorf("pay to addr script: %w",
+					err)
+			}
+
+			output := &wire.TxOut{
+				Value:    int64(amt),
+				PkScript: pkScript,
+			}
+
+			signature, err := scripts.SignVTXOCollabInput(
+				env.Wallet, commitTx, inputIdx, spendInfo,
+				&boardingIntent.Address.KeyDesc, output,
+				sigHashes, prevOutFetcher,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to sign "+
+					"boarding input %d: %w", inputIdx, err)
+			}
+
+			schnorrSig, ok := signature.(*schnorr.Signature)
+			if !ok {
+				return nil, fmt.Errorf("signature is not a " +
+					"schnorr signature")
+			}
+
+			inputSig := &types.BoardingInputSignature{
+				InputIndex:      inputIdx,
+				Outpoint:        *outpoint,
+				ClientSignature: schnorrSig,
+			}
+			boardingInputSigs = append(boardingInputSigs, inputSig)
+		}
+
+		// Build outbox messages.
+		txid := commitTx.TxHash()
+		callerID := fmt.Sprintf("commitment-%s", txid.String())
+
+		var pkScript []byte
+		if len(commitTx.TxOut) > 0 {
+			pkScript = commitTx.TxOut[0].PkScript
+		}
+
+		outboxMsgs := []ClientOutMsg{
+			&SubmitVTXOForfeitSigsToServer{
+				RoundID:     s.RoundID.String(),
+				ForfeitSigs: forfeitSigs,
+				ForfeitTxs:  forfeitTxs,
+			},
+			&SubmitForfeitSigRequest{
+				RoundID:    s.RoundID,
+				Signatures: boardingInputSigs,
+			},
+			&RegisterConfirmationRequest{
+				CallerID:    callerID,
+				Txid:        &txid,
+				PkScript:    pkScript,
+				TargetConfs: env.OperatorTerms.MinConfirmations,
+				HeightHint:  env.StartHeight,
+			},
+		}
+
+		// Checkpoint round state.
+		intents := s.Intents.Clone()
+		for i := range intents.Boarding {
+			intents.Boarding[i].Status = BoardingStatusAdopted
+		}
+		round := &Round{
+			RoundID:       s.RoundID,
+			StartHeight:   env.StartHeight,
+			CommitmentTx:  fn.Some(s.CommitmentTx),
+			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+			Intents:       intents,
+		}
+
+		nextState := &InputSigSentState{
+			RoundID:        s.RoundID,
+			CommitmentTx:   s.CommitmentTx,
+			VTXOTreePaths:  s.VTXOTreePaths,
+			Intents:        s.Intents.Clone(),
+			ClientTrees:    s.ClientTrees,
+			InputSigs:      boardingInputSigs,
+			ForfeitedVTXOs: forfeitedVTXOs,
+		}
+
+		err = env.RoundStore.CommitState(ctx, round, nextState)
+		if err != nil {
+			return nil, fmt.Errorf("failed to commit round "+
+				"state: %w", err)
+		}
+
+		env.Log.InfoS(ctx, "Round state checkpointed with forfeit signatures",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("boarding_sig_count", len(boardingInputSigs)),
+			slog.Int("forfeit_sig_count", len(forfeitSigs)))
+
+		checkpointNotify := &RoundCheckpointedNotification{
+			RoundID: s.RoundID,
+		}
+
+		return &ClientStateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: append(outboxMsgs, checkpointNotify),
+			}),
+		}, nil
+
+	case *BoardingFailed:
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("forfeit_signatures_collecting: "+
+			"unexpected event: %T", event)
 	}
 }
 
@@ -812,14 +1126,16 @@ func (s *NoncesSentState) ProcessEvent(
 
 		return &ClientStateTransition{
 			NextState: &NoncesAggregatedState{
-				RoundID:              s.RoundID,
-				CommitmentTx:         s.CommitmentTx,
-				VTXOTreePaths:        s.VTXOTreePaths,
-				Intents:              s.Intents.Clone(),
-				ClientTrees:          s.ClientTrees,
-				Musig2Sessions:       s.Musig2Sessions,
-				AggNonces:            evt.AggNonces,
-				BoardingInputIndices: s.BoardingInputIndices,
+				RoundID:               s.RoundID,
+				CommitmentTx:          s.CommitmentTx,
+				VTXOTreePaths:         s.VTXOTreePaths,
+				Intents:               s.Intents.Clone(),
+				ClientTrees:           s.ClientTrees,
+				Musig2Sessions:        s.Musig2Sessions,
+				AggNonces:             evt.AggNonces,
+				BoardingInputIndices:  s.BoardingInputIndices,
+				ForfeitMappings:       s.ForfeitMappings,
+				ServerForfeitPkScript: s.ServerForfeitPkScript,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{
@@ -890,13 +1206,15 @@ func (s *NoncesAggregatedState) ProcessEvent(
 		// aggregation.
 		return &ClientStateTransition{
 			NextState: &PartialSigsSentState{
-				RoundID:              s.RoundID,
-				CommitmentTx:         s.CommitmentTx,
-				VTXOTreePaths:        s.VTXOTreePaths,
-				Intents:              s.Intents.Clone(),
-				ClientTrees:          s.ClientTrees,
-				Musig2Sessions:       s.Musig2Sessions,
-				BoardingInputIndices: s.BoardingInputIndices,
+				RoundID:               s.RoundID,
+				CommitmentTx:          s.CommitmentTx,
+				VTXOTreePaths:         s.VTXOTreePaths,
+				Intents:               s.Intents.Clone(),
+				ClientTrees:           s.ClientTrees,
+				Musig2Sessions:        s.Musig2Sessions,
+				BoardingInputIndices:  s.BoardingInputIndices,
+				ForfeitMappings:       s.ForfeitMappings,
+				ServerForfeitPkScript: s.ServerForfeitPkScript,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{submitPartialSigsMsg},
@@ -953,13 +1271,24 @@ func (s *PartialSigsSentState) ProcessEvent(
 			}
 		}
 
-		env.Log.InfoS(ctx, "Validated aggregated signatures, signing boarding inputs",
+		env.Log.InfoS(ctx, "Validated aggregated signatures",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("forfeit_mapping_count", len(s.ForfeitMappings)))
+
+		// VTXO tree signatures validated. Now check if this round
+		// includes refresh requests. If so, we need to collect forfeit
+		// signatures from VTXO actors before signing boarding inputs.
+		// This ensures clients only forfeit old VTXOs after verifying
+		// their new VTXOs are properly signed.
+		if len(s.ForfeitMappings) > 0 {
+			return s.transitionToForfeitCollection(ctx, env)
+		}
+
+		// No refresh requests - proceed to sign boarding inputs.
+		env.Log.InfoS(ctx, "Signing boarding inputs",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
 
-		// Now that we know all the signatures are valid, we'll sign
-		// off on each of our boarding inputs sent to the server.
-		//
 		// Build a PrevOutputFetcher from ALL PSBT inputs. Taproot
 		// sighash (BIP341) requires prevout info for all inputs.
 		tx := s.CommitmentTx.UnsignedTx
@@ -1110,7 +1439,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 		// Checkpoint round data + FSM state atomically at the "point
 		// of no return". The next state is persisted so restart can
-		// recover to InputSigSentState.
+		// recover to InputSigSentState. For boarding-only rounds,
+		// ForfeitedVTXOs is nil.
 		nextState := &InputSigSentState{
 			RoundID:       s.RoundID,
 			CommitmentTx:  s.CommitmentTx,
@@ -1152,6 +1482,54 @@ func (s *PartialSigsSentState) ProcessEvent(
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
 	}
+}
+
+// transitionToForfeitCollection builds the transition to
+// ForfeitSignaturesCollectingState for refresh rounds. This helper is extracted
+// to keep ProcessEvent under the line length limit.
+func (s *PartialSigsSentState) transitionToForfeitCollection(
+	ctx context.Context, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	// Build forfeit request messages for each VTXO being refreshed.
+	var outbox []ClientOutMsg
+	for vtxoOutpoint, info := range s.ForfeitMappings {
+		msg := &ForfeitRequestToVTXO{
+			VTXOOutpoint:          vtxoOutpoint,
+			RoundID:               s.RoundID.String(),
+			ConnectorOutpoint:     info.ConnectorOutpoint,
+			ConnectorPkScript:     info.ConnectorPkScript,
+			ConnectorAmount:       info.ConnectorAmount,
+			ServerForfeitPkScript: s.ServerForfeitPkScript,
+		}
+		outbox = append(outbox, msg)
+	}
+
+	env.Log.InfoS(ctx, "Transitioning to forfeit collection",
+		slog.String("round_id", s.RoundID.String()),
+		slog.Int("forfeit_count", len(s.ForfeitMappings)))
+
+	// Transition to forfeit collection state. After collecting all forfeit
+	// signatures, that state will sign boarding inputs and transition to
+	// InputSigSent.
+	collectedForfeits := make(map[wire.OutPoint]*ForfeitSignatureResponse)
+
+	return &ClientStateTransition{
+		NextState: &ForfeitSignaturesCollectingState{
+			RoundID:               s.RoundID,
+			CommitmentTx:          s.CommitmentTx,
+			VTXOTreePaths:         s.VTXOTreePaths,
+			Intents:               s.Intents.Clone(),
+			ClientTrees:           s.ClientTrees,
+			ExpectedForfeits:      s.ForfeitMappings,
+			CollectedForfeits:     collectedForfeits,
+			BoardingInputIndices:  s.BoardingInputIndices,
+			ServerForfeitPkScript: s.ServerForfeitPkScript,
+		},
+		NewEvents: fn.Some(ClientEmittedEvent{
+			Outbox: outbox,
+		}),
+	}, nil
 }
 
 // buildClientVTXOs constructs ClientVTXO instances from the intents and client
@@ -1252,6 +1630,37 @@ func (s *InputSigSentState) ProcessEvent(
 			BlockHash: evt.BlockHash,
 		}
 
+		// Compute batch expiry as absolute block height.
+		sweepDelay := int32(env.OperatorTerms.SweepDelay)
+		batchExpiry := evt.BlockHeight + sweepDelay
+
+		// Build outbox messages starting with standard notifications.
+		outbox := []ClientOutMsg{
+			&VTXOCreatedNotification{
+				VTXOs:          vtxos,
+				RoundID:        s.RoundID.String(),
+				CommitmentTxID: evt.TxID,
+				BatchExpiry:    batchExpiry,
+				CreatedHeight:  evt.BlockHeight,
+			},
+			&RoundCompletedNotification{
+				RoundID:  s.RoundID,
+				TxID:     evt.TxID,
+				ConfInfo: confInfo,
+			},
+		}
+
+		// If this round included refresh requests, notify the old VTXO
+		// actors that their forfeit is now confirmed. This allows them
+		// to transition to the terminal Forfeited state.
+		for _, vtxoOutpoint := range s.ForfeitedVTXOs {
+			outbox = append(outbox, &ForfeitConfirmedToVTXO{
+				VTXOOutpoint:   vtxoOutpoint,
+				CommitmentTxID: evt.TxID,
+				BlockHeight:    evt.BlockHeight,
+			})
+		}
+
 		return &ClientStateTransition{
 			NextState: &ConfirmedState{
 				TxID:          evt.TxID,
@@ -1261,14 +1670,7 @@ func (s *InputSigSentState) ProcessEvent(
 				VTXOs:         vtxos,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: []ClientOutMsg{
-					&VTXOCreatedNotification{VTXOs: vtxos},
-					&RoundCompletedNotification{
-						RoundID:  s.RoundID,
-						TxID:     evt.TxID,
-						ConfInfo: confInfo,
-					},
-				},
+				Outbox: outbox,
 			}),
 		}, nil
 
