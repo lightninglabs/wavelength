@@ -304,11 +304,6 @@ func (m *VTXOCreatedNotification) clientOutMsgSealed() {}
 // VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
 func (m *VTXOCreatedNotification) VTXOManagerMsg() {}
 
-// MessageType returns the message type for logging.
-func (m *VTXOCreatedNotification) MessageType() string {
-	return "VTXOCreatedNotification"
-}
-
 // RoundCompletedNotification is emitted when a round FSM reaches ConfirmedState
 // which signals the actor to perform cleanup (remove from activeRounds,
 // finalize storage). This replaces the need for manual state inspection via

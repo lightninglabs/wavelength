@@ -738,4 +738,4 @@ type unknownClientMsg struct {
 }
 
 func (m *unknownClientMsg) MessageType() string { return "UnknownClientMsg" }
-func (m *unknownClientMsg) clientMsgSealed()    {}
+func (m *unknownClientMsg) RoundReceivable()    {}

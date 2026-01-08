@@ -186,7 +186,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			// new VTXO.
 			if a.cfg.RoundActor != nil {
 				vtxo := a.cfg.VTXO
-				a.cfg.RoundActor.Tell(ctx, &round.RefreshVTXORequest{
+				req := &round.RefreshVTXORequest{
 					VTXOOutpoint: m.VTXOOutpoint,
 					Amount:       m.Amount,
 					NewVTXOKey:   vtxo.ClientKey.PubKey,
@@ -194,7 +194,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					OperatorKey:  vtxo.OperatorKey,
 					Expiry:       vtxo.RelativeExpiry,
 					SigningKey:   vtxo.ClientKey,
-				})
+				}
+				a.cfg.RoundActor.Tell(ctx, req)
 				a.cfg.Logger.InfoS(ctx, "Sent refresh request",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
 					slog.String("urgency", m.Urgency.String()),
