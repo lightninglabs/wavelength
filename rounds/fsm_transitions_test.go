@@ -1506,6 +1506,98 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		require.Contains(t, errResp.ErrorMsg, "missing nonces")
 		require.Contains(t, errResp.ErrorMsg, "signing key")
 	})
+
+	t.Run("empty nonces for key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		key1, _ := testutils.CreateKey(200)
+		key2, _ := testutils.CreateKey(201)
+		keyHex1 := route.NewVertex(key1)
+		keyHex2 := route.NewVertex(key2)
+
+		awaitState := &AwaitingVTXONoncesState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
+					},
+				},
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees:            map[int]*tree.Tree{},
+			TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{}, //nolint:ll
+			ClientsWithNonces:    make(map[ClientID]struct{}),
+		}
+
+		h := newTestHarness(t, awaitState)
+
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client1",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				keyHex1: {},
+				keyHex2: {},
+			},
+		})
+		require.NoError(t, err)
+
+		state := assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no nonces for signing key")
+		require.Empty(t, state.ClientsWithNonces)
+	})
+
+	t.Run("empty nonce map rejected", func(t *testing.T) {
+		t.Parallel()
+
+		key, _ := testutils.CreateKey(150)
+		keyHex := route.NewVertex(key)
+
+		coordinators := map[int]*batch.TreeSignCoordinator{
+			0: {},
+		}
+
+		awaitState := &AwaitingVTXONoncesState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
+						keyHex: {
+							CoSignerKey: key,
+						},
+					},
+				},
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees:            map[int]*tree.Tree{},
+			TreeSignCoordinators: coordinators,
+			ClientsWithNonces:    make(map[ClientID]struct{}),
+		}
+
+		h := newTestHarness(t, awaitState)
+
+		err := h.sendEvent(&ClientVTXONoncesEvent{
+			ClientID: "client1",
+			Nonces: map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce{ //nolint:ll
+				keyHex: {},
+			},
+		})
+		require.NoError(t, err)
+
+		state := assertStateType[*AwaitingVTXONoncesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no nonces for signing key")
+		require.Empty(t, state.ClientsWithNonces)
+	})
 }
 
 // TestFSMVTXOSigningFlowE2ERealSigs exercises the full VTXO signing flow with
@@ -2230,5 +2322,85 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		require.Equal(t, ClientID("client1"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "missing signatures")
 		require.Contains(t, errResp.ErrorMsg, "signing key")
+	})
+
+	t.Run("empty signatures rejected", func(t *testing.T) {
+		t.Parallel()
+
+		awaitState := buildAwaitingVTXOSignaturesState(
+			map[ClientID]vtxoNoncesStateOpts{
+				"client1": {withVTXOs: true},
+			},
+		)
+		h := newTestHarness(t, awaitState)
+
+		var signingKey SigningKeyHex
+		for _, desc := range awaitState.ClientRegistrations["client1"].
+			VTXODescriptors {
+			signingKey = route.NewVertex(desc.CoSignerKey)
+			break
+		}
+
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client1",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				signingKey: {},
+			},
+		})
+		require.NoError(t, err)
+
+		state := assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no signatures for signing key")
+		require.Empty(t, state.ClientsWithSignatures)
+	})
+
+	t.Run("empty signatures for key rejected", func(t *testing.T) {
+		t.Parallel()
+
+		key1, _ := testutils.CreateKey(300)
+		key2, _ := testutils.CreateKey(301)
+		keyHex1 := route.NewVertex(key1)
+		keyHex2 := route.NewVertex(key2)
+
+		awaitState := &AwaitingVTXOSignaturesState{
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
+						keyHex1: {CoSignerKey: key1},
+						keyHex2: {CoSignerKey: key2},
+					},
+				},
+			},
+			PSBT: &psbt.Packet{
+				UnsignedTx: wire.NewMsgTx(2),
+			},
+			VTXOTrees:            map[int]*tree.Tree{},
+			TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{},
+			ClientsWithSignatures: make(
+				map[ClientID]struct{},
+			),
+		}
+
+		h := newTestHarness(t, awaitState)
+
+		err := h.sendEvent(&ClientVTXOPartialSigsEvent{
+			ClientID: "client1",
+			Signatures: map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				keyHex1: {},
+				keyHex2: {},
+			},
+		})
+		require.NoError(t, err)
+
+		state := assertStateType[*AwaitingVTXOSignaturesState](h)
+		h.assertOutboxLen(1)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "no signatures for signing key")
+		require.Empty(t, state.ClientsWithSignatures)
 	})
 }

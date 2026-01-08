@@ -979,7 +979,27 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		}
 	}
 
+	totalAccepted := 0
+
 	for signingKeyHex, nonces := range evt.Nonces {
+		if len(nonces) == 0 {
+			errMsg := fmt.Sprintf(
+				"no nonces for signing key %x", signingKeyHex[:],
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						newClientErrorResp(
+							clientID,
+							errMsg,
+						),
+					},
+				}),
+			}, nil
+		}
+
 		desc := reg.VTXODescriptors[signingKeyHex]
 		if desc == nil || desc.CoSignerKey == nil ||
 			nonces == nil {
@@ -1002,7 +1022,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		}
 
 		for idx, coordinator := range s.TreeSignCoordinators {
-			_, err := coordinator.AddNonces(desc.CoSignerKey, nonces) //nolint:ll
+			accepted, err := coordinator.AddNonces(
+				desc.CoSignerKey, nonces,
+			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
 					"failed to add nonces for tree %d: %v",
@@ -1021,7 +1043,21 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 					}),
 				}, nil
 			}
+
+			totalAccepted += accepted
 		}
+	}
+
+	if totalAccepted == 0 {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(clientID,
+						"no valid nonces provided"),
+				},
+			}),
+		}, nil
 	}
 
 	// Track that this client has submitted nonces.
@@ -1256,7 +1292,28 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		}
 	}
 
+	totalAccepted := 0
+
 	for signingKeyHex, sigs := range evt.Signatures {
+		if len(sigs) == 0 {
+			errMsg := fmt.Sprintf(
+				"no signatures for signing key %x",
+				signingKeyHex[:],
+			)
+
+			return &StateTransition{
+				NextState: s,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: []OutboxEvent{
+						newClientErrorResp(
+							clientID,
+							errMsg,
+						),
+					},
+				}),
+			}, nil
+		}
+
 		desc := reg.VTXODescriptors[signingKeyHex]
 		if desc == nil || desc.CoSignerKey == nil ||
 			sigs == nil {
@@ -1279,7 +1336,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		}
 
 		for idx, coordinator := range s.TreeSignCoordinators {
-			err := coordinator.AddPartialSignatures(
+			accepted, err := coordinator.AddPartialSignatures(
 				desc.CoSignerKey, sigs,
 			)
 			if err != nil {
@@ -1300,7 +1357,22 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 					}),
 				}, nil
 			}
+
+			totalAccepted += accepted
 		}
+	}
+
+	if totalAccepted == 0 {
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					newClientErrorResp(
+						clientID, "no valid signatures provided",
+					),
+				},
+			}),
+		}, nil
 	}
 
 	// Track that this client has submitted signatures.

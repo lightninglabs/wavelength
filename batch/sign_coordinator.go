@@ -491,25 +491,28 @@ func (c *TreeSignCoordinator) GetFinalSigsForSigners(
 }
 
 // AddPartialSignatures adds partial signatures from a signer for their
-// transactions.
+// transactions. Returns the number of signatures accepted.
 func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
-	sigs map[TxID]*musig2.PartialSignature) error {
+	sigs map[TxID]*musig2.PartialSignature) (int, error) {
 
+	accepted := 0
 	for txid, sig := range sigs {
 		txCoordinator, ok := c.txSigners[txid]
 		if !ok {
-			return fmt.Errorf("tx %s not found in coordinator",
+			return accepted, fmt.Errorf("tx %s not found in coordinator",
 				txid)
 		}
 
 		err := txCoordinator.AddPartialSignature(signer, sig)
 		if err != nil {
-			return fmt.Errorf("failed to add partial signature "+
-				"for tx %s: %w", txid, err)
+			return accepted, fmt.Errorf("failed to add partial "+
+				"signature for tx %s: %w", txid, err)
 		}
+
+		accepted++
 	}
 
-	return nil
+	return accepted, nil
 }
 
 // FullySigned returns true if all transactions have received all partial
