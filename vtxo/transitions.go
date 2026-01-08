@@ -167,6 +167,7 @@ func (s *LiveState) handleForfeitRequest(
 			NewRoundID:        evt.RoundID,
 			ConnectorOutpoint: evt.ConnectorOutpoint,
 			ForfeitTxID:       forfeitTxID,
+			ForfeitTx:         forfeitTx,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{
 			Outbox: []VTXOOutMsg{
@@ -179,6 +180,8 @@ func (s *LiveState) handleForfeitRequest(
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusForfeiting,
+					RoundID:   evt.RoundID,
+					ForfeitTx: forfeitTx,
 				},
 			},
 		}),
@@ -317,6 +320,7 @@ func (s *RefreshRequestedState) ProcessEvent(
 				NewRoundID:        evt.RoundID,
 				ConnectorOutpoint: evt.ConnectorOutpoint,
 				ForfeitTxID:       forfeitTxID,
+				ForfeitTx:         forfeitTx,
 			},
 			NewEvents: fn.Some(VTXOEmittedEvent{
 				Outbox: []VTXOOutMsg{
@@ -329,6 +333,8 @@ func (s *RefreshRequestedState) ProcessEvent(
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,
 						NewStatus: VTXOStatusForfeiting,
+						RoundID:   evt.RoundID,
+						ForfeitTx: forfeitTx,
 					},
 				},
 			}),
