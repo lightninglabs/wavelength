@@ -85,9 +85,9 @@ func TestEncodeTapTreeFormat(t *testing.T) {
 	require.Equal(t, []byte{0x01, 0x02, 0x03}, encoded[4:7])
 
 	// Verify second leaf.
-	require.Equal(t, byte(0x01), encoded[7])  // depth
-	require.Equal(t, byte(0xc0), encoded[8])  // version
-	require.Equal(t, byte(0x02), encoded[9])  // script length
+	require.Equal(t, byte(0x01), encoded[7]) // depth
+	require.Equal(t, byte(0xc0), encoded[8]) // version
+	require.Equal(t, byte(0x02), encoded[9]) // script length
 	require.Equal(t, []byte{0x04, 0x05}, encoded[10:12])
 }
 
@@ -163,7 +163,7 @@ func TestDecodeTapTreeExtraBytes(t *testing.T) {
 		0xc0,       // version
 		0x02,       // script length
 		0x01, 0x02, // script
-		0xff,       // extra byte
+		0xff, // extra byte
 	}
 
 	_, err := DecodeTapTree(data)
