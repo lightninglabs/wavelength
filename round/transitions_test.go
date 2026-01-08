@@ -3,12 +3,22 @@ package round
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// testRoundIDTr creates a deterministic RoundID from a string seed for tests.
+func testRoundIDTr(seed string) RoundID {
+	h := chainhash.HashH([]byte(seed))
+	id, _ := uuid.FromBytes(h[:16])
+
+	return RoundID(id)
+}
 
 // TestStateProperties verifies IsTerminal() and String() for all states.
 func TestStateProperties(t *testing.T) {
@@ -129,7 +139,7 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				return &Idle{}
 			},
-			event: &RoundJoined{RoundID: "test"},
+			event: &RoundJoined{RoundID: testRoundIDTr("test")},
 		},
 		{
 			name: "PendingAssembly_self_loops_on_RoundComplete",
@@ -160,83 +170,97 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return &RoundJoinedState{
-					RoundID: "round-1",
+					RoundID: testRoundIDTr("round-1"),
 					Intents: []BoardingIntent{intent},
 				}
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "CommitmentTxReceived_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
 				return h.newCommitmentTxReceivedState(
-					"round-001", []BoardingIntent{intent},
+					roundID, []BoardingIntent{intent},
 				)
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "CommitmentTxValidated_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
 				return h.newCommitmentTxValidatedState(
-					"round-001", []BoardingIntent{intent},
+					roundID, []BoardingIntent{intent},
 				)
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "NoncesSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &NoncesSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "NoncesAggregated_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &NoncesAggregatedState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "PartialSigsSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &PartialSigsSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "InputSigSent_self_loops_on_RoundJoined",
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &InputSigSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
-			event: &RoundJoined{RoundID: "another-round"},
+			event: &RoundJoined{RoundID: testRoundIDTr("other")},
 		},
 		{
 			name: "ClientFailed_self_loops_on_unknown",
@@ -246,7 +270,7 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 					Recoverable: true,
 				}
 			},
-			event: &RoundJoined{RoundID: "test"},
+			event: &RoundJoined{RoundID: testRoundIDTr("test")},
 		},
 	}
 
@@ -295,7 +319,7 @@ func TestBoardingFailedTransitions(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return &RoundJoinedState{
-					RoundID: "round-001",
+					RoundID: testRoundIDTr("round-001"),
 					Intents: []BoardingIntent{intent},
 				}
 			},
@@ -305,7 +329,8 @@ func TestBoardingFailedTransitions(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				intent := h.newTestBoardingIntent()
 				return h.newCommitmentTxReceivedState(
-					"round-001", []BoardingIntent{intent},
+					testRoundIDTr("round-001"),
+					[]BoardingIntent{intent},
 				)
 			},
 		},
@@ -314,10 +339,13 @@ func TestBoardingFailedTransitions(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &NoncesSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
 		},
@@ -326,10 +354,13 @@ func TestBoardingFailedTransitions(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &PartialSigsSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
 		},
@@ -338,10 +369,13 @@ func TestBoardingFailedTransitions(t *testing.T) {
 			setup: func(h *boardingTestHarness) ClientState {
 				vtxtTree, _ := h.newTestVTXOTree(1)
 				intent := h.newTestBoardingIntent()
+				roundID := testRoundIDTr("round-001")
+				trees := map[int]*tree.Tree{0: vtxtTree}
+
 				return &InputSigSentState{
-					RoundID:  "round-001",
-					VTXTTree: vtxtTree,
-					Intents:  []BoardingIntent{intent},
+					RoundID:       roundID,
+					VTXOTreePaths: trees,
+					Intents:       []BoardingIntent{intent},
 				}
 			},
 		},
@@ -401,7 +435,7 @@ func TestTerminalStateSelfLoop(t *testing.T) {
 			// Terminal states ignore all events and remain in their
 			// current state, preventing further transitions once
 			// boarding reaches a final outcome.
-			event := &RoundJoined{RoundID: "test"}
+			event := &RoundJoined{RoundID: testRoundIDTr("test")}
 			transition, err := h.sendEvent(event)
 			require.NoError(t, err)
 			require.NotNil(t, transition)
@@ -590,14 +624,15 @@ func TestRegistrationSentState(t *testing.T) {
 			Intents: []BoardingIntent{intent},
 		})
 
-		event := &RoundJoined{RoundID: "test-round-123"}
+		event := &RoundJoined{RoundID: testRoundIDTr("test-round-123")}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		nextState := assertStateType[*RoundJoinedState](h)
-		require.Equal(t, "test-round-123", nextState.RoundID)
+		expectedRoundID := testRoundIDTr("test-round-123")
+		require.Equal(t, expectedRoundID, nextState.RoundID)
 		require.Len(t, nextState.Intents, 1)
 	})
 }
@@ -612,13 +647,15 @@ func TestRoundJoinedState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		h.withState(&RoundJoinedState{
-			RoundID: "round-001",
+			RoundID: testRoundIDTr("round-001"),
 			Intents: []BoardingIntent{intent},
 		})
 
 		vtxtTree, _ := h.newTestVTXOTree(1)
 		commitEvent := h.newCommitmentTxBuiltEvent(
-			"round-001", []BoardingIntent{intent}, vtxtTree,
+			testRoundIDTr("round-001"),
+			[]BoardingIntent{intent},
+			vtxtTree,
 		)
 
 		transition, err := h.sendEvent(commitEvent)
@@ -626,7 +663,7 @@ func TestRoundJoinedState(t *testing.T) {
 		require.NotNil(t, transition)
 
 		nextState := assertStateType[*CommitmentTxReceivedState](h)
-		require.Equal(t, "round-001", nextState.RoundID)
+		require.Equal(t, testRoundIDTr("round-001"), nextState.RoundID)
 		require.NotNil(t, nextState.CommitmentTx)
 		require.True(t, transition.NewEvents.IsSome())
 	})
@@ -646,19 +683,19 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &CommitmentTxReceivedState{
-			RoundID:      "round-001",
-			CommitmentTx: commitmentTx,
-			TxID:         commitmentTx.UnsignedTx.TxHash(),
-			VTXTTree:     vtxtTree,
-			Intents:      intents,
-			ClientTrees:  make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       intents,
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 		}
 		h.withState(state)
 
 		event := &CommitmentTxBuilt{
-			RoundID:  "round-001",
-			Tx:       commitmentTx,
-			VTXTTree: vtxtTree,
+			RoundID:       testRoundIDTr("round-001"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		}
 
 		transition, err := h.sendEvent(event)
@@ -668,7 +705,8 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		validatedState := assertStateType[*CommitmentTxValidatedState](
 			h,
 		)
-		require.Equal(t, "round-001", validatedState.RoundID)
+		expectedID := testRoundIDTr("round-001")
+		require.Equal(t, expectedID, validatedState.RoundID)
 		require.NotEmpty(t, validatedState.BoardingInputIndices)
 		assertTransitionEmitsInternalEvent[*GenerateNonces](
 			h, transition,
@@ -690,19 +728,19 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(differentIntents)
 
 		state := &CommitmentTxReceivedState{
-			RoundID:      "round-001",
-			CommitmentTx: commitmentTx,
-			TxID:         commitmentTx.UnsignedTx.TxHash(),
-			VTXTTree:     vtxtTree,
-			Intents:      []BoardingIntent{intent},
-			ClientTrees:  make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			CommitmentTx:  commitmentTx,
+			TxID:          commitmentTx.UnsignedTx.TxHash(),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 		}
 		h.withState(state)
 
 		event := &CommitmentTxBuilt{
-			RoundID:  "round-001",
-			Tx:       commitmentTx,
-			VTXTTree: vtxtTree,
+			RoundID:       testRoundIDTr("round-001"),
+			Tx:            commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		}
 
 		transition, err := h.sendEvent(event)
@@ -725,7 +763,8 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		state := h.newCommitmentTxValidatedState(
-			"round-001", []BoardingIntent{intent},
+			testRoundIDTr("round-001"),
+			[]BoardingIntent{intent},
 		)
 		h.withState(state)
 
@@ -734,7 +773,8 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		require.NotNil(t, transition)
 
 		noncesSentState := assertStateType[*NoncesSentState](h)
-		require.Equal(t, "round-001", noncesSentState.RoundID)
+		expectedID := testRoundIDTr("round-001")
+		require.Equal(t, expectedID, noncesSentState.RoundID)
 		require.NotNil(t, noncesSentState.Musig2Sessions)
 
 		h.assertOutboxLen(1)
@@ -755,7 +795,8 @@ func TestNoncesSentState(t *testing.T) {
 
 		// Build up through actual flow to get real sessions.
 		validatedState := h.newCommitmentTxValidatedState(
-			"round-001", []BoardingIntent{intent},
+			testRoundIDTr("round-001"),
+			[]BoardingIntent{intent},
 		)
 		h.withState(validatedState)
 
@@ -766,7 +807,8 @@ func TestNoncesSentState(t *testing.T) {
 		noncesSentState := assertStateType[*NoncesSentState](h)
 
 		event := h.newNoncesAggregatedEvent(
-			"round-001", noncesSentState.VTXTTree,
+			testRoundIDTr("round-001"),
+			noncesSentState.VTXOTreePaths[0],
 		)
 
 		transition, err := h.sendEvent(event)
@@ -774,7 +816,8 @@ func TestNoncesSentState(t *testing.T) {
 		require.NotNil(t, transition)
 
 		noncesAggState := assertStateType[*NoncesAggregatedState](h)
-		require.Equal(t, "round-001", noncesAggState.RoundID)
+		expectedID := testRoundIDTr("round-001")
+		require.Equal(t, expectedID, noncesAggState.RoundID)
 		assertTransitionEmitsInternalEvent[*GeneratePartialSigs](
 			h, transition,
 		)
@@ -795,7 +838,8 @@ func TestNoncesAggregatedState(t *testing.T) {
 		// We build through the full state machine flow to ensure MuSig2
 		// sessions are properly initialized with real nonce state.
 		validatedState := h.newCommitmentTxValidatedState(
-			"round-001", []BoardingIntent{intent},
+			testRoundIDTr("round-001"),
+			[]BoardingIntent{intent},
 		)
 		h.withState(validatedState)
 
@@ -806,7 +850,8 @@ func TestNoncesAggregatedState(t *testing.T) {
 		noncesSentState := assertStateType[*NoncesSentState](h)
 
 		aggEvent := h.newNoncesAggregatedEvent(
-			"round-001", noncesSentState.VTXTTree,
+			testRoundIDTr("round-001"),
+			noncesSentState.VTXOTreePaths[0],
 		)
 		_, err = h.sendEvent(aggEvent)
 		require.NoError(t, err)
@@ -819,7 +864,8 @@ func TestNoncesAggregatedState(t *testing.T) {
 		require.NotNil(t, transition)
 
 		partialSigsState := assertStateType[*PartialSigsSentState](h)
-		require.Equal(t, "round-001", partialSigsState.RoundID)
+		expectedID := testRoundIDTr("round-001")
+		require.Equal(t, expectedID, partialSigsState.RoundID)
 		h.assertOutboxContainsType("*round.SubmitPartialSigRequest")
 	})
 }
@@ -850,11 +896,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		}
 
 		state := &PartialSigsSentState{
-			RoundID:      "round-real-sig-001",
-			CommitmentTx: commitmentTx,
-			VTXTTree:     vtxtTree,
-			Intents:      []BoardingIntent{intent},
-			ClientTrees:  clientTrees,
+			RoundID:       testRoundIDTr("round-real-sig-001"),
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   clientTrees,
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -866,8 +912,8 @@ func TestPartialSigsSentState(t *testing.T) {
 		h.withState(state)
 
 		event := &OperatorSigned{
-			RoundID:    "round-real-sig-001",
-			Signatures: validSigs,
+			RoundID: testRoundIDTr("round-real-sig-001"),
+			AggSigs: validSigs,
 		}
 
 		transition, err := h.sendEvent(event)
@@ -877,7 +923,8 @@ func TestPartialSigsSentState(t *testing.T) {
 		inputSigState := assertStateType[*InputSigSentState](
 			h.boardingTestHarness,
 		)
-		require.Equal(t, "round-real-sig-001", inputSigState.RoundID)
+		expectedRoundID := testRoundIDTr("round-real-sig-001")
+		require.Equal(t, expectedRoundID, inputSigState.RoundID)
 		require.NotEmpty(t, inputSigState.InputSigs)
 
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
@@ -895,11 +942,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:      "round-001",
-			CommitmentTx: commitmentTx,
-			VTXTTree:     vtxtTree,
-			Intents:      []BoardingIntent{intent},
-			ClientTrees:  make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -907,8 +954,8 @@ func TestPartialSigsSentState(t *testing.T) {
 		h.withState(state)
 
 		event := &OperatorSigned{
-			RoundID:    "round-001",
-			Signatures: map[chainhash.Hash][]byte{},
+			RoundID: testRoundIDTr("round-001"),
+			AggSigs: map[tree.TxID]*schnorr.Signature{},
 		}
 
 		transition, err := h.sendEvent(event)
@@ -930,23 +977,23 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:      "round-001",
-			CommitmentTx: commitmentTx,
-			VTXTTree:     vtxtTree,
-			Intents:      []BoardingIntent{intent},
-			ClientTrees:  make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
 		}
 		h.withState(state)
 
-		// Use a fake txid with an invalid signature (too short).
+		// Use a fake txid with a dummy signature.
 		fakeTxid := chainhash.HashH([]byte("fake-tx"))
 		event := &OperatorSigned{
-			RoundID: "round-001",
-			Signatures: map[chainhash.Hash][]byte{
-				fakeTxid: make([]byte, 10),
+			RoundID: testRoundIDTr("round-001"),
+			AggSigs: map[tree.TxID]*schnorr.Signature{
+				fakeTxid: {},
 			},
 		}
 
@@ -969,9 +1016,9 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:              "round-001",
+			RoundID:              testRoundIDTr("round-001"),
 			CommitmentTx:         commitmentTx,
-			VTXTTree:             vtxtTree,
+			VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
 			Intents:              []BoardingIntent{intent},
 			ClientTrees:          make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: make(map[wire.OutPoint]int),
@@ -981,17 +1028,13 @@ func TestPartialSigsSentState(t *testing.T) {
 		}
 		h.withState(state)
 
-		// Create a valid 64-byte signature with a fake txid.
-		validSig := make([]byte, 64)
-		for i := range validSig {
-			validSig[i] = byte(i + 1)
-		}
+		// Create a test signature with a fake txid.
 		fakeTxid := chainhash.HashH([]byte("fake-tx"))
 
 		event := &OperatorSigned{
-			RoundID: "round-001",
-			Signatures: map[chainhash.Hash][]byte{
-				fakeTxid: validSig,
+			RoundID: testRoundIDTr("round-001"),
+			AggSigs: map[tree.TxID]*schnorr.Signature{
+				fakeTxid: {},
 			},
 		}
 
@@ -1014,11 +1057,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:      "round-001",
-			CommitmentTx: commitmentTx,
-			VTXTTree:     vtxtTree,
-			Intents:      []BoardingIntent{intent},
-			ClientTrees:  make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -1035,9 +1078,9 @@ func TestPartialSigsSentState(t *testing.T) {
 			// Only provide one signature when more are needed.
 			fakeTxid := chainhash.HashH([]byte("fake-tx"))
 			event := &OperatorSigned{
-				RoundID: "round-001",
-				Signatures: map[chainhash.Hash][]byte{
-					fakeTxid: make([]byte, 64),
+				RoundID: testRoundIDTr("round-001"),
+				AggSigs: map[tree.TxID]*schnorr.Signature{
+					fakeTxid: {},
 				},
 			}
 
@@ -1062,7 +1105,8 @@ func TestInputSigSentState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		state := h.newInputSigSentState(
-			"round-001", []BoardingIntent{intent},
+			testRoundIDTr("round-001"),
+			[]BoardingIntent{intent},
 		)
 		h.withState(state)
 
@@ -1099,10 +1143,10 @@ func TestInputSigSentState(t *testing.T) {
 
 		// Empty ClientTrees will cause buildClientVTXOs to fail.
 		state := &InputSigSentState{
-			RoundID:     "round-001",
-			VTXTTree:    vtxtTree,
-			Intents:     []BoardingIntent{intent},
-			ClientTrees: make(map[SignerKey]*tree.Tree),
+			RoundID:       testRoundIDTr("round-001"),
+			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+			Intents:       []BoardingIntent{intent},
+			ClientTrees:   make(map[SignerKey]*tree.Tree),
 		}
 		h.withState(state)
 
@@ -1312,12 +1356,12 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	require.Len(t, regState.Intents, 1)
 
 	// Step 2: Server accepts.
-	joinEvent := &RoundJoined{RoundID: "round-001"}
+	joinEvent := &RoundJoined{RoundID: testRoundIDTr("round-001")}
 	_, err = h.sendEvent(joinEvent)
 	require.NoError(t, err)
 
 	joinedState := assertStateType[*RoundJoinedState](h)
-	require.Equal(t, "round-001", joinedState.RoundID)
+	require.Equal(t, testRoundIDTr("round-001"), joinedState.RoundID)
 }
 
 func TestBoardingFlowMultipleIntentsAccumulation(t *testing.T) {
@@ -1359,12 +1403,13 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 	require.Len(t, regSentState.Intents, 1)
 
 	// Step 2: RegistrationSentState → RoundJoinedState.
-	joinEvent := &RoundJoined{RoundID: "round-integration-001"}
+	integrationRoundID := testRoundIDTr("round-integration-001")
+	joinEvent := &RoundJoined{RoundID: integrationRoundID}
 	_, err = h.sendEvent(joinEvent)
 	require.NoError(t, err)
 
 	joinedState := assertStateType[*RoundJoinedState](h)
-	require.Equal(t, "round-integration-001", joinedState.RoundID)
+	require.Equal(t, integrationRoundID, joinedState.RoundID)
 }
 
 func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
@@ -1376,14 +1421,16 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 	intent := h.newTestBoardingIntent()
 
 	h.withState(&RoundJoinedState{
-		RoundID: "round-integration-002",
+		RoundID: testRoundIDTr("round-integration-002"),
 		Intents: []BoardingIntent{intent},
 	})
 
 	// Step 1: RoundJoined → CommitmentTxReceived.
 	vtxtTree := h.newTestVTXOTreeForIntent(intent)
 	commitEvent := h.newCommitmentTxBuiltEvent(
-		"round-integration-002", []BoardingIntent{intent}, vtxtTree,
+		testRoundIDTr("round-integration-002"),
+		[]BoardingIntent{intent},
+		vtxtTree,
 	)
 	_, err := h.sendEvent(commitEvent)
 	require.NoError(t, err)
@@ -1393,9 +1440,9 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 
 	// Step 2: CommitmentTxReceived → CommitmentTxValidated.
 	_, err = h.sendEvent(&CommitmentTxBuilt{
-		RoundID:  "round-integration-002",
-		Tx:       ctxReceivedState.CommitmentTx,
-		VTXTTree: ctxReceivedState.VTXTTree,
+		RoundID:       testRoundIDTr("round-integration-002"),
+		Tx:            ctxReceivedState.CommitmentTx,
+		VTXOTreePaths: ctxReceivedState.VTXOTreePaths,
 	})
 	require.NoError(t, err)
 
@@ -1413,13 +1460,14 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 
 	// Step 4: NoncesSent → NoncesAggregated.
 	aggNoncesEvent := h.newNoncesAggregatedEvent(
-		"round-integration-002", noncesSentState.VTXTTree,
+		testRoundIDTr("round-integration-002"),
+		noncesSentState.VTXOTreePaths[0],
 	)
 	_, err = h.sendEvent(aggNoncesEvent)
 	require.NoError(t, err)
 
 	noncesAggState := assertStateType[*NoncesAggregatedState](h)
-	require.NotEmpty(t, noncesAggState.AggregatedNonces)
+	require.NotEmpty(t, noncesAggState.AggNonces)
 	h.clearOutbox()
 
 	// Step 5: NoncesAggregated → PartialSigsSent.
@@ -1427,7 +1475,8 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 	require.NoError(t, err)
 
 	partialSigsState := assertStateType[*PartialSigsSentState](h)
-	require.Equal(t, "round-integration-002", partialSigsState.RoundID)
+	expectedID := testRoundIDTr("round-integration-002")
+	require.Equal(t, expectedID, partialSigsState.RoundID)
 }
 
 func TestBoardingFlowFailureAndRecovery(t *testing.T) {
@@ -1437,7 +1486,7 @@ func TestBoardingFlowFailureAndRecovery(t *testing.T) {
 
 	intent := h.newTestBoardingIntent()
 	h.withState(&RoundJoinedState{
-		RoundID: "round-fail-001",
+		RoundID: testRoundIDTr("round-fail-001"),
 		Intents: []BoardingIntent{intent},
 	})
 
