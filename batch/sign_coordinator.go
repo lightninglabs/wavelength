@@ -499,8 +499,9 @@ func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
 	for txid, sig := range sigs {
 		txCoordinator, ok := c.txSigners[txid]
 		if !ok {
-			return accepted, fmt.Errorf("tx %s not found in coordinator",
-				txid)
+			return accepted, fmt.Errorf(
+				"tx %s not found in coordinator", txid,
+			)
 		}
 
 		err := txCoordinator.AddPartialSignature(signer, sig)

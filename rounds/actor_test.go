@@ -269,6 +269,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		FeeEstimator:        common.feeEstimator,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
+		VTXOStore:           common.vtxoStore,
 		ChainSourceActor:    chainSourceActor,
 		ConfTarget:          6,
 		MinConfs:            1,

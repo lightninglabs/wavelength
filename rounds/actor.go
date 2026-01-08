@@ -70,6 +70,9 @@ type ActorConfig struct {
 	// RoundStore provides persistent storage for rounds.
 	RoundStore RoundStore
 
+	// VTXOStore provides persistent storage for VTXOs.
+	VTXOStore VTXOStore
+
 	// ChainSourceActor is a reference to the chain source actor for
 	// broadcasting transactions and subscribing to confirmations.
 	ChainSourceActor actor.ActorRef[
@@ -200,6 +203,8 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,
 		Terms:               a.cfg.Terms,
+		RoundStore:          a.cfg.RoundStore,
+		VTXOStore:           a.cfg.VTXOStore,
 	}
 
 	// Create the FSM starting in FinalizedState since the round was already
@@ -471,6 +476,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		ConfTarget:          a.cfg.ConfTarget,
 		MinConfs:            a.cfg.MinConfs,
 		RoundStore:          a.cfg.RoundStore,
+		VTXOStore:           a.cfg.VTXOStore,
 	}
 
 	fsmCfg := StateMachineCfg{

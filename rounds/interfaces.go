@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
@@ -139,6 +140,11 @@ type RoundStore interface {
 	// should be called after all signatures have been collected and the
 	// transaction is ready for broadcast.
 	PersistRound(ctx context.Context, round *Round) error
+
+	// MarkRoundConfirmed marks a pending round as confirmed with the block
+	// details for the broadcast commitment transaction.
+	MarkRoundConfirmed(ctx context.Context, roundID RoundID,
+		blockHeight int32, blockHash chainhash.Hash) error
 
 	// LoadPendingRounds returns all rounds that have been finalized but not
 	// yet confirmed on-chain. These rounds need to be reloaded into memory

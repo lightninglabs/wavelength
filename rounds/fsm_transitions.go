@@ -984,7 +984,8 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 	for signingKeyHex, nonces := range evt.Nonces {
 		if len(nonces) == 0 {
 			errMsg := fmt.Sprintf(
-				"no nonces for signing key %x", signingKeyHex[:],
+				"no nonces for signing key %x",
+				signingKeyHex[:],
 			)
 
 			return &StateTransition{
@@ -1368,7 +1369,8 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					newClientErrorResp(
-						clientID, "no valid signatures provided",
+						clientID,
+						"no valid signatures provided",
 					),
 				},
 			}),
@@ -1553,7 +1555,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	}
 
 	// Persist VTXOs in unconfirmed state before broadcast.
-	if len(s.VTXOTrees) > 0 && env.VTXOStore != nil {
+	if len(s.VTXOTrees) > 0 {
 		vtxos, err := collectVTXOs(
 			env.RoundID, s.VTXOTrees, s.ClientRegistrations,
 		)
@@ -1788,7 +1790,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 	switch e := event.(type) {
 	case *TransactionConfirmedEvent:
 		// Mark VTXOs live upon confirmation.
-		if len(s.VTXOTrees) > 0 && env.VTXOStore != nil {
+		if len(s.VTXOTrees) > 0 {
 			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
 			if err != nil {
 				return buildFailureTransition(
@@ -1796,6 +1798,17 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 					fmt.Sprintf("mark VTXOs live: %v", err),
 				), nil
 			}
+		}
+
+		// Persist the round as confirmed for bookkeeping.
+		err := env.RoundStore.MarkRoundConfirmed(
+			ctx, env.RoundID, e.BlockHeight, e.BlockHash,
+		)
+		if err != nil {
+			return buildFailureTransition(
+				env, s.ClientRegistrations,
+				fmt.Sprintf("mark round confirmed: %v", err),
+			), nil
 		}
 
 		return &StateTransition{

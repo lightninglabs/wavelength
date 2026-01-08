@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1548,7 +1549,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		h.assertOutboxLen(1)
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
-		require.Contains(t, errResp.ErrorMsg, "no nonces for signing key")
+		require.Contains(
+			t, errResp.ErrorMsg, "no nonces for signing key",
+		)
 		require.Empty(t, state.ClientsWithNonces)
 	})
 
@@ -1595,7 +1598,9 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		h.assertOutboxLen(1)
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
-		require.Contains(t, errResp.ErrorMsg, "no nonces for signing key")
+		require.Contains(
+			t, errResp.ErrorMsg, "no nonces for signing key",
+		)
 		require.Empty(t, state.ClientsWithNonces)
 	})
 }
@@ -1712,6 +1717,23 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	}
 
 	require.True(t, foundBroadcast, "broadcast should be requested")
+
+	// Simulate confirmation and ensure round + VTXOs are updated.
+	h.outboxMessages = nil
+	err = h.sendEvent(&TransactionConfirmedEvent{
+		BlockHeight: 100,
+		BlockHash:   chainhash.Hash{},
+	})
+	require.NoError(t, err)
+	assertStateType[*ConfirmedState](h)
+	h.assertOutboxLen(0)
+	h.vtxoStore.AssertCalled(t,
+		"MarkVTXOsLive", mock.Anything, h.roundID,
+	)
+	h.roundStore.AssertCalled(t,
+		"MarkRoundConfirmed", mock.Anything, h.roundID,
+		int32(100), mock.Anything,
+	)
 }
 
 // TestFSMVTXOMultiClientRealSigs covers two clients each with a VTXO, ensuring
@@ -2353,7 +2375,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		h.assertOutboxLen(1)
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
-		require.Contains(t, errResp.ErrorMsg, "no signatures for signing key")
+		require.Contains(
+			t, errResp.ErrorMsg, "no signatures for signing key",
+		)
 		require.Empty(t, state.ClientsWithSignatures)
 	})
 
@@ -2379,7 +2403,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				UnsignedTx: wire.NewMsgTx(2),
 			},
 			VTXOTrees:            map[int]*tree.Tree{},
-			TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{},
+			TreeSignCoordinators: map[int]*batch.TreeSignCoordinator{}, //nolint:ll
 			ClientsWithSignatures: make(
 				map[ClientID]struct{},
 			),
@@ -2400,7 +2424,9 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		h.assertOutboxLen(1)
 		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
 		require.Equal(t, ClientID("client1"), errResp.Client)
-		require.Contains(t, errResp.ErrorMsg, "no signatures for signing key")
+		require.Contains(
+			t, errResp.ErrorMsg, "no signatures for signing key",
+		)
 		require.Empty(t, state.ClientsWithSignatures)
 	})
 }

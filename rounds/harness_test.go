@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -63,6 +64,15 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockWalletController := newMockWalletController(operatorSigner)
 	mockRoundStore := &mockRoundStore{}
 	mockVTXOStore := &mockVTXOStore{}
+
+	// Allow confirmation bookkeeping calls by default.
+	mockRoundStore.On(
+		"MarkRoundConfirmed", mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"MarkVTXOsLive", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
 
 	m := &commonMockSetup{
 		t:                t,
@@ -1012,6 +1022,20 @@ func (m *mockRoundStore) LoadPendingRounds(ctx context.Context) ([]*Round,
 	}
 
 	return args.Get(0).([]*Round), args.Error(1) //nolint:forcetypeassert
+}
+
+// MarkRoundConfirmed is a mock implementation of RoundStore.MarkRoundConfirmed.
+func (m *mockRoundStore) MarkRoundConfirmed(ctx context.Context,
+	roundID RoundID, blockHeight int32,
+	blockHash chainhash.Hash) error {
+
+	if len(m.ExpectedCalls) == 0 {
+		return nil
+	}
+
+	args := m.Called(ctx, roundID, blockHeight, blockHash)
+
+	return args.Error(0)
 }
 
 // mockVTXOStore is a mock implementation of VTXOStore for testing.
