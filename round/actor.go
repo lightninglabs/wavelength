@@ -28,7 +28,7 @@ type RoundFSM struct {
 	FSM *ClientStateMachine
 
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// TxID is the commitment transaction ID for this round.
 	TxID chainhash.Hash
@@ -55,11 +55,11 @@ type RoundClientActor struct {
 
 	// activeRounds tracks concurrent round FSMs awaiting commitment tx
 	// confirmation. Map: RoundID → RoundFSM instance.
-	activeRounds map[string]*RoundFSM
+	activeRounds map[RoundID]*RoundFSM
 
 	// commitmentTxIndex maps commitment transaction IDs to their round IDs
 	// for routing confirmation events. Map: CommitmentTxID → RoundID.
-	commitmentTxIndex map[chainhash.Hash]string
+	commitmentTxIndex map[chainhash.Hash]RoundID
 
 	// env is the FSM environment containing all dependencies.
 	env *ClientEnvironment
@@ -142,8 +142,8 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	return fn.Ok(&RoundClientActor{
 		cfg:               cfg,
 		primaryFSM:        &primaryFSM,
-		activeRounds:      make(map[string]*RoundFSM),
-		commitmentTxIndex: make(map[chainhash.Hash]string),
+		activeRounds:      make(map[RoundID]*RoundFSM),
+		commitmentTxIndex: make(map[chainhash.Hash]RoundID),
 		env:               env,
 	})
 }
@@ -152,7 +152,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 // from checkpointed state. Uses FetchState to load both round data and FSM
 // state atomically.
 func (a *RoundClientActor) createRoundFSM(ctx context.Context,
-	roundID string) (*RoundFSM, error) {
+	roundID RoundID) (*RoundFSM, error) {
 
 	round, state, err := a.cfg.RoundStore.FetchState(ctx, roundID)
 	if err != nil {
@@ -381,7 +381,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 // signaling that a round has been saved to storage and should be migrated to
 // its own FSM instance for independent tracking.
 func (a *RoundClientActor) migrateRoundToActiveFSM(ctx context.Context,
-	roundID string) error {
+	roundID RoundID) error {
 
 	// Check if this round is already in activeRounds (idempotency).
 	if _, exists := a.activeRounds[roundID]; exists {
@@ -404,24 +404,27 @@ func (a *RoundClientActor) migrateRoundToActiveFSM(ctx context.Context,
 	return nil
 }
 
-// extractRoundID returns the RoundID from events that carry one. Returns empty
-// string for events without a RoundID field.
-func extractRoundID(event ClientEvent) string {
+// extractRoundID returns the RoundID from events that carry one. Returns the
+// zero value for events without a RoundID field.
+func extractRoundID(event ClientEvent) (RoundID, bool) {
 	switch e := event.(type) {
 	case *RoundJoined:
-		return e.RoundID
+		return e.RoundID, true
 
 	case *CommitmentTxBuilt:
-		return e.RoundID
+		return e.RoundID, true
 
 	case *NoncesAggregated:
-		return e.RoundID
+		return e.RoundID, true
 
 	case *OperatorSigned:
-		return e.RoundID
+		return e.RoundID, true
+
+	case *AwaitingBoardingSigs:
+		return e.RoundID, true
 
 	default:
-		return ""
+		return RoundID{}, false
 	}
 }
 
@@ -437,8 +440,8 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	// Otherwise, use the primaryFSM.
 	targetFSM := a.primaryFSM
 
-	roundID := extractRoundID(msg.Message)
-	if roundID != "" {
+	roundID, hasRoundID := extractRoundID(msg.Message)
+	if hasRoundID {
 		if roundFSM, exists := a.activeRounds[roundID]; exists {
 			targetFSM = roundFSM.FSM
 		}
@@ -479,14 +482,14 @@ func (a *RoundClientActor) handleGetState(_ context.Context,
 	states["primary"] = FSMStateInfo{
 		State:     clientState,
 		IsPrimary: true,
-		RoundID:   "",
+		RoundID:   RoundID{},
 	}
 
 	for roundID, roundFSM := range a.activeRounds {
 		roundState, err := roundFSM.FSM.CurrentState()
 		if err != nil {
 			log.Warnf("Failed to get FSM state for round %s: %v",
-				roundID, err)
+				roundID.String(), err)
 
 			continue
 		}
@@ -494,12 +497,12 @@ func (a *RoundClientActor) handleGetState(_ context.Context,
 		clientState, ok := roundState.(ClientState)
 		if !ok {
 			log.Warnf("Round %s FSM state is not a ClientState: %T",
-				roundID, roundState)
+				roundID.String(), roundState)
 
 			continue
 		}
 
-		states[roundID] = FSMStateInfo{
+		states[roundID.String()] = FSMStateInfo{
 			State:     clientState,
 			IsPrimary: false,
 			RoundID:   roundID,
@@ -538,7 +541,7 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 
 // onRoundComplete is called when a round finishes successfully. This removes
 // the round from active tracking and archives the round data.
-func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID string,
+func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 	txid chainhash.Hash, confInfo ConfInfo) error {
 
 	delete(a.activeRounds, roundID)
