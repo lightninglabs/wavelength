@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 )
