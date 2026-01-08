@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This document specifies the round lifecycle protocol for constructing, signing, and broadcasting Ark commitment transactions. A round aggregates multiple participant requests (boarding, leaving, batch swaps) into a single commitment transaction with associated VTXT structures.
+This document specifies the round lifecycle protocol for constructing, signing, and broadcasting Ark batch transactions. A round aggregates multiple participant requests (boarding, VTXO creation, leaving, batch swaps) into a single batch transaction with associated VTXT structures.
 
 ## Status
 
@@ -35,7 +35,7 @@ Operators MAY configure round frequency based on their operational requirements.
 
 The round frequency affects:
 - User experience (latency to obtain new VTXOs)
-- On-chain footprint (fewer rounds = fewer commitment transactions)
+- On-chain footprint (fewer rounds = fewer batch transactions)
 - Operator liquidity requirements (longer rounds may accumulate more value)
 
 ## Round Overview
@@ -48,7 +48,8 @@ stateDiagram-v2
 
     RequestCollection --> Construction: Collection Period Ends
 
-    Construction --> VTXTSigning: Commitment TX Built
+    Construction --> VTXTSigning: Batch TX Built (has VTXOs)
+    Construction --> InputSigning: Batch TX Built (no VTXOs)
 
     VTXTSigning --> InputSigning: VTXT Signatures Complete
 
@@ -62,31 +63,52 @@ stateDiagram-v2
     InputSigning --> [*]: Round Aborted
 ```
 
+**Note:** A round MAY skip the VTXTSigning phase if the batch has no VTXO outputs (e.g., only forfeit requests with leave outputs). In this case, Construction transitions directly to InputSigning.
+
 | Phase | Purpose | Participants |
 |-------|---------|--------------|
 | Request Collection | Gather participant requests | All |
-| Construction | Build commitment TX and VTXT | Operator |
+| Construction | Build batch TX and VTXT | Operator |
 | VTXT Signing | Sign virtual transaction tree | All with VTXOs |
-| Input Signing | Sign commitment TX inputs | Boarding participants |
+| Input Signing | Sign batch TX inputs | Boarding participants |
 | Broadcast | Publish and confirm | Operator |
 
 ## Phase 0: Request Collection
 
 ### Overview
 
-During request collection, the operator accepts requests from participants. Each request type results in specific inputs or outputs in the commitment transaction.
+During request collection, the operator accepts requests from participants. Each request type results in specific inputs or outputs in the batch transaction.
+
+### Session Key Submission
+
+As part of registration, participants MUST provide a **session key** (`session_pubkey`) that is separate from their VTXO ownership keys. This separation is a critical security and privacy feature.
+
+**Requirements:**
+1. Session keys are used exclusively for MuSig2 aggregation in VTXT branch nodes.
+2. Session keys SHOULD be freshly derived for each round.
+3. Session keys MUST NOT be reused across different rounds.
+4. Session keys MUST be different from VTXO ownership keys.
+
+**Rationale:** Separating session keys from VTXO keys provides:
+- **Privacy**: Prevents cross-round linkability of participant VTXOs
+- **Security isolation**: Session key compromise doesn't affect fund ownership
+- **Operational flexibility**: Session keys can be "hot" while VTXO keys remain "cold"
+
+See ARK-01 Section "Key Separation: Session Keys vs VTXO Keys" for detailed rationale and usage guidelines.
 
 ### Request Types
 
-#### Boarding Request
+Request types are **disjoint** - input requests (sources of funds) and output requests (destinations of funds) are specified independently. This allows flexible combinations like consolidation (multiple inputs → one output), splitting (one input → multiple outputs), and mixed operations.
 
-A boarding request enters the Ark by spending an on-chain UTXO.
+#### Input Request Types
+
+##### Boarding Request
+
+A boarding request provides funds by spending an on-chain UTXO.
 
 **Request Contents:**
 - `boarding_outpoint`: The TXID and output index of the boarding UTXO
 - `boarding_script`: The full script of the boarding output
-- `requested_vtxos`: List of VTXO specifications (pubkey, value)
-- `session_pubkey`: Ephemeral key for VTXT signing sessions
 - `proof_of_ownership`: Signature proving control of the boarding key
 
 **Operator Validation:**
@@ -94,42 +116,52 @@ A boarding request enters the Ark by spending an on-chain UTXO.
 2. The boarding UTXO MUST have sufficient confirmations (operator-defined minimum).
 3. The boarding script MUST match the expected format (see ARK-01).
 4. The operator key in the script MUST match the operator's current key.
-5. The requested VTXO values MUST NOT exceed the boarding value minus fees.
-6. The proof of ownership MUST be a valid signature.
+5. The proof of ownership MUST be a valid signature.
+6. The boarding UTXO MUST NOT be too close to its timeout expiry.
 
-#### Leave Request
+##### Forfeit Request
 
-A leave request exits the Ark by forfeiting a VTXO for an on-chain UTXO.
-
-**Request Contents:**
-- `vtxo_reference`: Reference to the VTXO being forfeited
-- `vtxo_proof`: Proof of VTXO ownership and validity
-- `destination_script`: The script to pay the leave output to
-- `destination_amount`: The amount for the leave output
-
-**Operator Validation:**
-1. The VTXO reference MUST point to a valid, unspent VTXO.
-2. The VTXO MUST NOT be locked by another pending operation.
-3. The VTXO MUST NOT be from an expired batch.
-4. The destination amount MUST NOT exceed VTXO value minus fees.
-5. The proof MUST demonstrate ownership of the VTXO.
-
-#### Batch Swap Request
-
-A batch swap refreshes expiring VTXOs by forfeiting them for new VTXOs.
+A forfeit request provides funds by forfeiting one or more existing VTXOs.
 
 **Request Contents:**
 - `vtxo_references`: List of VTXOs being forfeited
 - `vtxo_proofs`: Proofs of ownership for each VTXO
-- `requested_vtxos`: List of new VTXO specifications
-- `session_pubkey`: Ephemeral key for VTXT signing sessions
 
 **Operator Validation:**
 1. All VTXO references MUST point to valid, unspent VTXOs.
 2. No VTXO MUST be locked by another pending operation.
-3. No VTXO MUST be from an expired batch.
-4. The total requested value MUST NOT exceed total forfeited value minus fees.
-5. All proofs MUST demonstrate ownership.
+3. No VTXO MUST be too close to batch expiry (sweep expiry).
+4. All proofs MUST demonstrate ownership.
+
+#### Output Request Types
+
+##### VTXO Request
+
+A VTXO request creates new VTXOs in the batch.
+
+**Request Contents:**
+- `vtxo_specs`: List of VTXO specifications (owner pubkey, value) - one signing key per VTXO for unlinkability
+- `session_pubkey`: Ephemeral key for VTXT signing sessions
+
+**Note:** Each VTXO SHOULD have a unique owner pubkey to prevent linking VTXOs to the same owner. Participants may send to themselves or to other recipients.
+
+##### Leave Request
+
+A leave request creates an on-chain output (exits the Ark).
+
+**Request Contents:**
+- `destination_script`: The script to pay the leave output to
+- `destination_amount`: The amount for the leave output
+
+#### Request Balancing
+
+A participant's combined requests MUST balance:
+
+```
+sum(boarding_values) + sum(forfeit_values) >= sum(vtxo_values) + sum(leave_values) + fees
+```
+
+The operator validates this balance when processing a participant's complete request set. Excess value (if any) goes to the operator as fees.
 
 ### VTXO Locking
 
@@ -139,16 +171,34 @@ When a request is accepted, the affected VTXOs MUST be locked:
 - **Lock duration**: Until the round completes (success or failure).
 - **Lock storage**: MAY be in-memory during early phases; MUST be persisted after signing begins.
 
+### Request Pre-Validation
+
+Operators MUST validate requests before accepting them into a round:
+
+1. **Signature validity**: All required signatures are valid.
+2. **VTXO existence**: Referenced VTXOs exist and are not already spent/forfeited.
+3. **Expiry validity**: VTXOs are not too close to sweep expiry.
+4. **Value validity**: Amounts are positive and within bounds.
+5. **Script validity**: Output scripts are valid Ark scripts.
+
+Invalid requests MUST be rejected immediately with appropriate error codes.
+Requests that pass validation but cannot be included (e.g., due to capacity)
+SHOULD be queued for the next round.
+
+**Important:** Invalid requests do not abort rounds. They are rejected at submission
+time before being included in round construction.
+
 ### Request Aggregation
 
-The operator aggregates requests based on operational constraints:
+The operator aggregates valid requests based on operational constraints:
 
 - Maximum participants per round
 - Maximum VTXT tree depth
 - Maximum transaction size
 - Liquidity availability
 
-Requests that cannot be included MUST be rejected with appropriate error codes.
+Requests that cannot be included in the current round MUST be rejected with appropriate
+error codes, or queued for the next round if the operator supports request queuing.
 
 ### Request Window
 
@@ -159,11 +209,24 @@ The request collection phase ends when:
 
 The operator MUST NOT accept new requests after the collection phase ends.
 
+### Concurrent Rounds
+
+When requests arrive after the collection phase has ended, the operator MAY:
+
+1. **Reject**: Return an error indicating the request should be resubmitted next round.
+2. **Queue**: Accept and queue the request for the next scheduled round.
+3. **Spawn concurrent round**: Trigger a new concurrent round to process late requests.
+
+Operators supporting concurrent rounds MUST ensure proper isolation:
+- Each concurrent round has independent state (construction, signing, broadcast).
+- VTXOs locked for one round MUST NOT be used in concurrent rounds.
+- Connector trees from different concurrent rounds are independent.
+
 ## Phase 1: Construction
 
 ### Overview
 
-The operator constructs the unsigned commitment transaction and VTXT structures based on collected requests.
+The operator constructs the unsigned batch transaction and VTXT structures based on collected requests.
 
 ### Step 1: VTXO Grouping
 
@@ -191,6 +254,54 @@ function GroupVTXOs(vtxos, radix):
     return current_level[0]  // Root
 ```
 
+### Multiple Batch Outputs
+
+A single batch transaction MAY contain multiple batch outputs, each paying to a separate VTXT root. This section specifies when and how to use multiple batches.
+
+#### Single Expiry per Batch (Recommended)
+
+All VTXOs within a single batch SHOULD share the same expiry time. This simplifies sweeper logic and reduces implementation complexity. The operator defines the expiry time for each batch based on operational policy.
+
+**Rationale:** Different expiries per VTXO within a batch would require tracking multiple sweep deadlines and complicate the sweeper implementation significantly.
+
+#### Scenarios for Multiple Batches
+
+1. **Liquidity Partitioning**: Separate high-value VTXOs from low-value ones to reduce tree depth for high-value participants, minimizing their unilateral exit costs.
+
+3. **Participant Grouping**: Group participants by trust level or operational requirements (e.g., known vs anonymous participants, different fee tiers).
+
+4. **Tree Depth Management**: Split large participant sets to maintain reasonable VTXT depth (e.g., max depth of 10 levels). With radix 2 and 1000 participants, depth would be ~10 levels; splitting into 4 batches reduces to ~8 levels each.
+
+#### Trade-offs
+
+| Factor | Single Batch | Multiple Batches |
+|--------|--------------|------------------|
+| Simplicity | Simpler implementation | More complex grouping logic |
+| On-chain size | One batch output | Multiple outputs (larger tx) |
+| Signing complexity | One aggregated key | Multiple aggregated keys |
+| Monitoring | One tree to track | Multiple trees to track |
+
+#### Input/Output Matching Across Batches
+
+When multiple batches exist in a single batch transaction:
+
+1. Boarding inputs MAY fund VTXOs in any batch within the same batch transaction. A single boarding input can even fund VTXOs across multiple batches if the values sum correctly.
+
+2. Forfeit transactions MAY spend connector outputs regardless of which batch the new VTXO is in. The connector tree is shared across all batches.
+
+3. Leave outputs are independent of batch structure—they are direct outputs of the batch transaction.
+
+4. The batch transaction fee is shared across all batches proportionally to their total value.
+
+#### Operator Policy
+
+Operators SHOULD document their batching policy in the `GetInfo` response, including:
+- Maximum VTXT depth allowed
+- Maximum participants per batch
+- Whether multiple expiries are supported
+- Grouping criteria used (if any)
+- Any premium fees for specific batch types
+
 ### Step 2: VTXT Construction
 
 For each batch, construct the VTXT bottom-up:
@@ -203,26 +314,31 @@ For each batch, construct the VTXT bottom-up:
 1. Compute the aggregated public key (all downstream owners + operator).
 2. Compute the script tree (operator sweep path).
 3. Derive the taproot output key.
-4. Create the transaction spending from parent and producing the output.
+4. Create the transaction spending from child outputs and producing the aggregated output.
 
-**Note:** TXIDs are not yet known since transactions are unsigned.
+**Note:** TXIDs can only be computed once all output scripts are known. Output scripts depend on the public keys of downstream participants, which must be collected first. Since all transactions use SegWit, the TXID is independent of witness data and can be computed before signing.
 
 ### Step 3: Connector Tree Construction
 
 If any forfeits (leave or batch swap) are included:
 
 1. Count the number of forfeit transactions needed.
-2. Build a connector tree with that many leaves.
+2. Build connector tree(s) with that many total leaves.
 3. The connector tree radix MAY differ from the VTXT radix.
 
 **Connector tree structure:**
-- Root: Single output in commitment transaction
+- Root: Output(s) in batch transaction
 - Branches: Intermediate transactions (if needed)
 - Leaves: Individual connector outputs for forfeit transactions
 
-### Step 4: Commitment Transaction Assembly
+**Multiple trees:** A batch MAY have multiple connector trees if the number of forfeits
+would result in trees exceeding the desired depth. Similarly, the radix can be increased
+to reduce tree depth. The tradeoff is between tree depth (affecting unroll cost) and
+individual transaction sizes.
 
-Assemble the commitment transaction template:
+### Step 4: Batch Transaction Assembly
+
+Assemble the batch transaction template:
 
 **Inputs:**
 1. Boarding inputs (from boarding requests)
@@ -230,16 +346,16 @@ Assemble the commitment transaction template:
 3. Expired batch sweep inputs (if any)
 
 **Outputs:**
-1. Batch outputs (one per VTXT root)
-2. Connector output (if forfeits exist)
+1. Batch outputs (one or more per VTXT root - multiple trees MAY be used for large batches)
+2. Connector outputs (one or more if forfeits exist)
 3. Leave outputs (one per leave request)
 4. Change output (if needed)
 
 ### Step 5: TXID Propagation
 
-Once the commitment transaction template is complete:
+Once the batch transaction template is complete:
 
-1. Compute the commitment transaction TXID.
+1. Compute the batch transaction TXID.
 2. Update VTXT root transactions to reference this TXID.
 3. Traverse the VTXT top-down, updating each transaction's inputs.
 4. Update connector tree transactions similarly.
@@ -251,17 +367,17 @@ After this step, all transactions have valid input references (but no signatures
 Send each participant their relevant transaction data:
 
 **For boarding participants:**
-- Full commitment transaction
+- Full batch transaction
 - VTXT path from root to their VTXO(s)
 - Connector tree path (if doing batch swap in same request)
 
 **For leave request participants:**
-- Full commitment transaction
+- Full batch transaction
 - Connector tree path to their connector leaf
 - Forfeit transaction template
 
 **For batch swap participants:**
-- Full commitment transaction
+- Full batch transaction
 - VTXT path to their new VTXO(s)
 - Connector tree path to their connector leaf
 - Forfeit transaction template(s)
@@ -278,7 +394,7 @@ sequenceDiagram
     O->>O: Group VTXOs into trees
     O->>O: Build VTXT structures
     O->>O: Build connector tree
-    O->>O: Assemble commitment TX
+    O->>O: Assemble batch TX
     O->>O: Compute TXIDs, update references
 
     O->>P: Send relevant TX data
@@ -351,7 +467,7 @@ The operator aggregates and distributes final signatures:
 Each participant verifies their complete VTXT path:
 
 1. Verify each transaction in the path has a valid signature.
-2. Verify the transaction chain from commitment TX to VTXO is complete.
+2. Verify the transaction chain from batch TX to VTXO is complete.
 3. Verify the VTXO output matches requested parameters.
 
 **If verification fails:**
@@ -393,14 +509,14 @@ sequenceDiagram
 
 ### Overview
 
-After VTXT signing, participants sign their inputs to the commitment transaction. This phase commits participants to the round.
+After VTXT signing, participants sign their inputs to the batch transaction. This phase commits participants to the round.
 
 ### Boarding Input Signing
 
-Participants with boarding requests sign the commitment transaction inputs:
+Participants with boarding requests sign the batch transaction inputs:
 
 1. Verify the complete VTXT path is signed (from Phase 2).
-2. Verify the commitment transaction includes expected outputs.
+2. Verify the batch transaction includes expected outputs.
 3. Generate MuSig2 signature for the boarding input.
 4. Submit signature to operator.
 
@@ -413,7 +529,7 @@ Participants with boarding requests sign the commitment transaction inputs:
 
 Participants with leave or batch swap requests sign forfeit transactions:
 
-1. Verify the commitment transaction includes expected outputs.
+1. Verify the batch transaction includes expected outputs.
    - For leave: verify leave output with correct script and value.
    - For batch swap: verify new VTXOs (via VTXT path from Phase 2).
 2. Verify the connector path is valid.
@@ -423,7 +539,7 @@ Participants with leave or batch swap requests sign forfeit transactions:
 
 **The forfeit transaction:**
 - Spends the forfeited VTXO via collaborative keypath.
-- Spends a connector output from the new commitment transaction.
+- Spends a connector output from the new batch transaction.
 - Pays the operator.
 
 ### Operator Signature Completion
@@ -434,7 +550,7 @@ The operator completes signatures:
 2. Collect all forfeit transactions.
 3. Sign operator's wallet inputs.
 4. Sign connector inputs for each forfeit transaction.
-5. Assemble the fully signed commitment transaction.
+5. Assemble the fully signed batch transaction.
 
 ### Mermaid Diagram: Input Signing Flow
 
@@ -455,18 +571,18 @@ sequenceDiagram
 
     O->>O: Sign operator inputs
     O->>O: Sign connector inputs for forfeits
-    O->>O: Assemble fully signed commitment TX
+    O->>O: Assemble fully signed batch TX
 ```
 
 ## Phase 4: Broadcast
 
 ### Overview
 
-The operator broadcasts the commitment transaction and monitors for confirmation.
+The operator broadcasts the batch transaction and monitors for confirmation.
 
 ### Transaction Broadcast
 
-1. Verify the commitment transaction is fully signed.
+1. Verify the batch transaction is fully signed.
 2. Broadcast to the Bitcoin network.
 3. Monitor for inclusion in a block.
 
@@ -479,7 +595,7 @@ The operator SHOULD wait for a minimum confirmation depth before marking VTXOs a
 
 ### VTXO Activation
 
-Once the commitment transaction reaches minimum confirmations:
+Once the batch transaction reaches minimum confirmations:
 
 1. Mark all new VTXOs from this batch as "Live".
 2. Remove locks on forfeited VTXOs (they are now spent).
@@ -487,7 +603,7 @@ Once the commitment transaction reaches minimum confirmations:
 
 ### Failure Handling
 
-If the commitment transaction fails to confirm within a timeout:
+If the batch transaction fails to confirm within a timeout:
 
 1. Attempt fee bumping via CPFP on anchor outputs.
 2. Continue retrying until confirmed or explicitly abandoned.
@@ -503,7 +619,7 @@ sequenceDiagram
 
     Note over O,P: Phase 4: Broadcast
 
-    O->>BN: Broadcast commitment TX
+    O->>BN: Broadcast batch TX
 
     loop Until Confirmed
         O->>BN: Check for confirmation
@@ -533,12 +649,18 @@ A round MAY be aborted during:
 
 ### Participant Exclusion
 
-When a participant is excluded:
+When a participant fails to sign or is otherwise excluded, the round continues without them
+rather than aborting:
 
 1. Remove their requests from the round.
-2. Release any VTXO locks.
-3. Rebuild the commitment transaction without them.
-4. Restart from Construction phase.
+2. Release any VTXO locks for their VTXOs.
+3. Rebuild the batch transaction without them.
+4. Restart from Construction phase with remaining participants.
+5. Notify the excluded participant they must rejoin a future round.
+
+**Rationale:** This approach prevents a single malicious or unresponsive participant from
+blocking the entire round. The cost is that remaining participants must wait for the round
+to be reconstructed, but this is preferable to complete round failure.
 
 ### Retry Limits
 
@@ -605,9 +727,16 @@ stateDiagram-v2
 
 The operator MUST persist state at these points:
 
-1. **After VTXT signing begins**: Nonces and partial signatures.
-2. **After commitment transaction is fully signed**: The complete signed transaction.
+1. **After operator has signed**: Once the operator contributes their signature to the batch
+   transaction, the round state MUST be persisted. Prior to operator signing, persistence
+   is OPTIONAL (allows for simpler implementation and reduces storage requirements).
+2. **After batch transaction is fully signed**: The complete signed transaction.
 3. **After broadcast**: Transaction broadcast status.
+
+**Rationale:** Before the operator signs, a crash simply means the round is lost and
+participants must rejoin a new round. After the operator signs, the batch transaction
+could potentially be broadcast by any party holding a copy, so the operator must track
+it to avoid conflicting double-spends.
 
 ### Recovery Procedures
 
@@ -634,7 +763,7 @@ The operator MUST persist state at these points:
 
 ### Double-Spend Protection
 
-If a fully signed commitment transaction exists:
+If a fully signed batch transaction exists:
 
 1. The operator MUST assume it may have been broadcast.
 2. The operator MUST continue trying to confirm it.

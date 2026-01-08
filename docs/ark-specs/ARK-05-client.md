@@ -86,17 +86,22 @@ Where:
 
 ### Session Keys
 
-Session keys are ephemeral keys used for MuSig2 signing sessions during rounds.
+Session keys are used for MuSig2 signing sessions during rounds, specifically for the VTXT branch node aggregated keys.
 
 **Requirements:**
-1. MAY be derived or randomly generated.
-2. MUST be unique per signing session.
-3. SHOULD be stored temporarily during the round.
-4. MAY be discarded after round completion.
+1. Each VTXO SHOULD have its own session key (in addition to its VTXO output key).
+2. Session keys MAY be derived or randomly generated.
+3. MUST be stored at least until the batch transaction is confirmed.
+4. MAY be discarded after batch confirmation (but MUST be retained if the VTXO will be spent via OOR).
 
 **Usage:**
 - Used in VTXT branch node aggregated keys.
-- Allows round participation without exposing VTXO keys.
+- Allows round participation without exposing VTXO ownership keys.
+- Distinct from VTXO output keys: session keys sign VTXT branches, output keys are used in VTXO scripts.
+
+**Key separation:** Each VTXO conceptually has two keys:
+1. **Session key** (`P_s`): Used for VTXT signing during the round.
+2. **Output key** (`P_v`): Used in the VTXO output script for collaborative/unilateral spending.
 
 ### Boarding Keys
 
@@ -214,9 +219,9 @@ Clients MUST retain VTXO data until:
 
 ## Verification Requirements
 
-### Commitment Transaction Verification
+### Batch Transaction Verification
 
-When receiving a commitment transaction, verify:
+When receiving a batch transaction, verify:
 
 1. **Transaction validity**: Valid Bitcoin transaction structure.
 2. **Inputs signed**: All inputs have valid signatures (or will after round completes).
@@ -228,7 +233,7 @@ When receiving a commitment transaction, verify:
 When receiving VTXT path transactions, verify:
 
 1. **Chain validity**: Each transaction spends from the correct parent.
-2. **Root anchor**: The root spends from the commitment transaction batch output.
+2. **Root anchor**: The root spends from the batch transaction batch output.
 3. **Leaf validity**: The leaf transaction has the expected VTXO output.
 4. **Script verification**: All output scripts match expected format.
 5. **Signatures valid**: All transactions are properly signed.
@@ -276,8 +281,8 @@ When receiving or constructing OOR transactions:
 
 When receiving a VTXO from another party:
 
-1. **Full chain verification**: Verify the entire chain back to the confirmed commitment transaction.
-2. **Batch confirmation**: Verify the commitment transaction is confirmed on-chain.
+1. **Full chain verification**: Verify the entire chain back to the confirmed batch transaction.
+2. **Batch confirmation**: Verify the batch transaction is confirmed on-chain.
 3. **Operator signature**: Verify operator co-signed all transactions.
 4. **Expiry check**: Verify sufficient time remains before batch expiry.
 
@@ -294,6 +299,26 @@ If verification fails:
 2. **Log the failure**: Record details for debugging.
 3. **Notify user**: Alert about the failed verification.
 4. **Consider operator reputation**: Track operator failures.
+
+### Ownership Proofs
+
+**When ownership proofs are required:**
+- When **spending** a VTXO (forfeit, batch swap, OOR transaction), the client must prove
+  ownership by signing with the VTXO's ownership key.
+
+**When ownership proofs are NOT required:**
+- When **creating** a VTXO for another party (sending funds), no ownership proof is needed
+  for the destination VTXO. The sender simply specifies the recipient's public key.
+- The recipient may not have registered with the operator and discovers their VTXO
+  by scanning for outputs matching their keys.
+
+**Optional ownership proofs:**
+- Operators MAY require ownership proofs for VTXO creation requests as a spam prevention
+  mechanism (e.g., to verify the sender actually controls the inputs being spent).
+- This is an operator policy choice, not a protocol requirement.
+
+**Note:** This asymmetry is intentional: spending requires proof (to prevent theft),
+while receiving does not (to enable simple payment flows where the recipient may be offline).
 
 ## Unilateral Exit Procedure
 

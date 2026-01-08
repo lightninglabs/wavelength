@@ -23,7 +23,7 @@ This specification is a working draft.
 
 ### Purpose
 
-Out-of-Round transactions enable instant, off-chain transfers between participants without requiring a new on-chain commitment transaction. This provides:
+Out-of-Round transactions enable instant, off-chain transfers between participants without requiring a new on-chain batch transaction. This provides:
 
 - **Instant settlement**: Transfers complete in seconds, not waiting for rounds.
 - **Reduced on-chain footprint**: Most transfers remain off-chain.
@@ -49,15 +49,15 @@ An Ark transaction spends one or more VTXOs and creates new VTXOs:
 
 ```
 Ark Transaction:
-  Version: 2
+  Version: 3 (required for zero-fee anchors)
   Locktime: 0
 
   Inputs:
-    - Checkpoint output(s) (spent via collaborative keypath)
+    - Checkpoint output(s) (spent via collaborative script-path multi-sig)
 
   Outputs:
     - New VTXO output(s)
-    - Fee output to operator (optional)
+    - Fee output to operator (required)
     - Anchor output (ephemeral, 0 sats)
 ```
 
@@ -92,11 +92,16 @@ Each output creating a new VTXO:
 
 #### Fee Output
 
-If the Ark transaction includes an explicit fee output:
+Ark transactions MUST include an explicit fee output:
 
-1. SHOULD pay directly to an operator-controlled address.
+1. MUST pay directly to an operator-controlled address.
 2. MAY be unconditional (no timelock or multisig required).
 3. The value represents the fee for processing the OOR transaction.
+
+This explicit fee model is preferred over implicit fees (input > output difference) because:
+- Clear accounting of operator revenue
+- Explicit fee negotiation between sender and operator
+- Fees go to operator even if transaction goes on-chain (vs miners getting implicit fees)
 
 #### Anchor Output
 
@@ -107,13 +112,13 @@ All Ark transactions:
 
 ### Value Conservation
 
-The sum of output values MUST NOT exceed the sum of input values:
+The sum of output values MUST equal the sum of input values:
 
 ```
-sum(output_values) <= sum(checkpoint_values)
+sum(vtxo_outputs) + fee_output + anchor = sum(checkpoint_values)
 ```
 
-The difference represents the implicit fee paid to the operator.
+Where the anchor has zero value.
 
 ### Ark Transaction Diagram
 
@@ -156,11 +161,11 @@ Checkpoint transactions serve two purposes:
 
 ```
 Checkpoint Transaction:
-  Version: 2
+  Version: 3 (required for zero-fee anchors)
   Locktime: 0
 
   Inputs:
-    - VTXO input (spent via collaborative keypath)
+    - VTXO input (spent via collaborative script-path multi-sig)
 
   Outputs:
     - Checkpoint output
@@ -171,10 +176,14 @@ Checkpoint Transaction:
 
 The checkpoint output uses a taproot structure (see ARK-01):
 
-- **Internal key**: MuSig2(P_sender, P_operator)
-- **Script tree**: Single leaf with operator timeout path
+- **Internal key**: ARKNUMSKey (provably unspendable)
+- **Script tree**: Two leaves - collaborative spend and operator timeout
 
 ```
+Collaborative Spend Script (multi-sig):
+  <P_sender> OP_CHECKSIGVERIFY
+  <P_o> OP_CHECKSIG
+
 Operator Timeout Script:
   <P_o> OP_CHECKSIGVERIFY
   <t_c> OP_CHECKSEQUENCEVERIFY
@@ -182,7 +191,7 @@ Operator Timeout Script:
 
 ### Checkpoint Properties
 
-1. **Collaborative spend**: The Ark transaction spends via keypath, requiring both sender and operator signatures.
+1. **Collaborative spend**: The Ark transaction spends via script-path multi-sig, requiring individual signatures from both sender and operator.
 2. **Operator fallback**: If the sender abandons the chain, the operator can claim after `t_c` blocks.
 3. **Bounded chain cost**: Each checkpoint can be independently claimed, limiting operator exposure.
 
@@ -289,7 +298,7 @@ The operator:
 
 1. Validates the checkpoint transaction (see [Validation Requirements](#validation-requirements)).
 2. Validates the Ark transaction.
-3. Marks input VTXOs as "Spent" (pending confirmation).
+3. Marks input VTXOs as "Spent".
 4. Generates and returns:
    - MuSig2 partial signature for the checkpoint transaction.
    - MuSig2 partial signature for the Ark transaction.
@@ -444,7 +453,9 @@ Recipients of preconfirmed VTXOs trust:
 - Operator detects the broadcast.
 - Operator broadcasts the checkpoint transaction.
 - Checkpoint claims funds before sender's CSV delay expires.
-- Bob's VTXO_B is honored (operator makes Bob whole from checkpoint).
+- Bob's VTXO_B is honored: the operator creates a new VTXO for Bob in a future batch. The operator can afford to do this because they reclaimed the original funds via the checkpoint. This makes the operator economically whole (they didn't lose anything) and Bob whole (he receives his expected value).
+
+Note: Bob must trust the operator to include his VTXO in a future batch. If the operator refuses, Bob can use the checkpoint transaction chain to prove his claim. The economic incentive aligns: the operator benefits from maintaining reputation and Bob's continued participation.
 
 **Scenario 2: Operator collusion**
 

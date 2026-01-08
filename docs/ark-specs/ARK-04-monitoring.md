@@ -64,12 +64,14 @@ stateDiagram-v2
 
     Spent --> Unrolled: Double-spend attempt
     Forfeit --> Reclaimed: Forfeit broadcast
+    Forfeit --> Locked: Round recovery
 
     Live --> Expired: Batch expired
     Spent --> Expired: Batch expired
     Forfeit --> Expired: Batch expired
 
     Expired --> Swept: Operator sweep
+    Expired --> Unrolled: Client wins race
     Reclaimed --> [*]: Cleanup
     Unrolled --> [*]: Cleanup
     Swept --> [*]: Cleanup
@@ -88,14 +90,14 @@ stateDiagram-v2
 | **Forfeit** | Forfeit transaction signed | Store forfeit, monitor |
 | **Unrolled** | Broadcast on-chain by owner | None (legitimate exit) |
 | **Reclaimed** | Forfeit transaction broadcast | Await confirmation |
-| **Expired** | Batch absolute expiry reached | Sweep |
+| **Expired** | Batch absolute expiry reached (tracks prior state: was_live, was_spent, was_forfeit) | Sweep |
 | **Swept** | Funds recovered via sweep | Cleanup |
 
 ### Transition Rules
 
 #### Pending → Live
 
-**Trigger:** The commitment transaction containing the VTXO is confirmed to minimum depth.
+**Trigger:** The batch transaction containing the VTXO is confirmed to minimum depth.
 
 **Actions:**
 1. Mark VTXO as Live.
@@ -174,6 +176,39 @@ stateDiagram-v2
 2. Track forfeit transaction confirmation.
 3. Cleanup after sufficient confirmations.
 
+#### Forfeit → Locked (Recovery)
+
+**Trigger:** The operator explicitly double-spends one of their inputs from the batch
+transaction, making the original batch transaction permanently unconfirmable.
+
+This is an exceptional transition used when a round must be abandoned after forfeit
+transactions were signed but before the batch transaction was successfully broadcast.
+The VTXO transitions to Locked first, then can proceed to Live via the normal
+Locked → Live transition.
+
+**Requirements:**
+1. The operator MUST have broadcast a conflicting transaction spending one of their inputs.
+2. The conflicting transaction MUST be confirmed to sufficient depth (RECOMMENDED: 6 blocks).
+3. The original batch transaction MUST NOT have been broadcast successfully.
+4. The operator MUST have certainty that no copy of the batch transaction exists
+   that could be replayed.
+
+**Actions:**
+1. Verify the double-spend is confirmed to sufficient depth.
+2. Mark the associated VTXOs as Locked (intermediate state).
+3. Delete the now-invalid forfeit transactions.
+4. Proceed to Locked → Live transition once recovery is confirmed.
+5. Notify affected participants that their forfeits have been reversed.
+
+**Warning:** This transition carries replay risk. If the original batch transaction
+was ever broadcast (even if not confirmed), it could theoretically be replayed later
+by any party that retained a copy. The operator SHOULD only perform this transition
+when absolutely certain the original batch transaction was never broadcast.
+
+**Operator Liability:** If an operator performs this transition incorrectly and the
+original batch transaction is later confirmed, the operator may suffer financial
+loss (the forfeit transactions become valid while VTXOs are also marked Live).
+
 #### Any → Expired
 
 **Trigger:** The batch absolute expiry is reached.
@@ -192,13 +227,30 @@ stateDiagram-v2
 2. Cleanup state.
 3. Return liquidity to operator wallet.
 
+#### Expired → Unrolled
+
+**Trigger:** The client successfully unrolls a VTXO after the batch has reached expiry
+but before the operator's sweep transaction confirms.
+
+This can occur when:
+1. The client began the unilateral exit before expiry.
+2. The client's VTXT path transactions confirm before the operator's sweep.
+
+**Actions:**
+1. Mark VTXO as Unrolled.
+2. Remove from sweep candidate list.
+3. The client has legitimately claimed their funds.
+
+**Note:** This is a valid outcome, not fraud. If the client started unrolling before
+expiry, they may win the race against the operator's sweep transaction.
+
 ## Batch Output Monitoring
 
 ### Monitoring Scope
 
 The operator MUST monitor:
 
-1. **Batch outputs**: Top-level outputs of commitment transactions.
+1. **Batch outputs**: Top-level outputs of batch transactions.
 2. **VTXT node outputs**: Any VTXT branch that makes it on-chain.
 3. **Checkpoint outputs**: Outputs from checkpoint transactions.
 
@@ -208,7 +260,7 @@ The operator MUST monitor:
 
 Operators SHOULD subscribe to relevant address/output notifications:
 
-1. Register commitment transaction outpoints.
+1. Register batch transaction outpoints.
 2. Monitor for spends of those outpoints.
 3. When spent, register child outpoints and repeat.
 
@@ -293,13 +345,15 @@ BatchMonitorState:
 
 ### Response to Spent VTXO Unroll
 
-When a Spent VTXO appears on-chain:
+When a Spent VTXO appears on-chain (meaning the user is attempting to unilaterally exit a VTXO they already spent via OOR transaction):
 
-1. **Retrieve checkpoint chain**: Get all checkpoints from this VTXO to the current tip.
-2. **Broadcast first checkpoint**: The checkpoint spending this VTXO.
-3. **Monitor checkpoint confirmation**: Track the checkpoint transaction.
-4. **Handle continuation**: If the spender continues (broadcasts Ark TX), continue broadcasting checkpoints.
-5. **Claim timeout**: After `t_c` blocks, claim checkpoint via timeout path if unchallenged.
+1. **Retrieve checkpoint transaction**: Get the first checkpoint transaction that spends this VTXO.
+2. **Race the CSV delay**: The user's unilateral exit is subject to a CSV delay (`t_e` blocks). The operator must broadcast the checkpoint before this delay expires.
+3. **Broadcast checkpoint**: Submit the checkpoint transaction that spends the same VTXO output.
+4. **Monitor confirmation**: The checkpoint and the user's unilateral exit are competing for the same UTXO. Only one can confirm.
+5. **Claim timeout**: If the checkpoint wins (confirms), wait `t_c` blocks and claim via the timeout path.
+
+**Key insight**: The operator only needs to broadcast one checkpoint transaction - the one that directly spends the contested VTXO. The rest of the OOR chain is irrelevant because the checkpoint claims the funds before the user can complete their unilateral exit.
 
 ```mermaid
 sequenceDiagram
@@ -307,22 +361,21 @@ sequenceDiagram
     participant O as Operator
     participant BC as Blockchain
 
-    M->>BC: Broadcast VTXO unilateral exit
+    M->>BC: Broadcast VTXO unilateral exit (subject to CSV delay)
 
     O->>O: Detect VTXO spend on-chain
     O->>O: Lookup: VTXO is in Spent state
     O->>O: Retrieve signed checkpoint TX
 
-    O->>BC: Broadcast checkpoint TX
+    O->>BC: Broadcast checkpoint TX (races CSV delay)
 
-    alt User Continues Attack
-        M->>BC: Broadcast Ark TX (spends checkpoint)
-        O->>O: Detect checkpoint spent
-        O->>BC: Broadcast next checkpoint
-        Note over O,BC: Repeat until chain exhausted
-    else User Abandons
+    alt Checkpoint Wins (confirms first)
         Note over BC: Wait t_c blocks
         O->>BC: Claim checkpoint via timeout
+        Note over O: Operator recovers funds
+    else User's Exit Wins
+        Note over O: User successfully double-spent
+        Note over O: Operator has cryptographic fraud proof
     end
 ```
 
@@ -331,10 +384,11 @@ sequenceDiagram
 When a Forfeit VTXO appears on-chain:
 
 1. **Retrieve forfeit transaction**: Get the signed forfeit.
-2. **Verify connector**: Ensure the connector output exists (commitment TX confirmed).
-3. **Broadcast forfeit**: Submit the forfeit transaction.
-4. **Monitor confirmation**: Track forfeit confirmation.
-5. **Fee bump if needed**: Use anchor output for CPFP.
+2. **Unroll connector tree**: The forfeit transaction requires a connector input. First, broadcast the connector tree path (from the batch transaction's connector root output down to the specific connector leaf needed for this forfeit).
+3. **Verify connector**: Ensure the connector leaf output exists on-chain.
+4. **Broadcast forfeit**: Submit the forfeit transaction spending both the VTXO and connector.
+5. **Monitor confirmation**: Track forfeit confirmation.
+6. **Fee bump if needed**: Use anchor output for CPFP.
 
 ```mermaid
 sequenceDiagram
@@ -347,9 +401,12 @@ sequenceDiagram
     O->>O: Detect VTXO spend on-chain
     O->>O: Lookup: VTXO is in Forfeit state
     O->>O: Retrieve signed forfeit TX
-    O->>O: Verify connector output exists
+    O->>O: Retrieve connector tree path
 
-    O->>BC: Broadcast forfeit TX
+    O->>BC: Broadcast connector tree transactions
+    BC->>O: Connector leaf output confirmed
+
+    O->>BC: Broadcast forfeit TX (spends VTXO + connector)
 
     alt Confirmation Delayed
         O->>BC: Fee bump via anchor CPFP

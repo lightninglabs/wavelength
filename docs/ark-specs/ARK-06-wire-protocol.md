@@ -161,7 +161,7 @@ Subscriptions use server-side streaming:
 | 21 | SubmitLeaveRequest | C→O | Submit leave request |
 | 22 | SubmitBatchSwapRequest | C→O | Submit batch swap request |
 | 23 | RequestResponse | O→C | Generic request acknowledgment |
-| 30 | RoundProposal | O→C | Commitment TX and VTXT path |
+| 30 | RoundProposal | O→C | Batch TX and VTXT path |
 | 31 | SubmitNonces | C→O | Submit MuSig2 nonces |
 | 32 | AggregateNonces | O→C | Aggregated nonces |
 | 33 | SubmitPartialSigs | C→O | Submit partial signatures |
@@ -367,8 +367,8 @@ Operator sends the constructed round to participants.
 message RoundProposal {
     bytes round_id = 1;
 
-    // Unsigned commitment transaction
-    bytes commitment_tx = 2;
+    // Unsigned batch transaction
+    bytes batch_tx = 2;
 
     // VTXT path for this participant
     repeated bytes vtxt_transactions = 3;
@@ -470,7 +470,7 @@ message SignedTransaction {
 
 ### SubmitInputSigs
 
-Submit signatures for commitment transaction inputs.
+Submit signatures for batch transaction inputs.
 
 **Request:**
 ```protobuf
@@ -619,7 +619,7 @@ message RoundStartedData {
 }
 
 message RoundConfirmedData {
-    bytes commitment_txid = 1;
+    bytes batch_txid = 1;
     uint32 confirmation_height = 2;
 }
 
@@ -769,12 +769,14 @@ Operators MAY advertise optional features:
 
 ```protobuf
 message OperatorFeatures {
-    bool supports_cross_batch_oor = 1;
-    bool supports_client_auth = 2;
-    bool supports_instant_finality = 3;
+    bool supports_cross_batch_oor = 1;  // OOR txs can spend VTXOs from different batches
+    bool supports_client_auth = 2;       // Operator requires client authentication
+    bool supports_oor_transactions = 3;  // Operator supports OOR/Ark transactions
     // Future extensions
 }
 ```
+
+**Note:** `supports_oor_transactions` indicates whether the operator supports Out-of-Round (OOR/Ark) transactions for instant off-chain transfers. Operators that set this to false only support batch operations (boarding, leaving, batch swaps), requiring users to wait for rounds. This may be useful for operators with limited liquidity or simplified implementations.
 
 Clients MUST NOT use features not advertised by the operator.
 
