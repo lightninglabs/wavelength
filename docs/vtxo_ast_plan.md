@@ -33,7 +33,11 @@ PR #58 MUST implement, at minimum:
   - validation for VTXO and checkpoint policies, and
   - canonical compilation (leaf encoding + canonical tree construction).
 - A `SpendInfo` API that returns per-leaf script + control block + derived tx
-  context requirements.
+  context requirements. The `SpendInfo` type MUST include:
+  - `WitnessScript []byte` - the tapscript leaf script bytes,
+  - `ControlBlock []byte` - the control block for script-path spending,
+  - `RequiredSequence uint32` - the BIP-68 sequence value required for this leaf,
+  - `RequiredLockTime uint32` - the nLockTime value required for this leaf.
 - Canonicalization rules pinned in-code (leaf ordering + tree shape) so output
   keys are reproducible across implementations.
 - A tap tree encoding suitable for PSBT metadata for OOR finalization (see
@@ -50,6 +54,10 @@ PR #58 MUST:
   function signatures stable where feasible.
 - Reuse the existing NUMS/unspendable key machinery in `client/lib/scripts/nums.go`
   as the default internal key provider.
+- Consolidate the NUMS key definition to a single authoritative location
+  (`client/lib/scripts/nums.go`). The duplicate `arkNUMSHex` constant in
+  `lib/closure/script.go` MUST be removed and all usages updated to import from
+  the canonical location.
 
 PR #58 SHOULD document and/or update these call sites to use the new package
 internally:
@@ -66,6 +74,16 @@ MUST preserve the standard VTXO template behavior:
   `client/lib/scripts/VTXOTapScript` for the same `(owner, operator, delay)`.
 - This MUST be enforced via golden tests derived from the current implementation.
 
+**Implementation ordering**: Before any refactoring begins, PR #58 MUST create
+golden test vectors that capture:
+- Default VTXO output key for known `(owner, operator, delay)` test inputs,
+- Exact script bytes for exit and collab leaves,
+- Control block bytes for each leaf.
+
+These vectors MUST be generated from the current implementation and used to
+validate the new implementation produces byte-identical output. Golden tests
+MUST be the first deliverable (implementation plan step 0).
+
 PR #58 MAY additionally:
 - include a minimal “policy composition” hook for Taproot Assets (attach Ark
   policy root as a sibling to an externally provided root), but MUST keep this
@@ -73,9 +91,22 @@ PR #58 MAY additionally:
   v1.
 
 PR #58 MUST NOT:
-- implement a fake “EvaluateScriptToBool” VM helper,
+- implement a fake "EvaluateScriptToBool" VM helper,
 - accept arbitrary raw scripts that bypass validation, or
 - depend on library heuristics for taproot tree construction.
+
+### Legacy closure migration
+The existing `lib/closure` package contains `ConditionMultisigClosure` and
+`ConditionCSVMultisigClosure` types that accept arbitrary `Condition []byte`
+fields and use an `EvaluateScriptToBool()` VM helper. PR #58 MUST either:
+- (a) remove these types from the public API and document the migration path
+  to the new `HashLock` AST node for preimage-gated spending conditions, OR
+- (b) explicitly mark these types as deprecated and out-of-scope for the new
+  arkscript package, with a clear warning that they bypass structural
+  validation.
+
+The `EvaluateScriptToBool()` function in `lib/closure/script.go` MUST be
+removed or deprecated as part of PR #58.
 
 ## Terminology
 - **Policy**: a set of role-tagged leaves plus an internal key. Compiles to one
@@ -142,6 +173,17 @@ Canonical encoding:
 <xonly_pubkey> OP_CHECKSIG
 ```
 
+### Composition: `CSV(lock, Checksig(key))`
+The default VTXO exit leaf uses a CSV-gated single-key signature. The AST
+composition `CSV(lock, Checksig(key))` MUST produce byte-identical scripts to
+the current implementation (verified by golden tests):
+```
+<xonly_key> OP_CHECKSIG <lock> OP_CHECKSEQUENCEVERIFY OP_DROP
+```
+
+This is the canonical exit leaf for the default VTXO template. The inner
+expression (`Checksig`) executes first, then the CSV timelock is verified.
+
 ### `Multisig`
 This RFC standardizes N-of-N only (all keys must sign).
 
@@ -172,12 +214,26 @@ For keys `k[0..n-1]`:
 Key order is significant. For interoperability, key order MUST be specified by
 the policy template.
 
+**Default VTXO template key order**: For the default VTXO collab leaf, key
+order MUST be `[owner, operator]` to match the current implementation. The
+resulting 2-of-2 script MUST be:
+```
+<owner_xonly> OP_CHECKSIGVERIFY <operator_xonly> OP_CHECKSIG
+```
+
+This is the canonical collab leaf for the default VTXO template.
+
 ### `CSV`
 `CSV(lock, inner)` MUST compile to:
 ```
 <inner>
 <lock> OP_CHECKSEQUENCEVERIFY OP_DROP
 ```
+
+This suffix ordering (inner expression first, then CSV check) matches the
+current implementation. The inner expression evaluates first, leaving its
+result on the stack, then the CSV timelock is verified and the lock value
+is dropped.
 
 The lock value MUST encode a valid BIP-68 relative locktime when interpreted as
 an input sequence value.
@@ -220,12 +276,23 @@ Role ranks are pinned as:
 - VTXO: `collab`=0, `exit`=1, `custom`=2.
 - Checkpoint: `unroll`=0, `owner`=1, `custom`=2.
 
+The current implementation already follows this ordering: collab leaf at index
+0, exit (timeout) leaf at index 1. This is verified by golden tests in
+`lib/arkscript/golden_test.go`.
+
 Leaf names are for selection/audit. Leaf names MUST NOT be required to derive
 the same taproot output key.
 
 ### Tree construction
 Canonical tree shape MUST be deterministic and independent of library
 heuristics.
+
+**Backward compatibility verification**: Before implementing the canonical tree
+builder, PR #58 MUST verify that for the default 2-leaf VTXO case, btcd's
+`txscript.AssembleTaprootScriptTree()` produces the same merkle root as the
+`BuildTree()` algorithm defined below. If they differ, the `BuildTree()`
+algorithm MUST be adjusted to match the current behavior for backward
+compatibility with existing on-chain VTXOs.
 
 Define `BuildTree(leaves)` recursively over the canonical leaf list:
 - If `n == 1`: the root is the single leaf hash.
@@ -442,14 +509,20 @@ PR #58 should visibly include:
 - Unit/rapid tests for invariants + canonicalization + PSBT encoding helpers.
 
 ## Implementation plan (incremental)
-1) Implement AST nodes + canonical script encoder.
+0) **Create golden test vectors first** - Generate vectors from the current
+   implementation capturing default VTXO output keys, leaf scripts, and control
+   blocks. These vectors MUST be committed before any refactoring begins.
+1) Implement AST nodes + canonical script encoder (verify against golden
+   vectors).
 2) Implement canonical leaf ordering + canonical tree builder (with control
-   blocks).
+   blocks). Verify 2-leaf case matches btcd's `AssembleTaprootScriptTree()`.
 3) Implement VTXO and checkpoint validators.
-4) Implement tx-context derivation + `SpendInfo`.
+4) Implement tx-context derivation + `SpendInfo` (including `RequiredSequence`
+   and `RequiredLockTime` fields).
 5) Implement PSBT tap tree encoding helpers (writer/reader).
-6) Add assets composition hook (root sibling combination).
-7) Add tests + golden vectors.
+6) Add assets composition hook (root sibling combination) - MAY be deferred to
+   a follow-up PR if not immediately needed.
+7) Final integration tests against golden vectors.
 
 ## Testing plan
 Unit tests:
