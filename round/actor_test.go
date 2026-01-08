@@ -1074,3 +1074,182 @@ func TestActorServerMessageRouting(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleRefreshVTXORequest verifies that refresh requests from VTXO actors
+// are properly forwarded to the primary FSM and tracked for inclusion in the
+// next round registration.
+func TestHandleRefreshVTXORequest(t *testing.T) {
+	t.Parallel()
+
+	t.Run("queues_refresh_from_idle_state", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// With on-demand FSM creation, no FSMs exist at startup.
+		states := h.queryState()
+		require.Empty(t, states, "expected no FSMs at startup")
+
+		// Create a refresh request as if from a VTXO actor.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("vtxo-to-refresh")),
+			Index: 0,
+		}
+		refreshReq := &RefreshVTXORequest{
+			VTXOOutpoint: vtxoOutpoint,
+			Amount:       50000,
+			NewVTXOKey:   h.clientPubKey,
+			PkScript:     []byte{0x51, 0x20}, // Minimal P2TR
+			OperatorKey:  h.operatorPubKey,
+			Expiry:       144,
+		}
+
+		// Send the refresh request to the actor.
+		result := h.receive(refreshReq)
+		require.True(t, result.IsOk(), "expected Ok result, got: %v",
+			result.Err())
+
+		// FSM should transition to PendingRoundAssembly with the refresh
+		// request tracked. The FSM is keyed by a temp key.
+		states = h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM state")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State)
+
+		// Verify the refresh request is tracked.
+		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+		require.Equal(t, refreshReq, assembly.RefreshingVTXOs[vtxoOutpoint])
+	})
+
+	t.Run("queues_refresh_alongside_boarding_intent", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// First, add a boarding intent.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+
+		// Verify FSM is in PendingRoundAssembly with the intent.
+		h.assertFSMState("PendingRoundAssembly")
+
+		// Now add a refresh request.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("vtxo-refresh")),
+			Index: 1,
+		}
+		refreshReq := &RefreshVTXORequest{
+			VTXOOutpoint: vtxoOutpoint,
+			Amount:       75000,
+			NewVTXOKey:   h.clientPubKey,
+			PkScript:     []byte{0x51, 0x20},
+			OperatorKey:  h.operatorPubKey,
+			Expiry:       144,
+		}
+
+		result := h.receive(refreshReq)
+		require.True(t, result.IsOk())
+
+		// Verify both intent and refresh are tracked. The FSM is
+		// temp-keyed since it hasn't been assigned a RoundID yet.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM state")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State)
+		require.Len(t, assembly.Boarding, 1)
+		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+	})
+}
+
+// TestHandleForfeitSignatureResponse verifies that forfeit signatures from VTXO
+// actors are routed to the correct round FSM for collection.
+func TestHandleForfeitSignatureResponse(t *testing.T) {
+	t.Parallel()
+
+	t.Run("errors_on_unknown_round", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Send a forfeit signature for a non-existent round.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("unknown-vtxo")),
+			Index: 0,
+		}
+		response := &ForfeitSignatureResponse{
+			RoundID:      "non-existent-round",
+			VTXOOutpoint: vtxoOutpoint,
+			Signature:    []byte{0x30, 0x44}, // Dummy signature
+			ForfeitTx:    wire.NewMsgTx(2),
+		}
+
+		result := h.receive(response)
+		require.True(t, result.IsErr())
+		require.Contains(t, result.Err().Error(), "unknown round")
+	})
+}
+
+// TestVTXOCreatedNotificationForwarding verifies that VTXOCreatedNotification
+// messages from the FSM outbox are forwarded to the VTXO manager.
+func TestVTXOCreatedNotificationForwarding(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forwards_to_vtxo_manager", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Create a VTXOCreatedNotification as if from FSM outbox.
+		clientVTXO := &ClientVTXO{
+			Outpoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("new-vtxo")),
+				Index: 0,
+			},
+			Amount:      100000,
+			PkScript:    []byte{0x51, 0x20},
+			ClientKey:   h.newKeyDescriptor(),
+			OperatorKey: h.operatorPubKey,
+			Expiry:      144,
+		}
+
+		notification := &VTXOCreatedNotification{
+			VTXOs:          []*ClientVTXO{clientVTXO},
+			RoundID:        "test-round-123",
+			CommitmentTxID: chainhash.HashH([]byte("commitment")),
+			BatchExpiry:    1000,
+			CreatedHeight:  500,
+		}
+
+		// Directly call processOutbox to test the routing.
+		outbox := []ClientOutMsg{notification}
+		h.actor.processOutbox(h.ctx, outbox)
+
+		// Verify the VTXO manager received the notification.
+		receivedNotif := h.vtxoManager.assertVTXOCreatedReceived(t)
+		require.Equal(t, "test-round-123", receivedNotif.RoundID)
+		require.Len(t, receivedNotif.VTXOs, 1)
+		require.Equal(t, clientVTXO.Outpoint, receivedNotif.VTXOs[0].Outpoint)
+	})
+}

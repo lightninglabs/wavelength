@@ -277,6 +277,64 @@ func (m *mockSelfRef) waitForMessage(timeout time.Duration) (ClientMsg, bool) {
 	}
 }
 
+// mockVTXOManagerRef captures messages sent to the VTXO manager for test
+// verification, implementing actor.TellOnlyRef[actor.Message].
+type mockVTXOManagerRef struct {
+	t        *testing.T
+	id       string
+	messages []actor.Message
+	mu       sync.Mutex
+}
+
+func newMockVTXOManagerRef(t *testing.T) *mockVTXOManagerRef {
+	return &mockVTXOManagerRef{
+		t:        t,
+		id:       "mock-vtxo-manager",
+		messages: make([]actor.Message, 0),
+	}
+}
+
+func (m *mockVTXOManagerRef) ID() string {
+	return m.id
+}
+
+func (m *mockVTXOManagerRef) Tell(_ context.Context, msg actor.Message) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, msg)
+}
+
+// getMessages returns a copy of all captured messages.
+func (m *mockVTXOManagerRef) getMessages() []actor.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]actor.Message, len(m.messages))
+	copy(result, m.messages)
+	return result
+}
+
+// assertVTXOCreatedReceived verifies a VTXOCreatedNotification was received.
+func (m *mockVTXOManagerRef) assertVTXOCreatedReceived(
+	t *testing.T,
+) *VTXOCreatedNotification {
+
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, msg := range m.messages {
+		if notif, ok := msg.(*VTXOCreatedNotification); ok {
+			return notif
+		}
+	}
+
+	t.Fatalf("expected VTXOCreatedNotification, but none found in %d messages",
+		len(m.messages))
+
+	return nil
+}
+
 // immediateFuture provides a synchronous Future implementation for tests,
 // avoiding the complexity of async futures when the result is already known.
 type immediateFuture[T any] struct {
@@ -324,6 +382,7 @@ type actorTestHarness struct {
 	chainSource *mockChainSourceRef
 	walletActor *mockWalletActorRef
 	selfRef     *mockSelfRef
+	vtxoManager *mockVTXOManagerRef
 
 	roundStore *MockRoundStore
 	vtxoStore  *MockVTXOStore
@@ -352,6 +411,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	chainSource := newMockChainSourceRef(t)
 	walletActor := newMockWalletActorRef(t)
 	selfRef := newMockSelfRef(t)
+	vtxoManager := newMockVTXOManagerRef(t)
 
 	roundStore := &MockRoundStore{}
 	vtxoStore := &MockVTXOStore{}
@@ -381,6 +441,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ChainSource:    chainSource,
 		WalletActor:    walletActor,
 		SelfRef:        selfRef,
+		VTXOManager:    vtxoManager,
 		ChainParams:    &chaincfg.MainNetParams,
 		MaxOperatorFee: defaultMaxOperatorFee,
 	}
@@ -401,6 +462,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		chainSource:     chainSource,
 		walletActor:     walletActor,
 		selfRef:         selfRef,
+		vtxoManager:     vtxoManager,
 		roundStore:      roundStore,
 		vtxoStore:       vtxoStore,
 		wallet:          walletMock,
@@ -551,6 +613,18 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 			ConfTx:     confTx,
 		},
 		Status: wallet.BoardingStatusConfirmed,
+	}
+}
+
+// newKeyDescriptor creates a keychain.KeyDescriptor using the harness's client
+// key, useful for creating test ClientVTXO structs.
+func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
+	return keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
 	}
 }
 
