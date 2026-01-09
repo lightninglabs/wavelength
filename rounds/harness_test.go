@@ -199,13 +199,15 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	return h
 }
 
-// mustTaprootAddr derives a taproot address for tests and fails the test on
-// error.
+// mustTaprootAddr derives a taproot address from a public key. It computes the
+// taproot output key (BIP341 tweak) before creating the address.
 func mustTaprootAddr(t *testing.T, key *btcec.PublicKey) btcutil.Address {
 	t.Helper()
 
+	outputKey := txscript.ComputeTaprootOutputKey(key, nil)
 	addr, err := btcutil.NewAddressTaproot(
-		schnorr.SerializePubKey(key), &chaincfg.RegressionNetParams,
+		schnorr.SerializePubKey(outputKey),
+		&chaincfg.RegressionNetParams,
 	)
 	require.NoError(t, err)
 

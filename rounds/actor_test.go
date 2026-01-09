@@ -287,7 +287,8 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			MinBoardingConfirmations:   1,
 			MinVTXOAmount:              1000,
 			MaxVTXOAmount:              10000000,
-			VTXOExitDelay:              100,
+			VTXOExitDelay:              144,
+			TreeRadix:                  4,
 			RegistrationTimeout:        30 * time.Second,
 			SignatureCollectionTimeout: 30 * time.Second,
 		},
@@ -951,6 +952,137 @@ func TestActorBoardingSignatures(t *testing.T) {
 		)
 	})
 
+	t.Run("valid signatures with forfeits finalize round",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setActiveRounds([]*Round{})
+
+			const baseKeyIndex = 10
+
+			h.start(h.ctx)
+
+			// Set up a client with boarding and forfeit sigs.
+			client := h.newClient("client1", baseKeyIndex)
+			bHash := chainhash.HashH([]byte("boarding"))
+			boardingOutpoint := wire.OutPoint{
+				Hash:  bHash,
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit-input")),
+				Index: 0,
+			}
+
+			roundID := h.actor.currentRound.RoundID
+			h.setupValidBoardingInput(
+				&boardingOutpoint, client.boardingKey,
+				client.exitDelay, 10, roundID,
+			)
+			vtxo := h.setupValidForfeitVTXO(
+				&forfeitOutpoint, client.boardingKey, roundID,
+			)
+			h.expectVTXOLocked(roundID, forfeitOutpoint)
+			h.setupBatchBuildingMocks()
+
+			// Expect successful round finalization.
+			finalTx := wire.NewMsgTx(2)
+			finalTx.AddTxOut(&wire.TxOut{
+				Value:    100000,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+			})
+			h.expectRoundFinalized(finalTx)
+
+			boardingReq := client.createBoardingRequest(
+				&boardingOutpoint,
+			)
+			forfeitReq := &types.ForfeitRequest{
+				VTXOOutpoint: &forfeitOutpoint,
+			}
+			req := client.createActorJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			)
+			req.Request.ForfeitReqs = []*types.ForfeitRequest{
+				forfeitReq,
+			}
+
+			err := h.sendJoinRequest(req)
+			require.NoError(t, err)
+
+			// Trigger batch building -> AwaitingInputSigsState.
+			h.timeoutActor.FireTimeout(
+				h.ctx, roundID, TimeoutPhaseRegistration,
+			)
+
+			round := h.actor.getRound(roundID)
+			require.NotNil(t, round)
+
+			currentState, err := round.FSM.CurrentState()
+			require.NoError(t, err)
+
+			awaitState, ok :=
+				currentState.(*AwaitingInputSigsState)
+			require.True(t, ok)
+
+			batchInfo := h.clients.getClientBatchInfo(
+				client.clientID,
+			)
+			require.NotNil(t, batchInfo)
+			require.NotNil(t, batchInfo.BatchPSBT)
+
+			// Build boarding sigs from PSBT and add forfeit tx.
+			sigEvent := client.createInputSignaturesFromPSBT(
+				batchInfo.BatchPSBT,
+			)
+
+			assignment :=
+				awaitState.ConnectorAssignments[forfeitOutpoint]
+			require.NotNil(t, assignment)
+
+			clientPriv := testForfeitPrivKey(
+				byte(baseKeyIndex + 1),
+			)
+			require.True(t,
+				clientPriv.PubKey().IsEqual(client.boardingKey),
+			)
+
+			forfeitTx := buildForfeitTx(
+				t, forfeitOutpoint, vtxo.Descriptor.Amount,
+				assignment.LeafOutpoint, h.cfg.ForfeitScript,
+			)
+			clientSig := forfeitTxSig(
+				t, forfeitTx, clientPriv, forfeitOutpoint,
+				assignment.LeafOutput, h.operatorPub,
+				h.cfg.Terms.VTXOExitDelay, vtxo.Descriptor,
+			)
+			sigEvent.ForfeitTxs = []*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: clientSig,
+			}}
+
+			roundMsg := &RoundMsg{
+				RoundID: roundID,
+				Event:   sigEvent,
+			}
+			result := h.actor.Receive(h.ctx, roundMsg)
+			_, err = result.Unpack()
+			require.NoError(t, err)
+
+			// The round should finalize and include forfeit info.
+			newState, err := round.FSM.CurrentState()
+			require.NoError(t, err)
+			finalized, ok := newState.(*FinalizedState)
+			require.True(t, ok)
+			require.Contains(t, finalized.ForfeitInfos,
+				forfeitOutpoint,
+			)
+
+			h.timeoutActor.assertTimeoutCancelled(
+				roundID, TimeoutPhaseInputSigs,
+			)
+		})
+
 	t.Run("signatures for unknown round rejected", func(t *testing.T) {
 		t.Parallel()
 
@@ -998,10 +1130,24 @@ func TestActorLoadPendingRounds(t *testing.T) {
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
 		})
 
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("forfeit")),
+			Index: 0,
+		}
+		forfeitTx := wire.NewMsgTx(2)
+
 		persistedRound := &Round{
 			RoundID:   persistedRoundID,
 			FinalTx:   finalTx,
 			VTXOTrees: nil,
+			ForfeitInfos: map[wire.OutPoint]*ForfeitInfo{
+				forfeitOutpoint: {
+					RoundID:              persistedRoundID,
+					ConnectorOutputIndex: 0,
+					LeafIndex:            0,
+					ForfeitTx:            forfeitTx,
+				},
+			},
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},
@@ -1033,6 +1179,9 @@ func TestActorLoadPendingRounds(t *testing.T) {
 		// Verify the state has the correct data.
 		require.Equal(t, persistedRound.FinalTx, finalizedState.FinalTx)
 		require.Len(t, finalizedState.ClientRegistrations, 1)
+		require.Contains(
+			t, finalizedState.ForfeitInfos, forfeitOutpoint,
+		)
 	})
 
 	t.Run("starts with no pending rounds", func(t *testing.T) {
