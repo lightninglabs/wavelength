@@ -55,6 +55,18 @@ type BoardingInput struct {
 	OperatorKeyDesc *keychain.KeyDescriptor
 }
 
+// ForfeitInput represents a validated forfeit input from a VTXO that will be
+// spent in the batch transaction. The client is forfeiting their VTXO back to
+// the operator.
+type ForfeitInput struct {
+	// Outpoint is the virtual outpoint identifying the VTXO being
+	// forfeited.
+	Outpoint *wire.OutPoint
+
+	// VTXO is the VTXO being forfeited, retrieved from the VTXOStore.
+	VTXO *VTXO
+}
+
 // ClientRegistration holds all validated data for a client's join request.
 // This is created after validation succeeds and stored in the FSM state.
 type ClientRegistration struct {

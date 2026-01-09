@@ -210,6 +210,10 @@ type VTXOStore interface {
 	// MarkVTXOsLive updates the status of all VTXOs for a given round to
 	// "live" after the commitment transaction has been confirmed.
 	MarkVTXOsLive(ctx context.Context, roundID RoundID) error
+
+	// GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error
+	// if the VTXO doesn't exist.
+	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (*VTXO, error)
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

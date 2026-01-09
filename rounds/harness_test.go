@@ -300,6 +300,27 @@ func (c *commonMockSetup) expectFailedLock(outpoint *wire.OutPoint,
 		Return(err).Once()
 }
 
+// expectVTXO sets up the VTXO store mock to return the given VTXO when
+// GetVTXO is called with the specified outpoint. If vtxo is nil, GetVTXO
+// will return nil (indicating the VTXO doesn't exist).
+func (c *commonMockSetup) expectVTXO(outpoint wire.OutPoint, vtxo *VTXO) {
+	c.t.Helper()
+
+	c.vtxoStore.On("GetVTXO", mock.Anything, outpoint).
+		Return(vtxo, nil).Once()
+}
+
+// expectVTXONotFound sets up the VTXO store mock to return nil when GetVTXO
+// is called with the specified outpoint (indicating the VTXO doesn't exist).
+//
+//nolint:unused
+func (c *commonMockSetup) expectVTXONotFound(outpoint wire.OutPoint) {
+	c.t.Helper()
+
+	c.vtxoStore.On("GetVTXO", mock.Anything, outpoint).
+		Return(nil, nil).Once()
+}
+
 // setupBatchBuildingMocks sets up the mocks needed for successful batch
 // building (fee estimation and PSBT funding). This should be called before
 // sealing a round that will build a batch.
@@ -1059,6 +1080,17 @@ func (m *mockVTXOStore) MarkVTXOsLive(ctx context.Context,
 	args := m.Called(ctx, roundID)
 
 	return args.Error(0)
+}
+
+// GetVTXO is a mock implementation of VTXOStore.GetVTXO.
+func (m *mockVTXOStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*VTXO, error) {
+
+	args := m.Called(ctx, outpoint)
+
+	vtxo, _ := args.Get(0).(*VTXO)
+
+	return vtxo, args.Error(1)
 }
 
 // clientMuSigSession holds the MuSig2 signing sessions for a client's VTXO

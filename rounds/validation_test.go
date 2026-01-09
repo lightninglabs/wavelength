@@ -722,6 +722,112 @@ func TestValidateLeaveRequest(t *testing.T) {
 	})
 }
 
+// TestValidateForfeitRequest tests the ValidateForfeitRequest function.
+func TestValidateForfeitRequest(t *testing.T) {
+	t.Parallel()
+
+	clientPub, _ := testutils.CreateKey(2)
+
+	// Create a test outpoint for the VTXO.
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x10},
+		Index: 0,
+	}
+
+	t.Run("valid forfeit request returns input", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a live VTXO descriptor.
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		// Create a VTXO in live status.
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+
+		// Set up the VTXO store mock to return the VTXO.
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &vtxoOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, forfeitInput)
+		require.Equal(t, &vtxoOutpoint, forfeitInput.Outpoint)
+		require.Equal(t, vtxo, forfeitInput.VTXO)
+	})
+
+	t.Run("VTXO not found rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Don't add any VTXO to the store - it should not be found.
+		nonExistentOutpoint := wire.OutPoint{
+			Hash:  [32]byte{0x99},
+			Index: 5,
+		}
+
+		// Set up the VTXO store mock to return nil (VTXO not found).
+		h.expectVTXO(nonExistentOutpoint, nil)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &nonExistentOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.Nil(t, forfeitInput)
+		require.ErrorIs(t, err, ErrForfeitVTXONotFound)
+	})
+
+	t.Run("VTXO not live (unconfirmed) rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create an unconfirmed VTXO descriptor.
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		// Create a VTXO in unconfirmed status.
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusUnconfirmed,
+		}
+
+		// Set up the VTXO store mock to return the VTXO.
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &vtxoOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.Nil(t, forfeitInput)
+		require.ErrorIs(t, err, ErrForfeitVTXONotLive)
+	})
+}
+
 // TestValidateJoinRequest tests the ValidateJoinRequest validation function.
 func TestValidateJoinRequest(t *testing.T) {
 	t.Parallel()

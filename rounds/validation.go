@@ -117,6 +117,18 @@ var (
 	ErrOutputExceedsInput = errors.New(
 		"output total exceeds boarding input total",
 	)
+
+	// ErrForfeitVTXONotFound is returned when a forfeit request references
+	// a VTXO that doesn't exist in the store.
+	ErrForfeitVTXONotFound = errors.New("forfeit VTXO not found")
+
+	// ErrForfeitVTXONotLive is returned when a forfeit request references
+	// a VTXO that is not in "live" status.
+	ErrForfeitVTXONotLive = errors.New("forfeit VTXO is not live")
+
+	// ErrForfeitLookupFailed is returned when looking up a VTXO in the
+	// store fails.
+	ErrForfeitLookupFailed = errors.New("failed to lookup forfeit VTXO")
 )
 
 // JoinRequestResult holds the validated results from a join request.
@@ -496,4 +508,43 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 	}
 
 	return nil
+}
+
+// ValidateForfeitRequest validates a forfeit request from a client. It
+// verifies:
+//   - The VTXO exists in the store.
+//   - The VTXO is in "live" status (confirmed on-chain).
+//
+// On success, returns a ForfeitInput containing the VTXO data.
+//
+// TODO(elle): There should be a proof of ownership check so that we can check
+// at validation time that the client owns the VTXO they are forfeiting.
+// Otherwise any client could request to forfeit any live VTXO and then
+// fail at signing time which would cause the round to fail.
+func ValidateForfeitRequest(ctx context.Context, env *Environment,
+	req *types.ForfeitRequest) (*ForfeitInput, error) {
+
+	// Look up the VTXO in the store.
+	vtxo, err := env.VTXOStore.GetVTXO(ctx, *req.VTXOOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrForfeitLookupFailed, err)
+	}
+
+	// Verify the VTXO exists.
+	if vtxo == nil {
+		return nil, fmt.Errorf("%w: %v", ErrForfeitVTXONotFound,
+			req.VTXOOutpoint)
+	}
+
+	// Verify the VTXO is live (confirmed on-chain and not spent or
+	// expired).
+	if vtxo.Status != VTXOStatusLive {
+		return nil, fmt.Errorf("%w: status is %s",
+			ErrForfeitVTXONotLive, vtxo.Status)
+	}
+
+	return &ForfeitInput{
+		Outpoint: req.VTXOOutpoint,
+		VTXO:     vtxo,
+	}, nil
 }
