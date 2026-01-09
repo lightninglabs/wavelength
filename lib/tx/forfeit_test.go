@@ -233,3 +233,320 @@ func nonAnchorOutput(t *testing.T, node *tree.Node) *wire.TxOut {
 
 	return nil
 }
+
+// TestValidateForfeitTx tests the ValidateForfeitTx function with various
+// valid and invalid inputs.
+func TestValidateForfeitTx(t *testing.T) {
+	t.Parallel()
+
+	// Create test fixtures.
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("vtxo-tx")),
+		Index: 0,
+	}
+	connectorOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("connector-tx")),
+		Index: 1,
+	}
+	serverForfeitScript := []byte{
+		txscript.OP_1, txscript.OP_DATA_32,
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+	}
+	vtxoAmount := btcutil.Amount(10000)
+
+	// Build a valid forfeit tx using BuildForfeitTx.
+	validTx, err := tx.BuildForfeitTx(
+		&vtxoOutpoint, vtxoAmount, &connectorOutpoint,
+		serverForfeitScript,
+	)
+	require.NoError(t, err)
+
+	validParams := tx.ForfeitTxParams{
+		VTXOOutpoint:        vtxoOutpoint,
+		ConnectorOutpoint:   connectorOutpoint,
+		ServerForfeitScript: serverForfeitScript,
+	}
+
+	tests := []struct {
+		name        string
+		tx          *wire.MsgTx
+		params      tx.ForfeitTxParams
+		expectError string
+	}{
+		{
+			name:        "valid forfeit tx",
+			tx:          validTx,
+			params:      validParams,
+			expectError: "",
+		},
+		{
+			name:        "nil tx",
+			tx:          nil,
+			params:      validParams,
+			expectError: "forfeit tx is nil",
+		},
+		{
+			name: "wrong number of inputs - too few",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    int64(vtxoAmount),
+					PkScript: serverForfeitScript,
+				})
+				tx.AddTxOut(scripts.AnchorOutput())
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "has 1 inputs, expected 2",
+		},
+		{
+			name: "wrong number of inputs - too many",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: connectorOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: wire.OutPoint{
+						Index: 99,
+					},
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    int64(vtxoAmount),
+					PkScript: serverForfeitScript,
+				})
+				tx.AddTxOut(scripts.AnchorOutput())
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "has 3 inputs, expected 2",
+		},
+		{
+			name: "wrong VTXO outpoint",
+			tx:   validTx,
+			params: tx.ForfeitTxParams{
+				VTXOOutpoint: wire.OutPoint{
+					Hash: chainhash.HashH(
+						[]byte("wrong-vtxo"),
+					),
+					Index: 0,
+				},
+				ConnectorOutpoint:   connectorOutpoint,
+				ServerForfeitScript: serverForfeitScript,
+			},
+			expectError: "expected VTXO",
+		},
+		{
+			name: "wrong connector outpoint",
+			tx:   validTx,
+			params: tx.ForfeitTxParams{
+				VTXOOutpoint: vtxoOutpoint,
+				ConnectorOutpoint: wire.OutPoint{
+					Hash: chainhash.HashH(
+						[]byte("wrong-connector"),
+					),
+					Index: 0,
+				},
+				ServerForfeitScript: serverForfeitScript,
+			},
+			expectError: "expected connector",
+		},
+		{
+			name: "wrong number of outputs - too few",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: connectorOutpoint,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    int64(vtxoAmount),
+					PkScript: serverForfeitScript,
+				})
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "has 1 outputs, expected 2",
+		},
+		{
+			name: "wrong penalty script",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: connectorOutpoint,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value: int64(vtxoAmount),
+					PkScript: []byte{
+						0x00, 0x14, 0x01, 0x02,
+					},
+				})
+				tx.AddTxOut(scripts.AnchorOutput())
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "does not pay to server forfeit script",
+		},
+		{
+			name: "wrong amount when expected",
+			tx:   validTx,
+			params: tx.ForfeitTxParams{
+				VTXOOutpoint:        vtxoOutpoint,
+				ConnectorOutpoint:   connectorOutpoint,
+				ServerForfeitScript: serverForfeitScript,
+				ExpectedAmount:      btcutil.Amount(99999),
+			},
+			expectError: "penalty output has amount",
+		},
+		{
+			name: "correct amount when expected",
+			tx:   validTx,
+			params: tx.ForfeitTxParams{
+				VTXOOutpoint:        vtxoOutpoint,
+				ConnectorOutpoint:   connectorOutpoint,
+				ServerForfeitScript: serverForfeitScript,
+				ExpectedAmount:      vtxoAmount,
+			},
+			expectError: "",
+		},
+		{
+			name: "non-P2A anchor script",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: connectorOutpoint,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    int64(vtxoAmount),
+					PkScript: serverForfeitScript,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    0,
+					PkScript: []byte{0x00, 0x14, 0x01},
+				})
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "is not a P2A anchor",
+		},
+		{
+			name: "non-zero anchor value",
+			tx: func() *wire.MsgTx {
+				tx := wire.NewMsgTx(3)
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: vtxoOutpoint,
+				})
+				tx.AddTxIn(&wire.TxIn{
+					PreviousOutPoint: connectorOutpoint,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    int64(vtxoAmount),
+					PkScript: serverForfeitScript,
+				})
+				tx.AddTxOut(&wire.TxOut{
+					Value:    1000,
+					PkScript: scripts.AnchorPkScript,
+				})
+
+				return tx
+			}(),
+			params:      validParams,
+			expectError: "anchor output has non-zero value",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tx.ValidateForfeitTx(tc.tx, tc.params)
+
+			if tc.expectError == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.expectError)
+			}
+		})
+	}
+}
+
+// TestValidateForfeitTxRoundTrip verifies that a forfeit tx built with
+// BuildForfeitTx passes validation.
+func TestValidateForfeitTxRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Test with various amounts: dust limit, normal, and larger values.
+	amounts := []btcutil.Amount{
+		btcutil.Amount(546),
+		btcutil.Amount(10000),
+		btcutil.Amount(1000000),
+	}
+
+	for _, amount := range amounts {
+		t.Run(amount.String(), func(t *testing.T) {
+			vtxoOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("vtxo")),
+				Index: 0,
+			}
+			connectorOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("connector")),
+				Index: 0,
+			}
+			serverScript := []byte{
+				txscript.OP_1, txscript.OP_DATA_32,
+				0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+				0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+				0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+				0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+			}
+
+			forfeitTx, err := tx.BuildForfeitTx(
+				&vtxoOutpoint, amount, &connectorOutpoint,
+				serverScript,
+			)
+			require.NoError(t, err)
+
+			// Validate without amount check.
+			err = tx.ValidateForfeitTx(
+				forfeitTx, tx.ForfeitTxParams{
+					VTXOOutpoint:        vtxoOutpoint,
+					ConnectorOutpoint:   connectorOutpoint,
+					ServerForfeitScript: serverScript,
+				},
+			)
+			require.NoError(t, err)
+
+			// Validate with amount check.
+			err = tx.ValidateForfeitTx(
+				forfeitTx, tx.ForfeitTxParams{
+					VTXOOutpoint:        vtxoOutpoint,
+					ConnectorOutpoint:   connectorOutpoint,
+					ServerForfeitScript: serverScript,
+					ExpectedAmount:      amount,
+				},
+			)
+			require.NoError(t, err)
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package tx
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -19,6 +20,14 @@ const (
 
 	// ForfeitConnectorInputIndex is the index of the connector input.
 	ForfeitConnectorInputIndex = 1
+
+	// ForfeitPenaltyOutputIndex is the index of the penalty output that
+	// pays to the server's forfeit address.
+	ForfeitPenaltyOutputIndex = 0
+
+	// ForfeitAnchorOutputIndex is the index of the ephemeral anchor output
+	// for fee bumping via CPFP.
+	ForfeitAnchorOutputIndex = 1
 )
 
 // VTXOSpendContext describes the VTXO being spent.
@@ -139,4 +148,102 @@ func NewVTXOCollabSignDescriptor(vtxo *VTXOSpendContext,
 	}
 
 	return signDesc, spendInfo, nil
+}
+
+// ForfeitTxParams contains the expected parameters for validating a forfeit
+// transaction structure. This is used to verify that a forfeit tx built by a
+// VTXO actor matches the expected structure before submitting to the server.
+type ForfeitTxParams struct {
+	// VTXOOutpoint is the expected VTXO input outpoint.
+	VTXOOutpoint wire.OutPoint
+
+	// ConnectorOutpoint is the expected connector input outpoint.
+	ConnectorOutpoint wire.OutPoint
+
+	// ServerForfeitScript is the expected penalty output script.
+	ServerForfeitScript []byte
+
+	// ExpectedAmount is the expected value of the penalty output. If zero,
+	// the amount check is skipped (useful when the caller doesn't know the
+	// exact amount but wants to validate structure).
+	ExpectedAmount btcutil.Amount
+}
+
+// ValidateForfeitTx verifies that the forfeit transaction has the expected
+// structure before signing. This validation is critical because once a VTXO
+// actor signs a forfeit tx, they authorize the operator to claim their funds
+// if they attempt to exit unilaterally. By validating the structure, we ensure
+// the operator cannot construct a malformed transaction that violates the
+// protocol rules.
+//
+// The function checks:
+//   - Exactly 2 inputs: VTXO at index 0, connector at index 1
+//   - Exactly 2 outputs: penalty at index 0, P2A anchor at index 1
+//   - Inputs match expected outpoints
+//   - Penalty output pays to server's forfeit script
+//   - Anchor output is standard P2A with zero value
+func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
+	if forfeitTx == nil {
+		return fmt.Errorf("forfeit tx is nil")
+	}
+
+	// Forfeit tx must have exactly 2 inputs.
+	if len(forfeitTx.TxIn) != 2 {
+		return fmt.Errorf("forfeit tx has %d inputs, expected 2",
+			len(forfeitTx.TxIn))
+	}
+
+	// Verify input 0 is the VTXO.
+	vtxoIn := forfeitTx.TxIn[ForfeitVTXOInputIndex]
+	if vtxoIn.PreviousOutPoint != params.VTXOOutpoint {
+		return fmt.Errorf("forfeit tx input %d is %s, expected VTXO %s",
+			ForfeitVTXOInputIndex, vtxoIn.PreviousOutPoint,
+			params.VTXOOutpoint)
+	}
+
+	// Verify input 1 is the connector.
+	connectorIn := forfeitTx.TxIn[ForfeitConnectorInputIndex]
+	if connectorIn.PreviousOutPoint != params.ConnectorOutpoint {
+		return fmt.Errorf(
+			"forfeit tx input %d is %s, expected connector %s",
+			ForfeitConnectorInputIndex,
+			connectorIn.PreviousOutPoint,
+			params.ConnectorOutpoint,
+		)
+	}
+
+	// Forfeit tx must have exactly 2 outputs (penalty + anchor).
+	if len(forfeitTx.TxOut) != 2 {
+		return fmt.Errorf("forfeit tx has %d outputs, expected 2",
+			len(forfeitTx.TxOut))
+	}
+
+	// Verify penalty output pays to server's forfeit address.
+	penaltyOut := forfeitTx.TxOut[ForfeitPenaltyOutputIndex]
+	if !bytes.Equal(penaltyOut.PkScript, params.ServerForfeitScript) {
+		return fmt.Errorf("forfeit tx output %d does not pay to "+
+			"server forfeit script", ForfeitPenaltyOutputIndex)
+	}
+
+	// Optionally verify the penalty output amount.
+	if params.ExpectedAmount > 0 {
+		if btcutil.Amount(penaltyOut.Value) != params.ExpectedAmount {
+			return fmt.Errorf("forfeit tx penalty output has "+
+				"amount %d, expected %d",
+				penaltyOut.Value, params.ExpectedAmount)
+		}
+	}
+
+	// Verify anchor output is a standard P2A with zero value.
+	anchorOut := forfeitTx.TxOut[ForfeitAnchorOutputIndex]
+	if !bytes.Equal(anchorOut.PkScript, scripts.AnchorPkScript) {
+		return fmt.Errorf("forfeit tx output %d is not a P2A anchor",
+			ForfeitAnchorOutputIndex)
+	}
+	if anchorOut.Value != 0 {
+		return fmt.Errorf("forfeit tx anchor output has non-zero "+
+			"value: %d", anchorOut.Value)
+	}
+
+	return nil
 }
