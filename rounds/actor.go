@@ -380,24 +380,6 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				"sealed_round", m.SealedRoundID,
 				"new_round", newRound.RoundID)
 
-		case *UnlockBoardingInputsReq:
-			// Unlock boarding inputs that were locked for a failed
-			// round.
-			for _, outpoint := range m.Outpoints {
-				err := a.cfg.BoardingInputLocker.Unlock(
-					ctx, outpoint, m.RoundID,
-				)
-				if err != nil {
-					// Log warning but continue - input may
-					// already be unlocked.
-					a.log.WarnS(ctx, "Failed to unlock "+
-						"boarding input",
-						err,
-						"outpoint", outpoint,
-						"round_id", m.RoundID)
-				}
-			}
-
 		case *RoundFailedReq:
 			// Round has failed - clean up and create a new round if
 			// this was the current round.

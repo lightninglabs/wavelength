@@ -293,21 +293,6 @@ func (c *ClientRoundFailedResp) ToProto() proto.Message {
 // OutboxEvent interface.
 func (c *ClientRoundFailedResp) outboxEventSealed() {}
 
-// UnlockBoardingInputsReq is an outbox message emitted by the FSM to request
-// that the actor unlock boarding inputs that were previously locked for a
-// round. This is used when a round fails and the inputs should be released.
-type UnlockBoardingInputsReq struct {
-	// RoundID is the identifier of the round that locked these inputs.
-	RoundID RoundID
-
-	// Outpoints are the boarding input outpoints to unlock.
-	Outpoints []*wire.OutPoint
-}
-
-// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
-// OutboxEvent interface.
-func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
-
 // RoundFailedReq is emitted when a round has failed. The actor should clean up
 // any resources associated with the round and potentially create a new round.
 type RoundFailedReq struct {

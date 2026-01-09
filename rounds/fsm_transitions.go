@@ -74,6 +74,30 @@ func lockBoardingInputs(ctx context.Context, env *Environment,
 	return nil
 }
 
+// unlockBoardingInputs unlocks all boarding inputs for the given client
+// registrations. This is called when a round fails to release all locked
+// inputs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all inputs even if some fail.
+func unlockBoardingInputs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		for _, input := range reg.BoardingInputs {
+			err := env.BoardingInputLocker.Unlock(
+				ctx, input.Outpoint, env.RoundID,
+			)
+			if err != nil {
+				// Log the error but continue unlocking other
+				// inputs. We don't want one failure to prevent
+				// releasing other locked inputs.
+				env.Log.ErrorS(ctx, "Failed to unlock boarding "+
+					"input", err,
+					"outpoint", input.Outpoint.String())
+			}
+		}
+	}
+}
+
 // newClientRegistration creates a ClientRegistration from a validated join
 // request result.
 func newClientRegistration(clientID ClientID,
@@ -280,7 +304,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			reason := fmt.Sprintf("build commitment tx: %v", err)
 
 			return buildFailureTransition(
-				env, s.ClientRegistrations, reason,
+				ctx, env, s.ClientRegistrations, reason,
 			), nil
 		}
 
@@ -307,12 +331,12 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 }
 
 // ProcessEvent handles the events from the BatchBuiltState state.
-func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
+func (s *BatchBuiltState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	switch event.(type) {
 	case *PrepareClientNotificationsEvent:
-		return s.handlePrepareClientNotifications(env)
+		return s.handlePrepareClientNotifications(ctx, env)
 
 	default:
 		return unexpectedEvent(s, "batch-built", event, env), nil
@@ -323,7 +347,7 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 // data and transitions to either AwaitingVTXONoncesState (if VTXOs exist) or
 // AwaitingInputSigsState (if no VTXOs).
 func (s *BatchBuiltState) handlePrepareClientNotifications(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	// For each client, create a message with their personalized data.
 	// The PSBT contains WitnessUtxo for inputs, providing the prevout
@@ -352,7 +376,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 			)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
 						"client %s: %v", clientID, err),
 				), nil
@@ -369,17 +393,17 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 	// Check if there are any VTXOs in the batch.
 	hasVTXOs := len(s.VTXOTrees) > 0
 	if hasVTXOs {
-		return s.transitionToVTXONonces(env, outboxMsgs)
+		return s.transitionToVTXONonces(ctx, env, outboxMsgs)
 	}
 
 	// No VTXOs - go directly to boarding signatures.
-	return s.transitionToInputSigs(env, outboxMsgs)
+	return s.transitionToInputSigs(ctx, env, outboxMsgs)
 }
 
 // transitionToVTXONonces creates TreeSignCoordinators for each VTXO tree and
 // transitions to AwaitingVTXONoncesState.
-func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
-	outboxMsgs []OutboxEvent) (*StateTransition, error) {
+func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
+	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
 	// Create TreeSignCoordinators for each VTXO tree.
 	treeCoordinators := make(map[int]*batch.TreeSignCoordinator)
@@ -389,7 +413,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
 					"output %d: %v", idx, err),
 			), nil
@@ -423,8 +447,8 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 
 // transitionToInputSigs transitions directly to AwaitingInputSigsState
 // when there are no VTXOs in the batch.
-func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
-	outboxMsgs []OutboxEvent) (*StateTransition, error) {
+func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
+	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
 	// Notify clients with boarding inputs that we're ready for their
 	// signatures. This is separate from ClientBatchInfo because there may
@@ -464,37 +488,25 @@ func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
-// the necessary outbox events to notify clients, unlock boarding inputs, and
-// inform the actor of the failure.
-func buildFailureTransition(env *Environment,
+// the necessary outbox events to notify clients and inform the actor of the
+// failure. It also directly unlocks all boarding inputs.
+func buildFailureTransition(ctx context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string) *StateTransition {
 
 	var outboxMsgs []OutboxEvent
 
-	// Collect all boarding input outpoints for unlocking.
-	var allOutpoints []*wire.OutPoint
-	for clientID, reg := range clientRegs {
-		// Notify each client that the round has failed.
+	// Notify each client that the round has failed.
+	for clientID := range clientRegs {
 		outboxMsgs = append(outboxMsgs, &ClientRoundFailedResp{
 			Client:  clientID,
 			RoundID: env.RoundID,
 			Reason:  reason,
 		})
-
-		// Collect outpoints from this client's boarding inputs.
-		for _, bi := range reg.BoardingInputs {
-			allOutpoints = append(allOutpoints, bi.Outpoint)
-		}
 	}
 
-	// Request unlocking of all boarding inputs.
-	if len(allOutpoints) > 0 {
-		outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
-			RoundID:   env.RoundID,
-			Outpoints: allOutpoints,
-		})
-	}
+	// Unlock all boarding inputs directly in the FSM.
+	unlockBoardingInputs(ctx, env, clientRegs)
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
@@ -514,7 +526,7 @@ func buildFailureTransition(env *Environment,
 
 // ProcessEvent handles events in the AwaitingInputSigsState. This
 // state waits for clients to submit their boarding input signatures.
-func (s *AwaitingInputSigsState) ProcessEvent(_ context.Context,
+func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
@@ -526,7 +538,7 @@ func (s *AwaitingInputSigsState) ProcessEvent(_ context.Context,
 		reason := "input signature collection timeout"
 
 		return buildFailureTransition(
-			env, s.ClientRegistrations, reason,
+			ctx, env, s.ClientRegistrations, reason,
 		), nil
 
 	default:
@@ -870,17 +882,17 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 
 // ProcessEvent handles events in the AwaitingVTXONoncesState. This state waits
 // for clients with VTXOs to submit their MuSig2 nonces.
-func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
+func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ClientVTXONoncesEvent:
-		return s.handleClientNonces(env, evt)
+		return s.handleClientNonces(ctx, env, evt)
 
 	case *VTXONoncesTimeoutEvent:
 		// The timeout was reached before all nonces were collected.
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			"VTXO nonce collection timeout",
 		), nil
 
@@ -893,7 +905,8 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
 // handleClientNonces processes nonces submitted by a client, adding them to
 // the tree coordinators. If all clients have submitted nonces, it transitions
 // to the next state AwaitingVTXOSignaturesState.
-func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
+func (s *AwaitingVTXONoncesState) handleClientNonces(
+	ctx context.Context, env *Environment,
 	evt *ClientVTXONoncesEvent) (*StateTransition, error) {
 
 	clientID := evt.ClientID
@@ -1078,7 +1091,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 
 	// Check if all clients have submitted nonces.
 	if newState.allClientsSubmittedNonces() {
-		return newState.transitionToVTXOSignatures(env)
+		return newState.transitionToVTXOSignatures(ctx, env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
@@ -1092,7 +1105,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 // operator's partial signatures, aggregates nonces, and sends aggregated
 // nonces to each client.
 func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	// Generate operator's partial signatures for all trees. This must be
 	// done after all client nonces are collected.
@@ -1100,7 +1113,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 		err := coordinator.Sign()
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
 					idx, err),
 			), nil
@@ -1137,7 +1150,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 				GetAggNoncesForSigners(clientKeys)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("get agg nonces for %s: %v",
 						clientID, err),
 				), nil
@@ -1181,17 +1194,17 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 
 // ProcessEvent handles events in the AwaitingVTXOSignaturesState. This state
 // waits for clients with VTXOs to submit their MuSig2 partial signatures.
-func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
+func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ClientVTXOPartialSigsEvent:
-		return s.handleClientPartialSigs(env, evt)
+		return s.handleClientPartialSigs(ctx, env, evt)
 
 	case *VTXOSignaturesTimeoutEvent:
 		// Timeout expired before all partial sigs were collected.
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			"VTXO signature collection timeout",
 		), nil
 
@@ -1206,7 +1219,8 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
 // adding them to the tree coordinators. If all clients have submitted
 // signatures, it aggregates the final signatures and transitions to
 // AwaitingInputSigsState.
-func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
+func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
+	ctx context.Context, env *Environment,
 	evt *ClientVTXOPartialSigsEvent) (*StateTransition, error) {
 
 	clientID := evt.ClientID
@@ -1394,7 +1408,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 
 	// Check if all clients have submitted signatures.
 	if newState.allClientsSubmittedSignatures() {
-		return newState.transitionToInputSigs(env)
+		return newState.transitionToInputSigs(ctx, env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
@@ -1407,7 +1421,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 // AwaitingVTXOSignaturesState to AwaitingInputSigsState. It aggregates final
 // signatures and sends them to each client with VTXOs.
 func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	var outboxMsgs []OutboxEvent
 
@@ -1445,7 +1459,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 				)
 
 				return buildFailureTransition(
-					env, s.ClientRegistrations, errMsg,
+					ctx, env, s.ClientRegistrations, errMsg,
 				), nil
 			}
 
@@ -1523,7 +1537,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	err := s.signBoardingInputs(env)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to sign boarding inputs: %v", err),
 		), nil
 	}
@@ -1532,7 +1546,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to finalize PSBT: %v", err),
 		), nil
 	}
@@ -1548,7 +1562,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	err = env.RoundStore.PersistRound(ctx, round)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to persist round: %v", err),
 		), nil
 	}
@@ -1560,7 +1574,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("collect VTXOs: %v", err),
 			), nil
 		}
@@ -1568,7 +1582,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		err = env.VTXOStore.PersistVTXOs(ctx, vtxos)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("persist VTXOs: %v", err),
 			), nil
 		}
@@ -1793,7 +1807,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("mark VTXOs live: %v", err),
 				), nil
 			}
@@ -1805,7 +1819,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("mark round confirmed: %v", err),
 			), nil
 		}

@@ -160,7 +160,6 @@ Messages emitted by the FSM for the actor to process:
 | `CancelTimeoutReq`               | Request actor to cancel a pending phase timeout.                         |
 | `RoundSealedReq`                 | Notify actor that round is sealed (create new round for new clients).    |
 | `RoundFailedReq`                 | Notify actor that round has failed (clean up resources).                 |
-| `UnlockBoardingInputsReq`        | Request actor to unlock boarding inputs after round failure.             |
 | `BroadcastRoundReq`              | Request actor to broadcast transaction and subscribe to confirmations.   |
 
 ## Transition Details
@@ -197,7 +196,6 @@ SealEvent:
 BuildBatchTxEvent:
     [success] --> BatchBuiltState + internal(PrepareClientNotificationsEvent)
     [error]   --> FailedState + RoundFailedReq
-                               + UnlockBoardingInputsReq
                                + ClientRoundFailedResp (all clients)
 ```
 
@@ -228,7 +226,6 @@ ClientVTXONoncesEvent:
 
 VTXONoncesTimeoutEvent:
     --> FailedState + RoundFailedReq
-                    + UnlockBoardingInputsReq
                     + ClientRoundFailedResp (all clients)
 ```
 
@@ -250,7 +247,6 @@ ClientVTXOPartialSigsEvent:
 
 VTXOSignaturesTimeoutEvent:
     --> FailedState + RoundFailedReq
-                    + UnlockBoardingInputsReq
                     + ClientRoundFailedResp (all clients)
 ```
 
@@ -266,7 +262,6 @@ ClientBoardingSignaturesEvent:
 
 InputSignaturesTimeoutEvent:
     --> FailedState + RoundFailedReq
-                    + UnlockBoardingInputsReq
                     + ClientRoundFailedResp (all clients)
 ```
 
@@ -276,7 +271,6 @@ InputSignaturesTimeoutEvent:
 ServerSignInputsEvent:
     [success] --> FinalizedState + BroadcastRoundReq
     [error]   --> FailedState + RoundFailedReq
-                               + UnlockBoardingInputsReq
                                + ClientRoundFailedResp (all clients)
 ```
 
@@ -381,7 +375,6 @@ The FSM handles errors at various stages:
 
 When entering `FailedState`, the FSM emits:
 - `RoundFailedReq` to notify the actor
-- `UnlockBoardingInputsReq` to release locked inputs
 - `ClientRoundFailedResp` to notify all registered clients
 
 The actor removes failed rounds from tracking and creates a new current round

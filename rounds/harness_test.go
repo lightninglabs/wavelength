@@ -437,6 +437,18 @@ func (c *commonMockSetup) setupBoardingInputWithUnlock(outpoint *wire.OutPoint,
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
 }
 
+// expectInputUnlocked sets up an expectation that the FSM will unlock a
+// boarding input when the round fails. This should be called before triggering
+// a failure condition.
+func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
+	roundID RoundID) {
+
+	c.t.Helper()
+
+	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
+		Return(nil).Once()
+}
+
 // assertMockExpectations asserts that all mocks received their expected calls.
 // This should be called at the end of each test to verify mock expectations.
 func (c *commonMockSetup) assertMockExpectations() {

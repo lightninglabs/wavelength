@@ -1194,7 +1194,8 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.NotNil(t, result)
 		require.Len(t, result.ForfeitInputs, 1)
 		require.Len(t, result.RequiredOutputs, 1)
-		require.Equal(t, &vtxoOutpoint, result.ForfeitInputs[0].Outpoint)
+		require.Equal(t, &vtxoOutpoint,
+			result.ForfeitInputs[0].Outpoint)
 		require.Equal(t, int64(30000), result.RequiredOutputs[0].Value)
 	})
 
@@ -1294,48 +1295,51 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.Len(t, result.RequiredOutputs, 1)
 	})
 
-	t.Run("leave output exceeds forfeit input rejected", func(t *testing.T) {
-		t.Parallel()
+	t.Run("leave output exceeds forfeit input rejected",
+		func(t *testing.T) {
+			t.Parallel()
 
-		h := newTestHarness(t)
+			h := newTestHarness(t)
 
-		// Create a live VTXO with 50000 sats.
-		vtxoOutpoint := wire.OutPoint{
-			Hash:  [32]byte{0x23},
-			Index: 0,
-		}
+			// Create a live VTXO with 50000 sats.
+			vtxoOutpoint := wire.OutPoint{
+				Hash:  [32]byte{0x23},
+				Index: 0,
+			}
 
-		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
-		)
-		require.NoError(t, err)
+			descriptor, err := tree.NewVTXODescriptor(
+				50000, clientPub, h.operatorPub, 144,
+			)
+			require.NoError(t, err)
 
-		vtxo := &VTXO{
-			RoundID:          h.env.RoundID,
-			BatchOutputIndex: 0,
-			Descriptor:       descriptor,
-			Status:           VTXOStatusLive,
-		}
-		h.expectVTXO(vtxoOutpoint, vtxo)
+			vtxo := &VTXO{
+				RoundID:          h.env.RoundID,
+				BatchOutputIndex: 0,
+				Descriptor:       descriptor,
+				Status:           VTXOStatusLive,
+			}
+			h.expectVTXO(vtxoOutpoint, vtxo)
 
-		// Forfeit 50000 sats but try to leave 80000 sats.
-		req := &types.JoinRoundRequest{
-			ForfeitReqs: []*types.ForfeitRequest{{
-				VTXOOutpoint: &vtxoOutpoint,
-			}},
-			LeaveReqs: []*types.LeaveRequest{{
-				Output: &wire.TxOut{
-					Value:    80000,
-					PkScript: []byte{0x00, 0x14},
-				},
-			}},
-		}
+			// Forfeit 50000 sats but try to leave 80000 sats.
+			req := &types.JoinRoundRequest{
+				ForfeitReqs: []*types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				LeaveReqs: []*types.LeaveRequest{{
+					Output: &wire.TxOut{
+						Value:    80000,
+						PkScript: []byte{0x00, 0x14},
+					},
+				}},
+			}
 
-		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+			result, err := ValidateJoinRequest(
+				t.Context(), h.env, req,
+			)
 
-		require.Nil(t, result)
-		require.ErrorIs(t, err, ErrOutputExceedsInput)
-	})
+			require.Nil(t, result)
+			require.ErrorIs(t, err, ErrOutputExceedsInput)
+		})
 
 	t.Run("nil forfeit outpoint rejected", func(t *testing.T) {
 		t.Parallel()
