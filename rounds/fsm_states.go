@@ -147,6 +147,10 @@ type BatchBuiltState struct {
 	// ConnectorAssignments maps forfeited outpoints to connector leaves.
 	// This is nil if no forfeits exist in the round.
 	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
 }
 
 // String returns a human-readable representation of BatchBuiltState.
@@ -183,6 +187,10 @@ type AwaitingInputSigsState struct {
 	// ConnectorAssignments maps forfeited outpoints to connector leaves.
 	// This is nil if no forfeits exist in the round.
 	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
 
 	// ClientsSubmitted tracks which clients have submitted all expected
 	// boarding signatures and forfeit transactions. Once all registered
@@ -399,6 +407,10 @@ type ServerSigningState struct {
 	// This is nil if no forfeits exist in the round.
 	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
 
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
 	// CollectedSignatures contains all validated client boarding
 	// signatures. These will be applied to the PSBT along with the
 	// server's signatures.
@@ -436,6 +448,9 @@ type FinalizedState struct {
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
 }
 
 // String returns a human-readable representation of FinalizedState.

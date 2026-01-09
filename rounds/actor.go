@@ -219,6 +219,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		ClientRegistrations: round.ClientRegistrations,
 		FinalTx:             round.FinalTx,
 		VTXOTrees:           round.VTXOTrees,
+		ForfeitInfos:        round.ForfeitInfos,
 	}
 
 	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)

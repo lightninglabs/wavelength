@@ -1434,9 +1434,8 @@ func TestValidateForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    connectorOutpoint,
-					LeafOutput:      connectorLeafOutput,
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
 				},
 			}
 
@@ -1571,9 +1570,8 @@ func TestValidateForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    expectedConnector,
-					LeafOutput:      connectorLeafOutput,
+					LeafOutpoint: expectedConnector,
+					LeafOutput:   connectorLeafOutput,
 				},
 			}
 
@@ -1659,9 +1657,8 @@ func TestValidateForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    connectorOutpoint,
-					LeafOutput:      connectorLeafOutput,
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
 				},
 			}
 
@@ -1747,9 +1744,8 @@ func TestValidateForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    connectorOutpoint,
-					LeafOutput:      connectorLeafOutput,
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
 				},
 			}
 
@@ -1834,9 +1830,8 @@ func TestValidateForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    connectorOutpoint,
-					LeafOutput:      connectorLeafOutput,
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
 				},
 			}
 

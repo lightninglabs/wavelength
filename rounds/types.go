@@ -31,6 +31,36 @@ type InputSigsMap = map[ClientID][]*types.BoardingInputSignature
 // ForfeitTxsMap maps client IDs to their submitted forfeit transactions.
 type ForfeitTxsMap = map[ClientID][]*types.ForfeitTxSig
 
+// ConnectorTreeDescriptor captures the information needed to reconstruct a
+// connector tree and its output placement in the commitment transaction.
+type ConnectorTreeDescriptor struct {
+	// OutputIndex is the connector output index in the commitment
+	// transaction.
+	OutputIndex int
+
+	// NumLeaves is the number of connector leaves for this output.
+	NumLeaves int
+
+	// ForfeitScript is the penalty output script for forfeit transactions.
+	ForfeitScript []byte
+}
+
+// ForfeitInfo records how a VTXO was forfeited in a round.
+type ForfeitInfo struct {
+	// RoundID is the round in which the VTXO was forfeited.
+	RoundID RoundID
+
+	// ConnectorOutputIndex is the connector output index in the
+	// commitment transaction.
+	ConnectorOutputIndex int
+
+	// LeafIndex is the leaf index within the connector tree.
+	LeafIndex int
+
+	// ForfeitTx is the completed forfeit transaction.
+	ForfeitTx *wire.MsgTx
+}
+
 // BoardingInput represents a validated boarding input that will be spent in
 // the batch transaction. It contains all the data needed to construct the
 // input and sign it.
@@ -72,8 +102,12 @@ type ForfeitInput struct {
 
 // ConnectorLeafAssignment binds a forfeit input to a specific connector leaf.
 type ConnectorLeafAssignment struct {
-	// ForfeitOutpoint is the VTXO outpoint being forfeited.
-	ForfeitOutpoint wire.OutPoint
+	// ConnectorOutputIndex is the index of the connector output in the
+	// commitment transaction.
+	ConnectorOutputIndex int
+
+	// LeafIndex is the index of the leaf within the connector tree.
+	LeafIndex int
 
 	// LeafOutpoint is the outpoint for the connector leaf output.
 	LeafOutpoint wire.OutPoint

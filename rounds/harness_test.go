@@ -73,6 +73,10 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockVTXOStore.On(
 		"MarkVTXOsLive", mock.Anything, mock.Anything,
 	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"MarkVTXOForfeit", mock.Anything, mock.Anything,
+		mock.Anything,
+	).Return(nil).Maybe()
 
 	m := &commonMockSetup{
 		t:                t,
@@ -1187,6 +1191,15 @@ func (m *mockVTXOStore) MarkVTXOsLive(ctx context.Context,
 	roundID RoundID) error {
 
 	args := m.Called(ctx, roundID)
+
+	return args.Error(0)
+}
+
+// MarkVTXOForfeit is a mock implementation of VTXOStore.MarkVTXOForfeit.
+func (m *mockVTXOStore) MarkVTXOForfeit(ctx context.Context,
+	outpoint wire.OutPoint, info *ForfeitInfo) error {
+
+	args := m.Called(ctx, outpoint, info)
 
 	return args.Error(0)
 }

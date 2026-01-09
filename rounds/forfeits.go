@@ -3,10 +3,13 @@ package rounds
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/input"
@@ -18,8 +21,8 @@ type SpentVTXO struct {
 	// VTXOOutpoint identifies the forfeited VTXO.
 	VTXOOutpoint wire.OutPoint
 
-	// ForfeitTx is the completed forfeit transaction.
-	ForfeitTx *wire.MsgTx
+	// ForfeitInfo records how the VTXO was forfeited.
+	ForfeitInfo *ForfeitInfo
 }
 
 // completeForfeitTxs completes forfeit transactions by adding the server's
@@ -108,9 +111,15 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 				"input for %v: %w", vtxoOutpoint, err)
 		}
 
+		connOutIdx := assignment.ConnectorOutputIndex
 		spentVTXOs = append(spentVTXOs, &SpentVTXO{
 			VTXOOutpoint: vtxoOutpoint,
-			ForfeitTx:    ftx,
+			ForfeitInfo: &ForfeitInfo{
+				RoundID:              env.RoundID,
+				ConnectorOutputIndex: connOutIdx,
+				LeafIndex:            assignment.LeafIndex,
+				ForfeitTx:            ftx,
+			},
 		})
 	}
 
@@ -239,4 +248,60 @@ func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 	}
 
 	return nil
+}
+
+// buildConnectorTreeFromDescriptor reconstructs a connector tree from the
+// commitment transaction and a stored descriptor.
+func buildConnectorTreeFromDescriptor(commitmentTx *wire.MsgTx,
+	desc *ConnectorTreeDescriptor, operatorKey *btcec.PublicKey,
+	radix int) (*tree.Tree, error) {
+
+	if commitmentTx == nil {
+		return nil, fmt.Errorf("commitment tx cannot be nil")
+	}
+
+	if desc == nil {
+		return nil, fmt.Errorf("connector descriptor cannot be nil")
+	}
+
+	if desc.OutputIndex < 0 || desc.OutputIndex >= len(commitmentTx.TxOut) {
+		return nil, fmt.Errorf("connector output index out of bounds")
+	}
+
+	if desc.NumLeaves <= 0 {
+		return nil, fmt.Errorf("connector num leaves must be > 0")
+	}
+
+	if operatorKey == nil {
+		return nil, fmt.Errorf("operator key cannot be nil")
+	}
+
+	output := commitmentTx.TxOut[desc.OutputIndex]
+	if output == nil {
+		return nil, fmt.Errorf("connector output cannot be nil")
+	}
+
+	if output.Value%int64(desc.NumLeaves) != 0 {
+		return nil, fmt.Errorf("connector output value does not " +
+			"divide into leaves")
+	}
+
+	leafAmount := btcutil.Amount(
+		output.Value / int64(desc.NumLeaves),
+	)
+
+	connectorDesc := tree.ConnectorDescriptor{
+		PkScript:  output.PkScript,
+		NumLeaves: desc.NumLeaves,
+		Amount:    leafAmount,
+	}
+
+	connectorOutpoint := wire.OutPoint{
+		Hash:  commitmentTx.TxHash(),
+		Index: uint32(desc.OutputIndex),
+	}
+
+	return tree.BuildConnectorTree(
+		connectorOutpoint, output, connectorDesc, operatorKey, radix,
+	)
 }

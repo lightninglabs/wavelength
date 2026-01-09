@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -32,9 +33,8 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		t.Parallel()
 
 		const (
-			vtxoAmount   = btcutil.Amount(50000)
-			exitDelay    = 144
-			connectorAmt = btcutil.Amount(330)
+			vtxoAmount = btcutil.Amount(50000)
+			exitDelay  = 144
 		)
 		h := newTestHarness(t)
 		h.env.Terms.VTXOExitDelay = exitDelay
@@ -57,28 +57,62 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			Status:     VTXOStatusLive,
 		}
 
-		// Define the outpoints for the VTXO being forfeited and the
-		// connector leaf that will be consumed.
+		// Define the outpoint for the VTXO being forfeited.
 		vtxoOutpoint := wire.OutPoint{
 			Hash:  testForfeitHash(t, "vtxo"),
 			Index: 0,
 		}
-		connectorOutpoint := wire.OutPoint{
-			Hash:  testForfeitHash(t, "connector"),
-			Index: 0,
-		}
 
-		// Create the connector leaf output. Connectors are simple
-		// operator-only taproot outputs (no scripts, just keyspend).
+		// Build a commitment transaction with a connector output.
+		commitmentTx := wire.NewMsgTx(2)
 		connectorScript, err := txscript.PayToTaprootScript(
 			txscript.ComputeTaprootOutputKey(h.operatorPub, nil),
 		)
 		require.NoError(t, err)
 
-		connectorLeafOutput := &wire.TxOut{
-			Value:    int64(connectorAmt),
+		connectorOutput := &wire.TxOut{
+			Value:    int64(h.env.Terms.ConnectorDustAmount),
 			PkScript: connectorScript,
 		}
+		commitmentTx.AddTxOut(connectorOutput)
+
+		connectorRootOutpoint := wire.OutPoint{
+			Hash:  commitmentTx.TxHash(),
+			Index: 0,
+		}
+
+		connectorTree, err := tree.BuildConnectorTree(
+			connectorRootOutpoint,
+			connectorOutput,
+			tree.ConnectorDescriptor{
+				PkScript:  connectorOutput.PkScript,
+				NumLeaves: 1,
+				Amount:    h.env.Terms.ConnectorDustAmount,
+			},
+			h.operatorPub,
+			int(h.env.Terms.TreeRadix),
+		)
+		require.NoError(t, err)
+
+		leafPath, err := connectorTree.ExtractPathForIndices(0)
+		require.NoError(t, err)
+
+		leaves := leafPath.Root.GetLeafNodes()
+		require.Len(t, leaves, 1)
+
+		leaf := leaves[0]
+		connectorLeafOutpoint, err := leaf.GetNonAnchorOutpoint()
+		require.NoError(t, err)
+
+		var connectorLeafOutput *wire.TxOut
+		anchorScript := scripts.AnchorOutput().PkScript
+		for _, out := range leaf.Outputs {
+			if !bytes.Equal(out.PkScript, anchorScript) {
+				connectorLeafOutput = out
+				break
+			}
+		}
+		require.NotNil(t, connectorLeafOutput)
 
 		// Set up the client registration with the forfeit input.
 		forfeitInput := &ForfeitInput{
@@ -93,7 +127,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// the VTXO as input 0, connector as input 1, and outputs for
 		// the penalty (to server) and anchor.
 		forfeitTx := buildForfeitTx(
-			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			t, vtxoOutpoint, vtxoAmount, *connectorLeafOutpoint,
 			h.env.ForfeitScript,
 		)
 
@@ -107,12 +141,15 @@ func TestCompleteForfeitTxs(t *testing.T) {
 
 		// Set up connector assignments mapping forfeited VTXOs to their
 		// assigned connector leaves.
+		leafOutpoint := *connectorLeafOutpoint
+		leafOutput := connectorLeafOutput
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
-					LeafOutpoint:    connectorOutpoint,
-					LeafOutput:      connectorLeafOutput,
+					ConnectorOutputIndex: 0,
+					LeafIndex:            0,
+					LeafOutpoint:         leafOutpoint,
+					LeafOutput:           leafOutput,
 				},
 			}
 
@@ -128,6 +165,35 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.Len(t, spent, 1)
+
+		descriptor := &ConnectorTreeDescriptor{
+			OutputIndex:   0,
+			NumLeaves:     1,
+			ForfeitScript: h.env.ForfeitScript,
+		}
+
+		rehydratedTree, err := buildConnectorTreeFromDescriptor(
+			commitmentTx, descriptor, h.operatorPub,
+			int(h.env.Terms.TreeRadix),
+		)
+		require.NoError(t, err)
+
+		rehydratedPath, err := rehydratedTree.ExtractPathForIndices(
+			spent[0].ForfeitInfo.LeafIndex,
+		)
+		require.NoError(t, err)
+
+		rehydratedLeaves := rehydratedPath.Root.GetLeafNodes()
+		require.Len(t, rehydratedLeaves, 1)
+
+		rehydratedLeaf := rehydratedLeaves[0]
+		rehydratedOutpoint, err := rehydratedLeaf.GetNonAnchorOutpoint()
+		require.NoError(t, err)
+
+		require.Equal(t, *rehydratedOutpoint,
+			forfeitTx.TxIn[tx.ForfeitConnectorInputIndex].
+				PreviousOutPoint,
+		)
 
 		// Verify both inputs now have witness data.
 		vtxoWitness :=
@@ -154,7 +220,7 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				),
 			},
 			&tx.ConnectorSpendContext{
-				Outpoint: connectorOutpoint,
+				Outpoint: *connectorLeafOutpoint,
 				Output:   connectorLeafOutput,
 			},
 		)
@@ -263,7 +329,6 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		connectorAssignments :=
 			map[wire.OutPoint]*ConnectorLeafAssignment{
 				vtxoOutpoint: {
-					ForfeitOutpoint: vtxoOutpoint,
 					LeafOutpoint: wire.OutPoint{
 						Hash:  wrongLeafHash,
 						Index: 1,
