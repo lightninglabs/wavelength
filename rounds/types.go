@@ -67,6 +67,18 @@ type ForfeitInput struct {
 	VTXO *VTXO
 }
 
+// ConnectorLeafAssignment binds a forfeit input to a specific connector leaf.
+type ConnectorLeafAssignment struct {
+	// ForfeitOutpoint is the VTXO outpoint being forfeited.
+	ForfeitOutpoint wire.OutPoint
+
+	// LeafOutpoint is the outpoint for the connector leaf output.
+	LeafOutpoint wire.OutPoint
+
+	// LeafOutput is the transaction output for the connector leaf.
+	LeafOutput *wire.TxOut
+}
+
 // ClientRegistration holds all validated data for a client's join request.
 // This is created after validation succeeds and stored in the FSM state.
 type ClientRegistration struct {

@@ -130,6 +130,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	operatorKey := keychain.KeyDescriptor{
 		PubKey: common.operatorPub,
 	}
+	connectorAddr := mustTaprootAddr(t, operatorKey.PubKey)
 
 	// Generate a sweep key for VTXO trees.
 	sweepKey, _ := testutils.CreateKey(2)
@@ -147,9 +148,14 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		ConfTarget:          6,
 		MinConfs:            1,
 		Terms: &batch.Terms{
-			OperatorKey:                   operatorKey,
-			SweepKey:                      keychain.KeyDescriptor{PubKey: sweepKey},
+			OperatorKey: operatorKey,
+			SweepKey: keychain.KeyDescriptor{
+				PubKey: sweepKey,
+			},
 			SweepDelay:                    288,
+			MaxConnectorsPerTree:          128,
+			ConnectorDustAmount:           330,
+			ConnectorAddress:              connectorAddr,
 			BoardingExitDelay:             100,
 			BoardingExitDelaySafetyMargin: 6,
 			MinBoardingConfirmations:      1,
@@ -186,6 +192,19 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	}
 
 	return h
+}
+
+// mustTaprootAddr derives a taproot address for tests and fails the test on
+// error.
+func mustTaprootAddr(t *testing.T, key *btcec.PublicKey) btcutil.Address {
+	t.Helper()
+
+	addr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(key), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	return addr
 }
 
 // setupPermissiveMocks sets up permissive `.Maybe()` expectations on all mocks.

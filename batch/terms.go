@@ -26,6 +26,16 @@ type Terms struct {
 	// TreeRadix is the branching factor for VTXO trees.
 	TreeRadix uint32
 
+	// MaxConnectorsPerTree is the maximum number of connector leaves in a
+	// single connector tree.
+	MaxConnectorsPerTree uint32
+
+	// ConnectorDustAmount is the amount assigned to each connector leaf.
+	ConnectorDustAmount btcutil.Amount
+
+	// ConnectorAddress is the address used for connector outputs.
+	ConnectorAddress btcutil.Address
+
 	// BoardingExitDelay is the minimum exit delay for boarding inputs.
 	BoardingExitDelay uint32
 

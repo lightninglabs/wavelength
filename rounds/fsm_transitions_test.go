@@ -702,6 +702,79 @@ func TestFSMBatchBuilding(t *testing.T) {
 			"both clients get awaiting boarding sigs notification")
 	})
 
+	t.Run("batch building captures forfeit connectors",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupBatchBuildingMocks()
+
+			clientKey, _ := testutils.CreateKey(3)
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding")),
+				Index: 0,
+			}
+			pkScript := buildExpectedPkScript(
+				t, clientKey, h.operatorPub,
+				h.env.Terms.BoardingExitDelay,
+			)
+			boardingInput := &BoardingInput{
+				Outpoint: &boardingOutpoint,
+				Value:    10000,
+				PkScript: pkScript,
+			}
+
+			forfeitOutpoint1 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit1")),
+				Index: 0,
+			}
+			forfeitOutpoint2 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit2")),
+				Index: 0,
+			}
+			forfeitInputs := []*ForfeitInput{
+				{Outpoint: &forfeitOutpoint1},
+				{Outpoint: &forfeitOutpoint2},
+			}
+
+			clientRegs := map[ClientID]*ClientRegistration{
+				"client1": {
+					ClientID: "client1",
+					BoardingInputs: []*BoardingInput{
+						boardingInput,
+					},
+					ForfeitInputs: forfeitInputs,
+				},
+			}
+
+			regState := &BatchBuildingState{
+				ClientRegistrations: clientRegs,
+			}
+
+			transition, err := regState.ProcessEvent(
+				t.Context(), &BuildBatchTxEvent{}, h.env,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, transition)
+
+			nextState, ok := transition.NextState.(*BatchBuiltState)
+			require.True(t, ok)
+			require.NotNil(t, nextState.ConnectorTrees)
+			require.NotNil(t, nextState.ConnectorAssignments)
+			require.Len(
+				t, nextState.ConnectorAssignments,
+				len(forfeitInputs),
+			)
+
+			for _, input := range forfeitInputs {
+				outpoint := *input.Outpoint
+				assignment, ok :=
+					nextState.ConnectorAssignments[outpoint]
+				require.True(t, ok)
+				require.NotNil(t, assignment.LeafOutput)
+			}
+		})
+
 	t.Run("stale timeout ignored during boarding sigs",
 		func(t *testing.T) {
 			t.Parallel()

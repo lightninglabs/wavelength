@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sort"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -376,6 +377,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		// descriptors from client registrations.
 		var (
 			allBoardingInputs  []*BoardingInput
+			allForfeitInputs   []*ForfeitInput
 			allLeaveOutputs    []*wire.TxOut
 			allVTXODescriptors []tree.VTXODescriptor
 		)
@@ -383,6 +385,9 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		for _, reg := range s.ClientRegistrations {
 			allBoardingInputs = append(
 				allBoardingInputs, reg.BoardingInputs...,
+			)
+			allForfeitInputs = append(
+				allForfeitInputs, reg.ForfeitInputs...,
 			)
 			allLeaveOutputs = append(
 				allLeaveOutputs, reg.LeaveOutputs...,
@@ -397,9 +402,10 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		// Build the commitment transaction PSBT.
-		psbtPacket, _, vtxoTrees, err := buildCommitmentTx(
-			ctx, env, allBoardingInputs, allLeaveOutputs,
-			allVTXODescriptors,
+		psbtPacket, _, vtxoTrees, connectorTrees,
+			connectorAssignments, err := buildCommitmentTx(
+			ctx, env, allBoardingInputs, allForfeitInputs,
+			allLeaveOutputs, allVTXODescriptors,
 		)
 		if err != nil {
 			// Batch building failed - transition to FailedState.
@@ -413,9 +419,11 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
 			NextState: &BatchBuiltState{
-				ClientRegistrations: s.ClientRegistrations,
-				PSBT:                psbtPacket,
-				VTXOTrees:           vtxoTrees,
+				ClientRegistrations:  s.ClientRegistrations,
+				PSBT:                 psbtPacket,
+				VTXOTrees:            vtxoTrees,
+				ConnectorTrees:       connectorTrees,
+				ConnectorAssignments: connectorAssignments,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				// Emit the internal event to prepare client
@@ -844,14 +852,21 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 }
 
 // buildCommitmentTx constructs the commitment transaction PSBT with boarding
-// inputs, required outputs (leaves), and VTXO tree outputs. It funds the
-// transaction using the wallet and builds VTXO trees if needed.
+// inputs, forfeit inputs, required outputs (leaves), VTXO tree outputs, and
+// connector outputs for forfeits. It funds the transaction using the wallet
+// and builds both VTXO and connector trees if needed.
 //
-// TODO(elle): Add connector outputs (forfeit trees) when implemented.
+// Outputs in the transaction include:
+//  1. Leave outputs (client withdrawals)
+//  2. VTXO tree outputs (batch outputs)
+//  3. Connector outputs (forfeit trees)
+//  4. Change output (if needed, added by FundPsbt)
 func buildCommitmentTx(ctx context.Context, env *Environment,
-	boardingInputs []*BoardingInput, requiredOutputs []*wire.TxOut,
+	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
+	requiredOutputs []*wire.TxOut,
 	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
-	map[int]*tree.Tree, error) {
+	map[int]*tree.Tree, map[int]*tree.Tree,
+	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
 
 	// Step 1: Create unsigned transaction with boarding inputs and
 	// required outputs.
@@ -879,8 +894,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			env.Terms, vtxoDescriptors,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("build batch "+
-				"outputs: %w", err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
+				"batch outputs: %w", err)
 		}
 
 		for _, output := range vtxoTreeCtx.Outputs() {
@@ -888,10 +903,46 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		}
 	}
 
+	// Add connector outputs (for forfeit trees). We'll record their
+	// indices after FundPsbt reorders the transaction.
+	numForfeits := len(forfeitInputs)
+	var connectorOutputs []*wire.TxOut
+	if numForfeits > 0 {
+		maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+		if maxPerTree <= 0 {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"max connectors per tree must be > 0",
+			)
+		}
+
+		for i := 0; i < numForfeits; i += maxPerTree {
+			numInOutput := maxPerTree
+			if i+numInOutput > numForfeits {
+				numInOutput = numForfeits - i
+			}
+
+			connectorOutput, err := tree.BuildConnectorOutput(
+				numInOutput, env.Terms.ConnectorDustAmount,
+				env.Terms.ConnectorAddress,
+			)
+			if err != nil {
+				return nil, -1, nil, nil, nil, fmt.Errorf(
+					"build connector output: %w", err,
+				)
+			}
+
+			connectorOutputs = append(
+				connectorOutputs, connectorOutput,
+			)
+			tx.AddTxOut(connectorOutput)
+		}
+	}
+
 	// Step 2: Convert to PSBT.
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("create psbt: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("create psbt: %w",
+			err)
 	}
 
 	// Step 3: Add UTXO information for boarding inputs so FundPsbt can
@@ -911,7 +962,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	// Step 4: Get fee rate from estimator.
 	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("estimate fee: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("estimate fee: %w",
+			err)
 	}
 
 	// Step 5: Call FundPsbt to add wallet inputs and change.
@@ -922,7 +974,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		ctx, packet, env.MinConfs, feeRate, env.WalletAccount,
 	)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("fund psbt: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
+			err)
 	}
 
 	// Step 6: Build VTXO trees if VTXOs exist.
@@ -938,8 +991,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			batchOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("find batch "+
-				"outputs: %w", err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("find "+
+				"batch outputs: %w", err)
 		}
 
 		// Build VTXO trees using the post-FundPsbt batch output
@@ -948,30 +1001,68 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			packet.UnsignedTx, batchOutputIndices,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("build VTXO trees: %w",
-				err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
+				"VTXO trees: %w", err)
 		}
 	}
 
-	return packet, changeIdx, vtxoTrees, nil
+	// Step 7: Build connector trees and assignments if forfeits exist.
+	var (
+		connectorTrees       map[int]*tree.Tree
+		connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+	)
+	if numForfeits > 0 {
+		connectorOutputIndices, err := findOutputIndices(
+			connectorOutputs, packet.UnsignedTx,
+		)
+		if err != nil {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"find connector outputs: %w", err,
+			)
+		}
+
+		connectorTrees, connectorAssignments, err =
+			buildConnectorTreesAndAssignments(
+				env, packet.UnsignedTx, forfeitInputs,
+				connectorOutputIndices,
+			)
+		if err != nil {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"build connector trees: %w", err,
+			)
+		}
+	}
+
+	return packet, changeIdx, vtxoTrees, connectorTrees,
+		connectorAssignments, nil
 }
 
 // findOutputIndices finds the indices of the given outputs in the transaction
-// by matching their PkScripts. This is used after FundPsbt reorders the
-// transaction to locate specific outputs by their script.
+// by matching their PkScripts and values. This is used after FundPsbt reorders
+// the transaction to locate specific outputs by their script and amount.
 func findOutputIndices(expectedOutputs []*wire.TxOut,
 	tx *wire.MsgTx) ([]int, error) {
 
 	indices := make([]int, len(expectedOutputs))
+	used := make([]bool, len(tx.TxOut))
 
 	for i, expectedOut := range expectedOutputs {
 		found := false
 		for j, txOut := range tx.TxOut {
+			if used[j] {
+				continue
+			}
+
+			if expectedOut.Value != txOut.Value {
+				continue
+			}
+
 			if !bytes.Equal(expectedOut.PkScript, txOut.PkScript) {
 				continue
 			}
 
 			indices[i] = j
+			used[j] = true
 			found = true
 
 			break
@@ -983,6 +1074,158 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 	}
 
 	return indices, nil
+}
+
+// buildConnectorTreesAndAssignments builds connector trees and assigns each
+// forfeit input to a connector leaf.
+func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
+	forfeitInputs []*ForfeitInput, connectorOutputIndices []int) (
+	map[int]*tree.Tree, map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+
+	numForfeits := len(forfeitInputs)
+	if numForfeits == 0 {
+		return nil, nil, nil
+	}
+
+	sortedForfeits := make([]*ForfeitInput, 0, numForfeits)
+	for _, input := range forfeitInputs {
+		if input == nil || input.Outpoint == nil {
+			return nil, nil, fmt.Errorf(
+				"forfeit input outpoint is nil",
+			)
+		}
+
+		sortedForfeits = append(sortedForfeits, input)
+	}
+	sort.Slice(sortedForfeits, func(i, j int) bool {
+		return sortedForfeits[i].Outpoint.String() <
+			sortedForfeits[j].Outpoint.String()
+	})
+
+	maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+	if maxPerTree <= 0 {
+		return nil, nil, fmt.Errorf(
+			"max connectors per tree must be > 0",
+		)
+	}
+
+	if env.Terms.ConnectorDustAmount <= 0 {
+		return nil, nil, fmt.Errorf(
+			"connector dust amount must be > 0",
+		)
+	}
+
+	if env.Terms.ConnectorAddress == nil {
+		return nil, nil, fmt.Errorf("connector address cannot be nil")
+	}
+
+	if env.Terms.OperatorKey.PubKey == nil {
+		return nil, nil, fmt.Errorf("operator key cannot be nil")
+	}
+
+	radix := int(env.Terms.TreeRadix)
+	if radix < 2 {
+		return nil, nil, fmt.Errorf("tree radix must be at least 2")
+	}
+
+	expectedOutputs := (numForfeits + maxPerTree - 1) / maxPerTree
+	if len(connectorOutputIndices) != expectedOutputs {
+		return nil, nil, fmt.Errorf(
+			"connector output count mismatch: %d != %d",
+			len(connectorOutputIndices), expectedOutputs,
+		)
+	}
+
+	connectorTrees := make(map[int]*tree.Tree)
+	connectorAssignments := make(
+		map[wire.OutPoint]*ConnectorLeafAssignment, numForfeits,
+	)
+	txid := tx.TxHash()
+
+	offset := 0
+	for i, outputIdx := range connectorOutputIndices {
+		numInOutput := maxPerTree
+		if offset+numInOutput > numForfeits {
+			numInOutput = numForfeits - offset
+		}
+
+		connectorOutput := tx.TxOut[outputIdx]
+		connectorOutpoint := wire.OutPoint{
+			Hash:  txid,
+			Index: uint32(outputIdx),
+		}
+		connectorDesc := tree.ConnectorDescriptor{
+			PkScript:  connectorOutput.PkScript,
+			NumLeaves: numInOutput,
+			Amount:    env.Terms.ConnectorDustAmount,
+		}
+
+		connectorTree, err := tree.BuildConnectorTree(
+			connectorOutpoint, connectorOutput, connectorDesc,
+			env.Terms.OperatorKey.PubKey, radix,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"build connector tree %d: %w", i, err,
+			)
+		}
+
+		leaves := connectorTree.Root.GetLeafNodes()
+		if len(leaves) != numInOutput {
+			return nil, nil, fmt.Errorf(
+				"connector tree %d leaf count mismatch: "+
+					"%d != %d", i, len(leaves),
+				numInOutput,
+			)
+		}
+
+		connectorTrees[outputIdx] = connectorTree
+
+		for leafIdx := 0; leafIdx < numInOutput; leafIdx++ {
+			forfeitInput := sortedForfeits[offset+leafIdx]
+			leaf := leaves[leafIdx]
+			leafOutpoint, err := leaf.GetNonAnchorOutpoint()
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"connector leaf outpoint: %w", err,
+				)
+			}
+
+			leafOutput, err := leafNonAnchorOutput(leaf)
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"connector leaf output: %w", err,
+				)
+			}
+
+			connectorAssignments[*forfeitInput.Outpoint] =
+				&ConnectorLeafAssignment{
+					ForfeitOutpoint: *forfeitInput.Outpoint,
+					LeafOutpoint:    *leafOutpoint,
+					LeafOutput:      leafOutput,
+				}
+		}
+
+		offset += numInOutput
+	}
+
+	return connectorTrees, connectorAssignments, nil
+}
+
+// leafNonAnchorOutput returns the non-anchor output for a leaf node.
+func leafNonAnchorOutput(leaf *tree.Node) (*wire.TxOut, error) {
+	if leaf == nil {
+		return nil, fmt.Errorf("leaf cannot be nil")
+	}
+
+	anchorScript := scripts.AnchorOutput().PkScript
+	for _, output := range leaf.Outputs {
+		if !bytes.Equal(output.PkScript, anchorScript) {
+			return output, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no non-anchor output found")
 }
 
 // ProcessEvent handles events in the AwaitingVTXONoncesState. This state waits

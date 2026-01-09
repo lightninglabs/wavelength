@@ -139,6 +139,14 @@ type BatchBuiltState struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorTrees maps commitment tx output indices to connector trees.
+	// This is nil if no forfeits exist in the round.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
 }
 
 // String returns a human-readable representation of BatchBuiltState.

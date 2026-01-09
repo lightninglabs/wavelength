@@ -278,6 +278,11 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,
 			},
+			MaxConnectorsPerTree: 128,
+			ConnectorDustAmount:  330,
+			ConnectorAddress: mustTaprootAddr(
+				t, common.operatorPub,
+			),
 			BoardingExitDelay:          100,
 			MinBoardingConfirmations:   1,
 			MinVTXOAmount:              1000,
