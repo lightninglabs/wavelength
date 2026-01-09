@@ -184,15 +184,19 @@ type AwaitingInputSigsState struct {
 	// This is nil if no forfeits exist in the round.
 	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
 
-	// ClientsSubmitted tracks which clients have submitted their boarding
-	// signatures. Once all registered clients have submitted, the round
-	// transitions to ServerSigningState.
+	// ClientsSubmitted tracks which clients have submitted all expected
+	// boarding signatures and forfeit transactions. Once all registered
+	// clients have submitted, the round transitions to ServerSigningState.
 	ClientsSubmitted map[clientconn.ClientID]struct{}
 
 	// CollectedSignatures stores the boarding signatures submitted by each
 	// client. These are validated but not yet applied to the PSBT - that
 	// happens during server signing.
 	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs stores the forfeit transactions submitted by each
+	// client. These are validated but not yet signed by the server.
+	CollectedForfeitTxs ForfeitTxsMap
 }
 
 // String returns a human-readable representation of
@@ -395,6 +399,10 @@ type ServerSigningState struct {
 	// signatures. These will be applied to the PSBT along with the
 	// server's signatures.
 	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs contains all validated client forfeit
+	// transactions. The server will sign these before finalization.
+	CollectedForfeitTxs ForfeitTxsMap
 }
 
 // String returns a human-readable representation of ServerSigningState.

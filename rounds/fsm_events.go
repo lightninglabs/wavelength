@@ -73,10 +73,10 @@ type InputSignaturesTimeoutEvent struct{}
 // Event interface.
 func (e *InputSignaturesTimeoutEvent) eventSealed() {}
 
-// ClientBoardingSignaturesEvent is sent when a client submits their signatures
+// ClientInputSignaturesEvent is sent when a client submits their signatures
 // for their boarding inputs. Each client must sign all their boarding inputs
 // before the round can proceed.
-type ClientBoardingSignaturesEvent struct {
+type ClientInputSignaturesEvent struct {
 	// ClientID identifies which client is submitting signatures.
 	ClientID clientconn.ClientID
 
@@ -84,11 +84,16 @@ type ClientBoardingSignaturesEvent struct {
 	// boarding inputs. Each signature is for the collaborative tapscript
 	// spending path.
 	Signatures []*types.BoardingInputSignature
+
+	// ForfeitTxs contains the client's forfeit transactions with their
+	// VTXO input signatures. The server will validate these and add its
+	// own signatures to complete them.
+	ForfeitTxs []*types.ForfeitTxSig
 }
 
-// eventSealed marks ClientBoardingSignaturesEvent as implementing the sealed
+// eventSealed marks ClientInputSignaturesEvent as implementing the sealed
 // Event interface.
-func (e *ClientBoardingSignaturesEvent) eventSealed() {}
+func (e *ClientInputSignaturesEvent) eventSealed() {}
 
 // VTXONoncesTimeoutEvent is sent when the VTXO nonce collection timeout
 // expires. Only AwaitingVTXONoncesState should handle this.

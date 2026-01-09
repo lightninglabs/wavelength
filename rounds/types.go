@@ -28,6 +28,9 @@ type TxID = tree.TxID
 // This type alias improves readability in struct definitions.
 type InputSigsMap = map[ClientID][]*types.BoardingInputSignature
 
+// ForfeitTxsMap maps client IDs to their submitted forfeit transactions.
+type ForfeitTxsMap = map[ClientID][]*types.ForfeitTxSig
+
 // BoardingInput represents a validated boarding input that will be spent in
 // the batch transaction. It contains all the data needed to construct the
 // input and sign it.

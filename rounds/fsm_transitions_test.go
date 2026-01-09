@@ -1043,6 +1043,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				VTXOTrees:           map[int]*tree.Tree{},
 				ClientsSubmitted:    map[ClientID]struct{}{},
 				CollectedSignatures: InputSigsMap{},
+				CollectedForfeitTxs: ForfeitTxsMap{},
 			}
 
 			h := newTestHarness(t, awaitState)
@@ -1409,10 +1410,11 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.NotNil(t, awaitState.PSBT)
+		require.NotNil(t, awaitState.CollectedForfeitTxs)
 
 		// Submit boarding signatures.
 		h.outboxMessages = nil
-		sigEvent := client.createBoardingSignaturesEvent(awaitState)
+		sigEvent := client.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sigEvent)
 		require.NoError(t, err)
 
@@ -1500,10 +1502,11 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.Empty(t, awaitState.ClientsSubmitted)
+		require.NotNil(t, awaitState.CollectedForfeitTxs)
 
 		// Client1 submits - should remain in AwaitingInputSigsState.
 		h.outboxMessages = nil
-		sig1Event := client1.createBoardingSignaturesEvent(awaitState)
+		sig1Event := client1.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sig1Event)
 		require.NoError(t, err)
 
@@ -1511,13 +1514,15 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.Len(t, awaitState.ClientsSubmitted, 1)
 		require.True(t, awaitState.hasClientSubmitted("client1"))
 		require.False(t, awaitState.hasClientSubmitted("client2"))
+		_, hasClient1 := awaitState.CollectedForfeitTxs["client1"]
+		require.True(t, hasClient1)
 
 		// No outbox messages yet (no transition).
 		h.assertOutboxLen(0)
 
 		// Client2 submits - should transition through
 		// ServerSigningState to FinalizedState.
-		sig2Event := client2.createBoardingSignaturesEvent(awaitState)
+		sig2Event := client2.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sig2Event)
 		require.NoError(t, err)
 
@@ -1539,6 +1544,58 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			t, foundCancelTimeout, "timeout should be cancelled",
 		)
 	})
+
+	t.Run("server signing state carries forfeit txs map",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub,
+				exitDelay, expiry,
+			)
+
+			outpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("input1")),
+				Index: 0,
+			}
+
+			h.setupCompleteRegistrationFlow(
+				&outpoint, client.boardingKey, exitDelay,
+				10, h.roundID,
+			)
+
+			boardingReq := client.createBoardingRequest(&outpoint)
+			joinReqEvent := client.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			)
+			err := h.sendEvent(joinReqEvent)
+			require.NoError(t, err)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			awaitState :=
+				assertStateType[*AwaitingInputSigsState](h)
+			sigEvent :=
+				client.createInputSignaturesEvent(awaitState)
+
+			transition, err := awaitState.handleInputSignatures(
+				sigEvent, h.env,
+			)
+			require.NoError(t, err)
+
+			nextState, ok :=
+				transition.NextState.(*ServerSigningState)
+			require.True(t, ok)
+			require.NotNil(t, nextState.CollectedForfeitTxs)
+			_, hasClient := nextState.CollectedForfeitTxs["client1"]
+			require.True(t, hasClient)
+		})
 
 	t.Run("unknown client rejected", func(t *testing.T) {
 		t.Parallel()
@@ -1581,7 +1638,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Unknown client tries to submit.
 		h.outboxMessages = nil
-		unknownSigEvent := &ClientBoardingSignaturesEvent{
+		unknownSigEvent := &ClientInputSignaturesEvent{
 			ClientID:   "unknown_client",
 			Signatures: nil,
 		}
@@ -1599,12 +1656,72 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Original client should still be able to submit its valid sig.
 		h.outboxMessages = nil
-		sigEvent := client.createBoardingSignaturesEvent(awaitState)
+		sigEvent := client.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sigEvent)
 		require.NoError(t, err)
 
 		finalState := assertStateType[*FinalizedState](h)
 		require.Len(t, finalState.ClientRegistrations, 1)
+	})
+
+	t.Run("missing forfeit txs rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		boardingOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding")),
+			Index: 0,
+		}
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("forfeit")),
+			Index: 0,
+		}
+
+		h.setupValidBoardingInput(
+			&boardingOutpoint, client.boardingKey,
+			exitDelay, 10, h.roundID,
+		)
+		h.setupValidForfeitVTXO(
+			&forfeitOutpoint, client.boardingKey, h.roundID,
+		)
+		h.expectVTXOLocked(h.roundID, forfeitOutpoint)
+		h.setupBatchBuildingMocks()
+
+		boardingReq := client.createBoardingRequest(&boardingOutpoint)
+		forfeitReq := &types.ForfeitRequest{
+			VTXOOutpoint: &forfeitOutpoint,
+		}
+		joinReqEvent := client.createJoinRequestWithForfeits(
+			[]*types.BoardingRequest{boardingReq},
+			[]*types.ForfeitRequest{forfeitReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+		assertStateType[*RegistrationState](h)
+
+		h.outboxMessages = nil
+		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		require.NoError(t, err)
+
+		awaitState := assertStateType[*AwaitingInputSigsState](h)
+		sigEvent := client.createInputSignaturesEvent(awaitState)
+		sigEvent.ForfeitTxs = nil
+
+		h.outboxMessages = nil
+		err = h.sendEvent(sigEvent)
+		require.NoError(t, err)
+
+		assertStateType[*AwaitingInputSigsState](h)
+		errResp := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Equal(t, ClientID("client1"), errResp.Client)
+		require.Contains(t, errResp.ErrorMsg, "expected 1 forfeit txs")
 	})
 
 	t.Run("duplicate submission rejected", func(t *testing.T) {
@@ -1665,7 +1782,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Client1 submits first time - success.
 		h.outboxMessages = nil
-		sig1Event := client1.createBoardingSignaturesEvent(awaitState)
+		sig1Event := client1.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sig1Event)
 		require.NoError(t, err)
 
@@ -1674,7 +1791,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Client1 tries to submit again - should be rejected.
 		h.outboxMessages = nil
-		sig1EventDup := client1.createBoardingSignaturesEvent(
+		sig1EventDup := client1.createInputSignaturesEvent(
 			awaitState,
 		)
 		err = h.sendEvent(sig1EventDup)
@@ -1728,7 +1845,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Submit with no signatures (client has 1 input).
 		h.outboxMessages = nil
-		badSigEvent := &ClientBoardingSignaturesEvent{
+		badSigEvent := &ClientInputSignaturesEvent{
 			ClientID:   "client1",
 			Signatures: []*types.BoardingInputSignature{},
 		}
@@ -2276,7 +2393,7 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 
 	// Client submits boarding signatures to finalize.
 	h.outboxMessages = nil
-	boardingSigEvent := client.createBoardingSignaturesEvent(
+	boardingSigEvent := client.createInputSignaturesEvent(
 		awaitBoarding,
 	)
 	err = h.sendEvent(boardingSigEvent)
@@ -2455,13 +2572,13 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 
 	// Both clients submit boarding signatures.
 	h.outboxMessages = nil
-	err = h.sendEvent(client1.createBoardingSignaturesEvent(
+	err = h.sendEvent(client1.createInputSignaturesEvent(
 		awaitBoarding,
 	))
 	require.NoError(t, err)
 
 	awaitBoarding = assertStateType[*AwaitingInputSigsState](h)
-	err = h.sendEvent(client2.createBoardingSignaturesEvent(
+	err = h.sendEvent(client2.createInputSignaturesEvent(
 		awaitBoarding,
 	))
 	require.NoError(t, err)
@@ -2551,7 +2668,7 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 
 	// Finish boarding signatures.
 	h.outboxMessages = nil
-	err = h.sendEvent(client.createBoardingSignaturesEvent(awaitBoarding))
+	err = h.sendEvent(client.createInputSignaturesEvent(awaitBoarding))
 	require.NoError(t, err)
 
 	finalState := assertStateType[*FinalizedState](h)

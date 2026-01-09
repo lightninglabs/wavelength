@@ -37,8 +37,8 @@ stateDiagram-v2
     AwaitingVTXOSignaturesState --> AwaitingInputSigsState: ClientVTXOPartialSigsEvent [all submitted]
     AwaitingVTXOSignaturesState --> FailedState: VTXOSignaturesTimeoutEvent
 
-    AwaitingInputSigsState --> AwaitingInputSigsState: ClientBoardingSignaturesEvent [partial]
-    AwaitingInputSigsState --> ServerSigningState: ClientBoardingSignaturesEvent [all submitted]
+    AwaitingInputSigsState --> AwaitingInputSigsState: ClientInputSignaturesEvent [partial]
+    AwaitingInputSigsState --> ServerSigningState: ClientInputSignaturesEvent [all submitted]
     AwaitingInputSigsState --> FailedState: InputSignaturesTimeoutEvent
 
     ServerSigningState --> FinalizedState: ServerSignInputsEvent [success]
@@ -139,7 +139,7 @@ stateDiagram-v2
 | `VTXOSignaturesTimeoutEvent`      | Actor (timer) | VTXO partial signature collection timeout expired.                     |
 | `ClientVTXOPartialSigsEvent`      | Actor         | Client submits MuSig2 partial signatures for all their signing keys.   |
 | `InputSignaturesTimeoutEvent`  | Actor (timer) | Boarding signature collection timeout expired.                         |
-| `ClientBoardingSignaturesEvent`   | Actor         | Client submits signatures for their boarding inputs.                   |
+| `ClientInputSignaturesEvent`   | Actor         | Client submits boarding input signatures and forfeit tx signatures.    |
 | `ServerSignInputsEvent`           | Internal      | Triggers server to sign wallet inputs and finalize PSBT.               |
 | `TransactionConfirmedEvent`       | Actor         | Commitment transaction confirmed on-chain.                             |
 
@@ -253,7 +253,7 @@ VTXOSignaturesTimeoutEvent:
 ### AwaitingInputSigsState
 
 ```
-ClientBoardingSignaturesEvent:
+ClientInputSignaturesEvent:
     [invalid]        --> AwaitingInputSigsState + ClientErrorResp
     [duplicate]      --> AwaitingInputSigsState + ClientErrorResp
     [partial]        --> AwaitingInputSigsState
@@ -304,7 +304,7 @@ The FSM is driven by the `Actor` which:
 
 1. Creates a new round FSM in `CreatedState` on startup and when rounds are sealed
 2. Loads persisted rounds from storage (in `FinalizedState`) on startup
-3. Routes client messages as `ClientJoinRequestEvent` or `ClientBoardingSignaturesEvent`
+3. Routes client messages as `ClientJoinRequestEvent` or `ClientInputSignaturesEvent`
 4. Processes outbox messages (send responses, manage timeouts, broadcast transactions)
 5. Sends timeout events when timers expire
 6. Creates new rounds when current round is sealed

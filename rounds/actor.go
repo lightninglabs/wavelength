@@ -29,6 +29,11 @@ type ActorConfig struct {
 	// Terms are the operator terms for the round.
 	Terms *batch.Terms
 
+	// ForfeitScript is the output script that clients must use for the
+	// penalty output in forfeit transactions. This allows the server to
+	// claim forfeited VTXO funds.
+	ForfeitScript []byte
+
 	// ClientsConn is a reference to the ClientsConnectionActor for sending
 	// messages to registered clients.
 	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
@@ -203,6 +208,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,
 		Terms:               a.cfg.Terms,
+		ForfeitScript:       a.cfg.ForfeitScript,
 		RoundStore:          a.cfg.RoundStore,
 		VTXOStore:           a.cfg.VTXOStore,
 	}
@@ -452,6 +458,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		BoardingInputLocker: a.cfg.BoardingInputLocker,
 		ChainSource:         a.cfg.ChainSource,
 		Terms:               a.cfg.Terms,
+		ForfeitScript:       a.cfg.ForfeitScript,
 		WalletController:    a.cfg.WalletController,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,

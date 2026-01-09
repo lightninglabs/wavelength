@@ -291,6 +291,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			RegistrationTimeout:        30 * time.Second,
 			SignatureCollectionTimeout: 30 * time.Second,
 		},
+		ForfeitScript: []byte{0x51, 0x20, 0x01, 0x02},
 	}
 
 	actorResult := NewActor(cfg)
@@ -926,7 +927,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		// Create signatures using the PSBT from ClientBatchInfo. This
 		// mimics how a real client would create signatures using the
 		// batch info they received.
-		sigEvent := client.createBoardingSignaturesFromPSBT(
+		sigEvent := client.createInputSignaturesFromPSBT(
 			batchInfo.BatchPSBT,
 		)
 		roundMsg := &RoundMsg{
@@ -961,7 +962,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		unknownRoundID, err := NewRoundID()
 		require.NoError(t, err)
 
-		sigEvent := &ClientBoardingSignaturesEvent{
+		sigEvent := &ClientInputSignaturesEvent{
 			ClientID:   "client1",
 			Signatures: nil,
 		}

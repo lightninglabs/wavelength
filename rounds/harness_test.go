@@ -147,6 +147,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		VTXOStore:           common.vtxoStore,
 		ConfTarget:          6,
 		MinConfs:            1,
+		ForfeitScript:       []byte{0x51, 0x20, 0x01, 0x02},
 		Terms: &batch.Terms{
 			OperatorKey: operatorKey,
 			SweepKey: keychain.KeyDescriptor{
@@ -1227,11 +1228,11 @@ type clientMuSigSession struct {
 	sessions []*tree.SignerSession
 }
 
-// createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with
-// real signatures for the given boarding inputs. The client signs each input
-// using the tapscript collaborative spend path.
-func (c *clientHarness) createBoardingSignaturesEvent(
-	state *AwaitingInputSigsState) *ClientBoardingSignaturesEvent {
+// createInputSignaturesEvent creates a ClientInputSignaturesEvent with real
+// signatures for the given boarding inputs. The client signs each input using
+// the tapscript collaborative spend path.
+func (c *clientHarness) createInputSignaturesEvent(
+	state *AwaitingInputSigsState) *ClientInputSignaturesEvent {
 
 	c.t.Helper()
 
@@ -1300,18 +1301,18 @@ func (c *clientHarness) createBoardingSignaturesEvent(
 		})
 	}
 
-	return &ClientBoardingSignaturesEvent{
+	return &ClientInputSignaturesEvent{
 		ClientID:   c.clientID,
 		Signatures: sigs,
 	}
 }
 
-// createBoardingSignaturesFromPSBT creates a ClientBoardingSignaturesEvent
-// using the PSBT received from ClientBatchInfo. This mimics the real client
-// flow where the client uses their stored boarding requests and the received
-// PSBT to create signatures.
-func (c *clientHarness) createBoardingSignaturesFromPSBT(
-	p *psbt.Packet) *ClientBoardingSignaturesEvent {
+// createInputSignaturesFromPSBT creates a ClientInputSignaturesEvent using the
+// PSBT received from ClientBatchInfo. This mimics the real client flow where
+// the client uses their stored boarding requests and the received PSBT to
+// create signatures.
+func (c *clientHarness) createInputSignaturesFromPSBT(
+	p *psbt.Packet) *ClientInputSignaturesEvent {
 
 	c.t.Helper()
 
@@ -1387,7 +1388,7 @@ func (c *clientHarness) createBoardingSignaturesFromPSBT(
 		})
 	}
 
-	return &ClientBoardingSignaturesEvent{
+	return &ClientInputSignaturesEvent{
 		ClientID:   c.clientID,
 		Signatures: sigs,
 	}
