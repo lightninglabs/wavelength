@@ -575,6 +575,8 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 			ClientRegistrations:  s.ClientRegistrations,
 			PSBT:                 s.PSBT,
 			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			TreeSignCoordinators: treeCoordinators,
 			ClientsWithNonces: make(
 				map[clientconn.ClientID]struct{},
@@ -614,9 +616,11 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 
 	return &StateTransition{
 		NextState: &AwaitingInputSigsState{
-			ClientRegistrations: s.ClientRegistrations,
-			PSBT:                s.PSBT,
-			VTXOTrees:           s.VTXOTrees,
+			ClientRegistrations:  s.ClientRegistrations,
+			PSBT:                 s.PSBT,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
@@ -842,11 +846,13 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 
 	// Create new state with updated tracking.
 	newState := &AwaitingInputSigsState{
-		ClientRegistrations: s.ClientRegistrations,
-		PSBT:                s.PSBT,
-		VTXOTrees:           s.VTXOTrees,
-		ClientsSubmitted:    newClientsSubmitted,
-		CollectedSignatures: newCollectedSigs,
+		ClientRegistrations:  s.ClientRegistrations,
+		PSBT:                 s.PSBT,
+		VTXOTrees:            s.VTXOTrees,
+		ConnectorTrees:       s.ConnectorTrees,
+		ConnectorAssignments: s.ConnectorAssignments,
+		ClientsSubmitted:     newClientsSubmitted,
+		CollectedSignatures:  newCollectedSigs,
 	}
 
 	// Check if all clients have submitted.
@@ -1464,6 +1470,8 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 		ClientRegistrations:  s.ClientRegistrations,
 		PSBT:                 s.PSBT,
 		VTXOTrees:            s.VTXOTrees,
+		ConnectorTrees:       s.ConnectorTrees,
+		ConnectorAssignments: s.ConnectorAssignments,
 		TreeSignCoordinators: s.TreeSignCoordinators,
 		ClientsWithNonces:    newClientsWithNonces,
 	}
@@ -1560,6 +1568,8 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			ClientRegistrations:  s.ClientRegistrations,
 			PSBT:                 s.PSBT,
 			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			TreeSignCoordinators: s.TreeSignCoordinators,
 			ClientsWithSignatures: make(
 				map[clientconn.ClientID]struct{},
@@ -1781,6 +1791,8 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		ClientRegistrations:   s.ClientRegistrations,
 		PSBT:                  s.PSBT,
 		VTXOTrees:             s.VTXOTrees,
+		ConnectorTrees:        s.ConnectorTrees,
+		ConnectorAssignments:  s.ConnectorAssignments,
 		TreeSignCoordinators:  s.TreeSignCoordinators,
 		ClientsWithSignatures: newClientsWithSignatures,
 	}
@@ -1877,9 +1889,11 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 	return &StateTransition{
 		NextState: &AwaitingInputSigsState{
-			ClientRegistrations: s.ClientRegistrations,
-			PSBT:                s.PSBT,
-			VTXOTrees:           s.VTXOTrees,
+			ClientRegistrations:  s.ClientRegistrations,
+			PSBT:                 s.PSBT,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
