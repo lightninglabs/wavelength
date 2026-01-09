@@ -8,20 +8,19 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightninglabs/darepo/timeout"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -234,21 +233,16 @@ func (m *mockTimeoutActor) assertTimeoutCancelled(roundID RoundID,
 
 // actorTestHarness provides test infrastructure for the rounds Actor.
 type actorTestHarness struct {
-	t *testing.T
+	*testing.T
+	*commonMockSetup
 
 	//nolint:containedctx
 	ctx              context.Context
 	actor            *Actor
 	cfg              *ActorConfig
-	locker           *mockBoardingInputLocker
 	clients          *mockClientConnRef
-	chainSource      *mockChainSource
-	feeEstimator     *chainfee.MockEstimator
-	walletController *mockWalletController
 	timeoutActor     *mockTimeoutActor
-
-	// operatorPub is the operator public key for this test harness.
-	operatorPub *btcec.PublicKey
+	chainSourceActor *mockChainSourceActor
 }
 
 // newActorTestHarness creates a new actor test harness with default
@@ -257,32 +251,31 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	t.Helper()
 
 	ctx := t.Context()
-	locker := &mockBoardingInputLocker{}
+
+	// Create common mock setup.
+	common := newCommonMockSetup(t)
+
 	clients := newMockClientConnRef(t)
-	chainSource := &mockChainSource{}
 	timeoutActor := newMockTimeoutActor(t)
-
-	// Set up fee estimator. Tests should set up explicit expectations.
-	mockFeeEstimator := &chainfee.MockEstimator{}
-
-	// Set up operator key.
-	operatorPub, operatorSigner := testutils.CreateKey(1)
-	mockWalletController := newMockWalletController(operatorSigner)
+	chainSourceActor := newMockChainSourceActor()
 
 	cfg := &ActorConfig{
 		ChainParams:         &chaincfg.RegressionNetParams,
 		Logger:              btclog.Disabled,
 		ClientsConn:         clients,
-		BoardingInputLocker: locker,
-		ChainSource:         chainSource,
+		BoardingInputLocker: common.boardingLocker,
+		ChainSource:         common.chainSource,
 		TimeoutActor:        timeoutActor,
-		FeeEstimator:        mockFeeEstimator,
-		WalletController:    mockWalletController,
+		FeeEstimator:        common.feeEstimator,
+		WalletController:    common.walletController,
+		RoundStore:          common.roundStore,
+		ChainSourceActor:    chainSourceActor,
 		ConfTarget:          6,
 		MinConfs:            1,
+		ConfirmationTarget:  1,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
-				PubKey: operatorPub,
+				PubKey: common.operatorPub,
 			},
 			BoardingExitDelay:          100,
 			MinBoardingConfirmations:   1,
@@ -303,66 +296,45 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	cfg.SelfRef = &actorRef{actor: actor}
 
 	h := &actorTestHarness{
-		t:                t,
+		T:                t,
+		commonMockSetup:  common,
 		ctx:              ctx,
 		actor:            actor,
 		cfg:              cfg,
-		locker:           locker,
 		clients:          clients,
-		chainSource:      chainSource,
-		feeEstimator:     mockFeeEstimator,
-		walletController: mockWalletController,
 		timeoutActor:     timeoutActor,
-		operatorPub:      operatorPub,
+		chainSourceActor: chainSourceActor,
 	}
-
-	// Register cleanup to automatically assert mock expectations.
-	t.Cleanup(func() {
-		h.assertMockExpectations()
-	})
 
 	return h
 }
 
 // start initializes the actor by calling Start.
 func (h *actorTestHarness) start(ctx context.Context) {
-	h.t.Helper()
+	h.Helper()
 
 	err := h.actor.Start(ctx)
-	require.NoError(h.t, err)
-}
-
-// assertMockExpectations asserts that all mocks received their expected calls.
-// This should be called at the end of each test to verify mock expectations.
-// Note: mockClientConnRef and mockTimeoutActor are custom mocks that don't use
-// testify/mock, so they don't have AssertExpectations methods.
-func (h *actorTestHarness) assertMockExpectations() {
-	h.t.Helper()
-
-	h.locker.AssertExpectations(h.t)
-	h.chainSource.AssertExpectations(h.t)
-	h.feeEstimator.AssertExpectations(h.t)
-	h.walletController.AssertExpectations(h.t)
+	require.NoError(h, err)
 }
 
 // assertRoundCount verifies the actor is tracking the expected number of
 // rounds.
 func (h *actorTestHarness) assertRoundCount(expected int) {
-	h.t.Helper()
+	h.Helper()
 
-	require.Len(h.t, h.actor.rounds, expected)
+	require.Len(h, h.actor.rounds, expected)
 }
 
 // assertCurrentRoundExists verifies the actor has a current round set.
 func (h *actorTestHarness) assertCurrentRoundExists() {
-	h.t.Helper()
+	h.Helper()
 
-	require.NotNil(h.t, h.actor.currentRound)
+	require.NotNil(h, h.actor.currentRound)
 }
 
 // sendJoinRequest sends a JoinRoundRequest to the actor.
 func (h *actorTestHarness) sendJoinRequest(req *JoinRoundRequest) error {
-	h.t.Helper()
+	h.Helper()
 
 	result := h.actor.Receive(h.ctx, req)
 	_, err := result.Unpack()
@@ -404,28 +376,6 @@ func newActorClientHarness(t *testing.T, h *actorTestHarness, clientID string,
 	}
 }
 
-// mockBoardingUTXO sets up the chain source mock to return a UTXO for the
-// given outpoint with the client's boarding key.
-func (c *actorClientHarness) mockBoardingUTXO(outpoint wire.OutPoint,
-	confirmations int64) {
-
-	c.harness.t.Helper()
-
-	pkScript := buildExpectedPkScript(
-		c.harness.t, c.boardingKey, c.operatorKey, c.exitDelay,
-	)
-
-	c.harness.chainSource.On("GetUTXO", outpoint).Return(
-		&UTXO{
-			Output: &wire.TxOut{
-				Value:    int64(btcutil.Amount(100000)),
-				PkScript: pkScript,
-			},
-			Confirmations: confirmations,
-		}, nil,
-	)
-}
-
 // createActorJoinRequest creates a JoinRoundRequest for actor-level tests.
 func (c *actorClientHarness) createActorJoinRequest(
 	boardingReqs []*types.BoardingRequest) *JoinRoundRequest {
@@ -451,6 +401,7 @@ func TestActorStart(t *testing.T) {
 	t.Parallel()
 
 	h := newActorTestHarness(t)
+	h.setActiveRounds([]*Round{})
 	h.start(t.Context())
 
 	// Verify actor created a current round.
@@ -459,8 +410,6 @@ func TestActorStart(t *testing.T) {
 
 	// Verify round ID is set.
 	require.NotEmpty(t, h.actor.currentRound.RoundID)
-
-	h.assertMockExpectations()
 }
 
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest
@@ -472,6 +421,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client harness.
@@ -483,15 +433,15 @@ func TestActorJoinRoundRequest(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up explicit mock expectations.
+		// Set up valid boarding input (no batch building since test
+		// doesn't seal the round).
 		roundID := h.actor.currentRound.RoundID
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
-		h.locker.On("Lock", mock.Anything, &outpoint, roundID).
-			Return(nil).Once()
+		h.allowBoardingInput(&outpoint, roundID)
 
 		// Mock the UTXO and create the boarding request.
-		client.mockBoardingUTXO(outpoint, 10)
+		h.mockBoardingUTXO(
+			outpoint, client.boardingKey, client.exitDelay, 10,
+		)
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
@@ -523,6 +473,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a boarding request with a mismatched operator key.
@@ -536,8 +487,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 
 		// Set up IsLocked expectation so validation can proceed to
 		// operator key check, which will fail.
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
+		h.allowBoardingInput(&outpoint)
 
 		req := &JoinRoundRequest{
 			ClientID: "client1",
@@ -559,7 +509,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 
 		// Verify Lock was not called (validation failed before
 		// locking).
-		h.locker.AssertNotCalled(t, "Lock")
+		h.boardingLocker.AssertNotCalled(t, "Lock")
 
 		// Verify error response was sent to client.
 		msgs := h.clients.getMessages()
@@ -572,8 +522,6 @@ func TestActorJoinRoundRequest(t *testing.T) {
 		require.True(t, ok, "expected ClientErrorResp message")
 		require.Equal(t, "client1", string(clientMsg.Client))
 		require.Contains(t, clientMsg.ErrorMsg, "does not match")
-
-		h.assertMockExpectations()
 	})
 }
 
@@ -586,6 +534,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -595,20 +544,14 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up explicit mock expectations.
+		// Set up complete registration flow.
 		originalRoundID := h.actor.currentRound.RoundID
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
-		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
-			Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On(
-			"FundPsbt", mock.Anything, mock.Anything, int32(1),
-			chainfee.SatPerKWeight(1000), mock.Anything,
-		).Return(int32(-1), nil).Once()
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, client.exitDelay, 10,
+			originalRoundID,
+		)
 
-		client.mockBoardingUTXO(outpoint, 10)
+		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
@@ -640,14 +583,13 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		originalRound := h.actor.getRound(originalRoundID)
 		require.NotNil(t, originalRound,
 			"original round should still be tracked")
-
-		h.assertMockExpectations()
 	})
 
 	t.Run("duplicate timeout same phase ignored", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -657,20 +599,14 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up explicit mock expectations.
+		// Set up complete registration flow.
 		originalRoundID := h.actor.currentRound.RoundID
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
-		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
-			Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On(
-			"FundPsbt", mock.Anything, mock.Anything, int32(1),
-			chainfee.SatPerKWeight(1000), mock.Anything,
-		).Return(int32(-1), nil).Once()
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, client.exitDelay, 10,
+			originalRoundID,
+		)
 
-		client.mockBoardingUTXO(outpoint, 10)
+		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
@@ -707,14 +643,13 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		h.assertRoundCount(2)
 		require.Equal(t, newRoundID, h.actor.currentRound.RoundID,
 			"current round should be unchanged after duplicate")
-
-		h.assertMockExpectations()
 	})
 
 	t.Run("timeout for unknown round ignored", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Send timeout for a round that doesn't exist.
@@ -735,8 +670,6 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify no state changes.
 		h.assertRoundCount(1)
-
-		h.assertMockExpectations()
 	})
 }
 
@@ -749,6 +682,7 @@ func TestActorFailureHandling(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round.
@@ -758,19 +692,14 @@ func TestActorFailureHandling(t *testing.T) {
 			Index: 0,
 		}
 
-		// Record the original round ID before join.
+		// Set up boarding input with unlock (for failure scenario).
 		originalRoundID := h.actor.currentRound.RoundID
+		h.setupBoardingInputWithUnlock(
+			&outpoint, client.boardingKey, client.exitDelay, 10,
+			originalRoundID,
+		)
 
-		// Set up expectations for Lock, IsLocked, and Unlock.
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
-		h.locker.On("Lock", mock.Anything, &outpoint, originalRoundID).
-			Return(nil).Once()
-		h.locker.On(
-			"Unlock", mock.Anything, &outpoint, originalRoundID,
-		).Return(nil).Once()
-
-		client.mockBoardingUTXO(outpoint, 10)
+		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
@@ -783,12 +712,7 @@ func TestActorFailureHandling(t *testing.T) {
 		h.clients.clearMessages()
 
 		// Set up expectations for batch building.
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(0), fmt.Errorf("insufficient funds")).
-			Once()
+		h.setupBatchBuildingFailure(fmt.Errorf("insufficient funds"))
 
 		// Fire the registration timeout to trigger batch building.
 		h.timeoutActor.FireTimeout(
@@ -832,10 +756,93 @@ func TestActorFailureHandling(t *testing.T) {
 
 		// Should still have 1 round (old one removed, new one created).
 		h.assertRoundCount(1)
-
-		// Verify Lock and Unlock were called as expected.
-		h.assertMockExpectations()
 	})
+}
+
+// mockChainSourceActor implements actor.ActorRef for testing transaction
+// broadcasting and confirmation subscriptions. It records all requests made
+// to it so tests can verify the actor's behavior.
+type mockChainSourceActor struct {
+	mu sync.Mutex
+
+	// broadcastReqs stores all broadcast requests received via Ask.
+	broadcastReqs []*chainsource.BroadcastTxRequest
+
+	// confReqs stores all confirmation subscription requests received via
+	// Tell.
+	confReqs []*chainsource.RegisterConfRequest
+}
+
+// newMockChainSourceActor creates a new mock chain source actor.
+func newMockChainSourceActor() *mockChainSourceActor {
+	return &mockChainSourceActor{
+		broadcastReqs: make([]*chainsource.BroadcastTxRequest, 0),
+		confReqs:      make([]*chainsource.RegisterConfRequest, 0),
+	}
+}
+
+// ID returns the ID of this mock actor.
+func (m *mockChainSourceActor) ID() string {
+	return "mock-chain-source-actor"
+}
+
+// Ask handles broadcast requests and returns success.
+func (m *mockChainSourceActor) Ask(_ context.Context,
+	msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req, ok := msg.(*chainsource.BroadcastTxRequest)
+	if ok {
+		m.broadcastReqs = append(m.broadcastReqs, req)
+
+		// Return success response.
+		promise := actor.NewPromise[chainsource.ChainSourceResp]()
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.BroadcastTxResponse{},
+		))
+
+		return promise.Future()
+	}
+
+	// Unexpected message type.
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+	promise.Complete(fn.Err[chainsource.ChainSourceResp](
+		fmt.Errorf("unexpected message type: %T", msg),
+	))
+
+	return promise.Future()
+}
+
+// Tell handles confirmation subscription requests.
+func (m *mockChainSourceActor) Tell(_ context.Context,
+	msg chainsource.ChainSourceMsg) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req, ok := msg.(*chainsource.RegisterConfRequest)
+	if ok {
+		m.confReqs = append(m.confReqs, req)
+	}
+}
+
+// getBroadcastReqs returns a copy of all broadcast requests.
+func (m *mockChainSourceActor) getBroadcastReqs() []*chainsource.BroadcastTxRequest { //nolint:ll
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]*chainsource.BroadcastTxRequest{}, m.broadcastReqs...)
+}
+
+// getConfReqs returns a copy of all confirmation subscription requests.
+func (m *mockChainSourceActor) getConfReqs() []*chainsource.RegisterConfRequest { //nolint:ll
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]*chainsource.RegisterConfRequest{}, m.confReqs...)
 }
 
 // TestActorBoardingSignatures tests the actor's handling of boarding signature
@@ -847,6 +854,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Create a client and join the round with a boarding input.
@@ -856,22 +864,23 @@ func TestActorBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Record the round ID before join.
+		// Set up complete registration flow.
 		roundID := h.actor.currentRound.RoundID
+		h.setupCompleteRegistrationFlow(
+			&outpoint, client.boardingKey, client.exitDelay, 10,
+			roundID,
+		)
 
-		// Set up expectation that Lock will be called when client
-		// joins.
-		h.locker.On("IsLocked", mock.Anything, &outpoint).
-			Return(false, RoundID{}, nil).Once()
-		h.locker.On("Lock", mock.Anything, &outpoint, roundID).
-			Return(nil).Once()
-		h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-			Return(chainfee.SatPerKWeight(1000), nil).Once()
-		h.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-			mock.Anything, mock.Anything, mock.Anything).
-			Return(int32(-1), nil).Once()
+		// We expect the round building and signing to succeed and
+		// therefore for the round to be persisted.
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+		h.expectRoundFinalized(finalTx)
 
-		client.mockBoardingUTXO(outpoint, 10)
+		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		req := client.createActorJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
@@ -923,26 +932,23 @@ func TestActorBoardingSignatures(t *testing.T) {
 		_, err = result.Unpack()
 		require.NoError(t, err, "submitting signatures should succeed")
 
-		// Verify the round transitioned to ServerSigningState.
+		// Verify the round transitioned through ServerSigningState to
+		// FinalizedState.
 		newState, err := round.FSM.CurrentState()
 		require.NoError(t, err)
-		_, ok = newState.(*ServerSigningState)
-		require.True(t, ok,
-			"expected ServerSigningState, got %T", newState)
+		require.IsType(t, &FinalizedState{}, newState)
 
 		// Verify the boarding signatures timeout was cancelled.
 		h.timeoutActor.assertTimeoutCancelled(
 			roundID, TimeoutPhaseBoardingSigs,
 		)
-
-		// Verify Lock was called as expected.
-		h.locker.AssertExpectations(t)
 	})
 
 	t.Run("signatures for unknown round rejected", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
 		h.start(h.ctx)
 
 		// Send signatures for a round that doesn't exist.
@@ -962,5 +968,222 @@ func TestActorBoardingSignatures(t *testing.T) {
 		_, err = result.Unpack()
 		require.Error(t, err, "unknown round should error")
 		require.Contains(t, err.Error(), "not found")
+	})
+}
+
+// TestActorLoadPendingRounds tests that the actor correctly loads
+// pending rounds from storage on startup.
+func TestActorLoadPendingRounds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("loads pending rounds on start", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a mock persisted round that should be loaded.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID:   persistedRoundID,
+			FinalTx:   finalTx,
+			VTXOTrees: nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Set the pending rounds before starting the actor.
+		h.setActiveRounds([]*Round{persistedRound})
+
+		// Start the actor - it should load the pending round.
+		h.start(h.ctx)
+
+		// Verify the loaded round is tracked (plus the new current
+		// round).
+		h.assertRoundCount(2)
+
+		// Verify the loaded round exists and is in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound,
+			"loaded round should be tracked")
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+
+		finalizedState, ok := currentState.(*FinalizedState)
+		require.True(t, ok,
+			"loaded round should be in FinalizedState, got %T",
+			currentState)
+
+		// Verify the state has the correct data.
+		require.Equal(t, persistedRound.FinalTx, finalizedState.FinalTx)
+		require.Len(t, finalizedState.ClientRegistrations, 1)
+	})
+
+	t.Run("starts with no pending rounds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Set no pending rounds - LoadPendingRounds returns empty.
+		h.setActiveRounds([]*Round{})
+		h.start(h.ctx)
+
+		// Should only have the new current round.
+		h.assertRoundCount(1)
+		h.assertCurrentRoundExists()
+	})
+}
+
+// TestActorBroadcastAndConfirmation tests the actor's handling of transaction
+// broadcast and confirmation flow.
+func TestActorBroadcastAndConfirmation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("finalized round broadcasts and subscribes", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a round in FinalizedState with a signed transaction.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID:   persistedRoundID,
+			FinalTx:   finalTx,
+			VTXOTrees: nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Set the round in storage and start the actor. This will
+		// trigger loadRoundFSM which calls broadcastAndSubscribe.
+		h.setActiveRounds([]*Round{persistedRound})
+		h.start(h.ctx)
+
+		// Verify the round is loaded and in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound)
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*FinalizedState)
+		require.True(t, ok)
+
+		// Verify broadcast was requested.
+		broadcastReqs := h.chainSourceActor.getBroadcastReqs()
+		require.Len(t, broadcastReqs, 1)
+		require.Equal(t, finalTx, broadcastReqs[0].Tx)
+
+		// Verify confirmation subscription was registered.
+		confReqs := h.chainSourceActor.getConfReqs()
+		require.Len(t, confReqs, 1)
+		require.Equal(
+			t, persistedRoundID.String(), confReqs[0].CallerID,
+		)
+		require.Equal(t, uint32(1), confReqs[0].TargetConfs)
+	})
+
+	t.Run("confirmation transitions to ConfirmedState", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		// Create a round in FinalizedState.
+		persistedRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		finalTx := wire.NewMsgTx(2)
+		finalTx.AddTxOut(&wire.TxOut{
+			Value:    100000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02, 0x03},
+		})
+
+		persistedRound := &Round{
+			RoundID:   persistedRoundID,
+			FinalTx:   finalTx,
+			VTXOTrees: nil,
+			ClientRegistrations: map[ClientID]*ClientRegistration{
+				"client1": {},
+			},
+		}
+
+		// Load the round and start the actor.
+		h.setActiveRounds([]*Round{persistedRound})
+		h.start(h.ctx)
+
+		// Verify round is in FinalizedState.
+		loadedRound := h.actor.getRound(persistedRoundID)
+		require.NotNil(t, loadedRound)
+
+		currentState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+		_, ok := currentState.(*FinalizedState)
+		require.True(t, ok)
+
+		// Send a confirmation message directly to the actor.
+		blockHash := chainhash.HashH([]byte("test-block"))
+		confMsg := &ConfirmationMsg{
+			RoundID:     persistedRoundID,
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    1,
+		}
+
+		result := h.actor.Receive(h.ctx, confMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify round transitioned to ConfirmedState.
+		confirmedState, err := loadedRound.FSM.CurrentState()
+		require.NoError(t, err)
+
+		confirmed, ok := confirmedState.(*ConfirmedState)
+		require.True(t, ok)
+		require.Equal(t, int32(100), confirmed.BlockHeight)
+		require.Equal(t, blockHash, confirmed.BlockHash)
+	})
+
+	t.Run("confirmation for unknown round ignored", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
+		h.start(h.ctx)
+
+		// Send confirmation for a round that doesn't exist.
+		unknownRoundID, err := NewRoundID()
+		require.NoError(t, err)
+
+		blockHash := chainhash.HashH([]byte("test-block"))
+		confMsg := &ConfirmationMsg{
+			RoundID:     unknownRoundID,
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    1,
+		}
+
+		result := h.actor.Receive(h.ctx, confMsg)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify state is unchanged - still just the current round.
+		h.assertRoundCount(1)
 	})
 }

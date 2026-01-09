@@ -70,6 +70,32 @@ func (c *ClientSuccessResp) ToProto() proto.Message {
 // OutboxEvent interface.
 func (c *ClientSuccessResp) outboxEventSealed() {}
 
+// ClientAwaitingBoardingSigsResp is an outbox message sent to clients with
+// boarding inputs when the server is ready to receive their boarding
+// signatures. This is sent separately from ClientBatchInfo because there may
+// be VTXO signing phases between batch construction and boarding signature
+// collection.
+type ClientAwaitingBoardingSigsResp struct {
+	// Client is the identifier of the client to notify.
+	Client clientconn.ClientID
+}
+
+// ClientID returns the identifier of the client to send the message to.
+func (c *ClientAwaitingBoardingSigsResp) ClientID() clientconn.ClientID {
+	return c.Client
+}
+
+// ToProto converts ClientAwaitingBoardingSigsResp to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are
+// available.
+func (c *ClientAwaitingBoardingSigsResp) ToProto() proto.Message {
+	return nil
+}
+
+// outboxEventSealed marks ClientAwaitingBoardingSigsResp as implementing the
+// sealed OutboxEvent interface.
+func (c *ClientAwaitingBoardingSigsResp) outboxEventSealed() {}
+
 // RoundSealedReq is emitted when a round has been sealed (registration closed).
 // The actor should create a new round to accept new registrations.
 type RoundSealedReq struct {
@@ -222,3 +248,17 @@ type RoundFailedReq struct {
 // outboxEventSealed marks RoundFailedReq as implementing the sealed OutboxEvent
 // interface.
 func (r *RoundFailedReq) outboxEventSealed() {}
+
+// BroadcastRoundReq requests the actor to broadcast the signed commitment
+// transaction to the network and subscribe to its confirmation.
+type BroadcastRoundReq struct {
+	// RoundID is the identifier of the round to broadcast.
+	RoundID RoundID
+
+	// SignedTx is the fully signed commitment transaction to broadcast.
+	SignedTx *wire.MsgTx
+}
+
+// outboxEventSealed marks BroadcastRoundReq as implementing the sealed
+// OutboxEvent interface.
+func (b *BroadcastRoundReq) outboxEventSealed() {}

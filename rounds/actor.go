@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
@@ -65,6 +66,19 @@ type ActorConfig struct {
 	// MinConfs is the minimum number of confirmations required for wallet
 	// UTXOs to be used for funding.
 	MinConfs int32
+
+	// RoundStore provides persistent storage for rounds.
+	RoundStore RoundStore
+
+	// ChainSourceActor is a reference to the chain source actor for
+	// broadcasting transactions and subscribing to confirmations.
+	ChainSourceActor actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+
+	// ConfirmationTarget is the number of confirmations required before
+	// transitioning a round to the confirmed state.
+	ConfirmationTarget uint32
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -123,13 +137,17 @@ func NewActor(cfg *ActorConfig) fn.Result[*Actor] {
 	})
 }
 
-// Start initializes the actor. It creates a new live round FSM to accept
-// registrations. In the future, it will also resume any existing rounds from
-// storage.
+// Start initializes the actor. It loads any pending rounds from storage that
+// need to be tracked until confirmation, then creates a new live round FSM to
+// accept registrations.
 func (a *Actor) Start(ctx context.Context) error {
-	// TODO(elle): Load previous rounds from storage that still need to be
-	// managed (e.g., rounds awaiting confirmation).
+	// Load previous rounds from storage that still need to be managed
+	// (e.g., rounds awaiting confirmation).
+	if err := a.loadPendingRounds(ctx); err != nil {
+		return fmt.Errorf("unable to load pending rounds: %w", err)
+	}
 
+	// Create a new round to accept registrations.
 	round, err := a.newRoundFSM(ctx)
 	if err != nil {
 		return fmt.Errorf("unable to create new round FSM: %w", err)
@@ -139,6 +157,84 @@ func (a *Actor) Start(ctx context.Context) error {
 	a.rounds[round.RoundID] = round
 
 	return nil
+}
+
+// loadPendingRounds loads all pending rounds from storage and creates FSMs for
+// them. These are rounds that have been finalized but not yet confirmed
+// on-chain.
+func (a *Actor) loadPendingRounds(ctx context.Context) error {
+	rounds, err := a.cfg.RoundStore.LoadPendingRounds(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load pending rounds: %w", err)
+	}
+
+	for _, round := range rounds {
+		roundFSM, err := a.loadRoundFSM(ctx, round)
+		if err != nil {
+			return fmt.Errorf("failed to load round %s: %w",
+				round.RoundID, err)
+		}
+
+		a.rounds[round.RoundID] = roundFSM
+
+		a.log.InfoS(ctx, "Loaded pending round from storage",
+			"round_id", round.RoundID)
+	}
+
+	return nil
+}
+
+// loadRoundFSM creates a new FSM for a persisted round, starting in
+// FinalizedState. This is used to restore rounds that were finalized but not
+// yet confirmed on-chain. After creating the FSM, it re-subscribes to
+// confirmation notifications for the round's transaction.
+func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
+	error) {
+
+	env := &Environment{
+		RoundID:             round.RoundID,
+		ChainParams:         a.cfg.ChainParams,
+		BoardingInputLocker: a.cfg.BoardingInputLocker,
+		ChainSource:         a.cfg.ChainSource,
+		WalletController:    a.cfg.WalletController,
+		FeeEstimator:        a.cfg.FeeEstimator,
+		WalletAccount:       a.cfg.WalletAccount,
+		Terms:               a.cfg.Terms,
+	}
+
+	// Create the FSM starting in FinalizedState since the round was already
+	// signed and persisted.
+	initialState := &FinalizedState{
+		ClientRegistrations: round.ClientRegistrations,
+		FinalTx:             round.FinalTx,
+		VTXOTrees:           round.VTXOTrees,
+	}
+
+	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
+	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
+	fsmCfg := StateMachineCfg{
+		InitialState:  initialState,
+		Env:           env,
+		Logger:        fsmLogger,
+		ErrorReporter: newLoggingErrorReporter(fsmLogger),
+	}
+	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm.Start(ctx)
+
+	// Re-subscribe to confirmation notifications.
+	broadcastReq := &BroadcastRoundReq{
+		RoundID:  round.RoundID,
+		SignedTx: round.FinalTx,
+	}
+	if err := a.broadcastAndSubscribe(ctx, broadcastReq); err != nil {
+		return nil, fmt.Errorf("failed to re-subscribe to "+
+			"confirmation: %w", err)
+	}
+
+	return &RoundFSM{
+		FSM:     &fsm,
+		RoundID: round.RoundID,
+	}, nil
 }
 
 // Receive processes an actor message and returns a response. This is the main
@@ -155,6 +251,9 @@ func (a *Actor) Receive(ctx context.Context,
 
 	case *RoundMsg:
 		return a.handleRoundEvent(ctx, m)
+
+	case *ConfirmationMsg:
+		return a.handleConfirmation(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf(
@@ -325,6 +424,19 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 					"new_round", newRound.RoundID)
 			}
 
+		case *BroadcastRoundReq:
+			// Broadcast the transaction and subscribe to
+			// confirmation.
+			//
+			// TODO(elle): Handle broadcast failures - if broadcast
+			// fails, we should retry, fee bump or transition to a
+			// failed state.
+			err := a.broadcastAndSubscribe(ctx, m)
+			if err != nil {
+				return fmt.Errorf("failed to broadcast "+
+					"round %s: %w", m.RoundID, err)
+			}
+
 		default:
 			// Unknown outbox message. This could be an internal FSM
 			// event that doesn't need routing, so we ignore it.
@@ -358,6 +470,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		WalletAccount:       a.cfg.WalletAccount,
 		ConfTarget:          a.cfg.ConfTarget,
 		MinConfs:            a.cfg.MinConfs,
+		RoundStore:          a.cfg.RoundStore,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -447,4 +560,106 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](nil)
+}
+
+// handleConfirmation processes a ConfirmationMsg by forwarding a
+// TransactionConfirmedEvent to the appropriate round's FSM.
+func (a *Actor) handleConfirmation(ctx context.Context,
+	msg *ConfirmationMsg) fn.Result[ActorResp] {
+
+	// Find the round for this confirmation.
+	round := a.getRound(msg.RoundID)
+	if round == nil {
+		// Round no longer tracked - this can happen if the round was
+		// cleaned up before the confirmation arrived.
+		a.log.WarnS(ctx, "Ignoring confirmation for unknown round", nil,
+			"round_id", msg.RoundID)
+
+		return fn.Ok[ActorResp](nil)
+	}
+
+	// Forward the confirmation event to the FSM.
+	confirmedEvent := &TransactionConfirmedEvent{
+		BlockHeight: msg.BlockHeight,
+		BlockHash:   msg.BlockHash,
+		NumConfs:    msg.NumConfs,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, round.FSM, confirmedEvent)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing confirmation: %w", err))
+	}
+
+	a.log.InfoS(ctx, "Round transaction confirmed",
+		"round_id", msg.RoundID,
+		"block_height", msg.BlockHeight,
+		"num_confs", msg.NumConfs)
+
+	return fn.Ok[ActorResp](nil)
+}
+
+// broadcastAndSubscribe broadcasts the round's signed transaction and
+// subscribes to confirmation notifications.
+func (a *Actor) broadcastAndSubscribe(ctx context.Context,
+	req *BroadcastRoundReq) error {
+
+	// Skip if ChainSourceActor is not configured (e.g., in tests).
+	if a.cfg.ChainSourceActor == nil {
+		a.log.DebugS(ctx, "Skipping broadcast - no chain source actor",
+			"round_id", req.RoundID)
+
+		return nil
+	}
+
+	// Step 1: Broadcast the transaction.
+	txHash := req.SignedTx.TxHash()
+	broadcastReq := &chainsource.BroadcastTxRequest{
+		Tx:    req.SignedTx,
+		Label: fmt.Sprintf("round-%s", req.RoundID),
+	}
+
+	broadcastFuture := a.cfg.ChainSourceActor.Ask(ctx, broadcastReq)
+	broadcastResult := broadcastFuture.Await(ctx)
+	if _, err := broadcastResult.Unpack(); err != nil {
+		return fmt.Errorf("broadcast failed: %w", err)
+	}
+
+	a.log.InfoS(ctx, "Broadcast round transaction",
+		"round_id", req.RoundID,
+		"txid", txHash.String())
+
+	// Step 2: Subscribe to confirmation using actor mode. Create a mapped
+	// reference that transforms ConfirmationEvent to ConfirmationMsg.
+	// We use Tell (fire-and-forget) since we handle the confirmation
+	// asynchronously via ConfirmationMsg.
+	callbackRef := chainsource.MapConfirmationEvent(
+		a.cfg.SelfRef,
+		func(event chainsource.ConfirmationEvent) ActorMsg {
+			return &ConfirmationMsg{
+				RoundID:     req.RoundID,
+				BlockHeight: event.BlockHeight,
+				BlockHash:   event.BlockHash,
+				NumConfs:    event.NumConfs,
+			}
+		},
+	)
+
+	// Use the round ID as the caller ID for deterministic cancellation.
+	confReq := &chainsource.RegisterConfRequest{
+		CallerID:    req.RoundID.String(),
+		Txid:        &txHash,
+		TargetConfs: a.cfg.ConfirmationTarget,
+		HeightHint:  0,
+		NotifyActor: fn.Some(callbackRef),
+	}
+
+	a.cfg.ChainSourceActor.Tell(ctx, confReq)
+
+	a.log.DebugS(ctx, "Subscribed to transaction confirmation",
+		"round_id", req.RoundID,
+		"txid", txHash.String(),
+		"target_confs", a.cfg.ConfirmationTarget)
+
+	return nil
 }

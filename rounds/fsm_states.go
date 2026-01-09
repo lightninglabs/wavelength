@@ -2,6 +2,8 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -137,10 +139,6 @@ type BatchBuiltState struct {
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
 
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
-
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
@@ -168,10 +166,6 @@ type AwaitingBoardingSigsState struct {
 
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
-
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
@@ -237,10 +231,6 @@ type ServerSigningState struct {
 	// PSBT is the funded but unsigned commitment transaction.
 	PSBT *psbt.Packet
 
-	// ChangeOutputIndex is the index of the change output, or -1 if no
-	// change was created.
-	ChangeOutputIndex int32
-
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
 
@@ -264,6 +254,35 @@ func (s *ServerSigningState) IsTerminal() bool {
 // interface.
 func (s *ServerSigningState) stateSealed() {}
 
+// FinalizedState holds the fully signed transaction ready for broadcast. The
+// transaction has all boarding input signatures (client + operator) and wallet
+// input signatures applied.
+type FinalizedState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction ready for
+	// broadcast.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+}
+
+// String returns a human-readable representation of FinalizedState.
+func (s *FinalizedState) String() string {
+	return "FinalizedState"
+}
+
+// IsTerminal returns false as FinalizedState is not a terminal state. The
+// round waits for confirmation before completing.
+func (s *FinalizedState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks FinalizedState as implementing the sealed State interface.
+func (s *FinalizedState) stateSealed() {}
+
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock
 // boarding inputs, and inform the actor of the failure.
@@ -284,3 +303,36 @@ func (s *FailedState) IsTerminal() bool {
 
 // stateSealed marks FailedState as implementing the sealed State interface.
 func (s *FailedState) stateSealed() {}
+
+// ConfirmedState is a terminal state reached after the commitment transaction
+// has been confirmed on-chain with the required number of confirmations.
+type ConfirmedState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// This is nil if no VTXOs exist in the round.
+	VTXOTrees map[int]*tree.Tree
+
+	// BlockHeight is the height of the block containing the transaction.
+	BlockHeight int32
+
+	// BlockHash is the hash of the block containing the transaction.
+	BlockHash chainhash.Hash
+}
+
+// String returns a human-readable representation of ConfirmedState.
+func (s *ConfirmedState) String() string {
+	return "ConfirmedState"
+}
+
+// IsTerminal returns true as ConfirmedState is a terminal state.
+func (s *ConfirmedState) IsTerminal() bool {
+	return true
+}
+
+// stateSealed marks ConfirmedState as implementing the sealed State interface.
+func (s *ConfirmedState) stateSealed() {}
