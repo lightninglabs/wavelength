@@ -4,10 +4,23 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// testRoundIDForMsg creates a deterministic RoundID from a string seed.
+func testRoundIDForMsg(seed string) RoundID {
+	h := chainhash.HashH([]byte(seed))
+	id, _ := uuid.FromBytes(h[:16])
+
+	return RoundID(id)
+}
 
 // TestOutboxMessagesToProto ensures that ToProto() methods compile and return
 // the expected nil placeholders. These placeholders will be replaced with
@@ -39,11 +52,14 @@ func TestOutboxMessagesToProto(t *testing.T) {
 
 		txid := chainhash.HashH([]byte("test-tx"))
 		signerKey := NewSignerKey(pubKey)
+		var nonce tree.Musig2PubNonce
+		copy(nonce[:], []byte{0x01, 0x02})
+
 		msg := &SubmitNoncesRequest{
-			RoundID: "round-001",
-			Nonces: map[chainhash.Hash]map[SignerKey][]byte{
-				txid: {
-					signerKey: {0x01, 0x02},
+			RoundID: testRoundIDForMsg("round-001"),
+			Nonces: map[SignerKey]map[tree.TxID]tree.Musig2PubNonce{
+				signerKey: {
+					txid: nonce,
 				},
 			},
 		}
@@ -56,10 +72,19 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		t.Parallel()
 
 		fakeTxid := chainhash.HashH([]byte("test-tx"))
+		signerKey := NewSignerKey(pubKey)
+
+		// Create a test partial signature.
+		var scalar btcec.ModNScalar
+		scalar.SetInt(12345)
+		partialSig := &musig2.PartialSignature{S: &scalar}
+
 		msg := &SubmitPartialSigRequest{
-			RoundID: "round-001",
-			PartialSigs: map[chainhash.Hash][]byte{
-				fakeTxid: {0x01, 0x02},
+			RoundID: testRoundIDForMsg("round-001"),
+			Signatures: map[SignerKey]map[tree.TxID]*musig2.PartialSignature{ //nolint:ll
+				signerKey: {
+					fakeTxid: partialSig,
+				},
 			},
 		}
 
@@ -71,8 +96,13 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		t.Parallel()
 
 		msg := &SubmitForfeitSigRequest{
-			RoundID:     "round-001",
-			ForfeitSigs: [][]byte{{0xaa, 0xbb}},
+			RoundID: testRoundIDForMsg("round-001"),
+			Signatures: []*types.BoardingInputSignature{
+				{
+					InputIndex: 0,
+					Outpoint:   wire.OutPoint{},
+				},
+			},
 		}
 
 		result := msg.ToProto()
@@ -97,19 +127,22 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 
 	t.Run("SubmitNoncesRequest", func(t *testing.T) {
 		t.Parallel()
-		msg := &SubmitNoncesRequest{RoundID: "round-001"}
+		roundID := testRoundIDForMsg("round-001")
+		msg := &SubmitNoncesRequest{RoundID: roundID}
 		msg.clientOutMsgSealed()
 	})
 
 	t.Run("SubmitPartialSigRequest", func(t *testing.T) {
 		t.Parallel()
-		msg := &SubmitPartialSigRequest{RoundID: "round-001"}
+		roundID := testRoundIDForMsg("round-001")
+		msg := &SubmitPartialSigRequest{RoundID: roundID}
 		msg.clientOutMsgSealed()
 	})
 
 	t.Run("SubmitForfeitSigRequest", func(t *testing.T) {
 		t.Parallel()
-		msg := &SubmitForfeitSigRequest{RoundID: "round-001"}
+		roundID := testRoundIDForMsg("round-001")
+		msg := &SubmitForfeitSigRequest{RoundID: roundID}
 		msg.clientOutMsgSealed()
 	})
 
@@ -134,7 +167,7 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 	t.Run("RoundCompletedNotification", func(t *testing.T) {
 		t.Parallel()
 		msg := &RoundCompletedNotification{
-			RoundID: "round-001",
+			RoundID: testRoundIDForMsg("round-001"),
 			TxID:    txid,
 		}
 		msg.clientOutMsgSealed()
@@ -143,7 +176,7 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 	t.Run("RoundCheckpointedNotification", func(t *testing.T) {
 		t.Parallel()
 		msg := &RoundCheckpointedNotification{
-			RoundID: "round-001",
+			RoundID: testRoundIDForMsg("round-001"),
 		}
 		msg.clientOutMsgSealed()
 	})
@@ -151,7 +184,7 @@ func TestOutboxMessagesClientOutMsgSealed(t *testing.T) {
 	t.Run("RoundFailedNotification", func(t *testing.T) {
 		t.Parallel()
 		msg := &RoundFailedNotification{
-			RoundID:       "round-001",
+			RoundID:       fn.Some(testRoundIDForMsg("round-001")),
 			Reason:        "validation failed",
 			Recoverable:   true,
 			OriginalError: nil,

@@ -142,7 +142,8 @@ func TestActorRecovery(t *testing.T) {
 
 		h := newActorTestHarness(t)
 
-		round := h.newTestRound("test-round-001")
+		roundID := testRoundID("test-round-001")
+		round := h.newTestRound(roundID)
 		h.setupMockRoundStoreForRecovery([]*Round{round})
 
 		err := h.start()
@@ -152,9 +153,9 @@ func TestActorRecovery(t *testing.T) {
 		// created a corresponding FSM to resume processing.
 		require.Len(t, h.actor.activeRounds, 1)
 
-		roundFSM, exists := h.actor.activeRounds["test-round-001"]
+		roundFSM, exists := h.actor.activeRounds[roundID]
 		require.True(t, exists, "expected round FSM for test-round-001")
-		require.Equal(t, "test-round-001", roundFSM.RoundID)
+		require.Equal(t, roundID, roundFSM.RoundID)
 
 		// The commitment tx index is used to route confirmation
 		// events to the correct round FSM, so it must be rebuilt
@@ -162,7 +163,7 @@ func TestActorRecovery(t *testing.T) {
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists, "expected commitment tx in index")
-		require.Equal(t, "test-round-001", indexedRoundID)
+		require.Equal(t, roundID, indexedRoundID)
 
 		// The actor must re-register for chain confirmations during
 		// recovery to resume monitoring the commitment transaction.
@@ -178,9 +179,9 @@ func TestActorRecovery(t *testing.T) {
 		h := newActorTestHarness(t)
 
 		rounds := []*Round{
-			h.newTestRound("round-001"),
-			h.newTestRound("round-002"),
-			h.newTestRound("round-003"),
+			h.newTestRound(testRoundID("round-001")),
+			h.newTestRound(testRoundID("round-002")),
+			h.newTestRound(testRoundID("round-003")),
 		}
 		h.setupMockRoundStoreForRecovery(rounds)
 
@@ -212,13 +213,14 @@ func TestActorConfirmation(t *testing.T) {
 
 		h := newActorTestHarness(t)
 
-		round := h.newTestRound("test-round-001")
+		roundID := testRoundID("test-round-001")
+		round := h.newTestRound(roundID)
 		h.setupMockRoundStoreForRecovery([]*Round{round})
 
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Contains(t, h.actor.activeRounds, "test-round-001")
+		require.Contains(t, h.actor.activeRounds, roundID)
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		h.roundStore.On(
@@ -308,7 +310,7 @@ func TestActorConfirmation(t *testing.T) {
 		// the database but has no active FSM. This represents an
 		// inconsistent state that should be caught and reported as an
 		// error rather than silently ignored.
-		round := h.newTestRound("orphan-round")
+		round := h.newTestRound(testRoundID("orphan-round"))
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		h.roundStore.On(
 			"LookupRoundByCommitmentTx", mock.Anything, txid,
@@ -401,16 +403,16 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		h := newActorTestHarness(t)
 
-		round := h.newTestRound("completing-round")
+		roundID := testRoundID("completing-round")
+		round := h.newTestRound(roundID)
 		h.setupMockRoundStoreForRecovery([]*Round{round})
 
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Contains(t, h.actor.activeRounds, "completing-round")
+		require.Contains(t, h.actor.activeRounds, roundID)
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
-		roundID := "completing-round"
 		h.roundStore.On(
 			"FinalizeRound", mock.Anything, roundID, txid,
 			mock.Anything,
@@ -422,7 +424,7 @@ func TestActorProcessOutbox(t *testing.T) {
 		}
 		outbox := []ClientOutMsg{
 			&RoundCompletedNotification{
-				RoundID:  "completing-round",
+				RoundID:  roundID,
 				TxID:     txid,
 				ConfInfo: confInfo,
 			},
@@ -435,7 +437,7 @@ func TestActorProcessOutbox(t *testing.T) {
 		// in-memory state, including the FSM and tx index entry, to
 		// prevent memory leaks and avoid routing events to completed
 		// rounds.
-		require.NotContains(t, h.actor.activeRounds, "completing-round")
+		require.NotContains(t, h.actor.activeRounds, roundID)
 
 		_, exists := h.actor.commitmentTxIndex[txid]
 		require.False(t, exists)
@@ -457,18 +459,19 @@ func TestActorProcessOutbox(t *testing.T) {
 
 		require.Empty(t, h.actor.activeRounds)
 
-		round := h.newTestRound("checkpointed-round")
+		roundID := testRoundID("checkpointed-round")
+		round := h.newTestRound(roundID)
 		h.roundStore.On(
-			"FetchState", mock.Anything, "checkpointed-round",
+			"FetchState", mock.Anything, roundID,
 		).Return(
 			round,
-			&InputSigSentState{RoundID: "checkpointed-round"},
+			&InputSigSentState{RoundID: roundID},
 			nil,
 		)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{
-				RoundID: "checkpointed-round",
+				RoundID: roundID,
 			},
 		}
 
@@ -479,12 +482,12 @@ func TestActorProcessOutbox(t *testing.T) {
 		// migrate the round into an active FSM so it can continue
 		// processing events. This handles the transition from primary
 		// FSM states to dedicated round FSMs.
-		require.Contains(t, h.actor.activeRounds, "checkpointed-round")
+		require.Contains(t, h.actor.activeRounds, roundID)
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
-		require.Equal(t, "checkpointed-round", indexedRoundID)
+		require.Equal(t, roundID, indexedRoundID)
 	})
 
 	t.Run("vtxo_created", func(t *testing.T) {
@@ -515,23 +518,24 @@ func TestActorProcessOutbox(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		round := h.newTestRound("idempotent-round")
+		roundID := testRoundID("idempotent-round")
+		round := h.newTestRound(roundID)
 		h.roundStore.On(
-			"FetchState", mock.Anything, "idempotent-round",
+			"FetchState", mock.Anything, roundID,
 		).Return(
 			round,
-			&InputSigSentState{RoundID: "idempotent-round"},
+			&InputSigSentState{RoundID: roundID},
 			nil,
 		)
 
-		err = h.actor.migrateRoundToActiveFSM(h.ctx, "idempotent-round")
+		err = h.actor.migrateRoundToActiveFSM(h.ctx, roundID)
 		require.NoError(t, err)
 		require.Len(t, h.actor.activeRounds, 1)
 
 		// Migration must be idempotent to handle duplicate
 		// checkpoint notifications without creating multiple FSMs for
 		// the same round.
-		err = h.actor.migrateRoundToActiveFSM(h.ctx, "idempotent-round")
+		err = h.actor.migrateRoundToActiveFSM(h.ctx, roundID)
 		require.NoError(t, err)
 		require.Len(t, h.actor.activeRounds, 1)
 	})
@@ -566,8 +570,8 @@ func TestActorGetStateWithActiveRounds(t *testing.T) {
 	h := newActorTestHarness(t)
 
 	rounds := []*Round{
-		h.newTestRound("round-001"),
-		h.newTestRound("round-002"),
+		h.newTestRound(testRoundID("round-001")),
+		h.newTestRound(testRoundID("round-002")),
 	}
 	h.setupMockRoundStoreForRecovery(rounds)
 
@@ -585,7 +589,7 @@ func TestActorGetStateWithActiveRounds(t *testing.T) {
 	require.True(t, primaryState.IsPrimary)
 
 	for _, round := range rounds {
-		roundState, exists := states[round.RoundID]
+		roundState, exists := states[round.RoundID.String()]
 		require.True(t, exists, "expected state for %s", round.RoundID)
 		require.False(t, roundState.IsPrimary)
 		require.Equal(t, round.RoundID, roundState.RoundID)
@@ -643,7 +647,7 @@ func TestActorLifecycle(t *testing.T) {
 		h.assertFSMState("RegistrationSentState")
 		h.assertServerMessageSent("SendClientEventRequest")
 
-		roundID := "test-round-001"
+		roundID := testRoundID("test-round-001")
 		h.simulateRoundJoined(roundID)
 		h.assertFSMState("RoundJoinedState")
 	})
@@ -734,7 +738,9 @@ func TestActorServerMessageRouting(t *testing.T) {
 				h.sendWalletConfirmation(intent)
 				h.sendServerMessage(&RegistrationRequested{})
 			},
-			serverEvent:   &RoundJoined{RoundID: "test-round"},
+			serverEvent: &RoundJoined{
+				RoundID: testRoundID("test-round"),
+			},
 			expectedState: "RoundJoinedState",
 			expectOutbox:  false,
 		},

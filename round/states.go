@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
 // ClientState is a sealed interface for all states in the client round
@@ -84,7 +85,7 @@ func (s *RegistrationSentState) clientStateSealed() {}
 type RoundJoinedState struct {
 	// RoundID is the unique identifier assigned by the server for this
 	// round.
-	RoundID string
+	RoundID RoundID
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -101,10 +102,10 @@ func (s *RoundJoinedState) IsTerminal() bool {
 func (s *RoundJoinedState) clientStateSealed() {}
 
 // CommitmentTxReceivedState indicates the client has received the commitment
-// transaction and VTXT and must now validate them before proceeding.
+// transaction and VTXT paths and must now validate them before proceeding.
 type CommitmentTxReceivedState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
@@ -112,8 +113,8 @@ type CommitmentTxReceivedState struct {
 	// TxID is the transaction ID of the commitment transaction.
 	TxID chainhash.Hash
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -137,13 +138,13 @@ func (s *CommitmentTxReceivedState) clientStateSealed() {}
 // and is ready to participate in MuSig2 signing.
 type CommitmentTxValidatedState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -171,13 +172,13 @@ func (s *CommitmentTxValidatedState) clientStateSealed() {}
 // is waiting for aggregated nonces.
 type NoncesSentState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -209,13 +210,13 @@ func (s *NoncesSentState) clientStateSealed() {}
 // and is ready to generate partial signatures.
 type NoncesAggregatedState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -228,8 +229,8 @@ type NoncesAggregatedState struct {
 	// signing session for that VTXO.
 	Musig2Sessions map[SignerKey]*tree.SignerSession
 
-	// AggregatedNonces maps transaction IDs to aggregated MuSig2 nonces.
-	AggregatedNonces map[chainhash.Hash][]byte
+	// AggNonces maps transaction IDs to aggregated MuSig2 public nonces.
+	AggNonces map[tree.TxID]tree.Musig2PubNonce
 
 	// BoardingInputIndices maps each boarding intent's outpoint to its
 	// position in the commitment transaction inputs. Used for signing.
@@ -250,13 +251,13 @@ func (s *NoncesAggregatedState) clientStateSealed() {}
 // to the server and is waiting for the complete VTXT signatures.
 type PartialSigsSentState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -288,13 +289,13 @@ func (s *PartialSigsSentState) clientStateSealed() {}
 // signature and is waiting for the commitment tx to be broadcast.
 type InputSigSentState struct {
 	// RoundID is the unique identifier for this round.
-	RoundID string
+	RoundID RoundID
 
 	// CommitmentTx is the unsigned commitment transaction as a PSBT.
 	CommitmentTx *psbt.Packet
 
-	// VTXTTree is the virtual transaction tree for this round.
-	VTXTTree *tree.Tree
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
 
 	// Intents contains all boarding intents participating in this round.
 	Intents []BoardingIntent
@@ -304,7 +305,7 @@ type InputSigSentState struct {
 	ClientTrees map[SignerKey]*tree.Tree
 
 	// InputSigs are the Schnorr signatures for the boarding inputs.
-	InputSigs [][]byte
+	InputSigs []*types.BoardingInputSignature
 }
 
 func (s *InputSigSentState) String() string {

@@ -40,7 +40,7 @@ func (m *MockRoundStore) CommitState(ctx context.Context, round *Round,
 
 //nolint:forcetypeassert
 func (m *MockRoundStore) FetchState(ctx context.Context,
-	roundID string) (*Round, ClientState, error) {
+	roundID RoundID) (*Round, ClientState, error) {
 
 	args := m.Called(ctx, roundID)
 
@@ -85,7 +85,7 @@ func (m *MockRoundStore) ListActiveRounds(
 	return rounds, args.Error(1)
 }
 
-func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID string,
+func (m *MockRoundStore) FinalizeRound(ctx context.Context, roundID RoundID,
 	txid chainhash.Hash, confInfo ConfInfo) error {
 
 	args := m.Called(ctx, roundID, txid, confInfo)
@@ -675,7 +675,7 @@ func (h *boardingTestHarness) newTestVTXOTreeForIntent(
 // with WitnessUtxo populated for all inputs, which is required for correct
 // Taproot sighash computation.
 func (h *boardingTestHarness) newCommitmentTxBuiltEvent(
-	roundID string,
+	roundID RoundID,
 	intents []BoardingIntent,
 	vtxtTree *tree.Tree) *CommitmentTxBuilt {
 
@@ -722,9 +722,9 @@ func (h *boardingTestHarness) newCommitmentTxBuiltEvent(
 	packet.Outputs = pOutputs
 
 	return &CommitmentTxBuilt{
-		RoundID:  roundID,
-		Tx:       packet,
-		VTXTTree: vtxtTree,
+		RoundID:       roundID,
+		Tx:            packet,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 	}
 }
 
@@ -732,19 +732,19 @@ func (h *boardingTestHarness) newCommitmentTxBuiltEvent(
 // simulating what the server sends after collecting and combining nonces from
 // all round participants for the MuSig2 signing protocol.
 func (h *boardingTestHarness) newNoncesAggregatedEvent(
-	roundID string, vtxtTree *tree.Tree) *NoncesAggregated {
+	roundID RoundID, vtxtTree *tree.Tree) *NoncesAggregated {
 
 	h.t.Helper()
 
-	aggNonces := make(map[chainhash.Hash][]byte)
+	aggNonces := make(map[tree.TxID]tree.Musig2PubNonce)
 	err := vtxtTree.Root.ForEach(func(node *tree.Node) error {
 		txid, err := node.TXID()
 		if err != nil {
 			return err
 		}
 
-		nonce := make([]byte, musig2.PubNonceSize)
-		_, err = rand.Read(nonce)
+		var nonce tree.Musig2PubNonce
+		_, err = rand.Read(nonce[:])
 		if err != nil {
 			return err
 		}
@@ -756,8 +756,8 @@ func (h *boardingTestHarness) newNoncesAggregatedEvent(
 	require.NoError(h.t, err)
 
 	return &NoncesAggregated{
-		RoundID:          roundID,
-		AggregatedNonces: aggNonces,
+		RoundID:   roundID,
+		AggNonces: aggNonces,
 	}
 }
 
@@ -767,22 +767,28 @@ func (h *boardingTestHarness) newNoncesAggregatedEvent(
 //
 //nolint:unused
 func (h *boardingTestHarness) newOperatorSignedEvent(
-	roundID string, vtxtTree *tree.Tree) *OperatorSigned {
+	roundID RoundID, vtxtTree *tree.Tree) *OperatorSigned {
 
 	h.t.Helper()
 
 	// Build a map of signatures keyed by transaction ID.
-	sigs := make(map[chainhash.Hash][]byte)
+	sigs := make(map[tree.TxID]*schnorr.Signature)
 	err := vtxtTree.Root.ForEach(func(node *tree.Node) error {
 		txid, err := node.TXID()
 		if err != nil {
 			return err
 		}
 
-		sig := make([]byte, schnorr.SignatureSize)
-		_, err = rand.Read(sig)
+		sigBytes := make([]byte, schnorr.SignatureSize)
+		_, err = rand.Read(sigBytes)
 		if err != nil {
 			return err
+		}
+
+		sig, err := schnorr.ParseSignature(sigBytes)
+		if err != nil {
+			// Use a dummy signature for tests.
+			sig = &schnorr.Signature{}
 		}
 
 		sigs[txid] = sig
@@ -792,15 +798,15 @@ func (h *boardingTestHarness) newOperatorSignedEvent(
 	require.NoError(h.t, err)
 
 	return &OperatorSigned{
-		RoundID:    roundID,
-		Signatures: sigs,
+		RoundID: roundID,
+		AggSigs: sigs,
 	}
 }
 
 // newCommitmentTxReceivedState creates a CommitmentTxReceivedState ready for
 // validation testing with a pre-built commitment transaction and VTXT tree.
 func (h *boardingTestHarness) newCommitmentTxReceivedState(
-	roundID string, intents []BoardingIntent) *CommitmentTxReceivedState {
+	roundID RoundID, intents []BoardingIntent) *CommitmentTxReceivedState {
 
 	h.t.Helper()
 
@@ -808,12 +814,12 @@ func (h *boardingTestHarness) newCommitmentTxReceivedState(
 	commitmentTx := h.newTestCommitmentTx(intents)
 
 	return &CommitmentTxReceivedState{
-		RoundID:      roundID,
-		CommitmentTx: commitmentTx,
-		TxID:         commitmentTx.UnsignedTx.TxHash(),
-		VTXTTree:     vtxtTree,
-		Intents:      intents,
-		ClientTrees:  make(map[SignerKey]*tree.Tree),
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		TxID:          commitmentTx.UnsignedTx.TxHash(),
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents:       intents,
+		ClientTrees:   make(map[SignerKey]*tree.Tree),
 	}
 }
 
@@ -821,7 +827,7 @@ func (h *boardingTestHarness) newCommitmentTxReceivedState(
 // for nonce generation, with boarding input indices pre-mapped for efficient
 // input signature placement during the signing phase.
 func (h *boardingTestHarness) newCommitmentTxValidatedState(
-	roundID string, intents []BoardingIntent) *CommitmentTxValidatedState {
+	roundID RoundID, intents []BoardingIntent) *CommitmentTxValidatedState {
 
 	h.t.Helper()
 
@@ -833,12 +839,27 @@ func (h *boardingTestHarness) newCommitmentTxValidatedState(
 		boardingInputIndices[intent.Outpoint] = i
 	}
 
+	// Populate ClientTrees by extracting sub-trees for each signer key
+	// in the intent's VtxoTemplate. This simulates what happens during
+	// commitment tx validation when ValidatePath is called.
+	clientTrees := make(map[SignerKey]*tree.Tree)
+	for _, intent := range intents {
+		for _, vtxoReq := range intent.VtxoTemplate {
+			signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
+
+			// The client tree is a subtree extracted from the VTXT
+			// tree that corresponds to this signer's VTXO. For test
+			// purposes, we use the full tree as the client tree.
+			clientTrees[signerKey] = vtxtTree
+		}
+	}
+
 	return &CommitmentTxValidatedState{
 		RoundID:              roundID,
 		CommitmentTx:         commitmentTx,
-		VTXTTree:             vtxtTree,
+		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
 		Intents:              intents,
-		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		ClientTrees:          clientTrees,
 		BoardingInputIndices: boardingInputIndices,
 	}
 }
@@ -1009,7 +1030,7 @@ func (h *boardingTestHarness) setupMockVTXOStoreForSave() {
 
 //nolint:unused
 func (h *boardingTestHarness) newNoncesSentState(
-	roundID string, intents []BoardingIntent) *NoncesSentState {
+	roundID RoundID, intents []BoardingIntent) *NoncesSentState {
 
 	h.t.Helper()
 
@@ -1026,7 +1047,7 @@ func (h *boardingTestHarness) newNoncesSentState(
 	return &NoncesSentState{
 		RoundID:              roundID,
 		CommitmentTx:         commitmentTx,
-		VTXTTree:             vtxtTree,
+		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
 		Intents:              intents,
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       musig2Sessions,
@@ -1036,7 +1057,7 @@ func (h *boardingTestHarness) newNoncesSentState(
 
 //nolint:unused
 func (h *boardingTestHarness) newNoncesAggregatedState(
-	roundID string, intents []BoardingIntent) *NoncesAggregatedState {
+	roundID RoundID, intents []BoardingIntent) *NoncesAggregatedState {
 
 	h.t.Helper()
 
@@ -1048,15 +1069,15 @@ func (h *boardingTestHarness) newNoncesAggregatedState(
 		boardingInputIndices[intent.Outpoint] = i
 	}
 
-	aggNonces := make(map[chainhash.Hash][]byte)
+	aggNonces := make(map[tree.TxID]tree.Musig2PubNonce)
 	err := vtxtTree.Root.ForEach(func(node *tree.Node) error {
 		txid, err := node.TXID()
 		if err != nil {
 			return err
 		}
 
-		nonce := make([]byte, musig2.PubNonceSize)
-		_, err = rand.Read(nonce)
+		var nonce tree.Musig2PubNonce
+		_, err = rand.Read(nonce[:])
 		if err != nil {
 			return err
 		}
@@ -1070,18 +1091,18 @@ func (h *boardingTestHarness) newNoncesAggregatedState(
 	return &NoncesAggregatedState{
 		RoundID:              roundID,
 		CommitmentTx:         commitmentTx,
-		VTXTTree:             vtxtTree,
+		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
 		Intents:              intents,
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
-		AggregatedNonces:     aggNonces,
+		AggNonces:            aggNonces,
 		BoardingInputIndices: boardingInputIndices,
 	}
 }
 
 //nolint:unused
 func (h *boardingTestHarness) newPartialSigsSentState(
-	roundID string, intents []BoardingIntent) *PartialSigsSentState {
+	roundID RoundID, intents []BoardingIntent) *PartialSigsSentState {
 
 	h.t.Helper()
 
@@ -1096,7 +1117,7 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 	return &PartialSigsSentState{
 		RoundID:              roundID,
 		CommitmentTx:         commitmentTx,
-		VTXTTree:             vtxtTree,
+		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
 		Intents:              intents,
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
@@ -1105,18 +1126,31 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 }
 
 func (h *boardingTestHarness) newInputSigSentState(
-	roundID string, intents []BoardingIntent) *InputSigSentState {
+	roundID RoundID, intents []BoardingIntent) *InputSigSentState {
 
 	h.t.Helper()
 
 	vtxtTree := h.newTestVTXOTreeForIntent(intents[0])
 	commitmentTx := h.newTestCommitmentTx(intents)
 
-	inputSigs := make([][]byte, len(intents))
-	for i := range inputSigs {
-		inputSigs[i] = make([]byte, schnorr.SignatureSize)
-		_, err := rand.Read(inputSigs[i])
+	inputSigs := make([]*types.BoardingInputSignature, len(intents))
+	for i, intent := range intents {
+		sigBytes := make([]byte, schnorr.SignatureSize)
+		_, err := rand.Read(sigBytes)
 		require.NoError(h.t, err)
+
+		// Parse the random bytes as a signature, or use a dummy if
+		// invalid.
+		sig, err := schnorr.ParseSignature(sigBytes)
+		if err != nil {
+			sig = &schnorr.Signature{}
+		}
+
+		inputSigs[i] = &types.BoardingInputSignature{
+			InputIndex:      i,
+			Outpoint:        intent.Outpoint,
+			ClientSignature: sig,
+		}
 	}
 
 	clientTrees := make(map[SignerKey]*tree.Tree)
@@ -1128,12 +1162,12 @@ func (h *boardingTestHarness) newInputSigSentState(
 	}
 
 	return &InputSigSentState{
-		RoundID:      roundID,
-		CommitmentTx: commitmentTx,
-		VTXTTree:     vtxtTree,
-		Intents:      intents,
-		ClientTrees:  clientTrees,
-		InputSigs:    inputSigs,
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents:       intents,
+		ClientTrees:   clientTrees,
+		InputSigs:     inputSigs,
 	}
 }
 
@@ -1614,7 +1648,7 @@ func (h *realSigningTestHarness) newCommitmentTxForIntents(
 // 2. Going through the full nonce exchange and signing protocol.
 // 3. Combining partials to produce final Schnorr signatures.
 func (h *realSigningTestHarness) generateValidTreeSignatures(
-	vtxtTree *tree.Tree) (map[chainhash.Hash][]byte, error) {
+	vtxtTree *tree.Tree) (map[tree.TxID]*schnorr.Signature, error) {
 
 	h.t.Helper()
 
@@ -1661,7 +1695,7 @@ func (h *realSigningTestHarness) generateValidTreeSignatures(
 	h.operatorSigner = newRealMuSig2Signer(h.operatorPrivKey)
 
 	// Process each node and build a map of signatures by txid.
-	finalSigs := make(map[chainhash.Hash][]byte, len(nodes))
+	finalSigs := make(map[tree.TxID]*schnorr.Signature, len(nodes))
 	for _, ni := range nodes {
 		sig, sigErr := h.generateSignatureForNode(
 			ni.sigHash, sweepRoot,
@@ -1670,7 +1704,7 @@ func (h *realSigningTestHarness) generateValidTreeSignatures(
 			return nil, fmt.Errorf("failed to sign node %s: %w",
 				ni.txid, sigErr)
 		}
-		finalSigs[ni.txid] = sig.Serialize()
+		finalSigs[ni.txid] = sig
 	}
 
 	return finalSigs, nil

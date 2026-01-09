@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -150,8 +151,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			return err
 		}
 
-		// Serialize VTXT tree if present.
-		vtxtTreeBytes, err := serializeVTXTTree(r.VTXTTree)
+		// Serialize VTXO trees if present.
+		vtxtTreeBytes, err := serializeVTXOTreePaths(r.VTXOTreePaths)
 		if err != nil {
 			return err
 		}
@@ -162,7 +163,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 		// we only persist at the "point of no return" after sending
 		// input signatures. Confirmation info is None at this stage.
 		roundParams := InsertRoundParams{
-			RoundID:               r.RoundID,
+			RoundID:               r.RoundID.String(),
 			ConfirmationHeight:    sql.NullInt32{},
 			ConfirmationBlockHash: nil,
 			CommitmentTx:          commitmentTxBytes,
@@ -201,7 +202,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			for i, intent := range r.BoardingIntents {
 				sig := inputSigState.InputSigs[i]
 				iParams, err := s.domainIntentToRoundParams(
-					r.RoundID, &intent, i, sig,
+					r.RoundID.String(), &intent, i, sig,
 				)
 				if err != nil {
 					return fmt.Errorf(
@@ -218,8 +219,9 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 
 				// Insert VTXO templates for this intent.
 				for j, vtxoReq := range intent.VtxoTemplate {
+					roundStr := r.RoundID.String()
 					tParams := vtxoRequestToParams(
-						r.RoundID, &intent, j, &vtxoReq,
+						roundStr, &intent, j, &vtxoReq,
 					)
 					err = q.InsertRoundVtxoTemplate(
 						ctx, tParams,
@@ -247,7 +249,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 				}
 
 				treeParams := sqlc.InsertRoundClientTreeParams{
-					RoundID:   r.RoundID,
+					RoundID:   r.RoundID.String(),
 					ClientKey: key[:],
 					TreeData:  treeData,
 				}
@@ -271,7 +273,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 				for _, entry := range txidEntries {
 					p := sqlc.InsertClientTreeTxidParams{
 						Txid:      entry.Txid[:],
-						RoundID:   r.RoundID,
+						RoundID:   r.RoundID.String(),
 						ClientKey: key[:],
 						TreeLevel: int32(
 							entry.TreeLevel,
@@ -298,7 +300,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 // FetchState retrieves a round and its FSM state by round ID. Returns
 // (round, state, err) atomically to ensure consistency.
 func (s *RoundPersistenceStore) FetchState(ctx context.Context,
-	roundID string) (*round.Round, round.ClientState, error) {
+	roundID round.RoundID) (*round.Round, round.ClientState, error) {
 
 	readTxOpts := ReadTxOption()
 
@@ -307,15 +309,18 @@ func (s *RoundPersistenceStore) FetchState(ctx context.Context,
 		resultState round.ClientState
 	)
 
+	// Convert domain RoundID to string for DB query.
+	roundIDStr := roundID.String()
+
 	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
 		// Fetch round row.
-		dbRound, err := q.GetRound(ctx, roundID)
+		dbRound, err := q.GetRound(ctx, roundIDStr)
 		if err != nil {
 			return fmt.Errorf("get round: %w", err)
 		}
 
 		// Fetch boarding intents for this round.
-		dbIntents, err := q.GetRoundBoardingIntents(ctx, roundID)
+		dbIntents, err := q.GetRoundBoardingIntents(ctx, roundIDStr)
 		if err != nil {
 			return fmt.Errorf(
 				"get round boarding intents: %w", err,
@@ -323,7 +328,7 @@ func (s *RoundPersistenceStore) FetchState(ctx context.Context,
 		}
 
 		// Fetch client trees for this round.
-		dbTrees, err := q.GetRoundClientTrees(ctx, roundID)
+		dbTrees, err := q.GetRoundClientTrees(ctx, roundIDStr)
 		if err != nil {
 			return fmt.Errorf("get round client trees: %w", err)
 		}
@@ -439,13 +444,14 @@ func (s *RoundPersistenceStore) ListActiveRounds(
 // FinalizeRound marks a round as complete and archives it. The confInfo
 // contains the block height and hash at which the commitment tx was confirmed.
 func (s *RoundPersistenceStore) FinalizeRound(ctx context.Context,
-	roundID string, txid chainhash.Hash, confInfo round.ConfInfo) error {
+	roundID round.RoundID, txid chainhash.Hash,
+	confInfo round.ConfInfo) error {
 
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
 		params := sqlc.FinalizeRoundParams{
-			RoundID:        roundID,
+			RoundID:        roundID.String(),
 			CommitmentTxid: txid[:],
 			ConfirmationHeight: sql.NullInt32{
 				Int32: confInfo.Height,
@@ -570,8 +576,14 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	q RoundStore, dbRound RoundRow,
 	dbIntents []RoundBoardingIntentRow) (*round.Round, error) {
 
+	// Parse the round ID from the database string.
+	roundID, err := round.ParseRoundID(dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse round ID: %w", err)
+	}
+
 	r := &round.Round{
-		RoundID: dbRound.RoundID,
+		RoundID: roundID,
 	}
 
 	// Populate confirmation info if present.
@@ -600,7 +612,7 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 		r.CommitmentTx = fn.Some(packet)
 	}
 
-	// Deserialize VTXT tree if present.
+	// Deserialize VTXO trees if present.
 	if len(dbRound.VtxtTree) > 0 {
 		vtxtTree, err := DeserializeTree(dbRound.VtxtTree)
 		if err != nil {
@@ -609,7 +621,9 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 			)
 		}
 
-		r.VTXTTree = fn.Some(vtxtTree)
+		// For now, we store a single tree. Wrap it in a map at index 0.
+		// TODO: Support proper multi-tree serialization format.
+		r.VTXOTreePaths = fn.Some(map[int]*tree.Tree{0: vtxtTree})
 	}
 
 	// Convert boarding intents.
@@ -761,11 +775,17 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	}
 
 	// Create the round-specific BoardingIntent.
+	// Parse the round ID from the database string.
+	roundID, err := round.ParseRoundID(dbRoundIntent.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse round ID: %w", err)
+	}
+
 	intent := &round.BoardingIntent{
 		BoardingIntent:  baseIntent,
 		BoardingRequest: boardingReq,
 		VtxoTemplate:    vtxoTemplate,
-		RoundID:         fn.Some(dbRoundIntent.RoundID),
+		RoundID:         fn.Some(roundID),
 	}
 
 	return intent, nil
@@ -833,8 +853,14 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 	dbIntents []RoundBoardingIntentRow, dbTrees []RoundClientTreeRow,
 ) (*round.InputSigSentState, error) {
 
+	// Parse the round ID from the database string.
+	roundID, err := round.ParseRoundID(dbRound.RoundID)
+	if err != nil {
+		return nil, fmt.Errorf("parse round ID: %w", err)
+	}
+
 	state := &round.InputSigSentState{
-		RoundID:     dbRound.RoundID,
+		RoundID:     roundID,
 		ClientTrees: make(map[round.SignerKey]*tree.Tree),
 	}
 
@@ -851,7 +877,7 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		state.CommitmentTx = packet
 	}
 
-	// Deserialize VTXT tree.
+	// Deserialize VTXO trees.
 	if len(dbRound.VtxtTree) > 0 {
 		vtxtTree, err := DeserializeTree(dbRound.VtxtTree)
 		if err != nil {
@@ -860,12 +886,14 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 			)
 		}
 
-		state.VTXTTree = vtxtTree
+		// For now, we store a single tree. Wrap it in a map at index 0.
+		// TODO: Support proper multi-tree serialization format.
+		state.VTXOTreePaths = map[int]*tree.Tree{0: vtxtTree}
 	}
 
-	// Convert boarding intents.
+	// Convert boarding intents and input signatures.
 	intents := make([]round.BoardingIntent, 0, len(dbIntents))
-	inputSigs := make([][]byte, 0, len(dbIntents))
+	inputSigs := make([]*types.BoardingInputSignature, 0, len(dbIntents))
 	for _, dbIntent := range dbIntents {
 		intent, err := s.dbRoundIntentToDomainIntent(ctx, q, dbIntent)
 		if err != nil {
@@ -876,8 +904,32 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 
 		intents = append(intents, *intent)
 
+		// Reconstruct the BoardingInputSignature from stored data.
 		if len(dbIntent.InputSignature) > 0 {
-			inputSigs = append(inputSigs, dbIntent.InputSignature)
+			inputSig := dbIntent.InputSignature
+			sig, err := schnorr.ParseSignature(inputSig)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"parse input signature: %w", err,
+				)
+			}
+
+			var outpoint wire.OutPoint
+			copy(outpoint.Hash[:], dbIntent.OutpointHash)
+			outpoint.Index = uint32(dbIntent.OutpointIndex)
+
+			inputSigs = append(
+				inputSigs,
+				&types.BoardingInputSignature{
+					InputIndex:      int(dbIntent.InputIndex.Int32), //nolint:ll
+					Outpoint:        outpoint,
+					ClientSignature: sig,
+				},
+			)
+		} else {
+			// Missing signature - should not happen for
+			// input_sig_sent state, but handle gracefully.
+			inputSigs = append(inputSigs, nil)
 		}
 	}
 
@@ -905,9 +957,10 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 // parameters for the round_boarding_intents table. The inputSig parameter
 // contains the client's input signature for this boarding intent, which is
 // critical for state recovery after restart.
-func (s *RoundPersistenceStore) domainIntentToRoundParams(roundID string,
-	intent *round.BoardingIntent, inputIndex int,
-	inputSig []byte) (sqlc.InsertRoundBoardingIntentParams, error) {
+func (s *RoundPersistenceStore) domainIntentToRoundParams(
+	roundID string, intent *round.BoardingIntent, inputIndex int,
+	inputSig *types.BoardingInputSignature,
+) (sqlc.InsertRoundBoardingIntentParams, error) {
 
 	// Serialize TxProof if present.
 	var txProofBytes []byte
@@ -940,6 +993,12 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(roundID string,
 		}
 	}
 
+	// Serialize the input signature if present.
+	var inputSigBytes []byte
+	if inputSig != nil && inputSig.ClientSignature != nil {
+		inputSigBytes = inputSig.ClientSignature.Serialize()
+	}
+
 	return sqlc.InsertRoundBoardingIntentParams{
 		RoundID:        roundID,
 		OutpointHash:   intent.Outpoint.Hash[:],
@@ -949,7 +1008,7 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(roundID string,
 		ExitDelay:      int32(intent.BoardingRequest.ExitDelay),
 		TxProof:        txProofBytes,
 		InputIndex:     inputIdxVal,
-		InputSignature: inputSig,
+		InputSignature: inputSigBytes,
 	}, nil
 }
 
@@ -1046,9 +1105,9 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		treePathBytes = data
 	}
 
-	roundID := ""
-	vtxo.RoundID.WhenSome(func(rid string) {
-		roundID = rid
+	roundIDStr := ""
+	vtxo.RoundID.WhenSome(func(rid round.RoundID) {
+		roundIDStr = rid.String()
 	})
 
 	var operatorPubkey []byte
@@ -1066,7 +1125,7 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 	return InsertVTXOParams{
 		OutpointHash:    vtxo.Outpoint.Hash[:],
 		OutpointIndex:   int32(vtxo.Outpoint.Index),
-		RoundID:         roundID,
+		RoundID:         roundIDStr,
 		Amount:          int64(vtxo.Amount),
 		PkScript:        vtxo.PkScript,
 		Expiry:          int32(vtxo.Expiry),
@@ -1132,9 +1191,14 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		treePath = t
 	}
 
-	var roundID fn.Option[string]
+	var roundIDOpt fn.Option[round.RoundID]
 	if dbVTXO.RoundID != "" {
-		roundID = fn.Some(dbVTXO.RoundID)
+		roundID, err := round.ParseRoundID(dbVTXO.RoundID)
+		if err != nil {
+			return nil, fmt.Errorf("parse round ID: %w", err)
+		}
+
+		roundIDOpt = fn.Some(roundID)
 	}
 
 	keyFamily := keychain.KeyFamily(dbVTXO.ClientKeyFamily)
@@ -1153,7 +1217,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		},
 		OperatorKey: operatorPubkey,
 		TreePath:    treePath,
-		RoundID:     roundID,
+		RoundID:     roundIDOpt,
 	}, nil
 }
 
@@ -1178,21 +1242,33 @@ func serializeCommitmentTx(
 	return buf.Bytes(), txid[:], nil
 }
 
-// serializeVTXTTree serializes a VTXT tree if present. Returns the serialized
-// bytes or nil if the Option is None.
-func serializeVTXTTree(treeOpt fn.Option[*tree.Tree]) ([]byte, error) {
-	if !treeOpt.IsSome() {
+// serializeVTXOTreePaths serializes a VTXO tree paths map if present. Returns
+// the serialized bytes or nil if the Option is None.
+func serializeVTXOTreePaths(
+	treesOpt fn.Option[map[int]*tree.Tree],
+) ([]byte, error) {
+
+	if !treesOpt.IsSome() {
 		return nil, nil
 	}
 
-	t := treeOpt.UnwrapOr(nil)
-
-	data, err := SerializeTree(t)
-	if err != nil {
-		return nil, fmt.Errorf("serialize vtxt tree: %w", err)
+	trees := treesOpt.UnwrapOr(nil)
+	if len(trees) == 0 {
+		return nil, nil
 	}
 
-	return data, nil
+	// Serialize as a simple format: for now just take the first tree.
+	// TODO: Support multiple trees with proper serialization format.
+	for _, t := range trees {
+		data, err := SerializeTree(t)
+		if err != nil {
+			return nil, fmt.Errorf("serialize vtxt tree: %w", err)
+		}
+
+		return data, nil
+	}
+
+	return nil, nil
 }
 
 // Compile-time checks that RoundPersistenceStore implements the interfaces.

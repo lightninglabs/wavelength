@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -28,6 +29,17 @@ import (
 
 // confEventNotifier is a type alias for confirmation event notifiers.
 type confEventNotifier = actor.TellOnlyRef[chainsource.ConfirmationEvent]
+
+// testRoundID creates a deterministic RoundID from a string seed for testing.
+// This creates a valid UUID v4 by using the hash of the seed.
+func testRoundID(seed string) RoundID {
+	// Create a deterministic UUID from the seed by using it as namespace
+	// data.
+	h := chainhash.HashH([]byte(seed))
+	id, _ := uuid.FromBytes(h[:16])
+
+	return RoundID(id)
+}
 
 // mockServerConnRef captures all messages sent to the server for test
 // verification, implementing actor.TellOnlyRef[serverconn.ServerConnMsg].
@@ -495,7 +507,7 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 
 // simulateRoundJoined injects a RoundJoined server event to the actor,
 // simulating successful round enrollment.
-func (h *actorTestHarness) simulateRoundJoined(roundID string) {
+func (h *actorTestHarness) simulateRoundJoined(roundID RoundID) {
 	h.t.Helper()
 
 	event := &RoundJoined{
@@ -534,12 +546,12 @@ func (h *actorTestHarness) clearServerMessages() {
 
 // newTestRound creates a test Round with a unique commitment transaction,
 // using the roundID in the script to ensure distinct transaction hashes.
-func (h *actorTestHarness) newTestRound(roundID string) *Round {
+func (h *actorTestHarness) newTestRound(roundID RoundID) *Round {
 	h.t.Helper()
 
 	tx := wire.NewMsgTx(2)
 
-	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID)...)
+	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID.String())...)
 	tx.AddTxOut(&wire.TxOut{
 		Value:    100000,
 		PkScript: uniqueScript,

@@ -88,8 +88,8 @@ type FSMStateInfo struct {
 	// IsPrimary indicates whether this is the primary FSM.
 	IsPrimary bool
 
-	// RoundID is the round ID (empty for primary FSM).
-	RoundID string
+	// RoundID is the round ID (zero value for primary FSM).
+	RoundID RoundID
 }
 
 // GetClientStateResponse returns the current state of all FSMs.
