@@ -468,36 +468,36 @@ func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
 		Return(nil).Once()
 }
 
-// expectVTXOLocked sets up an expectation that the FSM will lock a VTXO
-// during registration when it's being forfeited.
-func (c *commonMockSetup) expectVTXOLocked(outpoint wire.OutPoint,
-	roundID RoundID) {
+// expectVTXOLocked sets up an expectation that the FSM will lock VTXOs
+// during registration when they're being forfeited.
+func (c *commonMockSetup) expectVTXOLocked(roundID RoundID,
+	outpoints ...wire.OutPoint) {
 
 	c.t.Helper()
 
+	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
 	c.vtxoStore.On(
-		"LockVTXO", mock.Anything, roundID,
-		[]wire.OutPoint{outpoint},
+		"LockVTXO", mock.Anything, roundID, outpointsCopy,
 	).Return(nil).Once()
 }
 
-// expectVTXOUnlocked sets up an expectation that the FSM will unlock a VTXO
+// expectVTXOUnlocked sets up an expectation that the FSM will unlock VTXOs
 // when the round fails. This should be called before triggering a failure
 // condition.
-func (c *commonMockSetup) expectVTXOUnlocked(outpoint wire.OutPoint,
-	roundID RoundID) {
+func (c *commonMockSetup) expectVTXOUnlocked(roundID RoundID,
+	outpoints ...wire.OutPoint) {
 
 	c.t.Helper()
 
+	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
 	c.vtxoStore.On(
-		"UnlockVTXO", mock.Anything, roundID,
-		[]wire.OutPoint{outpoint},
+		"UnlockVTXO", mock.Anything, roundID, outpointsCopy,
 	).Return(nil).Once()
 }
 
 // setupValidForfeitVTXO sets up the VTXO store mock to return a live VTXO
-// for the given outpoint, and sets up lock expectations. This creates a
-// forfeit VTXO that should pass validation and be lockable.
+// for the given outpoint. This creates a forfeit VTXO that should pass
+// validation.
 func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 	clientKey *btcec.PublicKey, roundID RoundID) *VTXO {
 
@@ -519,9 +519,6 @@ func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 
 	// Set up the VTXO store mock to return the VTXO.
 	c.expectVTXO(*outpoint, vtxo)
-
-	// Set up lock expectation.
-	c.expectVTXOLocked(*outpoint, roundID)
 
 	return vtxo
 }

@@ -493,10 +493,41 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 			}
 		}
 
+		// Extract connector leaf assignments for this client if they
+		// have forfeits.
+		var connectorLeafMap map[wire.OutPoint]*types.ConnectorLeafInfo
+		if len(reg.ForfeitInputs) > 0 {
+			connectorLeafMap = make(
+				map[wire.OutPoint]*types.ConnectorLeafInfo,
+				len(reg.ForfeitInputs),
+			)
+			for _, input := range reg.ForfeitInputs {
+				outpoint := *input.Outpoint
+				assignment, ok :=
+					s.ConnectorAssignments[outpoint]
+				if !ok {
+					return buildFailureTransition(
+						ctx, env, s.ClientRegistrations,
+						fmt.Sprintf("missing "+
+							"connector assignment "+
+							"for client %s",
+							clientID),
+					), nil
+				}
+
+				leafInfo := &types.ConnectorLeafInfo{
+					LeafOutpoint: assignment.LeafOutpoint,
+					LeafOutput:   assignment.LeafOutput,
+				}
+				connectorLeafMap[outpoint] = leafInfo
+			}
+		}
+
 		outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
-			Client:        clientID,
-			BatchPSBT:     s.PSBT,
-			VTXOTreePaths: vtxoTreePaths,
+			Client:           clientID,
+			BatchPSBT:        s.PSBT,
+			VTXOTreePaths:    vtxoTreePaths,
+			ConnectorLeafMap: connectorLeafMap,
 		})
 	}
 

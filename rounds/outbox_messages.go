@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 	"google.golang.org/protobuf/proto"
 )
@@ -247,6 +248,10 @@ type ClientBatchInfo struct {
 	// for this client. Each path contains only the transactions where the
 	// client is a cosigner. This is nil if the client has no VTXO requests.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// ConnectorLeafMap maps forfeited VTXO outpoints to connector leaf
+	// information. This is nil if the client has no forfeit requests.
+	ConnectorLeafMap map[wire.OutPoint]*types.ConnectorLeafInfo
 }
 
 // ClientID returns the identifier of the client to send the message to.
