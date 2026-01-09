@@ -83,5 +83,7 @@ type ClientRegistration struct {
 	// descriptors. Each VTXO request has a unique signing key.
 	VTXODescriptors map[SigningKeyHex]*tree.VTXODescriptor
 
-	// TODO(elle): Add ForfeitRequests when implemented.
+	// ForfeitInputs are the VTXOs this client is forfeiting back to the
+	// operator.
+	ForfeitInputs []*ForfeitInput
 }

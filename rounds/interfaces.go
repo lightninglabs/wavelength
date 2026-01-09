@@ -214,6 +214,18 @@ type VTXOStore interface {
 	// GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error
 	// if the VTXO doesn't exist.
 	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (*VTXO, error)
+
+	// LockVTXO locks VTXOs for forfeit in the specified round. This
+	// prevents the VTXOs from being forfeited in another round
+	// concurrently. The call should fail if any outpoint is already locked
+	// by another round.
+	LockVTXO(ctx context.Context, roundID RoundID,
+		outpoints ...wire.OutPoint) error
+
+	// UnlockVTXO releases the lock on VTXOs. Only the round that locked
+	// the VTXOs can unlock them.
+	UnlockVTXO(ctx context.Context, roundID RoundID,
+		outpoints ...wire.OutPoint) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

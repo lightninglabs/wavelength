@@ -40,10 +40,6 @@ func (s *CreatedState) stateSealed() {}
 // RegistrationState is the state where the FSM is accepting client join
 // requests. The FSM accumulates client requests until a SealEvent is
 // received.
-//
-// NOTE: for now, we only deal with boarding and leave requests.
-// TODO(elle): implement logic for:
-//   - forfeit requests
 type RegistrationState struct {
 	// ClientRegistrations maps client IDs to their registration data.
 	// This allows tracking which client submitted which requests, so we

@@ -449,6 +449,64 @@ func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
 		Return(nil).Once()
 }
 
+// expectVTXOLocked sets up an expectation that the FSM will lock a VTXO
+// during registration when it's being forfeited.
+func (c *commonMockSetup) expectVTXOLocked(outpoint wire.OutPoint,
+	roundID RoundID) {
+
+	c.t.Helper()
+
+	c.vtxoStore.On(
+		"LockVTXO", mock.Anything, roundID,
+		[]wire.OutPoint{outpoint},
+	).Return(nil).Once()
+}
+
+// expectVTXOUnlocked sets up an expectation that the FSM will unlock a VTXO
+// when the round fails. This should be called before triggering a failure
+// condition.
+func (c *commonMockSetup) expectVTXOUnlocked(outpoint wire.OutPoint,
+	roundID RoundID) {
+
+	c.t.Helper()
+
+	c.vtxoStore.On(
+		"UnlockVTXO", mock.Anything, roundID,
+		[]wire.OutPoint{outpoint},
+	).Return(nil).Once()
+}
+
+// setupValidForfeitVTXO sets up the VTXO store mock to return a live VTXO
+// for the given outpoint, and sets up lock expectations. This creates a
+// forfeit VTXO that should pass validation and be lockable.
+func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, roundID RoundID) *VTXO {
+
+	c.t.Helper()
+
+	// Create a live VTXO descriptor.
+	descriptor, err := tree.NewVTXODescriptor(
+		50000, clientKey, c.operatorPub, 144,
+	)
+	require.NoError(c.t, err)
+
+	// Create a VTXO in live status.
+	vtxo := &VTXO{
+		RoundID:          roundID,
+		BatchOutputIndex: 0,
+		Descriptor:       descriptor,
+		Status:           VTXOStatusLive,
+	}
+
+	// Set up the VTXO store mock to return the VTXO.
+	c.expectVTXO(*outpoint, vtxo)
+
+	// Set up lock expectation.
+	c.expectVTXOLocked(*outpoint, roundID)
+
+	return vtxo
+}
+
 // assertMockExpectations asserts that all mocks received their expected calls.
 // This should be called at the end of each test to verify mock expectations.
 func (c *commonMockSetup) assertMockExpectations() {
@@ -990,6 +1048,28 @@ func (c *clientHarness) createJoinRequestWithVTXOs(
 	}
 }
 
+// createJoinRequestWithForfeits creates a ClientJoinRequestEvent containing
+// boarding requests and forfeit requests.
+func (c *clientHarness) createJoinRequestWithForfeits(
+	boardingReqs []*types.BoardingRequest,
+	forfeitReqs []*types.ForfeitRequest) *ClientJoinRequestEvent {
+
+	c.t.Helper()
+
+	// Store boarding requests for later boarding signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
+
+	return &ClientJoinRequestEvent{
+		ClientID: c.clientID,
+		Request: &types.JoinRoundRequest{
+			BoardingReqs: boardingReqs,
+			ForfeitReqs:  forfeitReqs,
+		},
+	}
+}
+
 // mockWalletController is a mock implementation of WalletController for
 // testing.
 type mockWalletController struct {
@@ -1103,6 +1183,24 @@ func (m *mockVTXOStore) GetVTXO(ctx context.Context,
 	vtxo, _ := args.Get(0).(*VTXO)
 
 	return vtxo, args.Error(1)
+}
+
+// LockVTXO is a mock implementation of VTXOStore.LockVTXO.
+func (m *mockVTXOStore) LockVTXO(ctx context.Context,
+	roundID RoundID, outpoints ...wire.OutPoint) error {
+
+	args := m.Called(ctx, roundID, outpoints)
+
+	return args.Error(0)
+}
+
+// UnlockVTXO is a mock implementation of VTXOStore.UnlockVTXO.
+func (m *mockVTXOStore) UnlockVTXO(ctx context.Context,
+	roundID RoundID, outpoints ...wire.OutPoint) error {
+
+	args := m.Called(ctx, roundID, outpoints)
+
+	return args.Error(0)
 }
 
 // clientMuSigSession holds the MuSig2 signing sessions for a client's VTXO

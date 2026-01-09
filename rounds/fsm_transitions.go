@@ -74,6 +74,25 @@ func lockBoardingInputs(ctx context.Context, env *Environment,
 	return nil
 }
 
+// unlockBoardingInputsList unlocks a list of boarding inputs. This is called
+// when a client registration fails partway through (e.g., forfeit VTXO lock
+// failure) and we need to clean up boarding inputs that were successfully
+// locked. Errors are logged but don't stop the unlocking process.
+func unlockBoardingInputsList(ctx context.Context, env *Environment,
+	inputs []*BoardingInput) {
+
+	for _, input := range inputs {
+		err := env.BoardingInputLocker.Unlock(
+			ctx, input.Outpoint, env.RoundID,
+		)
+		if err != nil {
+			env.Log.ErrorS(ctx, "Failed to unlock boarding "+
+				"input", err,
+				"outpoint", input.Outpoint.String())
+		}
+	}
+}
+
 // unlockBoardingInputs unlocks all boarding inputs for the given client
 // registrations. This is called when a round fails to release all locked
 // inputs. Errors are logged but don't stop the unlocking process, ensuring
@@ -98,6 +117,62 @@ func unlockBoardingInputs(ctx context.Context, env *Environment,
 	}
 }
 
+// lockForfeitVTXOs attempts to lock all forfeit VTXOs for a client in the
+// VTXOStore. If any lock fails, it returns an error. If all locks succeed,
+// it returns nil.
+func lockForfeitVTXOs(ctx context.Context, env *Environment,
+	inputs []*ForfeitInput) error {
+
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		outpoints = append(outpoints, *input.Outpoint)
+	}
+
+	err := env.VTXOStore.LockVTXO(ctx, env.RoundID, outpoints...)
+	if err != nil {
+		return fmt.Errorf("failed to lock forfeit VTXOs: %w", err)
+	}
+
+	return nil
+}
+
+// unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
+// registrations. This is called when a round fails to release all locked
+// VTXOs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all VTXOs even if some fail.
+func unlockForfeitVTXOs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
+		)
+		for _, input := range reg.ForfeitInputs {
+			outpoints = append(outpoints, *input.Outpoint)
+		}
+
+		err := env.VTXOStore.UnlockVTXO(
+			ctx, env.RoundID, outpoints...,
+		)
+		if err != nil {
+			// Log the error but continue unlocking other
+			// VTXOs. We don't want one failure to prevent
+			// releasing other locked VTXOs.
+			env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
+				"VTXOs", err,
+				"count", len(outpoints))
+		}
+	}
+}
+
 // newClientRegistration creates a ClientRegistration from a validated join
 // request result.
 func newClientRegistration(clientID ClientID,
@@ -106,6 +181,7 @@ func newClientRegistration(clientID ClientID,
 	return &ClientRegistration{
 		ClientID:        clientID,
 		BoardingInputs:  result.BoardingInputs,
+		ForfeitInputs:   result.ForfeitInputs,
 		LeaveOutputs:    result.RequiredOutputs,
 		VTXODescriptors: result.VTXODescriptors,
 	}
@@ -139,6 +215,19 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		// Attempt to lock all boarding inputs for this client.
 		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
 		if err != nil {
+			return clientErrorTransition(
+				s, evt.ClientID, err.Error(),
+			), nil
+		}
+
+		// Attempt to lock all forfeit VTXOs for this client.
+		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
+		if err != nil {
+			// Unlock the boarding inputs since we can't proceed.
+			unlockBoardingInputsList(
+				ctx, env, result.BoardingInputs,
+			)
+
 			return clientErrorTransition(
 				s, evt.ClientID, err.Error(),
 			), nil
@@ -211,6 +300,19 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		// Attempt to lock all boarding inputs for this client.
 		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
 		if err != nil {
+			return clientErrorTransition(
+				s, evt.ClientID, err.Error(),
+			), nil
+		}
+
+		// Attempt to lock all forfeit VTXOs for this client.
+		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
+		if err != nil {
+			// Unlock the boarding inputs since we can't proceed.
+			unlockBoardingInputsList(
+				ctx, env, result.BoardingInputs,
+			)
+
 			return clientErrorTransition(
 				s, evt.ClientID, err.Error(),
 			), nil
@@ -507,6 +609,9 @@ func buildFailureTransition(ctx context.Context, env *Environment,
 
 	// Unlock all boarding inputs directly in the FSM.
 	unlockBoardingInputs(ctx, env, clientRegs)
+
+	// Unlock all forfeit VTXOs directly in the FSM.
+	unlockForfeitVTXOs(ctx, env, clientRegs)
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{

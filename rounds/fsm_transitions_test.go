@@ -122,6 +122,159 @@ func TestFSMCreatedState(t *testing.T) {
 		require.Equal(t, h.env.RoundID, timeoutReq.RoundID)
 		require.Equal(t, TimeoutPhaseRegistration, timeoutReq.Phase)
 	})
+
+	t.Run("forfeit VTXO locked during registration", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+		h.setupPermissiveMocks()
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		// Create a boarding input outpoint.
+		boardingOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding")),
+			Index: 0,
+		}
+
+		// Create a forfeit VTXO outpoint.
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("forfeit")),
+			Index: 0,
+		}
+
+		// Set up mocks to allow boarding input and forfeit VTXO to pass
+		// validation. The setupValidForfeitVTXO helper will set up the
+		// lock expectation for the forfeit VTXO.
+		h.setupValidBoardingInput(
+			&boardingOutpoint, client.boardingKey, exitDelay, 10,
+			h.roundID,
+		)
+		h.setupValidForfeitVTXO(
+			&forfeitOutpoint, client.boardingKey, h.roundID,
+		)
+
+		// Assert the initial state is CreatedState.
+		assertStateType[*CreatedState](h)
+
+		// Send a ClientJoinRequestEvent with both boarding and forfeit.
+		boardingReq := client.createBoardingRequest(&boardingOutpoint)
+		forfeitReq := &types.ForfeitRequest{
+			VTXOOutpoint: &forfeitOutpoint,
+		}
+		joinReqEvent := client.createJoinRequestWithForfeits(
+			[]*types.BoardingRequest{boardingReq},
+			[]*types.ForfeitRequest{forfeitReq},
+		)
+		err := h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Assert we transitioned to RegistrationState.
+		regState := assertStateType[*RegistrationState](h)
+		require.Len(t, regState.getAllBoardingInputs(), 1)
+
+		// Verify that the forfeit VTXO was locked by checking the
+		// ClientRegistration stored in the state.
+		reg, exists := regState.ClientRegistrations["client1"]
+		require.True(t, exists)
+		require.Len(t, reg.ForfeitInputs, 1)
+		require.Equal(
+			t, &forfeitOutpoint, reg.ForfeitInputs[0].Outpoint,
+		)
+
+		// Assert that we have the expected outbox messages.
+		h.assertOutboxLen(2)
+
+		// Check success response to client.
+		successResp := assertOutboxMessageType[*ClientSuccessResp](h, 0)
+		require.Equal(t, "client1", string(successResp.Client))
+	})
+
+	t.Run("forfeit VTXO lock failure", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up the test harness.
+		h := newTestHarness(t)
+
+		const exitDelay = 144
+		const expiry = 144
+		client := newClientHarness(
+			t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		)
+
+		// Create a boarding input outpoint.
+		boardingOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding")),
+			Index: 0,
+		}
+
+		// Create a forfeit VTXO outpoint.
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("forfeit")),
+			Index: 0,
+		}
+
+		// Set up valid boarding input.
+		h.setupValidBoardingInput(
+			&boardingOutpoint, client.boardingKey, exitDelay, 10,
+			h.roundID,
+		)
+
+		// Set up valid forfeit VTXO but make locking fail.
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, client.boardingKey, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			RoundID:          h.roundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+		h.expectVTXO(forfeitOutpoint, vtxo)
+
+		// Set up the VTXO lock to fail (e.g., already locked by another
+		// round).
+		lockErr := fmt.Errorf("VTXO already locked")
+		h.vtxoStore.On(
+			"LockVTXO", mock.Anything, h.roundID,
+			[]wire.OutPoint{forfeitOutpoint},
+		).Return(lockErr).Once()
+
+		// We also need to expect the boarding input to be unlocked when
+		// the forfeit VTXO lock fails.
+		h.expectInputUnlocked(&boardingOutpoint, h.roundID)
+
+		// Assert the initial state is CreatedState.
+		assertStateType[*CreatedState](h)
+
+		// Send a ClientJoinRequestEvent with both boarding and forfeit.
+		boardingReq := client.createBoardingRequest(&boardingOutpoint)
+		forfeitReq := &types.ForfeitRequest{
+			VTXOOutpoint: &forfeitOutpoint,
+		}
+		joinReqEvent := client.createJoinRequestWithForfeits(
+			[]*types.BoardingRequest{boardingReq},
+			[]*types.ForfeitRequest{forfeitReq},
+		)
+		err = h.sendEvent(joinReqEvent)
+		require.NoError(t, err)
+
+		// Assert we remain in CreatedState due to lock failure.
+		assertStateType[*CreatedState](h)
+
+		// Assert that we have the expected outbox message (client
+		// error).
+		h.assertOutboxLen(1)
+		msg := assertOutboxMessageType[*ClientErrorResp](h, 0)
+		require.Contains(t, msg.ErrorMsg, "failed to lock forfeit VTXO")
+	})
 }
 
 // TestFSMRegistrationState tests the FSM transitions from RegistrationState.
@@ -672,6 +825,119 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundClientFailed, "client should be notified")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
+
+	t.Run("forfeit VTXOs unlocked on batch building failure",
+		func(t *testing.T) {
+			t.Parallel()
+
+			// Set up the test harness.
+			h := newTestHarness(t)
+
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub, exitDelay,
+				expiry,
+			)
+
+			// Create a boarding input outpoint.
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding")),
+				Index: 0,
+			}
+
+			// Create a forfeit VTXO outpoint.
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit")),
+				Index: 0,
+			}
+
+			// Set up mocks for successful registration with both
+			// boarding and forfeit inputs.
+			h.setupValidBoardingInput(
+				&boardingOutpoint, client.boardingKey,
+				exitDelay, 10, h.roundID,
+			)
+			h.setupValidForfeitVTXO(
+				&forfeitOutpoint, client.boardingKey, h.roundID,
+			)
+
+			// Set up batch building to fail.
+			h.setupBatchBuildingFailure(
+				fmt.Errorf("insufficient funds"),
+			)
+
+			// Join with both boarding and forfeit to get to
+			// RegistrationState.
+			boardingReq := client.createBoardingRequest(
+				&boardingOutpoint,
+			)
+			forfeitReq := &types.ForfeitRequest{
+				VTXOOutpoint: &forfeitOutpoint,
+			}
+			joinReqEvent := client.createJoinRequestWithForfeits(
+				[]*types.BoardingRequest{boardingReq},
+				[]*types.ForfeitRequest{forfeitReq},
+			)
+			err := h.sendEvent(joinReqEvent)
+			require.NoError(t, err)
+
+			// Assert we're in RegistrationState.
+			assertStateType[*RegistrationState](h)
+
+			// Clear outbox.
+			h.outboxMessages = nil
+
+			// Set up expectations for both boarding input and
+			// forfeit VTXO unlock when round fails.
+			h.expectInputUnlocked(&boardingOutpoint, h.env.RoundID)
+			h.expectVTXOUnlocked(forfeitOutpoint, h.env.RoundID)
+
+			// Seal the round - this should trigger batch building
+			// which will fail due to wallet funding error.
+			err = h.sendEvent(&SealEvent{})
+			require.NoError(t, err)
+
+			// Should transition to FailedState.
+			failedState := assertStateType[*FailedState](h)
+			require.Contains(
+				t, failedState.Reason, "insufficient funds",
+			)
+
+			// Verify outbox messages:
+			// 1. ClientRoundFailedResp for client1
+			// 2. RoundFailedReq for the actor
+			var (
+				foundClientFailed bool
+				foundRoundFailed  bool
+			)
+			for _, msg := range h.outboxMessages {
+				switch m := msg.(type) {
+				case *ClientRoundFailedResp:
+					foundClientFailed = true
+					require.Equal(
+						t, ClientID("client1"),
+						m.Client,
+					)
+
+				case *RoundFailedReq:
+					foundRoundFailed = true
+					require.Equal(
+						t, h.env.RoundID,
+						m.FailedRoundID,
+					)
+				}
+			}
+			require.True(
+				t, foundClientFailed,
+				"client should be notified",
+			)
+			require.True(
+				t, foundRoundFailed,
+				"actor should be notified",
+			)
+		},
+	)
 
 	t.Run("FailedState is terminal and ignores events", func(t *testing.T) {
 		t.Parallel()
