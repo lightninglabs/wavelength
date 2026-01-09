@@ -129,6 +129,14 @@ var (
 	// ErrForfeitLookupFailed is returned when looking up a VTXO in the
 	// store fails.
 	ErrForfeitLookupFailed = errors.New("failed to lookup forfeit VTXO")
+
+	// ErrForfeitOutpointNil is returned when a forfeit request has a nil
+	// outpoint.
+	ErrForfeitOutpointNil = errors.New("forfeit request has nil outpoint")
+
+	// ErrDuplicateForfeitRequest is returned when a join request contains
+	// duplicate forfeit request outpoints.
+	ErrDuplicateForfeitRequest = errors.New("duplicate forfeit request")
 )
 
 // JoinRequestResult holds the validated results from a join request.
@@ -139,6 +147,9 @@ type JoinRequestResult struct {
 	// RequiredOutputs contains the outputs from leave requests that must
 	// be included in the round transaction.
 	RequiredOutputs []*wire.TxOut
+
+	// ForfeitInputs contains the validated forfeit inputs from VTXOs.
+	ForfeitInputs []*ForfeitInput
 
 	// VTXODescriptors maps signing key hex strings to their VTXO
 	// descriptors. The map key is the serialized public key.
@@ -154,13 +165,12 @@ type JoinRequestResult struct {
 // verifies:
 //   - Each boarding request is valid (no duplicates, passes individual
 //     validation).
+//   - Each forfeit request is valid (VTXO exists and is live).
 //   - Each leave request is valid (non-nil output, positive value, non-empty
 //     pkScript).
 //   - Each VTXO request is valid (passes individual validation).
 //   - The total output value (leave + VTXO) does not exceed the total input
-//     value.
-//
-// TODO(elle): Add forfeit request validation.
+//     value (boarding + forfeit).
 //
 // On success, returns JoinRequestResult containing all validated data.
 func ValidateJoinRequest(ctx context.Context, env *Environment,
@@ -168,6 +178,7 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	var (
 		boardingInputs  []*BoardingInput
+		forfeitInputs   []*ForfeitInput
 		requiredOutputs []*wire.TxOut
 		vtxoDescriptors = make(map[SigningKeyHex]*tree.VTXODescriptor)
 		signingKeys     = make(map[SigningKeyHex]*btcec.PublicKey)
@@ -196,6 +207,34 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 		boardReqs.Add(*boardReq.Outpoint)
 		boardingInputs = append(boardingInputs, boardingInput)
 		totalInputValue += boardingInput.Value
+	}
+
+	// Validate each forfeit request individually and also make sure that
+	// there are no duplicate forfeit requests.
+	forfeitReqs := fn.NewSet[wire.OutPoint]()
+	for _, forfeitReq := range req.ForfeitReqs {
+		if forfeitReq.VTXOOutpoint == nil {
+			return nil, ErrForfeitOutpointNil
+		}
+
+		if forfeitReqs.Contains(*forfeitReq.VTXOOutpoint) {
+			return nil, fmt.Errorf("%w: %v",
+				ErrDuplicateForfeitRequest,
+				forfeitReq.VTXOOutpoint)
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			ctx, env, forfeitReq,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid forfeit request "+
+				"for outpoint %v: %w",
+				forfeitReq.VTXOOutpoint, err)
+		}
+
+		forfeitReqs.Add(*forfeitReq.VTXOOutpoint)
+		forfeitInputs = append(forfeitInputs, forfeitInput)
+		totalInputValue += forfeitInput.VTXO.Descriptor.Amount
 	}
 
 	// Validate each leave request.
@@ -229,8 +268,8 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	// Ensure the client isn't asking for more output value than they are
 	// providing as input. This is a basic balance check - the client's
-	// leave request total + VTXO total cannot exceed their boarding input
-	// total.
+	// leave request total + VTXO total cannot exceed their boarding +
+	// forfeit input total.
 	totalOutputValue := totalLeaveValue + totalVTXOValue
 	if totalOutputValue > totalInputValue {
 		return nil, fmt.Errorf("%w: got %d sats, max %d sats",
@@ -240,6 +279,7 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	return &JoinRequestResult{
 		BoardingInputs:  boardingInputs,
+		ForfeitInputs:   forfeitInputs,
 		RequiredOutputs: requiredOutputs,
 		VTXODescriptors: vtxoDescriptors,
 		SigningKeys:     signingKeys,
