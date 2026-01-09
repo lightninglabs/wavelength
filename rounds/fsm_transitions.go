@@ -862,7 +862,6 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 				PSBT:                 s.PSBT,
 				VTXOTrees:            s.VTXOTrees,
 				ConnectorAssignments: s.ConnectorAssignments,
-				ConnectorDescriptors: s.ConnectorDescriptors,
 				CollectedSignatures:  newCollectedSigs,
 				CollectedForfeitTxs:  newCollectedForfeitTxs,
 			},
@@ -1992,8 +1991,6 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		), nil
 	}
 
-	forfeitInfos := make(map[wire.OutPoint]*ForfeitInfo)
-
 	// Complete forfeit transactions with the server's signatures.
 	for clientID, reg := range s.ClientRegistrations {
 		if len(reg.ForfeitInputs) == 0 {
@@ -2017,7 +2014,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			), nil
 		}
 
-		spent, err := completeForfeitTxs(
+		_, err := completeForfeitTxs(
 			forfeitTxs, reg, s.ConnectorAssignments, env,
 		)
 		if err != nil {
@@ -2026,19 +2023,6 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 				fmt.Sprintf("complete forfeit txs for "+
 					"client %s: %v", clientID, err),
 			), nil
-		}
-
-		for _, spentVTXO := range spent {
-			if spentVTXO.ForfeitInfo == nil {
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("missing forfeit info for "+
-						"client %s", clientID),
-				), nil
-			}
-
-			forfeitInfos[spentVTXO.VTXOOutpoint] =
-				spentVTXO.ForfeitInfo
 		}
 	}
 
@@ -2053,12 +2037,10 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 
 	// Persist the round to storage.
 	round := &Round{
-		RoundID:              env.RoundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            s.VTXOTrees,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
-		ClientRegistrations:  s.ClientRegistrations,
+		RoundID:             env.RoundID,
+		FinalTx:             finalTx,
+		VTXOTrees:           s.VTXOTrees,
+		ClientRegistrations: s.ClientRegistrations,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)
@@ -2097,7 +2079,6 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			ClientRegistrations: s.ClientRegistrations,
 			FinalTx:             finalTx,
 			VTXOTrees:           s.VTXOTrees,
-			ForfeitInfos:        forfeitInfos,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{

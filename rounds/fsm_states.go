@@ -395,6 +395,10 @@ type ServerSigningState struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
 
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
 	// CollectedSignatures contains all validated client boarding
 	// signatures. These will be applied to the PSBT along with the
 	// server's signatures.
