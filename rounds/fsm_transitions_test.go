@@ -9,11 +9,14 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -761,6 +764,242 @@ func TestFSMBatchBuilding(t *testing.T) {
 				batchInfo.ConnectorLeafMap[forfeitOutpoint]
 			require.True(t, ok)
 			require.NotNil(t, leafInfo.LeafOutput)
+		})
+
+	t.Run("round with forfeits builds connector outputs",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub,
+				exitDelay, expiry,
+			)
+
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit-vtxo")),
+				Index: 0,
+			}
+			h.setupValidForfeitVTXO(
+				&forfeitOutpoint, client.boardingKey, h.roundID,
+			)
+			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
+
+			h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
+				Return(chainfee.SatPerKWeight(1000), nil).Once()
+			h.walletController.On("FundPsbt", mock.Anything,
+				mock.Anything, mock.Anything, mock.Anything,
+				mock.Anything).
+				Run(func(args mock.Arguments) {
+					p, ok := args.Get(1).(*psbt.Packet)
+					require.True(t, ok)
+
+					changeScript := []byte{0x00, 0x14, 0xaa}
+					changeOut := &wire.TxOut{
+						Value:    1000,
+						PkScript: changeScript,
+					}
+					p.UnsignedTx.TxOut = append(
+						[]*wire.TxOut{changeOut},
+						p.UnsignedTx.TxOut...,
+					)
+					emptyOutputs := []psbt.POutput{{}}
+					p.Outputs = append(
+						emptyOutputs, p.Outputs...,
+					)
+				}).
+				Return(int32(0), nil).Once()
+
+			leaveScript := []byte{0x00, 0x14, 0x01, 0x02}
+			leaveReq := &types.LeaveRequest{
+				Output: &wire.TxOut{
+					Value:    30000,
+					PkScript: leaveScript,
+				},
+			}
+			forfeitReq := &types.ForfeitRequest{
+				VTXOOutpoint: &forfeitOutpoint,
+			}
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: client.clientID,
+				Request: &types.JoinRoundRequest{
+					ForfeitReqs: []*types.ForfeitRequest{
+						forfeitReq,
+					},
+					LeaveReqs: []*types.LeaveRequest{
+						leaveReq,
+					},
+				},
+			}
+			err := h.sendEvent(joinReq)
+			require.NoError(t, err)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			awaitState :=
+				assertStateType[*AwaitingInputSigsState](h)
+			require.NotNil(t, awaitState.PSBT)
+
+			assignment, ok :=
+				awaitState.ConnectorAssignments[forfeitOutpoint]
+			require.True(t, ok)
+
+			outputIdx := assignment.ConnectorOutputIndex
+			connectorOutput :=
+				awaitState.PSBT.UnsignedTx.TxOut[outputIdx]
+			expectedScript, err := txscript.PayToAddrScript(
+				h.env.Terms.ConnectorAddress,
+			)
+			require.NoError(t, err)
+
+			require.Equal(t, expectedScript,
+				connectorOutput.PkScript)
+			require.Equal(t,
+				int64(h.env.Terms.ConnectorDustAmount),
+				connectorOutput.Value,
+			)
+		})
+
+	t.Run("multiple forfeits split across connector trees",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.env.Terms.MaxConnectorsPerTree = 2
+			h.setupBatchBuildingMocks()
+
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub,
+				exitDelay, expiry,
+			)
+
+			forfeitOutpoints := []wire.OutPoint{
+				{Hash: chainhash.HashH([]byte("forfeit-a"))},
+				{Hash: chainhash.HashH([]byte("forfeit-b"))},
+				{Hash: chainhash.HashH([]byte("forfeit-c"))},
+			}
+			var forfeitReqs []*types.ForfeitRequest
+			for i := range forfeitOutpoints {
+				h.setupValidForfeitVTXO(
+					&forfeitOutpoints[i],
+					client.boardingKey,
+					h.roundID,
+				)
+				outpoint := &forfeitOutpoints[i]
+				forfeitReqs = append(forfeitReqs,
+					&types.ForfeitRequest{
+						VTXOOutpoint: outpoint,
+					},
+				)
+			}
+			h.expectVTXOLocked(h.roundID, forfeitOutpoints...)
+
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: client.clientID,
+				Request: &types.JoinRoundRequest{
+					ForfeitReqs: forfeitReqs,
+				},
+			}
+			err := h.sendEvent(joinReq)
+			require.NoError(t, err)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			awaitState :=
+				assertStateType[*AwaitingInputSigsState](h)
+			require.Len(t, awaitState.ConnectorTrees, 2)
+			require.Len(t, awaitState.ConnectorDescriptors, 2)
+
+			counts := make(map[int]int)
+			assignments := awaitState.ConnectorAssignments
+			for _, assignment := range assignments {
+				counts[assignment.ConnectorOutputIndex]++
+			}
+			require.Len(t, counts, 2)
+
+			outputs := awaitState.PSBT.UnsignedTx.TxOut
+			for outputIdx, leafCount := range counts {
+				output := outputs[outputIdx]
+				expectedValue := int64(
+					leafCount,
+				) * int64(h.env.Terms.ConnectorDustAmount)
+				require.Equal(t, expectedValue, output.Value)
+			}
+		})
+
+	t.Run("VTXO rounds also include connector outputs",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+			h.setupBatchBuildingMocks()
+
+			const exitDelay = 144
+			const expiry = 144
+			client := newClientHarness(
+				t, "client1", 10, h.operatorPub,
+				exitDelay, expiry,
+			)
+
+			boardingOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("boarding")),
+				Index: 0,
+			}
+			forfeitOutpoint := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("forfeit")),
+				Index: 0,
+			}
+			h.setupValidBoardingInput(
+				&boardingOutpoint, client.boardingKey,
+				exitDelay, 10, h.roundID,
+			)
+			h.setupValidForfeitVTXO(
+				&forfeitOutpoint, client.boardingKey, h.roundID,
+			)
+			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
+
+			boardingReq := client.createBoardingRequest(
+				&boardingOutpoint,
+			)
+			vtxoReq := client.createVTXORequest(
+				btcutil.Amount(50000),
+			)
+			forfeitReq := &types.ForfeitRequest{
+				VTXOOutpoint: &forfeitOutpoint,
+			}
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: client.clientID,
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						boardingReq,
+					},
+					VTXOReqs: []*types.VTXORequest{vtxoReq},
+					ForfeitReqs: []*types.ForfeitRequest{
+						forfeitReq,
+					},
+				},
+			}
+			err := h.sendEvent(joinReq)
+			require.NoError(t, err)
+
+			h.outboxMessages = nil
+			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			require.NoError(t, err)
+
+			awaitState :=
+				assertStateType[*AwaitingVTXONoncesState](h)
+			require.NotEmpty(t, awaitState.VTXOTrees)
+			require.NotEmpty(t, awaitState.ConnectorTrees)
+			require.NotEmpty(t, awaitState.ConnectorAssignments)
 		})
 
 	t.Run("two clients receive connector leaves",
@@ -2308,10 +2547,11 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 
 	h := newTestHarness(t)
 
+	const baseKeyIndex = 10
 	const exitDelay = 144
 	const expiry = 144
 	client := newClientHarness(
-		t, "client1", 10, h.operatorPub, exitDelay, expiry,
+		t, "client1", baseKeyIndex, h.operatorPub, exitDelay, expiry,
 	)
 
 	outpoint := wire.OutPoint{
@@ -2428,6 +2668,168 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	h.roundStore.AssertCalled(t,
 		"MarkRoundConfirmed", mock.Anything, h.roundID,
 		int32(100), mock.Anything,
+	)
+}
+
+// TestFSMForfeitSigningFlowE2ERealSigs exercises the full forfeit signing flow
+// with real signatures and validates the completed forfeit transaction.
+func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+
+	const baseKeyIndex = 10
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		t, "client1", baseKeyIndex, h.operatorPub, exitDelay, expiry,
+	)
+	h.env.Terms.VTXOExitDelay = exitDelay
+	connectorKey := txscript.ComputeTaprootOutputKey(
+		h.operatorPub, nil,
+	)
+	connectorAddr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(connectorKey), h.env.ChainParams,
+	)
+	require.NoError(t, err)
+	h.env.Terms.ConnectorAddress = connectorAddr
+
+	boardingOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("boarding")),
+		Index: 0,
+	}
+	forfeitOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("forfeit")),
+		Index: 0,
+	}
+
+	h.setupValidBoardingInput(
+		&boardingOutpoint, client.boardingKey, exitDelay, 10,
+		h.roundID,
+	)
+	vtxo := h.setupValidForfeitVTXO(
+		&forfeitOutpoint, client.boardingKey, h.roundID,
+	)
+	h.expectVTXOLocked(h.roundID, forfeitOutpoint)
+	h.setupBatchBuildingMocks()
+
+	finalTx := wire.NewMsgTx(2)
+	h.expectRoundFinalized(finalTx)
+
+	boardingReq := client.createBoardingRequest(&boardingOutpoint)
+	forfeitReq := &types.ForfeitRequest{
+		VTXOOutpoint: &forfeitOutpoint,
+	}
+	err = h.sendEvent(client.createJoinRequestWithForfeits(
+		[]*types.BoardingRequest{boardingReq},
+		[]*types.ForfeitRequest{forfeitReq},
+	))
+	require.NoError(t, err)
+	assertStateType[*RegistrationState](h)
+
+	h.outboxMessages = nil
+	err = h.sendEvent(&RegistrationTimeoutEvent{})
+	require.NoError(t, err)
+
+	awaitState := assertStateType[*AwaitingInputSigsState](h)
+	assignment :=
+		awaitState.ConnectorAssignments[forfeitOutpoint]
+	require.NotNil(t, assignment)
+
+	clientPriv := testForfeitPrivKey(byte(baseKeyIndex + 1))
+	require.True(t, clientPriv.PubKey().IsEqual(
+		client.boardingKey,
+	))
+
+	forfeitTx := buildForfeitTx(
+		t, forfeitOutpoint, vtxo.Descriptor.Amount,
+		assignment.LeafOutpoint, h.env.ForfeitScript,
+	)
+	clientSig := forfeitTxSig(
+		t, forfeitTx, clientPriv, forfeitOutpoint,
+		assignment.LeafOutput, h.operatorPub,
+		h.env.Terms.VTXOExitDelay, vtxo.Descriptor,
+	)
+
+	sigEvent := client.createInputSignaturesEvent(awaitState)
+	sigEvent.ForfeitTxs = []*types.ForfeitTxSig{{
+		UnsignedTx:    forfeitTx,
+		ClientVTXOSig: clientSig,
+	}}
+
+	h.outboxMessages = nil
+	err = h.sendEvent(sigEvent)
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	forfeitInfo := finalState.ForfeitInfos[forfeitOutpoint]
+	require.NotNil(t, forfeitInfo)
+
+	signedForfeitTx := forfeitInfo.ForfeitTx
+	require.NotEmpty(t,
+		signedForfeitTx.TxIn[tx.ForfeitVTXOInputIndex].Witness,
+	)
+	require.NotEmpty(t,
+		signedForfeitTx.TxIn[tx.ForfeitConnectorInputIndex].Witness,
+	)
+
+	prevFetcher, err := tx.NewForfeitPrevOutFetcher(
+		&tx.VTXOSpendContext{
+			Outpoint: forfeitOutpoint,
+			Output: &wire.TxOut{
+				Value:    int64(vtxo.Descriptor.Amount),
+				PkScript: vtxo.Descriptor.PkScript,
+			},
+			TapScript: mustVTXOTapScript(
+				t, client.boardingKey,
+				h.operatorPub, exitDelay,
+			),
+		},
+		&tx.ConnectorSpendContext{
+			Outpoint: assignment.LeafOutpoint,
+			Output:   assignment.LeafOutput,
+		},
+	)
+	require.NoError(t, err)
+
+	sigHashes := txscript.NewTxSigHashes(
+		signedForfeitTx, prevFetcher,
+	)
+
+	testutils.AssertEngineExecution(t, 0, true, func() (
+		*txscript.Engine, error) {
+
+		return txscript.NewEngine(
+			vtxo.Descriptor.PkScript, signedForfeitTx,
+			tx.ForfeitVTXOInputIndex,
+			txscript.StandardVerifyFlags, nil,
+			sigHashes, int64(vtxo.Descriptor.Amount),
+			prevFetcher,
+		)
+	})
+
+	testutils.AssertEngineExecution(t, 1, true, func() (
+		*txscript.Engine, error) {
+
+		return txscript.NewEngine(
+			assignment.LeafOutput.PkScript, signedForfeitTx,
+			tx.ForfeitConnectorInputIndex,
+			txscript.StandardVerifyFlags, nil,
+			sigHashes, assignment.LeafOutput.Value, prevFetcher,
+		)
+	})
+
+	h.outboxMessages = nil
+	err = h.sendEvent(&TransactionConfirmedEvent{
+		BlockHeight: 100,
+		BlockHash:   chainhash.Hash{},
+		NumConfs:    6,
+	})
+	require.NoError(t, err)
+	assertStateType[*ConfirmedState](h)
+	h.vtxoStore.AssertCalled(t,
+		"MarkVTXOForfeit", mock.Anything, forfeitOutpoint,
+		forfeitInfo,
 	)
 }
 
