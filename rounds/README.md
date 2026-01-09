@@ -67,7 +67,8 @@ stateDiagram-v2
     note right of BatchBuiltState
         PSBT funded.
         Preparing client
-        notifications.
+        notifications and
+        connector leaves.
     end note
 
     note right of AwaitingVTXONoncesState
@@ -84,12 +85,14 @@ stateDiagram-v2
 
     note right of AwaitingInputSigsState
         Waiting for clients to sign
-        inputs (boarding/forfeits).
+        boarding inputs and forfeit
+        transactions (if any).
     end note
 
     note right of ServerSigningState
         Server signing wallet
-        inputs and finalizing.
+        inputs and completing
+        forfeit txs.
     end note
 
     note right of FinalizedState
@@ -111,56 +114,56 @@ stateDiagram-v2
 
 ### States
 
-| State                         | Description                                                                                        |
-|-------------------------------|----------------------------------------------------------------------------------------------------|
-| `CreatedState`                | Initial state. No clients have joined yet. Transitions to `RegistrationState` on first valid join. |
-| `RegistrationState`           | Accepting client join requests. Accumulates registrations until sealed.                            |
-| `BatchBuildingState`          | Building the commitment transaction PSBT with boarding inputs and leave outputs.                   |
-| `BatchBuiltState`             | PSBT has been funded. Prepares client notifications with batch info and VTXO tree paths.           |
-| `AwaitingVTXONoncesState`     | Collecting MuSig2 public nonces from all clients with VTXOs for VTXO tree transactions.            |
-| `AwaitingVTXOSignaturesState` | Collecting MuSig2 partial signatures from all clients with VTXOs for VTXO tree transactions.       |
-| `AwaitingInputSigsState`   | Waiting for all clients to submit input signatures (boarding inputs and/or forfeit transactions).  |
-| `ServerSigningState`          | Server signs its wallet inputs and applies client boarding signatures to finalize the PSBT.        |
-| `FinalizedState`              | Transaction is fully signed and broadcast. Waiting for on-chain confirmation.                      |
-| `ConfirmedState` (terminal)   | Transaction confirmed on-chain with required confirmations. Round complete.                        |
-| `FailedState` (terminal)      | Round has failed. Clients notified, boarding inputs unlocked, resources cleaned up.                |
+| State                         | Description                                                                                                           |
+|-------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| `CreatedState`                | Initial state. No clients have joined yet. Transitions to `RegistrationState` on first valid join.                    |
+| `RegistrationState`           | Accepting client join requests. Accumulates registrations until sealed.                                               |
+| `BatchBuildingState`          | Building the commitment transaction PSBT with boarding inputs, leave outputs, and connector outputs for forfeits.     |
+| `BatchBuiltState`             | PSBT has been funded. Prepares client notifications with batch info, VTXO tree paths, and connector leaf assignments. |
+| `AwaitingVTXONoncesState`     | Collecting MuSig2 public nonces from all clients with VTXOs for VTXO tree transactions.                               |
+| `AwaitingVTXOSignaturesState` | Collecting MuSig2 partial signatures from all clients with VTXOs for VTXO tree transactions.                          |
+| `AwaitingInputSigsState`      | Waiting for all clients to submit boarding signatures and forfeit transactions (if any).                              |
+| `ServerSigningState`          | Server signs its wallet inputs, completes forfeit txs, and applies client boarding signatures.                        |
+| `FinalizedState`              | Transaction is fully signed and broadcast. Waiting for on-chain confirmation.                                         |
+| `ConfirmedState` (terminal)   | Transaction confirmed on-chain with required confirmations. Round complete.                                           |
+| `FailedState` (terminal)      | Round has failed. Clients notified, boarding inputs unlocked, resources cleaned up.                                   |
 
 ### Events
 
-| Event                             | Source        | Description                                                            |
-|-----------------------------------|---------------|------------------------------------------------------------------------|
-| `ClientJoinRequestEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests.      |
-| `RegistrationTimeoutEvent`        | Actor (timer) | Registration phase timeout expired.                                    |
-| `SealEvent`                       | Internal      | Seals the round, preventing new registrations.                         |
-| `BuildBatchTxEvent`               | Internal      | Triggers commitment transaction PSBT construction.                     |
-| `PrepareClientNotificationsEvent` | Internal      | Triggers sending batch info to clients.                                |
-| `VTXONoncesTimeoutEvent`          | Actor (timer) | VTXO nonce collection timeout expired.                                 |
-| `ClientVTXONoncesEvent`           | Actor         | Client submits MuSig2 nonces for all their VTXO signing keys.          |
-| `VTXOSignaturesTimeoutEvent`      | Actor (timer) | VTXO partial signature collection timeout expired.                     |
-| `ClientVTXOPartialSigsEvent`      | Actor         | Client submits MuSig2 partial signatures for all their signing keys.   |
-| `InputSignaturesTimeoutEvent`  | Actor (timer) | Boarding signature collection timeout expired.                         |
-| `ClientInputSignaturesEvent`   | Actor         | Client submits boarding input signatures and forfeit tx signatures.    |
-| `ServerSignInputsEvent`           | Internal      | Triggers server to sign wallet inputs and finalize PSBT.               |
-| `TransactionConfirmedEvent`       | Actor         | Commitment transaction confirmed on-chain.                             |
+| Event                             | Source        | Description                                                          |
+|-----------------------------------|---------------|----------------------------------------------------------------------|
+| `ClientJoinRequestEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests.    |
+| `RegistrationTimeoutEvent`        | Actor (timer) | Registration phase timeout expired.                                  |
+| `SealEvent`                       | Internal      | Seals the round, preventing new registrations.                       |
+| `BuildBatchTxEvent`               | Internal      | Triggers commitment transaction PSBT construction.                   |
+| `PrepareClientNotificationsEvent` | Internal      | Triggers sending batch info to clients.                              |
+| `VTXONoncesTimeoutEvent`          | Actor (timer) | VTXO nonce collection timeout expired.                               |
+| `ClientVTXONoncesEvent`           | Actor         | Client submits MuSig2 nonces for all their VTXO signing keys.        |
+| `VTXOSignaturesTimeoutEvent`      | Actor (timer) | VTXO partial signature collection timeout expired.                   |
+| `ClientVTXOPartialSigsEvent`      | Actor         | Client submits MuSig2 partial signatures for all their signing keys. |
+| `InputSignaturesTimeoutEvent`     | Actor (timer) | Boarding signature collection timeout expired.                       |
+| `ClientInputSignaturesEvent`      | Actor         | Client submits boarding signatures and forfeit tx signatures.        |
+| `ServerSignInputsEvent`           | Internal      | Triggers server to sign wallet inputs and finalize PSBT.             |
+| `TransactionConfirmedEvent`       | Actor         | Commitment transaction confirmed on-chain.                           |
 
 ### Outbox Messages
 
 Messages emitted by the FSM for the actor to process:
 
-| Message                          | Description                                                              |
-|----------------------------------|--------------------------------------------------------------------------|
-| `ClientSuccessResp`              | Send success response to client with round ID.                           |
-| `ClientErrorResp`                | Send error response to client with error message.                        |
-| `ClientBatchInfo`                | Send batch PSBT and VTXO tree paths to client.                           |
-| `ClientVTXOAggNonces`            | Send aggregated MuSig2 nonces to client for VTXO tree transactions.      |
-| `ClientVTXOAggSigs`              | Send aggregated MuSig2 signatures to client for VTXO tree transactions.  |
+| Message                       | Description                                                                 |
+|-------------------------------|-----------------------------------------------------------------------------|
+| `ClientSuccessResp`           | Send success response to client with round ID.                              |
+| `ClientErrorResp`             | Send error response to client with error message.                           |
+| `ClientBatchInfo`             | Send batch PSBT, VTXO tree paths, and connector leaf info to client.        |
+| `ClientVTXOAggNonces`         | Send aggregated MuSig2 nonces to client for VTXO tree transactions.         |
+| `ClientVTXOAggSigs`           | Send aggregated MuSig2 signatures to client for VTXO tree transactions.     |
 | `ClientAwaitingInputSigsResp` | Notify client that server is ready for input signatures (boarding/forfeit). |
-| `ClientRoundFailedResp`          | Notify client that their round has failed.                               |
-| `StartTimeoutReq`                | Request actor to start a phase timeout.                                  |
-| `CancelTimeoutReq`               | Request actor to cancel a pending phase timeout.                         |
-| `RoundSealedReq`                 | Notify actor that round is sealed (create new round for new clients).    |
-| `RoundFailedReq`                 | Notify actor that round has failed (clean up resources).                 |
-| `BroadcastRoundReq`              | Request actor to broadcast transaction and subscribe to confirmations.   |
+| `ClientRoundFailedResp`       | Notify client that their round has failed.                                  |
+| `StartTimeoutReq`             | Request actor to start a phase timeout.                                     |
+| `CancelTimeoutReq`            | Request actor to cancel a pending phase timeout.                            |
+| `RoundSealedReq`              | Notify actor that round is sealed (create new round for new clients).       |
+| `RoundFailedReq`              | Notify actor that round has failed (clean up resources).                    |
+| `BroadcastRoundReq`           | Request actor to broadcast transaction and subscribe to confirmations.      |
 
 ## Transition Details
 
@@ -206,6 +209,8 @@ PrepareClientNotificationsEvent:
     [has VTXOs] --> AwaitingVTXONoncesState + ClientBatchInfo (all clients)
                                              + StartTimeoutReq(VTXONonces)
     [no VTXOs]  --> AwaitingInputSigsState + ClientBatchInfo (all clients)
+                                               + ClientAwaitingInputSigsResp
+                                                 (clients with boarding)
                                                + StartTimeoutReq(InputSigs)
 ```
 
@@ -259,6 +264,11 @@ ClientInputSignaturesEvent:
     [partial]        --> AwaitingInputSigsState
     [all submitted]  --> ServerSigningState + CancelTimeoutReq(InputSigs)
                                              + internal(ServerSignInputsEvent)
+
+Notes:
+- Clients must submit all expected boarding signatures and forfeit txs in the
+  same message.
+- Forfeit transactions are validated here before acceptance.
 
 InputSignaturesTimeoutEvent:
     --> FailedState + RoundFailedReq
@@ -329,12 +339,12 @@ round and the phase that scheduled the timeout. When a timeout expires, the
 actor parses this ID to route the appropriate phase-specific event (e.g.,
 `RegistrationTimeoutEvent`) to the correct round's FSM.
 
-| Phase           | Timeout Event                    | Description                                |
-|-----------------|----------------------------------|--------------------------------------------|
-| `registration`  | `RegistrationTimeoutEvent`       | Registration phase timer expired.          |
-| `vtxo_nonces`   | `VTXONoncesTimeoutEvent`         | VTXO nonce collection timer expired.       |
-| `vtxo_sigs`     | `VTXOSignaturesTimeoutEvent`     | VTXO signature collection timer expired.   |
-| `boarding_sigs` | `InputSignaturesTimeoutEvent` | Boarding signature collection expired.     |
+| Phase           | Timeout Event                 | Description                              |
+|-----------------|-------------------------------|------------------------------------------|
+| `registration`  | `RegistrationTimeoutEvent`    | Registration phase timer expired.        |
+| `vtxo_nonces`   | `VTXONoncesTimeoutEvent`      | VTXO nonce collection timer expired.     |
+| `vtxo_sigs`     | `VTXOSignaturesTimeoutEvent`  | VTXO signature collection timer expired. |
+| `boarding_sigs` | `InputSignaturesTimeoutEvent` | Boarding signature collection expired.   |
 
 ### Transaction Broadcasting and Confirmation
 
@@ -357,6 +367,9 @@ Rounds are persisted to storage when they transition to `FinalizedState`. This
 allows the server to recover rounds after a restart and continue waiting for
 confirmations. The actor loads all persisted rounds on startup and re-subscribes
 to their confirmation notifications.
+
+Connector tree descriptors and forfeit metadata are persisted with the round so
+the server can reconstruct connector trees and broadcast forfeits later.
 
 ## Error Handling
 
