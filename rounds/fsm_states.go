@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 )
 
@@ -157,10 +158,10 @@ func (s *BatchBuiltState) IsTerminal() bool {
 // stateSealed marks BatchBuiltState as implementing the sealed State interface.
 func (s *BatchBuiltState) stateSealed() {}
 
-// AwaitingBoardingSigsState waits for clients to submit their boarding
+// AwaitingInputSigsState waits for clients to submit their boarding
 // input signatures. Each client must sign their boarding inputs so the
 // commitment transaction can be finalized.
-type AwaitingBoardingSigsState struct {
+type AwaitingInputSigsState struct {
 	// ClientRegistrations maps client IDs to their registration data.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
 
@@ -179,28 +180,28 @@ type AwaitingBoardingSigsState struct {
 	// CollectedSignatures stores the boarding signatures submitted by each
 	// client. These are validated but not yet applied to the PSBT - that
 	// happens during server signing.
-	CollectedSignatures BoardingSigsMap
+	CollectedSignatures InputSigsMap
 }
 
 // String returns a human-readable representation of
-// AwaitingBoardingSigsState.
-func (s *AwaitingBoardingSigsState) String() string {
-	return "AwaitingBoardingSigsState"
+// AwaitingInputSigsState.
+func (s *AwaitingInputSigsState) String() string {
+	return "AwaitingInputSigsState"
 }
 
-// IsTerminal returns false as AwaitingBoardingSigsState is not a terminal
+// IsTerminal returns false as AwaitingInputSigsState is not a terminal
 // state.
-func (s *AwaitingBoardingSigsState) IsTerminal() bool {
+func (s *AwaitingInputSigsState) IsTerminal() bool {
 	return false
 }
 
-// stateSealed marks AwaitingBoardingSigsState as implementing the sealed
+// stateSealed marks AwaitingInputSigsState as implementing the sealed
 // State interface.
-func (s *AwaitingBoardingSigsState) stateSealed() {}
+func (s *AwaitingInputSigsState) stateSealed() {}
 
 // allClientsSubmitted returns true if all registered clients with boarding
 // inputs have submitted their signatures.
-func (s *AwaitingBoardingSigsState) allClientsSubmitted() bool {
+func (s *AwaitingInputSigsState) allClientsSubmitted() bool {
 	// Count clients that have boarding inputs and thus need to submit sigs.
 	clientsWithBoarding := 0
 	for _, reg := range s.ClientRegistrations {
@@ -214,10 +215,138 @@ func (s *AwaitingBoardingSigsState) allClientsSubmitted() bool {
 
 // hasClientSubmitted checks if a client has already submitted their
 // signatures.
-func (s *AwaitingBoardingSigsState) hasClientSubmitted(
+func (s *AwaitingInputSigsState) hasClientSubmitted(
 	clientID clientconn.ClientID) bool {
 
 	_, exists := s.ClientsSubmitted[clientID]
+	return exists
+}
+
+// AwaitingVTXONoncesState waits for clients to submit their MuSig2 nonces for
+// VTXO tree transactions. This state is only entered if the round has VTXOs.
+// Once all clients with VTXOs have submitted nonces, the FSM transitions to
+// AwaitingVTXOSignaturesState for partial signature collection.
+type AwaitingVTXONoncesState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// TreeSignCoordinators maps commitment tx output indices to their
+	// MuSig2 signing coordinators. Each coordinator manages nonce and
+	// signature collection for one VTXO tree.
+	TreeSignCoordinators map[int]*batch.TreeSignCoordinator
+
+	// ClientsWithNonces tracks which clients have submitted nonces.
+	ClientsWithNonces map[clientconn.ClientID]struct{}
+}
+
+// String returns a human-readable representation of AwaitingVTXONoncesState.
+func (s *AwaitingVTXONoncesState) String() string {
+	return "AwaitingVTXONoncesState"
+}
+
+// IsTerminal returns false as AwaitingVTXONoncesState is not a terminal state.
+func (s *AwaitingVTXONoncesState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingVTXONoncesState as implementing the sealed State
+// interface.
+func (s *AwaitingVTXONoncesState) stateSealed() {}
+
+// allClientsSubmittedNonces returns true if all registered clients with VTXOs
+// have submitted their nonces.
+func (s *AwaitingVTXONoncesState) allClientsSubmittedNonces() bool {
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) == 0 {
+			continue
+		}
+
+		if !s.hasClientSubmittedNonces(clientID) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// hasClientSubmittedNonces checks if a client has submitted any nonces.
+func (s *AwaitingVTXONoncesState) hasClientSubmittedNonces(
+	clientID clientconn.ClientID) bool {
+
+	_, exists := s.ClientsWithNonces[clientID]
+	return exists
+}
+
+// AwaitingVTXOSignaturesState waits for clients to submit their MuSig2 partial
+// signatures for VTXO tree transactions. This state is entered after all
+// clients with VTXOs have submitted their nonces and the aggregated nonces have
+// been distributed. Once all clients have submitted partial signatures, the
+// final signatures are aggregated and distributed, then the FSM transitions to
+// AwaitingInputSigsState.
+type AwaitingVTXOSignaturesState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PSBT is the funded but unsigned commitment transaction.
+	PSBT *psbt.Packet
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// TreeSignCoordinators maps commitment tx output indices to their
+	// MuSig2 signing coordinators. Each coordinator manages signature
+	// collection for one VTXO tree.
+	TreeSignCoordinators map[int]*batch.TreeSignCoordinator
+
+	// ClientsWithSignatures tracks which clients have submitted their
+	// partial signatures.
+	ClientsWithSignatures map[clientconn.ClientID]struct{}
+}
+
+// String returns a human-readable representation of
+// AwaitingVTXOSignaturesState.
+func (s *AwaitingVTXOSignaturesState) String() string {
+	return "AwaitingVTXOSignaturesState"
+}
+
+// IsTerminal returns false as AwaitingVTXOSignaturesState is not a terminal
+// state.
+func (s *AwaitingVTXOSignaturesState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingVTXOSignaturesState as implementing the sealed
+// State interface.
+func (s *AwaitingVTXOSignaturesState) stateSealed() {}
+
+// allClientsSubmittedSignatures returns true if all registered clients with
+// VTXOs have submitted their partial signatures.
+func (s *AwaitingVTXOSignaturesState) allClientsSubmittedSignatures() bool {
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.VTXODescriptors) == 0 {
+			continue
+		}
+
+		if !s.hasClientSubmittedSignatures(clientID) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// hasClientSubmittedSignatures checks if a client has already submitted any
+// partial signatures.
+func (s *AwaitingVTXOSignaturesState) hasClientSubmittedSignatures(
+	clientID clientconn.ClientID) bool {
+
+	_, exists := s.ClientsWithSignatures[clientID]
 	return exists
 }
 
@@ -237,7 +366,7 @@ type ServerSigningState struct {
 	// CollectedSignatures contains all validated client boarding
 	// signatures. These will be applied to the PSBT along with the
 	// server's signatures.
-	CollectedSignatures BoardingSigsMap
+	CollectedSignatures InputSigsMap
 }
 
 // String returns a human-readable representation of ServerSigningState.

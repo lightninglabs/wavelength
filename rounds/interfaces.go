@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
@@ -140,6 +141,11 @@ type RoundStore interface {
 	// transaction is ready for broadcast.
 	PersistRound(ctx context.Context, round *Round) error
 
+	// MarkRoundConfirmed marks a pending round as confirmed with the block
+	// details for the broadcast commitment transaction.
+	MarkRoundConfirmed(ctx context.Context, roundID RoundID,
+		blockHeight int32, blockHash chainhash.Hash) error
+
 	// LoadPendingRounds returns all rounds that have been finalized but not
 	// yet confirmed on-chain. These rounds need to be reloaded into memory
 	// on restart so we can continue tracking them until confirmation.
@@ -159,6 +165,51 @@ type Round struct {
 
 	// ClientRegistrations contains client registration data.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// VTXOStatus represents the lifecycle state of a VTXO.
+type VTXOStatus string
+
+const (
+	// VTXOStatusUnconfirmed indicates the VTXO's commitment transaction has
+	// been broadcast but not yet confirmed on-chain.
+	VTXOStatusUnconfirmed VTXOStatus = "unconfirmed"
+
+	// VTXOStatusLive indicates the VTXO's commitment transaction has been
+	// confirmed and the VTXO is now spendable.
+	VTXOStatusLive VTXOStatus = "live"
+)
+
+// VTXO represents a Virtual Transaction Output that exists within a VTXO tree.
+// It contains all the information needed to identify and spend the VTXO.
+type VTXO struct {
+	// RoundID is the identifier of the round that created this VTXO.
+	RoundID RoundID
+
+	// BatchOutputIndex is the index of the batch output in the commitment
+	// transaction that roots the VTXO tree containing this VTXO.
+	BatchOutputIndex int
+
+	// Descriptor contains the VTXO specification (amount, script,
+	// cosigner).
+	Descriptor *tree.VTXODescriptor
+
+	// Status is the current lifecycle state of the VTXO.
+	Status VTXOStatus
+}
+
+// VTXOStore provides persistent storage for VTXOs. The actor uses this to
+// persist VTXOs when they are created and update their status when the
+// commitment transaction is confirmed.
+type VTXOStore interface {
+	// PersistVTXOs saves a batch of newly created VTXOs to storage. These
+	// VTXOs are in unconfirmed state until the commitment transaction is
+	// confirmed on-chain.
+	PersistVTXOs(ctx context.Context, vtxos []*VTXO) error
+
+	// MarkVTXOsLive updates the status of all VTXOs for a given round to
+	// "live" after the commitment transaction has been confirmed.
+	MarkVTXOsLive(ctx context.Context, roundID RoundID) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

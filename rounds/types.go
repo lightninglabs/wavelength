@@ -24,9 +24,9 @@ type SigningKeyHex = route.Vertex
 // efficient lookups.
 type TxID = tree.TxID
 
-// BoardingSigsMap maps client IDs to their boarding input signatures.
+// InputSigsMap maps client IDs to their boarding input signatures.
 // This type alias improves readability in struct definitions.
-type BoardingSigsMap = map[ClientID][]*types.BoardingInputSignature
+type InputSigsMap = map[ClientID][]*types.BoardingInputSignature
 
 // BoardingInput represents a validated boarding input that will be spent in
 // the batch transaction. It contains all the data needed to construct the

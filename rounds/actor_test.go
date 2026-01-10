@@ -269,6 +269,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		FeeEstimator:        common.feeEstimator,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
+		VTXOStore:           common.vtxoStore,
 		ChainSourceActor:    chainSourceActor,
 		ConfTarget:          6,
 		MinConfs:            1,
@@ -894,18 +895,18 @@ func TestActorBoardingSignatures(t *testing.T) {
 			h.ctx, roundID, TimeoutPhaseRegistration,
 		)
 
-		// Verify the round is now in AwaitingBoardingSigsState.
+		// Verify the round is now in AwaitingInputSigsState.
 		round := h.actor.getRound(roundID)
 		require.NotNil(t, round, "round should exist")
 
 		currentState, err := round.FSM.CurrentState()
 		require.NoError(t, err)
-		_, ok := currentState.(*AwaitingBoardingSigsState)
-		require.True(t, ok, "should be in AwaitingBoardingSigsState")
+		_, ok := currentState.(*AwaitingInputSigsState)
+		require.True(t, ok, "should be in AwaitingInputSigsState")
 
 		// Verify boarding signatures timeout was scheduled.
 		h.timeoutActor.assertTimeoutScheduled(
-			t, roundID, TimeoutPhaseBoardingSigs,
+			t, roundID, TimeoutPhaseInputSigs,
 		)
 
 		// Get the ClientBatchInfo that was sent to the client. This
@@ -940,7 +941,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 
 		// Verify the boarding signatures timeout was cancelled.
 		h.timeoutActor.assertTimeoutCancelled(
-			roundID, TimeoutPhaseBoardingSigs,
+			roundID, TimeoutPhaseInputSigs,
 		)
 	})
 

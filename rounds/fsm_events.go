@@ -1,7 +1,9 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 )
@@ -63,13 +65,13 @@ type PrepareClientNotificationsEvent struct{}
 // Event interface.
 func (e *PrepareClientNotificationsEvent) eventSealed() {}
 
-// BoardingSignaturesTimeoutEvent is sent when the boarding signature collection
-// timeout expires. Only AwaitingBoardingSigsState should handle this.
-type BoardingSignaturesTimeoutEvent struct{}
+// InputSignaturesTimeoutEvent is sent when the input signature collection
+// timeout expires. Only AwaitingInputSigsState should handle this.
+type InputSignaturesTimeoutEvent struct{}
 
-// eventSealed marks BoardingSignaturesTimeoutEvent as implementing the sealed
+// eventSealed marks InputSignaturesTimeoutEvent as implementing the sealed
 // Event interface.
-func (e *BoardingSignaturesTimeoutEvent) eventSealed() {}
+func (e *InputSignaturesTimeoutEvent) eventSealed() {}
 
 // ClientBoardingSignaturesEvent is sent when a client submits their signatures
 // for their boarding inputs. Each client must sign all their boarding inputs
@@ -87,6 +89,52 @@ type ClientBoardingSignaturesEvent struct {
 // eventSealed marks ClientBoardingSignaturesEvent as implementing the sealed
 // Event interface.
 func (e *ClientBoardingSignaturesEvent) eventSealed() {}
+
+// VTXONoncesTimeoutEvent is sent when the VTXO nonce collection timeout
+// expires. Only AwaitingVTXONoncesState should handle this.
+type VTXONoncesTimeoutEvent struct{}
+
+// eventSealed marks VTXONoncesTimeoutEvent as implementing the sealed Event
+// interface.
+func (e *VTXONoncesTimeoutEvent) eventSealed() {}
+
+// ClientVTXONoncesEvent is sent when a client submits their MuSig2 nonces for
+// VTXO tree transactions. Nonces are grouped by signing key so a client can
+// submit all of its keys in a single message.
+type ClientVTXONoncesEvent struct {
+	// ClientID identifies which client is submitting nonces.
+	ClientID clientconn.ClientID
+
+	// Nonces maps signing key hex -> txid -> public nonce.
+	Nonces map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce
+}
+
+// eventSealed marks ClientVTXONoncesEvent as implementing the sealed Event
+// interface.
+func (e *ClientVTXONoncesEvent) eventSealed() {}
+
+// VTXOSignaturesTimeoutEvent is sent when the VTXO partial signature collection
+// timeout expires. Only AwaitingVTXOSignaturesState should handle this.
+type VTXOSignaturesTimeoutEvent struct{}
+
+// eventSealed marks VTXOSignaturesTimeoutEvent as implementing the sealed Event
+// interface.
+func (e *VTXOSignaturesTimeoutEvent) eventSealed() {}
+
+// ClientVTXOPartialSigsEvent is sent when a client submits their MuSig2 partial
+// signatures for VTXO tree transactions. Signatures are grouped by signing key
+// so a client can submit all of its keys in a single message.
+type ClientVTXOPartialSigsEvent struct {
+	// ClientID identifies which client is submitting signatures.
+	ClientID clientconn.ClientID
+
+	// Signatures maps signing key hex -> txid -> partial signature.
+	Signatures map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature
+}
+
+// eventSealed marks ClientVTXOPartialSigsEvent as implementing the sealed Event
+// interface.
+func (e *ClientVTXOPartialSigsEvent) eventSealed() {}
 
 // ServerSignInputsEvent is an internal event that triggers the server to sign
 // all inputs in the PSBT. This includes signing the operator's part of the

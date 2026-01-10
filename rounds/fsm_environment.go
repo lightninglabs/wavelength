@@ -51,6 +51,9 @@ type Environment struct {
 
 	// RoundStore provides persistent storage for rounds.
 	RoundStore RoundStore
+
+	// VTXOStore provides persistent storage for VTXOs.
+	VTXOStore VTXOStore
 }
 
 // Name returns the unique identifier for this FSM instance.

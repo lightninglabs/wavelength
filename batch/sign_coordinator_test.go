@@ -459,14 +459,14 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 
 			c1Sigs, err := c1Session.Signatures(false)
 			require.NoError(t, err)
-			err = coordinator.AddPartialSignatures(
+			_, err = coordinator.AddPartialSignatures(
 				client1Key, c1Sigs,
 			)
 			require.NoError(t, err)
 
 			c2Sigs, err := c2Session.Signatures(false)
 			require.NoError(t, err)
-			err = coordinator.AddPartialSignatures(
+			_, err = coordinator.AddPartialSignatures(
 				client2Key, c2Sigs,
 			)
 			require.NoError(t, err)
@@ -678,7 +678,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 			unknownTxID: {},
 		}
 
-		err = coordinator.AddPartialSignatures(clientKey, sigs)
+		_, err = coordinator.AddPartialSignatures(clientKey, sigs)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "not found")
 	})
@@ -1018,14 +1018,14 @@ func TestEndToEndTreeSigning(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, sigsA1)
 
-		err = coordinator.AddPartialSignatures(clientAKey1, sigsA1)
+		_, err = coordinator.AddPartialSignatures(clientAKey1, sigsA1)
 		require.NoError(t, err)
 
 		sigsA2, err := sessionA2.Signatures(true)
 		require.NoError(t, err)
 		require.NotEmpty(t, sigsA2)
 
-		err = coordinator.AddPartialSignatures(clientAKey2, sigsA2)
+		_, err = coordinator.AddPartialSignatures(clientAKey2, sigsA2)
 		require.NoError(t, err)
 
 		// Client B signs.
@@ -1033,7 +1033,7 @@ func TestEndToEndTreeSigning(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, sigsB)
 
-		err = coordinator.AddPartialSignatures(clientBKey, sigsB)
+		_, err = coordinator.AddPartialSignatures(clientBKey, sigsB)
 		require.NoError(t, err)
 
 		// All signatures collected.
@@ -1227,7 +1227,7 @@ func TestTreeSigningWithSingleClient(t *testing.T) {
 	clientSigs, err := clientSession.Signatures(true)
 	require.NoError(t, err)
 
-	err = coordinator.AddPartialSignatures(clientKey, clientSigs)
+	_, err = coordinator.AddPartialSignatures(clientKey, clientSigs)
 	require.NoError(t, err)
 
 	require.True(t, coordinator.FullySigned())
@@ -1339,7 +1339,7 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 	clientSigs, err := clientSession.Signatures(true)
 	require.NoError(t, err)
 
-	err = coordinator.AddPartialSignatures(clientKey, clientSigs)
+	_, err = coordinator.AddPartialSignatures(clientKey, clientSigs)
 	require.NoError(t, err)
 
 	finalSigs, err := coordinator.AggregateSigs()

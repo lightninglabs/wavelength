@@ -26,11 +26,20 @@ stateDiagram-v2
     BatchBuildingState --> BatchBuiltState: BuildBatchTxEvent [success]
     BatchBuildingState --> FailedState: BuildBatchTxEvent [error]
 
-    BatchBuiltState --> AwaitingBoardingSigsState: PrepareClientNotificationsEvent
+    BatchBuiltState --> AwaitingVTXONoncesState: PrepareClientNotificationsEvent [has VTXOs]
+    BatchBuiltState --> AwaitingInputSigsState: PrepareClientNotificationsEvent [no VTXOs]
 
-    AwaitingBoardingSigsState --> AwaitingBoardingSigsState: ClientBoardingSignaturesEvent [partial]
-    AwaitingBoardingSigsState --> ServerSigningState: ClientBoardingSignaturesEvent [all submitted]
-    AwaitingBoardingSigsState --> FailedState: BoardingSignaturesTimeoutEvent
+    AwaitingVTXONoncesState --> AwaitingVTXONoncesState: ClientVTXONoncesEvent [partial]
+    AwaitingVTXONoncesState --> AwaitingVTXOSignaturesState: ClientVTXONoncesEvent [all submitted]
+    AwaitingVTXONoncesState --> FailedState: VTXONoncesTimeoutEvent
+
+    AwaitingVTXOSignaturesState --> AwaitingVTXOSignaturesState: ClientVTXOPartialSigsEvent [partial]
+    AwaitingVTXOSignaturesState --> AwaitingInputSigsState: ClientVTXOPartialSigsEvent [all submitted]
+    AwaitingVTXOSignaturesState --> FailedState: VTXOSignaturesTimeoutEvent
+
+    AwaitingInputSigsState --> AwaitingInputSigsState: ClientBoardingSignaturesEvent [partial]
+    AwaitingInputSigsState --> ServerSigningState: ClientBoardingSignaturesEvent [all submitted]
+    AwaitingInputSigsState --> FailedState: InputSignaturesTimeoutEvent
 
     ServerSigningState --> FinalizedState: ServerSignInputsEvent [success]
     ServerSigningState --> FailedState: ServerSignInputsEvent [error]
@@ -61,9 +70,21 @@ stateDiagram-v2
         notifications.
     end note
 
-    note right of AwaitingBoardingSigsState
-        Waiting for clients
-        to sign boarding inputs.
+    note right of AwaitingVTXONoncesState
+        Collecting MuSig2 nonces
+        from clients for VTXO
+        tree transactions.
+    end note
+
+    note right of AwaitingVTXOSignaturesState
+        Collecting MuSig2 partial
+        signatures for VTXO
+        tree transactions.
+    end note
+
+    note right of AwaitingInputSigsState
+        Waiting for clients to sign
+        inputs (boarding/forfeits).
     end note
 
     note right of ServerSigningState
@@ -90,49 +111,57 @@ stateDiagram-v2
 
 ### States
 
-| State                       | Description                                                                                        |
-|-----------------------------|----------------------------------------------------------------------------------------------------|
-| `CreatedState`              | Initial state. No clients have joined yet. Transitions to `RegistrationState` on first valid join. |
-| `RegistrationState`         | Accepting client join requests. Accumulates registrations until sealed.                            |
-| `BatchBuildingState`        | Building the commitment transaction PSBT with boarding inputs and leave outputs.                   |
-| `BatchBuiltState`           | PSBT has been funded. Prepares client notifications with batch info.                               |
-| `AwaitingBoardingSigsState` | Waiting for all clients with boarding inputs to submit their signatures.                           |
-| `ServerSigningState`        | Server signs its wallet inputs and applies client boarding signatures to finalize the PSBT.        |
-| `FinalizedState`            | Transaction is fully signed and broadcast. Waiting for on-chain confirmation.                      |
-| `ConfirmedState` (terminal) | Transaction confirmed on-chain with required confirmations. Round complete.                        |
-| `FailedState` (terminal)    | Round has failed. Clients notified, boarding inputs unlocked, resources cleaned up.                |
+| State                         | Description                                                                                        |
+|-------------------------------|----------------------------------------------------------------------------------------------------|
+| `CreatedState`                | Initial state. No clients have joined yet. Transitions to `RegistrationState` on first valid join. |
+| `RegistrationState`           | Accepting client join requests. Accumulates registrations until sealed.                            |
+| `BatchBuildingState`          | Building the commitment transaction PSBT with boarding inputs and leave outputs.                   |
+| `BatchBuiltState`             | PSBT has been funded. Prepares client notifications with batch info and VTXO tree paths.           |
+| `AwaitingVTXONoncesState`     | Collecting MuSig2 public nonces from all clients with VTXOs for VTXO tree transactions.            |
+| `AwaitingVTXOSignaturesState` | Collecting MuSig2 partial signatures from all clients with VTXOs for VTXO tree transactions.       |
+| `AwaitingInputSigsState`   | Waiting for all clients to submit input signatures (boarding inputs and/or forfeit transactions).  |
+| `ServerSigningState`          | Server signs its wallet inputs and applies client boarding signatures to finalize the PSBT.        |
+| `FinalizedState`              | Transaction is fully signed and broadcast. Waiting for on-chain confirmation.                      |
+| `ConfirmedState` (terminal)   | Transaction confirmed on-chain with required confirmations. Round complete.                        |
+| `FailedState` (terminal)      | Round has failed. Clients notified, boarding inputs unlocked, resources cleaned up.                |
 
 ### Events
 
-| Event                             | Source        | Description                                                       |
-|-----------------------------------|---------------|-------------------------------------------------------------------|
-| `ClientJoinRequestEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests. |
-| `RegistrationTimeoutEvent`        | Actor (timer) | Registration phase timeout expired.                               |
-| `SealEvent`                       | Internal      | Seals the round, preventing new registrations.                    |
-| `BuildBatchTxEvent`               | Internal      | Triggers commitment transaction PSBT construction.                |
-| `PrepareClientNotificationsEvent` | Internal      | Triggers sending batch info to clients.                           |
-| `BoardingSignaturesTimeoutEvent`  | Actor (timer) | Boarding signature collection timeout expired.                    |
-| `ClientBoardingSignaturesEvent`   | Actor         | Client submits signatures for their boarding inputs.              |
-| `ServerSignInputsEvent`           | Internal      | Triggers server to sign wallet inputs and finalize PSBT.          |
-| `TransactionConfirmedEvent`       | Actor         | Commitment transaction confirmed on-chain.                        |
+| Event                             | Source        | Description                                                            |
+|-----------------------------------|---------------|------------------------------------------------------------------------|
+| `ClientJoinRequestEvent`          | Actor         | Client wants to join the round with boarding/leave/VTXO requests.      |
+| `RegistrationTimeoutEvent`        | Actor (timer) | Registration phase timeout expired.                                    |
+| `SealEvent`                       | Internal      | Seals the round, preventing new registrations.                         |
+| `BuildBatchTxEvent`               | Internal      | Triggers commitment transaction PSBT construction.                     |
+| `PrepareClientNotificationsEvent` | Internal      | Triggers sending batch info to clients.                                |
+| `VTXONoncesTimeoutEvent`          | Actor (timer) | VTXO nonce collection timeout expired.                                 |
+| `ClientVTXONoncesEvent`           | Actor         | Client submits MuSig2 nonces for all their VTXO signing keys.          |
+| `VTXOSignaturesTimeoutEvent`      | Actor (timer) | VTXO partial signature collection timeout expired.                     |
+| `ClientVTXOPartialSigsEvent`      | Actor         | Client submits MuSig2 partial signatures for all their signing keys.   |
+| `InputSignaturesTimeoutEvent`  | Actor (timer) | Boarding signature collection timeout expired.                         |
+| `ClientBoardingSignaturesEvent`   | Actor         | Client submits signatures for their boarding inputs.                   |
+| `ServerSignInputsEvent`           | Internal      | Triggers server to sign wallet inputs and finalize PSBT.               |
+| `TransactionConfirmedEvent`       | Actor         | Commitment transaction confirmed on-chain.                             |
 
 ### Outbox Messages
 
 Messages emitted by the FSM for the actor to process:
 
-| Message                          | Description                                                           |
-|----------------------------------|-----------------------------------------------------------------------|
-| `ClientSuccessResp`              | Send success response to client with round ID.                        |
-| `ClientErrorResp`                | Send error response to client with error message.                     |
-| `ClientBatchInfo`                | Send batch PSBT and VTXO tree paths to client.                        |
-| `ClientAwaitingBoardingSigsResp` | Notify client that server is ready for boarding signatures.           |
-| `ClientRoundFailedResp`          | Notify client that their round has failed.                            |
-| `StartTimeoutReq`                | Request actor to start a phase timeout.                               |
-| `CancelTimeoutReq`               | Request actor to cancel a pending phase timeout.                      |
-| `RoundSealedReq`                 | Notify actor that round is sealed (create new round for new clients). |
-| `RoundFailedReq`                 | Notify actor that round has failed (clean up resources).              |
-| `UnlockBoardingInputsReq`        | Request actor to unlock boarding inputs after round failure.          |
-| `BroadcastRoundReq`              | Request actor to broadcast transaction and subscribe to confirmations.|
+| Message                          | Description                                                              |
+|----------------------------------|--------------------------------------------------------------------------|
+| `ClientSuccessResp`              | Send success response to client with round ID.                           |
+| `ClientErrorResp`                | Send error response to client with error message.                        |
+| `ClientBatchInfo`                | Send batch PSBT and VTXO tree paths to client.                           |
+| `ClientVTXOAggNonces`            | Send aggregated MuSig2 nonces to client for VTXO tree transactions.      |
+| `ClientVTXOAggSigs`              | Send aggregated MuSig2 signatures to client for VTXO tree transactions.  |
+| `ClientAwaitingInputSigsResp` | Notify client that server is ready for input signatures (boarding/forfeit). |
+| `ClientRoundFailedResp`          | Notify client that their round has failed.                               |
+| `StartTimeoutReq`                | Request actor to start a phase timeout.                                  |
+| `CancelTimeoutReq`               | Request actor to cancel a pending phase timeout.                         |
+| `RoundSealedReq`                 | Notify actor that round is sealed (create new round for new clients).    |
+| `RoundFailedReq`                 | Notify actor that round has failed (clean up resources).                 |
+| `UnlockBoardingInputsReq`        | Request actor to unlock boarding inputs after round failure.             |
+| `BroadcastRoundReq`              | Request actor to broadcast transaction and subscribe to confirmations.   |
 
 ## Transition Details
 
@@ -176,21 +205,66 @@ BuildBatchTxEvent:
 
 ```
 PrepareClientNotificationsEvent:
-    --> AwaitingBoardingSigsState + ClientBatchInfo (all clients)
-                                   + StartTimeoutReq(BoardingSigs)
+    [has VTXOs] --> AwaitingVTXONoncesState + ClientBatchInfo (all clients)
+                                             + StartTimeoutReq(VTXONonces)
+    [no VTXOs]  --> AwaitingInputSigsState + ClientBatchInfo (all clients)
+                                               + StartTimeoutReq(InputSigs)
 ```
 
-### AwaitingBoardingSigsState
+### AwaitingVTXONoncesState
+
+```
+ClientVTXONoncesEvent:
+    [unregistered client] --> AwaitingVTXONoncesState + ClientErrorResp
+    [no VTXOs]            --> AwaitingVTXONoncesState + ClientErrorResp
+    [already submitted]   --> AwaitingVTXONoncesState + ClientErrorResp
+    [missing keys]        --> AwaitingVTXONoncesState + ClientErrorResp
+    [invalid nonces]      --> AwaitingVTXONoncesState + ClientErrorResp
+    [partial]             --> AwaitingVTXONoncesState
+    [all submitted]       --> AwaitingVTXOSignaturesState
+                              + CancelTimeoutReq(VTXONonces)
+                              + ClientVTXOAggNonces (all clients with VTXOs)
+                              + StartTimeoutReq(VTXOSignatures)
+
+VTXONoncesTimeoutEvent:
+    --> FailedState + RoundFailedReq
+                    + UnlockBoardingInputsReq
+                    + ClientRoundFailedResp (all clients)
+```
+
+### AwaitingVTXOSignaturesState
+
+```
+ClientVTXOPartialSigsEvent:
+    [unregistered client] --> AwaitingVTXOSignaturesState + ClientErrorResp
+    [no VTXOs]            --> AwaitingVTXOSignaturesState + ClientErrorResp
+    [already submitted]   --> AwaitingVTXOSignaturesState + ClientErrorResp
+    [missing keys]        --> AwaitingVTXOSignaturesState + ClientErrorResp
+    [invalid signatures]  --> AwaitingVTXOSignaturesState + ClientErrorResp
+    [partial]             --> AwaitingVTXOSignaturesState
+    [all submitted]       --> AwaitingInputSigsState
+                              + CancelTimeoutReq(VTXOSignatures)
+                              + ClientVTXOAggSigs (all clients with VTXOs)
+                              + ClientAwaitingInputSigsResp (clients with boarding)
+                              + StartTimeoutReq(InputSigs)
+
+VTXOSignaturesTimeoutEvent:
+    --> FailedState + RoundFailedReq
+                    + UnlockBoardingInputsReq
+                    + ClientRoundFailedResp (all clients)
+```
+
+### AwaitingInputSigsState
 
 ```
 ClientBoardingSignaturesEvent:
-    [invalid]        --> AwaitingBoardingSigsState + ClientErrorResp
-    [duplicate]      --> AwaitingBoardingSigsState + ClientErrorResp
-    [partial]        --> AwaitingBoardingSigsState
-    [all submitted]  --> ServerSigningState + CancelTimeoutReq(BoardingSigs)
+    [invalid]        --> AwaitingInputSigsState + ClientErrorResp
+    [duplicate]      --> AwaitingInputSigsState + ClientErrorResp
+    [partial]        --> AwaitingInputSigsState
+    [all submitted]  --> ServerSigningState + CancelTimeoutReq(InputSigs)
                                              + internal(ServerSignInputsEvent)
 
-BoardingSignaturesTimeoutEvent:
+InputSignaturesTimeoutEvent:
     --> FailedState + RoundFailedReq
                     + UnlockBoardingInputsReq
                     + ClientRoundFailedResp (all clients)
@@ -261,10 +335,12 @@ round and the phase that scheduled the timeout. When a timeout expires, the
 actor parses this ID to route the appropriate phase-specific event (e.g.,
 `RegistrationTimeoutEvent`) to the correct round's FSM.
 
-| Phase           | Timeout Event                    | Description                            |
-|-----------------|----------------------------------|----------------------------------------|
-| `registration`  | `RegistrationTimeoutEvent`       | Registration phase timer expired.      |
-| `boarding_sigs` | `BoardingSignaturesTimeoutEvent` | Boarding signature collection expired. |
+| Phase           | Timeout Event                    | Description                                |
+|-----------------|----------------------------------|--------------------------------------------|
+| `registration`  | `RegistrationTimeoutEvent`       | Registration phase timer expired.          |
+| `vtxo_nonces`   | `VTXONoncesTimeoutEvent`         | VTXO nonce collection timer expired.       |
+| `vtxo_sigs`     | `VTXOSignaturesTimeoutEvent`     | VTXO signature collection timer expired.   |
+| `boarding_sigs` | `InputSignaturesTimeoutEvent` | Boarding signature collection expired.     |
 
 ### Transaction Broadcasting and Confirmation
 
@@ -310,3 +386,59 @@ When entering `FailedState`, the FSM emits:
 
 The actor removes failed rounds from tracking and creates a new current round
 if needed.
+
+## VTXO Tree Signing Flow
+
+When clients request VTXOs (virtual UTXOs) in a round, the commitment
+transaction includes VTXO tree outputs. Each VTXO tree contains multiple
+transactions that require MuSig2 multi-signature signing between the client
+and the operator.
+
+### MuSig2 Protocol
+
+The VTXO signing flow uses the MuSig2 two-round interactive signing protocol:
+
+1. **Nonce Generation Phase** (`AwaitingVTXONoncesState`):
+   - Each client generates public nonces for all VTXO tree transactions they
+     are involved in
+   - Clients submit nonces grouped by their signing keys (one key per VTXO)
+   - The FSM aggregates nonces from all participants and broadcasts aggregated
+     nonces back to clients
+   - Clients must submit nonces for **all** their signing keys atomically
+     (partial key submission is rejected)
+
+2. **Signature Generation Phase** (`AwaitingVTXOSignaturesState`):
+   - Clients use the aggregated nonces to generate partial signatures for each
+     transaction
+   - Clients submit partial signatures grouped by their signing keys
+   - The FSM aggregates partial signatures into final schnorr signatures
+   - Clients must submit signatures for **all** their signing keys atomically
+   - Final aggregated signatures are sent back to clients for storage
+
+### Multi-Key Handling
+
+Clients with multiple VTXO requests have multiple signing keys (one per VTXO).
+The FSM enforces atomic submission semantics:
+
+- Nonces and signatures are grouped by `SigningKeyHex` (33-byte compressed
+  public key)
+- The FSM validates that clients submit data for **all** their registered keys
+  in a single message
+- Partial submissions (e.g., submitting nonces for only 2 out of 3 keys) are
+  rejected with `ClientErrorResp`
+- This ensures consistent state and prevents incomplete signing sessions
+
+### VTXO Tree Path Extraction
+
+When preparing client notifications in `BatchBuiltState`, the FSM extracts
+client-specific VTXO tree paths using `batch.ExtractClientVTXOPaths()`. This
+filters the full VTXO trees to only include transactions where the client is
+a cosigner, reducing the data sent to clients and the number of signatures
+required.
+
+### Optional VTXO Signing
+
+If a round has no VTXO requests (only boarding and leave requests),
+`BatchBuiltState` skips the VTXO signing states and transitions directly to
+`AwaitingInputSigsState`. This optimization avoids unnecessary MuSig2
+protocol rounds when there are no VTXOs to sign.
