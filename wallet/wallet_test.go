@@ -62,6 +62,18 @@ func (m *MockBoardingBackend) ListUnspent(ctx context.Context,
 	return args.Get(0).([]*Utxo), args.Error(1)
 }
 
+func (m *MockBoardingBackend) GetTransaction(ctx context.Context,
+	txid chainhash.Hash) (*wire.MsgTx, error) {
+
+	args := m.Called(ctx, txid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	//nolint:forcetypeassert
+	return args.Get(0).(*wire.MsgTx), args.Error(1)
+}
+
 // MockBoardingStore implements BoardingStore for testing.
 type MockBoardingStore struct {
 	mock.Mock
@@ -425,7 +437,24 @@ func TestProcessNewUtxo(t *testing.T) {
 		ExitDelay:   144,
 	}
 
+	// Create a test UTXO outpoint.
+	testOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11, 0x22},
+		Index: 0,
+	}
+
+	// Create a mock transaction with the expected output.
+	mockTx := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 100000, PkScript: pkScript},
+		},
+	}
+
 	backend := &MockBoardingBackend{}
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint.Hash,
+	).Return(mockTx, nil)
+
 	store := &MockBoardingStore{}
 	store.On(
 		"LookupBoardingAddress", mock.Anything, pkScript,
@@ -461,12 +490,6 @@ func TestProcessNewUtxo(t *testing.T) {
 
 	result := walletActor.Receive(t.Context(), req)
 	require.True(t, result.IsOk())
-
-	// Create a test UTXO.
-	testOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
-		Index: 0,
-	}
 
 	testUtxo := &Utxo{
 		Outpoint:      testOutpoint,
@@ -513,6 +536,7 @@ func TestProcessNewUtxo(t *testing.T) {
 		// Expected - no duplicate notification.
 	}
 
+	backend.AssertExpectations(t)
 	store.AssertExpectations(t)
 }
 
@@ -557,7 +581,36 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 		ExitDelay:   144,
 	}
 
+	// Define test outpoints upfront so we can mock GetTransaction.
+	testOutpoint1 := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11, 0x22},
+		Index: 0,
+	}
+	testOutpoint2 := wire.OutPoint{
+		Hash:  chainhash.Hash{0x33, 0x44},
+		Index: 0,
+	}
+
+	// Create mock transactions with the expected outputs.
+	mockTx1 := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 100000, PkScript: pkScript},
+		},
+	}
+	mockTx2 := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 200000, PkScript: pkScript},
+		},
+	}
+
 	backend := &MockBoardingBackend{}
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint1.Hash,
+	).Return(mockTx1, nil)
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint2.Hash,
+	).Return(mockTx2, nil)
+
 	store := &MockBoardingStore{}
 	store.On(
 		"LookupBoardingAddress", mock.Anything, pkScript,
@@ -605,12 +658,8 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	require.True(t, result.IsOk())
 
 	// Create a test UTXO with only 3 confirmations.
-	testOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x11, 0x22},
-		Index: 0,
-	}
 	testUtxo := &Utxo{
-		Outpoint:      testOutpoint,
+		Outpoint:      testOutpoint1,
 		PkScript:      pkScript,
 		Amount:        100000,
 		Confirmations: 3,
@@ -624,7 +673,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	// Low-conf notifier should receive notification (3 >= 1).
 	select {
 	case event := <-lowConfRef.Messages():
-		require.Equal(t, testOutpoint, event.Outpoint)
+		require.Equal(t, testOutpoint1, event.Outpoint)
 
 	default:
 		t.Fatal("low-conf notifier should have received notification")
@@ -644,10 +693,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
 
 	testUtxo2 := &Utxo{
-		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{0x33, 0x44},
-			Index: 0,
-		},
+		Outpoint:      testOutpoint2,
 		PkScript:      pkScript,
 		Amount:        200000,
 		Confirmations: 6,
@@ -672,6 +718,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 		t.Fatal("high-conf notifier should have received notification")
 	}
 
+	backend.AssertExpectations(t)
 	store.AssertExpectations(t)
 }
 
