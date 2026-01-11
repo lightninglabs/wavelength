@@ -106,6 +106,14 @@ type BoardingBackend interface {
 	ListUnspent(
 		ctx context.Context, minConfs, maxConfs int32,
 	) ([]*Utxo, error)
+
+	// GetTransaction returns the full transaction for a given txid. This
+	// is used to fetch the transaction data when a new boarding UTXO is
+	// detected, allowing the round actor to validate outputs and construct
+	// TxProofs.
+	GetTransaction(
+		ctx context.Context, txid chainhash.Hash,
+	) (*wire.MsgTx, error)
 }
 
 // Utxo represents an unspent transaction output returned by ListUnspent. This

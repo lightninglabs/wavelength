@@ -432,12 +432,23 @@ func (a *Ark) processUtxo(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 	)
 
+	// Fetch the full transaction to populate ChainInfo.ConfTx. This is
+	// needed by the round FSM to extract the output value.
+	confTx, err := a.backend.GetTransaction(ctx, utxo.Outpoint.Hash)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to fetch boarding transaction", err,
+			btclog.Fmt("txid", "%v", utxo.Outpoint.Hash))
+
+		return
+	}
+
 	intent := BoardingIntent{
 		Address:  *addr,
 		Outpoint: utxo.Outpoint,
 		ChainInfo: BoardingChainInfo{
 			ConfHeight: epoch.Height,
 			ConfHash:   epoch.Hash,
+			ConfTx:     confTx,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,
 		},
