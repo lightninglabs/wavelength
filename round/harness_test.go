@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -334,7 +335,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 
 	env := NewClientEnvironment(
 		roundStore, vtxoStore, wallet, terms,
-		&chaincfg.RegressionNetParams,
+		&chaincfg.RegressionNetParams, btclog.Disabled,
 	)
 
 	h := &boardingTestHarness{
