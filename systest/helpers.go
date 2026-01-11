@@ -386,6 +386,26 @@ func (f *BoardingWalletFixture) AssertIntentStored(
 		10000,
 	)
 
+	// Verify the confirmation transaction was fetched. This is critical for
+	// the round FSM to extract output values and construct TxProofs.
+	require.NotNil(
+		f.T, found.ChainInfo.ConfTx,
+		"confirmation transaction should be populated",
+	)
+
+	// Verify the transaction contains the expected output at the index
+	// specified by the outpoint.
+	outIdx := found.Outpoint.Index
+	require.Less(
+		f.T, int(outIdx), len(found.ChainInfo.ConfTx.TxOut),
+		"outpoint index out of range",
+	)
+	txOut := found.ChainInfo.ConfTx.TxOut[outIdx]
+	require.InDelta(
+		f.T, int64(expectedAmount), txOut.Value, 10000,
+		"transaction output value should match expected amount",
+	)
+
 	return found
 }
 
