@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -69,7 +71,7 @@ func selfLoop(state ClientState) *ClientStateTransition {
 
 // ProcessEvent handles the events from the Idle state. In this state, we'll
 // receive boarding UTXO confirmations or resume existing boarding flows.
-func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
+func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
@@ -77,10 +79,15 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 		// If for some reason, there aren't any new intents, then we'll
 		// stay in the idle state.
 		if len(evt.Intents) == 0 {
+			env.Log.DebugS(ctx, "ResumeBoardingIntents received with no intents")
+
 			return &ClientStateTransition{
 				NextState: s,
 			}, nil
 		}
+
+		env.Log.InfoS(ctx, "Resuming boarding intents",
+			slog.Int("intent_count", len(evt.Intents)))
 
 		// Otherwise, we'll start to assemble a round with the resumed
 		// intents.
@@ -91,6 +98,10 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 		}, nil
 
 	case *BoardingUTXOConfirmed:
+		env.Log.InfoS(ctx, "Processing boarding UTXO confirmation in Idle state",
+			btclog.Fmt("outpoint", "%v", evt.Outpoint),
+			slog.Int("block_height", int(evt.BlockHeight)))
+
 		// A boarding UTXO was confirmed. The wallet has already
 		// persisted the intent; we just need to create an internal
 		// BoardingIntent and transition to PendingRoundAssembly.
@@ -167,6 +178,10 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 		intentMap := make(map[wire.OutPoint]BoardingIntent)
 		intentMap[evt.Outpoint] = intent
 
+		env.Log.InfoS(ctx, "Transitioning to PendingRoundAssembly",
+			slog.Int("amount", int(chainInfo.Amount)),
+			btclog.Fmt("outpoint", "%v", evt.Outpoint))
+
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Intents: intentMap,
@@ -182,13 +197,16 @@ func (s *Idle) ProcessEvent(_ context.Context, event ClientEvent,
 // ProcessEvent for PendingRoundAssembly tracks confirmed boarding intents and
 // transitions to registration once all are ready.
 func (s *PendingRoundAssembly) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	// A new boarding UTXO was confirmed. The wallet handles persistence;
 	// we just add to our internal map.
 	case *BoardingUTXOConfirmed:
+		env.Log.InfoS(ctx, "Additional boarding UTXO confirmed during assembly",
+			btclog.Fmt("outpoint", "%v", evt.Outpoint),
+			slog.Int("current_intent_count", len(s.Intents)))
 		if evt.Tx == nil {
 			return failWithNotification(
 				"confirmation event missing transaction",
@@ -272,6 +290,9 @@ func (s *PendingRoundAssembly) ProcessEvent(
 	// round. We'll send a message to the server using our outbox, then
 	// transition to the next phase.
 	case *RegistrationRequested:
+		env.Log.InfoS(ctx, "Registration requested, preparing to join round",
+			slog.Int("intent_count", len(s.Intents)))
+
 		// Extract the set of values from the intent map, as we don't
 		// need to track them by outpoint any longer.
 		//
@@ -301,6 +322,10 @@ func (s *PendingRoundAssembly) ProcessEvent(
 				true, fn.None[RoundID](),
 			), nil
 		}
+
+		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
+			slog.Int("boarding_requests", len(boardingReqs)),
+			slog.Int("vtxo_requests", len(vtxoReqs)))
 
 		// With all this extracted, we'll now send the JoinRoundRequest
 		// to kick off the signing process.
@@ -335,11 +360,15 @@ func (s *PendingRoundAssembly) ProcessEvent(
 
 // ProcessEvent for RegistrationSentState.
 func (s *RegistrationSentState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *RoundJoined:
+		env.Log.InfoS(ctx, "Successfully joined round",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int("intent_count", len(s.Intents)))
+
 		return &ClientStateTransition{
 			NextState: &RoundJoinedState{
 				RoundID: evt.RoundID,
@@ -366,16 +395,22 @@ func (s *RegistrationSentState) ProcessEvent(
 
 // ProcessEvent for RoundJoinedState.
 func (s *RoundJoinedState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *CommitmentTxBuilt:
+		txid := evt.Tx.UnsignedTx.TxHash()
+		env.Log.InfoS(ctx, "Received commitment transaction from server",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.String("commitment_txid", txid.String()),
+			slog.Int("vtxo_tree_count", len(evt.VTXOTreePaths)))
+
 		return &ClientStateTransition{
 			NextState: &CommitmentTxReceivedState{
 				RoundID:       evt.RoundID,
 				CommitmentTx:  evt.Tx,
-				TxID:          evt.Tx.UnsignedTx.TxHash(),
+				TxID:          txid,
 				VTXOTreePaths: evt.VTXOTreePaths,
 				Intents:       slices.Clone(s.Intents),
 				ClientTrees:   make(map[SignerKey]*tree.Tree),
@@ -434,17 +469,24 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 //
 //nolint:ll
 func (s *CommitmentTxReceivedState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *CommitmentTxBuilt:
+		env.Log.InfoS(ctx, "Validating commitment transaction",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("intent_count", len(s.Intents)))
+
 		// First, well make sure that all boarding UTXOs are present
 		// in the round transaction and build the outpoint-to-index map.
 		boardingInputIndices, err := validateBoardingInputs(
 			s.CommitmentTx.UnsignedTx, s.Intents,
 		)
 		if err != nil {
+			env.Log.WarnS(ctx, "Commitment tx validation failed", err,
+				slog.String("round_id", s.RoundID.String()))
+
 			return &ClientStateTransition{
 				NextState: &ClientFailedState{
 					Reason: "commitment tx " +
@@ -454,6 +496,9 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 				},
 			}, nil
 		}
+
+		env.Log.DebugS(ctx, "Validated boarding inputs in commitment tx",
+			slog.Int("boarding_input_count", len(boardingInputIndices)))
 
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
@@ -549,6 +594,11 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		//   * connector tree
 		//   * outputs on commit, etc
 
+		env.Log.InfoS(ctx, "Commitment transaction validated successfully",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("client_trees", len(clientTrees)),
+			slog.Int("vtxo_tree_count", len(s.VTXOTreePaths)))
+
 		// We'll now transition to the CommitmentTxValidatedState, and
 		// emit an internal generate nonces event so we can propagate
 		// the state.
@@ -583,11 +633,15 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 
 // ProcessEvent for CommitmentTxValidatedState.
 func (s *CommitmentTxValidatedState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch event.(type) {
 	case *GenerateNonces:
+		env.Log.InfoS(ctx, "Generating MuSig2 nonces for VTXO tree signing",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("intent_count", len(s.Intents)))
+
 		// At this point, all the basic validation checks have passed.
 		// So now we'll generate a musig2 session to create nonces to
 		// sign the VTXO tree. Each VTXO that we created will
@@ -651,6 +705,11 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			allNonces[signerKey] = nonces
 		}
 
+		env.Log.InfoS(ctx, "Generated MuSig2 nonces, sending to server",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("session_count", len(musig2Sessions)),
+			slog.Int("signer_key_count", len(allNonces)))
+
 		// MuSig2 nonces have been generated locally. Send them to the
 		// server to participate in the aggregated nonce computation.
 		nonceMsg := &SubmitNoncesRequest{
@@ -681,11 +740,15 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 
 // ProcessEvent for NoncesSentState.
 func (s *NoncesSentState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *NoncesAggregated:
+		env.Log.InfoS(ctx, "Received aggregated nonces from server",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int("agg_nonce_count", len(evt.AggNonces)))
+
 		// Received aggregated nonces from the server. Now register
 		// them with our signing session and generate partial
 		// signatures.
@@ -709,6 +772,9 @@ func (s *NoncesSentState) ProcessEvent(
 					"combined nonces: %w", err)
 			}
 		}
+
+		env.Log.DebugS(ctx, "Registered aggregated nonces with signing sessions",
+			slog.Int("session_count", len(s.Musig2Sessions)))
 
 		return &ClientStateTransition{
 			NextState: &NoncesAggregatedState{
@@ -745,11 +811,15 @@ func (s *NoncesSentState) ProcessEvent(
 
 // ProcessEvent for NoncesAggregatedState.
 func (s *NoncesAggregatedState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch event.(type) {
 	case *GeneratePartialSigs:
+		env.Log.InfoS(ctx, "Generating partial signatures for VTXO tree",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("session_count", len(s.Musig2Sessions)))
+
 		// At this stage, the nonces have been aggregated for each
 		// client, so now we'll generate and send our partial
 		// signatures. The server expects signatures grouped by signer
@@ -776,6 +846,10 @@ func (s *NoncesAggregatedState) ProcessEvent(
 			RoundID:    s.RoundID,
 			Signatures: allSignatures,
 		}
+
+		env.Log.InfoS(ctx, "Sending partial signatures to server",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("signer_key_count", len(allSignatures)))
 
 		// Partial MuSig2 signatures have been generated using the
 		// aggregated nonces. Send them to the server for signature
@@ -808,6 +882,10 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 	switch evt := event.(type) {
 	case *OperatorSigned:
+		env.Log.InfoS(ctx, "Received aggregated signatures from operator",
+			slog.String("round_id", evt.RoundID.String()),
+			slog.Int("agg_sig_count", len(evt.AggSigs)))
+
 		// At this point, Received complete VTXT signatures from the
 		// server after the operator aggregated all partial signatures.
 		//
@@ -838,6 +916,10 @@ func (s *PartialSigsSentState) ProcessEvent(
 				}, nil
 			}
 		}
+
+		env.Log.InfoS(ctx, "Validated aggregated signatures, signing boarding inputs",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("intent_count", len(s.Intents)))
 
 		// Now that we know all the signatures are valid, we'll sign
 		// off on each of our boarding inputs sent to the server.
@@ -961,6 +1043,10 @@ func (s *PartialSigsSentState) ProcessEvent(
 			BoardingIntents: adoptedIntents,
 		}
 
+		env.Log.InfoS(ctx, "Signed boarding inputs, checkpointing round state",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("boarding_sig_count", len(boardingInputSigs)))
+
 		// Checkpoint round data + FSM state atomically at the "point
 		// of no return". The next state is persisted so restart can
 		// recover to InputSigSentState.
@@ -977,6 +1063,10 @@ func (s *PartialSigsSentState) ProcessEvent(
 			return nil, fmt.Errorf("failed to commit round "+
 				"state: %w", err)
 		}
+
+		env.Log.InfoS(ctx, "Round state checkpointed at point of no return",
+			slog.String("round_id", s.RoundID.String()),
+			slog.String("commitment_txid", txid.String()))
 
 		checkpointNotify := &RoundCheckpointedNotification{
 			RoundID: s.RoundID,
@@ -1057,6 +1147,10 @@ func (s *InputSigSentState) ProcessEvent(
 
 	switch evt := event.(type) {
 	case *BoardingFailed:
+		env.Log.WarnS(ctx, "Boarding failed while awaiting confirmation", nil,
+			slog.String("round_id", s.RoundID.String()),
+			slog.String("reason", evt.Reason))
+
 		return &ClientStateTransition{
 			NextState: &ClientFailedState{
 				Reason:      evt.Reason,
@@ -1066,6 +1160,12 @@ func (s *InputSigSentState) ProcessEvent(
 		}, nil
 
 	case *BoardingConfirmed:
+		env.Log.InfoS(ctx, "Commitment transaction confirmed",
+			slog.String("round_id", s.RoundID.String()),
+			slog.String("txid", evt.TxID.String()),
+			slog.Int("block_height", int(evt.BlockHeight)),
+			slog.Int("confirmations", int(evt.Confirmations)))
+
 		vtxos, err := buildClientVTXOs(
 			s.Intents, s.ClientTrees, s.RoundID,
 		)
@@ -1080,11 +1180,19 @@ func (s *InputSigSentState) ProcessEvent(
 			}, nil
 		}
 
+		env.Log.InfoS(ctx, "Built client VTXOs from confirmed transaction",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("vtxo_count", len(vtxos)))
+
 		// Persist VTXOs with their extracted tree paths for future
 		// spending.
 		if err := env.VTXOStore.SaveVTXOs(ctx, vtxos); err != nil {
 			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
 		}
+
+		env.Log.InfoS(ctx, "Saved VTXOs to store, round complete",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("vtxo_count", len(vtxos)))
 
 		confInfo := ConfInfo{
 			Height:    evt.BlockHeight,
@@ -1146,11 +1254,16 @@ func (s *ConfirmedState) ProcessEvent(_ context.Context, event ClientEvent,
 // after a failure. Instead of duplicating the Idle logic, we transition to
 // Idle and forward the event as an internal event for Idle to process.
 func (s *ClientFailedState) ProcessEvent(
-	_ context.Context, event ClientEvent, env *ClientEnvironment,
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *RecoveryInitiated:
+		env.Log.InfoS(ctx, "Initiating CSV timeout recovery",
+			btclog.Fmt("outpoint", "%v", evt.Outpoint),
+			slog.String("sweep_txid", evt.SweepTxID.String()),
+			slog.String("reason", evt.Reason))
+
 		// Initiate CSV timeout recovery to sweep the boarding UTXO
 		// back to the client's wallet after the relative timelock
 		// expires.
@@ -1169,6 +1282,9 @@ func (s *ClientFailedState) ProcessEvent(
 			return selfLoop(s), nil
 		}
 
+		env.Log.InfoS(ctx, "Recovering from failed state with resumed intents",
+			slog.Int("intent_count", len(evt.Intents)))
+
 		return &ClientStateTransition{
 			NextState: &Idle{},
 			NewEvents: fn.Some(ClientEmittedEvent{
@@ -1177,6 +1293,9 @@ func (s *ClientFailedState) ProcessEvent(
 		}, nil
 
 	case *BoardingUTXOConfirmed:
+		env.Log.InfoS(ctx, "Recovering from failed state with new boarding confirmation",
+			btclog.Fmt("outpoint", "%v", evt.Outpoint))
+
 		// Recovery path: transition to Idle and forward the event
 		// to be processed there. This avoids duplicating the
 		// BoardingUTXOConfirmed handling logic.
