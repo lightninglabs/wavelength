@@ -2,6 +2,7 @@ package round
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
@@ -28,6 +29,9 @@ type ClientEnvironment struct {
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
+
+	// Log is the logger for FSM transitions and operations.
+	Log btclog.Logger
 }
 
 // Name returns the unique identifier for this FSM instance.
@@ -39,7 +43,7 @@ func (e *ClientEnvironment) Name() string {
 // dependencies.
 func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
-	chainParams *chaincfg.Params) *ClientEnvironment {
+	chainParams *chaincfg.Params, logger btclog.Logger) *ClientEnvironment {
 
 	return &ClientEnvironment{
 		RoundStore:    roundStore,
@@ -47,5 +51,6 @@ func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 		Wallet:        wallet,
 		OperatorTerms: terms,
 		ChainParams:   chainParams,
+		Log:           logger,
 	}
 }
