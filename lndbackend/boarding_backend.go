@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -85,6 +86,20 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	}
 
 	return utxos, nil
+}
+
+// GetTransaction returns the full transaction for a given txid. This is used
+// to fetch transaction data when a new boarding UTXO is detected, allowing the
+// round actor to validate outputs and construct TxProofs.
+func (l *BoardingBackend) GetTransaction(ctx context.Context,
+	txid chainhash.Hash) (*wire.MsgTx, error) {
+
+	txn, err := l.walletKit.GetTransaction(ctx, txid)
+	if err != nil {
+		return nil, fmt.Errorf("get transaction: %w", err)
+	}
+
+	return txn.Tx, nil
 }
 
 // Compile-time check that BoardingBackend implements wallet.BoardingBackend.
