@@ -3,6 +3,7 @@ package rounds
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -199,20 +200,6 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	error) {
 
-	env := &Environment{
-		RoundID:             round.RoundID,
-		ChainParams:         a.cfg.ChainParams,
-		BoardingInputLocker: a.cfg.BoardingInputLocker,
-		ChainSource:         a.cfg.ChainSource,
-		WalletController:    a.cfg.WalletController,
-		FeeEstimator:        a.cfg.FeeEstimator,
-		WalletAccount:       a.cfg.WalletAccount,
-		Terms:               a.cfg.Terms,
-		ForfeitScript:       a.cfg.ForfeitScript,
-		RoundStore:          a.cfg.RoundStore,
-		VTXOStore:           a.cfg.VTXOStore,
-	}
-
 	// Create the FSM starting in FinalizedState since the round was already
 	// signed and persisted.
 	initialState := &FinalizedState{
@@ -222,16 +209,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		ForfeitInfos:        round.ForfeitInfos,
 	}
 
-	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
-	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
-	fsmCfg := StateMachineCfg{
-		InitialState:  initialState,
-		Env:           env,
-		Logger:        fsmLogger,
-		ErrorReporter: newLoggingErrorReporter(fsmLogger),
-	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
+	fsm := a.buildAndStartRoundFSM(ctx, round.RoundID, initialState)
 
 	// Re-subscribe to confirmation notifications.
 	broadcastReq := &BroadcastRoundReq{
@@ -243,16 +221,54 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 			"confirmation: %w", err)
 	}
 
+	return fsm, nil
+}
+
+func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
+	state State) *RoundFSM {
+
+	fsmPrefix := roundID.LogPrefix()
+	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
+
+	env := &Environment{
+		RoundID:             roundID,
+		Log:                 fsmLogger,
+		ChainParams:         a.cfg.ChainParams,
+		BoardingInputLocker: a.cfg.BoardingInputLocker,
+		ChainSource:         a.cfg.ChainSource,
+		Terms:               a.cfg.Terms,
+		ForfeitScript:       a.cfg.ForfeitScript,
+		WalletController:    a.cfg.WalletController,
+		FeeEstimator:        a.cfg.FeeEstimator,
+		WalletAccount:       a.cfg.WalletAccount,
+		ConfTarget:          a.cfg.ConfTarget,
+		MinConfs:            a.cfg.MinConfs,
+		RoundStore:          a.cfg.RoundStore,
+		VTXOStore:           a.cfg.VTXOStore,
+	}
+
+	fsmCfg := StateMachineCfg{
+		InitialState:  state,
+		Env:           env,
+		Logger:        a.log.WithPrefix(fsmPrefix),
+		ErrorReporter: newLoggingErrorReporter(fsmLogger),
+	}
+	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm.Start(ctx)
+
 	return &RoundFSM{
 		FSM:     &fsm,
-		RoundID: round.RoundID,
-	}, nil
+		RoundID: roundID,
+	}
 }
 
 // Receive processes an actor message and returns a response. This is the main
 // entry point for the actor.
 func (a *Actor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
+
+	a.log.DebugS(ctx, "Received actor message",
+		slog.String("msg_type", msg.MessageType()))
 
 	switch m := msg.(type) {
 	case *JoinRoundRequest:
@@ -268,6 +284,9 @@ func (a *Actor) Receive(ctx context.Context,
 		return a.handleConfirmation(ctx, m)
 
 	default:
+		a.log.WarnS(ctx, "Unknown message type", nil,
+			slog.String("msg_type", msg.MessageType()))
+
 		return fn.Err[ActorResp](fmt.Errorf(
 			"unknown message type: %T", m))
 	}
@@ -449,39 +468,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		return nil, fmt.Errorf("unable to generate round ID: %w", err)
 	}
 
-	fsmPrefix := roundID.LogPrefix()
-	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
-
-	env := &Environment{
-		RoundID:             roundID,
-		Log:                 fsmLogger,
-		ChainParams:         a.cfg.ChainParams,
-		BoardingInputLocker: a.cfg.BoardingInputLocker,
-		ChainSource:         a.cfg.ChainSource,
-		Terms:               a.cfg.Terms,
-		ForfeitScript:       a.cfg.ForfeitScript,
-		WalletController:    a.cfg.WalletController,
-		FeeEstimator:        a.cfg.FeeEstimator,
-		WalletAccount:       a.cfg.WalletAccount,
-		ConfTarget:          a.cfg.ConfTarget,
-		MinConfs:            a.cfg.MinConfs,
-		RoundStore:          a.cfg.RoundStore,
-		VTXOStore:           a.cfg.VTXOStore,
-	}
-
-	fsmCfg := StateMachineCfg{
-		InitialState:  &CreatedState{},
-		Env:           env,
-		Logger:        a.log.WithPrefix(fsmPrefix),
-		ErrorReporter: newLoggingErrorReporter(fsmLogger),
-	}
-	fsm := protofsm.NewStateMachine(fsmCfg)
-	fsm.Start(ctx)
-
-	return &RoundFSM{
-		FSM:     &fsm,
-		RoundID: roundID,
-	}, nil
+	return a.buildAndStartRoundFSM(ctx, roundID, &CreatedState{}), nil
 }
 
 // handleJoinRoundRequest processes a JoinRoundRequest message by forwarding it

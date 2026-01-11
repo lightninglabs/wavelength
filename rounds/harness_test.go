@@ -3,6 +3,7 @@ package rounds
 import (
 	"context"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -139,13 +140,17 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	// Generate a sweep key for VTXO trees.
 	sweepKey, _ := testutils.CreateKey(2)
 
+	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	rootLog := btclog.NewSLogger(logHandler.SubSystem(Subsystem))
+	rootLog.SetLevel(btclog.LevelTrace)
+
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
 		BoardingInputLocker: common.boardingLocker,
 		ChainSource:         common.chainSource,
 		FeeEstimator:        common.feeEstimator,
-		Log:                 btclog.Disabled,
+		Log:                 rootLog,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
 		VTXOStore:           common.vtxoStore,

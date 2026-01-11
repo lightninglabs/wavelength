@@ -1824,7 +1824,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				client.createInputSignaturesEvent(awaitState)
 
 			transition, err := awaitState.handleInputSignatures(
-				sigEvent, h.env,
+				t.Context(), sigEvent, h.env,
 			)
 			require.NoError(t, err)
 

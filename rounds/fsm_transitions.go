@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sort"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -32,7 +33,10 @@ var (
 func unexpectedEvent(state State, stateName string, event Event,
 	env *Environment) *StateTransition {
 
-	env.Log.Warnf("%s: ignoring unexpected event: %T", stateName, event)
+	env.Log.WarnS(context.Background(), "Ignoring unexpected event", nil,
+		slog.String("state", stateName),
+		slog.String("event_type", fmt.Sprintf("%T", event)),
+	)
 
 	return &StateTransition{
 		NextState: state,
@@ -60,17 +64,26 @@ func clientErrorTransition(state State, clientID ClientID,
 func lockBoardingInputs(ctx context.Context, env *Environment,
 	inputs []*BoardingInput) error {
 
+	env.Log.DebugS(ctx, "Locking boarding inputs",
+		LogInputCount(len(inputs)))
+
 	for _, input := range inputs {
 		err := env.BoardingInputLocker.Lock(
 			ctx, input.Outpoint, env.RoundID,
 		)
 		if err != nil {
+			env.Log.WarnS(ctx, "Failed to lock boarding input", err,
+				LogOutpoint(input.Outpoint))
+
 			// If we fail to lock the boarding input, return an
 			// error to the client but remain in the current state.
 			return fmt.Errorf("failed to lock boarding "+
 				"input %v: %v", input.Outpoint, err)
 		}
 	}
+
+	env.Log.DebugS(ctx, "Boarding inputs locked successfully",
+		LogInputCount(len(inputs)))
 
 	return nil
 }
@@ -200,12 +213,25 @@ func newClientRegistration(clientID ClientID,
 func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("Created"),
+		LogEvent(event))
+
 	switch evt := event.(type) {
 	case *ClientJoinRequestEvent:
+		env.Log.DebugS(ctx, "First client joining round",
+			LogClientID(evt.ClientID),
+			LogVTXOCount(len(evt.Request.VTXOReqs)),
+			LogBoardingCount(len(evt.Request.BoardingReqs)),
+			LogLeaveCount(len(evt.Request.LeaveReqs)))
+
 		// Validate the join request. If this fails, this is not an FSM
 		// error, but we should respond to the client accordingly.
 		result, err := ValidateJoinRequest(ctx, env, evt.Request)
 		if err != nil {
+			env.Log.WarnS(ctx, "Join request validation failed", err,
+				LogClientID(evt.ClientID))
+
 			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
 				err)
 
@@ -240,6 +266,9 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		clientRegs := map[clientconn.ClientID]*ClientRegistration{
 			evt.ClientID: reg,
 		}
+
+		env.Log.InfoS(ctx, "First client registered, starting registration phase",
+			LogClientID(evt.ClientID))
 
 		return &StateTransition{
 			NextState: newRegistrationState(clientRegs),
@@ -278,10 +307,24 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("Registration"),
+		LogEvent(event),
+		LogClientCount(len(s.ClientRegistrations)))
+
 	switch evt := event.(type) {
 	case *ClientJoinRequestEvent:
+		env.Log.DebugS(ctx, "Client requesting to join",
+			LogClientID(evt.ClientID),
+			LogVTXOCount(len(evt.Request.VTXOReqs)),
+			LogBoardingCount(len(evt.Request.BoardingReqs)),
+			LogLeaveCount(len(evt.Request.LeaveReqs)))
+
 		// Check if client is already registered in this round.
 		if s.isClientRegistered(evt.ClientID) {
+			env.Log.WarnS(ctx, "Client already registered", nil,
+				LogClientID(evt.ClientID))
+
 			return clientErrorTransition(
 				s, evt.ClientID, "client already registered",
 			), nil
@@ -290,6 +333,9 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		// Validate the join request.
 		result, err := ValidateJoinRequest(ctx, env, evt.Request)
 		if err != nil {
+			env.Log.WarnS(ctx, "Join request validation failed", err,
+				LogClientID(evt.ClientID))
+
 			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
 				err)
 
@@ -319,6 +365,11 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
+		newClientCount := len(s.ClientRegistrations) + 1
+		env.Log.InfoS(ctx, "Client registered successfully",
+			LogClientID(evt.ClientID),
+			LogClientCount(newClientCount))
+
 		return &StateTransition{
 			NextState: s.withNewClient(evt.ClientID, result),
 			NewEvents: fn.Some(EmittedEvent{
@@ -332,6 +383,9 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *RegistrationTimeoutEvent:
+		env.Log.InfoS(ctx, "Registration timeout, sealing round",
+			LogClientCount(len(s.ClientRegistrations)))
+
 		// Registration timeout expired. Emit internal SealEvent to seal
 		// the round and outbox RoundSealedReq to notify actor.
 		return &StateTransition{
@@ -349,6 +403,9 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *SealEvent:
+		env.Log.InfoS(ctx, "Registration sealed, building batch",
+			LogClientCount(len(s.ClientRegistrations)))
+
 		// Registration is closed. Transition to BatchBuildingState with
 		// internal event to trigger PSBT construction.
 		return &StateTransition{
@@ -370,6 +427,10 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 // ProcessEvent handles the events from the BatchBuildingState state.
 func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("BatchBuilding"),
+		LogEvent(event))
 
 	switch event.(type) {
 	case *BuildBatchTxEvent:
@@ -401,6 +462,11 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			}
 		}
 
+		env.Log.DebugS(ctx, "Building commitment transaction",
+			LogBoardingCount(len(allBoardingInputs)),
+			LogLeaveCount(len(allLeaveOutputs)),
+			LogVTXOCount(len(allVTXODescriptors)))
+
 		// Build the commitment transaction PSBT.
 		psbtPacket, _, vtxoTrees, connectorTrees,
 			connectorAssignments, err := buildCommitmentTx(
@@ -408,6 +474,8 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			allLeaveOutputs, allVTXODescriptors,
 		)
 		if err != nil {
+			env.Log.WarnS(ctx, "Commitment tx build failed", err)
+
 			// Batch building failed - transition to FailedState.
 			reason := fmt.Sprintf("build commitment tx: %v", err)
 
@@ -428,6 +496,11 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 				ctx, env, s.ClientRegistrations, reason,
 			), nil
 		}
+
+		env.Log.InfoS(ctx, "Commitment transaction built successfully",
+			slog.Int("tree_count", len(vtxoTrees)),
+			slog.Int("input_count", len(psbtPacket.Inputs)),
+			slog.Int("output_count", len(psbtPacket.Outputs)))
 
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
@@ -458,6 +531,10 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 func (s *BatchBuiltState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("BatchBuilt"),
+		LogEvent(event))
+
 	switch event.(type) {
 	case *PrepareClientNotificationsEvent:
 		return s.handlePrepareClientNotifications(ctx, env)
@@ -470,8 +547,12 @@ func (s *BatchBuiltState) ProcessEvent(ctx context.Context, event Event,
 // handlePrepareClientNotifications prepares client notifications with batch
 // data and transitions to either AwaitingVTXONoncesState (if VTXOs exist) or
 // AwaitingInputSigsState (if no VTXOs).
-func (s *BatchBuiltState) handlePrepareClientNotifications(
-	ctx context.Context, env *Environment) (*StateTransition, error) {
+func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
+	env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Preparing client notifications",
+		LogClientCount(len(s.ClientRegistrations)),
+		slog.Int("tree_count", len(s.VTXOTrees)))
 
 	// For each client, create a message with their personalized data.
 	// The PSBT contains WitnessUtxo for inputs, providing the prevout
@@ -499,6 +580,9 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 				s.VTXOTrees, clientKeys,
 			)
 			if err != nil {
+				env.Log.WarnS(ctx, "Failed to extract VTXO paths", err,
+					LogClientID(clientID))
+
 				return buildFailureTransition(
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
@@ -548,8 +632,13 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 	// Check if there are any VTXOs in the batch.
 	hasVTXOs := len(s.VTXOTrees) > 0
 	if hasVTXOs {
+		env.Log.InfoS(ctx, "Transitioning to VTXO nonce collection",
+			slog.Int("tree_count", len(s.VTXOTrees)))
+
 		return s.transitionToVTXONonces(ctx, env, outboxMsgs)
 	}
+
+	env.Log.InfoS(ctx, "No VTXOs, transitioning to input signature collection")
 
 	// No VTXOs - go directly to boarding signatures.
 	return s.transitionToInputSigs(ctx, env, outboxMsgs)
@@ -560,6 +649,9 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Creating tree sign coordinators",
+		slog.Int("tree_count", len(s.VTXOTrees)))
+
 	// Create TreeSignCoordinators for each VTXO tree.
 	treeCoordinators := make(map[int]*batch.TreeSignCoordinator)
 	for idx, vtxoTree := range s.VTXOTrees {
@@ -567,6 +659,9 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 			env.WalletController, &env.Terms.OperatorKey, vtxoTree,
 		)
 		if err != nil {
+			env.Log.WarnS(ctx, "Failed to create tree coordinator", err,
+				LogOutputIndex(idx))
+
 			return buildFailureTransition(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
@@ -607,6 +702,9 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
+	// Count clients with boarding inputs for logging.
+	clientsWithBoarding := 0
+
 	// Notify clients with boarding inputs that we're ready for their
 	// signatures. This is separate from ClientBatchInfo because there may
 	// be VTXO signing phases between batch construction and boarding
@@ -616,10 +714,15 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 			continue
 		}
 
+		clientsWithBoarding++
 		outboxMsgs = append(outboxMsgs, &ClientAwaitingInputSigsResp{
 			Client: clientID,
 		})
 	}
+
+	env.Log.DebugS(ctx, "Awaiting input signatures",
+		slog.Int("clients_with_boarding", clientsWithBoarding),
+		LogClientCount(len(s.ClientRegistrations)))
 
 	// Add timeout for input signature collection.
 	outboxMsgs = append(outboxMsgs, &StartTimeoutReq{
@@ -654,6 +757,10 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 func buildFailureTransition(ctx context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string) *StateTransition {
+
+	env.Log.WarnS(context.Background(), "Round entering failed state", nil,
+		LogReason(reason),
+		LogClientCount(len(clientRegs)))
 
 	var outboxMsgs []OutboxEvent
 
@@ -693,11 +800,21 @@ func buildFailureTransition(ctx context.Context, env *Environment,
 func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingInputSigs"),
+		LogEvent(event),
+		LogSubmitted(len(s.ClientsSubmitted)),
+		LogExpected(len(s.ClientRegistrations)))
+
 	switch evt := event.(type) {
 	case *ClientInputSignaturesEvent:
-		return s.handleInputSignatures(evt, env)
+		return s.handleInputSignatures(ctx, evt, env)
 
 	case *InputSignaturesTimeoutEvent:
+		env.Log.WarnS(ctx, "Input signature collection timeout", nil,
+			LogSubmitted(len(s.ClientsSubmitted)),
+			LogExpected(len(s.ClientRegistrations)))
+
 		// Timeout expired - fail the round.
 		reason := "input signature collection timeout"
 
@@ -715,11 +832,15 @@ func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 // validates boarding signatures, validates forfeit transactions, stores the
 // signatures for later use, and tracks the client as having submitted. When
 // all clients have submitted, it transitions to ServerSigningState.
-func (s *AwaitingInputSigsState) handleInputSignatures(
+func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	evt *ClientInputSignaturesEvent, env *Environment) (*StateTransition,
 	error) {
 
 	clientID := evt.ClientID
+
+	env.Log.DebugS(ctx, "Received boarding signatures",
+		LogClientID(clientID),
+		LogSigCount(len(evt.Signatures)))
 
 	// Check if client is registered in this round.
 	reg, exists := s.ClientRegistrations[clientID]
@@ -736,6 +857,11 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 
 	// Verify signature count matches the number of boarding inputs.
 	if len(evt.Signatures) != len(reg.BoardingInputs) {
+		env.Log.WarnS(ctx, "Signature count mismatch", nil,
+			LogClientID(clientID),
+			slog.Int("expected", len(reg.BoardingInputs)),
+			slog.Int("got", len(evt.Signatures)))
+
 		errMsg := fmt.Sprintf(
 			"expected %d signatures, got %d",
 			len(reg.BoardingInputs), len(evt.Signatures),
@@ -797,9 +923,8 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 			boardingInput, sig, tx, prevOutFetcher,
 		)
 		if err != nil {
-			return clientErrorTransition(
-				s, clientID, err.Error(),
-			), nil
+			return clientErrorTransition(s, clientID, err.Error()),
+				nil
 		}
 	}
 
@@ -815,6 +940,10 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 			), nil
 		}
 	}
+
+	env.Log.DebugS(ctx, "Signatures validated successfully",
+		LogClientID(clientID),
+		LogSigCount(len(evt.Signatures)))
 
 	// Mark client as having submitted and store their signatures.
 	newClientsSubmitted := make(map[clientconn.ClientID]struct{})
@@ -837,6 +966,11 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 	}
 	newCollectedForfeitTxs[clientID] = evt.ForfeitTxs
 
+	env.Log.InfoS(ctx, "Client signatures accepted",
+		LogClientID(clientID),
+		LogSubmitted(len(newClientsSubmitted)),
+		LogExpected(len(s.ClientRegistrations)))
+
 	// Create new state with updated tracking.
 	newState := &AwaitingInputSigsState{
 		ClientRegistrations:  s.ClientRegistrations,
@@ -852,10 +986,12 @@ func (s *AwaitingInputSigsState) handleInputSignatures(
 
 	// Check if all clients have submitted.
 	if newState.allClientsSubmitted() {
+		env.Log.InfoS(ctx, "All signatures collected, transitioning to server signing",
+			LogClientCount(len(s.ClientRegistrations)))
+
 		// Cancel the input signatures timeout and transition to
 		// ServerSigningState. Emit ServerSignInputsEvent to trigger
 		// server signing.
-		//
 		return &StateTransition{
 			NextState: &ServerSigningState{
 				ClientRegistrations:  s.ClientRegistrations,
@@ -1315,11 +1451,20 @@ func leafNonAnchorOutput(leaf *tree.Node) (*wire.TxOut, error) {
 func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingVTXONonces"),
+		LogEvent(event),
+		LogSubmitted(len(s.ClientsWithNonces)),
+		slog.Int("tree_count", len(s.VTXOTrees)))
+
 	switch evt := event.(type) {
 	case *ClientVTXONoncesEvent:
 		return s.handleClientNonces(ctx, env, evt)
 
 	case *VTXONoncesTimeoutEvent:
+		env.Log.WarnS(ctx, "VTXO nonce collection timeout", nil,
+			LogSubmitted(len(s.ClientsWithNonces)))
+
 		// The timeout was reached before all nonces were collected.
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
@@ -1335,15 +1480,22 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 // handleClientNonces processes nonces submitted by a client, adding them to
 // the tree coordinators. If all clients have submitted nonces, it transitions
 // to the next state AwaitingVTXOSignaturesState.
-func (s *AwaitingVTXONoncesState) handleClientNonces(
-	ctx context.Context, env *Environment,
-	evt *ClientVTXONoncesEvent) (*StateTransition, error) {
+func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
+	env *Environment, evt *ClientVTXONoncesEvent) (*StateTransition,
+	error) {
 
 	clientID := evt.ClientID
+
+	env.Log.DebugS(ctx, "Received VTXO nonces",
+		LogClientID(clientID),
+		LogKeyCount(len(evt.Nonces)))
 
 	// Check if client is registered in this round.
 	reg, exists := s.ClientRegistrations[clientID]
 	if !exists {
+		env.Log.WarnS(ctx, "Client not registered", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1360,6 +1512,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 	// Check if client has VTXOs (should only accept nonces from VTXO
 	// clients).
 	if len(reg.VTXODescriptors) == 0 {
+		env.Log.WarnS(ctx, "Client has no VTXOs", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1373,6 +1528,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 	}
 
 	if s.hasClientSubmittedNonces(clientID) {
+		env.Log.WarnS(ctx, "Client already submitted nonces", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1387,6 +1545,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 	}
 
 	if len(evt.Nonces) == 0 {
+		env.Log.WarnS(ctx, "No nonces provided", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1492,6 +1653,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 	}
 
 	if totalAccepted == 0 {
+		env.Log.WarnS(ctx, "No valid nonces provided", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1503,12 +1667,20 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 		}, nil
 	}
 
+	env.Log.DebugS(ctx, "Nonces validated successfully",
+		LogClientID(clientID),
+		slog.Int("accepted_count", totalAccepted))
+
 	// Track that this client has submitted nonces.
 	newClientsWithNonces := make(map[clientconn.ClientID]struct{})
 	for cid := range s.ClientsWithNonces {
 		newClientsWithNonces[cid] = struct{}{}
 	}
 	newClientsWithNonces[clientID] = struct{}{}
+
+	env.Log.InfoS(ctx, "Client nonces accepted",
+		LogClientID(clientID),
+		LogSubmitted(len(newClientsWithNonces)))
 
 	// Create new state with updated tracking.
 	newState := &AwaitingVTXONoncesState{
@@ -1523,6 +1695,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 
 	// Check if all clients have submitted nonces.
 	if newState.allClientsSubmittedNonces() {
+		env.Log.InfoS(ctx, "All nonces collected, transitioning "+
+			"to VTXO signatures")
+
 		return newState.transitionToVTXOSignatures(ctx, env)
 	}
 
@@ -1539,11 +1714,17 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(
 func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 	ctx context.Context, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Generating operator partial signatures",
+		slog.Int("tree_count", len(s.TreeSignCoordinators)))
+
 	// Generate operator's partial signatures for all trees. This must be
 	// done after all client nonces are collected.
 	for idx, coordinator := range s.TreeSignCoordinators {
 		err := coordinator.Sign()
 		if err != nil {
+			env.Log.WarnS(ctx, "Operator signing failed", err,
+				LogOutputIndex(idx))
+
 			return buildFailureTransition(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
@@ -1631,11 +1812,19 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingVTXOSignatures"),
+		LogEvent(event),
+		LogSubmitted(len(s.ClientsWithSignatures)))
+
 	switch evt := event.(type) {
 	case *ClientVTXOPartialSigsEvent:
 		return s.handleClientPartialSigs(ctx, env, evt)
 
 	case *VTXOSignaturesTimeoutEvent:
+		env.Log.WarnS(ctx, "VTXO signature collection timeout", nil,
+			LogSubmitted(len(s.ClientsWithSignatures)))
+
 		// Timeout expired before all partial sigs were collected.
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
@@ -1659,9 +1848,16 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 
 	clientID := evt.ClientID
 
+	env.Log.DebugS(ctx, "Received VTXO partial signatures",
+		LogClientID(clientID),
+		LogKeyCount(len(evt.Signatures)))
+
 	// Check if client is registered in this round.
 	reg, exists := s.ClientRegistrations[clientID]
 	if !exists {
+		env.Log.WarnS(ctx, "Client not registered", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1678,6 +1874,9 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 	// Check if client has VTXOs (should only accept sigs from VTXO
 	// clients).
 	if len(reg.VTXODescriptors) == 0 {
+		env.Log.WarnS(ctx, "Client has no VTXOs", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1691,6 +1890,9 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 	}
 
 	if len(evt.Signatures) == 0 {
+		env.Log.WarnS(ctx, "No signatures provided", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1705,6 +1907,9 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 	}
 
 	if s.hasClientSubmittedSignatures(clientID) {
+		env.Log.WarnS(ctx, "Client already submitted signatures", nil,
+			LogClientID(clientID))
+
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
@@ -1967,6 +2172,10 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("ServerSigning"),
+		LogEvent(event))
+
 	switch event.(type) {
 	case *ServerSignInputsEvent:
 		return s.handleServerSigning(ctx, env)
@@ -1982,10 +2191,16 @@ func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Server signing inputs",
+		slog.Int("input_count", len(s.PSBT.Inputs)),
+		LogClientCount(len(s.CollectedSignatures)))
+
 	// First, sign and finalize all boarding inputs with the collected
 	// client signatures and the operator's signatures.
 	err := s.signBoardingInputs(env)
 	if err != nil {
+		env.Log.WarnS(ctx, "Failed to sign boarding inputs", err)
+
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to sign boarding inputs: %v", err),
@@ -2042,14 +2257,22 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		}
 	}
 
+	env.Log.DebugS(ctx, "Boarding inputs and forfeit txs signed, "+
+		"finalizing PSBT")
+
 	// Now finalize the PSBT which signs all wallet-controlled inputs.
 	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
 	if err != nil {
+		env.Log.WarnS(ctx, "Failed to finalize PSBT", err)
+
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to finalize PSBT: %v", err),
 		), nil
 	}
+
+	env.Log.DebugS(ctx, "PSBT finalized",
+		LogTxID(finalTx.TxHash().String()))
 
 	// Persist the round to storage.
 	round := &Round{
@@ -2303,12 +2526,22 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 func (s *FinalizedState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("Finalized"),
+		LogEvent(event))
+
 	switch e := event.(type) {
 	case *TransactionConfirmedEvent:
+		env.Log.InfoS(ctx, "Transaction confirmed",
+			slog.Int("block_height", int(e.BlockHeight)),
+			slog.Int("vtxo_trees", len(s.VTXOTrees)))
+
 		// Mark VTXOs live upon confirmation.
 		if len(s.VTXOTrees) > 0 {
 			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
 			if err != nil {
+				env.Log.WarnS(ctx, "Failed to mark VTXOs live", err)
+
 				return buildFailureTransition(
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("mark VTXOs live: %v", err),
@@ -2335,11 +2568,16 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 			ctx, env.RoundID, e.BlockHeight, e.BlockHash,
 		)
 		if err != nil {
+			env.Log.WarnS(ctx, "Failed to mark round confirmed", err)
+
 			return buildFailureTransition(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("mark round confirmed: %v", err),
 			), nil
 		}
+
+		env.Log.InfoS(ctx, "Round confirmed and complete",
+			slog.Int("block_height", int(e.BlockHeight)))
 
 		return &StateTransition{
 			NextState: &ConfirmedState{
