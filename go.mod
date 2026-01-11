@@ -20,10 +20,10 @@ require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
-	github.com/lightninglabs/lndclient v1.0.1-0.20251120145443-a0342758fc5b
+	github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea
 	github.com/lightninglabs/taproot-assets v0.7.0
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
-	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f
+	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
 	github.com/lightningnetwork/lnd/tlv v1.3.2
@@ -117,7 +117,7 @@ require (
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f // indirect
+	github.com/lightningnetwork/lnd/sqldb v1.0.12 // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796 // indirect
