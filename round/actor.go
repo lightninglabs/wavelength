@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -49,6 +51,9 @@ type RoundClientActor struct {
 	// cfg contains all the configuration for this actor.
 	cfg *RoundClientConfig
 
+	// log is the logger for this actor instance.
+	log btclog.Logger
+
 	// primaryFSM is the main FSM for assembling new rounds from Confirmed
 	// intents. It handles the flow from Idle through round registration.
 	primaryFSM *ClientStateMachine
@@ -69,6 +74,10 @@ type RoundClientActor struct {
 type RoundClientConfig struct {
 	// Name uniquely identifies this actor instance.
 	Name string
+
+	// Logger is the logger for this actor instance. If nil, uses the global
+	// package logger.
+	Logger btclog.Logger
 
 	// Wallet provides MuSig2 signing capabilities needed for round
 	// participation. Boarding address creation is handled by the wallet
@@ -111,6 +120,12 @@ type RoundClientConfig struct {
 // The FSM uses interfaces directly and calls lib package functions as needed.
 // Chain operations are handled via outbox messages (not direct calls).
 func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
+	// Use the configured logger, falling back to the global package logger.
+	actorLog := cfg.Logger
+	if actorLog == nil {
+		actorLog = log
+	}
+
 	// Create FSM environment with direct interface assignments. The FSM
 	// will call lib functions directly when needed (e.g.,
 	// lib.NewTreeSignerSession, signing helpers).
@@ -131,7 +146,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// Create the FSM with Idle initial state. The baselib protofsm uses 3
 	// type parameters: InternalEvent, OutboxEvent, Env.
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        log.WithPrefix("fsm-primary"),
+		Logger:        actorLog.WithPrefix("fsm-primary"),
 		ErrorReporter: newContextErrorReporter(context.Background(), "fsm-primary"),
 		InitialState:  &Idle{},
 		Env:           env,
@@ -141,6 +156,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 
 	return fn.Ok(&RoundClientActor{
 		cfg:               cfg,
+		log:               actorLog,
 		primaryFSM:        &primaryFSM,
 		activeRounds:      make(map[RoundID]*RoundFSM),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundID),
@@ -168,7 +184,7 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 
 	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        log.WithPrefix(fsmPrefix),
+		Logger:        a.log.WithPrefix(fsmPrefix),
 		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
 		InitialState:  state,
 		Env:           env,
@@ -460,7 +476,7 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 
 // handleGetState returns the current FSM state for monitoring/debugging.
 // This includes both the primary FSM and all active round FSMs.
-func (a *RoundClientActor) handleGetState(_ context.Context,
+func (a *RoundClientActor) handleGetState(ctx context.Context,
 	_ *GetClientStateRequest) fn.Result[ClientResp] {
 
 	states := make(map[string]FSMStateInfo)
@@ -488,16 +504,19 @@ func (a *RoundClientActor) handleGetState(_ context.Context,
 	for roundID, roundFSM := range a.activeRounds {
 		roundState, err := roundFSM.FSM.CurrentState()
 		if err != nil {
-			log.Warnf("Failed to get FSM state for round %s: %v",
-				roundID.String(), err)
+			a.log.WarnS(ctx, "Failed to get FSM state for round", err,
+				slog.String("round_id", roundID.String()),
+			)
 
 			continue
 		}
 
 		clientState, ok := roundState.(ClientState)
 		if !ok {
-			log.Warnf("Round %s FSM state is not a ClientState: %T",
-				roundID.String(), roundState)
+			a.log.WarnS(ctx, "Round FSM state is not a ClientState", nil,
+				slog.String("round_id", roundID.String()),
+				slog.String("state_type", fmt.Sprintf("%T", roundState)),
+			)
 
 			continue
 		}
@@ -565,8 +584,9 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		// Not a commitment tx we're tracking. This shouldn't happen
 		// since we only register for commitment tx confirmations.
 		// Log for observability in case of database issues.
-		log.Warnf("LookupRoundByCommitmentTx failed for txid %s: %v",
-			event.Txid, err)
+		a.log.WarnS(ctx, "LookupRoundByCommitmentTx failed", err,
+			slog.String("txid", event.Txid.String()),
+		)
 
 		return fn.Ok[ClientResp](nil)
 	}
@@ -685,13 +705,21 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 
 		case *RoundFailedNotification:
 			// Round entered failed state. Log for observability.
-			log.Warnf("Round %s failed: %s (recoverable=%v)",
-				m.RoundID, m.Reason, m.Recoverable)
+			roundIDStr := "none"
+			m.RoundID.WhenSome(func(id RoundID) {
+				roundIDStr = id.String()
+			})
+			a.log.WarnS(ctx, "Round failed", nil,
+				slog.String("round_id", roundIDStr),
+				slog.String("reason", m.Reason),
+				slog.Bool("recoverable", m.Recoverable),
+			)
 
 		default:
 			// Unknown outbox message type. Log for debugging.
-			log.Debugf("Ignoring unknown outbox message type: %T",
-				msg)
+			a.log.DebugS(ctx, "Ignoring unknown outbox message type",
+				slog.String("type", fmt.Sprintf("%T", msg)),
+			)
 		}
 	}
 
