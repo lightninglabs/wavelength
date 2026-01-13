@@ -2259,6 +2259,8 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		ConnectorDescriptors: s.ConnectorDescriptors,
 		ForfeitInfos:         forfeitInfos,
 		ClientRegistrations:  s.ClientRegistrations,
+		SweepKey:             env.Terms.SweepKey.PubKey,
+		CSVDelay:             env.Terms.SweepDelay,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)

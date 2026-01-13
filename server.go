@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn"
 )
 
@@ -56,7 +57,9 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 
 	// Initialize database
 	var err error
-	s.db, err = db.NewStoreFromConfig(cfg.DB, s.loggerFactory("STORE"))
+	s.db, err = db.NewStoreFromConfig(
+		cfg.DB, s.loggerFactory("STORE"), clock.NewDefaultClock(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database: %w", err)
 	}

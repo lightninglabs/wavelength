@@ -1,19 +1,23 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightningnetwork/lnd/clock"
 )
 
 // Store is the unified SQL-based storage implementation that wraps all
 // repository types (events, rounds, vtxos, offchain txs).
 type Store struct {
-	queries *sqlc.Queries
-	db      *sql.DB
-	log     btclog.Logger
+	*sqlc.Queries
+
+	db    *sql.DB
+	log   btclog.Logger
+	clock clock.Clock
 
 	// Backend type (sqlite or postgres)
 	backend sqlc.BackendType
@@ -21,19 +25,15 @@ type Store struct {
 
 // NewStore creates a new Store from either a SqliteStore or PostgresStore.
 func NewStore(db *sql.DB, queries *sqlc.Queries, backend sqlc.BackendType,
-	log btclog.Logger) *Store {
+	log btclog.Logger, clk clock.Clock) *Store {
 
 	return &Store{
-		queries: queries,
+		Queries: queries,
 		db:      db,
 		log:     log,
+		clock:   clk,
 		backend: backend,
 	}
-}
-
-// Queries returns the underlying sqlc queries.
-func (s *Store) Queries() *sqlc.Queries {
-	return s.queries
 }
 
 // DB returns the underlying database connection.
@@ -46,6 +46,22 @@ func (s *Store) Backend() sqlc.BackendType {
 	return s.backend
 }
 
+// BeginTx creates a new database transaction given the set of transaction
+// options.
+func (s *Store) BeginTx(ctx context.Context, opts TxOptions) (*sql.Tx, error) {
+	sqlOptions := sql.TxOptions{
+		ReadOnly:  opts.ReadOnly(),
+		Isolation: sql.LevelSerializable,
+	}
+
+	return s.db.BeginTx(ctx, &sqlOptions)
+}
+
+// WithTx returns a new Queries instance that uses the provided transaction.
+func (s *Store) WithTx(tx *sql.Tx) *sqlc.Queries {
+	return s.Queries.WithTx(tx)
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	if s.db != nil {
@@ -53,6 +69,11 @@ func (s *Store) Close() error {
 	}
 
 	return nil
+}
+
+// NewRoundStore creates a RoundStoreDB from this Store.
+func (s *Store) NewRoundStore() *RoundStoreDB {
+	return NewRoundStoreDB(s, s.clock)
 }
 
 // Config holds the configuration for the database store. It allows selecting
@@ -104,7 +125,9 @@ func DefaultPostgresConfig() *PostgresConfig {
 }
 
 // NewStoreFromConfig creates a new Store based on the configuration.
-func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
+func NewStoreFromConfig(cfg *Config, log btclog.Logger,
+	clk clock.Clock) (*Store, error) {
+
 	switch cfg.Backend {
 	case "sqlite":
 		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log)
@@ -115,7 +138,7 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 
 		return NewStore(
 			sqliteStore.DB, sqliteStore.Queries,
-			sqliteStore.Backend(), log,
+			sqliteStore.Backend(), log, clk,
 		), nil
 
 	case "postgres":
@@ -127,6 +150,7 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 
 		return NewStore(
 			pgStore.DB, pgStore.Queries, pgStore.Backend(), log,
+			clk,
 		), nil
 
 	default:

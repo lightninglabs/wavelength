@@ -1,6 +1,7 @@
 package db
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -8,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/rounds"
@@ -32,8 +34,6 @@ func testOutpointHash(t *testing.T, seed string) chainhash.Hash {
 
 // createTestFinalTx creates a simple test commitment transaction.
 // The seed parameter is used to create unique transactions.
-//
-//nolint:unused
 func createTestFinalTx(t *testing.T, seed string) *wire.MsgTx {
 	t.Helper()
 
@@ -52,14 +52,98 @@ func createTestFinalTx(t *testing.T, seed string) *wire.MsgTx {
 	return tx
 }
 
-// createTestVTXOTree creates a simple VTXO tree for testing.
-//
-//nolint:unused
+// createTestVTXOTree creates a multi-level VTXO tree for testing.
 func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 	t.Helper()
 
 	clientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	grandchild := &tree.Node{
+		Input: wire.OutPoint{
+			Hash:  chainhash.Hash{0x05},
+			Index: 0,
+		},
+		Outputs: []*wire.TxOut{
+			{Value: 200000, PkScript: []byte{0x51}},
+		},
+		CoSigners: []*btcec.PublicKey{
+			clientKey.PubKey(),
+		},
+		Children: make(map[uint32]*tree.Node),
+		Amount:   btcutil.Amount(200000),
+	}
+
+	child0 := &tree.Node{
+		Input: wire.OutPoint{
+			Hash:  chainhash.Hash{0x04},
+			Index: 0,
+		},
+		Outputs: []*wire.TxOut{
+			{Value: 300000, PkScript: []byte{0x51}},
+		},
+		CoSigners: []*btcec.PublicKey{
+			clientKey.PubKey(),
+		},
+		Children: map[uint32]*tree.Node{
+			0: grandchild,
+		},
+		Amount: btcutil.Amount(300000),
+	}
+
+	child1 := &tree.Node{
+		Input: wire.OutPoint{
+			Hash:  chainhash.Hash{0x06},
+			Index: 1,
+		},
+		Outputs: []*wire.TxOut{
+			{Value: 400000, PkScript: []byte{0x52}},
+		},
+		CoSigners: []*btcec.PublicKey{
+			operatorKey.PubKey(),
+		},
+		Children: make(map[uint32]*tree.Node),
+		Amount:   btcutil.Amount(400000),
+	}
+
+	return &tree.Tree{
+		BatchOutpoint: wire.OutPoint{
+			Hash:  chainhash.Hash{byte(batchOutput)},
+			Index: uint32(batchOutput),
+		},
+		BatchOutput: &wire.TxOut{
+			Value:    1000000,
+			PkScript: []byte{0x51, 0x20, 0xab, 0xcd},
+		},
+		Root: &tree.Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.Hash{0x03},
+				Index: 0,
+			},
+			Outputs: []*wire.TxOut{
+				{Value: 500000, PkScript: []byte{0x00, 0x14}},
+				{Value: 600000, PkScript: []byte{0x00, 0x15}},
+			},
+			CoSigners: []*btcec.PublicKey{
+				operatorKey.PubKey(),
+			},
+			Children: map[uint32]*tree.Node{
+				0: child0,
+				1: child1,
+			},
+			Amount: btcutil.Amount(500000),
+		},
+	}
+}
+
+// createTestSingleNodeVTXOTree creates a minimal tree with just a root node.
+func createTestSingleNodeVTXOTree(t *testing.T,
+	batchOutput int) *tree.Tree {
+
+	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -70,29 +154,112 @@ func createTestVTXOTree(t *testing.T, batchOutput int) *tree.Tree {
 			Index: uint32(batchOutput),
 		},
 		BatchOutput: &wire.TxOut{
-			Value:    1000000,
-			PkScript: []byte{0x51, 0x20},
+			Value:    700000,
+			PkScript: []byte{0x51, 0x21},
 		},
 		Root: &tree.Node{
 			Input: wire.OutPoint{
-				Hash:  chainhash.Hash{0x03},
+				Hash:  chainhash.Hash{0x07},
 				Index: 0,
 			},
 			Outputs: []*wire.TxOut{
-				{Value: 500000, PkScript: []byte{0x00, 0x14}},
+				{Value: 700000, PkScript: []byte{0x00, 0x16}},
 			},
 			CoSigners: []*btcec.PublicKey{
-				clientKey.PubKey(),
 				operatorKey.PubKey(),
 			},
 			Children: make(map[uint32]*tree.Node),
+			Amount:   btcutil.Amount(700000),
 		},
 	}
 }
 
+// createRandomVTXOTree builds a deterministic random tree for test coverage.
+func createRandomVTXOTree(t *testing.T, rng *rand.Rand,
+	batchOutput int) *tree.Tree {
+
+	t.Helper()
+
+	if rng == nil {
+		rng = rand.New(rand.NewSource(1))
+	}
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	root := &tree.Node{
+		Input: wire.OutPoint{
+			Hash:  chainhash.Hash{0x11},
+			Index: 0,
+		},
+		Outputs: []*wire.TxOut{
+			{Value: 1000, PkScript: []byte{0x51}},
+			{Value: 2000, PkScript: []byte{0x52}},
+		},
+		CoSigners: []*btcec.PublicKey{
+			operatorKey.PubKey(),
+		},
+		Children: make(map[uint32]*tree.Node),
+		Amount:   btcutil.Amount(1000),
+	}
+
+	maxDepth := 3
+	buildRandomChildren(t, rng, root, 0, maxDepth)
+
+	return &tree.Tree{
+		BatchOutpoint: wire.OutPoint{
+			Hash:  chainhash.Hash{byte(batchOutput)},
+			Index: uint32(batchOutput),
+		},
+		BatchOutput: &wire.TxOut{
+			Value:    1000000,
+			PkScript: []byte{0x51, 0x20, 0xab, 0xcd},
+		},
+		Root: root,
+	}
+}
+
+// buildRandomChildren recursively creates children with consistent indices.
+func buildRandomChildren(t *testing.T, rng *rand.Rand,
+	parent *tree.Node, depth int, maxDepth int) {
+
+	t.Helper()
+
+	if depth >= maxDepth {
+		return
+	}
+
+	numChildren := rng.Intn(3)
+	for i := 0; i < numChildren; i++ {
+		childKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		child := &tree.Node{
+			Input: wire.OutPoint{
+				Hash:  chainhash.Hash{byte(0x20 + depth)},
+				Index: uint32(i),
+			},
+			Outputs: []*wire.TxOut{
+				{
+					Value: int64(1000 + depth*100 + i),
+					PkScript: []byte{
+						0x51,
+					},
+				},
+			},
+			CoSigners: []*btcec.PublicKey{
+				childKey.PubKey(),
+			},
+			Children: make(map[uint32]*tree.Node),
+			Amount:   btcutil.Amount(1000 + depth*100 + i),
+		}
+
+		parent.Children[uint32(i)] = child
+		buildRandomChildren(t, rng, child, depth+1, maxDepth)
+	}
+}
+
 // createTestConnectorDescriptor creates a test connector descriptor.
-//
-//nolint:unused
 func createTestConnectorDescriptor(
 	outputIdx int, numLeaves int) *rounds.ConnectorTreeDescriptor {
 
@@ -104,8 +271,6 @@ func createTestConnectorDescriptor(
 }
 
 // createTestClientRegistration creates a test client registration.
-//
-//nolint:unused
 func createTestClientRegistration(t *testing.T,
 	clientID clientconn.ClientID) *rounds.ClientRegistration {
 
@@ -160,14 +325,19 @@ func createTestClientRegistration(t *testing.T,
 }
 
 // createTestRound creates a complete test round.
-//
-//nolint:unused
 func createTestRound(t *testing.T, roundID rounds.RoundID) *rounds.Round {
 	t.Helper()
 
 	// Use roundID as seed to create unique FinalTx for each round.
 	finalTx := createTestFinalTx(t, roundID.String())
 	vtxoTree := createTestVTXOTree(t, 0)
+	applyBatchOutpointToTree(vtxoTree, finalTx, 0)
+
+	// Create test sweep key.
+	sweepKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	applySweepRootToTree(t, vtxoTree, sweepKey.PubKey(), 144)
 
 	return &rounds.Round{
 		RoundID: roundID,
@@ -183,7 +353,48 @@ func createTestRound(t *testing.T, roundID rounds.RoundID) *rounds.Round {
 			ClientRegistration{
 			"client1": createTestClientRegistration(t, "client1"),
 		},
+		SweepKey: sweepKey.PubKey(),
+		CSVDelay: 144,
 	}
+}
+
+// applyBatchOutpointToTree sets the batch outpoint and root input to match the
+// commitment transaction output.
+func applyBatchOutpointToTree(vtxoTree *tree.Tree, finalTx *wire.MsgTx,
+	batchOutputIndex int) {
+
+	if vtxoTree == nil || finalTx == nil {
+		return
+	}
+
+	commitmentTxid := finalTx.TxHash()
+	batchOutpoint := wire.OutPoint{
+		Hash:  commitmentTxid,
+		Index: uint32(batchOutputIndex),
+	}
+	vtxoTree.BatchOutpoint = batchOutpoint
+	if vtxoTree.Root != nil {
+		vtxoTree.Root.Input = batchOutpoint
+	}
+}
+
+// applySweepRootToTree computes and sets the sweep tapscript root for a tree.
+func applySweepRootToTree(t *testing.T, vtxoTree *tree.Tree,
+	sweepKey *btcec.PublicKey, csvDelay uint32) {
+
+	t.Helper()
+
+	if vtxoTree == nil || sweepKey == nil {
+		return
+	}
+
+	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+		sweepKey, csvDelay,
+	)
+	require.NoError(t, err)
+
+	sweepTapRoot := sweepTapLeaf.TapHash()
+	vtxoTree.SweepTapscriptRoot = sweepTapRoot[:]
 }
 
 // createTestVTXO creates a test VTXO.
