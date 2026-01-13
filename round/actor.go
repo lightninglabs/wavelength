@@ -503,6 +503,76 @@ func (a *RoundClientActor) migrateRoundToActiveFSM(ctx context.Context,
 	return nil
 }
 
+// promotePrimaryFSMToActiveRounds moves the current primaryFSM to activeRounds
+// and creates a new primaryFSM starting at Idle. This is called when the
+// primaryFSM reaches InputSigSentState and emits RoundCheckpointedNotification.
+//
+// The promoted FSM will handle BoardingConfirmed when it arrives. The new
+// primaryFSM can immediately accept new boarding intents for subsequent rounds.
+func (a *RoundClientActor) promotePrimaryFSMToActiveRounds(ctx context.Context,
+	roundID RoundID) error {
+
+	// Check if this round is already in activeRounds (idempotency).
+	if _, exists := a.activeRounds[roundID]; exists {
+		a.log.DebugS(ctx, "Round already in activeRounds, skipping promotion",
+			slog.String("round_id", roundID.String()))
+
+		return nil
+	}
+
+	// Get the current primaryFSM state to extract commitment tx info.
+	primaryState, err := a.primaryFSM.CurrentState()
+	if err != nil {
+		return fmt.Errorf("failed to get primary FSM state: %w", err)
+	}
+
+	inputSigState, ok := primaryState.(*InputSigSentState)
+	if !ok {
+		return fmt.Errorf("primary FSM not in InputSigSentState, "+
+			"got %T", primaryState)
+	}
+
+	// Extract commitment tx ID for confirmation routing.
+	txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
+
+	a.log.InfoS(ctx, "Promoting primaryFSM to activeRounds",
+		slog.String("round_id", roundID.String()),
+		slog.String("commitment_txid", txid.String()))
+
+	// Move the current primaryFSM to activeRounds. It's already in
+	// InputSigSentState and ready to handle BoardingConfirmed.
+	roundFSM := &RoundFSM{
+		FSM:          a.primaryFSM,
+		RoundID:      roundID,
+		TxID:         txid,
+		CommitmentTx: fn.Some(inputSigState.CommitmentTx),
+	}
+	a.activeRounds[roundID] = roundFSM
+	a.commitmentTxIndex[txid] = roundID
+
+	// Register for commitment tx confirmation.
+	a.registerCommitmentConfirmation(ctx, txid, roundFSM.CommitmentTx)
+
+	// Create a NEW primaryFSM starting at Idle. This allows the actor to
+	// immediately accept new boarding intents for subsequent rounds.
+	fsmCfg := ClientStateMachineCfg{
+		Logger: a.log.WithPrefix("fsm-primary"),
+		ErrorReporter: newContextErrorReporter(
+			context.Background(), "fsm-primary",
+		),
+		InitialState: &Idle{},
+		Env:          a.env,
+	}
+	newPrimaryFSM := protofsm.NewStateMachine(fsmCfg)
+	newPrimaryFSM.Start(context.Background())
+	a.primaryFSM = &newPrimaryFSM
+
+	a.log.InfoS(ctx, "Created new primaryFSM at Idle, ready for new intents",
+		slog.String("promoted_round_id", roundID.String()))
+
+	return nil
+}
+
 // extractRoundID returns the RoundID from events that carry one. Returns the
 // zero value for events without a RoundID field.
 func extractRoundID(event ClientEvent) (RoundID, bool) {
