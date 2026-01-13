@@ -962,8 +962,16 @@ func (s *PartialSigsSentState) ProcessEvent(
 			// intent.
 			chainInfo := boardingIntent.ChainInfo
 			addr := boardingIntent.Address.Address
-			pkScript := addr.ScriptAddress()
 			amt := chainInfo.Amount
+
+			// Use PayToAddrScript to get the full pkScript with
+			// OP_1 OP_PUSHBYTES_32 prefix for P2TR addresses.
+			// ScriptAddress() only returns the 32-byte witness.
+			pkScript, err := txscript.PayToAddrScript(addr)
+			if err != nil {
+				return nil, fmt.Errorf("pay to addr script: %w",
+					err)
+			}
 
 			// Create the TxOut for the boarding output.
 			output := &wire.TxOut{
@@ -1014,11 +1022,27 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 		txid := tx.TxHash()
 		callerID := fmt.Sprintf("commitment-%s", txid.String())
+
+		// Get pkScript from the first transaction output. LND requires
+		// a pkScript for confirmation tracking.
+		var pkScript []byte
+		if len(tx.TxOut) > 0 {
+			pkScript = tx.TxOut[0].PkScript
+		}
+
+		env.Log.InfoS(ctx, "Building RegisterConfirmationRequest",
+			slog.String("round_id", s.RoundID.String()),
+			slog.String("txid", txid.String()),
+			slog.Int("num_outputs", len(tx.TxOut)),
+			slog.Int("pkscript_len", len(pkScript)),
+			slog.Int("target_confs", int(env.OperatorTerms.MinConfirmations)))
+
 		outboxMsgs := []ClientOutMsg{
 			forfeitSigReq,
 			&RegisterConfirmationRequest{
 				CallerID:    callerID,
 				Txid:        &txid,
+				PkScript:    pkScript,
 				TargetConfs: env.OperatorTerms.MinConfirmations,
 			},
 		}
@@ -1087,7 +1111,6 @@ func (s *PartialSigsSentState) ProcessEvent(
 				Recoverable: evt.Recoverable,
 			},
 		}, nil
-
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
