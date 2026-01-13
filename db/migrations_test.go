@@ -135,8 +135,8 @@ func TestSqliteMigrationBackup(t *testing.T) {
 		require.NoError(t, db.DB.Close())
 	})
 
-	// Manually run migrations to version 1.
-	err = db.ExecuteMigrations(TargetVersion(1))
+	// Run migrations to the latest version.
+	err = db.ExecuteMigrations(TargetLatest)
 	require.NoError(t, err)
 
 	// Insert some test data.
@@ -149,10 +149,8 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	_, err = db.ExecContext(ctx, insertQuery)
 	require.NoError(t, err)
 
-	// Now close and reopen the database, which will trigger a migration
-	// with backup if we add a new migration. For now, since we only have
-	// one migration, we'll just verify the backup isn't created when
-	// already at latest version.
+	// Now close and reopen the database. Since we're already at the latest
+	// version, no migration should run and no backup should be created.
 	require.NoError(t, db.DB.Close())
 
 	db2, err := NewSqliteStore(&SqliteConfig{
