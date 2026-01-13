@@ -3,6 +3,7 @@ package chainsource
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -183,6 +184,12 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 // request and sends it the registration message.
 func (a *ChainSourceActor) handleRegisterConf(ctx context.Context,
 	req *RegisterConfRequest) fn.Result[ChainSourceResp] {
+
+	a.logger(ctx).InfoS(ctx, "ChainSource received RegisterConfRequest",
+		slog.String("caller_id", req.CallerID),
+		slog.Int("pkscript_len", len(req.PkScript)),
+		slog.Int("target_confs", int(req.TargetConfs)),
+		slog.Int("height_hint", int(req.HeightHint)))
 
 	// Generate unique key component from txid and/or pkScript.
 	keyPart, err := txidOrScriptKey(req.Txid, req.PkScript)
