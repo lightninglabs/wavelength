@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -19,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 )
 
 var (
@@ -1027,11 +1029,17 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 // connector outputs for forfeits. It funds the transaction using the wallet
 // and builds both VTXO and connector trees if needed.
 //
-// Outputs in the transaction include:
-//  1. Leave outputs (client withdrawals)
-//  2. VTXO tree outputs (batch outputs)
-//  3. Connector outputs (forfeit trees)
-//  4. Change output (if needed, added by FundPsbt)
+// LND's FundPsbt cannot estimate witness weight for taproot script path spends,
+// so we use a two-phase approach:
+// 1. Create PSBT with just outputs (no external inputs)
+//   - leave outputs (client withdrawals)
+//   - VTXO tree outputs (batch outputs)
+//   - Connector outputs (forfeit trees)
+//   - Change output (if needed (added by FundPsbt)).
+//
+// 2. Fund with LND (it only sees wallet inputs)
+// 3. Add boarding inputs after funding
+// 4. Adjust change output to account for boarding input contribution
 func buildCommitmentTx(ctx context.Context, env *Environment,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
@@ -1039,17 +1047,40 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	map[int]*tree.Tree, map[int]*tree.Tree,
 	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
 
-	// Step 1: Create unsigned transaction with boarding inputs and
-	// required outputs.
-	tx := wire.NewMsgTx(2)
-
-	// Add boarding inputs.
+	// Calculate boarding input totals for later adjustment.
+	var totalBoardingValue btcutil.Amount
 	for _, bi := range boardingInputs {
-		tx.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: *bi.Outpoint,
-			Sequence:         wire.MaxTxInSequenceNum,
-		})
+		totalBoardingValue += bi.Value
 	}
+
+	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
+	if err != nil {
+		return nil, -1, nil, nil, nil,
+			fmt.Errorf("estimate fee: %w", err)
+	}
+
+	// Calculate fee for boarding inputs using LND's weight estimator. We
+	// calculate this ourselves since LND's FundPsbt cannot estimate
+	// witness weight for taproot script path spends.
+	//
+	// The witness for a collaborative tapscript spend consists of:
+	// - 2 schnorr signatures: 64 * 2 = 128 bytes
+	// - Script: ~70 bytes (2-of-2 multisig script)
+	// - Control block: ~33 bytes (1 byte header + 32 byte internal key)
+	// - Encoding overhead: ~4 bytes
+	// Total: ~235 witness bytes = 235 weight units.
+	const boardingWitnessWeight = 235
+	var weightEstimator input.TxWeightEstimator
+	for range boardingInputs {
+		weightEstimator.AddWitnessInput(boardingWitnessWeight)
+	}
+	boardingFee := feeRate.FeeForWeight(weightEstimator.Weight())
+
+	// Next, we'll create outputs-only transaction for funding. We don't
+	// include boarding inputs here because LND can't estimate their
+	// witness weight. Instead, we'll add them after funding and adjust the
+	// change output.
+	tx := wire.NewMsgTx(2)
 
 	// Add required outputs (leave requests).
 	for _, output := range requiredOutputs {
@@ -1109,35 +1140,13 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		}
 	}
 
-	// Step 2: Convert to PSBT.
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
 		return nil, -1, nil, nil, nil, fmt.Errorf("create psbt: %w",
 			err)
 	}
 
-	// Step 3: Add UTXO information for boarding inputs so FundPsbt can
-	// calculate fees correctly.
-	for i, bi := range boardingInputs {
-		packet.Inputs[i].WitnessUtxo = &wire.TxOut{
-			Value:    int64(bi.Value),
-			PkScript: bi.PkScript,
-		}
-
-		// Note: Boarding inputs use collaborative tapscript leaf path,
-		// not key spend. However, for fee estimation purposes, we set
-		// SigHashDefault.
-		packet.Inputs[i].SighashType = txscript.SigHashDefault
-	}
-
-	// Step 4: Get fee rate from estimator.
-	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
-	if err != nil {
-		return nil, -1, nil, nil, nil, fmt.Errorf("estimate fee: %w",
-			err)
-	}
-
-	// Step 5: Call FundPsbt to add wallet inputs and change.
+	// Now we'll call FundPsbt to add wallet inputs and change.
 	//
 	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
 	// before this call will be invalid.
@@ -1149,7 +1158,77 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			err)
 	}
 
-	// Step 6: Build VTXO trees if VTXOs exist.
+	// Now we'll add the boarding inputs to the funded PSBT. Since LND
+	// cannot estimate witness weight for taproot script path spends, we
+	// add boarding inputs after funding.
+	for _, bi := range boardingInputs {
+		// Add input to the transaction.
+		packet.UnsignedTx.TxIn = append(packet.UnsignedTx.TxIn,
+			&wire.TxIn{
+				PreviousOutPoint: *bi.Outpoint,
+				Sequence:         wire.MaxTxInSequenceNum,
+			},
+		)
+
+		// Add PSBT input metadata.
+		collabLeaf := bi.Tapscript.Leaves[0]
+		ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
+		if err != nil {
+			return nil, -1, nil, nil, nil,
+				fmt.Errorf("serialize control block: %w", err)
+		}
+
+		leafHash := txscript.NewTapLeaf(
+			collabLeaf.LeafVersion, collabLeaf.Script,
+		).TapHash()
+		leafHashBytes := leafHash[:]
+
+		packet.Inputs = append(packet.Inputs, psbt.PInput{
+			WitnessUtxo: &wire.TxOut{
+				Value:    int64(bi.Value),
+				PkScript: bi.PkScript,
+			},
+			SighashType: txscript.SigHashDefault,
+			TaprootLeafScript: []*psbt.TaprootTapLeafScript{
+				{
+					ControlBlock: ctrlBlockBytes,
+					Script:       collabLeaf.Script,
+					LeafVersion:  collabLeaf.LeafVersion,
+				},
+			},
+			TaprootMerkleRoot: bi.Tapscript.ControlBlock.RootHash(
+				collabLeaf.Script,
+			),
+			TaprootInternalKey: schnorr.SerializePubKey(
+				bi.Tapscript.ControlBlock.InternalKey,
+			),
+			TaprootBip32Derivation: []*psbt.TaprootBip32Derivation{
+				{
+					XOnlyPubKey: schnorr.SerializePubKey(
+						bi.OperatorKeyDesc.PubKey,
+					),
+					LeafHashes:           [][]byte{leafHashBytes},
+					MasterKeyFingerprint: 0,
+					Bip32Path: []uint32{
+						uint32(bi.OperatorKeyDesc.Family),
+						bi.OperatorKeyDesc.Index,
+					},
+				},
+			},
+		})
+	}
+
+	// Adjust change output to account for boarding input value. Boarding
+	// inputs contribute: value - fee. This extra value goes to the change
+	// output (or reduces what the wallet needed to provide).
+	if changeIdx >= 0 && len(boardingInputs) > 0 {
+		boardingContribution := totalBoardingValue - boardingFee
+		packet.UnsignedTx.TxOut[changeIdx].Value += int64(
+			boardingContribution,
+		)
+	}
+
+	// Next, we'll build VTXO trees if VTXOs exist.
 	var vtxoTrees map[int]*tree.Tree
 	if vtxoTreeCtx != nil {
 		// After FundPsbt reordering, find the VTXO tree root outputs

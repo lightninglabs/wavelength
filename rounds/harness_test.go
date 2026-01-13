@@ -651,6 +651,46 @@ func buildTestClientRegistration(clientID ClientID,
 	}
 }
 
+// buildTestBoardingInput creates a fully-populated BoardingInput for testing.
+// This creates real tapscript structures that can be used in buildCommitmentTx
+// without causing nil pointer panics.
+func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
+	value btcutil.Amount, operatorKey *btcec.PublicKey) *BoardingInput {
+
+	t.Helper()
+
+	// Generate a test client key.
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey := clientPriv.PubKey()
+
+	// Build the tapscript using the same structure as production code.
+	const exitDelay = 144
+	tapscript, err := scripts.VTXOTapScript(clientKey, operatorKey, exitDelay)
+	require.NoError(t, err)
+
+	// Build the P2TR pkScript.
+	outputKey, err := tapscript.TaprootKey()
+	require.NoError(t, err)
+	pkScript, err := input.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	return &BoardingInput{
+		Outpoint:  outpoint,
+		Tapscript: tapscript,
+		Value:     value,
+		PkScript:  pkScript,
+		ClientKey: clientKey,
+		OperatorKeyDesc: &keychain.KeyDescriptor{
+			PubKey: operatorKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(42),
+				Index:  0,
+			},
+		},
+	}
+}
+
 // vtxoNoncesStateOpts configures buildAwaitingVTXONoncesState.
 type vtxoNoncesStateOpts struct {
 	// withVTXOs marks this client as having VTXODescriptors.
