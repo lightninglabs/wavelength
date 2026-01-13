@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -92,6 +93,12 @@ func NewConfActor(cfg ConfActorConfig) *ConfActor {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *ConfActor) logger(ctx context.Context) btclog.Logger {
+	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Receive processes incoming messages for the ConfActor.
@@ -183,8 +190,14 @@ func (a *ConfActor) monitorConfirmation() {
 	defer a.wg.Done()
 	defer a.cancel()
 
+	log := a.logger(a.ctx)
+	log.InfoS(a.ctx, "ConfActor monitoring started",
+		"target_confs", a.targetConfs,
+		"height_hint", a.heightHint)
+
 	// Clean up registration when done.
 	defer func() {
+		log.InfoS(a.ctx, "ConfActor monitoring stopped")
 		if a.registration != nil {
 			a.registration.Cancel()
 		}
@@ -193,6 +206,8 @@ func (a *ConfActor) monitorConfirmation() {
 	select {
 	case confDetails, ok := <-a.registration.Confirmed:
 		if !ok || confDetails == nil {
+			log.WarnS(a.ctx, "Confirmation subscription closed",
+				fmt.Errorf("channel closed or nil details"))
 			a.failConfirmation(fmt.Errorf(
 				"confirmation subscription closed",
 			))
@@ -200,16 +215,24 @@ func (a *ConfActor) monitorConfirmation() {
 			return
 		}
 
+		log.InfoS(a.ctx, "Received confirmation from backend",
+			"block_height", confDetails.BlockHeight,
+			"block_hash", confDetails.BlockHash)
+
 		event, err := buildConfirmationEvent(confDetails, a)
 		if err != nil {
+			log.WarnS(a.ctx, "Failed to build confirmation event", err)
 			a.failConfirmation(err)
 			return
 		}
 
+		log.InfoS(a.ctx, "Delivering confirmation event",
+			"txid", event.Txid,
+			"block_height", event.BlockHeight)
 		a.deliverConfirmation(event)
 
 	case <-a.ctx.Done():
-
+		log.InfoS(a.ctx, "ConfActor context cancelled")
 		a.failConfirmation(a.ctx.Err())
 	}
 }
