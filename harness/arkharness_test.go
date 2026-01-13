@@ -12,11 +12,13 @@ import (
 // TestArkHarnessCanStart verifies that the ArkHarness can successfully start
 // the infrastructure and arkd server, then connect to the admin RPC.
 func TestArkHarnessCanStart(t *testing.T) {
-	opts := client_harness.DefaultOptions()
-	opts.GroupName = t.Name()
-	opts.StartTapd = false // Don't start tapd for this basic test.
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false // Don't start tapd for this basic test.
 
-	h := NewArkHarness(t, &opts)
+	h := NewArkHarness(t, &ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
 	t.Cleanup(func() { h.Stop() })
 
 	// Start the harness which will start bitcoind, lnd, and arkd.

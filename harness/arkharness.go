@@ -28,12 +28,27 @@ const (
 	pollInterval = 200 * time.Millisecond
 )
 
+// ArkHarnessOptions configures the ArkHarness behavior.
+type ArkHarnessOptions struct {
+	// ClientOptions are the options for the underlying client harness.
+	ClientOptions *client_harness.Options
+
+	// SkipArkd when true prevents arkd from being started. This is useful
+	// for in-process e2e tests where the server actors are run directly as
+	// goroutines rather than through the arkd binary.
+	SkipArkd bool
+}
+
 // ArkHarness extends the client harness with an in-process arkd server and
 // admin RPC connection. It provides all the infrastructure (bitcoind, lnd,
 // tapd, electrs) via the embedded client harness, and adds the arkd server
 // on top.
 type ArkHarness struct {
 	*client_harness.Harness
+
+	// skipArkd when true means arkd was not started. This is set based on
+	// ArkHarnessOptions.SkipArkd.
+	skipArkd bool
 
 	// arkdServer is the in-process arkd server.
 	arkdServer *darepo.Server
@@ -61,33 +76,40 @@ type ArkHarness struct {
 }
 
 // NewArkHarness creates a new ArkHarness instance from the given options.
-func NewArkHarness(t *testing.T, opts *client_harness.Options) *ArkHarness {
-	clientHarness := client_harness.NewHarness(t, opts)
+func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
+	clientHarness := client_harness.NewHarness(t, opts.ClientOptions)
 
 	return &ArkHarness{
-		Harness: clientHarness,
+		Harness:  clientHarness,
+		skipArkd: opts.SkipArkd,
 	}
 }
 
-// Start starts the harness infrastructure and the in-process arkd server.
+// Start starts the harness infrastructure and optionally the in-process arkd
+// server (unless SkipArkd was set in options).
 func (h *ArkHarness) Start() {
 	// Start the client harness first (bitcoind, lnd, tapd, electrs).
 	h.Harness.Start()
 
-	// Now start arkd on top.
-	h.startArkd()
+	// Now start arkd on top, unless we're skipping it for in-process tests.
+	if !h.skipArkd {
+		h.startArkd()
+	}
 }
 
-// Stop stops the arkd server and then the underlying infrastructure.
+// Stop stops the arkd server (if started) and then the underlying
+// infrastructure.
 func (h *ArkHarness) Stop() {
-	// Stop arkd first.
-	if h.arkdCancel != nil {
-		h.arkdCancel()
-		h.arkdWg.Wait()
-	}
+	// Stop arkd first, if it was started.
+	if !h.skipArkd {
+		if h.arkdCancel != nil {
+			h.arkdCancel()
+			h.arkdWg.Wait()
+		}
 
-	if h.arkdAdminConn != nil {
-		_ = h.arkdAdminConn.Close()
+		if h.arkdAdminConn != nil {
+			_ = h.arkdAdminConn.Close()
+		}
 	}
 
 	// Stop the client harness.
