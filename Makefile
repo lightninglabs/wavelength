@@ -5,6 +5,7 @@
 .PHONY: build rpc install help
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
 .PHONY: check-commits
+.PHONY: systest systest-verbose
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -248,6 +249,19 @@ check-commits: #? Run lint+unit on each commit since branch base (use upstream=<
 		$(if $(keep_going),--keep-going,) \
 		$(if $(no_submodules),--no-submodules,)
 
+# Database backend for systest: sqlite (default) or postgres.
+# Usage: make systest db=postgres
+SYSTEST_DB_TAG := $(if $(filter postgres,$(db)),test_postgres)
+SYSTEST_TAGS := systest $(SYSTEST_DB_TAG)
+
+systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
+	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m $(if $(case),-run $(case),)
+
+systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
+	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
+	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m -harness.logstdout $(if $(case),-run $(case),)
+
 # ============
 # RPC GENERATION
 # ============
@@ -334,4 +348,7 @@ help: #? Show this help message
 	@echo "  make unit pkg=db timeout=5m"
 	@echo "  make unit-debug log=\"stdlog trace\" pkg=db case=TestFoo timeout=10s"
 	@echo "  make unit tags=\"test_db_postgres\""
+	@echo "  make systest"
+	@echo "  make systest-verbose"
+	@echo "  make systest db=postgres"
 	@echo "  make migrate-create patchname=add_users_table"
