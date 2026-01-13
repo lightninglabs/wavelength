@@ -102,7 +102,6 @@ type RoundClientConfig struct {
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
 	// ChainSource is a reference to the ChainSource actor for registering
-	// confirmation notifications for commitment transactions.
 	// confirmation notifications for commitment transactions and querying
 	// block height.
 	ChainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp]
@@ -118,6 +117,13 @@ type RoundClientConfig struct {
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
+
+	// VTXOManager receives VTXO creation notifications after rounds
+	// complete. The round actor forwards VTXOCreatedNotification messages
+	// to spawn VTXO actors for newly created VTXOs. Uses actor.Message to
+	// avoid import cycle with vtxo package. Optional - if nil,
+	// notifications are not forwarded.
+	VTXOManager actor.TellOnlyRef[actor.Message]
 }
 
 // NewRoundClientActor creates a new client actor with the provided
@@ -844,6 +850,28 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				},
 			)
 
+			// Query ChainSource for current block height to use as
+			// HeightHint. LND requires HeightHint > 0 for
+			// confirmation scanning.
+			heightHint := m.HeightHint
+			if heightHint == 0 {
+				heightFuture := a.cfg.ChainSource.Ask(
+					ctx, &chainsource.BestHeightRequest{},
+				)
+				heightResult := heightFuture.Await(ctx)
+				heightResp, err := heightResult.Unpack()
+				if err != nil {
+					return fmt.Errorf("get best height "+
+						"for confirmation: %w", err)
+				}
+				bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+				if !ok {
+					return fmt.Errorf("unexpected " +
+						"height response type")
+				}
+				heightHint = uint32(bestHeightResp.Height)
+			}
+
 			// Build the complete RegisterConfRequest with the
 			// mapper as the NotifyActor target.
 			confReq := &chainsource.RegisterConfRequest{
@@ -851,14 +879,28 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				Txid:        m.Txid,
 				PkScript:    m.PkScript,
 				TargetConfs: m.TargetConfs,
-				HeightHint:  m.HeightHint,
+				HeightHint:  heightHint,
 				NotifyActor: fn.Some(mappedRef),
 			}
 
-			a.cfg.ChainSource.Tell(ctx, confReq)
+			a.log.InfoS(ctx, "Sending RegisterConfRequest to ChainSource",
+				slog.String("caller_id", callerID),
+				slog.Int("pkscript_len", len(m.PkScript)),
+				slog.Int("height_hint", int(heightHint)),
+				slog.Int("target_confs", int(m.TargetConfs)))
+
+			// Use a background context for the confirmation
+			// registration. The ConfActor needs a long-lived context
+			// that won't be cancelled when the current message
+			// processing completes.
+			a.cfg.ChainSource.Tell(context.Background(), confReq)
 
 		case *VTXOCreatedNotification:
-			_ = m.VTXOs
+			// Forward to VTXO manager to spawn actors for the new
+			// VTXOs if configured.
+			if a.cfg.VTXOManager != nil {
+				a.cfg.VTXOManager.Tell(ctx, m)
+			}
 
 		case *RoundCompletedNotification:
 			a.log.InfoS(ctx, "Processing round completion notification",
@@ -879,12 +921,14 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			a.log.InfoS(ctx, "Processing round checkpoint notification",
 				slog.String("round_id", m.RoundID.String()))
 
-			// Primary FSM checkpointed a round. Migrate to
-			// dedicated FSM.
-			err := a.migrateRoundToActiveFSM(ctx, m.RoundID)
+			// Promote the current primaryFSM to activeRounds. It's
+			// already in InputSigSentState and will handle the
+			// BoardingConfirmed event when it arrives.
+			err := a.promotePrimaryFSMToActiveRounds(ctx, m.RoundID)
 			if err != nil {
-				return fmt.Errorf("failed to migrate "+
-					"round %s: %w", m.RoundID, err)
+				return fmt.Errorf("failed to promote "+
+					"primaryFSM for round %s: %w",
+					m.RoundID, err)
 			}
 
 		case *RoundFailedNotification:
