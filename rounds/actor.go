@@ -234,6 +234,19 @@ func (a *Actor) loadPendingRounds(ctx context.Context) error {
 		return fmt.Errorf("failed to load pending rounds: %w", err)
 	}
 
+	// Unlock VTXOs that were locked by rounds that are no longer active.
+	// This cleans up locks from rounds that were abandoned due to crashes
+	// or failures before completion.
+	activeRoundIDs := make([]RoundID, len(rounds))
+	for i, round := range rounds {
+		activeRoundIDs[i] = round.RoundID
+	}
+
+	err = a.cfg.VTXOStore.UnlockStaleVTXOs(ctx, activeRoundIDs)
+	if err != nil {
+		return fmt.Errorf("failed to unlock stale vtxos: %w", err)
+	}
+
 	for _, round := range rounds {
 		roundFSM, err := a.loadRoundFSM(ctx, round)
 		if err != nil {

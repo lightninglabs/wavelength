@@ -76,6 +76,11 @@ func (s *Store) NewRoundStore() *RoundStoreDB {
 	return NewRoundStoreDB(s, s.clock)
 }
 
+// NewVTXOStore creates a VTXOStoreDB from this Store.
+func (s *Store) NewVTXOStore() *VTXOStoreDB {
+	return NewVTXOStoreDB(s)
+}
+
 // Config holds the configuration for the database store. It allows selecting
 // between SQLite and Postgres backends.
 type Config struct {

@@ -78,6 +78,9 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		"MarkVTXOForfeit", mock.Anything, mock.Anything,
 		mock.Anything,
 	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"UnlockStaleVTXOs", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
 
 	m := &commonMockSetup{
 		t:                t,
