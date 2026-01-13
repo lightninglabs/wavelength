@@ -618,8 +618,19 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		"round_id", req.RoundID,
 		"txid", txHash.String())
 
-	// Step 2: Subscribe to confirmation using actor mode. Create a mapped
-	// reference that transforms ConfirmationEvent to ConfirmationMsg.
+	// Get the current block height to use as a height hint for the
+	// confirmation subscription. LND requires a height hint > 0 to optimize
+	// confirmation scanning.
+	heightFuture := a.cfg.ChainSourceActor.Ask(ctx, &chainsource.BestHeightRequest{})
+	heightResult := heightFuture.Await(ctx)
+	heightResp, err := heightResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("get best height: %w", err)
+	}
+	bestHeightResp := heightResp.(*chainsource.BestHeightResponse)
+
+	// Subscribe to confirmation using actor mode. We create a mapped
+	// reference that transforms a ConfirmationEvent to a ConfirmationMsg.
 	// We use Tell (fire-and-forget) since we handle the confirmation
 	// asynchronously via ConfirmationMsg.
 	callbackRef := chainsource.MapConfirmationEvent(
@@ -635,11 +646,19 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 	)
 
 	// Use the round ID as the caller ID for deterministic cancellation.
+	// LND requires a pkScript for confirmation tracking - use the first
+	// output (the batch output) since that's what we're watching.
+	var pkScript []byte
+	if len(req.SignedTx.TxOut) > 0 {
+		pkScript = req.SignedTx.TxOut[0].PkScript
+	}
+
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    req.RoundID.String(),
 		Txid:        &txHash,
+		PkScript:    pkScript,
 		TargetConfs: a.cfg.ConfirmationTarget,
-		HeightHint:  0,
+		HeightHint:  uint32(bestHeightResp.Height),
 		NotifyActor: fn.Some(callbackRef),
 	}
 

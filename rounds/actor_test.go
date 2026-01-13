@@ -794,7 +794,7 @@ func (m *mockChainSourceActor) ID() string {
 	return "mock-chain-source-actor"
 }
 
-// Ask handles broadcast requests and returns success.
+// Ask handles broadcast and height requests and returns success.
 func (m *mockChainSourceActor) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,
 ) actor.Future[chainsource.ChainSourceResp] {
@@ -802,14 +802,23 @@ func (m *mockChainSourceActor) Ask(_ context.Context,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	req, ok := msg.(*chainsource.BroadcastTxRequest)
-	if ok {
+	switch req := msg.(type) {
+	case *chainsource.BroadcastTxRequest:
 		m.broadcastReqs = append(m.broadcastReqs, req)
 
 		// Return success response.
 		promise := actor.NewPromise[chainsource.ChainSourceResp]()
 		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
 			&chainsource.BroadcastTxResponse{},
+		))
+
+		return promise.Future()
+
+	case *chainsource.BestHeightRequest:
+		// Return a mock height.
+		promise := actor.NewPromise[chainsource.ChainSourceResp]()
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.BestHeightResponse{Height: 100},
 		))
 
 		return promise.Future()
