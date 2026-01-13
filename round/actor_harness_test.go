@@ -139,6 +139,31 @@ func (m *mockChainSourceRef) Tell(
 	}
 }
 
+// Ask implements actor.ActorRef for the mock. It returns a BestHeightResponse
+// for height queries.
+func (m *mockChainSourceRef) Ask(
+	_ context.Context, msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+
+	switch msg.(type) {
+	case *chainsource.BestHeightRequest:
+		// Return a reasonable test height.
+		resp := &chainsource.BestHeightResponse{
+			Height: 100,
+		}
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](resp))
+
+	default:
+		promise.Complete(fn.Err[chainsource.ChainSourceResp](
+			fmt.Errorf("unexpected Ask message type: %T", msg),
+		))
+	}
+
+	return promise.Future()
+}
+
 // mockWalletActorRef captures registration requests and enables tests to
 // inject boarding confirmations back to the actor under test.
 type mockWalletActorRef struct {
