@@ -186,9 +186,9 @@ type Round struct {
 type VTXOStatus string
 
 const (
-	// VTXOStatusUnconfirmed indicates the VTXO's commitment transaction has
+	// VTXOStatusPending indicates the VTXO's commitment transaction has
 	// been broadcast but not yet confirmed on-chain.
-	VTXOStatusUnconfirmed VTXOStatus = "unconfirmed"
+	VTXOStatusPending VTXOStatus = "pending"
 
 	// VTXOStatusLive indicates the VTXO's commitment transaction has been
 	// confirmed and the VTXO is now spendable.
@@ -202,9 +202,8 @@ const (
 // VTXO represents a Virtual Transaction Output that exists within a VTXO tree.
 // It contains all the information needed to identify and spend the VTXO.
 type VTXO struct {
-	// Outpoint identifies this VTXO's location. The hash is the TXID of the
-	// leaf transaction in the VTXO tree, and the index is always 0 (the
-	// VTXO output in the leaf).
+	// Outpoint uniquely identifies this VTXO on-chain. This is computed
+	// from the VTXO's position in the tree structure.
 	Outpoint wire.OutPoint
 
 	// RoundID is the identifier of the round that created this VTXO.
@@ -243,6 +242,11 @@ type VTXOStore interface {
 	// GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error
 	// if the VTXO doesn't exist.
 	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (*VTXO, error)
+
+	// GetForfeitInfo retrieves forfeit metadata for a VTXO. Returns nil
+	// and no error if the forfeit info doesn't exist.
+	GetForfeitInfo(ctx context.Context,
+		outpoint wire.OutPoint) (*ForfeitInfo, error)
 
 	// LockVTXO locks VTXOs for forfeit in the specified round. This
 	// prevents the VTXOs from being forfeited in another round

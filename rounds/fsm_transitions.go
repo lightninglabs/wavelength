@@ -2484,8 +2484,7 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 				outpoint, err := node.GetNonAnchorOutpoint()
 				if err != nil {
 					return fmt.Errorf(
-						"failed to get leaf TXID: %w",
-						err,
+						"get VTXO outpoint: %w", err,
 					)
 				}
 
@@ -2494,7 +2493,7 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					RoundID:          roundID,
 					BatchOutputIndex: outputIdx,
 					Descriptor:       desc,
-					Status:           VTXOStatusUnconfirmed,
+					Status:           VTXOStatusPending,
 				})
 
 				return nil
