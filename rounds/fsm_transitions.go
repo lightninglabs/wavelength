@@ -2492,7 +2492,8 @@ func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
 		return fmt.Errorf("invalid input index: %d", inputIdx)
 	}
 
-	input := s.PSBT.Inputs[inputIdx]
+	// Use a pointer to modify the actual PSBT input, not a copy.
+	input := &s.PSBT.Inputs[inputIdx]
 
 	// Get the prevout for this input.
 	prevOut := input.WitnessUtxo
