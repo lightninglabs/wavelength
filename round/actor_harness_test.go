@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -589,6 +590,47 @@ func (h *actorTestHarness) newTestRound(roundID RoundID) *Round {
 		RoundID:      roundID,
 		CommitmentTx: fn.Some(packet),
 	}
+}
+
+// setupPrimaryFSMInInputSigSentState replaces the actor's primaryFSM with one
+// initialized in InputSigSentState. This allows testing the promotion flow
+// where the primaryFSM is already at the checkpoint state. Returns the PSBT
+// commitment tx for test assertions.
+func (h *actorTestHarness) setupPrimaryFSMInInputSigSentState(
+	roundID RoundID) *psbt.Packet {
+
+	h.t.Helper()
+
+	// Create a unique commitment tx for this round.
+	tx := wire.NewMsgTx(2)
+	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID.String())...)
+	tx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: uniqueScript,
+	})
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(h.t, err)
+
+	// Create InputSigSentState with the commitment tx.
+	initialState := &InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+	}
+
+	// Create a new FSM starting in InputSigSentState.
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        h.actor.log.WithPrefix("fsm-primary-test"),
+		ErrorReporter: newContextErrorReporter(h.ctx, "fsm-primary-test"),
+		InitialState:  initialState,
+		Env:           h.actor.env,
+	}
+	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM.Start(h.ctx)
+
+	// Replace the actor's primaryFSM.
+	h.actor.primaryFSM = &newFSM
+
+	return packet
 }
 
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return

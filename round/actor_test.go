@@ -460,14 +460,10 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.Empty(t, h.actor.activeRounds)
 
 		roundID := testRoundID("checkpointed-round")
-		round := h.newTestRound(roundID)
-		h.roundStore.On(
-			"FetchState", mock.Anything, roundID,
-		).Return(
-			round,
-			&InputSigSentState{RoundID: roundID},
-			nil,
-		)
+
+		// Set up the primaryFSM in InputSigSentState, simulating the
+		// state after the round has completed through partial sigs.
+		commitmentTx := h.setupPrimaryFSMInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{
@@ -479,12 +475,97 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.NoError(t, err)
 
 		// When a checkpoint notification is received, the actor must
-		// migrate the round into an active FSM so it can continue
-		// processing events. This handles the transition from primary
-		// FSM states to dedicated round FSMs.
+		// promote the primaryFSM to activeRounds so it can continue
+		// processing events (like BoardingConfirmed). A new primaryFSM
+		// is created in Idle state for subsequent rounds.
 		require.Contains(t, h.actor.activeRounds, roundID)
 
-		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
+		txid := commitmentTx.UnsignedTx.TxHash()
+		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
+		require.True(t, exists)
+		require.Equal(t, roundID, indexedRoundID)
+
+		// Verify the new primaryFSM is in Idle state, ready for new
+		// boarding intents.
+		primaryState, err := h.actor.primaryFSM.CurrentState()
+		require.NoError(t, err)
+		_, isIdle := primaryState.(*Idle)
+		require.True(t, isIdle, "new primaryFSM should be in Idle, "+
+			"got %T", primaryState)
+	})
+
+	t.Run("primary_accepts_boarding_after_checkpoint", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// First round: promote primaryFSM to activeRounds.
+		firstRoundID := testRoundID("first-round")
+		h.setupPrimaryFSMInInputSigSentState(firstRoundID)
+
+		outbox := []ClientOutMsg{
+			&RoundCheckpointedNotification{RoundID: firstRoundID},
+		}
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.NoError(t, err)
+
+		// After promotion, a new primaryFSM should be in Idle.
+		primaryState, err := h.actor.primaryFSM.CurrentState()
+		require.NoError(t, err)
+		_, isIdle := primaryState.(*Idle)
+		require.True(t, isIdle)
+
+		// Send a new boarding confirmation to the new primaryFSM.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+
+		// The new primaryFSM should transition from Idle to
+		// PendingRoundAssembly.
+		primaryState, err = h.actor.primaryFSM.CurrentState()
+		require.NoError(t, err)
+		_, isPending := primaryState.(*PendingRoundAssembly)
+		require.True(t, isPending, "new primaryFSM should transition "+
+			"to PendingRoundAssembly, got %T", primaryState)
+
+		// The first round should still be tracked in activeRounds.
+		require.Contains(t, h.actor.activeRounds, firstRoundID)
+	})
+
+	t.Run("promoted_fsm_receives_boarding_confirmed", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Promote primaryFSM to activeRounds.
+		roundID := testRoundID("promoted-round")
+		commitmentTx := h.setupPrimaryFSMInInputSigSentState(roundID)
+
+		outbox := []ClientOutMsg{
+			&RoundCheckpointedNotification{RoundID: roundID},
+		}
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.NoError(t, err)
+
+		// The promoted FSM should be in activeRounds.
+		require.Contains(t, h.actor.activeRounds, roundID)
+		promotedFSM := h.actor.activeRounds[roundID]
+
+		// Verify the promoted FSM is still in InputSigSentState.
+		promotedState, err := promotedFSM.FSM.CurrentState()
+		require.NoError(t, err)
+		_, isInputSigSent := promotedState.(*InputSigSentState)
+		require.True(t, isInputSigSent)
+
+		// The promoted FSM should be indexed by commitment txid.
+		txid := commitmentTx.UnsignedTx.TxHash()
 		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
 		require.Equal(t, roundID, indexedRoundID)
