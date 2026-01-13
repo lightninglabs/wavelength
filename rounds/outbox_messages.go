@@ -239,6 +239,9 @@ type ClientBatchInfo struct {
 	// Client is the identifier of the client to send data to.
 	Client clientconn.ClientID
 
+	// RoundID is the identifier of the round this batch belongs to.
+	RoundID RoundID
+
 	// BatchPSBT is the partially signed batch transaction. The client needs
 	// the full PSBT (including witness UTXOs and other metadata) to create
 	// their signatures for boarding inputs.

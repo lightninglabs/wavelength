@@ -625,6 +625,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 
 		outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
 			Client:           clientID,
+			RoundID:          env.RoundID,
 			BatchPSBT:        s.PSBT,
 			VTXOTreePaths:    vtxoTreePaths,
 			ConnectorLeafMap: connectorLeafMap,
