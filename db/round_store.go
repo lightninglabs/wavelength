@@ -49,6 +49,9 @@ type RoundStore interface {
 
 	ListActiveRounds(ctx context.Context) ([]RoundRow, error)
 
+	ListRoundsByStatus(ctx context.Context,
+		status string) ([]RoundRow, error)
+
 	UpdateRoundStatus(
 		ctx context.Context, arg sqlc.UpdateRoundStatusParams,
 	) error
@@ -409,6 +412,50 @@ func (s *RoundPersistenceStore) ListActiveRounds(
 		dbRounds, err := q.ListActiveRounds(ctx)
 		if err != nil {
 			return fmt.Errorf("list active rounds: %w", err)
+		}
+
+		rounds := make([]*round.Round, 0, len(dbRounds))
+		for _, dbRound := range dbRounds {
+			// Fetch boarding intents for this round.
+			dbIntents, err := q.GetRoundBoardingIntents(
+				ctx, dbRound.RoundID,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"get round boarding intents: %w", err,
+				)
+			}
+
+			r, err := s.dbRoundToDomainRound(
+				ctx, q, dbRound, dbIntents,
+			)
+			if err != nil {
+				return fmt.Errorf("convert round: %w", err)
+			}
+
+			rounds = append(rounds, r)
+		}
+
+		result = rounds
+
+		return nil
+	})
+
+	return result, err
+}
+
+// ListConfirmedRounds returns all rounds that have been confirmed on-chain.
+func (s *RoundPersistenceStore) ListConfirmedRounds(
+	ctx context.Context) ([]*round.Round, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*round.Round
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		dbRounds, err := q.ListRoundsByStatus(ctx, "confirmed")
+		if err != nil {
+			return fmt.Errorf("list confirmed rounds: %w", err)
 		}
 
 		rounds := make([]*round.Round, 0, len(dbRounds))

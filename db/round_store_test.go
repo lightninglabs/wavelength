@@ -314,6 +314,70 @@ func TestRoundStoreFinalizeRound(t *testing.T) {
 	})
 }
 
+// TestRoundStoreListConfirmedRounds tests listing confirmed rounds. This
+// verifies that only rounds marked as "confirmed" (via FinalizeRound) are
+// returned, while active rounds are excluded.
+func TestRoundStoreListConfirmedRounds(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create and commit three rounds.
+	rounds := make([]*round.Round, 3)
+	for i := 0; i < 3; i++ {
+		seed := "confirmed-test-" + string(rune('a'+i))
+		roundID := testRoundIDDB(seed)
+		rounds[i] = createTestRound(t, roundID)
+		state := &round.InputSigSentState{
+			RoundID:     rounds[i].RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+
+		err := store.CommitState(ctx, rounds[i], state)
+		require.NoError(t, err)
+	}
+
+	// Initially, no rounds should be confirmed.
+	confirmedRounds, err := store.ListConfirmedRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, confirmedRounds, 0)
+
+	// Finalize two of the three rounds.
+	for i := 0; i < 2; i++ {
+		var txid chainhash.Hash
+		rounds[i].CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+			txid = packet.UnsignedTx.TxHash()
+		})
+
+		confInfo := round.ConfInfo{
+			Height:    int32(1000 + i),
+			BlockHash: chainhash.Hash{byte(i), 0xab, 0xcd},
+		}
+		err = store.FinalizeRound(
+			ctx, rounds[i].RoundID, txid, confInfo,
+		)
+		require.NoError(t, err)
+	}
+
+	// Now list confirmed rounds - should return exactly 2.
+	confirmedRounds, err = store.ListConfirmedRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, confirmedRounds, 2)
+
+	// Verify the confirmed rounds have correct ConfInfo populated.
+	for _, r := range confirmedRounds {
+		require.True(t, r.ConfInfo.IsSome(),
+			"confirmed round should have ConfInfo")
+	}
+
+	// Verify the active (non-confirmed) round is still in active list.
+	activeRounds, err := store.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, activeRounds, 1)
+	require.Equal(t, rounds[2].RoundID, activeRounds[0].RoundID)
+}
+
 // TestVTXOStoreSaveAndList tests saving and listing VTXOs.
 func TestVTXOStoreSaveAndList(t *testing.T) {
 	t.Parallel()
