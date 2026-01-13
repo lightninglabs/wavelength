@@ -4,6 +4,7 @@
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
 .PHONY: submodule-init submodule-update submodule-status submodule-check submodule-sync
+.PHONY: check-commits
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -240,6 +241,13 @@ unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
+check-commits: #? Run lint+unit on each commit since branch base (use upstream=<ref>, base=<ref>, keep_going=1, no_submodules=1)
+	./scripts/check_commits_since_base.sh \
+		$(if $(upstream),--upstream $(upstream),) \
+		$(if $(base),--base $(base),) \
+		$(if $(keep_going),--keep-going,) \
+		$(if $(no_submodules),--no-submodules,)
+
 # ============
 # RPC GENERATION
 # ============
@@ -315,13 +323,14 @@ release: #? Cross compile for all supported platforms
 help: #? Show this help message
 	@echo "Available make targets:"
 	@echo ""
-	@grep -E '^[a-zA-Z_-]+:.*?#\? .*$$' $(MAKEFILE_LIST) | \
+	@grep -h -E '^[a-zA-Z_-]+:.*?#\? .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?#\\? "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make rpc"
 	@echo "  make unit"
+	@echo "  make check-commits upstream=origin/main"
 	@echo "  make unit pkg=db timeout=5m"
 	@echo "  make unit-debug log=\"stdlog trace\" pkg=db case=TestFoo timeout=10s"
 	@echo "  make unit tags=\"test_db_postgres\""
