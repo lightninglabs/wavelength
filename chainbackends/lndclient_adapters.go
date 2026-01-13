@@ -177,6 +177,12 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	chainNotifier := n.cfg.LND.ChainNotifier
+
+	n.logger(ctx).InfoS(ctx, "Calling lndclient RegisterConfirmationsNtfn",
+		slog.Int("pkscript_len", len(pkScript)),
+		slog.Int("num_confs", int(numConfs)),
+		slog.Int("height_hint", int(heightHint)))
+
 	confChan, errChan, err := chainNotifier.RegisterConfirmationsNtfn(
 		ctx, txid, pkScript, int32(numConfs), int32(heightHint),
 		lndOpts...,
