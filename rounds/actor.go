@@ -662,7 +662,11 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		NotifyActor: fn.Some(callbackRef),
 	}
 
-	a.cfg.ChainSourceActor.Tell(ctx, confReq)
+	// Use a background context for the confirmation subscription since it
+	// needs to outlive the current request. The request context `ctx` would
+	// be cancelled when this function returns, which would cancel the
+	// ChainSourceActor's internal goroutines for monitoring confirmations.
+	a.cfg.ChainSourceActor.Tell(context.Background(), confReq)
 
 	a.log.DebugS(ctx, "Subscribed to transaction confirmation",
 		"round_id", req.RoundID,
