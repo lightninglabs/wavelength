@@ -23,6 +23,7 @@ require (
 	github.com/lightninglabs/darepo-client v0.0.0
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a
+	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn v1.2.3
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
 	github.com/ory/dockertest/v3 v3.12.0
@@ -114,7 +115,6 @@ require (
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11 // indirect
 	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9 // indirect
 	github.com/lightningnetwork/lnd/cert v1.2.2 // indirect
-	github.com/lightningnetwork/lnd/clock v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
 	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
@@ -205,6 +205,6 @@ require (
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
 
-replace github.com/lightninglabs/darepo-client => ./client
+replace github.com/lightninglabs/darepo-client => ../darepo-client
 
-replace github.com/lightninglabs/darepo-client/baselib => ./client/baselib
+replace github.com/lightninglabs/darepo-client/baselib => ../darepo-client/baselib
