@@ -213,16 +213,18 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 	)
 
 	return &RoundFSM{
-		FSM:     &fsm,
-		RoundID: round.RoundID,
-		TxID:    txid,
+		FSM:          &fsm,
+		RoundID:      round.RoundID,
+		TxID:         txid,
+		CommitmentTx: round.CommitmentTx,
 	}, nil
 }
 
 // registerCommitmentConfirmation registers for confirmation monitoring of a
-// commitment transaction with the chainsource actor.
+// commitment transaction with the chainsource actor. The commitmentTx is used
+// to extract the pkScript for LND's confirmation tracking.
 func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
-	txid chainhash.Hash) {
+	txid chainhash.Hash, commitmentTx fn.Option[*psbt.Packet]) {
 
 	callerID := fmt.Sprintf("commitment-tx-%s", txid.String())
 
@@ -238,14 +240,46 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		},
 	)
 
+	// Extract pkScript from the commitment transaction's first output.
+	// LND requires a pkScript for confirmation tracking.
+	var pkScript []byte
+	commitmentTx.WhenSome(func(packet *psbt.Packet) {
+		if packet.UnsignedTx != nil && len(packet.UnsignedTx.TxOut) > 0 {
+			pkScript = packet.UnsignedTx.TxOut[0].PkScript
+		}
+	})
+
+	// Query ChainSource for current block height to use as HeightHint.
+	// LND requires HeightHint > 0 for confirmation scanning.
+	var heightHint uint32
+	heightFuture := a.cfg.ChainSource.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	)
+	heightResult := heightFuture.Await(ctx)
+	heightResp, err := heightResult.Unpack()
+	if err == nil {
+		bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+		if ok {
+			heightHint = uint32(bestHeightResp.Height)
+		}
+	} else {
+		a.log.WarnS(ctx, "Failed to get best height for confirmation",
+			err, slog.String("txid", txid.String()))
+	}
+
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    callerID,
 		Txid:        &txid,
+		PkScript:    pkScript,
 		TargetConfs: a.cfg.OperatorTerms.MinConfirmations,
+		HeightHint:  heightHint,
 		NotifyActor: fn.Some(mappedRef),
 	}
 
-	a.cfg.ChainSource.Tell(ctx, confReq)
+	// Use a background context for the confirmation registration. The
+	// ConfActor needs a long-lived context that won't be cancelled when
+	// the current message processing completes.
+	a.cfg.ChainSource.Tell(context.Background(), confReq)
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any
@@ -354,7 +388,9 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		// round.
 		if !roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
 			a.commitmentTxIndex[roundFSM.TxID] = round.RoundID
-			a.registerCommitmentConfirmation(ctx, roundFSM.TxID)
+			a.registerCommitmentConfirmation(
+				ctx, roundFSM.TxID, round.CommitmentTx,
+			)
 
 			a.log.InfoS(ctx, "Resumed round awaiting confirmation",
 				slog.String("round_id", round.RoundID.String()),
@@ -459,7 +495,9 @@ func (a *RoundClientActor) migrateRoundToActiveFSM(ctx context.Context,
 	// Index commitment tx and register for confirmation monitoring.
 	if !roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
 		a.commitmentTxIndex[roundFSM.TxID] = roundID
-		a.registerCommitmentConfirmation(ctx, roundFSM.TxID)
+		a.registerCommitmentConfirmation(
+			ctx, roundFSM.TxID, roundFSM.CommitmentTx,
+		)
 	}
 
 	return nil
