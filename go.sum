@@ -1099,8 +1099,8 @@ github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf h1:HZKvJUHlcXI
 github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf/go.mod h1:vxmQPeIQxPf6Jf9rM8R+B4rKBqLA2AjttNxkFBL2Plk=
 github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.3 h1:NuDp6Z+QNMSzZ/+RzWsjgAgQSr/REDxTiHmTczZxlXA=
 github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.3/go.mod h1:bDnEKRN1u13NFBuy/C+bFLhxA5bfd3clT25y76QY0AM=
-github.com/lightninglabs/lndclient v1.0.1-0.20251120145443-a0342758fc5b h1:zGyRvVJ5oOAA22m0WD0sx/CFXxE4v0APaPrn3mISb5I=
-github.com/lightninglabs/lndclient v1.0.1-0.20251120145443-a0342758fc5b/go.mod h1:gBtIFPGmC2xIspGIv/G5+HiPSGJsFD8uIow7Oke1HFI=
+github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea h1:ribhearJGwK0aZ5BKKs3YgkJhmt4+w/yYcxX+adF6zU=
+github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea/go.mod h1:1/1AxNwcuSHveogybrQWffJVzttkvxb6Yuv8cYPfrqQ=
 github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2 h1:eFjp1dIB2BhhQp/THKrjLdlYuPugO9UU4kDqu91OX/Q=
 github.com/lightninglabs/migrate/v4 v4.18.2-9023d66a-fork-pr-2/go.mod h1:99BKpIi6ruaaXRM1A77eqZ+FWPQ3cfRa+ZVy5bmWMaY=
 github.com/lightninglabs/neutrino v0.16.2-0.20250820152345-800584718688 h1:fqEeH1lSuYcx0kzr1nBc8LCooBu8iKOUsBPhpXS523g=
@@ -1115,8 +1115,8 @@ github.com/lightninglabs/taproot-assets/taprpc v1.0.11 h1:8P6+M3GtKEhXnB+Du3uyR5
 github.com/lightninglabs/taproot-assets/taprpc v1.0.11/go.mod h1:DZn+0c9/PHEKisJLSqNdyH3BVJmwl8mFLe04y++/FlI=
 github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9 h1:6D3LrdagJweLLdFm1JNodZsBk6iU4TTsBBFLQ4yiXfI=
 github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9/go.mod h1:EDqJ3MuZIbMq0QI1czTIKDJ/GS8S14RXPwapHw8cw6w=
-github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f h1:lA9Xtup35wPPzu+b3W2KNhTt8Koj7xFKQMPKOe7zFaM=
-github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20251210075858-3d7ff866f89f/go.mod h1:EN/B9RUeC1a7FRL3y5rK7SjFgup31/nCY9KNUPs1JpY=
+github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a h1:iRR8gWsS7rPTz7GRmyBu/QU0kXBAPi/FYxfnrhuh9Y4=
+github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a/go.mod h1:OycW7yPCaApWsIqLthe8QHxk4dM5wOw0LPcUXjr3a5s=
 github.com/lightningnetwork/lnd/cert v1.2.2 h1:71YK6hogeJtxSxw2teq3eGeuy4rHGKcFf0d0Uy4qBjI=
 github.com/lightningnetwork/lnd/cert v1.2.2/go.mod h1:jQmFn/Ez4zhDgq2hnYSw8r35bqGVxViXhX6Cd7HXM6U=
 github.com/lightningnetwork/lnd/clock v1.1.1 h1:OfR3/zcJd2RhH0RU+zX/77c0ZiOnIMsDIBjgjWdZgA0=
@@ -1131,8 +1131,8 @@ github.com/lightningnetwork/lnd/kvdb v1.4.16 h1:9BZgWdDfjmHRHLS97cz39bVuBAqMc4/p
 github.com/lightningnetwork/lnd/kvdb v1.4.16/go.mod h1:HW+bvwkxNaopkz3oIgBV6NEnV4jCEZCACFUcNg4xSjM=
 github.com/lightningnetwork/lnd/queue v1.1.1 h1:99ovBlpM9B0FRCGYJo6RSFDlt8/vOkQQZznVb18iNMI=
 github.com/lightningnetwork/lnd/queue v1.1.1/go.mod h1:7A6nC1Qrm32FHuhx/mi1cieAiBZo5O6l8IBIoQxvkz4=
-github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f h1:yY2V+sZjOsmGBzrouomKZnnA6RbJnqXsU+dI38vICt8=
-github.com/lightningnetwork/lnd/sqldb v1.0.12-0.20251210075858-3d7ff866f89f/go.mod h1:Ic65SUa2pJzc3sWSZqDTrWo5qdKIS1zu/blhSddF7X8=
+github.com/lightningnetwork/lnd/sqldb v1.0.12 h1:cNJsL+ymCtTn9DqroszZixKaD96GN32ujpHUYvrkN30=
+github.com/lightningnetwork/lnd/sqldb v1.0.12/go.mod h1:Ic65SUa2pJzc3sWSZqDTrWo5qdKIS1zu/blhSddF7X8=
 github.com/lightningnetwork/lnd/ticker v1.1.1 h1:J/b6N2hibFtC7JLV77ULQp++QLtCwT6ijJlbdiZFbSM=
 github.com/lightningnetwork/lnd/ticker v1.1.1/go.mod h1:waPTRAAcwtu7Ji3+3k+u/xH5GHovTsCoSVpho0KDvdA=
 github.com/lightningnetwork/lnd/tlv v1.3.2 h1:MO4FCk7F4k5xPMqVZF6Nb/kOpxlwPrUQpYjmyKny5s0=
