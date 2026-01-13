@@ -34,6 +34,10 @@ type RoundFSM struct {
 
 	// TxID is the commitment transaction ID for this round.
 	TxID chainhash.Hash
+
+	// CommitmentTx is the commitment transaction as a PSBT, used for
+	// registering confirmation notifications with the correct pkScript.
+	CommitmentTx fn.Option[*psbt.Packet]
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
