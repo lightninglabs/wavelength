@@ -226,7 +226,7 @@ ast-grep-fix: #? Auto-fix ast-grep style issues (requires ast-grep/sg installed)
 	@$(call print, "Auto-fixing ast-grep style issues.")
 	sg scan --update-all $(AST_GREP_EXCLUDE) $(AST_GREP_PATH)
 
-lint: check-go-version lint-source #? Run static code analysis
+lint: check-go-version check-migration-version lint-source #? Run static code analysis
 
 fmt: $(GOIMPORTS_BIN) #? Format code and fix imports
 	@$(call print, "Fixing imports.")
@@ -256,6 +256,10 @@ check-go-version-dockerfile:
 check-go-version-yaml:
 	@$(call print, "Checking for target Go version (v$(GO_VERSION)) in YAML files")
 	@./scripts/check-go-version.sh $(GO_VERSION) "*.yml *.yaml" "go-version:\\|GO_VERSION:\\|go:"
+
+check-migration-version: #? Check that LatestMigrationVersion matches migration files
+	@$(call print, "Checking migration version consistency.")
+	@./scripts/check-migration-latest-version.sh
 
 # =======
 # TESTING
