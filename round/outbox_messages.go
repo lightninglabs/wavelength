@@ -154,6 +154,11 @@ type VTXOCreatedNotification struct {
 	VTXOs []*ClientVTXO
 }
 
+// MessageType returns the message type identifier for logging and debugging.
+func (m *VTXOCreatedNotification) MessageType() string {
+	return "VTXOCreatedNotification"
+}
+
 func (m *VTXOCreatedNotification) clientOutMsgSealed() {}
 
 // RoundCompletedNotification is emitted when a round FSM reaches ConfirmedState
