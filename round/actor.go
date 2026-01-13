@@ -99,7 +99,9 @@ type RoundClientConfig struct {
 
 	// ChainSource is a reference to the ChainSource actor for registering
 	// confirmation notifications for commitment transactions.
-	ChainSource actor.TellOnlyRef[chainsource.ChainSourceMsg]
+	// confirmation notifications for commitment transactions and querying
+	// block height.
+	ChainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp]
 
 	// WalletActor is a reference to the Ark wallet actor. The round actor
 	// registers to receive BoardingUtxoConfirmedEvent notifications when
