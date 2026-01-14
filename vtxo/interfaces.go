@@ -10,9 +10,177 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
+
+// =============================================================================
+// MESSAGE SPEC
+// =============================================================================
+//
+// This section documents all message types that flow into and out of the VTXO
+// FSM actor. This provides a quick reference similar to a protobuf service
+// definition, showing the complete message surface at a glance.
+//
+// Message flow:
+//
+//	                 ┌──────────┐
+//	 BlockEpochEvent─│          │─RefreshRequest ──▶ Round
+//	                 │          │
+//	 ForfeitRequest ─│ VTXO FSM │─ForfeitSigSubmit ─▶ Round
+//	    (from Round) │          │
+//	                 │          │─ExpiringNotify ───▶ ChainResolver
+//	 ForfeitConfirm ─│          │
+//	    (from Round) │          │─StatusUpdate ─────▶ Persistence
+//	                 │          │
+//	 ResumeVTXOEvent─│          │─TerminatedNotify ─▶ VTXOManager
+//	    (from Mgr)   └──────────┘
+//
+// =============================================================================
+
+// InboundEvent documents an event that flows INTO the FSM from an external
+// source. Used purely for documentation purposes.
+type InboundEvent[E VTXOEvent] struct{}
+
+// OutboundMsg documents a message that flows OUT of the FSM to other actors.
+// Used purely for documentation purposes.
+type OutboundMsg[M VTXOOutMsg] struct{}
+
+// InternalEvent documents an event used within the FSM for internal state
+// transitions. These are typically emitted by one state and consumed by the
+// same or a subsequent state. Used purely for documentation purposes.
+type InternalEvent[E VTXOEvent] struct{}
+
+// MessageSpec documents all message types supported by the VTXO FSM actor.
+// This provides a quick reference showing inbound events (what drives the FSM)
+// and outbound messages (what the FSM emits) at a glance.
+//
+// # Inbound Events
+//
+// Events are received from external actors and drive state transitions:
+//
+//   - BlockEpochEvent: From chain source (via VTXO manager), triggers expiry
+//     checks on each new block.
+//   - ForfeitRequestEvent: From round actor, initiates forfeit signing flow.
+//   - ForfeitConfirmedEvent: From round actor, confirms forfeit completion.
+//   - ResumeVTXOEvent: From VTXO manager, restores state after crash recovery.
+//   - VTXOFailedEvent: From any source, signals unrecoverable failure.
+//
+// # Outbound Messages
+//
+// Messages are emitted via the FSM outbox and routed to target actors:
+//
+//   - RefreshRequest: To round actor, requests VTXO inclusion in next batch.
+//   - ForfeitSignatureSubmission: To round actor, submits signed forfeit tx.
+//   - ExpiringNotification: To chain resolver, escalates critical expiry.
+//   - VTXOStatusUpdate: To persistence layer, updates database state.
+//   - VTXOTerminatedNotification: To VTXO manager, signals actor cleanup.
+//
+// # Internal Events
+//
+//   - ForfeitSignedEvent: Updates ForfeitTxID after signing (currently unused
+//     in production, reserved for round actor acknowledgment flow).
+var MessageSpec = struct {
+	// -----------------------------------------------------------------
+	// INBOUND EVENTS (from external actors → FSM)
+	// -----------------------------------------------------------------
+
+	// BlockEpochEvent is received from the chain source (routed via VTXO
+	// manager) when a new block is connected. Triggers expiry status checks
+	// and may cause state transitions if refresh or critical thresholds are
+	// crossed.
+	//
+	// Source: Chain source → VTXO Manager → VTXO Actor
+	// Handled in: LiveState, RefreshRequestedState, ForfeitingState
+	BlockEpochEvent InboundEvent[*BlockEpochEvent]
+
+	// ForfeitRequestEvent is received from the round actor when this VTXO
+	// has been selected for inclusion in a batch swap. The FSM should sign
+	// the forfeit transaction and submit it back to the round actor.
+	//
+	// Source: Round Actor → VTXO Actor
+	// Handled in: LiveState, RefreshRequestedState
+	ForfeitRequestEvent InboundEvent[*round.ForfeitRequestEvent]
+
+	// ForfeitConfirmedEvent is received from the round actor when the new
+	// commitment transaction has confirmed on-chain. This marks the forfeit
+	// as complete and transitions to terminal ForfeitedState.
+	//
+	// Source: Round Actor → VTXO Actor
+	// Handled in: ForfeitingState
+	ForfeitConfirmedEvent InboundEvent[*round.ForfeitConfirmedEvent]
+
+	// ResumeVTXOEvent is received from the VTXO manager during crash
+	// recovery to restore the FSM to its persisted state.
+	//
+	// Source: VTXO Manager → VTXO Actor
+	// Handled in: All non-terminal states
+	ResumeVTXOEvent InboundEvent[*ResumeVTXOEvent]
+
+	// VTXOFailedEvent signals an unrecoverable error from any source.
+	// Transitions to terminal FailedState.
+	//
+	// Source: Any actor or internal error path
+	// Handled in: All non-terminal states
+	VTXOFailedEvent InboundEvent[*VTXOFailedEvent]
+
+	// -----------------------------------------------------------------
+	// OUTBOUND MESSAGES (FSM → external actors)
+	// -----------------------------------------------------------------
+
+	// RefreshRequest is sent to the round actor when the VTXO's expiry
+	// status crosses the refresh threshold. Requests inclusion in the next
+	// batch swap to extend the VTXO's lifetime.
+	//
+	// Destination: VTXO Actor → Round Actor
+	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh)
+	RefreshRequest OutboundMsg[*RefreshRequest]
+
+	// ForfeitSignatureSubmission is sent to the round actor with the
+	// client's signature on the forfeit transaction. The round actor
+	// combines this with the operator signature and broadcasts.
+	//
+	// Destination: VTXO Actor → Round Actor
+	// Emitted from: LiveState, RefreshRequestedState (on ForfeitRequest)
+	ForfeitSignatureSubmission OutboundMsg[*ForfeitSignatureSubmission]
+
+	// ExpiringNotification is sent to the chain resolver when the VTXO
+	// reaches critical expiry and must begin unilateral exit. This is a
+	// terminal transition for this actor.
+	//
+	// Destination: VTXO Actor → Chain Resolver
+	// Emitted from: LiveState, RefreshRequestedState, ForfeitingState
+	//               (on ExpiryStatusCritical)
+	ExpiringNotification OutboundMsg[*ExpiringNotification]
+
+	// VTXOStatusUpdate is sent to the persistence layer to update the
+	// VTXO's status in the database. Emitted on most state transitions.
+	//
+	// Destination: VTXO Actor → Persistence Layer
+	// Emitted from: All state transitions that change VTXOStatus
+	VTXOStatusUpdate OutboundMsg[*VTXOStatusUpdate]
+
+	// VTXOTerminatedNotification is sent to the VTXO manager when this
+	// actor reaches a terminal state. The manager should clean up the
+	// actor reference.
+	//
+	// Destination: VTXO Actor → VTXO Manager
+	// Emitted from: All terminal state transitions
+	VTXOTerminatedNotification OutboundMsg[*VTXOTerminatedNotification]
+
+	// -----------------------------------------------------------------
+	// INTERNAL EVENTS (within FSM)
+	// -----------------------------------------------------------------
+
+	// ForfeitSignedEvent updates the ForfeitTxID after signing. Currently
+	// reserved for future round actor acknowledgment flow; not emitted in
+	// production code paths.
+	//
+	// Source: Internal (future: Round Actor acknowledgment)
+	// Handled in: ForfeitingState
+	ForfeitSignedEvent InternalEvent[*ForfeitSignedEvent]
+}{}
 
 // VTXOStateTransition is a type alias for the verbose protofsm.StateTransition
 // type used throughout the VTXO FSM. The baselib protofsm uses 3 type
