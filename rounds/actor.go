@@ -138,12 +138,12 @@ func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 // It will check the rounds-store for any rounds that still need to be tracked
 // and resume them. It will create a new "live" round that will accept new
 // registrations.
-func NewActor(cfg *ActorConfig) fn.Result[*Actor] {
-	return fn.Ok(&Actor{
+func NewActor(cfg *ActorConfig) *Actor {
+	return &Actor{
 		cfg:    cfg,
 		log:    cfg.Logger,
 		rounds: make(map[RoundID]*RoundFSM),
-	})
+	}
 }
 
 // Start initializes the actor. It loads any pending rounds from storage that

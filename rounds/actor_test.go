@@ -295,13 +295,13 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ForfeitScript: []byte{0x51, 0x20, 0x01, 0x02},
 	}
 
-	actorResult := NewActor(cfg)
-	actor, err := actorResult.Unpack()
-	require.NoError(t, err)
+	actor := NewActor(cfg)
 
 	// Set SelfRef so the actor can receive asynchronous notifications.
 	// Done after creation since we need the actor instance.
-	cfg.SelfRef = &actorRef{actor: actor}
+	cfg.SelfRef = &actorRef{
+		actor: actor,
+	}
 
 	h := &actorTestHarness{
 		T:                t,

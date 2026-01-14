@@ -366,15 +366,14 @@ func (h *E2EHarness) initActorSystem() {
 	}
 
 	// Create rounds actor.
-	roundsResult := rounds.NewActor(roundsCfg)
-	roundsActorInner := roundsResult.UnwrapOrFail(h.t)
+	roundsActor := rounds.NewActor(roundsCfg)
 
 	// Spawn the rounds actor.
 	roundsKey := actor.NewServiceKey[rounds.ActorMsg, rounds.ActorResp](
 		"rounds-actor",
 	)
 	h.roundsActor = roundsKey.Spawn(
-		h.actorSystem, "rounds-actor", roundsActorInner,
+		h.actorSystem, "rounds-actor", roundsActor,
 	)
 
 	// Set SelfRef on config after spawning (needed for callback mapping).
@@ -382,7 +381,7 @@ func (h *E2EHarness) initActorSystem() {
 	roundsCfg.SelfRef = h.roundsActor
 
 	// Start the rounds actor.
-	err = roundsActorInner.Start(h.ctx)
+	err = roundsActor.Start(h.ctx)
 	require.NoError(h.t, err, "failed to start rounds actor")
 }
 
