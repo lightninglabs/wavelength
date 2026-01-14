@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
 	"google.golang.org/protobuf/proto"
 )
@@ -247,6 +248,10 @@ type ClientBatchInfo struct {
 	// for this client. Each path contains only the transactions where the
 	// client is a cosigner. This is nil if the client has no VTXO requests.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// ConnectorLeafMap maps forfeited VTXO outpoints to connector leaf
+	// information. This is nil if the client has no forfeit requests.
+	ConnectorLeafMap map[wire.OutPoint]*types.ConnectorLeafInfo
 }
 
 // ClientID returns the identifier of the client to send the message to.
@@ -292,21 +297,6 @@ func (c *ClientRoundFailedResp) ToProto() proto.Message {
 // outboxEventSealed marks ClientRoundFailedResp as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientRoundFailedResp) outboxEventSealed() {}
-
-// UnlockBoardingInputsReq is an outbox message emitted by the FSM to request
-// that the actor unlock boarding inputs that were previously locked for a
-// round. This is used when a round fails and the inputs should be released.
-type UnlockBoardingInputsReq struct {
-	// RoundID is the identifier of the round that locked these inputs.
-	RoundID RoundID
-
-	// Outpoints are the boarding input outpoints to unlock.
-	Outpoints []*wire.OutPoint
-}
-
-// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
-// OutboxEvent interface.
-func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
 
 // RoundFailedReq is emitted when a round has failed. The actor should clean up
 // any resources associated with the round and potentially create a new round.

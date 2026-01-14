@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sort"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -74,6 +75,105 @@ func lockBoardingInputs(ctx context.Context, env *Environment,
 	return nil
 }
 
+// unlockBoardingInputsList unlocks a list of boarding inputs. This is called
+// when a client registration fails partway through (e.g., forfeit VTXO lock
+// failure) and we need to clean up boarding inputs that were successfully
+// locked. Errors are logged but don't stop the unlocking process.
+func unlockBoardingInputsList(ctx context.Context, env *Environment,
+	inputs []*BoardingInput) {
+
+	for _, input := range inputs {
+		err := env.BoardingInputLocker.Unlock(
+			ctx, input.Outpoint, env.RoundID,
+		)
+		if err != nil {
+			env.Log.ErrorS(ctx, "Failed to unlock boarding "+
+				"input", err,
+				"outpoint", input.Outpoint.String())
+		}
+	}
+}
+
+// unlockBoardingInputs unlocks all boarding inputs for the given client
+// registrations. This is called when a round fails to release all locked
+// inputs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all inputs even if some fail.
+func unlockBoardingInputs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		for _, input := range reg.BoardingInputs {
+			err := env.BoardingInputLocker.Unlock(
+				ctx, input.Outpoint, env.RoundID,
+			)
+			if err != nil {
+				// Log the error but continue unlocking other
+				// inputs. We don't want one failure to prevent
+				// releasing other locked inputs.
+				env.Log.ErrorS(ctx, "Failed to unlock boarding "+
+					"input", err,
+					"outpoint", input.Outpoint.String())
+			}
+		}
+	}
+}
+
+// lockForfeitVTXOs attempts to lock all forfeit VTXOs for a client in the
+// VTXOStore. If any lock fails, it returns an error. If all locks succeed,
+// it returns nil.
+func lockForfeitVTXOs(ctx context.Context, env *Environment,
+	inputs []*ForfeitInput) error {
+
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		outpoints = append(outpoints, *input.Outpoint)
+	}
+
+	err := env.VTXOStore.LockVTXO(ctx, env.RoundID, outpoints...)
+	if err != nil {
+		return fmt.Errorf("failed to lock forfeit VTXOs: %w", err)
+	}
+
+	return nil
+}
+
+// unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
+// registrations. This is called when a round fails to release all locked
+// VTXOs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all VTXOs even if some fail.
+func unlockForfeitVTXOs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
+		)
+		for _, input := range reg.ForfeitInputs {
+			outpoints = append(outpoints, *input.Outpoint)
+		}
+
+		err := env.VTXOStore.UnlockVTXO(
+			ctx, env.RoundID, outpoints...,
+		)
+		if err != nil {
+			// Log the error but continue unlocking other
+			// VTXOs. We don't want one failure to prevent
+			// releasing other locked VTXOs.
+			env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
+				"VTXOs", err,
+				"count", len(outpoints))
+		}
+	}
+}
+
 // newClientRegistration creates a ClientRegistration from a validated join
 // request result.
 func newClientRegistration(clientID ClientID,
@@ -82,6 +182,7 @@ func newClientRegistration(clientID ClientID,
 	return &ClientRegistration{
 		ClientID:        clientID,
 		BoardingInputs:  result.BoardingInputs,
+		ForfeitInputs:   result.ForfeitInputs,
 		LeaveOutputs:    result.RequiredOutputs,
 		VTXODescriptors: result.VTXODescriptors,
 	}
@@ -115,6 +216,19 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		// Attempt to lock all boarding inputs for this client.
 		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
 		if err != nil {
+			return clientErrorTransition(
+				s, evt.ClientID, err.Error(),
+			), nil
+		}
+
+		// Attempt to lock all forfeit VTXOs for this client.
+		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
+		if err != nil {
+			// Unlock the boarding inputs since we can't proceed.
+			unlockBoardingInputsList(
+				ctx, env, result.BoardingInputs,
+			)
+
 			return clientErrorTransition(
 				s, evt.ClientID, err.Error(),
 			), nil
@@ -192,6 +306,19 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
+		// Attempt to lock all forfeit VTXOs for this client.
+		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
+		if err != nil {
+			// Unlock the boarding inputs since we can't proceed.
+			unlockBoardingInputsList(
+				ctx, env, result.BoardingInputs,
+			)
+
+			return clientErrorTransition(
+				s, evt.ClientID, err.Error(),
+			), nil
+		}
+
 		return &StateTransition{
 			NextState: s.withNewClient(evt.ClientID, result),
 			NewEvents: fn.Some(EmittedEvent{
@@ -250,6 +377,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		// descriptors from client registrations.
 		var (
 			allBoardingInputs  []*BoardingInput
+			allForfeitInputs   []*ForfeitInput
 			allLeaveOutputs    []*wire.TxOut
 			allVTXODescriptors []tree.VTXODescriptor
 		)
@@ -257,6 +385,9 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		for _, reg := range s.ClientRegistrations {
 			allBoardingInputs = append(
 				allBoardingInputs, reg.BoardingInputs...,
+			)
+			allForfeitInputs = append(
+				allForfeitInputs, reg.ForfeitInputs...,
 			)
 			allLeaveOutputs = append(
 				allLeaveOutputs, reg.LeaveOutputs...,
@@ -271,25 +402,42 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		// Build the commitment transaction PSBT.
-		psbtPacket, _, vtxoTrees, err := buildCommitmentTx(
-			ctx, env, allBoardingInputs, allLeaveOutputs,
-			allVTXODescriptors,
+		psbtPacket, _, vtxoTrees, connectorTrees,
+			connectorAssignments, err := buildCommitmentTx(
+			ctx, env, allBoardingInputs, allForfeitInputs,
+			allLeaveOutputs, allVTXODescriptors,
 		)
 		if err != nil {
 			// Batch building failed - transition to FailedState.
 			reason := fmt.Sprintf("build commitment tx: %v", err)
 
 			return buildFailureTransition(
-				env, s.ClientRegistrations, reason,
+				ctx, env, s.ClientRegistrations, reason,
+			), nil
+		}
+
+		connectorDescriptors, err := buildConnectorDescriptors(
+			connectorAssignments, env.ForfeitScript,
+		)
+		if err != nil {
+			reason := fmt.Sprintf(
+				"build connector descriptors: %v", err,
+			)
+
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations, reason,
 			), nil
 		}
 
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
 			NextState: &BatchBuiltState{
-				ClientRegistrations: s.ClientRegistrations,
-				PSBT:                psbtPacket,
-				VTXOTrees:           vtxoTrees,
+				ClientRegistrations:  s.ClientRegistrations,
+				PSBT:                 psbtPacket,
+				VTXOTrees:            vtxoTrees,
+				ConnectorTrees:       connectorTrees,
+				ConnectorAssignments: connectorAssignments,
+				ConnectorDescriptors: connectorDescriptors,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				// Emit the internal event to prepare client
@@ -307,12 +455,12 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 }
 
 // ProcessEvent handles the events from the BatchBuiltState state.
-func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
+func (s *BatchBuiltState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	switch event.(type) {
 	case *PrepareClientNotificationsEvent:
-		return s.handlePrepareClientNotifications(env)
+		return s.handlePrepareClientNotifications(ctx, env)
 
 	default:
 		return unexpectedEvent(s, "batch-built", event, env), nil
@@ -323,7 +471,7 @@ func (s *BatchBuiltState) ProcessEvent(_ context.Context, event Event,
 // data and transitions to either AwaitingVTXONoncesState (if VTXOs exist) or
 // AwaitingInputSigsState (if no VTXOs).
 func (s *BatchBuiltState) handlePrepareClientNotifications(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	// For each client, create a message with their personalized data.
 	// The PSBT contains WitnessUtxo for inputs, providing the prevout
@@ -352,34 +500,65 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(
 			)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
 						"client %s: %v", clientID, err),
 				), nil
 			}
 		}
 
+		// Extract connector leaf assignments for this client if they
+		// have forfeits.
+		var connectorLeafMap map[wire.OutPoint]*types.ConnectorLeafInfo
+		if len(reg.ForfeitInputs) > 0 {
+			connectorLeafMap = make(
+				map[wire.OutPoint]*types.ConnectorLeafInfo,
+				len(reg.ForfeitInputs),
+			)
+			for _, input := range reg.ForfeitInputs {
+				outpoint := *input.Outpoint
+				assignment, ok :=
+					s.ConnectorAssignments[outpoint]
+				if !ok {
+					return buildFailureTransition(
+						ctx, env, s.ClientRegistrations,
+						fmt.Sprintf("missing "+
+							"connector assignment "+
+							"for client %s",
+							clientID),
+					), nil
+				}
+
+				leafInfo := &types.ConnectorLeafInfo{
+					LeafOutpoint: assignment.LeafOutpoint,
+					LeafOutput:   assignment.LeafOutput,
+				}
+				connectorLeafMap[outpoint] = leafInfo
+			}
+		}
+
 		outboxMsgs = append(outboxMsgs, &ClientBatchInfo{
-			Client:        clientID,
-			BatchPSBT:     s.PSBT,
-			VTXOTreePaths: vtxoTreePaths,
+			Client:           clientID,
+			BatchPSBT:        s.PSBT,
+			VTXOTreePaths:    vtxoTreePaths,
+			ConnectorLeafMap: connectorLeafMap,
 		})
 	}
 
 	// Check if there are any VTXOs in the batch.
 	hasVTXOs := len(s.VTXOTrees) > 0
 	if hasVTXOs {
-		return s.transitionToVTXONonces(env, outboxMsgs)
+		return s.transitionToVTXONonces(ctx, env, outboxMsgs)
 	}
 
 	// No VTXOs - go directly to boarding signatures.
-	return s.transitionToInputSigs(env, outboxMsgs)
+	return s.transitionToInputSigs(ctx, env, outboxMsgs)
 }
 
 // transitionToVTXONonces creates TreeSignCoordinators for each VTXO tree and
 // transitions to AwaitingVTXONoncesState.
-func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
-	outboxMsgs []OutboxEvent) (*StateTransition, error) {
+func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
+	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
 	// Create TreeSignCoordinators for each VTXO tree.
 	treeCoordinators := make(map[int]*batch.TreeSignCoordinator)
@@ -389,7 +568,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
 					"output %d: %v", idx, err),
 			), nil
@@ -410,6 +589,8 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 			ClientRegistrations:  s.ClientRegistrations,
 			PSBT:                 s.PSBT,
 			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			TreeSignCoordinators: treeCoordinators,
 			ClientsWithNonces: make(
 				map[clientconn.ClientID]struct{},
@@ -423,8 +604,8 @@ func (s *BatchBuiltState) transitionToVTXONonces(env *Environment,
 
 // transitionToInputSigs transitions directly to AwaitingInputSigsState
 // when there are no VTXOs in the batch.
-func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
-	outboxMsgs []OutboxEvent) (*StateTransition, error) {
+func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
+	env *Environment, outboxMsgs []OutboxEvent) (*StateTransition, error) {
 
 	// Notify clients with boarding inputs that we're ready for their
 	// signatures. This is separate from ClientBatchInfo because there may
@@ -449,13 +630,17 @@ func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
 
 	return &StateTransition{
 		NextState: &AwaitingInputSigsState{
-			ClientRegistrations: s.ClientRegistrations,
-			PSBT:                s.PSBT,
-			VTXOTrees:           s.VTXOTrees,
+			ClientRegistrations:  s.ClientRegistrations,
+			PSBT:                 s.PSBT,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
+			ConnectorDescriptors: s.ConnectorDescriptors,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
 			CollectedSignatures: make(InputSigsMap),
+			CollectedForfeitTxs: make(ForfeitTxsMap),
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -464,37 +649,28 @@ func (s *BatchBuiltState) transitionToInputSigs(env *Environment,
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
-// the necessary outbox events to notify clients, unlock boarding inputs, and
-// inform the actor of the failure.
-func buildFailureTransition(env *Environment,
+// the necessary outbox events to notify clients and inform the actor of the
+// failure. It also directly unlocks all boarding inputs.
+func buildFailureTransition(ctx context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string) *StateTransition {
 
 	var outboxMsgs []OutboxEvent
 
-	// Collect all boarding input outpoints for unlocking.
-	var allOutpoints []*wire.OutPoint
-	for clientID, reg := range clientRegs {
-		// Notify each client that the round has failed.
+	// Notify each client that the round has failed.
+	for clientID := range clientRegs {
 		outboxMsgs = append(outboxMsgs, &ClientRoundFailedResp{
 			Client:  clientID,
 			RoundID: env.RoundID,
 			Reason:  reason,
 		})
-
-		// Collect outpoints from this client's boarding inputs.
-		for _, bi := range reg.BoardingInputs {
-			allOutpoints = append(allOutpoints, bi.Outpoint)
-		}
 	}
 
-	// Request unlocking of all boarding inputs.
-	if len(allOutpoints) > 0 {
-		outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
-			RoundID:   env.RoundID,
-			Outpoints: allOutpoints,
-		})
-	}
+	// Unlock all boarding inputs directly in the FSM.
+	unlockBoardingInputs(ctx, env, clientRegs)
+
+	// Unlock all forfeit VTXOs directly in the FSM.
+	unlockForfeitVTXOs(ctx, env, clientRegs)
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
@@ -514,19 +690,19 @@ func buildFailureTransition(env *Environment,
 
 // ProcessEvent handles events in the AwaitingInputSigsState. This
 // state waits for clients to submit their boarding input signatures.
-func (s *AwaitingInputSigsState) ProcessEvent(_ context.Context,
+func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
-	case *ClientBoardingSignaturesEvent:
-		return s.handleBoardingSignatures(evt, env)
+	case *ClientInputSignaturesEvent:
+		return s.handleInputSignatures(evt, env)
 
 	case *InputSignaturesTimeoutEvent:
 		// Timeout expired - fail the round.
 		reason := "input signature collection timeout"
 
 		return buildFailureTransition(
-			env, s.ClientRegistrations, reason,
+			ctx, env, s.ClientRegistrations, reason,
 		), nil
 
 	default:
@@ -535,44 +711,27 @@ func (s *AwaitingInputSigsState) ProcessEvent(_ context.Context,
 	}
 }
 
-// handleBoardingSignatures processes a client's boarding signature submission.
-// It validates the signatures cryptographically against the tapscript
-// collaborative spend path, stores them for later use, and tracks the client
-// as having submitted. When all clients have submitted, it transitions to
-// ServerSigningState.
-func (s *AwaitingInputSigsState) handleBoardingSignatures(
-	evt *ClientBoardingSignaturesEvent,
-	env *Environment) (*StateTransition, error) {
+// handleInputSignatures processes a client's input signature submission. It
+// validates boarding signatures, validates forfeit transactions, stores the
+// signatures for later use, and tracks the client as having submitted. When
+// all clients have submitted, it transitions to ServerSigningState.
+func (s *AwaitingInputSigsState) handleInputSignatures(
+	evt *ClientInputSignaturesEvent, env *Environment) (*StateTransition,
+	error) {
 
 	clientID := evt.ClientID
 
 	// Check if client is registered in this round.
 	reg, exists := s.ClientRegistrations[clientID]
 	if !exists {
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, "not registered",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(s, clientID, "not registered"), nil
 	}
 
 	// Check if client already submitted.
 	if s.hasClientSubmitted(clientID) {
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, "already submitted",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "already submitted",
+		), nil
 	}
 
 	// Verify signature count matches the number of boarding inputs.
@@ -582,16 +741,17 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 			len(reg.BoardingInputs), len(evt.Signatures),
 		)
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, errMsg,
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(s, clientID, errMsg), nil
+	}
+
+	// Verify forfeit tx count matches the number of forfeit inputs.
+	if len(evt.ForfeitTxs) != len(reg.ForfeitInputs) {
+		errMsg := fmt.Sprintf(
+			"expected %d forfeit txs, got %d",
+			len(reg.ForfeitInputs), len(evt.ForfeitTxs),
+		)
+
+		return clientErrorTransition(s, clientID, errMsg), nil
 	}
 
 	// Build a map from outpoints to boarding inputs for quick lookup.
@@ -620,17 +780,7 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 				"unknown outpoint: %v", sig.Outpoint,
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		// Verify the input index is valid.
@@ -639,17 +789,7 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 				"invalid input index: %d", sig.InputIndex,
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		// Verify the schnorr signature against the sighash.
@@ -657,16 +797,22 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 			boardingInput, sig, tx, prevOutFetcher,
 		)
 		if err != nil {
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID, err.Error(),
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(
+				s, clientID, err.Error(),
+			), nil
+		}
+	}
+
+	// Validate forfeit transactions if the client has forfeits.
+	if len(reg.ForfeitInputs) > 0 {
+		err := validateForfeitTxs(
+			evt.ForfeitTxs, reg, s.ConnectorAssignments,
+			env.ForfeitScript, env.Terms.OperatorKey.PubKey,
+		)
+		if err != nil {
+			return clientErrorTransition(
+				s, clientID, err.Error(),
+			), nil
 		}
 	}
 
@@ -684,13 +830,24 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 	}
 	newCollectedSigs[clientID] = evt.Signatures
 
+	// Copy collected forfeit txs and add the new client's submissions.
+	newCollectedForfeitTxs := make(ForfeitTxsMap)
+	for id, txs := range s.CollectedForfeitTxs {
+		newCollectedForfeitTxs[id] = txs
+	}
+	newCollectedForfeitTxs[clientID] = evt.ForfeitTxs
+
 	// Create new state with updated tracking.
 	newState := &AwaitingInputSigsState{
-		ClientRegistrations: s.ClientRegistrations,
-		PSBT:                s.PSBT,
-		VTXOTrees:           s.VTXOTrees,
-		ClientsSubmitted:    newClientsSubmitted,
-		CollectedSignatures: newCollectedSigs,
+		ClientRegistrations:  s.ClientRegistrations,
+		PSBT:                 s.PSBT,
+		VTXOTrees:            s.VTXOTrees,
+		ConnectorTrees:       s.ConnectorTrees,
+		ConnectorAssignments: s.ConnectorAssignments,
+		ConnectorDescriptors: s.ConnectorDescriptors,
+		ClientsSubmitted:     newClientsSubmitted,
+		CollectedSignatures:  newCollectedSigs,
+		CollectedForfeitTxs:  newCollectedForfeitTxs,
 	}
 
 	// Check if all clients have submitted.
@@ -701,10 +858,13 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 		//
 		return &StateTransition{
 			NextState: &ServerSigningState{
-				ClientRegistrations: s.ClientRegistrations,
-				PSBT:                s.PSBT,
-				VTXOTrees:           s.VTXOTrees,
-				CollectedSignatures: newCollectedSigs,
+				ClientRegistrations:  s.ClientRegistrations,
+				PSBT:                 s.PSBT,
+				VTXOTrees:            s.VTXOTrees,
+				ConnectorAssignments: s.ConnectorAssignments,
+				ConnectorDescriptors: s.ConnectorDescriptors,
+				CollectedSignatures:  newCollectedSigs,
+				CollectedForfeitTxs:  newCollectedForfeitTxs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				InternalEvent: []Event{
@@ -727,14 +887,21 @@ func (s *AwaitingInputSigsState) handleBoardingSignatures(
 }
 
 // buildCommitmentTx constructs the commitment transaction PSBT with boarding
-// inputs, required outputs (leaves), and VTXO tree outputs. It funds the
-// transaction using the wallet and builds VTXO trees if needed.
+// inputs, forfeit inputs, required outputs (leaves), VTXO tree outputs, and
+// connector outputs for forfeits. It funds the transaction using the wallet
+// and builds both VTXO and connector trees if needed.
 //
-// TODO(elle): Add connector outputs (forfeit trees) when implemented.
+// Outputs in the transaction include:
+//  1. Leave outputs (client withdrawals)
+//  2. VTXO tree outputs (batch outputs)
+//  3. Connector outputs (forfeit trees)
+//  4. Change output (if needed, added by FundPsbt)
 func buildCommitmentTx(ctx context.Context, env *Environment,
-	boardingInputs []*BoardingInput, requiredOutputs []*wire.TxOut,
+	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
+	requiredOutputs []*wire.TxOut,
 	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
-	map[int]*tree.Tree, error) {
+	map[int]*tree.Tree, map[int]*tree.Tree,
+	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
 
 	// Step 1: Create unsigned transaction with boarding inputs and
 	// required outputs.
@@ -762,8 +929,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			env.Terms, vtxoDescriptors,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("build batch "+
-				"outputs: %w", err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
+				"batch outputs: %w", err)
 		}
 
 		for _, output := range vtxoTreeCtx.Outputs() {
@@ -771,10 +938,46 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		}
 	}
 
+	// Add connector outputs (for forfeit trees). We'll record their
+	// indices after FundPsbt reorders the transaction.
+	numForfeits := len(forfeitInputs)
+	var connectorOutputs []*wire.TxOut
+	if numForfeits > 0 {
+		maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+		if maxPerTree <= 0 {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"max connectors per tree must be > 0",
+			)
+		}
+
+		for i := 0; i < numForfeits; i += maxPerTree {
+			numInOutput := maxPerTree
+			if i+numInOutput > numForfeits {
+				numInOutput = numForfeits - i
+			}
+
+			connectorOutput, err := tree.BuildConnectorOutput(
+				numInOutput, env.Terms.ConnectorDustAmount,
+				env.Terms.ConnectorAddress,
+			)
+			if err != nil {
+				return nil, -1, nil, nil, nil, fmt.Errorf(
+					"build connector output: %w", err,
+				)
+			}
+
+			connectorOutputs = append(
+				connectorOutputs, connectorOutput,
+			)
+			tx.AddTxOut(connectorOutput)
+		}
+	}
+
 	// Step 2: Convert to PSBT.
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("create psbt: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("create psbt: %w",
+			err)
 	}
 
 	// Step 3: Add UTXO information for boarding inputs so FundPsbt can
@@ -794,7 +997,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	// Step 4: Get fee rate from estimator.
 	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("estimate fee: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("estimate fee: %w",
+			err)
 	}
 
 	// Step 5: Call FundPsbt to add wallet inputs and change.
@@ -805,7 +1009,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		ctx, packet, env.MinConfs, feeRate, env.WalletAccount,
 	)
 	if err != nil {
-		return nil, -1, nil, fmt.Errorf("fund psbt: %w", err)
+		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
+			err)
 	}
 
 	// Step 6: Build VTXO trees if VTXOs exist.
@@ -821,8 +1026,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			batchOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("find batch "+
-				"outputs: %w", err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("find "+
+				"batch outputs: %w", err)
 		}
 
 		// Build VTXO trees using the post-FundPsbt batch output
@@ -831,30 +1036,68 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			packet.UnsignedTx, batchOutputIndices,
 		)
 		if err != nil {
-			return nil, -1, nil, fmt.Errorf("build VTXO trees: %w",
-				err)
+			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
+				"VTXO trees: %w", err)
 		}
 	}
 
-	return packet, changeIdx, vtxoTrees, nil
+	// Step 7: Build connector trees and assignments if forfeits exist.
+	var (
+		connectorTrees       map[int]*tree.Tree
+		connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+	)
+	if numForfeits > 0 {
+		connectorOutputIndices, err := findOutputIndices(
+			connectorOutputs, packet.UnsignedTx,
+		)
+		if err != nil {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"find connector outputs: %w", err,
+			)
+		}
+
+		connectorTrees, connectorAssignments, err =
+			buildConnectorTreesAndAssignments(
+				env, packet.UnsignedTx, forfeitInputs,
+				connectorOutputIndices,
+			)
+		if err != nil {
+			return nil, -1, nil, nil, nil, fmt.Errorf(
+				"build connector trees: %w", err,
+			)
+		}
+	}
+
+	return packet, changeIdx, vtxoTrees, connectorTrees,
+		connectorAssignments, nil
 }
 
 // findOutputIndices finds the indices of the given outputs in the transaction
-// by matching their PkScripts. This is used after FundPsbt reorders the
-// transaction to locate specific outputs by their script.
+// by matching their PkScripts and values. This is used after FundPsbt reorders
+// the transaction to locate specific outputs by their script and amount.
 func findOutputIndices(expectedOutputs []*wire.TxOut,
 	tx *wire.MsgTx) ([]int, error) {
 
 	indices := make([]int, len(expectedOutputs))
+	used := make([]bool, len(tx.TxOut))
 
 	for i, expectedOut := range expectedOutputs {
 		found := false
 		for j, txOut := range tx.TxOut {
+			if used[j] {
+				continue
+			}
+
+			if expectedOut.Value != txOut.Value {
+				continue
+			}
+
 			if !bytes.Equal(expectedOut.PkScript, txOut.PkScript) {
 				continue
 			}
 
 			indices[i] = j
+			used[j] = true
 			found = true
 
 			break
@@ -868,19 +1111,218 @@ func findOutputIndices(expectedOutputs []*wire.TxOut,
 	return indices, nil
 }
 
+// buildConnectorDescriptors constructs connector tree descriptors from
+// connector assignments.
+func buildConnectorDescriptors(
+	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
+	forfeitScript []byte) ([]*ConnectorTreeDescriptor, error) {
+
+	if len(connectorAssignments) == 0 {
+		return nil, nil
+	}
+
+	counts := make(map[int]int)
+	for _, assignment := range connectorAssignments {
+		if assignment == nil {
+			return nil, fmt.Errorf(
+				"connector assignment cannot be nil",
+			)
+		}
+
+		if assignment.ConnectorOutputIndex < 0 {
+			return nil, fmt.Errorf(
+				"connector output index must be non-negative",
+			)
+		}
+
+		counts[assignment.ConnectorOutputIndex]++
+	}
+
+	outputIndices := make([]int, 0, len(counts))
+	for idx := range counts {
+		outputIndices = append(outputIndices, idx)
+	}
+	sort.Ints(outputIndices)
+
+	descriptors := make([]*ConnectorTreeDescriptor, 0, len(outputIndices))
+	for _, idx := range outputIndices {
+		descriptors = append(descriptors, &ConnectorTreeDescriptor{
+			OutputIndex:   idx,
+			NumLeaves:     counts[idx],
+			ForfeitScript: forfeitScript,
+		})
+	}
+
+	return descriptors, nil
+}
+
+// buildConnectorTreesAndAssignments builds connector trees and assigns each
+// forfeit input to a connector leaf.
+func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
+	forfeitInputs []*ForfeitInput, connectorOutputIndices []int) (
+	map[int]*tree.Tree, map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+
+	numForfeits := len(forfeitInputs)
+	if numForfeits == 0 {
+		return nil, nil, nil
+	}
+
+	sortedForfeits := make([]*ForfeitInput, 0, numForfeits)
+	for _, input := range forfeitInputs {
+		if input == nil || input.Outpoint == nil {
+			return nil, nil, fmt.Errorf(
+				"forfeit input outpoint is nil",
+			)
+		}
+
+		sortedForfeits = append(sortedForfeits, input)
+	}
+	sort.Slice(sortedForfeits, func(i, j int) bool {
+		return sortedForfeits[i].Outpoint.String() <
+			sortedForfeits[j].Outpoint.String()
+	})
+
+	maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+	if maxPerTree <= 0 {
+		return nil, nil, fmt.Errorf(
+			"max connectors per tree must be > 0",
+		)
+	}
+
+	if env.Terms.ConnectorDustAmount <= 0 {
+		return nil, nil, fmt.Errorf(
+			"connector dust amount must be > 0",
+		)
+	}
+
+	if env.Terms.ConnectorAddress == nil {
+		return nil, nil, fmt.Errorf("connector address cannot be nil")
+	}
+
+	if env.Terms.OperatorKey.PubKey == nil {
+		return nil, nil, fmt.Errorf("operator key cannot be nil")
+	}
+
+	radix := int(env.Terms.TreeRadix)
+	if radix < 2 {
+		return nil, nil, fmt.Errorf("tree radix must be at least 2")
+	}
+
+	expectedOutputs := (numForfeits + maxPerTree - 1) / maxPerTree
+	if len(connectorOutputIndices) != expectedOutputs {
+		return nil, nil, fmt.Errorf(
+			"connector output count mismatch: %d != %d",
+			len(connectorOutputIndices), expectedOutputs,
+		)
+	}
+
+	connectorTrees := make(map[int]*tree.Tree)
+	connectorAssignments := make(
+		map[wire.OutPoint]*ConnectorLeafAssignment, numForfeits,
+	)
+	txid := tx.TxHash()
+
+	offset := 0
+	for i, outputIdx := range connectorOutputIndices {
+		numInOutput := maxPerTree
+		if offset+numInOutput > numForfeits {
+			numInOutput = numForfeits - offset
+		}
+
+		connectorOutput := tx.TxOut[outputIdx]
+		connectorOutpoint := wire.OutPoint{
+			Hash:  txid,
+			Index: uint32(outputIdx),
+		}
+		connectorDesc := tree.ConnectorDescriptor{
+			PkScript:  connectorOutput.PkScript,
+			NumLeaves: numInOutput,
+			Amount:    env.Terms.ConnectorDustAmount,
+		}
+
+		connectorTree, err := tree.BuildConnectorTree(
+			connectorOutpoint, connectorOutput, connectorDesc,
+			env.Terms.OperatorKey.PubKey, radix,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"build connector tree %d: %w", i, err,
+			)
+		}
+
+		leaves := connectorTree.Root.GetLeafNodes()
+		if len(leaves) != numInOutput {
+			return nil, nil, fmt.Errorf(
+				"connector tree %d leaf count mismatch: "+
+					"%d != %d", i, len(leaves),
+				numInOutput,
+			)
+		}
+
+		connectorTrees[outputIdx] = connectorTree
+
+		for leafIdx := 0; leafIdx < numInOutput; leafIdx++ {
+			forfeitInput := sortedForfeits[offset+leafIdx]
+			leaf := leaves[leafIdx]
+			leafOutpoint, err := leaf.GetNonAnchorOutpoint()
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"connector leaf outpoint: %w", err,
+				)
+			}
+
+			leafOutput, err := leafNonAnchorOutput(leaf)
+			if err != nil {
+				return nil, nil, fmt.Errorf(
+					"connector leaf output: %w", err,
+				)
+			}
+
+			outpoint := *forfeitInput.Outpoint
+			connectorAssignments[outpoint] =
+				&ConnectorLeafAssignment{
+					ConnectorOutputIndex: outputIdx,
+					LeafIndex:            leafIdx,
+					LeafOutpoint:         *leafOutpoint,
+					LeafOutput:           leafOutput,
+				}
+		}
+
+		offset += numInOutput
+	}
+
+	return connectorTrees, connectorAssignments, nil
+}
+
+// leafNonAnchorOutput returns the non-anchor output for a leaf node.
+func leafNonAnchorOutput(leaf *tree.Node) (*wire.TxOut, error) {
+	if leaf == nil {
+		return nil, fmt.Errorf("leaf cannot be nil")
+	}
+
+	anchorScript := scripts.AnchorOutput().PkScript
+	for _, output := range leaf.Outputs {
+		if !bytes.Equal(output.PkScript, anchorScript) {
+			return output, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no non-anchor output found")
+}
+
 // ProcessEvent handles events in the AwaitingVTXONoncesState. This state waits
 // for clients with VTXOs to submit their MuSig2 nonces.
-func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
+func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ClientVTXONoncesEvent:
-		return s.handleClientNonces(env, evt)
+		return s.handleClientNonces(ctx, env, evt)
 
 	case *VTXONoncesTimeoutEvent:
 		// The timeout was reached before all nonces were collected.
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			"VTXO nonce collection timeout",
 		), nil
 
@@ -893,7 +1335,8 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(_ context.Context,
 // handleClientNonces processes nonces submitted by a client, adding them to
 // the tree coordinators. If all clients have submitted nonces, it transitions
 // to the next state AwaitingVTXOSignaturesState.
-func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
+func (s *AwaitingVTXONoncesState) handleClientNonces(
+	ctx context.Context, env *Environment,
 	evt *ClientVTXONoncesEvent) (*StateTransition, error) {
 
 	clientID := evt.ClientID
@@ -1072,13 +1515,15 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 		ClientRegistrations:  s.ClientRegistrations,
 		PSBT:                 s.PSBT,
 		VTXOTrees:            s.VTXOTrees,
+		ConnectorTrees:       s.ConnectorTrees,
+		ConnectorAssignments: s.ConnectorAssignments,
 		TreeSignCoordinators: s.TreeSignCoordinators,
 		ClientsWithNonces:    newClientsWithNonces,
 	}
 
 	// Check if all clients have submitted nonces.
 	if newState.allClientsSubmittedNonces() {
-		return newState.transitionToVTXOSignatures(env)
+		return newState.transitionToVTXOSignatures(ctx, env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
@@ -1092,7 +1537,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(env *Environment,
 // operator's partial signatures, aggregates nonces, and sends aggregated
 // nonces to each client.
 func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	// Generate operator's partial signatures for all trees. This must be
 	// done after all client nonces are collected.
@@ -1100,7 +1545,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 		err := coordinator.Sign()
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
 					idx, err),
 			), nil
@@ -1137,7 +1582,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 				GetAggNoncesForSigners(clientKeys)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("get agg nonces for %s: %v",
 						clientID, err),
 				), nil
@@ -1168,6 +1613,8 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			ClientRegistrations:  s.ClientRegistrations,
 			PSBT:                 s.PSBT,
 			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
 			TreeSignCoordinators: s.TreeSignCoordinators,
 			ClientsWithSignatures: make(
 				map[clientconn.ClientID]struct{},
@@ -1181,17 +1628,17 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 
 // ProcessEvent handles events in the AwaitingVTXOSignaturesState. This state
 // waits for clients with VTXOs to submit their MuSig2 partial signatures.
-func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
+func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	switch evt := event.(type) {
 	case *ClientVTXOPartialSigsEvent:
-		return s.handleClientPartialSigs(env, evt)
+		return s.handleClientPartialSigs(ctx, env, evt)
 
 	case *VTXOSignaturesTimeoutEvent:
 		// Timeout expired before all partial sigs were collected.
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			"VTXO signature collection timeout",
 		), nil
 
@@ -1206,7 +1653,8 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(_ context.Context,
 // adding them to the tree coordinators. If all clients have submitted
 // signatures, it aggregates the final signatures and transitions to
 // AwaitingInputSigsState.
-func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
+func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
+	ctx context.Context, env *Environment,
 	evt *ClientVTXOPartialSigsEvent) (*StateTransition, error) {
 
 	clientID := evt.ClientID
@@ -1388,13 +1836,15 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 		ClientRegistrations:   s.ClientRegistrations,
 		PSBT:                  s.PSBT,
 		VTXOTrees:             s.VTXOTrees,
+		ConnectorTrees:        s.ConnectorTrees,
+		ConnectorAssignments:  s.ConnectorAssignments,
 		TreeSignCoordinators:  s.TreeSignCoordinators,
 		ClientsWithSignatures: newClientsWithSignatures,
 	}
 
 	// Check if all clients have submitted signatures.
 	if newState.allClientsSubmittedSignatures() {
-		return newState.transitionToInputSigs(env)
+		return newState.transitionToInputSigs(ctx, env)
 	}
 
 	// Not all clients have submitted yet - remain in current state.
@@ -1407,7 +1857,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(env *Environment,
 // AwaitingVTXOSignaturesState to AwaitingInputSigsState. It aggregates final
 // signatures and sends them to each client with VTXOs.
 func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
-	env *Environment) (*StateTransition, error) {
+	ctx context.Context, env *Environment) (*StateTransition, error) {
 
 	var outboxMsgs []OutboxEvent
 
@@ -1445,7 +1895,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 				)
 
 				return buildFailureTransition(
-					env, s.ClientRegistrations, errMsg,
+					ctx, env, s.ClientRegistrations, errMsg,
 				), nil
 			}
 
@@ -1482,15 +1932,29 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 		Duration: env.Terms.SignatureCollectionTimeout,
 	})
 
+	connectorDescriptors, err := buildConnectorDescriptors(
+		s.ConnectorAssignments, env.ForfeitScript,
+	)
+	if err != nil {
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations,
+			fmt.Sprintf("build connector descriptors: %v", err),
+		), nil
+	}
+
 	return &StateTransition{
 		NextState: &AwaitingInputSigsState{
-			ClientRegistrations: s.ClientRegistrations,
-			PSBT:                s.PSBT,
-			VTXOTrees:           s.VTXOTrees,
+			ClientRegistrations:  s.ClientRegistrations,
+			PSBT:                 s.PSBT,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorTrees:       s.ConnectorTrees,
+			ConnectorAssignments: s.ConnectorAssignments,
+			ConnectorDescriptors: connectorDescriptors,
 			ClientsSubmitted: make(
 				map[clientconn.ClientID]struct{},
 			),
 			CollectedSignatures: make(InputSigsMap),
+			CollectedForfeitTxs: make(ForfeitTxsMap),
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -1523,32 +1987,84 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	err := s.signBoardingInputs(env)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to sign boarding inputs: %v", err),
 		), nil
+	}
+
+	forfeitInfos := make(map[wire.OutPoint]*ForfeitInfo)
+
+	// Complete forfeit transactions with the server's signatures.
+	for clientID, reg := range s.ClientRegistrations {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		if len(s.ConnectorAssignments) == 0 {
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations,
+				fmt.Sprintf("connector assignments missing "+
+					"for client %s", clientID),
+			), nil
+		}
+
+		forfeitTxs, ok := s.CollectedForfeitTxs[clientID]
+		if !ok {
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations,
+				fmt.Sprintf("missing forfeit txs for "+
+					"client %s", clientID),
+			), nil
+		}
+
+		spent, err := completeForfeitTxs(
+			forfeitTxs, reg, s.ConnectorAssignments, env,
+		)
+		if err != nil {
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations,
+				fmt.Sprintf("complete forfeit txs for "+
+					"client %s: %v", clientID, err),
+			), nil
+		}
+
+		for _, spentVTXO := range spent {
+			if spentVTXO.ForfeitInfo == nil {
+				return buildFailureTransition(
+					ctx, env, s.ClientRegistrations,
+					fmt.Sprintf("missing forfeit info for "+
+						"client %s", clientID),
+				), nil
+			}
+
+			forfeitInfos[spentVTXO.VTXOOutpoint] =
+				spentVTXO.ForfeitInfo
+		}
 	}
 
 	// Now finalize the PSBT which signs all wallet-controlled inputs.
 	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to finalize PSBT: %v", err),
 		), nil
 	}
 
 	// Persist the round to storage.
 	round := &Round{
-		RoundID:             env.RoundID,
-		FinalTx:             finalTx,
-		VTXOTrees:           s.VTXOTrees,
-		ClientRegistrations: s.ClientRegistrations,
+		RoundID:              env.RoundID,
+		FinalTx:              finalTx,
+		VTXOTrees:            s.VTXOTrees,
+		ConnectorDescriptors: s.ConnectorDescriptors,
+		ForfeitInfos:         forfeitInfos,
+		ClientRegistrations:  s.ClientRegistrations,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)
 	if err != nil {
 		return buildFailureTransition(
-			env, s.ClientRegistrations,
+			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("failed to persist round: %v", err),
 		), nil
 	}
@@ -1560,7 +2076,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("collect VTXOs: %v", err),
 			), nil
 		}
@@ -1568,7 +2084,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		err = env.VTXOStore.PersistVTXOs(ctx, vtxos)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("persist VTXOs: %v", err),
 			), nil
 		}
@@ -1581,6 +2097,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			ClientRegistrations: s.ClientRegistrations,
 			FinalTx:             finalTx,
 			VTXOTrees:           s.VTXOTrees,
+			ForfeitInfos:        forfeitInfos,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
@@ -1793,8 +2310,22 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
 			if err != nil {
 				return buildFailureTransition(
-					env, s.ClientRegistrations,
+					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("mark VTXOs live: %v", err),
+				), nil
+			}
+		}
+
+		// Mark forfeited VTXOs after confirmation.
+		for outpoint, info := range s.ForfeitInfos {
+			err := env.VTXOStore.MarkVTXOForfeit(
+				ctx, outpoint, info,
+			)
+			if err != nil {
+				return buildFailureTransition(
+					ctx, env, s.ClientRegistrations,
+					fmt.Sprintf("mark VTXO forfeit: %v",
+						err),
 				), nil
 			}
 		}
@@ -1805,7 +2336,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 		)
 		if err != nil {
 			return buildFailureTransition(
-				env, s.ClientRegistrations,
+				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("mark round confirmed: %v", err),
 			), nil
 		}

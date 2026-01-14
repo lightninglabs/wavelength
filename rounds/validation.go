@@ -7,12 +7,14 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -117,6 +119,26 @@ var (
 	ErrOutputExceedsInput = errors.New(
 		"output total exceeds boarding input total",
 	)
+
+	// ErrForfeitVTXONotFound is returned when a forfeit request references
+	// a VTXO that doesn't exist in the store.
+	ErrForfeitVTXONotFound = errors.New("forfeit VTXO not found")
+
+	// ErrForfeitVTXONotLive is returned when a forfeit request references
+	// a VTXO that is not in "live" status.
+	ErrForfeitVTXONotLive = errors.New("forfeit VTXO is not live")
+
+	// ErrForfeitLookupFailed is returned when looking up a VTXO in the
+	// store fails.
+	ErrForfeitLookupFailed = errors.New("failed to lookup forfeit VTXO")
+
+	// ErrForfeitOutpointNil is returned when a forfeit request has a nil
+	// outpoint.
+	ErrForfeitOutpointNil = errors.New("forfeit request has nil outpoint")
+
+	// ErrDuplicateForfeitRequest is returned when a join request contains
+	// duplicate forfeit request outpoints.
+	ErrDuplicateForfeitRequest = errors.New("duplicate forfeit request")
 )
 
 // JoinRequestResult holds the validated results from a join request.
@@ -127,6 +149,9 @@ type JoinRequestResult struct {
 	// RequiredOutputs contains the outputs from leave requests that must
 	// be included in the round transaction.
 	RequiredOutputs []*wire.TxOut
+
+	// ForfeitInputs contains the validated forfeit inputs from VTXOs.
+	ForfeitInputs []*ForfeitInput
 
 	// VTXODescriptors maps signing key hex strings to their VTXO
 	// descriptors. The map key is the serialized public key.
@@ -142,13 +167,12 @@ type JoinRequestResult struct {
 // verifies:
 //   - Each boarding request is valid (no duplicates, passes individual
 //     validation).
+//   - Each forfeit request is valid (VTXO exists and is live).
 //   - Each leave request is valid (non-nil output, positive value, non-empty
 //     pkScript).
 //   - Each VTXO request is valid (passes individual validation).
 //   - The total output value (leave + VTXO) does not exceed the total input
-//     value.
-//
-// TODO(elle): Add forfeit request validation.
+//     value (boarding + forfeit).
 //
 // On success, returns JoinRequestResult containing all validated data.
 func ValidateJoinRequest(ctx context.Context, env *Environment,
@@ -156,6 +180,7 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	var (
 		boardingInputs  []*BoardingInput
+		forfeitInputs   []*ForfeitInput
 		requiredOutputs []*wire.TxOut
 		vtxoDescriptors = make(map[SigningKeyHex]*tree.VTXODescriptor)
 		signingKeys     = make(map[SigningKeyHex]*btcec.PublicKey)
@@ -184,6 +209,34 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 		boardReqs.Add(*boardReq.Outpoint)
 		boardingInputs = append(boardingInputs, boardingInput)
 		totalInputValue += boardingInput.Value
+	}
+
+	// Validate each forfeit request individually and also make sure that
+	// there are no duplicate forfeit requests.
+	forfeitReqs := fn.NewSet[wire.OutPoint]()
+	for _, forfeitReq := range req.ForfeitReqs {
+		if forfeitReq.VTXOOutpoint == nil {
+			return nil, ErrForfeitOutpointNil
+		}
+
+		if forfeitReqs.Contains(*forfeitReq.VTXOOutpoint) {
+			return nil, fmt.Errorf("%w: %v",
+				ErrDuplicateForfeitRequest,
+				forfeitReq.VTXOOutpoint)
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			ctx, env, forfeitReq,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid forfeit request "+
+				"for outpoint %v: %w",
+				forfeitReq.VTXOOutpoint, err)
+		}
+
+		forfeitReqs.Add(*forfeitReq.VTXOOutpoint)
+		forfeitInputs = append(forfeitInputs, forfeitInput)
+		totalInputValue += forfeitInput.VTXO.Descriptor.Amount
 	}
 
 	// Validate each leave request.
@@ -217,8 +270,8 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	// Ensure the client isn't asking for more output value than they are
 	// providing as input. This is a basic balance check - the client's
-	// leave request total + VTXO total cannot exceed their boarding input
-	// total.
+	// leave request total + VTXO total cannot exceed their boarding +
+	// forfeit input total.
 	totalOutputValue := totalLeaveValue + totalVTXOValue
 	if totalOutputValue > totalInputValue {
 		return nil, fmt.Errorf("%w: got %d sats, max %d sats",
@@ -228,6 +281,7 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 
 	return &JoinRequestResult{
 		BoardingInputs:  boardingInputs,
+		ForfeitInputs:   forfeitInputs,
 		RequiredOutputs: requiredOutputs,
 		VTXODescriptors: vtxoDescriptors,
 		SigningKeys:     signingKeys,
@@ -496,4 +550,255 @@ func ValidateBoardingSignature(boardingInput *BoardingInput,
 	}
 
 	return nil
+}
+
+// validateForfeitTxs validates that forfeit transactions are correctly
+// constructed and have valid client signatures for the VTXO input.
+func validateForfeitTxs(
+	forfeitTxSigs []*types.ForfeitTxSig,
+	reg *ClientRegistration,
+	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
+	forfeitScript []byte, operatorKey *btcec.PublicKey) error {
+
+	// Build a map of expected forfeit outpoints from the registration.
+	expectedForfeits := make(map[wire.OutPoint]*ForfeitInput)
+	for _, forfeitInput := range reg.ForfeitInputs {
+		if forfeitInput.Outpoint == nil {
+			return fmt.Errorf("forfeit outpoint cannot be nil")
+		}
+
+		expectedForfeits[*forfeitInput.Outpoint] = forfeitInput
+	}
+
+	seenForfeits := make(map[wire.OutPoint]struct{})
+
+	// Client must provide exactly one forfeit tx per forfeit input.
+	if len(forfeitTxSigs) != len(expectedForfeits) {
+		return fmt.Errorf("expected %d forfeit txs, got %d",
+			len(expectedForfeits), len(forfeitTxSigs))
+	}
+
+	// Validate each forfeit transaction.
+	for _, forfeitTxSig := range forfeitTxSigs {
+		if forfeitTxSig.UnsignedTx == nil {
+			return fmt.Errorf("forfeit tx cannot be nil")
+		}
+
+		if forfeitTxSig.ClientVTXOSig == nil {
+			return fmt.Errorf("client VTXO signature cannot be nil")
+		}
+
+		ftx := forfeitTxSig.UnsignedTx
+
+		// Forfeit tx must have exactly 2 inputs: VTXO and connector.
+		if len(ftx.TxIn) != 2 {
+			return fmt.Errorf("forfeit tx must have exactly 2 "+
+				"inputs, got %d", len(ftx.TxIn))
+		}
+
+		// Forfeit tx must have exactly 2 outputs: penalty and anchor.
+		if len(ftx.TxOut) != 2 {
+			return fmt.Errorf("forfeit tx must have exactly 2 "+
+				"outputs, got %d", len(ftx.TxOut))
+		}
+
+		// Verify VTXO input is at index 0.
+		vtxoInput := ftx.TxIn[tx.ForfeitVTXOInputIndex]
+		vtxoOutpoint := vtxoInput.PreviousOutPoint
+
+		// Verify this VTXO was in the client's forfeit inputs.
+		forfeitInput, exists := expectedForfeits[vtxoOutpoint]
+		if !exists {
+			return fmt.Errorf("forfeit tx references unexpected "+
+				"VTXO %v", vtxoOutpoint)
+		}
+
+		if _, seen := seenForfeits[vtxoOutpoint]; seen {
+			return fmt.Errorf("duplicate forfeit tx for VTXO %v",
+				vtxoOutpoint)
+		}
+
+		seenForfeits[vtxoOutpoint] = struct{}{}
+
+		if forfeitInput.VTXO == nil {
+			return fmt.Errorf("forfeit tx missing VTXO data")
+		}
+
+		// Look up the connector assignment for this forfeit.
+		assignment, exists := connectorAssignments[vtxoOutpoint]
+		if !exists {
+			return fmt.Errorf("no connector assignment for VTXO %v",
+				vtxoOutpoint)
+		}
+
+		if assignment.LeafOutput == nil {
+			return fmt.Errorf("connector leaf output missing for "+
+				"VTXO %v", vtxoOutpoint)
+		}
+
+		// Verify the forfeit tx spends the correct connector leaf.
+		connectorInput := ftx.TxIn[tx.ForfeitConnectorInputIndex]
+		if connectorInput.PreviousOutPoint != assignment.LeafOutpoint {
+			return fmt.Errorf("connector input references wrong "+
+				"leaf: expected %v, got %v",
+				assignment.LeafOutpoint,
+				connectorInput.PreviousOutPoint)
+		}
+
+		// Verify the penalty output sends to the server's forfeit
+		// script and has the correct amount.
+		penaltyOutput := ftx.TxOut[0]
+		if !bytes.Equal(penaltyOutput.PkScript, forfeitScript) {
+			return fmt.Errorf("penalty output script does not " +
+				"match server's forfeit script")
+		}
+
+		expectedAmount := forfeitInput.VTXO.Descriptor.Amount
+		if penaltyOutput.Value != int64(expectedAmount) {
+			return fmt.Errorf("penalty output amount mismatch: "+
+				"expected %d, got %d",
+				expectedAmount, penaltyOutput.Value)
+		}
+
+		// Verify anchor output is at index 1.
+		anchorOutput := ftx.TxOut[1]
+		expectedAnchorScript := scripts.AnchorOutput().PkScript
+		if !bytes.Equal(anchorOutput.PkScript, expectedAnchorScript) {
+			return fmt.Errorf("anchor output script mismatch")
+		}
+
+		// Validate the client's VTXO signature cryptographically.
+		if err := validateForfeitVTXOSignature(
+			ftx, forfeitTxSig.ClientVTXOSig,
+			forfeitInput.VTXO, vtxoOutpoint,
+			assignment.LeafOutput, operatorKey,
+		); err != nil {
+			return fmt.Errorf("invalid VTXO signature for %v: %w",
+				vtxoOutpoint, err)
+		}
+	}
+
+	if len(seenForfeits) != len(expectedForfeits) {
+		return fmt.Errorf("forfeit txs missing expected VTXOs")
+	}
+
+	return nil
+}
+
+// validateForfeitVTXOSignature validates the client's schnorr signature for
+// the VTXO input in a forfeit transaction.
+func validateForfeitVTXOSignature(
+	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
+	operatorKey *btcec.PublicKey) error {
+
+	if vtxo == nil || vtxo.Descriptor == nil {
+		return fmt.Errorf("VTXO descriptor must be provided")
+	}
+
+	if operatorKey == nil {
+		return fmt.Errorf("operator key must be provided")
+	}
+
+	// Create the VTXO output.
+	vtxoOutput := &wire.TxOut{
+		Value:    int64(vtxo.Descriptor.Amount),
+		PkScript: vtxo.Descriptor.PkScript,
+	}
+
+	// Get the connector input outpoint.
+	connectorOutpoint :=
+		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
+
+	// Reconstruct the collaborative spend leaf for the VTXO.
+	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+		vtxo.Descriptor.CoSignerKey, operatorKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to reconstruct VTXO collab leaf: %w",
+			err)
+	}
+
+	// Create VTXO spend context.
+	vtxoCtx := &tx.VTXOSpendContext{
+		Outpoint:  vtxoOutpoint,
+		Output:    vtxoOutput,
+		TapScript: nil,
+	}
+
+	// Create connector spend context.
+	connectorCtx := &tx.ConnectorSpendContext{
+		Outpoint: connectorOutpoint,
+		Output:   connectorLeafOutput,
+	}
+
+	// Build prev output fetcher using the tx package helper.
+	prevOutFetcher, err := tx.NewForfeitPrevOutFetcher(
+		vtxoCtx, connectorCtx,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create prev out fetcher: %w",
+			err)
+	}
+
+	// Create signature hashes.
+	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
+
+	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+
+	// Calculate the tapscript signature hash for the collaborative path.
+	sigHash, err := txscript.CalcTapscriptSignaturehash(
+		sigHashes, txscript.SigHashDefault, ftx,
+		tx.ForfeitVTXOInputIndex, prevOutFetcher, tapLeaf,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to calculate tapscript "+
+			"signature hash: %w", err)
+	}
+
+	// Verify the schnorr signature against the client's public key.
+	if !clientSig.Verify(sigHash, vtxo.Descriptor.CoSignerKey) {
+		return fmt.Errorf("invalid client VTXO signature")
+	}
+
+	return nil
+}
+
+// ValidateForfeitRequest validates a forfeit request from a client. It
+// verifies:
+//   - The VTXO exists in the store.
+//   - The VTXO is in "live" status (confirmed on-chain).
+//
+// On success, returns a ForfeitInput containing the VTXO data.
+//
+// TODO(elle): There should be a proof of ownership check so that we can check
+// at validation time that the client owns the VTXO they are forfeiting.
+// Otherwise any client could request to forfeit any live VTXO and then
+// fail at signing time which would cause the round to fail.
+func ValidateForfeitRequest(ctx context.Context, env *Environment,
+	req *types.ForfeitRequest) (*ForfeitInput, error) {
+
+	// Look up the VTXO in the store.
+	vtxo, err := env.VTXOStore.GetVTXO(ctx, *req.VTXOOutpoint)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrForfeitLookupFailed, err)
+	}
+
+	// Verify the VTXO exists.
+	if vtxo == nil {
+		return nil, fmt.Errorf("%w: %v", ErrForfeitVTXONotFound,
+			req.VTXOOutpoint)
+	}
+
+	// Verify the VTXO is live (confirmed on-chain and not spent or
+	// expired).
+	if vtxo.Status != VTXOStatusLive {
+		return nil, fmt.Errorf("%w: status is %s",
+			ErrForfeitVTXONotLive, vtxo.Status)
+	}
+
+	return &ForfeitInput{
+		Outpoint: req.VTXOOutpoint,
+		VTXO:     vtxo,
+	}, nil
 }

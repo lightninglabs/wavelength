@@ -5,8 +5,14 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -722,6 +728,112 @@ func TestValidateLeaveRequest(t *testing.T) {
 	})
 }
 
+// TestValidateForfeitRequest tests the ValidateForfeitRequest function.
+func TestValidateForfeitRequest(t *testing.T) {
+	t.Parallel()
+
+	clientPub, _ := testutils.CreateKey(2)
+
+	// Create a test outpoint for the VTXO.
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x10},
+		Index: 0,
+	}
+
+	t.Run("valid forfeit request returns input", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a live VTXO descriptor.
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		// Create a VTXO in live status.
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+
+		// Set up the VTXO store mock to return the VTXO.
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &vtxoOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, forfeitInput)
+		require.Equal(t, &vtxoOutpoint, forfeitInput.Outpoint)
+		require.Equal(t, vtxo, forfeitInput.VTXO)
+	})
+
+	t.Run("VTXO not found rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Don't add any VTXO to the store - it should not be found.
+		nonExistentOutpoint := wire.OutPoint{
+			Hash:  [32]byte{0x99},
+			Index: 5,
+		}
+
+		// Set up the VTXO store mock to return nil (VTXO not found).
+		h.expectVTXO(nonExistentOutpoint, nil)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &nonExistentOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.Nil(t, forfeitInput)
+		require.ErrorIs(t, err, ErrForfeitVTXONotFound)
+	})
+
+	t.Run("VTXO not live (unconfirmed) rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create an unconfirmed VTXO descriptor.
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		// Create a VTXO in unconfirmed status.
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusUnconfirmed,
+		}
+
+		// Set up the VTXO store mock to return the VTXO.
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		req := &types.ForfeitRequest{
+			VTXOOutpoint: &vtxoOutpoint,
+		}
+
+		forfeitInput, err := ValidateForfeitRequest(
+			t.Context(), h.env, req,
+		)
+		require.Nil(t, forfeitInput)
+		require.ErrorIs(t, err, ErrForfeitVTXONotLive)
+	})
+}
+
 // TestValidateJoinRequest tests the ValidateJoinRequest validation function.
 func TestValidateJoinRequest(t *testing.T) {
 	t.Parallel()
@@ -1044,4 +1156,782 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.Nil(t, result)
 		require.ErrorIs(t, err, ErrOutputExceedsInput)
 	})
+
+	t.Run("valid forfeit request with leave output", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a live VTXO with 50000 sats.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  [32]byte{0x20},
+			Index: 0,
+		}
+
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		// Forfeit 50000 sats, leave 30000 sats.
+		req := &types.JoinRoundRequest{
+			ForfeitReqs: []*types.ForfeitRequest{{
+				VTXOOutpoint: &vtxoOutpoint,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    30000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.ForfeitInputs, 1)
+		require.Len(t, result.RequiredOutputs, 1)
+		require.Equal(t, &vtxoOutpoint,
+			result.ForfeitInputs[0].Outpoint)
+		require.Equal(t, int64(30000), result.RequiredOutputs[0].Value)
+	})
+
+	t.Run("duplicate forfeit request rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a live VTXO.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  [32]byte{0x21},
+			Index: 0,
+		}
+
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		// Duplicate forfeit request for the same outpoint.
+		req := &types.JoinRoundRequest{
+			ForfeitReqs: []*types.ForfeitRequest{
+				{VTXOOutpoint: &vtxoOutpoint},
+				{VTXOOutpoint: &vtxoOutpoint},
+			},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrDuplicateForfeitRequest)
+	})
+
+	t.Run("forfeit and boarding combined for balance", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create a live VTXO with 50000 sats.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  [32]byte{0x22},
+			Index: 0,
+		}
+
+		descriptor, err := tree.NewVTXODescriptor(
+			50000, clientPub, h.operatorPub, 144,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			RoundID:          h.env.RoundID,
+			BatchOutputIndex: 0,
+			Descriptor:       descriptor,
+			Status:           VTXOStatusLive,
+		}
+		h.expectVTXO(vtxoOutpoint, vtxo)
+
+		// Setup a boarding input with 100000 sats.
+		h.boardingLocker.On("IsLocked", t.Context(), &outpoint1).
+			Return(false, RoundID{}, nil)
+		h.mockBoardingUTXO(outpoint1, clientPub, 144, 10)
+
+		// Total input: 50000 (forfeit) + 100000 (boarding) = 150000.
+		// Leave output: 120000 sats (less than total).
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   144,
+			}},
+			ForfeitReqs: []*types.ForfeitRequest{{
+				VTXOOutpoint: &vtxoOutpoint,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    120000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.BoardingInputs, 1)
+		require.Len(t, result.ForfeitInputs, 1)
+		require.Len(t, result.RequiredOutputs, 1)
+	})
+
+	t.Run("leave output exceeds forfeit input rejected",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHarness(t)
+
+			// Create a live VTXO with 50000 sats.
+			vtxoOutpoint := wire.OutPoint{
+				Hash:  [32]byte{0x23},
+				Index: 0,
+			}
+
+			descriptor, err := tree.NewVTXODescriptor(
+				50000, clientPub, h.operatorPub, 144,
+			)
+			require.NoError(t, err)
+
+			vtxo := &VTXO{
+				RoundID:          h.env.RoundID,
+				BatchOutputIndex: 0,
+				Descriptor:       descriptor,
+				Status:           VTXOStatusLive,
+			}
+			h.expectVTXO(vtxoOutpoint, vtxo)
+
+			// Forfeit 50000 sats but try to leave 80000 sats.
+			req := &types.JoinRoundRequest{
+				ForfeitReqs: []*types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				LeaveReqs: []*types.LeaveRequest{{
+					Output: &wire.TxOut{
+						Value:    80000,
+						PkScript: []byte{0x00, 0x14},
+					},
+				}},
+			}
+
+			result, err := ValidateJoinRequest(
+				t.Context(), h.env, req,
+			)
+
+			require.Nil(t, result)
+			require.ErrorIs(t, err, ErrOutputExceedsInput)
+		})
+
+	t.Run("nil forfeit outpoint rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		req := &types.JoinRoundRequest{
+			ForfeitReqs: []*types.ForfeitRequest{{
+				VTXOOutpoint: nil,
+			}},
+		}
+
+		result, err := ValidateJoinRequest(t.Context(), h.env, req)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrForfeitOutpointNil)
+	})
+}
+
+// TestValidateForfeitTxs tests the forfeit transaction validation logic.
+func TestValidateForfeitTxs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid forfeit tx passes validation", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		clientPriv := testPrivKey(1)
+		operatorPriv := testPrivKey(2)
+
+		clientPub := clientPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, clientPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+			Status:     VTXOStatusLive,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "vtxo"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "connector"),
+			Index: 0,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		forfeitInput := &ForfeitInput{
+			Outpoint: &vtxoOutpoint,
+			VTXO:     vtxo,
+		}
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{forfeitInput},
+		}
+
+		forfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount, connectorOutpoint,
+			forfeitScript,
+		)
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		forfeitSig := forfeitTxSig(
+			t, forfeitTx, clientPriv, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: forfeitSig,
+			}},
+			reg, connectorAssignments, forfeitScript,
+			operatorPub,
+		)
+		require.NoError(t, err)
+	})
+
+	t.Run("missing forfeit assignment rejected", func(t *testing.T) {
+		t.Parallel()
+
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "missing"),
+			Index: 0,
+		}
+
+		vtxo := &VTXO{
+			Descriptor: &tree.VTXODescriptor{
+				Amount: 50000,
+			},
+		}
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &forfeitOutpoint, VTXO: vtxo},
+			},
+		}
+
+		forfeitTx := buildForfeitTx(
+			t, forfeitOutpoint, 50000,
+			wire.OutPoint{Hash: testOutpointHash(t, "conn")},
+			[]byte{0x51},
+		)
+
+		var dummySigBytes [64]byte
+		dummySig, err := schnorr.ParseSignature(dummySigBytes[:])
+		require.NoError(t, err)
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: dummySig,
+			}},
+			reg, map[wire.OutPoint]*ConnectorLeafAssignment{},
+			[]byte{0x51}, nil,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no connector assignment")
+	})
+
+	t.Run("wrong connector leaf rejected", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		clientPriv := testPrivKey(3)
+		operatorPriv := testPrivKey(4)
+
+		clientPub := clientPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, clientPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "leaf-vtxo"),
+			Index: 0,
+		}
+		expectedConnector := wire.OutPoint{
+			Hash:  testOutpointHash(t, "leaf-expected"),
+			Index: 0,
+		}
+		actualConnector := wire.OutPoint{
+			Hash:  testOutpointHash(t, "leaf-actual"),
+			Index: 1,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+			},
+		}
+
+		forfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount,
+			actualConnector, forfeitScript,
+		)
+
+		forfeitSig := forfeitTxSig(
+			t, forfeitTx, clientPriv, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: expectedConnector,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: forfeitSig,
+			}},
+			reg, connectorAssignments, forfeitScript,
+			operatorPub,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(),
+			"connector input references wrong")
+	})
+
+	t.Run("wrong penalty amount rejected", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		clientPriv := testPrivKey(5)
+		operatorPriv := testPrivKey(6)
+
+		clientPub := clientPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, clientPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "amount"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "amount-connector"),
+			Index: 0,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		forfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount,
+			connectorOutpoint, forfeitScript,
+		)
+		forfeitTx.TxOut[0].Value = int64(vtxoAmount - 1000)
+
+		forfeitSig := forfeitTxSig(
+			t, forfeitTx, clientPriv, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+			},
+		}
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: forfeitSig,
+			}},
+			reg, connectorAssignments, forfeitScript,
+			operatorPub,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(),
+			"penalty output amount mismatch")
+	})
+
+	t.Run("wrong penalty script rejected", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		clientPriv := testPrivKey(7)
+		operatorPriv := testPrivKey(8)
+
+		clientPub := clientPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, clientPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "script"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "script-connector"),
+			Index: 0,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		correctForfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount,
+			connectorOutpoint, correctForfeitScript,
+		)
+		forfeitTx.TxOut[0].PkScript = []byte("wrong")
+
+		forfeitSig := forfeitTxSig(
+			t, forfeitTx, clientPriv, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+			},
+		}
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: forfeitSig,
+			}},
+			reg, connectorAssignments, correctForfeitScript,
+			operatorPub,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(),
+			"penalty output script does not match")
+	})
+
+	t.Run("invalid client signature rejected", func(t *testing.T) {
+		t.Parallel()
+
+		const (
+			vtxoAmount   = btcutil.Amount(50000)
+			exitDelay    = 144
+			connectorAmt = btcutil.Amount(330)
+		)
+
+		clientPriv := testPrivKey(9)
+		operatorPriv := testPrivKey(10)
+
+		clientPub := clientPriv.PubKey()
+		operatorPub := operatorPriv.PubKey()
+
+		vtxoDesc, err := tree.NewVTXODescriptor(
+			vtxoAmount, clientPub, operatorPub, exitDelay,
+		)
+		require.NoError(t, err)
+
+		vtxo := &VTXO{
+			Descriptor: vtxoDesc,
+		}
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "sig"),
+			Index: 0,
+		}
+		connectorOutpoint := wire.OutPoint{
+			Hash:  testOutpointHash(t, "sig-connector"),
+			Index: 0,
+		}
+
+		connectorScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		connectorLeafOutput := &wire.TxOut{
+			Value:    int64(connectorAmt),
+			PkScript: connectorScript,
+		}
+
+		forfeitScript, err := txscript.PayToTaprootScript(
+			txscript.ComputeTaprootOutputKey(operatorPub, nil),
+		)
+		require.NoError(t, err)
+
+		forfeitTx := buildForfeitTx(
+			t, vtxoOutpoint, vtxoAmount,
+			connectorOutpoint, forfeitScript,
+		)
+
+		badSig := forfeitTxSig(
+			t, forfeitTx, operatorPriv, vtxoOutpoint,
+			connectorLeafOutput, operatorPub, exitDelay,
+			vtxoDesc,
+		)
+
+		reg := &ClientRegistration{
+			ForfeitInputs: []*ForfeitInput{
+				{Outpoint: &vtxoOutpoint, VTXO: vtxo},
+			},
+		}
+
+		connectorAssignments :=
+			map[wire.OutPoint]*ConnectorLeafAssignment{
+				vtxoOutpoint: {
+					LeafOutpoint: connectorOutpoint,
+					LeafOutput:   connectorLeafOutput,
+				},
+			}
+
+		err = validateForfeitTxs(
+			[]*types.ForfeitTxSig{{
+				UnsignedTx:    forfeitTx,
+				ClientVTXOSig: badSig,
+			}},
+			reg, connectorAssignments, forfeitScript,
+			operatorPub,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "invalid VTXO signature")
+	})
+}
+
+// buildForfeitTx builds a forfeit tx with the specified inputs and script.
+func buildForfeitTx(t *testing.T, vtxoOutpoint wire.OutPoint,
+	vtxoAmount btcutil.Amount, connectorOutpoint wire.OutPoint,
+	forfeitScript []byte) *wire.MsgTx {
+
+	t.Helper()
+
+	forfeitTx, err := tx.BuildForfeitTx(
+		&vtxoOutpoint, vtxoAmount, &connectorOutpoint,
+		forfeitScript,
+	)
+	require.NoError(t, err)
+
+	return forfeitTx
+}
+
+// forfeitTxSig creates a schnorr signature for a forfeit tx VTXO input.
+func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
+	signerPriv *btcec.PrivateKey, vtxoOutpoint wire.OutPoint,
+	connectorLeafOutput *wire.TxOut, operatorPub *btcec.PublicKey,
+	exitDelay uint32, desc *tree.VTXODescriptor) *schnorr.Signature {
+
+	t.Helper()
+
+	vtxoTapScript, err := scripts.VTXOTapScript(
+		desc.CoSignerKey, operatorPub, exitDelay,
+	)
+	require.NoError(t, err)
+
+	vtxoOutput := &wire.TxOut{
+		Value:    int64(desc.Amount),
+		PkScript: desc.PkScript,
+	}
+
+	connectorOutpoint :=
+		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
+
+	vtxoCtx := &tx.VTXOSpendContext{
+		Outpoint:  vtxoOutpoint,
+		Output:    vtxoOutput,
+		TapScript: vtxoTapScript,
+	}
+	connectorCtx := &tx.ConnectorSpendContext{
+		Outpoint: connectorOutpoint,
+		Output:   connectorLeafOutput,
+	}
+	prevFetcher, err := tx.NewForfeitPrevOutFetcher(
+		vtxoCtx, connectorCtx,
+	)
+	require.NoError(t, err)
+
+	sigHashes := txscript.NewTxSigHashes(ftx, prevFetcher)
+
+	leafIndex, err := scripts.VTXOCollabPathLeaf.LeafIndex()
+	require.NoError(t, err)
+
+	collabLeaf := vtxoTapScript.Leaves[leafIndex]
+	tapLeaf := txscript.NewBaseTapLeaf(collabLeaf.Script)
+
+	sigHash, err := txscript.CalcTapscriptSignaturehash(
+		sigHashes, txscript.SigHashDefault, ftx,
+		tx.ForfeitVTXOInputIndex, prevFetcher, tapLeaf,
+	)
+	require.NoError(t, err)
+
+	sig, err := schnorr.Sign(signerPriv, sigHash)
+	require.NoError(t, err)
+
+	return sig
+}
+
+// testPrivKey returns a deterministic private key for tests.
+func testPrivKey(index byte) *btcec.PrivateKey {
+	keyBytes := make([]byte, 32)
+	keyBytes[31] = index
+
+	privKey, _ := btcec.PrivKeyFromBytes(keyBytes)
+
+	return privKey
+}
+
+// testOutpointHash returns a deterministic hash for outpoints in tests.
+func testOutpointHash(t *testing.T, tag string) chainhash.Hash {
+	t.Helper()
+
+	return chainhash.HashH([]byte(tag))
 }

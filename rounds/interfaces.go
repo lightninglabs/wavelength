@@ -163,6 +163,12 @@ type Round struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
 
+	// ConnectorDescriptors describe connector outputs for this round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
 	// ClientRegistrations contains client registration data.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
 }
@@ -210,6 +216,27 @@ type VTXOStore interface {
 	// MarkVTXOsLive updates the status of all VTXOs for a given round to
 	// "live" after the commitment transaction has been confirmed.
 	MarkVTXOsLive(ctx context.Context, roundID RoundID) error
+
+	// MarkVTXOForfeit marks a VTXO as forfeited and stores the forfeit
+	// metadata.
+	MarkVTXOForfeit(ctx context.Context, outpoint wire.OutPoint,
+		info *ForfeitInfo) error
+
+	// GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error
+	// if the VTXO doesn't exist.
+	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (*VTXO, error)
+
+	// LockVTXO locks VTXOs for forfeit in the specified round. This
+	// prevents the VTXOs from being forfeited in another round
+	// concurrently. The call should fail if any outpoint is already locked
+	// by another round.
+	LockVTXO(ctx context.Context, roundID RoundID,
+		outpoints ...wire.OutPoint) error
+
+	// UnlockVTXO releases the lock on VTXOs. Only the round that locked
+	// the VTXOs can unlock them.
+	UnlockVTXO(ctx context.Context, roundID RoundID,
+		outpoints ...wire.OutPoint) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

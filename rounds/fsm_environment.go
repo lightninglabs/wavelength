@@ -29,6 +29,11 @@ type Environment struct {
 	// Terms contains the operator's terms for this round.
 	Terms *batch.Terms
 
+	// ForfeitScript is the output script that clients must use for the
+	// penalty output in forfeit transactions. This allows the server to
+	// claim forfeited VTXO funds.
+	ForfeitScript []byte
+
 	// Log is the logger for the FSM.
 	Log btclog.Logger
 

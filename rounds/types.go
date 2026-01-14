@@ -28,6 +28,39 @@ type TxID = tree.TxID
 // This type alias improves readability in struct definitions.
 type InputSigsMap = map[ClientID][]*types.BoardingInputSignature
 
+// ForfeitTxsMap maps client IDs to their submitted forfeit transactions.
+type ForfeitTxsMap = map[ClientID][]*types.ForfeitTxSig
+
+// ConnectorTreeDescriptor captures the information needed to reconstruct a
+// connector tree and its output placement in the commitment transaction.
+type ConnectorTreeDescriptor struct {
+	// OutputIndex is the connector output index in the commitment
+	// transaction.
+	OutputIndex int
+
+	// NumLeaves is the number of connector leaves for this output.
+	NumLeaves int
+
+	// ForfeitScript is the penalty output script for forfeit transactions.
+	ForfeitScript []byte
+}
+
+// ForfeitInfo records how a VTXO was forfeited in a round.
+type ForfeitInfo struct {
+	// RoundID is the round in which the VTXO was forfeited.
+	RoundID RoundID
+
+	// ConnectorOutputIndex is the connector output index in the
+	// commitment transaction.
+	ConnectorOutputIndex int
+
+	// LeafIndex is the leaf index within the connector tree.
+	LeafIndex int
+
+	// ForfeitTx is the completed forfeit transaction.
+	ForfeitTx *wire.MsgTx
+}
+
 // BoardingInput represents a validated boarding input that will be spent in
 // the batch transaction. It contains all the data needed to construct the
 // input and sign it.
@@ -55,6 +88,34 @@ type BoardingInput struct {
 	OperatorKeyDesc *keychain.KeyDescriptor
 }
 
+// ForfeitInput represents a validated forfeit input from a VTXO that will be
+// spent in the batch transaction. The client is forfeiting their VTXO back to
+// the operator.
+type ForfeitInput struct {
+	// Outpoint is the virtual outpoint identifying the VTXO being
+	// forfeited.
+	Outpoint *wire.OutPoint
+
+	// VTXO is the VTXO being forfeited, retrieved from the VTXOStore.
+	VTXO *VTXO
+}
+
+// ConnectorLeafAssignment binds a forfeit input to a specific connector leaf.
+type ConnectorLeafAssignment struct {
+	// ConnectorOutputIndex is the index of the connector output in the
+	// commitment transaction.
+	ConnectorOutputIndex int
+
+	// LeafIndex is the index of the leaf within the connector tree.
+	LeafIndex int
+
+	// LeafOutpoint is the outpoint for the connector leaf output.
+	LeafOutpoint wire.OutPoint
+
+	// LeafOutput is the transaction output for the connector leaf.
+	LeafOutput *wire.TxOut
+}
+
 // ClientRegistration holds all validated data for a client's join request.
 // This is created after validation succeeds and stored in the FSM state.
 type ClientRegistration struct {
@@ -71,5 +132,7 @@ type ClientRegistration struct {
 	// descriptors. Each VTXO request has a unique signing key.
 	VTXODescriptors map[SigningKeyHex]*tree.VTXODescriptor
 
-	// TODO(elle): Add ForfeitRequests when implemented.
+	// ForfeitInputs are the VTXOs this client is forfeiting back to the
+	// operator.
+	ForfeitInputs []*ForfeitInput
 }

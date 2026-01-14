@@ -73,6 +73,10 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockVTXOStore.On(
 		"MarkVTXOsLive", mock.Anything, mock.Anything,
 	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"MarkVTXOForfeit", mock.Anything, mock.Anything,
+		mock.Anything,
+	).Return(nil).Maybe()
 
 	m := &commonMockSetup{
 		t:                t,
@@ -130,6 +134,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	operatorKey := keychain.KeyDescriptor{
 		PubKey: common.operatorPub,
 	}
+	connectorAddr := mustTaprootAddr(t, operatorKey.PubKey)
 
 	// Generate a sweep key for VTXO trees.
 	sweepKey, _ := testutils.CreateKey(2)
@@ -146,10 +151,16 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		VTXOStore:           common.vtxoStore,
 		ConfTarget:          6,
 		MinConfs:            1,
+		ForfeitScript:       []byte{0x51, 0x20, 0x01, 0x02},
 		Terms: &batch.Terms{
-			OperatorKey:                   operatorKey,
-			SweepKey:                      keychain.KeyDescriptor{PubKey: sweepKey},
+			OperatorKey: operatorKey,
+			SweepKey: keychain.KeyDescriptor{
+				PubKey: sweepKey,
+			},
 			SweepDelay:                    288,
+			MaxConnectorsPerTree:          128,
+			ConnectorDustAmount:           330,
+			ConnectorAddress:              connectorAddr,
 			BoardingExitDelay:             100,
 			BoardingExitDelaySafetyMargin: 6,
 			MinBoardingConfirmations:      1,
@@ -186,6 +197,21 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	}
 
 	return h
+}
+
+// mustTaprootAddr derives a taproot address from a public key. It computes the
+// taproot output key (BIP341 tweak) before creating the address.
+func mustTaprootAddr(t *testing.T, key *btcec.PublicKey) btcutil.Address {
+	t.Helper()
+
+	outputKey := txscript.ComputeTaprootOutputKey(key, nil)
+	addr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(outputKey),
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	return addr
 }
 
 // setupPermissiveMocks sets up permissive `.Maybe()` expectations on all mocks.
@@ -298,6 +324,27 @@ func (c *commonMockSetup) expectFailedLock(outpoint *wire.OutPoint,
 
 	c.boardingLocker.On("Lock", mock.Anything, outpoint, roundID).
 		Return(err).Once()
+}
+
+// expectVTXO sets up the VTXO store mock to return the given VTXO when
+// GetVTXO is called with the specified outpoint. If vtxo is nil, GetVTXO
+// will return nil (indicating the VTXO doesn't exist).
+func (c *commonMockSetup) expectVTXO(outpoint wire.OutPoint, vtxo *VTXO) {
+	c.t.Helper()
+
+	c.vtxoStore.On("GetVTXO", mock.Anything, outpoint).
+		Return(vtxo, nil).Once()
+}
+
+// expectVTXONotFound sets up the VTXO store mock to return nil when GetVTXO
+// is called with the specified outpoint (indicating the VTXO doesn't exist).
+//
+//nolint:unused
+func (c *commonMockSetup) expectVTXONotFound(outpoint wire.OutPoint) {
+	c.t.Helper()
+
+	c.vtxoStore.On("GetVTXO", mock.Anything, outpoint).
+		Return(nil, nil).Once()
 }
 
 // setupBatchBuildingMocks sets up the mocks needed for successful batch
@@ -414,6 +461,73 @@ func (c *commonMockSetup) setupBoardingInputWithUnlock(outpoint *wire.OutPoint,
 	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
 		Return(nil).Once()
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
+}
+
+// expectInputUnlocked sets up an expectation that the FSM will unlock a
+// boarding input when the round fails. This should be called before triggering
+// a failure condition.
+func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
+	roundID RoundID) {
+
+	c.t.Helper()
+
+	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
+		Return(nil).Once()
+}
+
+// expectVTXOLocked sets up an expectation that the FSM will lock VTXOs
+// during registration when they're being forfeited.
+func (c *commonMockSetup) expectVTXOLocked(roundID RoundID,
+	outpoints ...wire.OutPoint) {
+
+	c.t.Helper()
+
+	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
+	c.vtxoStore.On(
+		"LockVTXO", mock.Anything, roundID, outpointsCopy,
+	).Return(nil).Once()
+}
+
+// expectVTXOUnlocked sets up an expectation that the FSM will unlock VTXOs
+// when the round fails. This should be called before triggering a failure
+// condition.
+func (c *commonMockSetup) expectVTXOUnlocked(roundID RoundID,
+	outpoints ...wire.OutPoint) {
+
+	c.t.Helper()
+
+	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
+	c.vtxoStore.On(
+		"UnlockVTXO", mock.Anything, roundID, outpointsCopy,
+	).Return(nil).Once()
+}
+
+// setupValidForfeitVTXO sets up the VTXO store mock to return a live VTXO
+// for the given outpoint. This creates a forfeit VTXO that should pass
+// validation.
+func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
+	clientKey *btcec.PublicKey, roundID RoundID) *VTXO {
+
+	c.t.Helper()
+
+	// Create a live VTXO descriptor.
+	descriptor, err := tree.NewVTXODescriptor(
+		50000, clientKey, c.operatorPub, 144,
+	)
+	require.NoError(c.t, err)
+
+	// Create a VTXO in live status.
+	vtxo := &VTXO{
+		RoundID:          roundID,
+		BatchOutputIndex: 0,
+		Descriptor:       descriptor,
+		Status:           VTXOStatusLive,
+	}
+
+	// Set up the VTXO store mock to return the VTXO.
+	c.expectVTXO(*outpoint, vtxo)
+
+	return vtxo
 }
 
 // assertMockExpectations asserts that all mocks received their expected calls.
@@ -957,6 +1071,28 @@ func (c *clientHarness) createJoinRequestWithVTXOs(
 	}
 }
 
+// createJoinRequestWithForfeits creates a ClientJoinRequestEvent containing
+// boarding requests and forfeit requests.
+func (c *clientHarness) createJoinRequestWithForfeits(
+	boardingReqs []*types.BoardingRequest,
+	forfeitReqs []*types.ForfeitRequest) *ClientJoinRequestEvent {
+
+	c.t.Helper()
+
+	// Store boarding requests for later boarding signature creation.
+	c.submittedBoardingReqs = append(
+		c.submittedBoardingReqs, boardingReqs...,
+	)
+
+	return &ClientJoinRequestEvent{
+		ClientID: c.clientID,
+		Request: &types.JoinRoundRequest{
+			BoardingReqs: boardingReqs,
+			ForfeitReqs:  forfeitReqs,
+		},
+	}
+}
+
 // mockWalletController is a mock implementation of WalletController for
 // testing.
 type mockWalletController struct {
@@ -1061,6 +1197,44 @@ func (m *mockVTXOStore) MarkVTXOsLive(ctx context.Context,
 	return args.Error(0)
 }
 
+// MarkVTXOForfeit is a mock implementation of VTXOStore.MarkVTXOForfeit.
+func (m *mockVTXOStore) MarkVTXOForfeit(ctx context.Context,
+	outpoint wire.OutPoint, info *ForfeitInfo) error {
+
+	args := m.Called(ctx, outpoint, info)
+
+	return args.Error(0)
+}
+
+// GetVTXO is a mock implementation of VTXOStore.GetVTXO.
+func (m *mockVTXOStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*VTXO, error) {
+
+	args := m.Called(ctx, outpoint)
+
+	vtxo, _ := args.Get(0).(*VTXO)
+
+	return vtxo, args.Error(1)
+}
+
+// LockVTXO is a mock implementation of VTXOStore.LockVTXO.
+func (m *mockVTXOStore) LockVTXO(ctx context.Context,
+	roundID RoundID, outpoints ...wire.OutPoint) error {
+
+	args := m.Called(ctx, roundID, outpoints)
+
+	return args.Error(0)
+}
+
+// UnlockVTXO is a mock implementation of VTXOStore.UnlockVTXO.
+func (m *mockVTXOStore) UnlockVTXO(ctx context.Context,
+	roundID RoundID, outpoints ...wire.OutPoint) error {
+
+	args := m.Called(ctx, roundID, outpoints)
+
+	return args.Error(0)
+}
+
 // clientMuSigSession holds the MuSig2 signing sessions for a client's VTXO
 // signing key across all relevant transactions.
 type clientMuSigSession struct {
@@ -1069,11 +1243,11 @@ type clientMuSigSession struct {
 	sessions []*tree.SignerSession
 }
 
-// createBoardingSignaturesEvent creates a ClientBoardingSignaturesEvent with
-// real signatures for the given boarding inputs. The client signs each input
-// using the tapscript collaborative spend path.
-func (c *clientHarness) createBoardingSignaturesEvent(
-	state *AwaitingInputSigsState) *ClientBoardingSignaturesEvent {
+// createInputSignaturesEvent creates a ClientInputSignaturesEvent with real
+// signatures for the given boarding inputs. The client signs each input using
+// the tapscript collaborative spend path.
+func (c *clientHarness) createInputSignaturesEvent(
+	state *AwaitingInputSigsState) *ClientInputSignaturesEvent {
 
 	c.t.Helper()
 
@@ -1142,18 +1316,18 @@ func (c *clientHarness) createBoardingSignaturesEvent(
 		})
 	}
 
-	return &ClientBoardingSignaturesEvent{
+	return &ClientInputSignaturesEvent{
 		ClientID:   c.clientID,
 		Signatures: sigs,
 	}
 }
 
-// createBoardingSignaturesFromPSBT creates a ClientBoardingSignaturesEvent
-// using the PSBT received from ClientBatchInfo. This mimics the real client
-// flow where the client uses their stored boarding requests and the received
-// PSBT to create signatures.
-func (c *clientHarness) createBoardingSignaturesFromPSBT(
-	p *psbt.Packet) *ClientBoardingSignaturesEvent {
+// createInputSignaturesFromPSBT creates a ClientInputSignaturesEvent using the
+// PSBT received from ClientBatchInfo. This mimics the real client flow where
+// the client uses their stored boarding requests and the received PSBT to
+// create signatures.
+func (c *clientHarness) createInputSignaturesFromPSBT(
+	p *psbt.Packet) *ClientInputSignaturesEvent {
 
 	c.t.Helper()
 
@@ -1229,7 +1403,7 @@ func (c *clientHarness) createBoardingSignaturesFromPSBT(
 		})
 	}
 
-	return &ClientBoardingSignaturesEvent{
+	return &ClientInputSignaturesEvent{
 		ClientID:   c.clientID,
 		Signatures: sigs,
 	}

@@ -29,6 +29,11 @@ type ActorConfig struct {
 	// Terms are the operator terms for the round.
 	Terms *batch.Terms
 
+	// ForfeitScript is the output script that clients must use for the
+	// penalty output in forfeit transactions. This allows the server to
+	// claim forfeited VTXO funds.
+	ForfeitScript []byte
+
 	// ClientsConn is a reference to the ClientsConnectionActor for sending
 	// messages to registered clients.
 	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
@@ -203,6 +208,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,
 		Terms:               a.cfg.Terms,
+		ForfeitScript:       a.cfg.ForfeitScript,
 		RoundStore:          a.cfg.RoundStore,
 		VTXOStore:           a.cfg.VTXOStore,
 	}
@@ -213,6 +219,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		ClientRegistrations: round.ClientRegistrations,
 		FinalTx:             round.FinalTx,
 		VTXOTrees:           round.VTXOTrees,
+		ForfeitInfos:        round.ForfeitInfos,
 	}
 
 	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
@@ -380,24 +387,6 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				"sealed_round", m.SealedRoundID,
 				"new_round", newRound.RoundID)
 
-		case *UnlockBoardingInputsReq:
-			// Unlock boarding inputs that were locked for a failed
-			// round.
-			for _, outpoint := range m.Outpoints {
-				err := a.cfg.BoardingInputLocker.Unlock(
-					ctx, outpoint, m.RoundID,
-				)
-				if err != nil {
-					// Log warning but continue - input may
-					// already be unlocked.
-					a.log.WarnS(ctx, "Failed to unlock "+
-						"boarding input",
-						err,
-						"outpoint", outpoint,
-						"round_id", m.RoundID)
-				}
-			}
-
 		case *RoundFailedReq:
 			// Round has failed - clean up and create a new round if
 			// this was the current round.
@@ -470,6 +459,7 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		BoardingInputLocker: a.cfg.BoardingInputLocker,
 		ChainSource:         a.cfg.ChainSource,
 		Terms:               a.cfg.Terms,
+		ForfeitScript:       a.cfg.ForfeitScript,
 		WalletController:    a.cfg.WalletController,
 		FeeEstimator:        a.cfg.FeeEstimator,
 		WalletAccount:       a.cfg.WalletAccount,

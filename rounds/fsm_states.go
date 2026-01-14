@@ -40,10 +40,6 @@ func (s *CreatedState) stateSealed() {}
 // RegistrationState is the state where the FSM is accepting client join
 // requests. The FSM accumulates client requests until a SealEvent is
 // received.
-//
-// NOTE: for now, we only deal with boarding and leave requests.
-// TODO(elle): implement logic for:
-//   - forfeit requests
 type RegistrationState struct {
 	// ClientRegistrations maps client IDs to their registration data.
 	// This allows tracking which client submitted which requests, so we
@@ -143,6 +139,18 @@ type BatchBuiltState struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorTrees maps commitment tx output indices to connector trees.
+	// This is nil if no forfeits exist in the round.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
 }
 
 // String returns a human-readable representation of BatchBuiltState.
@@ -172,15 +180,31 @@ type AwaitingInputSigsState struct {
 	// This is nil if no VTXOs exist in the round.
 	VTXOTrees map[int]*tree.Tree
 
-	// ClientsSubmitted tracks which clients have submitted their boarding
-	// signatures. Once all registered clients have submitted, the round
-	// transitions to ServerSigningState.
+	// ConnectorTrees maps commitment tx output indices to connector trees.
+	// This is nil if no forfeits exist in the round.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// ClientsSubmitted tracks which clients have submitted all expected
+	// boarding signatures and forfeit transactions. Once all registered
+	// clients have submitted, the round transitions to ServerSigningState.
 	ClientsSubmitted map[clientconn.ClientID]struct{}
 
 	// CollectedSignatures stores the boarding signatures submitted by each
 	// client. These are validated but not yet applied to the PSBT - that
 	// happens during server signing.
 	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs stores the forfeit transactions submitted by each
+	// client. These are validated but not yet signed by the server.
+	CollectedForfeitTxs ForfeitTxsMap
 }
 
 // String returns a human-readable representation of
@@ -235,6 +259,14 @@ type AwaitingVTXONoncesState struct {
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorTrees maps commitment tx output indices to connector trees.
+	// This is nil if no forfeits exist in the round.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
 
 	// TreeSignCoordinators maps commitment tx output indices to their
 	// MuSig2 signing coordinators. Each coordinator manages nonce and
@@ -298,6 +330,14 @@ type AwaitingVTXOSignaturesState struct {
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorTrees maps commitment tx output indices to connector trees.
+	// This is nil if no forfeits exist in the round.
+	ConnectorTrees map[int]*tree.Tree
+
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
 
 	// TreeSignCoordinators maps commitment tx output indices to their
 	// MuSig2 signing coordinators. Each coordinator manages signature
@@ -363,10 +403,22 @@ type ServerSigningState struct {
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
 
+	// ConnectorAssignments maps forfeited outpoints to connector leaves.
+	// This is nil if no forfeits exist in the round.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// This is nil if no forfeits exist in the round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
 	// CollectedSignatures contains all validated client boarding
 	// signatures. These will be applied to the PSBT along with the
 	// server's signatures.
 	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs contains all validated client forfeit
+	// transactions. The server will sign these before finalization.
+	CollectedForfeitTxs ForfeitTxsMap
 }
 
 // String returns a human-readable representation of ServerSigningState.
@@ -396,6 +448,9 @@ type FinalizedState struct {
 
 	// VTXOTrees maps commitment tx output indices to their VTXO trees.
 	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
 }
 
 // String returns a human-readable representation of FinalizedState.
