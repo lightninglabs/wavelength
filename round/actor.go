@@ -610,7 +610,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 
 	// Create the FSM event from the wallet's confirmed intent. Wallet only
 	// notifies after min confs, so we set confirmations to 1. Include the
-	// Address and TxProof for building the BoardingRequest.
+	// Address and TxProof for building the Request.
 	confirmEvt := &BoardingUTXOConfirmed{
 		Outpoint:      walletIntent.Outpoint,
 		Address:       walletIntent.Address,

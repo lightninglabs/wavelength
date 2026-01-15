@@ -480,7 +480,7 @@ func (h *boardingTestHarness) newTestBoardingIntent() BoardingIntent {
 			},
 			Status: wallet.BoardingStatusConfirmed,
 		},
-		BoardingRequest: types.BoardingRequest{
+		Request: types.BoardingRequest{
 			Outpoint:    &outpoint,
 			ClientKey:   h.clientPubKey,
 			OperatorKey: h.operatorPubKey,
@@ -1091,9 +1091,9 @@ func (h *boardingTestHarness) newNoncesSentState(
 	musig2Sessions := make(map[SignerKey]*tree.SignerSession)
 
 	return &NoncesSentState{
-		RoundID:              roundID,
-		CommitmentTx:         commitmentTx,
-		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
 			VTXOs:    vtxoReqs,
@@ -1146,9 +1146,9 @@ func (h *boardingTestHarness) newNoncesAggregatedState(
 	require.NoError(h.t, err)
 
 	return &NoncesAggregatedState{
-		RoundID:              roundID,
-		CommitmentTx:         commitmentTx,
-		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
 			VTXOs:    vtxoReqs,
@@ -1183,9 +1183,9 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 	}
 
 	return &PartialSigsSentState{
-		RoundID:              roundID,
-		CommitmentTx:         commitmentTx,
-		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
+		RoundID:       roundID,
+		CommitmentTx:  commitmentTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 		Intents: Intents{
 			Boarding: intents,
 			VTXOs:    vtxoReqs,
@@ -1650,7 +1650,7 @@ func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIn
 			},
 			Status: wallet.BoardingStatusConfirmed,
 		},
-		BoardingRequest: types.BoardingRequest{
+		Request: types.BoardingRequest{
 			Outpoint:    &outpoint,
 			ClientKey:   h.clientPubKey,
 			OperatorKey: h.operatorPubKey,

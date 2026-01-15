@@ -21,7 +21,7 @@ import (
 // buildBoardingRequest constructs a types.BoardingRequest from a
 // BoardingIntent.
 func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
-	return intent.BoardingRequest
+	return intent.Request
 }
 
 // failWithNotification creates a state transition to ClientFailedState and
@@ -163,8 +163,8 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 		// Create a BoardingIntent for the next round.
 		boardingIntent := BoardingIntent{
-			BoardingIntent:  walletIntent,
-			BoardingRequest: boardingRequest,
+			BoardingIntent: walletIntent,
+			Request:        boardingRequest,
 		}
 
 		env.Log.InfoS(ctx, "Transitioning to PendingRoundAssembly",
@@ -272,8 +272,8 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		}
 
 		intent := BoardingIntent{
-			BoardingIntent:  walletIntent,
-			BoardingRequest: boardingRequest,
+			BoardingIntent: walletIntent,
+			Request:        boardingRequest,
 		}
 
 		// Add the new intent to our existing set.
@@ -462,7 +462,7 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 
 	// Validate all intent outpoints are present in the commitment tx.
 	for _, intent := range intents {
-		outpoint := intent.BoardingRequest.Outpoint
+		outpoint := intent.Request.Outpoint
 		if _, found := outpointToIdx[*outpoint]; !found {
 			return nil, fmt.Errorf("boarding UTXO %s not found "+
 				"in commitment tx", outpoint)
@@ -945,7 +945,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 		// Build structured boarding input signatures for each intent.
 		var boardingInputSigs []*types.BoardingInputSignature
 		for _, boardingIntent := range s.Intents.Boarding {
-			outpoint := boardingIntent.BoardingRequest.Outpoint
+			outpoint := boardingIntent.Request.Outpoint
 			inputIdx, found := s.BoardingInputIndices[*outpoint]
 			if !found {
 				return nil, fmt.Errorf("no input index "+

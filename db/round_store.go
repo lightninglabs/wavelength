@@ -775,7 +775,7 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 		Status:    status,
 	}
 
-	// Reconstruct BoardingRequest from relational columns.
+	// Reconstruct Request from relational columns.
 	var clientKey, operatorKey *btcec.PublicKey
 	if len(dbRoundIntent.ClientKey) > 0 {
 		clientKey, err = btcec.ParsePubKey(dbRoundIntent.ClientKey)
@@ -811,8 +811,8 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	}
 
 	intent := &round.BoardingIntent{
-		BoardingIntent:  baseIntent,
-		BoardingRequest: boardingReq,
+		BoardingIntent: baseIntent,
+		Request:        boardingReq,
 	}
 
 	return intent, nil
@@ -1016,8 +1016,8 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 
 	// Serialize TxProof if present.
 	var txProofBytes []byte
-	if intent.BoardingRequest.TxProof.IsSome() {
-		p := intent.BoardingRequest.TxProof.UnsafeFromSome()
+	if intent.Request.TxProof.IsSome() {
+		p := intent.Request.TxProof.UnsafeFromSome()
 		data, err := SerializeTxProof(&p)
 		if err != nil {
 			return sqlc.InsertRoundBoardingIntentParams{},
@@ -1028,12 +1028,12 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 
 	// Serialize public keys.
 	var clientKey, operatorKey []byte
-	if intent.BoardingRequest.ClientKey != nil {
-		clientPk := intent.BoardingRequest.ClientKey
+	if intent.Request.ClientKey != nil {
+		clientPk := intent.Request.ClientKey
 		clientKey = clientPk.SerializeCompressed()
 	}
-	if intent.BoardingRequest.OperatorKey != nil {
-		opPk := intent.BoardingRequest.OperatorKey
+	if intent.Request.OperatorKey != nil {
+		opPk := intent.Request.OperatorKey
 		operatorKey = opPk.SerializeCompressed()
 	}
 
@@ -1057,7 +1057,7 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 		OutpointIndex:  int32(intent.Outpoint.Index),
 		ClientKey:      clientKey,
 		OperatorKey:    operatorKey,
-		ExitDelay:      int32(intent.BoardingRequest.ExitDelay),
+		ExitDelay:      int32(intent.Request.ExitDelay),
 		TxProof:        txProofBytes,
 		InputIndex:     inputIdxVal,
 		InputSignature: inputSigBytes,
