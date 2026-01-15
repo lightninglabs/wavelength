@@ -71,7 +71,7 @@ type BoardingUTXOConfirmed struct {
 	Outpoint wire.OutPoint
 
 	// Address is the boarding address for this UTXO. Contains the keys,
-	// tapscript, and exit delay needed to build the BoardingRequest.
+	// tapscript, and exit delay needed to build the Request.
 	Address wallet.BoardingAddress
 
 	// BlockHeight is the height at which the UTXO was confirmed.
