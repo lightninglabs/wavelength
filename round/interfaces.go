@@ -245,9 +245,9 @@ type BoardingIntent struct {
 	// Address, Outpoint, ChainInfo, and Status.
 	wallet.BoardingIntent
 
-	// BoardingRequest is the original boarding request details. It targets
+	// Request is the original boarding request details. It targets
 	// a boarding address by outpoint and includes additional metadata.
-	BoardingRequest types.BoardingRequest
+	Request types.BoardingRequest
 }
 
 // ConfInfo contains chain information about when a round's commitment

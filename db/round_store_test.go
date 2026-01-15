@@ -619,8 +619,8 @@ func createBoardingIntentFixture(
 	}
 
 	roundIntent := round.BoardingIntent{
-		BoardingIntent:  walletIntent,
-		BoardingRequest: boardingRequest,
+		BoardingIntent: walletIntent,
+		Request:        boardingRequest,
 	}
 
 	// Create input signature as a BoardingInputSignature.
