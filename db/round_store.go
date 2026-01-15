@@ -220,24 +220,31 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 						"insert round intent: %w", err,
 					)
 				}
+			}
+		}
 
-				// Insert VTXO templates for this intent.
-				for j, vtxoReq := range intent.VtxoTemplate {
-					roundStr := r.RoundID.String()
-					tParams := vtxoRequestToParams(
-						roundStr, &intent, j, &vtxoReq,
-					)
-					err = q.InsertRoundVtxoTemplate(
-						ctx, tParams,
-					)
-					if err != nil {
-						return fmt.Errorf(
-							"insert vtxo "+
-								"template: %w",
-							err,
-						)
-					}
-				}
+		// Insert VTXO templates for this round. For now, we couple
+		// VTXOs to boarding intents 1:1 by index at the DB level.
+		// TODO: Decouple VTXOs from intents in storage.
+		vtxos := inputSigState.Intents.VTXOs
+		if len(vtxos) != len(r.BoardingIntents) {
+			return fmt.Errorf(
+				"mismatch between vtxos (%d) and "+
+					"boarding intents (%d)",
+				len(vtxos), len(r.BoardingIntents),
+			)
+		}
+		for i, vtxoReq := range vtxos {
+			intent := &r.BoardingIntents[i]
+			roundStr := r.RoundID.String()
+			tParams := vtxoRequestToParams(
+				roundStr, intent, i, &vtxoReq,
+			)
+			err = q.InsertRoundVtxoTemplate(ctx, tParams)
+			if err != nil {
+				return fmt.Errorf(
+					"insert vtxo template: %w", err,
+				)
 			}
 		}
 
@@ -803,30 +810,9 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 		TxProof:     txProofOpt,
 	}
 
-	// Fetch and reconstruct VtxoTemplate from relational data.
-	templateParams := sqlc.GetRoundVtxoTemplatesParams{
-		RoundID:       dbRoundIntent.RoundID,
-		OutpointHash:  dbRoundIntent.OutpointHash,
-		OutpointIndex: dbRoundIntent.OutpointIndex,
-	}
-	dbTemplates, err := q.GetRoundVtxoTemplates(ctx, templateParams)
-	if err != nil {
-		return nil, fmt.Errorf("get vtxo templates: %w", err)
-	}
-
-	vtxoTemplate := make([]types.VTXORequest, 0, len(dbTemplates))
-	for _, t := range dbTemplates {
-		vtxoReq, err := dbTemplateToVTXORequest(t)
-		if err != nil {
-			return nil, fmt.Errorf("convert vtxo template: %w", err)
-		}
-		vtxoTemplate = append(vtxoTemplate, *vtxoReq)
-	}
-
 	intent := &round.BoardingIntent{
 		BoardingIntent:  baseIntent,
 		BoardingRequest: boardingReq,
-		VtxoTemplate:    vtxoTemplate,
 	}
 
 	return intent, nil
@@ -932,8 +918,10 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		state.VTXOTreePaths = map[int]*tree.Tree{0: vtxtTree}
 	}
 
-	// Convert boarding intents and input signatures.
+	// Convert boarding intents, VTXO templates, and input signatures.
+	// VTXOs are coupled 1:1 to boarding intents by index at the DB level.
 	intents := make([]round.BoardingIntent, 0, len(dbIntents))
+	vtxos := make([]types.VTXORequest, 0, len(dbIntents))
 	inputSigs := make([]*types.BoardingInputSignature, 0, len(dbIntents))
 	for _, dbIntent := range dbIntents {
 		intent, err := s.dbRoundIntentToDomainIntent(ctx, q, dbIntent)
@@ -944,6 +932,26 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		}
 
 		intents = append(intents, *intent)
+
+		// Fetch VTXO template for this intent.
+		templateParams := sqlc.GetRoundVtxoTemplatesParams{
+			RoundID:       dbIntent.RoundID,
+			OutpointHash:  dbIntent.OutpointHash,
+			OutpointIndex: dbIntent.OutpointIndex,
+		}
+		dbTemplates, err := q.GetRoundVtxoTemplates(ctx, templateParams)
+		if err != nil {
+			return nil, fmt.Errorf("get vtxo templates: %w", err)
+		}
+		for _, t := range dbTemplates {
+			vtxoReq, err := dbTemplateToVTXORequest(t)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"convert vtxo template: %w", err,
+				)
+			}
+			vtxos = append(vtxos, *vtxoReq)
+		}
 
 		// Reconstruct the BoardingInputSignature from stored data.
 		if len(dbIntent.InputSignature) > 0 {
@@ -974,7 +982,10 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		}
 	}
 
-	state.Intents = intents
+	state.Intents = round.Intents{
+		Boarding: intents,
+		VTXOs:    vtxos,
+	}
 	state.InputSigs = inputSigs
 
 	// Deserialize client trees.
@@ -1054,7 +1065,8 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 }
 
 // vtxoRequestToParams converts a types.VTXORequest to sqlc insert parameters
-// for the round_vtxo_templates table.
+// for the round_vtxo_templates table. The intent parameter provides the
+// outpoint used to associate the VTXO template with a boarding intent.
 func vtxoRequestToParams(roundID string, intent *round.BoardingIntent,
 	templateIndex int,
 	req *types.VTXORequest) sqlc.InsertRoundVtxoTemplateParams {
