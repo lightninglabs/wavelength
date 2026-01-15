@@ -172,7 +172,6 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			BoardingIntent:  walletIntent,
 			BoardingRequest: boardingRequest,
 			VtxoTemplate:    vtxoTemplate,
-			RoundID:         fn.None[RoundID](),
 		}
 
 		intentMap := make(map[wire.OutPoint]BoardingIntent)
@@ -273,7 +272,6 @@ func (s *PendingRoundAssembly) ProcessEvent(
 			BoardingIntent:  walletIntent,
 			BoardingRequest: boardingRequest,
 			VtxoTemplate:    vtxoTemplate,
-			RoundID:         fn.None[RoundID](),
 		}
 
 		// Add the newly confirmed intent to our map.
@@ -1060,7 +1058,6 @@ func (s *PartialSigsSentState) ProcessEvent(
 		adoptedIntents := make([]BoardingIntent, len(s.Intents))
 		for i, intent := range s.Intents {
 			intent.Status = BoardingStatusAdopted
-			intent.RoundID = fn.Some(s.RoundID)
 			adoptedIntents[i] = intent
 		}
 		round := &Round{
