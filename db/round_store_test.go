@@ -622,7 +622,6 @@ func createBoardingIntentFixture(
 		BoardingIntent:  walletIntent,
 		BoardingRequest: boardingRequest,
 		VtxoTemplate:    vtxoTemplates,
-		RoundID:         fn.Some[round.RoundID](roundID),
 	}
 
 	// Create input signature as a BoardingInputSignature.
