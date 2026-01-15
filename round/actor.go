@@ -140,7 +140,9 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 
 	// Create FSM environment with direct interface assignments. The FSM
 	// will call lib functions directly when needed (e.g.,
-	// lib.NewTreeSignerSession, signing helpers).
+	// lib.NewTreeSignerSession, signing helpers). StartHeight is set to 0
+	// here and will be updated in Start() when we have access to the
+	// ChainSource to query the current height.
 	env := &ClientEnvironment{
 		RoundStore:    cfg.RoundStore,
 		VTXOStore:     cfg.VTXOStore,
@@ -177,6 +179,27 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	})
 }
 
+// queryBestHeight queries the ChainSource for the current best block height.
+// This wraps the Ask->Await->Unpack pattern for height queries, providing a
+// clean interface for callers that need the current height.
+func (a *RoundClientActor) queryBestHeight(ctx context.Context) (uint32, error) {
+	heightFuture := a.cfg.ChainSource.Ask(ctx, &chainsource.BestHeightRequest{})
+	heightResult := heightFuture.Await(ctx)
+
+	heightResp, err := heightResult.Unpack()
+	if err != nil {
+		return 0, fmt.Errorf("failed to query best height: %w", err)
+	}
+
+	bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected height response type: %T",
+			heightResp)
+	}
+
+	return uint32(bestHeightResp.Height), nil
+}
+
 // createRoundFSM creates a new FSM instance for a specific round, restoring
 // from checkpointed state. Uses FetchState to load both round data and FSM
 // state atomically.
@@ -188,6 +211,11 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 		return nil, fmt.Errorf("failed to fetch round state: %w", err)
 	}
 
+	// Use the StartHeight stored in the round when it was created. This
+	// ensures we scan from the original starting point, not the current
+	// height, which could miss confirmations if the tx was already mined.
+	startHeight := round.StartHeight
+
 	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
@@ -198,6 +226,7 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 		OperatorTerms: a.cfg.OperatorTerms,
 		ChainParams:   a.cfg.ChainParams,
 		Log:           fsmLogger,
+		StartHeight:   startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -340,6 +369,19 @@ func (a *RoundClientActor) OnStop(ctx context.Context) error {
 func (a *RoundClientActor) Start(ctx context.Context) error {
 	a.log.InfoS(ctx, "Starting round client actor",
 		slog.String("name", a.cfg.Name))
+
+	// Query the current block height and set it in the env. This ensures
+	// that any FSM operations have a valid starting height for confirmation
+	// registration. We do this first to fail fast if ChainSource is
+	// unavailable.
+	startHeight, err := a.queryBestHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to query start height: %w", err)
+	}
+	a.env.StartHeight = startHeight
+
+	a.log.InfoS(ctx, "Queried start height for FSM env",
+		slog.Int("start_height", int(startHeight)))
 
 	// Register with the wallet actor to receive BoardingUtxoConfirmedEvent
 	// notifications. The wallet handles all boarding address monitoring and
@@ -558,6 +600,14 @@ func (a *RoundClientActor) promotePrimaryFSMToActiveRounds(ctx context.Context,
 
 	// Register for commitment tx confirmation.
 	a.registerCommitmentConfirmation(ctx, txid, roundFSM.CommitmentTx)
+
+	// Query the current height for the new FSM's StartHeight. This ensures
+	// any new round started after this point uses a fresh height hint.
+	newStartHeight, err := a.queryBestHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to query height for new FSM: %w", err)
+	}
+	a.env.StartHeight = newStartHeight
 
 	// Create a NEW primaryFSM starting at Idle. This allows the actor to
 	// immediately accept new boarding intents for subsequent rounds.

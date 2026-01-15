@@ -32,6 +32,13 @@ type ClientEnvironment struct {
 
 	// Log is the logger for FSM transitions and operations.
 	Log btclog.Logger
+
+	// StartHeight is the block height when the FSM was created. This is
+	// used as a HeightHint for confirmation registration, ensuring the
+	// chain backend scans from the correct starting point. This avoids
+	// missing confirmations if the transaction was broadcast before the
+	// registration request is processed.
+	StartHeight uint32
 }
 
 // Name returns the unique identifier for this FSM instance.
@@ -40,10 +47,12 @@ func (e *ClientEnvironment) Name() string {
 }
 
 // NewClientEnvironment creates a new client environment with the provided
-// dependencies.
+// dependencies. The startHeight parameter should be the current block height
+// when the FSM is created, used as a HeightHint for confirmation registration.
 func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
-	chainParams *chaincfg.Params, logger btclog.Logger) *ClientEnvironment {
+	chainParams *chaincfg.Params, logger btclog.Logger,
+	startHeight uint32) *ClientEnvironment {
 
 	return &ClientEnvironment{
 		RoundStore:    roundStore,
@@ -52,5 +61,6 @@ func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 		OperatorTerms: terms,
 		ChainParams:   chainParams,
 		Log:           logger,
+		StartHeight:   startHeight,
 	}
 }

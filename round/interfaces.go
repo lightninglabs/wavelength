@@ -189,6 +189,12 @@ type Round struct {
 	// client joins this round.
 	RoundID RoundID
 
+	// StartHeight is the block height when this round was created. This is
+	// used as a HeightHint for confirmation registration when the round is
+	// restored from disk, ensuring the chain backend scans from the correct
+	// starting point.
+	StartHeight uint32
+
 	// ConfInfo contains chain information about when the round's commitment
 	// transaction was confirmed. None until the commitment tx is confirmed
 	// on-chain.

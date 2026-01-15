@@ -3,8 +3,9 @@
 -- name: InsertRound :exec
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
-    commitment_txid, vtxt_tree, status, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    commitment_txid, vtxt_tree, status, creation_time, last_update_time,
+    start_height
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),

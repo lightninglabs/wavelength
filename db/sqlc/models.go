@@ -54,6 +54,7 @@ type ClientTreeTxid struct {
 
 type Round struct {
 	RoundID               string
+	StartHeight           int32
 	ConfirmationHeight    sql.NullInt32
 	ConfirmationBlockHash []byte
 	CommitmentTx          []byte
