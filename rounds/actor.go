@@ -601,7 +601,7 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		return nil
 	}
 
-	// Step 1: Broadcast the transaction.
+	// Broadcast the signed transaction to the network.
 	txHash := req.SignedTx.TxHash()
 	broadcastReq := &chainsource.BroadcastTxRequest{
 		Tx:    req.SignedTx,
