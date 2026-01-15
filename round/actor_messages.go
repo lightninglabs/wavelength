@@ -5,7 +5,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -141,35 +140,6 @@ func (m *CancelRoundResponse) MessageType() string {
 }
 
 func (m *CancelRoundResponse) clientRespSealed() {}
-
-// RegisterBoardingIntentRequest informs the FSM that the wallet has funded or
-// will fund a specific boarding address so confirmations should be tracked.
-type RegisterBoardingIntentRequest struct {
-	actor.BaseMessage
-
-	Address      *BoardingAddress
-	VTXORequests []*types.VTXORequest
-}
-
-func (m *RegisterBoardingIntentRequest) MessageType() string {
-	return "RegisterBoardingIntentRequest"
-}
-
-func (m *RegisterBoardingIntentRequest) clientMsgSealed() {}
-
-// RegisterBoardingIntentResponse acknowledges the request.
-type RegisterBoardingIntentResponse struct {
-	actor.BaseMessage
-
-	Success bool
-	Error   string
-}
-
-func (m *RegisterBoardingIntentResponse) MessageType() string {
-	return "RegisterBoardingIntentResponse"
-}
-
-func (m *RegisterBoardingIntentResponse) clientRespSealed() {}
 
 // RegisterVTXORequestsRequest informs the FSM of VTXO request amounts to
 // include in the next round registration.
