@@ -857,7 +857,7 @@ func (s *NoncesAggregatedState) ProcessEvent(
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
-				Intents:              slices.Clone(s.Intents),
+				BoardingIntents:      slices.Clone(s.Intents),
 				ClientTrees:          s.ClientTrees,
 				Musig2Sessions:       s.Musig2Sessions,
 				BoardingInputIndices: s.BoardingInputIndices,
@@ -919,7 +919,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 		env.Log.InfoS(ctx, "Validated aggregated signatures, signing boarding inputs",
 			slog.String("round_id", s.RoundID.String()),
-			slog.Int("intent_count", len(s.Intents)))
+			slog.Int("intent_count", len(s.BoardingIntents)))
 
 		// Now that we know all the signatures are valid, we'll sign
 		// off on each of our boarding inputs sent to the server.
@@ -941,7 +941,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 
 		// Build structured boarding input signatures for each intent.
 		var boardingInputSigs []*types.BoardingInputSignature
-		for _, boardingIntent := range s.Intents {
+		for _, boardingIntent := range s.BoardingIntents {
 			outpoint := boardingIntent.BoardingRequest.Outpoint
 			inputIdx, found := s.BoardingInputIndices[*outpoint]
 			if !found {
@@ -1008,9 +1008,9 @@ func (s *PartialSigsSentState) ProcessEvent(
 		}
 
 		numSigs := len(boardingInputSigs)
-		if numSigs != len(s.Intents) {
+		if numSigs != len(s.BoardingIntents) {
 			return nil, fmt.Errorf("signature count %d != "+
-				"intent count %d", numSigs, len(s.Intents))
+				"intent count %d", numSigs, len(s.BoardingIntents))
 		}
 
 		// Create a single forfeit signature request with all
@@ -1055,8 +1055,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 		//
 		// Mark all intents as Adopted (frozen in this round) and set
 		// their RoundID, then save them alongside the round.
-		adoptedIntents := make([]BoardingIntent, len(s.Intents))
-		for i, intent := range s.Intents {
+		adoptedIntents := make([]BoardingIntent, len(s.BoardingIntents))
+		for i, intent := range s.BoardingIntents {
 			intent.Status = BoardingStatusAdopted
 			adoptedIntents[i] = intent
 		}
@@ -1079,7 +1079,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 			RoundID:       s.RoundID,
 			CommitmentTx:  s.CommitmentTx,
 			VTXOTreePaths: s.VTXOTreePaths,
-			Intents:       slices.Clone(s.Intents),
+			Intents:       slices.Clone(s.BoardingIntents),
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
 		}

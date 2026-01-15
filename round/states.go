@@ -259,8 +259,9 @@ type PartialSigsSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// BoardingIntents contains all boarding intents participating in this
+	// round.
+	BoardingIntents []BoardingIntent
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
