@@ -96,6 +96,17 @@ type BoardingUTXOConfirmed struct {
 
 func (e *BoardingUTXOConfirmed) clientEventSealed() {}
 
+// VTXORequestsReceived is emitted when the client submits VTXO requests that
+// should be included in the next round registration.
+type VTXORequestsReceived struct {
+	// Requests are the VTXO requests to include in the next join round
+	// request.
+	Requests []types.VTXORequest
+}
+
+// clientEventSealed prevents external implementations.
+func (e *VTXORequestsReceived) clientEventSealed() {}
+
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
 // as a batch request containing every confirmed intent.

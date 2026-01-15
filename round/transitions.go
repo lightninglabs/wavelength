@@ -143,24 +143,6 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			OperatorKey: evt.Address.OperatorKey,
 		}
 
-		// Build the VTXO template from the boarding address info. The
-		// client wants a single VTXO with the full confirmed amount.
-		//
-		// TODO(elle): support fan-out and fan-in by separating this
-		// direct link between boarding UTXO and VTXO request.
-		// Also: vtxo info should not be directly derived from boarding
-		// info.
-		vtxoIntent := types.VTXORequest{
-			Amount: btcutil.Amount(
-				confirmedOutput.Value,
-			),
-			PkScript:    confirmedOutput.PkScript,
-			ClientKey:   evt.Address.KeyDesc.PubKey,
-			OperatorKey: evt.Address.OperatorKey,
-			Expiry:      evt.Address.ExitDelay,
-			SigningKey:  evt.Address.KeyDesc,
-		}
-
 		// Create a BoardingIntent for the next round.
 		boardingIntent := BoardingIntent{
 			BoardingIntent: walletIntent,
@@ -174,7 +156,19 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Boarding: []BoardingIntent{boardingIntent},
-				VTXOs:    []types.VTXORequest{vtxoIntent},
+				VTXOs:    []types.VTXORequest{},
+			},
+		}, nil
+
+	case *VTXORequestsReceived:
+		env.Log.InfoS(ctx, "Received VTXO requests in Idle state",
+			slog.Int("request_count", len(evt.Requests)))
+
+		// Transition to PendingRoundAssembly with the received VTXO.
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding: []BoardingIntent{},
+				VTXOs:    slices.Clone(evt.Requests),
 			},
 		}, nil
 
@@ -258,19 +252,6 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			OperatorKey: evt.Address.OperatorKey,
 		}
 
-		// Build the VTXO template from the boarding address info. The
-		// client wants a single VTXO with the full confirmed amount.
-		vtxoIntent := types.VTXORequest{
-			Amount: btcutil.Amount(
-				confirmedOutput.Value,
-			),
-			PkScript:    confirmedOutput.PkScript,
-			ClientKey:   evt.Address.KeyDesc.PubKey,
-			OperatorKey: evt.Address.OperatorKey,
-			Expiry:      evt.Address.ExitDelay,
-			SigningKey:  evt.Address.KeyDesc,
-		}
-
 		intent := BoardingIntent{
 			BoardingIntent: walletIntent,
 			Request:        boardingRequest,
@@ -280,13 +261,26 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		updatedBoardingIntents := slices.Clone(s.Boarding)
 		updatedBoardingIntents = append(updatedBoardingIntents, intent)
 
-		// Also add the new VTXO intent.
-		updatedVTXOIntents := slices.Clone(s.VTXOs)
-		updatedVTXOIntents = append(updatedVTXOIntents, vtxoIntent)
-
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Boarding: updatedBoardingIntents,
+				VTXOs:    slices.Clone(s.VTXOs),
+			},
+		}, nil
+
+	case *VTXORequestsReceived:
+		env.Log.InfoS(ctx, "Additional VTXO requests received during assembly",
+			slog.Int("current_boarding_intent_count", len(s.Boarding)),
+			slog.Int("current_vtxo_intent_count", len(s.VTXOs)),
+			slog.Int("new_request_count", len(evt.Requests)))
+
+		// Add the new VTXO requests to our existing set.
+		updatedVTXOIntents := slices.Clone(s.VTXOs)
+		updatedVTXOIntents = append(updatedVTXOIntents, evt.Requests...)
+
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding: slices.Clone(s.Boarding),
 				VTXOs:    updatedVTXOIntents,
 			},
 		}, nil

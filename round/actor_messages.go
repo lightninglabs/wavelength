@@ -1,6 +1,7 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -169,6 +170,38 @@ func (m *RegisterBoardingIntentResponse) MessageType() string {
 }
 
 func (m *RegisterBoardingIntentResponse) clientRespSealed() {}
+
+// RegisterVTXORequestsRequest informs the FSM of VTXO request amounts to
+// include in the next round registration.
+type RegisterVTXORequestsRequest struct {
+	actor.BaseMessage
+
+	Amounts []btcutil.Amount
+}
+
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsRequest) MessageType() string {
+	return "RegisterVTXORequestsRequest"
+}
+
+// clientMsgSealed marks this as a client message.
+func (m *RegisterVTXORequestsRequest) clientMsgSealed() {}
+
+// RegisterVTXORequestsResponse acknowledges the request.
+type RegisterVTXORequestsResponse struct {
+	actor.BaseMessage
+
+	Success bool
+	Error   string
+}
+
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsResponse) MessageType() string {
+	return "RegisterVTXORequestsResponse"
+}
+
+// clientRespSealed marks this as a client response message.
+func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
 
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.
