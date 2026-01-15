@@ -84,6 +84,71 @@ func ParseRoundID(s string) (RoundID, error) {
 	return RoundID(id), nil
 }
 
+// RoundKey is an interface for identifying rounds in the actor's map. It can
+// be either a TempRoundKey (client-generated before server assigns ID) or a
+// RoundID (server-assigned). This enables concurrent rounds to be tracked
+// before they receive their official RoundIDs.
+type RoundKey interface {
+	// KeyString returns a unique string representation for map keying.
+	KeyString() string
+
+	// IsTemp returns true if this is a temporary client-generated key.
+	IsTemp() bool
+}
+
+// TempRoundKey is a client-generated temporary identifier used for rounds
+// before the server assigns a RoundID. It uses UUIDv7 for time-ordering and
+// uniqueness.
+type TempRoundKey uuid.UUID
+
+// NewTempRoundKey generates a new temporary round key.
+func NewTempRoundKey() (TempRoundKey, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return TempRoundKey{}, err
+	}
+
+	return TempRoundKey(id), nil
+}
+
+// KeyString implements RoundKey.
+func (k TempRoundKey) KeyString() string {
+	return "temp:" + uuid.UUID(k).String()
+}
+
+// IsTemp implements RoundKey.
+func (k TempRoundKey) IsTemp() bool {
+	return true
+}
+
+// String returns the string representation.
+func (k TempRoundKey) String() string {
+	return uuid.UUID(k).String()
+}
+
+// LogPrefix returns a short string for logging.
+func (k TempRoundKey) LogPrefix() string {
+	return fmt.Sprintf("temp(%v)", hex.EncodeToString(k[12:16]))
+}
+
+// Ensure RoundID implements RoundKey.
+var _ RoundKey = RoundID{}
+
+// RoundKeyStr is a type alias for the string representation of a RoundKey.
+// Used as the key type in maps to avoid using raw strings, providing better
+// type safety and documentation.
+type RoundKeyStr string
+
+// KeyString implements RoundKey for RoundID.
+func (id RoundID) KeyString() string {
+	return uuid.UUID(id).String()
+}
+
+// IsTemp implements RoundKey for RoundID.
+func (id RoundID) IsTemp() bool {
+	return false
+}
+
 // SignerKey is the 33-byte compressed public key used to identify a signer
 // in MuSig2 sessions and client tree mappings.
 type SignerKey = [33]byte
