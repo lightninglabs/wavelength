@@ -673,6 +673,179 @@ func createBoardingIntentFixture(
 	}
 }
 
+// TestRoundStoreDecoupledVTXOStorage verifies that VTXO requests are stored
+// independently from boarding intents. This allows fan-out (1 input creating
+// multiple outputs) and fan-in (multiple inputs funding 1 output) scenarios.
+// The test creates 2 boarding intents but 3 VTXO requests to verify the counts
+// are independent.
+func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
+	t.Parallel()
+
+	const numIntents = 2
+	const numVTXORequests = 3
+
+	roundID := testRoundIDDB("test-round-decoupled-vtxo")
+
+	ctx := t.Context()
+	roundStore, db := newRoundStoreForTest(t)
+
+	// Set up boarding store for FK constraints.
+	boardingDB := NewTransactionExecutor(
+		db,
+		func(tx *sql.Tx) BoardingStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	// Create 2 boarding intent fixtures.
+	fixtures := make([]*boardingIntentFixture, numIntents)
+	for i := 0; i < numIntents; i++ {
+		fixtures[i] = createBoardingIntentFixture(t, roundID, i)
+
+		err := boardingStore.InsertBoardingAddress(
+			ctx, fixtures[i].boardingAddr,
+		)
+		require.NoError(t, err)
+
+		err = boardingStore.InsertBoardingIntents(
+			ctx, fixtures[i].walletIntent,
+		)
+		require.NoError(t, err)
+	}
+
+	// Build boarding intents from fixtures.
+	roundIntents := make([]round.BoardingIntent, numIntents)
+	inputSigs := make([]*types.BoardingInputSignature, numIntents)
+	clientTrees := make(map[round.SignerKey]*tree.Tree)
+	for i, f := range fixtures {
+		roundIntents[i] = f.roundIntent
+		inputSigs[i] = f.inputSig
+		clientTrees[f.clientTreeKey] = f.clientTree
+	}
+
+	// Create 3 VTXO requests (more than boarding intents) to test
+	// decoupled storage.
+	allVtxos := make([]types.VTXORequest, numVTXORequests)
+	for i := 0; i < numVTXORequests; i++ {
+		privKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		operatorKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		signingKey := keychain.KeyDescriptor{
+			PubKey: privKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(50),
+				Index:  uint32(i),
+			},
+		}
+
+		allVtxos[i] = types.VTXORequest{
+			Amount:      btcutil.Amount(30000 * (i + 1)),
+			PkScript:    fixtures[0].pkScript,
+			Expiry:      144,
+			ClientKey:   privKey.PubKey(),
+			OperatorKey: operatorKey.PubKey(),
+			SigningKey:  signingKey,
+		}
+	}
+
+	// Create commitment tx with inputs from all boarding intents.
+	tx := wire.NewMsgTx(2)
+	for _, f := range fixtures {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: f.outpoint,
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    180000,
+		PkScript: fixtures[0].pkScript,
+	})
+	commitTx, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Create VTXT tree. The output value must equal sum of leaf amounts
+	// (30000 + 60000 + 90000 = 180000).
+	vtxtTreeOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x02},
+		Index: 0,
+	}
+	vtxtTreeOutput := &wire.TxOut{
+		Value:    180000,
+		PkScript: fixtures[0].pkScript,
+	}
+	vtxtLeaves := make([]tree.LeafDescriptor, numVTXORequests)
+	for i := 0; i < numVTXORequests; i++ {
+		vtxtLeaves[i] = tree.LeafDescriptor{
+			PkScript:    fixtures[0].pkScript,
+			Amount:      btcutil.Amount(30000 * (i + 1)),
+			CoSignerKey: allVtxos[i].ClientKey,
+		}
+	}
+	vtxtTree, err := tree.NewTree(
+		vtxtTreeOutpoint, vtxtTreeOutput, vtxtLeaves,
+		fixtures[0].operatorKey, nil, 2,
+	)
+	require.NoError(t, err)
+
+	testRound := &round.Round{
+		RoundID:       roundID,
+		CommitmentTx:  fn.Some(commitTx),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
+	}
+
+	state := &round.InputSigSentState{
+		RoundID:       roundID,
+		CommitmentTx:  commitTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
+		ClientTrees: clientTrees,
+		InputSigs:   inputSigs,
+	}
+
+	// Commit state.
+	err = roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Fetch and verify.
+	fetchedRound, fetchedState, err := roundStore.FetchState(ctx, roundID)
+	require.NoError(t, err)
+
+	// Verify boarding intents count.
+	require.Len(
+		t, fetchedRound.Intents.Boarding, numIntents,
+		"expected %d boarding intents", numIntents,
+	)
+
+	// Verify VTXO requests count is different from intents.
+	inputSigState, ok := fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Len(
+		t, inputSigState.Intents.VTXOs, numVTXORequests,
+		"expected %d VTXO requests (decoupled from %d intents)",
+		numVTXORequests, numIntents,
+	)
+
+	// Verify VTXO amounts were preserved correctly.
+	for i, vtxo := range inputSigState.Intents.VTXOs {
+		expectedAmount := btcutil.Amount(30000 * (i + 1))
+		require.Equal(t, expectedAmount, vtxo.Amount,
+			"VTXO %d amount mismatch", i)
+	}
+}
+
 // TestRoundStoreWithBoardingGroup verifies that rounds with boarding intents
 // can be persisted and recovered correctly. This is critical because boarding
 // intents link on-chain UTXOs to virtual transaction outputs - losing this

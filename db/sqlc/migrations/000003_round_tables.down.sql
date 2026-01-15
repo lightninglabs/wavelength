@@ -8,7 +8,7 @@ DROP TABLE IF EXISTS vtxos;
 
 DROP TABLE IF EXISTS round_client_trees;
 
-DROP TABLE IF EXISTS round_vtxo_templates;
+DROP TABLE IF EXISTS round_vtxo_requests;
 
 DROP INDEX IF EXISTS idx_round_boarding_intents_round_id;
 DROP TABLE IF EXISTS round_boarding_intents;
