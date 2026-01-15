@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -212,6 +213,30 @@ const (
 	BoardingStatusSwept = wallet.BoardingStatusSwept
 )
 
+// Intents captures all the client's intents to be included in a single round
+// join request.
+type Intents struct {
+	// Boarding contains all boarding intents to include in the round.
+	Boarding []BoardingIntent
+
+	// VTXOs is the templates for the VTXO(s) requested in the round.
+	//
+	// TODO(roasbeef): add auxleaf for tap here.
+	VTXOs []types.VTXORequest
+
+	// Future extensions:
+	// Forfeits requests
+	// Leave requests
+}
+
+// Clone creates a copy of the Intents.
+func (i *Intents) Clone() Intents {
+	return Intents{
+		Boarding: slices.Clone(i.Boarding),
+		VTXOs:    slices.Clone(i.VTXOs),
+	}
+}
+
 // BoardingIntent captures one confirmed boarding input plus its requested VTXO
 // outputs. This type embeds the wallet's BoardingIntent and adds round-specific
 // fields for tracking VTXO templates and round assignment.
@@ -223,12 +248,6 @@ type BoardingIntent struct {
 	// BoardingRequest is the original boarding request details. It targets
 	// a boarding address by outpoint and includes additional metadata.
 	BoardingRequest types.BoardingRequest
-
-	// VtxoTemplate is the template for the VTXO(s) requested as part of
-	// boarding.
-	//
-	// TODO(roasbeef): add auxleaf for tap here.
-	VtxoTemplate []types.VTXORequest
 }
 
 // ConfInfo contains chain information about when a round's commitment

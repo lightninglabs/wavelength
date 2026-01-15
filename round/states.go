@@ -48,9 +48,13 @@ func (s *Idle) clientStateSealed() {}
 // all intents reach the required confirmations, the FSM transitions to round
 // registration.
 type PendingRoundAssembly struct {
-	// Intents maps outpoint to boarding intent. Only intents with on-chain
-	// UTXOs (i.e., ChainInfo.OutPoint set) are included in this map.
-	Intents map[wire.OutPoint]BoardingIntent
+	// Boarding contains the collected boarding intents to include in the
+	// next round.
+	Boarding []BoardingIntent
+
+	// VTXOs contains the collected VTXO requests to include in the next
+	// round.
+	VTXOs []types.VTXORequest
 }
 
 func (s *PendingRoundAssembly) String() string {
@@ -66,8 +70,8 @@ func (s *PendingRoundAssembly) clientStateSealed() {}
 // RegistrationSentState indicates the client has sent a JoinRoundRequest
 // to the server and is waiting for confirmation.
 type RegistrationSentState struct {
-	// Intents contains all boarding intents being registered in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 }
 
 func (s *RegistrationSentState) String() string {
@@ -87,8 +91,8 @@ type RoundJoinedState struct {
 	// round.
 	RoundID RoundID
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all intents participating in this round.
+	Intents Intents
 }
 
 func (s *RoundJoinedState) String() string {
@@ -116,8 +120,8 @@ type CommitmentTxReceivedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
@@ -146,8 +150,8 @@ type CommitmentTxValidatedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
@@ -180,8 +184,8 @@ type NoncesSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
@@ -218,8 +222,8 @@ type NoncesAggregatedState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
@@ -259,9 +263,8 @@ type PartialSigsSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// BoardingIntents contains all boarding intents participating in this
-	// round.
-	BoardingIntents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.
@@ -298,8 +301,8 @@ type InputSigSentState struct {
 	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
 	VTXOTreePaths map[int]*tree.Tree
 
-	// Intents contains all boarding intents participating in this round.
-	Intents []BoardingIntent
+	// Intents contains all the client's intents for this round.
+	Intents Intents
 
 	// ClientTrees maps signer keys (compressed pubkeys) to the client's
 	// extracted sub-tree for that VTXO.

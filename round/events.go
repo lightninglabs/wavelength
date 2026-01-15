@@ -1,12 +1,15 @@
 package round
 
 import (
+	"log/slog"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -32,14 +35,31 @@ type ClientOutMsg interface {
 	clientOutMsgSealed()
 }
 
-// ResumeBoardingIntents is emitted to instruct the FSM to resume monitoring
-// boarding intents that were in progress. The intents are provided as a
-// parameter (pre-filtered by the actor) rather than fetched from storage.
+// ResumeBoardingIntents is emitted to instruct the FSM to resume attempting to
+// join a round with previously submitted and confirmed-but-not-adopted
+// intents.
 type ResumeBoardingIntents struct {
-	// Intents are the boarding intents to resume, keyed by their outpoint.
-	// These are pre-filtered to include only Confirmed-but-not-Adopted
-	// intents.
-	Intents map[wire.OutPoint]BoardingIntent
+	// Boarding contains the collected boarding intents to include in the
+	// next round.
+	Boarding []BoardingIntent
+
+	// VTXOs contains the collected VTXO requests to include in the next
+	// round.
+	VTXOs []types.VTXORequest
+}
+
+// isEmpty returns true if there are no boarding intents or VTXO requests
+// to resume.
+func (e *ResumeBoardingIntents) isEmpty() bool {
+	return len(e.Boarding) == 0 && len(e.VTXOs) == 0
+}
+
+// logAttributes returns a map of attributes for logging purposes.
+func (e *ResumeBoardingIntents) logAttributes() []slog.Attr {
+	return []slog.Attr{
+		slog.Int("boarding_intents", len(e.Boarding)),
+		slog.Int("vtxo_requests", len(e.VTXOs)),
+	}
 }
 
 func (e *ResumeBoardingIntents) clientEventSealed() {}
