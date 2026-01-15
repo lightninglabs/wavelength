@@ -333,9 +333,13 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		MinConfirmations:  3,
 	}
 
+	// Use a mock start height for testing.
+	const testStartHeight uint32 = 100
+
 	env := NewClientEnvironment(
 		roundStore, vtxoStore, wallet, terms,
 		&chaincfg.RegressionNetParams, btclog.Disabled,
+		testStartHeight,
 	)
 
 	h := &boardingTestHarness{

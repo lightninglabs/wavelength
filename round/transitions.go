@@ -876,6 +876,8 @@ func (s *NoncesAggregatedState) ProcessEvent(
 }
 
 // ProcessEvent for PartialSigsSentState.
+//
+//nolint:funlen
 func (s *PartialSigsSentState) ProcessEvent(
 	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
@@ -1023,8 +1025,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 		txid := tx.TxHash()
 		callerID := fmt.Sprintf("commitment-%s", txid.String())
 
-		// Get pkScript from the first transaction output. LND requires
-		// a pkScript for confirmation tracking.
+		// Get pkScript from the first output for LND confirmation
+		// tracking.
 		var pkScript []byte
 		if len(tx.TxOut) > 0 {
 			pkScript = tx.TxOut[0].PkScript
@@ -1044,6 +1046,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 				Txid:        &txid,
 				PkScript:    pkScript,
 				TargetConfs: env.OperatorTerms.MinConfirmations,
+				HeightHint:  env.StartHeight,
 			},
 		}
 
@@ -1062,6 +1065,7 @@ func (s *PartialSigsSentState) ProcessEvent(
 		}
 		round := &Round{
 			RoundID:         s.RoundID,
+			StartHeight:     env.StartHeight,
 			CommitmentTx:    fn.Some(s.CommitmentTx),
 			VTXOTreePaths:   fn.Some(s.VTXOTreePaths),
 			BoardingIntents: adoptedIntents,

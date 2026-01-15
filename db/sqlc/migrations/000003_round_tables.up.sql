@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS rounds (
     -- round_id is the unique identifier assigned by the server.
     round_id TEXT PRIMARY KEY NOT NULL,
 
+    -- start_height is the block height when the round was created. Used as
+    -- a HeightHint for confirmation registration when restoring from disk.
+    start_height INTEGER NOT NULL DEFAULT 0,
+
     -- confirmation_height is the block height at which the commitment tx
     -- was confirmed. NULL until confirmed on-chain.
     confirmation_height INTEGER,

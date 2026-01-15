@@ -102,6 +102,7 @@ func createTestRound(t *testing.T, roundID round.RoundID) *round.Round {
 
 	return &round.Round{
 		RoundID:       roundID,
+		StartHeight:   100, // Test starting block height.
 		CommitmentTx:  fn.Some(commitTx),
 		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
 	}
@@ -186,6 +187,9 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 
 	// Verify round fields.
 	require.Equal(t, testRound.RoundID, fetchedRound.RoundID)
+
+	// Verify StartHeight is persisted and restored.
+	require.Equal(t, testRound.StartHeight, fetchedRound.StartHeight)
 
 	// ConfInfo is None at commit time (not yet confirmed).
 	require.True(t, fetchedRound.ConfInfo.IsNone())
