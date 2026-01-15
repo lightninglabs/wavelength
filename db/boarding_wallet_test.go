@@ -210,7 +210,7 @@ func TestBoardingIntentLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create a test boarding intent in confirmed status.
-	// (Intents are only created after on-chain confirmation.)
+	// (BoardingIntents are only created after on-chain confirmation.)
 	outpoint := wire.OutPoint{
 		Hash:  chainhash.Hash{0xaa, 0xbb},
 		Index: 0,

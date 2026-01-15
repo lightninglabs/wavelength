@@ -1123,7 +1123,7 @@ func (h *boardingTestHarness) newPartialSigsSentState(
 		RoundID:              roundID,
 		CommitmentTx:         commitmentTx,
 		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
-		Intents:              intents,
+		BoardingIntents:      intents,
 		ClientTrees:          make(map[SignerKey]*tree.Tree),
 		Musig2Sessions:       make(map[SignerKey]*tree.SignerSession),
 		BoardingInputIndices: boardingInputIndices,

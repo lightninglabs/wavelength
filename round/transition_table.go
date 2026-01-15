@@ -62,7 +62,7 @@ var BoardingClientTransitions = ClientTransitionTable{
 				{
 					Event:       &RegistrationRequested{},
 					ToState:     &RegistrationSentState{},
-					Description: "Intents confirmed, register with server",
+					Description: "BoardingIntents confirmed, register with server",
 					EmitsOutbox: []ClientOutMsg{&JoinRoundRequest{}},
 				},
 				{
