@@ -239,9 +239,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 
 				return &PartialSigsSentState{
-					RoundID:       roundID,
-					VTXOTreePaths: trees,
-					Intents:       []BoardingIntent{intent},
+					RoundID:         roundID,
+					VTXOTreePaths:   trees,
+					BoardingIntents: []BoardingIntent{intent},
 				}
 			},
 			event: &RoundJoined{RoundID: testRoundIDTr("other")},
@@ -358,9 +358,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 
 				return &PartialSigsSentState{
-					RoundID:       roundID,
-					VTXOTreePaths: trees,
-					Intents:       []BoardingIntent{intent},
+					RoundID:         roundID,
+					VTXOTreePaths:   trees,
+					BoardingIntents: []BoardingIntent{intent},
 				}
 			},
 		},
@@ -896,11 +896,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		}
 
 		state := &PartialSigsSentState{
-			RoundID:       testRoundIDTr("round-real-sig-001"),
-			CommitmentTx:  commitmentTx,
-			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-			Intents:       []BoardingIntent{intent},
-			ClientTrees:   clientTrees,
+			RoundID:         testRoundIDTr("round-real-sig-001"),
+			CommitmentTx:    commitmentTx,
+			VTXOTreePaths:   map[int]*tree.Tree{0: vtxtTree},
+			BoardingIntents: []BoardingIntent{intent},
+			ClientTrees:     clientTrees,
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -942,11 +942,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:       testRoundIDTr("round-001"),
-			CommitmentTx:  commitmentTx,
-			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-			Intents:       []BoardingIntent{intent},
-			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			RoundID:         testRoundIDTr("round-001"),
+			CommitmentTx:    commitmentTx,
+			VTXOTreePaths:   map[int]*tree.Tree{0: vtxtTree},
+			BoardingIntents: []BoardingIntent{intent},
+			ClientTrees:     make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -977,11 +977,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:       testRoundIDTr("round-001"),
-			CommitmentTx:  commitmentTx,
-			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-			Intents:       []BoardingIntent{intent},
-			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			RoundID:         testRoundIDTr("round-001"),
+			CommitmentTx:    commitmentTx,
+			VTXOTreePaths:   map[int]*tree.Tree{0: vtxtTree},
+			BoardingIntents: []BoardingIntent{intent},
+			ClientTrees:     make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
@@ -1019,7 +1019,7 @@ func TestPartialSigsSentState(t *testing.T) {
 			RoundID:              testRoundIDTr("round-001"),
 			CommitmentTx:         commitmentTx,
 			VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
-			Intents:              []BoardingIntent{intent},
+			BoardingIntents:      []BoardingIntent{intent},
 			ClientTrees:          make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: make(map[wire.OutPoint]int),
 			Musig2Sessions: make(
@@ -1057,11 +1057,11 @@ func TestPartialSigsSentState(t *testing.T) {
 		commitmentTx := h.newTestCommitmentTx(intents)
 
 		state := &PartialSigsSentState{
-			RoundID:       testRoundIDTr("round-001"),
-			CommitmentTx:  commitmentTx,
-			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-			Intents:       []BoardingIntent{intent},
-			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			RoundID:         testRoundIDTr("round-001"),
+			CommitmentTx:    commitmentTx,
+			VTXOTreePaths:   map[int]*tree.Tree{0: vtxtTree},
+			BoardingIntents: []BoardingIntent{intent},
+			ClientTrees:     make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
 				intent.Outpoint: 0,
 			},
