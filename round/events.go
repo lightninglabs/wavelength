@@ -91,10 +91,21 @@ func (e *RegistrationRequested) clientEventSealed() {}
 
 // RoundJoined is emitted when the server accepts the client's registration
 // and assigns them to a round. This event arrives via the Outbox from the
-// server FSM.
+// server FSM. The accepted outpoints are used to correlate this response to
+// the correct pending round when multiple rounds are in-flight concurrently.
 type RoundJoined struct {
 	// RoundID is the unique identifier for the round.
 	RoundID RoundID
+
+	// AcceptedBoardingOutpoints contains the boarding outpoints that were
+	// accepted into this round. Used to correlate the response to the
+	// correct pending round when multiple boarding rounds are in-flight.
+	AcceptedBoardingOutpoints []wire.OutPoint
+
+	// AcceptedVTXOOutpoints contains the VTXO outpoints involved in this
+	// round. Used for future operations like forfeit, leave, and refresh
+	// that affect VTXOs but may not involve boarding inputs.
+	AcceptedVTXOOutpoints []wire.OutPoint
 }
 
 func (e *RoundJoined) clientEventSealed() {}

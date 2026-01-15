@@ -6,6 +6,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // ClientMsg is the sealed interface for all messages that can be sent to a
@@ -85,10 +86,13 @@ type FSMStateInfo struct {
 	// State is the actual state object (any ClientState implementation).
 	State ClientState
 
-	// IsPrimary indicates whether this is the primary FSM.
-	IsPrimary bool
+	// IsTemp indicates whether this round has a temp key (not yet assigned
+	// a RoundID by the server). Temp-keyed rounds are in the process of
+	// joining a round but haven't received a RoundJoined response yet.
+	IsTemp bool
 
-	// RoundID is the round ID (zero value for primary FSM).
+	// RoundID is the server-assigned round ID (zero value for temp-keyed
+	// rounds).
 	RoundID RoundID
 }
 
@@ -96,8 +100,9 @@ type FSMStateInfo struct {
 type GetClientStateResponse struct {
 	actor.BaseMessage
 
-	// States maps FSM identifier to state info. Key "primary" for the
-	// primary FSM, round IDs for round FSMs.
+	// States maps FSM identifier to state info. Keys are either temp key
+	// strings (for pending rounds) or RoundID strings (for rounds that
+	// have been assigned an ID by the server).
 	States map[string]FSMStateInfo
 }
 
@@ -107,9 +112,13 @@ func (m *GetClientStateResponse) MessageType() string {
 
 func (m *GetClientStateResponse) clientRespSealed() {}
 
-// CancelRoundRequest cancels participation in the current round.
+// CancelRoundRequest cancels participation in a round.
 type CancelRoundRequest struct {
 	actor.BaseMessage
+
+	// RoundKey is the optional key of the round to cancel. If not
+	// specified, the first temp-keyed round will be cancelled.
+	RoundKey fn.Option[RoundKeyStr]
 }
 
 func (m *CancelRoundRequest) MessageType() string {
