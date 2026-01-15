@@ -71,7 +71,7 @@ func TestStateProperties(t *testing.T) {
 			},
 			{
 				"PendingRoundAssembly", &PendingRoundAssembly{},
-				"BoardingIntents",
+				"PendingRoundAssembly",
 			},
 			{
 				"RegistrationSent", &RegistrationSentState{},
