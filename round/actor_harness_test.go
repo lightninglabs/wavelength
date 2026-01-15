@@ -602,6 +602,34 @@ func (h *actorTestHarness) clearServerMessages() {
 	h.serverConn.clearMessages()
 }
 
+// sendVTXORequests sends VTXO request amounts to the actor. This sets up the
+// mock wallet to return key descriptors for each amount, then sends a
+// RegisterVTXORequestsRequest message.
+func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
+	h.t.Helper()
+
+	// Setup mock to return a key descriptor for each DeriveNextKey call.
+	for i := range amounts {
+		keyDesc := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  uint32(i),
+			},
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(keyDesc, nil).Once()
+	}
+
+	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
+}
+
 // newTestRound creates a test Round with a unique commitment transaction,
 // using the roundID in the script to ensure distinct transaction hashes.
 func (h *actorTestHarness) newTestRound(roundID RoundID) *Round {
