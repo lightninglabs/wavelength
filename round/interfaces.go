@@ -292,9 +292,8 @@ type Round struct {
 	// unilateral exit.
 	VTXOTreePaths fn.Option[map[int]*tree.Tree]
 
-	// BoardingIntents contains all boarding intents participating in this
-	// round.
-	BoardingIntents []BoardingIntent
+	// Intents contains all intents participating in this round.
+	Intents Intents
 
 	// Future extensions:
 	// Refreshes []*RefreshIntent
