@@ -772,10 +772,13 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	testRound := &round.Round{
-		RoundID:         roundID,
-		CommitmentTx:    fn.Some(commitTx),
-		VTXOTreePaths:   fn.Some(map[int]*tree.Tree{0: vtxtTree}),
-		BoardingIntents: roundIntents,
+		RoundID:       roundID,
+		CommitmentTx:  fn.Some(commitTx),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
 	}
 
 	// Create the FSM state with all intents, signatures, and client trees.
@@ -808,9 +811,9 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	require.True(t, fetchedRound.ConfInfo.IsNone())
 
 	// Verify boarding intents were persisted with all intents.
-	require.Len(t, fetchedRound.BoardingIntents, numIntents)
+	require.Len(t, fetchedRound.Intents.Boarding, numIntents)
 	for i, f := range fixtures {
-		fetchedIntent := fetchedRound.BoardingIntents[i]
+		fetchedIntent := fetchedRound.Intents.Boarding[i]
 		require.Equal(t, f.outpoint, fetchedIntent.Outpoint)
 	}
 
