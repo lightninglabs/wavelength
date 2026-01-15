@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -464,6 +465,22 @@ func (h *actorTestHarness) queryState() map[string]FSMStateInfo {
 	return stateResp.States
 }
 
+// findTempState returns the first temp-keyed round's state from the states map.
+// Returns the state info and true if found, empty and false otherwise.
+func (h *actorTestHarness) findTempState(
+	states map[string]FSMStateInfo) (FSMStateInfo, bool) {
+
+	h.t.Helper()
+
+	for _, state := range states {
+		if state.IsTemp {
+			return state, true
+		}
+	}
+
+	return FSMStateInfo{}, false
+}
+
 // newTestBoardingIntent creates a complete boarding intent with proper
 // tapscript and chain info for testing.
 func (h *actorTestHarness) newTestBoardingIntent() *wallet.BoardingIntent {
@@ -532,29 +549,44 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 }
 
 // simulateRoundJoined injects a RoundJoined server event to the actor,
-// simulating successful round enrollment.
-func (h *actorTestHarness) simulateRoundJoined(roundID RoundID) {
+// simulating successful round enrollment. The outpoints are used to correlate
+// the response to the correct pending round.
+func (h *actorTestHarness) simulateRoundJoined(
+	roundID RoundID, boardingOutpoints []wire.OutPoint,
+) {
+
 	h.t.Helper()
 
 	event := &RoundJoined{
-		RoundID: roundID,
+		RoundID:                   roundID,
+		AcceptedBoardingOutpoints: boardingOutpoints,
+		AcceptedVTXOOutpoints:     nil,
 	}
 	h.sendServerMessage(event)
 }
 
-// assertFSMState verifies the primary FSM is in the expected state type.
+// assertFSMState verifies that at least one FSM is in the expected state type.
 func (h *actorTestHarness) assertFSMState(expectedStateType string) {
 	h.t.Helper()
 
 	states := h.queryState()
-	primaryState, exists := states["primary"]
-	require.True(h.t, exists, "expected primary FSM state")
+	require.NotEmpty(h.t, states, "expected at least one FSM")
 
-	stateName := fmt.Sprintf("%T", primaryState.State)
-	require.Contains(
-		h.t, stateName, expectedStateType,
-		"expected state %s, got %s", expectedStateType, stateName,
-	)
+	for _, stateInfo := range states {
+		stateName := fmt.Sprintf("%T", stateInfo.State)
+		if strings.Contains(stateName, expectedStateType) {
+			return
+		}
+	}
+
+	// No matching state found, print what we have for debugging.
+	var foundStates []string
+	for key, stateInfo := range states {
+		foundStates = append(foundStates, fmt.Sprintf("%s=%T",
+			key, stateInfo.State))
+	}
+	h.t.Fatalf("expected state containing %q, got: %v",
+		expectedStateType, foundStates)
 }
 
 // assertServerMessageSent verifies a message of the given type was sent to
@@ -592,12 +624,13 @@ func (h *actorTestHarness) newTestRound(roundID RoundID) *Round {
 	}
 }
 
-// setupPrimaryFSMInInputSigSentState replaces the actor's primaryFSM with one
-// initialized in InputSigSentState. This allows testing the promotion flow
-// where the primaryFSM is already at the checkpoint state. Returns the PSBT
+// setupRoundInInputSigSentState creates a round FSM in InputSigSentState and
+// adds it to the actor's rounds map. This allows testing the checkpoint flow
+// where the FSM is already at the checkpoint state. Returns the PSBT
 // commitment tx for test assertions.
-func (h *actorTestHarness) setupPrimaryFSMInInputSigSentState(
-	roundID RoundID) *psbt.Packet {
+func (h *actorTestHarness) setupRoundInInputSigSentState(
+	roundID RoundID,
+) *psbt.Packet {
 
 	h.t.Helper()
 
@@ -619,16 +652,21 @@ func (h *actorTestHarness) setupPrimaryFSMInInputSigSentState(
 
 	// Create a new FSM starting in InputSigSentState.
 	fsmCfg := ClientStateMachineCfg{
-		Logger:        h.actor.log.WithPrefix("fsm-primary-test"),
-		ErrorReporter: newContextErrorReporter(h.ctx, "fsm-primary-test"),
+		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(h.ctx, roundID.LogPrefix()),
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
 	newFSM := protofsm.NewStateMachine(fsmCfg)
 	newFSM.Start(h.ctx)
 
-	// Replace the actor's primaryFSM.
-	h.actor.primaryFSM = &newFSM
+	// Add to the actor's rounds map.
+	keyStr := RoundKeyStr(roundID.KeyString())
+	h.actor.rounds[keyStr] = &RoundFSM{
+		FSM:     &newFSM,
+		Key:     roundID,
+		RoundID: roundID,
+	}
 
 	return packet
 }

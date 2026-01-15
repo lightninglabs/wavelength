@@ -7,6 +7,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -52,13 +54,13 @@ func TestActorStart(t *testing.T) {
 		// the actor is now waiting for the server to signal that a
 		// new round is being assembled.
 		states := h.queryState()
-		primaryState, exists := states["primary"]
-		require.True(t, exists, "expected primary FSM state")
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM state")
 
-		_, ok := primaryState.State.(*PendingRoundAssembly)
+		_, ok := tempState.State.(*PendingRoundAssembly)
 		require.True(
 			t, ok, "expected PendingRoundAssembly, got %T",
-			primaryState.State,
+			tempState.State,
 		)
 	})
 
@@ -90,14 +92,23 @@ func TestActorStart(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
+		// On startup with no active rounds, the state map should be
+		// empty since FSMs are now created on-demand when boarding
+		// intents arrive.
 		states := h.queryState()
+		require.Empty(t, states, "expected no rounds at startup")
 
-		primaryState, exists := states["primary"]
-		require.True(t, exists)
-		require.True(t, primaryState.IsPrimary)
+		// After a boarding intent arrives, a temp-keyed round is
+		// created.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
 
-		_, ok := primaryState.State.(*Idle)
-		require.True(t, ok, "expected Idle, got %T", primaryState.State)
+		states = h.queryState()
+		require.Len(t, states, 1, "expected one round after boarding")
+
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM")
+		require.True(t, tempState.IsTemp)
 	})
 
 	t.Run("handles_cancel_round_request", func(t *testing.T) {
@@ -112,6 +123,11 @@ func TestActorStart(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
 
+		// Verify round exists before cancel.
+		statesBeforeCancel := h.queryState()
+		_, exists := h.findTempState(statesBeforeCancel)
+		require.True(t, exists, "temp round before cancel")
+
 		result := h.receive(&CancelRoundRequest{})
 		require.True(t, result.IsOk())
 
@@ -120,14 +136,9 @@ func TestActorStart(t *testing.T) {
 		require.True(t, ok, "expected CancelRoundResponse")
 		require.True(t, cancelResp.Success)
 
+		// After cancel, the round is removed from rounds map.
 		states := h.queryState()
-		primaryState := states["primary"]
-		_, isFailedState := primaryState.State.(*ClientFailedState)
-		require.True(
-			t, isFailedState,
-			"expected ClientFailedState after cancel, got %T",
-			primaryState.State,
-		)
+		require.Empty(t, states, "round should be removed after cancel")
 	})
 }
 
@@ -151,9 +162,10 @@ func TestActorRecovery(t *testing.T) {
 
 		// The actor should have loaded the round from storage and
 		// created a corresponding FSM to resume processing.
-		require.Len(t, h.actor.activeRounds, 1)
+		require.Len(t, h.actor.rounds, 1)
 
-		roundFSM, exists := h.actor.activeRounds[roundID]
+		keyStr := RoundKeyStr(roundID.KeyString())
+		roundFSM, exists := h.actor.rounds[keyStr]
 		require.True(t, exists, "expected round FSM for test-round-001")
 		require.Equal(t, roundID, roundFSM.RoundID)
 
@@ -161,9 +173,9 @@ func TestActorRecovery(t *testing.T) {
 		// events to the correct round FSM, so it must be rebuilt
 		// during recovery.
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
-		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
+		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists, "expected commitment tx in index")
-		require.Equal(t, roundID, indexedRoundID)
+		require.Equal(t, keyStr, indexedKeyStr)
 
 		// The actor must re-register for chain confirmations during
 		// recovery to resume monitoring the commitment transaction.
@@ -188,9 +200,10 @@ func TestActorRecovery(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Len(t, h.actor.activeRounds, 3)
+		require.Len(t, h.actor.rounds, 3)
 		for _, round := range rounds {
-			_, exists := h.actor.activeRounds[round.RoundID]
+			keyStr := RoundKeyStr(round.RoundID.KeyString())
+			_, exists := h.actor.rounds[keyStr]
 			require.True(
 				t, exists,
 				"expected round FSM for %s", round.RoundID,
@@ -220,7 +233,8 @@ func TestActorConfirmation(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Contains(t, h.actor.activeRounds, roundID)
+		keyStr := RoundKeyStr(roundID.KeyString())
+		require.Contains(t, h.actor.rounds, keyStr)
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		h.roundStore.On(
@@ -306,15 +320,18 @@ func TestActorConfirmation(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		// This scenario tests the edge case where a round exists in
-		// the database but has no active FSM. This represents an
-		// inconsistent state that should be caught and reported as an
-		// error rather than silently ignored.
+		// This scenario tests the edge case where the commitment tx
+		// index contains an entry for a txid, but the corresponding
+		// FSM no longer exists (e.g., was cleaned up but index wasn't
+		// updated). This is an inconsistent state that should be
+		// reported as an error.
 		round := h.newTestRound(testRoundID("orphan-round"))
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
-		h.roundStore.On(
-			"LookupRoundByCommitmentTx", mock.Anything, txid,
-		).Return(round, nil)
+
+		// Simulate an inconsistent state by adding to the index
+		// without an FSM.
+		orphanKeyStr := RoundKeyStr("orphan-round-key")
+		h.actor.commitmentTxIndex[txid] = orphanKeyStr
 
 		packet := round.CommitmentTx.UnwrapOrFail(t)
 		confEvent := &ConfirmationEvent{
@@ -410,7 +427,8 @@ func TestActorProcessOutbox(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Contains(t, h.actor.activeRounds, roundID)
+		keyStr := RoundKeyStr(roundID.KeyString())
+		require.Contains(t, h.actor.rounds, keyStr)
 
 		txid := round.CommitmentTx.UnwrapOrFail(t).UnsignedTx.TxHash()
 		h.roundStore.On(
@@ -437,7 +455,7 @@ func TestActorProcessOutbox(t *testing.T) {
 		// in-memory state, including the FSM and tx index entry, to
 		// prevent memory leaks and avoid routing events to completed
 		// rounds.
-		require.NotContains(t, h.actor.activeRounds, roundID)
+		require.NotContains(t, h.actor.rounds, keyStr)
 
 		_, exists := h.actor.commitmentTxIndex[txid]
 		require.False(t, exists)
@@ -457,13 +475,13 @@ func TestActorProcessOutbox(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		require.Empty(t, h.actor.activeRounds)
+		require.Empty(t, h.actor.rounds)
 
 		roundID := testRoundID("checkpointed-round")
 
-		// Set up the primaryFSM in InputSigSentState, simulating the
-		// state after the round has completed through partial sigs.
-		commitmentTx := h.setupPrimaryFSMInInputSigSentState(roundID)
+		// Set up a round in InputSigSentState, simulating the state
+		// after the round has completed through partial sigs.
+		commitmentTx := h.setupRoundInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{
@@ -474,27 +492,18 @@ func TestActorProcessOutbox(t *testing.T) {
 		err = h.actor.processOutbox(h.ctx, outbox)
 		require.NoError(t, err)
 
-		// When a checkpoint notification is received, the actor must
-		// promote the primaryFSM to activeRounds so it can continue
-		// processing events (like BoardingConfirmed). A new primaryFSM
-		// is created in Idle state for subsequent rounds.
-		require.Contains(t, h.actor.activeRounds, roundID)
+		// When a checkpoint notification is received, the commitment
+		// tx should be indexed for confirmation routing.
+		keyStr := RoundKeyStr(roundID.KeyString())
+		require.Contains(t, h.actor.rounds, keyStr)
 
 		txid := commitmentTx.UnsignedTx.TxHash()
-		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
+		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
-		require.Equal(t, roundID, indexedRoundID)
-
-		// Verify the new primaryFSM is in Idle state, ready for new
-		// boarding intents.
-		primaryState, err := h.actor.primaryFSM.CurrentState()
-		require.NoError(t, err)
-		_, isIdle := primaryState.(*Idle)
-		require.True(t, isIdle, "new primaryFSM should be in Idle, "+
-			"got %T", primaryState)
+		require.Equal(t, keyStr, indexedKeyStr)
 	})
 
-	t.Run("primary_accepts_boarding_after_checkpoint", func(t *testing.T) {
+	t.Run("new_boarding_creates_round", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
@@ -503,39 +512,31 @@ func TestActorProcessOutbox(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		// First round: promote primaryFSM to activeRounds.
-		firstRoundID := testRoundID("first-round")
-		h.setupPrimaryFSMInInputSigSentState(firstRoundID)
+		// Initially no rounds.
+		require.Empty(t, h.actor.rounds)
 
-		outbox := []ClientOutMsg{
-			&RoundCheckpointedNotification{RoundID: firstRoundID},
-		}
-		err = h.actor.processOutbox(h.ctx, outbox)
-		require.NoError(t, err)
-
-		// After promotion, a new primaryFSM should be in Idle.
-		primaryState, err := h.actor.primaryFSM.CurrentState()
-		require.NoError(t, err)
-		_, isIdle := primaryState.(*Idle)
-		require.True(t, isIdle)
-
-		// Send a new boarding confirmation to the new primaryFSM.
+		// Send a new boarding confirmation - should create a new round.
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
 
-		// The new primaryFSM should transition from Idle to
-		// PendingRoundAssembly.
-		primaryState, err = h.actor.primaryFSM.CurrentState()
-		require.NoError(t, err)
-		_, isPending := primaryState.(*PendingRoundAssembly)
-		require.True(t, isPending, "new primaryFSM should transition "+
-			"to PendingRoundAssembly, got %T", primaryState)
+		// A new round should be created.
+		require.Len(t, h.actor.rounds, 1)
 
-		// The first round should still be tracked in activeRounds.
-		require.Contains(t, h.actor.activeRounds, firstRoundID)
+		// The new round should be in PendingRoundAssembly state.
+		for _, roundFSM := range h.actor.rounds {
+			state, err := roundFSM.FSM.CurrentState()
+			require.NoError(t, err)
+
+			_, isPending := state.(*PendingRoundAssembly)
+			require.True(t, isPending, "round should transition "+
+				"to PendingRoundAssembly, got %T", state)
+
+			// The round should have a temp key.
+			require.True(t, roundFSM.Key.IsTemp())
+		}
 	})
 
-	t.Run("promoted_fsm_receives_boarding_confirmed", func(t *testing.T) {
+	t.Run("checkpointed_round_indexed", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
@@ -544,9 +545,9 @@ func TestActorProcessOutbox(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		// Promote primaryFSM to activeRounds.
-		roundID := testRoundID("promoted-round")
-		commitmentTx := h.setupPrimaryFSMInInputSigSentState(roundID)
+		// Set up a round in InputSigSentState.
+		roundID := testRoundID("indexed-round")
+		commitmentTx := h.setupRoundInInputSigSentState(roundID)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{RoundID: roundID},
@@ -554,21 +555,22 @@ func TestActorProcessOutbox(t *testing.T) {
 		err = h.actor.processOutbox(h.ctx, outbox)
 		require.NoError(t, err)
 
-		// The promoted FSM should be in activeRounds.
-		require.Contains(t, h.actor.activeRounds, roundID)
-		promotedFSM := h.actor.activeRounds[roundID]
+		// The round should be tracked.
+		keyStr := RoundKeyStr(roundID.KeyString())
+		require.Contains(t, h.actor.rounds, keyStr)
+		roundFSM := h.actor.rounds[keyStr]
 
-		// Verify the promoted FSM is still in InputSigSentState.
-		promotedState, err := promotedFSM.FSM.CurrentState()
+		// Verify the FSM is still in InputSigSentState.
+		state, err := roundFSM.FSM.CurrentState()
 		require.NoError(t, err)
-		_, isInputSigSent := promotedState.(*InputSigSentState)
+		_, isInputSigSent := state.(*InputSigSentState)
 		require.True(t, isInputSigSent)
 
-		// The promoted FSM should be indexed by commitment txid.
+		// The round should be indexed by commitment txid.
 		txid := commitmentTx.UnsignedTx.TxHash()
-		indexedRoundID, exists := h.actor.commitmentTxIndex[txid]
+		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
-		require.Equal(t, roundID, indexedRoundID)
+		require.Equal(t, keyStr, indexedKeyStr)
 	})
 
 	t.Run("vtxo_created", func(t *testing.T) {
@@ -590,7 +592,7 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("migrate_round_idempotent", func(t *testing.T) {
+	t.Run("checkpoint_idempotent", func(t *testing.T) {
 		t.Parallel()
 
 		h := newActorTestHarness(t)
@@ -600,25 +602,21 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.NoError(t, err)
 
 		roundID := testRoundID("idempotent-round")
-		round := h.newTestRound(roundID)
-		h.roundStore.On(
-			"FetchState", mock.Anything, roundID,
-		).Return(
-			round,
-			&InputSigSentState{RoundID: roundID},
-			nil,
-		)
+		h.setupRoundInInputSigSentState(roundID)
 
-		err = h.actor.migrateRoundToActiveFSM(h.ctx, roundID)
-		require.NoError(t, err)
-		require.Len(t, h.actor.activeRounds, 1)
+		outbox := []ClientOutMsg{
+			&RoundCheckpointedNotification{RoundID: roundID},
+		}
 
-		// Migration must be idempotent to handle duplicate
-		// checkpoint notifications without creating multiple FSMs for
-		// the same round.
-		err = h.actor.migrateRoundToActiveFSM(h.ctx, roundID)
+		// First checkpoint.
+		err = h.actor.processOutbox(h.ctx, outbox)
 		require.NoError(t, err)
-		require.Len(t, h.actor.activeRounds, 1)
+		require.Len(t, h.actor.rounds, 1)
+
+		// Duplicate checkpoint should be idempotent.
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.NoError(t, err)
+		require.Len(t, h.actor.rounds, 1)
 	})
 
 	t.Run("server_messages", func(t *testing.T) {
@@ -643,8 +641,8 @@ func TestActorProcessOutbox(t *testing.T) {
 	})
 }
 
-// TestActorGetStateWithActiveRounds validates that the actor correctly
-// reports both the primary FSM state and all active round states when queried.
+// TestActorGetStateWithActiveRounds validates that the actor correctly reports
+// all round FSM states when queried.
 func TestActorGetStateWithActiveRounds(t *testing.T) {
 	t.Parallel()
 
@@ -661,18 +659,13 @@ func TestActorGetStateWithActiveRounds(t *testing.T) {
 
 	states := h.queryState()
 
-	// The state map should contain the primary FSM plus one entry for
-	// each active round.
-	require.Len(t, states, 3)
-
-	primaryState, exists := states["primary"]
-	require.True(t, exists)
-	require.True(t, primaryState.IsPrimary)
+	// The state map should contain one entry for each recovered round.
+	require.Len(t, states, 2)
 
 	for _, round := range rounds {
-		roundState, exists := states[round.RoundID.String()]
+		keyStr := round.RoundID.KeyString()
+		roundState, exists := states[keyStr]
 		require.True(t, exists, "expected state for %s", round.RoundID)
-		require.False(t, roundState.IsPrimary)
 		require.Equal(t, round.RoundID, roundState.RoundID)
 	}
 }
@@ -711,13 +704,13 @@ func TestActorLifecycle(t *testing.T) {
 		err := h.start()
 		require.NoError(t, err)
 
-		// The actor begins in Idle state, registered with the wallet
+		// The actor begins with no rounds, registered with the wallet
 		// to receive boarding confirmations.
 		require.NotNil(
 			t, h.walletActor.registeredNotifier,
 			"actor should register with wallet on start",
 		)
-		h.assertFSMState("Idle")
+		require.Empty(t, h.actor.rounds)
 
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
@@ -729,7 +722,7 @@ func TestActorLifecycle(t *testing.T) {
 		h.assertServerMessageSent("SendClientEventRequest")
 
 		roundID := testRoundID("test-round-001")
-		h.simulateRoundJoined(roundID)
+		h.simulateRoundJoined(roundID, []wire.OutPoint{intent.Outpoint})
 		h.assertFSMState("RoundJoinedState")
 	})
 
@@ -781,6 +774,103 @@ func TestActorLifecycle(t *testing.T) {
 
 		h.assertFSMState("ClientFailedState")
 	})
+
+	t.Run("concurrent_rounds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Create first boarding intent - this creates round 1.
+		intent1 := h.newTestBoardingIntentWithSuffix("-first")
+		h.sendWalletConfirmation(intent1)
+
+		// Advance round 1 to RegistrationSentState.
+		h.sendServerMessage(&RegistrationRequested{})
+
+		// Verify we have one round in RegistrationSentState.
+		states := h.queryState()
+		require.Len(t, states, 1, "expected one round")
+		var round1Key string
+		for k, info := range states {
+			require.IsType(t, &RegistrationSentState{}, info.State)
+			round1Key = k
+		}
+
+		// Create second boarding intent - this should create a new
+		// round (round 2) since round 1 is past Idle state.
+		intent2 := h.newTestBoardingIntentWithSuffix("-second")
+		h.sendWalletConfirmation(intent2)
+
+		// Verify we now have two rounds.
+		states = h.queryState()
+		require.Len(t, states, 2, "expected two concurrent rounds")
+
+		// Verify round states: round 1 should still be in
+		// RegistrationSentState, round 2 in PendingRoundAssembly.
+		foundRound1 := false
+		foundRound2 := false
+		var round2Key string
+		for k, info := range states {
+			if k == round1Key {
+				foundRound1 = true
+				require.IsType(
+					t, &RegistrationSentState{}, info.State,
+					"round 1 in RegistrationSentState",
+				)
+			} else {
+				foundRound2 = true
+				round2Key = k
+				require.IsType(
+					t, &PendingRoundAssembly{}, info.State,
+					"round 2 in PendingRoundAssembly",
+				)
+			}
+		}
+		require.True(t, foundRound1, "round 1 not found")
+		require.True(t, foundRound2, "round 2 not found")
+
+		// Complete round 1 by sending RoundJoined.
+		roundID1 := testRoundID("test-round-001")
+		outpoints1 := []wire.OutPoint{intent1.Outpoint}
+		h.simulateRoundJoined(roundID1, outpoints1)
+
+		// Verify round 1 transitioned and round 2 is still pending.
+		states = h.queryState()
+		require.Len(t, states, 2, "still expected two rounds")
+
+		// Round 1 should now be keyed by RoundID (re-keyed).
+		round1KeyStr := RoundKeyStr(roundID1.KeyString())
+		round1Info, exists := states[string(round1KeyStr)]
+		require.True(t, exists, "round 1 should be re-keyed")
+		require.IsType(t, &RoundJoinedState{}, round1Info.State)
+		require.False(t, round1Info.IsTemp, "round 1 not temp")
+
+		// Round 2 should still be temp-keyed.
+		round2Info, exists := states[round2Key]
+		require.True(t, exists, "round 2 should still exist")
+		require.IsType(t, &PendingRoundAssembly{}, round2Info.State)
+		require.True(t, round2Info.IsTemp, "round 2 should be temp")
+
+		// Cancel round 2 using the specific key.
+		cancelResult := h.receive(&CancelRoundRequest{
+			RoundKey: fn.Some(RoundKeyStr(round2Key)),
+		})
+		require.True(t, cancelResult.IsOk())
+		resp, _ := cancelResult.Unpack()
+		cancelResp, ok := resp.(*CancelRoundResponse)
+		require.True(t, ok, "expected CancelRoundResponse")
+		require.True(t, cancelResp.Success)
+
+		// Verify only round 1 remains.
+		states = h.queryState()
+		require.Len(t, states, 1, "expected one round after cancel")
+		_, exists = states[string(round1KeyStr)]
+		require.True(t, exists, "round 1 should remain")
+	})
 }
 
 // TestActorServerMessageRouting uses table-driven tests to verify that server
@@ -789,53 +879,98 @@ func TestActorLifecycle(t *testing.T) {
 func TestActorServerMessageRouting(t *testing.T) {
 	t.Parallel()
 
+	// serverEventBuilder allows building server events that depend on
+	// harness state (e.g., RoundJoined needs the intent's outpoint).
+	type serverEventBuilder func(*actorTestHarness) ClientEvent
+
 	testCases := []struct {
 		name          string
-		setupState    func(*actorTestHarness)
-		serverEvent   ClientEvent
+		setupState    func(*actorTestHarness) *wallet.BoardingIntent
+		serverEvent   serverEventBuilder
 		expectedState string
 		expectOutbox  bool
 		outboxMsgType string
 	}{
 		{
 			name: "RegistrationRequested_from_PendingRoundAssembly",
-			setupState: func(h *actorTestHarness) {
+			setupState: func(
+				h *actorTestHarness,
+			) *wallet.BoardingIntent {
+
 				h.setupMockRoundStoreForStart()
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
+
+				return intent
 			},
-			serverEvent:   &RegistrationRequested{},
+			serverEvent: func(_ *actorTestHarness) ClientEvent {
+				return &RegistrationRequested{}
+			},
 			expectedState: "RegistrationSentState",
 			expectOutbox:  true,
 			outboxMsgType: "SendClientEventRequest",
 		},
 		{
 			name: "RoundJoined_from_RegistrationSentState",
-			setupState: func(h *actorTestHarness) {
+			setupState: func(
+				h *actorTestHarness,
+			) *wallet.BoardingIntent {
+
 				h.setupMockRoundStoreForStart()
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
 				h.sendServerMessage(&RegistrationRequested{})
+
+				return intent
 			},
-			serverEvent: &RoundJoined{
-				RoundID: testRoundID("test-round"),
+			serverEvent: func(h *actorTestHarness) ClientEvent {
+				// Find outpoints from pending round.
+				states := h.queryState()
+				var outpoints []wire.OutPoint
+				for _, info := range states {
+					st := info.State
+					rs, ok := st.(*RegistrationSentState)
+					if !ok {
+						continue
+					}
+
+					for _, i := range rs.Intents {
+						outpoints = append(
+							outpoints, i.Outpoint,
+						)
+					}
+				}
+
+				roundID := testRoundID("test-round")
+
+				return &RoundJoined{
+					RoundID:                   roundID,
+					AcceptedBoardingOutpoints: outpoints,
+				}
 			},
 			expectedState: "RoundJoinedState",
 			expectOutbox:  false,
 		},
 		{
 			name: "BoardingFailed_from_any_state",
-			setupState: func(h *actorTestHarness) {
+			setupState: func(
+				h *actorTestHarness,
+			) *wallet.BoardingIntent {
+
 				h.setupMockRoundStoreForStart()
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
+
+				return intent
 			},
-			serverEvent: &BoardingFailed{
-				Reason:      "Test failure",
-				Recoverable: true,
+			serverEvent: func(_ *actorTestHarness) ClientEvent {
+				return &BoardingFailed{
+					Reason:      "Test failure",
+					Recoverable: true,
+				}
 			},
 			expectedState: "ClientFailedState",
 			expectOutbox:  false,
@@ -850,7 +985,8 @@ func TestActorServerMessageRouting(t *testing.T) {
 			tc.setupState(h)
 			h.clearServerMessages()
 
-			h.sendServerMessage(tc.serverEvent)
+			event := tc.serverEvent(h)
+			h.sendServerMessage(event)
 
 			h.assertFSMState(tc.expectedState)
 			if tc.expectOutbox {
