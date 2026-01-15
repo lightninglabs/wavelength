@@ -175,6 +175,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 			Status:                "input_sig_sent",
 			CreationTime:          nowUnix,
 			LastUpdateTime:        nowUnix,
+			StartHeight:           int32(r.StartHeight),
 		}
 		if err := q.InsertRound(ctx, roundParams); err != nil {
 			return fmt.Errorf("insert round: %w", err)
@@ -630,7 +631,8 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 	}
 
 	r := &round.Round{
-		RoundID: roundID,
+		RoundID:     roundID,
+		StartHeight: uint32(dbRound.StartHeight),
 	}
 
 	// Populate confirmation info if present.
