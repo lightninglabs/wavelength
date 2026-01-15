@@ -54,7 +54,7 @@ type PendingRoundAssembly struct {
 }
 
 func (s *PendingRoundAssembly) String() string {
-	return "BoardingIntents"
+	return "PendingRoundAssembly"
 }
 
 func (s *PendingRoundAssembly) IsTerminal() bool {
