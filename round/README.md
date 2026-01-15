@@ -58,13 +58,24 @@ instance to process additional addresses across different rounds.
 After receiving an address, the user funds it by broadcasting a Bitcoin
 transaction. Once confirmed via `BoardingUTXOConfirmed`, the FSM transitions
 from Idle to PendingRoundAssembly, registering a boarding intent containing
-the address, on-chain UTXO, and VTXO template (amount, expiry, keys).
+the address and on-chain UTXO information.
 
-The FSM accumulates multiple intents, handling additional `BoardingUTXOConfirmed`
-events as a self-loop. When `RegistrationRequested` is received, it transitions
-to RegistrationSentState, emitting a `JoinRoundRequest` that aggregates all
-intents into a single server request. The FSM can also resume existing intents
-on restart via `ResumeBoardingIntents`.
+Boarding intents and VTXO requests are managed separately, enabling flexible
+input-output mappings. The FSM collects boarding intents (inputs to spend) and
+VTXO requests (outputs to create) independently:
+
+- `BoardingUTXOConfirmed` adds a boarding intent to the pending set
+- `VTXORequestsReceived` adds VTXO requests specifying desired output amounts
+
+This separation supports future fan-in (multiple inputs funding one output) and
+fan-out (one input creating multiple outputs) scenarios. The FSM accumulates
+both types as self-loops in PendingRoundAssembly.
+
+When `RegistrationRequested` is received, the FSM validates that both boarding
+requests and VTXO requests are present, then transitions to RegistrationSentState,
+emitting a `JoinRoundRequest` that aggregates all intents into a single server
+request. The FSM can also resume existing intents on restart via
+`ResumeBoardingIntents`.
 
 ### RegistrationSent and RoundJoined States
 
@@ -227,9 +238,14 @@ sequenceDiagram
     C->>A: AddressReceived (outbox)
     A->>C: User: Wallet deposits to address
 
-    Note over C,B: Intent Registration Phase
+    Note over C,B: Intent Assembly Phase
     B->>A: UTXO confirmed
     A->>C: BoardingUTXOConfirmed
+    Note over A: User specifies VTXO amounts
+    A->>C: VTXORequestsReceived
+
+    Note over C,B: Round Registration Phase
+    A->>C: RegistrationRequested
     C->>A: JoinRoundRequest (outbox)
     A->>S: JoinRound
     S->>A: RoundJoined(roundID)
@@ -278,6 +294,8 @@ Key observations:
 
 - All server-bound messages flow through the outbox, never directly from FSM
 - The actor routes outbox messages to appropriate destinations based on type
+- Boarding intents and VTXO requests are collected separately during the
+  assembly phase, enabling flexible input-output relationships
 - Internal validation (tree extraction, signature verification, descriptor
   building) happens within state transitions, invisible to external systems
 - The checkpoint before sending boarding input signatures is critical for
@@ -313,8 +331,10 @@ during checkpoint.
 stateDiagram-v2
     [*] --> Idle
     Idle --> PendingRoundAssembly: BoardingUTXOConfirmed
+    Idle --> PendingRoundAssembly: VTXORequestsReceived
     Idle --> PendingRoundAssembly: ResumeBoardingIntents
     PendingRoundAssembly --> PendingRoundAssembly: BoardingUTXOConfirmed
+    PendingRoundAssembly --> PendingRoundAssembly: VTXORequestsReceived
     PendingRoundAssembly --> RegistrationSent: RegistrationRequested
     RegistrationSent --> RoundJoined: RoundJoined
     RoundJoined --> CommitmentTxReceived: CommitmentTxBuilt
