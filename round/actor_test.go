@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -75,6 +78,7 @@ func TestActorStart(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
+		h.sendVTXORequests(50000)
 		h.sendServerMessage(&RegistrationRequested{})
 
 		// When the server signals registration is requested, the
@@ -139,6 +143,70 @@ func TestActorStart(t *testing.T) {
 		// After cancel, the round is removed from rounds map.
 		states := h.queryState()
 		require.Empty(t, states, "round should be removed after cancel")
+	})
+
+	t.Run("registers_vtxo_requests_from_amounts", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		signingKey := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  0,
+			},
+		}
+
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(signingKey, nil).Once()
+
+		amount := btcutil.Amount(50000)
+		msg := &RegisterVTXORequestsRequest{
+			Amounts: []btcutil.Amount{amount},
+		}
+
+		result := h.receive(msg)
+		require.True(t, result.IsOk())
+
+		resp, _ := result.Unpack()
+		registerResp, ok := resp.(*RegisterVTXORequestsResponse)
+		require.True(t, ok)
+		require.True(t, registerResp.Success)
+
+		states := h.queryState()
+		require.Len(t, states, 1, "expected one FSM")
+
+		// Find the temp-keyed round.
+		tempState, found := h.findTempState(states)
+		require.True(t, found, "expected temp-keyed FSM state")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(
+			t, ok, "expected PendingRoundAssembly, got %T",
+			tempState.State,
+		)
+		require.Len(t, assembly.VTXOs, 1)
+
+		expectedDesc, err := tree.NewVTXODescriptor(
+			amount, signingKey.PubKey, h.operatorPubKey,
+			h.operatorTerms.VTXOExitDelay,
+		)
+		require.NoError(t, err)
+
+		req := assembly.VTXOs[0]
+		require.Equal(t, amount, req.Amount)
+		require.Equal(t, expectedDesc.PkScript, req.PkScript)
+		require.Equal(t, h.operatorTerms.VTXOExitDelay, req.Expiry)
+		require.True(t, req.ClientKey.IsEqual(signingKey.PubKey))
+		require.True(t, req.OperatorKey.IsEqual(h.operatorPubKey))
+		require.Equal(t, *signingKey, req.SigningKey)
 	})
 }
 
@@ -716,6 +784,9 @@ func TestActorLifecycle(t *testing.T) {
 		h.sendWalletConfirmation(intent)
 		h.assertFSMState("PendingRoundAssembly")
 
+		// Send VTXO requests before registration.
+		h.sendVTXORequests(50000)
+
 		h.clearServerMessages()
 		h.sendServerMessage(&RegistrationRequested{})
 		h.assertFSMState("RegistrationSentState")
@@ -746,6 +817,9 @@ func TestActorLifecycle(t *testing.T) {
 		h.sendWalletConfirmation(intent2)
 		h.assertFSMState("PendingRoundAssembly")
 
+		// Send VTXO requests before registration.
+		h.sendVTXORequests(50000)
+
 		h.clearServerMessages()
 		h.sendServerMessage(&RegistrationRequested{})
 		h.assertFSMState("RegistrationSentState")
@@ -763,6 +837,7 @@ func TestActorLifecycle(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		h.sendWalletConfirmation(intent)
+		h.sendVTXORequests(50000)
 		h.sendServerMessage(&RegistrationRequested{})
 		h.assertFSMState("RegistrationSentState")
 
@@ -788,7 +863,9 @@ func TestActorLifecycle(t *testing.T) {
 		intent1 := h.newTestBoardingIntentWithSuffix("-first")
 		h.sendWalletConfirmation(intent1)
 
-		// Advance round 1 to RegistrationSentState.
+		// Add VTXO requests and advance to RegistrationSentState (new
+		// transitions require both boarding AND VTXO requests).
+		h.sendVTXORequests(50000)
 		h.sendServerMessage(&RegistrationRequested{})
 
 		// Verify we have one round in RegistrationSentState.
@@ -901,6 +978,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
+				h.sendVTXORequests(50000)
 
 				return intent
 			},
@@ -921,6 +999,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
+				h.sendVTXORequests(50000)
 				h.sendServerMessage(&RegistrationRequested{})
 
 				return intent
@@ -936,7 +1015,7 @@ func TestActorServerMessageRouting(t *testing.T) {
 						continue
 					}
 
-					for _, i := range rs.Intents {
+					for _, i := range rs.Intents.Boarding {
 						outpoints = append(
 							outpoints, i.Outpoint,
 						)

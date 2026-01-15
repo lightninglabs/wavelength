@@ -151,6 +151,20 @@ type MockClientWallet struct {
 }
 
 //nolint:forcetypeassert
+func (m *MockClientWallet) DeriveNextKey(ctx context.Context,
+	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+
+	args := m.Called(ctx, family)
+
+	var keyDesc *keychain.KeyDescriptor
+	if args.Get(0) != nil {
+		keyDesc = args.Get(0).(*keychain.KeyDescriptor)
+	}
+
+	return keyDesc, args.Error(1)
+}
+
+//nolint:forcetypeassert
 func (m *MockClientWallet) MuSig2CreateSession(
 	version input.MuSig2Version,
 	keyLoc keychain.KeyLocator,

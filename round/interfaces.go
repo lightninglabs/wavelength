@@ -413,4 +413,9 @@ type VTXOStore interface {
 // embed Signer here.
 type ClientWallet interface {
 	input.Signer
+
+	// DeriveNextKey derives the next key in the specified key family for
+	// use as a VTXO signing key.
+	DeriveNextKey(ctx context.Context,
+		family keychain.KeyFamily) (*keychain.KeyDescriptor, error)
 }
