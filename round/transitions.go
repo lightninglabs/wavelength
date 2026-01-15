@@ -1057,20 +1057,18 @@ func (s *PartialSigsSentState) ProcessEvent(
 		// broadcast the commitment transaction. We must persist all
 		// round data to enable recovery if the client restarts.
 		//
-		// Mark all intents as Adopted (frozen in this round) and set
-		// their RoundID, then save them alongside the round.
-		numBoardingIntents := len(s.Intents.Boarding)
-		adoptedIntents := make([]BoardingIntent, numBoardingIntents)
-		for i, intent := range s.Intents.Boarding {
-			intent.Status = BoardingStatusAdopted
-			adoptedIntents[i] = intent
+		// Mark all intents as Adopted (frozen in this round) and then
+		// save them alongside the round.
+		intents := s.Intents.Clone()
+		for i := range intents.Boarding {
+			intents.Boarding[i].Status = BoardingStatusAdopted
 		}
 		round := &Round{
-			RoundID:         s.RoundID,
-			StartHeight:     env.StartHeight,
-			CommitmentTx:    fn.Some(s.CommitmentTx),
-			VTXOTreePaths:   fn.Some(s.VTXOTreePaths),
-			BoardingIntents: adoptedIntents,
+			RoundID:       s.RoundID,
+			StartHeight:   env.StartHeight,
+			CommitmentTx:  fn.Some(s.CommitmentTx),
+			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+			Intents:       intents,
 		}
 
 		env.Log.InfoS(ctx, "Signed boarding inputs, checkpointing round state",

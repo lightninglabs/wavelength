@@ -192,8 +192,8 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 		}
 
 		// Insert boarding intents for this round.
-		if len(r.BoardingIntents) > 0 {
-			numIntents := len(r.BoardingIntents)
+		if len(r.Intents.Boarding) > 0 {
+			numIntents := len(r.Intents.Boarding)
 			numSigs := len(inputSigState.InputSigs)
 			if numIntents != numSigs {
 				return fmt.Errorf(
@@ -203,7 +203,7 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 				)
 			}
 
-			for i, intent := range r.BoardingIntents {
+			for i, intent := range r.Intents.Boarding {
 				sig := inputSigState.InputSigs[i]
 				iParams, err := s.domainIntentToRoundParams(
 					r.RoundID.String(), &intent, i, sig,
@@ -226,16 +226,16 @@ func (s *RoundPersistenceStore) CommitState(ctx context.Context,
 		// Insert VTXO templates for this round. For now, we couple
 		// VTXOs to boarding intents 1:1 by index at the DB level.
 		// TODO: Decouple VTXOs from intents in storage.
-		vtxos := inputSigState.Intents.VTXOs
-		if len(vtxos) != len(r.BoardingIntents) {
+		vtxos := r.Intents.VTXOs
+		if len(vtxos) != len(r.Intents.Boarding) {
 			return fmt.Errorf(
 				"mismatch between vtxos (%d) and "+
 					"boarding intents (%d)",
-				len(vtxos), len(r.BoardingIntents),
+				len(vtxos), len(r.Intents.Boarding),
 			)
 		}
 		for i, vtxoReq := range vtxos {
-			intent := &r.BoardingIntents[i]
+			intent := &r.Intents.Boarding[i]
 			roundStr := r.RoundID.String()
 			tParams := vtxoRequestToParams(
 				roundStr, intent, i, &vtxoReq,
@@ -698,7 +698,7 @@ func (s *RoundPersistenceStore) dbRoundToDomainRound(ctx context.Context,
 			intents = append(intents, *intent)
 		}
 
-		r.BoardingIntents = intents
+		r.Intents.Boarding = intents
 	}
 
 	return r, nil
