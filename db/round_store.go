@@ -823,18 +823,10 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 		vtxoTemplate = append(vtxoTemplate, *vtxoReq)
 	}
 
-	// Create the round-specific BoardingIntent.
-	// Parse the round ID from the database string.
-	roundID, err := round.ParseRoundID(dbRoundIntent.RoundID)
-	if err != nil {
-		return nil, fmt.Errorf("parse round ID: %w", err)
-	}
-
 	intent := &round.BoardingIntent{
 		BoardingIntent:  baseIntent,
 		BoardingRequest: boardingReq,
 		VtxoTemplate:    vtxoTemplate,
-		RoundID:         fn.Some(roundID),
 	}
 
 	return intent, nil

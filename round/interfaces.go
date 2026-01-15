@@ -229,10 +229,6 @@ type BoardingIntent struct {
 	//
 	// TODO(roasbeef): add auxleaf for tap here.
 	VtxoTemplate []types.VTXORequest
-
-	// RoundID is the identifier of the round this intent was assigned to.
-	// None until the client joins a round.
-	RoundID fn.Option[RoundID]
 }
 
 // ConfInfo contains chain information about when a round's commitment
