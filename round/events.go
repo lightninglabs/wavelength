@@ -79,13 +79,7 @@ func (e *BoardingUTXOConfirmed) clientEventSealed() {}
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
 // as a batch request containing every confirmed intent.
-type RegistrationRequested struct {
-	Intents []BoardingIntent
-
-	// RoundID allows resuming a previously assigned round when rejoining.
-	// None for new registrations.
-	RoundID fn.Option[RoundID]
-}
+type RegistrationRequested struct{}
 
 func (e *RegistrationRequested) clientEventSealed() {}
 
