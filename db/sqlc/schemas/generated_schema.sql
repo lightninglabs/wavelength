@@ -204,14 +204,12 @@ CREATE TABLE round_statuses (
     status_name TEXT UNIQUE NOT NULL
 );
 
-CREATE TABLE round_vtxo_templates (
-    -- Composite FK to round_boarding_intents.
+CREATE TABLE round_vtxo_requests (
+    -- round_id links to the parent round.
     round_id TEXT NOT NULL,
-    outpoint_hash BLOB NOT NULL,
-    outpoint_index INTEGER NOT NULL,
 
-    -- template_index is the order of this VTXO within the request.
-    template_index INTEGER NOT NULL,
+    -- request_index preserves request order.
+    request_index INTEGER NOT NULL,
 
     -- VTXORequest.Amount - value in satoshis.
     amount BIGINT NOT NULL,
@@ -237,10 +235,8 @@ CREATE TABLE round_vtxo_templates (
     -- VTXORequest.SigningKey.PubKey - 33-byte compressed public key.
     signing_pubkey BLOB NOT NULL,
 
-    PRIMARY KEY (round_id, outpoint_hash, outpoint_index, template_index),
-    FOREIGN KEY (round_id, outpoint_hash, outpoint_index)
-        REFERENCES round_boarding_intents(round_id, outpoint_hash, outpoint_index)
-        ON DELETE CASCADE
+    PRIMARY KEY (round_id, request_index),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
 );
 
 CREATE TABLE rounds (
