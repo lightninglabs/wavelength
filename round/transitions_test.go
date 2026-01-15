@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
@@ -661,8 +662,101 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
+		// With no VTXOs, total output is zero which fails validation.
 		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(t, failedState.Reason, "no boarding requests")
+		require.Contains(t, failedState.Reason, "no VTXO output amount")
+	})
+
+	t.Run("output_exceeds_input_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Create intent with 50,000 sats.
+		intent := h.newTestBoardingIntent()
+		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
+
+		// Create VTXO request for 60,000 sats (more than input).
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.Amount = btcutil.Amount(60000)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		})
+
+		event := &RegistrationRequested{}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "outputs exceed inputs")
+	})
+
+	t.Run("fee_exceeds_max_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Set a low max operator fee (1,000 sats).
+		h.env.MaxOperatorFee = btcutil.Amount(1000)
+
+		// Create intent with 50,000 sats.
+		intent := h.newTestBoardingIntent()
+		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
+
+		// Create VTXO request for 40,000 sats, implying 10,000 sat fee.
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.Amount = btcutil.Amount(40000)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		})
+
+		event := &RegistrationRequested{}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(
+			t, failedState.Reason, "operator fee exceeds limit",
+		)
+	})
+
+	t.Run("valid_fee_within_limit_succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Set max operator fee (10,000 sats).
+		h.env.MaxOperatorFee = btcutil.Amount(10000)
+
+		// Create intent with 50,000 sats.
+		intent := h.newTestBoardingIntent()
+
+		// Create VTXO request for 45,000 sats, implying 5,000 sat fee.
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.Amount = btcutil.Amount(45000)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		})
+
+		event := &RegistrationRequested{}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		// Should succeed and transition to RegistrationSentState.
+		nextState := assertStateType[*RegistrationSentState](h)
+		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 }
 

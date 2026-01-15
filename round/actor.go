@@ -127,6 +127,11 @@ type RoundClientConfig struct {
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
+	// MaxOperatorFee is the maximum fee the client is willing to pay per
+	// round. This limits the difference between total boarding input amounts
+	// and total VTXO output amounts.
+	MaxOperatorFee btcutil.Amount
+
 	// VTXOManager receives VTXO creation notifications after rounds
 	// complete. The round actor forwards VTXOCreatedNotification messages
 	// to spawn VTXO actors for newly created VTXOs. Uses actor.Message to
@@ -152,12 +157,13 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:    cfg.RoundStore,
-		VTXOStore:     cfg.VTXOStore,
-		Wallet:        cfg.Wallet,
-		OperatorTerms: cfg.OperatorTerms,
-		ChainParams:   cfg.ChainParams,
-		Log:           actorLog,
+		RoundStore:     cfg.RoundStore,
+		VTXOStore:      cfg.VTXOStore,
+		Wallet:         cfg.Wallet,
+		OperatorTerms:  cfg.OperatorTerms,
+		ChainParams:    cfg.ChainParams,
+		MaxOperatorFee: cfg.MaxOperatorFee,
+		Log:            actorLog,
 	}
 
 	if err := ValidateDelayParameters(
@@ -219,13 +225,14 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:    a.cfg.RoundStore,
-		VTXOStore:     a.cfg.VTXOStore,
-		Wallet:        a.cfg.Wallet,
-		OperatorTerms: a.cfg.OperatorTerms,
-		ChainParams:   a.cfg.ChainParams,
-		Log:           fsmLogger,
-		StartHeight:   startHeight,
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -273,13 +280,14 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:    a.cfg.RoundStore,
-		VTXOStore:     a.cfg.VTXOStore,
-		Wallet:        a.cfg.Wallet,
-		OperatorTerms: a.cfg.OperatorTerms,
-		ChainParams:   a.cfg.ChainParams,
-		Log:           fsmLogger,
-		StartHeight:   startHeight,
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -635,8 +643,10 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
 		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
 
-	// Find an existing Idle round or create a new one.
-	roundFSM := a.findIdleRound()
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows multiple boarding confirmations to
+	// accumulate in the same round.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)

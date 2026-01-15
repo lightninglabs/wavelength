@@ -366,17 +366,23 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		MinConfirmations:  1,
 	}
 
+	// Default max operator fee for tests: 100,000 sats (0.001 BTC).
+	// This is generous to avoid test brittleness when multiple intents
+	// are used.
+	const defaultMaxOperatorFee = btcutil.Amount(100000)
+
 	cfg := &RoundClientConfig{
-		Name:          "test-round-actor",
-		Wallet:        walletMock,
-		RoundStore:    roundStore,
-		VTXOStore:     vtxoStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    serverConn,
-		ChainSource:   chainSource,
-		WalletActor:   walletActor,
-		SelfRef:       selfRef,
-		ChainParams:   &chaincfg.MainNetParams,
+		Name:           "test-round-actor",
+		Wallet:         walletMock,
+		RoundStore:     roundStore,
+		VTXOStore:      vtxoStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     serverConn,
+		ChainSource:    chainSource,
+		WalletActor:    walletActor,
+		SelfRef:        selfRef,
+		ChainParams:    &chaincfg.MainNetParams,
+		MaxOperatorFee: defaultMaxOperatorFee,
 	}
 
 	actorResult := NewRoundClientActor(cfg)
@@ -582,8 +588,15 @@ func (h *actorTestHarness) assertFSMState(expectedStateType string) {
 	// No matching state found, print what we have for debugging.
 	var foundStates []string
 	for key, stateInfo := range states {
-		foundStates = append(foundStates, fmt.Sprintf("%s=%T",
-			key, stateInfo.State))
+		stateStr := fmt.Sprintf("%s=%T", key, stateInfo.State)
+
+		// Print additional info for ClientFailedState.
+		if failedState, ok := stateInfo.State.(*ClientFailedState); ok {
+			stateStr = fmt.Sprintf("%s (reason=%q, err=%v)",
+				stateStr, failedState.Reason, failedState.Error)
+		}
+
+		foundStates = append(foundStates, stateStr)
 	}
 	h.t.Fatalf("expected state containing %q, got: %v",
 		expectedStateType, foundStates)

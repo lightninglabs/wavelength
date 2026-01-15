@@ -298,30 +298,65 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			VTXOs:    slices.Clone(s.VTXOs),
 		}
 
-		// TODO(elle): should be able to remove the checks below and
-		// only need to check that total input and output amounts are
-		// sane.
+		// Calculate total input amount from all boarding intents.
+		var totalInput btcutil.Amount
+		for _, boarding := range s.Boarding {
+			totalInput += boarding.ChainInfo.Amount
+		}
+
+		// Calculate total output amount from all VTXO requests.
+		var totalOutput btcutil.Amount
+		for _, vtxo := range s.VTXOs {
+			totalOutput += vtxo.Amount
+		}
+
+		// Validate that we have outputs to create.
+		if totalOutput == 0 {
+			return failWithNotification(
+				"no VTXO output amount",
+				fmt.Errorf("total VTXO output is zero"),
+				true, fn.None[RoundID](),
+			), nil
+		}
+
+		// Validate that outputs don't exceed inputs.
+		if totalOutput > totalInput {
+			return failWithNotification(
+				"outputs exceed inputs",
+				fmt.Errorf(
+					"total output (%d) exceeds total "+
+						"input (%d)",
+					totalOutput, totalInput,
+				),
+				true, fn.None[RoundID](),
+			), nil
+		}
+
+		// Calculate the implicit operator fee (inputs - outputs).
+		operatorFee := totalInput - totalOutput
+
+		// Validate that the operator fee is within acceptable limits.
+		if operatorFee > env.MaxOperatorFee {
+			return failWithNotification(
+				"operator fee exceeds limit",
+				fmt.Errorf(
+					"operator fee (%d) exceeds max "+
+						"allowed (%d)",
+					operatorFee, env.MaxOperatorFee,
+				),
+				true, fn.None[RoundID](),
+			), nil
+		}
+
+		env.Log.InfoS(ctx, "Amount validation passed",
+			btclog.Fmt("total_input", "%v", totalInput),
+			btclog.Fmt("total_output", "%v", totalOutput),
+			btclog.Fmt("operator_fee", "%v", operatorFee))
 
 		// Extract the set of values from the intent map, as we don't
 		// need to track them by outpoint any longer.
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
-		if len(boardingReqs) == 0 {
-			return failWithNotification(
-				"no boarding requests to register",
-				fmt.Errorf("empty boarding requests"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Next, we'll extract all the VTXO requests.
 		vtxoReqs := slices.Clone(s.VTXOs)
-		if len(vtxoReqs) == 0 {
-			return failWithNotification(
-				"no VTXO requests to register",
-				fmt.Errorf("empty VTXO requests"),
-				true, fn.None[RoundID](),
-			), nil
-		}
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
