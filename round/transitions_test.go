@@ -581,8 +581,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			},
 		})
 
-		intents := []BoardingIntent{intent}
-		event := &RegistrationRequested{Intents: intents}
+		event := &RegistrationRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -600,7 +599,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			Intents: map[wire.OutPoint]BoardingIntent{},
 		})
 
-		event := &RegistrationRequested{Intents: []BoardingIntent{}}
+		event := &RegistrationRequested{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -1348,7 +1347,7 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	h.withState(&PendingRoundAssembly{Intents: intentsMap})
 
 	// Step 1: Request registration.
-	regEvent := &RegistrationRequested{Intents: []BoardingIntent{intent}}
+	regEvent := &RegistrationRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
@@ -1395,7 +1394,7 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 	h.withState(&PendingRoundAssembly{Intents: intentsMap})
 
 	// Step 1: PendingRoundAssembly → RegistrationSentState.
-	regEvent := &RegistrationRequested{Intents: []BoardingIntent{intent}}
+	regEvent := &RegistrationRequested{}
 	_, err := h.sendEvent(regEvent)
 	require.NoError(t, err)
 
