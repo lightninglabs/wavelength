@@ -350,10 +350,15 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 	// Use a mock start height for testing.
 	const testStartHeight uint32 = 100
 
+	// Default max operator fee for tests: 100,000 sats (0.001 BTC).
+	// This is generous to avoid test brittleness when multiple intents
+	// are used.
+	const defaultMaxOperatorFee = btcutil.Amount(100000)
+
 	env := NewClientEnvironment(
 		roundStore, vtxoStore, wallet, terms,
-		&chaincfg.RegressionNetParams, btclog.Disabled,
-		testStartHeight,
+		&chaincfg.RegressionNetParams, defaultMaxOperatorFee,
+		btclog.Disabled, testStartHeight,
 	)
 
 	h := &boardingTestHarness{
