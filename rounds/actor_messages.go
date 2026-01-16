@@ -113,3 +113,36 @@ func (m *ConfirmationMsg) MessageType() string {
 
 // actorMsgSealed marks this message as part of the ActorMsg sealed interface.
 func (m *ConfirmationMsg) actorMsgSealed() {}
+
+// GetClientRoundsRequest requests the list of rounds a client is participating
+// in. This goes through the actor for concurrency safety.
+type GetClientRoundsRequest struct {
+	actor.BaseMessage
+
+	// ClientID is the client to query.
+	ClientID clientconn.ClientID
+}
+
+// MessageType returns the type name of this message.
+func (m *GetClientRoundsRequest) MessageType() string {
+	return "GetClientRoundsRequest"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *GetClientRoundsRequest) actorMsgSealed() {}
+
+// GetClientRoundsResponse is the response to GetClientRoundsRequest.
+type GetClientRoundsResponse struct {
+	actor.BaseMessage
+
+	// RoundIDs is the list of rounds the client is participating in.
+	RoundIDs []RoundID
+}
+
+// MessageType returns the type name of this message.
+func (m *GetClientRoundsResponse) MessageType() string {
+	return "GetClientRoundsResponse"
+}
+
+// actorRespSealed marks this as part of the ActorResp sealed interface.
+func (m *GetClientRoundsResponse) actorRespSealed() {}

@@ -91,20 +91,24 @@ type ActorConfig struct {
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
-// lifecycle. It tracks multiple concurrent rounds - one "current" round that
-// accepts new registrations, and sealed rounds that are still being processed.
+// lifecycle. It tracks multiple concurrent rounds in a unified map, with the
+// currentRoundID identifying which round accepts new registrations.
 type Actor struct {
 	// cfg contains all the configuration for this actor.
 	cfg *ActorConfig
 
-	// currentRound is the current live round FSM instance managed by the
-	// actor. This is the round that is actively accepting new registrations.
-	currentRound *RoundFSM
-
-	// rounds is a map of all rounds being tracked by the actor, keyed by
-	// round ID. This includes the current round and any sealed rounds that
-	// are still being processed.
+	// rounds holds all active rounds keyed by their IDs. This includes the
+	// round currently accepting registrations and any sealed rounds still
+	// being processed.
 	rounds map[RoundID]*RoundFSM
+
+	// currentRoundID identifies the round currently accepting registrations.
+	// Access the round via rounds[currentRoundID].
+	currentRoundID RoundID
+
+	// clientRounds tracks which rounds each client is participating in.
+	// Updated when clients join rounds and when rounds complete/fail.
+	clientRounds map[clientconn.ClientID]map[RoundID]struct{}
 
 	log btclog.Logger
 }
@@ -139,10 +143,13 @@ func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 // and resume them. It will create a new "live" round that will accept new
 // registrations.
 func NewActor(cfg *ActorConfig) *Actor {
+	clientRounds := make(map[clientconn.ClientID]map[RoundID]struct{})
+
 	return &Actor{
-		cfg:    cfg,
-		log:    cfg.Logger,
-		rounds: make(map[RoundID]*RoundFSM),
+		cfg:          cfg,
+		log:          cfg.Logger,
+		rounds:       make(map[RoundID]*RoundFSM),
+		clientRounds: clientRounds,
 	}
 }
 
@@ -162,8 +169,8 @@ func (a *Actor) Start(ctx context.Context) error {
 		return fmt.Errorf("unable to create new round FSM: %w", err)
 	}
 
-	a.currentRound = round
 	a.rounds[round.RoundID] = round
+	a.currentRoundID = round.RoundID
 
 	return nil
 }
@@ -333,6 +340,9 @@ func (a *Actor) Receive(ctx context.Context,
 	case *ConfirmationMsg:
 		return a.handleConfirmation(ctx, m)
 
+	case *GetClientRoundsRequest:
+		return a.handleGetClientRounds(ctx, m)
+
 	default:
 		a.log.WarnS(ctx, "Unknown message type", nil,
 			slog.String("msg_type", msg.MessageType()))
@@ -367,6 +377,17 @@ func (a *Actor) getRound(roundID RoundID) *RoundFSM {
 	return a.rounds[roundID]
 }
 
+// handleGetClientRounds processes a GetClientRoundsRequest and returns the list
+// of rounds the client is participating in.
+func (a *Actor) handleGetClientRounds(_ context.Context,
+	msg *GetClientRoundsRequest) fn.Result[ActorResp] {
+
+	rounds := a.getClientRounds(msg.ClientID)
+	return fn.Ok[ActorResp](&GetClientRoundsResponse{
+		RoundIDs: rounds,
+	})
+}
+
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
 // outbox messages. This consolidates a common pattern throughout the actor
 // where FSM events trigger outbox processing.
@@ -398,6 +419,13 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 		// Check if this message should be sent to client(s). All
 		// client-bound messages implement the ClientMessage interface.
 		case clientconn.ClientMessage:
+			// Track client join when a ClientSuccessResp is sent.
+			if successResp, ok := m.(*ClientSuccessResp); ok {
+				a.trackClientJoin(
+					successResp.Client, successResp.RoundID,
+				)
+			}
+
 			sendReq := &clientconn.SendServerEventRequest{
 				Message: m,
 			}
@@ -449,8 +477,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 					"failed to create new round: %w", err)
 			}
 
-			a.currentRound = newRound
 			a.rounds[newRound.RoundID] = newRound
+			a.currentRoundID = newRound.RoundID
 
 			a.log.InfoS(ctx, "Created new round after sealing",
 				"sealed_round", m.SealedRoundID,
@@ -464,13 +492,14 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				"round_id", m.FailedRoundID,
 				"reason", m.Reason)
 
+			// Untrack all clients from this failed round.
+			a.untrackRound(m.FailedRoundID)
+
 			// Remove the failed round from tracking.
 			delete(a.rounds, m.FailedRoundID)
 
 			// If this was the current round, create a new one.
-			if a.currentRound != nil &&
-				a.currentRound.RoundID == m.FailedRoundID {
-
+			if a.currentRoundID == m.FailedRoundID {
 				newRound, err := a.newRoundFSM(ctx)
 				if err != nil {
 					return fmt.Errorf("failed to create "+
@@ -478,8 +507,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 						err)
 				}
 
-				a.currentRound = newRound
 				a.rounds[newRound.RoundID] = newRound
+				a.currentRoundID = newRound.RoundID
 
 				a.log.InfoS(ctx, "Created new round after "+
 					"failure",
@@ -550,13 +579,19 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 	msg *JoinRoundRequest) fn.Result[ActorResp] {
 
+	currentRound := a.getCurrentRound()
+	if currentRound == nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"no current round available"))
+	}
+
 	// Convert the actor message to an FSM event.
 	joinEvent := &ClientJoinRequestEvent{
 		ClientID: msg.ClientID,
 		Request:  msg.Request,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, a.currentRound.FSM, joinEvent)
+	err := a.askEventAndProcessOutbox(ctx, currentRound.FSM, joinEvent)
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing join request: %w", err))
@@ -653,6 +688,9 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing confirmation: %w", err))
 	}
+
+	// Untrack all clients from this completed round.
+	a.untrackRound(msg.RoundID)
 
 	a.log.InfoS(ctx, "Round transaction confirmed",
 		"round_id", msg.RoundID,
