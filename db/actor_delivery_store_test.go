@@ -154,7 +154,12 @@ func TestActorDeliveryStoreNack(t *testing.T) {
 	require.NotNil(t, leased)
 
 	// Nack with correct token should succeed.
-	rows, err := store.NackMessage(ctx, "msg-nack", "token-456", 5*time.Minute)
+	rows, err := store.NackMessage(
+		ctx,
+		"msg-nack",
+		"token-456",
+		5*time.Minute,
+	)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
@@ -525,7 +530,12 @@ func TestActorDeliveryStoreExpireLeases(t *testing.T) {
 	require.NoError(t, err)
 
 	// Lease with 10 second duration.
-	_, err = ts.LeaseNextMessage(ctx, "actor-1", "token-old", 10*time.Second)
+	_, err = ts.LeaseNextMessage(
+		ctx,
+		"actor-1",
+		"token-old",
+		10*time.Second,
+	)
 	require.NoError(t, err)
 
 	// Advance time by 15 seconds so the lease has expired.
@@ -576,7 +586,10 @@ func TestActorDeliveryStoreMultipleEnqueueLease(t *testing.T) {
 	leased := 0
 	for {
 		msg, err := store.LeaseNextMessage(
-			ctx, mailboxID, generateTestID(), 30*time.Second,
+			ctx,
+			mailboxID,
+			generateTestID(),
+			30*time.Second,
 		)
 		require.NoError(t, err)
 
@@ -606,13 +619,20 @@ func TestActorDeliveryStoreRapidEnqueueLease(t *testing.T) {
 
 	rapid.Check(t, func(rt *rapid.T) {
 		// Generate a unique mailbox for this iteration.
-		mailboxID := rapid.StringMatching(`[a-z]{5,10}`).Draw(rt, "mailboxID")
+		const mailboxIDPattern = `[a-z]{5,10}`
+		mailboxID := rapid.StringMatching(mailboxIDPattern).Draw(
+			rt, "mailboxID",
+		)
 		numMessages := rapid.IntRange(1, 5).Draw(rt, "numMessages")
 
 		var enqueued []string
 		for i := 0; i < numMessages; i++ {
-			id := rapid.StringMatching(`msg-[a-z0-9]{8}`).Draw(rt, "msgID")
-			payload := rapid.SliceOf(rapid.Byte()).Draw(rt, "payload")
+			const msgIDPattern = `msg-[a-z0-9]{8}`
+			id := rapid.StringMatching(msgIDPattern).Draw(
+				rt, "msgID",
+			)
+			payloadStrategy := rapid.SliceOf(rapid.Byte())
+			payload := payloadStrategy.Draw(rt, "payload")
 			priority := rapid.IntRange(0, 100).Draw(rt, "priority")
 
 			err := store.EnqueueMessage(ctx, actor.EnqueueParams{
@@ -633,7 +653,10 @@ func TestActorDeliveryStoreRapidEnqueueLease(t *testing.T) {
 		leased := 0
 		for {
 			msg, err := store.LeaseNextMessage(
-				ctx, mailboxID, generateTestID(), 30*time.Second,
+				ctx,
+				mailboxID,
+				generateTestID(),
+				30*time.Second,
 			)
 			require.NoError(t, err)
 
@@ -660,7 +683,10 @@ func TestActorDeliveryStoreRapidCheckpoint(t *testing.T) {
 	ctx := t.Context()
 
 	rapid.Check(t, func(rt *rapid.T) {
-		actorID := rapid.StringMatching(`actor-[a-z0-9]{6}`).Draw(rt, "actorID")
+		const actorIDPattern = `actor-[a-z0-9]{6}`
+		actorID := rapid.StringMatching(actorIDPattern).Draw(
+			rt, "actorID",
+		)
 		stateType := rapid.StringMatching(
 			`[A-Z][a-zA-Z]{5,15}`,
 		).Draw(rt, "stateType")

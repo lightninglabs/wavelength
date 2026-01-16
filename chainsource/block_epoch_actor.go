@@ -233,7 +233,13 @@ func (a *BlockEpochActor) monitorBlocks() {
 					ref actor.TellOnlyRef[BlockEpoch],
 				) {
 
-					ref.Tell(a.ctx, blockEpoch)
+					err := ref.Tell(a.ctx, blockEpoch)
+					if err != nil {
+						log.WarnS(a.ctx,
+							"Failed to deliver block epoch",
+							err,
+						)
+					}
 				}
 				a.notifyActor.WhenSome(notifyRef)
 			}
