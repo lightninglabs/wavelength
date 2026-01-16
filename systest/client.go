@@ -303,18 +303,26 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	)
 
 	// Create RoundClientActor config.
+	//
+	// MaxOperatorFee is set to a generous 100,000 sats to avoid test
+	// brittleness when calculating VTXO amounts. This is the difference
+	// between total input (boarding) amounts and total output (VTXO)
+	// amounts that the client is willing to accept.
+	const maxOperatorFee = btcutil.Amount(100_000)
+
 	roundCfg := &round.RoundClientConfig{
-		Name:          string(clientID),
-		Logger:        h.SubLogger(round.Subsystem),
-		Wallet:        clientWallet,
-		RoundStore:    roundStore,
-		VTXOStore:     roundStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    serverConnRef,
-		ChainSource:   chainSourceRef,
-		WalletActor:   walletRef,
-		ChainParams:   &chaincfg.RegressionNetParams,
-		VTXOManager:   vtxoManagerRef,
+		Name:           string(clientID),
+		Logger:         h.SubLogger(round.Subsystem),
+		Wallet:         clientWallet,
+		RoundStore:     roundStore,
+		VTXOStore:      roundStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     serverConnRef,
+		ChainSource:    chainSourceRef,
+		WalletActor:    walletRef,
+		ChainParams:    &chaincfg.RegressionNetParams,
+		VTXOManager:    vtxoManagerRef,
+		MaxOperatorFee: maxOperatorFee,
 	}
 
 	// Create and spawn RoundClientActor.
@@ -824,6 +832,35 @@ func (c *TestClient) WaitForFSMState(targetState string, timeout time.Duration) 
 // UTXO confirmation, which transitions the FSM to PendingRoundAssembly state.
 func (c *TestClient) WaitForBoardingConfirmation(timeout time.Duration) error {
 	return c.WaitForFSMState("PendingRoundAssembly", timeout)
+}
+
+// RegisterVTXORequests sends VTXO request amounts to the round actor. This must
+// be called before TriggerRegistration to specify the VTXOs the client wants to
+// receive. The amounts should not exceed the total boarding input value minus
+// operator fees.
+func (c *TestClient) RegisterVTXORequests(ctx context.Context,
+	amounts []btcutil.Amount) error {
+
+	msg := &round.RegisterVTXORequestsRequest{
+		Amounts: amounts,
+	}
+
+	future := c.roundRef.Ask(ctx, msg)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("VTXO registration failed: %w", result.Err())
+	}
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*round.RegisterVTXORequestsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected response type: %T", respVal)
+	}
+	if !resp.Success {
+		return fmt.Errorf("VTXO registration failed: %s", resp.Error)
+	}
+
+	return nil
 }
 
 // TriggerRegistration sends a RegistrationRequested event to the round actor,
