@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -313,33 +315,37 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	return roundFSM, nil
 }
 
+// roundInState returns a predicate that checks if a RoundFSM is in the
+// specified state type.
+func roundInState[S ClientState]() fn.Pred[*RoundFSM] {
+	return func(r *RoundFSM) bool {
+		state, err := r.FSM.CurrentState()
+		if err != nil {
+			return false
+		}
+		_, ok := state.(S)
+
+		return ok
+	}
+}
+
 // findAssemblingRound finds a round that is currently assembling intents.
 // It prioritizes PendingRoundAssembly (which already has boarding inputs)
 // over Idle rounds. This ensures VTXOs are attached to rounds that have
 // inputs, preventing registration failures from empty input sets.
 func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
-	// First pass: prefer rounds that already have boarding intents.
-	for _, roundFSM := range a.rounds {
-		state, err := roundFSM.FSM.CurrentState()
-		if err != nil {
-			continue
-		}
+	rounds := slices.Collect(maps.Values(a.rounds))
 
-		if _, ok := state.(*PendingRoundAssembly); ok {
-			return roundFSM
-		}
+	// Prefer rounds that already have boarding intents.
+	if assembling := fn.Filter(
+		rounds, roundInState[*PendingRoundAssembly](),
+	); len(assembling) > 0 {
+		return assembling[0]
 	}
 
-	// Second pass: fall back to idle rounds.
-	for _, roundFSM := range a.rounds {
-		state, err := roundFSM.FSM.CurrentState()
-		if err != nil {
-			continue
-		}
-
-		if _, ok := state.(*Idle); ok {
-			return roundFSM
-		}
+	// Fall back to idle rounds.
+	if idle := fn.Filter(rounds, roundInState[*Idle]()); len(idle) > 0 {
+		return idle[0]
 	}
 
 	return nil
