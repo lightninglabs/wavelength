@@ -6,6 +6,7 @@
 
 ### Building and Testing
 - `make build` - Compile the project
+- `make tidy-module-check` - Verify module files are tidy
 - `make lint` - Run the linter (must pass before committing)
 - `make fmt` - Format all Go source files
 - `make clean` - Remove build artifacts
@@ -38,6 +39,19 @@
 - Comments should explain **how/why**, not just what
 - Use literate programming style—comments should be additive and insightful
 - All exported functions need detailed documentation
+
+### GoDoc for Exported Identifiers
+- Any exported identifier (type, const, var, func, method) must have a GoDoc
+  comment that starts with the identifier name.
+- Exported struct fields must have a GoDoc comment (GoDoc style, starting with
+  the field name) and wrapped to 80 columns.
+- All GoDoc-style comments must be wrapped to 80 columns.
+
+### Comments for Non-trivial Code
+- Any non-trivial code blocks (multi-step algorithms, subtle invariants,
+  concurrency/locking, retries/idempotency, tricky encodings) must include
+  explanatory comments that describe the “why” and any invariants.
+- These explanatory comments should also be wrapped to 80 columns.
 
 **Examples:**
 ```go
@@ -168,6 +182,7 @@ Strive for **near 90% test coverage** where practical.
 ### Before Committing
 **YOU MUST** run tests before every commit:
 
+0. Run module tidy check: `make tidy-module-check`
 1. Run unit tests: `make unit pkg=$pkg timeout=5m`
 2. Run with debug logs: `make unit-debug log="stdlog trace" pkg=$pkg case=$case timeout=10s`
 3. **Check logs carefully**:
