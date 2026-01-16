@@ -22,6 +22,7 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client v0.0.0
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
+	github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea
 	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn v1.2.3
@@ -108,7 +109,6 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.3 // indirect
-	github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea // indirect
 	github.com/lightninglabs/neutrino v0.16.2-0.20250820152345-800584718688 // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
 	github.com/lightninglabs/taproot-assets v0.7.0 // indirect
@@ -205,6 +205,6 @@ require (
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
 
-replace github.com/lightninglabs/darepo-client => ../darepo-client
+replace github.com/lightninglabs/darepo-client => ./client
 
-replace github.com/lightninglabs/darepo-client/baselib => ../darepo-client/baselib
+replace github.com/lightninglabs/darepo-client/baselib => ./client/baselib
