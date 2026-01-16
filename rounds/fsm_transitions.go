@@ -2407,6 +2407,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 				&BroadcastRoundReq{
 					RoundID:  env.RoundID,
 					SignedTx: finalTx,
+					StartHeight: env.StartHeight,
 				},
 			},
 		}),

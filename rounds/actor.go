@@ -168,6 +168,48 @@ func (a *Actor) Start(ctx context.Context) error {
 	return nil
 }
 
+// getCurrentRound returns the round FSM currently accepting registrations.
+func (a *Actor) getCurrentRound() *RoundFSM {
+	return a.rounds[a.currentRoundID]
+}
+
+// trackClientJoin records that a client has joined a specific round.
+func (a *Actor) trackClientJoin(clientID clientconn.ClientID, roundID RoundID) {
+	if a.clientRounds[clientID] == nil {
+		a.clientRounds[clientID] = make(map[RoundID]struct{})
+	}
+	a.clientRounds[clientID][roundID] = struct{}{}
+}
+
+// untrackRound removes a round from all clients' tracking. This is called when
+// a round completes or fails.
+func (a *Actor) untrackRound(roundID RoundID) {
+	for clientID := range a.clientRounds {
+		delete(a.clientRounds[clientID], roundID)
+		// Clean up empty client entries.
+		if len(a.clientRounds[clientID]) == 0 {
+			delete(a.clientRounds, clientID)
+		}
+	}
+}
+
+// getClientRounds returns the list of round IDs that a client is currently
+// participating in. This is a private helper; external callers should use
+// GetClientRoundsRequest message via the actor's Receive method.
+func (a *Actor) getClientRounds(clientID clientconn.ClientID) []RoundID {
+	roundSet := a.clientRounds[clientID]
+	if len(roundSet) == 0 {
+		return nil
+	}
+
+	rounds := make([]RoundID, 0, len(roundSet))
+	for roundID := range roundSet {
+		rounds = append(rounds, roundID)
+	}
+
+	return rounds
+}
+
 // loadPendingRounds loads all pending rounds from storage and creates FSMs for
 // them. These are rounds that have been finalized but not yet confirmed
 // on-chain.
@@ -209,12 +251,19 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 		ForfeitInfos:        round.ForfeitInfos,
 	}
 
-	fsm := a.buildAndStartRoundFSM(ctx, round.RoundID, initialState)
+	// Use 0 as height hint for loaded rounds. This causes LND to scan from
+	// the beginning which is safe but slower. When DB support is added, the
+	// start height should be persisted and loaded here.
+	//
+	// TODO(roasbeef): Load StartHeight from round.StartHeight when DB
+	// stores it.
+	fsm := a.buildAndStartRoundFSM(ctx, round.RoundID, initialState, 0)
 
 	// Re-subscribe to confirmation notifications.
 	broadcastReq := &BroadcastRoundReq{
-		RoundID:  round.RoundID,
-		SignedTx: round.FinalTx,
+		RoundID:     round.RoundID,
+		SignedTx:    round.FinalTx,
+		StartHeight: 0,
 	}
 	if err := a.broadcastAndSubscribe(ctx, broadcastReq); err != nil {
 		return nil, fmt.Errorf("failed to re-subscribe to "+
@@ -225,7 +274,7 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 }
 
 func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
-	state State) *RoundFSM {
+	state State, startHeight uint32) *RoundFSM {
 
 	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
@@ -245,6 +294,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		MinConfs:            a.cfg.MinConfs,
 		RoundStore:          a.cfg.RoundStore,
 		VTXOStore:           a.cfg.VTXOStore,
+		StartHeight:         startHeight,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -461,14 +511,38 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 }
 
 // newRoundFSM creates and starts a new round FSM instance with a unique round
-// ID and returns it.
+// ID and returns it. It queries the chain source for the current best height
+// to use as the height hint for confirmation tracking.
 func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 	roundID, err := NewRoundID()
 	if err != nil {
 		return nil, fmt.Errorf("unable to generate round ID: %w", err)
 	}
 
-	return a.buildAndStartRoundFSM(ctx, roundID, &CreatedState{}), nil
+	// Query the current best height to use as the start height for this
+	// round. This height will be used as the height hint when subscribing
+	// to confirmation notifications later.
+	var startHeight uint32
+	if a.cfg.ChainSourceActor != nil {
+		heightFuture := a.cfg.ChainSourceActor.Ask(
+			ctx, &chainsource.BestHeightRequest{},
+		)
+		heightResult := heightFuture.Await(ctx)
+		heightResp, err := heightResult.Unpack()
+		if err != nil {
+			return nil, fmt.Errorf("get best height: %w", err)
+		}
+		bhr, ok := heightResp.(*chainsource.BestHeightResponse)
+		if !ok {
+			return nil, fmt.Errorf("unexpected height resp type")
+		}
+		bestHeightResp := bhr
+		startHeight = uint32(bestHeightResp.Height)
+	}
+
+	return a.buildAndStartRoundFSM(
+		ctx, roundID, &CreatedState{}, startHeight,
+	), nil
 }
 
 // handleJoinRoundRequest processes a JoinRoundRequest message by forwarding it
@@ -618,21 +692,11 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		"round_id", req.RoundID,
 		"txid", txHash.String())
 
-	// Get the current block height to use as a height hint for the
-	// confirmation subscription. LND requires a height hint > 0 to optimize
-	// confirmation scanning.
-	heightFuture := a.cfg.ChainSourceActor.Ask(ctx, &chainsource.BestHeightRequest{})
-	heightResult := heightFuture.Await(ctx)
-	heightResp, err := heightResult.Unpack()
-	if err != nil {
-		return fmt.Errorf("get best height: %w", err)
-	}
-	bestHeightResp := heightResp.(*chainsource.BestHeightResponse)
-
 	// Subscribe to confirmation using actor mode. We create a mapped
 	// reference that transforms a ConfirmationEvent to a ConfirmationMsg.
 	// We use Tell (fire-and-forget) since we handle the confirmation
-	// asynchronously via ConfirmationMsg.
+	// asynchronously via ConfirmationMsg. The height hint comes from
+	// req.StartHeight which was captured when the round was created.
 	callbackRef := chainsource.MapConfirmationEvent(
 		a.cfg.SelfRef,
 		func(event chainsource.ConfirmationEvent) ActorMsg {
@@ -658,7 +722,7 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		Txid:        &txHash,
 		PkScript:    pkScript,
 		TargetConfs: a.cfg.ConfirmationTarget,
-		HeightHint:  uint32(bestHeightResp.Height),
+		HeightHint:  req.StartHeight,
 		NotifyActor: fn.Some(callbackRef),
 	}
 
