@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -137,6 +139,31 @@ func (m *mockChainSourceRef) Tell(
 			m.notifiers[req.CallerID] = notifier
 		}
 	}
+}
+
+// Ask implements actor.ActorRef for the mock. It returns a BestHeightResponse
+// for height queries.
+func (m *mockChainSourceRef) Ask(
+	_ context.Context, msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	promise := actor.NewPromise[chainsource.ChainSourceResp]()
+
+	switch msg.(type) {
+	case *chainsource.BestHeightRequest:
+		// Return a reasonable test height.
+		resp := &chainsource.BestHeightResponse{
+			Height: 100,
+		}
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](resp))
+
+	default:
+		promise.Complete(fn.Err[chainsource.ChainSourceResp](
+			fmt.Errorf("unexpected Ask message type: %T", msg),
+		))
+	}
+
+	return promise.Future()
 }
 
 // mockWalletActorRef captures registration requests and enables tests to
@@ -339,17 +366,23 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		MinConfirmations:  1,
 	}
 
+	// Default max operator fee for tests: 100,000 sats (0.001 BTC).
+	// This is generous to avoid test brittleness when multiple intents
+	// are used.
+	const defaultMaxOperatorFee = btcutil.Amount(100000)
+
 	cfg := &RoundClientConfig{
-		Name:          "test-round-actor",
-		Wallet:        walletMock,
-		RoundStore:    roundStore,
-		VTXOStore:     vtxoStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    serverConn,
-		ChainSource:   chainSource,
-		WalletActor:   walletActor,
-		SelfRef:       selfRef,
-		ChainParams:   &chaincfg.MainNetParams,
+		Name:           "test-round-actor",
+		Wallet:         walletMock,
+		RoundStore:     roundStore,
+		VTXOStore:      vtxoStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     serverConn,
+		ChainSource:    chainSource,
+		WalletActor:    walletActor,
+		SelfRef:        selfRef,
+		ChainParams:    &chaincfg.MainNetParams,
+		MaxOperatorFee: defaultMaxOperatorFee,
 	}
 
 	actorResult := NewRoundClientActor(cfg)
@@ -438,6 +471,22 @@ func (h *actorTestHarness) queryState() map[string]FSMStateInfo {
 	return stateResp.States
 }
 
+// findTempState returns the first temp-keyed round's state from the states map.
+// Returns the state info and true if found, empty and false otherwise.
+func (h *actorTestHarness) findTempState(
+	states map[string]FSMStateInfo) (FSMStateInfo, bool) {
+
+	h.t.Helper()
+
+	for _, state := range states {
+		if state.IsTemp {
+			return state, true
+		}
+	}
+
+	return FSMStateInfo{}, false
+}
+
 // newTestBoardingIntent creates a complete boarding intent with proper
 // tapscript and chain info for testing.
 func (h *actorTestHarness) newTestBoardingIntent() *wallet.BoardingIntent {
@@ -506,29 +555,51 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 }
 
 // simulateRoundJoined injects a RoundJoined server event to the actor,
-// simulating successful round enrollment.
-func (h *actorTestHarness) simulateRoundJoined(roundID RoundID) {
+// simulating successful round enrollment. The outpoints are used to correlate
+// the response to the correct pending round.
+func (h *actorTestHarness) simulateRoundJoined(
+	roundID RoundID, boardingOutpoints []wire.OutPoint,
+) {
+
 	h.t.Helper()
 
 	event := &RoundJoined{
-		RoundID: roundID,
+		RoundID:                   roundID,
+		AcceptedBoardingOutpoints: boardingOutpoints,
+		AcceptedVTXOOutpoints:     nil,
 	}
 	h.sendServerMessage(event)
 }
 
-// assertFSMState verifies the primary FSM is in the expected state type.
+// assertFSMState verifies that at least one FSM is in the expected state type.
 func (h *actorTestHarness) assertFSMState(expectedStateType string) {
 	h.t.Helper()
 
 	states := h.queryState()
-	primaryState, exists := states["primary"]
-	require.True(h.t, exists, "expected primary FSM state")
+	require.NotEmpty(h.t, states, "expected at least one FSM")
 
-	stateName := fmt.Sprintf("%T", primaryState.State)
-	require.Contains(
-		h.t, stateName, expectedStateType,
-		"expected state %s, got %s", expectedStateType, stateName,
-	)
+	for _, stateInfo := range states {
+		stateName := fmt.Sprintf("%T", stateInfo.State)
+		if strings.Contains(stateName, expectedStateType) {
+			return
+		}
+	}
+
+	// No matching state found, print what we have for debugging.
+	var foundStates []string
+	for key, stateInfo := range states {
+		stateStr := fmt.Sprintf("%s=%T", key, stateInfo.State)
+
+		// Print additional info for ClientFailedState.
+		if failedState, ok := stateInfo.State.(*ClientFailedState); ok {
+			stateStr = fmt.Sprintf("%s (reason=%q, err=%v)",
+				stateStr, failedState.Reason, failedState.Error)
+		}
+
+		foundStates = append(foundStates, stateStr)
+	}
+	h.t.Fatalf("expected state containing %q, got: %v",
+		expectedStateType, foundStates)
 }
 
 // assertServerMessageSent verifies a message of the given type was sent to
@@ -542,6 +613,34 @@ func (h *actorTestHarness) assertServerMessageSent(msgType string) {
 // verify only new messages sent after this point.
 func (h *actorTestHarness) clearServerMessages() {
 	h.serverConn.clearMessages()
+}
+
+// sendVTXORequests sends VTXO request amounts to the actor. This sets up the
+// mock wallet to return key descriptors for each amount, then sends a
+// RegisterVTXORequestsRequest message.
+func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
+	h.t.Helper()
+
+	// Setup mock to return a key descriptor for each DeriveNextKey call.
+	for i := range amounts {
+		keyDesc := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  uint32(i),
+			},
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(keyDesc, nil).Once()
+	}
+
+	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
 }
 
 // newTestRound creates a test Round with a unique commitment transaction,
@@ -564,6 +663,53 @@ func (h *actorTestHarness) newTestRound(roundID RoundID) *Round {
 		RoundID:      roundID,
 		CommitmentTx: fn.Some(packet),
 	}
+}
+
+// setupRoundInInputSigSentState creates a round FSM in InputSigSentState and
+// adds it to the actor's rounds map. This allows testing the checkpoint flow
+// where the FSM is already at the checkpoint state. Returns the PSBT
+// commitment tx for test assertions.
+func (h *actorTestHarness) setupRoundInInputSigSentState(
+	roundID RoundID,
+) *psbt.Packet {
+
+	h.t.Helper()
+
+	// Create a unique commitment tx for this round.
+	tx := wire.NewMsgTx(2)
+	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID.String())...)
+	tx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: uniqueScript,
+	})
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(h.t, err)
+
+	// Create InputSigSentState with the commitment tx.
+	initialState := &InputSigSentState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+	}
+
+	// Create a new FSM starting in InputSigSentState.
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(h.ctx, roundID.LogPrefix()),
+		InitialState:  initialState,
+		Env:           h.actor.env,
+	}
+	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM.Start(h.ctx)
+
+	// Add to the actor's rounds map.
+	keyStr := RoundKeyStr(roundID.KeyString())
+	h.actor.rounds[keyStr] = &RoundFSM{
+		FSM:     &newFSM,
+		Key:     roundID,
+		RoundID: roundID,
+	}
+
+	return packet
 }
 
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return

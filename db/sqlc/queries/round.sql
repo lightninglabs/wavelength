@@ -3,8 +3,9 @@
 -- name: InsertRound :exec
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
-    commitment_txid, vtxt_tree, status, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    commitment_txid, vtxt_tree, status, creation_time, last_update_time,
+    start_height
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
@@ -59,25 +60,19 @@ UPDATE round_boarding_intents
 SET input_signature = $4, input_index = $5
 WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3;
 
--- Round VTXO templates queries.
+-- Round VTXO request queries.
 
--- name: InsertRoundVtxoTemplate :exec
-INSERT INTO round_vtxo_templates (
-    round_id, outpoint_hash, outpoint_index, template_index, amount, pk_script,
-    expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index,
-    signing_pubkey
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-ON CONFLICT (round_id, outpoint_hash, outpoint_index, template_index) DO NOTHING;
+-- name: InsertRoundVtxoRequest :exec
+INSERT INTO round_vtxo_requests (
+    round_id, request_index, amount, pk_script, expiry, client_pubkey,
+    operator_pubkey, signing_key_family, signing_key_index, signing_pubkey
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (round_id, request_index) DO NOTHING;
 
--- name: GetRoundVtxoTemplates :many
-SELECT * FROM round_vtxo_templates
-WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3
-ORDER BY template_index ASC;
-
--- name: GetAllRoundVtxoTemplates :many
-SELECT * FROM round_vtxo_templates
+-- name: GetRoundVtxoRequests :many
+SELECT * FROM round_vtxo_requests
 WHERE round_id = $1
-ORDER BY outpoint_hash, outpoint_index, template_index ASC;
+ORDER BY request_index ASC;
 
 -- Client trees queries.
 

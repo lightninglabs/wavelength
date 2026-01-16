@@ -204,14 +204,12 @@ CREATE TABLE round_statuses (
     status_name TEXT UNIQUE NOT NULL
 );
 
-CREATE TABLE round_vtxo_templates (
-    -- Composite FK to round_boarding_intents.
+CREATE TABLE round_vtxo_requests (
+    -- round_id links to the parent round.
     round_id TEXT NOT NULL,
-    outpoint_hash BLOB NOT NULL,
-    outpoint_index INTEGER NOT NULL,
 
-    -- template_index is the order of this VTXO within the request.
-    template_index INTEGER NOT NULL,
+    -- request_index preserves request order.
+    request_index INTEGER NOT NULL,
 
     -- VTXORequest.Amount - value in satoshis.
     amount BIGINT NOT NULL,
@@ -237,15 +235,17 @@ CREATE TABLE round_vtxo_templates (
     -- VTXORequest.SigningKey.PubKey - 33-byte compressed public key.
     signing_pubkey BLOB NOT NULL,
 
-    PRIMARY KEY (round_id, outpoint_hash, outpoint_index, template_index),
-    FOREIGN KEY (round_id, outpoint_hash, outpoint_index)
-        REFERENCES round_boarding_intents(round_id, outpoint_hash, outpoint_index)
-        ON DELETE CASCADE
+    PRIMARY KEY (round_id, request_index),
+    FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
 );
 
 CREATE TABLE rounds (
     -- round_id is the unique identifier assigned by the server.
     round_id TEXT PRIMARY KEY NOT NULL,
+
+    -- start_height is the block height when the round was created. Used as
+    -- a HeightHint for confirmation registration when restoring from disk.
+    start_height INTEGER NOT NULL DEFAULT 0,
 
     -- confirmation_height is the block height at which the commitment tx
     -- was confirmed. NULL until confirmed on-chain.

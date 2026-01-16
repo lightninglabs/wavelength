@@ -80,6 +80,12 @@ jobs:
       - name: Check SQL models
         run: make sqlc-check
 
+      ########################
+      # Migration version check
+      ########################
+      - name: Check migration version
+        run: make check-migration-version
+
   ########################
   # lint code
   ########################

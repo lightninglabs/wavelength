@@ -1,11 +1,12 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // ClientMsg is the sealed interface for all messages that can be sent to a
@@ -85,10 +86,13 @@ type FSMStateInfo struct {
 	// State is the actual state object (any ClientState implementation).
 	State ClientState
 
-	// IsPrimary indicates whether this is the primary FSM.
-	IsPrimary bool
+	// IsTemp indicates whether this round has a temp key (not yet assigned
+	// a RoundID by the server). Temp-keyed rounds are in the process of
+	// joining a round but haven't received a RoundJoined response yet.
+	IsTemp bool
 
-	// RoundID is the round ID (zero value for primary FSM).
+	// RoundID is the server-assigned round ID (zero value for temp-keyed
+	// rounds).
 	RoundID RoundID
 }
 
@@ -96,8 +100,9 @@ type FSMStateInfo struct {
 type GetClientStateResponse struct {
 	actor.BaseMessage
 
-	// States maps FSM identifier to state info. Key "primary" for the
-	// primary FSM, round IDs for round FSMs.
+	// States maps FSM identifier to state info. Keys are either temp key
+	// strings (for pending rounds) or RoundID strings (for rounds that
+	// have been assigned an ID by the server).
 	States map[string]FSMStateInfo
 }
 
@@ -107,9 +112,13 @@ func (m *GetClientStateResponse) MessageType() string {
 
 func (m *GetClientStateResponse) clientRespSealed() {}
 
-// CancelRoundRequest cancels participation in the current round.
+// CancelRoundRequest cancels participation in a round.
 type CancelRoundRequest struct {
 	actor.BaseMessage
+
+	// RoundKey is the optional key of the round to cancel. If not
+	// specified, the first temp-keyed round will be cancelled.
+	RoundKey fn.Option[RoundKeyStr]
 }
 
 func (m *CancelRoundRequest) MessageType() string {
@@ -132,34 +141,37 @@ func (m *CancelRoundResponse) MessageType() string {
 
 func (m *CancelRoundResponse) clientRespSealed() {}
 
-// RegisterBoardingIntentRequest informs the FSM that the wallet has funded or
-// will fund a specific boarding address so confirmations should be tracked.
-type RegisterBoardingIntentRequest struct {
+// RegisterVTXORequestsRequest informs the FSM of VTXO request amounts to
+// include in the next round registration.
+type RegisterVTXORequestsRequest struct {
 	actor.BaseMessage
 
-	Address      *BoardingAddress
-	VTXORequests []*types.VTXORequest
+	Amounts []btcutil.Amount
 }
 
-func (m *RegisterBoardingIntentRequest) MessageType() string {
-	return "RegisterBoardingIntentRequest"
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsRequest) MessageType() string {
+	return "RegisterVTXORequestsRequest"
 }
 
-func (m *RegisterBoardingIntentRequest) clientMsgSealed() {}
+// clientMsgSealed marks this as a client message.
+func (m *RegisterVTXORequestsRequest) clientMsgSealed() {}
 
-// RegisterBoardingIntentResponse acknowledges the request.
-type RegisterBoardingIntentResponse struct {
+// RegisterVTXORequestsResponse acknowledges the request.
+type RegisterVTXORequestsResponse struct {
 	actor.BaseMessage
 
 	Success bool
 	Error   string
 }
 
-func (m *RegisterBoardingIntentResponse) MessageType() string {
-	return "RegisterBoardingIntentResponse"
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsResponse) MessageType() string {
+	return "RegisterVTXORequestsResponse"
 }
 
-func (m *RegisterBoardingIntentResponse) clientRespSealed() {}
+// clientRespSealed marks this as a client response message.
+func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
 
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.

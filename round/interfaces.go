@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -84,6 +85,71 @@ func ParseRoundID(s string) (RoundID, error) {
 	return RoundID(id), nil
 }
 
+// RoundKey is an interface for identifying rounds in the actor's map. It can
+// be either a TempRoundKey (client-generated before server assigns ID) or a
+// RoundID (server-assigned). This enables concurrent rounds to be tracked
+// before they receive their official RoundIDs.
+type RoundKey interface {
+	// KeyString returns a unique string representation for map keying.
+	KeyString() string
+
+	// IsTemp returns true if this is a temporary client-generated key.
+	IsTemp() bool
+}
+
+// TempRoundKey is a client-generated temporary identifier used for rounds
+// before the server assigns a RoundID. It uses UUIDv7 for time-ordering and
+// uniqueness.
+type TempRoundKey uuid.UUID
+
+// NewTempRoundKey generates a new temporary round key.
+func NewTempRoundKey() (TempRoundKey, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return TempRoundKey{}, err
+	}
+
+	return TempRoundKey(id), nil
+}
+
+// KeyString implements RoundKey.
+func (k TempRoundKey) KeyString() string {
+	return "temp:" + uuid.UUID(k).String()
+}
+
+// IsTemp implements RoundKey.
+func (k TempRoundKey) IsTemp() bool {
+	return true
+}
+
+// String returns the string representation.
+func (k TempRoundKey) String() string {
+	return uuid.UUID(k).String()
+}
+
+// LogPrefix returns a short string for logging.
+func (k TempRoundKey) LogPrefix() string {
+	return fmt.Sprintf("temp(%v)", hex.EncodeToString(k[12:16]))
+}
+
+// Ensure RoundID implements RoundKey.
+var _ RoundKey = RoundID{}
+
+// RoundKeyStr is a type alias for the string representation of a RoundKey.
+// Used as the key type in maps to avoid using raw strings, providing better
+// type safety and documentation.
+type RoundKeyStr string
+
+// KeyString implements RoundKey for RoundID.
+func (id RoundID) KeyString() string {
+	return uuid.UUID(id).String()
+}
+
+// IsTemp implements RoundKey for RoundID.
+func (id RoundID) IsTemp() bool {
+	return false
+}
+
 // SignerKey is the 33-byte compressed public key used to identify a signer
 // in MuSig2 sessions and client tree mappings.
 type SignerKey = [33]byte
@@ -147,6 +213,30 @@ const (
 	BoardingStatusSwept = wallet.BoardingStatusSwept
 )
 
+// Intents captures all the client's intents to be included in a single round
+// join request.
+type Intents struct {
+	// Boarding contains all boarding intents to include in the round.
+	Boarding []BoardingIntent
+
+	// VTXOs is the templates for the VTXO(s) requested in the round.
+	//
+	// TODO(roasbeef): add auxleaf for tap here.
+	VTXOs []types.VTXORequest
+
+	// Future extensions:
+	// Forfeits requests
+	// Leave requests
+}
+
+// Clone creates a copy of the Intents.
+func (i *Intents) Clone() Intents {
+	return Intents{
+		Boarding: slices.Clone(i.Boarding),
+		VTXOs:    slices.Clone(i.VTXOs),
+	}
+}
+
 // BoardingIntent captures one confirmed boarding input plus its requested VTXO
 // outputs. This type embeds the wallet's BoardingIntent and adds round-specific
 // fields for tracking VTXO templates and round assignment.
@@ -155,19 +245,9 @@ type BoardingIntent struct {
 	// Address, Outpoint, ChainInfo, and Status.
 	wallet.BoardingIntent
 
-	// BoardingRequest is the original boarding request details. It targets
+	// Request is the original boarding request details. It targets
 	// a boarding address by outpoint and includes additional metadata.
-	BoardingRequest types.BoardingRequest
-
-	// VtxoTemplate is the template for the VTXO(s) requested as part of
-	// boarding.
-	//
-	// TODO(roasbeef): add auxleaf for tap here.
-	VtxoTemplate []types.VTXORequest
-
-	// RoundID is the identifier of the round this intent was assigned to.
-	// None until the client joins a round.
-	RoundID fn.Option[RoundID]
+	Request types.BoardingRequest
 }
 
 // ConfInfo contains chain information about when a round's commitment
@@ -189,6 +269,12 @@ type Round struct {
 	// client joins this round.
 	RoundID RoundID
 
+	// StartHeight is the block height when this round was created. This is
+	// used as a HeightHint for confirmation registration when the round is
+	// restored from disk, ensuring the chain backend scans from the correct
+	// starting point.
+	StartHeight uint32
+
 	// ConfInfo contains chain information about when the round's commitment
 	// transaction was confirmed. None until the commitment tx is confirmed
 	// on-chain.
@@ -206,9 +292,8 @@ type Round struct {
 	// unilateral exit.
 	VTXOTreePaths fn.Option[map[int]*tree.Tree]
 
-	// BoardingIntents contains all boarding intents participating in this
-	// round.
-	BoardingIntents []BoardingIntent
+	// Intents contains all intents participating in this round.
+	Intents Intents
 
 	// Future extensions:
 	// Refreshes []*RefreshIntent
@@ -328,4 +413,9 @@ type VTXOStore interface {
 // embed Signer here.
 type ClientWallet interface {
 	input.Signer
+
+	// DeriveNextKey derives the next key in the specified key family for
+	// use as a VTXO signing key.
+	DeriveNextKey(ctx context.Context,
+		family keychain.KeyFamily) (*keychain.KeyDescriptor, error)
 }

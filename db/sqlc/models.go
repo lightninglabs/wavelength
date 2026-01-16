@@ -54,6 +54,7 @@ type ClientTreeTxid struct {
 
 type Round struct {
 	RoundID               string
+	StartHeight           int32
 	ConfirmationHeight    sql.NullInt32
 	ConfirmationBlockHash []byte
 	CommitmentTx          []byte
@@ -87,11 +88,9 @@ type RoundStatus struct {
 	StatusName string
 }
 
-type RoundVtxoTemplate struct {
+type RoundVtxoRequest struct {
 	RoundID          string
-	OutpointHash     []byte
-	OutpointIndex    int32
-	TemplateIndex    int32
+	RequestIndex     int32
 	Amount           int64
 	PkScript         []byte
 	Expiry           int32

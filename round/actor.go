@@ -6,18 +6,24 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // Compile-time assertion that RoundClientActor implements actor.Stoppable.
@@ -29,11 +35,21 @@ type RoundFSM struct {
 	// type parameters: InternalEvent, OutboxEvent, Env.
 	FSM *ClientStateMachine
 
-	// RoundID is the unique identifier for this round.
+	// Key is the current key for this round in the actor's map. It starts
+	// as a TempRoundKey and is upgraded to a RoundID when the server
+	// assigns one.
+	Key RoundKey
+
+	// RoundID is the unique identifier for this round, assigned by the
+	// server. Zero value until the server assigns an ID.
 	RoundID RoundID
 
 	// TxID is the commitment transaction ID for this round.
 	TxID chainhash.Hash
+
+	// CommitmentTx is the commitment transaction as a PSBT, used for
+	// registering confirmation notifications with the correct pkScript.
+	CommitmentTx fn.Option[*psbt.Packet]
 }
 
 // RoundClientActor wraps the client boarding FSM in an actor interface. The
@@ -42,7 +58,8 @@ type RoundFSM struct {
 // chainsource actor for chain monitoring.
 //
 // Architecture:
-//   - Actor holds FSM (protofsm.StateMachine).
+//   - Actor holds FSMs (protofsm.StateMachine) in a unified map.
+//   - Rounds start with TempRoundKey, re-keyed to RoundID on server response.
 //   - Actor receives actor messages (ClientMsg).
 //   - Actor converts messages to FSM events.
 //   - FSM processes events producing new state and outbox.
@@ -54,19 +71,17 @@ type RoundClientActor struct {
 	// log is the logger for this actor instance.
 	log btclog.Logger
 
-	// primaryFSM is the main FSM for assembling new rounds from Confirmed
-	// intents. It handles the flow from Idle through round registration.
-	primaryFSM *ClientStateMachine
+	// rounds tracks all round FSMs keyed by their RoundKey. Rounds start
+	// with a TempRoundKey and are re-keyed to their server-assigned RoundID
+	// when received via RoundJoined. This enables concurrent round assembly.
+	rounds map[RoundKeyStr]*RoundFSM
 
-	// activeRounds tracks concurrent round FSMs awaiting commitment tx
-	// confirmation. Map: RoundID → RoundFSM instance.
-	activeRounds map[RoundID]*RoundFSM
+	// commitmentTxIndex maps commitment transaction IDs to their round
+	// keys for routing confirmation events.
+	commitmentTxIndex map[chainhash.Hash]RoundKeyStr
 
-	// commitmentTxIndex maps commitment transaction IDs to their round IDs
-	// for routing confirmation events. Map: CommitmentTxID → RoundID.
-	commitmentTxIndex map[chainhash.Hash]RoundID
-
-	// env is the FSM environment containing all dependencies.
+	// env is the base FSM environment template containing all dependencies.
+	// Each new round FSM gets a copy with a fresh StartHeight.
 	env *ClientEnvironment
 }
 
@@ -98,8 +113,9 @@ type RoundClientConfig struct {
 	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
 	// ChainSource is a reference to the ChainSource actor for registering
-	// confirmation notifications for commitment transactions.
-	ChainSource actor.TellOnlyRef[chainsource.ChainSourceMsg]
+	// confirmation notifications for commitment transactions and querying
+	// block height.
+	ChainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp]
 
 	// WalletActor is a reference to the Ark wallet actor. The round actor
 	// registers to receive BoardingUtxoConfirmedEvent notifications when
@@ -112,10 +128,22 @@ type RoundClientConfig struct {
 
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
+
+	// MaxOperatorFee is the maximum fee the client is willing to pay per
+	// round. This limits the difference between total boarding input amounts
+	// and total VTXO output amounts.
+	MaxOperatorFee btcutil.Amount
+
+	// VTXOManager receives VTXO creation notifications after rounds
+	// complete. The round actor forwards VTXOCreatedNotification messages
+	// to spawn VTXO actors for newly created VTXOs. Uses actor.Message to
+	// avoid import cycle with vtxo package. Optional - if nil,
+	// notifications are not forwarded.
+	VTXOManager actor.TellOnlyRef[actor.Message]
 }
 
 // NewRoundClientActor creates a new client actor with the provided
-// configuration. The actor starts in the Idle state.
+// configuration. FSMs are created on-demand when boarding intents arrive.
 //
 // The FSM uses interfaces directly and calls lib package functions as needed.
 // Chain operations are handled via outbox messages (not direct calls).
@@ -126,16 +154,18 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		actorLog = log
 	}
 
-	// Create FSM environment with direct interface assignments. The FSM
-	// will call lib functions directly when needed (e.g.,
-	// lib.NewTreeSignerSession, signing helpers).
+	// Create base FSM environment template with direct interface
+	// assignments. The FSM will call lib functions directly when needed
+	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
+	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:    cfg.RoundStore,
-		VTXOStore:     cfg.VTXOStore,
-		Wallet:        cfg.Wallet,
-		OperatorTerms: cfg.OperatorTerms,
-		ChainParams:   cfg.ChainParams,
-		Log:           actorLog,
+		RoundStore:     cfg.RoundStore,
+		VTXOStore:      cfg.VTXOStore,
+		Wallet:         cfg.Wallet,
+		OperatorTerms:  cfg.OperatorTerms,
+		ChainParams:    cfg.ChainParams,
+		MaxOperatorFee: cfg.MaxOperatorFee,
+		Log:            actorLog,
 	}
 
 	if err := ValidateDelayParameters(
@@ -144,31 +174,43 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		return fn.Err[*RoundClientActor](err)
 	}
 
-	// Create the FSM with Idle initial state. The baselib protofsm uses 3
-	// type parameters: InternalEvent, OutboxEvent, Env.
-	fsmCfg := ClientStateMachineCfg{
-		Logger:        actorLog.WithPrefix("fsm-primary"),
-		ErrorReporter: newContextErrorReporter(context.Background(), "fsm-primary"),
-		InitialState:  &Idle{},
-		Env:           env,
-	}
-	primaryFSM := protofsm.NewStateMachine(fsmCfg)
-	primaryFSM.Start(context.Background())
-
+	// No FSM is created here. FSMs are created on-demand when boarding
+	// intents arrive via createNewRound().
 	return fn.Ok(&RoundClientActor{
 		cfg:               cfg,
 		log:               actorLog,
-		primaryFSM:        &primaryFSM,
-		activeRounds:      make(map[RoundID]*RoundFSM),
-		commitmentTxIndex: make(map[chainhash.Hash]RoundID),
+		rounds:            make(map[RoundKeyStr]*RoundFSM),
+		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
 		env:               env,
 	})
 }
 
-// createRoundFSM creates a new FSM instance for a specific round, restoring
-// from checkpointed state. Uses FetchState to load both round data and FSM
-// state atomically.
-func (a *RoundClientActor) createRoundFSM(ctx context.Context,
+// queryBestHeight queries the ChainSource for the current best block height.
+// This wraps the Ask->Await->Unpack pattern for height queries, providing a
+// clean interface for callers that need the current height.
+func (a *RoundClientActor) queryBestHeight(ctx context.Context) (uint32, error) {
+	heightFuture := a.cfg.ChainSource.Ask(ctx, &chainsource.BestHeightRequest{})
+	heightResult := heightFuture.Await(ctx)
+
+	heightResp, err := heightResult.Unpack()
+	if err != nil {
+		return 0, fmt.Errorf("failed to query best height: %w", err)
+	}
+
+	bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected height response type: %T",
+			heightResp)
+	}
+
+	return uint32(bestHeightResp.Height), nil
+}
+
+// createRoundFSMFromDB creates a new FSM instance for a specific round,
+// restoring from checkpointed state. Uses FetchState to load both round data
+// and FSM state atomically. Used when loading active rounds from database on
+// startup.
+func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	roundID RoundID) (*RoundFSM, error) {
 
 	round, state, err := a.cfg.RoundStore.FetchState(ctx, roundID)
@@ -176,16 +218,23 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 		return nil, fmt.Errorf("failed to fetch round state: %w", err)
 	}
 
-	fsmPrefix := fmt.Sprintf("fsm-%s", round.RoundID)
+	// Use the StartHeight stored in the round when it was created. This
+	// ensures we scan from the original starting point, not the current
+	// height, which could miss confirmations if the tx was already mined.
+	startHeight := round.StartHeight
+
+	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:    a.cfg.RoundStore,
-		VTXOStore:     a.cfg.VTXOStore,
-		Wallet:        a.cfg.Wallet,
-		OperatorTerms: a.cfg.OperatorTerms,
-		ChainParams:   a.cfg.ChainParams,
-		Log:           fsmLogger,
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -207,16 +256,157 @@ func (a *RoundClientActor) createRoundFSM(ctx context.Context,
 	)
 
 	return &RoundFSM{
-		FSM:     &fsm,
-		RoundID: round.RoundID,
-		TxID:    txid,
+		FSM:          &fsm,
+		Key:          roundID,
+		RoundID:      round.RoundID,
+		TxID:         txid,
+		CommitmentTx: round.CommitmentTx,
 	}, nil
 }
 
+// createNewRound creates a new round FSM with a temporary key when a boarding
+// intent arrives. The round starts in Idle state and will be re-keyed to a
+// server-assigned RoundID when RoundJoined is received.
+func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error) {
+	tempKey, err := NewTempRoundKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate temp key: %w", err)
+	}
+
+	startHeight, err := a.queryBestHeight(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query start height: %w", err)
+	}
+
+	fsmPrefix := tempKey.LogPrefix()
+	fsmLogger := a.log.WithPrefix(fsmPrefix)
+
+	env := &ClientEnvironment{
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
+	}
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        fsmLogger,
+		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
+		InitialState:  &Idle{},
+		Env:           env,
+	}
+	fsm := protofsm.NewStateMachine(fsmCfg)
+	fsm.Start(ctx)
+
+	roundFSM := &RoundFSM{
+		FSM: &fsm,
+		Key: tempKey,
+	}
+
+	keyStr := RoundKeyStr(tempKey.KeyString())
+	a.rounds[keyStr] = roundFSM
+
+	a.log.InfoS(ctx, "Created new round FSM",
+		slog.String("temp_key", tempKey.String()),
+		slog.Int("start_height", int(startHeight)))
+
+	return roundFSM, nil
+}
+
+// roundInState returns a predicate that checks if a RoundFSM is in the
+// specified state type.
+func roundInState[S ClientState]() fn.Pred[*RoundFSM] {
+	return func(r *RoundFSM) bool {
+		state, err := r.FSM.CurrentState()
+		if err != nil {
+			return false
+		}
+		_, ok := state.(S)
+
+		return ok
+	}
+}
+
+// findAssemblingRound finds a round that is currently assembling intents.
+// It prioritizes PendingRoundAssembly (which already has boarding inputs)
+// over Idle rounds. This ensures VTXOs are attached to rounds that have
+// inputs, preventing registration failures from empty input sets.
+func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
+	rounds := slices.Collect(maps.Values(a.rounds))
+
+	// Prefer rounds that already have boarding intents.
+	if assembling := fn.Filter(
+		rounds, roundInState[*PendingRoundAssembly](),
+	); len(assembling) > 0 {
+		return assembling[0]
+	}
+
+	// Fall back to idle rounds.
+	if idle := fn.Filter(rounds, roundInState[*Idle]()); len(idle) > 0 {
+		return idle[0]
+	}
+
+	return nil
+}
+
+// findRoundByOutpoints finds a pending round (in RegistrationSentState) whose
+// inputs match the given outpoints. Used to correlate RoundJoined responses to
+// the correct pending round when multiple rounds are in-flight concurrently.
+func (a *RoundClientActor) findRoundByOutpoints(
+	boardingOutpoints, vtxoOutpoints []wire.OutPoint) *RoundFSM {
+
+	// Build set of boarding outpoints for efficient lookup.
+	boardingSet := fn.NewSet(boardingOutpoints...)
+
+	// TODO: When VTXO operations (forfeit/leave/refresh) are implemented,
+	// also match vtxoOutpoints against the round's involved VTXOs.
+	_ = vtxoOutpoints
+
+	for _, roundFSM := range a.rounds {
+		state, err := roundFSM.FSM.CurrentState()
+		if err != nil {
+			continue
+		}
+
+		regState, ok := state.(*RegistrationSentState)
+		if !ok {
+			continue
+		}
+
+		// Check if this round's intents match the boarding outpoints.
+		if a.intentsMatchOutpoints(regState.Intents.Boarding, boardingSet) {
+			return roundFSM
+		}
+	}
+
+	return nil
+}
+
+// intentsMatchOutpoints checks if a round's boarding intents exactly match the
+// given set of outpoints.
+func (a *RoundClientActor) intentsMatchOutpoints(
+	intents []BoardingIntent, outpoints fn.Set[wire.OutPoint]) bool {
+
+	if uint(len(intents)) != outpoints.Size() {
+		return false
+	}
+
+	for _, intent := range intents {
+		if !outpoints.Contains(intent.Outpoint) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // registerCommitmentConfirmation registers for confirmation monitoring of a
-// commitment transaction with the chainsource actor.
+// commitment transaction with the chainsource actor. The commitmentTx is used
+// to extract the pkScript for LND's confirmation tracking.
 func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
-	txid chainhash.Hash) {
+	txid chainhash.Hash, commitmentTx fn.Option[*psbt.Packet]) {
 
 	callerID := fmt.Sprintf("commitment-tx-%s", txid.String())
 
@@ -232,14 +422,46 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 		},
 	)
 
+	// Extract pkScript from the commitment transaction's first output.
+	// LND requires a pkScript for confirmation tracking.
+	var pkScript []byte
+	commitmentTx.WhenSome(func(packet *psbt.Packet) {
+		if packet.UnsignedTx != nil && len(packet.UnsignedTx.TxOut) > 0 {
+			pkScript = packet.UnsignedTx.TxOut[0].PkScript
+		}
+	})
+
+	// Query ChainSource for current block height to use as HeightHint.
+	// LND requires HeightHint > 0 for confirmation scanning.
+	var heightHint uint32
+	heightFuture := a.cfg.ChainSource.Ask(
+		ctx, &chainsource.BestHeightRequest{},
+	)
+	heightResult := heightFuture.Await(ctx)
+	heightResp, err := heightResult.Unpack()
+	if err == nil {
+		bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+		if ok {
+			heightHint = uint32(bestHeightResp.Height)
+		}
+	} else {
+		a.log.WarnS(ctx, "Failed to get best height for confirmation",
+			err, slog.String("txid", txid.String()))
+	}
+
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    callerID,
 		Txid:        &txid,
+		PkScript:    pkScript,
 		TargetConfs: a.cfg.OperatorTerms.MinConfirmations,
+		HeightHint:  heightHint,
 		NotifyActor: fn.Some(mappedRef),
 	}
 
-	a.cfg.ChainSource.Tell(ctx, confReq)
+	// Use a background context for the confirmation registration. The
+	// ConfActor needs a long-lived context that won't be cancelled when
+	// the current message processing completes.
+	a.cfg.ChainSource.Tell(context.Background(), confReq)
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any
@@ -266,19 +488,15 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 }
 
 // OnStop implements actor.Stoppable to gracefully shut down all FSMs when the
-// actor is stopping. This prevents goroutine leaks by stopping the primaryFSM
-// and all active round FSMs.
+// actor is stopping. This prevents goroutine leaks by stopping all round FSMs.
 func (a *RoundClientActor) OnStop(ctx context.Context) error {
 	a.log.InfoS(ctx, "Stopping round client actor",
-		slog.Int("active_rounds", len(a.activeRounds)))
+		slog.Int("rounds", len(a.rounds)))
 
-	// Stop the primary FSM.
-	a.primaryFSM.Stop()
-
-	// Stop all active round FSMs.
-	for roundID, roundFSM := range a.activeRounds {
+	// Stop all round FSMs.
+	for keyStr, roundFSM := range a.rounds {
 		a.log.DebugS(ctx, "Stopping round FSM",
-			slog.String("round_id", roundID.String()))
+			slog.String("key", string(keyStr)))
 
 		roundFSM.FSM.Stop()
 	}
@@ -326,7 +544,8 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		slog.Int("min_confirmations", int(a.cfg.OperatorTerms.MinConfirmations)))
 
 	// Load active rounds (commitment tx broadcast, not yet confirmed) and
-	// resume their FSMs.
+	// resume their FSMs. These rounds have server-assigned RoundIDs from the
+	// checkpoint.
 	activeRounds, err := a.cfg.RoundStore.ListActiveRounds(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to load active rounds: %w", err)
@@ -336,19 +555,24 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 		slog.Int("count", len(activeRounds)))
 
 	for _, round := range activeRounds {
-		roundFSM, err := a.createRoundFSM(ctx, round.RoundID)
+		roundFSM, err := a.createRoundFSMFromDB(ctx, round.RoundID)
 		if err != nil {
 			return fmt.Errorf("failed to create FSM for "+
 				"round %s: %w", round.RoundID, err)
 		}
 
-		a.activeRounds[round.RoundID] = roundFSM
+		// Use the RoundID as the key (already server-assigned at
+		// checkpoint).
+		keyStr := RoundKeyStr(round.RoundID.KeyString())
+		a.rounds[keyStr] = roundFSM
 
 		// Register for confirmation of the commitment tx for this
 		// round.
 		if !roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
-			a.commitmentTxIndex[roundFSM.TxID] = round.RoundID
-			a.registerCommitmentConfirmation(ctx, roundFSM.TxID)
+			a.commitmentTxIndex[roundFSM.TxID] = keyStr
+			a.registerCommitmentConfirmation(
+				ctx, roundFSM.TxID, round.CommitmentTx,
+			)
 
 			a.log.InfoS(ctx, "Resumed round awaiting confirmation",
 				slog.String("round_id", round.RoundID.String()),
@@ -369,6 +593,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	switch m := msg.(type) {
 	case *WalletBoardingConfirmed:
 		return a.handleWalletBoardingConfirmed(ctx, m)
+
+	case *RegisterVTXORequestsRequest:
+		return a.handleVTXORequests(ctx, m)
 
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
@@ -405,9 +632,22 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
 		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
 
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows multiple boarding confirmations to
+	// accumulate in the same round.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"failed to create round for boarding: %w", err))
+		}
+	}
+
 	// Create the FSM event from the wallet's confirmed intent. Wallet only
 	// notifies after min confs, so we set confirmations to 1. Include the
-	// Address and TxProof for building the BoardingRequest.
+	// Address and TxProof for building the Request.
 	confirmEvt := &BoardingUTXOConfirmed{
 		Outpoint:      walletIntent.Outpoint,
 		Address:       walletIntent.Address,
@@ -419,7 +659,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	}
 
 	// Drive the FSM with the confirmation event.
-	err := a.askEventAndProcessOutbox(ctx, a.primaryFSM, confirmEvt)
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
 	if err != nil {
 		return fn.Err[ClientResp](fmt.Errorf(
 			"FSM error processing boarding confirmation: %w", err))
@@ -428,35 +668,146 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	return fn.Ok[ClientResp](nil)
 }
 
-// migrateRoundToActiveFSM creates a dedicated FSM for a checkpointed round.
-// This is called when the primary FSM emits a RoundCheckpointedNotification,
-// signaling that a round has been saved to storage and should be migrated to
-// its own FSM instance for independent tracking.
-func (a *RoundClientActor) migrateRoundToActiveFSM(ctx context.Context,
-	roundID RoundID) error {
+// handleVTXORequests processes client-submitted VTXO requests and forwards
+// them to an idle round FSM. If no idle round exists, a new one is created.
+func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
+	msg *RegisterVTXORequestsRequest) fn.Result[ClientResp] {
 
-	// Check if this round is already in activeRounds (idempotency).
-	if _, exists := a.activeRounds[roundID]; exists {
-		return nil
+	if len(msg.Amounts) == 0 {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"VTXO request amounts are empty",
+		))
 	}
 
-	// Create FSM for this round (loads round + state via FetchState).
-	roundFSM, err := a.createRoundFSM(ctx, roundID)
+	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
+	for i, amount := range msg.Amounts {
+		if amount <= 0 {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"VTXO amount %d is invalid: %v", i, amount,
+			))
+		}
+
+		req, err := a.buildVTXORequest(ctx, amount)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"build VTXO request %d: %w", i, err,
+			))
+		}
+
+		requests = append(requests, *req)
+	}
+
+	a.log.InfoS(ctx, "Received VTXO requests",
+		slog.Int("count", len(requests)))
+
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows VTXOs to join a round that already has
+	// boarding intents being assembled.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"create new round for VTXO requests: %w", err,
+			))
+		}
+	}
+
+	event := &VTXORequestsReceived{
+		Requests: requests,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
 	if err != nil {
-		return fmt.Errorf("failed to create round FSM: %w", err)
-	}
-	a.activeRounds[roundID] = roundFSM
-
-	a.log.InfoS(ctx, "Migrated round to dedicated FSM",
-		slog.String("round_id", roundID.String()))
-
-	// Index commitment tx and register for confirmation monitoring.
-	if !roundFSM.TxID.IsEqual(&chainhash.Hash{}) {
-		a.commitmentTxIndex[roundFSM.TxID] = roundID
-		a.registerCommitmentConfirmation(ctx, roundFSM.TxID)
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing VTXO requests: %w", err,
+		))
 	}
 
-	return nil
+	return fn.Ok[ClientResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
+}
+
+// buildVTXORequest derives a signing key and constructs a VTXO request for
+// the provided amount.
+func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
+	amount btcutil.Amount) (*types.VTXORequest, error) {
+
+	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
+		ctx, keychain.KeyFamilyMultiSig,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("derive signing key: %w", err)
+	}
+
+	operatorKey := a.cfg.OperatorTerms.PubKey
+	expiry := a.cfg.OperatorTerms.VTXOExitDelay
+	desc, err := tree.NewVTXODescriptor(
+		amount, keyDesc.PubKey, operatorKey, expiry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build VTXO descriptor for amount %v, "+
+			"client %x, operator %x, expiry %d: %w",
+			amount, keyDesc.PubKey.SerializeCompressed(),
+			operatorKey.SerializeCompressed(), expiry, err)
+	}
+
+	return &types.VTXORequest{
+		Amount:      amount,
+		PkScript:    desc.PkScript,
+		Expiry:      expiry,
+		ClientKey:   keyDesc.PubKey,
+		OperatorKey: operatorKey,
+		SigningKey:  *keyDesc,
+	}, nil
+}
+
+// handleRoundJoined handles the RoundJoined event which requires special
+// re-keying logic. It matches the accepted outpoints to find the correct
+// pending round, then re-keys the round from its TempRoundKey to the
+// server-assigned RoundID.
+func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
+	event *RoundJoined) fn.Result[ClientResp] {
+
+	// Find the pending round by matching outpoints. Currently we only match
+	// boarding outpoints, but this will be extended for VTXO operations
+	// (forfeit, leave, refresh) when implemented.
+	roundFSM := a.findRoundByOutpoints(
+		event.AcceptedBoardingOutpoints,
+		event.AcceptedVTXOOutpoints,
+	)
+	if roundFSM == nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"no pending round matches: boarding=%v, vtxo=%v",
+			event.AcceptedBoardingOutpoints,
+			event.AcceptedVTXOOutpoints))
+	}
+
+	// Re-key: Remove old temp key, add with new RoundID.
+	oldKeyStr := RoundKeyStr(roundFSM.Key.KeyString())
+	delete(a.rounds, oldKeyStr)
+
+	newKeyStr := RoundKeyStr(event.RoundID.KeyString())
+	roundFSM.Key = event.RoundID
+	roundFSM.RoundID = event.RoundID
+	a.rounds[newKeyStr] = roundFSM
+
+	a.log.InfoS(ctx, "Re-keyed round from temp to assigned",
+		slog.String("old_key", string(oldKeyStr)),
+		slog.String("round_id", event.RoundID.String()),
+		slog.Int("num_boarding", len(event.AcceptedBoardingOutpoints)),
+		slog.Int("num_vtxo", len(event.AcceptedVTXOOutpoints)))
+
+	// Now process the event normally.
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing RoundJoined: %w", err))
+	}
+
+	return fn.Ok[ClientResp](&ServerMessageResponse{Success: true})
 }
 
 // extractRoundID returns the RoundID from events that carry one. Returns the
@@ -485,30 +836,48 @@ func extractRoundID(event ClientEvent) (RoundID, bool) {
 
 // handleServerMessage processes a message from the server (delivered via
 // Outbox). The actor routes the message to the appropriate FSM based on the
-// RoundID: if the round exists in activeRounds, route there; otherwise use
-// the primaryFSM.
+// event type and RoundID.
 func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	msg *ServerMessageNotification) fn.Result[ClientResp] {
 
-	// Determine which FSM should handle this message. If the event has a
-	// RoundID and that round exists in activeRounds, route to that FSM.
-	// Otherwise, use the primaryFSM.
-	targetFSM := a.primaryFSM
-	targetName := "primary"
-
-	roundID, hasRoundID := extractRoundID(msg.Message)
-	if hasRoundID {
-		if roundFSM, exists := a.activeRounds[roundID]; exists {
-			targetFSM = roundFSM.FSM
-			targetName = roundID.String()
-		}
+	// RoundJoined requires special handling for re-keying.
+	if joined, ok := msg.Message.(*RoundJoined); ok {
+		return a.handleRoundJoined(ctx, joined)
 	}
 
-	a.log.DebugS(ctx, "Received server message",
-		slog.String("event_type", fmt.Sprintf("%T", msg.Message)),
-		slog.String("target_fsm", targetName))
+	// Try to route by RoundID first.
+	roundID, hasRoundID := extractRoundID(msg.Message)
 
-	err := a.askEventAndProcessOutbox(ctx, targetFSM, msg.Message)
+	var roundFSM *RoundFSM
+	if hasRoundID {
+		keyStr := RoundKeyStr(roundID.KeyString())
+		var exists bool
+		roundFSM, exists = a.rounds[keyStr]
+		if !exists {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"no round for ID: %s", roundID))
+		}
+
+		a.log.DebugS(ctx, "Routing server message by RoundID",
+			slog.String("event_type", fmt.Sprintf("%T", msg.Message)),
+			slog.String("round_id", roundID.String()))
+	} else {
+		// Events without RoundID (e.g., RegistrationRequested,
+		// BoardingFailed) are routed to a pending (temp-keyed) round.
+		// This supports events that arrive before the server assigns a
+		// RoundID.
+		roundFSM = a.findPendingRound()
+		if roundFSM == nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"no pending round for event %T", msg.Message))
+		}
+
+		a.log.DebugS(ctx, "Routing server message to pending round",
+			slog.String("event_type", fmt.Sprintf("%T", msg.Message)),
+			slog.String("key", roundFSM.Key.KeyString()))
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, msg.Message)
 	if err != nil {
 		return fn.Err[ClientResp](fmt.Errorf(
 			"FSM error processing server message: %w", err))
@@ -519,39 +888,30 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 	})
 }
 
+// findPendingRound returns a round with a temp key (not yet assigned a RoundID
+// by the server). Returns nil if no pending rounds exist.
+func (a *RoundClientActor) findPendingRound() *RoundFSM {
+	for _, roundFSM := range a.rounds {
+		if roundFSM.Key.IsTemp() {
+			return roundFSM
+		}
+	}
+
+	return nil
+}
+
 // handleGetState returns the current FSM state for monitoring/debugging.
-// This includes both the primary FSM and all active round FSMs.
+// This includes all round FSMs (both temp-keyed and RoundID-keyed).
 func (a *RoundClientActor) handleGetState(ctx context.Context,
 	_ *GetClientStateRequest) fn.Result[ClientResp] {
 
 	states := make(map[string]FSMStateInfo)
 
-	// Query the primary FSM state.
-	primaryState, err := a.primaryFSM.CurrentState()
-	if err != nil {
-		return fn.Err[ClientResp](fmt.Errorf(
-			"failed to get primary FSM state: %w", err))
-	}
-
-	// Add primary FSM to the response map.
-	clientState, ok := primaryState.(ClientState)
-	if !ok {
-		return fn.Err[ClientResp](fmt.Errorf(
-			"primary FSM state is not a ClientState"))
-	}
-
-	states["primary"] = FSMStateInfo{
-		State:     clientState,
-		IsPrimary: true,
-		RoundID:   RoundID{},
-	}
-
-	for roundID, roundFSM := range a.activeRounds {
+	for keyStr, roundFSM := range a.rounds {
 		roundState, err := roundFSM.FSM.CurrentState()
 		if err != nil {
 			a.log.WarnS(ctx, "Failed to get FSM state for round", err,
-				slog.String("round_id", roundID.String()),
-			)
+				slog.String("key", string(keyStr)))
 
 			continue
 		}
@@ -559,17 +919,16 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 		clientState, ok := roundState.(ClientState)
 		if !ok {
 			a.log.WarnS(ctx, "Round FSM state is not a ClientState", nil,
-				slog.String("round_id", roundID.String()),
-				slog.String("state_type", fmt.Sprintf("%T", roundState)),
-			)
+				slog.String("key", string(keyStr)),
+				slog.String("state_type", fmt.Sprintf("%T", roundState)))
 
 			continue
 		}
 
-		states[roundID.String()] = FSMStateInfo{
-			State:     clientState,
-			IsPrimary: false,
-			RoundID:   roundID,
+		states[string(keyStr)] = FSMStateInfo{
+			State:   clientState,
+			IsTemp:  roundFSM.Key.IsTemp(),
+			RoundID: roundFSM.RoundID,
 		}
 	}
 
@@ -578,11 +937,43 @@ func (a *RoundClientActor) handleGetState(ctx context.Context,
 	})
 }
 
-// handleCancelRound attempts to cancel the current round participation.
+// handleCancelRound attempts to cancel a pending round participation.
+// If a RoundKey is specified in the request, that round is cancelled;
+// otherwise, the first temp-keyed round is cancelled.
 func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 	req *CancelRoundRequest) fn.Result[ClientResp] {
 
 	a.log.InfoS(ctx, "Cancelling round participation by user request")
+
+	// Find the round to cancel.
+	var targetFSM *RoundFSM
+	if req.RoundKey.IsSome() {
+		// Cancel specific round by key.
+		keyStr := req.RoundKey.UnsafeFromSome()
+		var exists bool
+		targetFSM, exists = a.rounds[keyStr]
+		if !exists {
+			return fn.Ok[ClientResp](&CancelRoundResponse{
+				Success: false,
+				Error:   fmt.Sprintf("no round with key: %s", keyStr),
+			})
+		}
+	} else {
+		// Cancel the first temp-keyed round.
+		for _, roundFSM := range a.rounds {
+			if roundFSM.Key.IsTemp() {
+				targetFSM = roundFSM
+				break
+			}
+		}
+	}
+
+	if targetFSM == nil {
+		return fn.Ok[ClientResp](&CancelRoundResponse{
+			Success: false,
+			Error:   "no pending round to cancel",
+		})
+	}
 
 	// Inject a BoardingFailed event to transition the FSM to failed state.
 	// This will trigger any cleanup logic in the FSM transitions.
@@ -592,7 +983,7 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 		Recoverable: true,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, a.primaryFSM, cancelEvent)
+	err := a.askEventAndProcessOutbox(ctx, targetFSM.FSM, cancelEvent)
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to cancel round", err)
 
@@ -601,6 +992,10 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 			Error:   fmt.Sprintf("failed to cancel: %v", err),
 		})
 	}
+
+	// Remove the cancelled round from the map.
+	keyStr := RoundKeyStr(targetFSM.Key.KeyString())
+	delete(a.rounds, keyStr)
 
 	a.log.InfoS(ctx, "Round participation cancelled successfully")
 
@@ -619,7 +1014,11 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 		slog.String("commitment_txid", txid.String()),
 		slog.Int("conf_height", int(confInfo.Height)))
 
-	delete(a.activeRounds, roundID)
+	keyStr := RoundKeyStr(roundID.KeyString())
+	if roundFSM, exists := a.rounds[keyStr]; exists {
+		roundFSM.FSM.Stop()
+		delete(a.rounds, keyStr)
+	}
 	delete(a.commitmentTxIndex, txid)
 
 	return a.cfg.RoundStore.FinalizeRound(ctx, roundID, txid, confInfo)
@@ -630,7 +1029,7 @@ func (a *RoundClientActor) onRoundComplete(ctx context.Context, roundID RoundID,
 // WalletBoardingConfirmed events from the wallet actor.
 //
 // Concurrency: The actor framework serializes all messages through Receive(),
-// so no synchronization is needed for activeRounds map access.
+// so no synchronization is needed for rounds map access.
 func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 	event *ConfirmationEvent) fn.Result[ClientResp] {
 
@@ -639,27 +1038,28 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		slog.Int("block_height", int(event.BlockHeight)),
 		slog.Int("confirmations", int(event.Confirmations)))
 
-	// Look up the round by commitment transaction ID.
-	round, err := a.cfg.RoundStore.LookupRoundByCommitmentTx(ctx, event.Txid)
-	if err != nil {
+	// Look up the round by commitment transaction index.
+	keyStr, exists := a.commitmentTxIndex[event.Txid]
+	if !exists {
 		// Not a commitment tx we're tracking. This shouldn't happen
 		// since we only register for commitment tx confirmations.
-		// Log for observability in case of database issues.
-		a.log.WarnS(ctx, "LookupRoundByCommitmentTx failed", err,
+		// Log for observability.
+		a.log.WarnS(ctx, "Commitment tx not in index", nil,
 			slog.String("txid", event.Txid.String()))
 
 		return fn.Ok[ClientResp](nil)
 	}
 
 	// Route to the specific round's FSM.
-	roundFSM, exists := a.activeRounds[round.RoundID]
+	roundFSM, exists := a.rounds[keyStr]
 	if !exists {
 		return fn.Err[ClientResp](fmt.Errorf(
-			"round FSM not found for round %s", round.RoundID))
+			"round FSM not found for key %s", keyStr))
 	}
 
 	a.log.InfoS(ctx, "Routing confirmation to round FSM",
-		slog.String("round_id", round.RoundID.String()))
+		slog.String("key", string(keyStr)),
+		slog.String("round_id", roundFSM.RoundID.String()))
 
 	confirmEvt := &BoardingConfirmed{
 		TxID:          event.Txid,
@@ -668,7 +1068,7 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		Confirmations: int32(event.Confirmations),
 	}
 
-	err = a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
 	if err != nil {
 		return fn.Err[ClientResp](fmt.Errorf(
 			"FSM error processing commitment confirmation: %w", err))
@@ -730,6 +1130,28 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				},
 			)
 
+			// Query ChainSource for current block height to use as
+			// HeightHint. LND requires HeightHint > 0 for
+			// confirmation scanning.
+			heightHint := m.HeightHint
+			if heightHint == 0 {
+				heightFuture := a.cfg.ChainSource.Ask(
+					ctx, &chainsource.BestHeightRequest{},
+				)
+				heightResult := heightFuture.Await(ctx)
+				heightResp, err := heightResult.Unpack()
+				if err != nil {
+					return fmt.Errorf("get best height "+
+						"for confirmation: %w", err)
+				}
+				bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+				if !ok {
+					return fmt.Errorf("unexpected " +
+						"height response type")
+				}
+				heightHint = uint32(bestHeightResp.Height)
+			}
+
 			// Build the complete RegisterConfRequest with the
 			// mapper as the NotifyActor target.
 			confReq := &chainsource.RegisterConfRequest{
@@ -737,14 +1159,28 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				Txid:        m.Txid,
 				PkScript:    m.PkScript,
 				TargetConfs: m.TargetConfs,
-				HeightHint:  m.HeightHint,
+				HeightHint:  heightHint,
 				NotifyActor: fn.Some(mappedRef),
 			}
 
-			a.cfg.ChainSource.Tell(ctx, confReq)
+			a.log.InfoS(ctx, "Sending RegisterConfRequest to ChainSource",
+				slog.String("caller_id", callerID),
+				slog.Int("pkscript_len", len(m.PkScript)),
+				slog.Int("height_hint", int(heightHint)),
+				slog.Int("target_confs", int(m.TargetConfs)))
+
+			// Use a background context for the confirmation
+			// registration. The ConfActor needs a long-lived context
+			// that won't be cancelled when the current message
+			// processing completes.
+			a.cfg.ChainSource.Tell(context.Background(), confReq)
 
 		case *VTXOCreatedNotification:
-			_ = m.VTXOs
+			// Forward to VTXO manager to spawn actors for the new
+			// VTXOs if configured.
+			if a.cfg.VTXOManager != nil {
+				a.cfg.VTXOManager.Tell(ctx, m)
+			}
 
 		case *RoundCompletedNotification:
 			a.log.InfoS(ctx, "Processing round completion notification",
@@ -765,13 +1201,43 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			a.log.InfoS(ctx, "Processing round checkpoint notification",
 				slog.String("round_id", m.RoundID.String()))
 
-			// Primary FSM checkpointed a round. Migrate to
-			// dedicated FSM.
-			err := a.migrateRoundToActiveFSM(ctx, m.RoundID)
-			if err != nil {
-				return fmt.Errorf("failed to migrate "+
-					"round %s: %w", m.RoundID, err)
+			// Find the round by its RoundID (should already be
+			// re-keyed at this point).
+			keyStr := RoundKeyStr(m.RoundID.KeyString())
+			roundFSM, exists := a.rounds[keyStr]
+			if !exists {
+				return fmt.Errorf(
+					"round not found for checkpoint: %s",
+					m.RoundID)
 			}
+
+			// Get the current state to extract commitment tx info.
+			state, err := roundFSM.FSM.CurrentState()
+			if err != nil {
+				return fmt.Errorf(
+					"failed to get state: %w", err)
+			}
+
+			inputSigState, ok := state.(*InputSigSentState)
+			if !ok {
+				return fmt.Errorf("round not in "+
+					"InputSigSentState, got %T", state)
+			}
+
+			// Update round FSM with commitment tx info.
+			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
+			roundFSM.TxID = txid
+			roundFSM.CommitmentTx = fn.Some(inputSigState.CommitmentTx)
+
+			// Index for confirmation routing and register.
+			a.commitmentTxIndex[txid] = keyStr
+			a.registerCommitmentConfirmation(
+				ctx, txid, roundFSM.CommitmentTx,
+			)
+
+			a.log.InfoS(ctx, "Round checkpoint processed",
+				slog.String("round_id", m.RoundID.String()),
+				slog.String("commitment_txid", txid.String()))
 
 		case *RoundFailedNotification:
 			// Round entered failed state. Log for observability.

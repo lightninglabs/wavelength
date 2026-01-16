@@ -102,6 +102,7 @@ func createTestRound(t *testing.T, roundID round.RoundID) *round.Round {
 
 	return &round.Round{
 		RoundID:       roundID,
+		StartHeight:   100, // Test starting block height.
 		CommitmentTx:  fn.Some(commitTx),
 		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
 	}
@@ -186,6 +187,9 @@ func TestRoundStoreCommitAndFetch(t *testing.T) {
 
 	// Verify round fields.
 	require.Equal(t, testRound.RoundID, fetchedRound.RoundID)
+
+	// Verify StartHeight is persisted and restored.
+	require.Equal(t, testRound.StartHeight, fetchedRound.StartHeight)
 
 	// ConfInfo is None at commit time (not yet confirmed).
 	require.True(t, fetchedRound.ConfInfo.IsNone())
@@ -314,6 +318,70 @@ func TestRoundStoreFinalizeRound(t *testing.T) {
 	})
 }
 
+// TestRoundStoreListConfirmedRounds tests listing confirmed rounds. This
+// verifies that only rounds marked as "confirmed" (via FinalizeRound) are
+// returned, while active rounds are excluded.
+func TestRoundStoreListConfirmedRounds(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Create and commit three rounds.
+	rounds := make([]*round.Round, 3)
+	for i := 0; i < 3; i++ {
+		seed := "confirmed-test-" + string(rune('a'+i))
+		roundID := testRoundIDDB(seed)
+		rounds[i] = createTestRound(t, roundID)
+		state := &round.InputSigSentState{
+			RoundID:     rounds[i].RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+
+		err := store.CommitState(ctx, rounds[i], state)
+		require.NoError(t, err)
+	}
+
+	// Initially, no rounds should be confirmed.
+	confirmedRounds, err := store.ListConfirmedRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, confirmedRounds, 0)
+
+	// Finalize two of the three rounds.
+	for i := 0; i < 2; i++ {
+		var txid chainhash.Hash
+		rounds[i].CommitmentTx.WhenSome(func(packet *psbt.Packet) {
+			txid = packet.UnsignedTx.TxHash()
+		})
+
+		confInfo := round.ConfInfo{
+			Height:    int32(1000 + i),
+			BlockHash: chainhash.Hash{byte(i), 0xab, 0xcd},
+		}
+		err = store.FinalizeRound(
+			ctx, rounds[i].RoundID, txid, confInfo,
+		)
+		require.NoError(t, err)
+	}
+
+	// Now list confirmed rounds - should return exactly 2.
+	confirmedRounds, err = store.ListConfirmedRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, confirmedRounds, 2)
+
+	// Verify the confirmed rounds have correct ConfInfo populated.
+	for _, r := range confirmedRounds {
+		require.True(t, r.ConfInfo.IsSome(),
+			"confirmed round should have ConfInfo")
+	}
+
+	// Verify the active (non-confirmed) round is still in active list.
+	activeRounds, err := store.ListActiveRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, activeRounds, 1)
+	require.Equal(t, rounds[2].RoundID, activeRounds[0].RoundID)
+}
+
 // TestVTXOStoreSaveAndList tests saving and listing VTXOs.
 func TestVTXOStoreSaveAndList(t *testing.T) {
 	t.Parallel()
@@ -430,6 +498,7 @@ type boardingIntentFixture struct {
 	boardingAddr  *wallet.BoardingAddress
 	walletIntent  wallet.BoardingIntent
 	roundIntent   round.BoardingIntent
+	vtxoTemplates []types.VTXORequest
 	outpoint      wire.OutPoint
 	pkScript      []byte
 	inputSig      *types.BoardingInputSignature
@@ -523,25 +592,24 @@ func createBoardingIntentFixture(
 		Status: wallet.BoardingStatusConfirmed,
 	}
 
-	// Create multiple VTXO templates per intent.
-	vtxoTemplates := make([]types.VTXORequest, 2)
-	for j := 0; j < 2; j++ {
-		signingKey := keychain.KeyDescriptor{
-			PubKey: clientPubKey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(43),
-				Index:  uint32(idx*10 + j),
-			},
-		}
-		vtxoTemplates[j] = types.VTXORequest{
-			Amount:      btcutil.Amount(45000 * (j + 1)),
-			PkScript:    pkScript,
-			Expiry:      exitDelay,
-			ClientKey:   clientPubKey,
-			OperatorKey: operatorPubKey,
-			SigningKey:  signingKey,
-		}
+	// Create VTXO template for this intent (1:1 coupling at DB level for
+	// now). TODO: Support multiple VTXOs per intent when we decouple
+	// storage.
+	signingKey := keychain.KeyDescriptor{
+		PubKey: clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(43),
+			Index:  uint32(idx * 10),
+		},
 	}
+	vtxoTemplates := []types.VTXORequest{{
+		Amount:      btcutil.Amount(90000),
+		PkScript:    pkScript,
+		Expiry:      exitDelay,
+		ClientKey:   clientPubKey,
+		OperatorKey: operatorPubKey,
+		SigningKey:  signingKey,
+	}}
 
 	boardingRequest := types.BoardingRequest{
 		Outpoint:    &intentOutpoint,
@@ -551,10 +619,8 @@ func createBoardingIntentFixture(
 	}
 
 	roundIntent := round.BoardingIntent{
-		BoardingIntent:  walletIntent,
-		BoardingRequest: boardingRequest,
-		VtxoTemplate:    vtxoTemplates,
-		RoundID:         fn.Some[round.RoundID](roundID),
+		BoardingIntent: walletIntent,
+		Request:        boardingRequest,
 	}
 
 	// Create input signature as a BoardingInputSignature.
@@ -569,8 +635,8 @@ func createBoardingIntentFixture(
 		ClientSignature: sig,
 	}
 
-	// Create client tree using the actual tree builder with multiple
-	// leaves.
+	// Create client tree using the actual tree builder (1 leaf per intent
+	// to match 1:1 VTXO coupling).
 	clientTreeKey := round.NewSignerKey(clientPubKey)
 	rootOutpoint := wire.OutPoint{
 		Hash:  chainhash.Hash{0xc1, 0x1e, byte(idx)},
@@ -583,12 +649,7 @@ func createBoardingIntentFixture(
 	leaves := []tree.LeafDescriptor{
 		{
 			PkScript:    pkScript,
-			Amount:      btcutil.Amount(45000 * (idx + 1)),
-			CoSignerKey: clientPubKey,
-		},
-		{
-			PkScript:    pkScript,
-			Amount:      btcutil.Amount(45000 * (idx + 1)),
+			Amount:      btcutil.Amount(90000 * (idx + 1)),
 			CoSignerKey: clientPubKey,
 		},
 	}
@@ -603,11 +664,185 @@ func createBoardingIntentFixture(
 		boardingAddr:  boardingAddr,
 		walletIntent:  walletIntent,
 		roundIntent:   roundIntent,
+		vtxoTemplates: vtxoTemplates,
 		outpoint:      intentOutpoint,
 		pkScript:      pkScript,
 		inputSig:      inputSig,
 		clientTreeKey: clientTreeKey,
 		clientTree:    clientTree,
+	}
+}
+
+// TestRoundStoreDecoupledVTXOStorage verifies that VTXO requests are stored
+// independently from boarding intents. This allows fan-out (1 input creating
+// multiple outputs) and fan-in (multiple inputs funding 1 output) scenarios.
+// The test creates 2 boarding intents but 3 VTXO requests to verify the counts
+// are independent.
+func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
+	t.Parallel()
+
+	const numIntents = 2
+	const numVTXORequests = 3
+
+	roundID := testRoundIDDB("test-round-decoupled-vtxo")
+
+	ctx := t.Context()
+	roundStore, db := newRoundStoreForTest(t)
+
+	// Set up boarding store for FK constraints.
+	boardingDB := NewTransactionExecutor(
+		db,
+		func(tx *sql.Tx) BoardingStore {
+			return db.WithTx(tx)
+		},
+		btclog.Disabled,
+	)
+	boardingStore := NewBoardingWalletStore(
+		boardingDB, &chaincfg.RegressionNetParams,
+		clock.NewDefaultClock(),
+	)
+
+	// Create 2 boarding intent fixtures.
+	fixtures := make([]*boardingIntentFixture, numIntents)
+	for i := 0; i < numIntents; i++ {
+		fixtures[i] = createBoardingIntentFixture(t, roundID, i)
+
+		err := boardingStore.InsertBoardingAddress(
+			ctx, fixtures[i].boardingAddr,
+		)
+		require.NoError(t, err)
+
+		err = boardingStore.InsertBoardingIntents(
+			ctx, fixtures[i].walletIntent,
+		)
+		require.NoError(t, err)
+	}
+
+	// Build boarding intents from fixtures.
+	roundIntents := make([]round.BoardingIntent, numIntents)
+	inputSigs := make([]*types.BoardingInputSignature, numIntents)
+	clientTrees := make(map[round.SignerKey]*tree.Tree)
+	for i, f := range fixtures {
+		roundIntents[i] = f.roundIntent
+		inputSigs[i] = f.inputSig
+		clientTrees[f.clientTreeKey] = f.clientTree
+	}
+
+	// Create 3 VTXO requests (more than boarding intents) to test
+	// decoupled storage.
+	allVtxos := make([]types.VTXORequest, numVTXORequests)
+	for i := 0; i < numVTXORequests; i++ {
+		privKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+		operatorKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		signingKey := keychain.KeyDescriptor{
+			PubKey: privKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(50),
+				Index:  uint32(i),
+			},
+		}
+
+		allVtxos[i] = types.VTXORequest{
+			Amount:      btcutil.Amount(30000 * (i + 1)),
+			PkScript:    fixtures[0].pkScript,
+			Expiry:      144,
+			ClientKey:   privKey.PubKey(),
+			OperatorKey: operatorKey.PubKey(),
+			SigningKey:  signingKey,
+		}
+	}
+
+	// Create commitment tx with inputs from all boarding intents.
+	tx := wire.NewMsgTx(2)
+	for _, f := range fixtures {
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: f.outpoint,
+		})
+	}
+	tx.AddTxOut(&wire.TxOut{
+		Value:    180000,
+		PkScript: fixtures[0].pkScript,
+	})
+	commitTx, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Create VTXT tree. The output value must equal sum of leaf amounts
+	// (30000 + 60000 + 90000 = 180000).
+	vtxtTreeOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x02},
+		Index: 0,
+	}
+	vtxtTreeOutput := &wire.TxOut{
+		Value:    180000,
+		PkScript: fixtures[0].pkScript,
+	}
+	vtxtLeaves := make([]tree.LeafDescriptor, numVTXORequests)
+	for i := 0; i < numVTXORequests; i++ {
+		vtxtLeaves[i] = tree.LeafDescriptor{
+			PkScript:    fixtures[0].pkScript,
+			Amount:      btcutil.Amount(30000 * (i + 1)),
+			CoSignerKey: allVtxos[i].ClientKey,
+		}
+	}
+	vtxtTree, err := tree.NewTree(
+		vtxtTreeOutpoint, vtxtTreeOutput, vtxtLeaves,
+		fixtures[0].operatorKey, nil, 2,
+	)
+	require.NoError(t, err)
+
+	testRound := &round.Round{
+		RoundID:       roundID,
+		CommitmentTx:  fn.Some(commitTx),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
+	}
+
+	state := &round.InputSigSentState{
+		RoundID:       roundID,
+		CommitmentTx:  commitTx,
+		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
+		ClientTrees: clientTrees,
+		InputSigs:   inputSigs,
+	}
+
+	// Commit state.
+	err = roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Fetch and verify.
+	fetchedRound, fetchedState, err := roundStore.FetchState(ctx, roundID)
+	require.NoError(t, err)
+
+	// Verify boarding intents count.
+	require.Len(
+		t, fetchedRound.Intents.Boarding, numIntents,
+		"expected %d boarding intents", numIntents,
+	)
+
+	// Verify VTXO requests count is different from intents.
+	inputSigState, ok := fetchedState.(*round.InputSigSentState)
+	require.True(t, ok)
+	require.Len(
+		t, inputSigState.Intents.VTXOs, numVTXORequests,
+		"expected %d VTXO requests (decoupled from %d intents)",
+		numVTXORequests, numIntents,
+	)
+
+	// Verify VTXO amounts were preserved correctly.
+	for i, vtxo := range inputSigState.Intents.VTXOs {
+		expectedAmount := btcutil.Amount(30000 * (i + 1))
+		require.Equal(t, expectedAmount, vtxo.Amount,
+			"VTXO %d amount mismatch", i)
 	}
 }
 
@@ -660,10 +895,12 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Build the round's boarding group from the fixtures.
 	roundIntents := make([]round.BoardingIntent, numIntents)
+	allVtxos := make([]types.VTXORequest, 0, numIntents)
 	inputSigs := make([]*types.BoardingInputSignature, numIntents)
 	clientTrees := make(map[round.SignerKey]*tree.Tree)
 	for i, f := range fixtures {
 		roundIntents[i] = f.roundIntent
+		allVtxos = append(allVtxos, f.vtxoTemplates...)
 		inputSigs[i] = f.inputSig
 		clientTrees[f.clientTreeKey] = f.clientTree
 	}
@@ -688,12 +925,12 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		Index: 0,
 	}
 	vtxtTreeOutput := &wire.TxOut{
-		Value:    180000,
+		Value:    90000,
 		PkScript: fixtures[0].pkScript,
 	}
-	vtxtLeaves := make([]tree.LeafDescriptor, 0, numIntents*2)
+	vtxtLeaves := make([]tree.LeafDescriptor, 0, numIntents)
 	for _, f := range fixtures {
-		for range f.roundIntent.VtxoTemplate {
+		for range f.vtxoTemplates {
 			vtxtLeaves = append(vtxtLeaves, tree.LeafDescriptor{
 				PkScript:    f.pkScript,
 				Amount:      45000,
@@ -708,10 +945,13 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	testRound := &round.Round{
-		RoundID:         roundID,
-		CommitmentTx:    fn.Some(commitTx),
-		VTXOTreePaths:   fn.Some(map[int]*tree.Tree{0: vtxtTree}),
-		BoardingIntents: roundIntents,
+		RoundID:       roundID,
+		CommitmentTx:  fn.Some(commitTx),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{0: vtxtTree}),
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
 	}
 
 	// Create the FSM state with all intents, signatures, and client trees.
@@ -719,9 +959,12 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 		RoundID:       roundID,
 		CommitmentTx:  commitTx,
 		VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-		Intents:       roundIntents,
-		ClientTrees:   clientTrees,
-		InputSigs:     inputSigs,
+		Intents: round.Intents{
+			Boarding: roundIntents,
+			VTXOs:    allVtxos,
+		},
+		ClientTrees: clientTrees,
+		InputSigs:   inputSigs,
 	}
 
 	// Commit the state.
@@ -741,19 +984,19 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	require.True(t, fetchedRound.ConfInfo.IsNone())
 
 	// Verify boarding intents were persisted with all intents.
-	require.Len(t, fetchedRound.BoardingIntents, numIntents)
+	require.Len(t, fetchedRound.Intents.Boarding, numIntents)
 	for i, f := range fixtures {
-		fetchedIntent := fetchedRound.BoardingIntents[i]
+		fetchedIntent := fetchedRound.Intents.Boarding[i]
 		require.Equal(t, f.outpoint, fetchedIntent.Outpoint)
-
-		// Verify VTXO templates were persisted.
-		require.Len(t, fetchedIntent.VtxoTemplate, 2)
 	}
 
 	// Verify FSM state type.
 	inputSigState, ok := fetchedState.(*round.InputSigSentState)
 	require.True(t, ok)
 	require.Equal(t, roundID, inputSigState.RoundID)
+
+	// Verify VTXO templates were persisted (1 per intent for now).
+	require.Len(t, inputSigState.Intents.VTXOs, numIntents)
 
 	// Verify all input signatures were persisted and recovered.
 	require.Len(t, inputSigState.InputSigs, numIntents)
@@ -776,8 +1019,8 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 		// Verify tree structure was preserved. The number of outputs
 		// should match: one per leaf group + 1 anchor output (P2A).
-		// Each fixture creates 2 leaves in the client tree.
-		numLeaves := 2
+		// Each fixture creates 1 leaf (1:1 coupling).
+		numLeaves := 1
 		expectedOutputs := numLeaves + 1
 		require.Len(t, fetchedTree.Root.Outputs, expectedOutputs)
 	}

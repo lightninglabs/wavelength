@@ -64,48 +64,6 @@ func (q *Queries) FinalizeRound(ctx context.Context, arg FinalizeRoundParams) er
 	return err
 }
 
-const GetAllRoundVtxoTemplates = `-- name: GetAllRoundVtxoTemplates :many
-SELECT round_id, outpoint_hash, outpoint_index, template_index, amount, pk_script, expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_templates
-WHERE round_id = $1
-ORDER BY outpoint_hash, outpoint_index, template_index ASC
-`
-
-func (q *Queries) GetAllRoundVtxoTemplates(ctx context.Context, roundID string) ([]RoundVtxoTemplate, error) {
-	rows, err := q.db.QueryContext(ctx, GetAllRoundVtxoTemplates, roundID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []RoundVtxoTemplate
-	for rows.Next() {
-		var i RoundVtxoTemplate
-		if err := rows.Scan(
-			&i.RoundID,
-			&i.OutpointHash,
-			&i.OutpointIndex,
-			&i.TemplateIndex,
-			&i.Amount,
-			&i.PkScript,
-			&i.Expiry,
-			&i.ClientPubkey,
-			&i.OperatorPubkey,
-			&i.SigningKeyFamily,
-			&i.SigningKeyIndex,
-			&i.SigningPubkey,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const GetClientTreeByTxid = `-- name: GetClientTreeByTxid :one
 SELECT t.round_id, t.client_key, t.tree_data FROM round_client_trees t
 JOIN client_tree_txids idx ON t.round_id = idx.round_id AND t.client_key = idx.client_key
@@ -177,7 +135,7 @@ func (q *Queries) GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxids
 }
 
 const GetRound = `-- name: GetRound :one
-SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE round_id = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE round_id = $1
 `
 
 func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
@@ -185,6 +143,7 @@ func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
 	var i Round
 	err := row.Scan(
 		&i.RoundID,
+		&i.StartHeight,
 		&i.ConfirmationHeight,
 		&i.ConfirmationBlockHash,
 		&i.CommitmentTx,
@@ -235,7 +194,7 @@ func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) (
 }
 
 const GetRoundByCommitmentTxid = `-- name: GetRoundByCommitmentTxid :one
-SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE commitment_txid = $1
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE commitment_txid = $1
 `
 
 func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error) {
@@ -243,6 +202,7 @@ func (q *Queries) GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid [
 	var i Round
 	err := row.Scan(
 		&i.RoundID,
+		&i.StartHeight,
 		&i.ConfirmationHeight,
 		&i.ConfirmationBlockHash,
 		&i.CommitmentTx,
@@ -299,32 +259,24 @@ func (q *Queries) GetRoundClientTrees(ctx context.Context, roundID string) ([]Ro
 	return items, nil
 }
 
-const GetRoundVtxoTemplates = `-- name: GetRoundVtxoTemplates :many
-SELECT round_id, outpoint_hash, outpoint_index, template_index, amount, pk_script, expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_templates
-WHERE round_id = $1 AND outpoint_hash = $2 AND outpoint_index = $3
-ORDER BY template_index ASC
+const GetRoundVtxoRequests = `-- name: GetRoundVtxoRequests :many
+SELECT round_id, request_index, amount, pk_script, expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
+WHERE round_id = $1
+ORDER BY request_index ASC
 `
 
-type GetRoundVtxoTemplatesParams struct {
-	RoundID       string
-	OutpointHash  []byte
-	OutpointIndex int32
-}
-
-func (q *Queries) GetRoundVtxoTemplates(ctx context.Context, arg GetRoundVtxoTemplatesParams) ([]RoundVtxoTemplate, error) {
-	rows, err := q.db.QueryContext(ctx, GetRoundVtxoTemplates, arg.RoundID, arg.OutpointHash, arg.OutpointIndex)
+func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error) {
+	rows, err := q.db.QueryContext(ctx, GetRoundVtxoRequests, roundID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RoundVtxoTemplate
+	var items []RoundVtxoRequest
 	for rows.Next() {
-		var i RoundVtxoTemplate
+		var i RoundVtxoRequest
 		if err := rows.Scan(
 			&i.RoundID,
-			&i.OutpointHash,
-			&i.OutpointIndex,
-			&i.TemplateIndex,
+			&i.RequestIndex,
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
@@ -410,8 +362,9 @@ const InsertRound = `-- name: InsertRound :exec
 
 INSERT INTO rounds (
     round_id, confirmation_height, confirmation_block_hash, commitment_tx,
-    commitment_txid, vtxt_tree, status, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    commitment_txid, vtxt_tree, status, creation_time, last_update_time,
+    start_height
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (round_id) DO UPDATE SET
     confirmation_height = COALESCE(excluded.confirmation_height, rounds.confirmation_height),
     confirmation_block_hash = COALESCE(excluded.confirmation_block_hash, rounds.confirmation_block_hash),
@@ -432,6 +385,7 @@ type InsertRoundParams struct {
 	Status                string
 	CreationTime          int64
 	LastUpdateTime        int64
+	StartHeight           int32
 }
 
 // Round queries.
@@ -446,6 +400,7 @@ func (q *Queries) InsertRound(ctx context.Context, arg InsertRoundParams) error 
 		arg.Status,
 		arg.CreationTime,
 		arg.LastUpdateTime,
+		arg.StartHeight,
 	)
 	return err
 }
@@ -509,21 +464,18 @@ func (q *Queries) InsertRoundClientTree(ctx context.Context, arg InsertRoundClie
 	return err
 }
 
-const InsertRoundVtxoTemplate = `-- name: InsertRoundVtxoTemplate :exec
+const InsertRoundVtxoRequest = `-- name: InsertRoundVtxoRequest :exec
 
-INSERT INTO round_vtxo_templates (
-    round_id, outpoint_hash, outpoint_index, template_index, amount, pk_script,
-    expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index,
-    signing_pubkey
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-ON CONFLICT (round_id, outpoint_hash, outpoint_index, template_index) DO NOTHING
+INSERT INTO round_vtxo_requests (
+    round_id, request_index, amount, pk_script, expiry, client_pubkey,
+    operator_pubkey, signing_key_family, signing_key_index, signing_pubkey
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (round_id, request_index) DO NOTHING
 `
 
-type InsertRoundVtxoTemplateParams struct {
+type InsertRoundVtxoRequestParams struct {
 	RoundID          string
-	OutpointHash     []byte
-	OutpointIndex    int32
-	TemplateIndex    int32
+	RequestIndex     int32
 	Amount           int64
 	PkScript         []byte
 	Expiry           int32
@@ -534,13 +486,11 @@ type InsertRoundVtxoTemplateParams struct {
 	SigningPubkey    []byte
 }
 
-// Round VTXO templates queries.
-func (q *Queries) InsertRoundVtxoTemplate(ctx context.Context, arg InsertRoundVtxoTemplateParams) error {
-	_, err := q.db.ExecContext(ctx, InsertRoundVtxoTemplate,
+// Round VTXO request queries.
+func (q *Queries) InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error {
+	_, err := q.db.ExecContext(ctx, InsertRoundVtxoRequest,
 		arg.RoundID,
-		arg.OutpointHash,
-		arg.OutpointIndex,
-		arg.TemplateIndex,
+		arg.RequestIndex,
 		arg.Amount,
 		arg.PkScript,
 		arg.Expiry,
@@ -602,7 +552,7 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 }
 
 const ListActiveRounds = `-- name: ListActiveRounds :many
-SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC
 `
 
 func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
@@ -616,6 +566,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 		var i Round
 		if err := rows.Scan(
 			&i.RoundID,
+			&i.StartHeight,
 			&i.ConfirmationHeight,
 			&i.ConfirmationBlockHash,
 			&i.CommitmentTx,
@@ -681,7 +632,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
-SELECT round_id, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = $1 ORDER BY creation_time DESC
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds WHERE status = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Round, error) {
@@ -695,6 +646,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 		var i Round
 		if err := rows.Scan(
 			&i.RoundID,
+			&i.StartHeight,
 			&i.ConfirmationHeight,
 			&i.ConfirmationBlockHash,
 			&i.CommitmentTx,

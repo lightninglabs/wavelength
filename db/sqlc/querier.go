@@ -13,7 +13,6 @@ type Querier interface {
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
-	GetAllRoundVtxoTemplates(ctx context.Context, roundID string) ([]RoundVtxoTemplate, error)
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
@@ -25,7 +24,7 @@ type Querier interface {
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
-	GetRoundVtxoTemplates(ctx context.Context, arg GetRoundVtxoTemplatesParams) ([]RoundVtxoTemplate, error)
+	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
@@ -39,8 +38,8 @@ type Querier interface {
 	InsertRoundBoardingIntent(ctx context.Context, arg InsertRoundBoardingIntentParams) error
 	// Client trees queries.
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
-	// Round VTXO templates queries.
-	InsertRoundVtxoTemplate(ctx context.Context, arg InsertRoundVtxoTemplateParams) error
+	// Round VTXO request queries.
+	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
 	// VTXO queries.
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
