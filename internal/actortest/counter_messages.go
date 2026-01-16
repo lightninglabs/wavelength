@@ -18,8 +18,8 @@ const (
 
 // TLV record type constants for fields within messages.
 const (
-	amountRecordType tlv.Type = 1
-	targetRecordType tlv.Type = 2
+	amountRecordType  tlv.Type = 1
+	targetRecordType  tlv.Type = 2
 	msgTypeRecordType tlv.Type = 3
 	payloadRecordType tlv.Type = 4
 )
@@ -41,17 +41,17 @@ type IncrementMsg struct {
 }
 
 // MessageType returns a human-readable type name for logging.
-func (m IncrementMsg) MessageType() string {
+func (m *IncrementMsg) MessageType() string {
 	return "counter.Increment"
 }
 
 // TLVType returns the unique TLV type identifier for this message.
-func (m IncrementMsg) TLVType() tlv.Type {
+func (m *IncrementMsg) TLVType() tlv.Type {
 	return IncrementMsgType
 }
 
 // Encode serializes the message to the provided writer.
-func (m IncrementMsg) Encode(w io.Writer) error {
+func (m *IncrementMsg) Encode(w io.Writer) error {
 	// TLV MakePrimitiveRecord requires uint64, not int64.
 	amount := uint64(m.Amount)
 
@@ -97,17 +97,17 @@ type DecrementMsg struct {
 }
 
 // MessageType returns a human-readable type name for logging.
-func (m DecrementMsg) MessageType() string {
+func (m *DecrementMsg) MessageType() string {
 	return "counter.Decrement"
 }
 
 // TLVType returns the unique TLV type identifier for this message.
-func (m DecrementMsg) TLVType() tlv.Type {
+func (m *DecrementMsg) TLVType() tlv.Type {
 	return DecrementMsgType
 }
 
 // Encode serializes the message to the provided writer.
-func (m DecrementMsg) Encode(w io.Writer) error {
+func (m *DecrementMsg) Encode(w io.Writer) error {
 	// TLV MakePrimitiveRecord requires uint64, not int64.
 	amount := uint64(m.Amount)
 
@@ -151,18 +151,18 @@ type GetCountMsg struct {
 }
 
 // MessageType returns a human-readable type name for logging.
-func (m GetCountMsg) MessageType() string {
+func (m *GetCountMsg) MessageType() string {
 	return "counter.GetCount"
 }
 
 // TLVType returns the unique TLV type identifier for this message.
-func (m GetCountMsg) TLVType() tlv.Type {
+func (m *GetCountMsg) TLVType() tlv.Type {
 	return GetCountMsgType
 }
 
 // Encode serializes the message to the provided writer.
 // GetCountMsg has no fields, so this is a no-op.
-func (m GetCountMsg) Encode(w io.Writer) error {
+func (m *GetCountMsg) Encode(w io.Writer) error {
 	return nil
 }
 
@@ -183,17 +183,17 @@ type ForwardMsg struct {
 }
 
 // MessageType returns a human-readable type name for logging.
-func (m ForwardMsg) MessageType() string {
+func (m *ForwardMsg) MessageType() string {
 	return "counter.Forward"
 }
 
 // TLVType returns the unique TLV type identifier for this message.
-func (m ForwardMsg) TLVType() tlv.Type {
+func (m *ForwardMsg) TLVType() tlv.Type {
 	return ForwardMsgType
 }
 
 // Encode serializes the message to the provided writer.
-func (m ForwardMsg) Encode(w io.Writer) error {
+func (m *ForwardMsg) Encode(w io.Writer) error {
 	target := []byte(m.Target)
 	msgType := uint64(m.MsgType)
 	payload := m.Payload

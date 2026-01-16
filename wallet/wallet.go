@@ -173,9 +173,12 @@ func (a *Ark) Stop(ctx context.Context) {
 		a.cancel()
 	}
 
-	a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
+	err := a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
 		CallerID: "boarding-wallet",
 	})
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to unsubscribe blocks", err)
+	}
 
 	a.wg.Wait()
 
@@ -474,7 +477,10 @@ func (a *Ark) processUtxo(ctx context.Context,
 	}
 	for _, notifier := range a.notifiers {
 		if uint32(utxo.Confirmations) >= notifier.minConf {
-			notifier.actor.Tell(ctx, event)
+			if err := notifier.actor.Tell(ctx, event); err != nil {
+				a.log.WarnS(ctx, "Failed to notify confirmation",
+					err)
+			}
 		}
 	}
 }
@@ -505,7 +511,9 @@ func (a *Ark) sendBacklog(ctx context.Context,
 			BoardingIntent: intent,
 		}
 
-		notifier.Tell(ctx, event)
+		if err := notifier.Tell(ctx, event); err != nil {
+			a.log.WarnS(ctx, "Failed to deliver backlog event", err)
+		}
 	}
 
 	a.log.InfoS(ctx, "Backlog delivery completed",

@@ -245,7 +245,10 @@ func (a *ConfActor) deliverConfirmation(event ConfirmationEvent) {
 	})
 
 	a.notifyActor.WhenSome(func(ref actor.TellOnlyRef[ConfirmationEvent]) {
-		ref.Tell(a.ctx, event)
+		log := a.logger(a.ctx)
+		if err := ref.Tell(a.ctx, event); err != nil {
+			log.WarnS(a.ctx, "Failed to deliver confirmation", err)
+		}
 	})
 }
 

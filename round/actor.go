@@ -461,7 +461,9 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	// Use a background context for the confirmation registration. The
 	// ConfActor needs a long-lived context that won't be cancelled when
 	// the current message processing completes.
-	a.cfg.ChainSource.Tell(context.Background(), confReq)
+	if err := a.cfg.ChainSource.Tell(context.Background(), confReq); err != nil {
+		a.log.WarnS(ctx, "Failed to register confirmation", err)
+	}
 }
 
 // askEventAndProcessOutbox sends an event to the FSM and processes any
@@ -1089,7 +1091,9 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			sendReq := &serverconn.SendClientEventRequest{
 				Message: serverMsg,
 			}
-			a.cfg.ServerConn.Tell(ctx, sendReq)
+			if err := a.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+				return fmt.Errorf("send to server: %w", err)
+			}
 
 			continue
 		}
@@ -1173,13 +1177,24 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// registration. The ConfActor needs a long-lived context
 			// that won't be cancelled when the current message
 			// processing completes.
-			a.cfg.ChainSource.Tell(context.Background(), confReq)
+			if err := a.cfg.ChainSource.Tell(context.Background(),
+				confReq); err != nil {
+				a.log.WarnS(ctx,
+					"Failed to register confirmation",
+					err,
+				)
+			}
 
 		case *VTXOCreatedNotification:
 			// Forward to VTXO manager to spawn actors for the new
 			// VTXOs if configured.
 			if a.cfg.VTXOManager != nil {
-				a.cfg.VTXOManager.Tell(ctx, m)
+				if err := a.cfg.VTXOManager.Tell(ctx, m); err != nil {
+					a.log.WarnS(ctx,
+						"Failed to notify VTXO manager",
+						err,
+					)
+				}
 			}
 
 		case *RoundCompletedNotification:

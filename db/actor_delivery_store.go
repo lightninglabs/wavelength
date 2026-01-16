@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -33,15 +34,22 @@ type (
 )
 
 // ActorDeliveryQueries is the interface that groups all actor delivery-related
-// database queries. This is a subset of sqlc.Querier focused on durable mailbox
-// operations.
+// database queries.
+//
+// ActorDeliveryQueries is intentionally wide because it is implemented by
+// SQLC-generated query sets. Keeping it as a single interface simplifies
+// transactional usage without excessive adapter boilerplate.
+//
+//nolint:interfacebloat
 type ActorDeliveryQueries interface {
 	// Mailbox operations.
-	EnqueueMailboxMessage(ctx context.Context, arg EnqueueMailboxParams) error
+	EnqueueMailboxMessage(ctx context.Context,
+		arg EnqueueMailboxParams) error
 	LeaseNextMailboxMessage(
 		ctx context.Context, arg LeaseMailboxParams,
 	) (MailboxMsgRow, error)
-	AckMailboxMessage(ctx context.Context, arg AckMailboxParams) (int64, error)
+	AckMailboxMessage(ctx context.Context,
+		arg AckMailboxParams) (int64, error)
 	NackMailboxMessage(
 		ctx context.Context, arg NackMailboxParams,
 	) (int64, error)
@@ -53,13 +61,16 @@ type ActorDeliveryQueries interface {
 
 	// Ask result operations.
 	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
-	GetAskResult(ctx context.Context, promiseID string) (AskResultRow, error)
+	GetAskResult(ctx context.Context,
+		promiseID string) (AskResultRow, error)
 	DeleteAskResult(ctx context.Context, promiseID string) error
 
 	// Outbox operations.
 	EnqueueOutboxMessage(ctx context.Context, arg EnqueueOutboxParams) error
-	ClaimOutboxBatch(ctx context.Context, limit int32) ([]OutboxMsgRow, error)
-	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxParams) error
+	ClaimOutboxBatch(ctx context.Context,
+		limit int32) ([]OutboxMsgRow, error)
+	CompleteOutboxMessage(ctx context.Context,
+		arg CompleteOutboxParams) error
 	FailOutboxMessage(ctx context.Context, arg FailOutboxParams) error
 
 	// Deduplication operations.
@@ -84,7 +95,8 @@ type ActorDeliveryQueries interface {
 	DeleteDeadLetter(ctx context.Context, id string) error
 
 	// Cleanup operations.
-	CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int32) error
+	CleanupExpiredProcessedMessages(ctx context.Context,
+		expiresAt int32) error
 	CleanupExpiredAskResults(ctx context.Context, expiresAt int32) error
 }
 
@@ -123,21 +135,35 @@ func (s *ActorDeliveryStore) EnqueueMessage(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.EnqueueMailboxMessage(ctx, EnqueueMailboxParams{
-			ID:              params.ID,
-			MailboxID:       params.MailboxID,
-			MessageType:     params.MessageType,
-			Payload:         params.Payload,
-			PromiseID:       toNullString(params.PromiseID),
-			CallbackActorID: toNullString(params.CallbackActorID),
-			CorrelationID:   toNullString(params.CorrelationID),
-			Priority:        int32(params.Priority),
-			AvailableAt:     int32(params.AvailableAt.Unix()),
-			MaxAttempts:     int32(params.MaxAttempts),
-			CreatedAt:       int32(s.clock.Now().Unix()),
+	return s.db.ExecTx(ctx, writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			createdAt := int32(s.clock.Now().Unix())
+
+			return q.EnqueueMailboxMessage(
+				ctx,
+				EnqueueMailboxParams{
+					ID:          params.ID,
+					MailboxID:   params.MailboxID,
+					MessageType: params.MessageType,
+					Payload:     params.Payload,
+					PromiseID: toNullString(
+						params.PromiseID,
+					),
+					CallbackActorID: toNullString(
+						params.CallbackActorID,
+					),
+					CorrelationID: toNullString(
+						params.CorrelationID,
+					),
+					Priority: int32(params.Priority),
+					AvailableAt: int32(
+						params.AvailableAt.Unix(),
+					),
+					MaxAttempts: int32(params.MaxAttempts),
+					CreatedAt:   createdAt,
+				},
+			)
 		})
-	})
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
@@ -152,42 +178,55 @@ func (s *ActorDeliveryStore) LeaseNextMessage(
 
 	var result *actor.LeasedMessage
 
-	err := s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		now := s.clock.Now()
-		leaseUntil := now.Add(leaseDuration)
+	err := s.db.ExecTx(ctx, writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			now := s.clock.Now()
+			leaseUntil := now.Add(leaseDuration)
 
-		msg, err := q.LeaseNextMailboxMessage(ctx, LeaseMailboxParams{
-			MailboxID:   mailboxID,
-			LeaseToken:  toNullString(leaseToken),
-			LeaseUntil:  toNullInt32(int32(leaseUntil.Unix())),
-			AvailableAt: int32(now.Unix()),
-		})
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil
+			msg, err := q.LeaseNextMailboxMessage(
+				ctx,
+				LeaseMailboxParams{
+					MailboxID: mailboxID,
+					LeaseToken: toNullString(
+						leaseToken,
+					),
+					LeaseUntil: toNullInt32(
+						int32(leaseUntil.Unix()),
+					),
+					AvailableAt: int32(now.Unix()),
+				},
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil
+				}
+
+				return err
 			}
 
-			return err
-		}
+			callbackActorID := fromNullString(msg.CallbackActorID)
+			correlationID := fromNullString(msg.CorrelationID)
+			leaseUntilTime := fromNullInt32Time(msg.LeaseUntil)
+			createdAt := time.Unix(int64(msg.CreatedAt), 0)
 
-		result = &actor.LeasedMessage{
-			ID:              msg.ID,
-			MailboxID:       msg.MailboxID,
-			MessageType:     msg.MessageType,
-			Payload:         msg.Payload,
-			PromiseID:       fromNullString(msg.PromiseID),
-			CallbackActorID: fromNullString(msg.CallbackActorID),
-			CorrelationID:   fromNullString(msg.CorrelationID),
-			Priority:        int(msg.Priority),
-			LeaseToken:      fromNullString(msg.LeaseToken),
-			LeaseUntil:      fromNullInt32Time(msg.LeaseUntil),
-			Attempts:        int(msg.Attempts),
-			MaxAttempts:     int(msg.MaxAttempts),
-			CreatedAt:       time.Unix(int64(msg.CreatedAt), 0),
-		}
+			result = &actor.LeasedMessage{
+				ID:              msg.ID,
+				MailboxID:       msg.MailboxID,
+				MessageType:     msg.MessageType,
+				Payload:         msg.Payload,
+				PromiseID:       fromNullString(msg.PromiseID),
+				CallbackActorID: callbackActorID,
+				CorrelationID:   correlationID,
+				Priority:        int(msg.Priority),
+				LeaseToken:      fromNullString(msg.LeaseToken),
+				LeaseUntil:      leaseUntilTime,
+				Attempts:        int(msg.Attempts),
+				MaxAttempts:     int(msg.MaxAttempts),
+				CreatedAt:       createdAt,
+			}
 
-		return nil
-	})
+			return nil
+		})
 
 	return result, err
 }
@@ -201,15 +240,19 @@ func (s *ActorDeliveryStore) AckMessage(
 
 	var rows int64
 
-	err := s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		var err error
-		rows, err = q.AckMailboxMessage(ctx, AckMailboxParams{
-			ID:         id,
-			LeaseToken: toNullString(leaseToken),
-		})
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			rows, err = q.AckMailboxMessage(ctx, AckMailboxParams{
+				ID:         id,
+				LeaseToken: toNullString(leaseToken),
+			})
 
-		return err
-	})
+			return err
+		},
+	)
 
 	return rows, err
 }
@@ -225,18 +268,22 @@ func (s *ActorDeliveryStore) NackMessage(
 
 	var rows int64
 
-	err := s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		availableAt := s.clock.Now().Add(retryAfter)
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			availableAt := s.clock.Now().Add(retryAfter)
 
-		var err error
-		rows, err = q.NackMailboxMessage(ctx, NackMailboxParams{
-			ID:          id,
-			LeaseToken:  toNullString(leaseToken),
-			AvailableAt: int32(availableAt.Unix()),
-		})
+			var err error
+			rows, err = q.NackMailboxMessage(ctx, NackMailboxParams{
+				ID:          id,
+				LeaseToken:  toNullString(leaseToken),
+				AvailableAt: int32(availableAt.Unix()),
+			})
 
-		return err
-	})
+			return err
+		},
+	)
 
 	return rows, err
 }
@@ -252,18 +299,27 @@ func (s *ActorDeliveryStore) ExtendLease(
 
 	var rows int64
 
-	err := s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		leaseUntil := s.clock.Now().Add(extension)
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			leaseUntil := s.clock.Now().Add(extension)
 
-		var err error
-		rows, err = q.ExtendMailboxLease(ctx, ExtendMailboxParams{
-			ID:         id,
-			LeaseToken: toNullString(leaseToken),
-			LeaseUntil: toNullInt32(int32(leaseUntil.Unix())),
-		})
+			var err error
+			rows, err = q.ExtendMailboxLease(
+				ctx,
+				ExtendMailboxParams{
+					ID:         id,
+					LeaseToken: toNullString(leaseToken),
+					LeaseUntil: toNullInt32(
+						int32(leaseUntil.Unix()),
+					),
+				},
+			)
 
-		return err
-	})
+			return err
+		},
+	)
 
 	return rows, err
 }
@@ -275,20 +331,29 @@ func (s *ActorDeliveryStore) MoveToDeadLetter(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		// First, move to dead letter.
-		err := q.MoveMailboxToDeadLetter(ctx, DeadLetterInsertParams{
-			ID:            id,
-			FailureReason: reason,
-			CreatedAt:     int32(s.clock.Now().Unix()),
-		})
-		if err != nil {
-			return err
-		}
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			createdAt := int32(s.clock.Now().Unix())
 
-		// Then delete from mailbox.
-		return q.DeleteMailboxMessage(ctx, id)
-	})
+			// First, move to dead letter.
+			err := q.MoveMailboxToDeadLetter(
+				ctx,
+				DeadLetterInsertParams{
+					ID:            id,
+					FailureReason: reason,
+					CreatedAt:     createdAt,
+				},
+			)
+			if err != nil {
+				return err
+			}
+
+			// Then delete from mailbox.
+			return q.DeleteMailboxMessage(ctx, id)
+		},
+	)
 }
 
 // DeleteMessage removes a message from the mailbox.
@@ -298,9 +363,13 @@ func (s *ActorDeliveryStore) DeleteMessage(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.DeleteMailboxMessage(ctx, id)
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.DeleteMailboxMessage(ctx, id)
+		},
+	)
 }
 
 // SaveAskResult persists the result of an Ask message for caller retrieval.
@@ -310,15 +379,19 @@ func (s *ActorDeliveryStore) SaveAskResult(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.InsertAskResult(ctx, InsertAskResultParams{
-			PromiseID:  params.PromiseID,
-			ResultBlob: params.ResultBlob,
-			ErrorText:  toNullString(params.ErrorText),
-			CreatedAt:  int32(s.clock.Now().Unix()),
-			ExpiresAt:  int32(params.ExpiresAt.Unix()),
-		})
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.InsertAskResult(ctx, InsertAskResultParams{
+				PromiseID:  params.PromiseID,
+				ResultBlob: params.ResultBlob,
+				ErrorText:  toNullString(params.ErrorText),
+				CreatedAt:  int32(s.clock.Now().Unix()),
+				ExpiresAt:  int32(params.ExpiresAt.Unix()),
+			})
+		},
+	)
 }
 
 // GetAskResult retrieves the result of an Ask message.
@@ -333,7 +406,7 @@ func (s *ActorDeliveryStore) GetAskResult(
 	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
 		row, err := q.GetAskResult(ctx, promiseID)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 
@@ -361,9 +434,13 @@ func (s *ActorDeliveryStore) DeleteAskResult(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.DeleteAskResult(ctx, promiseID)
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.DeleteAskResult(ctx, promiseID)
+		},
+	)
 }
 
 // EnqueueOutbox adds a message to the transactional outbox.
@@ -373,18 +450,22 @@ func (s *ActorDeliveryStore) EnqueueOutbox(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.EnqueueOutboxMessage(ctx, EnqueueOutboxParams{
-			ID:            params.ID,
-			SourceActorID: params.SourceActorID,
-			TargetActorID: params.TargetActorID,
-			MessageType:   params.MessageType,
-			Payload:       params.Payload,
-			DomainKey:     toNullString(params.DomainKey),
-			Version:       int32(params.Version),
-			CreatedAt:     int32(s.clock.Now().Unix()),
-		})
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.EnqueueOutboxMessage(ctx, EnqueueOutboxParams{
+				ID:            params.ID,
+				SourceActorID: params.SourceActorID,
+				TargetActorID: params.TargetActorID,
+				MessageType:   params.MessageType,
+				Payload:       params.Payload,
+				DomainKey:     toNullString(params.DomainKey),
+				Version:       int32(params.Version),
+				CreatedAt:     int32(s.clock.Now().Unix()),
+			})
+		},
+	)
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
@@ -396,30 +477,38 @@ func (s *ActorDeliveryStore) ClaimOutboxBatch(
 
 	var result []actor.OutboxMessage
 
-	err := s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		rows, err := q.ClaimOutboxBatch(ctx, int32(limit))
-		if err != nil {
-			return err
-		}
-
-		result = make([]actor.OutboxMessage, len(rows))
-		for i, row := range rows {
-			result[i] = actor.OutboxMessage{
-				ID:               row.ID,
-				SourceActorID:    row.SourceActorID,
-				TargetActorID:    row.TargetActorID,
-				MessageType:      row.MessageType,
-				Payload:          row.Payload,
-				DomainKey:        fromNullString(row.DomainKey),
-				Version:          int64(row.Version),
-				Status:           row.Status,
-				DeliveryAttempts: int(row.DeliveryAttempts),
-				CreatedAt:        time.Unix(int64(row.CreatedAt), 0),
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			rows, err := q.ClaimOutboxBatch(ctx, int32(limit))
+			if err != nil {
+				return err
 			}
-		}
 
-		return nil
-	})
+			result = make([]actor.OutboxMessage, len(rows))
+			for i, row := range rows {
+				createdAt := time.Unix(int64(row.CreatedAt), 0)
+				domainKey := fromNullString(row.DomainKey)
+				deliveryAttempts := int(row.DeliveryAttempts)
+
+				result[i] = actor.OutboxMessage{
+					ID:               row.ID,
+					SourceActorID:    row.SourceActorID,
+					TargetActorID:    row.TargetActorID,
+					MessageType:      row.MessageType,
+					Payload:          row.Payload,
+					DomainKey:        domainKey,
+					Version:          int64(row.Version),
+					Status:           row.Status,
+					DeliveryAttempts: deliveryAttempts,
+					CreatedAt:        createdAt,
+				}
+			}
+
+			return nil
+		},
+	)
 
 	return result, err
 }
@@ -431,12 +520,21 @@ func (s *ActorDeliveryStore) CompleteOutbox(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.CompleteOutboxMessage(ctx, CompleteOutboxParams{
-			ID:          id,
-			CompletedAt: toNullInt32(int32(s.clock.Now().Unix())),
-		})
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.CompleteOutboxMessage(
+				ctx,
+				CompleteOutboxParams{
+					ID: id,
+					CompletedAt: toNullInt32(
+						int32(s.clock.Now().Unix()),
+					),
+				},
+			)
+		},
+	)
 }
 
 // FailOutbox marks an outbox message as failed (dead letter).
@@ -446,12 +544,18 @@ func (s *ActorDeliveryStore) FailOutbox(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.FailOutboxMessage(ctx, FailOutboxParams{
-			ID:          id,
-			CompletedAt: toNullInt32(int32(s.clock.Now().Unix())),
-		})
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.FailOutboxMessage(ctx, FailOutboxParams{
+				ID: id,
+				CompletedAt: toNullInt32(
+					int32(s.clock.Now().Unix()),
+				),
+			})
+		},
+	)
 }
 
 // IsProcessed checks if a message has already been processed.
@@ -482,17 +586,21 @@ func (s *ActorDeliveryStore) MarkProcessed(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		now := s.clock.Now()
-		expiresAt := now.Add(ttl)
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			now := s.clock.Now()
+			expiresAt := now.Add(ttl)
 
-		return q.MarkMessageProcessed(ctx, MarkProcessedParams{
-			ID:          id,
-			ActorID:     actorID,
-			ProcessedAt: int32(now.Unix()),
-			ExpiresAt:   int32(expiresAt.Unix()),
-		})
-	})
+			return q.MarkMessageProcessed(ctx, MarkProcessedParams{
+				ID:          id,
+				ActorID:     actorID,
+				ProcessedAt: int32(now.Unix()),
+				ExpiresAt:   int32(expiresAt.Unix()),
+			})
+		},
+	)
 }
 
 // SaveCheckpoint saves or updates an FSM state checkpoint.
@@ -502,15 +610,19 @@ func (s *ActorDeliveryStore) SaveCheckpoint(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.SaveFSMCheckpoint(ctx, SaveCheckpointParams{
-			ActorID:   params.ActorID,
-			StateType: params.StateType,
-			StateData: params.StateData,
-			Version:   int32(params.Version),
-			UpdatedAt: int32(s.clock.Now().Unix()),
-		})
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.SaveFSMCheckpoint(ctx, SaveCheckpointParams{
+				ActorID:   params.ActorID,
+				StateType: params.StateType,
+				StateData: params.StateData,
+				Version:   int32(params.Version),
+				UpdatedAt: int32(s.clock.Now().Unix()),
+			})
+		},
+	)
 }
 
 // LoadCheckpoint loads an FSM checkpoint for an actor.
@@ -525,7 +637,7 @@ func (s *ActorDeliveryStore) LoadCheckpoint(
 	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
 		row, err := q.GetFSMCheckpoint(ctx, actorID)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 
@@ -553,9 +665,13 @@ func (s *ActorDeliveryStore) DeleteCheckpoint(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.DeleteFSMCheckpoint(ctx, actorID)
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.DeleteFSMCheckpoint(ctx, actorID)
+		},
+	)
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
@@ -570,7 +686,7 @@ func (s *ActorDeliveryStore) GetDeadLetter(
 	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
 		row, err := q.GetDeadLetter(ctx, id)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 
@@ -604,16 +720,21 @@ func (s *ActorDeliveryStore) ListDeadLetters(
 	var result []actor.DeadLetter
 
 	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
-		rows, err := q.ListDeadLettersByActor(ctx, ListDeadLettersParams{
-			ActorID: actorID,
-			Limit:   int32(limit),
-		})
+		rows, err := q.ListDeadLettersByActor(
+			ctx,
+			ListDeadLettersParams{
+				ActorID: actorID,
+				Limit:   int32(limit),
+			},
+		)
 		if err != nil {
 			return err
 		}
 
 		result = make([]actor.DeadLetter, len(rows))
 		for i, row := range rows {
+			createdAt := time.Unix(int64(row.CreatedAt), 0)
+
 			result[i] = actor.DeadLetter{
 				ID:            row.ID,
 				Source:        row.Source,
@@ -622,7 +743,7 @@ func (s *ActorDeliveryStore) ListDeadLetters(
 				Payload:       row.Payload,
 				FailureReason: row.FailureReason,
 				Attempts:      int(row.Attempts),
-				CreatedAt:     time.Unix(int64(row.CreatedAt), 0),
+				CreatedAt:     createdAt,
 			}
 		}
 
@@ -639,37 +760,51 @@ func (s *ActorDeliveryStore) DeleteDeadLetter(
 
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.DeleteDeadLetter(ctx, id)
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.DeleteDeadLetter(ctx, id)
+		},
+	)
 }
 
 // ExpireLeases releases all expired leases so messages can be redelivered.
 func (s *ActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		return q.ExpireMailboxLeases(
-			ctx, toNullInt32(int32(s.clock.Now().Unix())),
-		)
-	})
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			return q.ExpireMailboxLeases(
+				ctx, toNullInt32(int32(s.clock.Now().Unix())),
+			)
+		},
+	)
 }
 
 // CleanupExpired removes expired deduplication entries and ask results.
 func (s *ActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 	writeTxOpts := WriteTxOption()
 
-	return s.db.ExecTx(ctx, writeTxOpts, func(q ActorDeliveryQueries) error {
-		now := int32(s.clock.Now().Unix())
+	return s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			now := int32(s.clock.Now().Unix())
 
-		// Cleanup expired deduplication entries.
-		if err := q.CleanupExpiredProcessedMessages(ctx, now); err != nil {
-			return err
-		}
+			// Cleanup expired deduplication entries.
+			if err := q.CleanupExpiredProcessedMessages(
+				ctx, now,
+			); err != nil {
+				return err
+			}
 
-		// Cleanup expired Ask results.
-		return q.CleanupExpiredAskResults(ctx, now)
-	})
+			// Cleanup expired Ask results.
+			return q.CleanupExpiredAskResults(ctx, now)
+		},
+	)
 }
 
 // Helper functions for SQL type conversions.
@@ -770,7 +905,7 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(
 		AvailableAt: int32(now.Unix()),
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 
@@ -883,7 +1018,7 @@ func (s *TxActorDeliveryStore) GetAskResult(
 
 	row, err := s.querier.GetAskResult(ctx, promiseID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 
@@ -1022,7 +1157,7 @@ func (s *TxActorDeliveryStore) LoadCheckpoint(
 
 	row, err := s.querier.GetFSMCheckpoint(ctx, actorID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 
@@ -1053,7 +1188,7 @@ func (s *TxActorDeliveryStore) GetDeadLetter(
 
 	row, err := s.querier.GetDeadLetter(ctx, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 
@@ -1077,10 +1212,13 @@ func (s *TxActorDeliveryStore) ListDeadLetters(
 	ctx context.Context, actorID string, limit int,
 ) ([]actor.DeadLetter, error) {
 
-	rows, err := s.querier.ListDeadLettersByActor(ctx, ListDeadLettersParams{
-		ActorID: actorID,
-		Limit:   int32(limit),
-	})
+	rows, err := s.querier.ListDeadLettersByActor(
+		ctx,
+		ListDeadLettersParams{
+			ActorID: actorID,
+			Limit:   int32(limit),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1121,7 +1259,8 @@ func (s *TxActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 func (s *TxActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 	now := int32(s.clock.Now().Unix())
 
-	if err := s.querier.CleanupExpiredProcessedMessages(ctx, now); err != nil {
+	err := s.querier.CleanupExpiredProcessedMessages(ctx, now)
+	if err != nil {
 		return err
 	}
 
@@ -1140,7 +1279,9 @@ type TxAwareActorDeliveryStore struct {
 
 // NewTxAwareActorDeliveryStore creates a new transaction-aware delivery store.
 func NewTxAwareActorDeliveryStore(
-	db BatchedActorDeliveryQueries, querier BatchedQuerier, clock clock.Clock,
+	db BatchedActorDeliveryQueries,
+	querier BatchedQuerier,
+	clock clock.Clock,
 ) *TxAwareActorDeliveryStore {
 
 	return &TxAwareActorDeliveryStore{
