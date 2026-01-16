@@ -313,23 +313,6 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	return roundFSM, nil
 }
 
-// findIdleRound finds an existing round FSM that is in Idle state and can
-// accept new boarding intents. Returns nil if no idle round exists.
-func (a *RoundClientActor) findIdleRound() *RoundFSM {
-	for _, roundFSM := range a.rounds {
-		state, err := roundFSM.FSM.CurrentState()
-		if err != nil {
-			continue
-		}
-
-		if _, ok := state.(*Idle); ok {
-			return roundFSM
-		}
-	}
-
-	return nil
-}
-
 // findAssemblingRound finds a round that is currently assembling intents.
 // It prioritizes PendingRoundAssembly (which already has boarding inputs)
 // over Idle rounds. This ensures VTXOs are attached to rounds that have
