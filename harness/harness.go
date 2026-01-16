@@ -291,7 +291,7 @@ func DefaultOptions() Options {
 
 	return Options{
 		BitcoindImage:       "lightninglabs/bitcoin-core:29",
-		LNDImage:            "lightninglabs/lnd:v0.20.0-beta",
+		LNDImage:            "lightninglabs/lnd:daily-testing-20260115",
 		TapdImage:           "lightninglabs/taproot-assets:v0.7.0-rc1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
