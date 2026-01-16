@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -15,10 +16,12 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // Compile-time assertion that RoundClientActor implements actor.Stoppable.
@@ -124,6 +127,11 @@ type RoundClientConfig struct {
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
+	// MaxOperatorFee is the maximum fee the client is willing to pay per
+	// round. This limits the difference between total boarding input amounts
+	// and total VTXO output amounts.
+	MaxOperatorFee btcutil.Amount
+
 	// VTXOManager receives VTXO creation notifications after rounds
 	// complete. The round actor forwards VTXOCreatedNotification messages
 	// to spawn VTXO actors for newly created VTXOs. Uses actor.Message to
@@ -149,12 +157,13 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:    cfg.RoundStore,
-		VTXOStore:     cfg.VTXOStore,
-		Wallet:        cfg.Wallet,
-		OperatorTerms: cfg.OperatorTerms,
-		ChainParams:   cfg.ChainParams,
-		Log:           actorLog,
+		RoundStore:     cfg.RoundStore,
+		VTXOStore:      cfg.VTXOStore,
+		Wallet:         cfg.Wallet,
+		OperatorTerms:  cfg.OperatorTerms,
+		ChainParams:    cfg.ChainParams,
+		MaxOperatorFee: cfg.MaxOperatorFee,
+		Log:            actorLog,
 	}
 
 	if err := ValidateDelayParameters(
@@ -216,13 +225,14 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:    a.cfg.RoundStore,
-		VTXOStore:     a.cfg.VTXOStore,
-		Wallet:        a.cfg.Wallet,
-		OperatorTerms: a.cfg.OperatorTerms,
-		ChainParams:   a.cfg.ChainParams,
-		Log:           fsmLogger,
-		StartHeight:   startHeight,
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -270,13 +280,14 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:    a.cfg.RoundStore,
-		VTXOStore:     a.cfg.VTXOStore,
-		Wallet:        a.cfg.Wallet,
-		OperatorTerms: a.cfg.OperatorTerms,
-		ChainParams:   a.cfg.ChainParams,
-		Log:           fsmLogger,
-		StartHeight:   startHeight,
+		RoundStore:     a.cfg.RoundStore,
+		VTXOStore:      a.cfg.VTXOStore,
+		Wallet:         a.cfg.Wallet,
+		OperatorTerms:  a.cfg.OperatorTerms,
+		ChainParams:    a.cfg.ChainParams,
+		MaxOperatorFee: a.cfg.MaxOperatorFee,
+		Log:            fsmLogger,
+		StartHeight:    startHeight,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -302,9 +313,24 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	return roundFSM, nil
 }
 
-// findIdleRound finds an existing round FSM that is in Idle state and can
-// accept new boarding intents. Returns nil if no idle round exists.
-func (a *RoundClientActor) findIdleRound() *RoundFSM {
+// findAssemblingRound finds a round that is currently assembling intents.
+// It prioritizes PendingRoundAssembly (which already has boarding inputs)
+// over Idle rounds. This ensures VTXOs are attached to rounds that have
+// inputs, preventing registration failures from empty input sets.
+func (a *RoundClientActor) findAssemblingRound() *RoundFSM {
+	// First pass: prefer rounds that already have boarding intents.
+	for _, roundFSM := range a.rounds {
+		state, err := roundFSM.FSM.CurrentState()
+		if err != nil {
+			continue
+		}
+
+		if _, ok := state.(*PendingRoundAssembly); ok {
+			return roundFSM
+		}
+	}
+
+	// Second pass: fall back to idle rounds.
 	for _, roundFSM := range a.rounds {
 		state, err := roundFSM.FSM.CurrentState()
 		if err != nil {
@@ -344,7 +370,7 @@ func (a *RoundClientActor) findRoundByOutpoints(
 		}
 
 		// Check if this round's intents match the boarding outpoints.
-		if a.intentsMatchOutpoints(regState.Intents, boardingSet) {
+		if a.intentsMatchOutpoints(regState.Intents.Boarding, boardingSet) {
 			return roundFSM
 		}
 	}
@@ -562,6 +588,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *WalletBoardingConfirmed:
 		return a.handleWalletBoardingConfirmed(ctx, m)
 
+	case *RegisterVTXORequestsRequest:
+		return a.handleVTXORequests(ctx, m)
+
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
 
@@ -597,8 +626,10 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
 		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
 
-	// Find an existing Idle round or create a new one.
-	roundFSM := a.findIdleRound()
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows multiple boarding confirmations to
+	// accumulate in the same round.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
@@ -610,7 +641,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 
 	// Create the FSM event from the wallet's confirmed intent. Wallet only
 	// notifies after min confs, so we set confirmations to 1. Include the
-	// Address and TxProof for building the BoardingRequest.
+	// Address and TxProof for building the Request.
 	confirmEvt := &BoardingUTXOConfirmed{
 		Outpoint:      walletIntent.Outpoint,
 		Address:       walletIntent.Address,
@@ -629,6 +660,102 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	}
 
 	return fn.Ok[ClientResp](nil)
+}
+
+// handleVTXORequests processes client-submitted VTXO requests and forwards
+// them to an idle round FSM. If no idle round exists, a new one is created.
+func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
+	msg *RegisterVTXORequestsRequest) fn.Result[ClientResp] {
+
+	if len(msg.Amounts) == 0 {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"VTXO request amounts are empty",
+		))
+	}
+
+	requests := make([]types.VTXORequest, 0, len(msg.Amounts))
+	for i, amount := range msg.Amounts {
+		if amount <= 0 {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"VTXO amount %d is invalid: %v", i, amount,
+			))
+		}
+
+		req, err := a.buildVTXORequest(ctx, amount)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"build VTXO request %d: %w", i, err,
+			))
+		}
+
+		requests = append(requests, *req)
+	}
+
+	a.log.InfoS(ctx, "Received VTXO requests",
+		slog.Int("count", len(requests)))
+
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows VTXOs to join a round that already has
+	// boarding intents being assembled.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"create new round for VTXO requests: %w", err,
+			))
+		}
+	}
+
+	event := &VTXORequestsReceived{
+		Requests: requests,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing VTXO requests: %w", err,
+		))
+	}
+
+	return fn.Ok[ClientResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
+}
+
+// buildVTXORequest derives a signing key and constructs a VTXO request for
+// the provided amount.
+func (a *RoundClientActor) buildVTXORequest(ctx context.Context,
+	amount btcutil.Amount) (*types.VTXORequest, error) {
+
+	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
+		ctx, keychain.KeyFamilyMultiSig,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("derive signing key: %w", err)
+	}
+
+	operatorKey := a.cfg.OperatorTerms.PubKey
+	expiry := a.cfg.OperatorTerms.VTXOExitDelay
+	desc, err := tree.NewVTXODescriptor(
+		amount, keyDesc.PubKey, operatorKey, expiry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build VTXO descriptor for amount %v, "+
+			"client %x, operator %x, expiry %d: %w",
+			amount, keyDesc.PubKey.SerializeCompressed(),
+			operatorKey.SerializeCompressed(), expiry, err)
+	}
+
+	return &types.VTXORequest{
+		Amount:      amount,
+		PkScript:    desc.PkScript,
+		Expiry:      expiry,
+		ClientKey:   keyDesc.PubKey,
+		OperatorKey: operatorKey,
+		SigningKey:  *keyDesc,
+	}, nil
 }
 
 // handleRoundJoined handles the RoundJoined event which requires special

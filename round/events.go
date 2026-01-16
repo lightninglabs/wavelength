@@ -1,12 +1,15 @@
 package round
 
 import (
+	"log/slog"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -32,14 +35,31 @@ type ClientOutMsg interface {
 	clientOutMsgSealed()
 }
 
-// ResumeBoardingIntents is emitted to instruct the FSM to resume monitoring
-// boarding intents that were in progress. The intents are provided as a
-// parameter (pre-filtered by the actor) rather than fetched from storage.
+// ResumeBoardingIntents is emitted to instruct the FSM to resume attempting to
+// join a round with previously submitted and confirmed-but-not-adopted
+// intents.
 type ResumeBoardingIntents struct {
-	// Intents are the boarding intents to resume, keyed by their outpoint.
-	// These are pre-filtered to include only Confirmed-but-not-Adopted
-	// intents.
-	Intents map[wire.OutPoint]BoardingIntent
+	// Boarding contains the collected boarding intents to include in the
+	// next round.
+	Boarding []BoardingIntent
+
+	// VTXOs contains the collected VTXO requests to include in the next
+	// round.
+	VTXOs []types.VTXORequest
+}
+
+// isEmpty returns true if there are no boarding intents or VTXO requests
+// to resume.
+func (e *ResumeBoardingIntents) isEmpty() bool {
+	return len(e.Boarding) == 0 && len(e.VTXOs) == 0
+}
+
+// logAttributes returns a map of attributes for logging purposes.
+func (e *ResumeBoardingIntents) logAttributes() []slog.Attr {
+	return []slog.Attr{
+		slog.Int("boarding_intents", len(e.Boarding)),
+		slog.Int("vtxo_requests", len(e.VTXOs)),
+	}
 }
 
 func (e *ResumeBoardingIntents) clientEventSealed() {}
@@ -51,7 +71,7 @@ type BoardingUTXOConfirmed struct {
 	Outpoint wire.OutPoint
 
 	// Address is the boarding address for this UTXO. Contains the keys,
-	// tapscript, and exit delay needed to build the BoardingRequest.
+	// tapscript, and exit delay needed to build the Request.
 	Address wallet.BoardingAddress
 
 	// BlockHeight is the height at which the UTXO was confirmed.
@@ -76,16 +96,21 @@ type BoardingUTXOConfirmed struct {
 
 func (e *BoardingUTXOConfirmed) clientEventSealed() {}
 
+// VTXORequestsReceived is emitted when the client submits VTXO requests that
+// should be included in the next round registration.
+type VTXORequestsReceived struct {
+	// Requests are the VTXO requests to include in the next join round
+	// request.
+	Requests []types.VTXORequest
+}
+
+// clientEventSealed prevents external implementations.
+func (e *VTXORequestsReceived) clientEventSealed() {}
+
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
 // as a batch request containing every confirmed intent.
-type RegistrationRequested struct {
-	Intents []BoardingIntent
-
-	// RoundID allows resuming a previously assigned round when rejoining.
-	// None for new registrations.
-	RoundID fn.Option[RoundID]
-}
+type RegistrationRequested struct{}
 
 func (e *RegistrationRequested) clientEventSealed() {}
 

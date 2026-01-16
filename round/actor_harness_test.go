@@ -366,17 +366,23 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		MinConfirmations:  1,
 	}
 
+	// Default max operator fee for tests: 100,000 sats (0.001 BTC).
+	// This is generous to avoid test brittleness when multiple intents
+	// are used.
+	const defaultMaxOperatorFee = btcutil.Amount(100000)
+
 	cfg := &RoundClientConfig{
-		Name:          "test-round-actor",
-		Wallet:        walletMock,
-		RoundStore:    roundStore,
-		VTXOStore:     vtxoStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    serverConn,
-		ChainSource:   chainSource,
-		WalletActor:   walletActor,
-		SelfRef:       selfRef,
-		ChainParams:   &chaincfg.MainNetParams,
+		Name:           "test-round-actor",
+		Wallet:         walletMock,
+		RoundStore:     roundStore,
+		VTXOStore:      vtxoStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     serverConn,
+		ChainSource:    chainSource,
+		WalletActor:    walletActor,
+		SelfRef:        selfRef,
+		ChainParams:    &chaincfg.MainNetParams,
+		MaxOperatorFee: defaultMaxOperatorFee,
 	}
 
 	actorResult := NewRoundClientActor(cfg)
@@ -582,8 +588,15 @@ func (h *actorTestHarness) assertFSMState(expectedStateType string) {
 	// No matching state found, print what we have for debugging.
 	var foundStates []string
 	for key, stateInfo := range states {
-		foundStates = append(foundStates, fmt.Sprintf("%s=%T",
-			key, stateInfo.State))
+		stateStr := fmt.Sprintf("%s=%T", key, stateInfo.State)
+
+		// Print additional info for ClientFailedState.
+		if failedState, ok := stateInfo.State.(*ClientFailedState); ok {
+			stateStr = fmt.Sprintf("%s (reason=%q, err=%v)",
+				stateStr, failedState.Reason, failedState.Error)
+		}
+
+		foundStates = append(foundStates, stateStr)
 	}
 	h.t.Fatalf("expected state containing %q, got: %v",
 		expectedStateType, foundStates)
@@ -600,6 +613,34 @@ func (h *actorTestHarness) assertServerMessageSent(msgType string) {
 // verify only new messages sent after this point.
 func (h *actorTestHarness) clearServerMessages() {
 	h.serverConn.clearMessages()
+}
+
+// sendVTXORequests sends VTXO request amounts to the actor. This sets up the
+// mock wallet to return key descriptors for each amount, then sends a
+// RegisterVTXORequestsRequest message.
+func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
+	h.t.Helper()
+
+	// Setup mock to return a key descriptor for each DeriveNextKey call.
+	for i := range amounts {
+		keyDesc := &keychain.KeyDescriptor{
+			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  uint32(i),
+			},
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(keyDesc, nil).Once()
+	}
+
+	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
 }
 
 // newTestRound creates a test Round with a unique commitment transaction,

@@ -1,10 +1,10 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -141,34 +141,37 @@ func (m *CancelRoundResponse) MessageType() string {
 
 func (m *CancelRoundResponse) clientRespSealed() {}
 
-// RegisterBoardingIntentRequest informs the FSM that the wallet has funded or
-// will fund a specific boarding address so confirmations should be tracked.
-type RegisterBoardingIntentRequest struct {
+// RegisterVTXORequestsRequest informs the FSM of VTXO request amounts to
+// include in the next round registration.
+type RegisterVTXORequestsRequest struct {
 	actor.BaseMessage
 
-	Address      *BoardingAddress
-	VTXORequests []*types.VTXORequest
+	Amounts []btcutil.Amount
 }
 
-func (m *RegisterBoardingIntentRequest) MessageType() string {
-	return "RegisterBoardingIntentRequest"
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsRequest) MessageType() string {
+	return "RegisterVTXORequestsRequest"
 }
 
-func (m *RegisterBoardingIntentRequest) clientMsgSealed() {}
+// clientMsgSealed marks this as a client message.
+func (m *RegisterVTXORequestsRequest) clientMsgSealed() {}
 
-// RegisterBoardingIntentResponse acknowledges the request.
-type RegisterBoardingIntentResponse struct {
+// RegisterVTXORequestsResponse acknowledges the request.
+type RegisterVTXORequestsResponse struct {
 	actor.BaseMessage
 
 	Success bool
 	Error   string
 }
 
-func (m *RegisterBoardingIntentResponse) MessageType() string {
-	return "RegisterBoardingIntentResponse"
+// MessageType returns the message type name.
+func (m *RegisterVTXORequestsResponse) MessageType() string {
+	return "RegisterVTXORequestsResponse"
 }
 
-func (m *RegisterBoardingIntentResponse) clientRespSealed() {}
+// clientRespSealed marks this as a client response message.
+func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
 
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.

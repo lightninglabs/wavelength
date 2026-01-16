@@ -88,11 +88,9 @@ type RoundStatus struct {
 	StatusName string
 }
 
-type RoundVtxoTemplate struct {
+type RoundVtxoRequest struct {
 	RoundID          string
-	OutpointHash     []byte
-	OutpointIndex    int32
-	TemplateIndex    int32
+	RequestIndex     int32
 	Amount           int64
 	PkScript         []byte
 	Expiry           int32

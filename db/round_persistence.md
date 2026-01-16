@@ -26,8 +26,8 @@ The round persistence schema consists of seven tables:
    in that round, storing BoardingRequest fields relationally and input
    signatures.
 
-4. **round_vtxo_templates**: Stores VTXO requests (VTXORequest) for each
-   boarding intent. One intent can request multiple VTXOs (1:N relationship).
+4. **round_vtxo_requests**: Stores VTXO requests (VTXORequest) for the round,
+   keyed by request index.
 
 5. **round_client_trees**: Stores per-client extracted tree paths for
    reconstructing sweep transactions if needed.
@@ -47,7 +47,7 @@ erDiagram
     rounds ||--o{ round_client_trees : "contains"
     rounds ||--o{ vtxos : "produces"
     boarding_intents ||--o{ round_boarding_intents : "references"
-    round_boarding_intents ||--o{ round_vtxo_templates : "contains"
+    rounds ||--o{ round_vtxo_requests : "contains"
     round_client_trees ||--o{ client_tree_txids : "indexes"
 
     round_statuses {
@@ -78,11 +78,9 @@ erDiagram
         BLOB input_signature
     }
 
-    round_vtxo_templates {
+    round_vtxo_requests {
         TEXT round_id "PK, FK"
-        BLOB outpoint_hash "PK, FK"
-        INTEGER outpoint_index "PK, FK"
-        INTEGER template_index "PK"
+        INTEGER request_index "PK"
         BIGINT amount
         BLOB pk_script
         INTEGER expiry

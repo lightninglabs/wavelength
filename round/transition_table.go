@@ -42,6 +42,11 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "First UTXO confirmed, start assembly",
 				},
 				{
+					Event:       &VTXORequestsReceived{},
+					ToState:     &PendingRoundAssembly{},
+					Description: "VTXO requests received, start assembly",
+				},
+				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Boarding failed before any progress",
@@ -58,6 +63,11 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Event:       &BoardingUTXOConfirmed{},
 					ToState:     &PendingRoundAssembly{},
 					Description: "Additional boarding UTXO confirmed",
+				},
+				{
+					Event:       &VTXORequestsReceived{},
+					ToState:     &PendingRoundAssembly{},
+					Description: "Additional VTXO requests received",
 				},
 				{
 					Event:       &RegistrationRequested{},

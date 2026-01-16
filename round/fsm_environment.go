@@ -1,6 +1,7 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -30,6 +31,12 @@ type ClientEnvironment struct {
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
+	// MaxOperatorFee is the maximum fee the client is willing to pay to
+	// the operator per round. This is the difference between total input
+	// (boarding) amounts and total output (VTXO) amounts. If the fee would
+	// exceed this limit, registration is rejected.
+	MaxOperatorFee btcutil.Amount
+
 	// Log is the logger for FSM transitions and operations.
 	Log btclog.Logger
 
@@ -51,16 +58,17 @@ func (e *ClientEnvironment) Name() string {
 // when the FSM is created, used as a HeightHint for confirmation registration.
 func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
-	chainParams *chaincfg.Params, logger btclog.Logger,
-	startHeight uint32) *ClientEnvironment {
+	chainParams *chaincfg.Params, maxOperatorFee btcutil.Amount,
+	logger btclog.Logger, startHeight uint32) *ClientEnvironment {
 
 	return &ClientEnvironment{
-		RoundStore:    roundStore,
-		VTXOStore:     vtxoStore,
-		Wallet:        wallet,
-		OperatorTerms: terms,
-		ChainParams:   chainParams,
-		Log:           logger,
-		StartHeight:   startHeight,
+		RoundStore:     roundStore,
+		VTXOStore:      vtxoStore,
+		Wallet:         wallet,
+		OperatorTerms:  terms,
+		ChainParams:    chainParams,
+		MaxOperatorFee: maxOperatorFee,
+		Log:            logger,
+		StartHeight:    startHeight,
 	}
 }
