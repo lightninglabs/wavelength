@@ -94,6 +94,13 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	)
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
+	// Register VTXO requests with desired amounts. Amount should be
+	// boarding amount minus estimated fees (5000 sats for simplicity).
+	vtxoAmount := amount - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	require.NoError(t, err, "should register VTXO requests")
+	t.Logf("Registered VTXO request for %d sats", vtxoAmount)
+
 	// Trigger registration by sending RegistrationRequested event to the
 	// round FSM. This transitions from PendingRoundAssembly to
 	// RegistrationSentState and emits a JoinRoundRequest to the server.
@@ -210,6 +217,124 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	t.Log("TestBoardingE2ESingleClient completed full E2E flow successfully!")
 }
 
+// TestBoardingE2EMultipleVTXOs tests that a client can board with a single
+// input of size N and receive multiple VTXOs. This demonstrates the decoupled
+// VTXO request model where VTXOs are explicitly registered independent of
+// boarding inputs.
+func TestBoardingE2EMultipleVTXOs(t *testing.T) {
+	ParallelN(t)
+
+	h := NewE2EHarness(t)
+	h.Start()
+
+	ctx := context.Background()
+
+	// Fund the server wallet.
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin) // 1 BTC
+	t.Log("Funded server wallet with 1 BTC")
+
+	// Create a test client.
+	client := NewTestClient(h)
+	require.NotNil(t, client)
+	t.Logf("Created client: %s", client.ClientID())
+
+	// Create a boarding address.
+	terms := h.Terms()
+	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	require.NoError(t, err, "should create boarding address")
+	t.Logf("Created boarding address: %s", boardingResp.Address.String())
+
+	// Fund with 200,000 sats (N).
+	boardingAmount := btcutil.Amount(200_000)
+	txidStr := h.Harness.Faucet(boardingResp.Address.String(), boardingAmount)
+	t.Logf("Funded boarding address with %d sats, txid: %s", boardingAmount, txidStr)
+
+	// Mine blocks to confirm the funding.
+	h.MineBlocks(int(terms.MinBoardingConfirmations))
+	t.Logf("Mined %d blocks to confirm funding", terms.MinBoardingConfirmations)
+
+	// Wait for boarding confirmation.
+	err = client.WaitForBoardingConfirmation(30 * time.Second)
+	require.NoError(t, err, "FSM should reach PendingRoundAssembly")
+	t.Log("Client FSM reached PendingRoundAssembly state")
+
+	// Register TWO VTXO requests of ~N/2 each (minus fees).
+	// Estimate 5000 sats total operator fee, so each VTXO gets ~97,500 sats.
+	vtxoAmount := (boardingAmount - 5000) / 2
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{
+		vtxoAmount,
+		vtxoAmount,
+	})
+	require.NoError(t, err, "should register VTXO requests")
+	t.Logf("Registered 2 VTXO requests for %d sats each", vtxoAmount)
+
+	// Trigger registration.
+	err = client.TriggerRegistration(ctx)
+	require.NoError(t, err, "should trigger registration")
+
+	// Wait for server response.
+	err = h.Transcript().WaitForEntryCount(2, 5*time.Second)
+	require.NoError(t, err, "server should respond within timeout")
+
+	t.Log("Transcript after JoinRound:")
+	t.Log(h.Transcript().Dump())
+
+	// Assert success response.
+	h.Transcript().AssertContainsMessage(t, C2S("JoinRoundRequest"))
+	h.Transcript().AssertContainsMessage(t, S2C("ClientSuccessResp"))
+	h.Transcript().AssertNotContainsMessage(t, S2C("ClientRoundFailedResp"))
+	h.Transcript().AssertNotContainsMessage(t, S2C("ClientErrorResp"))
+
+	// Seal the round.
+	h.TriggerRoundSeal()
+	t.Log("Triggered round seal")
+
+	// Wait for full signing exchange.
+	err = h.Transcript().WaitForEntryCount(9, 30*time.Second)
+	require.NoError(t, err, "should complete VTXO and input signing phases")
+
+	t.Log("Transcript after signing:")
+	t.Log(h.Transcript().Dump())
+
+	// Wait for broadcast.
+	time.Sleep(1 * time.Second)
+
+	// Verify tx in mempool.
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err, "should get bitcoin RPC client")
+	mempoolTxs, err := rpcClient.GetRawMempool()
+	require.NoError(t, err, "should get mempool")
+	require.Len(t, mempoolTxs, 1, "should have exactly one tx in mempool")
+	t.Logf("Commitment tx in mempool: %s", mempoolTxs[0].String())
+
+	// Mine to confirm.
+	h.MineBlocksAndConfirm(1)
+	t.Log("Mined block to confirm commitment transaction")
+
+	// Wait for round completion.
+	err = client.WaitForRoundComplete(30 * time.Second)
+	require.NoError(t, err, "round should complete successfully")
+
+	// Verify TWO VTXOs in database.
+	client.AssertVTXOCountFromDB(2)
+	t.Log("Two VTXOs persisted to client database")
+
+	// Verify VTXO amounts.
+	vtxos, err := client.ListVTXOs(ctx)
+	require.NoError(t, err, "should list VTXOs")
+	require.Len(t, vtxos, 2, "should have exactly two VTXOs")
+
+	for i, vtxo := range vtxos {
+		t.Logf("VTXO %d: outpoint=%s, amount=%d sats",
+			i+1, vtxo.Outpoint, vtxo.Amount)
+		// Each should be close to vtxoAmount (allow for small variance).
+		require.InDelta(t, int64(vtxoAmount), int64(vtxo.Amount), 1000,
+			"VTXO amount should be approximately %d", vtxoAmount)
+	}
+
+	t.Log("TestBoardingE2EMultipleVTXOs completed successfully!")
+}
+
 // TestBoardingE2EMultipleClients tests the complete boarding flow with multiple
 // clients joining the same round. Each client:
 //  1. Gets its own LND node (wallet isolation)
@@ -264,6 +389,15 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 		require.NoError(t, err, "client %d should reach PendingRoundAssembly", i)
 	}
 	t.Log("All clients reached PendingRoundAssembly")
+
+	// Register VTXO requests for all clients. Each client requests a VTXO
+	// with their boarding amount minus estimated fees.
+	for i, client := range clients {
+		vtxoAmount := amounts[i] - 5000
+		err := client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+		require.NoError(t, err, "client %d should register VTXO requests", i)
+	}
+	t.Log("All clients registered VTXO requests")
 
 	// All clients trigger registration and join the same round.
 	for i, client := range clients {
@@ -371,6 +505,10 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
 	require.NoError(t, err, "round 1: should reach PendingRoundAssembly")
 
+	vtxoAmount1 := amount1 - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount1})
+	require.NoError(t, err, "round 1: should register VTXO requests")
+
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "round 1: should trigger registration")
 
@@ -424,6 +562,10 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 	// back to PendingRoundAssembly.
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
 	require.NoError(t, err, "round 2: should reach PendingRoundAssembly")
+
+	vtxoAmount2 := amount2 - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount2})
+	require.NoError(t, err, "round 2: should register VTXO requests")
 
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "round 2: should trigger registration")
@@ -568,6 +710,11 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	require.NoError(t, err, "FSM should reach PendingRoundAssembly")
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
+	// Register VTXO requests.
+	vtxoAmount := amount - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	require.NoError(t, err, "should register VTXO requests")
+
 	// Trigger registration.
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
@@ -686,6 +833,16 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	err = client2.WaitForBoardingConfirmation(30 * time.Second)
 	require.NoError(t, err, "client2: should reach PendingRoundAssembly")
 	t.Log("Client2 boarding confirmed")
+
+	// Register VTXO requests for both clients.
+	vtxoAmount1 := amount1 - 5000
+	err = client1.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount1})
+	require.NoError(t, err, "client1: should register VTXO requests")
+
+	vtxoAmount2 := amount2 - 5000
+	err = client2.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount2})
+	require.NoError(t, err, "client2: should register VTXO requests")
+	t.Log("Both clients registered VTXO requests")
 
 	// === Phase 2: Client 1 Joins Round 1 ===
 	err = client1.TriggerRegistration(ctx)
@@ -844,6 +1001,11 @@ func TestBoardingRestartBeforeConfirmation(t *testing.T) {
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
 	require.NoError(t, err, "restarted client should detect boarding confirmation")
 	t.Log("Restarted client detected boarding confirmation")
+
+	// Register VTXO requests.
+	vtxoAmount := amount - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	require.NoError(t, err, "should register VTXO requests")
 
 	// Complete the round normally to verify the client recovered properly.
 	err = client.TriggerRegistration(ctx)
