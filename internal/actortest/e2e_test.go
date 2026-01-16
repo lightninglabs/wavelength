@@ -23,8 +23,11 @@ import (
 
 // testHarness holds all the components needed for e2e testing.
 type testHarness struct {
-	t           *testing.T
-	ctx         context.Context
+	t *testing.T
+
+	// ctx is owned by the harness and canceled via cancel.
+	ctx context.Context //nolint:containedctx
+
 	cancel      context.CancelFunc
 	store       *db.ActorDeliveryStore
 	codec       *actor.MessageCodec
@@ -64,7 +67,7 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	t.Cleanup(func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), 5*time.Second,
+			t.Context(), 5*time.Second,
 		)
 		defer shutdownCancel()
 
@@ -100,8 +103,12 @@ func (h *testHarness) newDurableCounter(id string) (
 	cfg := actor.DefaultDurableActorConfig[CounterMessage, CounterResult](
 		id, behavior, h.store, h.codec,
 	)
-	cfg.Clock = fn.Some[clock.Clock](h.clock) // Use test clock for determinism.
-	cfg.PollInterval = 10 * time.Millisecond  // Fast polling for tests.
+
+	// Use the test clock for deterministic availability and lease timing.
+	cfg.Clock = fn.Some[clock.Clock](h.clock)
+
+	// Use short intervals to reduce overall test runtime.
+	cfg.PollInterval = 10 * time.Millisecond
 	cfg.LeaseDuration = 5 * time.Second
 	cfg.HeartbeatInterval = 1 * time.Second
 
@@ -110,9 +117,11 @@ func (h *testHarness) newDurableCounter(id string) (
 	// Register with [Message, any] types so OutboxPublisher can find it.
 	// The OutboxPublisher looks up actors using ServiceKey[Message, any],
 	// so we use TypeAssertingRef to adapt the concrete types.
-	erasingRef := actor.TypeAssertingRef[actor.Message, CounterMessage, CounterResult](
-		durableActor.Ref(),
-	)
+	erasingRef := actor.TypeAssertingRef[
+		actor.Message,
+		CounterMessage,
+		CounterResult,
+	](durableActor.Ref())
 	key := actor.NewServiceKey[actor.Message, any](id)
 	_ = actor.RegisterWithReceptionist(
 		h.actorSystem.Receptionist(), key, erasingRef,
@@ -136,6 +145,25 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	}
 
 	t.Fatal("condition not met within timeout")
+}
+
+// durableCounterRef is a shorthand alias for the generic durable ref used in
+// these end-to-end tests.
+type durableCounterRef = actor.DurableActorRef[CounterMessage, CounterResult]
+
+// requireDurableCounterRef asserts that the given actor ref supports durable
+// operations, and fails the test if it does not.
+func requireDurableCounterRef(
+	t *testing.T,
+	targetRef actor.ActorRef[CounterMessage, CounterResult],
+) durableCounterRef {
+
+	t.Helper()
+
+	durableRef, ok := targetRef.(durableCounterRef)
+	require.True(t, ok, "expected DurableActorRef")
+
+	return durableRef
 }
 
 // ============================================================================
@@ -189,7 +217,8 @@ func TestDurableCounter_AskGetCount(t *testing.T) {
 	require.Equal(t, int64(42), val)
 }
 
-// TestDurableCounter_MultipleTells verifies multiple Tell messages process in order.
+// TestDurableCounter_MultipleTells verifies multiple Tell messages process in
+// order.
 func TestDurableCounter_MultipleTells(t *testing.T) {
 	t.Parallel()
 
@@ -247,7 +276,8 @@ func TestDurableCounter_IncrementDecrement(t *testing.T) {
 // Outbox Tests
 // ============================================================================
 
-// TestDurableCounter_ForwardWritesToOutbox verifies ForwardMsg writes to outbox.
+// TestDurableCounter_ForwardWritesToOutbox verifies ForwardMsg writes to
+// outbox.
 func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	t.Parallel()
 
@@ -283,7 +313,8 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 	require.Equal(t, "target-counter", batch[0].TargetActorID)
 }
 
-// TestOutboxPublisher_DeliversToTarget verifies outbox publisher delivers messages.
+// TestOutboxPublisher_DeliversToTarget verifies outbox publisher delivers
+// messages.
 func TestOutboxPublisher_DeliversToTarget(t *testing.T) {
 	t.Parallel()
 
@@ -509,7 +540,8 @@ func TestDurableCounter_ConcurrentSenders(t *testing.T) {
 	wg.Wait()
 	t.Logf("All sends complete: %d messages sent", sendCount.Load())
 
-	// Wait for all messages to process. Allow more time for concurrent test.
+	// Wait for all messages to process. Allow more time for concurrent
+	// test.
 	expectedCount := int64(numSenders * msgsPerSender)
 	var lastLogged int64
 	eventually(t, 30*time.Second, func() bool {
@@ -574,8 +606,10 @@ func TestDurableCounter_ConcurrentAsks(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// TestProperty_IncrementDecrement_Commutative verifies increment/decrement commutativity.
-// The invariant: sum of all increments - sum of all decrements = final count.
+// TestProperty_IncrementDecrement_Commutative verifies increment/decrement
+// commutativity.
+//
+// INVARIANT: sum of all increments - sum of all decrements = final count.
 func TestProperty_IncrementDecrement_Commutative(t *testing.T) {
 	t.Parallel()
 
@@ -640,7 +674,12 @@ func TestProperty_AskAlwaysReturnsCurrentValue(t *testing.T) {
 		val, err := result.Unpack()
 
 		require.NoError(t, err)
-		require.Equal(t, initial, val, "Ask should return current count")
+		require.Equal(
+			t,
+			initial,
+			val,
+			"Ask should return current count",
+		)
 	}
 }
 
@@ -769,7 +808,9 @@ func TestRecovery_RestartMessagePriority(t *testing.T) {
 	err := h.store.SaveCheckpoint(h.ctx, actor.CheckpointParams{
 		ActorID:   actorID,
 		StateType: "CounterState",
-		StateData: []byte{0, 0, 0, 0, 0, 0, 0, 100}, // 100 in big-endian
+
+		// 100 in big-endian.
+		StateData: []byte{0, 0, 0, 0, 0, 0, 0, 100},
 		Version:   1,
 	})
 	require.NoError(t, err)
@@ -789,11 +830,18 @@ func TestRecovery_RestartMessagePriority(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Prepend restart message (should be processed first due to high priority).
+	// Prepend restart message (should be processed first due to high
+	// priority).
 	checkpoint, err := h.store.LoadCheckpoint(h.ctx, actorID)
 	require.NoError(t, err)
 
-	err = actor.PrependRestartMessage(h.ctx, h.store, h.codec, actorID, checkpoint)
+	err = actor.PrependRestartMessage(
+		h.ctx,
+		h.store,
+		h.codec,
+		actorID,
+		checkpoint,
+	)
 	require.NoError(t, err)
 
 	// Lease first message - should be restart message due to priority.
@@ -836,14 +884,16 @@ func TestRecovery_IdempotentProcessing(t *testing.T) {
 	counterActor.Start()
 
 	// Wait for processing AND ack to complete. The behavior increments the
-	// counter, but the ack (which marks processed) happens after the behavior
-	// returns. We need to wait for both to complete before stopping.
+	// counter, but the ack (which marks processed) happens after the
+	// behavior returns. We need to wait for both to complete before
+	// stopping.
 	eventually(t, 2*time.Second, func() bool {
 		if behavior.Count() != 50 {
 			return false
 		}
 
-		// Also check that the ack completed (message marked as processed).
+		// Also check that the ack completed (message marked as
+		// processed).
 		processed, err := h.store.IsProcessed(h.ctx, messageID)
 
 		return err == nil && processed
@@ -855,7 +905,11 @@ func TestRecovery_IdempotentProcessing(t *testing.T) {
 	// Verify message was marked as processed.
 	processed, err := h.store.IsProcessed(h.ctx, messageID)
 	require.NoError(t, err)
-	require.True(t, processed, "message should be marked as processed after ack")
+	require.True(
+		t,
+		processed,
+		"message should be marked as processed after ack",
+	)
 
 	// Enqueue same message ID again (simulating redelivery after crash).
 	err = h.store.EnqueueMessage(h.ctx, actor.EnqueueParams{
@@ -866,8 +920,8 @@ func TestRecovery_IdempotentProcessing(t *testing.T) {
 		AvailableAt: time.Now().Add(-time.Second),
 		MaxAttempts: 10,
 	})
-	// May fail due to UNIQUE constraint - that's OK, redelivery would happen
-	// from lease expiry anyway.
+	// May fail due to UNIQUE constraint - that's OK. Redelivery would
+	// happen from lease expiry anyway.
 	_ = err
 
 	// Create new actor instance (restart).
@@ -878,10 +932,11 @@ func TestRecovery_IdempotentProcessing(t *testing.T) {
 	// Wait a bit for any processing.
 	time.Sleep(500 * time.Millisecond)
 
-	// Count should still be 50 (message was deduplicated, not processed twice).
-	// Note: The new behavior starts fresh, so count is 0 unless we implement
-	// checkpoint restore. The key test is that dedup prevented double
-	// processing - we can verify via the IsProcessed check.
+	// Count should still be 50 (message was deduplicated, not processed
+	// twice).
+	// Note: The new behavior starts fresh, so count is 0 unless we
+	// implement checkpoint restore. The key test is that dedup prevented
+	// double processing - we can verify via the IsProcessed check.
 	require.Equal(t, int64(0), behavior2.Count())
 
 	// The deduplication entry should still exist.
@@ -932,7 +987,8 @@ func TestLease_MutualExclusion(t *testing.T) {
 	require.Nil(t, leased2)
 }
 
-// TestLease_AckRequiresValidToken verifies ack only succeeds with correct token.
+// TestLease_AckRequiresValidToken verifies ack only succeeds with correct
+// token.
 // This tests the "ack requires valid lease" invariant.
 func TestLease_AckRequiresValidToken(t *testing.T) {
 	t.Parallel()
@@ -1003,15 +1059,20 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 
 	// Simulate multiple failed attempts via lease/nack cycles.
 	for i := 0; i < maxAttempts; i++ {
+		token := fmt.Sprintf("token-%c", rune('A'+i))
+
 		leased, err := h.store.LeaseNextMessage(
-			h.ctx, mailboxID, "token-"+string(rune('A'+i)), 5*time.Second,
+			h.ctx, mailboxID, token, 5*time.Second,
 		)
 		require.NoError(t, err)
 
 		if leased != nil {
 			// Nack to trigger retry.
 			_, err = h.store.NackMessage(
-				h.ctx, messageID, leased.LeaseToken, time.Millisecond,
+				h.ctx,
+				messageID,
+				leased.LeaseToken,
+				time.Millisecond,
 			)
 			require.NoError(t, err)
 		}
@@ -1021,7 +1082,11 @@ func TestDeadLetter_BoundedRetries(t *testing.T) {
 	}
 
 	// After max attempts, move to dead letter.
-	err = h.store.MoveToDeadLetter(h.ctx, messageID, "max attempts exceeded")
+	err = h.store.MoveToDeadLetter(
+		h.ctx,
+		messageID,
+		"max attempts exceeded",
+	)
 	require.NoError(t, err)
 
 	// Verify it's in dead letters.
@@ -1126,7 +1191,8 @@ func TestPriority_HigherPriorityFirst(t *testing.T) {
 		require.Equal(t, expectedID, leased.ID, "iteration %d", i)
 
 		// Ack to move to next.
-		_, err = h.store.AckMessage(h.ctx, leased.ID, "token-"+expectedID)
+		ackToken := "token-" + expectedID
+		_, err = h.store.AckMessage(h.ctx, leased.ID, ackToken)
 		require.NoError(t, err)
 	}
 }
@@ -1156,13 +1222,16 @@ func TestFIFO_SamePriorityOrderedByTime(t *testing.T) {
 		require.NoError(t, err)
 
 		// Each message slightly later in time.
+		availableAt := time.Now().Add(-time.Hour)
+		availableAt = availableAt.Add(time.Duration(i) * time.Minute)
+
 		err = h.store.EnqueueMessage(h.ctx, actor.EnqueueParams{
 			ID:          id,
 			MailboxID:   mailboxID,
 			MessageType: "counter.Increment",
 			Payload:     payload,
 			Priority:    basePriority,
-			AvailableAt: time.Now().Add(-time.Hour + time.Duration(i)*time.Minute),
+			AvailableAt: availableAt,
 			MaxAttempts: 10,
 		})
 		require.NoError(t, err)
@@ -1178,7 +1247,8 @@ func TestFIFO_SamePriorityOrderedByTime(t *testing.T) {
 		require.Equal(t, expectedID, leased.ID, "iteration %d", i)
 
 		// Ack to move to next.
-		_, err = h.store.AckMessage(h.ctx, leased.ID, "token-"+expectedID)
+		ackToken := "token-" + expectedID
+		_, err = h.store.AckMessage(h.ctx, leased.ID, ackToken)
 		require.NoError(t, err)
 	}
 }
@@ -1229,17 +1299,21 @@ func TestDurableAskResponseViaOutbox(t *testing.T) {
 	correlationID := uniqueID("corr")
 	targetRef := targetActor.Ref()
 
-	durableRef, ok := targetRef.(actor.DurableActorRef[CounterMessage, CounterResult])
-	require.True(t, ok, "expected DurableActorRef")
+	durableRef := requireDurableCounterRef(t, targetRef)
 
-	err := durableRef.DurableAsk(h.ctx, &GetCountMsg{}, actor.DurableAskParams{
-		CallbackActorID: senderID,
-		CorrelationID:   correlationID,
-	})
+	err := durableRef.DurableAsk(
+		h.ctx,
+		&GetCountMsg{},
+		actor.DurableAskParams{
+			CallbackActorID: senderID,
+			CorrelationID:   correlationID,
+		},
+	)
 	require.NoError(t, err)
 
 	// Wait for the response to be delivered to sender's mailbox.
-	// The sender behavior receives all messages, so we check for AskResponse.
+	// The sender behavior receives all messages, so we check for
+	// AskResponse.
 	var receivedResponse *actor.AskResponse
 	eventually(t, 3*time.Second, func() bool {
 		// Check if sender received an AskResponse.
@@ -1286,12 +1360,16 @@ func TestDurableAskErrorResponse(t *testing.T) {
 	correlationID := uniqueID("corr")
 	targetRef := targetActor.Ref()
 
-	durableRef := targetRef.(actor.DurableActorRef[CounterMessage, CounterResult])
+	durableRef := requireDurableCounterRef(t, targetRef)
 
-	err := durableRef.DurableAsk(h.ctx, &GetCountMsg{}, actor.DurableAskParams{
-		CallbackActorID: senderID,
-		CorrelationID:   correlationID,
-	})
+	err := durableRef.DurableAsk(
+		h.ctx,
+		&GetCountMsg{},
+		actor.DurableAskParams{
+			CallbackActorID: senderID,
+			CorrelationID:   correlationID,
+		},
+	)
 	require.NoError(t, err)
 
 	// Wait for the error response.
@@ -1339,15 +1417,19 @@ func TestDurableAskConcurrentRequests(t *testing.T) {
 	correlationIDs := make([]string, numRequests)
 
 	targetRef := targetActor.Ref()
-	durableRef := targetRef.(actor.DurableActorRef[CounterMessage, CounterResult])
+	durableRef := requireDurableCounterRef(t, targetRef)
 
 	for i := 0; i < numRequests; i++ {
 		correlationIDs[i] = uniqueID(fmt.Sprintf("corr-%d", i))
 
-		err := durableRef.DurableAsk(h.ctx, &GetCountMsg{}, actor.DurableAskParams{
-			CallbackActorID: senderID,
-			CorrelationID:   correlationIDs[i],
-		})
+		err := durableRef.DurableAsk(
+			h.ctx,
+			&GetCountMsg{},
+			actor.DurableAskParams{
+				CallbackActorID: senderID,
+				CorrelationID:   correlationIDs[i],
+			},
+		)
 		require.NoError(t, err)
 	}
 
@@ -1403,21 +1485,30 @@ func TestDurableAskWithSpecialCorrelationIDs(t *testing.T) {
 	defer publisher.Stop()
 
 	// Test various correlation ID formats.
+	veryLongID := fmt.Sprintf(
+		"very-long-correlation-id-%s-%s",
+		uuid.NewString(),
+		uuid.NewString(),
+	)
 	testIDs := []string{
 		"simple-id",
 		"uuid-" + uuid.NewString(),
 		"with-special-chars_123",
-		"very-long-correlation-id-" + uuid.NewString() + "-" + uuid.NewString(),
+		veryLongID,
 	}
 
 	targetRef := targetActor.Ref()
-	durableRef := targetRef.(actor.DurableActorRef[CounterMessage, CounterResult])
+	durableRef := requireDurableCounterRef(t, targetRef)
 
 	for _, correlationID := range testIDs {
-		err := durableRef.DurableAsk(h.ctx, &GetCountMsg{}, actor.DurableAskParams{
-			CallbackActorID: senderID,
-			CorrelationID:   correlationID,
-		})
+		err := durableRef.DurableAsk(
+			h.ctx,
+			&GetCountMsg{},
+			actor.DurableAskParams{
+				CallbackActorID: senderID,
+				CorrelationID:   correlationID,
+			},
+		)
 		require.NoError(t, err)
 	}
 
@@ -1465,8 +1556,12 @@ func TestDurableAskErrorMessagePreserved(t *testing.T) {
 			senderID := uniqueID("sender")
 			targetID := uniqueID("target")
 
-			senderActor, senderBehavior := h.newDurableCounter(senderID)
-			targetActor, targetBehavior := h.newDurableCounter(targetID)
+			senderActor, senderBehavior := h.newDurableCounter(
+				senderID,
+			)
+			targetActor, targetBehavior := h.newDurableCounter(
+				targetID,
+			)
 
 			senderActor.Start()
 			targetActor.Start()
@@ -1481,16 +1576,22 @@ func TestDurableAskErrorMessagePreserved(t *testing.T) {
 			publisher.Start()
 			defer publisher.Stop()
 
-			targetBehavior.SetForceError(fmt.Errorf("%s", tc.errorMsg))
+			targetBehavior.SetForceError(
+				fmt.Errorf("%s", tc.errorMsg),
+			)
 
 			correlationID := uniqueID("corr")
 			targetRef := targetActor.Ref()
-			durableRef := targetRef.(actor.DurableActorRef[CounterMessage, CounterResult])
+			durableRef := requireDurableCounterRef(t, targetRef)
 
-			err := durableRef.DurableAsk(h.ctx, &GetCountMsg{}, actor.DurableAskParams{
-				CallbackActorID: senderID,
-				CorrelationID:   correlationID,
-			})
+			err := durableRef.DurableAsk(
+				h.ctx,
+				&GetCountMsg{},
+				actor.DurableAskParams{
+					CallbackActorID: senderID,
+					CorrelationID:   correlationID,
+				},
+			)
 			require.NoError(t, err)
 
 			// Wait for error response.
