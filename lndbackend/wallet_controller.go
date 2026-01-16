@@ -385,3 +385,20 @@ var _ rounds.WalletController = (*LndWalletController)(nil)
 // Compile-time check that LndWalletController implements input.Signer (which is
 // what round.ClientWallet requires on the client side).
 var _ input.Signer = (*LndWalletController)(nil)
+
+// DeriveNextKey derives the next key in the specified key family using LND's
+// key derivation infrastructure. This satisfies the client's round.ClientWallet
+// interface for VTXO signing key derivation.
+func (l *LndWalletController) DeriveNextKey(ctx context.Context,
+	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+
+	return l.walletKit.DeriveNextKey(ctx, int32(family))
+}
+
+// DeriveKey derives an arbitrary key specified by the KeyLocator using LND's
+// key derivation infrastructure.
+func (l *LndWalletController) DeriveKey(ctx context.Context,
+	keyLoc keychain.KeyLocator) (*keychain.KeyDescriptor, error) {
+
+	return l.walletKit.DeriveKey(ctx, &keyLoc)
+}
