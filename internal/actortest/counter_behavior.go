@@ -107,7 +107,7 @@ func (b *CounterBehavior) Receive(
 
 		b.forwardCount.Add(1)
 
-		return fn.Ok(CounterResult(b.forwardCount.Load()))
+		return fn.Ok(b.forwardCount.Load())
 
 	case *actor.AskResponse:
 		// Store the AskResponse for testing verification.
@@ -207,4 +207,6 @@ func (b *CounterBehavior) ReceivedCorrelationIDs() []string {
 }
 
 // Compile-time interface check.
-var _ actor.ActorBehavior[CounterMessage, CounterResult] = (*CounterBehavior)(nil)
+var _ actor.ActorBehavior[CounterMessage, CounterResult] = (*CounterBehavior)(
+	nil,
+)
