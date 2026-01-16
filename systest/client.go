@@ -797,12 +797,16 @@ func (c *TestClient) WaitForFSMState(targetState string, timeout time.Duration) 
 			return fmt.Errorf("unexpected response type: %T", resp)
 		}
 
-		// Check primary FSM state. The State field is a ClientState interface,
-		// so we check its type name.
-		if primaryState, exists := stateResp.States["primary"]; exists {
-			stateName := fmt.Sprintf("%T", primaryState.State)
-			// Remove package prefix if present (e.g., "*round.PendingRoundAssembly").
-			if idx := len("*round."); len(stateName) > idx && stateName[:idx] == "*round." {
+		// Check all FSM states. The State field is a ClientState interface,
+		// so we check its type name. FSM keys are either temp keys
+		// (e.g., "temp:uuid") or round IDs.
+		for _, fsmState := range stateResp.States {
+			stateName := fmt.Sprintf("%T", fsmState.State)
+			// Remove package prefix if present (e.g.,
+			// "*round.PendingRoundAssembly").
+			if idx := len("*round."); len(stateName) > idx &&
+				stateName[:idx] == "*round." {
+
 				stateName = stateName[idx:]
 			}
 			if stateName == targetState {

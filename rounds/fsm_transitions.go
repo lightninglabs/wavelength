@@ -203,6 +203,40 @@ func newClientRegistration(clientID ClientID,
 	}
 }
 
+// extractBoardingOutpoints extracts the outpoints from a slice of
+// BoardingInputs. Returns nil if inputs is nil or empty.
+func extractBoardingOutpoints(inputs []*BoardingInput) []wire.OutPoint {
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		if input.Outpoint != nil {
+			outpoints = append(outpoints, *input.Outpoint)
+		}
+	}
+
+	return outpoints
+}
+
+// extractVTXOOutpoints extracts the outpoints from a slice of ForfeitInputs.
+// Returns nil if inputs is nil or empty.
+func extractVTXOOutpoints(inputs []*ForfeitInput) []wire.OutPoint {
+	if len(inputs) == 0 {
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for _, input := range inputs {
+		if input.Outpoint != nil {
+			outpoints = append(outpoints, *input.Outpoint)
+		}
+	}
+
+	return outpoints
+}
+
 // ProcessEvent handles the events from the CreatedState state.
 //
 // Event handling:
@@ -279,6 +313,12 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 					&ClientSuccessResp{
 						Client:  evt.ClientID,
 						RoundID: env.RoundID,
+						AcceptedBoardingOutpoints: extractBoardingOutpoints(
+							result.BoardingInputs,
+						),
+						AcceptedVTXOOutpoints: extractVTXOOutpoints(
+							result.ForfeitInputs,
+						),
 					},
 					newStartTimeoutReq(
 						env, TimeoutPhaseRegistration,
@@ -379,6 +419,12 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 					&ClientSuccessResp{
 						Client:  evt.ClientID,
 						RoundID: env.RoundID,
+						AcceptedBoardingOutpoints: extractBoardingOutpoints(
+							result.BoardingInputs,
+						),
+						AcceptedVTXOOutpoints: extractVTXOOutpoints(
+							result.ForfeitInputs,
+						),
 					},
 				},
 			}),
@@ -719,7 +765,8 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 
 		clientsWithBoarding++
 		outboxMsgs = append(outboxMsgs, &ClientAwaitingInputSigsResp{
-			Client: clientID,
+			Client:  clientID,
+			RoundID: env.RoundID,
 		})
 	}
 
@@ -1858,6 +1905,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 
 		outboxMsgs = append(outboxMsgs, &ClientVTXOAggNonces{
 			Client:    clientID,
+			RoundID:   env.RoundID,
 			AggNonces: aggNonces,
 		})
 	}
@@ -2193,6 +2241,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 		outboxMsgs = append(outboxMsgs, &ClientVTXOAggSigs{
 			Client:  clientID,
+			RoundID: env.RoundID,
 			AggSigs: aggSigs,
 		})
 	}
@@ -2204,7 +2253,8 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			outboxMsgs = append(
 				outboxMsgs,
 				&ClientAwaitingInputSigsResp{
-					Client: clientID,
+					Client:  clientID,
+					RoundID: env.RoundID,
 				},
 			)
 		}
@@ -2405,8 +2455,8 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
 				&BroadcastRoundReq{
-					RoundID:  env.RoundID,
-					SignedTx: finalTx,
+					RoundID:     env.RoundID,
+					SignedTx:    finalTx,
 					StartHeight: env.StartHeight,
 				},
 			},

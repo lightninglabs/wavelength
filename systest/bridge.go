@@ -551,7 +551,9 @@ func (b *BridgeClientConn) convertToClientEvent(
 	switch m := msg.(type) {
 	case *rounds.ClientSuccessResp:
 		return &clientround.RoundJoined{
-			RoundID: clientround.RoundID(m.RoundID),
+			RoundID:                   clientround.RoundID(m.RoundID),
+			AcceptedBoardingOutpoints: m.AcceptedBoardingOutpoints,
+			AcceptedVTXOOutpoints:     m.AcceptedVTXOOutpoints,
 		}, nil
 
 	case *rounds.ClientBatchInfo:
@@ -562,15 +564,19 @@ func (b *BridgeClientConn) convertToClientEvent(
 		}, nil
 
 	case *rounds.ClientAwaitingInputSigsResp:
-		return &clientround.AwaitingBoardingSigs{}, nil
+		return &clientround.AwaitingBoardingSigs{
+			RoundID: clientround.RoundID(m.RoundID),
+		}, nil
 
 	case *rounds.ClientVTXOAggNonces:
 		return &clientround.NoncesAggregated{
+			RoundID:   clientround.RoundID(m.RoundID),
 			AggNonces: m.AggNonces,
 		}, nil
 
 	case *rounds.ClientVTXOAggSigs:
 		return &clientround.OperatorSigned{
+			RoundID: clientround.RoundID(m.RoundID),
 			AggSigs: m.AggSigs,
 		}, nil
 
