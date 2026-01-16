@@ -615,6 +615,188 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	t.Log("TestBoardingRestartAfterRoundBroadcast completed successfully!")
 }
 
+// TestBoardingE2EConcurrentRounds tests two clients participating in two
+// different rounds that are actively driven simultaneously. This demonstrates
+// true concurrency where both rounds are in their signing phases at the same
+// time, with interleaved message processing.
+//
+// Timeline:
+//
+//	Setup:    Client1 boarding confirmed    Client2 boarding confirmed
+//	          ─────────────────────────────────────────────────────────
+//	Round1:   Client1 joins → Seal → BatchInfo → Signing... → Finalized
+//	Round2:                          Client2 joins → Seal → BatchInfo → Signing... → Finalized
+//	                                 ─────────────────────────────────────────────────
+//	                                 ↑ CONCURRENT WINDOW: Both rounds actively signing ↑
+//	          ────────────────────────────────────────────────────────────────────────
+//	Mine:                                                          [Block confirms both]
+func TestBoardingE2EConcurrentRounds(t *testing.T) {
+	ParallelN(t)
+
+	h := NewE2EHarness(t)
+	h.Start()
+
+	ctx := context.Background()
+
+	// Fund the server wallet with MULTIPLE UTXOs for concurrent rounds.
+	// Each round needs its own UTXO for the commitment transaction, so we
+	// fund with separate transactions to create distinct UTXOs.
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 2)
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 2)
+	t.Log("Funded server wallet with 2 separate UTXOs (2 BTC each)")
+
+	terms := h.Terms()
+
+	// === Phase 1: Setup Both Clients Upfront ===
+	// Create two clients and confirm both boarding inputs before any round
+	// participation. This ensures we can drive both rounds concurrently.
+
+	client1 := NewTestClient(h)
+	t.Logf("Created client1: %s", client1.ClientID())
+
+	client2 := NewTestClient(h)
+	t.Logf("Created client2: %s", client2.ClientID())
+
+	// Create boarding addresses for both clients.
+	addr1, err := client1.CreateBoardingAddress(terms.BoardingExitDelay)
+	require.NoError(t, err)
+	t.Logf("Client1 boarding address: %s", addr1.Address.String())
+
+	addr2, err := client2.CreateBoardingAddress(terms.BoardingExitDelay)
+	require.NoError(t, err)
+	t.Logf("Client2 boarding address: %s", addr2.Address.String())
+
+	// Fund both boarding addresses.
+	amount1 := btcutil.Amount(200_000)
+	amount2 := btcutil.Amount(300_000)
+	txid1 := h.Harness.Faucet(addr1.Address.String(), amount1)
+	t.Logf("Client1 funded with %d sats, txid: %s", amount1, txid1)
+	txid2 := h.Harness.Faucet(addr2.Address.String(), amount2)
+	t.Logf("Client2 funded with %d sats, txid: %s", amount2, txid2)
+
+	// Mine blocks to confirm BOTH boarding inputs.
+	h.MineBlocks(int(terms.MinBoardingConfirmations))
+	t.Log("Mined blocks to confirm both boarding inputs")
+
+	// Wait for both clients to reach PendingRoundAssembly state.
+	err = client1.WaitForBoardingConfirmation(30 * time.Second)
+	require.NoError(t, err, "client1: should reach PendingRoundAssembly")
+	t.Log("Client1 boarding confirmed")
+
+	err = client2.WaitForBoardingConfirmation(30 * time.Second)
+	require.NoError(t, err, "client2: should reach PendingRoundAssembly")
+	t.Log("Client2 boarding confirmed")
+
+	// === Phase 2: Client 1 Joins Round 1 ===
+	err = client1.TriggerRegistration(ctx)
+	require.NoError(t, err, "client1: should trigger registration")
+
+	// Wait for Client 1 to receive join response.
+	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	require.NoError(t, err, "client1: should receive join response")
+	t.Log("Client1 joined Round 1")
+
+	// === Enable S→C buffering BEFORE sealing ===
+	// We buffer server messages so that signing-phase messages (BatchInfo,
+	// nonces, sigs) accumulate while we set up both rounds. This ensures
+	// both rounds enter signing before either client starts processing.
+	h.Bridge().SetBuffered(true)
+	t.Log("Enabled S→C message buffering")
+
+	// Seal Round 1 - this creates Round 2 and starts Round 1's batch
+	// building. The ClientBatchInfo message for Client 1 is buffered.
+	h.TriggerRoundSeal()
+	t.Log("Round 1 sealed (Round 2 created, BatchInfo for C1 buffered)")
+
+	// === Phase 3: Client 2 Joins Round 2 ===
+	err = client2.TriggerRegistration(ctx)
+	require.NoError(t, err, "client2: should trigger registration")
+
+	// Give the server time to process the join and queue ClientSuccessResp.
+	time.Sleep(500 * time.Millisecond)
+	t.Log("Client2 join request sent (response buffered)")
+
+	// Seal Round 2 - starts Round 2's batch building. Both rounds now have
+	// their signing-phase messages queued in the buffer.
+	h.TriggerRoundSeal()
+	t.Log("Round 2 sealed (BatchInfo for C2 buffered)")
+
+	// Give server time to build batches for both rounds.
+	time.Sleep(500 * time.Millisecond)
+
+	// Check buffered message counts.
+	buffered1 := h.Bridge().PendingCountFor(client1.ClientID())
+	buffered2 := h.Bridge().PendingCountFor(client2.ClientID())
+	t.Logf("Buffered messages - Client1: %d, Client2: %d", buffered1, buffered2)
+
+	// === Phase 4: Release All Messages - Both Rounds Sign Concurrently ===
+	// Disable buffering and flush. Both clients receive their messages and
+	// start their signing phases simultaneously.
+	h.Bridge().SetBuffered(false)
+	h.Bridge().FlushAllFor(client1.ClientID())
+	h.Bridge().FlushAllFor(client2.ClientID())
+	t.Log("Flushed all buffered messages - both rounds now signing")
+
+	// Both rounds are now in their signing phases concurrently.
+	// Total messages: 2 clients * 9 messages each = 18 messages
+	totalExpectedMsgs := msgsPerClientRound * 2
+	err = h.Transcript().WaitForEntryCount(totalExpectedMsgs, 60*time.Second)
+	require.NoError(t, err, "both rounds should complete signing")
+
+	t.Log("Both rounds completed signing phase")
+	t.Log(h.Transcript().Dump())
+
+	// Give server time to broadcast both commitment transactions.
+	time.Sleep(1 * time.Second)
+
+	// === Verify: Both commitment transactions in mempool simultaneously ===
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err, "should get bitcoin RPC client")
+	mempoolTxs, err := rpcClient.GetRawMempool()
+	require.NoError(t, err, "should get mempool")
+	require.Len(t, mempoolTxs, 2, "BOTH commitment txs should be in mempool")
+	t.Logf("Round 1 commitment tx: %s", mempoolTxs[0].String())
+	t.Logf("Round 2 commitment tx: %s", mempoolTxs[1].String())
+
+	// === Phase 5: Confirm Both Rounds ===
+	h.MineBlocksAndConfirm(1)
+	t.Log("Mined block to confirm both commitment transactions")
+
+	// Wait for both clients to receive round completion.
+	err = client1.WaitForRoundComplete(30 * time.Second)
+	require.NoError(t, err, "client1: round should complete")
+
+	err = client2.WaitForRoundComplete(30 * time.Second)
+	require.NoError(t, err, "client2: round should complete")
+
+	// === Verify Final State ===
+	// Each client should have exactly 1 VTXO from their round.
+	client1.AssertVTXOCountFromDB(1)
+	client1.AssertConfirmedRoundCountFromDB(1)
+
+	client2.AssertVTXOCountFromDB(1)
+	client2.AssertConfirmedRoundCountFromDB(1)
+
+	vtxos1, err := client1.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, vtxos1, 1, "client1 should have 1 VTXO")
+	t.Logf("Client1 VTXO: outpoint=%s, amount=%d sats",
+		vtxos1[0].Outpoint, vtxos1[0].Amount)
+
+	vtxos2, err := client2.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, vtxos2, 1, "client2 should have 1 VTXO")
+	t.Logf("Client2 VTXO: outpoint=%s, amount=%d sats",
+		vtxos2[0].Outpoint, vtxos2[0].Amount)
+
+	// Verify VTXO properties for both clients.
+	client1.AssertVTXOProperties()
+	client2.AssertVTXOProperties()
+
+	t.Log("TestBoardingE2EConcurrentRounds completed successfully!")
+	t.Log("Verified: Two rounds driven concurrently with interleaved signing")
+}
+
 // TestBoardingRestartBeforeConfirmation tests client restart before the
 // boarding UTXO has been confirmed. The restarted client should:
 // 1. Load the boarding address from the database

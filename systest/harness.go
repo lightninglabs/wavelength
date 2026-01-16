@@ -477,6 +477,13 @@ func (h *E2EHarness) Transcript() *MessageTranscript {
 	return h.transcript
 }
 
+// Bridge returns the server-to-client bridge for message control. This allows
+// tests to buffer, hold, and release messages for orchestrating concurrent
+// round execution.
+func (h *E2EHarness) Bridge() *BridgeClientConn {
+	return h.bridge
+}
+
 // TriggerRoundSeal triggers the registration timeout to seal the round.
 func (h *E2EHarness) TriggerRoundSeal() {
 	h.TriggerTimeout(rounds.TimeoutPhaseRegistration)
