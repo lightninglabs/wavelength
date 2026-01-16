@@ -136,11 +136,13 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			Status:    BoardingStatusConfirmed,
 		}
 
-		// Build the boarding request from the address.
+		// Build the boarding request from the address. Include the exit
+		// delay so the operator can verify the boarding output script.
 		boardingRequest := types.BoardingRequest{
 			Outpoint:    &evt.Outpoint,
 			ClientKey:   evt.Address.KeyDesc.PubKey,
 			OperatorKey: evt.Address.OperatorKey,
+			ExitDelay:   evt.Address.ExitDelay,
 		}
 
 		// Create a BoardingIntent for the next round.
@@ -245,11 +247,13 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			Status:    BoardingStatusConfirmed,
 		}
 
-		// Build the boarding request from the address.
+		// Build the boarding request from the address. Include the exit
+		// delay so the operator can verify the boarding output script.
 		boardingRequest := types.BoardingRequest{
 			Outpoint:    &evt.Outpoint,
 			ClientKey:   evt.Address.KeyDesc.PubKey,
 			OperatorKey: evt.Address.OperatorKey,
+			ExitDelay:   evt.Address.ExitDelay,
 		}
 
 		intent := BoardingIntent{
