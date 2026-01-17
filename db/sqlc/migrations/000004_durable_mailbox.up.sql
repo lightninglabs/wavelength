@@ -66,11 +66,12 @@ CREATE TABLE IF NOT EXISTS mailbox_messages (
 );
 
 -- Index for efficient polling of available messages.
--- Covers: mailbox lookup, availability check, priority ordering.
+-- Covers: mailbox lookup, priority ordering, availability check, creation time.
 -- Note: We cannot use a partial index with strftime() since it's non-deterministic.
 -- The query handles lease expiry filtering at runtime.
+-- The index order matches the ORDER BY clause for optimal query performance.
 CREATE INDEX IF NOT EXISTS idx_mailbox_messages_available
-    ON mailbox_messages(mailbox_id, available_at, priority DESC);
+    ON mailbox_messages(mailbox_id, priority DESC, available_at ASC, created_at ASC);
 
 -- Index for lease expiry cleanup.
 CREATE INDEX IF NOT EXISTS idx_mailbox_messages_lease
