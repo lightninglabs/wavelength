@@ -144,6 +144,22 @@ type Querier interface {
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
+	// Delete a stored response payload.
+	MailboxRPCClientDeleteResponse(ctx context.Context, arg MailboxRPCClientDeleteResponseParams) error
+	// Mailbox RPC client persistence queries.
+	//
+	// These queries persist the minimal state needed to make mailboxrpcclient
+	// crash-safe under cursor-based AckUpTo:
+	//   - The pull cursor (watermark), and
+	//   - response payloads keyed by correlation_id.
+	// Get the current cursor.
+	MailboxRPCClientGetCursor(ctx context.Context, mailboxID string) (int64, error)
+	// Get a previously stored response payload.
+	MailboxRPCClientGetResponse(ctx context.Context, arg MailboxRPCClientGetResponseParams) ([]byte, error)
+	// Store a response payload if it doesn't already exist.
+	MailboxRPCClientPutResponse(ctx context.Context, arg MailboxRPCClientPutResponseParams) error
+	// Set cursor to the provided value, but only if it moves forward.
+	MailboxRPCClientUpsertCursor(ctx context.Context, arg MailboxRPCClientUpsertCursorParams) error
 	// =============================================================================
 	// Processed Messages (Deduplication)
 	// =============================================================================

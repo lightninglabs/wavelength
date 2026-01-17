@@ -96,6 +96,17 @@ type MailboxMessage struct {
 	CreatedAt       int32
 }
 
+type MailboxrpcclientCursor struct {
+	MailboxID string
+	Cursor    int64
+}
+
+type MailboxrpcclientResponse struct {
+	MailboxID     string
+	CorrelationID string
+	Payload       []byte
+}
+
 type OutboxMessage struct {
 	ID               string
 	SourceActorID    string

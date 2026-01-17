@@ -25,6 +25,7 @@ type Client struct {
 	mu sync.Mutex
 
 	cursor uint64
+	ackTo  uint64
 
 	pending map[string][]byte
 	waiters map[string][]chan struct{}
@@ -52,10 +53,19 @@ func New(cfg Config) (*Client, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	cursor, err := cfg.Store.LoadCursor(ctx, cfg.LocalMailboxID)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("load cursor: %w", err)
+	}
+
 	c := &Client{
 		cfg: cfg,
 
 		cancel: cancel,
+
+		cursor: cursor,
+		ackTo:  cursor,
 
 		pending: make(map[string][]byte),
 		waiters: make(map[string][]chan struct{}),
@@ -152,11 +162,24 @@ func (c *Client) AwaitRPC(ctx context.Context, correlationID string,
 	resp proto.Message) error {
 
 	for {
-		data, ok := c.popPending(correlationID)
+		data, ok, err := c.peekResponse(ctx, correlationID)
+		if err != nil {
+			return err
+		}
 		if ok {
-			return (proto.UnmarshalOptions{
+			err := (proto.UnmarshalOptions{
 				DiscardUnknown: true,
 			}).Unmarshal(data, resp)
+			if err != nil {
+				return err
+			}
+
+			c.deletePending(correlationID)
+			c.deleteResponseBestEffort(
+				ctx, c.cfg.LocalMailboxID, correlationID,
+			)
+
+			return nil
 		}
 
 		ch := c.addWaiter(correlationID)
@@ -179,6 +202,9 @@ func applyDefaults(cfg Config) Config {
 	if cfg.PullWaitTimeout == 0 {
 		cfg.PullWaitTimeout = def.PullWaitTimeout
 	}
+	if cfg.Store == nil {
+		cfg.Store = NewMemoryStore()
+	}
 
 	return cfg
 }
@@ -190,6 +216,16 @@ func (c *Client) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		ackTo := c.loadAckTo()
+		if ackTo != 0 {
+			if !c.ackUpTo(ctx, ackTo) {
+				c.sleepRetry(ctx)
+				continue
+			}
+
+			c.clearAckTo(ackTo)
 		}
 
 		cursor := c.loadCursor()
@@ -211,18 +247,28 @@ func (c *Client) run(ctx context.Context) {
 			continue
 		}
 
+		var handleErr error
 		for _, env := range resp.Envelopes {
-			c.handleEnvelope(env)
+			if err := c.handleEnvelope(ctx, env); err != nil {
+				handleErr = err
+				break
+			}
+		}
+
+		if handleErr != nil {
+			c.sleepRetry(ctx)
+			continue
 		}
 
 		if resp.NextCursor > cursor {
-			ackOK := c.ackUpTo(ctx, resp.NextCursor)
-			if ackOK {
-				c.storeCursor(resp.NextCursor)
+			if err := c.storeCursor(
+				ctx, resp.NextCursor,
+			); err != nil {
+				c.sleepRetry(ctx)
 				continue
 			}
 
-			c.sleepRetry(ctx)
+			c.setAckTo(resp.NextCursor)
 		}
 	}
 }
@@ -252,22 +298,34 @@ func (c *Client) ackUpTo(ctx context.Context, cursor uint64) bool {
 }
 
 // handleEnvelope caches correlated responses and wakes waiters.
-func (c *Client) handleEnvelope(env *mailboxpb.Envelope) {
+func (c *Client) handleEnvelope(ctx context.Context,
+	env *mailboxpb.Envelope) error {
+
 	if env == nil || env.Rpc == nil {
-		return
+		return nil
 	}
 
 	if env.Rpc.Kind != mailboxpb.RpcMeta_KIND_RESPONSE {
-		return
+		return nil
 	}
 
 	correlationID := env.Rpc.CorrelationId
 	if correlationID == "" {
-		return
+		return nil
 	}
 
 	if env.Body == nil {
-		return
+		return nil
+	}
+
+	payload := env.Body.Value
+	payloadCopy := make([]byte, len(payload))
+	copy(payloadCopy, payload)
+
+	if err := c.cfg.Store.PutResponse(
+		ctx, c.cfg.LocalMailboxID, correlationID, payloadCopy,
+	); err != nil {
+		return err
 	}
 
 	c.mu.Lock()
@@ -276,10 +334,6 @@ func (c *Client) handleEnvelope(env *mailboxpb.Envelope) {
 	// If we already have a response for this correlation id, keep the
 	// first response and ignore duplicates.
 	if _, exists := c.pending[correlationID]; !exists {
-		payload := env.Body.Value
-		payloadCopy := make([]byte, len(payload))
-		copy(payloadCopy, payload)
-
 		c.pending[correlationID] = payloadCopy
 	}
 
@@ -288,10 +342,12 @@ func (c *Client) handleEnvelope(env *mailboxpb.Envelope) {
 		close(ch)
 	}
 	delete(c.waiters, correlationID)
+
+	return nil
 }
 
-// popPending returns and removes a cached response for correlationID.
-func (c *Client) popPending(correlationID string) ([]byte, bool) {
+// peekPending returns a cached response payload for correlationID.
+func (c *Client) peekPending(correlationID string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -300,9 +356,51 @@ func (c *Client) popPending(correlationID string) ([]byte, bool) {
 		return nil, false
 	}
 
-	delete(c.pending, correlationID)
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
 
-	return data, true
+	return dataCopy, true
+}
+
+func (c *Client) deletePending(correlationID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.pending, correlationID)
+}
+
+func (c *Client) peekResponse(ctx context.Context,
+	correlationID string) ([]byte, bool, error) {
+
+	if data, ok := c.peekPending(correlationID); ok {
+		return data, true, nil
+	}
+
+	return c.cfg.Store.GetResponse(ctx, c.cfg.LocalMailboxID, correlationID)
+}
+
+func (c *Client) deleteResponseBestEffort(ctx context.Context, mailboxID string,
+	correlationID string) {
+
+	const maxAttempts = 3
+	backoff := 50 * time.Millisecond
+
+	for i := 0; i < maxAttempts; i++ {
+		err := c.cfg.Store.DeleteResponse(ctx, mailboxID, correlationID)
+		if err == nil {
+			return
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		backoff *= 2
+	}
 }
 
 // addWaiter registers a waiter for correlationID and returns its channel.
@@ -347,12 +445,45 @@ func (c *Client) loadCursor() uint64 {
 	return c.cursor
 }
 
-// storeCursor sets the pull cursor.
-func (c *Client) storeCursor(cursor uint64) {
+func (c *Client) loadAckTo() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.ackTo
+}
+
+func (c *Client) setAckTo(cursor uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if cursor > c.ackTo {
+		c.ackTo = cursor
+	}
+}
+
+func (c *Client) clearAckTo(cursor uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.ackTo == cursor {
+		c.ackTo = 0
+	}
+}
+
+// storeCursor persists and sets the pull cursor.
+func (c *Client) storeCursor(ctx context.Context, cursor uint64) error {
+	if err := c.cfg.Store.SaveCursor(
+		ctx, c.cfg.LocalMailboxID, cursor,
+	); err != nil {
+		return err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.cursor = cursor
+
+	return nil
 }
 
 // randomID generates an opaque id backed by crypto/rand.

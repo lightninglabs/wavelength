@@ -299,6 +299,27 @@ CREATE TABLE mailbox_messages (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE mailboxrpcclient_cursors (
+    -- mailbox_id is the client mailbox id (recipient id used in Pull).
+    mailbox_id TEXT PRIMARY KEY,
+
+    -- cursor is the next event_seq the client should request from Pull.
+    cursor BIGINT NOT NULL
+);
+
+CREATE TABLE mailboxrpcclient_responses (
+    -- mailbox_id is the client mailbox id.
+    mailbox_id TEXT NOT NULL,
+
+    -- correlation_id matches mailboxpb.Envelope.rpc.correlation_id.
+    correlation_id TEXT NOT NULL,
+
+    -- payload contains the protobuf message bytes stored in Any.Value.
+    payload BLOB NOT NULL,
+
+    PRIMARY KEY (mailbox_id, correlation_id)
+);
+
 CREATE TABLE outbox_messages (
     -- id is a ULID providing time-ordering and uniqueness.
     id TEXT PRIMARY KEY,
