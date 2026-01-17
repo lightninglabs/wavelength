@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package mailboxrpctest.v1;
+
+option go_package = "github.com/lightninglabs/darepo-client/mailbox/test;mailboxrpctest";
+
+// HelloService is a tiny example RPC service used to validate the
+// RPC-over-mailbox overlay in tests.
+service HelloService {
+    // SayHello echoes a greeting for test purposes.
+    rpc SayHello (HelloRequest) returns (HelloResponse);
+}
+
+// HelloRequest is the request message for SayHello.
+message HelloRequest {
+    // Name is the name to greet.
+    string name = 1;
+}
+
+// HelloResponse is the response message for SayHello.
+message HelloResponse {
+    // Message is the greeting returned by the server.
+    string message = 1;
+}

@@ -56,6 +56,7 @@ function generate() {
 # Generate protos for mailbox edge transport and arkrpc.
 generate "mailbox/pb"
 generate "arkrpc"
+generate "mailbox/test"
 
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then
