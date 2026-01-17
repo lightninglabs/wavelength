@@ -268,7 +268,10 @@ func (m *mockSelfRef) ID() string {
 }
 
 // Tell records the message and also forwards it to a buffered channel.
-func (m *mockSelfRef) Tell(_ context.Context, msg actormsg.RoundReceivable) error {
+func (m *mockSelfRef) Tell(
+	_ context.Context, msg actormsg.RoundReceivable,
+) error {
+
 	m.mu.Lock()
 	m.messages = append(m.messages, msg)
 	m.mu.Unlock()

@@ -557,10 +557,16 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
 
-		roundRef.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
+		err := roundRef.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
 			TargetOutpoints: req.TargetOutpoints,
 			ForceRefresh:    req.ForceRefresh,
 		})
+		if err != nil {
+			a.log.WarnS(ctx,
+				"Failed to forward refresh to "+
+					"round actor",
+				err)
+		}
 
 		a.log.DebugS(ctx, "Forwarded refresh request to round actor")
 	} else {

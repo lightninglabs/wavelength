@@ -231,7 +231,13 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					Expiry:       vtxo.RelativeExpiry,
 					SigningKey:   vtxo.ClientKey,
 				}
-				a.cfg.RoundActor.Tell(ctx, refreshReq)
+				if err := a.cfg.RoundActor.Tell(
+					ctx, refreshReq,
+				); err != nil {
+					a.cfg.Logger.WarnS(
+						ctx, "Failed to tell refresh",
+						err)
+				}
 
 				a.cfg.Logger.InfoS(
 					ctx, "Sent refresh request to round",
@@ -270,10 +276,23 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					ForfeitTx:    m.ForfeitTx,
 					Signature:    m.Signature,
 				}
-				a.cfg.RoundActor.Tell(ctx, resp)
+				err := a.cfg.RoundActor.Tell(ctx, resp)
+				if err != nil {
+					a.cfg.Logger.WarnS(
+						ctx,
+						"Failed to send forfeit sig",
+						err,
+						slog.String(
+							"outpoint",
+							m.VTXOOutpoint.String(),
+						))
+				}
 				a.cfg.Logger.InfoS(
 					ctx, "Sent forfeit signature",
-					slog.String("outpoint", m.VTXOOutpoint.String()),
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
 					slog.String("round_id", m.RoundID),
 				)
 			}
@@ -281,22 +300,51 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 		case *ExpiringNotification:
 			// Route to chain resolver for unilateral exit handling.
 			if a.cfg.ChainResolver != nil {
-				a.cfg.ChainResolver.Tell(ctx, *m)
+				err := a.cfg.ChainResolver.Tell(ctx, *m)
+				if err != nil {
+					a.cfg.Logger.WarnS(
+						ctx,
+						"Failed to tell chain resolver",
+						err,
+						slog.String(
+							"outpoint",
+							m.VTXO.Outpoint.String(),
+						))
+				}
 				a.cfg.Logger.WarnS(
-					ctx, "VTXO sent to chain resolver", nil,
-					slog.String("outpoint", m.VTXO.Outpoint.String()),
-					slog.Int("blocks_remaining", int(m.BlocksRemaining)),
+					ctx,
+					"VTXO sent to chain resolver",
+					nil,
+					slog.String(
+						"outpoint",
+						m.VTXO.Outpoint.String(),
+					),
+					slog.Int(
+						"blocks_remaining",
+						int(m.BlocksRemaining),
+					),
 				)
 			}
 
 		case *VTXOTerminatedNotification:
 			// Notify manager to remove this actor from tracking.
 			if a.cfg.Manager != nil {
-				a.cfg.Manager.Tell(ctx, &VTXOTerminatedMsg{
-					Outpoint:   m.VTXOOutpoint,
-					FinalState: m.FinalState,
-					Reason:     m.Reason,
-				})
+				err := a.cfg.Manager.Tell(
+					ctx, &VTXOTerminatedMsg{
+						Outpoint:   m.VTXOOutpoint,
+						FinalState: m.FinalState,
+						Reason:     m.Reason,
+					})
+				if err != nil {
+					a.cfg.Logger.WarnS(
+						ctx,
+						"Failed to notify manager",
+						err,
+						slog.String(
+							"outpoint",
+							m.VTXOOutpoint.String(),
+						))
+				}
 			}
 		}
 	}
@@ -337,9 +385,20 @@ func (a *VTXOActor) subscribeBlockEpochs(ctx context.Context) error {
 func (a *VTXOActor) unsubscribeBlockEpochs(ctx context.Context) {
 	callerID := fmt.Sprintf("vtxo.%s", a.cfg.VTXO.Outpoint.String())
 
-	a.cfg.ChainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
-		CallerID: callerID,
-	})
+	err := a.cfg.ChainSource.Tell(
+		ctx, &chainsource.UnsubscribeBlocksRequest{
+			CallerID: callerID,
+		},
+	)
+	if err != nil {
+		a.cfg.Logger.WarnS(ctx,
+			"Failed to unsubscribe from blocks",
+			err,
+			slog.String(
+				"vtxo",
+				a.cfg.VTXO.Outpoint.String(),
+			))
+	}
 
 	a.cfg.Logger.DebugS(ctx, "Unsubscribed from block epochs",
 		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()))
