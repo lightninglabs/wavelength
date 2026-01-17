@@ -9,6 +9,10 @@ function generate() {
 
 	pushd "${package}" > /dev/null
 
+	# Install the repo-local protoc plugin so make rpc generates mailbox RPC
+	# stubs consistently across development environments.
+	go install -buildvcs=false /build/cmd/protoc-gen-mailboxrpc
+
 	# Format proto files with clang-format using the proto-specific style.
 	find . -name "*.proto" -print0 | xargs -0 clang-format --style=file:/build/scripts/.clang-format-proto -i
 
@@ -21,6 +25,16 @@ function generate() {
 			--go_out=. --go_opt=paths=source_relative \
 			--go-grpc_out=. --go-grpc_opt=paths=source_relative \
 			"${file}"
+
+		# Generate RPC-over-mailbox stubs for service definitions.
+		#
+		# The mailbox edge proto (mailboxpb) defines the underlying transport and
+		# should not get an RPC-over-mailbox overlay, so we exclude it.
+		if [ "${package}" != "mailbox/pb" ]; then
+			protoc -I/usr/local/include -I. -I.. \
+				--mailboxrpc_out=. --mailboxrpc_opt=paths=source_relative \
+				"${file}"
+		fi
 	done
 
 	# Generate the JSON/WASM client stubs using falafel for gomobile
@@ -39,8 +53,13 @@ function generate() {
 	popd > /dev/null
 }
 
-# Generate protos for both arkrpc and adminrpc packages.
+# Generate protos for mailbox edge transport and arkrpc.
+generate "mailbox/pb"
 generate "arkrpc"
-generate "adminrpc"
+
+# Generate adminrpc protos if present.
+if [ -d "adminrpc" ]; then
+	generate "adminrpc"
+fi
 
 echo "Proto generation complete"
