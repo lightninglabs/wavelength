@@ -1172,88 +1172,10 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 		// Handle non-server messages.
 		switch m := msg.(type) {
 		case *RegisterConfirmationRequest:
-			// FSM emitted a confirmation request. Complete it with
-			// the NotifyActor field pointing to ourselves and send
-			// to ChainSource.
-			var sessionID string
-			switch {
-			case len(m.PkScript) > 0:
-				sessionID = hex.EncodeToString(m.PkScript)
-
-			case m.Txid != nil:
-				sessionID = m.Txid.String()
-
-			default:
-				sessionID = "unknown"
-			}
-			callerID := fmt.Sprintf(
-				"boarding-%s-%s", sessionID, m.CallerID,
-			)
-
-			// Use the shared mapper helper so ChainSource can
-			// deliver confirmation events directly without an
-			// intermediate actor.
-			mappedRef := chainsource.MapConfirmationEvent(
-				a.cfg.SelfRef,
-				func(ce chainsource.ConfirmationEvent) actormsg.RoundReceivable {
-					return &ConfirmationEvent{
-						Txid:          ce.Txid,
-						BlockHeight:   ce.BlockHeight,
-						Confirmations: ce.NumConfs,
-						Tx:            ce.Tx,
-					}
-				},
-			)
-
-			// Query ChainSource for current block height to use as
-			// HeightHint. LND requires HeightHint > 0 for
-			// confirmation scanning.
-			heightHint := m.HeightHint
-			if heightHint == 0 {
-				heightFuture := a.cfg.ChainSource.Ask(
-					ctx, &chainsource.BestHeightRequest{},
-				)
-				heightResult := heightFuture.Await(ctx)
-				heightResp, err := heightResult.Unpack()
-				if err != nil {
-					return fmt.Errorf("get best height "+
-						"for confirmation: %w", err)
-				}
-				bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
-				if !ok {
-					return fmt.Errorf("unexpected " +
-						"height response type")
-				}
-				heightHint = uint32(bestHeightResp.Height)
-			}
-
-			// Build the complete RegisterConfRequest with the
-			// mapper as the NotifyActor target.
-			confReq := &chainsource.RegisterConfRequest{
-				CallerID:    callerID,
-				Txid:        m.Txid,
-				PkScript:    m.PkScript,
-				TargetConfs: m.TargetConfs,
-				HeightHint:  heightHint,
-				NotifyActor: fn.Some(mappedRef),
-			}
-
-			a.log.InfoS(ctx, "Sending RegisterConfRequest to ChainSource",
-				slog.String("caller_id", callerID),
-				slog.Int("pkscript_len", len(m.PkScript)),
-				slog.Int("height_hint", int(heightHint)),
-				slog.Int("target_confs", int(m.TargetConfs)))
-
-			// Use a background context for the confirmation
-			// registration. The ConfActor needs a long-lived context
-			// that won't be cancelled when the current message
-			// processing completes.
-			if err := a.cfg.ChainSource.Tell(context.Background(),
-				confReq); err != nil {
-				a.log.WarnS(ctx,
-					"Failed to register confirmation",
-					err,
-				)
+			if err := a.processConfirmationRequest(
+				ctx, m,
+			); err != nil {
+				return err
 			}
 
 		case *VTXOCreatedNotification:
@@ -1352,7 +1274,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				a.log.DebugS(ctx, "Looking up VTXO actor by service key",
 					slog.String("outpoint", m.VTXOOutpoint.String()))
 
-				serviceKey.Ref(a.cfg.ActorSystem).Tell(
+				err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					ctx, &ForfeitRequestEvent{
 						RoundID:               m.RoundID,
 						ConnectorOutpoint:     m.ConnectorOutpoint,
@@ -1361,6 +1283,11 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						ServerForfeitPkScript: m.ServerForfeitPkScript,
 					},
 				)
+				if err != nil {
+					a.log.WarnS(ctx, "Failed to send forfeit request to VTXO actor",
+						err,
+						slog.String("outpoint", m.VTXOOutpoint.String()))
+				}
 				a.log.InfoS(ctx, "Sent forfeit request to VTXO actor",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
 					slog.String("round_id", m.RoundID))
@@ -1376,15 +1303,32 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				serviceKey := actormsg.VTXOActorServiceKey(
 					m.VTXOOutpoint,
 				)
-				serviceKey.Ref(a.cfg.ActorSystem).Tell(
+				err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					ctx, &ForfeitConfirmedEvent{
 						CommitmentTxID: m.CommitmentTxID,
 						BlockHeight:    m.BlockHeight,
 					},
 				)
-				log.InfoS(ctx, "Sent forfeit confirmation to VTXO actor",
-					"outpoint", m.VTXOOutpoint.String(),
-					"commitment_txid", m.CommitmentTxID.String())
+				if err != nil {
+					a.log.WarnS(ctx,
+						"Failed to send forfeit "+
+							"confirmation",
+						err,
+						slog.String(
+							"outpoint",
+							m.VTXOOutpoint.String(),
+						))
+				}
+				a.log.InfoS(ctx,
+					"Sent forfeit confirmed to VTXO",
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+					slog.String(
+						"commitment_txid",
+						m.CommitmentTxID.String(),
+					))
 			}
 
 		default:
@@ -1393,6 +1337,98 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 				slog.String("type", fmt.Sprintf("%T", msg)),
 			)
 		}
+	}
+
+	return nil
+}
+
+// processConfirmationRequest handles a RegisterConfirmationRequest emitted by
+// the round FSM. It builds a caller ID, creates a mapped actor ref for
+// confirmation delivery, queries the current block height for HeightHint, and
+// sends the registration to ChainSource.
+func (a *RoundClientActor) processConfirmationRequest(
+	ctx context.Context, m *RegisterConfirmationRequest,
+) error {
+
+	// Build a unique caller ID from the pkscript or txid.
+	var sessionID string
+	switch {
+	case len(m.PkScript) > 0:
+		sessionID = hex.EncodeToString(m.PkScript)
+
+	case m.Txid != nil:
+		sessionID = m.Txid.String()
+
+	default:
+		sessionID = "unknown"
+	}
+	callerID := fmt.Sprintf(
+		"boarding-%s-%s", sessionID, m.CallerID,
+	)
+
+	// Use the shared mapper helper so ChainSource can deliver
+	// confirmation events directly without an intermediate actor.
+	mappedRef := chainsource.MapConfirmationEvent(
+		a.cfg.SelfRef,
+		func(ce chainsource.ConfirmationEvent) actormsg.RoundReceivable {
+			return &ConfirmationEvent{
+				Txid:          ce.Txid,
+				BlockHeight:   ce.BlockHeight,
+				Confirmations: ce.NumConfs,
+				Tx:            ce.Tx,
+			}
+		},
+	)
+
+	// Query ChainSource for current block height to use as
+	// HeightHint. LND requires HeightHint > 0 for confirmation
+	// scanning.
+	heightHint := m.HeightHint
+	if heightHint == 0 {
+		heightFuture := a.cfg.ChainSource.Ask(
+			ctx, &chainsource.BestHeightRequest{},
+		)
+		heightResult := heightFuture.Await(ctx)
+		heightResp, err := heightResult.Unpack()
+		if err != nil {
+			return fmt.Errorf("get best height "+
+				"for confirmation: %w", err)
+		}
+		bestHeightResp, ok := heightResp.(*chainsource.BestHeightResponse)
+		if !ok {
+			return fmt.Errorf("unexpected " +
+				"height response type")
+		}
+		heightHint = uint32(bestHeightResp.Height)
+	}
+
+	// Build the complete RegisterConfRequest with the mapper as
+	// the NotifyActor target.
+	confReq := &chainsource.RegisterConfRequest{
+		CallerID:    callerID,
+		Txid:        m.Txid,
+		PkScript:    m.PkScript,
+		TargetConfs: m.TargetConfs,
+		HeightHint:  heightHint,
+		NotifyActor: fn.Some(mappedRef),
+	}
+
+	a.log.InfoS(ctx, "Sending RegisterConfRequest to ChainSource",
+		slog.String("caller_id", callerID),
+		slog.Int("pkscript_len", len(m.PkScript)),
+		slog.Int("height_hint", int(heightHint)),
+		slog.Int("target_confs", int(m.TargetConfs)))
+
+	// Use a background context for the confirmation registration.
+	// The ConfActor needs a long-lived context that won't be
+	// cancelled when the current message processing completes.
+	if err := a.cfg.ChainSource.Tell(
+		context.Background(), confReq,
+	); err != nil {
+		a.log.WarnS(ctx,
+			"Failed to register confirmation",
+			err,
+		)
 	}
 
 	return nil
@@ -1434,9 +1470,16 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	// The RoundID is empty since we haven't assigned it to a round yet.
 	if a.cfg.ActorSystem != nil {
 		serviceKey := actormsg.VTXOActorServiceKey(req.VTXOOutpoint)
-		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &RefreshAcknowledgedEvent{
-			RoundID: "",
-		})
+		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+			ctx, &RefreshAcknowledgedEvent{
+				RoundID: "",
+			},
+		)
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to send refresh ack to VTXO actor",
+				err,
+				slog.String("outpoint", req.VTXOOutpoint.String()))
+		}
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
@@ -1530,9 +1573,21 @@ func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
 	triggeredCount := 0
 	for _, outpoint := range cmd.TargetOutpoints {
 		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
-		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &TriggerRefreshEvent{
-			ForceRefresh: cmd.ForceRefresh,
-		})
+		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+			ctx, &TriggerRefreshEvent{
+				ForceRefresh: cmd.ForceRefresh,
+			},
+		)
+		if err != nil {
+			a.log.WarnS(ctx,
+				"Failed to send refresh trigger "+
+					"to VTXO actor",
+				err,
+				slog.String(
+					"outpoint",
+					outpoint.String(),
+				))
+		}
 
 		a.log.InfoS(ctx, "Sent refresh trigger to VTXO actor",
 			slog.String("outpoint", outpoint.String()),

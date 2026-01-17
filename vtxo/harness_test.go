@@ -699,11 +699,13 @@ func (m *mockRoundActorRef) ID() string {
 
 func (m *mockRoundActorRef) Tell(
 	_ context.Context, msg actormsg.RoundReceivable,
-) {
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 func (m *mockRoundActorRef) getMessages() []actormsg.RoundReceivable {
@@ -734,10 +736,12 @@ func (m *mockManagerRef) ID() string {
 	return "mock-manager"
 }
 
-func (m *mockManagerRef) Tell(_ context.Context, msg ManagerMsg) {
+func (m *mockManagerRef) Tell(_ context.Context, msg ManagerMsg) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 func (m *mockManagerRef) getMessages() []ManagerMsg {
@@ -770,11 +774,13 @@ func (m *mockChainResolverRef) ID() string {
 
 func (m *mockChainResolverRef) Tell(
 	_ context.Context, msg ExpiringNotification,
-) {
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 func (m *mockChainResolverRef) getMessages() []ExpiringNotification {
