@@ -65,6 +65,15 @@ type ClientSuccessResp struct {
 
 	// RoundID is the identifier of the round the client has joined.
 	RoundID RoundID
+
+	// AcceptedBoardingOutpoints contains the boarding outpoints that were
+	// accepted into this round. Used by clients to correlate the response
+	// to the correct pending round when multiple rounds are in-flight.
+	AcceptedBoardingOutpoints []wire.OutPoint
+
+	// AcceptedVTXOOutpoints contains the VTXO outpoints involved in this
+	// round. Used for operations like forfeit, leave, and refresh.
+	AcceptedVTXOOutpoints []wire.OutPoint
 }
 
 // ClientID returns the identifier of the client to send the message to.
@@ -90,6 +99,9 @@ func (c *ClientSuccessResp) outboxEventSealed() {}
 type ClientAwaitingInputSigsResp struct {
 	// Client is the identifier of the client to notify.
 	Client clientconn.ClientID
+
+	// RoundID identifies which round is awaiting input signatures.
+	RoundID RoundID
 }
 
 // ClientID returns the identifier of the client to send the message to.
@@ -114,6 +126,9 @@ func (c *ClientAwaitingInputSigsResp) outboxEventSealed() {}
 type ClientVTXOAggNonces struct {
 	// Client is the identifier of the client to send nonces to.
 	Client clientconn.ClientID
+
+	// RoundID identifies which round these aggregated nonces belong to.
+	RoundID RoundID
 
 	// AggNonces maps transaction IDs to the aggregated public nonces for
 	// those transactions. Only includes transactions where this client is
@@ -142,6 +157,9 @@ func (c *ClientVTXOAggNonces) outboxEventSealed() {}
 type ClientVTXOAggSigs struct {
 	// Client is the identifier of the client to send signatures to.
 	Client clientconn.ClientID
+
+	// RoundID identifies which round these aggregated signatures belong to.
+	RoundID RoundID
 
 	// AggSigs maps transaction IDs to the final aggregated schnorr
 	// signatures. Only includes transactions where this client is a
@@ -239,6 +257,9 @@ type ClientBatchInfo struct {
 	// Client is the identifier of the client to send data to.
 	Client clientconn.ClientID
 
+	// RoundID is the identifier of the round this batch belongs to.
+	RoundID RoundID
+
 	// BatchPSBT is the partially signed batch transaction. The client needs
 	// the full PSBT (including witness UTXOs and other metadata) to create
 	// their signatures for boarding inputs.
@@ -320,6 +341,11 @@ type BroadcastRoundReq struct {
 
 	// SignedTx is the fully signed commitment transaction to broadcast.
 	SignedTx *wire.MsgTx
+
+	// StartHeight is the block height when the round was created. Used as
+	// the height hint for confirmation scanning to ensure we don't miss
+	// confirmations that occur between round creation and broadcast.
+	StartHeight uint32
 }
 
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed

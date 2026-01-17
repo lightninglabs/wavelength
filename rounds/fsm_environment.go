@@ -59,6 +59,12 @@ type Environment struct {
 
 	// VTXOStore provides persistent storage for VTXOs.
 	VTXOStore VTXOStore
+
+	// StartHeight is the block height when this round was created. Used as
+	// the height hint when subscribing to confirmation notifications to
+	// ensure we don't miss confirmations that occur between round creation
+	// and broadcast.
+	StartHeight uint32
 }
 
 // Name returns the unique identifier for this FSM instance.

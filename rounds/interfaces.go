@@ -253,7 +253,7 @@ func newLoggingErrorReporter(log btclog.Logger) *loggingErrorReporter {
 
 // ReportError logs the error using the configured logger.
 func (r *loggingErrorReporter) ReportError(err error) {
-	r.log.Errorf("FSM error: %v", err)
+	r.log.ErrorS(context.Background(), "FSM error", err)
 }
 
 // Compile-time check that loggingErrorReporter implements ErrorReporter.

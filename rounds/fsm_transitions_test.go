@@ -640,6 +640,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 	t.Run("multi-client batch building", func(t *testing.T) {
 		t.Parallel()
 
+		// Get deterministic operator key (same as harness uses).
+		operatorPub, _ := testutils.CreateKey(1)
+
 		// Create RegistrationState with two clients already registered.
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
@@ -650,14 +653,16 @@ func TestFSMBatchBuilding(t *testing.T) {
 			Index: 0,
 		}
 
-		client1Reg := buildTestClientRegistration(
-			"client1",
-			&BoardingInput{Outpoint: &outpoint1},
+		// Use fully populated boarding inputs for batch building.
+		bi1 := buildTestBoardingInput(
+			t, &outpoint1, 100_000, operatorPub,
 		)
-		client2Reg := buildTestClientRegistration(
-			"client2",
-			&BoardingInput{Outpoint: &outpoint2},
+		bi2 := buildTestBoardingInput(
+			t, &outpoint2, 100_000, operatorPub,
 		)
+
+		client1Reg := buildTestClientRegistration("client1", bi1)
+		client2Reg := buildTestClientRegistration("client2", bi2)
 		regState := &RegistrationState{
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": client1Reg,
@@ -1192,20 +1197,16 @@ func TestFSMBatchBuilding(t *testing.T) {
 			h := newTestHarness(t)
 			h.setupBatchBuildingMocks()
 
-			clientKey, _ := testutils.CreateKey(3)
 			boardingOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("boarding")),
 				Index: 0,
 			}
-			pkScript := buildExpectedPkScript(
-				t, clientKey, h.operatorPub,
-				h.env.Terms.BoardingExitDelay,
+
+			// Use fully populated boarding inputs for batch
+			// building.
+			bi := buildTestBoardingInput(
+				t, &boardingOutpoint, 10_000, h.operatorPub,
 			)
-			boardingInput := &BoardingInput{
-				Outpoint: &boardingOutpoint,
-				Value:    10000,
-				PkScript: pkScript,
-			}
 
 			forfeitOutpoint1 := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("forfeit1")),
@@ -1224,7 +1225,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					BoardingInputs: []*BoardingInput{
-						boardingInput,
+						bi,
 					},
 					ForfeitInputs: forfeitInputs,
 				},
@@ -1256,7 +1257,8 @@ func TestFSMBatchBuilding(t *testing.T) {
 				require.True(t, ok)
 				require.NotNil(t, assignment.LeafOutput)
 			}
-		})
+		},
+	)
 
 	t.Run("stale timeout ignored during boarding sigs",
 		func(t *testing.T) {
@@ -1824,7 +1826,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				client.createInputSignaturesEvent(awaitState)
 
 			transition, err := awaitState.handleInputSignatures(
-				sigEvent, h.env,
+				t.Context(), sigEvent, h.env,
 			)
 			require.NoError(t, err)
 

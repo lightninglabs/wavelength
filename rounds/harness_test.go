@@ -3,6 +3,7 @@ package rounds
 import (
 	"context"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -139,13 +140,17 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	// Generate a sweep key for VTXO trees.
 	sweepKey, _ := testutils.CreateKey(2)
 
+	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	rootLog := btclog.NewSLogger(logHandler.SubSystem(Subsystem))
+	rootLog.SetLevel(btclog.LevelTrace)
+
 	env := Environment{
 		RoundID:             roundID,
 		ChainParams:         &chaincfg.RegressionNetParams,
 		BoardingInputLocker: common.boardingLocker,
 		ChainSource:         common.chainSource,
 		FeeEstimator:        common.feeEstimator,
-		Log:                 btclog.Disabled,
+		Log:                 rootLog,
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
 		VTXOStore:           common.vtxoStore,
@@ -173,7 +178,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		},
 	}
 
-	// Determine initial state: use provided state or default to CreatedState.
+	// Use provided state or default to CreatedState.
 	var startState State = &CreatedState{}
 	if len(initialState) > 0 {
 		startState = initialState[0]
@@ -643,6 +648,48 @@ func buildTestClientRegistration(clientID ClientID,
 	return &ClientRegistration{
 		ClientID:       clientID,
 		BoardingInputs: boardingInputs,
+	}
+}
+
+// buildTestBoardingInput creates a fully-populated BoardingInput for testing.
+// This creates real tapscript structures that can be used in buildCommitmentTx
+// without causing nil pointer panics.
+func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
+	value btcutil.Amount, operatorKey *btcec.PublicKey) *BoardingInput {
+
+	t.Helper()
+
+	// Generate a test client key.
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientKey := clientPriv.PubKey()
+
+	// Build the tapscript using the same structure as production code.
+	const exitDelay = 144
+	tapscript, err := scripts.VTXOTapScript(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	// Build the P2TR pkScript.
+	outputKey, err := tapscript.TaprootKey()
+	require.NoError(t, err)
+	pkScript, err := input.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	return &BoardingInput{
+		Outpoint:  outpoint,
+		Tapscript: tapscript,
+		Value:     value,
+		PkScript:  pkScript,
+		ClientKey: clientKey,
+		OperatorKeyDesc: &keychain.KeyDescriptor{
+			PubKey: operatorKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(42),
+				Index:  0,
+			},
+		},
 	}
 }
 

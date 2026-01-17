@@ -295,13 +295,13 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ForfeitScript: []byte{0x51, 0x20, 0x01, 0x02},
 	}
 
-	actorResult := NewActor(cfg)
-	actor, err := actorResult.Unpack()
-	require.NoError(t, err)
+	actor := NewActor(cfg)
 
 	// Set SelfRef so the actor can receive asynchronous notifications.
 	// Done after creation since we need the actor instance.
-	cfg.SelfRef = &actorRef{actor: actor}
+	cfg.SelfRef = &actorRef{
+		actor: actor,
+	}
 
 	h := &actorTestHarness{
 		T:                t,
@@ -337,7 +337,13 @@ func (h *actorTestHarness) assertRoundCount(expected int) {
 func (h *actorTestHarness) assertCurrentRoundExists() {
 	h.Helper()
 
-	require.NotNil(h, h.actor.currentRound)
+	require.NotEmpty(h, h.actor.currentRoundID)
+	require.NotNil(h, h.actor.rounds[h.actor.currentRoundID])
+}
+
+// getCurrentRound returns the current round FSM from the actor.
+func (h *actorTestHarness) getCurrentRound() *RoundFSM {
+	return h.actor.rounds[h.actor.currentRoundID]
 }
 
 // sendJoinRequest sends a JoinRoundRequest to the actor.
@@ -417,7 +423,7 @@ func TestActorStart(t *testing.T) {
 	h.assertRoundCount(1)
 
 	// Verify round ID is set.
-	require.NotEmpty(t, h.actor.currentRound.RoundID)
+	require.NotEmpty(t, h.getCurrentRound().RoundID)
 }
 
 // TestActorJoinRoundRequest tests the actor's handling of JoinRoundRequest
@@ -443,7 +449,7 @@ func TestActorJoinRoundRequest(t *testing.T) {
 
 		// Set up valid boarding input (no batch building since test
 		// doesn't seal the round).
-		roundID := h.actor.currentRound.RoundID
+		roundID := h.getCurrentRound().RoundID
 		h.allowBoardingInput(&outpoint, roundID)
 
 		// Mock the UTXO and create the boarding request.
@@ -553,7 +559,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		}
 
 		// Set up complete registration flow.
-		originalRoundID := h.actor.currentRound.RoundID
+		originalRoundID := h.getCurrentRound().RoundID
 		h.setupCompleteRegistrationFlow(
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			originalRoundID,
@@ -580,7 +586,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify a new round was created.
 		require.NotEqual(
-			t, originalRoundID, h.actor.currentRound.RoundID,
+			t, originalRoundID, h.getCurrentRound().RoundID,
 			"current round should be different after timeout",
 		)
 
@@ -608,7 +614,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 		}
 
 		// Set up complete registration flow.
-		originalRoundID := h.actor.currentRound.RoundID
+		originalRoundID := h.getCurrentRound().RoundID
 		h.setupCompleteRegistrationFlow(
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			originalRoundID,
@@ -636,7 +642,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify we have 2 rounds after first timeout.
 		h.assertRoundCount(2)
-		newRoundID := h.actor.currentRound.RoundID
+		newRoundID := h.getCurrentRound().RoundID
 
 		// Now simulate a duplicate/stale timeout arriving. Since the
 		// callback was already removed, manually send the TimeoutMsg.
@@ -649,7 +655,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 
 		// Verify state is unchanged - still 2 rounds, same current.
 		h.assertRoundCount(2)
-		require.Equal(t, newRoundID, h.actor.currentRound.RoundID,
+		require.Equal(t, newRoundID, h.getCurrentRound().RoundID,
 			"current round should be unchanged after duplicate")
 	})
 
@@ -701,7 +707,7 @@ func TestActorFailureHandling(t *testing.T) {
 		}
 
 		// Set up boarding input with unlock (for failure scenario).
-		originalRoundID := h.actor.currentRound.RoundID
+		originalRoundID := h.getCurrentRound().RoundID
 		h.setupBoardingInputWithUnlock(
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			originalRoundID,
@@ -758,7 +764,7 @@ func TestActorFailureHandling(t *testing.T) {
 		// Verify failed round was removed and new round created.
 		require.Nil(t, h.actor.getRound(originalRoundID),
 			"failed round should be removed")
-		newRoundID := h.actor.currentRound.RoundID
+		newRoundID := h.getCurrentRound().RoundID
 		require.NotEqual(t, originalRoundID, newRoundID,
 			"new round should have different ID")
 
@@ -794,7 +800,7 @@ func (m *mockChainSourceActor) ID() string {
 	return "mock-chain-source-actor"
 }
 
-// Ask handles broadcast requests and returns success.
+// Ask handles broadcast and height requests and returns success.
 func (m *mockChainSourceActor) Ask(_ context.Context,
 	msg chainsource.ChainSourceMsg,
 ) actor.Future[chainsource.ChainSourceResp] {
@@ -802,14 +808,23 @@ func (m *mockChainSourceActor) Ask(_ context.Context,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	req, ok := msg.(*chainsource.BroadcastTxRequest)
-	if ok {
+	switch req := msg.(type) {
+	case *chainsource.BroadcastTxRequest:
 		m.broadcastReqs = append(m.broadcastReqs, req)
 
 		// Return success response.
 		promise := actor.NewPromise[chainsource.ChainSourceResp]()
 		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
 			&chainsource.BroadcastTxResponse{},
+		))
+
+		return promise.Future()
+
+	case *chainsource.BestHeightRequest:
+		// Return a mock height.
+		promise := actor.NewPromise[chainsource.ChainSourceResp]()
+		promise.Complete(fn.Ok[chainsource.ChainSourceResp](
+			&chainsource.BestHeightResponse{Height: 100},
 		))
 
 		return promise.Future()
@@ -873,7 +888,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 		}
 
 		// Set up complete registration flow.
-		roundID := h.actor.currentRound.RoundID
+		roundID := h.getCurrentRound().RoundID
 		h.setupCompleteRegistrationFlow(
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			roundID,
@@ -975,7 +990,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 				Index: 0,
 			}
 
-			roundID := h.actor.currentRound.RoundID
+			roundID := h.getCurrentRound().RoundID
 			h.setupValidBoardingInput(
 				&boardingOutpoint, client.boardingKey,
 				client.exitDelay, 10, roundID,
@@ -1342,4 +1357,141 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 		// Verify state is unchanged - still just the current round.
 		h.assertRoundCount(1)
 	})
+}
+
+// TestActorConcurrentRounds tests that multiple rounds can progress
+// concurrently, with each client tracked in their respective rounds.
+func TestActorConcurrentRounds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("two clients in concurrent rounds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setActiveRounds([]*Round{})
+		h.start(h.ctx)
+
+		// Create two clients.
+		clientA := h.newClient("clientA", 10)
+		clientB := h.newClient("clientB", 20)
+
+		// Set up outpoints for each client.
+		outpointA := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input-A")),
+			Index: 0,
+		}
+		outpointB := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("input-B")),
+			Index: 0,
+		}
+
+		// Get Round 1 ID before any joins.
+		round1ID := h.getCurrentRound().RoundID
+
+		// Set up boarding input for Client A in Round 1.
+		h.setupCompleteRegistrationFlow(
+			&outpointA, clientA.boardingKey, clientA.exitDelay, 10,
+			round1ID,
+		)
+
+		// Client A joins Round 1.
+		boardingReqA := clientA.createBoardingRequest(&outpointA)
+		reqA := clientA.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReqA},
+		)
+		err := h.sendJoinRequest(reqA)
+		require.NoError(t, err)
+
+		// Verify Client A is tracked in Round 1.
+		clientARounds := h.getClientRounds("clientA")
+		require.Len(t, clientARounds, 1)
+		require.Equal(t, round1ID, clientARounds[0])
+
+		// Fire registration timeout to seal Round 1 and create Round 2.
+		h.timeoutActor.FireTimeout(
+			h.ctx, round1ID, TimeoutPhaseRegistration,
+		)
+
+		// Verify Round 2 was created.
+		h.assertRoundCount(2)
+		round2ID := h.getCurrentRound().RoundID
+		require.NotEqual(t, round1ID, round2ID)
+
+		// Set up boarding input for Client B in Round 2.
+		h.allowBoardingInput(&outpointB, round2ID)
+		h.mockBoardingUTXO(
+			outpointB, clientB.boardingKey, clientB.exitDelay, 10,
+		)
+
+		// Client B joins Round 2.
+		boardingReqB := clientB.createBoardingRequest(&outpointB)
+		reqB := clientB.createActorJoinRequest(
+			[]*types.BoardingRequest{boardingReqB},
+		)
+		err = h.sendJoinRequest(reqB)
+		require.NoError(t, err)
+
+		// Verify Client B is tracked in Round 2.
+		clientBRounds := h.getClientRounds("clientB")
+		require.Len(t, clientBRounds, 1)
+		require.Equal(t, round2ID, clientBRounds[0])
+
+		// Verify Client A is still only in Round 1.
+		clientARounds = h.getClientRounds("clientA")
+		require.Len(t, clientARounds, 1)
+		require.Equal(t, round1ID, clientARounds[0])
+
+		// Confirm Round 1 - this should untrack Client A.
+		blockHash := chainhash.HashH([]byte("block-1"))
+		confMsg1 := &ConfirmationMsg{
+			RoundID:     round1ID,
+			BlockHeight: 100,
+			BlockHash:   blockHash,
+			NumConfs:    1,
+		}
+		result := h.actor.Receive(h.ctx, confMsg1)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify Client A is no longer tracked.
+		clientARounds = h.getClientRounds("clientA")
+		require.Empty(t, clientARounds)
+
+		// Client B should still be tracked in Round 2.
+		clientBRounds = h.getClientRounds("clientB")
+		require.Len(t, clientBRounds, 1)
+
+		// Confirm Round 2 - this should untrack Client B.
+		confMsg2 := &ConfirmationMsg{
+			RoundID:     round2ID,
+			BlockHeight: 101,
+			BlockHash:   chainhash.HashH([]byte("block-2")),
+			NumConfs:    1,
+		}
+		result = h.actor.Receive(h.ctx, confMsg2)
+		_, err = result.Unpack()
+		require.NoError(t, err)
+
+		// Verify Client B is no longer tracked.
+		clientBRounds = h.getClientRounds("clientB")
+		require.Empty(t, clientBRounds)
+	})
+}
+
+// getClientRounds is a test helper that queries the actor for a client's
+// rounds using the proper actor message pattern.
+func (h *actorTestHarness) getClientRounds(clientID string) []RoundID {
+	h.Helper()
+
+	req := &GetClientRoundsRequest{
+		ClientID: ClientID(clientID),
+	}
+	result := h.actor.Receive(h.ctx, req)
+	resp, err := result.Unpack()
+	require.NoError(h.T, err)
+
+	clientRoundsResp, ok := resp.(*GetClientRoundsResponse)
+	require.True(h.T, ok)
+
+	return clientRoundsResp.RoundIDs
 }
