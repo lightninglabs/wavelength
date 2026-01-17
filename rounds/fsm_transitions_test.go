@@ -654,8 +654,12 @@ func TestFSMBatchBuilding(t *testing.T) {
 		}
 
 		// Use fully populated boarding inputs for batch building.
-		bi1 := buildTestBoardingInput(t, &outpoint1, 100_000, operatorPub)
-		bi2 := buildTestBoardingInput(t, &outpoint2, 100_000, operatorPub)
+		bi1 := buildTestBoardingInput(
+			t, &outpoint1, 100_000, operatorPub,
+		)
+		bi2 := buildTestBoardingInput(
+			t, &outpoint2, 100_000, operatorPub,
+		)
 
 		client1Reg := buildTestClientRegistration("client1", bi1)
 		client2Reg := buildTestClientRegistration("client2", bi2)

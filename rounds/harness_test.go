@@ -178,7 +178,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		},
 	}
 
-	// Determine initial state: use provided state or default to CreatedState.
+	// Use provided state or default to CreatedState.
 	var startState State = &CreatedState{}
 	if len(initialState) > 0 {
 		startState = initialState[0]
@@ -666,7 +666,9 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 
 	// Build the tapscript using the same structure as production code.
 	const exitDelay = 144
-	tapscript, err := scripts.VTXOTapScript(clientKey, operatorKey, exitDelay)
+	tapscript, err := scripts.VTXOTapScript(
+		clientKey, operatorKey, exitDelay,
+	)
 	require.NoError(t, err)
 
 	// Build the P2TR pkScript.

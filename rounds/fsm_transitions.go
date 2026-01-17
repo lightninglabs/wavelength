@@ -306,20 +306,22 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 		env.Log.InfoS(ctx, "First client registered, starting registration phase",
 			LogClientID(evt.ClientID))
 
+		successResp := &ClientSuccessResp{
+			Client:  evt.ClientID,
+			RoundID: env.RoundID,
+			AcceptedBoardingOutpoints: extractBoardingOutpoints(
+				result.BoardingInputs,
+			),
+			AcceptedVTXOOutpoints: extractVTXOOutpoints(
+				result.ForfeitInputs,
+			),
+		}
+
 		return &StateTransition{
 			NextState: newRegistrationState(clientRegs),
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&ClientSuccessResp{
-						Client:  evt.ClientID,
-						RoundID: env.RoundID,
-						AcceptedBoardingOutpoints: extractBoardingOutpoints(
-							result.BoardingInputs,
-						),
-						AcceptedVTXOOutpoints: extractVTXOOutpoints(
-							result.ForfeitInputs,
-						),
-					},
+					successResp,
 					newStartTimeoutReq(
 						env, TimeoutPhaseRegistration,
 					),
@@ -412,21 +414,21 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			LogClientID(evt.ClientID),
 			LogClientCount(newClientCount))
 
+		successResp := &ClientSuccessResp{
+			Client:  evt.ClientID,
+			RoundID: env.RoundID,
+			AcceptedBoardingOutpoints: extractBoardingOutpoints(
+				result.BoardingInputs,
+			),
+			AcceptedVTXOOutpoints: extractVTXOOutpoints(
+				result.ForfeitInputs,
+			),
+		}
+
 		return &StateTransition{
 			NextState: s.withNewClient(evt.ClientID, result),
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&ClientSuccessResp{
-						Client:  evt.ClientID,
-						RoundID: env.RoundID,
-						AcceptedBoardingOutpoints: extractBoardingOutpoints(
-							result.BoardingInputs,
-						),
-						AcceptedVTXOOutpoints: extractVTXOOutpoints(
-							result.ForfeitInputs,
-						),
-					},
-				},
+				Outbox: []OutboxEvent{successResp},
 			}),
 		}, nil
 
@@ -1087,7 +1089,9 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 //
 // 2. Fund with LND (it only sees wallet inputs)
 // 3. Add boarding inputs after funding
-// 4. Adjust change output to account for boarding input contribution
+// 4. Adjust change output to account for boarding input contribution.
+//
+//nolint:funlen
 func buildCommitmentTx(ctx context.Context, env *Environment,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
@@ -1231,6 +1235,10 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		).TapHash()
 		leafHashBytes := leafHash[:]
 
+		// Build the BIP32 derivation path for the operator key.
+		keyFamily := uint32(bi.OperatorKeyDesc.Family)
+		bip32Path := []uint32{keyFamily, bi.OperatorKeyDesc.Index}
+
 		packet.Inputs = append(packet.Inputs, psbt.PInput{
 			WitnessUtxo: &wire.TxOut{
 				Value:    int64(bi.Value),
@@ -1255,12 +1263,11 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 					XOnlyPubKey: schnorr.SerializePubKey(
 						bi.OperatorKeyDesc.PubKey,
 					),
-					LeafHashes:           [][]byte{leafHashBytes},
-					MasterKeyFingerprint: 0,
-					Bip32Path: []uint32{
-						uint32(bi.OperatorKeyDesc.Family),
-						bi.OperatorKeyDesc.Index,
+					LeafHashes: [][]byte{
+						leafHashBytes,
 					},
+					MasterKeyFingerprint: 0,
+					Bip32Path:            bip32Path,
 				},
 			},
 		})
@@ -1623,89 +1630,47 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		env.Log.WarnS(ctx, "Client not registered", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"not registered in this round",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "not registered in this round",
+		), nil
 	}
 
-	// Check if client has VTXOs (should only accept nonces from VTXO
-	// clients).
+	// Only accept nonces from clients with VTXOs.
 	if len(reg.VTXODescriptors) == 0 {
 		env.Log.WarnS(ctx, "Client has no VTXOs", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, "client has no VTXOs",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "client has no VTXOs",
+		), nil
 	}
 
 	if s.hasClientSubmittedNonces(clientID) {
 		env.Log.WarnS(ctx, "Client already submitted nonces", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"already submitted nonces",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "already submitted nonces",
+		), nil
 	}
 
 	if len(evt.Nonces) == 0 {
 		env.Log.WarnS(ctx, "No nonces provided", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, "no nonces provided",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "no nonces provided",
+		), nil
 	}
 
 	// Verify client submitted nonces for all their signing keys.
 	for keyHex := range reg.VTXODescriptors {
 		if _, ok := evt.Nonces[keyHex]; !ok {
 			errMsg := fmt.Sprintf(
-				"missing nonces for signing key %x",
-				keyHex[:],
+				"missing nonces for signing key %x", keyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 	}
 
@@ -1718,38 +1683,16 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 				signingKeyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.CoSignerKey == nil ||
-			nonces == nil {
-
+		if desc == nil || desc.CoSignerKey == nil || nonces == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		for idx, coordinator := range s.TreeSignCoordinators {
@@ -1758,21 +1701,12 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
-					"failed to add nonces for tree %d: %v",
-					idx, err,
+					"add nonces for tree %d: %v", idx, err,
 				)
 
-				return &StateTransition{
-					NextState: s,
-					NewEvents: fn.Some(EmittedEvent{
-						Outbox: []OutboxEvent{
-							newClientErrorResp(
-								clientID,
-								errMsg,
-							),
-						},
-					}),
-				}, nil
+				return clientErrorTransition(
+					s, clientID, errMsg,
+				), nil
 			}
 
 			totalAccepted += accepted
@@ -1783,15 +1717,9 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		env.Log.WarnS(ctx, "No valid nonces provided", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(clientID,
-						"no valid nonces provided"),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "no valid nonces provided",
+		), nil
 	}
 
 	env.Log.DebugS(ctx, "Nonces validated successfully",
@@ -1986,69 +1914,37 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		env.Log.WarnS(ctx, "Client not registered", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"not registered in this round",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "not registered in this round",
+		), nil
 	}
 
-	// Check if client has VTXOs (should only accept sigs from VTXO
-	// clients).
+	// Only accept signatures from clients with VTXOs.
 	if len(reg.VTXODescriptors) == 0 {
 		env.Log.WarnS(ctx, "Client has no VTXOs", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID, "client has no VTXOs",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "client has no VTXOs",
+		), nil
 	}
 
 	if len(evt.Signatures) == 0 {
 		env.Log.WarnS(ctx, "No signatures provided", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"no signatures provided",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "no signatures provided",
+		), nil
 	}
 
 	if s.hasClientSubmittedSignatures(clientID) {
 		env.Log.WarnS(ctx, "Client already submitted signatures", nil,
 			LogClientID(clientID))
 
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"already submitted signatures",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "already submitted signatures",
+		), nil
 	}
 
 	// Verify client submitted signatures for all their signing keys.
@@ -2059,17 +1955,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 				keyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 	}
 
@@ -2082,38 +1968,16 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 				signingKeyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.CoSignerKey == nil ||
-			sigs == nil {
-
+		if desc == nil || desc.CoSignerKey == nil || sigs == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
 
-			return &StateTransition{
-				NextState: s,
-				NewEvents: fn.Some(EmittedEvent{
-					Outbox: []OutboxEvent{
-						newClientErrorResp(
-							clientID,
-							errMsg,
-						),
-					},
-				}),
-			}, nil
+			return clientErrorTransition(s, clientID, errMsg), nil
 		}
 
 		for idx, coordinator := range s.TreeSignCoordinators {
@@ -2122,21 +1986,12 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
-					"failed to add sigs for tree %d: %v",
-					idx, err,
+					"add sigs for tree %d: %v", idx, err,
 				)
 
-				return &StateTransition{
-					NextState: s,
-					NewEvents: fn.Some(EmittedEvent{
-						Outbox: []OutboxEvent{
-							newClientErrorResp(
-								clientID,
-								errMsg,
-							),
-						},
-					}),
-				}, nil
+				return clientErrorTransition(
+					s, clientID, errMsg,
+				), nil
 			}
 
 			totalAccepted += accepted
@@ -2144,17 +1999,9 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 	}
 
 	if totalAccepted == 0 {
-		return &StateTransition{
-			NextState: s,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					newClientErrorResp(
-						clientID,
-						"no valid signatures provided",
-					),
-				},
-			}),
-		}, nil
+		return clientErrorTransition(
+			s, clientID, "no valid signatures provided",
+		), nil
 	}
 
 	// Track that this client has submitted signatures.
