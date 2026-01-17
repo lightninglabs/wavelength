@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package mailbox.v1;
+
+import "google/protobuf/any.proto";
+
+option go_package = "github.com/lightninglabs/darepo-client/mailbox/pb;mailboxpb";
+
+// RpcMeta carries metadata for the RPC-over-mailbox overlay.
+message RpcMeta {
+    // Kind indicates whether an envelope is a request, response, or event.
+    enum Kind {
+        KIND_UNSPECIFIED = 0;
+        KIND_REQUEST = 1;
+        KIND_RESPONSE = 2;
+        KIND_EVENT = 3;
+    }
+
+    // kind indicates the kind of RPC envelope.
+    Kind kind = 1;
+
+    // service is the protobuf fully-qualified service name, i.e.
+    // "<proto package>.<ServiceName>".
+    string service = 2;
+
+    // method is the protobuf method name.
+    string method = 3;
+
+    // correlation_id ties a response/event back to a request.
+    string correlation_id = 4;
+
+    // reply_to indicates the sender mailbox id to send responses to.
+    string reply_to = 5;
+}
+
+// Envelope is the durable unit sent via the mailbox edge.
+message Envelope {
+    // protocol_version is the mailbox envelope protocol version.
+    uint32 protocol_version = 1;
+
+    // msg_id is unique per send attempt.
+    string msg_id = 2;
+
+    // idempotency_key is stable per semantic operation and is used for dedupe.
+    string idempotency_key = 3;
+
+    // sender identifies the mailbox sender.
+    string sender = 4;
+
+    // recipient identifies the mailbox recipient.
+    string recipient = 5;
+
+    // created_at_unix_ms is informational.
+    int64 created_at_unix_ms = 6;
+
+    // expires_at_unix_ms is informational.
+    int64 expires_at_unix_ms = 7;
+
+    // type is an informational message type.
+    string type = 8;
+
+    // headers carry structured metadata.
+    map<string, string> headers = 9;
+
+    // body carries the typed protobuf payload.
+    google.protobuf.Any body = 10;
+
+    // rpc carries optional RPC overlay metadata.
+    RpcMeta rpc = 11;
+
+    // event_seq is assigned by the mailbox edge to define per-mailbox ordering.
+    uint64 event_seq = 12;
+}
+
+// Status describes the result of a mailbox edge operation.
+message Status {
+    // ok indicates whether an operation succeeded.
+    bool ok = 1;
+
+    // code is a machine-readable error code.
+    string code = 2;
+
+    // message is a human-readable error message.
+    string message = 3;
+
+    // min_supported_protocol_version is populated for upgrade-required errors.
+    uint32 min_supported_protocol_version = 4;
+
+    // server_protocol_version is populated for upgrade-required errors.
+    uint32 server_protocol_version = 5;
+
+    // upgrade_url is populated for upgrade-required errors.
+    string upgrade_url = 6;
+}
+
+// SendRequest sends a single envelope.
+message SendRequest {
+    Envelope envelope = 1;
+}
+
+// SendResponse returns the send status.
+message SendResponse {
+    Status status = 1;
+}
+
+// PullRequest requests envelopes for a mailbox starting at cursor.
+message PullRequest {
+    string mailbox_id = 1;
+
+    // max_envelopes limits how many envelopes are returned.
+    uint32 max_envelopes = 2;
+
+    // wait_timeout_ms controls long-poll behavior.
+    uint32 wait_timeout_ms = 3;
+
+    // cursor is the next expected event sequence.
+    uint64 cursor = 4;
+}
+
+// PullResponse returns a batch of envelopes and the next cursor.
+message PullResponse {
+    Status status = 1;
+    repeated Envelope envelopes = 2;
+
+    // next_cursor is the highest event_seq returned + 1.
+    uint64 next_cursor = 3;
+}
+
+// AckUpToRequest acknowledges all envelopes with event_seq < cursor.
+message AckUpToRequest {
+    string mailbox_id = 1;
+    uint64 cursor = 2;
+}
+
+// AckUpToResponse returns the ack status.
+message AckUpToResponse {
+    Status status = 1;
+}
+
+// MailboxService is the public mailbox edge API.
+service MailboxService {
+    rpc Send (SendRequest) returns (SendResponse);
+    rpc Pull (PullRequest) returns (PullResponse);
+    rpc AckUpTo (AckUpToRequest) returns (AckUpToResponse);
+}
