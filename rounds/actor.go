@@ -12,7 +12,9 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -88,6 +90,12 @@ type ActorConfig struct {
 	// ConfirmationTarget is the number of confirmations required before
 	// transitioning a round to the confirmed state.
 	ConfirmationTarget uint32
+
+	// BatchWatcher is an optional reference to the batch watcher actor for
+	// registering confirmed batches for on-chain tree monitoring.
+	BatchWatcher fn.Option[actor.ActorRef[
+		batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
+	]]
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -689,6 +697,20 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 			"FSM error processing confirmation: %w", err))
 	}
 
+	// Get the confirmed state to access VTXOTrees for batch watcher
+	// registration.
+	currentState, err := round.FSM.CurrentState()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to get current state after confirmation",
+			err, "round_id", msg.RoundID)
+	} else if cs, ok := currentState.(*ConfirmedState); ok {
+		// Register VTXO trees with the batch watcher for on-chain
+		// monitoring.
+		a.registerBatchesWithWatcher(
+			ctx, msg.RoundID, msg.BlockHeight, cs.VTXOTrees,
+		)
+	}
+
 	// Untrack all clients from this completed round.
 	a.untrackRound(msg.RoundID)
 
@@ -776,4 +798,51 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 		"target_confs", a.cfg.ConfirmationTarget)
 
 	return nil
+}
+
+// registerBatchesWithWatcher registers all VTXO trees from a confirmed round
+// with the BatchWatcher for on-chain monitoring.
+func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
+	blockHeight int32, vtxoTrees map[int]*tree.Tree) {
+
+	// Type aliases for readability.
+	type bwMsg = batchwatcher.BatchWatcherMsg
+	type bwResp = batchwatcher.BatchWatcherResp
+
+	a.cfg.BatchWatcher.WhenSome(func(ref actor.ActorRef[bwMsg, bwResp]) {
+		// Calculate expiry height based on confirmation height and
+		// sweep delay from terms.
+		expiryHeight := uint32(blockHeight) + a.cfg.Terms.SweepDelay
+
+		// Register each VTXO tree with the batch watcher.
+		for outputIdx, vtxoTree := range vtxoTrees {
+			if vtxoTree == nil {
+				continue
+			}
+
+			// Create a deterministic BatchID from RoundID and
+			// output index using UUID v5. This ensures the BatchID
+			// encodes both values and is reproducible.
+			batchIDName := fmt.Sprintf("%s-%d", roundID, outputIdx)
+			batchID := batchwatcher.BatchID(uuid.NewSHA1(
+				uuid.UUID(roundID), []byte(batchIDName),
+			))
+
+			req := &batchwatcher.RegisterBatchRequest{
+				BatchID:      batchID,
+				Tree:         vtxoTree,
+				ExpiryHeight: expiryHeight,
+			}
+
+			// Send registration request using fire-and-forget since
+			// we don't need to wait for acknowledgment.
+			ref.Tell(ctx, req)
+
+			a.log.InfoS(ctx, "Registered batch with watcher",
+				"round_id", roundID,
+				"batch_id", batchID,
+				"output_idx", outputIdx,
+				slog.Uint64("expiry_height", uint64(expiryHeight)))
+		}
+	})
 }
