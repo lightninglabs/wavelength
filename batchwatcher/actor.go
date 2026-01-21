@@ -535,7 +535,9 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 }
 
 // notifyTreeStateChanged sends a notification to the BatchSweeper that the
-// tree state has changed.
+// tree state has changed. This allows the sweeper to re-attempt sweeping for
+// expired batches when additional operator-controlled outputs appear on-chain
+// due to progressive unrolls.
 func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 	a.cfg.BatchSweeper.WhenSome(func(
 		ref actor.TellOnlyRef[BatchSweeperMsg],

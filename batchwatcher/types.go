@@ -35,6 +35,38 @@ type Output struct {
 	OutputIndex uint32
 }
 
+// Clone creates a deep copy of this output suitable for returning in query
+// responses. This prevents callers from mutating internal state via shared
+// pointers or slices.
+//
+// NOTE: The TreeNode reference is intentionally shared because the batch tree
+// is immutable after registration.
+func (o *Output) Clone() *Output {
+	if o == nil {
+		return nil
+	}
+
+	var txOutCopy *wire.TxOut
+	if o.TxOut != nil {
+		txOutCopy = &wire.TxOut{
+			Value:    o.TxOut.Value,
+			PkScript: append([]byte(nil), o.TxOut.PkScript...),
+		}
+	}
+
+	return &Output{
+		Outpoint: o.Outpoint,
+		TxOut:    txOutCopy,
+
+		ConfirmedHeight: o.ConfirmedHeight,
+		IsVTXO:          o.IsVTXO,
+
+		TreeNode: o.TreeNode,
+
+		OutputIndex: o.OutputIndex,
+	}
+}
+
 // BatchTreeState tracks the on-chain state of a single batch's VTXO tree.
 type BatchTreeState struct {
 	// BatchID uniquely identifies this batch.
@@ -152,14 +184,12 @@ func (b *BatchTreeState) GetVTXOsOnChain() []*Output {
 }
 
 // Clone creates a copy of the BatchTreeState suitable for returning in query
-// responses without exposing internal mutable state. All internal maps and
-// bookkeeping fields are deep-copied, but the following are shallow-copied:
+// responses without exposing internal mutable state. All internal maps,
+// bookkeeping fields, and outputs are deep-copied.
 //
-//   - Tree: The batch tree is immutable after registration, so sharing it
-//     across clones is safe and avoids unnecessary copying.
-//   - Output pointers: The Output structs in ExistingOutputs and VTXOsOnChain
-//     are shared between original and clone. These are treated as immutable
-//     once created.
+// NOTE: The underlying batch Tree is shallow-copied because it is immutable
+// after registration, so sharing it across clones is safe and avoids
+// unnecessary copying.
 func (b *BatchTreeState) Clone() *BatchTreeState {
 	clone := &BatchTreeState{
 		BatchID: b.BatchID,
@@ -185,14 +215,18 @@ func (b *BatchTreeState) Clone() *BatchTreeState {
 		clone.SpentNodes[k] = v
 	}
 
-	// Output pointers are shallow-copied. The Output structs are immutable
-	// once created, so sharing them between original and clone is safe.
 	for k, v := range b.ExistingOutputs {
-		clone.ExistingOutputs[k] = v
+		clone.ExistingOutputs[k] = v.Clone()
 	}
 
 	for k, v := range b.VTXOsOnChain {
-		clone.VTXOsOnChain[k] = v
+		// Preserve pointer identity for outputs tracked in both maps.
+		if existing, ok := clone.ExistingOutputs[k]; ok {
+			clone.VTXOsOnChain[k] = existing
+			continue
+		}
+
+		clone.VTXOsOnChain[k] = v.Clone()
 	}
 
 	for k, v := range b.WatchedOutpoints {

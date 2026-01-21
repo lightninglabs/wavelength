@@ -245,7 +245,10 @@ func (m *BatchExpiredNotification) MessageType() string {
 func (m *BatchExpiredNotification) batchSweeperMsgSealed() {}
 
 // TreeStateChangedNotification is sent to the BatchSweeper when the on-chain
-// tree state changes (new outputs appear or existing outputs are spent).
+// tree state changes (new outputs appear or existing outputs are spent). This
+// allows the sweeper to re-attempt sweeping for batches that have already
+// expired when additional operator-controlled outputs become available on-
+// chain due to progressive unrolls.
 type TreeStateChangedNotification struct {
 	actor.BaseMessage
 
