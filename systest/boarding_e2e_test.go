@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1192,4 +1193,154 @@ func TestBatchExpiryNotification(t *testing.T) {
 		batchID, notification.ExpiryHeight)
 
 	t.Log("TestBatchExpiryNotification completed successfully!")
+}
+
+// TestBatchSweepOnExpiry verifies that the real BatchSweeperActor constructs
+// and broadcasts a sweep transaction when a batch expires. The test mines
+// blocks to expiry and then confirms the sweep spend, asserting that the
+// BatchWatcher does not unroll the tree for a non-presigned spend.
+func TestBatchSweepOnExpiry(t *testing.T) {
+	ParallelN(t)
+
+	sweepDelay := uint32(150)
+	h := NewE2EHarness(t, WithSweepDelay(sweepDelay))
+	h.Start()
+
+	ctx := context.Background()
+
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
+
+	client := NewTestClient(h)
+	require.NotNil(t, client)
+
+	terms := h.Terms()
+	require.Equal(t, sweepDelay, terms.SweepDelay,
+		"sweep delay should be configured to %d", sweepDelay)
+
+	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	require.NoError(t, err, "should create boarding address")
+
+	amount := btcutil.Amount(100_000)
+	h.Harness.Faucet(boardingResp.Address.String(), amount)
+	h.MineBlocks(int(terms.MinBoardingConfirmations))
+
+	err = client.WaitForBoardingConfirmation(30 * time.Second)
+	require.NoError(t, err, "FSM should reach PendingRoundAssembly")
+
+	vtxoAmount := amount - 5000
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	require.NoError(t, err, "should register VTXO requests")
+
+	err = client.TriggerRegistration(ctx)
+	require.NoError(t, err, "should trigger registration")
+
+	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	require.NoError(t, err, "server should respond")
+
+	h.TriggerRoundSeal()
+	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	require.NoError(t, err, "should complete signing")
+
+	time.Sleep(1 * time.Second)
+
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err, "should get bitcoin RPC client")
+	blockCountBeforeConfirm, err := rpcClient.GetBlockCount()
+	require.NoError(t, err, "should get block count")
+
+	h.MineBlocksAndConfirm(1)
+
+	err = client.WaitForRoundComplete(30 * time.Second)
+	require.NoError(t, err, "round should complete successfully")
+
+	roundID, err := client.GetLastCompletedRoundID()
+	require.NoError(t, err, "should get last completed round ID")
+	batchID := ComputeBatchID(uuid.UUID(roundID), 0)
+
+	confirmationHeight := uint32(blockCountBeforeConfirm) + 1
+	expiryHeight := confirmationHeight + sweepDelay
+
+	h.AssertBatchRegistered(uuid.UUID(roundID), confirmationHeight, 1)
+
+	currentHeight, err := rpcClient.GetBlockCount()
+	require.NoError(t, err, "should get current block count")
+
+	blocksToMine := int(expiryHeight) - int(currentHeight)
+	require.Greater(t, blocksToMine, 0, "should have blocks to mine")
+	h.MineBlocks(blocksToMine)
+
+	time.Sleep(500 * time.Millisecond)
+
+	req := &batchwatcher.GetTreeStateRequest{BatchID: batchID}
+	resp, err := h.BatchWatcher().Ask(h.ctx, req).Await(h.ctx).Unpack()
+	require.NoError(t, err, "should query batch watcher")
+
+	stateResp, ok := resp.(*batchwatcher.GetTreeStateResponse)
+	require.True(t, ok, "response should be GetTreeStateResponse")
+	require.True(t, stateResp.Found, "batch should exist in watcher")
+	require.NotNil(t, stateResp.TreeState, "tree state should not be nil")
+
+	var (
+		rootOutpoint wire.OutPoint
+		foundRoot    bool
+	)
+	for op, output := range stateResp.TreeState.ExistingOutputs {
+		if output == nil {
+			continue
+		}
+
+		if output.IsVTXO {
+			continue
+		}
+
+		rootOutpoint = op
+		foundRoot = true
+		break
+	}
+	require.True(t, foundRoot, "expected an operator-controlled output")
+
+	var sweepTxid chainhash.Hash
+	require.Eventually(t, func() bool {
+		for _, txidStr := range h.Harness.MempoolTxIDs() {
+			txid, err := chainhash.NewHashFromStr(txidStr)
+			if err != nil {
+				continue
+			}
+
+			tx, err := rpcClient.GetRawTransaction(txid)
+			if err != nil {
+				continue
+			}
+
+			for _, txIn := range tx.MsgTx().TxIn {
+				if txIn.PreviousOutPoint == rootOutpoint {
+					sweepTxid = *txid
+					return true
+				}
+			}
+		}
+
+		return false
+	}, defaultTimeout, pollInterval, "sweep tx not in mempool")
+
+	h.MineBlocksAndConfirm(1)
+
+	require.Eventually(t, func() bool {
+		resp, err := h.BatchWatcher().Ask(h.ctx, req).Await(h.ctx).Unpack()
+		if err != nil {
+			return false
+		}
+
+		stateResp, ok := resp.(*batchwatcher.GetTreeStateResponse)
+		if !ok || stateResp.TreeState == nil {
+			return false
+		}
+
+		// A non-presigned spend (the operator sweep tx) should not trigger
+		// progressive unrolling. The spend should simply remove the output
+		// from ExistingOutputs.
+		return len(stateResp.TreeState.ExistingOutputs) == 0
+	}, defaultTimeout, pollInterval, "batch watcher state not updated")
+
+	t.Logf("Verified sweep tx %s spent %s", sweepTxid, rootOutpoint)
 }

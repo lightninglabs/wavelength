@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -21,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/harness"
@@ -165,6 +167,11 @@ type E2EHarness struct {
 	// mockBatchSweeper captures batch expiry and tree state notifications
 	// from the BatchWatcher for test assertions.
 	mockBatchSweeper *MockBatchSweeper
+
+	// batchSweeperRouter fans out BatchWatcher notifications to both the
+	// mock sweeper (for assertions) and a real BatchSweeperActor (for
+	// sweeping integration coverage).
+	batchSweeperRouter *BatchSweeperRouter
 
 	// Real components (NOT mocked):
 	// - walletController: lndbackend.LndWalletController from server's LND
@@ -389,13 +396,19 @@ func (h *E2EHarness) initActorSystem() {
 	// Create mock BatchSweeper to capture expiry and tree state notifications.
 	h.mockBatchSweeper = NewMockBatchSweeper()
 
+	// Create a notification router so we can attach a real sweeper actor
+	// after the BatchWatcher has been spawned.
+	h.batchSweeperRouter = NewBatchSweeperRouter(h.mockBatchSweeper)
+
 	// Create BatchWatcher actor config. FraudDetector is not implemented
 	// yet, so we pass None. BatchSweeper uses the mock for test assertions.
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Logger:        h.SubLogger("BWCH"),
 		ChainSource:   h.chainSourceActorRef,
 		FraudDetector: fn.None[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]](),
-		BatchSweeper:  fn.Some[actor.TellOnlyRef[batchwatcher.BatchSweeperMsg]](h.mockBatchSweeper),
+		BatchSweeper: fn.Some[actor.TellOnlyRef[batchwatcher.BatchSweeperMsg]](
+			h.batchSweeperRouter,
+		),
 	}
 
 	h.batchWatcher = batchwatcher.NewActor(batchWatcherCfg)
@@ -410,6 +423,10 @@ func (h *E2EHarness) initActorSystem() {
 
 	// Set SelfRef after spawning (needed for callback mapping).
 	batchWatcherCfg.SelfRef = h.batchWatcherRef
+
+	// Create and wire the real BatchSweeperActor for sweeping integration
+	// coverage.
+	h.initBatchSweeper()
 
 	// Create fee estimator with a higher rate for regtest.
 	// Use 2000 sat/kw (~8 sat/vbyte) to ensure transactions have enough
@@ -458,6 +475,42 @@ func (h *E2EHarness) initActorSystem() {
 	// Start the rounds actor.
 	err = roundsActor.Start(h.ctx)
 	require.NoError(h.t, err, "failed to start rounds actor")
+}
+
+// initBatchSweeper creates and wires a real BatchSweeperActor so systests can
+// assert sweeping behavior while still capturing notifications via the mock.
+func (h *E2EHarness) initBatchSweeper() {
+	sweepPkScript, err := txscript.PayToTaprootScript(
+		h.terms.SweepKey.PubKey,
+	)
+	require.NoError(h.t, err, "failed to create sweep pkScript")
+
+	cfg := &batchsweeper.ActorConfig{
+		Logger:        h.SubLogger("BSWP"),
+		BatchWatcher:  h.batchWatcherRef,
+		ChainSource:   h.chainSourceActorRef,
+		SweepKey:      h.terms.SweepKey,
+		SweepDelay:    h.terms.SweepDelay,
+		Signer:        h.walletController,
+		SweepPkScript: sweepPkScript,
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			h.mockTimeoutRef,
+		),
+	}
+
+	sweeper := batchsweeper.NewActor(cfg)
+
+	sweeperKey := actor.NewServiceKey[
+		batchsweeper.Msg, batchsweeper.Resp,
+	]("batch-sweeper-actor")
+	sweeperRef := sweeperKey.Spawn(
+		h.actorSystem, "batch-sweeper-actor", sweeper,
+	)
+
+	cfg.SelfRef = sweeperRef
+
+	mappedRef := batchsweeper.MapBatchWatcherNotification(sweeperRef)
+	h.batchSweeperRouter.SetTargets(h.mockBatchSweeper, mappedRef)
 }
 
 // getOperatorKeyFromLND derives the operator key from the server's LND using
