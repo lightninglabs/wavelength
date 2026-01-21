@@ -1085,7 +1085,7 @@ func TestBatchExpiryNotification(t *testing.T) {
 	h := NewE2EHarness(t, WithSweepDelay(sweepDelay))
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
@@ -1110,7 +1110,7 @@ func TestBatchExpiryNotification(t *testing.T) {
 	h.Harness.Faucet(boardingResp.Address.String(), amount)
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
 
-	err = client.WaitForBoardingConfirmation(30 * time.Second)
+	err = client.WaitForBoardingConfirmation(defaultTimeout)
 	require.NoError(t, err, "FSM should reach PendingRoundAssembly")
 
 	// Register VTXO requests.
@@ -1122,19 +1122,22 @@ func TestBatchExpiryNotification(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, defaultTimeout)
 	require.NoError(t, err, "server should respond")
 
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, defaultTimeout)
 	require.NoError(t, err, "should complete signing")
 
-	// Wait for broadcast.
-	time.Sleep(1 * time.Second)
-
-	// Get block height before mining the confirmation block.
+	// Wait for the commitment transaction to appear in the mempool.
 	rpcClient, err := h.BitcoinRPCClient()
 	require.NoError(t, err, "should get bitcoin RPC client")
+
+	require.Eventually(t, func() bool {
+		return len(h.Harness.MempoolTxIDs()) > 0
+	}, defaultTimeout, pollInterval, "commitment tx should be in mempool")
+
+	// Get block height before mining the confirmation block.
 	blockCountBeforeConfirm, err := rpcClient.GetBlockCount()
 	require.NoError(t, err, "should get block count")
 
@@ -1143,7 +1146,7 @@ func TestBatchExpiryNotification(t *testing.T) {
 	t.Log("Mined block to confirm commitment transaction")
 
 	// Wait for round completion.
-	err = client.WaitForRoundComplete(30 * time.Second)
+	err = client.WaitForRoundComplete(defaultTimeout)
 	require.NoError(t, err, "round should complete successfully")
 
 	// Get the round ID and compute the batch ID.
@@ -1176,13 +1179,10 @@ func TestBatchExpiryNotification(t *testing.T) {
 
 	h.MineBlocks(blocksToMine)
 
-	// Give the BatchWatcher time to process the block and send the expiry
-	// notification.
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify the BatchSweeper received the expiry notification.
-	require.True(t, h.MockBatchSweeper().HasExpiryNotification(batchID),
-		"batch should have received expiry notification")
+	// Wait for the BatchSweeper to receive the expiry notification.
+	require.Eventually(t, func() bool {
+		return h.MockBatchSweeper().HasExpiryNotification(batchID)
+	}, defaultTimeout, pollInterval, "batch should have received expiry notification")
 
 	notification := h.MockBatchSweeper().GetExpiryNotification(batchID)
 	require.NotNil(t, notification, "expiry notification should not be nil")
@@ -1206,7 +1206,7 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	h := NewE2EHarness(t, WithSweepDelay(sweepDelay))
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
@@ -1221,10 +1221,13 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	require.NoError(t, err, "should create boarding address")
 
 	amount := btcutil.Amount(100_000)
-	h.Harness.Faucet(boardingResp.Address.String(), amount)
+	fundingTxidStr := h.Harness.Faucet(boardingResp.Address.String(), amount)
+	fundingTxid, err := chainhash.NewHashFromStr(fundingTxidStr)
+	require.NoError(t, err, "should parse funding txid")
+	h.AssertTxInMempool(*fundingTxid)
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
 
-	err = client.WaitForBoardingConfirmation(30 * time.Second)
+	err = client.WaitForBoardingConfirmation(defaultTimeout)
 	require.NoError(t, err, "FSM should reach PendingRoundAssembly")
 
 	vtxoAmount := amount - 5000
@@ -1234,23 +1237,27 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, defaultTimeout)
 	require.NoError(t, err, "server should respond")
 
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, defaultTimeout)
 	require.NoError(t, err, "should complete signing")
 
-	time.Sleep(1 * time.Second)
-
+	// Wait for commitment tx to appear in mempool.
 	rpcClient, err := h.BitcoinRPCClient()
 	require.NoError(t, err, "should get bitcoin RPC client")
+
+	require.Eventually(t, func() bool {
+		return len(h.Harness.MempoolTxIDs()) > 0
+	}, defaultTimeout, pollInterval, "commitment tx should be in mempool")
+
 	blockCountBeforeConfirm, err := rpcClient.GetBlockCount()
 	require.NoError(t, err, "should get block count")
 
 	h.MineBlocksAndConfirm(1)
 
-	err = client.WaitForRoundComplete(30 * time.Second)
+	err = client.WaitForRoundComplete(defaultTimeout)
 	require.NoError(t, err, "round should complete successfully")
 
 	roundID, err := client.GetLastCompletedRoundID()
@@ -1268,8 +1275,6 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	blocksToMine := int(expiryHeight) - int(currentHeight)
 	require.Greater(t, blocksToMine, 0, "should have blocks to mine")
 	h.MineBlocks(blocksToMine)
-
-	time.Sleep(500 * time.Millisecond)
 
 	req := &batchwatcher.GetTreeStateRequest{BatchID: batchID}
 	resp, err := h.BatchWatcher().Ask(h.ctx, req).Await(h.ctx).Unpack()

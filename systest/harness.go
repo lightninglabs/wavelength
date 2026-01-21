@@ -373,16 +373,29 @@ func (h *E2EHarness) initActorSystem() {
 	// Create REAL chain source actor using the server's LND backend.
 	// This provides proper chain notifications, transaction broadcast,
 	// and confirmation subscriptions.
-	chainBackend := chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
+	chainBackendLogger := h.SubLogger("CSRC")
+	notifier := chainbackends.NewLndClientChainNotifier(
+		chainbackends.LndClientChainNotifierConfig{
 			LND: h.serverLNDServices,
-		}.WithLogger(h.SubLogger("CSRC")),
+		}.WithLogger(chainBackendLogger),
+	)
+
+	// Use a static fee estimator for systests to avoid flaky/oversized fee
+	// estimates from remote LND backends on regtest.
+	feeEstimator := chainfee.NewStaticEstimator(
+		chainfee.SatPerKWeight(2000), 0,
+	)
+	broadcaster := chainbackends.NewLndClientTxBroadcaster(
+		h.serverLNDServices.WalletKit,
+	)
+	chainBackend := chainbackends.NewLNDBackend(
+		notifier, feeEstimator, broadcaster,
 	)
 	h.chainSourceActor = chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: chainBackend,
 			System:  h.actorSystem,
-		}.WithLogger(h.SubLogger("CSRC")),
+		}.WithLogger(chainBackendLogger),
 	)
 
 	// Spawn the chain source actor.
@@ -427,13 +440,6 @@ func (h *E2EHarness) initActorSystem() {
 	// Create and wire the real BatchSweeperActor for sweeping integration
 	// coverage.
 	h.initBatchSweeper()
-
-	// Create fee estimator with a higher rate for regtest.
-	// Use 2000 sat/kw (~8 sat/vbyte) to ensure transactions have enough
-	// fee for reliable block inclusion.
-	feeEstimator := chainfee.NewStaticEstimator(
-		chainfee.SatPerKWeight(2000), 0,
-	)
 
 	// Create rounds actor configuration. ActorRef embeds TellOnlyRef, so
 	// we can assign ActorRef directly to TellOnlyRef fields.
