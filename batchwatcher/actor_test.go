@@ -153,9 +153,10 @@ func TestRegisterBatch(t *testing.T) {
 
 	// Register the batch.
 	req := &RegisterBatchRequest{
-		BatchID:      batchID,
-		Tree:         testTree,
-		ExpiryHeight: 1000,
+		BatchID:            batchID,
+		Tree:               testTree,
+		ConfirmationHeight: 900,
+		ExpiryHeight:       1000,
 	}
 
 	result := h.actor.Receive(h.t.Context(), req)
@@ -454,17 +455,11 @@ func TestNodeSpendDetected_ProgressiveWatching(t *testing.T) {
 		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
 		Maybe()
 
-	// Create a spending transaction that matches the root node's structure.
-	// The tree.Root node has outputs, so we simulate it being spent.
-	spendingTx := wire.NewMsgTx(3)
-	spendingTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: testTree.BatchOutpoint,
-	})
-
-	// Add outputs from the root node (this simulates the tree unroll).
-	for _, txOut := range testTree.Root.Outputs {
-		spendingTx.AddTxOut(txOut)
-	}
+	// Create the presigned root transaction. The BatchWatcher only
+	// performs progressive unrolling if the observed spend matches the
+	// presigned tree transaction for the spent output.
+	spendingTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
 
 	spendingTxHash := spendingTx.TxHash()
 
@@ -518,17 +513,10 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
 		Maybe()
 
-	// Create a spending transaction that produces VTXO outputs.
-	// For our simple tree, the root node's children are leaves (VTXOs).
-	spendingTx := wire.NewMsgTx(3)
-	spendingTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: testTree.BatchOutpoint,
-	})
-
-	// Add outputs from the root node.
-	for _, txOut := range testTree.Root.Outputs {
-		spendingTx.AddTxOut(txOut)
-	}
+	// Create the presigned root transaction. For our simple tree, the root
+	// node's children are leaves (VTXOs).
+	spendingTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
 
 	// Send NodeSpendDetected message.
 	msg := &NodeSpendDetected{

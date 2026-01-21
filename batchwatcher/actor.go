@@ -98,12 +98,30 @@ func (a *Actor) handleRegisterBatch(ctx context.Context,
 
 	a.log.InfoS(ctx, "Registering batch for monitoring",
 		"batch_id", req.BatchID,
+		"confirmation_height", req.ConfirmationHeight,
 		"expiry_height", req.ExpiryHeight)
 
 	// Create the tree state for this batch.
 	treeState := NewBatchTreeState(
 		req.BatchID, req.Tree, req.ExpiryHeight,
 	)
+
+	// Record the batch output as an existing output. This ensures that a
+	// batch that never unrolls still has a sweepable operator-controlled
+	// output (the commitment transaction output) in its tree state.
+	if req.Tree != nil && req.Tree.BatchOutput != nil {
+		treeState.AddExistingOutput(&Output{
+			Outpoint: req.Tree.BatchOutpoint,
+			TxOut:    req.Tree.BatchOutput,
+
+			ConfirmedHeight: req.ConfirmationHeight,
+
+			// The batch output is spent by the root transaction in the
+			// presigned tree, so we store Root as the expected spending
+			// node for progressive watching and sweeping.
+			TreeNode: req.Tree.Root,
+		})
+	}
 
 	// Register the batch in our state store.
 	a.state.RegisterBatch(treeState)
@@ -189,7 +207,7 @@ func (a *Actor) watchBatchOutput(ctx context.Context, batchID BatchID,
 // watchNodeOutputs registers spend watches on the outputs of a tree node.
 // This is called when a parent node is spent to continue progressive watching.
 func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
-	node *tree.Node, spendingTx *wire.MsgTx) error {
+	node *tree.Node, spendingTx *wire.MsgTx, spendingHeight int32) error {
 
 	batchState := a.state.GetBatch(batchID)
 	if batchState == nil {
@@ -225,13 +243,19 @@ func (a *Actor) watchNodeOutputs(ctx context.Context, batchID BatchID,
 		childNode := node.Children[uint32(i)]
 		isVTXO := childNode != nil && childNode.IsLeaf()
 
+		confirmedHeight := uint32(0)
+		if spendingHeight >= 0 {
+			confirmedHeight = uint32(spendingHeight)
+		}
+
 		// Create the output record.
 		output := &Output{
-			Outpoint:    outpoint,
-			TxOut:       txOut,
-			IsVTXO:      isVTXO,
-			TreeNode:    childNode,
-			OutputIndex: uint32(i),
+			Outpoint:        outpoint,
+			TxOut:           txOut,
+			ConfirmedHeight: confirmedHeight,
+			IsVTXO:          isVTXO,
+			TreeNode:        childNode,
+			OutputIndex:     uint32(i),
 		}
 
 		// Add to existing outputs.
@@ -353,16 +377,41 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 	// Get the output that was spent.
 	spentOutput := batchState.RemoveExistingOutput(msg.SpentOutpoint)
 
-	// Mark the spending transaction as spent (so we track progression).
 	spendingTxHash := msg.SpendingTx.TxHash()
-	batchState.MarkNodeSpent(spendingTxHash)
 
 	// If this was the batch output (root), watch the root node's outputs.
 	if batchState.Tree != nil &&
 		msg.SpentOutpoint == batchState.Tree.BatchOutpoint {
 
-		err := a.watchNodeOutputs(
+		// Only treat this as a tree unroll if the spend matches the
+		// presigned root transaction. Batch sweeps will spend the batch
+		// output with a non-tree transaction, and must not trigger
+		// progressive watching.
+		expectedTxid, err := batchState.Tree.Root.TXID()
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to compute root txid", err,
+				"batch_id", msg.BatchID)
+
+			return fn.Ok[BatchWatcherResp](nil)
+		}
+
+		if spendingTxHash != expectedTxid {
+			a.log.InfoS(ctx, "Batch output spent by non-tree tx",
+				"batch_id", msg.BatchID,
+				"outpoint", msg.SpentOutpoint,
+				"spending_tx", spendingTxHash)
+
+			a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+			return fn.Ok[BatchWatcherResp](nil)
+		}
+
+		// Mark the presigned node transaction as spent (tree progression).
+		batchState.MarkNodeSpent(spendingTxHash)
+
+		err = a.watchNodeOutputs(
 			ctx, msg.BatchID, batchState.Tree.Root, msg.SpendingTx,
+			msg.SpendingHeight,
 		)
 		if err != nil {
 			a.log.WarnS(ctx, "Failed to watch root outputs",
@@ -372,16 +421,62 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
+	if spentOutput == nil {
+		a.log.WarnS(ctx, "Spend detected for unknown output", nil,
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint,
+			"spending_tx", spendingTxHash)
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
+	if spentOutput.TreeNode == nil {
+		a.log.WarnS(ctx, "Spent output missing tree node", nil,
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint,
+			"spending_tx", spendingTxHash)
+
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
 	// Otherwise, this was an internal node being spent. Find the
 	// corresponding tree node and watch its children.
-	if spentOutput != nil && spentOutput.TreeNode != nil {
-		err := a.watchNodeOutputs(
-			ctx, msg.BatchID, spentOutput.TreeNode, msg.SpendingTx,
-		)
-		if err != nil {
-			a.log.WarnS(ctx, "Failed to watch child outputs",
-				err, "batch_id", msg.BatchID)
-		}
+	expectedTxid, err := spentOutput.TreeNode.TXID()
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to compute tree node txid", err,
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint)
+
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
+	// If this spend is not the presigned transaction for this output, it
+	// is a non-tree spend (typically an operator sweep). Do not unroll.
+	if spendingTxHash != expectedTxid {
+		a.log.InfoS(ctx, "Tree output spent by non-tree tx",
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint,
+			"spending_tx", spendingTxHash)
+
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
+	// Mark the presigned node transaction as spent (tree progression).
+	batchState.MarkNodeSpent(spendingTxHash)
+
+	err = a.watchNodeOutputs(
+		ctx, msg.BatchID, spentOutput.TreeNode, msg.SpendingTx,
+		msg.SpendingHeight,
+	)
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to watch child outputs",
+			err, "batch_id", msg.BatchID)
 	}
 
 	return fn.Ok[BatchWatcherResp](nil)

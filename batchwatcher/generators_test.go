@@ -73,7 +73,10 @@ func genOutput() *rapid.Generator[*Output] {
 		return &Output{
 			Outpoint: genOutpoint().Draw(t, "outpoint"),
 			TxOut:    genTxOut().Draw(t, "txout"),
-			IsVTXO:   rapid.Bool().Draw(t, "isVTXO"),
+			ConfirmedHeight: rapid.Uint32().Draw(
+				t, "confirmedHeight",
+			),
+			IsVTXO: rapid.Bool().Draw(t, "isVTXO"),
 			// TreeNode requires tree construction.
 			TreeNode:    nil,
 			OutputIndex: outputIdx,

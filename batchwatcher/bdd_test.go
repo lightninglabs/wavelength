@@ -78,9 +78,10 @@ func (bc *bddContext) iRegisterABatchWithExpiryHeight(height int) error {
 	testTree := bc.harness.createSimpleTree(bc.t)
 
 	req := &RegisterBatchRequest{
-		BatchID:      batchID,
-		Tree:         testTree,
-		ExpiryHeight: uint32(height),
+		BatchID:            batchID,
+		Tree:               testTree,
+		ConfirmationHeight: 0,
+		ExpiryHeight:       uint32(height),
 	}
 
 	result := bc.harness.actor.Receive(bc.t.Context(), req)
@@ -347,8 +348,13 @@ func (bc *bddContext) theBatchOutputIsSpent() error {
 		return fmt.Errorf("batch not found")
 	}
 
-	// Create spending transaction with outputs from root node.
-	spendingTx := createSpendingTx(batchState.Tree)
+	// Create the presigned root transaction. The BatchWatcher only
+	// performs progressive unrolling if the observed spend matches the
+	// presigned tree transaction for the spent output.
+	spendingTx, err := createSpendingTx(batchState.Tree)
+	if err != nil {
+		return err
+	}
 
 	msg := &NodeSpendDetected{
 		BatchID:        batchID,
@@ -458,18 +464,12 @@ func (bc *bddContext) noFurtherVTXOWatch() error {
 
 // createSpendingTx creates a spending transaction that spends the batch output
 // and creates outputs matching the root node's outputs.
-func createSpendingTx(t *tree.Tree) *wire.MsgTx {
-	spendingTx := wire.NewMsgTx(3)
-	spendingTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: t.BatchOutpoint,
-	})
-
-	// Add outputs from the root node.
-	for _, txOut := range t.Root.Outputs {
-		spendingTx.AddTxOut(txOut)
+func createSpendingTx(t *tree.Tree) (*wire.MsgTx, error) {
+	if t == nil || t.Root == nil {
+		return nil, fmt.Errorf("tree is nil")
 	}
 
-	return spendingTx
+	return t.Root.ToTx()
 }
 
 // setupMockExpectations configures common mock behaviors.

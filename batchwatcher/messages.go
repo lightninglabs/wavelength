@@ -42,6 +42,11 @@ type RegisterBatchRequest struct {
 	// Tree is the complete pre-signed VTXO tree for this batch.
 	Tree *tree.Tree
 
+	// ConfirmationHeight is the block height at which the commitment
+	// transaction for this batch was confirmed. This is used for CSV
+	// maturity calculations when sweeping operator-controlled outputs.
+	ConfirmationHeight uint32
+
 	// ExpiryHeight is the block height at which this batch expires and
 	// becomes sweepable by the operator.
 	ExpiryHeight uint32

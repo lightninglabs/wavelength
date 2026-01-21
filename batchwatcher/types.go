@@ -14,6 +14,11 @@ type Output struct {
 	// TxOut contains the output's value and pkScript.
 	TxOut *wire.TxOut
 
+	// ConfirmedHeight is the block height at which this output was
+	// confirmed on-chain. This is used for CSV maturity calculations for
+	// operator sweeps.
+	ConfirmedHeight uint32
+
 	// IsVTXO indicates whether this output is a VTXO leaf output. When
 	// true, this output represents a spendable VTXO that should trigger
 	// fraud detection notifications.
