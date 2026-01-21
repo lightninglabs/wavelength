@@ -829,9 +829,10 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 			))
 
 			req := &batchwatcher.RegisterBatchRequest{
-				BatchID:      batchID,
-				Tree:         vtxoTree,
-				ExpiryHeight: expiryHeight,
+				BatchID:            batchID,
+				Tree:               vtxoTree,
+				ConfirmationHeight: uint32(blockHeight),
+				ExpiryHeight:       expiryHeight,
 			}
 
 			// Send registration request using fire-and-forget since
