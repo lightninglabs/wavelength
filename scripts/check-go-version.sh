@@ -33,13 +33,21 @@ if [[ "$FILE_PATTERN" == *" "* ]]; then
     done
 
     if [ ${#find_args[@]} -gt 0 ]; then
-        FILES=$(find . -type f \( "${find_args[@]}" \) -not -path "./vendor/*" -not -path "./.git/*")
+        FILES=$(find . -type f \( "${find_args[@]}" \) \
+            -not -path "./vendor/*" -not -path "./.git/*" \
+            -not -path "./.gomodcache/*" -not -path "./.gopath/*" \
+            -not -path "./.gocache/*" \
+            -not -path "./systest/test-artifacts/*" 2>/dev/null || true)
     else
         FILES=""
     fi
 else
     # Single pattern.
-    FILES=$(find . -type f -name "$FILE_PATTERN" -not -path "./vendor/*" -not -path "./.git/*")
+    FILES=$(find . -type f -name "$FILE_PATTERN" \
+        -not -path "./vendor/*" -not -path "./.git/*" \
+        -not -path "./.gomodcache/*" -not -path "./.gopath/*" \
+        -not -path "./.gocache/*" \
+        -not -path "./systest/test-artifacts/*" 2>/dev/null || true)
 fi
 
 if [ -z "$FILES" ]; then
