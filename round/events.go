@@ -177,11 +177,6 @@ type CommitmentTxBuilt struct {
 	// This allows VTXO actors to find their connector output and construct
 	// the forfeit transaction. Only set when refresh requests are present.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ServerForfeitPkScript is the operator's taproot script where all
-	// forfeited VTXO values are paid. The forfeit transaction output uses
-	// this script.
-	ServerForfeitPkScript []byte
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}
