@@ -2085,7 +2085,6 @@ func TestForfeitMappingsCarriedThroughSigningStates(t *testing.T) {
 	intent := h.newTestBoardingIntent()
 	vtxoOutpoint := h.newTestOutpoint()
 	connectorOutpoint := h.newTestOutpoint()
-	serverForfeitScript := []byte{0x51, 0x20}
 
 	// Build forfeit mappings for a refresh round.
 	forfeitMappings := map[wire.OutPoint]*ConnectorLeafInfo{
@@ -2104,7 +2103,6 @@ func TestForfeitMappingsCarriedThroughSigningStates(t *testing.T) {
 		roundID, []BoardingIntent{intent},
 	)
 	validatedState.ForfeitMappings = forfeitMappings
-	validatedState.ServerForfeitPkScript = serverForfeitScript
 	h.withState(validatedState)
 
 	// Generate nonces.
