@@ -603,6 +603,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
 
+	case *RegisterLeaveRequestsRequest:
+		return a.handleLeaveRequests(ctx, m)
+
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
 
@@ -738,6 +741,74 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	}
 
 	return fn.Ok[ClientResp](&RegisterVTXORequestsResponse{
+		Success: true,
+	})
+}
+
+// handleLeaveRequests processes client-submitted leave requests and forwards
+// them to an idle round FSM. If no idle round exists, a new one is created.
+func (a *RoundClientActor) handleLeaveRequests(ctx context.Context,
+	msg *RegisterLeaveRequestsRequest) fn.Result[ClientResp] {
+
+	if len(msg.Outputs) == 0 {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"leave request outputs are empty",
+		))
+	}
+
+	requests := make([]types.LeaveRequest, 0, len(msg.Outputs))
+	for i, output := range msg.Outputs {
+		if output == nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"leave output %d is nil", i,
+			))
+		}
+		if output.Value <= 0 {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"leave output %d has amount %d", i, output.Value,
+			))
+		}
+		if btcutil.Amount(output.Value) <
+			a.cfg.OperatorTerms.DustLimit {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"leave output %d below dust limit", i,
+			))
+		}
+
+		requests = append(requests, types.LeaveRequest{
+			Output: output,
+		})
+	}
+
+	a.log.InfoS(ctx, "Received leave requests",
+		slog.Int("count", len(requests)))
+
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows leave requests to join a round that
+	// already has boarding intents being assembled.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"create new round for leave requests: %w", err,
+			))
+		}
+	}
+
+	event := &LeaveRequestReceived{
+		Requests: requests,
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing leave requests: %w", err,
+		))
+	}
+
+	return fn.Ok[ClientResp](&RegisterLeaveRequestsResponse{
 		Success: true,
 	})
 }
