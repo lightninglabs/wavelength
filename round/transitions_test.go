@@ -563,6 +563,29 @@ func TestIdleState(t *testing.T) {
 		_ = assertStateType[*Idle](h)
 	})
 
+	t.Run("LeaveRequestReceived_to_pending", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.withState(&Idle{})
+
+		event := &LeaveRequestReceived{
+			Requests: []types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    10000,
+					PkScript: []byte{0x51},
+				},
+			}},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		nextState := assertStateType[*PendingRoundAssembly](h)
+		require.Len(t, nextState.Leaves, 1)
+	})
+
 	t.Run("nil_tx_transitions_to_failed", func(t *testing.T) {
 		t.Parallel()
 
@@ -646,6 +669,41 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		nextState := assertStateType[*RegistrationSentState](h)
 		require.Len(t, nextState.Intents.Boarding, 1)
+	})
+
+	t.Run("additional_leave_requests_accumulate", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+			Leaves: []types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    5000,
+					PkScript: []byte{0x51},
+				},
+			}},
+		})
+
+		event := &LeaveRequestReceived{
+			Requests: []types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    7000,
+					PkScript: []byte{0x52},
+				},
+			}},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		nextState := assertStateType[*PendingRoundAssembly](h)
+		require.Len(t, nextState.Leaves, 2)
 	})
 
 	t.Run("no_intents_transitions_to_failed", func(t *testing.T) {
@@ -1505,6 +1563,115 @@ func TestValidateBoardingInputs(t *testing.T) {
 		require.Equal(t, 0, result[intent1.Outpoint])
 		require.Equal(t, 1, result[intent2.Outpoint])
 		require.Equal(t, 2, result[intent3.Outpoint])
+	})
+}
+
+// TestValidateLeaveOutputs verifies commitment output validation for leave
+// requests.
+func TestValidateLeaveOutputs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil_tx", func(t *testing.T) {
+		t.Parallel()
+
+		leaves := []types.LeaveRequest{{
+			Output: &wire.TxOut{
+				Value:    100,
+				PkScript: []byte{0x51},
+			},
+		}}
+
+		err := validateLeaveOutputs(nil, leaves)
+
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "commitment tx is nil")
+	})
+
+	t.Run("empty_leaves", func(t *testing.T) {
+		t.Parallel()
+
+		tx := wire.NewMsgTx(2)
+
+		err := validateLeaveOutputs(tx, nil)
+
+		require.NoError(t, err)
+	})
+
+	t.Run("nil_output", func(t *testing.T) {
+		t.Parallel()
+
+		tx := wire.NewMsgTx(2)
+		leaves := []types.LeaveRequest{{
+			Output: nil,
+		}}
+
+		err := validateLeaveOutputs(tx, leaves)
+
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "leave output 0 is nil")
+	})
+
+	t.Run("missing_output", func(t *testing.T) {
+		t.Parallel()
+
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(&wire.TxOut{
+			Value:    100,
+			PkScript: []byte{0x51},
+		})
+		leaves := []types.LeaveRequest{{
+			Output: &wire.TxOut{
+				Value:    200,
+				PkScript: []byte{0x52},
+			},
+		}}
+
+		err := validateLeaveOutputs(tx, leaves)
+
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "not in commitment tx")
+	})
+
+	t.Run("success_multiple", func(t *testing.T) {
+		t.Parallel()
+
+		tx := wire.NewMsgTx(2)
+		tx.AddTxOut(&wire.TxOut{
+			Value:    100,
+			PkScript: []byte{0x51},
+		})
+		tx.AddTxOut(&wire.TxOut{
+			Value:    100,
+			PkScript: []byte{0x51},
+		})
+		tx.AddTxOut(&wire.TxOut{
+			Value:    200,
+			PkScript: []byte{0x52},
+		})
+		leaves := []types.LeaveRequest{
+			{
+				Output: &wire.TxOut{
+					Value:    100,
+					PkScript: []byte{0x51},
+				},
+			},
+			{
+				Output: &wire.TxOut{
+					Value:    200,
+					PkScript: []byte{0x52},
+				},
+			},
+			{
+				Output: &wire.TxOut{
+					Value:    100,
+					PkScript: []byte{0x51},
+				},
+			},
+		}
+
+		err := validateLeaveOutputs(tx, leaves)
+
+		require.NoError(t, err)
 	})
 }
 
