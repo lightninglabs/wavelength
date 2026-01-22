@@ -150,7 +150,9 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 }
 
 // TestProcessOutboxRefreshRequest verifies that RefreshRequest messages in the
-// outbox are routed to the round actor with the correct fields populated.
+// outbox are routed to the round actor with the correct fields populated. Since
+// refresh is decoupled from VTXO creation, both a RefreshVTXORequest and a
+// VTXORequestsReceived message should be sent.
 func TestProcessOutboxRefreshRequest(t *testing.T) {
 	t.Parallel()
 
@@ -181,16 +183,33 @@ func TestProcessOutboxRefreshRequest(t *testing.T) {
 
 	actor.processOutbox(h.ctx, outbox)
 
+	// Should send both a RefreshVTXORequest and a VTXORequestsReceived.
 	msgs := roundActor.getMessages()
-	require.Len(t, msgs, 1)
+	require.Len(t, msgs, 2)
 
-	req, ok := msgs[0].(*round.RefreshVTXORequest)
+	// First message should be the refresh request.
+	refreshReq, ok := msgs[0].(*round.RefreshVTXORequest)
 	require.True(t, ok, "expected RefreshVTXORequest, got %T", msgs[0])
-	require.Equal(t, vtxo.Outpoint, req.VTXOOutpoint)
-	require.Equal(t, int64(vtxo.Amount), req.Amount)
-	require.Equal(t, vtxo.ClientKey.PubKey, req.NewVTXOKey)
-	require.Equal(t, vtxo.OperatorKey, req.OperatorKey)
-	require.Equal(t, vtxo.RelativeExpiry, req.Expiry)
+	require.Equal(t, vtxo.Outpoint, refreshReq.VTXOOutpoint)
+	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
+	require.Equal(t, vtxo.ClientKey.PubKey, refreshReq.NewVTXOKey)
+	require.Equal(t, vtxo.OperatorKey, refreshReq.OperatorKey)
+	require.Equal(t, vtxo.RelativeExpiry, refreshReq.Expiry)
+
+	// Second message should be the VTXO request for the new VTXO.
+	vtxoReqMsg, ok := msgs[1].(*round.VTXORequestsReceived)
+	require.True(t, ok, "expected VTXORequestsReceived, got %T", msgs[1])
+	require.Len(t, vtxoReqMsg.Requests, 1)
+
+	vtxoReq := vtxoReqMsg.Requests[0]
+	require.Equal(t, vtxo.Amount, vtxoReq.Amount)
+	require.Equal(t, vtxo.PkScript, vtxoReq.PkScript)
+	require.Equal(t, vtxo.RelativeExpiry, vtxoReq.Expiry)
+	require.Equal(t, vtxo.ClientKey.PubKey, vtxoReq.ClientKey)
+	require.Equal(t, vtxo.OperatorKey, vtxoReq.OperatorKey)
+	require.Equal(
+		t, vtxo.ClientKey.KeyLocator, vtxoReq.SigningKey.KeyLocator,
+	)
 }
 
 // TestProcessOutboxTerminatedNotification verifies that

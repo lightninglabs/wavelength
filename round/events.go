@@ -100,8 +100,12 @@ type BoardingUTXOConfirmed struct {
 func (e *BoardingUTXOConfirmed) clientEventSealed() {}
 
 // VTXORequestsReceived is emitted when the client submits VTXO requests that
-// should be included in the next round registration.
+// should be included in the next round registration. This event can be sent
+// from both internal sources (e.g., wallet) and external actors (e.g., VTXO
+// actor requesting a new VTXO during refresh).
 type VTXORequestsReceived struct {
+	actor.BaseMessage
+
 	// Requests are the VTXO requests to include in the next join round
 	// request.
 	Requests []types.VTXORequest
@@ -109,6 +113,14 @@ type VTXORequestsReceived struct {
 
 // clientEventSealed prevents external implementations.
 func (e *VTXORequestsReceived) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *VTXORequestsReceived) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *VTXORequestsReceived) MessageType() string {
+	return "VTXORequestsReceived"
+}
 
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this

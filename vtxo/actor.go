@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -180,13 +182,16 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			}
 
 		case *RefreshRequest:
-			// Route refresh request to round actor. Include all
-			// fields needed to build the server's RefreshRequest
-			// and VTXORequest. We reuse the same client key for the
-			// new VTXO.
+			// Route refresh request to round actor. This tells
+			// the round to include this VTXO in the forfeit flow.
+			// We also send a separate VTXORequest to explicitly
+			// request a new VTXO for the refreshed value (refresh
+			// no longer automatically creates a replacement VTXO).
 			if a.cfg.RoundActor != nil {
 				vtxo := a.cfg.VTXO
-				req := &round.RefreshVTXORequest{
+
+				// Send the refresh request for forfeit flow.
+				refreshReq := &round.RefreshVTXORequest{
 					VTXOOutpoint: m.VTXOOutpoint,
 					Amount:       m.Amount,
 					NewVTXOKey:   vtxo.ClientKey.PubKey,
@@ -195,10 +200,33 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					Expiry:       vtxo.RelativeExpiry,
 					SigningKey:   vtxo.ClientKey,
 				}
-				a.cfg.RoundActor.Tell(ctx, req)
-				a.cfg.Logger.InfoS(ctx, "Sent refresh request",
-					slog.String("outpoint", m.VTXOOutpoint.String()),
-					slog.String("urgency", m.Urgency.String()),
+				a.cfg.RoundActor.Tell(ctx, refreshReq)
+
+				// Also send a VTXORequest to request the new
+				// VTXO output for this refresh.
+				amt := btcutil.Amount(m.Amount)
+				vtxoReq := &round.VTXORequestsReceived{
+					Requests: []types.VTXORequest{{
+						Amount:   amt,
+						PkScript: vtxo.PkScript,
+						Expiry:   vtxo.RelativeExpiry,
+						ClientKey: vtxo.ClientKey.
+							PubKey,
+						OperatorKey: vtxo.OperatorKey,
+						SigningKey:  vtxo.ClientKey,
+					}},
+				}
+				a.cfg.RoundActor.Tell(ctx, vtxoReq)
+
+				a.cfg.Logger.InfoS(
+					ctx, "Sent refresh and VTXO request",
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+					slog.String(
+						"urgency", m.Urgency.String(),
+					),
 				)
 			}
 
