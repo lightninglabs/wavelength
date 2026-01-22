@@ -336,6 +336,9 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 	vtxoStore := &MockVTXOStore{}
 	wallet := &MockClientWallet{}
 
+	// Create a test forfeit script (a valid P2TR script).
+	testForfeitScript := []byte{0x51, 0x20}
+
 	terms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
 		SweepKey:          operatorPubKey,
@@ -345,6 +348,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		MaxBoardingAmount: 100000000, // 1 BTC.
 		FeeRate:           10,
 		MinConfirmations:  3,
+		ForfeitScript:     testForfeitScript,
 	}
 
 	// Use a mock start height for testing.
@@ -1999,14 +2003,13 @@ func (h *boardingTestHarness) newForfeitCollectingState(
 	}
 
 	return &ForfeitSignaturesCollectingState{
-		RoundID:               roundID,
-		CommitmentTx:          commitmentTx,
-		VTXOTreePaths:         map[int]*tree.Tree{0: vtxtTree},
-		Intents:               intents,
-		ClientTrees:           make(map[SignerKey]*tree.Tree),
-		BoardingInputIndices:  boardingInputIndices,
-		ExpectedForfeits:      expectedForfeits,
-		ServerForfeitPkScript: serverForfeitScript,
+		RoundID:              roundID,
+		CommitmentTx:         commitmentTx,
+		VTXOTreePaths:        map[int]*tree.Tree{0: vtxtTree},
+		Intents:              intents,
+		ClientTrees:          make(map[SignerKey]*tree.Tree),
+		BoardingInputIndices: boardingInputIndices,
+		ExpectedForfeits:     expectedForfeits,
 		CollectedForfeits: make(
 			map[wire.OutPoint]*ForfeitSignatureResponse,
 		),

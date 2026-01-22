@@ -173,10 +173,6 @@ type CommitmentTxValidatedState struct {
 	// refresh rounds. Empty for boarding-only rounds. Carried forward
 	// through MuSig2 signing states until forfeit collection.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ServerForfeitPkScript is the operator's forfeit address for refresh
-	// rounds. Empty for boarding-only rounds.
-	ServerForfeitPkScript []byte
 }
 
 func (s *CommitmentTxValidatedState) String() string {
@@ -227,9 +223,6 @@ type ForfeitSignaturesCollectingState struct {
 	// CollectedForfeits maps VTXO outpoints to their forfeit responses.
 	// When len(CollectedForfeits) == len(ExpectedForfeits), we proceed.
 	CollectedForfeits map[wire.OutPoint]*ForfeitSignatureResponse
-
-	// ServerForfeitPkScript is the operator's forfeit address.
-	ServerForfeitPkScript []byte
 }
 
 func (s *ForfeitSignaturesCollectingState) String() string {
@@ -273,9 +266,6 @@ type NoncesSentState struct {
 	// refresh rounds. Carried forward until forfeit collection after
 	// VTXO tree signing.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ServerForfeitPkScript is the operator's forfeit address.
-	ServerForfeitPkScript []byte
 }
 
 func (s *NoncesSentState) String() string {
@@ -322,9 +312,6 @@ type NoncesAggregatedState struct {
 	// refresh rounds. Carried forward until forfeit collection after
 	// VTXO tree signing.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ServerForfeitPkScript is the operator's forfeit address.
-	ServerForfeitPkScript []byte
 }
 
 func (s *NoncesAggregatedState) String() string {
@@ -368,9 +355,6 @@ type PartialSigsSentState struct {
 	// refresh rounds. After VTXO tree signature validation, if non-empty,
 	// transitions to ForfeitSignaturesCollectingState.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
-
-	// ServerForfeitPkScript is the operator's forfeit address.
-	ServerForfeitPkScript []byte
 }
 
 func (s *PartialSigsSentState) String() string {
