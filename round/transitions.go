@@ -1081,8 +1081,8 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("forfeit_signatures_collecting: "+
-			"unexpected event: %T", event)
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
 	}
 }
 
