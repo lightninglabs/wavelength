@@ -47,6 +47,11 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Description: "VTXO requests received, start assembly",
 				},
 				{
+					Event:       &LeaveRequestReceived{},
+					ToState:     &PendingRoundAssembly{},
+					Description: "Leave requests received, start assembly",
+				},
+				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Boarding failed before any progress",
@@ -68,6 +73,11 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Event:       &VTXORequestsReceived{},
 					ToState:     &PendingRoundAssembly{},
 					Description: "Additional VTXO requests received",
+				},
+				{
+					Event:       &LeaveRequestReceived{},
+					ToState:     &PendingRoundAssembly{},
+					Description: "Additional leave requests received",
 				},
 				{
 					Event:       &RegistrationRequested{},

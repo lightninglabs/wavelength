@@ -110,6 +110,17 @@ type VTXORequestsReceived struct {
 // clientEventSealed prevents external implementations.
 func (e *VTXORequestsReceived) clientEventSealed() {}
 
+// LeaveRequestReceived is emitted when the client submits leave requests
+// that should be included in the next round registration.
+type LeaveRequestReceived struct {
+	// Requests are the leave requests to include in the next join round
+	// request.
+	Requests []types.LeaveRequest
+}
+
+// clientEventSealed prevents external implementations.
+func (e *LeaveRequestReceived) clientEventSealed() {}
+
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
 // as a batch request containing every confirmed intent.

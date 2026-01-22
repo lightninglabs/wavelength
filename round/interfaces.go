@@ -224,9 +224,8 @@ type Intents struct {
 	// TODO(roasbeef): add auxleaf for tap here.
 	VTXOs []types.VTXORequest
 
-	// Future extensions:
-	// Forfeits requests
-	// Leave requests
+	// Leaves contains leave requests to include in the round.
+	Leaves []types.LeaveRequest
 }
 
 // Clone creates a copy of the Intents.
@@ -234,6 +233,7 @@ func (i *Intents) Clone() Intents {
 	return Intents{
 		Boarding: slices.Clone(i.Boarding),
 		VTXOs:    slices.Clone(i.VTXOs),
+		Leaves:   slices.Clone(i.Leaves),
 	}
 }
 

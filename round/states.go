@@ -59,6 +59,9 @@ type PendingRoundAssembly struct {
 	// round.
 	VTXOs []types.VTXORequest
 
+	// Leaves contains any leave requests to include in the next round.
+	Leaves []types.LeaveRequest
+
 	// RefreshingVTXOs tracks VTXOs waiting to be refreshed in this round.
 	// Keyed by VTXO outpoint. These are accumulated alongside boarding
 	// intents and included in the same round registration.

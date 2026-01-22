@@ -32,6 +32,10 @@ type JoinRoundRequest struct {
 	// and expects forfeit signatures before broadcasting.
 	RefreshRequests []*RefreshRequest
 
+	// LeaveRequests contains outputs requested to leave the Ark in this
+	// round.
+	LeaveRequests []types.LeaveRequest
+
 	// RoundID is optional; when empty it instructs the server to assign
 	// a new round. When non-empty, the request is for the specified round.
 	RoundID string

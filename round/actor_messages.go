@@ -178,6 +178,37 @@ func (m *RegisterVTXORequestsResponse) MessageType() string {
 // clientRespSealed marks this as a client response message.
 func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
 
+// RegisterLeaveRequestsRequest informs the FSM of leave outputs to include in
+// the next round registration.
+type RegisterLeaveRequestsRequest struct {
+	actor.BaseMessage
+
+	Outputs []*wire.TxOut
+}
+
+// MessageType returns the message type name.
+func (m *RegisterLeaveRequestsRequest) MessageType() string {
+	return "RegisterLeaveRequestsRequest"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *RegisterLeaveRequestsRequest) RoundReceivable() {}
+
+// RegisterLeaveRequestsResponse acknowledges the request.
+type RegisterLeaveRequestsResponse struct {
+	actor.BaseMessage
+
+	Success bool
+}
+
+// MessageType returns the message type name.
+func (m *RegisterLeaveRequestsResponse) MessageType() string {
+	return "RegisterLeaveRequestsResponse"
+}
+
+// clientRespSealed marks this as a client response message.
+func (m *RegisterLeaveRequestsResponse) clientRespSealed() {}
+
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.
 type ConfirmationEvent struct {
