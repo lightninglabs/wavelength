@@ -793,14 +793,13 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		// VTXOs are properly signed.
 		return &ClientStateTransition{
 			NextState: &CommitmentTxValidatedState{
-				RoundID:               s.RoundID,
-				CommitmentTx:          s.CommitmentTx,
-				VTXOTreePaths:         s.VTXOTreePaths,
-				Intents:               s.Intents.Clone(),
-				ClientTrees:           clientTrees,
-				BoardingInputIndices:  boardingInputIndices,
-				ForfeitMappings:       evt.ForfeitMappings,
-				ServerForfeitPkScript: evt.ServerForfeitPkScript,
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          clientTrees,
+				BoardingInputIndices: boardingInputIndices,
+				ForfeitMappings:      evt.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{&GenerateNonces{}},
@@ -909,15 +908,14 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 
 		return &ClientStateTransition{
 			NextState: &NoncesSentState{
-				RoundID:               s.RoundID,
-				CommitmentTx:          s.CommitmentTx,
-				VTXOTreePaths:         s.VTXOTreePaths,
-				Intents:               s.Intents.Clone(),
-				ClientTrees:           s.ClientTrees,
-				Musig2Sessions:        musig2Sessions,
-				BoardingInputIndices:  s.BoardingInputIndices,
-				ForfeitMappings:       s.ForfeitMappings,
-				ServerForfeitPkScript: s.ServerForfeitPkScript,
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          s.ClientTrees,
+				Musig2Sessions:       musig2Sessions,
+				BoardingInputIndices: s.BoardingInputIndices,
+				ForfeitMappings:      s.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{nonceMsg},
@@ -955,7 +953,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		params := tx.ForfeitTxParams{
 			VTXOOutpoint:        evt.VTXOOutpoint,
 			ConnectorOutpoint:   connectorInfo.ConnectorOutpoint,
-			ServerForfeitScript: s.ServerForfeitPkScript,
+			ServerForfeitScript: env.OperatorTerms.ForfeitScript,
 			ExpectedAmount:      connectorInfo.VTXOAmount,
 		}
 		err := tx.ValidateForfeitTx(evt.ForfeitTx, params)
@@ -983,15 +981,14 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			return &ClientStateTransition{
 				//nolint:ll
 				NextState: &ForfeitSignaturesCollectingState{
-					RoundID:               s.RoundID,
-					CommitmentTx:          s.CommitmentTx,
-					VTXOTreePaths:         s.VTXOTreePaths,
-					Intents:               s.Intents.Clone(),
-					ClientTrees:           s.ClientTrees,
-					BoardingInputIndices:  s.BoardingInputIndices,
-					ExpectedForfeits:      s.ExpectedForfeits,
-					CollectedForfeits:     updatedForfeits,
-					ServerForfeitPkScript: s.ServerForfeitPkScript,
+					RoundID:              s.RoundID,
+					CommitmentTx:         s.CommitmentTx,
+					VTXOTreePaths:        s.VTXOTreePaths,
+					Intents:              s.Intents.Clone(),
+					ClientTrees:          s.ClientTrees,
+					BoardingInputIndices: s.BoardingInputIndices,
+					ExpectedForfeits:     s.ExpectedForfeits,
+					CollectedForfeits:    updatedForfeits,
 				},
 			}, nil
 		}
@@ -1148,16 +1145,15 @@ func (s *NoncesSentState) ProcessEvent(
 
 		return &ClientStateTransition{
 			NextState: &NoncesAggregatedState{
-				RoundID:               s.RoundID,
-				CommitmentTx:          s.CommitmentTx,
-				VTXOTreePaths:         s.VTXOTreePaths,
-				Intents:               s.Intents.Clone(),
-				ClientTrees:           s.ClientTrees,
-				Musig2Sessions:        s.Musig2Sessions,
-				AggNonces:             evt.AggNonces,
-				BoardingInputIndices:  s.BoardingInputIndices,
-				ForfeitMappings:       s.ForfeitMappings,
-				ServerForfeitPkScript: s.ServerForfeitPkScript,
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          s.ClientTrees,
+				Musig2Sessions:       s.Musig2Sessions,
+				AggNonces:            evt.AggNonces,
+				BoardingInputIndices: s.BoardingInputIndices,
+				ForfeitMappings:      s.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				InternalEvent: []ClientEvent{
@@ -1228,15 +1224,14 @@ func (s *NoncesAggregatedState) ProcessEvent(
 		// aggregation.
 		return &ClientStateTransition{
 			NextState: &PartialSigsSentState{
-				RoundID:               s.RoundID,
-				CommitmentTx:          s.CommitmentTx,
-				VTXOTreePaths:         s.VTXOTreePaths,
-				Intents:               s.Intents.Clone(),
-				ClientTrees:           s.ClientTrees,
-				Musig2Sessions:        s.Musig2Sessions,
-				BoardingInputIndices:  s.BoardingInputIndices,
-				ForfeitMappings:       s.ForfeitMappings,
-				ServerForfeitPkScript: s.ServerForfeitPkScript,
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          s.ClientTrees,
+				Musig2Sessions:       s.Musig2Sessions,
+				BoardingInputIndices: s.BoardingInputIndices,
+				ForfeitMappings:      s.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{submitPartialSigsMsg},
@@ -1431,7 +1426,8 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	ctx context.Context, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
 
-	// Build forfeit request messages for each VTXO being refreshed.
+	// Build forfeit request messages for each VTXO being refreshed. The
+	// forfeit script is a static operator property from OperatorTerms.
 	var outbox []ClientOutMsg
 	for vtxoOutpoint, info := range s.ForfeitMappings {
 		msg := &ForfeitRequestToVTXO{
@@ -1440,7 +1436,7 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 			ConnectorOutpoint:     info.ConnectorOutpoint,
 			ConnectorPkScript:     info.ConnectorPkScript,
 			ConnectorAmount:       info.ConnectorAmount,
-			ServerForfeitPkScript: s.ServerForfeitPkScript,
+			ServerForfeitPkScript: env.OperatorTerms.ForfeitScript,
 		}
 		outbox = append(outbox, msg)
 	}
@@ -1456,15 +1452,14 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 
 	return &ClientStateTransition{
 		NextState: &ForfeitSignaturesCollectingState{
-			RoundID:               s.RoundID,
-			CommitmentTx:          s.CommitmentTx,
-			VTXOTreePaths:         s.VTXOTreePaths,
-			Intents:               s.Intents.Clone(),
-			ClientTrees:           s.ClientTrees,
-			ExpectedForfeits:      s.ForfeitMappings,
-			CollectedForfeits:     collectedForfeits,
-			BoardingInputIndices:  s.BoardingInputIndices,
-			ServerForfeitPkScript: s.ServerForfeitPkScript,
+			RoundID:              s.RoundID,
+			CommitmentTx:         s.CommitmentTx,
+			VTXOTreePaths:        s.VTXOTreePaths,
+			Intents:              s.Intents.Clone(),
+			ClientTrees:          s.ClientTrees,
+			ExpectedForfeits:     s.ForfeitMappings,
+			CollectedForfeits:    collectedForfeits,
+			BoardingInputIndices: s.BoardingInputIndices,
 		},
 		NewEvents: fn.Some(ClientEmittedEvent{
 			Outbox: outbox,
