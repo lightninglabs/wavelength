@@ -8,11 +8,13 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ClientEvent is a sealed interface for all events that can be processed by
@@ -293,3 +295,75 @@ func (e *RecoveryInitiated) clientEventSealed() {}
 type RoundComplete struct{}
 
 func (e *RoundComplete) clientEventSealed() {}
+
+// RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
+// expiry and needs to be refreshed in a new round. The round actor should
+// queue this VTXO for inclusion in the next batch swap.
+//
+// This request contains all information needed to build both the server's
+// RefreshRequest (for the connector tree) and a VTXORequest (for the new VTXO
+// in the VTXT). The same client key is typically reused for the new VTXO.
+type RefreshVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to refresh.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// NewVTXOKey is the client's public key for the new VTXO. This is
+	// typically the same as the old VTXO's key but could be fresh.
+	NewVTXOKey *btcec.PublicKey
+
+	// PkScript is the output script for the new VTXO.
+	PkScript []byte
+
+	// OperatorKey is the operator's public key for the new VTXO.
+	OperatorKey *btcec.PublicKey
+
+	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
+	Expiry uint32
+
+	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	SigningKey keychain.KeyDescriptor
+}
+
+func (e *RefreshVTXORequest) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RefreshVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RefreshVTXORequest) MessageType() string {
+	return "RefreshVTXORequest"
+}
+
+// ForfeitSignatureResponse is sent from a VTXO actor with its signature for
+// the forfeit transaction. This is the response to a forfeit request during
+// a batch swap round.
+type ForfeitSignatureResponse struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO being forfeited.
+	VTXOOutpoint wire.OutPoint
+
+	// RoundID is the round where the forfeit is being processed.
+	RoundID string
+
+	// ForfeitTx is the built forfeit transaction.
+	ForfeitTx *wire.MsgTx
+
+	// Signature is the client's signature for the forfeit tx.
+	Signature []byte
+}
+
+func (e *ForfeitSignatureResponse) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *ForfeitSignatureResponse) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *ForfeitSignatureResponse) MessageType() string {
+	return "ForfeitSignatureResponse"
+}

@@ -1,8 +1,11 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -22,6 +25,31 @@ type JoinRoundRequest struct {
 
 	// VTXORequests specifies the VTXOs the client wants to receive.
 	VTXORequests []types.VTXORequest
+
+	// RefreshRequests contains VTXOs being refreshed in this round. Each
+	// refresh request specifies an old VTXO to forfeit and details for the
+	// new VTXO to receive. The server includes these in the connector tree
+	// and expects forfeit signatures before broadcasting.
+	RefreshRequests []*RefreshRequest
+
+	// RoundID is optional; when empty it instructs the server to assign
+	// a new round. When non-empty, the request is for the specified round.
+	RoundID string
+}
+
+// RefreshRequest describes a VTXO being refreshed (forfeited to receive a new
+// VTXO in the current round). The old VTXO will be spent via a forfeit tx that
+// atomically links to the new commitment transaction's connector tree.
+type RefreshRequest struct {
+	// VTXOOutpoint identifies the old VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the value of the VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// NewVTXOKey is the client's public key for the new VTXO. This may be
+	// the same as the old VTXO's key or a fresh key for improved privacy.
+	NewVTXOKey *btcec.PublicKey
 }
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}
@@ -112,6 +140,103 @@ func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
 	return nil
 }
 
+// ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
+// transaction as part of a batch swap. The round actor routes this message to
+// the VTXO actor via its service key. The VTXO actor should sign the forfeit
+// transaction and respond with ForfeitSignatureResponse.
+//
+// This message contains all information needed to construct and sign the
+// forfeit transaction:
+//   - Connector output from new commitment tx (links forfeit atomically)
+//   - Server's forfeit address (where forfeited value is paid)
+type ForfeitRequestToVTXO struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO being forfeited.
+	VTXOOutpoint wire.OutPoint
+
+	// RoundID is the new round where the refreshed VTXO will be created.
+	RoundID string
+
+	// ConnectorOutpoint is the connector output from the new commitment tx
+	// that the forfeit tx must spend. This links the forfeit atomically to
+	// the new round - the forfeit is only valid if the new round confirms.
+	ConnectorOutpoint wire.OutPoint
+
+	// ConnectorPkScript is the scriptPubKey of the connector output.
+	ConnectorPkScript []byte
+
+	// ConnectorAmount is the value of the connector output in satoshis.
+	ConnectorAmount int64
+
+	// ServerForfeitPkScript is the operator's taproot script where the
+	// forfeited VTXO value will be paid.
+	ServerForfeitPkScript []byte
+}
+
+func (m *ForfeitRequestToVTXO) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *ForfeitRequestToVTXO) MessageType() string {
+	return "ForfeitRequestToVTXO"
+}
+
+// ForfeitConfirmedToVTXO is emitted by the FSM when the commitment transaction
+// confirms, indicating that the forfeit is final. The round actor routes this
+// to old VTXO actors so they can transition to the terminal Forfeited state.
+type ForfeitConfirmedToVTXO struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the forfeited VTXO.
+	VTXOOutpoint wire.OutPoint
+
+	// CommitmentTxID is the new commitment transaction that confirmed.
+	CommitmentTxID chainhash.Hash
+
+	// BlockHeight is the height at which confirmation occurred.
+	BlockHeight int32
+}
+
+func (m *ForfeitConfirmedToVTXO) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *ForfeitConfirmedToVTXO) MessageType() string {
+	return "ForfeitConfirmedToVTXO"
+}
+
+// SubmitVTXOForfeitSigsToServer is emitted by the FSM after collecting all
+// forfeit signatures from VTXO actors. This message contains the signatures
+// for all VTXOs being refreshed in the round and is sent to the server so it
+// can complete the forfeit transactions.
+type SubmitVTXOForfeitSigsToServer struct {
+	actor.BaseMessage
+
+	// RoundID identifies the round.
+	RoundID string
+
+	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
+	// signatures. Each signature is the client's portion of the 2-of-2
+	// collaborative spend from the VTXO.
+	ForfeitSigs map[wire.OutPoint][]byte
+
+	// ForfeitTxs maps VTXO outpoints to the built forfeit transactions.
+	// The server uses these to broadcast after adding its signature.
+	ForfeitTxs map[wire.OutPoint]*wire.MsgTx
+}
+
+func (m *SubmitVTXOForfeitSigsToServer) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
+	return "SubmitVTXOForfeitSigsToServer"
+}
+
+// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message.
+// TODO: Implement actual proto conversion once proto definitions are available.
+func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
+	return nil
+}
+
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring
 // for a transaction. The actor will complete this message with the NotifyActor
 // field before sending to ChainSource.
@@ -144,14 +269,29 @@ type RegisterConfirmationRequest struct {
 
 func (m *RegisterConfirmationRequest) clientOutMsgSealed() {}
 
-// VTXOCreatedNotification notifies higher layers (wallet) that new VTXOs are
-// available after successful boarding. This is emitted once the commitment
-// transaction confirms and includes the full descriptors (with tree paths) so
-// the wallet can resume or unroll on-chain if needed.
+// VTXOCreatedNotification notifies higher layers (wallet, VTXO manager) that
+// new VTXOs are available after successful boarding. This is emitted once the
+// commitment transaction confirms and includes the full descriptors (with tree
+// paths) so the wallet can resume or unroll on-chain if needed.
+//
+// Note: TreeDepth is per-VTXO and derivable from ClientVTXO.TreePath.
 type VTXOCreatedNotification struct {
 	actor.BaseMessage
 
+	// VTXOs are the ClientVTXOs created by this round.
 	VTXOs []*ClientVTXO
+
+	// RoundID identifies the round that created these VTXOs.
+	RoundID string
+
+	// CommitmentTxID is the txid of the confirmed commitment transaction.
+	CommitmentTxID chainhash.Hash
+
+	// BatchExpiry is the absolute block height when the batch expires.
+	BatchExpiry int32
+
+	// CreatedHeight is the block height when the commitment tx confirmed.
+	CreatedHeight int32
 }
 
 // MessageType returns the message type identifier for logging and debugging.
@@ -160,6 +300,9 @@ func (m *VTXOCreatedNotification) MessageType() string {
 }
 
 func (m *VTXOCreatedNotification) clientOutMsgSealed() {}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (m *VTXOCreatedNotification) VTXOManagerMsg() {}
 
 // RoundCompletedNotification is emitted when a round FSM reaches ConfirmedState
 // which signals the actor to perform cleanup (remove from activeRounds,
