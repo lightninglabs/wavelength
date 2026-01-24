@@ -192,11 +192,25 @@ func (b *BridgeServerConn) convertToActorMsg(
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
 
+		// Convert RefreshRequests to ForfeitReqs. Each refresh
+		// specifies a VTXO to forfeit and a new VTXO to receive.
+		// The forfeit request only needs the outpoint; the new VTXO
+		// is already included in VTXORequests.
+		forfeitReqs := make(
+			[]*clienttypes.ForfeitRequest, len(m.RefreshRequests),
+		)
+		for i, refreshReq := range m.RefreshRequests {
+			forfeitReqs[i] = &clienttypes.ForfeitRequest{
+				VTXOOutpoint: &refreshReq.VTXOOutpoint,
+			}
+		}
+
 		return &rounds.JoinRoundRequest{
 			ClientID: b.clientID,
 			Request: &clienttypes.JoinRoundRequest{
 				BoardingReqs: boardingReqs,
 				VTXOReqs:     vtxoReqs,
+				ForfeitReqs:  forfeitReqs,
 			},
 		}, nil
 
