@@ -3,6 +3,7 @@ package wallet
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -259,3 +260,44 @@ func (m BlockEpochNotification) MessageType() string {
 
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m BlockEpochNotification) walletMsgSealed() {}
+
+// RefreshVTXOsRequest triggers refresh of specified VTXOs or all VTXOs
+// approaching expiry. This is the primary wallet-level API for refresh.
+type RefreshVTXOsRequest struct {
+	actor.BaseMessage
+
+	// TargetOutpoints specifies which VTXOs to refresh. If empty, refreshes
+	// all VTXOs within the expiry threshold.
+	TargetOutpoints []wire.OutPoint
+
+	// ForceRefresh ignores the expiry threshold and refreshes immediately.
+	// Used by tests or when user explicitly requests refresh.
+	ForceRefresh bool
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RefreshVTXOsRequest) MessageType() string {
+	return "RefreshVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *RefreshVTXOsRequest) walletMsgSealed() {}
+
+// RefreshVTXOsResponse indicates the result of the refresh request.
+type RefreshVTXOsResponse struct {
+	actor.BaseMessage
+
+	// RefreshingCount is the number of VTXOs that were queued for refresh.
+	RefreshingCount int
+
+	// Errors contains any VTXOs that couldn't be refreshed and why.
+	Errors map[wire.OutPoint]error
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *RefreshVTXOsResponse) MessageType() string {
+	return "RefreshVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *RefreshVTXOsResponse) walletRespSealed() {}
