@@ -40,4 +40,7 @@ type (
 	// ResumeVTXOEvent is sent when resuming a VTXO actor from persisted
 	// state.
 	ResumeVTXOEvent = round.ResumeVTXOEvent
+
+	// TriggerRefreshEvent is sent to manually trigger a refresh request.
+	TriggerRefreshEvent = round.TriggerRefreshEvent
 )

@@ -24,6 +24,9 @@ func (s *LiveState) ProcessEvent(
 	case *ForfeitRequestEvent:
 		return s.handleForfeitRequest(ctx, evt, env)
 
+	case *TriggerRefreshEvent:
+		return s.handleTriggerRefresh(ctx, evt, env)
+
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
 		// block.
@@ -186,6 +189,35 @@ func (s *LiveState) handleForfeitRequest(
 				},
 			},
 		}),
+	}, nil
+}
+
+// handleTriggerRefresh handles a manual refresh request from the wallet. This
+// bypasses the automatic expiry-based refresh and immediately transitions the
+// VTXO to RefreshRequested state, emitting a RefreshRequest to the round actor.
+func (s *LiveState) handleTriggerRefresh(
+	_ context.Context, _ *TriggerRefreshEvent, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	outbox := []VTXOOutMsg{
+		&RefreshRequest{
+			VTXOOutpoint: s.VTXO.Outpoint,
+			Amount:       int64(s.VTXO.Amount),
+			Urgency:      RefreshUrgencyNormal,
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusRefreshRequested,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &RefreshRequestedState{
+			VTXO: s.VTXO,
+			// Manual trigger has no height context.
+			RequestedAtHeight: 0,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}, nil
 }
 
