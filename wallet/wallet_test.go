@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -288,7 +289,9 @@ func TestCreateBoardingAddress(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	// Create a boarding address.
@@ -326,7 +329,9 @@ func TestRegisterNotifier(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	// Create a test notifier using the actor package helper.
@@ -471,7 +476,9 @@ func TestProcessNewUtxo(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	// Initialize the actor's state.
@@ -627,7 +634,9 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
@@ -762,7 +771,9 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	// Query addresses.
@@ -803,7 +814,9 @@ func TestGetBoardingBalance(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, btclog.Disabled,
+		backend, store, chainSource,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		btclog.Disabled,
 	)
 
 	// Query balance.
@@ -911,7 +924,9 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, btclog.Disabled,
+			backend, store, chainSource,
+			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -953,7 +968,9 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, btclog.Disabled,
+			backend, store, chainSource,
+			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1001,7 +1018,9 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, btclog.Disabled,
+			backend, store, chainSource,
+			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
@@ -1069,7 +1088,9 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, btclog.Disabled,
+			backend, store, chainSource,
+			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			btclog.Disabled,
 		)
 
 		// Create a notifier using the actor package helper.
