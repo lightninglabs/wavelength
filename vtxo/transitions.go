@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tx"
@@ -193,7 +194,8 @@ func (s *LiveState) handleForfeitRequest(
 // collaborative spend path, so both client and operator signatures are needed.
 // This function only produces the client's half; the operator adds theirs.
 func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
-	forfeitTx *wire.MsgTx, env *VTXOEnvironment) ([]byte, error) {
+	forfeitTx *wire.MsgTx,
+	env *VTXOEnvironment) (*schnorr.Signature, error) {
 
 	if vtxo.TapScript == nil {
 		return nil, fmt.Errorf("VTXO tapscript is required for signing")
@@ -244,7 +246,13 @@ func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
 		return nil, fmt.Errorf("failed to sign: %w", err)
 	}
 
-	return sig.Serialize(), nil
+	// Parse the serialized signature to get a typed schnorr.Signature.
+	schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+	if err != nil {
+		return nil, fmt.Errorf("parse schnorr signature: %w", err)
+	}
+
+	return schnorrSig, nil
 }
 
 // ProcessEvent handles events in RefreshRequestedState. The VTXO is waiting

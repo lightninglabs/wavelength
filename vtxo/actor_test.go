@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -42,12 +43,13 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 		PkScript: []byte{0x51, 0x20},
 	})
 
+	testSig := testutils.TestSchnorrSignature(t, "forfeit")
 	outbox := []VTXOOutMsg{
 		&ForfeitSignatureSubmission{
 			VTXOOutpoint: vtxo.Outpoint,
 			RoundID:      "round-123",
 			ForfeitTx:    forfeitTx,
-			Signature:    []byte{0x30, 0x44},
+			Signature:    testSig,
 		},
 	}
 
@@ -63,7 +65,7 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 	require.Equal(t, vtxo.Outpoint, resp.VTXOOutpoint)
 	require.Equal(t, "round-123", resp.RoundID)
 	require.NotNil(t, resp.ForfeitTx)
-	require.Equal(t, []byte{0x30, 0x44}, resp.Signature)
+	require.Equal(t, testSig, resp.Signature)
 }
 
 // TestProcessOutboxMarkForfeiting verifies that VTXOStatusUpdate with
