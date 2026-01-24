@@ -205,6 +205,6 @@ require (
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
 
-replace github.com/lightninglabs/darepo-client => ./client
+replace github.com/lightninglabs/darepo-client => ../darepo-client-roudn-forfeit-server-catch-up
 
-replace github.com/lightninglabs/darepo-client/baselib => ./client/baselib
+replace github.com/lightninglabs/darepo-client/baselib => ../darepo-client-roudn-forfeit-server-catch-up/baselib

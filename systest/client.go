@@ -21,6 +21,7 @@ import (
 	clientlnd "github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/lndbackend"
@@ -84,6 +85,9 @@ type TestClient struct {
 	// roundStore provides round persistence (implements both RoundStore and
 	// VTXOStore interfaces).
 	roundStore *db.RoundPersistenceStore
+
+	// vtxoStore provides VTXO lifecycle persistence with status tracking.
+	vtxoStore *db.VTXOPersistenceStore
 
 	// boardingStore provides boarding address persistence.
 	boardingStore *db.BoardingWalletStore
@@ -260,6 +264,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
 	)
 
+	// Create VTXOStore for VTXO lifecycle management.
+	vtxoStore := db.NewVTXOPersistenceStore(roundDB, clock.NewDefaultClock())
+
 	// Create per-client C→S bridge.
 	serverConn := NewBridgeServerConn(clientID, h.roundsActor, h.transcript)
 	serverConnActorID := fmt.Sprintf("bridge-server%s", opts.actorSuffix)
@@ -365,6 +372,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		sqlDB:          sqlDB,
 		dbPath:         opts.dbPath,
 		roundStore:     roundStore,
+		vtxoStore:      vtxoStore,
 		boardingStore:  boardingStore,
 		clientKeyDesc:  clientKeyDesc,
 		vtxoObserver:   vtxoObserver,
@@ -911,4 +919,147 @@ func (c *TestClient) DBPath() string {
 // testing, ensuring the same wallet and keys are available.
 func (c *TestClient) LNDInstance() *clientharness.LndInstance {
 	return c.lndInstance
+}
+
+// TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
+// refresh of the specified VTXOs. This causes the wallet to coordinate with the
+// round actor to include these VTXOs in the next round's forfeit flow.
+func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	req := &wallet.RefreshVTXOsRequest{
+		TargetOutpoints: outpoints,
+		ForceRefresh:    true,
+	}
+
+	future := c.walletRef.Ask(ctx, req)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("refresh request failed: %w", result.Err())
+	}
+
+	resp, _ := result.Unpack()
+	refreshResp, ok := resp.(*wallet.RefreshVTXOsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected response type: %T", resp)
+	}
+
+	if len(refreshResp.Errors) > 0 {
+		// Collect all error messages.
+		var errMsgs []string
+		for op, err := range refreshResp.Errors {
+			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", op, err))
+		}
+		return fmt.Errorf("refresh errors: %v", errMsgs)
+	}
+
+	return nil
+}
+
+// WaitForVTXOStatus waits for a VTXO to reach the expected status within the
+// specified timeout. This polls the database to detect status changes.
+func (c *TestClient) WaitForVTXOStatus(outpoint wire.OutPoint,
+	expectedStatus vtxo.VTXOStatus, timeout time.Duration) error {
+
+	ctx := c.harness.ctx
+
+	err := wait.Predicate(func() bool {
+		desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return false
+		}
+
+		return desc.Status == expectedStatus
+	}, timeout)
+
+	if err != nil {
+		// Get current status for better error message.
+		desc, getErr := c.vtxoStore.GetVTXO(ctx, outpoint)
+		if getErr != nil {
+			return fmt.Errorf(
+				"timeout waiting for VTXO %s status %s: %w",
+				outpoint, expectedStatus, err,
+			)
+		}
+		return fmt.Errorf(
+			"timeout waiting for VTXO %s status %s (current: %s)",
+			outpoint, expectedStatus, desc.Status,
+		)
+	}
+
+	return nil
+}
+
+// AssertVTXOStatus asserts that a VTXO has the expected status in the database.
+func (c *TestClient) AssertVTXOStatus(outpoint wire.OutPoint,
+	expectedStatus vtxo.VTXOStatus) {
+
+	ctx := c.harness.ctx
+	t := c.harness.t
+
+	desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
+	require.NoError(t, err, "failed to get VTXO %s", outpoint)
+	require.Equal(t, expectedStatus, desc.Status,
+		"VTXO %s status mismatch", outpoint)
+}
+
+// AssertVTXOReplacement verifies that the old VTXO was replaced by the new
+// VTXO. This checks that the old VTXO is in Forfeited status and that both
+// VTXOs exist in the database with the expected relationship.
+func (c *TestClient) AssertVTXOReplacement(oldOutpoint,
+	newOutpoint wire.OutPoint) {
+
+	ctx := c.harness.ctx
+	t := c.harness.t
+
+	// Verify old VTXO is forfeited.
+	oldDesc, err := c.vtxoStore.GetVTXO(ctx, oldOutpoint)
+	require.NoError(t, err, "failed to get old VTXO %s", oldOutpoint)
+	require.Equal(t, vtxo.VTXOStatusForfeited, oldDesc.Status,
+		"old VTXO should be forfeited")
+
+	// Verify new VTXO exists and is live.
+	newDesc, err := c.vtxoStore.GetVTXO(ctx, newOutpoint)
+	require.NoError(t, err, "failed to get new VTXO %s", newOutpoint)
+	require.Equal(t, vtxo.VTXOStatusLive, newDesc.Status,
+		"new VTXO should be live")
+
+	// Verify amounts are similar (new should be slightly less due to fees).
+	require.InDelta(t, float64(oldDesc.Amount), float64(newDesc.Amount),
+		float64(100_000), // Allow up to 100k sats difference for fees
+		"new VTXO amount should be close to old")
+}
+
+// GetVTXOByRoundID returns the VTXO created in a specific round. This is useful
+// for finding the new VTXO after a refresh operation.
+func (c *TestClient) GetVTXOByRoundID(roundID string) (*vtxo.Descriptor, error) {
+	ctx := c.harness.ctx
+
+	// List all live VTXOs and find the one from the target round.
+	vtxos, err := c.vtxoStore.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VTXOs: %w", err)
+	}
+
+	for _, desc := range vtxos {
+		if desc.RoundID == roundID {
+			return desc, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no VTXO found for round %s", roundID)
+}
+
+// GetVTXODescriptor returns the full VTXO descriptor for an outpoint. This
+// provides access to all VTXO fields including status and lifecycle data.
+func (c *TestClient) GetVTXODescriptor(outpoint wire.OutPoint) (
+	*vtxo.Descriptor, error) {
+
+	return c.vtxoStore.GetVTXO(c.harness.ctx, outpoint)
+}
+
+// ListLiveVTXODescriptors returns all VTXOs that are not in a terminal state.
+// This is useful for finding VTXOs that can be refreshed or spent.
+func (c *TestClient) ListLiveVTXODescriptors() ([]*vtxo.Descriptor, error) {
+	return c.vtxoStore.ListLiveVTXOs(c.harness.ctx)
 }
