@@ -3,13 +3,29 @@ package vtxo
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// testSchnorrSignature creates a deterministic schnorr signature for tests.
+func testSchnorrSignature(t *testing.T, seed string) *schnorr.Signature {
+	t.Helper()
+
+	h := chainhash.HashH([]byte(seed))
+	privKey, _ := btcec.PrivKeyFromBytes(h[:])
+	msg := chainhash.HashH([]byte("test message"))
+	sig, err := schnorr.Sign(privKey, msg[:])
+	require.NoError(t, err)
+
+	return sig
+}
 
 // TestProcessOutboxForfeitSignature verifies that ForfeitSignatureSubmission
 // messages in the outbox are routed to the round actor.
@@ -42,12 +58,13 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 		PkScript: []byte{0x51, 0x20},
 	})
 
+	testSig := testSchnorrSignature(t, "forfeit")
 	outbox := []VTXOOutMsg{
 		&ForfeitSignatureSubmission{
 			VTXOOutpoint: vtxo.Outpoint,
 			RoundID:      "round-123",
 			ForfeitTx:    forfeitTx,
-			Signature:    []byte{0x30, 0x44},
+			Signature:    testSig,
 		},
 	}
 
@@ -63,7 +80,7 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 	require.Equal(t, vtxo.Outpoint, resp.VTXOOutpoint)
 	require.Equal(t, "round-123", resp.RoundID)
 	require.NotNil(t, resp.ForfeitTx)
-	require.Equal(t, []byte{0x30, 0x44}, resp.Signature)
+	require.Equal(t, testSig, resp.Signature)
 }
 
 // TestProcessOutboxMarkForfeiting verifies that VTXOStatusUpdate with

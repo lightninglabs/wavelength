@@ -1197,7 +1197,7 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 		response := &ForfeitSignatureResponse{
 			RoundID:      "non-existent-round",
 			VTXOOutpoint: vtxoOutpoint,
-			Signature:    []byte{0x30, 0x44}, // Dummy signature
+			Signature:    testSchnorrSignature(t, "forfeit"),
 			ForfeitTx:    wire.NewMsgTx(2),
 		}
 
