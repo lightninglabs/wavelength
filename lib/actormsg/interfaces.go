@@ -1,6 +1,9 @@
 package actormsg
 
-import "github.com/lightninglabs/darepo-client/baselib/actor"
+import (
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+)
 
 // VTXOActorMsg is the message type for VTXO actors. Messages sent TO VTXO
 // actors implement this interface via the exported marker method. This enables
@@ -30,4 +33,26 @@ type RoundReceivable interface {
 type VTXOManagerMsg interface {
 	actor.Message
 	VTXOManagerMsg()
+}
+
+// TriggerVTXORefreshMsg is sent from the wallet actor to the round actor to
+// request refresh of specific VTXOs. Defined in actormsg to avoid import cycle
+// between wallet and round packages.
+type TriggerVTXORefreshMsg struct {
+	actor.BaseMessage
+
+	// TargetOutpoints specifies which VTXOs to refresh.
+	TargetOutpoints []wire.OutPoint
+
+	// ForceRefresh indicates this is a user-initiated refresh that should
+	// proceed regardless of expiry status.
+	ForceRefresh bool
+}
+
+// RoundReceivable implements the RoundReceivable marker interface.
+func (m *TriggerVTXORefreshMsg) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (m *TriggerVTXORefreshMsg) MessageType() string {
+	return "TriggerVTXORefreshMsg"
 }
