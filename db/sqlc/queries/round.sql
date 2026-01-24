@@ -115,12 +115,25 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 -- VTXO queries.
 
 -- name: InsertVTXO :exec
+-- InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
+-- updated if the new values are non-zero/non-null (allowing the VTXO manager
+-- to fill in BatchExpiry, TreeDepth, CreatedHeight, CommitmentTxid after the
+-- round store creates the initial record).
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     client_key_family, client_key_index, client_pubkey, operator_pubkey,
-    tree_path, spent, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-ON CONFLICT (outpoint_hash, outpoint_index) DO NOTHING;
+    tree_path, batch_expiry, tree_depth, created_height, commitment_txid,
+    spent, creation_time, last_update_time
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18
+)
+ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
+    tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
+    created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
+    commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    last_update_time = excluded.last_update_time;
 
 -- name: GetVTXO :one
 SELECT * FROM vtxos
@@ -136,7 +149,8 @@ SELECT * FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC;
 SELECT * FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC;
 
 -- name: MarkVTXOSpent :exec
-UPDATE vtxos SET spent = TRUE, last_update_time = $3
+-- Also sets status = 4 (Spent) to keep status in sync with spent flag.
+UPDATE vtxos SET spent = TRUE, status = 4, last_update_time = $3
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: CountUnspentVTXOs :one
