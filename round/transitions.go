@@ -1028,7 +1028,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 
 		outboxMsgs := []ClientOutMsg{
 			&SubmitVTXOForfeitSigsToServer{
-				RoundID:     s.RoundID.String(),
+				RoundID:     s.RoundID,
 				ForfeitSigs: forfeitSigs,
 				ForfeitTxs:  forfeitTxs,
 			},
