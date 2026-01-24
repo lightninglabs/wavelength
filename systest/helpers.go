@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -113,6 +114,7 @@ func NewBoardingWalletFixture(t *testing.T) *BoardingWalletFixture {
 	backend := h.NewBoardingBackend()
 	walletActor := wallet.NewArk(
 		backend, h.BoardingStore(), chainSourceRef,
+		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
 		h.SubLogger(wallet.Subsystem),
 	)
 

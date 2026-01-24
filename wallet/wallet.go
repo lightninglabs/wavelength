@@ -8,10 +8,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -56,6 +58,10 @@ type Ark struct {
 	// store persists boarding addresses and intents to the database.
 	store BoardingStore
 
+	// roundActor is a reference to the round actor for forwarding refresh
+	// requests. The round actor handles VTXO actor coordination.
+	roundActor fn.Option[actor.TellOnlyRef[actormsg.RoundReceivable]]
+
 	// chainSource provides block epoch notifications for polling.
 	chainSource actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
@@ -87,14 +93,19 @@ type Ark struct {
 
 // NewArk creates a new Ark wallet actor. The logger should already have the
 // subsystem set (e.g., created via handler.SubSystem(wallet.Subsystem)).
+//
+// The roundActor parameter is optional - if provided, refresh requests will be
+// forwarded to the round actor for VTXO actor coordination.
 func NewArk(backend BoardingBackend, store BoardingStore,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
+	roundActor fn.Option[actor.TellOnlyRef[actormsg.RoundReceivable]],
 	log btclog.Logger) *Ark {
 
 	return &Ark{
 		backend:     backend,
 		store:       store,
 		chainSource: chainSource,
+		roundActor:  roundActor,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
 		log:         log,
@@ -204,6 +215,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case BlockEpochNotification:
 		return a.handleBlockEpoch(ctx, m.BlockEpoch)
+
+	case *RefreshVTXOsRequest:
+		return a.handleRefreshVTXOs(ctx, m)
 
 	default:
 		return fn.Err[WalletResp](
@@ -511,6 +525,36 @@ func (a *Ark) sendBacklog(ctx context.Context,
 	a.log.InfoS(ctx, "Backlog delivery completed",
 		slog.Int("from_height", int(fromHeight)),
 		slog.Int("events_sent", len(intents)))
+}
+
+// handleRefreshVTXOs processes a request to refresh VTXOs. This forwards the
+// request to the round actor which coordinates with VTXO actors to initiate
+// the refresh flow.
+func (a *Ark) handleRefreshVTXOs(ctx context.Context,
+	req *RefreshVTXOsRequest) fn.Result[WalletResp] {
+
+	a.log.InfoS(ctx, "Received VTXO refresh request",
+		slog.Int("target_count", len(req.TargetOutpoints)),
+		slog.Bool("force_refresh", req.ForceRefresh),
+	)
+
+	// Forward to round actor if configured. The round actor looks up VTXO
+	// actors by service key and sends TriggerRefreshEvent to each one.
+	a.roundActor.WhenSome(
+		func(ref actor.TellOnlyRef[actormsg.RoundReceivable]) {
+			ref.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
+				TargetOutpoints: req.TargetOutpoints,
+				ForceRefresh:    req.ForceRefresh,
+			})
+		},
+	)
+
+	resp := &RefreshVTXOsResponse{
+		RefreshingCount: len(req.TargetOutpoints),
+		Errors:          make(map[wire.OutPoint]error),
+	}
+
+	return fn.Ok[WalletResp](resp)
 }
 
 // buildBoardingTapscript constructs a 2-of-2 tapscript with CSV timeout for
