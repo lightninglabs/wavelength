@@ -98,6 +98,29 @@ type RoundStore interface {
 
 	MarkVTXOSpent(ctx context.Context, arg sqlc.MarkVTXOSpentParams) error
 
+	// VTXO lifecycle status queries.
+	ListLiveVTXOs(ctx context.Context) ([]VTXORow, error)
+
+	ListVTXOsByStatus(ctx context.Context, status int32) ([]VTXORow, error)
+
+	UpdateVTXOStatus(
+		ctx context.Context, arg sqlc.UpdateVTXOStatusParams,
+	) error
+
+	MarkVTXOForfeiting(
+		ctx context.Context, arg sqlc.MarkVTXOForfeitingParams,
+	) error
+
+	GetVTXOForfeitTx(
+		ctx context.Context, arg sqlc.GetVTXOForfeitTxParams,
+	) (sqlc.GetVTXOForfeitTxRow, error)
+
+	MarkVTXOForfeited(
+		ctx context.Context, arg sqlc.MarkVTXOForfeitedParams,
+	) error
+
+	DeleteVTXO(ctx context.Context, arg sqlc.DeleteVTXOParams) error
+
 	// Include BoardingStore methods for fetching boarding intent details.
 	GetBoardingIntent(
 		ctx context.Context, arg BoardingIntentKey,
