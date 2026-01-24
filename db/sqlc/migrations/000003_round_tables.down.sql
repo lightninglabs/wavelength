@@ -1,6 +1,7 @@
 -- Round tables down migration.
 -- Drops all tables created in the up migration in reverse order.
 
+DROP INDEX IF EXISTS idx_vtxos_status;
 DROP INDEX IF EXISTS idx_vtxos_creation_time;
 DROP INDEX IF EXISTS idx_vtxos_spent;
 DROP INDEX IF EXISTS idx_vtxos_round_id;
