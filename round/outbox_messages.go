@@ -213,7 +213,7 @@ type SubmitVTXOForfeitSigsToServer struct {
 	actor.BaseMessage
 
 	// RoundID identifies the round.
-	RoundID string
+	RoundID RoundID
 
 	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
 	// signatures. Each signature is the client's schnorr signature for the
