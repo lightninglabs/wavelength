@@ -300,7 +300,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -327,6 +327,12 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.Spent,
 		&i.CreationTime,
 		&i.LastUpdateTime,
+		&i.Status,
+		&i.ForfeitRoundID,
+		&i.ForfeitTx,
+		&i.ForfeitTxid,
+		&i.ReplacedByHash,
+		&i.ReplacedByIndex,
 	)
 	return i, err
 }
@@ -590,7 +596,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -617,6 +623,12 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.Spent,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 		); err != nil {
 			return nil, err
 		}
@@ -670,7 +682,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -697,6 +709,12 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.Spent,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 		); err != nil {
 			return nil, err
 		}
@@ -712,7 +730,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -739,6 +757,12 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.Spent,
 			&i.CreationTime,
 			&i.LastUpdateTime,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 		); err != nil {
 			return nil, err
 		}

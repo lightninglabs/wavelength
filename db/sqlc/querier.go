@@ -11,7 +11,12 @@ import (
 type Querier interface {
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
+	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
+	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
+	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
+	// states are reached and the VTXO is no longer needed.
+	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	GetBoardingAddress(ctx context.Context, pkScript []byte) (BoardingAddress, error)
 	GetBoardingIntent(ctx context.Context, arg GetBoardingIntentParams) (BoardingIntent, error)
@@ -26,6 +31,12 @@ type Querier interface {
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
+	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
+	// Used during recovery to restore the ForfeitingState with its tx.
+	GetVTXOForfeitTx(ctx context.Context, arg GetVTXOForfeitTxParams) (GetVTXOForfeitTxRow, error)
+	// GetVTXOReplacement retrieves the replacement VTXO outpoint for a forfeited
+	// VTXO. Returns NULL if not forfeited or no replacement recorded.
+	GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacementParams) (GetVTXOReplacementRow, error)
 	// Boarding address queries.
 	InsertBoardingAddress(ctx context.Context, arg InsertBoardingAddressParams) error
 	// Boarding intent queries.
@@ -52,15 +63,35 @@ type Querier interface {
 	ListBoardingIntentsByStatus(ctx context.Context, status string) ([]BoardingIntent, error)
 	ListBoardingIntentsByStatusAndMinHeight(ctx context.Context, arg ListBoardingIntentsByStatusAndMinHeightParams) ([]BoardingIntent, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	// ListLiveVTXOs returns all VTXOs that are not in a terminal state.
+	// Terminal states are: Forfeited (3), Spent (4), Expiring (5), Failed (6).
+	// This is used during startup to recover active VTXO actors.
+	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
+	// VTXO status and lifecycle queries.
+	// These queries support the vtxo.VTXOStore interface for VTXO lifecycle
+	// management, including status transitions and forfeit transaction tracking.
+	// ListVTXOsByStatus returns all VTXOs with the specified status.
+	ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error)
+	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
+	// transaction ID and replacement VTXO outpoint. Called when the new round's
+	// commitment transaction confirms.
+	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) error
+	// MarkVTXOForfeiting transitions a VTXO to Forfeiting status and persists
+	// the forfeit round ID and transaction for crash recovery. Called when
+	// entering the forfeit flow.
+	MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeitingParams) error
 	MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error
 	SumBoardingIntentAmountsByStatus(ctx context.Context, status string) (interface{}, error)
 	SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error)
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
+	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
+	// method for state transitions that don't require additional data.
+	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 }
 

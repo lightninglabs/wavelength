@@ -149,6 +149,8 @@ CREATE INDEX idx_vtxos_round_id
 CREATE INDEX idx_vtxos_spent
     ON vtxos(spent);
 
+CREATE INDEX idx_vtxos_status ON vtxos(status);
+
 CREATE TABLE round_boarding_intents (
     -- round_id links to the parent round.
     round_id TEXT NOT NULL,
@@ -321,7 +323,7 @@ CREATE TABLE vtxos (
 
     -- last_update_time is the unix epoch timestamp when this VTXO was last
     -- modified, such as when it was marked as spent.
-    last_update_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL, status INTEGER NOT NULL DEFAULT 0, forfeit_round_id TEXT, forfeit_tx BLOB, forfeit_txid BLOB, replaced_by_hash BLOB, replaced_by_index INTEGER,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

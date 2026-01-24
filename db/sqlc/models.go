@@ -116,4 +116,10 @@ type Vtxo struct {
 	Spent           bool
 	CreationTime    int64
 	LastUpdateTime  int64
+	Status          int32
+	ForfeitRoundID  sql.NullString
+	ForfeitTx       []byte
+	ForfeitTxid     []byte
+	ReplacedByHash  []byte
+	ReplacedByIndex sql.NullInt32
 }
