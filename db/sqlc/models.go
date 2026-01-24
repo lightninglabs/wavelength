@@ -113,7 +113,17 @@ type Vtxo struct {
 	ClientPubkey    []byte
 	OperatorPubkey  []byte
 	TreePath        []byte
+	BatchExpiry     int32
+	TreeDepth       int32
+	CreatedHeight   int32
+	CommitmentTxid  []byte
 	Spent           bool
+	Status          int32
+	ForfeitRoundID  sql.NullString
+	ForfeitTx       []byte
+	ForfeitTxid     []byte
+	ReplacedByHash  []byte
+	ReplacedByIndex sql.NullInt32
 	CreationTime    int64
 	LastUpdateTime  int64
 }

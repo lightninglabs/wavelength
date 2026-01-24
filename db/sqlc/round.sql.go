@@ -300,7 +300,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -324,7 +324,17 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.ClientPubkey,
 		&i.OperatorPubkey,
 		&i.TreePath,
+		&i.BatchExpiry,
+		&i.TreeDepth,
+		&i.CreatedHeight,
+		&i.CommitmentTxid,
 		&i.Spent,
+		&i.Status,
+		&i.ForfeitRoundID,
+		&i.ForfeitTx,
+		&i.ForfeitTxid,
+		&i.ReplacedByHash,
+		&i.ReplacedByIndex,
 		&i.CreationTime,
 		&i.LastUpdateTime,
 	)
@@ -508,9 +518,18 @@ const InsertVTXO = `-- name: InsertVTXO :exec
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     client_key_family, client_key_index, client_pubkey, operator_pubkey,
-    tree_path, spent, creation_time, last_update_time
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-ON CONFLICT (outpoint_hash, outpoint_index) DO NOTHING
+    tree_path, batch_expiry, tree_depth, created_height, commitment_txid,
+    spent, creation_time, last_update_time
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+    $16, $17, $18
+)
+ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
+    tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
+    created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
+    commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
+    last_update_time = excluded.last_update_time
 `
 
 type InsertVTXOParams struct {
@@ -525,12 +544,20 @@ type InsertVTXOParams struct {
 	ClientPubkey    []byte
 	OperatorPubkey  []byte
 	TreePath        []byte
+	BatchExpiry     int32
+	TreeDepth       int32
+	CreatedHeight   int32
+	CommitmentTxid  []byte
 	Spent           bool
 	CreationTime    int64
 	LastUpdateTime  int64
 }
 
 // VTXO queries.
+// InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
+// updated if the new values are non-zero/non-null (allowing the VTXO manager
+// to fill in BatchExpiry, TreeDepth, CreatedHeight, CommitmentTxid after the
+// round store creates the initial record).
 func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 	_, err := q.db.ExecContext(ctx, InsertVTXO,
 		arg.OutpointHash,
@@ -544,6 +571,10 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.ClientPubkey,
 		arg.OperatorPubkey,
 		arg.TreePath,
+		arg.BatchExpiry,
+		arg.TreeDepth,
+		arg.CreatedHeight,
+		arg.CommitmentTxid,
 		arg.Spent,
 		arg.CreationTime,
 		arg.LastUpdateTime,
@@ -590,7 +621,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -614,7 +645,17 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.ClientPubkey,
 			&i.OperatorPubkey,
 			&i.TreePath,
+			&i.BatchExpiry,
+			&i.TreeDepth,
+			&i.CreatedHeight,
+			&i.CommitmentTxid,
 			&i.Spent,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 			&i.CreationTime,
 			&i.LastUpdateTime,
 		); err != nil {
@@ -670,7 +711,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -694,7 +735,17 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.ClientPubkey,
 			&i.OperatorPubkey,
 			&i.TreePath,
+			&i.BatchExpiry,
+			&i.TreeDepth,
+			&i.CreatedHeight,
+			&i.CommitmentTxid,
 			&i.Spent,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 			&i.CreationTime,
 			&i.LastUpdateTime,
 		); err != nil {
@@ -712,7 +763,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, spent, creation_time, last_update_time FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -736,7 +787,17 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.ClientPubkey,
 			&i.OperatorPubkey,
 			&i.TreePath,
+			&i.BatchExpiry,
+			&i.TreeDepth,
+			&i.CreatedHeight,
+			&i.CommitmentTxid,
 			&i.Spent,
+			&i.Status,
+			&i.ForfeitRoundID,
+			&i.ForfeitTx,
+			&i.ForfeitTxid,
+			&i.ReplacedByHash,
+			&i.ReplacedByIndex,
 			&i.CreationTime,
 			&i.LastUpdateTime,
 		); err != nil {
@@ -754,7 +815,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 }
 
 const MarkVTXOSpent = `-- name: MarkVTXOSpent :exec
-UPDATE vtxos SET spent = TRUE, last_update_time = $3
+UPDATE vtxos SET spent = TRUE, status = 4, last_update_time = $3
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -764,6 +825,7 @@ type MarkVTXOSpentParams struct {
 	LastUpdateTime int64
 }
 
+// Also sets status = 4 (Spent) to keep status in sync with spent flag.
 func (q *Queries) MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) error {
 	_, err := q.db.ExecContext(ctx, MarkVTXOSpent, arg.OutpointHash, arg.OutpointIndex, arg.LastUpdateTime)
 	return err
