@@ -3,7 +3,6 @@ package vtxo
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -491,9 +490,12 @@ func TestForfeitRequestRealSigning(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify the signature is non-empty and has valid length (64 bytes for
-	// Schnorr).
-	require.Len(t, submission.Signature, 64, "signature should be 64 bytes")
+	// Verify the signature is non-nil and serializes to 64 bytes (Schnorr).
+	require.NotNil(t, submission.Signature)
+	require.Len(
+		t, submission.Signature.Serialize(), 64,
+		"signature should be 64 bytes",
+	)
 }
 
 // TestForfeitingStateCriticalExpiry verifies that ForfeitingState transitions
@@ -818,9 +820,8 @@ func TestForfeitSignatureValidity(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Parse client signature from raw bytes.
-	clientSig, err := schnorr.ParseSignature(submission.Signature)
-	require.NoError(t, err)
+	// The client signature is already parsed as *schnorr.Signature.
+	clientSig := submission.Signature
 
 	// Build complete witness for collaborative spend.
 	witness, err := scripts.VTXOCollabSpendWitness(

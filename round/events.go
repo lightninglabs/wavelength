@@ -396,8 +396,8 @@ type ForfeitSignatureResponse struct {
 	// ForfeitTx is the built forfeit transaction.
 	ForfeitTx *wire.MsgTx
 
-	// Signature is the client's signature for the forfeit tx.
-	Signature []byte
+	// Signature is the client's schnorr signature for the forfeit tx.
+	Signature *schnorr.Signature
 }
 
 func (e *ForfeitSignatureResponse) clientEventSealed() {}

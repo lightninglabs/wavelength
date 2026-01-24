@@ -994,7 +994,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		}
 
 		// All forfeit signatures collected! Build the submission.
-		forfeitSigs := make(map[wire.OutPoint][]byte)
+		forfeitSigs := make(map[wire.OutPoint]*schnorr.Signature)
 		forfeitTxs := make(map[wire.OutPoint]*wire.MsgTx)
 		forfeitedVTXOs := make([]wire.OutPoint, 0, len(updatedForfeits))
 		for outpoint, resp := range updatedForfeits {
