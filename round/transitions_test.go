@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
+	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -1766,11 +1767,12 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		h.withState(state)
 
 		// Send forfeit signature response.
+		sig := testutils.TestSchnorrSignature(t, "forfeit")
 		event := &ForfeitSignatureResponse{
 			VTXOOutpoint: vtxoOutpoint,
 			RoundID:      roundID.String(),
 			ForfeitTx:    forfeitTx,
-			Signature:    make([]byte, 64),
+			Signature:    sig,
 		}
 
 		transition, err := h.sendEvent(event)
@@ -1834,11 +1836,12 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		forfeitTx1 := h.newTestForfeitTx(
 			vtxoOutpoint1, connectorOutpoint1, serverForfeitScript,
 		)
+		sig1 := testutils.TestSchnorrSignature(t, "forfeit")
 		event1 := &ForfeitSignatureResponse{
 			VTXOOutpoint: vtxoOutpoint1,
 			RoundID:      roundID.String(),
 			ForfeitTx:    forfeitTx1,
-			Signature:    make([]byte, 64),
+			Signature:    sig1,
 		}
 
 		_, err := h.sendEvent(event1)
@@ -1853,11 +1856,12 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		forfeitTx2 := h.newTestForfeitTx(
 			vtxoOutpoint2, connectorOutpoint2, serverForfeitScript,
 		)
+		sig2 := testutils.TestSchnorrSignature(t, "forfeit")
 		event2 := &ForfeitSignatureResponse{
 			VTXOOutpoint: vtxoOutpoint2,
 			RoundID:      roundID.String(),
 			ForfeitTx:    forfeitTx2,
-			Signature:    make([]byte, 64),
+			Signature:    sig2,
 		}
 
 		transition, err := h.sendEvent(event2)
@@ -1910,11 +1914,12 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		forfeitTx := h.newTestForfeitTx(
 			vtxoOutpoint, connectorOutpoint, serverForfeitScript,
 		)
+		sigDup := testutils.TestSchnorrSignature(t, "forfeit")
 		event := &ForfeitSignatureResponse{
 			VTXOOutpoint: vtxoOutpoint,
 			RoundID:      roundID.String(),
 			ForfeitTx:    forfeitTx,
-			Signature:    make([]byte, 64),
+			Signature:    sigDup,
 		}
 
 		// First response.
@@ -1963,10 +1968,11 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 
 		// Send forfeit for unknown VTXO.
 		unknownOutpoint := h.newTestOutpoint()
+		sigUnknown := testutils.TestSchnorrSignature(t, "forfeit")
 		event := &ForfeitSignatureResponse{
 			VTXOOutpoint: unknownOutpoint,
 			RoundID:      roundID.String(),
-			Signature:    make([]byte, 64),
+			Signature:    sigUnknown,
 		}
 
 		_, err := h.sendEvent(event)
@@ -2059,11 +2065,12 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		)
 		h.withState(state)
 
+		sigPenalty := testutils.TestSchnorrSignature(t, "forfeit")
 		event := &ForfeitSignatureResponse{
 			VTXOOutpoint: vtxoOutpoint,
 			RoundID:      roundID.String(),
 			ForfeitTx:    forfeitTx,
-			Signature:    make([]byte, 64),
+			Signature:    sigPenalty,
 		}
 
 		_, err := h.sendEvent(event)
@@ -2233,7 +2240,7 @@ func TestForfeitCollectionStateImmutability(t *testing.T) {
 		VTXOOutpoint: vtxoOutpoint1,
 		RoundID:      "round-immut-001",
 		ForfeitTx:    forfeitTx1,
-		Signature:    make([]byte, 64),
+		Signature:    testutils.TestSchnorrSignature(t, "forfeit"),
 	}
 
 	_, err := h.sendEvent(event1)

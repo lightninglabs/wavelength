@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 )
@@ -96,8 +97,8 @@ type ForfeitSignatureSubmission struct {
 	// ForfeitTx is the signed forfeit transaction.
 	ForfeitTx *wire.MsgTx
 
-	// Signature is the client's signature for the forfeit tx.
-	Signature []byte
+	// Signature is the client's schnorr signature for the forfeit tx.
+	Signature *schnorr.Signature
 }
 
 func (m *ForfeitSignatureSubmission) vtxoOutMsgSealed() {}
