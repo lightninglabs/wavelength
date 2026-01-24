@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	clienttree "github.com/lightninglabs/darepo-client/lib/tree"
 	clienttypes "github.com/lightninglabs/darepo-client/lib/types"
@@ -250,6 +251,27 @@ func (b *BridgeServerConn) convertToActorMsg(
 			Event: &rounds.ClientInputSignaturesEvent{
 				ClientID:   b.clientID,
 				Signatures: m.Signatures,
+			},
+		}, nil
+
+	case *clientround.SubmitVTXOForfeitSigsToServer:
+		// Convert client's VTXO forfeit signatures to server's
+		// RoundMsg with ClientInputSignaturesEvent.ForfeitTxs.
+		forfeitTxs := make(
+			[]*clienttypes.ForfeitTxSig, 0, len(m.ForfeitSigs),
+		)
+		for outpoint, sig := range m.ForfeitSigs {
+			forfeitTxs = append(forfeitTxs, &clienttypes.ForfeitTxSig{
+				UnsignedTx:    m.ForfeitTxs[outpoint],
+				ClientVTXOSig: sig,
+			})
+		}
+
+		return &rounds.RoundMsg{
+			RoundID: rounds.RoundID(m.RoundID),
+			Event: &rounds.ClientInputSignaturesEvent{
+				ClientID:   b.clientID,
+				ForfeitTxs: forfeitTxs,
 			},
 		}, nil
 
@@ -557,10 +579,31 @@ func (b *BridgeClientConn) convertToClientEvent(
 		}, nil
 
 	case *rounds.ClientBatchInfo:
+		// Convert connector leaf map from server format to client format.
+		// The client format has additional fields (VTXOAmount, LeafIndex)
+		// that are looked up from local VTXO state by the client.
+		var forfeitMappings map[wire.OutPoint]*clientround.ConnectorLeafInfo
+		if m.ConnectorLeafMap != nil {
+			forfeitMappings = make(
+				map[wire.OutPoint]*clientround.ConnectorLeafInfo,
+				len(m.ConnectorLeafMap),
+			)
+			for outpoint, info := range m.ConnectorLeafMap {
+				forfeitMappings[outpoint] = &clientround.ConnectorLeafInfo{
+					ConnectorOutpoint: info.LeafOutpoint,
+					ConnectorPkScript: info.LeafOutput.PkScript,
+					ConnectorAmount:   info.LeafOutput.Value,
+					// VTXOAmount is looked up from client's
+					// local VTXO state.
+				}
+			}
+		}
+
 		return &clientround.CommitmentTxBuilt{
-			RoundID:       clientround.RoundID(m.RoundID),
-			Tx:            m.BatchPSBT,
-			VTXOTreePaths: m.VTXOTreePaths,
+			RoundID:         clientround.RoundID(m.RoundID),
+			Tx:              m.BatchPSBT,
+			VTXOTreePaths:   m.VTXOTreePaths,
+			ForfeitMappings: forfeitMappings,
 		}, nil
 
 	case *rounds.ClientAwaitingInputSigsResp:
