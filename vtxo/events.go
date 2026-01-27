@@ -43,4 +43,9 @@ type (
 
 	// TriggerRefreshEvent is sent to manually trigger a refresh request.
 	TriggerRefreshEvent = round.TriggerRefreshEvent
+
+	// TriggerLeaveEvent is sent to manually trigger a leave (offboard)
+	// request. The VTXO will be forfeited and the value sent to the
+	// specified destination output.
+	TriggerLeaveEvent = round.TriggerLeaveEvent
 )
