@@ -126,7 +126,13 @@ VTXOs are categorized as:
 
 #### Virtual Transaction Tree (VTXT)
 
-The Virtual Transaction Tree is a balanced tree of pre-signed transactions that subdivides a Batch Output into individual VTXOs. The tree structure allows any participant to unilaterally claim their VTXO by broadcasting only the path from the root to their leaf.
+The Virtual Transaction Tree is a fan-out radix tree of pre-signed
+transactions that subdivides a Batch Output into individual VTXOs. The tree
+structure allows any participant to unilaterally claim their VTXO by
+broadcasting only the path from the root to their leaf.
+
+Leaves are assigned using a deterministic LPT ordering (amount descending,
+pkScript tiebreaker) to keep the fan-out balanced.
 
 VTXT branch nodes have two spend paths:
 1. **Collaborative Path**: MuSig2 aggregated signature of all downstream VTXO owners and the operator.

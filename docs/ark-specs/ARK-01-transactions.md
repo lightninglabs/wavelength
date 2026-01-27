@@ -12,7 +12,7 @@ This specification is a working draft.
 
 1. [Introduction](#introduction)
 2. [General Requirements](#general-requirements)
-3. [Key Separation: Session Keys vs VTXO Keys](#key-separation-session-keys-vs-vtxo-keys)
+3. [Key Separation: Signing Keys vs VTXO Keys](#key-separation-signing-keys-vs-vtxo-keys)
 4. [VTXO Output Script](#vtxo-output-script)
 5. [VTXT Node Output Script](#vtxt-node-output-script)
 6. [Connector Output Script](#connector-output-script)
@@ -26,10 +26,16 @@ This specification is a working draft.
 
 ## Introduction
 
-All Ark protocol outputs use Taproot (BIP-341) [[1]](#references). The collaborative spend mechanism varies by output type:
+All Ark protocol outputs use Taproot (BIP-341) [[1]](#references). The
+collaborative spend mechanism varies by output type:
 
-- **VTXT branch nodes**: Use MuSig2 (BIP-327) [[2]](#references) keypath spends for efficiency (single 64-byte signature) and privacy.
-- **VTXO outputs, boarding outputs, connector leaves, checkpoint outputs**: Use script-path multi-sig (not MuSig2) with an unspendable internal key. This avoids interactive nonce exchange for leaf outputs.
+- **VTXT branch nodes**: Use MuSig2 (BIP-327) [[2]](#references) keypath spends
+  for efficiency (single 64-byte signature) and privacy.
+- **VTXO outputs, boarding outputs, checkpoint outputs**: Use script-path
+  multi-sig (not MuSig2) with an unspendable internal key (ARKNUMSKey). This
+  avoids interactive nonce exchange for these spends.
+- **Connector outputs/leaves**: Use standard P2TR keypath spends to an operator
+  address. Connector trees are signed by the operator only.
 
 ### Design Rationale
 
@@ -38,7 +44,8 @@ VTXT branch node transactions use MuSig2 keypaths because:
 2. **Privacy**: Keypath spends reveal no script information.
 3. **Efficiency for mass signing**: Branch nodes are signed during rounds where all participants are already interacting.
 
-Leaf-level outputs (VTXOs, boarding, connectors, checkpoints) use script-path multi-sig because:
+Leaf-level outputs (VTXOs, boarding, checkpoints) use script-path multi-sig
+because:
 1. **No interactive nonce exchange**: Signatures can be provided independently without coordination.
 2. **Simpler key management**: Each party signs with their own key without MuSig2 session state.
 3. **Operational flexibility**: The VTXO owner can sign their portion at any time.
@@ -53,6 +60,18 @@ All taproot outputs in the Ark protocol MUST be constructed as follows:
 2. Compute the taproot tweak from the script tree (if any).
 3. Derive the output key as specified in BIP-341.
 
+### ARKNUMSKey
+
+The ARKNUMSKey is a fixed, unspendable internal key used for outputs that must
+be script-path only (no keypath spend). Its compressed public key is:
+
+```
+ARKNUMSKey = 02372f225b3caee8213096de3229ee4335306b07c3c169438461b5d4749884ec65
+```
+
+This key is derived from the seed phrase “Ark Protocol NUMS” using the
+`mailbox/numsgen` tool and has no known private key.
+
 ### MuSig2 Usage
 
 For all MuSig2 aggregated keys:
@@ -66,49 +85,64 @@ For all MuSig2 aggregated keys:
 - Absolute timelocks (CLTV) MUST be encoded as block heights, not timestamps.
 - Relative timelocks (CSV) MUST be encoded as block counts using the sequence number format specified in BIP-68 [[3]](#references).
 
-## Key Separation: Session Keys vs VTXO Keys
+## Key Separation: Signing Keys vs VTXO Keys
 
 ### Overview
 
 The Ark protocol uses two distinct categories of keys for different purposes:
 
 1. **VTXO Ownership Keys (P_v)**: Used in VTXO output scripts, control actual fund ownership.
-2. **Session Keys (P_s)**: Ephemeral keys used for MuSig2 signing of VTXT branch transactions.
+2. **Signing Keys (P_s)**: Per‑VTXO keys used for MuSig2 signing of VTXT branch
+   transactions.
 
 This separation is a critical protocol design choice that provides privacy, security isolation, and operational flexibility.
 
 ### Rationale for Separation
 
-**Privacy**: Using separate session keys prevents linking a participant's VTXO ownership across multiple batches or rounds. The VTXT branch signatures reveal the session key but not the VTXO ownership key. This means an observer cannot determine which VTXOs belong to the same participant by analyzing VTXT signatures.
+**Privacy**: Using separate signing keys prevents linking a participant's VTXO
+ownership across multiple batches or rounds. The VTXT branch signatures reveal
+the signing key but not the VTXO ownership key. This means an observer cannot
+determine which VTXOs belong to the same participant by analyzing VTXT
+signatures.
 
-**Signing Efficiency**: Session keys can be generated fresh each round without affecting long-term key management. MuSig2 nonces can be pre-generated for session keys since they are ephemeral.
+**Signing Efficiency**: Signing keys can be generated fresh each round (per
+VTXO request) without affecting long-term key management. MuSig2 nonces can be
+pre-generated for signing keys since they are ephemeral.
 
-**Key Isolation**: Compromise of a session key affects only one round's branch signing ability, not fund ownership. VTXO ownership keys can be kept in cold storage or hardware security modules while session keys are used for active signing.
+**Key Isolation**: Compromise of a signing key affects only one round's branch
+signing ability, not fund ownership. VTXO ownership keys can be kept in cold
+storage or hardware security modules while signing keys are used for active
+signing.
 
-**Operational Flexibility**: Different security policies can apply to each key type. Session keys can be "hot" for automated signing, while VTXO keys remain "cold" and are only used when spending.
+**Operational Flexibility**: Different security policies can apply to each
+key type. Signing keys can be "hot" for automated signing, while VTXO keys
+remain "cold" and are only used when spending.
 
 ### Usage by Key Type
 
 | Context | Key Type | Purpose |
 |---------|----------|---------|
-| VTXO output script (internal key) | VTXO ownership key (P_v) | Controls fund ownership |
+| VTXO/boarding/checkpoint internal key | ARKNUMSKey | Forces script-path spends only |
 | VTXO unilateral exit path | VTXO ownership key (P_v) | Signs exit transaction |
 | VTXO collaborative spend (OOR/forfeit) | VTXO ownership key (P_v) | Signs spending transaction |
-| VTXT branch node keypath | Session key (P_s) | Signs branch transactions |
-| Batch output keypath | Session key (P_s) | Signs root transaction |
+| VTXT branch node keypath | Signing key (P_s) | Signs branch transactions |
+| Batch output keypath | Signing key (P_s) | Signs root transaction |
+| VTXT sweep path | Operator sweep key (P_sw) | Sweeps after expiry |
 
 ### Key Derivation Requirements
 
-1. VTXO ownership keys and session keys SHOULD be derived from the same HD wallet master seed.
+1. VTXO ownership keys and signing keys SHOULD be derived from the same HD
+   wallet master seed.
 2. They MUST use different derivation paths to ensure separation (see ARK-05 for paths).
-3. Session keys SHOULD be freshly derived for each round.
-4. Session keys MUST NOT be reused across different rounds.
+3. Signing keys SHOULD be freshly derived for each round.
+4. Signing keys MUST NOT be reused across different rounds.
 
 ### Security Considerations
 
-- Compromise of a session key does NOT allow theft of funds (VTXO key required).
+- Compromise of a signing key does NOT allow theft of funds (VTXO key required).
 - Compromise of a VTXO key allows spending of that specific VTXO only.
-- Loss of session key after round completion has no impact (signatures already collected).
+- Loss of signing key after round completion has no impact (signatures already
+  collected).
 - Loss of VTXO key results in loss of funds (backup essential).
 
 ## VTXO Output Script
@@ -143,8 +177,8 @@ Collaborative Spend Script (multi-sig):
   <P_o> OP_CHECKSIG
 
 Unilateral Exit Script:
-  <P_v> OP_CHECKSIGVERIFY
-  <t_e> OP_CHECKSEQUENCEVERIFY
+  <P_v> OP_CHECKSIG
+  <t_e> OP_CHECKSEQUENCEVERIFY OP_DROP
 ```
 
 Where:
@@ -173,27 +207,29 @@ To spend via the unilateral exit path:
 
 Operators validating VTXO requests MUST verify:
 
-1. The output key is correctly derived from the claimed `P_v` and `P_o`.
-2. The script tree contains only the expected unilateral exit script.
+1. The output key is correctly derived from ARKNUMSKey and the script tree.
+2. The script tree contains the expected collaborative and unilateral leaves.
 3. The CSV delay `t_e` meets the operator's minimum requirements.
-4. The `P_o` in the script matches the operator's current signing key.
+4. The `P_o` in the collaborative leaf matches the operator's current signing
+   key.
 
 ### Mermaid Diagram
 
 ```mermaid
 graph TD
     subgraph "VTXO Taproot Output"
-        IK[Internal Key: MuSig2_P_v_P_o] --> OK[Output Key]
+        IK[Internal Key: ARKNUMSKey] --> OK[Output Key]
         ST[Script Tree] --> OK
     end
 
     subgraph "Script Tree"
+        ST --> CL[Collaborative Leaf]
         ST --> UE[Unilateral Exit Leaf]
     end
 
     subgraph "Spend Paths"
-        OK --> KP[Keypath: MuSig2 sig]
-        OK --> SP[Scriptpath: sig + CSV wait]
+        OK --> SP1[Scriptpath: 2-of-2 sigs]
+        OK --> SP2[Scriptpath: sig + CSV wait]
     end
 ```
 
@@ -201,7 +237,10 @@ graph TD
 
 ### Purpose
 
-VTXT node outputs (including the root Batch Output) represent intermediate values in the virtual transaction tree. They can be spent collaboratively by all downstream participants or swept by the operator after the absolute expiry.
+VTXT node outputs (including the root Batch Output) represent intermediate
+values in the virtual transaction tree. They can be spent collaboratively by
+all downstream participants or swept by the operator after the sweep delay
+(`T_e`) elapses.
 
 ### Script Structure
 
@@ -216,15 +255,18 @@ Where:
 #### Internal Key
 
 The internal key is a MuSig2 aggregated key of:
-- `P_s1, P_s2, ..., P_sn`: **Session public keys** of all downstream VTXO participants (not VTXO ownership keys)
+- `P_s1, P_s2, ..., P_sn`: **Signing public keys** of all downstream VTXO
+  participants (not VTXO ownership keys)
 - `P_o`: The operator's public key
 
-Using session keys (rather than VTXO ownership keys) prevents linking a participant's VTXOs across different rounds, as the session keys are ephemeral and change each round.
+Using signing keys (rather than VTXO ownership keys) prevents linking a
+participant's VTXOs across different rounds, as the signing keys are
+ephemeral and change each round.
 
 For a binary tree with radix 2:
-- Leaf level: Each branch aggregates session keys of 1 participant + operator
-- Level 1: Each branch aggregates session keys of 2 participants + operator
-- Level 2: Each branch aggregates session keys of 4 participants + operator
+- Leaf level: Each branch aggregates signing keys of 1 participant + operator
+- Level 1: Each branch aggregates signing keys of 2 participants + operator
+- Level 2: Each branch aggregates signing keys of 4 participants + operator
 - And so on up to the root
 
 #### Script Tree
@@ -233,13 +275,14 @@ The script tree contains a single leaf for the operator sweep path:
 
 ```
 Operator Sweep Script:
-  <P_o> OP_CHECKSIGVERIFY
+  <P_sw> OP_CHECKSIG
   <T_e> OP_CHECKSEQUENCEVERIFY OP_DROP
 ```
 
 Where:
-- `P_o`: The operator's public key
-- `T_e`: The expiry delay (relative, starts counting from when the branch transaction is confirmed on-chain)
+- `P_sw`: The operator's sweep public key (may be distinct from `P_o`)
+- `T_e`: The expiry delay (relative, starts counting from when the branch
+  transaction is confirmed on-chain)
 
 ### Spend Paths
 
@@ -259,17 +302,23 @@ Used by the operator to reclaim expired batch funds:
 2. Produce a signature with the operator's key.
 3. Witness: `<signature> <sweep_script> <control_block>`
 
-### Tree Construction
+### Tree Construction (Fan-out)
 
-The VTXT is constructed bottom-up:
+The VTXT is constructed as a fan-out tree where each node transaction spends a
+single parent output and creates multiple child outputs:
 
-1. **Leaf Level**: Create VTXO outputs for each participant.
-2. **Branch Levels**: Group outputs by radix, create branch transactions.
-3. **Root Level**: Final branch transaction output is the Batch Output.
+1. **Root Level**: The root transaction spends the Batch Output.
+2. **Branch Levels**: Each node spends its parent output and creates outputs
+   for its children (radix determines the fan-out).
+3. **Leaf Level**: Leaf node transactions create the VTXO outputs.
 
-For each branch transaction:
-- Inputs: Outputs from child branch/leaf transactions
-- Outputs: Single output paying to the aggregated key of all downstream participants
+For each node transaction:
+- Inputs: Exactly one input spending the parent output.
+- Outputs: One output per child plus a trailing anchor output.
+
+Leaf assignment MUST use deterministic LPT ordering:
+1. Sort VTXO outputs by value (descending), then by pkScript bytes.
+2. Assign in order to leaves to keep the fan-out tree balanced.
 
 ### Mermaid Diagram
 
@@ -299,34 +348,37 @@ graph TD
 
 ### Purpose
 
-Connector outputs provide atomicity for forfeit transactions. They ensure that a forfeit is only valid if the corresponding batch transaction is confirmed.
+Connector outputs provide atomicity for forfeit transactions. They ensure that a
+forfeit is only valid if the corresponding batch transaction is confirmed.
 
 ### Script Structure
 
-Connector leaf outputs use a taproot output with an unspendable internal key and a script-path spend:
+Connector outputs are standard P2TR keypath outputs to an operator-specified
+connector address. There is no script tree:
 
 ```
 Output Script: OP_1 <output_key>
 
 Where:
-  internal_key = ARKNUMSKey (provably unspendable)
-  output_key = taproot_tweak(internal_key, script_tree_root)
-
-Script Tree (single leaf):
-  <P_o> OP_CHECKSIG
+  output_key = operator connector key (P2TR)
 ```
 
-Where `P_o` is the operator's public key. The connector is spendable only by the operator via the script path.
+Connector leaves are spendable only by the operator via keypath. Connector tree
+nodes are also keypath spends signed by the operator only.
 
 ### Connector Tree
 
-When multiple forfeits are included in a round, connectors are organized in a tree structure to minimize on-chain footprint:
+When multiple forfeits are included in a round, connectors are organized in a
+tree structure to minimize on-chain footprint:
 
-1. **Connector Tree Root**: A single output in the batch transaction.
-2. **Connector Branches**: Intermediate transactions subdividing the root.
-3. **Connector Leaves**: Individual connector outputs used by forfeit transactions.
+1. **Connector Tree Root**: One or more outputs in the batch transaction.
+2. **Connector Branches**: Intermediate fan-out transactions subdividing the
+   root output.
+3. **Connector Leaves**: Individual connector outputs used by forfeit
+   transactions.
 
-The radix of the connector tree MAY differ from the VTXT radix. A higher radix reduces tree depth but increases individual transaction sizes.
+The radix of the connector tree MAY differ from the VTXT radix. A higher radix
+reduces tree depth but increases individual transaction sizes.
 
 ### Mermaid Diagram
 
@@ -385,8 +437,8 @@ Collaborative Spend Script (multi-sig):
   <P_o> OP_CHECKSIG
 
 Timeout Reclaim Script:
-  <P_b> OP_CHECKSIGVERIFY
-  <t_b> OP_CHECKSEQUENCEVERIFY
+  <P_b> OP_CHECKSIG
+  <t_b> OP_CHECKSEQUENCEVERIFY OP_DROP
 ```
 
 Where:
@@ -445,33 +497,45 @@ The internal key MUST be the ARKNUMSKey, a provably unspendable point. This ensu
 
 #### Script Tree
 
-The script tree contains two leaves:
+The checkpoint output uses a two-leaf tapscript tree:
 
 ```
-Collaborative Spend Script (multi-sig):
+Operator Unroll Script (CSV):
+  <P_sw> OP_CHECKSIG
+  <t_c> OP_CHECKSEQUENCEVERIFY OP_DROP
+
+Owner Leaf Script (v0, closure-provided):
+  <closure_script>
+
+Default collaborative closure (RECOMMENDED):
   <P_c> OP_CHECKSIGVERIFY
   <P_o> OP_CHECKSIG
-
-Operator Timeout Script:
-  <P_o> OP_CHECKSIGVERIFY
-  <t_c> OP_CHECKSEQUENCEVERIFY
 ```
 
 Where:
-- `P_c`: The checkpoint participant's public key (same as VTXO owner being spent)
-- `P_o`: The operator's public key
+- `P_c`: The checkpoint participant's public key (same as VTXO owner being
+  spent)
+- `P_o`: The operator's collaborative signing key
+- `P_sw`: The operator's sweep/unroll key (may be distinct from `P_o`)
 - `t_c`: The checkpoint timeout in blocks (relative)
+
+**Note (v0):** The owner leaf is a closure-provided script committed in the
+tap tree. Operators MAY enforce a policy that only accepts the default
+collaborative closure, but v0 is defined to allow arbitrary closures that are
+validated by policy.
 
 ### Spend Paths
 
-#### Collaborative Spend (Script Path Multi-sig)
+#### Owner Leaf Spend (Script Path)
 
-Used to continue the Ark transaction chain:
+Used to continue the Ark transaction chain via the owner leaf:
 
-1. Participant produces a signature with `P_c`.
-2. Operator produces a signature with `P_o`.
-3. The Ark transaction spends from the checkpoint via this path.
-4. Witness: `<sig_operator> <sig_participant> <collab_script> <control_block>`
+1. The witness satisfies the closure-provided script.
+2. The Ark transaction spends from the checkpoint via this path.
+3. Witness: `<closure_witness> <closure_script> <control_block>`
+
+If the default collaborative closure is used, the witness contains both the
+participant and operator signatures.
 
 #### Operator Timeout (Script Path)
 
@@ -513,7 +577,7 @@ Batch Transaction:
 
   Outputs:
     - Batch outputs (1 or more)
-    - Connector output (0 or 1)
+    - Connector outputs (0 or more)
     - Leave outputs (0 or more)
     - Change output to operator (0 or 1)
 ```
@@ -544,11 +608,14 @@ Batch Transaction:
 - Value equals sum of VTXO values in that tree.
 - Multiple batch outputs MAY exist in a single batch transaction.
 
-#### Connector Output
+#### Connector Outputs
 
-- Pay to connector tree root.
+- Pay to connector tree root(s) using the operator-provided P2TR connector
+  address.
 - Present if any forfeit transactions are included in this round.
-- Value is minimal (546 satoshis minimum for dust limit).
+- One or more outputs MAY be used if the connector tree is split by policy.
+- Each output value is `num_connectors * connector_dust_amount`, where each
+  leaf receives the dust amount configured in operator terms.
 
 #### Leave Outputs
 
@@ -598,15 +665,15 @@ A forfeit transaction atomically transfers a VTXO to the operator in exchange fo
 
 ```
 Forfeit Transaction:
-  Version: 3 (required for zero-fee anchors)
+  Version: 3 (required for P2A anchors)
   Locktime: 0
 
   Inputs:
     - VTXO input (spent via collaborative script-path multi-sig)
-    - Connector input (spent via operator script-path)
+    - Connector input (operator keypath spend)
 
   Outputs:
-    - Operator output (full VTXO value minus fees)
+    - Operator output (full VTXO value)
     - Anchor output (ephemeral, 0 sats)
 ```
 
@@ -621,7 +688,7 @@ Forfeit Transaction:
 #### Connector Input
 
 - Spends a connector leaf from the new batch transaction.
-- Requires signature from operator.
+- Requires operator keypath signature.
 - Provides atomicity: forfeit is only valid if batch transaction confirms.
 
 ### Output Requirements
@@ -629,7 +696,7 @@ Forfeit Transaction:
 #### Operator Output
 
 - Pays the forfeited value to an operator-controlled address.
-- Value equals VTXO value minus transaction fees.
+- Value equals the full VTXO value (fees are paid via CPFP anchor).
 
 #### Anchor Output
 
@@ -671,23 +738,29 @@ graph LR
 
 ### Purpose
 
-An Ark Transaction (also called Out-of-Round Transaction or OOR Transaction) spends one or more VTXOs and creates new VTXOs without requiring a new Batch Transaction. Ark transactions enable instant off-chain transfers between Ark participants.
+An Ark Transaction (also called Out-of-Round Transaction or OOR Transaction)
+spends one or more VTXOs and creates new VTXOs without requiring a new Batch
+Transaction. Ark transactions enable instant off-chain transfers between Ark
+participants.
 
-### Transaction Structure
+### Transaction Structure (v0 draft)
 
 ```
 Ark Transaction:
-  Version: 3 (required for zero-fee anchors)
+  Version: 3 (required for P2A anchors)
   Locktime: 0
 
   Inputs:
-    - Checkpoint output(s) (one per input VTXO, spent via collaborative script-path multi-sig)
+    - Checkpoint output(s) (one per input VTXO, vout=0)
 
   Outputs:
     - New VTXO output(s) for recipient(s)
     - Change VTXO output (if any) for sender
-    - Anchor output (ephemeral, 0 sats)
+    - Anchor output (ephemeral P2A, 0 sats, must be last)
 ```
+
+**Fees:** The v0 draft does not include a dedicated fee output. Fee policy for
+OOR is TBD and expected to be handled at the round level.
 
 ### Input Requirements
 
@@ -706,16 +779,36 @@ Each input spends from a checkpoint output:
 #### Anchor Output
 
 - Ephemeral anchor for fee bumping.
-- Zero satoshi value.
+- Zero satoshi value (P2A).
+
+### Canonical Ordering (v0 draft)
+
+Ark transactions MUST be canonicalized:
+
+1. Inputs are ordered by previous outpoint (txid, then vout), per BIP-69 style.
+2. Non-anchor outputs are ordered by value (ascending), then lexicographically
+   by raw pkScript bytes (BIP-69 output ordering).
+3. Exactly one anchor output exists and it MUST be the final output.
+
+### PSBT Profile (v0 draft)
+
+Ark transactions are exchanged as PSBTs with the following requirements:
+
+- Each Ark input MUST include `WitnessUtxo` matching the checkpoint output
+  (script + value).
+- Each Ark input MUST include a `taptree` metadata blob in a PSBT unknown field.
+  This blob is a TLV-encoded tapleaf list used by the corresponding checkpoint
+  output. See ARK-03 for the encoding.
 
 ### Validation Requirements
 
 Operators validating Ark transactions MUST verify:
 
 1. All input checkpoint outputs are valid and unspent.
-2. Input values equal output values (accounting for any implicit fees).
+2. Input values equal output values (v0 has no implicit fee).
 3. All new VTXO outputs have valid script structures.
-4. The transaction version is 3 (for zero-fee anchors).
+4. The transaction is canonical (ordering + single anchor last).
+5. The transaction version is 3 (for P2A anchors).
 
 ### Mermaid Diagram
 
@@ -738,22 +831,28 @@ Anchor outputs enable fee bumping for pre-signed transactions. Since VTXT transa
 
 ### Ephemeral Anchor Specification
 
-Ark uses ephemeral anchors as specified in BIP proposed for package relay:
+Ark uses ephemeral anchors (P2A) as specified in BIP-431:
 
 ```
 Anchor Output:
   Value: 0 satoshis
-  Script: OP_TRUE
+  Script: OP_1 0x4e 0x73   # P2A (bc1pfeessrawgf)
 ```
 
 This output:
-- Has zero value (does not require dust relay rules exemption in modern nodes).
-- Is immediately spendable by anyone with `OP_TRUE`.
-- Can be spent by a fee-bumping child transaction.
+- Has zero value.
+- Is immediately spendable by anyone with a child transaction.
+- Can be used for package CPFP fee bumping.
 
 ### Usage in Ark
 
-All off-chain transactions (VTXT transactions, Ark transactions, checkpoint transactions, forfeit transactions) MUST include an ephemeral anchor output. These transactions MUST use version 3 to support zero-fee anchors.
+All off-chain transactions that may need CPFP fee bumping (VTXT transactions,
+connector tree transactions, Ark transactions, forfeit transactions) MUST
+include an ephemeral anchor output as the final output. These transactions MUST
+use version 3 to support P2A anchors.
+
+Checkpoint transactions are a v0 exception: they use version 3 for package
+relay compatibility but do not include a P2A anchor output.
 
 When broadcasting these transactions:
 1. Create a child transaction spending the anchor.
@@ -773,7 +872,9 @@ The fee-bumping child transaction:
 
 All Ark protocol transactions:
 
-1. Off-chain transactions (VTXT, Ark, checkpoint, forfeit) MUST use transaction version 3 to support zero-fee anchors.
+1. Off-chain transactions (VTXT, connector trees, Ark, checkpoint, forfeit)
+   MUST use transaction version 3 (P2A anchors or package relay
+   compatibility).
 2. On-chain transactions (commitment) MUST use transaction version 2.
 3. MUST use witness serialization (SegWit).
 4. MUST have valid signatures for all inputs.
@@ -785,7 +886,7 @@ VTXT transactions:
 
 1. MUST spend from either a batch output or another VTXT transaction.
 2. MUST have outputs matching the expected VTXT structure.
-3. MUST include an anchor output.
+3. MUST include a trailing anchor output.
 4. SHOULD use locktime 0.
 
 ### Forfeit Transaction Rules
@@ -795,7 +896,7 @@ Forfeit transactions:
 1. MUST have exactly two inputs (VTXO and connector).
 2. MUST have the connector input from the associated batch transaction.
 3. MUST pay the operator output correctly.
-4. MUST include an anchor output.
+4. MUST include a trailing anchor output.
 
 ### Batch Transaction Rules
 
@@ -805,6 +906,9 @@ Commitment transactions:
 2. MUST have connector output if any forfeits are processed.
 3. MUST NOT exceed standard transaction size limits.
 4. SHOULD target reasonable confirmation time fee rates.
+5. Connector outputs MUST pay to the operator's connector address and have
+   value equal to the number of connector leaves times the connector dust
+   amount.
 
 ## References
 
@@ -813,6 +917,7 @@ Commitment transactions:
 3. BIP 68: Relative lock-time using consensus-enforced sequence numbers - https://github.com/bitcoin/bips/blob/master/bip-0068.mediawiki
 4. BIP 112: CHECKSEQUENCEVERIFY - https://github.com/bitcoin/bips/blob/master/bip-0112.mediawiki
 5. BIP 65: OP_CHECKLOCKTIMEVERIFY - https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki
+6. BIP 431: Package relay and ephemeral anchors - https://github.com/bitcoin/bips/blob/master/bip-0431.mediawiki
 
 ## Authors
 

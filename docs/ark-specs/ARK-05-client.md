@@ -84,24 +84,29 @@ Where:
   index = sequential key index
 ```
 
-### Session Keys
+### Signing Keys
 
-Session keys are used for MuSig2 signing sessions during rounds, specifically for the VTXT branch node aggregated keys.
+Signing keys are used for MuSig2 signing sessions during rounds, specifically
+for VTXT branch node aggregated keys. These are provided **per VTXO request**.
 
 **Requirements:**
-1. Each VTXO SHOULD have its own session key (in addition to its VTXO output key).
-2. Session keys MAY be derived or randomly generated.
+1. Each VTXO MUST have its own signing key (in addition to its VTXO output key).
+2. Signing keys MAY be derived or randomly generated.
 3. MUST be stored at least until the batch transaction is confirmed.
-4. MAY be discarded after batch confirmation (but MUST be retained if the VTXO will be spent via OOR).
+4. MUST NOT be reused across different rounds.
+5. MAY be discarded after batch confirmation.
 
 **Usage:**
 - Used in VTXT branch node aggregated keys.
 - Allows round participation without exposing VTXO ownership keys.
-- Distinct from VTXO output keys: session keys sign VTXT branches, output keys are used in VTXO scripts.
+- Distinct from VTXO output keys: signing keys sign VTXT branches, output keys
+  are used in VTXO scripts.
+  OOR spends use VTXO ownership keys, not signing keys.
 
 **Key separation:** Each VTXO conceptually has two keys:
-1. **Session key** (`P_s`): Used for VTXT signing during the round.
-2. **Output key** (`P_v`): Used in the VTXO output script for collaborative/unilateral spending.
+1. **Signing key** (`P_s`): Used for VTXT signing during the round.
+2. **Output key** (`P_v`): Used in the VTXO output script for collaborative/
+   unilateral spending.
 
 ### Boarding Keys
 
@@ -152,7 +157,12 @@ VTXORecord:
   owner_pubkey: pubkey
 
   // Ownership proof
-  vtxt_path: [SignedTransaction, ...]  // Path from batch output to VTXO
+  vtxt_path: [
+    {
+      tx: SignedTransaction
+      output_index: uint32  // Which output this path continues from
+    }, ...
+  ]  // Path from batch output to VTXO (fan-out)
   commitment_tx: SignedTransaction
   batch_id: bytes32
 
@@ -234,33 +244,48 @@ When receiving VTXT path transactions, verify:
 
 1. **Chain validity**: Each transaction spends from the correct parent.
 2. **Root anchor**: The root spends from the batch transaction batch output.
-3. **Leaf validity**: The leaf transaction has the expected VTXO output.
-4. **Script verification**: All output scripts match expected format.
-5. **Signatures valid**: All transactions are properly signed.
+3. **Fan-out output index**: Each path entry specifies which output continues
+   the path; it MUST not point to the anchor output.
+4. **Leaf validity**: The leaf transaction has the expected VTXO output.
+5. **Anchor output**: Each VTXT transaction ends with a P2A anchor output.
+6. **Script verification**: All output scripts match expected format.
+7. **Signatures valid**: All transactions are properly signed.
 
 **Verification Algorithm:**
 ```
 function VerifyVTXTPath(commitment_tx, vtxt_path, expected_vtxo):
-    // Start from root
+    // Start from the batch output outpoint
     current_outpoint = (commitment_tx.txid, batch_output_index)
 
-    for tx in vtxt_path:
+    for entry in vtxt_path:
+        tx = entry.tx
+        out_idx = entry.output_index
+
         // Verify tx spends from expected outpoint
         assert tx.inputs[0].prev_outpoint == current_outpoint
 
-        // Verify tx signature
+        // Verify tx signature (MuSig2 keypath)
         assert VerifySignature(tx)
 
-        // Verify output script (for non-leaf)
+        // Verify anchor output is last and P2A
+        assert IsP2AAnchor(tx.outputs[-1])
+
+        // Output index must not point to the anchor
+        assert out_idx < len(tx.outputs) - 1
+
+        // Verify branch output script if non-leaf
         if not tx.is_leaf:
-            assert VerifyBranchScript(tx.outputs[0])
+            assert VerifyBranchScript(tx.outputs[out_idx])
 
-        // Move to next level
-        current_outpoint = (tx.txid, 0)
+        // Move to next level (fan-out)
+        current_outpoint = (tx.txid, out_idx)
 
-    // Verify final VTXO
-    leaf_tx = vtxt_path[-1]
-    vtxo_output = leaf_tx.outputs[expected_vtxo.output_index]
+    // Verify final VTXO output (non-anchor output in leaf tx)
+    leaf_entry = vtxt_path[-1]
+    leaf_tx = leaf_entry.tx
+    leaf_out_idx = leaf_entry.output_index
+
+    vtxo_output = leaf_tx.outputs[leaf_out_idx]
 
     assert vtxo_output.script == ExpectedVTXOScript(expected_vtxo)
     assert vtxo_output.value == expected_vtxo.value
@@ -380,7 +405,7 @@ total_fee = sum(tx_size * fee_rate for tx in transaction_chain)
 
 ### Step 3: Broadcast Transaction Chain
 
-Broadcast transactions in order:
+Broadcast transactions in order (following the fan-out path):
 
 1. Commitment transaction (if not confirmed).
 2. VTXT branch transactions (root to leaf).

@@ -79,22 +79,26 @@ stateDiagram-v2
 
 During request collection, the operator accepts requests from participants. Each request type results in specific inputs or outputs in the batch transaction.
 
-### Session Key Submission
+### VTXT Signing Keys (Per VTXO)
 
-As part of registration, participants MUST provide a **session key** (`session_pubkey`) that is separate from their VTXO ownership keys. This separation is a critical security and privacy feature.
+Participants MUST provide a **signing key per requested VTXO**. These signing
+keys are used exclusively for MuSig2 aggregation in VTXT branch nodes and are
+separate from VTXO ownership keys.
 
 **Requirements:**
-1. Session keys are used exclusively for MuSig2 aggregation in VTXT branch nodes.
-2. Session keys SHOULD be freshly derived for each round.
-3. Session keys MUST NOT be reused across different rounds.
-4. Session keys MUST be different from VTXO ownership keys.
+1. Each VTXO request MUST include a signing key for VTXT signing.
+2. Signing keys SHOULD be freshly derived and MUST be unique within the batch.
+3. Signing keys MUST NOT be reused across different rounds.
+4. Signing keys MUST be different from VTXO ownership keys.
 
-**Rationale:** Separating session keys from VTXO keys provides:
-- **Privacy**: Prevents cross-round linkability of participant VTXOs
-- **Security isolation**: Session key compromise doesn't affect fund ownership
-- **Operational flexibility**: Session keys can be "hot" while VTXO keys remain "cold"
+**Rationale:** Separating signing keys from VTXO keys provides:
+- **Privacy**: Prevents cross-round linkability of participant VTXOs.
+- **Security isolation**: Signing key compromise doesn't affect fund ownership.
+- **Operational flexibility**: Signing keys can be "hot" while VTXO keys remain
+  "cold".
 
-See ARK-01 Section "Key Separation: Session Keys vs VTXO Keys" for detailed rationale and usage guidelines.
+See ARK-01 Section "Key Separation: Signing Keys vs VTXO Keys" for detailed
+rationale and usage guidelines.
 
 ### Request Types
 
@@ -140,10 +144,11 @@ A forfeit request provides funds by forfeiting one or more existing VTXOs.
 A VTXO request creates new VTXOs in the batch.
 
 **Request Contents:**
-- `vtxo_specs`: List of VTXO specifications (owner pubkey, value) - one signing key per VTXO for unlinkability
-- `session_pubkey`: Ephemeral key for VTXT signing sessions
+- `vtxo_specs`: List of VTXO specifications (owner pubkey, value, signing
+  pubkey). Each VTXO MUST include its own signing key for VTXT signing.
 
-**Note:** Each VTXO SHOULD have a unique owner pubkey to prevent linking VTXOs to the same owner. Participants may send to themselves or to other recipients.
+**Note:** Each VTXO SHOULD have a unique owner pubkey to prevent linking VTXOs
+to the same owner. Participants may send to themselves or to other recipients.
 
 ##### Leave Request
 
@@ -239,8 +244,10 @@ Group all VTXO requests (from boarding and batch swap) into trees:
 **Algorithm:**
 ```
 function GroupVTXOs(vtxos, radix):
-    // Sort VTXOs (optional, for determinism)
-    sorted_vtxos = Sort(vtxos)
+    // Sort VTXOs for determinism (LPT):
+    // - descending by amount
+    // - tie-breaker by pkScript bytes (lexicographic)
+    sorted_vtxos = SortByAmountDescThenPkScript(vtxos)
 
     // Build balanced tree bottom-up
     current_level = sorted_vtxos
@@ -301,20 +308,24 @@ Operators SHOULD document their batching policy in the `GetInfo` response, inclu
 - Whether multiple expiries are supported
 - Grouping criteria used (if any)
 - Any premium fees for specific batch types
+- Connector policy (max connectors per tree, connector dust amount, connector
+  address)
 
 ### Step 2: VTXT Construction
 
-For each batch, construct the VTXT bottom-up:
+For each batch, construct the VTXT as a fan-out tree:
 
-1. **Leaf Level**: Create leaf transactions with VTXO outputs.
-2. **Branch Levels**: Create branch transactions aggregating child outputs.
-3. **Root Level**: The final output becomes the batch output.
+1. **Root Level**: Create the root transaction that spends the batch output.
+2. **Branch Levels**: Each node spends its parent output and creates outputs
+   for its children (radix fan-out).
+3. **Leaf Level**: Leaf node transactions create the VTXO outputs.
 
 **For each VTXT node:**
-1. Compute the aggregated public key (all downstream owners + operator).
+1. Compute the aggregated public key (all downstream signing keys + operator).
 2. Compute the script tree (operator sweep path).
 3. Derive the taproot output key.
-4. Create the transaction spending from child outputs and producing the aggregated output.
+4. Create a transaction with a single input (parent output) and multiple child
+   outputs plus a trailing anchor output.
 
 **Note:** TXIDs can only be computed once all output scripts are known. Output scripts depend on the public keys of downstream participants, which must be collected first. Since all transactions use SegWit, the TXID is independent of witness data and can be computed before signing.
 
@@ -373,14 +384,14 @@ Send each participant their relevant transaction data:
 
 **For leave request participants:**
 - Full batch transaction
-- Connector tree path to their connector leaf
-- Forfeit transaction template
+- Connector leaf assignment for each forfeited VTXO
+- Forfeit transaction template per forfeited VTXO
 
 **For batch swap participants:**
 - Full batch transaction
 - VTXT path to their new VTXO(s)
-- Connector tree path to their connector leaf
-- Forfeit transaction template(s)
+- Connector leaf assignment for each forfeited VTXO
+- Forfeit transaction template(s) (one per forfeited VTXO)
 
 ### Mermaid Diagram: Construction Flow
 
@@ -419,7 +430,8 @@ For each VTXT transaction, signing proceeds as follows:
 
 ### Step 1: Client Nonce Submission
 
-Each participant generates and submits nonces for their VTXT path:
+Each participant generates and submits nonces for their VTXT path using the
+per‑VTXO signing keys they provided during request collection:
 
 **For each transaction in participant's VTXT path:**
 1. Generate fresh random nonce pair (R1, R2) per BIP-327.
@@ -517,7 +529,8 @@ Participants with boarding requests sign the batch transaction inputs:
 
 1. Verify the complete VTXT path is signed (from Phase 2).
 2. Verify the batch transaction includes expected outputs.
-3. Generate MuSig2 signature for the boarding input.
+3. Generate a Schnorr signature for the boarding input's collaborative
+   script‑path leaf.
 4. Submit signature to operator.
 
 **The participant MUST verify before signing:**
@@ -533,12 +546,14 @@ Participants with leave or batch swap requests sign forfeit transactions:
    - For leave: verify leave output with correct script and value.
    - For batch swap: verify new VTXOs (via VTXT path from Phase 2).
 2. Verify the connector path is valid.
-3. Construct the forfeit transaction.
-4. Generate MuSig2 signature for the VTXO input of the forfeit.
-5. Submit the complete signed forfeit transaction to operator.
+3. Construct the unsigned forfeit transaction.
+4. Generate a Schnorr signature for the VTXO input of the forfeit (collab
+   script‑path leaf).
+5. Submit the unsigned forfeit transaction plus the client VTXO signature to
+   the operator.
 
 **The forfeit transaction:**
-- Spends the forfeited VTXO via collaborative keypath.
+- Spends the forfeited VTXO via collaborative script‑path.
 - Spends a connector output from the new batch transaction.
 - Pays the operator.
 
@@ -547,9 +562,9 @@ Participants with leave or batch swap requests sign forfeit transactions:
 The operator completes signatures:
 
 1. Collect all boarding input signatures.
-2. Collect all forfeit transactions.
+2. Collect all forfeit transaction templates and client VTXO signatures.
 3. Sign operator's wallet inputs.
-4. Sign connector inputs for each forfeit transaction.
+4. Sign VTXO inputs and connector inputs for each forfeit transaction.
 5. Assemble the fully signed batch transaction.
 
 ### Mermaid Diagram: Input Signing Flow
@@ -566,11 +581,11 @@ sequenceDiagram
     BP->>O: Submit boarding input signature
 
     BSP->>BSP: Verify new VTXO path complete
-    BSP->>BSP: Construct and sign forfeit TX
-    BSP->>O: Submit signed forfeit TX
+    BSP->>BSP: Construct forfeit TX and sign VTXO input
+    BSP->>O: Submit forfeit TX + client signature
 
     O->>O: Sign operator inputs
-    O->>O: Sign connector inputs for forfeits
+    O->>O: Sign VTXO + connector inputs for forfeits
     O->>O: Assemble fully signed batch TX
 ```
 

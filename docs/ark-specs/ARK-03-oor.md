@@ -6,7 +6,8 @@ This document specifies the Out-of-Round (OOR) transaction protocol, also known 
 
 ## Status
 
-This specification is a working draft.
+This specification is a working draft. The v0 OOR PSBT flow described here is
+draft and aligns with the current implementation work in progress.
 
 ## Table of Contents
 
@@ -41,27 +42,31 @@ OOR transactions introduce additional considerations:
 
 The checkpoint mechanism addresses the griefing attack where a malicious sender could force the operator to broadcast expensive transaction chains. Checkpoints ensure the operator's on-chain costs are bounded regardless of OOR chain length.
 
-## Ark Transaction Format
+## Ark Transaction Format (v0 draft)
 
 ### Transaction Structure
 
-An Ark transaction spends one or more VTXOs and creates new VTXOs:
+An Ark transaction spends one or more checkpoints and creates new VTXOs:
 
 ```
 Ark Transaction:
-  Version: 3 (required for zero-fee anchors)
+  Version: 3 (required for P2A anchors)
   Locktime: 0
 
   Inputs:
-    - Checkpoint output(s) (spent via collaborative script-path multi-sig)
+    - Checkpoint output(s) (vout=0 of each checkpoint tx)
 
   Outputs:
     - New VTXO output(s)
-    - Fee output to operator (required)
-    - Anchor output (ephemeral, 0 sats)
+    - Change VTXO output (if any)
+    - Anchor output (ephemeral P2A, 0 sats, must be last)
 ```
 
-**Note:** Ark transactions spend from checkpoint outputs, not directly from VTXOs. Each VTXO input requires a corresponding checkpoint transaction.
+**Note:** Ark transactions spend from checkpoint outputs, not directly from
+VTXOs. Each VTXO input requires a corresponding checkpoint transaction.
+
+**Fees:** The v0 draft does not include a dedicated fee output. Fee policy for
+OOR is TBD and expected to be handled at the round level.
 
 ### Input Requirements
 
@@ -69,8 +74,8 @@ Ark Transaction:
 
 Each Ark transaction input:
 
-1. MUST spend from a checkpoint output.
-2. MUST be spent via the collaborative keypath (MuSig2 signature).
+1. MUST spend from a checkpoint output (vout=0).
+2. MUST be spent via the collaborative script‑path (Schnorr signatures).
 3. The checkpoint MUST spend from a valid, unspent VTXO.
 
 #### Cross-Batch Inputs
@@ -90,32 +95,28 @@ Each output creating a new VTXO:
 2. MUST have a valid recipient public key.
 3. MUST have positive value.
 
-#### Fee Output
-
-Ark transactions MUST include an explicit fee output:
-
-1. MUST pay directly to an operator-controlled address.
-2. MAY be unconditional (no timelock or multisig required).
-3. The value represents the fee for processing the OOR transaction.
-
-This explicit fee model is preferred over implicit fees (input > output difference) because:
-- Clear accounting of operator revenue
-- Explicit fee negotiation between sender and operator
-- Fees go to operator even if transaction goes on-chain (vs miners getting implicit fees)
-
 #### Anchor Output
 
 All Ark transactions:
 
-1. MUST include an ephemeral anchor output.
-2. The anchor enables fee bumping at broadcast time.
+1. MUST include an ephemeral P2A anchor output.
+2. The anchor MUST be the final output.
+
+### Canonical Ordering (v0 draft)
+
+Ark transactions MUST be canonicalized (BIP-69 style):
+
+1. Inputs are ordered by previous outpoint (txid, then vout).
+2. Non‑anchor outputs are ordered by value (ascending), then lexicographically
+   by raw pkScript bytes (BIP-69 output ordering).
+3. Exactly one anchor output exists and it MUST be last.
 
 ### Value Conservation
 
-The sum of output values MUST equal the sum of input values:
+The sum of output values MUST equal the sum of input values in v0:
 
 ```
-sum(vtxo_outputs) + fee_output + anchor = sum(checkpoint_values)
+sum(vtxo_outputs) + anchor = sum(checkpoint_values)
 ```
 
 Where the anchor has zero value.
@@ -136,7 +137,6 @@ graph LR
     subgraph "Output Side"
         V1[VTXO to Bob]
         V2[VTXO change to Alice]
-        FEE[Fee to Operator]
         ANCHOR[Anchor 0 sats]
     end
 
@@ -144,7 +144,6 @@ graph LR
     CP2 --> ARK
     ARK --> V1
     ARK --> V2
-    ARK --> FEE
     ARK --> ANCHOR
 ```
 
@@ -161,37 +160,44 @@ Checkpoint transactions serve two purposes:
 
 ```
 Checkpoint Transaction:
-  Version: 3 (required for zero-fee anchors)
+  Version: 3 (required for package relay compatibility)
   Locktime: 0
 
   Inputs:
-    - VTXO input (spent via collaborative script-path multi-sig)
+    - VTXO input (spent via owner-leaf script path)
 
   Outputs:
     - Checkpoint output
-    - Anchor output (ephemeral, 0 sats)
 ```
+
+**Note (v0):** Checkpoint transactions omit a P2A anchor output; version 3 is
+used for package relay compatibility.
 
 ### Checkpoint Output Script
 
 The checkpoint output uses a taproot structure (see ARK-01):
 
-- **Internal key**: ARKNUMSKey (provably unspendable)
-- **Script tree**: Two leaves - collaborative spend and operator timeout
+- **Internal key**: ARKNUMSKey (provably unspendable, script‑path only)
+- **Script tree**: Two leaves - operator unroll (CSV) and owner leaf
 
 ```
-Collaborative Spend Script (multi-sig):
+Operator Unroll Script (CSV):
+  <P_sw> OP_CHECKSIG
+  <t_c> OP_CHECKSEQUENCEVERIFY OP_DROP
+
+Owner Leaf Script (v0, closure-provided):
+  <closure_script>
+
+Default collaborative closure (RECOMMENDED):
   <P_sender> OP_CHECKSIGVERIFY
   <P_o> OP_CHECKSIG
-
-Operator Timeout Script:
-  <P_o> OP_CHECKSIGVERIFY
-  <t_c> OP_CHECKSEQUENCEVERIFY
 ```
 
 ### Checkpoint Properties
 
-1. **Collaborative spend**: The Ark transaction spends via script-path multi-sig, requiring individual signatures from both sender and operator.
+1. **Owner-leaf spend**: The Ark transaction spends via the owner leaf.
+   The exact closure is policy-defined; the default collaborative closure
+   requires individual signatures from both sender and operator.
 2. **Operator fallback**: If the sender abandons the chain, the operator can claim after `t_c` blocks.
 3. **Bounded chain cost**: Each checkpoint can be independently claimed, limiting operator exposure.
 
@@ -249,119 +255,97 @@ graph TD
 
 ## OOR Transaction Flow
 
-### Overview
+### Overview (PSBT submit/finalize)
 
-The OOR transaction flow involves multiple message exchanges between sender and operator:
+The v0 OOR flow uses PSBT packages:
 
-1. Sender constructs checkpoint and Ark transactions.
-2. Sender signs the Ark transaction (not the checkpoint).
-3. Sender sends both transactions to operator.
-4. Operator validates and co-signs both transactions.
-5. Sender verifies operator signatures.
-6. Sender signs the checkpoint transaction.
-7. Sender returns checkpoint signature to operator.
-8. Transaction is complete; new VTXOs are live.
+1. Sender constructs checkpoint PSBTs and an Ark PSBT.
+2. Sender signs Ark inputs and submits a **submit package**.
+3. Operator validates and co-signs Ark + checkpoint inputs.
+4. Sender verifies operator signatures and signs checkpoint PSBTs.
+5. Sender submits a **finalize package**.
+6. Operator validates, persists, and marks new VTXOs as preconfirmed.
+
+These submit/finalize packages are normative for v0.
 
 ### Step 1: Transaction Construction
 
 The sender constructs:
 
-**Checkpoint Transaction:**
-- Input: The VTXO(s) being spent.
-- Output: Checkpoint output paying to MuSig2(sender, operator).
+**Checkpoint PSBTs (one per input VTXO):**
+- Input: The VTXO being spent.
+- Output 0: Checkpoint output (script defined in ARK-01).
+- Owner leaf: Closure-provided script committed to the checkpoint tap tree.
 
-**Ark Transaction:**
-- Input: The checkpoint output(s).
-- Outputs: New VTXOs for recipients and change.
+**Ark PSBT:**
+- Inputs: Each spends checkpoint outpoint `(txid, vout=0)`.
+- Outputs: New VTXOs + optional change + P2A anchor (last).
+- Canonical ordering enforced (see Ark Transaction Format).
+- Each Ark input includes `WitnessUtxo` matching the checkpoint output.
+- Each Ark input includes `taptree` metadata (see Tap Tree Encoding below).
 
-### Step 2: Sender Signs Ark Transaction
+### Step 2: Sender Signs Ark PSBT
 
 The sender:
 
-1. Generates MuSig2 nonces for the Ark transaction.
-2. Computes partial signature for the Ark transaction.
-3. Does NOT sign the checkpoint yet.
+1. Signs each Ark input (script‑path Schnorr signatures).
+2. Does NOT sign checkpoint inputs yet.
 
-**Rationale:** The sender signs the Ark transaction first to commit to the transfer. The checkpoint is signed last to prevent premature commitment.
+**Rationale:** The sender commits to the transfer by signing the Ark PSBT, but
+retains control until the operator co‑signs.
 
-### Step 3: Submit to Operator
+### Step 3: Submit Package
 
 The sender submits to the operator:
 
-- The unsigned checkpoint transaction.
-- The Ark transaction with sender's partial signature.
-- MuSig2 pubnonces for both transactions.
+- Ark PSBT (with sender Ark signatures).
+- Checkpoint PSBTs (unsigned).
 
 ### Step 4: Operator Validation and Signing
 
 The operator:
 
-1. Validates the checkpoint transaction (see [Validation Requirements](#validation-requirements)).
-2. Validates the Ark transaction.
-3. Marks input VTXOs as "Spent".
-4. Generates and returns:
-   - MuSig2 partial signature for the checkpoint transaction.
-   - MuSig2 partial signature for the Ark transaction.
+1. Validates the submit package (canonical ordering, mappings, metadata).
+2. Validates checkpoints against policy and VTXO state.
+3. Signs Ark inputs and checkpoint inputs.
+4. Returns updated PSBTs to the sender.
 
-### Step 5: Sender Verification
+### Step 5: Sender Finalizes Checkpoints
 
 The sender:
 
-1. Verifies operator's signatures are valid.
-2. Aggregates signatures for the Ark transaction.
-3. Verifies the complete Ark transaction signature.
+1. Verifies operator signatures.
+2. Signs checkpoint inputs.
+3. Produces finalize package.
 
-### Step 6: Sender Signs Checkpoint
+### Step 6: Finalize Package
 
-The sender:
+The sender submits:
 
-1. Generates partial signature for the checkpoint transaction.
-2. Aggregates with operator's partial signature.
-3. Returns the complete checkpoint signature (or just sender's partial) to operator.
-
-### Step 7: Completion
+- Ark PSBT (canonical, used to map inputs and tap tree metadata).
+- Checkpoint PSBTs with final signature material.
 
 The operator:
 
-1. Verifies the checkpoint signature.
-2. Stores the signed checkpoint transaction.
-3. Marks the new VTXOs as "Live" (preconfirmed).
-4. Notifies any registered recipients.
+1. Validates finalize package structure.
+2. Persists fully signed checkpoint PSBTs.
+3. Marks input VTXOs as Spent and new VTXOs as Live (preconfirmed).
+4. Notifies registered recipients.
 
-### Flow Diagram
+### Tap Tree Encoding (v0)
 
-```mermaid
-sequenceDiagram
-    participant S as Sender
-    participant O as Operator
-    participant R as Recipient
+The `taptree` PSBT input metadata (stored under the PSBT unknown key
+`taptree`) encodes the checkpoint tapleaf scripts using the same TLV format as
+`waddrmgr.Tapscript`:
 
-    Note over S,R: OOR Transaction Flow
+- Top-level TLV stream includes:
+  - `type=1` tapscript type (uint8, set to 0 in v0).
+  - `type=3` tapscript leaves (a sequence of leaf TLVs).
+- Each leaf is length-prefixed and encoded as a TLV stream containing:
+  - `type=1` leaf version (uint8, base tapscript leaf version in v0).
+  - `type=2` leaf script (raw script bytes).
 
-    S->>S: Construct checkpoint TX
-    S->>S: Construct Ark TX
-    S->>S: Sign Ark TX only
-
-    S->>O: Submit checkpoint TX + Ark TX + nonces
-
-    O->>O: Validate transactions
-    O->>O: Mark VTXOs as Spent
-    O->>O: Sign both transactions
-
-    O->>S: Return operator signatures
-
-    S->>S: Verify operator signatures
-    S->>S: Aggregate Ark TX signature
-    S->>S: Sign checkpoint TX
-
-    S->>O: Submit checkpoint signature
-
-    O->>O: Verify checkpoint signature
-    O->>O: Store signed checkpoint
-    O->>O: Mark new VTXOs as Live
-
-    O->>R: Notify of incoming VTXO
-```
+Decoders MUST ignore the leaf version in v0 and return the raw script bytes.
 
 ## Cross-Batch Transactions
 
@@ -544,16 +528,42 @@ The operator MUST validate:
 4. **VTXO not expired**: The VTXO's batch has not expired.
 5. **Script correctness**: The checkpoint output script matches expected format.
 6. **Operator key**: The operator key in the checkpoint matches current signing key.
+7. **Owner closure policy**: The owner leaf script is acceptable under
+   operator policy and matches the taptree metadata attached to the Ark PSBT.
 
-### Ark Transaction Validation
+### Submit Package Validation (v0)
+
+The operator MUST validate:
+
+1. **Canonical Ark tx**: Inputs/outputs ordered per v0 rules; single anchor
+   output last.
+2. **Checkpoint mapping**: Each Ark input spends checkpoint outpoint
+   `(txid, vout=0)`; checkpoint set matches Ark inputs exactly.
+3. **Witness UTXO**: Each Ark PSBT input includes `WitnessUtxo` matching the
+   corresponding checkpoint output (script + value).
+4. **Tap tree metadata**: Each Ark PSBT input includes the `taptree` TLV
+   blob (see Tap Tree Encoding).
+
+### Finalize Package Validation (v0)
+
+The operator MUST validate:
+
+1. **Canonical Ark tx**: Finalize package MUST include the Ark PSBT, and it
+   must be canonical for deterministic mapping.
+2. **Checkpoint set**: Final checkpoint PSBTs match the Ark input set.
+3. **Signature material**: Each checkpoint PSBT contains some finalized
+   signature material (final witness or taproot sig fields).
+
+### Ark Transaction Validation (semantic)
 
 The operator MUST validate:
 
 1. **Input validity**: All checkpoint inputs are valid.
-2. **Value conservation**: Output sum <= input sum.
+2. **Value conservation**: Output sum == input sum (v0 has no implicit fee).
 3. **VTXO format**: All output VTXOs follow correct script format.
-4. **Signature validity**: The sender's partial signature is valid.
-5. **Chain depth**: (Optional) The resulting chain depth is within policy limits.
+4. **Signature validity**: Sender and operator signatures are valid.
+5. **Chain depth**: (Optional) The resulting chain depth is within policy
+   limits.
 
 ### Policy Limits
 
@@ -563,7 +573,7 @@ Operators MAY enforce policy limits:
 |--------|-------------|---------|
 | Max chain depth | Limit OOR chain length | 10 transactions |
 | Max cross-batch inputs | Limit inputs from different batches | 3 batches |
-| Min fee rate | Minimum fee for OOR processing | 1 sat/vbyte |
+| Min fee rate | Minimum fee for OOR processing | TBD |
 | Max VTXO count | Limit outputs per Ark transaction | 10 VTXOs |
 
 Policy violations SHOULD be rejected with appropriate error codes.
@@ -572,7 +582,9 @@ Policy violations SHOULD be rejected with appropriate error codes.
 
 1. ARK-00: Protocol Overview and Terminology
 2. ARK-01: Transaction Formats and Script Specifications
-3. BIP 327: MuSig2 - https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
+3. BIP 174: PSBT - https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
+4. BIP 371: PSBTv2 - https://github.com/bitcoin/bips/blob/master/bip-0371.mediawiki
+5. BIP 69: Lexicographic transaction ordering - https://github.com/bitcoin/bips/blob/master/bip-0069.mediawiki
 
 ## Authors
 

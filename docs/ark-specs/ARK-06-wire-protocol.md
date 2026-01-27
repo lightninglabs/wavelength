@@ -167,9 +167,9 @@ Subscriptions use server-side streaming:
 | 33 | SubmitPartialSigs | C→O | Submit partial signatures |
 | 34 | FinalSignatures | O→C | Final VTXT signatures |
 | 35 | SubmitInputSigs | C→O | Submit input signatures |
-| 40 | SubmitArkTx | C→O | Submit OOR transaction |
+| 40 | SubmitArkTx | C→O | Submit OOR submit package |
 | 41 | ArkTxResponse | O→C | OOR transaction response |
-| 42 | SubmitCheckpointSig | C→O | Submit checkpoint signature |
+| 42 | SubmitCheckpointSig | C→O | Submit OOR finalize package |
 | 50 | SubscribeRounds | C→O | Subscribe to round events |
 | 51 | RoundEvent | O→C | Round event notification |
 | 52 | SubscribeVTXOs | C→O | Subscribe to VTXO events |
@@ -209,15 +209,15 @@ message GetInfoResponse {
 
 message OperatorTerms {
     // Timelock parameters
-    uint32 vtxo_csv_delay = 1;        // Blocks
-    uint32 boarding_timeout = 2;       // Blocks
-    uint32 checkpoint_timeout = 3;     // Blocks
-    uint32 batch_expiry_delta = 4;     // Blocks from creation
+    uint32 vtxo_csv_delay = 1;        // Blocks (CSV)
+    uint32 boarding_timeout = 2;       // Blocks (CSV)
+    uint32 checkpoint_timeout = 3;     // Blocks (CSV)
+    uint32 batch_expiry_delta = 4;     // Blocks (CSV from confirmation)
 
     // Fee parameters
     uint64 min_relay_fee_rate = 5;     // sats/vbyte
     uint64 round_fee_rate = 6;         // sats/vbyte
-    uint64 oor_fee_per_vtxo = 7;       // sats per VTXO
+    uint64 oor_fee_per_vtxo = 7;       // sats per VTXO (TBD, may be 0 in v0)
 
     // Limits
     uint32 max_vtxos_per_round = 8;
@@ -226,9 +226,14 @@ message OperatorTerms {
     uint32 connector_radix = 11;
     uint32 max_oor_chain_depth = 12;
 
+    // Connector policy
+    uint32 max_connectors_per_tree = 14;
+    uint64 connector_dust_amount = 15; // sats per connector leaf
+    bytes connector_address = 16;      // P2TR address bytes
+
     // Round schedule
-    uint32 round_interval_seconds = 13;
-    uint32 round_timeout_seconds = 14;
+    uint32 round_interval_seconds = 17;
+    uint32 round_timeout_seconds = 18;
 }
 
 message OperatorStatus {
@@ -252,11 +257,8 @@ Register intent to participate in the next round.
 **Request:**
 ```protobuf
 message RegisterRoundRequest {
-    // Client session key for this round
-    bytes session_pubkey = 1;
-
     // Types of requests the client intends to submit
-    repeated RequestType intended_requests = 2;
+    repeated RequestType intended_requests = 1;
 }
 
 enum RequestType {
@@ -274,7 +276,7 @@ message RegisterRoundResponse {
 
     // Expected timeline
     uint64 collection_deadline = 2;    // Unix timestamp
-    uint32 expected_expiry_height = 3;
+    uint32 expected_sweep_delay = 3;   // CSV delay (blocks)
 }
 ```
 
@@ -300,14 +302,14 @@ message SubmitBoardingRequest {
 
     // Requested VTXOs
     repeated VTXORequest vtxo_requests = 8;
-
-    // Session key for VTXT signing
-    bytes session_pubkey = 9;
 }
 
 message VTXORequest {
     bytes owner_pubkey = 1;
     uint64 value = 2;
+    uint32 expiry = 3;            // CSV delay for unilateral path
+    bytes pk_script = 4;          // Full P2TR pkScript
+    bytes signing_pubkey = 5;     // Per‑VTXO VTXT signing key (MuSig2)
 }
 ```
 
@@ -352,9 +354,6 @@ message SubmitBatchSwapRequest {
 
     // New VTXOs requested
     repeated VTXORequest vtxo_requests = 4;
-
-    // Session key for VTXT signing
-    bytes session_pubkey = 5;
 }
 ```
 
@@ -373,14 +372,29 @@ message RoundProposal {
     // VTXT path for this participant
     repeated bytes vtxt_transactions = 3;
 
-    // Connector path (for forfeits)
+    // Connector transactions (optional, for monitoring)
     repeated bytes connector_transactions = 4;
 
-    // Forfeit transaction template (for leave/swap)
-    bytes forfeit_tx_template = 5;
+    // Connector leaf assignments (per forfeited VTXO)
+    repeated ConnectorLeafAssignment connector_assignments = 5;
+
+    // Forfeit transaction templates (one per forfeited VTXO)
+    repeated ForfeitTxTemplate forfeit_tx_templates = 6;
 
     // Signing instructions
-    repeated SigningInstruction signing_instructions = 6;
+    repeated SigningInstruction signing_instructions = 7;
+}
+
+message ConnectorLeafAssignment {
+    VTXOReference vtxo_ref = 1;
+    bytes leaf_txid = 2;
+    uint32 leaf_vout = 3;
+    bytes leaf_output = 4; // serialized TxOut
+}
+
+message ForfeitTxTemplate {
+    VTXOReference vtxo_ref = 1;
+    bytes unsigned_tx = 2;      // unsigned forfeit tx
 }
 
 message SigningInstruction {
@@ -477,63 +491,67 @@ Submit signatures for batch transaction inputs.
 message SubmitInputSigsRequest {
     bytes round_id = 1;
 
-    // For boarding inputs: partial signature
+    // For boarding inputs: client signature
     repeated BoardingInputSig boarding_sigs = 2;
 
-    // For forfeits: complete signed forfeit transaction
-    repeated SignedTransaction forfeit_txs = 3;
+    // For forfeits: unsigned forfeit tx + client VTXO signature
+    repeated ForfeitTxSig forfeit_txs = 3;
 }
 
 message BoardingInputSig {
     bytes boarding_outpoint_txid = 1;
     uint32 boarding_outpoint_vout = 2;
-    bytes partial_sig = 3;
+    bytes client_sig = 3;
+}
+
+message ForfeitTxSig {
+    bytes unsigned_tx = 1;
+    bytes client_vtxo_sig = 2;
 }
 ```
 
 ## OOR Transaction Messages
 
+The v0 OOR flow is defined in terms of PSBT submit/finalize packages. The
+messages below are normative for v0.
+
 ### SubmitArkTx
 
-Submit an OOR/Ark transaction for processing.
+Submit an OOR/Ark **submit package** (v0).
+
+**PSBT Profile Notes (v0):**
+- Ark PSBT MUST be canonicalized (BIP-69 ordering: amount, then pkScript;
+  single anchor last).
+- Each Ark PSBT input MUST include `WitnessUtxo` matching the referenced
+  checkpoint output.
+- Each Ark PSBT input MUST include an unknown field with key `taptree`
+  containing the TLV-encoded tapleaf list (see ARK-03).
 
 **Request:**
 ```protobuf
 message SubmitArkTxRequest {
-    // Checkpoint transactions (one per input VTXO)
-    repeated bytes checkpoint_txs = 1;
+    // Ark PSBT (unsigned or partially signed by sender)
+    bytes ark_psbt = 1;
 
-    // Ark transaction
-    bytes ark_tx = 2;
-
-    // Sender's partial signatures
-    repeated PartialSignature sender_sigs = 3;
-
-    // Sender's public nonces
-    repeated TransactionNonces sender_nonces = 4;
-}
-
-message PartialSignature {
-    bytes txid = 1;
-    uint32 input_index = 2;
-    bytes partial_sig = 3;
+    // Checkpoint PSBTs (unsigned)
+    repeated bytes checkpoint_psbts = 2;
 }
 ```
 
 **Response:**
 ```protobuf
 message SubmitArkTxResponse {
-    // Operator's partial signatures for checkpoints and ark tx
-    repeated PartialSignature operator_sigs = 1;
+    bool accepted = 1;
+    string reject_reason = 2;
 
-    // Operator's public nonces
-    repeated TransactionNonces operator_nonces = 2;
+    // Ark PSBT with operator signatures attached
+    bytes ark_psbt = 3;
 
-    // Status
-    bool accepted = 3;
+    // Checkpoint PSBTs with operator signatures attached
+    repeated bytes checkpoint_psbts = 4;
 
-    // New VTXO details
-    repeated VTXOInfo new_vtxos = 4;
+    // New VTXO details (preconfirmed)
+    repeated VTXOInfo new_vtxos = 5;
 }
 
 message VTXOInfo {
@@ -548,16 +566,19 @@ message VTXOInfo {
 
 ### SubmitCheckpointSig
 
-Submit the client's checkpoint signature to finalize OOR.
+Submit the **finalize package** (v0).
+
+The Ark PSBT MUST match the canonical Ark PSBT previously submitted (same
+txid).
 
 **Request:**
 ```protobuf
 message SubmitCheckpointSigRequest {
-    // Reference to the OOR transaction
-    bytes ark_tx_id = 1;
+    // Ark PSBT (canonical, used to map inputs and tap tree metadata)
+    bytes ark_psbt = 1;
 
-    // Client's signatures for checkpoint transactions
-    repeated PartialSignature checkpoint_sigs = 2;
+    // Finalized checkpoint PSBTs (with client signatures)
+    repeated bytes final_checkpoint_psbts = 2;
 }
 ```
 
