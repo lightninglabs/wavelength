@@ -381,6 +381,40 @@ func (e *RefreshVTXORequest) MessageType() string {
 	return "RefreshVTXORequest"
 }
 
+// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
+// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
+// is similar to RefreshVTXORequest except the output is on-chain rather than a
+// new VTXO.
+//
+// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
+// forfeited via a connector output, and the leave output is included directly
+// in the batch transaction.
+type LeaveVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// Output is the on-chain destination output that will be included in
+	// the batch transaction. This contains the value and pkScript for the
+	// leave output.
+	Output *wire.TxOut
+}
+
+// clientEventSealed prevents external implementations.
+func (e *LeaveVTXORequest) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *LeaveVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *LeaveVTXORequest) MessageType() string {
+	return "LeaveVTXORequest"
+}
+
 // ForfeitSignatureResponse is sent from a VTXO actor with its signature for
 // the forfeit transaction. This is the response to a forfeit request during
 // a batch swap round.
