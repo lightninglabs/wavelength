@@ -201,6 +201,24 @@ func (e *TriggerRefreshEvent) MessageType() string {
 	return "TriggerRefreshEvent"
 }
 
+// TriggerLeaveEvent is sent to a VTXO actor to manually trigger a leave
+// (offboard) request. This transitions the VTXO to a state where it will be
+// forfeited and the value sent to the specified destination output. Used by
+// the wallet actor when the user explicitly requests to leave the Ark.
+type TriggerLeaveEvent struct {
+	actor.BaseMessage
+
+	// DestOutput is the on-chain destination output where the funds will
+	// be sent. This output will be included in the batch transaction.
+	DestOutput *wire.TxOut
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *TriggerLeaveEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *TriggerLeaveEvent) MessageType() string { return "TriggerLeaveEvent" }
+
 // =============================================================================
 // Messages TO VTXO Manager
 // =============================================================================
