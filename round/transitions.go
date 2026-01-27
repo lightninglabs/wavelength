@@ -980,6 +980,54 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
 
+		// For leave-only rounds (no new VTXOs), skip nonce generation
+		// and go directly to forfeit collection. The server doesn't
+		// need nonces when there are no VTXOs to sign.
+		if len(s.Intents.VTXOs) == 0 && len(s.ForfeitMappings) > 0 {
+			env.Log.InfoS(ctx, "Leave-only round, skipping "+
+				"to forfeit collection",
+				slog.String("round_id", s.RoundID.String()),
+				slog.Int("forfeit_count", len(s.ForfeitMappings)))
+
+			// Build forfeit request messages for each VTXO being
+			// forfeited.
+			var outbox []ClientOutMsg
+			for vtxoOutpoint, info := range s.ForfeitMappings {
+				msg := &ForfeitRequestToVTXO{
+					VTXOOutpoint:      vtxoOutpoint,
+					RoundID:           s.RoundID.String(),
+					ConnectorOutpoint: info.ConnectorOutpoint,
+					ConnectorPkScript: info.ConnectorPkScript,
+					ConnectorAmount:   info.ConnectorAmount,
+					ServerForfeitPkScript: env.OperatorTerms.
+						ForfeitScript,
+				}
+				outbox = append(outbox, msg)
+			}
+
+			// Transition directly to forfeit collection.
+			collectedForfeits := make(
+				map[wire.OutPoint]*ForfeitSignatureResponse,
+			)
+
+			return &ClientStateTransition{
+				NextState: &ForfeitSignaturesCollectingState{
+					RoundID:           s.RoundID,
+					CommitmentTx:      s.CommitmentTx,
+					VTXOTreePaths:     s.VTXOTreePaths,
+					Intents:           s.Intents.Clone(),
+					ClientTrees:       s.ClientTrees,
+					ExpectedForfeits:  s.ForfeitMappings,
+					CollectedForfeits: collectedForfeits,
+					BoardingInputIndices: s.
+						BoardingInputIndices,
+				},
+				NewEvents: fn.Some(ClientEmittedEvent{
+					Outbox: outbox,
+				}),
+			}, nil
+		}
+
 		// At this point, all the basic validation checks have passed.
 		// So now we'll generate a musig2 session to create nonces to
 		// sign the VTXO tree. Each VTXO that we created will
