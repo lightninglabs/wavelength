@@ -260,6 +260,28 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				)
 			}
 
+		case *LeaveRequest:
+			// Route leave request to round actor. This tells the
+			// round to forfeit this VTXO and include a leave output
+			// in the batch transaction (no new VTXO is created).
+			if a.cfg.RoundActor != nil {
+				leaveReq := &round.LeaveVTXORequest{
+					VTXOOutpoint: m.VTXOOutpoint,
+					Amount:       m.Amount,
+					Output:       m.DestOutput,
+				}
+				a.cfg.RoundActor.Tell(ctx, leaveReq)
+
+				a.cfg.Logger.InfoS(
+					ctx, "Sent leave request to round",
+					slog.String(
+						"outpoint",
+						m.VTXOOutpoint.String(),
+					),
+					slog.Int64("amount", m.Amount),
+				)
+			}
+
 		case *ForfeitSignatureSubmission:
 			// Route forfeit signature to round actor.
 			if a.cfg.RoundActor != nil {
