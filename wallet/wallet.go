@@ -112,6 +112,17 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 	}
 }
 
+// SetRoundActor sets the round actor reference for forwarding refresh requests.
+// This is used to break the circular dependency where the wallet is created
+// before the round actor, but needs the round actor reference for VTXO
+// coordination. Must be called before Start() if the round actor reference
+// wasn't provided to NewArk().
+func (a *Ark) SetRoundActor(
+	roundActor actor.TellOnlyRef[actormsg.RoundReceivable]) {
+
+	a.roundActor = fn.Some(roundActor)
+}
+
 // Start initializes the actor and subscribes to block epochs. The selfRef
 // parameter is the actor's own reference, used to receive block epoch
 // notifications from the chainsource actor.
@@ -218,6 +229,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *RefreshVTXOsRequest:
 		return a.handleRefreshVTXOs(ctx, m)
+
+	case *LeaveVTXOsRequest:
+		return a.handleLeaveVTXOs(ctx, m)
 
 	default:
 		return fn.Err[WalletResp](
@@ -550,6 +564,33 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	resp := &RefreshVTXOsResponse{
 		RefreshingCount: len(req.TargetOutpoints),
 		Errors:          make(map[wire.OutPoint]error),
+	}
+
+	return fn.Ok[WalletResp](resp)
+}
+
+// handleLeaveVTXOs processes a leave (offboard) request by forwarding it to the
+// round actor. The round actor coordinates with VTXO actors to initiate the
+// forfeit flow, resulting in an on-chain output in the batch transaction.
+func (a *Ark) handleLeaveVTXOs(ctx context.Context,
+	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
+
+	a.log.InfoS(ctx, "Received VTXO leave request",
+		slog.Int("target_count", len(req.TargetOutpoints)),
+	)
+
+	// Forward to round actor if configured. The round actor looks up VTXO
+	// actors by service key and sends TriggerLeaveEvent to each one.
+	a.roundActor.WhenSome(func(ref actor.TellOnlyRef[actormsg.RoundReceivable]) {
+		ref.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
+			TargetOutpoints: req.TargetOutpoints,
+			DestOutput:      req.DestOutput,
+		})
+	})
+
+	resp := &LeaveVTXOsResponse{
+		LeavingCount: len(req.TargetOutpoints),
+		Errors:       make(map[wire.OutPoint]error),
 	}
 
 	return fn.Ok[WalletResp](resp)
