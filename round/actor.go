@@ -629,11 +629,17 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
 
+	case *LeaveVTXORequest:
+		return a.handleLeaveVTXORequest(ctx, m)
+
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
 
 	case *actormsg.TriggerVTXORefreshMsg:
 		return a.handleTriggerVTXORefresh(ctx, m)
+
+	case *actormsg.TriggerVTXOLeaveMsg:
+		return a.handleTriggerVTXOLeave(ctx, m)
 
 	default:
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -1382,6 +1388,41 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
+// handleLeaveVTXORequest processes a leave (offboard) request from a VTXO
+// actor. The VTXO is being exited to an on-chain output. The request is
+// forwarded to a pending round FSM which tracks it alongside boarding intents
+// and refresh requests.
+func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
+	req *LeaveVTXORequest) fn.Result[ClientResp] {
+
+	// Find a pending round or create one if none exists.
+	roundFSM := a.findPendingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[ClientResp](fmt.Errorf(
+				"failed to create round for leave: %w", err,
+			))
+		}
+	}
+
+	// Forward to the round FSM. The FSM tracks leaving VTXOs in its
+	// state (similar to how it tracks boarding intents and refreshes).
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	if err != nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"FSM error processing leave request: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Queued VTXO for leave",
+		slog.String("outpoint", req.VTXOOutpoint.String()),
+		slog.Int64("amount", req.Amount))
+
+	return fn.Ok[ClientResp](nil)
+}
+
 // handleForfeitSignatureResponse processes a forfeit signature from a VTXO
 // actor. The VTXO actor has signed the forfeit transaction as part of a batch
 // swap round. The signature is forwarded to the round's FSM for tracking.
@@ -1450,4 +1491,36 @@ func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
 		slog.Int("count", triggeredCount))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleTriggerVTXOLeave processes a leave (offboard) trigger request from the
+// wallet actor. For each target outpoint, we send TriggerLeaveEvent to the VTXO
+// actor via its service key. The VTXO actor then emits LeaveVTXORequest back to
+// us through its outbox.
+func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
+	cmd *actormsg.TriggerVTXOLeaveMsg) fn.Result[ClientResp] {
+
+	if a.cfg.ActorSystem == nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"ActorSystem not configured, cannot trigger VTXO leave",
+		))
+	}
+
+	triggeredCount := 0
+	for _, outpoint := range cmd.TargetOutpoints {
+		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &TriggerLeaveEvent{
+			DestOutput: cmd.DestOutput,
+		})
+
+		a.log.InfoS(ctx, "Sent leave trigger to VTXO actor",
+			slog.String("outpoint", outpoint.String()))
+
+		triggeredCount++
+	}
+
+	a.log.InfoS(ctx, "Triggered VTXO leave",
+		slog.Int("count", triggeredCount))
+
+	return fn.Ok[ClientResp](nil)
 }
