@@ -301,3 +301,43 @@ func (m *RefreshVTXOsResponse) MessageType() string {
 
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *RefreshVTXOsResponse) walletRespSealed() {}
+
+// LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
+// will be forfeited and their value sent to the specified destination output.
+type LeaveVTXOsRequest struct {
+	actor.BaseMessage
+
+	// TargetOutpoints specifies which VTXOs to leave (offboard).
+	TargetOutpoints []wire.OutPoint
+
+	// DestOutput is the on-chain destination output where the funds will
+	// be sent. This output will be included in the batch transaction.
+	DestOutput *wire.TxOut
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *LeaveVTXOsRequest) MessageType() string {
+	return "LeaveVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *LeaveVTXOsRequest) walletMsgSealed() {}
+
+// LeaveVTXOsResponse indicates the result of the leave request.
+type LeaveVTXOsResponse struct {
+	actor.BaseMessage
+
+	// LeavingCount is the number of VTXOs that were queued for leave.
+	LeavingCount int
+
+	// Errors contains any VTXOs that couldn't be left and why.
+	Errors map[wire.OutPoint]error
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *LeaveVTXOsResponse) MessageType() string {
+	return "LeaveVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *LeaveVTXOsResponse) walletRespSealed() {}
