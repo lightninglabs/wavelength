@@ -48,8 +48,9 @@ func (s *Idle) clientStateSealed() {}
 // all intents reach the required confirmations, the FSM transitions to round
 // registration.
 //
-// This state also tracks VTXOs pending refresh. When VTXOs are approaching
-// expiry, they send RefreshVTXORequest to be included in the next round.
+// This state also tracks VTXOs pending refresh or leave. When VTXOs are
+// approaching expiry, they send RefreshVTXORequest to be included in the next
+// round. When a user wants to exit the Ark, they send LeaveVTXORequest.
 type PendingRoundAssembly struct {
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
@@ -63,6 +64,11 @@ type PendingRoundAssembly struct {
 	// Keyed by VTXO outpoint. These are accumulated alongside boarding
 	// intents and included in the same round registration.
 	RefreshingVTXOs map[wire.OutPoint]*RefreshVTXORequest
+
+	// LeavingVTXOs tracks VTXOs waiting to exit to on-chain outputs. Keyed
+	// by VTXO outpoint. These are accumulated alongside boarding intents
+	// and refresh requests, and included in the same round registration.
+	LeavingVTXOs map[wire.OutPoint]*LeaveVTXORequest
 }
 
 func (s *PendingRoundAssembly) String() string {
