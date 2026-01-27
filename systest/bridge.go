@@ -198,12 +198,32 @@ func (b *BridgeServerConn) convertToActorMsg(
 		// The forfeit request only needs the outpoint; the new VTXO
 		// is already included in VTXORequests.
 		forfeitReqs := make(
-			[]*clienttypes.ForfeitRequest, len(m.RefreshRequests),
+			[]*clienttypes.ForfeitRequest, 0,
+			len(m.RefreshRequests)+len(m.LeaveRequests),
 		)
-		for i, refreshReq := range m.RefreshRequests {
-			forfeitReqs[i] = &clienttypes.ForfeitRequest{
+		for _, refreshReq := range m.RefreshRequests {
+			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
 				VTXOOutpoint: &refreshReq.VTXOOutpoint,
+			})
+		}
+
+		// Convert LeaveRequests to both LeaveReqs and ForfeitReqs.
+		// Each leave specifies a VTXO to forfeit and an on-chain
+		// destination output. The leave output goes in LeaveReqs, and
+		// the VTXO forfeit goes in ForfeitReqs.
+		leaveReqs := make(
+			[]*clienttypes.LeaveRequest, len(m.LeaveRequests),
+		)
+		for i, leaveReq := range m.LeaveRequests {
+			leaveReqs[i] = &clienttypes.LeaveRequest{
+				Output: leaveReq.Output,
 			}
+
+			// Also add to forfeitReqs since leave requires
+			// forfeiting the VTXO.
+			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
+				VTXOOutpoint: &leaveReq.VTXOOutpoint,
+			})
 		}
 
 		return &rounds.JoinRoundRequest{
@@ -212,6 +232,7 @@ func (b *BridgeServerConn) convertToActorMsg(
 				BoardingReqs: boardingReqs,
 				VTXOReqs:     vtxoReqs,
 				ForfeitReqs:  forfeitReqs,
+				LeaveReqs:    leaveReqs,
 			},
 		}, nil
 
