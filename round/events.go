@@ -342,9 +342,9 @@ func (e *RoundComplete) clientEventSealed() {}
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
 //
-// This request contains all information needed to build both the server's
-// RefreshRequest (for the connector tree) and a VTXORequest (for the new VTXO
-// in the VTXT). The same client key is typically reused for the new VTXO.
+// This request contains all information needed to build a forfeit request
+// (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
+// The same client key is typically reused for the new VTXO.
 type RefreshVTXORequest struct {
 	actor.BaseMessage
 

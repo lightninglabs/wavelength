@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -211,8 +210,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				)
 			}
 
-		case *RefreshRequest:
-			// Route refresh request to round actor. This tells
+		case *ForfeitRequest:
+			// Route forfeit request to round actor. This tells
 			// the round to include this VTXO in the forfeit flow.
 			// We also send a separate VTXORequest to explicitly
 			// request a new VTXO for the refreshed value (refresh
@@ -223,7 +222,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				// Send the refresh request for forfeit flow.
 				refreshReq := &round.RefreshVTXORequest{
 					VTXOOutpoint: m.VTXOOutpoint,
-					Amount:       m.Amount,
+					Amount:       int64(vtxo.Amount),
 					NewVTXOKey:   vtxo.ClientKey.PubKey,
 					PkScript:     vtxo.PkScript,
 					OperatorKey:  vtxo.OperatorKey,
@@ -234,10 +233,9 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 
 				// Also send a VTXORequest to request the new
 				// VTXO output for this refresh.
-				amt := btcutil.Amount(m.Amount)
 				vtxoReq := &round.VTXORequestsReceived{
 					Requests: []types.VTXORequest{{
-						Amount:   amt,
+						Amount:   vtxo.Amount,
 						PkScript: vtxo.PkScript,
 						Expiry:   vtxo.RelativeExpiry,
 						ClientKey: vtxo.ClientKey.
@@ -249,14 +247,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				a.cfg.RoundActor.Tell(ctx, vtxoReq)
 
 				a.cfg.Logger.InfoS(
-					ctx, "Sent refresh and VTXO request",
-					slog.String(
-						"outpoint",
-						m.VTXOOutpoint.String(),
-					),
-					slog.String(
-						"urgency", m.Urgency.String(),
-					),
+					ctx, "Sent refresh forfeit and request",
+					slog.String("outpoint", m.VTXOOutpoint.String()),
 				)
 			}
 

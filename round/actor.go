@@ -614,6 +614,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterVTXORequestsRequest:
 		return a.handleVTXORequests(ctx, m)
 
+	case *VTXORequestsReceived:
+		return a.handleVTXORequestsReceived(ctx, m)
+
 	case *ServerMessageNotification:
 		return a.handleServerMessage(ctx, m)
 
@@ -760,6 +763,42 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	return fn.Ok[actormsg.RoundActorResp](&RegisterVTXORequestsResponse{
 		Success: true,
 	})
+}
+
+// handleVTXORequestsReceived forwards pre-built VTXO requests from other
+// actors into the pending round FSM.
+func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
+	req *VTXORequestsReceived) fn.Result[actormsg.RoundActorResp] {
+
+	if len(req.Requests) == 0 {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"VTXO requests are empty",
+		))
+	}
+
+	a.log.InfoS(ctx, "Received VTXO requests",
+		slog.Int("count", len(req.Requests)))
+
+	// Find an existing assembling round (Idle or PendingRoundAssembly) or
+	// create a new one. This allows VTXOs to join a round that already has
+	// boarding intents being assembled.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"create new round for VTXO requests: %w", err))
+		}
+	}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"FSM error processing VTXO requests: %w", err))
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
 // buildVTXORequest derives a signing key and constructs a VTXO request for
