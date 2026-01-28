@@ -193,24 +193,30 @@ func (b *BridgeServerConn) convertToActorMsg(
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
 
+		// Convert ForfeitRequests to ForfeitReqs. Each forfeit
+		// specifies a VTXO to forfeit.
+		forfeitReqs := make(
+			[]*clienttypes.ForfeitRequest, 0,
+			len(m.ForfeitRequests)+len(m.RefreshRequests),
+		)
+		for _, forfeitReq := range m.ForfeitRequests {
+			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
+				VTXOOutpoint: &forfeitReq.VTXOOutpoint,
+			})
+		}
+
 		// Convert RefreshRequests to ForfeitReqs. Each refresh
 		// specifies a VTXO to forfeit and a new VTXO to receive.
 		// The forfeit request only needs the outpoint; the new VTXO
 		// is already included in VTXORequests.
-		forfeitReqs := make(
-			[]*clienttypes.ForfeitRequest, 0,
-			len(m.RefreshRequests)+len(m.LeaveRequests),
-		)
 		for _, refreshReq := range m.RefreshRequests {
 			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
 				VTXOOutpoint: &refreshReq.VTXOOutpoint,
 			})
 		}
 
-		// Convert LeaveRequests to both LeaveReqs and ForfeitReqs.
-		// Each leave specifies a VTXO to forfeit and an on-chain
-		// destination output. The leave output goes in LeaveReqs, and
-		// the VTXO forfeit goes in ForfeitReqs.
+		// Convert LeaveRequests directly. Each leave specifies an
+		// on-chain destination output.
 		leaveReqs := make(
 			[]*clienttypes.LeaveRequest, len(m.LeaveRequests),
 		)
@@ -218,12 +224,6 @@ func (b *BridgeServerConn) convertToActorMsg(
 			leaveReqs[i] = &clienttypes.LeaveRequest{
 				Output: leaveReq.Output,
 			}
-
-			// Also add to forfeitReqs since leave requires
-			// forfeiting the VTXO.
-			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
-				VTXOOutpoint: &leaveReq.VTXOOutpoint,
-			})
 		}
 
 		return &rounds.JoinRoundRequest{
