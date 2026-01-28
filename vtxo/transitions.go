@@ -71,16 +71,9 @@ func (s *LiveState) handleBlockEpoch(
 
 	case ExpiryStatusNeedsRefresh:
 		// Request refresh before expiry becomes critical.
-		blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
-		urgency := env.ExpiryConfig.DetermineRefreshUrgency(
-			s.VTXO, blocksRemaining,
-		)
-
 		outbox := []VTXOOutMsg{
-			&RefreshRequest{
+			&ForfeitRequest{
 				VTXOOutpoint: s.VTXO.Outpoint,
-				Amount:       int64(s.VTXO.Amount),
-				Urgency:      urgency,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -197,16 +190,14 @@ func (s *LiveState) handleForfeitRequest(
 
 // handleTriggerRefresh handles a manual refresh request from the wallet. This
 // bypasses the automatic expiry-based refresh and immediately transitions the
-// VTXO to RefreshRequested state, emitting a RefreshRequest to the round actor.
+// VTXO to RefreshRequested state, emitting a ForfeitRequest to the round actor.
 func (s *LiveState) handleTriggerRefresh(
 	_ context.Context, _ *TriggerRefreshEvent, _ *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 
 	outbox := []VTXOOutMsg{
-		&RefreshRequest{
+		&ForfeitRequest{
 			VTXOOutpoint: s.VTXO.Outpoint,
-			Amount:       int64(s.VTXO.Amount),
-			Urgency:      RefreshUrgencyNormal,
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
