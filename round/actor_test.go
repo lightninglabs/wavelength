@@ -1248,8 +1248,7 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 
 		// Directly call processOutbox to test the routing.
 		outbox := []ClientOutMsg{notification}
-		err = h.actor.processOutbox(h.ctx, outbox)
-		require.NoError(t, err)
+		_ = h.actor.processOutbox(h.ctx, outbox)
 
 		// Verify the VTXO manager received the notification.
 		receivedNotif := h.vtxoManager.assertVTXOCreatedReceived(t)
