@@ -574,23 +574,15 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Build refresh requests for VTXOs being refreshed. The actual
-		// VTXO outputs are specified via VTXOReqs (not assumed 1:1).
-		numRefresh := len(s.RefreshingVTXOs)
-		refreshReqs := make([]*RefreshRequest, 0, numRefresh)
+		// Build forfeit requests for VTXOs being refreshed or exited
+		// on-chain. Forfeits are listed separately from outputs.
+		numForfeit := len(s.RefreshingVTXOs) + len(s.LeavingVTXOs)
+		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
 		for _, req := range s.RefreshingVTXOs {
-			refreshReqs = append(refreshReqs, &RefreshRequest{
+			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
 				VTXOOutpoint: req.VTXOOutpoint,
-				Amount:       btcutil.Amount(req.Amount),
-				NewVTXOKey:   req.NewVTXOKey,
 			})
 		}
-
-		// Build forfeit requests for VTXOs being exited to on-chain
-		// outputs. Each leave forfeits a VTXO and creates an on-chain
-		// output in the batch transaction.
-		numForfeit := len(s.LeavingVTXOs)
-		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
 		for _, req := range s.LeavingVTXOs {
 			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
 				VTXOOutpoint: req.VTXOOutpoint,
@@ -612,16 +604,14 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			slog.Int("boarding_requests", len(boardingReqs)),
 			slog.Int("vtxo_requests", len(vtxoReqs)),
 			slog.Int("forfeit_requests", len(forfeitReqs)),
-			slog.Int("refresh_requests", len(refreshReqs)),
 			slog.Int("leave_requests", len(leaveReqs)))
 
-		// Build Intents with all VTXOs, refreshes, and leaves for
-		// downstream validation.
+		// Build Intents with all VTXOs and leaves for downstream
+		// validation.
 		intent := Intents{
-			Boarding:  slices.Clone(s.Boarding),
-			VTXOs:     vtxoReqs,
-			Refreshes: refreshReqs,
-			Leaves:    leaveReqs,
+			Boarding: slices.Clone(s.Boarding),
+			VTXOs:    vtxoReqs,
+			Leaves:   leaveReqs,
 		}
 
 		// With all this extracted, we'll now send the JoinRoundRequest
@@ -636,7 +626,6 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 						BoardingRequests: boardingReqs,
 						VTXORequests:     vtxoReqs,
 						ForfeitRequests:  forfeitReqs,
-						RefreshRequests:  refreshReqs,
 						LeaveRequests:    leaveReqs,
 					},
 				},

@@ -126,8 +126,8 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 
 	assertState[*RefreshRequestedState](h)
 
-	// Should emit RefreshRequest.
-	assertOutboxContains[*RefreshRequest](h)
+	// Should emit ForfeitRequest.
+	assertOutboxContains[*ForfeitRequest](h)
 }
 
 // TestLiveStateBlockEpochCritical verifies that LiveState transitions to
