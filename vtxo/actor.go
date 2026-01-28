@@ -265,9 +265,10 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			// round to forfeit this VTXO and include a leave output
 			// in the batch transaction (no new VTXO is created).
 			if a.cfg.RoundActor != nil {
+				vtxo := a.cfg.VTXO
 				leaveReq := &round.LeaveVTXORequest{
-					VTXOOutpoint: m.VTXOOutpoint,
-					Amount:       m.Amount,
+					VTXOOutpoint: vtxo.Outpoint,
+					Amount:       int64(vtxo.Amount),
 					Output:       m.DestOutput,
 				}
 				a.cfg.RoundActor.Tell(ctx, leaveReq)
@@ -275,10 +276,9 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				a.cfg.Logger.InfoS(
 					ctx, "Sent leave request to round",
 					slog.String(
-						"outpoint",
-						m.VTXOOutpoint.String(),
+						"outpoint", vtxo.Outpoint.String(),
 					),
-					slog.Int64("amount", m.Amount),
+					slog.Int64("amount", int64(vtxo.Amount)),
 				)
 			}
 

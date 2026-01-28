@@ -217,7 +217,7 @@ func (s *LiveState) handleTriggerRefresh(
 	return &VTXOStateTransition{
 		NextState: &RefreshRequestedState{
 			VTXO: s.VTXO,
-			// Manual trigger has no height context.
+			// Manual trigger, no height context.
 			RequestedAtHeight: 0,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
@@ -234,9 +234,7 @@ func (s *LiveState) handleTriggerLeave(
 
 	outbox := []VTXOOutMsg{
 		&LeaveRequest{
-			VTXOOutpoint: s.VTXO.Outpoint,
-			Amount:       int64(s.VTXO.Amount),
-			DestOutput:   evt.DestOutput,
+			DestOutput: evt.DestOutput,
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
@@ -248,8 +246,9 @@ func (s *LiveState) handleTriggerLeave(
 	// ForfeitRequestEvent from the round actor, then sign the forfeit tx.
 	return &VTXOStateTransition{
 		NextState: &RefreshRequestedState{
-			VTXO:              s.VTXO,
-			RequestedAtHeight: 0, // Manual trigger, no height context.
+			VTXO: s.VTXO,
+			// Manual trigger, no height context.
+			RequestedAtHeight: 0,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}, nil
