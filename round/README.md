@@ -71,17 +71,19 @@ This separation supports future fan-in (multiple inputs funding one output) and
 fan-out (one input creating multiple outputs) scenarios. The FSM accumulates
 both types as self-loops in PendingRoundAssembly.
 
-When `RegistrationRequested` is received, the FSM validates that both boarding
-requests and VTXO requests are present, then transitions to RegistrationSentState,
-emitting a `JoinRoundRequest` that aggregates all intents into a single server
-request. The FSM can also resume existing intents on restart via
-`ResumeBoardingIntents`.
+When `RegistrationRequested` is received, the FSM validates that total outputs
+do not exceed inputs, then transitions to RegistrationSentState, emitting a
+`JoinRoundRequest` that aggregates all intents into a single server request.
+The join request carries boarding inputs, VTXO outputs, explicit forfeit
+outpoints, and optional leave outputs. The FSM can also resume existing intents
+on restart via `ResumeBoardingIntents`.
 
 ### RegistrationSent and RoundJoined States
 
-The `JoinRoundRequest` carries serialized boarding requests and VTXO templates
-to the operator. The server aggregates requests from multiple clients and, once
-sufficient participation is reached, initiates a round by assigning a round ID.
+The `JoinRoundRequest` carries serialized boarding requests, VTXO templates,
+forfeit outpoints, and leave outputs to the operator. The server aggregates
+requests from multiple clients and, once sufficient participation is reached,
+initiates a round by assigning a round ID.
 
 The FSM transitions to RoundJoined upon receiving the `RoundJoined` response,
 which includes the round ID used to track this batch through completion.
@@ -366,7 +368,8 @@ triggered by external events. Each state may perform significant computation
 
 The current implementation supports boarding, the entry point for Ark
 participation. Future extensions will add exit paths (unilateral timeout-based
-and cooperative), VTXO transfers between participants, and VTXO refresh rounds
+and cooperative), VTXO transfers between participants, and refresh rounds
+implemented by combining forfeit requests with new VTXO requests
 preventing timeouts by moving VTXOs into new trees with extended expirations.
 
 These extensions may introduce additional states or entirely separate FSMs for
