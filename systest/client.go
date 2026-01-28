@@ -29,6 +29,7 @@ import (
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
@@ -990,7 +991,7 @@ func (c *TestClient) LNDInstance() *clientharness.LndInstance {
 // TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
 // refresh of the specified VTXOs. The wallet forwards this to the round actor,
 // which sends TriggerRefreshEvent to each VTXO actor. The VTXO actors emit
-// RefreshRequest to be included in the next round's forfeit flow.
+// ForfeitRequest to be included in the next round's forfeit flow.
 func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
 	outpoints []wire.OutPoint) error {
 

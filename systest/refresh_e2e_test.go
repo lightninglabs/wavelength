@@ -138,8 +138,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("VTXO status: RefreshRequested")
 
 	// Now trigger registration to send the JoinRoundRequest to the server.
-	// The round FSM has accumulated the refresh request in PendingRoundAssembly,
-	// but needs RegistrationRequested to actually send the join message.
+	// The round FSM has accumulated the refresh request in
+	// PendingRoundAssembly, but needs RegistrationRequested to actually
+	// send the join message.
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration for refresh")
 	t.Log("Triggered registration for refresh round")

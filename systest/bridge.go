@@ -197,21 +197,11 @@ func (b *BridgeServerConn) convertToActorMsg(
 		// specifies a VTXO to forfeit.
 		forfeitReqs := make(
 			[]*clienttypes.ForfeitRequest, 0,
-			len(m.ForfeitRequests)+len(m.RefreshRequests),
+			len(m.ForfeitRequests),
 		)
 		for _, forfeitReq := range m.ForfeitRequests {
 			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
 				VTXOOutpoint: &forfeitReq.VTXOOutpoint,
-			})
-		}
-
-		// Convert RefreshRequests to ForfeitReqs. Each refresh
-		// specifies a VTXO to forfeit and a new VTXO to receive.
-		// The forfeit request only needs the outpoint; the new VTXO
-		// is already included in VTXORequests.
-		for _, refreshReq := range m.RefreshRequests {
-			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
-				VTXOOutpoint: &refreshReq.VTXOOutpoint,
 			})
 		}
 
