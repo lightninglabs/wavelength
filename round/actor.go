@@ -1393,7 +1393,7 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 // forwarded to a pending round FSM which tracks it alongside boarding intents
 // and refresh requests.
 func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
-	req *LeaveVTXORequest) fn.Result[ClientResp] {
+	req *LeaveVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
 	// Find a pending round or create one if none exists.
 	roundFSM := a.findPendingRound()
@@ -1401,7 +1401,7 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
-			return fn.Err[ClientResp](fmt.Errorf(
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"failed to create round for leave: %w", err,
 			))
 		}
@@ -1411,7 +1411,7 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 	// state (similar to how it tracks boarding intents and refreshes).
 	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
 	if err != nil {
-		return fn.Err[ClientResp](fmt.Errorf(
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing leave request: %w", err,
 		))
 	}
@@ -1420,7 +1420,7 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 		slog.String("outpoint", req.VTXOOutpoint.String()),
 		slog.Int64("amount", req.Amount))
 
-	return fn.Ok[ClientResp](nil)
+	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
 // handleForfeitSignatureResponse processes a forfeit signature from a VTXO
@@ -1498,10 +1498,10 @@ func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
 // actor via its service key. The VTXO actor then emits LeaveVTXORequest back to
 // us through its outbox.
 func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
-	cmd *actormsg.TriggerVTXOLeaveMsg) fn.Result[ClientResp] {
+	cmd *actormsg.TriggerVTXOLeaveMsg) fn.Result[actormsg.RoundActorResp] {
 
 	if a.cfg.ActorSystem == nil {
-		return fn.Err[ClientResp](fmt.Errorf(
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"ActorSystem not configured, cannot trigger VTXO leave",
 		))
 	}
@@ -1522,5 +1522,5 @@ func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
 	a.log.InfoS(ctx, "Triggered VTXO leave",
 		slog.Int("count", triggeredCount))
 
-	return fn.Ok[ClientResp](nil)
+	return fn.Ok[actormsg.RoundActorResp](nil)
 }

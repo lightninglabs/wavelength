@@ -300,9 +300,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 
 	case *LeaveVTXORequest:
 		// A VTXO actor (or wallet) requested to exit the Ark. Start
-		// assembling a round with this leave request. Similar to refresh
-		// requests, we track leaving VTXOs in the PendingRoundAssembly
-		// state.
+		// assembling a round with this leave request. Similar to
+		// refresh requests, we track leaving VTXOs in the
+		// PendingRoundAssembly state.
 		leaveMap := make(map[wire.OutPoint]*LeaveVTXORequest)
 		leaveMap[evt.VTXOOutpoint] = evt
 
@@ -461,8 +461,8 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *LeaveVTXORequest:
-		// A VTXO actor (or wallet) requested to exit the Ark. Add to our
-		// leaving map. We stay in this state and accumulate leave
+		// A VTXO actor (or wallet) requested to exit the Ark. Add to
+		// our leaving map. We stay in this state and accumulate leave
 		// requests alongside boarding intents and refresh requests.
 		updatedLeaving := maps.Clone(s.LeavingVTXOs)
 		if updatedLeaving == nil {
@@ -586,6 +586,17 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			})
 		}
 
+		// Build forfeit requests for VTXOs being exited to on-chain
+		// outputs. Each leave forfeits a VTXO and creates an on-chain
+		// output in the batch transaction.
+		numForfeit := len(s.LeavingVTXOs)
+		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
+		for _, req := range s.LeavingVTXOs {
+			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
+				VTXOOutpoint: req.VTXOOutpoint,
+			})
+		}
+
 		// Build leave requests for VTXOs being exited to on-chain
 		// outputs. Each leave forfeits a VTXO and creates an on-chain
 		// output in the batch transaction.
@@ -593,14 +604,14 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		leaveReqs := make([]*LeaveRequest, 0, numLeave)
 		for _, req := range s.LeavingVTXOs {
 			leaveReqs = append(leaveReqs, &LeaveRequest{
-				VTXOOutpoint: req.VTXOOutpoint,
-				Output:       req.Output,
+				Output: req.Output,
 			})
 		}
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
 			slog.Int("vtxo_requests", len(vtxoReqs)),
+			slog.Int("forfeit_requests", len(forfeitReqs)),
 			slog.Int("refresh_requests", len(refreshReqs)),
 			slog.Int("leave_requests", len(leaveReqs)))
 
@@ -624,6 +635,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 					&JoinRoundRequest{
 						BoardingRequests: boardingReqs,
 						VTXORequests:     vtxoReqs,
+						ForfeitRequests:  forfeitReqs,
 						RefreshRequests:  refreshReqs,
 						LeaveRequests:    leaveReqs,
 					},
@@ -1033,14 +1045,19 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			// forfeited.
 			var outbox []ClientOutMsg
 			for vtxoOutpoint, info := range s.ForfeitMappings {
+				connOut := info.ConnectorOutpoint
+				connScript := info.ConnectorPkScript
+				connAmt := info.ConnectorAmount
+				forfeitScript := env.OperatorTerms.ForfeitScript
+				roundIDStr := s.RoundID.String()
+
 				msg := &ForfeitRequestToVTXO{
-					VTXOOutpoint:      vtxoOutpoint,
-					RoundID:           s.RoundID.String(),
-					ConnectorOutpoint: info.ConnectorOutpoint,
-					ConnectorPkScript: info.ConnectorPkScript,
-					ConnectorAmount:   info.ConnectorAmount,
-					ServerForfeitPkScript: env.OperatorTerms.
-						ForfeitScript,
+					VTXOOutpoint:          vtxoOutpoint,
+					RoundID:               roundIDStr,
+					ConnectorOutpoint:     connOut,
+					ConnectorPkScript:     connScript,
+					ConnectorAmount:       connAmt,
+					ServerForfeitPkScript: forfeitScript,
 				}
 				outbox = append(outbox, msg)
 			}

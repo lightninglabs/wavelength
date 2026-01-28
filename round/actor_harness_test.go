@@ -325,8 +325,10 @@ func (m *mockVTXOManagerRef) assertVTXOCreatedReceived(
 		}
 	}
 
-	t.Fatalf("expected VTXOCreatedNotification, but none found "+
-		"in %d messages", len(m.messages))
+	t.Fatalf(
+		"expected VTXOCreatedNotification, none found in %d messages",
+		len(m.messages),
+	)
 
 	return nil
 }

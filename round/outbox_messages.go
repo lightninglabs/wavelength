@@ -27,6 +27,9 @@ type JoinRoundRequest struct {
 	// VTXORequests specifies the VTXOs the client wants to receive.
 	VTXORequests []types.VTXORequest
 
+	// ForfeitRequests specifies the VTXOs the client wants to forfeit.
+	ForfeitRequests []*ForfeitRequest
+
 	// RefreshRequests contains VTXOs being refreshed in this round. Each
 	// refresh request specifies an old VTXO to forfeit and details for the
 	// new VTXO to receive. The server includes these in the connector tree
@@ -34,9 +37,9 @@ type JoinRoundRequest struct {
 	RefreshRequests []*RefreshRequest
 
 	// LeaveRequests contains VTXOs being exited to on-chain outputs. Each
-	// leave request specifies a VTXO to forfeit and the on-chain
-	// destination output. The server includes these in the connector tree
-	// (for forfeit) and adds the leave outputs to the batch transaction.
+	// leave request specifies only the on-chain destination output. The
+	// server includes these in the batch transaction; any forfeited VTXOs
+	// are listed separately in ForfeitRequests.
 	LeaveRequests []*LeaveRequest
 
 	// RoundID is optional; when empty it instructs the server to assign
@@ -59,13 +62,16 @@ type RefreshRequest struct {
 	NewVTXOKey *btcec.PublicKey
 }
 
+// ForfeitRequest describes a VTXO that will be forfeited in the round.
+type ForfeitRequest struct {
+	// VTXOOutpoint identifies the VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+}
+
 // LeaveRequest describes a leave output to be included in the batch
 // transaction. This represents a client exiting the Ark by forfeiting an
 // existing VTXO and receiving an on-chain output instead of a new VTXO.
 type LeaveRequest struct {
-	// VTXOOutpoint identifies the VTXO being forfeited to fund this leave.
-	VTXOOutpoint wire.OutPoint
-
 	// Output is the on-chain destination output. Contains the value and
 	// pkScript for the leave output that will be included in the batch tx.
 	Output *wire.TxOut

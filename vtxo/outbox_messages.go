@@ -149,12 +149,6 @@ func (m *VTXOTerminatedNotification) vtxoOutMsgSealed() {}
 type LeaveRequest struct {
 	actor.BaseMessage
 
-	// VTXOOutpoint identifies the VTXO to forfeit.
-	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
 	// DestOutput is the on-chain output where the funds will be sent.
 	DestOutput *wire.TxOut
 }
