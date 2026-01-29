@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -99,8 +100,12 @@ type BoardingUTXOConfirmed struct {
 func (e *BoardingUTXOConfirmed) clientEventSealed() {}
 
 // VTXORequestsReceived is emitted when the client submits VTXO requests that
-// should be included in the next round registration.
+// should be included in the next round registration. This event can be sent
+// from both internal sources (e.g., wallet) and external actors (e.g., VTXO
+// actor requesting a new VTXO during refresh).
 type VTXORequestsReceived struct {
+	actor.BaseMessage
+
 	// Requests are the VTXO requests to include in the next join round
 	// request.
 	Requests []types.VTXORequest
@@ -108,6 +113,14 @@ type VTXORequestsReceived struct {
 
 // clientEventSealed prevents external implementations.
 func (e *VTXORequestsReceived) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *VTXORequestsReceived) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *VTXORequestsReceived) MessageType() string {
+	return "VTXORequestsReceived"
+}
 
 // RegistrationRequested is emitted when the FSM is ready to join a round with
 // the currently confirmed set of boarding intents. The actor should treat this
@@ -159,9 +172,38 @@ type CommitmentTxBuilt struct {
 	// sufficient for the client to verify their VTXOs and perform
 	// unilateral exit if needed.
 	VTXOTreePaths map[int]*tree.Tree
+
+	// ForfeitMappings maps each VTXO outpoint to its connector leaf info.
+	// This allows VTXO actors to find their connector output and construct
+	// the forfeit transaction. Only set when refresh requests are present.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}
+
+// ConnectorLeafInfo contains the information needed to construct a forfeit
+// transaction for a specific VTXO. The forfeit tx spends the VTXO and its
+// connector output, paying the VTXO value to the operator's forfeit address.
+type ConnectorLeafInfo struct {
+	// LeafIndex is the position of this connector in the connector tree.
+	LeafIndex int
+
+	// ConnectorOutpoint is the outpoint of the connector output in the
+	// commitment transaction that this forfeit tx must spend.
+	ConnectorOutpoint wire.OutPoint
+
+	// ConnectorPkScript is the scriptPubKey of the connector output.
+	ConnectorPkScript []byte
+
+	// ConnectorAmount is the value of the connector output in satoshis.
+	// Connectors typically have minimal value (dust limit).
+	ConnectorAmount int64
+
+	// VTXOAmount is the value of the VTXO being forfeited. The forfeit tx's
+	// penalty output must equal this amount. This field enables validation
+	// that prevents value theft by ensuring the correct amount is forfeited.
+	VTXOAmount btcutil.Amount
+}
 
 // CommitmentTxValidated is emitted after the client successfully validates
 // the commitment transaction and VTXT path. This is a critical security

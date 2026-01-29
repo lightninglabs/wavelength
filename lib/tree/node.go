@@ -25,6 +25,12 @@ import (
 // key-spend path of its parent output.
 const inputIndex = 0
 
+// NumLeafOutputs is the number of outputs in a leaf node transaction.
+// Leaf nodes always have exactly 2 outputs:
+//   - For VTXO tree leaves: [VTXO output, anchor output]
+//   - For connector tree leaves: [dust connector output, anchor output]
+const NumLeafOutputs = 2
+
 // Node represents a single transaction in a virtual transaction tree.
 type Node struct {
 	// Input is the single outpoint this transaction spends.

@@ -47,6 +47,9 @@ func (s *Idle) clientStateSealed() {}
 // on-chain outpoint for efficient lookup when confirmation events arrive. Once
 // all intents reach the required confirmations, the FSM transitions to round
 // registration.
+//
+// This state also tracks VTXOs pending refresh. When VTXOs are approaching
+// expiry, they send RefreshVTXORequest to be included in the next round.
 type PendingRoundAssembly struct {
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
@@ -55,6 +58,11 @@ type PendingRoundAssembly struct {
 	// VTXOs contains the collected VTXO requests to include in the next
 	// round.
 	VTXOs []types.VTXORequest
+
+	// RefreshingVTXOs tracks VTXOs waiting to be refreshed in this round.
+	// Keyed by VTXO outpoint. These are accumulated alongside boarding
+	// intents and included in the same round registration.
+	RefreshingVTXOs map[wire.OutPoint]*RefreshVTXORequest
 }
 
 func (s *PendingRoundAssembly) String() string {
@@ -160,6 +168,11 @@ type CommitmentTxValidatedState struct {
 	// BoardingInputIndices maps each boarding intent's outpoint to its
 	// position in the commitment transaction inputs. Used for signing.
 	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitMappings maps VTXO outpoints to their connector info for
+	// refresh rounds. Empty for boarding-only rounds. Carried forward
+	// through MuSig2 signing states until forfeit collection.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
 }
 
 func (s *CommitmentTxValidatedState) String() string {
@@ -171,6 +184,56 @@ func (s *CommitmentTxValidatedState) IsTerminal() bool {
 }
 
 func (s *CommitmentTxValidatedState) clientStateSealed() {}
+
+// ForfeitSignaturesCollectingState indicates the client is waiting for forfeit
+// signatures from VTXO actors after completing VTXO tree signing. This state
+// is entered when the round includes refresh or leave requests (VTXOs being
+// rolled over or exited). The FSM waits until all expected forfeit signatures
+// are collected, then submits them to the server and transitions to boarding
+// input signing.
+//
+// The forfeit flow ensures atomic refresh: old VTXOs are forfeited (locked to
+// the new commitment tx via connectors) before new VTXOs become valid. This
+// prevents double-spending while preserving client custody.
+type ForfeitSignaturesCollectingState struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// CommitmentTx is the unsigned commitment transaction as a PSBT.
+	CommitmentTx *psbt.Packet
+
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree paths.
+	VTXOTreePaths map[int]*tree.Tree
+
+	// Intents contains all the client's intents for this round.
+	Intents Intents
+
+	// ClientTrees maps signer keys (compressed pubkeys) to the client's
+	// extracted sub-tree for that VTXO.
+	ClientTrees map[SignerKey]*tree.Tree
+
+	// BoardingInputIndices maps each boarding intent's outpoint to its
+	// position in the commitment transaction inputs. Used for signing.
+	BoardingInputIndices map[wire.OutPoint]int
+
+	// ExpectedForfeits maps VTXO outpoints to their connector info. These
+	// are the VTXOs we're waiting for forfeit signatures from.
+	ExpectedForfeits map[wire.OutPoint]*ConnectorLeafInfo
+
+	// CollectedForfeits maps VTXO outpoints to their forfeit responses.
+	// When len(CollectedForfeits) == len(ExpectedForfeits), we proceed.
+	CollectedForfeits map[wire.OutPoint]*ForfeitSignatureResponse
+}
+
+func (s *ForfeitSignaturesCollectingState) String() string {
+	return "ForfeitSignaturesCollecting"
+}
+
+func (s *ForfeitSignaturesCollectingState) IsTerminal() bool {
+	return false
+}
+
+func (s *ForfeitSignaturesCollectingState) clientStateSealed() {}
 
 // NoncesSentState indicates the client has sent nonces to the server and
 // is waiting for aggregated nonces.
@@ -198,6 +261,11 @@ type NoncesSentState struct {
 	// BoardingInputIndices maps each boarding intent's outpoint to its
 	// position in the commitment transaction inputs. Used for signing.
 	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitMappings maps VTXO outpoints to their connector info for
+	// refresh rounds. Carried forward until forfeit collection after
+	// VTXO tree signing.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
 }
 
 func (s *NoncesSentState) String() string {
@@ -239,6 +307,11 @@ type NoncesAggregatedState struct {
 	// BoardingInputIndices maps each boarding intent's outpoint to its
 	// position in the commitment transaction inputs. Used for signing.
 	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitMappings maps VTXO outpoints to their connector info for
+	// refresh rounds. Carried forward until forfeit collection after
+	// VTXO tree signing.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
 }
 
 func (s *NoncesAggregatedState) String() string {
@@ -277,6 +350,11 @@ type PartialSigsSentState struct {
 	// BoardingInputIndices maps each boarding intent's outpoint to its
 	// position in the commitment transaction inputs. Used for signing.
 	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitMappings maps VTXO outpoints to their connector info for
+	// refresh rounds. After VTXO tree signature validation, if non-empty,
+	// transitions to ForfeitSignaturesCollectingState.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
 }
 
 func (s *PartialSigsSentState) String() string {
@@ -310,6 +388,11 @@ type InputSigSentState struct {
 
 	// InputSigs are the Schnorr signatures for the boarding inputs.
 	InputSigs []*types.BoardingInputSignature
+
+	// ForfeitedVTXOs contains outpoints of VTXOs being refreshed. When the
+	// round confirms, ForfeitConfirmedToVTXO messages are emitted for each
+	// so old VTXO actors can transition to the Forfeited terminal state.
+	ForfeitedVTXOs []wire.OutPoint
 }
 
 func (s *InputSigSentState) String() string {
