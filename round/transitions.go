@@ -27,6 +27,20 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	return intent.Request
 }
 
+// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
+// RefreshVTXORequest. The refresh request contains all info needed to create
+// the new VTXO output in the round.
+func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
+	return types.VTXORequest{
+		Amount:      btcutil.Amount(req.Amount),
+		PkScript:    req.PkScript,
+		Expiry:      req.Expiry,
+		ClientKey:   req.NewVTXOKey,
+		OperatorKey: req.OperatorKey,
+		SigningKey:  req.SigningKey,
+	}
+}
+
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
@@ -267,13 +281,19 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 		// A VTXO actor requested refresh. Start assembling a round with
 		// this refresh request. Similar to boarding intents, we track
 		// refreshing VTXOs in the PendingRoundAssembly state.
+		//
+		// The refresh request contains all info to build both the
+		// RefreshRequest (forfeit) and VTXORequest (new output).
 		refreshMap := make(map[wire.OutPoint]*RefreshVTXORequest)
 		refreshMap[evt.VTXOOutpoint] = evt
+
+		// Create the VTXORequest for the new VTXO output.
+		vtxoReq := buildVTXORequestFromRefresh(evt)
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Boarding:        nil,
-				VTXOs:           nil,
+				VTXOs:           []types.VTXORequest{vtxoReq},
 				RefreshingVTXOs: refreshMap,
 			},
 		}, nil
@@ -400,6 +420,8 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 	case *RefreshVTXORequest:
 		// A VTXO actor requested refresh. Add to our refreshing map.
 		// We stay in this state and accumulate refresh requests.
+		//
+		// Also create a VTXORequest for the new VTXO output.
 		updatedRefreshing := maps.Clone(s.RefreshingVTXOs)
 		if updatedRefreshing == nil {
 			updatedRefreshing = make(
@@ -408,10 +430,15 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		}
 		updatedRefreshing[evt.VTXOOutpoint] = evt
 
+		// Add the VTXORequest for this refresh to the VTXOs list.
+		vtxoReq := buildVTXORequestFromRefresh(evt)
+		updatedVTXOs := slices.Clone(s.VTXOs)
+		updatedVTXOs = append(updatedVTXOs, vtxoReq)
+
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           slices.Clone(s.VTXOs),
+				VTXOs:           updatedVTXOs,
 				RefreshingVTXOs: updatedRefreshing,
 			},
 		}, nil
