@@ -1197,10 +1197,11 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("unknown-vtxo")),
 			Index: 0,
 		}
+		sig := testutils.TestSchnorrSignature(t, "forfeit")
 		response := &ForfeitSignatureResponse{
 			RoundID:      "non-existent-round",
 			VTXOOutpoint: vtxoOutpoint,
-			Signature:    testutils.TestSchnorrSignature(t, "forfeit"),
+			Signature:    sig,
 			ForfeitTx:    wire.NewMsgTx(2),
 		}
 
