@@ -484,7 +484,16 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 		return err
 	}
 
+	a.log.DebugS(ctx, "askEventAndProcessOutbox: FSM returned outbox events",
+		slog.Int("event_count", len(events)),
+		slog.String("input_event_type", fmt.Sprintf("%T", event)))
+
 	if len(events) > 0 {
+		for i, e := range events {
+			a.log.DebugS(ctx, "askEventAndProcessOutbox: outbox event",
+				slog.Int("index", i),
+				slog.String("type", fmt.Sprintf("%T", e)))
+		}
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
@@ -1269,10 +1278,18 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// Route forfeit request to VTXO actor via service key.
 			// The VTXO actor will sign the forfeit tx and respond
 			// with ForfeitSignatureResponse.
+			a.log.DebugS(ctx, "Processing ForfeitRequestToVTXO",
+				slog.String("outpoint", m.VTXOOutpoint.String()),
+				slog.String("round_id", m.RoundID),
+				slog.Bool("actor_system_nil", a.cfg.ActorSystem == nil))
+
 			if a.cfg.ActorSystem != nil {
 				serviceKey := actormsg.VTXOActorServiceKey(
 					m.VTXOOutpoint,
 				)
+				a.log.DebugS(ctx, "Looking up VTXO actor by service key",
+					slog.String("outpoint", m.VTXOOutpoint.String()))
+
 				serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					ctx, &ForfeitRequestEvent{
 						RoundID:               m.RoundID,
@@ -1282,9 +1299,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						ServerForfeitPkScript: m.ServerForfeitPkScript,
 					},
 				)
-				log.InfoS(ctx, "Sent forfeit request to VTXO actor",
-					"outpoint", m.VTXOOutpoint.String(),
-					"round_id", m.RoundID)
+				a.log.InfoS(ctx, "Sent forfeit request to VTXO actor",
+					slog.String("outpoint", m.VTXOOutpoint.String()),
+					slog.String("round_id", m.RoundID))
+			} else {
+				a.log.WarnS(ctx, "Cannot send forfeit request: ActorSystem is nil", nil,
+					slog.String("outpoint", m.VTXOOutpoint.String()))
 			}
 
 		case *ForfeitConfirmedToVTXO:
