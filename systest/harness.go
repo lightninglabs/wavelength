@@ -4,6 +4,7 @@ package systest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -12,19 +13,24 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/batchsweeper"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -58,12 +64,39 @@ const (
 	defaultSweepDelay = 1000
 )
 
+// HarnessOption is a functional option for configuring the E2EHarness.
+type HarnessOption func(*harnessConfig)
+
+// harnessConfig holds optional configuration for the harness.
+type harnessConfig struct {
+	sweepDelay uint32
+}
+
+// defaultHarnessConfig returns the default harness configuration.
+func defaultHarnessConfig() *harnessConfig {
+	return &harnessConfig{
+		sweepDelay: defaultSweepDelay,
+	}
+}
+
+// WithSweepDelay sets a custom sweep delay for the VTXO trees. This is useful
+// for tests that need to verify batch expiry notifications without mining
+// 1000+ blocks.
+func WithSweepDelay(delay uint32) HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.sweepDelay = delay
+	}
+}
+
 // E2EHarness provides full client-server test infrastructure for e2e testing.
 // It embeds the ArkHarness for chain infrastructure and adds actor-based
 // components for testing the round FSM without gRPC.
 type E2EHarness struct {
 	// Embedded ArkHarness provides bitcoind, lnd, tapd, electrs, arkd.
 	*harness.ArkHarness
+
+	// cfg holds optional configuration for the harness.
+	cfg *harnessConfig
 
 	// t is the test instance.
 	t *testing.T
@@ -124,6 +157,22 @@ type E2EHarness struct {
 	// chainSourceActorRef is the actor reference for the chain source.
 	chainSourceActorRef actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp]
 
+	// batchWatcher is the BatchWatcherActor that monitors on-chain tree
+	// state for all registered batches.
+	batchWatcher *batchwatcher.Actor
+
+	// batchWatcherRef is the actor reference for the batch watcher.
+	batchWatcherRef actor.ActorRef[batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp]
+
+	// mockBatchSweeper captures batch expiry and tree state notifications
+	// from the BatchWatcher for test assertions.
+	mockBatchSweeper *MockBatchSweeper
+
+	// batchSweeperRouter fans out BatchWatcher notifications to both the
+	// mock sweeper (for assertions) and a real BatchSweeperActor (for
+	// sweeping integration coverage).
+	batchSweeperRouter *BatchSweeperRouter
+
 	// Real components (NOT mocked):
 	// - walletController: lndbackend.LndWalletController from server's LND
 	// - chainSource: lndbackend.ChainSource wrapping bitcoind
@@ -140,8 +189,14 @@ type E2EHarness struct {
 	clientCounter int
 }
 
-// NewE2EHarness creates a new harness for e2e tests.
-func NewE2EHarness(t *testing.T) *E2EHarness {
+// NewE2EHarness creates a new harness for e2e tests. Optional HarnessOption
+// functions can be provided to customize the harness configuration.
+func NewE2EHarness(t *testing.T, opts ...HarnessOption) *E2EHarness {
+	// Apply options to the default config.
+	cfg := defaultHarnessConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
 	// Create the underlying ArkHarness with default options. We skip arkd
 	// since the e2e tests run the server actors in-process as goroutines
 	// rather than starting the full arkd binary.
@@ -185,6 +240,7 @@ func NewE2EHarness(t *testing.T) *E2EHarness {
 
 	h := &E2EHarness{
 		ArkHarness: arkHarness,
+		cfg:        cfg,
 		t:          t,
 		ctx:        ctx,
 		cancel:     cancel,
@@ -317,16 +373,29 @@ func (h *E2EHarness) initActorSystem() {
 	// Create REAL chain source actor using the server's LND backend.
 	// This provides proper chain notifications, transaction broadcast,
 	// and confirmation subscriptions.
-	chainBackend := chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
+	chainBackendLogger := h.SubLogger("CSRC")
+	notifier := chainbackends.NewLndClientChainNotifier(
+		chainbackends.LndClientChainNotifierConfig{
 			LND: h.serverLNDServices,
-		}.WithLogger(h.SubLogger("CSRC")),
+		}.WithLogger(chainBackendLogger),
+	)
+
+	// Use a static fee estimator for systests to avoid flaky/oversized fee
+	// estimates from remote LND backends on regtest.
+	feeEstimator := chainfee.NewStaticEstimator(
+		chainfee.SatPerKWeight(2000), 0,
+	)
+	broadcaster := chainbackends.NewLndClientTxBroadcaster(
+		h.serverLNDServices.WalletKit,
+	)
+	chainBackend := chainbackends.NewLNDBackend(
+		notifier, feeEstimator, broadcaster,
 	)
 	h.chainSourceActor = chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: chainBackend,
 			System:  h.actorSystem,
-		}.WithLogger(h.SubLogger("CSRC")),
+		}.WithLogger(chainBackendLogger),
 	)
 
 	// Spawn the chain source actor.
@@ -337,12 +406,40 @@ func (h *E2EHarness) initActorSystem() {
 		h.actorSystem, "chain-source-actor", h.chainSourceActor,
 	)
 
-	// Create fee estimator with a higher rate for regtest.
-	// Use 2000 sat/kw (~8 sat/vbyte) to ensure transactions have enough
-	// fee for reliable block inclusion.
-	feeEstimator := chainfee.NewStaticEstimator(
-		chainfee.SatPerKWeight(2000), 0,
+	// Create mock BatchSweeper to capture expiry and tree state notifications.
+	h.mockBatchSweeper = NewMockBatchSweeper()
+
+	// Create a notification router so we can attach a real sweeper actor
+	// after the BatchWatcher has been spawned.
+	h.batchSweeperRouter = NewBatchSweeperRouter(h.mockBatchSweeper)
+
+	// Create BatchWatcher actor config. FraudDetector is not implemented
+	// yet, so we pass None. BatchSweeper uses the mock for test assertions.
+	batchWatcherCfg := &batchwatcher.ActorConfig{
+		Logger:        h.SubLogger("BWCH"),
+		ChainSource:   h.chainSourceActorRef,
+		FraudDetector: fn.None[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]](),
+		BatchSweeper: fn.Some[actor.TellOnlyRef[batchwatcher.BatchSweeperMsg]](
+			h.batchSweeperRouter,
+		),
+	}
+
+	h.batchWatcher = batchwatcher.NewActor(batchWatcherCfg)
+
+	// Spawn the batch watcher actor.
+	batchWatcherKey := actor.NewServiceKey[
+		batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
+	]("batch-watcher-actor")
+	h.batchWatcherRef = batchWatcherKey.Spawn(
+		h.actorSystem, "batch-watcher-actor", h.batchWatcher,
 	)
+
+	// Set SelfRef after spawning (needed for callback mapping).
+	batchWatcherCfg.SelfRef = h.batchWatcherRef
+
+	// Create and wire the real BatchSweeperActor for sweeping integration
+	// coverage.
+	h.initBatchSweeper()
 
 	// Create rounds actor configuration. ActorRef embeds TellOnlyRef, so
 	// we can assign ActorRef directly to TellOnlyRef fields.
@@ -363,6 +460,7 @@ func (h *E2EHarness) initActorSystem() {
 		ConfTarget:          defaultConfirmationTarget,
 		MinConfs:            1,
 		ConfirmationTarget:  uint32(defaultConfirmationTarget),
+		BatchWatcher:        fn.Some(h.batchWatcherRef),
 	}
 
 	// Create rounds actor.
@@ -383,6 +481,42 @@ func (h *E2EHarness) initActorSystem() {
 	// Start the rounds actor.
 	err = roundsActor.Start(h.ctx)
 	require.NoError(h.t, err, "failed to start rounds actor")
+}
+
+// initBatchSweeper creates and wires a real BatchSweeperActor so systests can
+// assert sweeping behavior while still capturing notifications via the mock.
+func (h *E2EHarness) initBatchSweeper() {
+	sweepPkScript, err := txscript.PayToTaprootScript(
+		h.terms.SweepKey.PubKey,
+	)
+	require.NoError(h.t, err, "failed to create sweep pkScript")
+
+	cfg := &batchsweeper.ActorConfig{
+		Logger:        h.SubLogger("BSWP"),
+		BatchWatcher:  h.batchWatcherRef,
+		ChainSource:   h.chainSourceActorRef,
+		SweepKey:      h.terms.SweepKey,
+		SweepDelay:    h.terms.SweepDelay,
+		Signer:        h.walletController,
+		SweepPkScript: sweepPkScript,
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			h.mockTimeoutRef,
+		),
+	}
+
+	sweeper := batchsweeper.NewActor(cfg)
+
+	sweeperKey := actor.NewServiceKey[
+		batchsweeper.Msg, batchsweeper.Resp,
+	]("batch-sweeper-actor")
+	sweeperRef := sweeperKey.Spawn(
+		h.actorSystem, "batch-sweeper-actor", sweeper,
+	)
+
+	cfg.SelfRef = sweeperRef
+
+	mappedRef := batchsweeper.MapBatchWatcherNotification(sweeperRef)
+	h.batchSweeperRouter.SetTargets(h.mockBatchSweeper, mappedRef)
 }
 
 // getOperatorKeyFromLND derives the operator key from the server's LND using
@@ -418,7 +552,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 	return &batch.Terms{
 		OperatorKey:                   *h.operatorKeyDesc,
 		SweepKey:                      *sweepKeyDesc,
-		SweepDelay:                    defaultSweepDelay,
+		SweepDelay:                    h.cfg.sweepDelay,
 		MaxVTXOsPerTree:               256,
 		TreeRadix:                     4,
 		BoardingExitDelay:             defaultBoardingExitDelay,
@@ -482,6 +616,77 @@ func (h *E2EHarness) Transcript() *MessageTranscript {
 // round execution.
 func (h *E2EHarness) Bridge() *BridgeClientConn {
 	return h.bridge
+}
+
+// BatchWatcher returns the batch watcher actor reference. This can be used to
+// query tree state or verify that batches were registered for monitoring.
+func (h *E2EHarness) BatchWatcher() actor.ActorRef[
+	batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
+] {
+
+	return h.batchWatcherRef
+}
+
+// MockBatchSweeper returns the mock batch sweeper for test assertions.
+func (h *E2EHarness) MockBatchSweeper() *MockBatchSweeper {
+	return h.mockBatchSweeper
+}
+
+// ComputeBatchID computes the BatchID for a given round and output index using
+// the same algorithm as the rounds actor. The roundID parameter accepts any
+// type that is based on uuid.UUID (e.g., rounds.RoundID or round.RoundID).
+func ComputeBatchID(roundID uuid.UUID, outputIdx int) batchwatcher.BatchID {
+	batchIDName := fmt.Sprintf("%s-%d", roundID, outputIdx)
+	return batchwatcher.BatchID(uuid.NewSHA1(roundID, []byte(batchIDName)))
+}
+
+// AssertBatchRegistered verifies that a batch was registered with the
+// BatchWatcher and has the correct expiry height. The expectedTreeCount
+// specifies how many VTXO trees to check (typically 1 for single-client
+// rounds). The roundID parameter accepts any type that is based on uuid.UUID.
+func (h *E2EHarness) AssertBatchRegistered(
+	roundID uuid.UUID, confirmationHeight uint32, expectedTreeCount int) {
+
+	for outputIdx := 0; outputIdx < expectedTreeCount; outputIdx++ {
+		batchID := ComputeBatchID(roundID, outputIdx)
+
+		// Query the BatchWatcher for the tree state.
+		req := &batchwatcher.GetTreeStateRequest{BatchID: batchID}
+		future := h.batchWatcherRef.Ask(h.ctx, req)
+		resp, err := future.Await(h.ctx).Unpack()
+		require.NoError(h.t, err, "should query batch watcher")
+
+		stateResp, ok := resp.(*batchwatcher.GetTreeStateResponse)
+		require.True(h.t, ok, "response should be GetTreeStateResponse")
+
+		// Verify the batch was found.
+		require.True(h.t, stateResp.Found,
+			"batch %s should be found in watcher", batchID)
+		require.NotNil(h.t, stateResp.TreeState,
+			"tree state for batch %s should not be nil", batchID)
+
+		// Verify the expiry height.
+		expectedExpiry := confirmationHeight + h.terms.SweepDelay
+		require.Equal(h.t, expectedExpiry, stateResp.TreeState.ExpiryHeight,
+			"batch %s expiry height should be %d (confirm=%d + sweep=%d)",
+			batchID, expectedExpiry, confirmationHeight, h.terms.SweepDelay)
+
+		h.t.Logf("Verified batch %s registered with expiry height %d",
+			batchID, stateResp.TreeState.ExpiryHeight)
+	}
+}
+
+// AssertBatchExpired verifies that a batch expiry notification was sent to the
+// mock BatchSweeper. The roundID parameter accepts any type based on uuid.UUID.
+func (h *E2EHarness) AssertBatchExpired(roundID uuid.UUID, outputIdx int) {
+
+	batchID := ComputeBatchID(roundID, outputIdx)
+	require.True(h.t, h.mockBatchSweeper.HasExpiryNotification(batchID),
+		"batch %s should have received expiry notification", batchID)
+
+	notification := h.mockBatchSweeper.GetExpiryNotification(batchID)
+	h.t.Logf("Verified batch %s expiry notification at height %d",
+		batchID, notification.ExpiryHeight)
 }
 
 // TriggerRoundSeal triggers the registration timeout to seal the round.
