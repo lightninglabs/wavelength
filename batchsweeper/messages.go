@@ -68,3 +68,26 @@ func (m *SweepRetryEvent) MessageType() string {
 
 // batchSweeperMsgSealed implements the sealed Msg interface.
 func (m *SweepRetryEvent) batchSweeperMsgSealed() {}
+
+// SweepConfirmedEvent is an internal message that indicates a sweep
+// transaction has confirmed. This triggers cleanup of tracking state.
+type SweepConfirmedEvent struct {
+	actor.BaseMessage
+
+	// BatchID identifies the batch whose sweep confirmed.
+	BatchID batchwatcher.BatchID
+
+	// Txid is the confirmed sweep transaction ID.
+	Txid [32]byte
+
+	// BlockHeight is the height at which the sweep confirmed.
+	BlockHeight int32
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SweepConfirmedEvent) MessageType() string {
+	return "SweepConfirmedEvent"
+}
+
+// batchSweeperMsgSealed implements the sealed Msg interface.
+func (m *SweepConfirmedEvent) batchSweeperMsgSealed() {}

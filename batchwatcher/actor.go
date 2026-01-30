@@ -428,19 +428,43 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 	return fn.Ok[BatchWatcherResp](nil)
 }
 
-// handleNewBlockReceived processes a new block notification and checks for
-// expired batches.
+// handleNewBlockReceived processes a new block notification. It notifies the
+// BatchSweeper for batches newly expiring at this height, and re-notifies for
+// all already-expired batches to trigger per-block sweep retries with fresh
+// fee rates.
 func (a *Actor) handleNewBlockReceived(ctx context.Context,
 	msg *NewBlockReceived) fn.Result[BatchWatcherResp] {
 
-	// Check for batches expiring at this height.
-	expiringBatches := a.state.GetBatchesExpiringAt(uint32(msg.Height))
-	for _, batchID := range expiringBatches {
+	// Ignore invalid heights. This can happen during tests or if the chain
+	// backend reports an unexpected height.
+	if msg.Height < 0 {
+		return fn.Ok[BatchWatcherResp](nil)
+	}
+
+	currentHeight := uint32(msg.Height)
+
+	// Check for batches expiring at this exact height (new expiries).
+	newlyExpiring := a.state.GetBatchesExpiringAt(currentHeight)
+	for _, batchID := range newlyExpiring {
 		a.log.InfoS(ctx, "Batch expired",
 			"batch_id", batchID,
 			"height", msg.Height)
 
-		a.notifyBatchExpired(ctx, batchID, uint32(msg.Height))
+		a.notifyBatchExpired(ctx, batchID, currentHeight)
+	}
+
+	// Re-notify for all already-expired batches to trigger sweep retries
+	// with fresh fee rates. Skip batches that just expired (already
+	// notified above).
+	alreadyExpired := a.state.GetExpiredBatches(currentHeight)
+	for _, batchID := range alreadyExpired {
+		// Skip batches that just expired at this height.
+		batch := a.state.GetBatch(batchID)
+		if batch != nil && batch.ExpiryHeight == currentHeight {
+			continue
+		}
+
+		a.notifyBatchExpired(ctx, batchID, batch.ExpiryHeight)
 	}
 
 	return fn.Ok[BatchWatcherResp](nil)

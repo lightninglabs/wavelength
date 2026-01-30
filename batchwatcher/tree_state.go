@@ -106,3 +106,17 @@ func (s *StateStore) GetAllBatches() []BatchID {
 func (s *StateStore) NumBatches() int {
 	return len(s.batches)
 }
+
+// GetExpiredBatches returns all batch IDs that have expired (expiry height <=
+// current height). This is used for per-block sweep retry notifications.
+func (s *StateStore) GetExpiredBatches(currentHeight uint32) []BatchID {
+	var result []BatchID
+
+	for height, batches := range s.expiryIndex {
+		if height <= currentHeight {
+			result = append(result, batches...)
+		}
+	}
+
+	return result
+}

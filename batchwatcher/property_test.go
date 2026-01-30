@@ -323,7 +323,7 @@ func TestActorInvariants_Property(t *testing.T) {
 			})
 		})
 
-	t.Run("invariant: expiry notification only at correct height",
+	t.Run("invariant: expiry notification at and after expiry height",
 		func(t *testing.T) {
 			rapid.Check(t, func(rt *rapid.T) {
 				h := newTestHarness(t)
@@ -356,11 +356,14 @@ func TestActorInvariants_Property(t *testing.T) {
 						h.mockBatchSweeper.receivedMsgs,
 					) > 0
 
-					shouldNotify := height ==
+					// Notifications sent at expiry height
+					// and on every subsequent block (for
+					// per-block sweep retries).
+					shouldNotify := height >=
 						int32(expiryHeight)
 
-					// INVARIANT: Notification only at
-					// exact expiry height.
+					// INVARIANT: Notification at expiry
+					// and after (for sweep retries).
 					if gotNotification != shouldNotify {
 						rt.Fatalf("height %d: got "+
 							"notification=%v, "+

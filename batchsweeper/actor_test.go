@@ -2,6 +2,7 @@ package batchsweeper
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -78,7 +79,8 @@ type mockChainSourceRef struct {
 	bestHeightResp  *chainsource.BestHeightResponse
 	feeEstimateResp *chainsource.FeeEstimateResponse
 
-	lastBroadcast *chainsource.BroadcastTxRequest
+	lastBroadcast        *chainsource.BroadcastTxRequest
+	lastConfRegistration *chainsource.RegisterConfRequest
 }
 
 // ID returns the ID of the mock chain source.
@@ -86,9 +88,16 @@ func (m *mockChainSourceRef) ID() string {
 	return "mock-chainsource"
 }
 
-// Tell is a no-op for this mock.
+// Tell captures fire-and-forget messages like RegisterConfRequest.
 func (m *mockChainSourceRef) Tell(_ context.Context,
-	_ chainsource.ChainSourceMsg) {
+	msg chainsource.ChainSourceMsg) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if req, ok := msg.(*chainsource.RegisterConfRequest); ok {
+		m.lastConfRegistration = req
+	}
 }
 
 // Ask returns the configured response based on request type.
@@ -129,6 +138,14 @@ func (m *mockChainSourceRef) LastBroadcast() *chainsource.BroadcastTxRequest {
 	defer m.mu.Unlock()
 
 	return m.lastBroadcast
+}
+
+// LastConfRegistration returns the last confirmation registration request.
+func (m *mockChainSourceRef) LastConfRegistration() *chainsource.RegisterConfRequest { //nolint:ll
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.lastConfRegistration
 }
 
 // mockTimeoutRef is a test double for the timeout actor reference that captures
@@ -190,9 +207,13 @@ func TestBatchExpiredQueriesWatcher(t *testing.T) {
 		},
 	}
 
+	mockChainSource := &mockChainSourceRef{}
+
 	cfg := &ActorConfig{
 		Logger:       btclog.Disabled,
 		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SelfRef:      &nopSelfRef{},
 	}
 
 	a := NewActor(cfg)
@@ -287,4 +308,276 @@ func TestBatchExpiredSchedulesRetryForImmatureOutputs(t *testing.T) {
 	expired := a.expired[batchID]
 	require.NotNil(t, expired)
 	require.EqualValues(t, 0, expired.attempts)
+}
+
+// TestRepeatedBatchExpiredPreservesAttempts verifies that receiving repeated
+// BatchExpiredEvent (per-block retry from BatchWatcher) does not reset the
+// attempt counter for an already-expired batch.
+func TestRepeatedBatchExpiredPreservesAttempts(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found: false,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{}
+
+	cfg := &ActorConfig{
+		Logger:       btclog.Disabled,
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SelfRef:      &nopSelfRef{},
+	}
+
+	a := NewActor(cfg)
+
+	// First expiry notification.
+	result := a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+	require.EqualValues(t, 0, a.expired[batchID].attempts)
+
+	// Simulate some failures to increment attempts.
+	a.expired[batchID].attempts = 5
+
+	// Repeated expiry notification (per-block retry from BatchWatcher).
+	result = a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// Verify attempts were NOT reset.
+	require.EqualValues(t, 5, a.expired[batchID].attempts)
+}
+
+// TestSweepConfirmedCleansUp verifies that a sweep confirmation event cleans
+// up the tracking state for the batch.
+func TestSweepConfirmedCleansUp(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	mockChainSource := &mockChainSourceRef{}
+
+	cfg := &ActorConfig{
+		Logger:      btclog.Disabled,
+		ChainSource: mockChainSource,
+		SelfRef:     &nopSelfRef{},
+	}
+
+	a := NewActor(cfg)
+
+	// Set up tracking state as if a sweep was broadcast.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     3,
+	}
+	a.pendingSweeps[batchID] = &pendingSweep{
+		batchID:   batchID,
+		feeRate:   btcutil.Amount(5),
+		numInputs: 2,
+	}
+
+	// Send SweepConfirmedEvent.
+	result := a.Receive(t.Context(), &SweepConfirmedEvent{
+		BatchID:     batchID,
+		BlockHeight: 120,
+	})
+	require.True(t, result.IsOk())
+
+	// Verify tracking state is cleaned up.
+	require.Empty(t, a.expired)
+	require.Empty(t, a.pendingSweeps)
+}
+
+// TestRepeatedBatchExpiredSkipsWhenFeeNotHigher verifies that batches with
+// pending sweeps are skipped when the current fee rate is not higher.
+func TestRepeatedBatchExpiredSkipsWhenFeeNotHigher(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found: true,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{
+		feeEstimateResp: &chainsource.FeeEstimateResponse{
+			SatPerVByte: btcutil.Amount(5),
+		},
+	}
+
+	cfg := &ActorConfig{
+		Logger:       btclog.Disabled,
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SelfRef:      &nopSelfRef{},
+	}
+
+	a := NewActor(cfg)
+
+	// Set up tracking state with a pending sweep at higher fee rate.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     1,
+	}
+	a.pendingSweeps[batchID] = &pendingSweep{
+		batchID: batchID,
+		feeRate: btcutil.Amount(10), // Higher than current (5)
+	}
+
+	// Send BatchExpiredEvent (per-block retry from BatchWatcher).
+	result := a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// Verify watcher was NOT queried (fee bump not needed).
+	require.Nil(t, mockWatcher.LastAsk())
+}
+
+// TestRepeatedBatchExpiredBumpsFeeWhenHigher verifies that batches with
+// pending sweeps trigger a rebroadcast when the current fee rate is higher.
+func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	internalKey, _ := testutils.CreateKey(1)
+	node := &treepkg.Node{
+		CoSigners: []*btcec.PublicKey{internalKey},
+	}
+
+	txOut := wire.NewTxOut(1000, []byte{0x51})
+
+	outpoint := wire.OutPoint{Index: 0}
+	treeState := &batchwatcher.BatchTreeState{
+		ExistingOutputs: map[wire.OutPoint]*batchwatcher.Output{
+			outpoint: {
+				Outpoint:        outpoint,
+				TxOut:           txOut,
+				ConfirmedHeight: 100,
+				IsVTXO:          false,
+				TreeNode:        node,
+				OutputIndex:     0,
+			},
+		},
+	}
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found:     true,
+			TreeState: treeState,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{
+		bestHeightResp: &chainsource.BestHeightResponse{
+			Height: 115,
+		},
+		feeEstimateResp: &chainsource.FeeEstimateResponse{
+			// Higher than pending fee rate of 5.
+			SatPerVByte: btcutil.Amount(15),
+		},
+	}
+
+	cfg := &ActorConfig{
+		Logger:       btclog.Disabled,
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SweepDelay:   10,
+		SelfRef:      &nopSelfRef{},
+		BuildSweepTx: func(_ []*batchwatcher.Output,
+			_ btcutil.Amount) (*wire.MsgTx, error) {
+
+			tx := wire.NewMsgTx(2)
+			tx.AddTxOut(wire.NewTxOut(900, []byte{0x51}))
+
+			return tx, nil
+		},
+	}
+
+	a := NewActor(cfg)
+
+	// Set up tracking state with a pending sweep at lower fee rate.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     1,
+	}
+	a.pendingSweeps[batchID] = &pendingSweep{
+		batchID: batchID,
+		feeRate: btcutil.Amount(5), // Lower than current (15)
+	}
+
+	// Send BatchExpiredEvent (per-block retry from BatchWatcher).
+	result := a.Receive(t.Context(), &BatchExpiredEvent{
+		Notification: &batchwatcher.BatchExpiredNotification{
+			BatchID:      batchID,
+			ExpiryHeight: 100,
+		},
+	})
+	require.True(t, result.IsOk())
+
+	// Verify broadcast was triggered (fee bump).
+	broadcast := mockChainSource.LastBroadcast()
+	require.NotNil(t, broadcast)
+
+	// Verify pending sweep was updated with new fee rate.
+	require.Equal(t, btcutil.Amount(15), a.pendingSweeps[batchID].feeRate)
+}
+
+// TestAlertOnPersistentFailure verifies that an alert is logged when sweep
+// failures exceed the configured threshold.
+func TestAlertOnPersistentFailure(t *testing.T) {
+	t.Parallel()
+
+	batchID := batchwatcher.BatchID(uuid.New())
+
+	mockWatcher := &mockBatchWatcherRef{
+		resp: &batchwatcher.GetTreeStateResponse{
+			Found: false,
+		},
+	}
+
+	mockChainSource := &mockChainSourceRef{}
+
+	cfg := &ActorConfig{
+		Logger:         btclog.Disabled,
+		BatchWatcher:   mockWatcher,
+		ChainSource:    mockChainSource,
+		SelfRef:        &nopSelfRef{},
+		AlertThreshold: 3,
+	}
+
+	a := NewActor(cfg)
+
+	// Set up batch with attempts just below threshold.
+	a.expired[batchID] = &expiredBatch{
+		expiryHeight: 100,
+		attempts:     2,
+	}
+
+	// Simulate a failure that should trigger alert at threshold.
+	testErr := errors.New("test broadcast failure")
+	a.handleSweepAttemptError(t.Context(), batchID, testErr)
+
+	// Verify attempt was incremented to threshold.
+	require.EqualValues(t, 3, a.expired[batchID].attempts)
+	require.Equal(t, testErr, a.expired[batchID].lastError)
 }

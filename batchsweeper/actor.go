@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -29,20 +30,27 @@ const (
 	// a reasonable balance between confirmation speed and fee cost.
 	defaultFeeTarget = 6
 
-	// defaultMaxRetryAttempts is the default maximum number of broadcast
-	// retries before giving up on a sweep. This limit prevents infinite
-	// retries when there's a fundamental issue with the transaction (e.g.,
-	// invalid signatures, dust outputs). The operator should investigate
-	// after this limit is reached.
-	defaultMaxRetryAttempts = 10
+	// defaultAlertThreshold is the number of failed sweep attempts before
+	// an alert is logged at ErrorS level. This alerts operators to
+	// investigate persistent sweep failures.
+	defaultAlertThreshold = 10
+
+	// defaultAlertRepeatInterval is the number of attempts between
+	// repeated alerts after the initial alert threshold is reached.
+	defaultAlertRepeatInterval = 100
 
 	// defaultInitialRetryDelay is the starting delay for exponential
-	// backoff when retrying sweep broadcasts.
+	// backoff when retrying sweep broadcasts via timer (used when block
+	// subscription is not yet active).
 	defaultInitialRetryDelay = time.Second
 
 	// defaultMaxRetryDelay caps the exponential backoff to prevent
 	// excessively long waits between retry attempts.
 	defaultMaxRetryDelay = 5 * time.Minute
+
+	// defaultSweepConfirmations is the number of confirmations required
+	// before considering a sweep transaction confirmed.
+	defaultSweepConfirmations = 3
 )
 
 // ActorConfig contains the configuration for creating a new BatchSweeperActor.
@@ -86,18 +94,28 @@ type ActorConfig struct {
 	// configuration fields.
 	BuildSweepTx SweepTxBuilder
 
-	// TimeoutActor optionally schedules retries for sweep attempts.
+	// TimeoutActor optionally schedules retries for sweep attempts when
+	// block subscription is not yet active.
 	TimeoutActor fn.Option[actor.TellOnlyRef[timeout.Msg]]
 
-	// MaxRetryAttempts is the maximum number of retry attempts for a
-	// single batch sweep.
-	MaxRetryAttempts uint32
+	// AlertThreshold is the number of failed sweep attempts before an
+	// alert is logged at ErrorS level.
+	AlertThreshold uint32
 
-	// InitialRetryDelay is the initial delay used for sweep retries.
+	// AlertRepeatInterval is the number of attempts between repeated
+	// alerts after the initial threshold is reached.
+	AlertRepeatInterval uint32
+
+	// InitialRetryDelay is the initial delay used for sweep retries
+	// when block subscription is not yet active.
 	InitialRetryDelay time.Duration
 
 	// MaxRetryDelay is the maximum delay used for sweep retries.
 	MaxRetryDelay time.Duration
+
+	// SweepConfirmations is the number of confirmations required before
+	// considering a sweep transaction confirmed.
+	SweepConfirmations uint32
 
 	// SelfRef is a reference to this actor for receiving mapped
 	// notifications and internal timer callbacks.
@@ -113,6 +131,16 @@ type SweepTxBuilder func(candidates []*batchwatcher.Output,
 type expiredBatch struct {
 	expiryHeight uint32
 	attempts     uint32
+	lastError    error
+}
+
+// pendingSweep tracks a broadcast sweep that is awaiting confirmation.
+type pendingSweep struct {
+	txid        chainhash.Hash
+	batchID     batchwatcher.BatchID
+	broadcastAt time.Time
+	feeRate     btcutil.Amount
+	numInputs   int
 }
 
 // retryableError is returned by trySweep when the operation should be retried.
@@ -155,6 +183,10 @@ type Actor struct {
 	// expired tracks batches that have reached expiry and are eligible for
 	// sweeping.
 	expired map[batchwatcher.BatchID]*expiredBatch
+
+	// pendingSweeps tracks broadcast sweep transactions awaiting
+	// confirmation, keyed by batch ID.
+	pendingSweeps map[batchwatcher.BatchID]*pendingSweep
 }
 
 // NewActor creates a new BatchSweeperActor with the provided configuration.
@@ -163,8 +195,12 @@ func NewActor(cfg *ActorConfig) *Actor {
 		cfg.FeeTarget = defaultFeeTarget
 	}
 
-	if cfg.MaxRetryAttempts == 0 {
-		cfg.MaxRetryAttempts = defaultMaxRetryAttempts
+	if cfg.AlertThreshold == 0 {
+		cfg.AlertThreshold = defaultAlertThreshold
+	}
+
+	if cfg.AlertRepeatInterval == 0 {
+		cfg.AlertRepeatInterval = defaultAlertRepeatInterval
 	}
 
 	if cfg.InitialRetryDelay == 0 {
@@ -175,11 +211,18 @@ func NewActor(cfg *ActorConfig) *Actor {
 		cfg.MaxRetryDelay = defaultMaxRetryDelay
 	}
 
+	if cfg.SweepConfirmations == 0 {
+		cfg.SweepConfirmations = defaultSweepConfirmations
+	}
+
 	return &Actor{
 		cfg: cfg,
 		log: cfg.Logger,
 		expired: make(
 			map[batchwatcher.BatchID]*expiredBatch,
+		),
+		pendingSweeps: make(
+			map[batchwatcher.BatchID]*pendingSweep,
 		),
 	}
 }
@@ -196,12 +239,19 @@ func (a *Actor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 	case *SweepRetryEvent:
 		return a.handleSweepRetry(ctx, m)
 
+	case *SweepConfirmedEvent:
+		return a.handleSweepConfirmed(ctx, m)
+
 	default:
 		return fn.Err[Resp](fmt.Errorf("unknown message type: %T", m))
 	}
 }
 
-// handleBatchExpired processes a batch expiry notification.
+// handleBatchExpired processes a batch expiry notification. This is called
+// both when a batch first expires and on subsequent blocks (as a retry
+// trigger from BatchWatcher). The handler preserves attempt counts for
+// existing batches. For batches with pending sweeps, it checks if the
+// current fee rate is higher and rebroadcasts with the bumped fee if so.
 func (a *Actor) handleBatchExpired(ctx context.Context,
 	msg *BatchExpiredEvent) fn.Result[Resp] {
 
@@ -209,21 +259,59 @@ func (a *Actor) handleBatchExpired(ctx context.Context,
 		return fn.Err[Resp](fmt.Errorf("nil batch expiry notification"))
 	}
 
-	a.log.InfoS(ctx, "Batch expired",
-		"batch_id", msg.Notification.BatchID,
-		"expiry_height", msg.Notification.ExpiryHeight)
+	batchID := msg.Notification.BatchID
 
-	a.expired[msg.Notification.BatchID] = &expiredBatch{
-		expiryHeight: msg.Notification.ExpiryHeight,
-		attempts:     0,
+	// Only log and initialize tracking for newly expired batches.
+	// Re-notifications from BatchWatcher preserve existing state.
+	if _, alreadyExpired := a.expired[batchID]; !alreadyExpired {
+		a.log.InfoS(ctx, "Batch expired",
+			"batch_id", batchID,
+			"expiry_height", msg.Notification.ExpiryHeight)
+
+		a.expired[batchID] = &expiredBatch{
+			expiryHeight: msg.Notification.ExpiryHeight,
+			attempts:     0,
+		}
 	}
 
-	err := a.trySweep(ctx, msg.Notification.BatchID)
+	// If there's a pending sweep, check if we should bump the fee.
+	if pending, hasPending := a.pendingSweeps[batchID]; hasPending {
+		shouldBump, err := a.shouldBumpFee(ctx, pending)
+		if err != nil {
+			a.log.DebugS(ctx, "Fee rate query failed for bump check",
+				err, "batch_id", batchID)
+
+			return fn.Ok[Resp](nil)
+		}
+
+		if !shouldBump {
+			return fn.Ok[Resp](nil)
+		}
+
+		a.log.DebugS(ctx, "Bumping fee for pending sweep",
+			"batch_id", batchID,
+			"old_fee_rate", pending.feeRate)
+	}
+
+	err := a.trySweep(ctx, batchID)
 	if err != nil {
-		a.handleSweepAttemptError(ctx, msg.Notification.BatchID, err)
+		a.handleSweepAttemptError(ctx, batchID, err)
 	}
 
 	return fn.Ok[Resp](nil)
+}
+
+// shouldBumpFee checks if the current fee rate is higher than the pending
+// sweep's fee rate, indicating we should rebroadcast with the higher fee.
+func (a *Actor) shouldBumpFee(ctx context.Context,
+	pending *pendingSweep) (bool, error) {
+
+	currentFeeRate, err := a.queryFeeRate(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	return currentFeeRate > pending.feeRate, nil
 }
 
 // handleTreeStateChanged processes a tree state change notification.
@@ -273,8 +361,8 @@ func (a *Actor) handleSweepRetry(ctx context.Context,
 	return fn.Ok[Resp](nil)
 }
 
-// handleSweepAttemptError logs a sweep attempt error and schedules a retry when
-// appropriate.
+// handleSweepAttemptError logs a sweep attempt error, schedules a retry, and
+// emits alerts when failure count exceeds thresholds.
 func (a *Actor) handleSweepAttemptError(ctx context.Context,
 	batchID batchwatcher.BatchID, err error) {
 
@@ -296,7 +384,52 @@ func (a *Actor) handleSweepAttemptError(ctx context.Context,
 			"batch_id", batchID)
 	}
 
+	// Store the last error for alerting context.
+	if state, ok := a.expired[batchID]; ok {
+		state.lastError = err
+	}
+
 	a.scheduleRetry(ctx, batchID, delayHint, countAttempt)
+
+	// Check if we need to emit an alert after incrementing the attempt
+	// count. Alert at initial threshold and then at regular intervals.
+	a.maybeAlert(ctx, batchID)
+}
+
+// maybeAlert logs an ErrorS alert if the batch has exceeded the alert
+// threshold for sweep failures. Alerts are emitted at the initial threshold
+// and then repeated at configured intervals.
+func (a *Actor) maybeAlert(ctx context.Context, batchID batchwatcher.BatchID) {
+	state, ok := a.expired[batchID]
+	if !ok {
+		return
+	}
+
+	// Don't alert if below threshold.
+	if state.attempts < a.cfg.AlertThreshold {
+		return
+	}
+
+	// Alert at the initial threshold.
+	if state.attempts == a.cfg.AlertThreshold {
+		a.log.ErrorS(ctx, "Sweep failures exceeded alert threshold",
+			state.lastError,
+			"batch_id", batchID,
+			"attempts", state.attempts,
+			"expiry_height", state.expiryHeight)
+
+		return
+	}
+
+	// After initial threshold, alert at regular intervals.
+	attemptsSinceThreshold := state.attempts - a.cfg.AlertThreshold
+	if attemptsSinceThreshold%a.cfg.AlertRepeatInterval == 0 {
+		a.log.ErrorS(ctx, "Sweep failures continue",
+			state.lastError,
+			"batch_id", batchID,
+			"attempts", state.attempts,
+			"expiry_height", state.expiryHeight)
+	}
 }
 
 // trySweep attempts to build, sign, and broadcast a sweep transaction for a
@@ -393,15 +526,27 @@ func (a *Actor) trySweep(ctx context.Context,
 		)
 	}
 
+	txid := sweepTx.TxHash()
+
 	a.log.InfoS(ctx, "Broadcast batch sweep transaction",
 		"batch_id", batchID,
-		"txid", sweepTx.TxHash(),
+		"txid", txid,
 		"num_inputs", len(candidates),
 		"fee_rate_sat_vb", feeRate)
 
-	if batch, ok := a.expired[batchID]; ok {
-		batch.attempts = 0
+	// Track this pending sweep and register for confirmation notification.
+	a.pendingSweeps[batchID] = &pendingSweep{
+		txid:        txid,
+		batchID:     batchID,
+		broadcastAt: time.Now(),
+		feeRate:     feeRate,
+		numInputs:   len(candidates),
 	}
+
+	a.registerSweepConfirmation(
+		ctx, batchID, &txid, sweepTx.TxOut[0].PkScript,
+		uint32(bestHeight),
+	)
 
 	return nil
 }
@@ -476,8 +621,79 @@ func (a *Actor) queryFeeRate(ctx context.Context) (btcutil.Amount, error) {
 	return feeResp.SatPerVByte, nil
 }
 
-// scheduleRetry schedules a sweep retry if a timeout actor is configured and
-// the retry limit has not been exceeded.
+// registerSweepConfirmation registers for confirmation notification of a
+// broadcast sweep transaction. The heightHint should be the current best block
+// height to avoid unnecessary rescans of historical blocks.
+func (a *Actor) registerSweepConfirmation(ctx context.Context,
+	batchID batchwatcher.BatchID, txid *chainhash.Hash, pkScript []byte,
+	heightHint uint32) {
+
+	// Create a mapped reference that transforms ConfirmationEvent to
+	// SweepConfirmedEvent.
+	mappedRef := chainsource.MapConfirmationEvent(
+		a.cfg.SelfRef,
+		func(conf chainsource.ConfirmationEvent) Msg {
+			return &SweepConfirmedEvent{
+				BatchID:     batchID,
+				Txid:        conf.Txid,
+				BlockHeight: conf.BlockHeight,
+			}
+		},
+	)
+
+	req := &chainsource.RegisterConfRequest{
+		CallerID:    fmt.Sprintf("batchsweeper-conf-%s", batchID),
+		Txid:        txid,
+		PkScript:    pkScript,
+		TargetConfs: a.cfg.SweepConfirmations,
+		HeightHint:  heightHint,
+		NotifyActor: fn.Some(mappedRef),
+	}
+
+	// Fire-and-forget: we don't block on registration response. The
+	// confirmation will arrive asynchronously via SweepConfirmedEvent.
+	a.cfg.ChainSource.Tell(ctx, req)
+
+	a.log.DebugS(ctx, "Registered for sweep confirmation",
+		"batch_id", batchID,
+		"txid", txid,
+		"target_confs", a.cfg.SweepConfirmations,
+		"height_hint", heightHint)
+}
+
+// handleSweepConfirmed processes a sweep confirmation notification and cleans
+// up tracking state.
+func (a *Actor) handleSweepConfirmed(ctx context.Context,
+	msg *SweepConfirmedEvent) fn.Result[Resp] {
+
+	pending, ok := a.pendingSweeps[msg.BatchID]
+	if !ok {
+		a.log.WarnS(ctx, "Received confirmation for unknown pending sweep",
+			nil,
+			"batch_id", msg.BatchID,
+			"txid", msg.Txid)
+
+		return fn.Ok[Resp](nil)
+	}
+
+	a.log.InfoS(ctx, "Sweep transaction confirmed",
+		"batch_id", msg.BatchID,
+		"txid", msg.Txid,
+		"block_height", msg.BlockHeight,
+		"fee_rate_sat_vb", pending.feeRate,
+		"num_inputs", pending.numInputs)
+
+	// Clean up tracking state.
+	delete(a.pendingSweeps, msg.BatchID)
+	delete(a.expired, msg.BatchID)
+
+	return fn.Ok[Resp](nil)
+}
+
+// scheduleRetry schedules a timer-based sweep retry when a specific delay is
+// needed (e.g., waiting for CSV maturity). For normal failures, BatchWatcher
+// will re-notify us each block, so timer-based retries are only used when
+// there's a delay hint indicating we should wait longer than one block.
 func (a *Actor) scheduleRetry(ctx context.Context, batchID batchwatcher.BatchID,
 	delayHint time.Duration, countAttempt bool) {
 
@@ -487,15 +703,13 @@ func (a *Actor) scheduleRetry(ctx context.Context, batchID batchwatcher.BatchID,
 	}
 
 	if countAttempt {
-		if state.attempts >= a.cfg.MaxRetryAttempts {
-			a.log.WarnS(ctx, "Sweep retry attempts exhausted", nil,
-				"batch_id", batchID,
-				"attempts", state.attempts)
-
-			return
-		}
-
 		state.attempts++
+	}
+
+	// If no delay hint, rely on per-block retries from BatchWatcher instead
+	// of scheduling a timer.
+	if delayHint == 0 {
+		return
 	}
 
 	delay := retryDelay(
