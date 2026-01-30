@@ -2,12 +2,14 @@ package chainsource
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -60,6 +62,33 @@ func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	label string) error {
 
 	return nil
+}
+
+// broadcastErrorBackend is a mock backend that allows injecting broadcast
+// errors and mempool accept behavior while reusing the base mock backend for
+// other operations.
+type broadcastErrorBackend struct {
+	*mockBackend
+
+	broadcastErr error
+
+	mempoolAccepted bool
+	mempoolReason   string
+	mempoolErr      error
+}
+
+// BroadcastTx returns the configured error for testing error handling paths.
+func (b *broadcastErrorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
+	label string) error {
+
+	return b.broadcastErr
+}
+
+// TestMempoolAccept returns the configured mempool acceptance values.
+func (b *broadcastErrorBackend) TestMempoolAccept(ctx context.Context,
+	tx *wire.MsgTx) (bool, string, error) {
+
+	return b.mempoolAccepted, b.mempoolReason, b.mempoolErr
 }
 
 func (m *mockBackend) RegisterConf(ctx context.Context,
@@ -201,6 +230,143 @@ func TestChainSourceActorBroadcastTx(t *testing.T) {
 	require.True(t, ok)
 	expectedHash := tx.TxHash()
 	require.Equal(t, expectedHash, broadcastResp.Txid)
+}
+
+// TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors tests that broadcast
+// errors expected during re-broadcast are treated as success.
+func TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors(t *testing.T) {
+	t.Parallel()
+
+	baseBackend := newMockBackend()
+	backend := &broadcastErrorBackend{
+		mockBackend: baseBackend,
+
+		broadcastErr: chain.ErrInsufficientFee,
+
+		// If we regress and call TestMempoolAccept on ignorable errors,
+		// the broadcast is treated as a failure,
+		// and this test should fail.
+		mempoolErr: errors.New("should not call testmempoolaccept"),
+	}
+
+	system := actor.NewActorSystem()
+	defer func() { _ = system.Shutdown(t.Context()) }()
+
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
+	ref := ChainSourceKey.Spawn(
+		system, "chainsource-broadcast-ignore", chainSource,
+	)
+
+	ctx := t.Context()
+	tx := wire.NewMsgTx(2)
+	future := ref.Ask(ctx, &BroadcastTxRequest{
+		Tx:    tx,
+		Label: "test-tx",
+	})
+
+	result := future.Await(ctx)
+	require.True(t, result.IsOk())
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	broadcastResp, ok := resp.(*BroadcastTxResponse)
+	require.True(t, ok)
+	require.Equal(t, tx.TxHash(), broadcastResp.Txid)
+}
+
+// TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept tests that the
+// ChainSourceActor treats a failed broadcast as success if the backend reports
+// that the transaction would be accepted by the mempool.
+func TestChainSourceActorBroadcastTxFallsBackToTestMempoolAccept(t *testing.T) {
+	t.Parallel()
+
+	baseBackend := newMockBackend()
+	backend := &broadcastErrorBackend{
+		mockBackend: baseBackend,
+
+		broadcastErr: errors.New("non-standard backend error"),
+
+		mempoolAccepted: true,
+		mempoolReason:   "",
+		mempoolErr:      nil,
+	}
+
+	system := actor.NewActorSystem()
+	defer func() { _ = system.Shutdown(t.Context()) }()
+
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
+	ref := ChainSourceKey.Spawn(
+		system, "chainsource-broadcast-mempool", chainSource,
+	)
+
+	ctx := t.Context()
+	tx := wire.NewMsgTx(2)
+	future := ref.Ask(ctx, &BroadcastTxRequest{
+		Tx:    tx,
+		Label: "test-tx",
+	})
+
+	result := future.Await(ctx)
+	require.True(t, result.IsOk())
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	broadcastResp, ok := resp.(*BroadcastTxResponse)
+	require.True(t, ok)
+	require.Equal(t, tx.TxHash(), broadcastResp.Txid)
+}
+
+// TestChainSourceActorBroadcastTxFallsBackToIgnorableRejectReason tests that
+// the ChainSourceActor treats a failed broadcast as success if the backend
+// reports an ignorable reject reason from TestMempoolAccept.
+func TestChainSourceActorBroadcastTxFallsBackToIgnorableRejectReason(
+	t *testing.T) {
+
+	t.Parallel()
+
+	baseBackend := newMockBackend()
+	backend := &broadcastErrorBackend{
+		mockBackend: baseBackend,
+
+		broadcastErr: errors.New("non-standard backend error"),
+
+		mempoolAccepted: false,
+		mempoolReason:   "already in mempool",
+		mempoolErr:      nil,
+	}
+
+	system := actor.NewActorSystem()
+	defer func() { _ = system.Shutdown(t.Context()) }()
+
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
+	ref := ChainSourceKey.Spawn(
+		system, "chainsource-broadcast-mempool-reject", chainSource,
+	)
+
+	ctx := t.Context()
+	tx := wire.NewMsgTx(2)
+	future := ref.Ask(ctx, &BroadcastTxRequest{
+		Tx:    tx,
+		Label: "test-tx",
+	})
+
+	result := future.Await(ctx)
+	require.True(t, result.IsOk())
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	broadcastResp, ok := resp.(*BroadcastTxResponse)
+	require.True(t, ok)
+	require.Equal(t, tx.TxHash(), broadcastResp.Txid)
 }
 
 // TestChainSourceActorBestHeight tests best height query through the

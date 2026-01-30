@@ -169,6 +169,69 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 
 	err := a.cfg.Backend.BroadcastTx(ctx, req.Tx, req.Label)
 	if err != nil {
+		txHash := req.Tx.TxHash()
+
+		// Some backends treat duplicate broadcasts as errors.
+		// If the error
+		// indicates the transaction is already known or confirmed,
+		// treat the broadcast as a success so higher-level retry logic
+		// doesn't increment failure counters.
+		if IsIgnorableBroadcastError(err) {
+			a.logger(ctx).DebugS(ctx,
+				"Broadcast returned ignorable error",
+				slog.String("broadcast_error", err.Error()),
+				slog.String("txid", txHash.String()),
+				slog.String("label", req.Label))
+
+			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
+				Txid: txHash,
+			})
+		}
+
+		// If supported by the backend, test mempool acceptance as a
+		// best-effort signal that the transaction is already known.
+		// This is useful for backends that return non-standard error
+		// strings
+		// from BroadcastTx but provide a structured reject reason via
+		// testmempoolaccept.
+		accepted, reason, acceptErr := a.cfg.Backend.TestMempoolAccept(
+			ctx, req.Tx,
+		)
+		switch {
+		case acceptErr == nil && accepted:
+			a.logger(ctx).DebugS(ctx,
+				"Broadcast failed but mempool accept succeeded",
+				slog.String("broadcast_error", err.Error()),
+				slog.String("txid", txHash.String()),
+				slog.String("label", req.Label))
+
+			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
+				Txid: txHash,
+			})
+
+		case acceptErr == nil && IsIgnorableMempoolRejectReason(reason):
+			a.logger(ctx).DebugS(ctx,
+				"Broadcast failed; mempool reject ignorable",
+				slog.String("broadcast_error", err.Error()),
+				slog.String("txid", txHash.String()),
+				slog.String("label", req.Label),
+				slog.String("reject_reason", reason))
+
+			return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
+				Txid: txHash,
+			})
+
+		case acceptErr != nil:
+			a.logger(ctx).DebugS(ctx,
+				"Broadcast failed; mempool accept query failed",
+				slog.String("broadcast_error", err.Error()),
+				slog.String("mempool_accept_error",
+					acceptErr.Error(),
+				),
+				slog.String("txid", txHash.String()),
+				slog.String("label", req.Label))
+		}
+
 		return fn.Err[ChainSourceResp](fmt.Errorf("failed to "+
 			"broadcast transaction: %w", err))
 	}
