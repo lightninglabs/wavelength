@@ -1,0 +1,460 @@
+package unroller
+
+import (
+	"context"
+	"crypto/rand"
+	"sync"
+	"testing"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/round"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+// MockUnrollStore implements UnrollStore using mock.Mock for testing.
+type MockUnrollStore struct {
+	mock.Mock
+}
+
+// SaveUnrollState creates a new unroll tracking record.
+func (m *MockUnrollStore) SaveUnrollState(
+	ctx context.Context, state *UnrollState,
+) error {
+
+	args := m.Called(ctx, state)
+	return args.Error(0)
+}
+
+// UpdateUnrollState updates an existing unroll record.
+func (m *MockUnrollStore) UpdateUnrollState(
+	ctx context.Context, state *UnrollState,
+) error {
+
+	args := m.Called(ctx, state)
+	return args.Error(0)
+}
+
+// GetUnrollState retrieves unroll state by VTXO outpoint.
+//
+//nolint:forcetypeassert
+func (m *MockUnrollStore) GetUnrollState(
+	ctx context.Context, vtxoOutpoint wire.OutPoint,
+) (*UnrollState, error) {
+
+	args := m.Called(ctx, vtxoOutpoint)
+	var state *UnrollState
+	if args.Get(0) != nil {
+		state = args.Get(0).(*UnrollState)
+	}
+
+	return state, args.Error(1)
+}
+
+// ListActiveUnrolls returns all in-progress unrolls.
+//
+//nolint:forcetypeassert
+func (m *MockUnrollStore) ListActiveUnrolls(
+	ctx context.Context,
+) ([]*UnrollState, error) {
+
+	args := m.Called(ctx)
+	var states []*UnrollState
+	if args.Get(0) != nil {
+		states = args.Get(0).([]*UnrollState)
+	}
+
+	return states, args.Error(1)
+}
+
+// DeleteUnrollState removes completed unroll record.
+func (m *MockUnrollStore) DeleteUnrollState(
+	ctx context.Context, vtxoOutpoint wire.OutPoint,
+) error {
+
+	args := m.Called(ctx, vtxoOutpoint)
+	return args.Error(0)
+}
+
+// GetVTXO retrieves a VTXO by outpoint.
+//
+//nolint:forcetypeassert
+func (m *MockUnrollStore) GetVTXO(
+	ctx context.Context, outpoint wire.OutPoint,
+) (*round.ClientVTXO, error) {
+
+	args := m.Called(ctx, outpoint)
+	var vtxo *round.ClientVTXO
+	if args.Get(0) != nil {
+		vtxo = args.Get(0).(*round.ClientVTXO)
+	}
+
+	return vtxo, args.Error(1)
+}
+
+// Compile-time check that MockUnrollStore implements UnrollStore.
+var _ UnrollStore = (*MockUnrollStore)(nil)
+
+// mockChainSourceRef implements a mock chain source actor ref for testing.
+type mockChainSourceRef struct {
+	t          *testing.T
+	broadcasts []broadcastCall
+	mu         sync.Mutex
+}
+
+type broadcastCall struct {
+	tx    *wire.MsgTx
+	label string
+}
+
+// newMockChainSourceRef creates a new mock chain source actor ref.
+func newMockChainSourceRef(t *testing.T) *mockChainSourceRef {
+	return &mockChainSourceRef{
+		t:          t,
+		broadcasts: make([]broadcastCall, 0),
+	}
+}
+
+// ID returns the actor ID.
+func (m *mockChainSourceRef) ID() string {
+	return "mock-chain-source"
+}
+
+// Ask sends a request and returns a future response.
+func (m *mockChainSourceRef) Ask(
+	_ context.Context, msg chainsource.ChainSourceMsg,
+) actor.Future[chainsource.ChainSourceResp] {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch req := msg.(type) {
+	case *chainsource.BroadcastTxRequest:
+		m.broadcasts = append(m.broadcasts, broadcastCall{
+			tx:    req.Tx,
+			label: req.Label,
+		})
+
+		// Return success response.
+		return &mockFuture[chainsource.ChainSourceResp]{
+			result: fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BroadcastTxResponse{},
+			),
+		}
+
+	default:
+		m.t.Fatalf("unexpected message type: %T", msg)
+		return nil
+	}
+}
+
+// Tell sends a message without expecting a response.
+func (m *mockChainSourceRef) Tell(
+	_ context.Context, _ chainsource.ChainSourceMsg,
+) {
+
+	// No-op for testing.
+}
+
+// TellOnly returns a tell-only reference.
+//
+//nolint:ll
+func (m *mockChainSourceRef) TellOnly() actor.TellOnlyRef[chainsource.ChainSourceMsg] {
+	return m
+}
+
+// getBroadcasts returns all broadcast calls.
+//
+//nolint:unused
+func (m *mockChainSourceRef) getBroadcasts() []broadcastCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]broadcastCall, len(m.broadcasts))
+	copy(result, m.broadcasts)
+
+	return result
+}
+
+// mockFuture implements actor.Future for testing.
+type mockFuture[T any] struct {
+	result fn.Result[T]
+}
+
+// Await returns the stored result.
+func (f *mockFuture[T]) Await(_ context.Context) fn.Result[T] {
+	return f.result
+}
+
+// ThenApply applies a transformation function to the result.
+func (f *mockFuture[T]) ThenApply(
+	ctx context.Context, transformFn func(T) T,
+) actor.Future[T] {
+
+	return &mockFuture[T]{
+		result: f.result.MapOk(transformFn),
+	}
+}
+
+// OnComplete registers a callback for when the result is ready.
+func (f *mockFuture[T]) OnComplete(
+	_ context.Context, callback func(fn.Result[T]),
+) {
+
+	callback(f.result)
+}
+
+// unrollerTestHarness provides common test utilities.
+//
+//nolint:containedctx
+type unrollerTestHarness struct {
+	t      *testing.T
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	store       *MockUnrollStore
+	chainSource *mockChainSourceRef
+	actor       *UnrollerActor
+}
+
+// newUnrollerTestHarness creates a new test harness.
+func newUnrollerTestHarness(t *testing.T) *unrollerTestHarness {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	store := &MockUnrollStore{}
+	chainSource := newMockChainSourceRef(t)
+
+	// Create a no-op self ref for testing.
+	selfRef := &mockSelfRef{t: t}
+
+	cfg := &UnrollerConfig{
+		ChainSource: chainSource,
+		Store:       store,
+		ChainParams: &chaincfg.RegressionNetParams,
+		Logger:      btclog.Disabled,
+		SelfRef:     selfRef,
+	}
+
+	actorInstance := NewUnrollerActor(cfg)
+
+	h := &unrollerTestHarness{
+		t:           t,
+		ctx:         ctx,
+		cancel:      cancel,
+		store:       store,
+		chainSource: chainSource,
+		actor:       actorInstance,
+	}
+
+	t.Cleanup(func() {
+		cancel()
+	})
+
+	return h
+}
+
+// newTestOutpoint creates a random test outpoint.
+func (h *unrollerTestHarness) newTestOutpoint() wire.OutPoint {
+	h.t.Helper()
+
+	var hash chainhash.Hash
+	_, err := rand.Read(hash[:])
+	require.NoError(h.t, err)
+
+	return wire.OutPoint{Hash: hash, Index: 0}
+}
+
+// newTestVTXO creates a test VTXO with a simple tree.
+func (h *unrollerTestHarness) newTestVTXO() *round.ClientVTXO {
+	h.t.Helper()
+
+	outpoint := h.newTestOutpoint()
+
+	// Create a simple tree with 2 levels.
+	root := &tree.Node{
+		Input:    wire.OutPoint{},
+		Outputs:  []*wire.TxOut{},
+		Children: make(map[uint32]*tree.Node),
+	}
+
+	treePath := &tree.Tree{
+		Root: root,
+	}
+
+	return &round.ClientVTXO{
+		Outpoint: outpoint,
+		Amount:   btcutil.Amount(50000),
+		Expiry:   144,
+		TreePath: treePath,
+	}
+}
+
+// mockSelfRef implements a no-op TellOnlyRef for testing.
+type mockSelfRef struct {
+	t *testing.T
+}
+
+// ID returns the actor ID.
+func (m *mockSelfRef) ID() string {
+	return "mock-self-ref"
+}
+
+// Tell is a no-op for testing.
+func (m *mockSelfRef) Tell(_ context.Context, _ UnrollerMsg) {
+	// No-op.
+}
+
+// TestUnrollRequest_InitiatesUnroll verifies that receiving an UnrollRequest
+// starts a new unroll.
+func TestUnrollRequest_InitiatesUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newUnrollerTestHarness(t)
+	vtxoDesc := h.newTestVTXO()
+
+	// Mock store to return VTXO descriptor.
+	h.store.On("GetVTXO", h.ctx, vtxoDesc.Outpoint).Return(
+		vtxoDesc, nil,
+	)
+
+	// Expect store to save unroll state.
+	h.store.On("SaveUnrollState", h.ctx, mock.Anything).Return(nil)
+	h.store.On("UpdateUnrollState", h.ctx, mock.Anything).Return(nil)
+
+	// Send unroll request.
+	msg := &UnrollRequest{
+		TargetVTXOs: []wire.OutPoint{vtxoDesc.Outpoint},
+	}
+
+	result := h.actor.Receive(h.ctx, msg)
+
+	require.True(t, result.IsOk())
+
+	// Verify store was called to fetch VTXO.
+	h.store.AssertCalled(t, "GetVTXO", h.ctx, vtxoDesc.Outpoint)
+
+	// Verify store was called to save state.
+	h.store.AssertCalled(
+		t, "SaveUnrollState", h.ctx,
+		mock.AnythingOfType("*unroller.UnrollState"),
+	)
+
+	// Verify the saved state has correct fields.
+	// Calls: GetVTXO, SaveUnrollState, UpdateUnrollState (from broadcast).
+	calls := h.store.Calls
+	require.GreaterOrEqual(t, len(calls), 2)
+
+	var savedState *UnrollState
+	for _, call := range calls {
+		if call.Method == "SaveUnrollState" {
+			var ok bool
+			savedState, ok = call.Arguments.Get(1).(*UnrollState)
+			require.True(t, ok, "expected *UnrollState")
+
+			break
+		}
+	}
+
+	require.NotNil(t, savedState)
+	require.Equal(t, vtxoDesc.Outpoint, savedState.VTXOOutpoint)
+	// Status starts as Pending when saved, but may transition to
+	// Broadcasting or AwaitingCSV immediately after in broadcastLevel
+	// (AwaitingCSV if the tree has minimal levels and broadcasts complete
+	// synchronously).
+	require.Contains(
+		t,
+		[]UnrollStatus{
+			UnrollStatusPending,
+			UnrollStatusBroadcasting,
+			UnrollStatusAwaitingCSV,
+		},
+		savedState.Status,
+	)
+}
+
+// TestUnrollRequest_DuplicateIgnored verifies that duplicate unroll requests
+// are ignored.
+func TestUnrollRequest_DuplicateIgnored(t *testing.T) {
+	t.Parallel()
+
+	h := newUnrollerTestHarness(t)
+	vtxoDesc := h.newTestVTXO()
+
+	// Mock store to return VTXO descriptor.
+	h.store.On("GetVTXO", h.ctx, vtxoDesc.Outpoint).Return(
+		vtxoDesc, nil,
+	)
+
+	// Expect store to save unroll state once.
+	h.store.On("SaveUnrollState", h.ctx, mock.Anything).Return(
+		nil,
+	).Once()
+	h.store.On("UpdateUnrollState", h.ctx, mock.Anything).Return(nil)
+
+	// Send first request.
+	msg := &UnrollRequest{
+		TargetVTXOs: []wire.OutPoint{vtxoDesc.Outpoint},
+	}
+
+	result1 := h.actor.Receive(h.ctx, msg)
+	require.True(t, result1.IsOk())
+
+	// Send duplicate request.
+	result2 := h.actor.Receive(h.ctx, msg)
+	require.True(t, result2.IsOk())
+
+	// Verify GetVTXO and SaveUnrollState were only called once.
+	h.store.AssertNumberOfCalls(t, "GetVTXO", 1)
+	h.store.AssertNumberOfCalls(t, "SaveUnrollState", 1)
+}
+
+// TestGetUnrollStatus_ReturnsCurrentStatus verifies that GetUnrollStatusRequest
+// returns the correct status.
+func TestGetUnrollStatus_ReturnsCurrentStatus(t *testing.T) {
+	t.Parallel()
+
+	h := newUnrollerTestHarness(t)
+	vtxoDesc := h.newTestVTXO()
+
+	// Create unroll state directly in actor.
+	state := &UnrollState{
+		VTXOOutpoint: vtxoDesc.Outpoint,
+		VTXO:         vtxoDesc,
+		LevelOrder: []LevelTxids{
+			{Level: 0, Txids: []chainhash.Hash{}},
+		},
+		CurrentLevel:   0,
+		BroadcastTxids: make(map[chainhash.Hash]bool),
+		ConfirmedTxids: make(map[chainhash.Hash]ConfirmationInfo),
+		Status:         UnrollStatusBroadcasting,
+	}
+
+	h.actor.activeUnrolls[vtxoDesc.Outpoint.String()] = state
+
+	// Query status.
+	req := &GetUnrollStatusRequest{
+		VTXOOutpoint: vtxoDesc.Outpoint,
+	}
+
+	result := h.actor.Receive(h.ctx, req)
+	require.True(t, result.IsOk())
+
+	respMsg, err := result.Unpack()
+	require.NoError(t, err)
+
+	resp, ok := respMsg.(*UnrollStatusResp)
+	require.True(t, ok)
+	require.Equal(t, UnrollStatusBroadcasting, resp.Status)
+	require.Equal(t, 0, resp.CurrentLevel)
+	require.Equal(t, 1, resp.TotalLevels)
+}
