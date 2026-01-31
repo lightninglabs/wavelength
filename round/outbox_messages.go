@@ -2,6 +2,7 @@ package round
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -212,12 +213,12 @@ type SubmitVTXOForfeitSigsToServer struct {
 	actor.BaseMessage
 
 	// RoundID identifies the round.
-	RoundID string
+	RoundID RoundID
 
 	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
-	// signatures. Each signature is the client's portion of the 2-of-2
-	// collaborative spend from the VTXO.
-	ForfeitSigs map[wire.OutPoint][]byte
+	// signatures. Each signature is the client's schnorr signature for the
+	// collaborative 2-of-2 spend from the VTXO.
+	ForfeitSigs map[wire.OutPoint]*schnorr.Signature
 
 	// ForfeitTxs maps VTXO outpoints to the built forfeit transactions.
 	// The server uses these to broadcast after adding its signature.

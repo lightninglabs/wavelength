@@ -240,8 +240,55 @@ CREATE TABLE IF NOT EXISTS vtxos (
     -- tree_path is the TLV-encoded extracted tree.Tree path.
     tree_path BLOB NOT NULL,
 
+    -- batch_expiry is the absolute block height at which the batch expires
+    -- (when the operator can sweep via the batch-level timelock). Zero value
+    -- is used for VTXOs created via the round store before the VTXO manager
+    -- fills in the full metadata via ON CONFLICT DO UPDATE.
+    batch_expiry INTEGER NOT NULL,
+
+    -- tree_depth is the depth of this VTXO in the VTXT (used for expiry
+    -- calculation based on TreeDepthMultiplier). Zero for same reason.
+    tree_depth INTEGER NOT NULL,
+
+    -- created_height is the block height when this VTXO was created.
+    -- Zero for same reason.
+    created_height INTEGER NOT NULL,
+
+    -- commitment_txid is the 32-byte txid of the commitment transaction that
+    -- anchors this VTXO's tree on-chain. Empty blob until the VTXO manager
+    -- fills in the full metadata via ON CONFLICT DO UPDATE.
+    commitment_txid BLOB NOT NULL,
+
     -- spent indicates if this VTXO has been used.
     spent BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- status tracks VTXO lifecycle (vtxo.VTXOStatus enum):
+    --   0 = Live (default)
+    --   1 = RefreshRequested
+    --   2 = Forfeiting
+    --   3 = Forfeited
+    --   4 = Spent
+    --   5 = Expiring
+    --   6 = Failed
+    status INTEGER NOT NULL DEFAULT 0,
+
+    -- forfeit_round_id is the round in which this VTXO is being forfeited.
+    -- NULL unless VTXO is in Forfeiting or Forfeited status.
+    forfeit_round_id TEXT,
+
+    -- forfeit_tx is the serialized wire.MsgTx (binary) of the forfeit tx.
+    -- Persisted when entering Forfeiting state for crash recovery.
+    forfeit_tx BLOB,
+
+    -- forfeit_txid is the 32-byte hash of the forfeit transaction.
+    -- Set when the forfeit is confirmed (transition to Forfeited state).
+    forfeit_txid BLOB,
+
+    -- replaced_by_hash is the outpoint hash of the replacement VTXO.
+    replaced_by_hash BLOB,
+
+    -- replaced_by_index is the outpoint index of the replacement VTXO.
+    replaced_by_index INTEGER,
 
     -- creation_time is the unix epoch timestamp when this VTXO was created.
     creation_time BIGINT NOT NULL,
@@ -265,3 +312,7 @@ CREATE INDEX IF NOT EXISTS idx_vtxos_spent
 -- Index on creation_time for chronological queries.
 CREATE INDEX IF NOT EXISTS idx_vtxos_creation_time
     ON vtxos(creation_time DESC);
+
+-- Index on status for efficient status-based queries (ListLiveVTXOs, etc.).
+CREATE INDEX IF NOT EXISTS idx_vtxos_status
+    ON vtxos(status);

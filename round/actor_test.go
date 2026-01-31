@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -1196,10 +1197,11 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 			Hash:  chainhash.HashH([]byte("unknown-vtxo")),
 			Index: 0,
 		}
+		sig := testutils.TestSchnorrSignature(t, "forfeit")
 		response := &ForfeitSignatureResponse{
 			RoundID:      "non-existent-round",
 			VTXOOutpoint: vtxoOutpoint,
-			Signature:    []byte{0x30, 0x44}, // Dummy signature
+			Signature:    sig,
 			ForfeitTx:    wire.NewMsgTx(2),
 		}
 

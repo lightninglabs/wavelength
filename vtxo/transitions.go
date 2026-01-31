@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tx"
@@ -22,6 +23,9 @@ func (s *LiveState) ProcessEvent(
 
 	case *ForfeitRequestEvent:
 		return s.handleForfeitRequest(ctx, evt, env)
+
+	case *TriggerRefreshEvent:
+		return s.handleTriggerRefresh(ctx, evt, env)
 
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
@@ -188,12 +192,42 @@ func (s *LiveState) handleForfeitRequest(
 	}, nil
 }
 
+// handleTriggerRefresh handles a manual refresh request from the wallet. This
+// bypasses the automatic expiry-based refresh and immediately transitions the
+// VTXO to RefreshRequested state, emitting a RefreshRequest to the round actor.
+func (s *LiveState) handleTriggerRefresh(
+	_ context.Context, _ *TriggerRefreshEvent, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	outbox := []VTXOOutMsg{
+		&RefreshRequest{
+			VTXOOutpoint: s.VTXO.Outpoint,
+			Amount:       int64(s.VTXO.Amount),
+			Urgency:      RefreshUrgencyNormal,
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusRefreshRequested,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &RefreshRequestedState{
+			VTXO: s.VTXO,
+			// Manual trigger has no height context.
+			RequestedAtHeight: 0,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
+	}, nil
+}
+
 // signForfeitVTXOInput produces the client's schnorr signature for the VTXO
 // input of a forfeit transaction. The VTXO uses a tapscript with a 2-of-2
 // collaborative spend path, so both client and operator signatures are needed.
 // This function only produces the client's half; the operator adds theirs.
 func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
-	forfeitTx *wire.MsgTx, env *VTXOEnvironment) ([]byte, error) {
+	forfeitTx *wire.MsgTx,
+	env *VTXOEnvironment) (*schnorr.Signature, error) {
 
 	if vtxo.TapScript == nil {
 		return nil, fmt.Errorf("VTXO tapscript is required for signing")
@@ -244,7 +278,13 @@ func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
 		return nil, fmt.Errorf("failed to sign: %w", err)
 	}
 
-	return sig.Serialize(), nil
+	// Parse the serialized signature to get a typed schnorr.Signature.
+	schnorrSig, err := schnorr.ParseSignature(sig.Serialize())
+	if err != nil {
+		return nil, fmt.Errorf("parse schnorr signature: %w", err)
+	}
+
+	return schnorrSig, nil
 }
 
 // ProcessEvent handles events in RefreshRequestedState. The VTXO is waiting

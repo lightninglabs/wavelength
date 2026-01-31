@@ -103,6 +103,11 @@ func (a *VTXOActor) Stop(ctx context.Context) {
 func (a *VTXOActor) Receive(ctx context.Context,
 	event actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
+	a.cfg.Logger.DebugS(ctx, "VTXO actor received event",
+		slog.String("event_type", fmt.Sprintf("%T", event)),
+		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
+		slog.String("current_state", fmt.Sprintf("%T", a.state)))
+
 	vtxoEvent, ok := event.(VTXOEvent)
 	if !ok {
 		return fn.Err[actormsg.VTXOActorResp](
@@ -112,10 +117,23 @@ func (a *VTXOActor) Receive(ctx context.Context,
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
+		a.cfg.Logger.ErrorS(ctx, "VTXO FSM ProcessEvent failed", err,
+			slog.String("event_type", fmt.Sprintf("%T", vtxoEvent)),
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
+
 		return fn.Err[actormsg.VTXOActorResp](
 			fmt.Errorf("process event: %w", err),
 		)
 	}
+
+	// Log transition details.
+	var outboxLen int
+	transition.NewEvents.WhenSome(func(emitted VTXOEmittedEvent) {
+		outboxLen = len(emitted.Outbox)
+	})
+	a.cfg.Logger.DebugS(ctx, "VTXO FSM transition completed",
+		slog.String("next_state", fmt.Sprintf("%T", transition.NextState)),
+		slog.Int("outbox_len", outboxLen))
 
 	priorState := a.state
 
@@ -164,9 +182,21 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				m.NewStatus == VTXOStatusForfeiting &&
 					m.ForfeitTx != nil
 
+			a.cfg.Logger.DebugS(ctx, "Processing VTXOStatusUpdate",
+				slog.String("outpoint", m.Outpoint.String()),
+				slog.String("new_status", m.NewStatus.String()),
+				slog.Bool("has_forfeit_tx", m.ForfeitTx != nil),
+				slog.Bool("is_forfeiting_with_tx", isForfeitingWithTx))
+
 			if isForfeitingWithTx {
 				err = a.cfg.Store.MarkForfeiting(
 					ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
+				)
+				a.cfg.Logger.DebugS(
+					ctx, "Called MarkForfeiting",
+					slog.String("outpoint", m.Outpoint.String()),
+					slog.String("round_id", m.RoundID),
+					slog.Bool("error", err != nil),
 				)
 			} else {
 				err = a.cfg.Store.UpdateVTXOStatus(

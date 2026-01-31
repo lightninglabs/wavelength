@@ -484,7 +484,16 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 		return err
 	}
 
+	a.log.DebugS(ctx, "askEventAndProcessOutbox: FSM returned outbox events",
+		slog.Int("event_count", len(events)),
+		slog.String("input_event_type", fmt.Sprintf("%T", event)))
+
 	if len(events) > 0 {
+		for i, e := range events {
+			a.log.DebugS(ctx, "askEventAndProcessOutbox: outbox event",
+				slog.Int("index", i),
+				slog.String("type", fmt.Sprintf("%T", e)))
+		}
 		if err := a.processOutbox(ctx, events); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
@@ -620,6 +629,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
+
+	case *actormsg.TriggerVTXORefreshMsg:
+		return a.handleTriggerVTXORefresh(ctx, m)
 
 	default:
 		return fn.Err[ClientResp](fmt.Errorf(
@@ -1266,10 +1278,18 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			// Route forfeit request to VTXO actor via service key.
 			// The VTXO actor will sign the forfeit tx and respond
 			// with ForfeitSignatureResponse.
+			a.log.DebugS(ctx, "Processing ForfeitRequestToVTXO",
+				slog.String("outpoint", m.VTXOOutpoint.String()),
+				slog.String("round_id", m.RoundID),
+				slog.Bool("actor_system_nil", a.cfg.ActorSystem == nil))
+
 			if a.cfg.ActorSystem != nil {
 				serviceKey := actormsg.VTXOActorServiceKey(
 					m.VTXOOutpoint,
 				)
+				a.log.DebugS(ctx, "Looking up VTXO actor by service key",
+					slog.String("outpoint", m.VTXOOutpoint.String()))
+
 				serviceKey.Ref(a.cfg.ActorSystem).Tell(
 					ctx, &ForfeitRequestEvent{
 						RoundID:               m.RoundID,
@@ -1279,9 +1299,12 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 						ServerForfeitPkScript: m.ServerForfeitPkScript,
 					},
 				)
-				log.InfoS(ctx, "Sent forfeit request to VTXO actor",
-					"outpoint", m.VTXOOutpoint.String(),
-					"round_id", m.RoundID)
+				a.log.InfoS(ctx, "Sent forfeit request to VTXO actor",
+					slog.String("outpoint", m.VTXOOutpoint.String()),
+					slog.String("round_id", m.RoundID))
+			} else {
+				a.log.WarnS(ctx, "Cannot send forfeit request: ActorSystem is nil", nil,
+					slog.String("outpoint", m.VTXOOutpoint.String()))
 			}
 
 		case *ForfeitConfirmedToVTXO:
@@ -1390,6 +1413,39 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 	a.log.InfoS(ctx, "Collected forfeit signature",
 		slog.String("outpoint", resp.VTXOOutpoint.String()),
 		slog.String("round_id", roundIDStr))
+
+	return fn.Ok[ClientResp](nil)
+}
+
+// handleTriggerVTXORefresh processes a refresh trigger request from the wallet
+// actor. For each target outpoint, we send TriggerRefreshEvent to the VTXO
+// actor via its service key. The VTXO actor then emits RefreshVTXORequest back
+// to us through its outbox.
+func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
+	cmd *actormsg.TriggerVTXORefreshMsg) fn.Result[ClientResp] {
+
+	if a.cfg.ActorSystem == nil {
+		return fn.Err[ClientResp](fmt.Errorf(
+			"ActorSystem not configured, cannot trigger VTXO refresh",
+		))
+	}
+
+	triggeredCount := 0
+	for _, outpoint := range cmd.TargetOutpoints {
+		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &TriggerRefreshEvent{
+			ForceRefresh: cmd.ForceRefresh,
+		})
+
+		a.log.InfoS(ctx, "Sent refresh trigger to VTXO actor",
+			slog.String("outpoint", outpoint.String()),
+			slog.Bool("force", cmd.ForceRefresh))
+
+		triggeredCount++
+	}
+
+	a.log.InfoS(ctx, "Triggered VTXO refresh",
+		slog.Int("count", triggeredCount))
 
 	return fn.Ok[ClientResp](nil)
 }
