@@ -40,8 +40,8 @@ type VTXOActorConfig struct {
 	Logger       btclog.Logger
 
 	// RoundActor receives refresh requests and forfeit signatures from this
-	// VTXO actor.
-	RoundActor actor.TellOnlyRef[round.ClientMsg]
+	// VTXO actor. Uses actormsg.RoundReceivable to avoid import cycles.
+	RoundActor actor.TellOnlyRef[actormsg.RoundReceivable]
 
 	// ChainResolver receives expiring notifications for unilateral exit.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
