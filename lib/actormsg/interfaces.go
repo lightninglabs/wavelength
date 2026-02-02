@@ -28,6 +28,14 @@ type RoundReceivable interface {
 	RoundReceivable()
 }
 
+// RoundActorResp is the response type marker for round actors. The concrete
+// round.ClientResp struct implements this interface. Using an interface here
+// allows the wallet to look up the round actor without importing the round
+// package (avoiding import cycles).
+type RoundActorResp interface {
+	RoundActorResp()
+}
+
 // VTXOManagerMsg is the message type for VTXO manager. Messages sent TO the
 // manager implement this interface via the exported marker method.
 type VTXOManagerMsg interface {

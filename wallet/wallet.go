@@ -58,9 +58,11 @@ type Ark struct {
 	// store persists boarding addresses and intents to the database.
 	store BoardingStore
 
-	// roundActor is a reference to the round actor for forwarding refresh
-	// requests. The round actor handles VTXO actor coordination.
-	roundActor fn.Option[actor.TellOnlyRef[actormsg.RoundReceivable]]
+	// actorSystem is the actor system context for looking up actors by
+	// service key. Used to find the round actor when forwarding refresh
+	// requests. This avoids circular dependencies since we look up the
+	// actor on-demand rather than holding a reference.
+	actorSystem actor.SystemContext
 
 	// chainSource provides block epoch notifications for polling.
 	chainSource actor.ActorRef[
@@ -94,18 +96,19 @@ type Ark struct {
 // NewArk creates a new Ark wallet actor. The logger should already have the
 // subsystem set (e.g., created via handler.SubSystem(wallet.Subsystem)).
 //
-// The roundActor parameter is optional - if provided, refresh requests will be
-// forwarded to the round actor for VTXO actor coordination.
+// The actorSystem parameter enables refresh request forwarding to the round
+// actor via service key lookup. This avoids circular dependencies since we
+// look up the actor on-demand using the well-known RoundActorServiceKey.
 func NewArk(backend BoardingBackend, store BoardingStore,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
-	roundActor fn.Option[actor.TellOnlyRef[actormsg.RoundReceivable]],
+	actorSystem actor.SystemContext,
 	log btclog.Logger) *Ark {
 
 	return &Ark{
 		backend:     backend,
 		store:       store,
 		chainSource: chainSource,
-		roundActor:  roundActor,
+		actorSystem: actorSystem,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
 		log:         log,
@@ -535,19 +538,24 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 
 	a.log.InfoS(ctx, "Received VTXO refresh request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
-		slog.Bool("force_refresh", req.ForceRefresh),
-	)
+		slog.Bool("force_refresh", req.ForceRefresh))
 
-	// Forward to round actor if configured. The round actor looks up VTXO
-	// actors by service key and sends TriggerRefreshEvent to each one.
-	a.roundActor.WhenSome(
-		func(ref actor.TellOnlyRef[actormsg.RoundReceivable]) {
-			ref.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
-				TargetOutpoints: req.TargetOutpoints,
-				ForceRefresh:    req.ForceRefresh,
-			})
-		},
-	)
+	// Forward to round actor via service key lookup. The round actor looks
+	// up VTXO actors by service key and sends TriggerRefreshEvent to each.
+	if a.actorSystem != nil {
+		serviceKey := actormsg.RoundActorServiceKey()
+		roundRef := serviceKey.Ref(a.actorSystem)
+
+		roundRef.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
+			TargetOutpoints: req.TargetOutpoints,
+			ForceRefresh:    req.ForceRefresh,
+		})
+
+		a.log.DebugS(ctx, "Forwarded refresh request to round actor")
+	} else {
+		a.log.WarnS(ctx, "Cannot forward refresh: no actor system "+
+			"configured", nil)
+	}
 
 	resp := &RefreshVTXOsResponse{
 		RefreshingCount: len(req.TargetOutpoints),

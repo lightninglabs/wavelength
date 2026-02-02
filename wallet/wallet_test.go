@@ -15,7 +15,6 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -289,8 +288,7 @@ func TestCreateBoardingAddress(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -329,8 +327,7 @@ func TestRegisterNotifier(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -476,8 +473,7 @@ func TestProcessNewUtxo(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -634,8 +630,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -771,8 +766,7 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -814,8 +808,7 @@ func TestGetBoardingBalance(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		backend, store, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -924,8 +917,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource,
-			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			backend, store, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -968,8 +960,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource,
-			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			backend, store, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -1018,8 +1009,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource,
-			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			backend, store, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -1088,8 +1078,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource,
-			fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+			backend, store, chainSource, nil,
 			btclog.Disabled,
 		)
 
