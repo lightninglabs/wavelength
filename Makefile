@@ -254,13 +254,23 @@ check-commits: #? Run lint+unit on each commit since branch base (use upstream=<
 SYSTEST_DB_TAG := $(if $(filter postgres,$(db)),test_postgres)
 SYSTEST_TAGS := systest $(SYSTEST_DB_TAG)
 
+# System tests are significantly heavier and can be flaky under high load on
+# shared CI runners. Reduce parallelism in CI to make runs more stable.
+ifdef CI
+SYSTEST_PARALLEL ?= 2
+endif
+
 systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
 	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m $(if $(case),-run $(case),)
+	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
+		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \
+		$(if $(case),-run $(case),)
 
 systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
 	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
-	$(GOTEST) -tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 10m -harness.logstdout $(if $(case),-run $(case),)
+	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
+		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \
+		-harness.logstdout $(if $(case),-run $(case),)
 
 # ============
 # RPC GENERATION

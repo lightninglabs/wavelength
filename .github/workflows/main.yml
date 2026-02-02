@@ -261,3 +261,63 @@ jobs:
             **/test-artifacts/
           retention-days: 5
           if-no-files-found: ignore
+
+  ########################
+  # run system tests
+  ########################
+  systest:
+    name: Run system tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # Initialize submodules during checkout.
+          submodules: recursive
+          # Use fine-grained PAT with read access to private submodule repos.
+          # The token must have Contents: Read permission for both the main
+          # repo and any private submodules (e.g., darepo-client).
+          token: ${{ secrets.SUBMODULE_PAT }}
+
+      # - name: Clean up runner space
+      #   uses: ./.github/actions/cleanup-space
+
+      - name: Fetch and rebase on ${{ github.base_ref }}
+        if: github.event_name == 'pull_request'
+        uses: ./.github/actions/rebase
+
+      - name: Setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+          key-prefix: systest
+
+      - name: Run system tests
+        # Run with sudo as harness uses user 0:0 which needs extra permissions
+        # on the github runner in order for docker mounts to work correctly.
+        run: sudo env "PATH=$PATH" "GOPATH=$GOPATH" make systest
+
+      - name: Fix artifact permissions
+        if: always()
+        run: |
+          # Fix permissions for test artifacts (created in package directories)
+          # Run find with sudo so it can traverse directories owned by root
+          sudo find . -type d -name "test-artifacts" -exec chown -R "$(id -u):$(id -g)" {} + || true
+          sudo find . -type d -name "test-artifacts" -exec chmod -R a+r {} + || true
+
+      - name: Set artifact name
+        if: failure()
+        id: artifact-name
+        run: |
+          echo "name=test-artifacts-systest-${{ github.run_id }}" >> $GITHUB_OUTPUT
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: |
+            **/test-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
