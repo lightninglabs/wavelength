@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	clienttree "github.com/lightninglabs/darepo-client/lib/tree"
 	clienttypes "github.com/lightninglabs/darepo-client/lib/types"
 	clientround "github.com/lightninglabs/darepo-client/round"
@@ -275,8 +276,15 @@ func (b *BridgeServerConn) convertToActorMsg(
 			[]*clienttypes.ForfeitTxSig, 0, len(m.ForfeitSigs),
 		)
 		for outpoint, sig := range m.ForfeitSigs {
+			unsignedTx, ok := m.ForfeitTxs[outpoint]
+			if !ok {
+				return nil, fmt.Errorf(
+					"missing unsigned forfeit tx for "+
+						"outpoint %s", outpoint,
+				)
+			}
 			forfeitTxs = append(forfeitTxs, &clienttypes.ForfeitTxSig{
-				UnsignedTx:    m.ForfeitTxs[outpoint],
+				UnsignedTx:    unsignedTx,
 				ClientVTXOSig: sig,
 			})
 		}
@@ -308,7 +316,7 @@ type BridgeClientConn struct {
 	mu sync.RWMutex
 
 	// clients maps client IDs to their actor references.
-	clients map[clientconn.ClientID]actor.TellOnlyRef[clientround.ClientMsg]
+	clients map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]
 
 	// eventServers maps client IDs to subscribe.Server instances that
 	// broadcast events to subscribers. This enables TestClient to observe
@@ -329,7 +337,7 @@ type BridgeClientConn struct {
 // NewBridgeClientConn creates a new bridge client connection.
 func NewBridgeClientConn(transcript *MessageTranscript) *BridgeClientConn {
 	return &BridgeClientConn{
-		clients:      make(map[clientconn.ClientID]actor.TellOnlyRef[clientround.ClientMsg]),
+		clients:      make(map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]),
 		eventServers: make(map[clientconn.ClientID]*subscribe.Server),
 		transcript:   transcript,
 		pendingS2C:   make(map[clientconn.ClientID][]pendingS2CMessage),
@@ -467,7 +475,7 @@ func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) {
 
 // RegisterClient adds a client actor reference for message routing.
 func (b *BridgeClientConn) RegisterClient(id clientconn.ClientID,
-	ref actor.TellOnlyRef[clientround.ClientMsg]) {
+	ref actor.TellOnlyRef[actormsg.RoundReceivable]) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()

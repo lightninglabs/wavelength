@@ -137,7 +137,13 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err, "VTXO should reach RefreshRequested status")
 	t.Log("VTXO status: RefreshRequested")
 
-	// The refresh request should have triggered registration with the server.
+	// Now trigger registration to send the JoinRoundRequest to the server.
+	// The round FSM has accumulated the refresh request in PendingRoundAssembly,
+	// but needs RegistrationRequested to actually send the join message.
+	err = client.TriggerRegistration(ctx)
+	require.NoError(t, err, "should trigger registration for refresh")
+	t.Log("Triggered registration for refresh round")
+
 	// Wait for server response.
 	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
 	require.NoError(t, err, "server should respond to refresh registration")
@@ -201,18 +207,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 		"new VTXO should be Live")
 	t.Log("Verified: New VTXO is Live")
 
-	// Verify replacement relationship.
+	// Verify replacement relationship (this also checks amounts are similar).
 	client.AssertVTXOReplacement(vtxo1Outpoint, vtxo2Desc.Outpoint)
-	t.Log("Verified: VTXO replacement relationship")
-
-	// Verify amounts are similar (new should be slightly less due to fees).
-	vtxo1DescFinal, err := client.GetVTXODescriptor(vtxo1Outpoint)
-	require.NoError(t, err)
-	require.InDelta(t, float64(vtxo1DescFinal.Amount), float64(vtxo2Desc.Amount),
-		float64(100_000), // Allow up to 100k sats for fees
-		"new VTXO amount should be close to old")
-	t.Logf("Value preserved: old=%d, new=%d sats",
-		vtxo1DescFinal.Amount, vtxo2Desc.Amount)
+	t.Log("Verified: VTXO replacement relationship and value preservation")
 
 	// Verify we have exactly 1 live VTXO (the new one).
 	liveVTXOs, err := client.ListLiveVTXODescriptors()

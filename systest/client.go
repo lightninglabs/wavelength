@@ -21,7 +21,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	clientlnd "github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/round"
-	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -73,8 +72,9 @@ type TestClient struct {
 	// roundActor is the client-side round actor.
 	roundActor *round.RoundClientActor
 
-	// roundRef is the actor reference for the round client actor.
-	roundRef actor.ActorRef[round.ClientMsg, round.ClientResp]
+	// roundRef is the actor reference for the round client actor. Uses
+	// actormsg types so the wallet can find it via service key lookup.
+	roundRef actor.ActorRef[actormsg.RoundReceivable, actormsg.RoundActorResp]
 
 	// sqlDB is the per-client SQLite database.
 	sqlDB *db.SqliteStore
@@ -240,16 +240,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// Create BoardingBackend using client's LND.
 	boardingBackend := clientlnd.NewBoardingBackend(lndServices.WalletKit)
 
-	// Create and spawn WalletActor (Ark).
-	//
-	// NOTE: We pass fn.None() for roundActor because the round actor is
-	// created after the wallet. For refresh testing, we bypass the wallet
-	// and send TriggerVTXORefreshMsg directly to the round actor.
+	// Create and spawn WalletActor (Ark). The wallet uses service key lookup
+	// to find the round actor when forwarding refresh requests.
 	walletActor := wallet.NewArk(
 		boardingBackend,
 		boardingStore,
 		chainSourceRef,
-		fn.None[actor.TellOnlyRef[actormsg.RoundReceivable]](),
+		h.actorSystem,
 		h.SubLogger(wallet.Subsystem),
 	)
 	walletActorID := fmt.Sprintf("wallet%s", opts.actorSuffix)
@@ -328,31 +325,35 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		ActorSystem:    h.actorSystem,
 	}
 
-	// Create and spawn RoundClientActor.
+	// Create and spawn RoundClientActor. The round actor uses actormsg types
+	// (RoundReceivable/RoundActorResp) so the wallet can find it via service
+	// key lookup without import cycles.
 	roundActorResult := round.NewRoundClientActor(roundCfg)
 	roundActorInner := roundActorResult.UnwrapOrFail(t)
 
-	roundActorID := fmt.Sprintf("round-client%s", opts.actorSuffix)
-	roundKey := actor.NewServiceKey[round.ClientMsg, round.ClientResp](
-		roundActorID,
+	roundKey := actormsg.RoundActorServiceKey()
+	roundRef := roundKey.Spawn(
+		h.actorSystem, actormsg.RoundActorServiceKeyName, roundActorInner,
 	)
-	roundRef := roundKey.Spawn(h.actorSystem, roundActorID, roundActorInner)
 
-	// Set SelfRef after spawning.
+	// Set SelfRef after spawning. Since roundRef is
+	// ActorRef[RoundReceivable, RoundActorResp] and SelfRef expects
+	// TellOnlyRef[RoundReceivable], we can use it directly (ActorRef
+	// embeds TellOnlyRef).
 	roundCfg.SelfRef = roundRef
 
 	// Create real vtxo.Manager with round actor reference. This enables
 	// VTXO actors to send RefreshRequest and ForfeitSignature back to the
 	// round actor.
 	vtxoManagerCfg := &vtxo.ManagerConfig{
-		Store:        vtxoStore,
-		Wallet:       clientWallet,
-		ChainSource:  chainSourceRef,
-		ActorSystem:  h.actorSystem,
-		ChainParams:  &chaincfg.RegressionNetParams,
-		ExpiryConfig: nil, // Use defaults.
-		Logger:       h.SubLogger("VTXO"),
-		RoundActor:   roundRef,
+		Store:         vtxoStore,
+		Wallet:        clientWallet,
+		ChainSource:   chainSourceRef,
+		ActorSystem:   h.actorSystem,
+		ChainParams:   &chaincfg.RegressionNetParams,
+		ExpiryConfig:  nil, // Use defaults.
+		Logger:        h.SubLogger("VTXO"),
+		RoundActor:    roundRef,
 		ChainResolver: nil, // No unilateral exit in e2e tests.
 	}
 	vtxoManagerActor := vtxo.NewManager(vtxoManagerCfg)
@@ -408,19 +409,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// Start round actor (registers with wallet for boarding confirmations).
 	err = roundActorInner.Start(ctx)
 	require.NoError(t, err, "failed to start round actor")
-
-	// Wire up wallet -> round actor connection for refresh requests.
-	// The wallet needs to forward TriggerVTXORefreshMsg to the round actor.
-	// We create a mapped ref that adapts RoundReceivable to ClientMsg.
-	roundTellRef := actor.NewMapInputRef[
-		actormsg.RoundReceivable, round.ClientMsg,
-	](
-		roundRef,
-		func(m actormsg.RoundReceivable) round.ClientMsg {
-			return m.(round.ClientMsg)
-		},
-	)
-	walletActor.SetRoundActor(roundTellRef)
 
 	// Register with S→C bridge.
 	h.bridge.RegisterClient(clientID, roundRef)
@@ -949,8 +937,9 @@ func (c *TestClient) RegisterVTXORequests(ctx context.Context,
 // triggering the FSM to transition from PendingRoundAssembly to
 // RegistrationSent state and emit a JoinRoundRequest.
 func (c *TestClient) TriggerRegistration(ctx context.Context) error {
-	// The round actor processes RegistrationRequested via ServerMessageNotification.
-	// This is how client-initiated events are routed to the FSM.
+	// The round actor processes RegistrationRequested via
+	// ServerMessageNotification. This is how client-initiated events are
+	// routed to the FSM.
 	msg := &round.ServerMessageNotification{
 		Message: &round.RegistrationRequested{},
 	}
@@ -958,7 +947,8 @@ func (c *TestClient) TriggerRegistration(ctx context.Context) error {
 	future := c.roundRef.Ask(ctx, msg)
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return fmt.Errorf("failed to trigger registration: %w", result.Err())
+		return fmt.Errorf("failed to trigger registration: %w",
+			result.Err())
 	}
 
 	return nil
@@ -1052,8 +1042,9 @@ func (c *TestClient) WaitForVTXOStatus(outpoint wire.OutPoint,
 		desc, getErr := c.vtxoStore.GetVTXO(ctx, outpoint)
 		if getErr != nil {
 			return fmt.Errorf(
-				"timeout waiting for VTXO %s status %s: %w",
-				outpoint, expectedStatus, err,
+				"timeout waiting for VTXO %s status %s "+
+					"(getting current status failed: %v): %w",
+				outpoint, expectedStatus, getErr, err,
 			)
 		}
 		return fmt.Errorf(
