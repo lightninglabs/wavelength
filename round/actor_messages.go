@@ -18,10 +18,55 @@ type ClientMsg interface {
 }
 
 // ClientResp is the sealed interface for all response messages from a
-// RoundClientActor.
+// RoundClientActor. It implements actormsg.RoundActorResp to enable service
+// key lookup from the wallet package.
 type ClientResp interface {
 	actor.Message
+	actormsg.RoundActorResp
 	clientRespSealed()
+}
+
+// serviceKeyConfig holds configuration for service key creation.
+type serviceKeyConfig struct {
+	suffix string
+}
+
+// ServiceKeyOption is a functional option for customizing the service key.
+type ServiceKeyOption func(*serviceKeyConfig)
+
+// WithSuffix adds a suffix to the service key name. This is useful in tests
+// with multiple round actors that need unique service keys to avoid collisions.
+func WithSuffix(suffix string) ServiceKeyOption {
+	return func(cfg *serviceKeyConfig) {
+		cfg.suffix = suffix
+	}
+}
+
+// NewServiceKey returns the service key for looking up a round client actor.
+// The service key uses actormsg interface types to match the round actor's
+// Receive signature and ensure compatibility with wallet service key lookups.
+//
+// Use the WithSuffix option in tests to create unique service keys for
+// multi-client scenarios:
+//
+//	key := round.NewServiceKey(round.WithSuffix("-1"))
+func NewServiceKey(
+	opts ...ServiceKeyOption,
+) actor.ServiceKey[actormsg.RoundReceivable, actormsg.RoundActorResp] {
+
+	cfg := &serviceKeyConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	keyName := actormsg.RoundActorServiceKeyName
+	if cfg.suffix != "" {
+		keyName += cfg.suffix
+	}
+
+	return actor.NewServiceKey[actormsg.RoundReceivable, actormsg.RoundActorResp](
+		keyName,
+	)
 }
 
 // WalletBoardingConfirmed wraps a wallet.BoardingUtxoConfirmedEvent to make it
@@ -73,6 +118,9 @@ func (m *ServerMessageResponse) MessageType() string {
 
 func (m *ServerMessageResponse) clientRespSealed() {}
 
+// RoundActorResp implements actormsg.RoundActorResp marker interface.
+func (m *ServerMessageResponse) RoundActorResp() {}
+
 // GetClientStateRequest queries the current client state.
 type GetClientStateRequest struct {
 	actor.BaseMessage
@@ -116,6 +164,9 @@ func (m *GetClientStateResponse) MessageType() string {
 
 func (m *GetClientStateResponse) clientRespSealed() {}
 
+// RoundActorResp implements actormsg.RoundActorResp marker interface.
+func (m *GetClientStateResponse) RoundActorResp() {}
+
 // CancelRoundRequest cancels participation in a round.
 type CancelRoundRequest struct {
 	actor.BaseMessage
@@ -145,6 +196,9 @@ func (m *CancelRoundResponse) MessageType() string {
 }
 
 func (m *CancelRoundResponse) clientRespSealed() {}
+
+// RoundActorResp implements actormsg.RoundActorResp marker interface.
+func (m *CancelRoundResponse) RoundActorResp() {}
 
 // RegisterVTXORequestsRequest informs the FSM of VTXO request amounts to
 // include in the next round registration.
@@ -177,6 +231,9 @@ func (m *RegisterVTXORequestsResponse) MessageType() string {
 
 // clientRespSealed marks this as a client response message.
 func (m *RegisterVTXORequestsResponse) clientRespSealed() {}
+
+// RoundActorResp implements actormsg.RoundActorResp marker interface.
+func (m *RegisterVTXORequestsResponse) RoundActorResp() {}
 
 // ConfirmationEvent wraps a chain confirmation event from ChainSource.
 // This allows the actor to receive confirmation notifications.
