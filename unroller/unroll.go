@@ -332,13 +332,41 @@ func (a *UnrollerActor) handleBlockEpoch(
 			}
 
 		case UnrollStatusAwaitingCSV:
+			// If no leaf confirmation height was recorded, initialize the
+			// baseline at the first epoch we observe.
+			if state.LeafConfirmHeight == 0 {
+				state.LeafConfirmHeight = evt.Height
+
+				a.cfg.Logger.InfoS(ctx, "Initialized CSV baseline",
+					slog.String("vtxo", state.VTXOOutpoint.String()),
+					slog.Int(
+						"leaf_height",
+						int(state.LeafConfirmHeight),
+					))
+
+				if err := a.cfg.Store.UpdateUnrollState(
+					ctx, state,
+				); err != nil {
+					a.cfg.Logger.ErrorS(
+						ctx, "Failed to update unroll state", err,
+						slog.String(
+							"vtxo",
+							state.VTXOOutpoint.String(),
+						),
+					)
+				}
+			}
+
 			// Check if CSV delay satisfied to complete unroll.
 			if evt.Height >= state.LeafConfirmHeight+csvDelay {
 				a.cfg.Logger.InfoS(
 					ctx, "CSV satisfied, completing unroll",
 					slog.String("vtxo", state.VTXOOutpoint.String()),
 					slog.Int("height", int(evt.Height)),
-					slog.Int("leaf_height", int(state.LeafConfirmHeight)))
+					slog.Int(
+						"leaf_height",
+						int(state.LeafConfirmHeight),
+					))
 
 				a.handleCSVComplete(ctx, state)
 			}
@@ -388,6 +416,9 @@ func (a *UnrollerActor) handleAllLevelsComplete(
 		a.cfg.Logger.ErrorS(ctx, "Failed to update unroll state", err,
 			slog.String("vtxo", state.VTXOOutpoint.String()))
 	}
+
+	// Ensure we track block epochs even when no broadcasts happen.
+	a.subscribeBlockEpochs(ctx, state)
 }
 
 // handleCSVComplete marks the unroll as complete after CSV delay is satisfied.
