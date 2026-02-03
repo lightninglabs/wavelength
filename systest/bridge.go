@@ -193,16 +193,26 @@ func (b *BridgeServerConn) convertToActorMsg(
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
 
-		// Convert RefreshRequests to ForfeitReqs. Each refresh
-		// specifies a VTXO to forfeit and a new VTXO to receive.
-		// The forfeit request only needs the outpoint; the new VTXO
-		// is already included in VTXORequests.
+		// Convert ForfeitRequests to ForfeitReqs. Each forfeit
+		// specifies a VTXO to forfeit.
 		forfeitReqs := make(
-			[]*clienttypes.ForfeitRequest, len(m.RefreshRequests),
+			[]*clienttypes.ForfeitRequest, 0,
+			len(m.ForfeitRequests),
 		)
-		for i, refreshReq := range m.RefreshRequests {
-			forfeitReqs[i] = &clienttypes.ForfeitRequest{
-				VTXOOutpoint: &refreshReq.VTXOOutpoint,
+		for _, forfeitReq := range m.ForfeitRequests {
+			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
+				VTXOOutpoint: &forfeitReq.VTXOOutpoint,
+			})
+		}
+
+		// Convert LeaveRequests directly. Each leave specifies an
+		// on-chain destination output.
+		leaveReqs := make(
+			[]*clienttypes.LeaveRequest, len(m.LeaveRequests),
+		)
+		for i, leaveReq := range m.LeaveRequests {
+			leaveReqs[i] = &clienttypes.LeaveRequest{
+				Output: leaveReq.Output,
 			}
 		}
 
@@ -212,6 +222,7 @@ func (b *BridgeServerConn) convertToActorMsg(
 				BoardingReqs: boardingReqs,
 				VTXOReqs:     vtxoReqs,
 				ForfeitReqs:  forfeitReqs,
+				LeaveReqs:    leaveReqs,
 			},
 		}, nil
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainbackends"
@@ -29,6 +30,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/stretchr/testify/require"
@@ -988,7 +990,7 @@ func (c *TestClient) LNDInstance() *clientharness.LndInstance {
 // TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
 // refresh of the specified VTXOs. The wallet forwards this to the round actor,
 // which sends TriggerRefreshEvent to each VTXO actor. The VTXO actors emit
-// RefreshRequest to be included in the next round's forfeit flow.
+// ForfeitRequest to be included in the next round's forfeit flow.
 func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
 	outpoints []wire.OutPoint) error {
 
@@ -1128,4 +1130,101 @@ func (c *TestClient) GetVTXODescriptor(outpoint wire.OutPoint) (
 // This is useful for finding VTXOs that can be refreshed or spent.
 func (c *TestClient) ListLiveVTXODescriptors() ([]*vtxo.Descriptor, error) {
 	return c.vtxoStore.ListLiveVTXOs(c.harness.ctx)
+}
+
+// TriggerVTXOLeave sends a LeaveVTXOsRequest to the wallet actor to trigger
+// leave (offboard) for the specified VTXOs. The destination is an on-chain
+// address where the funds will be sent. The flow is:
+// wallet -> round actor -> VTXO actor -> round actor (LeaveVTXORequest).
+func (c *TestClient) TriggerVTXOLeave(ctx context.Context,
+	outpoints []wire.OutPoint, destAddr btcutil.Address) error {
+
+	// Compute total amount from all VTXOs being left.
+	var totalAmount btcutil.Amount
+	for _, outpoint := range outpoints {
+		desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return fmt.Errorf("get VTXO %s: %w", outpoint, err)
+		}
+
+		totalAmount += desc.Amount
+	}
+
+	// Create output script from destination address.
+	pkScript, err := txscript.PayToAddrScript(destAddr)
+	if err != nil {
+		return fmt.Errorf("create pkScript: %w", err)
+	}
+
+	// Create the leave output with total VTXO amount. The actual fee
+	// will be deducted by the server.
+	leaveOutput := &wire.TxOut{
+		Value:    int64(totalAmount),
+		PkScript: pkScript,
+	}
+
+	// Send LeaveVTXOsRequest to wallet actor.
+	req := &wallet.LeaveVTXOsRequest{
+		TargetOutpoints: outpoints,
+		DestOutput:      leaveOutput,
+	}
+
+	future := c.walletRef.Ask(ctx, req)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("leave request failed: %w", result.Err())
+	}
+
+	return nil
+}
+
+// GetOnChainBalance returns the client's confirmed on-chain wallet balance.
+// This queries the LND wallet for the total confirmed balance.
+func (c *TestClient) GetOnChainBalance(ctx context.Context) (
+	btcutil.Amount, error) {
+
+	balance, err := c.lndServices.Client.WalletBalance(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("get wallet balance: %w", err)
+	}
+
+	return balance.Confirmed, nil
+}
+
+// WaitForOnChainBalance waits for the client's on-chain balance to be at least
+// the expected amount. This is useful after leave operations.
+func (c *TestClient) WaitForOnChainBalance(ctx context.Context,
+	expectedMin btcutil.Amount, timeout time.Duration) error {
+
+	return wait.NoError(func() error {
+		balance, err := c.GetOnChainBalance(ctx)
+		if err != nil {
+			return err
+		}
+
+		if balance < expectedMin {
+			return fmt.Errorf(
+				"balance %d sats < expected %d sats",
+				balance, expectedMin,
+			)
+		}
+
+		return nil
+	}, timeout)
+}
+
+// GetNewAddress generates a new on-chain address from the client's LND wallet.
+// This is used as the destination for leave operations.
+func (c *TestClient) GetNewAddress(ctx context.Context) (
+	btcutil.Address, error) {
+
+	// Use the WalletKit to get a taproot address.
+	addr, err := c.lndServices.WalletKit.NextAddr(
+		ctx, "", walletrpc.AddressType_TAPROOT_PUBKEY, false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get new address: %w", err)
+	}
+
+	return addr, nil
 }
