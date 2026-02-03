@@ -22,3 +22,20 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 		fmt.Sprintf("vtxo.%s", outpoint.String()),
 	)
 }
+
+// RoundActorServiceKeyName is the well-known service key name for the round
+// actor. Both the round package (for registration) and wallet package (for
+// lookup) use this constant to ensure they reference the same actor.
+const RoundActorServiceKeyName = "round-client"
+
+// RoundActorServiceKey returns the service key for looking up the round actor.
+// This uses RoundReceivable for the message type so the wallet can look up the
+// round actor without importing the round package (avoiding import cycles).
+//
+// The round package must register the round actor with this key for lookup to
+// work. Use RoundActorServiceKeyName to construct the actor ID for Spawn.
+func RoundActorServiceKey() actor.ServiceKey[RoundReceivable, RoundActorResp] {
+	return actor.NewServiceKey[RoundReceivable, RoundActorResp](
+		RoundActorServiceKeyName,
+	)
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
@@ -236,8 +237,8 @@ func (m *mockWalletActorRef) sendBoardingConfirmation(ctx context.Context,
 type mockSelfRef struct {
 	t        *testing.T
 	id       string
-	messages []ClientMsg
-	msgChan  chan ClientMsg
+	messages []actormsg.RoundReceivable
+	msgChan  chan actormsg.RoundReceivable
 	mu       sync.Mutex
 }
 
@@ -245,8 +246,8 @@ func newMockSelfRef(t *testing.T) *mockSelfRef {
 	return &mockSelfRef{
 		t:        t,
 		id:       "mock-self-ref",
-		messages: make([]ClientMsg, 0),
-		msgChan:  make(chan ClientMsg, 100),
+		messages: make([]actormsg.RoundReceivable, 0),
+		msgChan:  make(chan actormsg.RoundReceivable, 100),
 	}
 }
 
@@ -254,7 +255,7 @@ func (m *mockSelfRef) ID() string {
 	return m.id
 }
 
-func (m *mockSelfRef) Tell(_ context.Context, msg ClientMsg) {
+func (m *mockSelfRef) Tell(_ context.Context, msg actormsg.RoundReceivable) {
 	m.mu.Lock()
 	m.messages = append(m.messages, msg)
 	m.mu.Unlock()
@@ -268,10 +269,14 @@ func (m *mockSelfRef) Tell(_ context.Context, msg ClientMsg) {
 
 // waitForMessage blocks until a message arrives or the timeout expires,
 // enabling synchronous test assertions on asynchronous actor messages.
-func (m *mockSelfRef) waitForMessage(timeout time.Duration) (ClientMsg, bool) {
+func (m *mockSelfRef) waitForMessage(
+	timeout time.Duration,
+) (actormsg.RoundReceivable, bool) {
+
 	select {
 	case msg := <-m.msgChan:
 		return msg, true
+
 	case <-time.After(timeout):
 		return nil, false
 	}
@@ -481,7 +486,10 @@ func (h *actorTestHarness) start() error {
 }
 
 // receive sends a message to the actor and returns the response.
-func (h *actorTestHarness) receive(msg ClientMsg) fn.Result[ClientResp] {
+func (h *actorTestHarness) receive(
+	msg actormsg.RoundReceivable,
+) fn.Result[actormsg.RoundActorResp] {
+
 	return h.actor.Receive(h.ctx, msg)
 }
 

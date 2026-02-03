@@ -15,8 +15,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
-	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -679,17 +679,17 @@ func assertOutboxContainsReal[T VTXOOutMsg](h *realVTXOSigningHarness) T {
 }
 
 // mockRoundActorRef captures messages sent to the round actor for test
-// verification. Implements actor.TellOnlyRef[round.ClientMsg].
+// verification. Implements actor.TellOnlyRef[actormsg.RoundReceivable].
 type mockRoundActorRef struct {
 	t        *testing.T
-	messages []round.ClientMsg
+	messages []actormsg.RoundReceivable
 	mu       sync.Mutex
 }
 
 func newMockRoundActorRef(t *testing.T) *mockRoundActorRef {
 	return &mockRoundActorRef{
 		t:        t,
-		messages: make([]round.ClientMsg, 0),
+		messages: make([]actormsg.RoundReceivable, 0),
 	}
 }
 
@@ -697,17 +697,20 @@ func (m *mockRoundActorRef) ID() string {
 	return "mock-round-actor"
 }
 
-func (m *mockRoundActorRef) Tell(_ context.Context, msg round.ClientMsg) {
+func (m *mockRoundActorRef) Tell(
+	_ context.Context, msg actormsg.RoundReceivable,
+) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
 }
 
-func (m *mockRoundActorRef) getMessages() []round.ClientMsg {
+func (m *mockRoundActorRef) getMessages() []actormsg.RoundReceivable {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	result := make([]round.ClientMsg, len(m.messages))
+	result := make([]actormsg.RoundReceivable, len(m.messages))
 	copy(result, m.messages)
 
 	return result
