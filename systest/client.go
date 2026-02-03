@@ -29,7 +29,6 @@ import (
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
-	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
@@ -1197,30 +1196,21 @@ func (c *TestClient) GetOnChainBalance(ctx context.Context) (
 func (c *TestClient) WaitForOnChainBalance(ctx context.Context,
 	expectedMin btcutil.Amount, timeout time.Duration) error {
 
-	err := wait.Predicate(func() bool {
+	return wait.NoError(func() error {
 		balance, err := c.GetOnChainBalance(ctx)
 		if err != nil {
-			return false
+			return err
 		}
-		return balance >= expectedMin
-	}, timeout)
 
-	if err != nil {
-		// Get current balance for better error message.
-		balance, getErr := c.GetOnChainBalance(ctx)
-		if getErr != nil {
+		if balance < expectedMin {
 			return fmt.Errorf(
-				"timeout waiting for balance >= %d sats: %w",
-				expectedMin, err,
+				"balance %d sats < expected %d sats",
+				balance, expectedMin,
 			)
 		}
-		return fmt.Errorf(
-			"timeout waiting for balance >= %d sats (current: %d)",
-			expectedMin, balance,
-		)
-	}
 
-	return nil
+		return nil
+	}, timeout)
 }
 
 // GetNewAddress generates a new on-chain address from the client's LND wallet.
