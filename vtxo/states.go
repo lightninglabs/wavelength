@@ -43,9 +43,9 @@ func (s *LiveState) IsTerminal() bool {
 
 func (s *LiveState) vtxoStateSealed() {}
 
-// RefreshRequestedState indicates a refresh request has been sent to the round
-// actor. The VTXO is waiting for acknowledgment or a forfeit request to begin
-// the batch swap process.
+// RefreshRequestedState indicates a forfeit request has been sent to the round
+// actor to refresh this VTXO. The VTXO is waiting for acknowledgment or a
+// forfeit request to begin the batch swap process.
 type RefreshRequestedState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor

@@ -298,6 +298,22 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			},
 		}, nil
 
+	case *LeaveVTXORequest:
+		// A VTXO actor (or wallet) requested to exit the Ark. Start
+		// assembling a round with this leave request. Similar to
+		// refresh requests, we track leaving VTXOs in the
+		// PendingRoundAssembly state.
+		leaveMap := make(map[wire.OutPoint]*LeaveVTXORequest)
+		leaveMap[evt.VTXOOutpoint] = evt
+
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding:     nil,
+				VTXOs:        nil,
+				LeavingVTXOs: leaveMap,
+			},
+		}, nil
+
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
@@ -440,6 +456,28 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 				Boarding:        slices.Clone(s.Boarding),
 				VTXOs:           updatedVTXOs,
 				RefreshingVTXOs: updatedRefreshing,
+				LeavingVTXOs:    maps.Clone(s.LeavingVTXOs),
+			},
+		}, nil
+
+	case *LeaveVTXORequest:
+		// A VTXO actor (or wallet) requested to exit the Ark. Add to
+		// our leaving map. We stay in this state and accumulate leave
+		// requests alongside boarding intents and refresh requests.
+		updatedLeaving := maps.Clone(s.LeavingVTXOs)
+		if updatedLeaving == nil {
+			updatedLeaving = make(
+				map[wire.OutPoint]*LeaveVTXORequest,
+			)
+		}
+		updatedLeaving[evt.VTXOOutpoint] = evt
+
+		return &ClientStateTransition{
+			NextState: &PendingRoundAssembly{
+				Boarding:        slices.Clone(s.Boarding),
+				VTXOs:           slices.Clone(s.VTXOs),
+				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
+				LeavingVTXOs:    updatedLeaving,
 			},
 		}, nil
 
@@ -468,6 +506,24 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// VTXOReqs and LeaveReqs (not assumed 1:1 with refresh).
 		for _, req := range s.RefreshingVTXOs {
 			totalInput += btcutil.Amount(req.Amount)
+		}
+
+		// Include leave amounts in both inputs and outputs. The
+		// forfeited VTXO value contributes to totalInput, and the
+		// on-chain leave output contributes to totalOutput.
+		for _, req := range s.LeavingVTXOs {
+			if req.Output == nil {
+				return failWithNotification(
+					"leave request has nil output",
+					fmt.Errorf("leave request for %v "+
+						"has nil output",
+						req.VTXOOutpoint),
+					true, fn.None[RoundID](),
+				), nil
+			}
+
+			totalInput += btcutil.Amount(req.Amount)
+			totalOutput += btcutil.Amount(req.Output.Value)
 		}
 
 		// Validate that we have outputs to create.
@@ -518,29 +574,44 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Build refresh requests for VTXOs being refreshed. The actual
-		// VTXO outputs are specified via VTXOReqs (not assumed 1:1).
-		numRefresh := len(s.RefreshingVTXOs)
-		refreshReqs := make([]*RefreshRequest, 0, numRefresh)
+		// Build forfeit requests for VTXOs being refreshed or exited
+		// on-chain. Forfeits are listed separately from outputs.
+		numForfeit := len(s.RefreshingVTXOs) + len(s.LeavingVTXOs)
+		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
 		for _, req := range s.RefreshingVTXOs {
-			refreshReqs = append(refreshReqs, &RefreshRequest{
+			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
 				VTXOOutpoint: req.VTXOOutpoint,
-				Amount:       btcutil.Amount(req.Amount),
-				NewVTXOKey:   req.NewVTXOKey,
+			})
+		}
+		for _, req := range s.LeavingVTXOs {
+			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
+				VTXOOutpoint: req.VTXOOutpoint,
+			})
+		}
+
+		// Build leave requests for VTXOs being exited to on-chain
+		// outputs. Each leave forfeits a VTXO and creates an on-chain
+		// output in the batch transaction.
+		numLeave := len(s.LeavingVTXOs)
+		leaveReqs := make([]*LeaveRequest, 0, numLeave)
+		for _, req := range s.LeavingVTXOs {
+			leaveReqs = append(leaveReqs, &LeaveRequest{
+				Output: req.Output,
 			})
 		}
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
 			slog.Int("vtxo_requests", len(vtxoReqs)),
-			slog.Int("refresh_requests", len(refreshReqs)))
+			slog.Int("forfeit_requests", len(forfeitReqs)),
+			slog.Int("leave_requests", len(leaveReqs)))
 
-		// Build Intents with all VTXOs and refreshes for downstream
+		// Build Intents with all VTXOs and leaves for downstream
 		// validation.
 		intent := Intents{
-			Boarding:  slices.Clone(s.Boarding),
-			VTXOs:     vtxoReqs,
-			Refreshes: refreshReqs,
+			Boarding: slices.Clone(s.Boarding),
+			VTXOs:    vtxoReqs,
+			Leaves:   leaveReqs,
 		}
 
 		// With all this extracted, we'll now send the JoinRoundRequest
@@ -554,7 +625,8 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 					&JoinRoundRequest{
 						BoardingRequests: boardingReqs,
 						VTXORequests:     vtxoReqs,
-						RefreshRequests:  refreshReqs,
+						ForfeitRequests:  forfeitReqs,
+						LeaveRequests:    leaveReqs,
 					},
 				},
 			}),
@@ -683,6 +755,62 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 	return outpointToIdx, nil
 }
 
+// validateLeaveOutputs verifies that all leave outputs are present in the
+// commitment transaction with matching values and scripts. This ensures the
+// server has properly included the requested on-chain exit outputs.
+func validateLeaveOutputs(
+	commitmentTx *wire.MsgTx, leaves []*LeaveRequest,
+) error {
+
+	if commitmentTx == nil {
+		return fmt.Errorf("commitment tx is nil")
+	}
+
+	// If there are no leave requests, nothing to validate.
+	if len(leaves) == 0 {
+		return nil
+	}
+
+	// Build a set of expected leave outputs for matching. We use string for
+	// pkScript since slices cannot be map keys.
+	type leaveOutput struct {
+		value    int64
+		pkScript string
+	}
+	expectedOutputs := make(map[leaveOutput]int)
+	for _, leave := range leaves {
+		key := leaveOutput{
+			value:    leave.Output.Value,
+			pkScript: string(leave.Output.PkScript),
+		}
+		expectedOutputs[key]++
+	}
+
+	// Search through commitment tx outputs for matching leave outputs.
+	for _, txOut := range commitmentTx.TxOut {
+		key := leaveOutput{
+			value:    txOut.Value,
+			pkScript: string(txOut.PkScript),
+		}
+		if count, found := expectedOutputs[key]; found && count > 0 {
+			expectedOutputs[key]--
+		}
+	}
+
+	// Check if all expected outputs were found.
+	for key, count := range expectedOutputs {
+		if count > 0 {
+			return fmt.Errorf(
+				"leave output not found in commitment tx: "+
+					"value=%d, remaining=%d",
+				key.value, count,
+			)
+		}
+	}
+
+	return nil
+}
+
 // ProcessEvent for CommitmentTxReceivedState.
 //
 //nolint:ll
@@ -695,7 +823,8 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		env.Log.InfoS(ctx, "Validating commitment transaction",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
-			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
+			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)),
+			slog.Int("leave_intent_count", len(s.Intents.Leaves)))
 
 		// Validate boarding inputs if we have any boarding intents.
 		// Refresh-only rounds have no boarding inputs to validate.
@@ -724,6 +853,35 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 
 		env.Log.DebugS(ctx, "Validated boarding inputs in commitment tx",
 			slog.Int("boarding_input_count", len(boardingInputIndices)))
+
+		// Validate leave outputs if we have any leave requests. Each
+		// leave output must be present in the commitment tx with the
+		// correct value and script.
+		if len(s.Intents.Leaves) > 0 {
+			if err := validateLeaveOutputs(
+				s.CommitmentTx.UnsignedTx, s.Intents.Leaves,
+			); err != nil {
+				env.Log.WarnS(
+					ctx, "Leave output validation failed",
+					err,
+					slog.String("round_id", s.RoundID.String()),
+				)
+
+				return &ClientStateTransition{
+					NextState: &ClientFailedState{
+						Reason: "leave output " +
+							"validation failed",
+						Error:       err,
+						Recoverable: true,
+					},
+				}, nil
+			}
+
+			env.Log.DebugS(
+				ctx, "Validated leave outputs in commitment tx",
+				slog.Int("leave_output_count", len(s.Intents.Leaves)),
+			)
+		}
 
 		clientTrees := make(map[SignerKey]*tree.Tree)
 
@@ -859,6 +1017,62 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("boarding_intent_count", len(s.Intents.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.Intents.VTXOs)))
+
+		// For leave-only rounds (no new VTXOs), skip nonce generation
+		// and go directly to forfeit collection. The server doesn't
+		// need nonces when there are no VTXOs to sign. We check
+		// Intents.Leaves explicitly rather than ForfeitMappings,
+		// since a batch tx could have boarding inputs and leave
+		// outputs without any refresh forfeits.
+		if len(s.Intents.VTXOs) == 0 && len(s.Intents.Leaves) > 0 {
+			env.Log.InfoS(ctx, "Leave-only round, skipping "+
+				"to forfeit collection",
+				slog.String("round_id", s.RoundID.String()),
+				slog.Int("leave_count", len(s.Intents.Leaves)))
+
+			// Build forfeit request messages for each VTXO being
+			// forfeited.
+			var outbox []ClientOutMsg
+			for vtxoOutpoint, info := range s.ForfeitMappings {
+				connOut := info.ConnectorOutpoint
+				connScript := info.ConnectorPkScript
+				connAmt := info.ConnectorAmount
+				forfeitScript := env.OperatorTerms.ForfeitScript
+				roundIDStr := s.RoundID.String()
+
+				msg := &ForfeitRequestToVTXO{
+					VTXOOutpoint:          vtxoOutpoint,
+					RoundID:               roundIDStr,
+					ConnectorOutpoint:     connOut,
+					ConnectorPkScript:     connScript,
+					ConnectorAmount:       connAmt,
+					ServerForfeitPkScript: forfeitScript,
+				}
+				outbox = append(outbox, msg)
+			}
+
+			// Transition directly to forfeit collection.
+			collectedForfeits := make(
+				map[wire.OutPoint]*ForfeitSignatureResponse,
+			)
+
+			return &ClientStateTransition{
+				NextState: &ForfeitSignaturesCollectingState{
+					RoundID:           s.RoundID,
+					CommitmentTx:      s.CommitmentTx,
+					VTXOTreePaths:     s.VTXOTreePaths,
+					Intents:           s.Intents.Clone(),
+					ClientTrees:       s.ClientTrees,
+					ExpectedForfeits:  s.ForfeitMappings,
+					CollectedForfeits: collectedForfeits,
+					BoardingInputIndices: s.
+						BoardingInputIndices,
+				},
+				NewEvents: fn.Some(ClientEmittedEvent{
+					Outbox: outbox,
+				}),
+			}, nil
+		}
 
 		// At this point, all the basic validation checks have passed.
 		// So now we'll generate a musig2 session to create nonces to

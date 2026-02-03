@@ -151,11 +151,11 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 	)
 }
 
-// TestProcessOutboxRefreshRequest verifies that RefreshRequest messages in the
+// TestProcessOutboxForfeitRequest verifies that ForfeitRequest messages in the
 // outbox are routed to the round actor with the correct fields populated. Since
 // refresh is decoupled from VTXO creation, both a RefreshVTXORequest and a
 // VTXORequestsReceived message should be sent.
-func TestProcessOutboxRefreshRequest(t *testing.T) {
+func TestProcessOutboxForfeitRequest(t *testing.T) {
 	t.Parallel()
 
 	h := newVTXOTestHarness(t)
@@ -176,10 +176,8 @@ func TestProcessOutboxRefreshRequest(t *testing.T) {
 	}
 
 	outbox := []VTXOOutMsg{
-		&RefreshRequest{
+		&ForfeitRequest{
 			VTXOOutpoint: vtxo.Outpoint,
-			Amount:       int64(vtxo.Amount),
-			Urgency:      RefreshUrgencyNormal,
 		},
 	}
 

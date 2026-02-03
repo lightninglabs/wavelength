@@ -342,9 +342,9 @@ func (e *RoundComplete) clientEventSealed() {}
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
 //
-// This request contains all information needed to build both the server's
-// RefreshRequest (for the connector tree) and a VTXORequest (for the new VTXO
-// in the VTXT). The same client key is typically reused for the new VTXO.
+// This request contains all information needed to build a forfeit request
+// (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
+// The same client key is typically reused for the new VTXO.
 type RefreshVTXORequest struct {
 	actor.BaseMessage
 
@@ -379,6 +379,40 @@ func (e *RefreshVTXORequest) RoundReceivable() {}
 // MessageType returns the message type for logging.
 func (e *RefreshVTXORequest) MessageType() string {
 	return "RefreshVTXORequest"
+}
+
+// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
+// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
+// is similar to RefreshVTXORequest except the output is on-chain rather than a
+// new VTXO.
+//
+// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
+// forfeited via a connector output, and the leave output is included directly
+// in the batch transaction.
+type LeaveVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// Output is the on-chain destination output that will be included in
+	// the batch transaction. This contains the value and pkScript for the
+	// leave output.
+	Output *wire.TxOut
+}
+
+// clientEventSealed prevents external implementations.
+func (e *LeaveVTXORequest) clientEventSealed() {}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *LeaveVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *LeaveVTXORequest) MessageType() string {
+	return "LeaveVTXORequest"
 }
 
 // ForfeitSignatureResponse is sent from a VTXO actor with its signature for

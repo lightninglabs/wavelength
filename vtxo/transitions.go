@@ -27,6 +27,9 @@ func (s *LiveState) ProcessEvent(
 	case *TriggerRefreshEvent:
 		return s.handleTriggerRefresh(ctx, evt, env)
 
+	case *TriggerLeaveEvent:
+		return s.handleTriggerLeave(ctx, evt, env)
+
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
 		// block.
@@ -68,16 +71,9 @@ func (s *LiveState) handleBlockEpoch(
 
 	case ExpiryStatusNeedsRefresh:
 		// Request refresh before expiry becomes critical.
-		blocksRemaining := BlocksUntilExpiry(s.VTXO, evt.Height)
-		urgency := env.ExpiryConfig.DetermineRefreshUrgency(
-			s.VTXO, blocksRemaining,
-		)
-
 		outbox := []VTXOOutMsg{
-			&RefreshRequest{
+			&ForfeitRequest{
 				VTXOOutpoint: s.VTXO.Outpoint,
-				Amount:       int64(s.VTXO.Amount),
-				Urgency:      urgency,
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
@@ -194,16 +190,14 @@ func (s *LiveState) handleForfeitRequest(
 
 // handleTriggerRefresh handles a manual refresh request from the wallet. This
 // bypasses the automatic expiry-based refresh and immediately transitions the
-// VTXO to RefreshRequested state, emitting a RefreshRequest to the round actor.
+// VTXO to RefreshRequested state, emitting a ForfeitRequest to the round actor.
 func (s *LiveState) handleTriggerRefresh(
 	_ context.Context, _ *TriggerRefreshEvent, _ *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 
 	outbox := []VTXOOutMsg{
-		&RefreshRequest{
+		&ForfeitRequest{
 			VTXOOutpoint: s.VTXO.Outpoint,
-			Amount:       int64(s.VTXO.Amount),
-			Urgency:      RefreshUrgencyNormal,
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
@@ -214,7 +208,37 @@ func (s *LiveState) handleTriggerRefresh(
 	return &VTXOStateTransition{
 		NextState: &RefreshRequestedState{
 			VTXO: s.VTXO,
-			// Manual trigger has no height context.
+			// Manual trigger, no height context.
+			RequestedAtHeight: 0,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
+	}, nil
+}
+
+// handleTriggerLeave handles a leave (offboard) request from the wallet. This
+// transitions the VTXO to RefreshRequestedState and emits a LeaveRequest to
+// the round actor. The leave flow reuses the forfeit mechanism: the VTXO is
+// forfeited and the value goes to an on-chain output instead of a new VTXO.
+func (s *LiveState) handleTriggerLeave(
+	_ context.Context, evt *TriggerLeaveEvent, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	outbox := []VTXOOutMsg{
+		&LeaveRequest{
+			DestOutput: evt.DestOutput,
+		},
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusRefreshRequested,
+		},
+	}
+
+	// Reuse RefreshRequestedState since the behavior is identical: wait for
+	// ForfeitRequestEvent from the round actor, then sign the forfeit tx.
+	return &VTXOStateTransition{
+		NextState: &RefreshRequestedState{
+			VTXO: s.VTXO,
+			// Manual trigger, no height context.
 			RequestedAtHeight: 0,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),

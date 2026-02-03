@@ -1,10 +1,8 @@
 package round
 
 import (
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -27,30 +25,33 @@ type JoinRoundRequest struct {
 	// VTXORequests specifies the VTXOs the client wants to receive.
 	VTXORequests []types.VTXORequest
 
-	// RefreshRequests contains VTXOs being refreshed in this round. Each
-	// refresh request specifies an old VTXO to forfeit and details for the
-	// new VTXO to receive. The server includes these in the connector tree
-	// and expects forfeit signatures before broadcasting.
-	RefreshRequests []*RefreshRequest
+	// ForfeitRequests specifies the VTXOs the client wants to forfeit.
+	ForfeitRequests []*ForfeitRequest
+
+	// LeaveRequests contains VTXOs being exited to on-chain outputs. Each
+	// leave request specifies only the on-chain destination output. The
+	// server includes these in the batch transaction; any forfeited VTXOs
+	// are listed separately in ForfeitRequests.
+	LeaveRequests []*LeaveRequest
 
 	// RoundID is optional; when empty it instructs the server to assign
 	// a new round. When non-empty, the request is for the specified round.
 	RoundID string
 }
 
-// RefreshRequest describes a VTXO being refreshed (forfeited to receive a new
-// VTXO in the current round). The old VTXO will be spent via a forfeit tx that
-// atomically links to the new commitment transaction's connector tree.
-type RefreshRequest struct {
-	// VTXOOutpoint identifies the old VTXO to forfeit.
+// ForfeitRequest describes a VTXO that will be forfeited in the round.
+type ForfeitRequest struct {
+	// VTXOOutpoint identifies the VTXO to forfeit.
 	VTXOOutpoint wire.OutPoint
+}
 
-	// Amount is the value of the VTXO in satoshis.
-	Amount btcutil.Amount
-
-	// NewVTXOKey is the client's public key for the new VTXO. This may be
-	// the same as the old VTXO's key or a fresh key for improved privacy.
-	NewVTXOKey *btcec.PublicKey
+// LeaveRequest describes a leave output to be included in the batch
+// transaction. This represents a client exiting the Ark by forfeiting an
+// existing VTXO and receiving an on-chain output instead of a new VTXO.
+type LeaveRequest struct {
+	// Output is the on-chain destination output. Contains the value and
+	// pkScript for the leave output that will be included in the batch tx.
+	Output *wire.TxOut
 }
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}

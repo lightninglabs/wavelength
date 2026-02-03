@@ -42,23 +42,16 @@ func (u RefreshUrgency) String() string {
 	}
 }
 
-// RefreshRequest is sent to the round actor when a VTXO needs to be refreshed.
-// The round actor should queue this VTXO for inclusion in the next batch swap.
-type RefreshRequest struct {
+// ForfeitRequest is sent to the round actor when a VTXO needs to be forfeited
+// as part of a refresh or leave operation.
+type ForfeitRequest struct {
 	actor.BaseMessage
 
-	// VTXOOutpoint identifies the VTXO to refresh.
+	// VTXOOutpoint identifies the VTXO to forfeit.
 	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
-	// Urgency indicates how urgent the refresh is (based on blocks
-	// remaining until expiry).
-	Urgency RefreshUrgency
 }
 
-func (m *RefreshRequest) vtxoOutMsgSealed() {}
+func (m *ForfeitRequest) vtxoOutMsgSealed() {}
 
 // ExpiringNotification is sent to the chain resolver when a VTXO is critically
 // close to expiry and needs unilateral exit handling. The chain resolver
@@ -142,3 +135,15 @@ type VTXOTerminatedNotification struct {
 }
 
 func (m *VTXOTerminatedNotification) vtxoOutMsgSealed() {}
+
+// LeaveRequest is sent to the round actor when a VTXO is being offboarded. The
+// round actor should queue this VTXO for forfeiture and include the destination
+// output in the batch transaction.
+type LeaveRequest struct {
+	actor.BaseMessage
+
+	// DestOutput is the on-chain output where the funds will be sent.
+	DestOutput *wire.TxOut
+}
+
+func (m *LeaveRequest) vtxoOutMsgSealed() {}

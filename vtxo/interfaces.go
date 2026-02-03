@@ -26,7 +26,7 @@ import (
 // Message flow:
 //
 //	                 ┌──────────┐
-//	 BlockEpochEvent─│          │─RefreshRequest ──▶ Round
+//	 BlockEpochEvent─│          │─ForfeitRequest ──▶ Round
 //	                 │          │
 //	 ForfeitRequest ─│ VTXO FSM │─ForfeitSigSubmit ─▶ Round
 //	    (from Round) │          │
@@ -71,7 +71,7 @@ type InternalEvent[E VTXOEvent] struct{}
 //
 // Messages are emitted via the FSM outbox and routed to target actors:
 //
-//   - RefreshRequest: To round actor, requests VTXO inclusion in next batch.
+//   - ForfeitRequest: To round actor, requests VTXO forfeit in next batch.
 //   - ForfeitSignatureSubmission: To round actor, submits signed forfeit tx.
 //   - ExpiringNotification: To chain resolver, escalates critical expiry.
 //   - VTXOStatusUpdate: To persistence layer, updates database state.
@@ -129,13 +129,13 @@ var MessageSpec = struct {
 	// OUTBOUND MESSAGES (FSM → external actors)
 	// -----------------------------------------------------------------
 
-	// RefreshRequest is sent to the round actor when the VTXO's expiry
+	// ForfeitRequest is sent to the round actor when the VTXO's expiry
 	// status crosses the refresh threshold. Requests inclusion in the next
 	// batch swap to extend the VTXO's lifetime.
 	//
 	// Destination: VTXO Actor → Round Actor
 	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh)
-	RefreshRequest OutboundMsg[*RefreshRequest]
+	ForfeitRequest OutboundMsg[*ForfeitRequest]
 
 	// ForfeitSignatureSubmission is sent to the round actor with the
 	// client's signature on the forfeit transaction. The round actor
