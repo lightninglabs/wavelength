@@ -3,13 +3,13 @@ name: CI
 on:
   push:
     branches:
-      - "main"
+      - "master"
   pull_request:
     branches:
       - "*"
   merge_group:
     branches:
-      - "main"
+      - "master"
 
 permissions:
   # Required to manage and delete caches.
