@@ -64,9 +64,9 @@ func NewServiceKey(
 		keyName += cfg.suffix
 	}
 
-	return actor.NewServiceKey[actormsg.RoundReceivable, actormsg.RoundActorResp](
-		keyName,
-	)
+	return actor.NewServiceKey[
+		actormsg.RoundReceivable, actormsg.RoundActorResp,
+	](keyName)
 }
 
 // WalletBoardingConfirmed wraps a wallet.BoardingUtxoConfirmedEvent to make it
