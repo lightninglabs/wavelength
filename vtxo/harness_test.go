@@ -697,7 +697,10 @@ func (m *mockRoundActorRef) ID() string {
 	return "mock-round-actor"
 }
 
-func (m *mockRoundActorRef) Tell(_ context.Context, msg actormsg.RoundReceivable) {
+func (m *mockRoundActorRef) Tell(
+	_ context.Context, msg actormsg.RoundReceivable,
+) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
