@@ -118,3 +118,42 @@ func (o *VTXOObserver) HasReceivedNotification() bool {
 
 	return o.notificationCount > 0
 }
+
+// VTXOManagerFanout implements actor.TellOnlyRef[actor.Message] and forwards
+// messages to both a real vtxo.Manager and a VTXOObserver. This allows e2e
+// tests to use the real VTXO manager for spawning actors while still receiving
+// notifications for test assertions.
+type VTXOManagerFanout struct {
+	// manager receives messages for real VTXO actor management.
+	manager actor.TellOnlyRef[actor.Message]
+
+	// observer receives messages for test notification.
+	observer actor.TellOnlyRef[actor.Message]
+}
+
+// NewVTXOManagerFanout creates a new fan-out that forwards to both targets.
+func NewVTXOManagerFanout(
+	manager actor.TellOnlyRef[actor.Message],
+	observer actor.TellOnlyRef[actor.Message],
+) *VTXOManagerFanout {
+
+	return &VTXOManagerFanout{
+		manager:  manager,
+		observer: observer,
+	}
+}
+
+// ID returns a unique identifier for this fan-out ref. Required by
+// actor.TellOnlyRef interface.
+func (f *VTXOManagerFanout) ID() string {
+	return "vtxo-manager-fanout"
+}
+
+// Tell forwards the message to both the manager and observer.
+func (f *VTXOManagerFanout) Tell(ctx context.Context, msg actor.Message) {
+	// Forward to real manager first (spawns VTXO actors).
+	f.manager.Tell(ctx, msg)
+
+	// Then forward to observer (for test notifications).
+	f.observer.Tell(ctx, msg)
+}

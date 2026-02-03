@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -144,10 +145,19 @@ type E2EHarness struct {
 	// includes both the locator and the actual public key.
 	operatorKeyDesc *keychain.KeyDescriptor
 
+	// forfeitScript is the output script that clients must use for the
+	// penalty output in forfeit transactions. This is a P2TR script paying
+	// to the operator's key.
+	forfeitScript []byte
+
 	// Mock stores with testify/mock for call assertions (STORAGE ONLY).
 	mockRoundStore     *MockRoundStore
 	mockBoardingLocker *MockBoardingLocker
-	mockVTXOStore      *MockVTXOStore
+
+	// memoryVTXOStore is an in-memory VTXO store that actually persists
+	// VTXOs. Unlike a mock, this allows the forfeit flow to work where
+	// round N+1 looks up VTXOs created in round N.
+	memoryVTXOStore *MemoryVTXOStore
 
 	// chainSourceActor is the real ChainSourceActor from the client package.
 	// It handles transaction broadcasts and confirmation subscriptions using
@@ -345,6 +355,16 @@ func (h *E2EHarness) initActorSystem() {
 	// public key, not a mock.
 	h.operatorKeyDesc = h.getOperatorKeyFromLND()
 
+	// Create the forfeit script - a P2TR script paying to the operator's
+	// taproot output key. Clients use this as the penalty output in forfeit
+	// transactions so the server can claim forfeited funds.
+	operatorOutputKey := txscript.ComputeTaprootOutputKey(
+		h.operatorKeyDesc.PubKey, nil,
+	)
+	forfeitScript, err := txscript.PayToTaprootScript(operatorOutputKey)
+	require.NoError(h.t, err, "failed to create forfeit script")
+	h.forfeitScript = forfeitScript
+
 	// Create default terms for test rounds using the real operator key.
 	h.terms = h.createDefaultTerms()
 
@@ -355,8 +375,10 @@ func (h *E2EHarness) initActorSystem() {
 	h.mockBoardingLocker = &MockBoardingLocker{}
 	h.mockBoardingLocker.SetupDefaultExpectations()
 
-	h.mockVTXOStore = &MockVTXOStore{}
-	h.mockVTXOStore.SetupDefaultExpectations()
+	// Use an in-memory VTXO store that actually persists VTXOs. This is
+	// required for the forfeit flow where round N+1 looks up VTXOs created
+	// in round N.
+	h.memoryVTXOStore = NewMemoryVTXOStore()
 
 	// Create REAL wallet controller from the server's dedicated LND.
 	// Using a separate LND ensures the server's wallet is isolated from
@@ -447,12 +469,13 @@ func (h *E2EHarness) initActorSystem() {
 		ChainParams:         &chaincfg.RegressionNetParams,
 		Logger:              h.SubLogger(rounds.Subsystem),
 		Terms:               h.terms,
+		ForfeitScript:       h.forfeitScript,
 		ClientsConn:         bridgeRef,
 		BoardingInputLocker: h.mockBoardingLocker,
 		ChainSource:         h.chainSource,
 		ChainSourceActor:    h.chainSourceActorRef,
 		RoundStore:          h.mockRoundStore,
-		VTXOStore:           h.mockVTXOStore,
+		VTXOStore:           h.memoryVTXOStore,
 		TimeoutActor:        h.mockTimeoutRef,
 		WalletController:    h.walletController,
 		FeeEstimator:        feeEstimator,
@@ -549,11 +572,25 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 	// Use the real operator and sweep keys from LND. These keys have actual
 	// public keys that will be used for validation and script construction.
 	sweepKeyDesc := h.getSweepKeyFromLND()
+
+	// Create connector address from operator key. This is a taproot address
+	// that receives connector outputs for forfeit transactions.
+	operatorPub := h.operatorKeyDesc.PubKey
+	outputKey := txscript.ComputeTaprootOutputKey(operatorPub, nil)
+	connectorAddr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(outputKey),
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(h.t, err, "failed to create connector address")
+
 	return &batch.Terms{
 		OperatorKey:                   *h.operatorKeyDesc,
 		SweepKey:                      *sweepKeyDesc,
 		SweepDelay:                    h.cfg.sweepDelay,
 		MaxVTXOsPerTree:               256,
+		MaxConnectorsPerTree:          128,
+		ConnectorDustAmount:           330,
+		ConnectorAddress:              connectorAddr,
 		TreeRadix:                     4,
 		BoardingExitDelay:             defaultBoardingExitDelay,
 		BoardingExitDelaySafetyMargin: 10,
@@ -597,13 +634,19 @@ func (h *E2EHarness) Terms() *batch.Terms {
 	return h.terms
 }
 
+// ForfeitScript returns the forfeit script for clients to use in forfeit
+// transactions. This is a P2TR script paying to the operator's key.
+func (h *E2EHarness) ForfeitScript() []byte {
+	return h.forfeitScript
+}
+
 // AssertMocksCalled verifies all mock storage expectations were met. Currently
 // the mocks use `mock.Anything` patterns so this will pass, but it's available
 // for tests that configure specific expectations.
 func (h *E2EHarness) AssertMocksCalled(t *testing.T) {
 	h.mockRoundStore.AssertExpectations(t)
 	h.mockBoardingLocker.AssertExpectations(t)
-	h.mockVTXOStore.AssertExpectations(t)
+	// memoryVTXOStore is not a mock, no expectations to assert.
 }
 
 // Transcript returns the message transcript for assertions.

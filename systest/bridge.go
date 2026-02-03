@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	clienttree "github.com/lightninglabs/darepo-client/lib/tree"
 	clienttypes "github.com/lightninglabs/darepo-client/lib/types"
 	clientround "github.com/lightninglabs/darepo-client/round"
@@ -191,11 +193,25 @@ func (b *BridgeServerConn) convertToActorMsg(
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
 
+		// Convert RefreshRequests to ForfeitReqs. Each refresh
+		// specifies a VTXO to forfeit and a new VTXO to receive.
+		// The forfeit request only needs the outpoint; the new VTXO
+		// is already included in VTXORequests.
+		forfeitReqs := make(
+			[]*clienttypes.ForfeitRequest, len(m.RefreshRequests),
+		)
+		for i, refreshReq := range m.RefreshRequests {
+			forfeitReqs[i] = &clienttypes.ForfeitRequest{
+				VTXOOutpoint: &refreshReq.VTXOOutpoint,
+			}
+		}
+
 		return &rounds.JoinRoundRequest{
 			ClientID: b.clientID,
 			Request: &clienttypes.JoinRoundRequest{
 				BoardingReqs: boardingReqs,
 				VTXOReqs:     vtxoReqs,
+				ForfeitReqs:  forfeitReqs,
 			},
 		}, nil
 
@@ -253,6 +269,34 @@ func (b *BridgeServerConn) convertToActorMsg(
 			},
 		}, nil
 
+	case *clientround.SubmitVTXOForfeitSigsToServer:
+		// Convert client's VTXO forfeit signatures to server's
+		// RoundMsg with ClientInputSignaturesEvent.ForfeitTxs.
+		forfeitTxs := make(
+			[]*clienttypes.ForfeitTxSig, 0, len(m.ForfeitSigs),
+		)
+		for outpoint, sig := range m.ForfeitSigs {
+			unsignedTx, ok := m.ForfeitTxs[outpoint]
+			if !ok {
+				return nil, fmt.Errorf(
+					"missing unsigned forfeit tx for "+
+						"outpoint %s", outpoint,
+				)
+			}
+			forfeitTxs = append(forfeitTxs, &clienttypes.ForfeitTxSig{
+				UnsignedTx:    unsignedTx,
+				ClientVTXOSig: sig,
+			})
+		}
+
+		return &rounds.RoundMsg{
+			RoundID: rounds.RoundID(m.RoundID),
+			Event: &rounds.ClientInputSignaturesEvent{
+				ClientID:   b.clientID,
+				ForfeitTxs: forfeitTxs,
+			},
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported client message type: %T", msg)
 	}
@@ -272,7 +316,7 @@ type BridgeClientConn struct {
 	mu sync.RWMutex
 
 	// clients maps client IDs to their actor references.
-	clients map[clientconn.ClientID]actor.TellOnlyRef[clientround.ClientMsg]
+	clients map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]
 
 	// eventServers maps client IDs to subscribe.Server instances that
 	// broadcast events to subscribers. This enables TestClient to observe
@@ -293,7 +337,7 @@ type BridgeClientConn struct {
 // NewBridgeClientConn creates a new bridge client connection.
 func NewBridgeClientConn(transcript *MessageTranscript) *BridgeClientConn {
 	return &BridgeClientConn{
-		clients:      make(map[clientconn.ClientID]actor.TellOnlyRef[clientround.ClientMsg]),
+		clients:      make(map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]),
 		eventServers: make(map[clientconn.ClientID]*subscribe.Server),
 		transcript:   transcript,
 		pendingS2C:   make(map[clientconn.ClientID][]pendingS2CMessage),
@@ -431,7 +475,7 @@ func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) {
 
 // RegisterClient adds a client actor reference for message routing.
 func (b *BridgeClientConn) RegisterClient(id clientconn.ClientID,
-	ref actor.TellOnlyRef[clientround.ClientMsg]) {
+	ref actor.TellOnlyRef[actormsg.RoundReceivable]) {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -557,10 +601,31 @@ func (b *BridgeClientConn) convertToClientEvent(
 		}, nil
 
 	case *rounds.ClientBatchInfo:
+		// Convert connector leaf map from server format to client format.
+		// The client format has additional fields (VTXOAmount, LeafIndex)
+		// that are looked up from local VTXO state by the client.
+		var forfeitMappings map[wire.OutPoint]*clientround.ConnectorLeafInfo
+		if m.ConnectorLeafMap != nil {
+			forfeitMappings = make(
+				map[wire.OutPoint]*clientround.ConnectorLeafInfo,
+				len(m.ConnectorLeafMap),
+			)
+			for outpoint, info := range m.ConnectorLeafMap {
+				forfeitMappings[outpoint] = &clientround.ConnectorLeafInfo{
+					ConnectorOutpoint: info.LeafOutpoint,
+					ConnectorPkScript: info.LeafOutput.PkScript,
+					ConnectorAmount:   info.LeafOutput.Value,
+					// VTXOAmount is looked up from client's
+					// local VTXO state.
+				}
+			}
+		}
+
 		return &clientround.CommitmentTxBuilt{
-			RoundID:       clientround.RoundID(m.RoundID),
-			Tx:            m.BatchPSBT,
-			VTXOTreePaths: m.VTXOTreePaths,
+			RoundID:         clientround.RoundID(m.RoundID),
+			Tx:              m.BatchPSBT,
+			VTXOTreePaths:   m.VTXOTreePaths,
+			ForfeitMappings: forfeitMappings,
 		}, nil
 
 	case *rounds.ClientAwaitingInputSigsResp:

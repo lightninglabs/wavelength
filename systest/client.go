@@ -17,10 +17,12 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/db"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	clientlnd "github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/lndbackend"
@@ -70,8 +72,9 @@ type TestClient struct {
 	// roundActor is the client-side round actor.
 	roundActor *round.RoundClientActor
 
-	// roundRef is the actor reference for the round client actor.
-	roundRef actor.ActorRef[round.ClientMsg, round.ClientResp]
+	// roundRef is the actor reference for the round client actor. Uses
+	// actormsg types so the wallet can find it via service key lookup.
+	roundRef actor.ActorRef[actormsg.RoundReceivable, actormsg.RoundActorResp]
 
 	// sqlDB is the per-client SQLite database.
 	sqlDB *db.SqliteStore
@@ -85,11 +88,17 @@ type TestClient struct {
 	// VTXOStore interfaces).
 	roundStore *db.RoundPersistenceStore
 
+	// vtxoStore provides VTXO lifecycle persistence with status tracking.
+	vtxoStore *db.VTXOPersistenceStore
+
 	// boardingStore provides boarding address persistence.
 	boardingStore *db.BoardingWalletStore
 
 	// clientKeyDesc is this client's identity key from LND.
 	clientKeyDesc *keychain.KeyDescriptor
+
+	// vtxoManager is the real VTXO manager that spawns VTXO actors.
+	vtxoManager *vtxo.Manager
 
 	// vtxoObserver receives VTXOCreatedNotification events from the round
 	// actor, enabling event-based detection of round completion.
@@ -231,11 +240,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// Create BoardingBackend using client's LND.
 	boardingBackend := clientlnd.NewBoardingBackend(lndServices.WalletKit)
 
-	// Create and spawn WalletActor (Ark).
+	// Create and spawn WalletActor (Ark). The wallet uses service key lookup
+	// to find the round actor when forwarding refresh requests.
 	walletActor := wallet.NewArk(
 		boardingBackend,
 		boardingStore,
 		chainSourceRef,
+		h.actorSystem,
 		h.SubLogger(wallet.Subsystem),
 	)
 	walletActorID := fmt.Sprintf("wallet%s", opts.actorSuffix)
@@ -260,6 +271,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
 	)
 
+	// Create VTXOStore for VTXO lifecycle management.
+	vtxoStore := db.NewVTXOPersistenceStore(roundDB, clock.NewDefaultClock())
+
 	// Create per-client C→S bridge.
 	serverConn := NewBridgeServerConn(clientID, h.roundsActor, h.transcript)
 	serverConnActorID := fmt.Sprintf("bridge-server%s", opts.actorSuffix)
@@ -283,26 +297,11 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		SweepDelay:        h.terms.SweepDelay,
 		SweepKey:          h.terms.SweepKey.PubKey,
 		MinConfirmations:  uint32(h.terms.MinBoardingConfirmations),
+		ForfeitScript:     h.ForfeitScript(),
 	}
 
-	// Create and spawn VTXOObserver.
-	vtxoObserver := NewVTXOObserver()
-	vtxoObserverActorID := fmt.Sprintf("vtxo-observer%s", opts.actorSuffix)
-	vtxoObserverKey := actor.NewServiceKey[VTXOObserverMsg, VTXOObserverResp](
-		vtxoObserverActorID,
-	)
-	vtxoObserverRef := vtxoObserverKey.Spawn(
-		h.actorSystem, vtxoObserverActorID, vtxoObserver,
-	)
-
-	vtxoManagerRef := actor.NewMapInputRef(
-		vtxoObserverRef,
-		func(m actor.Message) VTXOObserverMsg {
-			return m.(VTXOObserverMsg)
-		},
-	)
-
-	// Create RoundClientActor config.
+	// Create RoundClientActor config with VTXOManager=nil initially.
+	// We'll set it after creating the vtxo.Manager (circular dependency).
 	//
 	// MaxOperatorFee is set to a generous 100,000 sats to avoid test
 	// brittleness when calculating VTXO amounts. This is the difference
@@ -321,22 +320,91 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		ChainSource:    chainSourceRef,
 		WalletActor:    walletRef,
 		ChainParams:    &chaincfg.RegressionNetParams,
-		VTXOManager:    vtxoManagerRef,
+		VTXOManager:    nil, // Set after vtxo.Manager is created.
 		MaxOperatorFee: maxOperatorFee,
+		ActorSystem:    h.actorSystem,
 	}
 
-	// Create and spawn RoundClientActor.
+	// Create and spawn RoundClientActor. The round actor uses actormsg types
+	// (RoundReceivable/RoundActorResp) so the wallet can find it via service
+	// key lookup without import cycles.
 	roundActorResult := round.NewRoundClientActor(roundCfg)
 	roundActorInner := roundActorResult.UnwrapOrFail(t)
 
-	roundActorID := fmt.Sprintf("round-client%s", opts.actorSuffix)
-	roundKey := actor.NewServiceKey[round.ClientMsg, round.ClientResp](
-		roundActorID,
+	roundKey := actormsg.RoundActorServiceKey()
+	roundRef := roundKey.Spawn(
+		h.actorSystem, actormsg.RoundActorServiceKeyName, roundActorInner,
 	)
-	roundRef := roundKey.Spawn(h.actorSystem, roundActorID, roundActorInner)
 
-	// Set SelfRef after spawning.
+	// Set SelfRef after spawning. Since roundRef is
+	// ActorRef[RoundReceivable, RoundActorResp] and SelfRef expects
+	// TellOnlyRef[RoundReceivable], we can use it directly (ActorRef
+	// embeds TellOnlyRef).
 	roundCfg.SelfRef = roundRef
+
+	// Create real vtxo.Manager with round actor reference. This enables
+	// VTXO actors to send RefreshRequest and ForfeitSignature back to the
+	// round actor.
+	vtxoManagerCfg := &vtxo.ManagerConfig{
+		Store:         vtxoStore,
+		Wallet:        clientWallet,
+		ChainSource:   chainSourceRef,
+		ActorSystem:   h.actorSystem,
+		ChainParams:   &chaincfg.RegressionNetParams,
+		ExpiryConfig:  nil, // Use defaults.
+		Logger:        h.SubLogger("VTXO"),
+		RoundActor:    roundRef,
+		ChainResolver: nil, // No unilateral exit in e2e tests.
+	}
+	vtxoManagerActor := vtxo.NewManager(vtxoManagerCfg)
+
+	// Spawn the vtxo.Manager as an actor.
+	vtxoManagerActorID := fmt.Sprintf("vtxo-manager%s", opts.actorSuffix)
+	vtxoManagerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
+		vtxoManagerActorID,
+	)
+	vtxoManagerActorRef := vtxoManagerKey.Spawn(
+		h.actorSystem, vtxoManagerActorID, vtxoManagerActor,
+	)
+
+	// Create a TellOnlyRef for the manager (used for termination notifications).
+	vtxoManagerTellRef := actor.NewMapInputRef[vtxo.ManagerMsg, vtxo.ManagerMsg](
+		vtxoManagerActorRef,
+		func(m vtxo.ManagerMsg) vtxo.ManagerMsg { return m },
+	)
+
+	// Start vtxo.Manager (recovers persisted VTXOs).
+	err = vtxoManagerActor.Start(ctx, vtxoManagerTellRef)
+	require.NoError(t, err, "failed to start vtxo manager")
+
+	// Create VTXOObserver for test notifications.
+	vtxoObserver := NewVTXOObserver()
+	vtxoObserverActorID := fmt.Sprintf("vtxo-observer%s", opts.actorSuffix)
+	vtxoObserverKey := actor.NewServiceKey[VTXOObserverMsg, VTXOObserverResp](
+		vtxoObserverActorID,
+	)
+	vtxoObserverRef := vtxoObserverKey.Spawn(
+		h.actorSystem, vtxoObserverActorID, vtxoObserver,
+	)
+
+	// Create fan-out ref that forwards to both vtxo.Manager and VTXOObserver.
+	// This allows the round actor to send VTXOCreatedNotification to both.
+	vtxoManagerMappedRef := actor.NewMapInputRef[actor.Message, vtxo.ManagerMsg](
+		vtxoManagerActorRef,
+		func(m actor.Message) vtxo.ManagerMsg {
+			return m.(vtxo.ManagerMsg)
+		},
+	)
+	vtxoObserverMappedRef := actor.NewMapInputRef[actor.Message, VTXOObserverMsg](
+		vtxoObserverRef,
+		func(m actor.Message) VTXOObserverMsg {
+			return m.(VTXOObserverMsg)
+		},
+	)
+	vtxoFanout := NewVTXOManagerFanout(vtxoManagerMappedRef, vtxoObserverMappedRef)
+
+	// Set VTXOManager on round config now that we have the fan-out.
+	roundCfg.VTXOManager = vtxoFanout
 
 	// Start round actor (registers with wallet for boarding confirmations).
 	err = roundActorInner.Start(ctx)
@@ -365,8 +433,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		sqlDB:          sqlDB,
 		dbPath:         opts.dbPath,
 		roundStore:     roundStore,
+		vtxoStore:      vtxoStore,
 		boardingStore:  boardingStore,
 		clientKeyDesc:  clientKeyDesc,
+		vtxoManager:    vtxoManagerActor,
 		vtxoObserver:   vtxoObserver,
 		eventSub:       eventSub,
 	}
@@ -867,8 +937,9 @@ func (c *TestClient) RegisterVTXORequests(ctx context.Context,
 // triggering the FSM to transition from PendingRoundAssembly to
 // RegistrationSent state and emit a JoinRoundRequest.
 func (c *TestClient) TriggerRegistration(ctx context.Context) error {
-	// The round actor processes RegistrationRequested via ServerMessageNotification.
-	// This is how client-initiated events are routed to the FSM.
+	// The round actor processes RegistrationRequested via
+	// ServerMessageNotification. This is how client-initiated events are
+	// routed to the FSM.
 	msg := &round.ServerMessageNotification{
 		Message: &round.RegistrationRequested{},
 	}
@@ -876,7 +947,8 @@ func (c *TestClient) TriggerRegistration(ctx context.Context) error {
 	future := c.roundRef.Ask(ctx, msg)
 	result := future.Await(ctx)
 	if result.IsErr() {
-		return fmt.Errorf("failed to trigger registration: %w", result.Err())
+		return fmt.Errorf("failed to trigger registration: %w",
+			result.Err())
 	}
 
 	return nil
@@ -911,4 +983,149 @@ func (c *TestClient) DBPath() string {
 // testing, ensuring the same wallet and keys are available.
 func (c *TestClient) LNDInstance() *clientharness.LndInstance {
 	return c.lndInstance
+}
+
+// TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
+// refresh of the specified VTXOs. The wallet forwards this to the round actor,
+// which sends TriggerRefreshEvent to each VTXO actor. The VTXO actors emit
+// RefreshRequest to be included in the next round's forfeit flow.
+func (c *TestClient) TriggerVTXORefresh(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	req := &wallet.RefreshVTXOsRequest{
+		TargetOutpoints: outpoints,
+		ForceRefresh:    true,
+	}
+
+	future := c.walletRef.Ask(ctx, req)
+	result := future.Await(ctx)
+	if result.IsErr() {
+		return fmt.Errorf("refresh request failed: %w", result.Err())
+	}
+
+	resp, _ := result.Unpack()
+	refreshResp, ok := resp.(*wallet.RefreshVTXOsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected response type: %T", resp)
+	}
+
+	if len(refreshResp.Errors) > 0 {
+		// Collect all error messages.
+		var errMsgs []string
+		for op, err := range refreshResp.Errors {
+			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", op, err))
+		}
+		return fmt.Errorf("refresh errors: %v", errMsgs)
+	}
+
+	return nil
+}
+
+// WaitForVTXOStatus waits for a VTXO to reach the expected status within the
+// specified timeout. This polls the database to detect status changes.
+func (c *TestClient) WaitForVTXOStatus(outpoint wire.OutPoint,
+	expectedStatus vtxo.VTXOStatus, timeout time.Duration) error {
+
+	ctx := c.harness.ctx
+
+	err := wait.Predicate(func() bool {
+		desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return false
+		}
+
+		return desc.Status == expectedStatus
+	}, timeout)
+
+	if err != nil {
+		// Get current status for better error message.
+		desc, getErr := c.vtxoStore.GetVTXO(ctx, outpoint)
+		if getErr != nil {
+			return fmt.Errorf(
+				"timeout waiting for VTXO %s status %s "+
+					"(getting current status failed: %v): %w",
+				outpoint, expectedStatus, getErr, err,
+			)
+		}
+		return fmt.Errorf(
+			"timeout waiting for VTXO %s status %s (current: %s)",
+			outpoint, expectedStatus, desc.Status,
+		)
+	}
+
+	return nil
+}
+
+// AssertVTXOStatus asserts that a VTXO has the expected status in the database.
+func (c *TestClient) AssertVTXOStatus(outpoint wire.OutPoint,
+	expectedStatus vtxo.VTXOStatus) {
+
+	ctx := c.harness.ctx
+	t := c.harness.t
+
+	desc, err := c.vtxoStore.GetVTXO(ctx, outpoint)
+	require.NoError(t, err, "failed to get VTXO %s", outpoint)
+	require.Equal(t, expectedStatus, desc.Status,
+		"VTXO %s status mismatch", outpoint)
+}
+
+// AssertVTXOReplacement verifies that the old VTXO was replaced by the new
+// VTXO. This checks that the old VTXO is in Forfeited status and that both
+// VTXOs exist in the database with the expected relationship.
+func (c *TestClient) AssertVTXOReplacement(oldOutpoint,
+	newOutpoint wire.OutPoint) {
+
+	ctx := c.harness.ctx
+	t := c.harness.t
+
+	// Verify old VTXO is forfeited.
+	oldDesc, err := c.vtxoStore.GetVTXO(ctx, oldOutpoint)
+	require.NoError(t, err, "failed to get old VTXO %s", oldOutpoint)
+	require.Equal(t, vtxo.VTXOStatusForfeited, oldDesc.Status,
+		"old VTXO should be forfeited")
+
+	// Verify new VTXO exists and is live.
+	newDesc, err := c.vtxoStore.GetVTXO(ctx, newOutpoint)
+	require.NoError(t, err, "failed to get new VTXO %s", newOutpoint)
+	require.Equal(t, vtxo.VTXOStatusLive, newDesc.Status,
+		"new VTXO should be live")
+
+	// Verify amounts are similar (new should be slightly less due to fees).
+	require.InDelta(t, float64(oldDesc.Amount), float64(newDesc.Amount),
+		float64(100_000), // Allow up to 100k sats difference for fees
+		"new VTXO amount should be close to old")
+}
+
+// GetVTXOByRoundID returns the VTXO created in a specific round. This is useful
+// for finding the new VTXO after a refresh operation.
+func (c *TestClient) GetVTXOByRoundID(roundID string) (*vtxo.Descriptor, error) {
+	ctx := c.harness.ctx
+
+	// List all live VTXOs and find the one from the target round.
+	vtxos, err := c.vtxoStore.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VTXOs: %w", err)
+	}
+
+	for _, desc := range vtxos {
+		if desc.RoundID == roundID {
+			return desc, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no VTXO found for round %s", roundID)
+}
+
+// GetVTXODescriptor returns the full VTXO descriptor for an outpoint. This
+// provides access to all VTXO fields including status and lifecycle data.
+func (c *TestClient) GetVTXODescriptor(outpoint wire.OutPoint) (
+	*vtxo.Descriptor, error) {
+
+	return c.vtxoStore.GetVTXO(c.harness.ctx, outpoint)
+}
+
+// ListLiveVTXODescriptors returns all VTXOs that are not in a terminal state.
+// This is useful for finding VTXOs that can be refreshed or spent.
+func (c *TestClient) ListLiveVTXODescriptors() ([]*vtxo.Descriptor, error) {
+	return c.vtxoStore.ListLiveVTXOs(c.harness.ctx)
 }

@@ -193,3 +193,112 @@ func (m *MockVTXOStore) SetupDefaultExpectations() {
 
 // Compile-time check that MockVTXOStore implements rounds.VTXOStore.
 var _ rounds.VTXOStore = (*MockVTXOStore)(nil)
+
+// MemoryVTXOStore is an in-memory implementation of rounds.VTXOStore that
+// actually stores and retrieves VTXOs. Unlike MockVTXOStore which just returns
+// nil for GetVTXO, this store maintains state across rounds, which is required
+// for the forfeit flow where round N+1 needs to look up VTXOs created in round
+// N.
+type MemoryVTXOStore struct {
+	// vtxos maps outpoint string to VTXO.
+	vtxos map[string]*rounds.VTXO
+
+	// lockedBy maps outpoint string to the round that locked it.
+	lockedBy map[string]rounds.RoundID
+
+	// byRoundID maps round ID to list of outpoint strings for that round.
+	byRoundID map[rounds.RoundID][]string
+}
+
+// NewMemoryVTXOStore creates a new in-memory VTXO store.
+func NewMemoryVTXOStore() *MemoryVTXOStore {
+	return &MemoryVTXOStore{
+		vtxos:     make(map[string]*rounds.VTXO),
+		lockedBy:  make(map[string]rounds.RoundID),
+		byRoundID: make(map[rounds.RoundID][]string),
+	}
+}
+
+// PersistVTXOs implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) PersistVTXOs(ctx context.Context,
+	vtxos []*rounds.VTXO) error {
+
+	for _, vtxo := range vtxos {
+		key := vtxo.Outpoint.String()
+		m.vtxos[key] = vtxo
+		m.byRoundID[vtxo.RoundID] = append(
+			m.byRoundID[vtxo.RoundID], key,
+		)
+	}
+
+	return nil
+}
+
+// MarkVTXOsLive implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) MarkVTXOsLive(ctx context.Context,
+	roundID rounds.RoundID) error {
+
+	outpoints := m.byRoundID[roundID]
+	for _, op := range outpoints {
+		if vtxo, exists := m.vtxos[op]; exists {
+			vtxo.Status = rounds.VTXOStatusLive
+		}
+	}
+
+	return nil
+}
+
+// MarkVTXOForfeit implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) MarkVTXOForfeit(ctx context.Context,
+	outpoint wire.OutPoint, info *rounds.ForfeitInfo) error {
+
+	key := outpoint.String()
+	if vtxo, exists := m.vtxos[key]; exists {
+		vtxo.Status = rounds.VTXOStatusForfeited
+	}
+
+	return nil
+}
+
+// GetVTXO implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*rounds.VTXO, error) {
+
+	key := outpoint.String()
+	if vtxo, exists := m.vtxos[key]; exists {
+		return vtxo, nil
+	}
+
+	return nil, nil
+}
+
+// LockVTXO implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) LockVTXO(ctx context.Context, roundID rounds.RoundID,
+	outpoints ...wire.OutPoint) error {
+
+	for _, op := range outpoints {
+		key := op.String()
+		m.lockedBy[key] = roundID
+	}
+
+	return nil
+}
+
+// UnlockVTXO implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) UnlockVTXO(ctx context.Context,
+	roundID rounds.RoundID, outpoints ...wire.OutPoint) error {
+
+	for _, op := range outpoints {
+		key := op.String()
+		if lockedRound, exists := m.lockedBy[key]; exists {
+			if lockedRound == roundID {
+				delete(m.lockedBy, key)
+			}
+		}
+	}
+
+	return nil
+}
+
+// Compile-time check that MemoryVTXOStore implements rounds.VTXOStore.
+var _ rounds.VTXOStore = (*MemoryVTXOStore)(nil)

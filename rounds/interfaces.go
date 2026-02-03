@@ -184,11 +184,20 @@ const (
 	// VTXOStatusLive indicates the VTXO's commitment transaction has been
 	// confirmed and the VTXO is now spendable.
 	VTXOStatusLive VTXOStatus = "live"
+
+	// VTXOStatusForfeited indicates the VTXO has been forfeited in a
+	// subsequent round.
+	VTXOStatusForfeited VTXOStatus = "forfeited"
 )
 
 // VTXO represents a Virtual Transaction Output that exists within a VTXO tree.
 // It contains all the information needed to identify and spend the VTXO.
 type VTXO struct {
+	// Outpoint identifies this VTXO's location. The hash is the TXID of the
+	// leaf transaction in the VTXO tree, and the index is always 0 (the
+	// VTXO output in the leaf).
+	Outpoint wire.OutPoint
+
 	// RoundID is the identifier of the round that created this VTXO.
 	RoundID RoundID
 
