@@ -11,7 +11,6 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -213,13 +212,16 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 		case *ForfeitRequest:
 			// Route forfeit request to round actor. This tells
 			// the round to include this VTXO in the forfeit flow.
-			// We also send a separate VTXORequest to explicitly
-			// request a new VTXO for the refreshed value (refresh
-			// no longer automatically creates a replacement VTXO).
+			// The round FSM's RefreshVTXORequest handler creates
+			// the corresponding VTXORequest for the new output via
+			// buildVTXORequestFromRefresh, so we only need to send
+			// the refresh request here.
 			if a.cfg.RoundActor != nil {
 				vtxo := a.cfg.VTXO
 
 				// Send the refresh request for forfeit flow.
+				// The FSM adds both the forfeit input and the
+				// new VTXO output from this single message.
 				refreshReq := &round.RefreshVTXORequest{
 					VTXOOutpoint: m.VTXOOutpoint,
 					Amount:       int64(vtxo.Amount),
@@ -231,23 +233,8 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				}
 				a.cfg.RoundActor.Tell(ctx, refreshReq)
 
-				// Also send a VTXORequest to request the new
-				// VTXO output for this refresh.
-				vtxoReq := &round.VTXORequestsReceived{
-					Requests: []types.VTXORequest{{
-						Amount:   vtxo.Amount,
-						PkScript: vtxo.PkScript,
-						Expiry:   vtxo.RelativeExpiry,
-						ClientKey: vtxo.ClientKey.
-							PubKey,
-						OperatorKey: vtxo.OperatorKey,
-						SigningKey:  vtxo.ClientKey,
-					}},
-				}
-				a.cfg.RoundActor.Tell(ctx, vtxoReq)
-
 				a.cfg.Logger.InfoS(
-					ctx, "Sent refresh forfeit and request",
+					ctx, "Sent refresh request to round",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
 				)
 			}
