@@ -3,11 +3,13 @@ CREATE TABLE chain_info (
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
 );
+
 CREATE UNIQUE INDEX idx_forfeit_infos_outpoint
 	ON round_forfeit_infos(outpoint_hash, outpoint_index);
 
 CREATE INDEX idx_forfeit_infos_round
 	ON round_forfeit_infos(round_id);
+
 CREATE INDEX idx_rounds_created_at
 	ON rounds(created_at DESC);
 
@@ -29,6 +31,15 @@ CREATE INDEX idx_vtxo_tree_nodes_leaves
 
 CREATE INDEX idx_vtxo_tree_nodes_parent
 	ON vtxo_tree_nodes(round_id, batch_output_index, parent_node_id);
+
+CREATE INDEX idx_vtxos_locked
+	ON vtxos(locked_by_round_id) WHERE locked_by_round_id IS NOT NULL;
+
+CREATE INDEX idx_vtxos_round
+	ON vtxos(round_id);
+
+CREATE INDEX idx_vtxos_status
+	ON vtxos(status);
 
 CREATE TABLE round_client_registrations (
 	-- round_id links to the parent round.
@@ -60,6 +71,29 @@ CREATE TABLE round_connector_descriptors (
 	forfeit_script BLOB NOT NULL,
 
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+);
+
+CREATE TABLE round_forfeit_infos (
+	-- round_id is the round in which the VTXO was forfeited.
+	round_id BLOB NOT NULL,
+
+	-- outpoint_hash and outpoint_index identify the forfeited VTXO.
+	outpoint_hash BLOB NOT NULL,
+	outpoint_index INTEGER NOT NULL,
+
+	-- forfeit_tx is the serialized wire.MsgTx (completed forfeit transaction).
+	forfeit_tx BLOB NOT NULL,
+
+	-- connector_output_index is the connector output index in the commitment tx.
+	connector_output_index INTEGER NOT NULL,
+
+	-- leaf_index is the leaf index within the connector tree.
+	leaf_index INTEGER NOT NULL,
+
+	PRIMARY KEY (round_id, outpoint_hash, outpoint_index),
+	FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE,
+	FOREIGN KEY (outpoint_hash, outpoint_index)
+		REFERENCES vtxos(outpoint_hash, outpoint_index)
 );
 
 CREATE TABLE round_statuses (
@@ -120,6 +154,10 @@ CREATE TABLE rounds (
 	FOREIGN KEY (status) REFERENCES round_statuses(status)
 );
 
+CREATE TABLE vtxo_statuses (
+	status TEXT PRIMARY KEY
+);
+
 CREATE TABLE vtxo_tree_cosigners (
 	-- Links to parent node.
 	round_id BLOB NOT NULL,
@@ -148,7 +186,7 @@ CREATE TABLE vtxo_tree_node_outputs (
 	output_index INTEGER NOT NULL,
 
 	-- Output details.
-	value INTEGER NOT NULL,
+	value BIGINT NOT NULL,
 	pk_script BLOB NOT NULL,
 
 	PRIMARY KEY (round_id, batch_output_index, node_id, output_index),
@@ -179,14 +217,57 @@ CREATE TABLE vtxo_tree_nodes (
 	input_index INTEGER NOT NULL,
 
 	-- Node attributes.
-	amount INTEGER NOT NULL,
+	amount BIGINT NOT NULL,
 
 	-- Optional fields populated after signing.
 	signature BLOB,
 	final_key BLOB,
 
 	PRIMARY KEY (round_id, batch_output_index, node_id),
+	FOREIGN KEY (round_id, batch_output_index)
+		REFERENCES round_vtxo_tree(round_id, batch_output_index)
+		ON DELETE CASCADE,
 	FOREIGN KEY (round_id, batch_output_index, parent_node_id)
 		REFERENCES vtxo_tree_nodes(round_id, batch_output_index, node_id)
 		ON DELETE CASCADE
 );
+
+CREATE TABLE vtxos (
+	-- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
+	outpoint_hash BLOB NOT NULL,
+	outpoint_index INTEGER NOT NULL,
+
+	-- round_id links to the round that created this VTXO.
+	-- NULL for VTXOs created by virtual transactions (future feature).
+	-- NOT NULL for VTXOs created directly in rounds (current implementation).
+	round_id BLOB,
+
+	-- batch_output_index is the commitment tx output index that roots the
+	-- VTXO tree containing this VTXO.
+	-- NULL for VTXOs created by virtual transactions (future feature).
+	-- NOT NULL for VTXOs created directly in rounds (current implementation).
+	batch_output_index INTEGER,
+
+	-- VTXO descriptor fields (from tree.VTXODescriptor).
+	-- amount is the value of this VTXO in satoshis.
+	amount BIGINT NOT NULL,
+
+	-- pk_script is the P2TR script for the VTXO output.
+	pk_script BLOB NOT NULL,
+
+	-- cosigner_key is the 33-byte compressed public key of the VTXO owner.
+	cosigner_key BLOB NOT NULL,
+
+	-- status tracks VTXO lifecycle (pending, live, locked, forfeited, spent).
+	status TEXT NOT NULL DEFAULT 'pending',
+
+	-- locked_by_round_id tracks which round/operation has locked this VTXO.
+	-- NULL when unlocked, populated when status='locked'.
+	-- Prevents concurrent forfeits across multiple rounds.
+	locked_by_round_id BLOB,
+
+	PRIMARY KEY (outpoint_hash, outpoint_index),
+	FOREIGN KEY (round_id) REFERENCES rounds(round_id),
+	FOREIGN KEY (status) REFERENCES vtxo_statuses(status)
+);
+

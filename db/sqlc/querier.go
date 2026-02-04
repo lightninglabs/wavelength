@@ -25,6 +25,14 @@ type Querier interface {
 	// The cascading foreign keys will handle deletion of outputs and cosigners.
 	DeleteVTXOTreeRecursive(ctx context.Context, arg DeleteVTXOTreeRecursiveParams) error
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
+	GetLockedVTXOs(ctx context.Context, lockedByRoundID []byte) ([]Vtxo, error)
+	GetRound(ctx context.Context, roundID []byte) (Round, error)
+	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
+	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
+	GetRoundForfeitInfoByOutpoint(ctx context.Context, arg GetRoundForfeitInfoByOutpointParams) ([]RoundForfeitInfo, error)
+	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
+	GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]RoundVtxoTree, error)
+	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	GetVTXOTreeCosigners(ctx context.Context, arg GetVTXOTreeCosignersParams) ([]GetVTXOTreeCosignersRow, error)
 	// NOTE: Complex recursive queries with slices are commented out for now.
 	// They can be implemented in Go code using multiple queries.
@@ -48,13 +56,33 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	// Round queries for server-side round persistence.
+	// RoundStore queries.
+	InsertRound(ctx context.Context, arg InsertRoundParams) error
+	InsertRoundClientRegistration(ctx context.Context, arg InsertRoundClientRegistrationParams) error
+	InsertRoundConnectorDescriptor(ctx context.Context, arg InsertRoundConnectorDescriptorParams) error
+	InsertRoundForfeitInfo(ctx context.Context, arg InsertRoundForfeitInfoParams) error
+	InsertRoundVTXOTree(ctx context.Context, arg InsertRoundVTXOTreeParams) error
+	// VTXOStore queries.
+	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
 	InsertVTXOTreeCosigner(ctx context.Context, arg InsertVTXOTreeCosignerParams) error
 	// VTXO tree recursive queries.
 	// These queries support storing and retrieving VTXO trees in normalized form.
 	InsertVTXOTreeNode(ctx context.Context, arg InsertVTXOTreeNodeParams) error
 	InsertVTXOTreeNodeOutput(ctx context.Context, arg InsertVTXOTreeNodeOutputParams) error
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListPendingRounds(ctx context.Context) ([]Round, error)
+	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
+	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)
+	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
+	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
+	UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
+	UnlockVTXO(ctx context.Context, arg UnlockVTXOParams) (int64, error)
+	UpdateRoundConfirmed(ctx context.Context, arg UpdateRoundConfirmedParams) error
+	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) (int64, error)
+	UpdateVTXOsLiveByRound(ctx context.Context, roundID []byte) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	UpsertRoundForfeitInfo(ctx context.Context, arg UpsertRoundForfeitInfoParams) error
 }
 
 var _ Querier = (*Queries)(nil)

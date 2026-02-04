@@ -40,6 +40,15 @@ type RoundConnectorDescriptor struct {
 	ForfeitScript []byte
 }
 
+type RoundForfeitInfo struct {
+	RoundID              []byte
+	OutpointHash         []byte
+	OutpointIndex        int32
+	ForfeitTx            []byte
+	ConnectorOutputIndex int32
+	LeafIndex            int32
+}
+
 type RoundStatus struct {
 	Status string
 }
@@ -47,6 +56,22 @@ type RoundStatus struct {
 type RoundVtxoTree struct {
 	RoundID          []byte
 	BatchOutputIndex int32
+}
+
+type Vtxo struct {
+	OutpointHash     []byte
+	OutpointIndex    int32
+	RoundID          []byte
+	BatchOutputIndex sql.NullInt32
+	Amount           int64
+	PkScript         []byte
+	CosignerKey      []byte
+	Status           string
+	LockedByRoundID  []byte
+}
+
+type VtxoStatus struct {
+	Status string
 }
 
 type VtxoTreeCosigner struct {
@@ -67,7 +92,7 @@ type VtxoTreeNode struct {
 	IsLeaf            int32
 	InputHash         []byte
 	InputIndex        int32
-	Amount            int32
+	Amount            int64
 	Signature         []byte
 	FinalKey          []byte
 }
@@ -77,6 +102,6 @@ type VtxoTreeNodeOutput struct {
 	BatchOutputIndex int32
 	NodeID           string
 	OutputIndex      int32
-	Value            int32
+	Value            int64
 	PkScript         []byte
 }

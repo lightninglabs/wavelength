@@ -119,7 +119,7 @@ type GetVTXOTreeLeavesByCoSignerRow struct {
 	NodeID       string
 	ParentNodeID sql.NullString
 	Depth        int32
-	Amount       int32
+	Amount       int64
 	InputHash    []byte
 	InputIndex   int32
 }
@@ -195,7 +195,7 @@ type GetVTXOTreeNodeOutputsParams struct {
 type GetVTXOTreeNodeOutputsRow struct {
 	NodeID      string
 	OutputIndex int32
-	Value       int32
+	Value       int64
 	PkScript    []byte
 }
 
@@ -258,7 +258,7 @@ type GetVTXOTreeNodesRow struct {
 	IsLeaf            int32
 	InputHash         []byte
 	InputIndex        int32
-	Amount            int32
+	Amount            int64
 	Signature         []byte
 	FinalKey          []byte
 }
@@ -354,7 +354,7 @@ type InsertVTXOTreeNodeParams struct {
 	IsLeaf            int32
 	InputHash         []byte
 	InputIndex        int32
-	Amount            int32
+	Amount            int64
 	Signature         []byte
 	FinalKey          []byte
 }
@@ -395,7 +395,7 @@ type InsertVTXOTreeNodeOutputParams struct {
 	BatchOutputIndex int32
 	NodeID           string
 	OutputIndex      int32
-	Value            int32
+	Value            int64
 	PkScript         []byte
 }
 
