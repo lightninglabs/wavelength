@@ -278,6 +278,10 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,
 			},
+			SweepKey: keychain.KeyDescriptor{
+				PubKey: common.operatorPub,
+			},
+			SweepDelay:           144,
 			MaxConnectorsPerTree: 128,
 			ConnectorDustAmount:  330,
 			ConnectorAddress: mustTaprootAddr(
@@ -1166,6 +1170,8 @@ func TestActorLoadPendingRounds(t *testing.T) {
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},
+			SweepKey: h.cfg.Terms.SweepKey.PubKey,
+			CSVDelay: h.cfg.Terms.SweepDelay,
 		}
 
 		// Set the pending rounds before starting the actor.
@@ -1241,6 +1247,8 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},
+			SweepKey: h.cfg.Terms.SweepKey.PubKey,
+			CSVDelay: h.cfg.Terms.SweepDelay,
 		}
 
 		// Set the round in storage and start the actor. This will
@@ -1293,6 +1301,8 @@ func TestActorBroadcastAndConfirmation(t *testing.T) {
 			ClientRegistrations: map[ClientID]*ClientRegistration{
 				"client1": {},
 			},
+			SweepKey: h.cfg.Terms.SweepKey.PubKey,
+			CSVDelay: h.cfg.Terms.SweepDelay,
 		}
 
 		// Load the round and start the actor.

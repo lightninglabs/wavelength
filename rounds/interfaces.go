@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -171,15 +172,23 @@ type Round struct {
 
 	// ClientRegistrations contains client registration data.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts. Required to reconstruct sweep scripts for unilateral exits.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock in blocks for the VTXO sweep
+	// timeout path. Required to reconstruct sweep scripts.
+	CSVDelay uint32
 }
 
 // VTXOStatus represents the lifecycle state of a VTXO.
 type VTXOStatus string
 
 const (
-	// VTXOStatusUnconfirmed indicates the VTXO's commitment transaction has
+	// VTXOStatusPending indicates the VTXO's commitment transaction has
 	// been broadcast but not yet confirmed on-chain.
-	VTXOStatusUnconfirmed VTXOStatus = "unconfirmed"
+	VTXOStatusPending VTXOStatus = "pending"
 
 	// VTXOStatusLive indicates the VTXO's commitment transaction has been
 	// confirmed and the VTXO is now spendable.
@@ -193,9 +202,8 @@ const (
 // VTXO represents a Virtual Transaction Output that exists within a VTXO tree.
 // It contains all the information needed to identify and spend the VTXO.
 type VTXO struct {
-	// Outpoint identifies this VTXO's location. The hash is the TXID of the
-	// leaf transaction in the VTXO tree, and the index is always 0 (the
-	// VTXO output in the leaf).
+	// Outpoint uniquely identifies this VTXO on-chain. This is computed
+	// from the VTXO's position in the tree structure.
 	Outpoint wire.OutPoint
 
 	// RoundID is the identifier of the round that created this VTXO.
@@ -235,6 +243,11 @@ type VTXOStore interface {
 	// if the VTXO doesn't exist.
 	GetVTXO(ctx context.Context, outpoint wire.OutPoint) (*VTXO, error)
 
+	// GetForfeitInfo retrieves forfeit metadata for a VTXO. Returns nil
+	// and no error if the forfeit info doesn't exist.
+	GetForfeitInfo(ctx context.Context,
+		outpoint wire.OutPoint) (*ForfeitInfo, error)
+
 	// LockVTXO locks VTXOs for forfeit in the specified round. This
 	// prevents the VTXOs from being forfeited in another round
 	// concurrently. The call should fail if any outpoint is already locked
@@ -246,6 +259,12 @@ type VTXOStore interface {
 	// the VTXOs can unlock them.
 	UnlockVTXO(ctx context.Context, roundID RoundID,
 		outpoints ...wire.OutPoint) error
+
+	// UnlockStaleVTXOs releases locks on VTXOs that are locked by rounds
+	// not in the provided list of active round IDs. This is used on
+	// startup to clean up stale locks from crashed rounds.
+	UnlockStaleVTXOs(ctx context.Context,
+		activeRoundIDs []RoundID) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

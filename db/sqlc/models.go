@@ -4,8 +4,104 @@
 
 package sqlc
 
+import (
+	"database/sql"
+)
+
 type ChainInfo struct {
 	ID          int64
 	ChainName   string
 	GenesisHash []byte
+}
+
+type Round struct {
+	RoundID               []byte
+	FinalTx               []byte
+	CommitmentTxid        string
+	ConfirmationHeight    sql.NullInt32
+	ConfirmationBlockHash []byte
+	Status                string
+	SweepKey              []byte
+	CsvDelay              int32
+	CreatedAt             int64
+	UpdatedAt             int64
+}
+
+type RoundClientRegistration struct {
+	RoundID          []byte
+	ClientID         []byte
+	RegistrationData []byte
+}
+
+type RoundConnectorDescriptor struct {
+	RoundID       []byte
+	OutputIndex   int32
+	NumLeaves     int32
+	ForfeitScript []byte
+}
+
+type RoundForfeitInfo struct {
+	RoundID              []byte
+	OutpointHash         []byte
+	OutpointIndex        int32
+	ForfeitTx            []byte
+	ConnectorOutputIndex int32
+	LeafIndex            int32
+}
+
+type RoundStatus struct {
+	Status string
+}
+
+type RoundVtxoTree struct {
+	RoundID          []byte
+	BatchOutputIndex int32
+}
+
+type Vtxo struct {
+	OutpointHash     []byte
+	OutpointIndex    int32
+	RoundID          []byte
+	BatchOutputIndex sql.NullInt32
+	Amount           int64
+	PkScript         []byte
+	CosignerKey      []byte
+	Status           string
+	LockedByRoundID  []byte
+}
+
+type VtxoStatus struct {
+	Status string
+}
+
+type VtxoTreeCosigner struct {
+	RoundID          []byte
+	BatchOutputIndex int32
+	NodeID           string
+	CosignerKey      []byte
+	KeyIndex         int32
+}
+
+type VtxoTreeNode struct {
+	RoundID           []byte
+	BatchOutputIndex  int32
+	NodeID            string
+	ParentNodeID      sql.NullString
+	ParentOutputIndex sql.NullInt32
+	Depth             int32
+	IsLeaf            int32
+	InputHash         []byte
+	InputIndex        int32
+	Amount            int64
+	Signature         []byte
+	FinalKey          []byte
+}
+
+type VtxoTreeNodeOutput struct {
+	RoundID          []byte
+	BatchOutputIndex int32
+	NodeID           string
+	OutputIndex      int32
+	Value            int64
+	PkScript         []byte
 }

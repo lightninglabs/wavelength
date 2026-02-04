@@ -816,7 +816,7 @@ func TestValidateForfeitRequest(t *testing.T) {
 			RoundID:          h.env.RoundID,
 			BatchOutputIndex: 0,
 			Descriptor:       descriptor,
-			Status:           VTXOStatusUnconfirmed,
+			Status:           VTXOStatusPending,
 		}
 
 		// Set up the VTXO store mock to return the VTXO.

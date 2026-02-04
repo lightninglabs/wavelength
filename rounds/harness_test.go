@@ -78,6 +78,9 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		"MarkVTXOForfeit", mock.Anything, mock.Anything,
 		mock.Anything,
 	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"UnlockStaleVTXOs", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
 
 	m := &commonMockSetup{
 		t:                t,
@@ -1264,6 +1267,17 @@ func (m *mockVTXOStore) GetVTXO(ctx context.Context,
 	return vtxo, args.Error(1)
 }
 
+// GetForfeitInfo is a mock implementation of VTXOStore.GetForfeitInfo.
+func (m *mockVTXOStore) GetForfeitInfo(ctx context.Context,
+	outpoint wire.OutPoint) (*ForfeitInfo, error) {
+
+	args := m.Called(ctx, outpoint)
+
+	info, _ := args.Get(0).(*ForfeitInfo)
+
+	return info, args.Error(1)
+}
+
 // LockVTXO is a mock implementation of VTXOStore.LockVTXO.
 func (m *mockVTXOStore) LockVTXO(ctx context.Context,
 	roundID RoundID, outpoints ...wire.OutPoint) error {
@@ -1278,6 +1292,15 @@ func (m *mockVTXOStore) UnlockVTXO(ctx context.Context,
 	roundID RoundID, outpoints ...wire.OutPoint) error {
 
 	args := m.Called(ctx, roundID, outpoints)
+
+	return args.Error(0)
+}
+
+// UnlockStaleVTXOs is a mock implementation of VTXOStore.UnlockStaleVTXOs.
+func (m *mockVTXOStore) UnlockStaleVTXOs(ctx context.Context,
+	activeRoundIDs []RoundID) error {
+
+	args := m.Called(ctx, activeRoundIDs)
 
 	return args.Error(0)
 }

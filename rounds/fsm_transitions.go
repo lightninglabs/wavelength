@@ -2259,6 +2259,8 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		ConnectorDescriptors: s.ConnectorDescriptors,
 		ForfeitInfos:         forfeitInfos,
 		ClientRegistrations:  s.ClientRegistrations,
+		SweepKey:             env.Terms.SweepKey.PubKey,
+		CSVDelay:             env.Terms.SweepDelay,
 	}
 
 	err = env.RoundStore.PersistRound(ctx, round)
@@ -2480,25 +2482,20 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					)
 				}
 
-				// Derive the VTXO outpoint from the leaf node's
-				// transaction. The VTXO is always at index 0.
-				txid, err := node.TXID()
+				// Compute the outpoint for this VTXO leaf.
+				outpoint, err := node.GetNonAnchorOutpoint()
 				if err != nil {
 					return fmt.Errorf(
-						"failed to get leaf TXID: %w",
-						err,
+						"get VTXO outpoint: %w", err,
 					)
 				}
 
 				vtxos = append(vtxos, &VTXO{
-					Outpoint: wire.OutPoint{
-						Hash:  txid,
-						Index: 0,
-					},
+					Outpoint:         *outpoint,
 					RoundID:          roundID,
 					BatchOutputIndex: outputIdx,
 					Descriptor:       desc,
-					Status:           VTXOStatusUnconfirmed,
+					Status:           VTXOStatusPending,
 				})
 
 				return nil
