@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -171,6 +172,14 @@ type Round struct {
 
 	// ClientRegistrations contains client registration data.
 	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts. Required to reconstruct sweep scripts for unilateral exits.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock in blocks for the VTXO sweep
+	// timeout path. Required to reconstruct sweep scripts.
+	CSVDelay uint32
 }
 
 // VTXOStatus represents the lifecycle state of a VTXO.
@@ -246,6 +255,12 @@ type VTXOStore interface {
 	// the VTXOs can unlock them.
 	UnlockVTXO(ctx context.Context, roundID RoundID,
 		outpoints ...wire.OutPoint) error
+
+	// UnlockStaleVTXOs releases locks on VTXOs that are locked by rounds
+	// not in the provided list of active round IDs. This is used on
+	// startup to clean up stale locks from crashed rounds.
+	UnlockStaleVTXOs(ctx context.Context,
+		activeRoundIDs []RoundID) error
 }
 
 // loggingErrorReporter implements protofsm.ErrorReporter by logging errors

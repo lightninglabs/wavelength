@@ -1282,6 +1282,15 @@ func (m *mockVTXOStore) UnlockVTXO(ctx context.Context,
 	return args.Error(0)
 }
 
+// UnlockStaleVTXOs is a mock implementation of VTXOStore.UnlockStaleVTXOs.
+func (m *mockVTXOStore) UnlockStaleVTXOs(ctx context.Context,
+	activeRoundIDs []RoundID) error {
+
+	args := m.Called(ctx, activeRoundIDs)
+
+	return args.Error(0)
+}
+
 // clientMuSigSession holds the MuSig2 signing sessions for a client's VTXO
 // signing key across all relevant transactions.
 type clientMuSigSession struct {

@@ -2480,9 +2480,8 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					)
 				}
 
-				// Derive the VTXO outpoint from the leaf node's
-				// transaction. The VTXO is always at index 0.
-				txid, err := node.TXID()
+				// Compute the outpoint for this VTXO leaf.
+				outpoint, err := node.GetNonAnchorOutpoint()
 				if err != nil {
 					return fmt.Errorf(
 						"failed to get leaf TXID: %w",
@@ -2491,10 +2490,7 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 				}
 
 				vtxos = append(vtxos, &VTXO{
-					Outpoint: wire.OutPoint{
-						Hash:  txid,
-						Index: 0,
-					},
+					Outpoint:         *outpoint,
 					RoundID:          roundID,
 					BatchOutputIndex: outputIdx,
 					Descriptor:       desc,
