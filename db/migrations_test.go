@@ -133,8 +133,8 @@ func TestSqliteMigrationBackup(t *testing.T) {
 		require.NoError(t, db.DB.Close())
 	})
 
-	// Manually run migrations to version 1.
-	err = db.ExecuteMigrations(TargetVersion(1))
+	// Manually run migrations to the latest version.
+	err = db.ExecuteMigrations(TargetLatest)
 	require.NoError(t, err)
 
 	// Insert some test data.
