@@ -3,7 +3,11 @@ CREATE TABLE chain_info (
     chain_name TEXT NOT NULL UNIQUE,
     genesis_hash BLOB NOT NULL
 );
+CREATE UNIQUE INDEX idx_forfeit_infos_outpoint
+	ON round_forfeit_infos(outpoint_hash, outpoint_index);
 
+CREATE INDEX idx_forfeit_infos_round
+	ON round_forfeit_infos(round_id);
 CREATE INDEX idx_rounds_created_at
 	ON rounds(created_at DESC);
 
@@ -186,4 +190,3 @@ CREATE TABLE vtxo_tree_nodes (
 		REFERENCES vtxo_tree_nodes(round_id, batch_output_index, node_id)
 		ON DELETE CASCADE
 );
-
