@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -26,11 +27,13 @@ import (
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -150,14 +153,19 @@ type E2EHarness struct {
 	// to the operator's key.
 	forfeitScript []byte
 
-	// Mock stores with testify/mock for call assertions (STORAGE ONLY).
-	mockRoundStore     *MockRoundStore
-	mockBoardingLocker *MockBoardingLocker
+	// sqlStore is the SQL database store providing real persistence for
+	// rounds and VTXOs. This allows the systests to exercise the actual
+	// database code paths including TLV serialization, migrations, and
+	// query logic.
+	sqlStore *db.Store
 
-	// memoryVTXOStore is an in-memory VTXO store that actually persists
-	// VTXOs. Unlike a mock, this allows the forfeit flow to work where
-	// round N+1 looks up VTXOs created in round N.
-	memoryVTXOStore *MemoryVTXOStore
+	// Real database-backed stores for rounds and VTXOs.
+	roundStore *db.RoundStoreDB
+	vtxoStore  *db.VTXOStoreDB
+
+	// Mock boarding locker is still used since we don't have a real
+	// implementation yet.
+	mockBoardingLocker *MockBoardingLocker
 
 	// chainSourceActor is the real ChainSourceActor from the client package.
 	// It handles transaction broadcasts and confirmation subscriptions using
@@ -313,6 +321,11 @@ func (h *E2EHarness) Stop() {
 		_ = h.actorSystem.Shutdown(shutdownCtx)
 	}
 
+	// Close the database connection.
+	if h.sqlStore != nil {
+		_ = h.sqlStore.Close()
+	}
+
 	// Cancel context to stop any remaining operations.
 	if h.cancel != nil {
 		h.cancel()
@@ -368,17 +381,34 @@ func (h *E2EHarness) initActorSystem() {
 	// Create default terms for test rounds using the real operator key.
 	h.terms = h.createDefaultTerms()
 
-	// Create mock stores with testify/mock (STORAGE ONLY).
-	h.mockRoundStore = &MockRoundStore{}
-	h.mockRoundStore.SetupDefaultExpectations()
+	// Create a temporary SQLite database for this test. Each test gets
+	// its own isolated database in a temporary directory.
+	dbDir := h.t.TempDir()
+	dbPath := filepath.Join(dbDir, "systest.db")
+	h.log.Infof("Using SQLite database at %s", dbPath)
 
+	// Configure SQLite store.
+	sqliteConfig := &db.SqliteConfig{
+		DatabaseFileName: dbPath,
+	}
+
+	// Create the SQL store with real persistence.
+	sqliteStore, err := db.NewSqliteStore(sqliteConfig, h.log)
+	require.NoError(h.t, err, "failed to create sqlite store")
+
+	h.sqlStore = db.NewStore(
+		sqliteStore.DB, sqliteStore.Queries, sqliteStore.Backend(),
+		h.log, clock.NewDefaultClock(),
+	)
+
+	// Create real database-backed stores.
+	h.roundStore = h.sqlStore.NewRoundStore()
+	h.vtxoStore = h.sqlStore.NewVTXOStore()
+
+	// Mock boarding locker is still used since we don't have a real
+	// implementation yet.
 	h.mockBoardingLocker = &MockBoardingLocker{}
 	h.mockBoardingLocker.SetupDefaultExpectations()
-
-	// Use an in-memory VTXO store that actually persists VTXOs. This is
-	// required for the forfeit flow where round N+1 looks up VTXOs created
-	// in round N.
-	h.memoryVTXOStore = NewMemoryVTXOStore()
 
 	// Create REAL wallet controller from the server's dedicated LND.
 	// Using a separate LND ensures the server's wallet is isolated from
@@ -474,8 +504,8 @@ func (h *E2EHarness) initActorSystem() {
 		BoardingInputLocker: h.mockBoardingLocker,
 		ChainSource:         h.chainSource,
 		ChainSourceActor:    h.chainSourceActorRef,
-		RoundStore:          h.mockRoundStore,
-		VTXOStore:           h.memoryVTXOStore,
+		RoundStore:          h.roundStore,
+		VTXOStore:           h.vtxoStore,
 		TimeoutActor:        h.mockTimeoutRef,
 		WalletController:    h.walletController,
 		FeeEstimator:        feeEstimator,
@@ -640,13 +670,11 @@ func (h *E2EHarness) ForfeitScript() []byte {
 	return h.forfeitScript
 }
 
-// AssertMocksCalled verifies all mock storage expectations were met. Currently
-// the mocks use `mock.Anything` patterns so this will pass, but it's available
-// for tests that configure specific expectations.
+// AssertMocksCalled verifies all mock expectations were met. Currently only
+// the boarding locker is mocked. The round and VTXO stores use real SQL
+// database persistence.
 func (h *E2EHarness) AssertMocksCalled(t *testing.T) {
-	h.mockRoundStore.AssertExpectations(t)
 	h.mockBoardingLocker.AssertExpectations(t)
-	// memoryVTXOStore is not a mock, no expectations to assert.
 }
 
 // Transcript returns the message transcript for assertions.
