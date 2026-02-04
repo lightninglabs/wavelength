@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
@@ -294,6 +295,97 @@ func TestRoundStoreMultipleRounds(t *testing.T) {
 	pending, err = roundStore.LoadPendingRounds(ctx)
 	require.NoError(t, err)
 	require.Len(t, pending, 2)
+}
+
+// TestRoundStoreWithForfeitInfos tests persisting and loading rounds with
+// forfeit information.
+func TestRoundStoreWithForfeitInfos(t *testing.T) {
+	t.Parallel()
+
+	sqlStore := NewTestDB(t)
+	store := NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	roundStore := store.NewRoundStore()
+	vtxoStore := store.NewVTXOStore()
+	ctx := t.Context()
+
+	// Create a round with forfeit info.
+	roundID := testRoundID("test-round-forfeit")
+	testRound := createTestRound(t, roundID)
+
+	// First persist the round so we can create VTXOs with this roundID.
+	err := roundStore.PersistRound(ctx, testRound)
+	require.NoError(t, err)
+
+	// Create and persist a VTXO that we'll forfeit.
+	forfeitVTXO := createTestVTXO(t, roundID, 10)
+	err = vtxoStore.PersistVTXOs(ctx, []*rounds.VTXO{forfeitVTXO})
+	require.NoError(t, err)
+
+	// Now add forfeit info using the VTXO's outpoint.
+	forfeitOutpoint := forfeitVTXO.Outpoint
+	forfeitTx := wire.NewMsgTx(2)
+	forfeitTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: forfeitOutpoint,
+	})
+	forfeitTx.AddTxOut(&wire.TxOut{
+		Value:    50000,
+		PkScript: []byte{0x51, 0x20},
+	})
+
+	// Update the round with forfeit info and persist again.
+	// Note: In real usage, forfeit info is added via MarkVTXOForfeit,
+	// but for this test we're testing the round persistence itself.
+	testRound.ForfeitInfos[forfeitOutpoint] = &rounds.ForfeitInfo{
+		RoundID:              roundID,
+		ConnectorOutputIndex: 1,
+		LeafIndex:            2,
+		ForfeitTx:            forfeitTx,
+	}
+
+	// Insert the forfeit info directly (normally done via
+	// MarkVTXOForfeit).
+	qtx := store.Queries
+	var forfeitTxBytes []byte
+	if testRound.ForfeitInfos[forfeitOutpoint].ForfeitTx != nil {
+		var buf bytes.Buffer
+		forfeitTx := testRound.ForfeitInfos[forfeitOutpoint].ForfeitTx
+		err = forfeitTx.Serialize(&buf)
+		require.NoError(t, err)
+		forfeitTxBytes = buf.Bytes()
+	}
+
+	err = qtx.InsertRoundForfeitInfo(
+		ctx, sqlc.InsertRoundForfeitInfoParams{
+			RoundID:              roundID[:],
+			OutpointHash:         forfeitOutpoint.Hash[:],
+			OutpointIndex:        int32(forfeitOutpoint.Index),
+			ForfeitTx:            forfeitTxBytes,
+			ConnectorOutputIndex: int32(1),
+			LeafIndex:            int32(2),
+		},
+	)
+	require.NoError(t, err)
+
+	// Load and verify forfeit info.
+	pending, err := roundStore.LoadPendingRounds(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+
+	loaded := pending[0]
+	require.Len(t, loaded.ForfeitInfos, 1)
+	require.Contains(t, loaded.ForfeitInfos, forfeitOutpoint)
+
+	forfeitInfo := loaded.ForfeitInfos[forfeitOutpoint]
+	require.Equal(t, roundID, forfeitInfo.RoundID)
+	require.Equal(t, 1, forfeitInfo.ConnectorOutputIndex)
+	require.Equal(t, 2, forfeitInfo.LeafIndex)
+	require.NotNil(t, forfeitInfo.ForfeitTx)
+	require.Equal(
+		t, forfeitTx.TxHash(), forfeitInfo.ForfeitTx.TxHash(),
+	)
 }
 
 // TestRoundStoreTransactionAtomicity tests that round persistence is atomic.
