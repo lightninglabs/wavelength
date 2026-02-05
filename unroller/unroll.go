@@ -5,19 +5,20 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
 
 // handleUnrollRequest initiates unroll for the requested VTXOs.
 func (a *UnrollerActor) handleUnrollRequest(
 	ctx context.Context, req *UnrollRequest,
 ) fn.Result[UnrollerResp] {
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// For now, handle single VTXO unroll. Multi-VTXO support can be added
 	// later.
@@ -32,7 +33,7 @@ func (a *UnrollerActor) handleUnrollRequest(
 
 	// Check if already unrolling this VTXO.
 	if _, exists := a.activeUnrolls[outpointKey]; exists {
-		a.cfg.Logger.WarnS(ctx, "Unroll already in progress", nil,
+		a.cfg.Logger.InfoS(ctx, "Unroll already in progress",
 			slog.String("outpoint", outpointKey))
 
 		return fn.Ok[UnrollerResp](&UnrollStartedResp{})
@@ -41,7 +42,7 @@ func (a *UnrollerActor) handleUnrollRequest(
 	// Fetch VTXO descriptor from store.
 	vtxoDesc, err := a.cfg.Store.GetVTXO(ctx, outpoint)
 	if err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to fetch VTXO", err,
+		a.cfg.Logger.WarnS(ctx, "Failed to fetch VTXO", err,
 			slog.String("outpoint", outpointKey))
 
 		return fn.Err[UnrollerResp](
@@ -53,7 +54,15 @@ func (a *UnrollerActor) handleUnrollRequest(
 		slog.String("outpoint", outpointKey))
 
 	// Extract level-ordered transactions from tree.
-	levelOrder := extractLevelOrder(vtxoDesc.TreePath)
+	levelOrder, err := extractLevelOrder(vtxoDesc.TreePath)
+	if err != nil {
+		a.cfg.Logger.WarnS(ctx, "Failed to extract tree levels", err,
+			slog.String("outpoint", outpointKey))
+
+		return fn.Err[UnrollerResp](
+			fmt.Errorf("extract tree levels: %w", err),
+		)
+	}
 
 	// Create unroll state.
 	state := &UnrollState{
@@ -68,7 +77,7 @@ func (a *UnrollerActor) handleUnrollRequest(
 
 	// Persist state.
 	if err := a.cfg.Store.SaveUnrollState(ctx, state); err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to save unroll state", err,
+		a.cfg.Logger.WarnS(ctx, "Failed to save unroll state", err,
 			slog.String("outpoint", outpointKey))
 
 		return fn.Err[UnrollerResp](err)
@@ -76,20 +85,29 @@ func (a *UnrollerActor) handleUnrollRequest(
 
 	a.activeUnrolls[outpointKey] = state
 
-	// Start broadcasting from level 1. Level 0 is the root/pool transaction
-	// which is already confirmed on-chain.
-	a.broadcastLevel(ctx, state, 1)
+	// Index all txids for O(1) confirmation lookup.
+	a.indexUnrollTxids(state)
+
+	// Start broadcasting from level 0. The tree root (level 0) is a
+	// virtual transaction that spends the batch outpoint and needs to
+	// be broadcast to initiate the unilateral exit.
+	a.broadcastLevel(ctx, state, 0)
 
 	return fn.Ok[UnrollerResp](&UnrollStartedResp{})
 }
 
-// broadcastLevel broadcasts all transactions at the specified level.
+// broadcastLevel broadcasts all transactions at the specified level
+// using 1P1C package relay. V3 transactions with ephemeral anchors
+// (0-sat P2A outputs) cannot be broadcast standalone — they must be
+// submitted as parent+child packages via bitcoind's submitpackage
+// RPC with a fee-paying CPFP child that spends the anchor output.
 func (a *UnrollerActor) broadcastLevel(
 	ctx context.Context, state *UnrollState, level int,
 ) {
 
 	if level >= len(state.LevelOrder) {
-		// All levels complete, transition to CSV wait or completion.
+		// All levels complete, transition to CSV wait or
+		// completion.
 		a.handleAllLevelsComplete(ctx, state)
 		return
 	}
@@ -104,6 +122,18 @@ func (a *UnrollerActor) broadcastLevel(
 	state.CurrentLevel = level
 	state.Status = UnrollStatusBroadcasting
 
+	// Get fee rate once per level so all transactions in the
+	// same level use a consistent fee rate.
+	feeRate, err := a.getFeeRate(ctx)
+	if err != nil {
+		a.failUnroll(
+			ctx, state,
+			fmt.Errorf("get fee rate: %w", err),
+		)
+
+		return
+	}
+
 	for i, node := range levelTxids.Nodes {
 		if i >= len(levelTxids.Txids) {
 			break
@@ -111,35 +141,141 @@ func (a *UnrollerActor) broadcastLevel(
 
 		txid := levelTxids.Txids[i]
 
-		// Convert to signed transaction.
+		// Convert to signed transaction. A failure here means
+		// the tree data is corrupt or incomplete (missing
+		// signature), which cannot be retried.
 		signedTx, err := node.ToSignedTx()
 		if err != nil {
-			a.cfg.Logger.ErrorS(ctx, "Failed to construct tx", err,
-				slog.String("txid", txid.String()))
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("construct signed tx %s: %w",
+					txid, err),
+			)
 
-			continue
+			return
 		}
 
-		// Broadcast transaction.
-		broadReq := &chainsource.BroadcastTxRequest{
-			Tx: signedTx,
-			Label: fmt.Sprintf(
-				"unroll-%s-L%d", state.VTXOOutpoint, level,
-			),
+		// The anchor output is always the last output in the
+		// node's output list (branch nodes: [child1, child2,
+		// ..., anchor], leaf nodes: [vtxo, anchor]).
+		anchorIdx := uint32(len(signedTx.TxOut) - 1)
+		anchorOut := signedTx.TxOut[anchorIdx]
+
+		// Compute fee for entire package: parent vsize + child
+		// vsize estimate, multiplied by the per-vbyte fee rate.
+		parentWeight := estimateWeight(signedTx)
+		parentVSize := (parentWeight + 3) / 4
+		totalFee := feeRate *
+			btcutil.Amount(parentVSize+childVSizeEstimate)
+
+		if totalFee < 1 {
+			totalFee = 1
 		}
 
-		future := a.cfg.ChainSource.Ask(ctx, broadReq)
-		result := future.Await(ctx)
+		// Select a confirmed wallet UTXO for the fee input.
+		// V3 rules require the child to have at most one
+		// unconfirmed input (the anchor), so the fee input
+		// must be confirmed.
+		feeInput, err := selectFeeUTXO(
+			ctx, a.cfg.WalletKit, totalFee,
+		)
+		if err != nil {
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("select fee UTXO for %s: %w",
+					txid, err),
+			)
 
-		if result.IsErr() {
-			a.cfg.Logger.WarnS(
-				ctx, "Broadcast failed", result.Err(),
-				slog.String("txid", txid.String()),
-				slog.Int("level", level))
-
-			// Continue with other transactions, will retry later.
-			continue
+			return
 		}
+
+		// Get a change address from the wallet.
+		changeAddr, err := a.cfg.WalletKit.NextAddr(
+			ctx, "",
+			walletrpc.AddressType_TAPROOT_PUBKEY, false,
+		)
+		if err != nil {
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("get change address: %w", err),
+			)
+
+			return
+		}
+
+		changePkScript, err := txscript.PayToAddrScript(
+			changeAddr,
+		)
+		if err != nil {
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("encode change script: %w",
+					err),
+			)
+
+			return
+		}
+
+		// Build the unsigned CPFP child transaction.
+		parentTxid := signedTx.TxHash()
+		childTx, err := buildCPFPChild(
+			parentTxid, anchorIdx, feeInput,
+			changePkScript, totalFee,
+		)
+		if err != nil {
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("build CPFP child for %s: %w",
+					txid, err),
+			)
+
+			return
+		}
+
+		// Sign the child via PSBT. The P2A anchor input gets
+		// an empty witness (anyone-can-spend). The wallet
+		// input is signed by LND.
+		signedChild, err := signCPFPChild(
+			ctx, a.cfg.WalletKit, childTx, anchorOut,
+			feeInput,
+		)
+		if err != nil {
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("sign CPFP child for %s: %w",
+					txid, err),
+			)
+
+			return
+		}
+
+		// Submit via ChainSource atomically.
+		submitReq := &chainsource.SubmitPackageRequest{
+			Parents: []*wire.MsgTx{signedTx},
+			Child:   signedChild,
+		}
+
+		submitResult := a.cfg.ChainSource.Ask(
+			ctx, submitReq,
+		).Await(ctx)
+		_, err = submitResult.Unpack()
+		if err != nil {
+			// Package submission failure is fatal — the
+			// CPFP child is valid and funded, so rejection
+			// indicates a fundamental problem (e.g. invalid
+			// parent, conflicting transaction).
+			a.failUnroll(
+				ctx, state,
+				fmt.Errorf("package broadcast %s: %w",
+					txid, err),
+			)
+
+			return
+		}
+
+		a.cfg.Logger.InfoS(ctx, "Package broadcast successful",
+			slog.String("txid", txid.String()),
+			slog.Int("level", level))
 
 		// Mark as broadcast.
 		state.BroadcastTxids[txid] = true
@@ -148,14 +284,64 @@ func (a *UnrollerActor) broadcastLevel(
 		a.registerConfirmation(ctx, state, txid)
 	}
 
-	// Subscribe to block epochs for CSV tracking.
-	a.subscribeBlockEpochs(ctx, state)
-
 	// Persist updated state.
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to update unroll state", err,
-			slog.String("vtxo", state.VTXOOutpoint.String()))
+		a.cfg.Logger.WarnS(
+			ctx, "Failed to update unroll state", err,
+			slog.String("vtxo", state.VTXOOutpoint.String()),
+		)
 	}
+}
+
+// getFeeRate queries the chain source for the current fee rate estimate.
+// Uses a target of 6 blocks which is a reasonable default for unroll
+// transactions that are not time-critical within a single level.
+func (a *UnrollerActor) getFeeRate(
+	ctx context.Context,
+) (btcutil.Amount, error) {
+
+	feeReq := &chainsource.FeeEstimateRequest{TargetConf: 6}
+	result := a.cfg.ChainSource.Ask(ctx, feeReq).Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return 0, fmt.Errorf("fee estimate: %w", err)
+	}
+
+	feeResp, ok := resp.(*chainsource.FeeEstimateResponse)
+	if !ok {
+		return 0, fmt.Errorf(
+			"unexpected fee response type: %T", resp,
+		)
+	}
+
+	return feeResp.SatPerVByte, nil
+}
+
+// failUnroll transitions the unroll to a failed state, persists it, and
+// removes it from active tracking.
+func (a *UnrollerActor) failUnroll(
+	ctx context.Context, state *UnrollState, err error,
+) {
+
+	a.cfg.Logger.WarnS(ctx, "Unroll failed", err,
+		slog.String("vtxo", state.VTXOOutpoint.String()))
+
+	state.Status = UnrollStatusFailed
+	state.Error = err
+
+	if storeErr := a.cfg.Store.UpdateUnrollState(ctx, state); storeErr != nil {
+		a.cfg.Logger.WarnS(
+			ctx, "Failed to persist failed unroll state",
+			storeErr,
+			slog.String("vtxo", state.VTXOOutpoint.String()),
+		)
+	}
+
+	// Clean up reverse-lookup entries and remove from active tracking.
+	a.cleanupUnrollTxids(state)
+
+	delete(a.activeUnrolls, state.VTXOOutpoint.String())
 }
 
 // registerConfirmation subscribes to confirmation events for a transaction.
@@ -209,9 +395,11 @@ func (a *UnrollerActor) subscribeBlockEpochs(
 	// Cast mapped ref to TellOnlyRef for subscription.
 	notifyRef := actor.TellOnlyRef[chainsource.BlockEpoch](mappedRef)
 
+	// Use a stable per-unroll CallerID to avoid accumulating
+	// subscriptions across levels.
 	subReq := &chainsource.SubscribeBlocksRequest{
 		CallerID: fmt.Sprintf(
-			"csv-%s-L%d", state.VTXOOutpoint, state.CurrentLevel,
+			"csv-%s", state.VTXOOutpoint,
 		),
 		NotifyActor: fn.Some(notifyRef),
 	}
@@ -224,13 +412,15 @@ func (a *UnrollerActor) handleConfirmation(
 	ctx context.Context, evt *ConfirmationEvent,
 ) fn.Result[UnrollerResp] {
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Find which unroll this confirmation belongs to.
-	state := a.findUnrollByTxid(evt.Txid)
-	if state == nil {
+	// Find which unroll this confirmation belongs to via O(1) lookup.
+	outpointKey, known := a.txidToUnroll[evt.Txid]
+	if !known {
 		// Might be from a previous unroll that completed.
+		return fn.Ok[UnrollerResp](&UnrollStartedResp{})
+	}
+
+	state, active := a.activeUnrolls[outpointKey]
+	if !active {
 		return fn.Ok[UnrollerResp](&UnrollStartedResp{})
 	}
 
@@ -250,25 +440,21 @@ func (a *UnrollerActor) handleConfirmation(
 		a.cfg.Logger.InfoS(ctx, "Level fully confirmed",
 			slog.Int("level", state.CurrentLevel))
 
-		// Check if CSV delay required before next level.
+		// Intermediate branch nodes have no CSV lock (only the
+		// final VTXO leaf has OP_CHECKSEQUENCEVERIFY). So we
+		// broadcast the next level immediately on confirmation.
 		if state.CurrentLevel < len(state.LevelOrder)-1 {
-			// Not final level, CSV delay will be checked in block
-			// epoch handler.
-			a.cfg.Logger.InfoS(ctx, "Waiting for CSV delay",
-				slog.Int("level", state.CurrentLevel),
-				slog.Int(
-					"csv_blocks",
-					int(state.VTXO.Expiry),
-				))
+			nextLevel := state.CurrentLevel + 1
+			a.broadcastLevel(ctx, state, nextLevel)
 		} else {
-			// Final level confirmed, handle completion.
+			// Final level confirmed, transition to CSV wait.
 			a.handleAllLevelsComplete(ctx, state)
 		}
 	}
 
 	// Persist updated state.
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to update unroll state", err,
+		a.cfg.Logger.WarnS(ctx, "Failed to update unroll state", err,
 			slog.String("vtxo", state.VTXOOutpoint.String()))
 	}
 
@@ -296,41 +482,13 @@ func (a *UnrollerActor) handleBlockEpoch(
 	ctx context.Context, evt *BlockEpochEvent,
 ) fn.Result[UnrollerResp] {
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	// Track latest block height for status reporting.
+	a.bestHeight = evt.Height
 
 	for _, state := range a.activeUnrolls {
 		csvDelay := int32(state.VTXO.Expiry)
 
 		switch state.Status {
-		case UnrollStatusBroadcasting:
-			// Check if level confirmed and CSV delay passed.
-			if !a.isLevelConfirmed(state, state.CurrentLevel) {
-				continue
-			}
-
-			// Get confirmation height of current level.
-			currentLevelHeight := a.getLevelConfirmHeight(
-				state, state.CurrentLevel,
-			)
-
-			if evt.Height >= currentLevelHeight+csvDelay {
-				// CSV delay satisfied, broadcast next level.
-				nextLevel := state.CurrentLevel + 1
-
-				a.cfg.Logger.InfoS(
-					ctx, "CSV delay satisfied for level",
-					slog.String("vtxo", state.VTXOOutpoint.String()),
-					slog.Int("level", state.CurrentLevel),
-					slog.Int("current_height", int(evt.Height)),
-					slog.Int(
-						"confirm_height",
-						int(currentLevelHeight),
-					))
-
-				a.broadcastLevel(ctx, state, nextLevel)
-			}
-
 		case UnrollStatusAwaitingCSV:
 			// If no leaf confirmation height was recorded, initialize the
 			// baseline at the first epoch we observe.
@@ -347,7 +505,7 @@ func (a *UnrollerActor) handleBlockEpoch(
 				if err := a.cfg.Store.UpdateUnrollState(
 					ctx, state,
 				); err != nil {
-					a.cfg.Logger.ErrorS(
+					a.cfg.Logger.WarnS(
 						ctx, "Failed to update unroll state", err,
 						slog.String(
 							"vtxo",
@@ -413,7 +571,7 @@ func (a *UnrollerActor) handleAllLevelsComplete(
 		slog.Int("csv_delay", int(state.VTXO.Expiry)))
 
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to update unroll state", err,
+		a.cfg.Logger.WarnS(ctx, "Failed to update unroll state", err,
 			slog.String("vtxo", state.VTXOOutpoint.String()))
 	}
 
@@ -434,29 +592,23 @@ func (a *UnrollerActor) handleCSVComplete(
 	state.Status = UnrollStatusComplete
 
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
-		a.cfg.Logger.ErrorS(ctx, "Failed to update unroll state", err,
+		a.cfg.Logger.WarnS(ctx, "Failed to update unroll state", err,
 			slog.String("vtxo", state.VTXOOutpoint.String()))
 	}
+
+	// Clean up reverse-lookup entries.
+	a.cleanupUnrollTxids(state)
+
+	// Unsubscribe from block epoch notifications since CSV tracking
+	// is no longer needed.
+	unsubReq := &chainsource.UnsubscribeBlocksRequest{
+		CallerID: fmt.Sprintf(
+			"csv-%s", state.VTXOOutpoint,
+		),
+	}
+	a.cfg.ChainSource.Tell(context.Background(), unsubReq)
 
 	// Remove from active tracking. The VTXO is now ready for sweeping
 	// by a dedicated sweeper actor.
 	delete(a.activeUnrolls, state.VTXOOutpoint.String())
-}
-
-// findUnrollByTxid finds which unroll a txid belongs to.
-func (a *UnrollerActor) findUnrollByTxid(
-	txid chainhash.Hash,
-) *UnrollState {
-
-	for _, state := range a.activeUnrolls {
-		for _, level := range state.LevelOrder {
-			for _, levelTxid := range level.Txids {
-				if levelTxid == txid {
-					return state
-				}
-			}
-		}
-	}
-
-	return nil
 }
