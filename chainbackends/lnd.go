@@ -177,18 +177,32 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 		return fmt.Errorf("submit package RPC: %w", err)
 	}
 
+	// Collect per-transaction errors for diagnostics.
+	var txErrors []string
+	for wtxid, txResult := range result.TxResults {
+		if txResult.Error != nil {
+			txErrors = append(txErrors,
+				fmt.Sprintf("%s: %s", wtxid,
+					*txResult.Error))
+		}
+	}
+
 	// Check the overall package result.
 	if result.PackageMsg != "success" {
+		if len(txErrors) > 0 {
+			return fmt.Errorf("package not accepted: "+
+				"%s (tx errors: %v)",
+				result.PackageMsg, txErrors)
+		}
+
 		return fmt.Errorf("package not accepted: %s",
 			result.PackageMsg)
 	}
 
-	// Check for per-transaction errors.
-	for wtxid, txResult := range result.TxResults {
-		if txResult.Error != nil {
-			return fmt.Errorf("tx %s rejected: %s",
-				wtxid, *txResult.Error)
-		}
+	// Even with a successful package, individual transactions
+	// may have been rejected.
+	if len(txErrors) > 0 {
+		return fmt.Errorf("tx rejected: %v", txErrors)
 	}
 
 	return nil
