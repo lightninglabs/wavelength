@@ -85,6 +85,13 @@ type ChainBackend interface {
 	// missed blocks if the client provides a best known block.
 	RegisterBlocks(ctx context.Context) (*BlockRegistration, error)
 
+	// SubmitPackage atomically submits a parent+child transaction
+	// package to the network. Required for V3 transactions with
+	// ephemeral anchors. Returns an error if the package is
+	// rejected or submission is not supported.
+	SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+		child *wire.MsgTx) error
+
 	// Start initializes the backend and any background processes. This
 	// must be called before using any other methods.
 	Start() error

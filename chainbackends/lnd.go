@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -23,6 +24,17 @@ type TxBroadcaster interface {
 		label string) error
 }
 
+// PackageSubmitter is an optional interface for atomic submission of
+// parent+child transaction packages. This is required for V3 transactions
+// with ephemeral anchors that cannot be broadcast individually.
+// chain.BitcoindRPCClient satisfies this interface.
+type PackageSubmitter interface {
+	// SubmitPackage atomically submits a parent+child transaction
+	// package. The maxFeeRate parameter is optional (nil for no limit).
+	SubmitPackage(parents []*wire.MsgTx, child *wire.MsgTx,
+		maxFeeRate *float64) (*btcjson.SubmitPackageResult, error)
+}
+
 // LNDBackend implements the chainsource.ChainBackend interface by wrapping
 // lnd's chain notification and fee estimation interfaces. This backend provides
 // full-node functionality and is suitable for production deployments where lnd
@@ -39,6 +51,11 @@ type LNDBackend struct {
 
 	// broadcaster provides transaction broadcasting capabilities.
 	broadcaster TxBroadcaster
+
+	// packageSubmitter provides optional atomic package submission.
+	// Not all deployments have direct bitcoind access — when nil,
+	// SubmitPackage returns an "unsupported" error.
+	packageSubmitter PackageSubmitter
 }
 
 // NewLNDBackend creates a new LNDBackend instance with the given lnd
@@ -137,6 +154,41 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	err := b.broadcaster.PublishTransaction(ctx, tx, label)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
+	}
+
+	return nil
+}
+
+// SubmitPackage atomically submits a parent+child transaction package via
+// the optional PackageSubmitter. Returns an error if package submission is
+// not supported (packageSubmitter is nil) or if the package is rejected.
+func (b *LNDBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	if b.packageSubmitter == nil {
+		return fmt.Errorf("package submission not supported " +
+			"by this backend")
+	}
+
+	result, err := b.packageSubmitter.SubmitPackage(
+		parents, child, nil,
+	)
+	if err != nil {
+		return fmt.Errorf("submit package RPC: %w", err)
+	}
+
+	// Check the overall package result.
+	if result.PackageMsg != "success" {
+		return fmt.Errorf("package not accepted: %s",
+			result.PackageMsg)
+	}
+
+	// Check for per-transaction errors.
+	for wtxid, txResult := range result.TxResults {
+		if txResult.Error != nil {
+			return fmt.Errorf("tx %s rejected: %s",
+				wtxid, *txResult.Error)
+		}
 	}
 
 	return nil
