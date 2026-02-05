@@ -1420,6 +1420,11 @@ func (h *Harness) Faucet(address string, amount btcutil.Amount) string {
 	txID := h.bitcoindSendToAddress(address, amount.ToBTC())
 	h.Logf("Faucet sent %v to %s (txid %s)", amount, address, txID)
 
+	// Ensure the transaction actually lands in mempool before returning.
+	// Some systests intentionally restart client-side actors before mining,
+	// and we want to avoid racing "mine" against "broadcast".
+	h.WaitMempoolTx(txID)
+
 	return txID
 }
 
@@ -1458,6 +1463,26 @@ func (h *Harness) WaitMempoolTxCount(minTxCount int) []string {
 	)
 
 	return txIDs
+}
+
+// WaitMempoolTx waits until the given transaction ID appears in bitcoind's
+// mempool.
+func (h *Harness) WaitMempoolTx(txID string) {
+	h.T.Helper()
+
+	require.Eventually(
+		h.T, func() bool {
+			txIDs := h.MempoolTxIDs()
+			for i := range txIDs {
+				if txIDs[i] == txID {
+					return true
+				}
+			}
+
+			return false
+		}, defaultTimeout, pollInterval,
+		"txid %s not found in mempool", txID,
+	)
 }
 
 // rpcRequest is a JSON-RPC request.
@@ -1785,9 +1810,8 @@ func (h *Harness) initAndWaitLNDInstance(
 		)
 		defer cancel()
 
-		conn, err := grpc.DialContext(
-			ctxt, addr, grpc.WithTransportCredentials(tlsCert),
-			grpc.WithBlock(),
+		conn, err := grpc.NewClient(
+			addr, grpc.WithTransportCredentials(tlsCert),
 		)
 		if err != nil {
 			return false
@@ -2049,12 +2073,9 @@ func getLNDClientConn(ctx context.Context, addr, tlsPath,
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithPerRPCCredentials(macaroonCred),
-		grpc.WithBlock(),
 	}
 
-	conn, err := grpc.DialContext(
-		ctx, addr, opts...,
-	)
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial LND: %w", err)
 	}
@@ -2093,10 +2114,9 @@ func getTapdClientConn(ctx context.Context, addr, tlsPath,
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithPerRPCCredentials(macaroonCred),
-		grpc.WithBlock(),
 	}
 
-	conn, err := grpc.DialContext(ctx, addr, opts...)
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial tapd: %w", err)
 	}

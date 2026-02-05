@@ -388,9 +388,8 @@ func (th *TapdHarness) initAndWaitLND() {
 		)
 		defer cancel()
 
-		conn, err := grpc.DialContext(
-			ctx, addr, grpc.WithTransportCredentials(tlsCert),
-			grpc.WithBlock(),
+		conn, err := grpc.NewClient(
+			addr, grpc.WithTransportCredentials(tlsCert),
 		)
 		if err != nil {
 			return false
