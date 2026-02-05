@@ -177,26 +177,36 @@ func (b *LNDBackend) SubmitPackage(ctx context.Context,
 		return fmt.Errorf("submit package RPC: %w", err)
 	}
 
-	// Collect per-transaction errors for diagnostics.
+	// Collect per-transaction details for diagnostics.
 	var txErrors []string
+	var txDetails []string
 	for wtxid, txResult := range result.TxResults {
+		detail := fmt.Sprintf("wtxid=%s txid=%s",
+			wtxid, txResult.TxID)
 		if txResult.Error != nil {
+			detail += fmt.Sprintf(" error=%q",
+				*txResult.Error)
+
 			txErrors = append(txErrors,
 				fmt.Sprintf("%s: %s", wtxid,
 					*txResult.Error))
 		}
+		if txResult.OtherWtxid != nil {
+			detail += fmt.Sprintf(" other_wtxid=%s",
+				txResult.OtherWtxid)
+		}
+
+		txDetails = append(txDetails, detail)
 	}
 
 	// Check the overall package result.
 	if result.PackageMsg != "success" {
-		if len(txErrors) > 0 {
-			return fmt.Errorf("package not accepted: "+
-				"%s (tx errors: %v)",
-				result.PackageMsg, txErrors)
-		}
-
-		return fmt.Errorf("package not accepted: %s",
-			result.PackageMsg)
+		return fmt.Errorf("package not accepted: "+
+			"%s (tx_count=%d, tx_details=%v, "+
+			"tx_errors=%v)",
+			result.PackageMsg,
+			len(result.TxResults),
+			txDetails, txErrors)
 	}
 
 	// Even with a successful package, individual transactions
