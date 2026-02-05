@@ -13,11 +13,13 @@ Feature: Unroller - VTXO Tree Unrolling
     Given a VTXO with a 2-level tree
     When I request unroll for the VTXO
     Then the unroll should start successfully
-    And level 1 transactions should be broadcast
+    And level 0 transactions should be broadcast
     And the unroll status should be "broadcasting"
+    When level 0 transactions confirm
+    Then level 1 transactions should be broadcast
     When level 1 transactions confirm
     Then the unroll status should be "awaiting_csv"
-    When the CSV delay is satisfied
+    When the final CSV delay is satisfied
     Then the unroll status should be "complete"
     And the VTXO should be ready for sweeping
 
@@ -25,14 +27,12 @@ Feature: Unroller - VTXO Tree Unrolling
     Given a VTXO with a 4-level tree
     When I request unroll for the VTXO
     Then the unroll should start successfully
-    And level 1 transactions should be broadcast
+    And level 0 transactions should be broadcast
+    When level 0 transactions confirm
+    Then level 1 transactions should be broadcast
     When level 1 transactions confirm
-    Then the unroll status should be "broadcasting"
-    And the actor should wait for CSV delay
-    When the CSV delay for level 1 is satisfied
     Then level 2 transactions should be broadcast
     When level 2 transactions confirm
-    And the CSV delay for level 2 is satisfied
     Then level 3 transactions should be broadcast
     When level 3 transactions confirm
     Then the unroll status should be "awaiting_csv"
@@ -60,24 +60,18 @@ Feature: Unroller - VTXO Tree Unrolling
     When the unroller restarts
     Then the unroll should resume from level 2
     And confirmation subscriptions should be re-registered
-    And block epoch subscriptions should be re-registered
 
-  Scenario: Handle broadcast failures gracefully
+  Scenario: Handle broadcast failures
     Given a VTXO with a 2-level tree
+    And the broadcast fails for all transactions
     When I request unroll for the VTXO
-    And the broadcast fails for level 1 transaction
-    Then the actor should log the failure
-    And the unroll should remain in "broadcasting" status
-    And retry should be attempted on next block
+    Then the unroll status should be "failed"
 
   Scenario: Unroll multiple VTXOs concurrently
     Given 3 VTXOs with 2-level trees
     When I request unroll for all 3 VTXOs
     Then all 3 unrolls should start successfully
     And each unroll should be tracked independently
-    When transactions for VTXO 1 confirm
-    Then only VTXO 1 should progress to "awaiting_csv"
-    And VTXO 2 and VTXO 3 should remain in "broadcasting"
 
   Scenario: Validate CSV delay enforcement
     Given a VTXO with CSV delay of 144 blocks

@@ -13,10 +13,11 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/cucumber/godog"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/require" //nolint:depguard
 )
 
 // unrollerGodogContext holds the state for godog BDD tests.
@@ -27,6 +28,7 @@ type unrollerGodogContext struct {
 	actor       *UnrollerActor
 	store       *MockUnrollStore
 	chainSource *mockChainSourceRef
+	walletKit   *mockWalletKit
 
 	// Test state.
 	vtxos           map[string]*round.ClientVTXO
@@ -51,6 +53,7 @@ func newUnrollerGodogContext(t *testing.T) *unrollerGodogContext {
 	// Setup mocks.
 	ctx.store = &MockUnrollStore{}
 	ctx.chainSource = newMockChainSourceRef(t)
+	ctx.walletKit = &mockWalletKit{}
 
 	// Setup actor.
 	selfRef := &mockSelfRef{t: t}
@@ -60,6 +63,7 @@ func newUnrollerGodogContext(t *testing.T) *unrollerGodogContext {
 		ChainParams: &chaincfg.RegressionNetParams,
 		Logger:      btclog.Disabled,
 		SelfRef:     selfRef,
+		WalletKit:   ctx.walletKit,
 	}
 
 	ctx.actor = NewUnrollerActor(cfg)
@@ -147,7 +151,9 @@ func (ctx *unrollerGodogContext) theLeafTransactionConfirmedAtHeight(
 	require.NotNil(ctx.t, vtxo)
 
 	// Get leaf txid.
-	levelOrder := extractLevelOrder(vtxo.TreePath)
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
 	if len(levelOrder) == 0 {
 		return nil
 	}
@@ -208,10 +214,13 @@ func (ctx *unrollerGodogContext) anUnrollIsAlreadyInProgressForTheVTXO() error {
 	require.NotNil(ctx.t, vtxo)
 
 	// Create active unroll state.
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
 	state := &UnrollState{
 		VTXOOutpoint:   vtxo.Outpoint,
 		VTXO:           vtxo,
-		LevelOrder:     extractLevelOrder(vtxo.TreePath),
+		LevelOrder:     levelOrder,
 		CurrentLevel:   0,
 		BroadcastTxids: make(map[chainhash.Hash]bool),
 		ConfirmedTxids: make(map[chainhash.Hash]ConfirmationInfo),
@@ -229,12 +238,24 @@ func (ctx *unrollerGodogContext) anUnrollIsInProgressAtLevel(level int) error {
 	require.NotNil(ctx.t, vtxo)
 
 	// Create active unroll state.
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
+	// Populate BroadcastTxids for the current level so that restart
+	// re-registration has txids to work with.
+	broadcastTxids := make(map[chainhash.Hash]bool)
+	if level < len(levelOrder) {
+		for _, txid := range levelOrder[level].Txids {
+			broadcastTxids[txid] = true
+		}
+	}
+
 	state := &UnrollState{
 		VTXOOutpoint:   vtxo.Outpoint,
 		VTXO:           vtxo,
-		LevelOrder:     extractLevelOrder(vtxo.TreePath),
+		LevelOrder:     levelOrder,
 		CurrentLevel:   level,
-		BroadcastTxids: make(map[chainhash.Hash]bool),
+		BroadcastTxids: broadcastTxids,
 		ConfirmedTxids: make(map[chainhash.Hash]ConfirmationInfo),
 		Status:         UnrollStatusBroadcasting,
 	}
@@ -321,6 +342,7 @@ func (ctx *unrollerGodogContext) theUnrollerRestarts() error {
 		ChainParams: &chaincfg.RegressionNetParams,
 		Logger:      btclog.Disabled,
 		SelfRef:     selfRef,
+		WalletKit:   ctx.walletKit,
 	}
 
 	ctx.actor = NewUnrollerActor(cfg)
@@ -417,15 +439,24 @@ func (ctx *unrollerGodogContext) createTestVTXO(
 	}
 }
 
-// Helper: Create test node recursively.
+// createTestNode creates a test tree node recursively with valid
+// signatures so that ToSignedTx() succeeds during testing. Each
+// node includes a P2A ephemeral anchor as the last output, matching
+// the V3 transaction structure used in production.
 func (ctx *unrollerGodogContext) createTestNode(
 	maxLevel, currentLevel int,
 ) *tree.Node {
 
 	node := &tree.Node{
-		Input:    wire.OutPoint{},
-		Outputs:  []*wire.TxOut{{Value: 1000}},
-		Children: make(map[uint32]*tree.Node),
+		Input: wire.OutPoint{},
+		Outputs: []*wire.TxOut{
+			{Value: 1000, PkScript: make([]byte, 34)},
+			{Value: 0, PkScript: []byte{
+				0x51, 0x02, 0x4e, 0x73,
+			}},
+		},
+		Children:  make(map[uint32]*tree.Node),
+		Signature: testSchnorrSignature(ctx.t),
 	}
 
 	// Add children if not at leaf level.
@@ -468,12 +499,25 @@ func (ctx *unrollerGodogContext) theUnrollStatusShouldBe(status string) error {
 
 	expectedStatus := parseUnrollStatus(status)
 
-	// When unroll completes, it's removed from activeUnrolls. So nil state
-	// is acceptable when checking for "complete" status.
+	// When unroll completes or fails, it's removed from activeUnrolls.
+	// Both "complete" and "failed" are terminal states that cause
+	// removal.
 	if state == nil {
-		if expectedStatus == UnrollStatusComplete {
+		switch expectedStatus {
+		case UnrollStatusComplete:
 			return nil
+
+		case UnrollStatusFailed:
+			// Verify the unroll was actually started (there's a
+			// result from the request, either nil or error).
+			_, requested := ctx.unrollResults["vtxo1"]
+			if requested {
+				return nil
+			}
+
+			ctx.t.Fatal("unroll not found and was never requested")
 		}
+
 		ctx.t.Fatal("unroll state not found")
 	}
 
@@ -619,6 +663,126 @@ func (ctx *unrollerGodogContext) eachUnrollShouldBeTrackedIndependently() error 
 	return nil
 }
 
+// Step: Then level N transactions should be broadcast.
+func (ctx *unrollerGodogContext) levelNTransactionsShouldBeBroadcast(
+	level int,
+) error {
+
+	vtxo := ctx.vtxos["vtxo1"]
+	require.NotNil(ctx.t, vtxo)
+
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
+	if level >= len(levelOrder) {
+		ctx.t.Fatalf("level %d out of range (tree has %d levels)",
+			level, len(levelOrder))
+	}
+
+	// Verify the wallet was used for CPFP child signing — the
+	// mockWalletKit.FinalizePsbt call count reflects the number
+	// of package broadcasts.
+	expectedCount := len(levelOrder[level].Txids)
+
+	ctx.walletKit.mu.Lock()
+	actualCount := ctx.walletKit.calls
+	ctx.walletKit.mu.Unlock()
+
+	require.GreaterOrEqual(ctx.t, actualCount, expectedCount,
+		"expected at least %d CPFP child signs for "+
+			"level %d", expectedCount, level)
+
+	return nil
+}
+
+// Step: When level N transactions confirm.
+func (ctx *unrollerGodogContext) levelNTransactionsConfirm(
+	level int,
+) error {
+
+	vtxo := ctx.vtxos["vtxo1"]
+	require.NotNil(ctx.t, vtxo)
+
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
+	if level >= len(levelOrder) {
+		ctx.t.Fatalf("level %d out of range", level)
+	}
+
+	// Send ConfirmationEvent for each txid at this level.
+	ctx.currentHeight++
+
+	for _, txid := range levelOrder[level].Txids {
+		evt := &ConfirmationEvent{
+			Txid:        txid,
+			BlockHeight: ctx.currentHeight,
+		}
+
+		result := ctx.actor.Receive(context.Background(), evt)
+		if result.IsErr() {
+			return result.Err()
+		}
+	}
+
+	return nil
+}
+
+// Step: When the final CSV delay is satisfied.
+func (ctx *unrollerGodogContext) theFinalCSVDelayIsSatisfied() error {
+	vtxo := ctx.vtxos["vtxo1"]
+	require.NotNil(ctx.t, vtxo)
+
+	// The final CSV delay is leaf_confirm_height + csv_delay.
+	// Find the state to get the confirm height, or use currentHeight
+	// as baseline.
+	state := ctx.actor.activeUnrolls[vtxo.Outpoint.String()]
+	if state == nil {
+		ctx.t.Fatal("unroll state not found for CSV delay")
+	}
+
+	csvTarget := state.LeafConfirmHeight + int32(state.VTXO.Expiry)
+
+	// Send block epoch at the CSV target height.
+	evt := &BlockEpochEvent{
+		Height: csvTarget,
+	}
+
+	result := ctx.actor.Receive(context.Background(), evt)
+
+	return result.Err()
+}
+
+// Step: Given the broadcast fails for all transactions.
+func (ctx *unrollerGodogContext) theBroadcastFailsForAllTransactions() error {
+	ctx.chainSource.submitErr = fmt.Errorf(
+		"package broadcast rejected",
+	)
+
+	return nil
+}
+
+// Step: Then confirmation subscriptions should be re-registered.
+func (ctx *unrollerGodogContext) confirmationSubscriptionsShouldBeReRegistered() error {
+	// After restart with Broadcasting status, the actor re-registers
+	// confirmations via Tell to the chain source. Verify at least one
+	// Tell call was made with a RegisterConfRequest.
+	ctx.chainSource.mu.Lock()
+	defer ctx.chainSource.mu.Unlock()
+
+	var confRegistrations int
+	for _, msg := range ctx.chainSource.tells {
+		if _, ok := msg.(*chainsource.RegisterConfRequest); ok {
+			confRegistrations++
+		}
+	}
+
+	require.Greater(ctx.t, confRegistrations, 0,
+		"expected confirmation re-registrations after restart")
+
+	return nil
+}
+
 // Step: Then the request should fail with "fetch VTXO" error.
 func (ctx *unrollerGodogContext) theRequestShouldFailWithError(
 	errorMsg string,
@@ -629,8 +793,8 @@ func (ctx *unrollerGodogContext) theRequestShouldFailWithError(
 		ctx.t.Fatal("expected error, got nil")
 	}
 
-	// Check error contains expected message.
-	// In real implementation, would check specific error type.
+	require.ErrorContains(ctx.t, err, errorMsg)
+
 	return nil
 }
 
@@ -717,6 +881,10 @@ func TestUnrollerBDD(t *testing.T) {
 			sc.Given(`^an unroll is in progress at level (\d+)$`,
 				ctx.anUnrollIsInProgressAtLevel)
 
+			sc.Given(
+				`^the broadcast fails for all transactions$`,
+				ctx.theBroadcastFailsForAllTransactions)
+
 			sc.When(`^I request unroll for the VTXO$`,
 				ctx.iRequestUnrollForTheVTXO)
 			sc.When(`^I request unroll for the same VTXO again$`,
@@ -733,6 +901,10 @@ func TestUnrollerBDD(t *testing.T) {
 				ctx.theCurrentBlockHeightIs)
 			sc.When(`^the current block height reaches (\d+)$`,
 				ctx.theCurrentBlockHeightReaches)
+			sc.When(`^level (\d+) transactions confirm$`,
+				ctx.levelNTransactionsConfirm)
+			sc.When(`^the final CSV delay is satisfied$`,
+				ctx.theFinalCSVDelayIsSatisfied)
 
 			// Then step definitions.
 			sc.Then(`^the unroll should start successfully$`,
@@ -766,6 +938,12 @@ func TestUnrollerBDD(t *testing.T) {
 			sc.Then(
 				`^the unroll status should transition to "([^"]*)"$`,
 				ctx.theUnrollStatusShouldTransitionTo)
+			sc.Then(
+				`^level (\d+) transactions should be broadcast$`,
+				ctx.levelNTransactionsShouldBeBroadcast)
+			sc.Then(
+				`^confirmation subscriptions should be re-registered$`,
+				ctx.confirmationSubscriptionsShouldBeReRegistered)
 		},
 		Options: &godog.Options{
 			Format:   "pretty",

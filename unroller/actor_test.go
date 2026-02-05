@@ -1,12 +1,16 @@
 package unroller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"sync"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -15,7 +19,10 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/lndclient"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -103,23 +110,96 @@ func (m *MockUnrollStore) GetVTXO(
 // Compile-time check that MockUnrollStore implements UnrollStore.
 var _ UnrollStore = (*MockUnrollStore)(nil)
 
-// mockChainSourceRef implements a mock chain source actor ref for testing.
-type mockChainSourceRef struct {
-	t          *testing.T
-	broadcasts []broadcastCall
-	mu         sync.Mutex
+// mockWalletKit implements the narrow WalletKit interface for testing.
+// Returns a single UTXO with sufficient value, a dummy P2TR address,
+// and passes through the transaction from FinalizePsbt as-is (mock
+// signing).
+type mockWalletKit struct {
+	mu    sync.Mutex
+	calls int
+	err   error
 }
 
-type broadcastCall struct {
-	tx    *wire.MsgTx
-	label string
+// ListUnspent returns a single confirmed UTXO with 1 BTC of value.
+func (m *mockWalletKit) ListUnspent(_ context.Context,
+	_, _ int32,
+	_ ...lndclient.ListUnspentOption,
+) ([]*lnwallet.Utxo, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.err != nil {
+		return nil, m.err
+	}
+
+	return []*lnwallet.Utxo{
+		{
+			OutPoint: wire.OutPoint{
+				Hash:  chainhash.Hash{0x01},
+				Index: 0,
+			},
+			Value:    btcutil.Amount(100_000_000),
+			PkScript: bytes.Repeat([]byte{0xaa}, 34),
+		},
+	}, nil
+}
+
+// NextAddr returns a dummy P2TR-like address for change output.
+func (m *mockWalletKit) NextAddr(_ context.Context,
+	_ string, _ walletrpc.AddressType,
+	_ bool) (btcutil.Address, error) {
+
+	// Return a simple P2PKH address for testing. The actual
+	// address type doesn't matter since we just need a valid
+	// pkScript.
+	return btcutil.DecodeAddress(
+		"n3GNqMveyvaPvUbH469vDRadqpJMPc84JA",
+		&chaincfg.RegressionNetParams,
+	)
+}
+
+// FinalizePsbt returns the unsigned transaction from the PSBT packet
+// as the "signed" result. This mock-signs by returning the tx as-is.
+func (m *mockWalletKit) FinalizePsbt(_ context.Context,
+	packet *psbt.Packet,
+	_ string) (*psbt.Packet, *wire.MsgTx, error) {
+
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+
+	// Extract the unsigned tx from the PSBT.
+	tx := packet.UnsignedTx
+
+	return packet, tx, nil
+}
+
+// Compile-time check that mockWalletKit satisfies WalletKit.
+var _ WalletKit = (*mockWalletKit)(nil)
+
+// mockChainSourceRef implements a mock chain source actor ref for
+// testing. Handles FeeEstimateRequest and SubmitPackageRequest (for
+// broadcastLevel) and forwards Tell messages for confirmation/epoch
+// subscriptions.
+type mockChainSourceRef struct {
+	t     *testing.T
+	tells []chainsource.ChainSourceMsg
+	mu    sync.Mutex
+
+	// feeRate is the fee rate returned by FeeEstimateRequest.
+	feeRate btcutil.Amount
+
+	// submitErr is returned by SubmitPackageRequest when non-nil.
+	submitErr error
 }
 
 // newMockChainSourceRef creates a new mock chain source actor ref.
 func newMockChainSourceRef(t *testing.T) *mockChainSourceRef {
 	return &mockChainSourceRef{
-		t:          t,
-		broadcasts: make([]broadcastCall, 0),
+		t:       t,
+		tells:   make([]chainsource.ChainSourceMsg, 0),
+		feeRate: 10,
 	}
 }
 
@@ -136,32 +216,46 @@ func (m *mockChainSourceRef) Ask(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	switch req := msg.(type) {
-	case *chainsource.BroadcastTxRequest:
-		m.broadcasts = append(m.broadcasts, broadcastCall{
-			tx:    req.Tx,
-			label: req.Label,
-		})
-
-		// Return success response.
+	switch msg.(type) {
+	case *chainsource.FeeEstimateRequest:
 		return &mockFuture[chainsource.ChainSourceResp]{
 			result: fn.Ok[chainsource.ChainSourceResp](
-				&chainsource.BroadcastTxResponse{},
+				&chainsource.FeeEstimateResponse{
+					SatPerVByte: m.feeRate,
+				},
+			),
+		}
+
+	case *chainsource.SubmitPackageRequest:
+		if m.submitErr != nil {
+			return &mockFuture[chainsource.ChainSourceResp]{
+				result: fn.Err[chainsource.ChainSourceResp](
+					m.submitErr,
+				),
+			}
+		}
+
+		return &mockFuture[chainsource.ChainSourceResp]{
+			result: fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubmitPackageResponse{},
 			),
 		}
 
 	default:
-		m.t.Fatalf("unexpected message type: %T", msg)
+		m.t.Fatalf("unexpected Ask message type: %T", msg)
 		return nil
 	}
 }
 
 // Tell sends a message without expecting a response.
 func (m *mockChainSourceRef) Tell(
-	_ context.Context, _ chainsource.ChainSourceMsg,
+	_ context.Context, msg chainsource.ChainSourceMsg,
 ) {
 
-	// No-op for testing.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.tells = append(m.tells, msg)
 }
 
 // TellOnly returns a tell-only reference.
@@ -169,19 +263,6 @@ func (m *mockChainSourceRef) Tell(
 //nolint:ll
 func (m *mockChainSourceRef) TellOnly() actor.TellOnlyRef[chainsource.ChainSourceMsg] {
 	return m
-}
-
-// getBroadcasts returns all broadcast calls.
-//
-//nolint:unused
-func (m *mockChainSourceRef) getBroadcasts() []broadcastCall {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	result := make([]broadcastCall, len(m.broadcasts))
-	copy(result, m.broadcasts)
-
-	return result
 }
 
 // mockFuture implements actor.Future for testing.
@@ -222,6 +303,7 @@ type unrollerTestHarness struct {
 
 	store       *MockUnrollStore
 	chainSource *mockChainSourceRef
+	walletKit   *mockWalletKit
 	actor       *UnrollerActor
 }
 
@@ -233,6 +315,7 @@ func newUnrollerTestHarness(t *testing.T) *unrollerTestHarness {
 
 	store := &MockUnrollStore{}
 	chainSource := newMockChainSourceRef(t)
+	walletKit := &mockWalletKit{}
 
 	// Create a no-op self ref for testing.
 	selfRef := &mockSelfRef{t: t}
@@ -243,6 +326,7 @@ func newUnrollerTestHarness(t *testing.T) *unrollerTestHarness {
 		ChainParams: &chaincfg.RegressionNetParams,
 		Logger:      btclog.Disabled,
 		SelfRef:     selfRef,
+		WalletKit:   walletKit,
 	}
 
 	actorInstance := NewUnrollerActor(cfg)
@@ -253,6 +337,7 @@ func newUnrollerTestHarness(t *testing.T) *unrollerTestHarness {
 		cancel:      cancel,
 		store:       store,
 		chainSource: chainSource,
+		walletKit:   walletKit,
 		actor:       actorInstance,
 	}
 
@@ -274,17 +359,45 @@ func (h *unrollerTestHarness) newTestOutpoint() wire.OutPoint {
 	return wire.OutPoint{Hash: hash, Index: 0}
 }
 
+// testSchnorrSignature creates a valid schnorr signature for testing.
+func testSchnorrSignature(t *testing.T) *schnorr.Signature {
+	t.Helper()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	var msg [32]byte
+	_, err = rand.Read(msg[:])
+	require.NoError(t, err)
+
+	sig, err := schnorr.Sign(privKey, msg[:])
+	require.NoError(t, err)
+
+	return sig
+}
+
 // newTestVTXO creates a test VTXO with a simple tree.
 func (h *unrollerTestHarness) newTestVTXO() *round.ClientVTXO {
 	h.t.Helper()
 
 	outpoint := h.newTestOutpoint()
 
-	// Create a simple tree with 2 levels.
+	// Create a simple tree with a root node that has a valid
+	// signature so that ToSignedTx() succeeds. The last output
+	// is a P2A ephemeral anchor (0-sat, script 0x51024e73) as
+	// required by the V3 package broadcast flow.
 	root := &tree.Node{
-		Input:    wire.OutPoint{},
-		Outputs:  []*wire.TxOut{},
-		Children: make(map[uint32]*tree.Node),
+		Input: wire.OutPoint{},
+		Outputs: []*wire.TxOut{
+			{Value: 1000, PkScript: bytes.Repeat(
+				[]byte{0xab}, 34,
+			)},
+			{Value: 0, PkScript: []byte{
+				0x51, 0x02, 0x4e, 0x73,
+			}},
+		},
+		Children:  make(map[uint32]*tree.Node),
+		Signature: testSchnorrSignature(h.t),
 	}
 
 	treePath := &tree.Tree{
