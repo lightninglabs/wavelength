@@ -196,10 +196,10 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
-			snap.CheckpointPSBTs = cps
-			snap.InputOutpoints = s.InputOutpoints
-			snap.WaitForArkConfirmation = s.WaitForArkConfirmation
-			snap.ArkConfirmDepth = s.ArkConfirmDepth
+		snap.CheckpointPSBTs = cps
+		snap.InputOutpoints = s.InputOutpoints
+		snap.WaitForArkConfirmation = s.WaitForArkConfirmation
+		snap.ArkConfirmDepth = s.ArkConfirmDepth
 
 	case *AwaitingLocalVTXOUpdate:
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
@@ -352,15 +352,15 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			return nil, err
 		}
 
-			return &AwaitingFinalizeAccepted{
-				SessionID:      snapshot.SessionID,
-				InputOutpoints: snapshot.InputOutpoints,
-				ArkPSBT:        ark,
-				FinalCheckpointPSBTs: cps,
-				WaitForArkConfirmation: snapshot.
-					WaitForArkConfirmation,
-				ArkConfirmDepth: snapshot.ArkConfirmDepth,
-			}, nil
+		return &AwaitingFinalizeAccepted{
+			SessionID:            snapshot.SessionID,
+			InputOutpoints:       snapshot.InputOutpoints,
+			ArkPSBT:              ark,
+			FinalCheckpointPSBTs: cps,
+			WaitForArkConfirmation: snapshot.
+				WaitForArkConfirmation,
+			ArkConfirmDepth: snapshot.ArkConfirmDepth,
+		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
 		return &AwaitingLocalVTXOUpdate{
