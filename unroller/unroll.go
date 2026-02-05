@@ -262,7 +262,7 @@ func (a *UnrollerActor) broadcastLevel(
 			return
 		}
 
-		a.cfg.Logger.DebugS(ctx, "Submitting package",
+		a.cfg.Logger.InfoS(ctx, "Submitting package",
 			slog.String("parent_txid", parentTxid.String()),
 			slog.Int("parent_inputs", len(signedTx.TxIn)),
 			slog.Int("parent_outputs", len(signedTx.TxOut)),
@@ -270,7 +270,10 @@ func (a *UnrollerActor) broadcastLevel(
 			slog.Int("child_inputs", len(signedChild.TxIn)),
 			slog.Int("child_outputs", len(signedChild.TxOut)),
 			slog.Int64("total_fee", int64(totalFee)),
-			slog.Int("parent_version", int(signedTx.Version)))
+			slog.Int("parent_version", int(signedTx.Version)),
+			slog.Int64("fee_rate", int64(feeRate)),
+			slog.Int64("anchor_value", anchorOut.Value),
+			slog.Int("anchor_pkscript_len", len(anchorOut.PkScript)))
 
 		// Submit via ChainSource atomically.
 		submitReq := &chainsource.SubmitPackageRequest{
