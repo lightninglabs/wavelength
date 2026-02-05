@@ -210,7 +210,7 @@ docker-tools:
 
 lint-source: docker-tools
 	@$(call print, "Linting source.")
-	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
+	$(DOCKER_TOOLS) custom-gcl run -v --timeout=15m $(LINT_WORKERS)
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'
