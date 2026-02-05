@@ -122,6 +122,19 @@ func (a *UnrollerActor) broadcastLevel(
 	state.CurrentLevel = level
 	state.Status = UnrollStatusBroadcasting
 
+	// Query the current best block height for use as height
+	// hint when registering confirmation notifications. lnd
+	// requires a height hint > 0.
+	heightHint, err := a.getBestHeight(ctx)
+	if err != nil {
+		a.failUnroll(
+			ctx, state,
+			fmt.Errorf("get best height: %w", err),
+		)
+
+		return
+	}
+
 	// Get fee rate once per level so all transactions in the
 	// same level use a consistent fee rate.
 	feeRate, err := a.getFeeRate(ctx)
@@ -249,6 +262,16 @@ func (a *UnrollerActor) broadcastLevel(
 			return
 		}
 
+		a.cfg.Logger.DebugS(ctx, "Submitting package",
+			slog.String("parent_txid", parentTxid.String()),
+			slog.Int("parent_inputs", len(signedTx.TxIn)),
+			slog.Int("parent_outputs", len(signedTx.TxOut)),
+			slog.Int64("parent_weight", parentWeight),
+			slog.Int("child_inputs", len(signedChild.TxIn)),
+			slog.Int("child_outputs", len(signedChild.TxOut)),
+			slog.Int64("total_fee", int64(totalFee)),
+			slog.Int("parent_version", int(signedTx.Version)))
+
 		// Submit via ChainSource atomically.
 		submitReq := &chainsource.SubmitPackageRequest{
 			Parents: []*wire.MsgTx{signedTx},
@@ -280,8 +303,14 @@ func (a *UnrollerActor) broadcastLevel(
 		// Mark as broadcast.
 		state.BroadcastTxids[txid] = true
 
-		// Register for confirmation monitoring.
-		a.registerConfirmation(ctx, state, txid)
+		// Register for confirmation monitoring using the
+		// first output's pkScript so lnd's notifier can
+		// match the transaction in new blocks.
+		a.registerConfirmation(
+			ctx, state, txid,
+			signedTx.TxOut[0].PkScript,
+			heightHint,
+		)
 	}
 
 	// Persist updated state.
@@ -318,6 +347,33 @@ func (a *UnrollerActor) getFeeRate(
 	return feeResp.SatPerVByte, nil
 }
 
+// getBestHeight queries the chain source for the current best block
+// height. This is used as the height hint when registering for
+// confirmation notifications, since lnd requires a hint > 0.
+func (a *UnrollerActor) getBestHeight(
+	ctx context.Context,
+) (uint32, error) {
+
+	heightReq := &chainsource.BestHeightRequest{}
+	result := a.cfg.ChainSource.Ask(
+		ctx, heightReq,
+	).Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return 0, fmt.Errorf("best height: %w", err)
+	}
+
+	heightResp, ok := resp.(*chainsource.BestHeightResponse)
+	if !ok {
+		return 0, fmt.Errorf(
+			"unexpected height response type: %T", resp,
+		)
+	}
+
+	return uint32(heightResp.Height), nil
+}
+
 // failUnroll transitions the unroll to a failed state, persists it, and
 // removes it from active tracking.
 func (a *UnrollerActor) failUnroll(
@@ -344,12 +400,16 @@ func (a *UnrollerActor) failUnroll(
 	delete(a.activeUnrolls, state.VTXOOutpoint.String())
 }
 
-// registerConfirmation subscribes to confirmation events for a transaction.
+// registerConfirmation subscribes to confirmation events for a
+// transaction. The pkScript of the first output is required by lnd's
+// chain notifier for matching confirmations in new blocks.
 func (a *UnrollerActor) registerConfirmation(
 	ctx context.Context, state *UnrollState, txid chainhash.Hash,
+	pkScript []byte, heightHint uint32,
 ) {
 
-	// Create mapped ref to convert confirmation events to our message type.
+	// Create mapped ref to convert confirmation events to our
+	// message type.
 	mappedRef := actor.NewMapInputRef(
 		a.cfg.SelfRef,
 		func(evt chainsource.ConfirmationEvent) UnrollerMsg {
@@ -362,15 +422,26 @@ func (a *UnrollerActor) registerConfirmation(
 	)
 
 	// Cast mapped ref to TellOnlyRef for registration.
-	notifyRef := actor.TellOnlyRef[chainsource.ConfirmationEvent](mappedRef)
+	notifyRef := actor.TellOnlyRef[
+		chainsource.ConfirmationEvent,
+	](mappedRef)
 
-	callerID := fmt.Sprintf("unroll-%s-%s", state.VTXOOutpoint, txid)
+	callerID := fmt.Sprintf(
+		"unroll-%s-%s", state.VTXOOutpoint, txid,
+	)
 	confReq := &chainsource.RegisterConfRequest{
 		CallerID:    callerID,
 		Txid:        &txid,
+		PkScript:    pkScript,
+		HeightHint:  heightHint,
 		TargetConfs: 1, // V3 transactions need only 1 conf.
 		NotifyActor: fn.Some(notifyRef),
 	}
+
+	a.cfg.Logger.DebugS(ctx, "Registering for confirmation",
+		slog.String("txid", txid.String()),
+		slog.Int("pkscript_len", len(pkScript)),
+		slog.Int("height_hint", int(heightHint)))
 
 	// Use background context for long-lived registration.
 	a.cfg.ChainSource.Tell(context.Background(), confReq)

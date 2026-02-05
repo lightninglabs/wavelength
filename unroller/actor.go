@@ -76,6 +76,17 @@ func (a *UnrollerActor) Start(ctx context.Context) error {
 		return fmt.Errorf("list active unrolls: %w", err)
 	}
 
+	// Query the current best height before resuming. This is
+	// needed as the height hint for confirmation registrations.
+	// lnd requires a height hint > 0.
+	if len(states) > 0 {
+		bestHeight, err := a.getBestHeight(ctx)
+		if err != nil {
+			return fmt.Errorf("get best height: %w", err)
+		}
+		a.bestHeight = int32(bestHeight)
+	}
+
 	for _, state := range states {
 		outpointKey := state.VTXOOutpoint.String()
 		a.activeUnrolls[outpointKey] = state
@@ -144,7 +155,15 @@ func (a *UnrollerActor) resumeUnroll(
 		for txid := range state.BroadcastTxids {
 			_, confirmed := state.ConfirmedTxids[txid]
 			if !confirmed {
-				a.registerConfirmation(ctx, state, txid)
+				pkScript := a.findPkScriptForTxid(
+					state, txid,
+				)
+
+				a.registerConfirmation(
+					ctx, state, txid,
+					pkScript,
+					uint32(a.bestHeight),
+				)
 			}
 		}
 
@@ -178,6 +197,32 @@ func (a *UnrollerActor) indexUnrollTxids(state *UnrollState) {
 			a.txidToUnroll[txid] = outpointKey
 		}
 	}
+}
+
+// findPkScriptForTxid searches the unroll's level order for a node
+// matching the given txid and returns its first output pkScript. This
+// is needed for re-registering confirmations on resume, where we no
+// longer have the signed transaction in hand. Returns nil if not found.
+func (a *UnrollerActor) findPkScriptForTxid(
+	state *UnrollState, txid chainhash.Hash,
+) []byte {
+
+	for _, level := range state.LevelOrder {
+		for i, tid := range level.Txids {
+			if tid != txid || i >= len(level.Nodes) {
+				continue
+			}
+
+			signedTx, err := level.Nodes[i].ToSignedTx()
+			if err != nil || len(signedTx.TxOut) == 0 {
+				return nil
+			}
+
+			return signedTx.TxOut[0].PkScript
+		}
+	}
+
+	return nil
 }
 
 // cleanupUnrollTxids removes all txid reverse-lookup entries for the

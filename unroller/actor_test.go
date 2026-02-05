@@ -226,6 +226,15 @@ func (m *mockChainSourceRef) Ask(
 			),
 		}
 
+	case *chainsource.BestHeightRequest:
+		return &mockFuture[chainsource.ChainSourceResp]{
+			result: fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.BestHeightResponse{
+					Height: 100,
+				},
+			),
+		}
+
 	case *chainsource.SubmitPackageRequest:
 		if m.submitErr != nil {
 			return &mockFuture[chainsource.ChainSourceResp]{
