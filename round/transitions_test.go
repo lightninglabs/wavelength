@@ -1058,9 +1058,20 @@ func TestPartialSigsSentState(t *testing.T) {
 			[]BoardingIntent{intent}, vtxtTree,
 		)
 
+		// Extract a separate client sub-tree (as production
+		// does in CommitmentTxReceivedState via ValidatePath
+		// -> ExtractPathForCoSigners). Using the same object
+		// as VTXOTreePaths would mask the signature
+		// propagation bug.
+		extractedTree, err := vtxtTree.ExtractPathForCoSigners(
+			vtxoReq.SigningKey.PubKey,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, extractedTree)
+
 		clientTrees := make(map[SignerKey]*tree.Tree)
 		signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
-		clientTrees[signerKey] = vtxtTree
+		clientTrees[signerKey] = extractedTree
 
 		state := &PartialSigsSentState{
 			RoundID:       testRoundIDTr("round-real-sig-001"),
@@ -1099,6 +1110,27 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
 		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
+
+		// Verify signatures were propagated to extracted
+		// ClientTrees (not just VTXOTreePaths).
+		for _, ct := range inputSigState.ClientTrees {
+			err := ct.Root.ForEach(
+				func(node *tree.Node) error {
+					require.NotNil(
+						t, node.Signature,
+						"extracted client "+
+							"tree node "+
+							"should have "+
+							"signature "+
+							"after "+
+							"OperatorSigned",
+					)
+
+					return nil
+				},
+			)
+			require.NoError(t, err)
+		}
 	})
 
 	t.Run("empty_signatures_error", func(t *testing.T) {
