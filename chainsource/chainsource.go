@@ -87,6 +87,9 @@ func (a *ChainSourceActor) Receive(actorCtx context.Context,
 	case *BroadcastTxRequest:
 		return a.handleBroadcastTx(actorCtx, m)
 
+	case *SubmitPackageRequest:
+		return a.handleSubmitPackage(actorCtx, m)
+
 	case *RegisterConfRequest:
 		return a.handleRegisterConf(actorCtx, m)
 
@@ -241,6 +244,20 @@ func (a *ChainSourceActor) handleBroadcastTx(ctx context.Context,
 	return fn.Ok[ChainSourceResp](&BroadcastTxResponse{
 		Txid: txHash,
 	})
+}
+
+// handleSubmitPackage processes an atomic package submission request by
+// delegating to the backend's SubmitPackage method.
+func (a *ChainSourceActor) handleSubmitPackage(ctx context.Context,
+	req *SubmitPackageRequest) fn.Result[ChainSourceResp] {
+
+	err := a.cfg.Backend.SubmitPackage(ctx, req.Parents, req.Child)
+	if err != nil {
+		return fn.Err[ChainSourceResp](
+			fmt.Errorf("submit package: %w", err))
+	}
+
+	return fn.Ok[ChainSourceResp](&SubmitPackageResponse{})
 }
 
 // handleRegisterConf spawns a dedicated ConfActor for this confirmation
