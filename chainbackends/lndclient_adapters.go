@@ -75,14 +75,15 @@ func (e *LndClientFeeEstimator) EstimateFeePerKW(
 		context.Background(), 30*time.Second,
 	)
 	defer cancel()
-	satPerVByte, err := e.walletKit.EstimateFeeRate(
+
+	// EstimateFeeRate already returns SatPerKWeight, so no
+	// conversion is needed.
+	satPerKw, err := e.walletKit.EstimateFeeRate(
 		ctx, int32(numBlocks),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("estimate fee rate: %w", err)
 	}
-
-	satPerKw := chainfee.SatPerVByte(satPerVByte).FeePerKWeight()
 
 	return satPerKw, nil
 }
