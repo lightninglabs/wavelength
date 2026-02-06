@@ -226,6 +226,7 @@ INSERT INTO mailbox_messages (
     max_attempts,
     created_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (id) DO NOTHING
 `
 
 type EnqueueMailboxMessageParams struct {
@@ -248,6 +249,11 @@ type EnqueueMailboxMessageParams struct {
 // Mailbox Message Operations
 // =============================================================================
 // Enqueue a new message to an actor's mailbox.
+// ON CONFLICT (id) DO NOTHING enables receiver-side deduplication for outbox
+// delivery: if the OutboxPublisher successfully delivers a message but the
+// subsequent CompleteOutbox call fails, the retry will attempt to insert the
+// same outbox-derived ID. The conflict clause makes this a silent no-op
+// instead of an error, preserving exactly-once inbox semantics.
 func (q *Queries) EnqueueMailboxMessage(ctx context.Context, arg EnqueueMailboxMessageParams) error {
 	_, err := q.db.ExecContext(ctx, EnqueueMailboxMessage,
 		arg.ID,
