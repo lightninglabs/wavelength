@@ -202,9 +202,16 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// Get a router for the target service key.
 	ref := targetKey.Ref(p.cfg.System)
 
+	// Inject the outbox message ID into the context so the target
+	// actor's DurableMailbox uses it as the inbox message ID. This
+	// enables receiver-side deduplication: if CompleteOutbox fails
+	// after a successful Tell, the retry inserts the same ID and the
+	// ON CONFLICT clause makes it a no-op.
+	deliverCtx := WithOutboxID(p.ctx, msg.ID)
+
 	// Deliver the message. Tell now returns an error if the message could
 	// not be durably enqueued to the target's mailbox.
-	if err := ref.Tell(p.ctx, decoded); err != nil {
+	if err := ref.Tell(deliverCtx, decoded); err != nil {
 		log.WarnS(p.ctx, "Failed to deliver outbox message", err,
 			"message_id", msg.ID,
 			"target", msg.TargetActorID,
