@@ -371,18 +371,30 @@ func (a *DurableActor[M, R]) processInTransaction(
 	delivery *Delivery[M, R],
 ) {
 
+	// Capture the behavior result so we can complete the in-memory
+	// promise only after the transaction commits successfully. This
+	// prevents callers from observing success for an operation that
+	// was not durably committed.
+	var behaviorResult fn.Result[R]
+
+	// Suppress in-Ack promise completion during the tx -- we'll
+	// complete the promise ourselves after commit succeeds.
+	delivery.deferPromise = true
+
 	err := a.txAwareStore.ExecTx(ctx, false, func(
 		txCtx context.Context, store DeliveryStore,
 	) error {
 
 		// Execute behavior with panic recovery.
-		result := a.executeBehaviorSafely(txCtx, delivery)
+		behaviorResult = a.executeBehaviorSafely(txCtx, delivery)
 
 		// Handle the result within the transaction. This determines
 		// whether to ack, nack for retry, or dead-letter. We only mark
 		// as processed if we're not going to retry - otherwise the
 		// redelivered message would be incorrectly skipped by dedup.
-		return a.handleResultInTx(txCtx, delivery, result, store)
+		return a.handleResultInTx(
+			txCtx, delivery, behaviorResult, store,
+		)
 	})
 
 	if err != nil {
@@ -396,6 +408,14 @@ func (a *DurableActor[M, R]) processInTransaction(
 				nackErr,
 				"delivery_id", delivery.ID)
 		}
+
+		return
+	}
+
+	// Transaction committed -- now it is safe to complete the
+	// in-memory promise so the caller observes the result.
+	if delivery.IsAsk() && delivery.Promise != nil {
+		delivery.Promise.Complete(behaviorResult)
 	}
 }
 
@@ -419,16 +439,34 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 	// turning into a permanent "processed" flag while the mailbox message
 	// (and Ask result) is still pending.
 	if delivery.IsAsk() {
+		// For DurableAsk, the outbox write is the critical durable
+		// output. If it fails, we must nack for retry rather than
+		// acking (which would permanently drop the response while
+		// the request appears "done").
 		if delivery.IsDurableAsk() {
 			if err := a.writeAskResponseToOutbox(
 				ctx, delivery, result, a.store,
 			); err != nil {
 				log.WarnS(ctx,
-					"Failed to write ask response to outbox",
+					"Failed to write ask response to "+
+						"outbox, nacking for retry",
 					err,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID,
-					"callback_actor_id", delivery.CallbackActorID)
+					"callback_actor_id",
+					delivery.CallbackActorID)
+
+				if nackErr := delivery.Nack(
+					ctx, err, 5*time.Second,
+				); nackErr != nil {
+					log.WarnS(ctx,
+						"Failed to nack after "+
+							"outbox write failure",
+						nackErr,
+						"delivery_id", delivery.ID)
+				}
+
+				return
 			}
 		}
 
@@ -453,8 +491,16 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 
 	// Only mark as processed if we're not going to retry.
 	// For Tell messages that fail, we may want to retry.
+	// For DurableAsk messages, defer marking processed until after the
+	// outbox write succeeds in handleResult (the outbox write is the
+	// critical durable output, and marking processed before it succeeds
+	// would permanently drop the response on outbox failure).
 	shouldMarkProcessed := true
-	if delivery.IsTell() && result.Err() != nil {
+	if delivery.IsDurableAsk() {
+		// DurableAsk: mark processed only after outbox write in
+		// handleResult.
+		shouldMarkProcessed = false
+	} else if delivery.IsTell() && result.Err() != nil {
 		retry, _ := a.tellRetryPolicy(result.Err(), delivery.Attempts)
 		if retry {
 			shouldMarkProcessed = false
@@ -583,17 +629,53 @@ func (a *DurableActor[M, R]) handleResult(
 	result fn.Result[R],
 ) {
 
-	// For DurableAsk messages, write response to outbox.
+	// For DurableAsk messages, write response to outbox. If the write
+	// fails, nack for retry rather than dropping the response. On
+	// success, mark as processed and ack immediately since the outbox
+	// write is the critical durable output.
 	if delivery.IsDurableAsk() {
 		if err := a.writeAskResponseToOutbox(
 			ctx, delivery, result, a.store,
 		); err != nil {
-			log.WarnS(ctx, "Failed to write ask response to outbox",
+			log.WarnS(ctx,
+				"Failed to write ask response to outbox, "+
+					"nacking for retry",
 				err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID,
 				"callback_actor_id", delivery.CallbackActorID)
+
+			if nackErr := delivery.Nack(
+				ctx, err, 5*time.Second,
+			); nackErr != nil {
+				log.WarnS(ctx,
+					"Failed to nack after outbox write "+
+						"failure",
+					nackErr,
+					"delivery_id", delivery.ID)
+			}
+
+			return
 		}
+
+		// Outbox write succeeded -- mark processed and ack.
+		if err := a.store.MarkProcessed(
+			ctx, delivery.ID, a.id, a.deduplicationTTL,
+		); err != nil {
+			log.WarnS(ctx, "Failed to mark DurableAsk processed",
+				err,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID)
+		}
+
+		if err := delivery.Ack(ctx, result); err != nil {
+			log.WarnS(ctx, "Failed to ack DurableAsk message",
+				err,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID)
+		}
+
+		return
 	}
 
 	// For Ask messages, always Ack (even with error result).
