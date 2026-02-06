@@ -1618,9 +1618,18 @@ func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
 	triggeredCount := 0
 	for _, outpoint := range cmd.TargetOutpoints {
 		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
-		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &TriggerLeaveEvent{
-			DestOutput: cmd.DestOutput,
-		})
+		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+			ctx, &TriggerLeaveEvent{
+				DestOutput: cmd.DestOutput,
+			},
+		)
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to send leave trigger "+
+				"to VTXO actor", err,
+				slog.String(
+					"outpoint", outpoint.String(),
+				))
+		}
 
 		a.log.InfoS(ctx, "Sent leave trigger to VTXO actor",
 			slog.String("outpoint", outpoint.String()))

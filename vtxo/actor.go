@@ -256,7 +256,18 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					Amount:       int64(vtxo.Amount),
 					Output:       m.DestOutput,
 				}
-				a.cfg.RoundActor.Tell(ctx, leaveReq)
+				err := a.cfg.RoundActor.Tell(ctx, leaveReq)
+				if err != nil {
+					a.cfg.Logger.WarnS(
+						ctx, "Failed to send leave "+
+							"request to round",
+						err,
+						slog.String(
+							"outpoint",
+							vtxo.Outpoint.String(),
+						),
+					)
+				}
 
 				a.cfg.Logger.InfoS(
 					ctx, "Sent leave request to round",
