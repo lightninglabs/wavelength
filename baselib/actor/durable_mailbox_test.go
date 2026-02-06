@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -733,4 +734,340 @@ func TestDurableMailboxRapid_ConcurrentCloseAndSend(t *testing.T) {
 		// No panics or races should occur.
 		require.True(rt, mailbox.IsClosed())
 	})
+}
+
+// TestDurableMailboxPoisonMessageDeadLetter verifies that when a message
+// consistently fails to decode and exhausts max_attempts, it is moved to the
+// dead letter queue rather than being stranded in the mailbox.
+// (Fix #5 from Codex review.)
+func TestDurableMailboxPoisonMessageDeadLetter(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	mailbox := NewDurableMailbox[*durableTestMsg, int](
+		ctx,
+		DurableMailboxConfig{
+			MailboxID:     "test-actor",
+			Store:         store,
+			Codec:         codec,
+			LeaseDuration: 30 * time.Second,
+			PollInterval:  10 * time.Millisecond,
+			MaxAttempts:   3,
+		},
+	)
+
+	// Insert a message with corrupted payload that will fail to decode.
+	// Set attempts to max so the first decode failure triggers dead-letter.
+	poisonID := "poison-msg-1"
+	store.mu.Lock()
+	store.messages[poisonID] = &LeasedMessage{
+		ID:          poisonID,
+		MailboxID:   "test-actor",
+		MessageType: "durable.TestMsg",
+		Payload:     []byte("this is not valid TLV"),
+		MaxAttempts: 3,
+		Attempts:    3, // Already at max.
+		CreatedAt:   time.Now(),
+	}
+	store.mu.Unlock()
+
+	// Start receiving. The poison message should be dead-lettered.
+	receiveCtx, receiveCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer receiveCancel()
+
+	// Consume one iteration -- this will attempt to decode, fail, and
+	// dead-letter since attempts >= max_attempts.
+	for range mailbox.Receive(receiveCtx) {
+		// Should not yield any valid envelope for the poison message.
+		t.Fatal("should not receive a valid envelope for poison message")
+	}
+
+	// Verify the poison message was dead-lettered.
+	store.mu.Lock()
+	numDL := len(store.deadLetters)
+	numMessages := len(store.messages)
+	store.mu.Unlock()
+
+	require.Equal(t, 1, numDL,
+		"poison message should be in dead letter queue")
+	require.Equal(t, 0, numMessages,
+		"poison message should be removed from mailbox")
+}
+
+// TestDurableMailboxPoisonMessageNackBeforeMax verifies that a decode failure
+// when attempts < max_attempts results in a nack (for retry) rather than
+// dead-lettering. We use a very high MaxAttempts to ensure the message cannot
+// exhaust during the brief test window.
+func TestDurableMailboxPoisonMessageNackBeforeMax(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	// Use an extremely high max_attempts so even a tight decode-fail loop
+	// cannot exhaust it during the test.
+	const maxAttempts = 1_000_000
+
+	mailbox := NewDurableMailbox[*durableTestMsg, int](
+		ctx,
+		DurableMailboxConfig{
+			MailboxID:     "test-actor",
+			Store:         store,
+			Codec:         codec,
+			LeaseDuration: 30 * time.Second,
+			PollInterval:  10 * time.Millisecond,
+			MaxAttempts:   maxAttempts,
+		},
+	)
+
+	// Insert a poison message.
+	poisonID := "poison-msg-2"
+	store.mu.Lock()
+	store.messages[poisonID] = &LeasedMessage{
+		ID:          poisonID,
+		MailboxID:   "test-actor",
+		MessageType: "durable.TestMsg",
+		Payload:     []byte("invalid TLV data"),
+		MaxAttempts: maxAttempts,
+		Attempts:    0,
+		CreatedAt:   time.Now(),
+	}
+	store.mu.Unlock()
+
+	// Receive very briefly (just enough for a few decode failures).
+	receiveCtx, receiveCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer receiveCancel()
+
+	for range mailbox.Receive(receiveCtx) {
+		t.Fatal("should not receive a valid envelope for poison message")
+	}
+
+	// Message should still be in the mailbox (nacked, not dead-lettered).
+	store.mu.Lock()
+	numDL := len(store.deadLetters)
+	numMessages := len(store.messages)
+	attempts := 0
+	if msg, ok := store.messages[poisonID]; ok {
+		attempts = msg.Attempts
+	}
+	store.mu.Unlock()
+
+	require.Equal(t, 0, numDL,
+		"message should not be dead-lettered before max attempts")
+	require.Equal(t, 1, numMessages,
+		"message should remain in mailbox for retry")
+	require.Greater(t, attempts, 0,
+		"message should have been attempted at least once")
+	require.Less(t, attempts, maxAttempts,
+		"message should not have exhausted max attempts")
+}
+
+// TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure verifies that when
+// EnqueueMessage fails, the promise registry entry is removed to prevent
+// unbounded stale entries. (Fix #8 from Codex review.)
+func TestDurableMailboxPromiseRegistryCleanupOnEnqueueFailure(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	mailbox := NewDurableMailbox[*durableTestMsg, int](
+		ctx,
+		DurableMailboxConfig{
+			MailboxID:     "test-actor",
+			Store:         store,
+			Codec:         codec,
+			LeaseDuration: 30 * time.Second,
+			PollInterval:  100 * time.Millisecond,
+			MaxAttempts:   10,
+		},
+	)
+
+	// Inject enqueue error so Send will fail after promise registration.
+	store.mu.Lock()
+	store.injectEnqueueError = errors.New("simulated enqueue failure")
+	store.mu.Unlock()
+
+	// Attempt to Send an Ask envelope (with promise).
+	promise := NewPromise[int]()
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("test")),
+	}
+
+	env := envelope[*durableTestMsg, int]{
+		message:   msg,
+		promise:   promise,
+		callerCtx: ctx,
+	}
+
+	// Send should return false due to enqueue failure.
+	ok := mailbox.Send(ctx, env)
+	require.False(t, ok)
+
+	// The promise registry should be empty -- the entry should have been
+	// cleaned up after the enqueue failure.
+	mailbox.promiseRegistryMu.RLock()
+	registrySize := len(mailbox.promiseRegistry)
+	mailbox.promiseRegistryMu.RUnlock()
+
+	require.Equal(t, 0, registrySize,
+		"promise registry should be empty after enqueue failure")
+
+	// Verify that repeated failures don't accumulate stale entries.
+	for range 10 {
+		p := NewPromise[int]()
+		env := envelope[*durableTestMsg, int]{
+			message:   msg,
+			promise:   p,
+			callerCtx: ctx,
+		}
+		ok := mailbox.Send(ctx, env)
+		require.False(t, ok)
+	}
+
+	mailbox.promiseRegistryMu.RLock()
+	registrySize = len(mailbox.promiseRegistry)
+	mailbox.promiseRegistryMu.RUnlock()
+
+	require.Equal(t, 0, registrySize,
+		"promise registry should remain empty after repeated failures")
+}
+
+// TestDurableMailboxSendUsesOutboxIDFromContext verifies that when the context
+// carries an outbox message ID (set by the OutboxPublisher), DurableMailbox.Send
+// uses it as the inbox message ID instead of generating a fresh one. This
+// enables receiver-side deduplication for CDC delivery retries.
+// (Fix #2 from Codex review.)
+func TestDurableMailboxSendUsesOutboxIDFromContext(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("test")),
+	}
+
+	env := envelope[*durableTestMsg, int]{
+		message:   msg,
+		callerCtx: ctx,
+	}
+
+	// Inject the outbox ID into the context.
+	outboxID := "outbox-msg-42"
+	sendCtx := WithOutboxID(ctx, outboxID)
+
+	ok := mailbox.Send(sendCtx, env)
+	require.True(t, ok)
+
+	// Verify the stored message uses the outbox ID, not a fresh UUID.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	require.Len(t, store.messages, 1)
+
+	storedMsg, exists := store.messages[outboxID]
+	require.True(t, exists,
+		"message should be stored with outbox ID as key")
+	require.Equal(t, outboxID, storedMsg.ID)
+	require.Equal(t, "test-mailbox", storedMsg.MailboxID)
+}
+
+// TestDurableMailboxSendDuplicateOutboxIDIsIdempotent verifies that sending
+// the same outbox-derived message ID twice is a no-op on the second attempt.
+// This is the core receiver-side deduplication guarantee: if the OutboxPublisher
+// retries after CompleteOutbox fails, the duplicate enqueue succeeds (returns
+// true) without creating a second inbox message.
+// (Fix #2 from Codex review.)
+func TestDurableMailboxSendDuplicateOutboxIDIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("test")),
+	}
+
+	env := envelope[*durableTestMsg, int]{
+		message:   msg,
+		callerCtx: ctx,
+	}
+
+	outboxID := "outbox-msg-dedup"
+	sendCtx := WithOutboxID(ctx, outboxID)
+
+	// First send should succeed.
+	ok := mailbox.Send(sendCtx, env)
+	require.True(t, ok)
+
+	// Second send with the same outbox ID should also succeed (idempotent).
+	ok = mailbox.Send(sendCtx, env)
+	require.True(t, ok)
+
+	// Only one message should exist in the store.
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	require.Len(t, store.messages, 1,
+		"duplicate outbox ID should not create a second message")
+	require.Contains(t, store.messages, outboxID)
+}
+
+// TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID verifies that when
+// no outbox ID is present in the context (normal Tell/Ask path), a fresh
+// UUIDv7 is generated as before.
+func TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", store, codec)
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("test")),
+	}
+
+	env := envelope[*durableTestMsg, int]{
+		message:   msg,
+		callerCtx: ctx,
+	}
+
+	// Send without outbox ID in context (regular Tell path).
+	ok := mailbox.Send(ctx, env)
+	require.True(t, ok)
+
+	// Verify a fresh UUIDv7 was generated (not empty, not a hardcoded value).
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	require.Len(t, store.messages, 1)
+
+	for id := range store.messages {
+		require.NotEmpty(t, id)
+		// UUIDv7 format: 8-4-4-4-12 hex chars with dashes.
+		require.Len(t, id, 36,
+			"generated ID should be a UUID (36 chars)")
+	}
 }
