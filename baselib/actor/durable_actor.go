@@ -554,7 +554,10 @@ func (a *DurableActor[M, R]) handleResultInTx(
 	store DeliveryStore,
 ) error {
 
-	// Create a delivery that uses the tx-scoped store.
+	// Create a delivery that uses the tx-scoped store. We must
+	// propagate deferPromise so the in-Ack promise completion is
+	// suppressed -- the caller (processInTransaction) handles
+	// promise completion after ExecTx returns.
 	txDelivery := &Delivery[M, R]{
 		ID:              delivery.ID,
 		Message:         delivery.Message,
@@ -567,13 +570,29 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		Attempts:        delivery.Attempts,
 		MaxAttempts:     delivery.MaxAttempts,
 		store:           store,
+		deferPromise:    delivery.deferPromise,
 	}
 
-	// For DurableAsk messages, write response to outbox (within transaction).
+	// For DurableAsk messages, write the response to the outbox,
+	// mark as processed, and ack within the transaction. DurableAsk
+	// messages are never retried via the Tell retry policy because
+	// the outbox write IS the durable output. Retrying after a
+	// successful outbox write would produce duplicate responses for
+	// the same correlation ID.
 	if delivery.IsDurableAsk() {
-		if err := a.writeAskResponseToOutbox(ctx, delivery, result, store); err != nil {
+		if err := a.writeAskResponseToOutbox(
+			ctx, delivery, result, store,
+		); err != nil {
 			return fmt.Errorf("write ask response: %w", err)
 		}
+
+		if err := store.MarkProcessed(
+			ctx, delivery.ID, a.id, a.deduplicationTTL,
+		); err != nil {
+			return fmt.Errorf("mark processed: %w", err)
+		}
+
+		return txDelivery.Ack(ctx, result)
 	}
 
 	// For Ask messages, always Ack (even with error result). Mark as
