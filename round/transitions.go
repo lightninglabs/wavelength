@@ -518,29 +518,27 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Build refresh requests for VTXOs being refreshed. The actual
-		// VTXO outputs are specified via VTXOReqs (not assumed 1:1).
-		numRefresh := len(s.RefreshingVTXOs)
-		refreshReqs := make([]*RefreshRequest, 0, numRefresh)
+		// Build forfeit requests for VTXOs being forfeited/refreshed.
+		// The actual VTXO outputs are specified via VTXOReqs.
+		numForfeit := len(s.RefreshingVTXOs)
+		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
 		for _, req := range s.RefreshingVTXOs {
-			refreshReqs = append(refreshReqs, &RefreshRequest{
+			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
 				VTXOOutpoint: req.VTXOOutpoint,
-				Amount:       btcutil.Amount(req.Amount),
-				NewVTXOKey:   req.NewVTXOKey,
 			})
 		}
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
 			slog.Int("vtxo_requests", len(vtxoReqs)),
-			slog.Int("refresh_requests", len(refreshReqs)))
+			slog.Int("forfeit_requests", len(forfeitReqs)))
 
-		// Build Intents with all VTXOs and refreshes for downstream
+		// Build Intents with all VTXOs and forfeits for downstream
 		// validation.
 		intent := Intents{
-			Boarding:  slices.Clone(s.Boarding),
-			VTXOs:     vtxoReqs,
-			Refreshes: refreshReqs,
+			Boarding: slices.Clone(s.Boarding),
+			VTXOs:    vtxoReqs,
+			Forfeits: forfeitReqs,
 		}
 
 		// With all this extracted, we'll now send the JoinRoundRequest
@@ -554,7 +552,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 					&JoinRoundRequest{
 						BoardingRequests: boardingReqs,
 						VTXORequests:     vtxoReqs,
-						RefreshRequests:  refreshReqs,
+						ForfeitRequests:  forfeitReqs,
 					},
 				},
 			}),

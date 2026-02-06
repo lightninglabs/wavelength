@@ -224,21 +224,18 @@ type Intents struct {
 	// TODO(roasbeef): add auxleaf for tap here.
 	VTXOs []types.VTXORequest
 
-	// Refreshes contains the refresh requests for VTXOs being forfeited.
-	// Each refresh consumes input value but doesn't automatically create
+	// Forfeits contains the forfeit requests for VTXOs being forfeited.
+	// Each forfeit consumes input value but doesn't automatically create
 	// output - the actual outputs are specified via VTXOs or Leave.
-	Refreshes []*RefreshRequest
-
-	// Future extensions:
-	// Leave requests
+	Forfeits []*ForfeitRequest
 }
 
 // Clone creates a copy of the Intents.
 func (i *Intents) Clone() Intents {
 	return Intents{
-		Boarding:  slices.Clone(i.Boarding),
-		VTXOs:     slices.Clone(i.VTXOs),
-		Refreshes: slices.Clone(i.Refreshes),
+		Boarding: slices.Clone(i.Boarding),
+		VTXOs:    slices.Clone(i.VTXOs),
+		Forfeits: slices.Clone(i.Forfeits),
 	}
 }
 
