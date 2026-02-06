@@ -53,6 +53,11 @@ type Querier interface {
 	// Mailbox Message Operations
 	// =============================================================================
 	// Enqueue a new message to an actor's mailbox.
+	// ON CONFLICT (id) DO NOTHING enables receiver-side deduplication for outbox
+	// delivery: if the OutboxPublisher successfully delivers a message but the
+	// subsequent CompleteOutbox call fails, the retry will attempt to insert the
+	// same outbox-derived ID. The conflict clause makes this a silent no-op
+	// instead of an error, preserving exactly-once inbox semantics.
 	EnqueueMailboxMessage(ctx context.Context, arg EnqueueMailboxMessageParams) error
 	// =============================================================================
 	// Outbox Operations (CDC Pattern)
