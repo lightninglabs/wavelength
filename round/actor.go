@@ -635,6 +635,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *actormsg.TriggerVTXORefreshMsg:
 		return a.handleTriggerVTXORefresh(ctx, m)
 
+	case *actormsg.TriggerVTXOLeaveMsg:
+		return a.handleTriggerVTXOLeave(ctx, m)
+
 	default:
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"unknown message type: %T", msg))
@@ -1447,6 +1450,38 @@ func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
 	}
 
 	a.log.InfoS(ctx, "Triggered VTXO refresh",
+		slog.Int("count", triggeredCount))
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleTriggerVTXOLeave processes a leave trigger request from the wallet
+// actor. For each target outpoint, we send TriggerLeaveEvent to the VTXO
+// actor via its service key. The VTXO actor then transitions to a leave state
+// and emits a LeaveVTXORequest back to us through its outbox.
+func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
+	cmd *actormsg.TriggerVTXOLeaveMsg) fn.Result[actormsg.RoundActorResp] {
+
+	if a.cfg.ActorSystem == nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"ActorSystem not configured, cannot trigger VTXO leave",
+		))
+	}
+
+	triggeredCount := 0
+	for _, outpoint := range cmd.TargetOutpoints {
+		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+		serviceKey.Ref(a.cfg.ActorSystem).Tell(ctx, &TriggerLeaveEvent{
+			DestOutput: cmd.DestOutput,
+		})
+
+		a.log.InfoS(ctx, "Sent leave trigger to VTXO actor",
+			slog.String("outpoint", outpoint.String()))
+
+		triggeredCount++
+	}
+
+	a.log.InfoS(ctx, "Triggered VTXO leave",
 		slog.Int("count", triggeredCount))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)

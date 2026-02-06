@@ -222,6 +222,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *RefreshVTXOsRequest:
 		return a.handleRefreshVTXOs(ctx, m)
 
+	case *LeaveVTXOsRequest:
+		return a.handleLeaveVTXOs(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -560,6 +563,40 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	resp := &RefreshVTXOsResponse{
 		RefreshingCount: len(req.TargetOutpoints),
 		Errors:          make(map[wire.OutPoint]error),
+	}
+
+	return fn.Ok[WalletResp](resp)
+}
+
+// handleLeaveVTXOs processes a request to leave (offboard) VTXOs. This forwards
+// the request to the round actor which coordinates with VTXO actors to initiate
+// the leave flow.
+func (a *Ark) handleLeaveVTXOs(ctx context.Context,
+	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
+
+	a.log.InfoS(ctx, "Received VTXO leave request",
+		slog.Int("target_count", len(req.TargetOutpoints)))
+
+	// Forward to round actor via service key lookup. The round actor looks
+	// up VTXO actors by service key and sends TriggerLeaveEvent to each.
+	if a.actorSystem != nil {
+		serviceKey := actormsg.RoundActorServiceKey()
+		roundRef := serviceKey.Ref(a.actorSystem)
+
+		roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
+			TargetOutpoints: req.TargetOutpoints,
+			DestOutput:      req.DestOutput,
+		})
+
+		a.log.DebugS(ctx, "Forwarded leave request to round actor")
+	} else {
+		a.log.WarnS(ctx, "Cannot forward leave: no actor system configured",
+			nil)
+	}
+
+	resp := &LeaveVTXOsResponse{
+		LeavingCount: len(req.TargetOutpoints),
+		Errors:       make(map[wire.OutPoint]error),
 	}
 
 	return fn.Ok[WalletResp](resp)
