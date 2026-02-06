@@ -598,10 +598,13 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	if a.actorSystem != nil {
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
-		roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
+		if err := roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
 			TargetOutpoints: req.TargetOutpoints,
 			DestOutput:      req.DestOutput,
-		})
+		}); err != nil {
+			a.log.WarnS(ctx, "Failed to forward leave to "+
+				"round actor", err)
+		}
 	} else {
 		a.log.WarnS(ctx, "Cannot forward leave: no actor system "+
 			"configured", nil)
