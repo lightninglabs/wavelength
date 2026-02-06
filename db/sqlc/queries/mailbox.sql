@@ -7,6 +7,11 @@
 
 -- name: EnqueueMailboxMessage :exec
 -- Enqueue a new message to an actor's mailbox.
+-- ON CONFLICT (id) DO NOTHING enables receiver-side deduplication for outbox
+-- delivery: if the OutboxPublisher successfully delivers a message but the
+-- subsequent CompleteOutbox call fails, the retry will attempt to insert the
+-- same outbox-derived ID. The conflict clause makes this a silent no-op
+-- instead of an error, preserving exactly-once inbox semantics.
 INSERT INTO mailbox_messages (
     id,
     mailbox_id,
@@ -19,7 +24,8 @@ INSERT INTO mailbox_messages (
     available_at,
     max_attempts,
     created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (id) DO NOTHING;
 
 -- name: LeaseNextMailboxMessage :one
 -- Atomically claim the next available message for processing.

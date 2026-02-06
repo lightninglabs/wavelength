@@ -68,3 +68,27 @@ type TxQuerier interface {
 
 // Ensure *sql.Tx implements TxQuerier.
 var _ TxQuerier = (*sql.Tx)(nil)
+
+// outboxIDContextKey is the context key for propagating the outbox message ID
+// to the target actor's mailbox during CDC delivery. When the OutboxPublisher
+// delivers a message, it injects the outbox row ID into the context so the
+// receiving DurableMailbox uses it as the inbox message ID instead of generating
+// a fresh one. This gives us receiver-side deduplication for free: if
+// CompleteOutbox fails after a successful Tell, the retry will attempt to
+// INSERT the same ID. The ON CONFLICT (id) DO NOTHING clause on
+// EnqueueMailboxMessage makes this a silent no-op.
+type outboxIDContextKey struct{}
+
+// WithOutboxID returns a new context carrying the outbox message ID. The
+// OutboxPublisher calls this before Tell so the downstream mailbox can reuse
+// the ID for idempotent enqueue.
+func WithOutboxID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, outboxIDContextKey{}, id)
+}
+
+// OutboxIDFromContext retrieves the outbox message ID from the context, if
+// present. Returns the ID and true if found, empty string and false otherwise.
+func OutboxIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(outboxIDContextKey{}).(string)
+	return id, ok && id != ""
+}
