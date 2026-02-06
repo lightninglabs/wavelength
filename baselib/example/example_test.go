@@ -15,6 +15,7 @@ import (
 // ReviewService and NotificationService actors.
 func ExampleActorStateMachine() {
 	ctx := context.Background()
+	reviewStart := make(chan struct{}, 1)
 
 	// Create actor system.
 	system := actor.NewActorSystemWithConfig(actor.SystemConfig{
@@ -25,7 +26,9 @@ func ExampleActorStateMachine() {
 	}()
 
 	// Register ReviewService actor.
-	reviewBehavior := &ReviewServiceBehavior{}
+	reviewBehavior := &ReviewServiceBehavior{
+		startProcessing: reviewStart,
+	}
 	actor.RegisterWithSystem(
 		system, "review-service", ReviewServiceKey, reviewBehavior,
 	)
@@ -53,14 +56,18 @@ func ExampleActorStateMachine() {
 
 	// Submit a document for review.
 	fmt.Println("=== Submitting Document ===")
-	resp1 := fsmRef.Ask(ctx, protofsm.ActorMessage[DocEvent]{
-		Event: EventSubmitDocument{
-			DocumentID: "DOC-123",
-			Author:     "Alice",
+	resp1 := fsmRef.Ask(
+		ctx, protofsm.ActorMessage[DocEvent]{
+			Event: EventSubmitDocument{
+				DocumentID: "DOC-123",
+				Author:     "Alice",
+			},
 		},
-	}).Await(ctx)
+	).Await(ctx)
 
 	if resp1.IsErr() {
+		// Release the review worker in error paths so shutdown is clean.
+		reviewStart <- struct{}{}
 		fmt.Printf("Error: %v\n", resp1.Err())
 		return
 	}
@@ -72,13 +79,16 @@ func ExampleActorStateMachine() {
 	// 4. FSM transitions to Approved and emits OutboxNotify
 	// 5. NotificationService receives and processes notification
 	fmt.Println("\n=== Processing Review ===")
+	reviewStart <- struct{}{}
 	time.Sleep(300 * time.Millisecond)
 
 	// Query current state (using StateQuery flag).
 	fmt.Println("\n=== Checking Final State ===")
-	resp2 := fsmRef.Ask(ctx, protofsm.ActorMessage[DocEvent]{
-		StateQuery: true,
-	}).Await(ctx)
+	resp2 := fsmRef.Ask(
+		ctx, protofsm.ActorMessage[DocEvent]{
+			StateQuery: true,
+		},
+	).Await(ctx)
 
 	if resp2.IsOk() {
 		state2, _ := resp2.Unpack()

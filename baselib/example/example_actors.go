@@ -37,11 +37,23 @@ type ReviewResp struct {
 }
 
 // ReviewServiceBehavior simulates async review process.
-type ReviewServiceBehavior struct{}
+type ReviewServiceBehavior struct {
+	// startProcessing gates review processing in the example so its
+	// section header is always printed before async actor output.
+	startProcessing <-chan struct{}
+}
 
 // Receive processes review requests.
 func (r *ReviewServiceBehavior) Receive(ctx context.Context,
 	msg ReviewMsg) fn.Result[ReviewResp] {
+
+	if r.startProcessing != nil {
+		select {
+		case <-r.startProcessing:
+		case <-ctx.Done():
+			return fn.Err[ReviewResp](ctx.Err())
+		}
+	}
 
 	fmt.Printf("ReviewService: Processing document %s by %s\n",
 		msg.DocumentID, msg.Author)
