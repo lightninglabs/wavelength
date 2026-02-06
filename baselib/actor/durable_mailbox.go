@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"sync"
 	"sync/atomic"
@@ -136,8 +137,16 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 		return false
 	}
 
-	// Generate message ID.
-	id := generateID()
+	// Use the outbox-propagated ID for receiver-side deduplication when
+	// present, otherwise generate a fresh UUIDv7. The OutboxPublisher
+	// injects the outbox row ID so that retry deliveries (when
+	// CompleteOutbox fails after a successful Tell) produce the same
+	// inbox message ID. The ON CONFLICT (id) DO NOTHING clause on
+	// EnqueueMailboxMessage makes the duplicate insert a silent no-op.
+	id, ok := OutboxIDFromContext(ctx)
+	if !ok {
+		id = generateID()
+	}
 
 	// Determine promise ID for Ask messages and register the promise.
 	var promiseID string
@@ -172,6 +181,14 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 	}
 
 	if err := m.cfg.Store.EnqueueMessage(ctx, params); err != nil {
+		// Clean up the promise registry entry to prevent unbounded
+		// stale entries from accumulating on repeated enqueue failures.
+		if promiseID != "" {
+			m.promiseRegistryMu.Lock()
+			delete(m.promiseRegistry, promiseID)
+			m.promiseRegistryMu.Unlock()
+		}
+
 		return false
 	}
 
@@ -267,14 +284,18 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			// Decode the message.
 			decoded, err := m.cfg.Codec.Decode(leased.Payload)
 			if err != nil {
-				// Decode error - nack with backoff.
+				// Decode error - nack with backoff, or
+				// dead-letter if max attempts exhausted.
 				log.WarnS(ctx, "Failed to decode message payload",
 					err,
 					"mailbox_id", m.cfg.MailboxID,
-					"message_id", leased.ID)
+					"message_id", leased.ID,
+					"attempts", leased.Attempts,
+					"max_attempts", leased.MaxAttempts)
 
-				_, _ = m.cfg.Store.NackMessage(
-					ctx, leased.ID, leased.LeaseToken, 60*time.Second,
+				m.handlePoisonMessage(
+					ctx, leased,
+					fmt.Sprintf("decode error: %v", err),
 				)
 
 				continue
@@ -283,9 +304,19 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			// Cast to the expected message type.
 			msg, ok := decoded.(M)
 			if !ok {
-				// Type mismatch - nack with backoff.
-				_, _ = m.cfg.Store.NackMessage(
-					ctx, leased.ID, leased.LeaseToken, 60*time.Second,
+				// Type mismatch - nack with backoff, or
+				// dead-letter if max attempts exhausted.
+				log.WarnS(ctx, "Message type mismatch",
+					nil,
+					"mailbox_id", m.cfg.MailboxID,
+					"message_id", leased.ID,
+					"attempts", leased.Attempts,
+					"max_attempts", leased.MaxAttempts)
+
+				m.handlePoisonMessage(
+					ctx, leased,
+					"type mismatch: cannot cast decoded "+
+						"message to expected type",
 				)
 
 				continue
@@ -331,6 +362,62 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			}
 		}
 	}
+}
+
+// handlePoisonMessage handles a message that cannot be decoded or cast to the
+// expected type. If the message has exhausted its max delivery attempts, it is
+// moved to the dead letter queue. Otherwise it is nacked with a backoff delay
+// for retry (in case the failure is due to a transient codec issue or version
+// mismatch that a restart could resolve).
+func (m *DurableMailbox[M, R]) handlePoisonMessage(
+	ctx context.Context,
+	leased *LeasedMessage,
+	reason string,
+) {
+
+	if leased.Attempts >= leased.MaxAttempts {
+		// Exhausted attempts -- dead-letter the message so it
+		// doesn't stay stranded in the mailbox forever.
+		dlReason := fmt.Sprintf(
+			"poison message (attempts %d/%d): %s",
+			leased.Attempts, leased.MaxAttempts, reason,
+		)
+
+		if dlErr := m.cfg.Store.MoveToDeadLetter(
+			ctx, leased.ID, dlReason,
+		); dlErr != nil {
+			log.WarnS(ctx,
+				"Failed to dead-letter poison message",
+				dlErr,
+				"mailbox_id", m.cfg.MailboxID,
+				"message_id", leased.ID)
+
+			return
+		}
+
+		if delErr := m.cfg.Store.DeleteMessage(
+			ctx, leased.ID,
+		); delErr != nil {
+			log.WarnS(ctx,
+				"Failed to delete dead-lettered poison "+
+					"message",
+				delErr,
+				"mailbox_id", m.cfg.MailboxID,
+				"message_id", leased.ID)
+		}
+
+		log.InfoS(ctx, "Poison message moved to dead letter queue",
+			"mailbox_id", m.cfg.MailboxID,
+			"message_id", leased.ID,
+			"reason", dlReason)
+
+		return
+	}
+
+	// Not yet exhausted -- nack for retry with backoff.
+	_, _ = m.cfg.Store.NackMessage(
+		ctx, leased.ID, leased.LeaseToken, 60*time.Second,
+	)
 }
 
 // Close closes the mailbox, preventing any further sends. After closing,
