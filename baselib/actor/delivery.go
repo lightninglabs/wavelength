@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -62,8 +63,18 @@ type Delivery[M TLVMessage, R any] struct {
 	// store is the backing store for persisting ack/nack operations.
 	store DeliveryStore
 
+	// mu guards mutable fields (acked, LeaseUntil) that may be accessed
+	// concurrently by the heartbeat goroutine (Extend) and the main
+	// processing goroutine (Ack/Nack).
+	mu sync.Mutex
+
 	// acked tracks whether this delivery has been acknowledged.
 	acked bool
+
+	// deferPromise suppresses in-Ack promise completion when set. This
+	// is used by the transaction path to defer promise completion until
+	// after the transaction commits successfully.
+	deferPromise bool
 }
 
 // IsAsk returns true if this delivery is for an Ask message (has a promise).
@@ -84,11 +95,17 @@ func (d *Delivery[M, R]) IsTell() bool {
 
 // LeaseRemaining returns the time remaining on the lease.
 func (d *Delivery[M, R]) LeaseRemaining() time.Duration {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	return time.Until(d.LeaseUntil)
 }
 
 // IsLeaseExpired returns true if the lease has expired.
 func (d *Delivery[M, R]) IsLeaseExpired() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	return time.Now().After(d.LeaseUntil)
 }
 
@@ -110,9 +127,13 @@ func (d *Delivery[M, R]) ShouldDeadLetter() bool {
 // If a transaction is present (via WithTx), the ack will be part of that
 // transaction.
 func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
+	d.mu.Lock()
 	if d.acked {
+		d.mu.Unlock()
+
 		return ErrAlreadyAcked
 	}
+	d.mu.Unlock()
 
 	// For Ask messages, persist the result for crash recovery.
 	if d.IsAsk() && d.Promise != nil {
@@ -123,8 +144,8 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 		if err := result.Err(); err != nil {
 			errorText = err.Error()
 		} else {
-			// For standard Ask, only the success status is persisted, not
-			// the result value itself. See the doc comment above.
+			// For standard Ask, only the success status is persisted,
+			// not the result value itself. See the doc comment above.
 			resultBlob = nil
 		}
 
@@ -137,9 +158,6 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 		if err != nil {
 			return fmt.Errorf("save ask result: %w", err)
 		}
-
-		// Complete the in-memory promise.
-		d.Promise.Complete(result)
 	}
 
 	// Delete the message from the mailbox.
@@ -152,7 +170,17 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 		return ErrLeaseExpired
 	}
 
+	d.mu.Lock()
 	d.acked = true
+	d.mu.Unlock()
+
+	// Complete the in-memory promise only after the durable ack has
+	// succeeded. This ensures callers never observe success for an
+	// operation that was not durably committed. When deferPromise is
+	// set, the caller (tx path) handles completion after commit.
+	if d.IsAsk() && d.Promise != nil && !d.deferPromise {
+		d.Promise.Complete(result)
+	}
 
 	return nil
 }
@@ -169,9 +197,13 @@ func (d *Delivery[M, R]) Nack(
 	retryAfter time.Duration,
 ) error {
 
+	d.mu.Lock()
 	if d.acked {
+		d.mu.Unlock()
+
 		return ErrAlreadyAcked
 	}
+	d.mu.Unlock()
 
 	// Check if we should dead-letter instead of retry.
 	if d.ShouldDeadLetter() {
@@ -188,13 +220,17 @@ func (d *Delivery[M, R]) Nack(
 			return fmt.Errorf("delete message after dead letter: %w", delErr)
 		}
 
+		d.mu.Lock()
 		d.acked = true
+		d.mu.Unlock()
 
 		return nil
 	}
 
 	// Release the message for redelivery.
-	rowsAffected, nackErr := d.store.NackMessage(ctx, d.ID, d.LeaseToken, retryAfter)
+	rowsAffected, nackErr := d.store.NackMessage(
+		ctx, d.ID, d.LeaseToken, retryAfter,
+	)
 	if nackErr != nil {
 		return fmt.Errorf("nack message: %w", nackErr)
 	}
@@ -203,7 +239,9 @@ func (d *Delivery[M, R]) Nack(
 		return ErrLeaseExpired
 	}
 
+	d.mu.Lock()
 	d.acked = true
+	d.mu.Unlock()
 
 	return nil
 }
@@ -212,11 +250,17 @@ func (d *Delivery[M, R]) Nack(
 // be called periodically for messages that take longer than the default lease
 // duration. Returns an error if the lease has already expired.
 func (d *Delivery[M, R]) Extend(ctx context.Context, extension time.Duration) error {
+	d.mu.Lock()
 	if d.acked {
+		d.mu.Unlock()
+
 		return ErrAlreadyAcked
 	}
+	d.mu.Unlock()
 
-	rowsAffected, err := d.store.ExtendLease(ctx, d.ID, d.LeaseToken, extension)
+	rowsAffected, err := d.store.ExtendLease(
+		ctx, d.ID, d.LeaseToken, extension,
+	)
 	if err != nil {
 		return fmt.Errorf("extend lease: %w", err)
 	}
@@ -225,8 +269,11 @@ func (d *Delivery[M, R]) Extend(ctx context.Context, extension time.Duration) er
 		return ErrLeaseExpired
 	}
 
-	// Update local state.
+	// Update local state under the lock since the heartbeat goroutine
+	// may read LeaseUntil concurrently.
+	d.mu.Lock()
 	d.LeaseUntil = time.Now().Add(extension)
+	d.mu.Unlock()
 
 	return nil
 }
