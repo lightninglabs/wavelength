@@ -1208,6 +1208,388 @@ func TestDurableActorWithTxAwareStore(t *testing.T) {
 	})
 }
 
+// TestDurableAskNacksOnOutboxWriteFailure verifies that when
+// writeAskResponseToOutbox fails for a DurableAsk, the message is nacked for
+// retry instead of being acked and permanently dropping the response.
+// (Fix #1 from Codex review.)
+func TestDurableAskNacksOnOutboxWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newActorTestCodec()
+	codec.MustRegister(AskResponseMsgType, func() TLVMessage {
+		return &AskResponse{}
+	})
+
+	// Use a channel-signaled behavior so we can stop the actor after the
+	// first processing and inspect state before the retry loop churns
+	// through all attempts.
+	firstCall := make(chan struct{})
+	behavior := newMockBehavior(fn.Ok(42))
+	behavior.onReceive = func(ctx context.Context, msg *actorTestMsg) {
+		select {
+		case firstCall <- struct{}{}:
+		default:
+		}
+	}
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg)
+
+	actor.Start()
+
+	ctx := context.Background()
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+	}
+
+	// Inject outbox error to simulate write failure.
+	store.mu.Lock()
+	store.injectOutboxError = errors.New("simulated outbox failure")
+	store.mu.Unlock()
+
+	durableRef := actor.Ref().(DurableActorRef[*actorTestMsg, int])
+
+	err := durableRef.DurableAsk(ctx, msg, DurableAskParams{
+		CallbackActorID: "callback-actor",
+		CorrelationID:   "test-correlation",
+	})
+	require.NoError(t, err)
+
+	// Wait for first call, then stop the actor to prevent retry churn.
+	select {
+	case <-firstCall:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("behavior was never called")
+	}
+
+	// Brief pause for nack to complete, then stop actor.
+	time.Sleep(20 * time.Millisecond)
+	actor.Stop()
+	time.Sleep(20 * time.Millisecond)
+
+	store.mu.Lock()
+	numProcessed := len(store.processed)
+	numOutbox := len(store.outbox)
+	store.mu.Unlock()
+
+	require.Equal(t, 0, numProcessed,
+		"message should not be marked processed when outbox write fails")
+	require.Equal(t, 0, numOutbox,
+		"outbox should be empty when write fails")
+
+	// The behavior was called, confirming the message was processed but
+	// the outbox write failure caused a nack (not an ack).
+	require.GreaterOrEqual(t, behavior.callCount(), 1)
+}
+
+// TestPromiseCompletionDeferredUntilAfterAck verifies that in the non-tx path,
+// the Ask promise is completed only after AckMessage succeeds, not before.
+// (Fix #3 from Codex review.)
+func TestPromiseCompletionDeferredUntilAfterAck(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	msgID := "test-msg-1"
+	leaseToken := "test-lease-token"
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	promise := NewPromise[string]()
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID:          msgID,
+		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		Promise:     promise,
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+	}
+
+	// Ack should succeed.
+	err := delivery.Ack(ctx, fn.Ok("the result"))
+	require.NoError(t, err)
+
+	// Promise should be completed after Ack returns.
+	result := promise.Future().Await(ctx)
+	value, err := result.Unpack()
+	require.NoError(t, err)
+	require.Equal(t, "the result", value)
+
+	// Message should be removed from store.
+	require.Empty(t, store.messages)
+}
+
+// TestPromiseNotCompletedOnAckFailure verifies that if AckMessage fails
+// (e.g., lease expired), the promise is not completed.
+func TestPromiseNotCompletedOnAckFailure(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	msgID := "test-msg-1"
+	// Store has a DIFFERENT lease token, so Ack will return 0 rows.
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  "different-token",
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	promise := NewPromise[string]()
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID:          msgID,
+		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		Promise:     promise,
+		LeaseToken:  "stale-token",
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+	}
+
+	// Ack should fail with ErrLeaseExpired.
+	err := delivery.Ack(ctx, fn.Ok("the result"))
+	require.ErrorIs(t, err, ErrLeaseExpired)
+
+	// Promise should NOT be completed (no result available yet).
+	promiseCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+
+	result := promise.Future().Await(promiseCtx)
+
+	// The await should time out because the promise was never completed.
+	require.Error(t, result.Err())
+}
+
+// TestPromiseCompletionDeferredInTxPath verifies that in the tx path, the
+// promise is only completed after ExecTx returns (i.e., after commit).
+func TestPromiseCompletionDeferredInTxPath(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg)
+
+	actor.Start()
+	defer actor.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(99)),
+	}
+
+	ctx := context.Background()
+	future := actor.Ref().Ask(ctx, msg)
+
+	// Wait for result with timeout.
+	resultCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	result := future.Await(resultCtx)
+
+	val, err := result.Unpack()
+	require.NoError(t, err)
+	require.Equal(t, 42, val)
+
+	// Transaction should have been used.
+	require.True(t, store.txExecuted.Load())
+}
+
+// TestPromiseNotCompletedOnTxFailure verifies that if the transaction fails,
+// the in-memory promise is NOT completed.
+func TestPromiseNotCompletedOnTxFailure(t *testing.T) {
+	t.Parallel()
+
+	store := newMockTxAwareStore()
+	store.txShouldFail = true
+	codec := newActorTestCodec()
+	behavior := newMockBehavior(fn.Ok(42))
+
+	cfg := DefaultDurableActorConfig("test-actor", behavior, store, codec)
+	cfg.PollInterval = 10 * time.Millisecond
+	actor := NewDurableActor(cfg)
+
+	actor.Start()
+	defer actor.Stop()
+
+	msg := &actorTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(99)),
+	}
+
+	ctx := context.Background()
+	future := actor.Ref().Ask(ctx, msg)
+
+	// Wait for tx failure + nack.
+	require.Eventually(t, func() bool {
+		return store.txExecuted.Load()
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return store.nackCalled.Load()
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	// The promise should NOT have been completed.
+	promiseCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	result := future.Await(promiseCtx)
+
+	// Should time out or get context error - not a real result.
+	require.Error(t, result.Err())
+}
+
+// TestDeliveryConcurrentExtendAndAck verifies that concurrent Extend and Ack
+// calls on a Delivery do not race. This test should be run with -race.
+// (Fix #4 from Codex review.)
+func TestDeliveryConcurrentExtendAndAck(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	msgID := "test-msg-1"
+	leaseToken := "test-lease-token"
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID:          msgID,
+		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+	}
+
+	// Run concurrent Extend calls alongside an Ack.
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	// Heartbeat-like goroutine that calls Extend.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				// Extend may return ErrAlreadyAcked after Ack
+				// completes, which is expected.
+				_ = delivery.Extend(ctx, 30*time.Second)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	// Also read LeaseRemaining and IsLeaseExpired concurrently.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = delivery.LeaseRemaining()
+				_ = delivery.IsLeaseExpired()
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	// Let the concurrent access run for a bit.
+	time.Sleep(20 * time.Millisecond)
+
+	// Ack on the main goroutine.
+	err := delivery.Ack(ctx, fn.Ok("success"))
+	require.NoError(t, err)
+
+	// Signal goroutines to stop.
+	close(done)
+	wg.Wait()
+}
+
+// TestDeliveryConcurrentExtendAndNack is the same as above but with Nack.
+func TestDeliveryConcurrentExtendAndNack(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+
+	msgID := "test-msg-1"
+	leaseToken := "test-lease-token"
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID:          msgID,
+		Message:     &testTLVMsg{Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42))},
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	// Heartbeat-like goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = delivery.Extend(ctx, 30*time.Second)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Nack on the main goroutine.
+	err := delivery.Nack(ctx, errors.New("error"), 5*time.Second)
+	require.NoError(t, err)
+
+	close(done)
+	wg.Wait()
+}
+
 // TestDurableAskWithMailboxFull tests DurableAsk behavior when mailbox is full.
 func TestDurableAskWithMailboxFull(t *testing.T) {
 	t.Parallel()

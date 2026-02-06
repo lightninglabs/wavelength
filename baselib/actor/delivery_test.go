@@ -37,6 +37,12 @@ type mockDeliveryStore struct {
 
 	// Error injection for testing.
 	injectError error
+
+	// injectOutboxError causes only EnqueueOutbox to fail.
+	injectOutboxError error
+
+	// injectEnqueueError causes only EnqueueMessage to fail.
+	injectEnqueueError error
 }
 
 func newMockDeliveryStore() *mockDeliveryStore {
@@ -54,8 +60,20 @@ func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context, params EnqueuePa
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.injectEnqueueError != nil {
+		return m.injectEnqueueError
+	}
+
 	if m.injectError != nil {
 		return m.injectError
+	}
+
+	// Match the ON CONFLICT (id) DO NOTHING semantics of the real SQL
+	// query: if a message with this ID already exists, silently succeed
+	// without overwriting. This enables receiver-side deduplication for
+	// outbox delivery retries.
+	if _, exists := m.messages[params.ID]; exists {
+		return nil
 	}
 
 	m.messages[params.ID] = &LeasedMessage{
@@ -271,6 +289,10 @@ func (m *mockDeliveryStore) DeleteAskResult(ctx context.Context, promiseID strin
 func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context, params OutboxParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.injectOutboxError != nil {
+		return m.injectOutboxError
+	}
 
 	if m.injectError != nil {
 		return m.injectError

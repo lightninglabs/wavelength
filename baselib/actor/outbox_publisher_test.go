@@ -66,6 +66,7 @@ type mockSystem struct {
 	tellCalls []struct {
 		target string
 		msg    Message
+		ctx    context.Context
 	}
 
 	// tellError is returned from Tell if non-nil.
@@ -117,9 +118,11 @@ func (r *mockActorRef) Tell(ctx context.Context, msg Message) error {
 	r.system.tellCalls = append(r.system.tellCalls, struct {
 		target string
 		msg    Message
+		ctx    context.Context
 	}{
 		target: r.target,
 		msg:    msg,
+		ctx:    ctx,
 	})
 
 	return r.system.tellError
@@ -418,6 +421,68 @@ func TestOutboxPublisherPublishPending(t *testing.T) {
 	// Message should be delivered immediately.
 	system.mu.Lock()
 	require.Len(t, system.tellCalls, 1)
+	system.mu.Unlock()
+}
+
+// TestOutboxPublisherPropagatesOutboxID verifies that the OutboxPublisher
+// injects the outbox message ID into the context when calling Tell on the
+// target actor. This is the publisher-side half of the receiver-side
+// deduplication mechanism: the outbox row ID flows through context → Tell →
+// DurableMailbox.Send → EnqueueMessage, so retry deliveries produce the same
+// inbox message ID and the ON CONFLICT clause deduplicates them.
+// (Fix #2 from Codex review.)
+func TestOutboxPublisherPropagatesOutboxID(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newOutboxTestCodec()
+	system := newMockSystem()
+
+	// Create an outbox message with a known ID.
+	msg := &outboxTestMsg{
+		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(99)),
+	}
+	payload, err := codec.Encode(msg)
+	require.NoError(t, err)
+
+	outboxID := "outbox-dedup-42"
+	outboxMsg := &OutboxMessage{
+		ID:            outboxID,
+		SourceActorID: "source-actor",
+		TargetActorID: "target-actor",
+		MessageType:   msg.MessageType(),
+		Payload:       payload,
+		Status:        "pending",
+	}
+
+	store.mu.Lock()
+	store.outbox[outboxMsg.ID] = outboxMsg
+	store.mu.Unlock()
+
+	cfg := DefaultOutboxPublisherConfig(store, codec, system)
+	cfg.PollInterval = 10 * time.Millisecond
+	publisher := NewOutboxPublisher(cfg)
+
+	publisher.Start()
+	defer publisher.Stop()
+
+	// Wait for the message to be delivered.
+	require.Eventually(t, func() bool {
+		system.mu.Lock()
+		defer system.mu.Unlock()
+		return len(system.tellCalls) > 0
+	}, 500*time.Millisecond, 10*time.Millisecond)
+
+	// Verify the context passed to Tell carries the outbox message ID.
+	system.mu.Lock()
+	require.Len(t, system.tellCalls, 1)
+
+	call := system.tellCalls[0]
+	propagatedID, ok := OutboxIDFromContext(call.ctx)
+	require.True(t, ok,
+		"Tell context should carry outbox ID")
+	require.Equal(t, outboxID, propagatedID,
+		"propagated outbox ID should match original")
 	system.mu.Unlock()
 }
 
