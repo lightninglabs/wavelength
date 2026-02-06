@@ -81,6 +81,17 @@ Feature: Unroller - VTXO Tree Unrolling
     When the current block height reaches 1144
     Then the unroll status should transition to "complete"
 
+  Scenario: Verify submitted packages have correct 1P1C structure
+    Given a VTXO with a 2-level tree
+    When I request unroll for the VTXO
+    Then the chain source should have received 1 package submission
+    And each submitted package should be a valid 1P1C package
+    And submitted package 1 should match level 0 of the tree
+    When level 0 transactions confirm
+    Then the chain source should have received 2 package submissions
+    And each submitted package should be a valid 1P1C package
+    And submitted package 2 should match level 1 of the tree
+
   Scenario: Handle missing VTXO in database
     Given a VTXO outpoint that does not exist in the database
     When I request unroll for the non-existent VTXO

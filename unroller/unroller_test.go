@@ -829,6 +829,122 @@ func (ctx *unrollerGodogContext) theUnrollStatusShouldTransitionTo(
 	return ctx.theUnrollStatusShouldBe(status)
 }
 
+// Step: Then the chain source should have received N package submissions.
+func (ctx *unrollerGodogContext) theChainSourceShouldHaveReceivedNPackageSubmissions(
+	n int,
+) error {
+
+	ctx.chainSource.mu.Lock()
+	actual := len(ctx.chainSource.submittedPackages)
+	ctx.chainSource.mu.Unlock()
+
+	require.GreaterOrEqual(ctx.t, actual, n,
+		"expected at least %d package submissions, got %d",
+		n, actual)
+
+	return nil
+}
+
+// Step: Then each submitted package should be a valid 1P1C package.
+func (ctx *unrollerGodogContext) eachSubmittedPackageShouldBeAValid1P1CPackage() error {
+	ctx.chainSource.mu.Lock()
+	packages := ctx.chainSource.submittedPackages
+	ctx.chainSource.mu.Unlock()
+
+	require.NotEmpty(ctx.t, packages,
+		"no packages submitted")
+
+	for i, pkg := range packages {
+		// Exactly 1 parent transaction.
+		require.Len(ctx.t, pkg.Parents, 1,
+			"package %d: expected 1 parent", i)
+
+		parent := pkg.Parents[0]
+
+		// Non-nil child transaction.
+		require.NotNil(ctx.t, pkg.Child,
+			"package %d: child is nil", i)
+
+		child := pkg.Child
+
+		// Both parent and child are V3 transactions.
+		require.Equal(ctx.t, int32(3), parent.Version,
+			"package %d: parent version", i)
+
+		require.Equal(ctx.t, int32(3), child.Version,
+			"package %d: child version", i)
+
+		// Parent's last output is a P2A anchor (4 bytes:
+		// OP_1 OP_PUSHBYTES_2 0x4e73).
+		lastOut := parent.TxOut[len(parent.TxOut)-1]
+		p2aScript := []byte{0x51, 0x02, 0x4e, 0x73}
+
+		require.Equal(ctx.t, p2aScript, lastOut.PkScript,
+			"package %d: parent anchor pkScript", i)
+
+		// Child has exactly 2 inputs: anchor + wallet UTXO.
+		require.Len(ctx.t, child.TxIn, 2,
+			"package %d: child input count", i)
+
+		// Child input 0 spends the parent's anchor output.
+		anchorIdx := uint32(len(parent.TxOut) - 1)
+		parentTxid := parent.TxHash()
+
+		require.Equal(ctx.t, parentTxid,
+			child.TxIn[0].PreviousOutPoint.Hash,
+			"package %d: child anchor input txid", i)
+
+		require.Equal(ctx.t, anchorIdx,
+			child.TxIn[0].PreviousOutPoint.Index,
+			"package %d: child anchor input index", i)
+	}
+
+	return nil
+}
+
+// Step: Then submitted package N should match level N of the tree.
+func (ctx *unrollerGodogContext) submittedPackageNShouldMatchTreeLevelN(
+	pkg, level int,
+) error {
+
+	vtxo := ctx.vtxos["vtxo1"]
+	require.NotNil(ctx.t, vtxo)
+
+	levelOrder, err := extractLevelOrder(vtxo.TreePath)
+	require.NoError(ctx.t, err)
+
+	require.Less(ctx.t, level, len(levelOrder),
+		"level %d out of range (tree has %d levels)",
+		level, len(levelOrder))
+
+	ctx.chainSource.mu.Lock()
+	packages := ctx.chainSource.submittedPackages
+	ctx.chainSource.mu.Unlock()
+
+	// Package numbers are 1-based in the gherkin step.
+	idx := pkg - 1
+
+	require.Less(ctx.t, idx, len(packages),
+		"package %d not found (only %d submitted)",
+		pkg, len(packages))
+
+	submitted := packages[idx]
+
+	require.Len(ctx.t, submitted.Parents, 1,
+		"package %d: expected 1 parent", pkg)
+
+	// The parent txid should match the tree node txid at
+	// the specified level.
+	parentTxid := submitted.Parents[0].TxHash()
+	expectedTxid := levelOrder[level].Txids[0]
+
+	require.Equal(ctx.t, expectedTxid, parentTxid,
+		"package %d parent txid should match level %d "+
+			"tree node", pkg, level)
+
+	return nil
+}
+
 // Helper: Parse string status to UnrollStatus.
 func parseUnrollStatus(status string) UnrollStatus {
 	switch status {
@@ -944,6 +1060,15 @@ func TestUnrollerBDD(t *testing.T) {
 			sc.Then(
 				`^confirmation subscriptions should be re-registered$`,
 				ctx.confirmationSubscriptionsShouldBeReRegistered)
+			sc.Then(
+				`^the chain source should have received (\d+) package submissions?$`,
+				ctx.theChainSourceShouldHaveReceivedNPackageSubmissions)
+			sc.Then(
+				`^each submitted package should be a valid 1P1C package$`,
+				ctx.eachSubmittedPackageShouldBeAValid1P1CPackage)
+			sc.Then(
+				`^submitted package (\d+) should match level (\d+) of the tree$`,
+				ctx.submittedPackageNShouldMatchTreeLevelN)
 		},
 		Options: &godog.Options{
 			Format:   "pretty",

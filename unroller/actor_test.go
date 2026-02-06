@@ -178,6 +178,13 @@ func (m *mockWalletKit) FinalizePsbt(_ context.Context,
 // Compile-time check that mockWalletKit satisfies WalletKit.
 var _ WalletKit = (*mockWalletKit)(nil)
 
+// submittedPackage captures the contents of a SubmitPackageRequest
+// for verification in tests.
+type submittedPackage struct {
+	Parents []*wire.MsgTx
+	Child   *wire.MsgTx
+}
+
 // mockChainSourceRef implements a mock chain source actor ref for
 // testing. Handles FeeEstimateRequest and SubmitPackageRequest (for
 // broadcastLevel) and forwards Tell messages for confirmation/epoch
@@ -192,6 +199,10 @@ type mockChainSourceRef struct {
 
 	// submitErr is returned by SubmitPackageRequest when non-nil.
 	submitErr error
+
+	// submittedPackages records every SubmitPackageRequest for
+	// post-hoc verification of package structure.
+	submittedPackages []submittedPackage
 }
 
 // newMockChainSourceRef creates a new mock chain source actor ref.
@@ -216,8 +227,10 @@ func (m *mockChainSourceRef) Ask(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	switch msg.(type) {
+	switch req := msg.(type) {
 	case *chainsource.FeeEstimateRequest:
+		_ = req
+
 		return &mockFuture[chainsource.ChainSourceResp]{
 			result: fn.Ok[chainsource.ChainSourceResp](
 				&chainsource.FeeEstimateResponse{
@@ -236,6 +249,14 @@ func (m *mockChainSourceRef) Ask(
 		}
 
 	case *chainsource.SubmitPackageRequest:
+		// Record the package for post-hoc verification.
+		m.submittedPackages = append(m.submittedPackages,
+			submittedPackage{
+				Parents: req.Parents,
+				Child:   req.Child,
+			},
+		)
+
 		if m.submitErr != nil {
 			return &mockFuture[chainsource.ChainSourceResp]{
 				result: fn.Err[chainsource.ChainSourceResp](
