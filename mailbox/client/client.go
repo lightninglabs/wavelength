@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
+const errMalformedResponseBody = "failed to unmarshal response body: %w"
+
 // Client implements mailboxrpc.RPCClient by sending and receiving mailbox
 // envelopes through a mailboxpb.MailboxServiceClient.
 type Client struct {
@@ -171,7 +173,7 @@ func (c *Client) AwaitRPC(ctx context.Context, correlationID string,
 				DiscardUnknown: true,
 			}).Unmarshal(data, resp)
 			if err != nil {
-				return err
+				return fmt.Errorf(errMalformedResponseBody, err)
 			}
 
 			c.deletePending(correlationID)
