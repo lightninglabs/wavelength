@@ -313,7 +313,10 @@ func (m *mockDeliveryStore) EnqueueOutbox(ctx context.Context, params OutboxPara
 	return nil
 }
 
-func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context, limit int) ([]OutboxMessage, error) {
+func (m *mockDeliveryStore) ClaimOutboxBatch(
+	ctx context.Context, params OutboxClaimParams,
+) ([]OutboxMessage, error) {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -325,9 +328,10 @@ func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context, limit int) ([]
 	for _, msg := range m.outbox {
 		if msg.Status == "pending" {
 			msg.DeliveryAttempts++
+			msg.ClaimToken = params.ClaimToken
 			result = append(result, *msg)
 
-			if len(result) >= limit {
+			if len(result) >= params.Limit {
 				break
 			}
 		}
@@ -336,7 +340,10 @@ func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context, limit int) ([]
 	return result, nil
 }
 
-func (m *mockDeliveryStore) CompleteOutbox(ctx context.Context, id string) error {
+func (m *mockDeliveryStore) CompleteOutbox(
+	ctx context.Context, id, claimToken string,
+) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -347,7 +354,10 @@ func (m *mockDeliveryStore) CompleteOutbox(ctx context.Context, id string) error
 	return nil
 }
 
-func (m *mockDeliveryStore) FailOutbox(ctx context.Context, id string) error {
+func (m *mockDeliveryStore) FailOutbox(
+	ctx context.Context, id, claimToken string,
+) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

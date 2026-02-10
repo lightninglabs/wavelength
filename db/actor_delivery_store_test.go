@@ -375,17 +375,27 @@ func TestActorDeliveryStoreOutbox(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Claim a batch.
-	batch, err := store.ClaimOutboxBatch(ctx, 10)
+	// Claim a batch with a claim token and lease duration.
+	claimToken := "test-claim-token"
+	batch, err := store.ClaimOutboxBatch(ctx, actor.OutboxClaimParams{
+		Limit:         10,
+		ClaimToken:    claimToken,
+		ClaimDuration: 30 * time.Second,
+	})
 	require.NoError(t, err)
 	require.Len(t, batch, 3)
 
-	// Complete one.
-	err = store.CompleteOutbox(ctx, batch[0].ID)
+	// Verify claim token is set on returned messages.
+	for _, msg := range batch {
+		require.Equal(t, claimToken, msg.ClaimToken)
+	}
+
+	// Complete one with matching claim token.
+	err = store.CompleteOutbox(ctx, batch[0].ID, claimToken)
 	require.NoError(t, err)
 
-	// Fail another.
-	err = store.FailOutbox(ctx, batch[1].ID)
+	// Fail another with matching claim token.
+	err = store.FailOutbox(ctx, batch[1].ID, claimToken)
 	require.NoError(t, err)
 }
 

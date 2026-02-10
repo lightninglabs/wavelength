@@ -25,6 +25,7 @@ type (
 	NackMailboxParams      = sqlc.NackMailboxMessageParams
 	ExtendMailboxParams    = sqlc.ExtendMailboxLeaseParams
 	InsertAskResultParams  = sqlc.InsertAskResultParams
+	ClaimOutboxBatchParams = sqlc.ClaimOutboxBatchParams
 	CompleteOutboxParams   = sqlc.CompleteOutboxMessageParams
 	FailOutboxParams       = sqlc.FailOutboxMessageParams
 	MarkProcessedParams    = sqlc.MarkMessageProcessedParams
@@ -57,7 +58,7 @@ type ActorDeliveryQueries interface {
 		ctx context.Context, arg ExtendMailboxParams,
 	) (int64, error)
 	DeleteMailboxMessage(ctx context.Context, id string) error
-	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt32) error
+	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 
 	// Ask result operations.
 	InsertAskResult(ctx context.Context, arg InsertAskResultParams) error
@@ -68,7 +69,7 @@ type ActorDeliveryQueries interface {
 	// Outbox operations.
 	EnqueueOutboxMessage(ctx context.Context, arg EnqueueOutboxParams) error
 	ClaimOutboxBatch(ctx context.Context,
-		limit int32) ([]OutboxMsgRow, error)
+		arg ClaimOutboxBatchParams) ([]OutboxMsgRow, error)
 	CompleteOutboxMessage(ctx context.Context,
 		arg CompleteOutboxParams) error
 	FailOutboxMessage(ctx context.Context, arg FailOutboxParams) error
@@ -96,8 +97,8 @@ type ActorDeliveryQueries interface {
 
 	// Cleanup operations.
 	CleanupExpiredProcessedMessages(ctx context.Context,
-		expiresAt int32) error
-	CleanupExpiredAskResults(ctx context.Context, expiresAt int32) error
+		expiresAt int64) error
+	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
 }
 
 // BatchedActorDeliveryQueries combines ActorDeliveryQueries with transaction
@@ -137,7 +138,7 @@ func (s *ActorDeliveryStore) EnqueueMessage(
 
 	return s.db.ExecTx(ctx, writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			createdAt := int32(s.clock.Now().Unix())
+			createdAt := s.clock.Now().Unix()
 
 			return q.EnqueueMailboxMessage(
 				ctx,
@@ -155,10 +156,8 @@ func (s *ActorDeliveryStore) EnqueueMessage(
 					CorrelationID: toNullString(
 						params.CorrelationID,
 					),
-					Priority: int32(params.Priority),
-					AvailableAt: int32(
-						params.AvailableAt.Unix(),
-					),
+					Priority:    int32(params.Priority),
+					AvailableAt: params.AvailableAt.Unix(),
 					MaxAttempts: int32(params.MaxAttempts),
 					CreatedAt:   createdAt,
 				},
@@ -190,10 +189,10 @@ func (s *ActorDeliveryStore) LeaseNextMessage(
 					LeaseToken: toNullString(
 						leaseToken,
 					),
-					LeaseUntil: toNullInt32(
-						int32(leaseUntil.Unix()),
+					LeaseUntil: toNullInt64(
+						leaseUntil.Unix(),
 					),
-					AvailableAt: int32(now.Unix()),
+					AvailableAt: now.Unix(),
 				},
 			)
 			if err != nil {
@@ -206,8 +205,8 @@ func (s *ActorDeliveryStore) LeaseNextMessage(
 
 			callbackActorID := fromNullString(msg.CallbackActorID)
 			correlationID := fromNullString(msg.CorrelationID)
-			leaseUntilTime := fromNullInt32Time(msg.LeaseUntil)
-			createdAt := time.Unix(int64(msg.CreatedAt), 0)
+			leaseUntilTime := fromNullInt64Time(msg.LeaseUntil)
+			createdAt := time.Unix(msg.CreatedAt, 0)
 
 			result = &actor.LeasedMessage{
 				ID:              msg.ID,
@@ -278,7 +277,7 @@ func (s *ActorDeliveryStore) NackMessage(
 			rows, err = q.NackMailboxMessage(ctx, NackMailboxParams{
 				ID:          id,
 				LeaseToken:  toNullString(leaseToken),
-				AvailableAt: int32(availableAt.Unix()),
+				AvailableAt: availableAt.Unix(),
 			})
 
 			return err
@@ -311,8 +310,8 @@ func (s *ActorDeliveryStore) ExtendLease(
 				ExtendMailboxParams{
 					ID:         id,
 					LeaseToken: toNullString(leaseToken),
-					LeaseUntil: toNullInt32(
-						int32(leaseUntil.Unix()),
+					LeaseUntil: toNullInt64(
+						leaseUntil.Unix(),
 					),
 				},
 			)
@@ -335,7 +334,7 @@ func (s *ActorDeliveryStore) MoveToDeadLetter(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			createdAt := int32(s.clock.Now().Unix())
+			createdAt := s.clock.Now().Unix()
 
 			// First, move to dead letter.
 			err := q.MoveMailboxToDeadLetter(
@@ -387,8 +386,8 @@ func (s *ActorDeliveryStore) SaveAskResult(
 				PromiseID:  params.PromiseID,
 				ResultBlob: params.ResultBlob,
 				ErrorText:  toNullString(params.ErrorText),
-				CreatedAt:  int32(s.clock.Now().Unix()),
-				ExpiresAt:  int32(params.ExpiresAt.Unix()),
+				CreatedAt:  s.clock.Now().Unix(),
+				ExpiresAt:  params.ExpiresAt.Unix(),
 			})
 		},
 	)
@@ -417,8 +416,8 @@ func (s *ActorDeliveryStore) GetAskResult(
 			PromiseID:  row.PromiseID,
 			ResultBlob: row.ResultBlob,
 			ErrorText:  fromNullString(row.ErrorText),
-			CreatedAt:  time.Unix(int64(row.CreatedAt), 0),
-			ExpiresAt:  time.Unix(int64(row.ExpiresAt), 0),
+			CreatedAt:  time.Unix(row.CreatedAt, 0),
+			ExpiresAt:  time.Unix(row.ExpiresAt, 0),
 		}
 
 		return nil
@@ -462,7 +461,7 @@ func (s *ActorDeliveryStore) EnqueueOutbox(
 				Payload:       params.Payload,
 				DomainKey:     toNullString(params.DomainKey),
 				Version:       int32(params.Version),
-				CreatedAt:     int32(s.clock.Now().Unix()),
+				CreatedAt:     s.clock.Now().Unix(),
 			})
 		},
 	)
@@ -470,7 +469,7 @@ func (s *ActorDeliveryStore) EnqueueOutbox(
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
 func (s *ActorDeliveryStore) ClaimOutboxBatch(
-	ctx context.Context, limit int,
+	ctx context.Context, params actor.OutboxClaimParams,
 ) ([]actor.OutboxMessage, error) {
 
 	writeTxOpts := WriteTxOption()
@@ -481,28 +480,47 @@ func (s *ActorDeliveryStore) ClaimOutboxBatch(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			rows, err := q.ClaimOutboxBatch(ctx, int32(limit))
+			now := s.clock.Now()
+			claimedUntil := now.Add(params.ClaimDuration)
+
+			rows, err := q.ClaimOutboxBatch(
+				ctx, ClaimOutboxBatchParams{
+					Limit: int32(params.Limit),
+					ClaimToken: toNullString(
+						params.ClaimToken,
+					),
+					ClaimedUntil: toNullInt64(
+						claimedUntil.Unix(),
+					),
+					ClaimedUntil_2: toNullInt64(
+						now.Unix(),
+					),
+				},
+			)
 			if err != nil {
 				return err
 			}
 
 			result = make([]actor.OutboxMessage, len(rows))
 			for i, row := range rows {
-				createdAt := time.Unix(int64(row.CreatedAt), 0)
-				domainKey := fromNullString(row.DomainKey)
-				deliveryAttempts := int(row.DeliveryAttempts)
-
 				result[i] = actor.OutboxMessage{
-					ID:               row.ID,
-					SourceActorID:    row.SourceActorID,
-					TargetActorID:    row.TargetActorID,
-					MessageType:      row.MessageType,
-					Payload:          row.Payload,
-					DomainKey:        domainKey,
-					Version:          int64(row.Version),
-					Status:           row.Status,
-					DeliveryAttempts: deliveryAttempts,
-					CreatedAt:        createdAt,
+					ID:            row.ID,
+					SourceActorID: row.SourceActorID,
+					TargetActorID: row.TargetActorID,
+					MessageType:   row.MessageType,
+					Payload:       row.Payload,
+					DomainKey: fromNullString(
+						row.DomainKey,
+					),
+					Version: int64(row.Version),
+					Status:  row.Status,
+					DeliveryAttempts: int(
+						row.DeliveryAttempts,
+					),
+					ClaimToken: fromNullString(
+						row.ClaimToken,
+					),
+					CreatedAt: time.Unix(row.CreatedAt, 0),
 				}
 			}
 
@@ -513,9 +531,10 @@ func (s *ActorDeliveryStore) ClaimOutboxBatch(
 	return result, err
 }
 
-// CompleteOutbox marks an outbox message as successfully delivered.
+// CompleteOutbox marks an outbox message as successfully delivered. The
+// claim token must match the token set during ClaimOutboxBatch.
 func (s *ActorDeliveryStore) CompleteOutbox(
-	ctx context.Context, id string,
+	ctx context.Context, id, claimToken string,
 ) error {
 
 	writeTxOpts := WriteTxOption()
@@ -528,8 +547,11 @@ func (s *ActorDeliveryStore) CompleteOutbox(
 				ctx,
 				CompleteOutboxParams{
 					ID: id,
-					CompletedAt: toNullInt32(
-						int32(s.clock.Now().Unix()),
+					CompletedAt: toNullInt64(
+						s.clock.Now().Unix(),
+					),
+					ClaimToken: toNullString(
+						claimToken,
 					),
 				},
 			)
@@ -537,9 +559,10 @@ func (s *ActorDeliveryStore) CompleteOutbox(
 	)
 }
 
-// FailOutbox marks an outbox message as failed (dead letter).
+// FailOutbox marks an outbox message as failed (dead letter). The claim
+// token must match the token set during ClaimOutboxBatch.
 func (s *ActorDeliveryStore) FailOutbox(
-	ctx context.Context, id string,
+	ctx context.Context, id, claimToken string,
 ) error {
 
 	writeTxOpts := WriteTxOption()
@@ -550,9 +573,10 @@ func (s *ActorDeliveryStore) FailOutbox(
 		func(q ActorDeliveryQueries) error {
 			return q.FailOutboxMessage(ctx, FailOutboxParams{
 				ID: id,
-				CompletedAt: toNullInt32(
-					int32(s.clock.Now().Unix()),
+				CompletedAt: toNullInt64(
+					s.clock.Now().Unix(),
 				),
+				ClaimToken: toNullString(claimToken),
 			})
 		},
 	)
@@ -596,8 +620,8 @@ func (s *ActorDeliveryStore) MarkProcessed(
 			return q.MarkMessageProcessed(ctx, MarkProcessedParams{
 				ID:          id,
 				ActorID:     actorID,
-				ProcessedAt: int32(now.Unix()),
-				ExpiresAt:   int32(expiresAt.Unix()),
+				ProcessedAt: now.Unix(),
+				ExpiresAt:   expiresAt.Unix(),
 			})
 		},
 	)
@@ -619,7 +643,7 @@ func (s *ActorDeliveryStore) SaveCheckpoint(
 				StateType: params.StateType,
 				StateData: params.StateData,
 				Version:   int32(params.Version),
-				UpdatedAt: int32(s.clock.Now().Unix()),
+				UpdatedAt: s.clock.Now().Unix(),
 			})
 		},
 	)
@@ -649,7 +673,7 @@ func (s *ActorDeliveryStore) LoadCheckpoint(
 			StateType: row.StateType,
 			StateData: row.StateData,
 			Version:   int64(row.Version),
-			UpdatedAt: time.Unix(int64(row.UpdatedAt), 0),
+			UpdatedAt: time.Unix(row.UpdatedAt, 0),
 		}
 
 		return nil
@@ -701,7 +725,7 @@ func (s *ActorDeliveryStore) GetDeadLetter(
 			Payload:       row.Payload,
 			FailureReason: row.FailureReason,
 			Attempts:      int(row.Attempts),
-			CreatedAt:     time.Unix(int64(row.CreatedAt), 0),
+			CreatedAt:     time.Unix(row.CreatedAt, 0),
 		}
 
 		return nil
@@ -733,7 +757,7 @@ func (s *ActorDeliveryStore) ListDeadLetters(
 
 		result = make([]actor.DeadLetter, len(rows))
 		for i, row := range rows {
-			createdAt := time.Unix(int64(row.CreatedAt), 0)
+			createdAt := time.Unix(row.CreatedAt, 0)
 
 			result[i] = actor.DeadLetter{
 				ID:            row.ID,
@@ -778,7 +802,7 @@ func (s *ActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
 			return q.ExpireMailboxLeases(
-				ctx, toNullInt32(int32(s.clock.Now().Unix())),
+				ctx, toNullInt64(s.clock.Now().Unix()),
 			)
 		},
 	)
@@ -792,7 +816,7 @@ func (s *ActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			now := int32(s.clock.Now().Unix())
+			now := s.clock.Now().Unix()
 
 			// Cleanup expired deduplication entries.
 			if err := q.CleanupExpiredProcessedMessages(
@@ -827,18 +851,18 @@ func fromNullString(ns sql.NullString) string {
 	return ns.String
 }
 
-// toNullInt32 converts an int32 to sql.NullInt32.
-func toNullInt32(i int32) sql.NullInt32 {
-	return sql.NullInt32{Int32: i, Valid: true}
+// toNullInt64 converts an int64 to sql.NullInt64.
+func toNullInt64(i int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: i, Valid: true}
 }
 
-// fromNullInt32Time converts sql.NullInt32 (Unix timestamp) to time.Time.
-func fromNullInt32Time(ni sql.NullInt32) time.Time {
+// fromNullInt64Time converts sql.NullInt64 (Unix timestamp) to time.Time.
+func fromNullInt64Time(ni sql.NullInt64) time.Time {
 	if !ni.Valid {
 		return time.Time{}
 	}
 
-	return time.Unix(int64(ni.Int32), 0)
+	return time.Unix(ni.Int64, 0)
 }
 
 // TxActorDeliveryStore is a transaction-scoped version of ActorDeliveryStore.
@@ -881,9 +905,9 @@ func (s *TxActorDeliveryStore) EnqueueMessage(
 		CallbackActorID: toNullString(params.CallbackActorID),
 		CorrelationID:   toNullString(params.CorrelationID),
 		Priority:        int32(params.Priority),
-		AvailableAt:     int32(params.AvailableAt.Unix()),
+		AvailableAt:     params.AvailableAt.Unix(),
 		MaxAttempts:     int32(params.MaxAttempts),
-		CreatedAt:       int32(s.clock.Now().Unix()),
+		CreatedAt:       s.clock.Now().Unix(),
 	})
 }
 
@@ -901,8 +925,8 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(
 	msg, err := s.querier.LeaseNextMailboxMessage(ctx, LeaseMailboxParams{
 		MailboxID:   mailboxID,
 		LeaseToken:  toNullString(leaseToken),
-		LeaseUntil:  toNullInt32(int32(leaseUntil.Unix())),
-		AvailableAt: int32(now.Unix()),
+		LeaseUntil:  toNullInt64(leaseUntil.Unix()),
+		AvailableAt: now.Unix(),
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -922,10 +946,10 @@ func (s *TxActorDeliveryStore) LeaseNextMessage(
 		CorrelationID:   fromNullString(msg.CorrelationID),
 		Priority:        int(msg.Priority),
 		LeaseToken:      fromNullString(msg.LeaseToken),
-		LeaseUntil:      fromNullInt32Time(msg.LeaseUntil),
+		LeaseUntil:      fromNullInt64Time(msg.LeaseUntil),
 		Attempts:        int(msg.Attempts),
 		MaxAttempts:     int(msg.MaxAttempts),
-		CreatedAt:       time.Unix(int64(msg.CreatedAt), 0),
+		CreatedAt:       time.Unix(msg.CreatedAt, 0),
 	}, nil
 }
 
@@ -952,7 +976,7 @@ func (s *TxActorDeliveryStore) NackMessage(
 	return s.querier.NackMailboxMessage(ctx, NackMailboxParams{
 		ID:          id,
 		LeaseToken:  toNullString(leaseToken),
-		AvailableAt: int32(availableAt.Unix()),
+		AvailableAt: availableAt.Unix(),
 	})
 }
 
@@ -968,7 +992,7 @@ func (s *TxActorDeliveryStore) ExtendLease(
 	return s.querier.ExtendMailboxLease(ctx, ExtendMailboxParams{
 		ID:         id,
 		LeaseToken: toNullString(leaseToken),
-		LeaseUntil: toNullInt32(int32(leaseUntil.Unix())),
+		LeaseUntil: toNullInt64(leaseUntil.Unix()),
 	})
 }
 
@@ -980,7 +1004,7 @@ func (s *TxActorDeliveryStore) MoveToDeadLetter(
 	err := s.querier.MoveMailboxToDeadLetter(ctx, DeadLetterInsertParams{
 		ID:            id,
 		FailureReason: reason,
-		CreatedAt:     int32(s.clock.Now().Unix()),
+		CreatedAt:     s.clock.Now().Unix(),
 	})
 	if err != nil {
 		return err
@@ -1006,8 +1030,8 @@ func (s *TxActorDeliveryStore) SaveAskResult(
 		PromiseID:  params.PromiseID,
 		ResultBlob: params.ResultBlob,
 		ErrorText:  toNullString(params.ErrorText),
-		CreatedAt:  int32(s.clock.Now().Unix()),
-		ExpiresAt:  int32(params.ExpiresAt.Unix()),
+		CreatedAt:  s.clock.Now().Unix(),
+		ExpiresAt:  params.ExpiresAt.Unix(),
 	})
 }
 
@@ -1029,8 +1053,8 @@ func (s *TxActorDeliveryStore) GetAskResult(
 		PromiseID:  row.PromiseID,
 		ResultBlob: row.ResultBlob,
 		ErrorText:  fromNullString(row.ErrorText),
-		CreatedAt:  time.Unix(int64(row.CreatedAt), 0),
-		ExpiresAt:  time.Unix(int64(row.ExpiresAt), 0),
+		CreatedAt:  time.Unix(row.CreatedAt, 0),
+		ExpiresAt:  time.Unix(row.ExpiresAt, 0),
 	}, nil
 }
 
@@ -1055,16 +1079,26 @@ func (s *TxActorDeliveryStore) EnqueueOutbox(
 		Payload:       params.Payload,
 		DomainKey:     toNullString(params.DomainKey),
 		Version:       int32(params.Version),
-		CreatedAt:     int32(s.clock.Now().Unix()),
+		CreatedAt:     s.clock.Now().Unix(),
 	})
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
 func (s *TxActorDeliveryStore) ClaimOutboxBatch(
-	ctx context.Context, limit int,
+	ctx context.Context, params actor.OutboxClaimParams,
 ) ([]actor.OutboxMessage, error) {
 
-	rows, err := s.querier.ClaimOutboxBatch(ctx, int32(limit))
+	now := s.clock.Now()
+	claimedUntil := now.Add(params.ClaimDuration)
+
+	rows, err := s.querier.ClaimOutboxBatch(
+		ctx, ClaimOutboxBatchParams{
+			Limit:          int32(params.Limit),
+			ClaimToken:     toNullString(params.ClaimToken),
+			ClaimedUntil:   toNullInt64(claimedUntil.Unix()),
+			ClaimedUntil_2: toNullInt64(now.Unix()),
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1081,32 +1115,36 @@ func (s *TxActorDeliveryStore) ClaimOutboxBatch(
 			Version:          int64(row.Version),
 			Status:           row.Status,
 			DeliveryAttempts: int(row.DeliveryAttempts),
-			CreatedAt:        time.Unix(int64(row.CreatedAt), 0),
+			ClaimToken:       fromNullString(row.ClaimToken),
+			CreatedAt:        time.Unix(row.CreatedAt, 0),
 		}
 	}
 
 	return result, nil
 }
 
-// CompleteOutbox marks an outbox message as successfully delivered.
+// CompleteOutbox marks an outbox message as successfully delivered. The
+// claim token must match the token set during ClaimOutboxBatch.
 func (s *TxActorDeliveryStore) CompleteOutbox(
-	ctx context.Context, id string,
+	ctx context.Context, id, claimToken string,
 ) error {
 
 	return s.querier.CompleteOutboxMessage(ctx, CompleteOutboxParams{
 		ID:          id,
-		CompletedAt: toNullInt32(int32(s.clock.Now().Unix())),
+		CompletedAt: toNullInt64(s.clock.Now().Unix()),
+		ClaimToken:  toNullString(claimToken),
 	})
 }
 
 // FailOutbox marks an outbox message as failed.
 func (s *TxActorDeliveryStore) FailOutbox(
-	ctx context.Context, id string,
+	ctx context.Context, id, claimToken string,
 ) error {
 
 	return s.querier.FailOutboxMessage(ctx, FailOutboxParams{
 		ID:          id,
-		CompletedAt: toNullInt32(int32(s.clock.Now().Unix())),
+		CompletedAt: toNullInt64(s.clock.Now().Unix()),
+		ClaimToken:  toNullString(claimToken),
 	})
 }
 
@@ -1131,8 +1169,8 @@ func (s *TxActorDeliveryStore) MarkProcessed(
 	return s.querier.MarkMessageProcessed(ctx, MarkProcessedParams{
 		ID:          id,
 		ActorID:     actorID,
-		ProcessedAt: int32(now.Unix()),
-		ExpiresAt:   int32(expiresAt.Unix()),
+		ProcessedAt: now.Unix(),
+		ExpiresAt:   expiresAt.Unix(),
 	})
 }
 
@@ -1146,7 +1184,7 @@ func (s *TxActorDeliveryStore) SaveCheckpoint(
 		StateType: params.StateType,
 		StateData: params.StateData,
 		Version:   int32(params.Version),
-		UpdatedAt: int32(s.clock.Now().Unix()),
+		UpdatedAt: s.clock.Now().Unix(),
 	})
 }
 
@@ -1169,7 +1207,7 @@ func (s *TxActorDeliveryStore) LoadCheckpoint(
 		StateType: row.StateType,
 		StateData: row.StateData,
 		Version:   int64(row.Version),
-		UpdatedAt: time.Unix(int64(row.UpdatedAt), 0),
+		UpdatedAt: time.Unix(row.UpdatedAt, 0),
 	}, nil
 }
 
@@ -1203,7 +1241,7 @@ func (s *TxActorDeliveryStore) GetDeadLetter(
 		Payload:       row.Payload,
 		FailureReason: row.FailureReason,
 		Attempts:      int(row.Attempts),
-		CreatedAt:     time.Unix(int64(row.CreatedAt), 0),
+		CreatedAt:     time.Unix(row.CreatedAt, 0),
 	}, nil
 }
 
@@ -1233,7 +1271,7 @@ func (s *TxActorDeliveryStore) ListDeadLetters(
 			Payload:       row.Payload,
 			FailureReason: row.FailureReason,
 			Attempts:      int(row.Attempts),
-			CreatedAt:     time.Unix(int64(row.CreatedAt), 0),
+			CreatedAt:     time.Unix(row.CreatedAt, 0),
 		}
 	}
 
@@ -1251,13 +1289,13 @@ func (s *TxActorDeliveryStore) DeleteDeadLetter(
 // ExpireLeases releases all expired leases so messages can be redelivered.
 func (s *TxActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 	return s.querier.ExpireMailboxLeases(
-		ctx, toNullInt32(int32(s.clock.Now().Unix())),
+		ctx, toNullInt64(s.clock.Now().Unix()),
 	)
 }
 
 // CleanupExpired removes expired deduplication entries and ask results.
 func (s *TxActorDeliveryStore) CleanupExpired(ctx context.Context) error {
-	now := int32(s.clock.Now().Unix())
+	now := s.clock.Now().Unix()
 
 	err := s.querier.CleanupExpiredProcessedMessages(ctx, now)
 	if err != nil {

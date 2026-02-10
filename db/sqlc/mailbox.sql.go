@@ -32,21 +32,36 @@ func (q *Queries) AckMailboxMessage(ctx context.Context, arg AckMailboxMessagePa
 
 const ClaimOutboxBatch = `-- name: ClaimOutboxBatch :many
 UPDATE outbox_messages
-SET delivery_attempts = delivery_attempts + 1
+SET delivery_attempts = delivery_attempts + 1,
+    claim_token = $2,
+    claimed_until = $3
 WHERE id IN (
-    SELECT id FROM outbox_messages
-    WHERE status = 'pending'
-    ORDER BY created_at ASC
+    SELECT o.id FROM outbox_messages o
+    WHERE o.status = 'pending'
+      AND (o.claimed_until IS NULL OR o.claimed_until < $4)
+    ORDER BY o.created_at ASC
     LIMIT $1
 )
-RETURNING id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, created_at, completed_at
+RETURNING id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at
 `
 
-// Claim a batch of pending outbox messages for delivery.
-// Updates status to 'pending' with incremented delivery_attempts.
-// Returns messages ordered by creation time.
-func (q *Queries) ClaimOutboxBatch(ctx context.Context, limit int32) ([]OutboxMessage, error) {
-	rows, err := q.db.QueryContext(ctx, ClaimOutboxBatch, limit)
+type ClaimOutboxBatchParams struct {
+	Limit          int32
+	ClaimToken     sql.NullString
+	ClaimedUntil   sql.NullInt64
+	ClaimedUntil_2 sql.NullInt64
+}
+
+// Claim a batch of pending outbox messages for delivery. Sets a claim token
+// and expiry to prevent concurrent publishers from processing the same messages.
+// Only selects rows that are unclaimed or whose claim has expired.
+func (q *Queries) ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxMessage, error) {
+	rows, err := q.db.QueryContext(ctx, ClaimOutboxBatch,
+		arg.Limit,
+		arg.ClaimToken,
+		arg.ClaimedUntil,
+		arg.ClaimedUntil_2,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +79,8 @@ func (q *Queries) ClaimOutboxBatch(ctx context.Context, limit int32) ([]OutboxMe
 			&i.Version,
 			&i.Status,
 			&i.DeliveryAttempts,
+			&i.ClaimToken,
+			&i.ClaimedUntil,
 			&i.CreatedAt,
 			&i.CompletedAt,
 		); err != nil {
@@ -85,7 +102,7 @@ DELETE FROM ask_results WHERE expires_at < $1
 `
 
 // Delete Ask results that have expired.
-func (q *Queries) CleanupExpiredAskResults(ctx context.Context, expiresAt int32) error {
+func (q *Queries) CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error {
 	_, err := q.db.ExecContext(ctx, CleanupExpiredAskResults, expiresAt)
 	return err
 }
@@ -95,7 +112,7 @@ DELETE FROM processed_messages WHERE expires_at < $1
 `
 
 // Delete expired deduplication entries.
-func (q *Queries) CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int32) error {
+func (q *Queries) CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int64) error {
 	_, err := q.db.ExecContext(ctx, CleanupExpiredProcessedMessages, expiresAt)
 	return err
 }
@@ -105,7 +122,7 @@ DELETE FROM dead_letters WHERE created_at < $1
 `
 
 // Delete dead letters older than a threshold.
-func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int32) error {
+func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int64) error {
 	_, err := q.db.ExecContext(ctx, CleanupOldDeadLetters, createdAt)
 	return err
 }
@@ -113,17 +130,19 @@ func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int32) er
 const CompleteOutboxMessage = `-- name: CompleteOutboxMessage :exec
 UPDATE outbox_messages
 SET status = 'completed', completed_at = $2
-WHERE id = $1
+WHERE id = $1 AND claim_token = $3
 `
 
 type CompleteOutboxMessageParams struct {
 	ID          string
-	CompletedAt sql.NullInt32
+	CompletedAt sql.NullInt64
+	ClaimToken  sql.NullString
 }
 
-// Mark an outbox message as successfully delivered.
+// Mark an outbox message as successfully delivered. The claim token must match
+// to prevent stale publishers from completing messages they no longer own.
 func (q *Queries) CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error {
-	_, err := q.db.ExecContext(ctx, CompleteOutboxMessage, arg.ID, arg.CompletedAt)
+	_, err := q.db.ExecContext(ctx, CompleteOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
 	return err
 }
 
@@ -147,7 +166,7 @@ WHERE mailbox_id = $1
 
 type CountPendingMailboxMessagesParams struct {
 	MailboxID  string
-	LeaseUntil sql.NullInt32
+	LeaseUntil sql.NullInt64
 }
 
 // Count pending messages for an actor's mailbox.
@@ -238,9 +257,9 @@ type EnqueueMailboxMessageParams struct {
 	CallbackActorID sql.NullString
 	CorrelationID   sql.NullString
 	Priority        int32
-	AvailableAt     int32
+	AvailableAt     int64
 	MaxAttempts     int32
-	CreatedAt       int32
+	CreatedAt       int64
 }
 
 // Durable mailbox queries.
@@ -293,7 +312,7 @@ type EnqueueOutboxMessageParams struct {
 	Payload       []byte
 	DomainKey     sql.NullString
 	Version       int32
-	CreatedAt     int32
+	CreatedAt     int64
 }
 
 // =============================================================================
@@ -325,7 +344,7 @@ WHERE lease_until IS NOT NULL AND lease_until < $1
 
 // Release all expired leases so messages can be redelivered.
 // Called periodically by a background cleanup task.
-func (q *Queries) ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt32) error {
+func (q *Queries) ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error {
 	_, err := q.db.ExecContext(ctx, ExpireMailboxLeases, leaseUntil)
 	return err
 }
@@ -339,7 +358,7 @@ WHERE id = $1 AND lease_token = $2
 type ExtendMailboxLeaseParams struct {
 	ID         string
 	LeaseToken sql.NullString
-	LeaseUntil sql.NullInt32
+	LeaseUntil sql.NullInt64
 }
 
 // Extend the lease for long-running message processing.
@@ -355,17 +374,19 @@ func (q *Queries) ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLease
 const FailOutboxMessage = `-- name: FailOutboxMessage :exec
 UPDATE outbox_messages
 SET status = 'dead_letter', completed_at = $2
-WHERE id = $1
+WHERE id = $1 AND claim_token = $3
 `
 
 type FailOutboxMessageParams struct {
 	ID          string
-	CompletedAt sql.NullInt32
+	CompletedAt sql.NullInt64
+	ClaimToken  sql.NullString
 }
 
-// Mark an outbox message as failed (dead letter).
+// Mark an outbox message as failed (dead letter). The claim token must match
+// to prevent stale publishers from failing messages they no longer own.
 func (q *Queries) FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) error {
-	_, err := q.db.ExecContext(ctx, FailOutboxMessage, arg.ID, arg.CompletedAt)
+	_, err := q.db.ExecContext(ctx, FailOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
 	return err
 }
 
@@ -458,7 +479,7 @@ func (q *Queries) GetMailboxMessage(ctx context.Context, id string) (MailboxMess
 }
 
 const GetOutboxMessage = `-- name: GetOutboxMessage :one
-SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, created_at, completed_at FROM outbox_messages WHERE id = $1
+SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at FROM outbox_messages WHERE id = $1
 `
 
 // Get a specific outbox message by ID.
@@ -475,6 +496,8 @@ func (q *Queries) GetOutboxMessage(ctx context.Context, id string) (OutboxMessag
 		&i.Version,
 		&i.Status,
 		&i.DeliveryAttempts,
+		&i.ClaimToken,
+		&i.ClaimedUntil,
 		&i.CreatedAt,
 		&i.CompletedAt,
 	)
@@ -492,8 +515,8 @@ type InsertAskResultParams struct {
 	PromiseID  string
 	ResultBlob []byte
 	ErrorText  sql.NullString
-	CreatedAt  int32
-	ExpiresAt  int32
+	CreatedAt  int64
+	ExpiresAt  int64
 }
 
 // =============================================================================
@@ -544,8 +567,8 @@ RETURNING id, mailbox_id, message_type, payload, promise_id, callback_actor_id, 
 type LeaseNextMailboxMessageParams struct {
 	MailboxID   string
 	LeaseToken  sql.NullString
-	LeaseUntil  sql.NullInt32
-	AvailableAt int32
+	LeaseUntil  sql.NullInt64
+	AvailableAt int64
 }
 
 // Atomically claim the next available message for processing.
@@ -751,7 +774,7 @@ func (q *Queries) ListMailboxMessagesByActor(ctx context.Context, mailboxID stri
 }
 
 const ListPendingOutboxByTarget = `-- name: ListPendingOutboxByTarget :many
-SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, created_at, completed_at FROM outbox_messages
+SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at FROM outbox_messages
 WHERE target_actor_id = $1 AND status = 'pending'
 ORDER BY created_at ASC
 `
@@ -776,6 +799,8 @@ func (q *Queries) ListPendingOutboxByTarget(ctx context.Context, targetActorID s
 			&i.Version,
 			&i.Status,
 			&i.DeliveryAttempts,
+			&i.ClaimToken,
+			&i.ClaimedUntil,
 			&i.CreatedAt,
 			&i.CompletedAt,
 		); err != nil {
@@ -803,8 +828,8 @@ ON CONFLICT (id) DO NOTHING
 type MarkMessageProcessedParams struct {
 	ID          string
 	ActorID     string
-	ProcessedAt int32
-	ExpiresAt   int32
+	ProcessedAt int64
+	ExpiresAt   int64
 }
 
 // NOTE: DeleteOutboxMessage and CleanupCompletedOutbox are intentionally
@@ -835,7 +860,7 @@ WHERE m.id = $1
 type MoveMailboxToDeadLetterParams struct {
 	ID            string
 	FailureReason string
-	CreatedAt     int32
+	CreatedAt     int64
 }
 
 // Move a failed message to the dead letter queue.
@@ -854,7 +879,7 @@ WHERE o.id = $1
 type MoveOutboxToDeadLetterParams struct {
 	ID            string
 	FailureReason string
-	CreatedAt     int32
+	CreatedAt     int64
 }
 
 // Move a failed outbox message to the dead letter queue.
@@ -875,7 +900,7 @@ WHERE id = $1 AND lease_token = $2
 type NackMailboxMessageParams struct {
 	ID          string
 	LeaseToken  sql.NullString
-	AvailableAt int32
+	AvailableAt int64
 }
 
 // Release message for redelivery after retry delay.
@@ -905,7 +930,7 @@ type SaveFSMCheckpointParams struct {
 	StateType string
 	StateData []byte
 	Version   int32
-	UpdatedAt int32
+	UpdatedAt int64
 }
 
 // =============================================================================
