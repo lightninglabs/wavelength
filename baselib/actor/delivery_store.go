@@ -70,14 +70,20 @@ type DeliveryStore interface {
 	// Should be called within the same transaction as FSM state changes.
 	EnqueueOutbox(ctx context.Context, params OutboxParams) error
 
-	// ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
-	ClaimOutboxBatch(ctx context.Context, limit int) ([]OutboxMessage, error)
+	// ClaimOutboxBatch claims a batch of pending outbox messages for
+	// delivery. Sets a claim token and lease duration to prevent
+	// concurrent publishers from processing the same messages.
+	ClaimOutboxBatch(
+		ctx context.Context, params OutboxClaimParams,
+	) ([]OutboxMessage, error)
 
 	// CompleteOutbox marks an outbox message as successfully delivered.
-	CompleteOutbox(ctx context.Context, id string) error
+	// The claim token must match the token set during ClaimOutboxBatch.
+	CompleteOutbox(ctx context.Context, id, claimToken string) error
 
 	// FailOutbox marks an outbox message as failed (dead letter).
-	FailOutbox(ctx context.Context, id string) error
+	// The claim token must match the token set during ClaimOutboxBatch.
+	FailOutbox(ctx context.Context, id, claimToken string) error
 
 	// ===== Deduplication Operations =====
 
@@ -258,6 +264,20 @@ type OutboxParams struct {
 	Version int64
 }
 
+// OutboxClaimParams contains parameters for claiming outbox messages.
+type OutboxClaimParams struct {
+	// Limit is the maximum number of messages to claim.
+	Limit int
+
+	// ClaimToken is an opaque token identifying this publisher's claim.
+	// CompleteOutbox/FailOutbox must present a matching token.
+	ClaimToken string
+
+	// ClaimDuration is how long the claim is valid. After expiry, the
+	// messages become available for reclaim by another publisher.
+	ClaimDuration time.Duration
+}
+
 // OutboxMessage represents a message in the transactional outbox.
 type OutboxMessage struct {
 	// ID is the unique message identifier.
@@ -286,6 +306,9 @@ type OutboxMessage struct {
 
 	// DeliveryAttempts is the number of delivery attempts.
 	DeliveryAttempts int
+
+	// ClaimToken is the opaque token set during claim.
+	ClaimToken string
 
 	// CreatedAt is when the message was enqueued.
 	CreatedAt time.Time

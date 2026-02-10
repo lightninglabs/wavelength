@@ -11,7 +11,7 @@
 -- Messages are leased to a consumer who must Ack/Nack before lease expires,
 -- otherwise the message becomes available for redelivery.
 CREATE TABLE IF NOT EXISTS mailbox_messages (
-    -- id is a ULID providing time-ordering and uniqueness.
+    -- id is a UUIDv7 providing time-ordering and uniqueness.
     id TEXT PRIMARY KEY,
 
     -- mailbox_id identifies the target actor's mailbox.
@@ -48,12 +48,12 @@ CREATE TABLE IF NOT EXISTS mailbox_messages (
 
     -- lease_until is the unix timestamp when the lease expires.
     -- After expiry, the message becomes available for redelivery.
-    lease_until INTEGER,
+    lease_until BIGINT,
 
     -- Delivery tracking fields.
     -- available_at is the unix timestamp when the message becomes available.
     -- Used for scheduling initial delivery and retry delays after Nack.
-    available_at INTEGER NOT NULL,
+    available_at BIGINT NOT NULL,
 
     -- attempts tracks how many times delivery has been attempted.
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS mailbox_messages (
     max_attempts INTEGER NOT NULL DEFAULT 10,
 
     -- created_at is the unix timestamp when the message was enqueued.
-    created_at INTEGER NOT NULL
+    created_at BIGINT NOT NULL
 );
 
 -- Index for efficient polling of available messages.
@@ -100,11 +100,11 @@ CREATE TABLE IF NOT EXISTS ask_results (
     error_text TEXT,
 
     -- created_at is the unix timestamp when the result was persisted.
-    created_at INTEGER NOT NULL,
+    created_at BIGINT NOT NULL,
 
     -- expires_at is the unix timestamp after which this result can be garbage
     -- collected. Callers should retrieve results before expiry.
-    expires_at INTEGER NOT NULL
+    expires_at BIGINT NOT NULL
 );
 
 -- Index for TTL-based cleanup of expired results.
@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_ask_results_expires
 -- as FSM state changes. A background publisher drains this table and delivers
 -- messages, only deleting after successful delivery. This implements CDC.
 CREATE TABLE IF NOT EXISTS outbox_messages (
-    -- id is a ULID providing time-ordering and uniqueness.
+    -- id is a UUIDv7 providing time-ordering and uniqueness.
     id TEXT PRIMARY KEY,
 
     -- source_actor_id identifies the actor that created this message.
@@ -147,11 +147,22 @@ CREATE TABLE IF NOT EXISTS outbox_messages (
     -- delivery_attempts tracks how many times delivery was attempted.
     delivery_attempts INTEGER NOT NULL DEFAULT 0,
 
+    -- Claim management fields for concurrent publisher safety.
+    -- claim_token is an opaque token set by ClaimOutboxBatch. CompleteOutbox
+    -- and FailOutbox must present a matching token to mutate the message,
+    -- preventing a slow publisher from completing a message that was already
+    -- reclaimed by another publisher after lease expiry.
+    claim_token TEXT,
+
+    -- claimed_until is the unix timestamp when the current claim expires.
+    -- After expiry, the message becomes available for reclaim.
+    claimed_until BIGINT,
+
     -- created_at is the unix timestamp when the message was enqueued.
-    created_at INTEGER NOT NULL,
+    created_at BIGINT NOT NULL,
 
     -- completed_at is the unix timestamp when delivery completed (or failed).
-    completed_at INTEGER
+    completed_at BIGINT
 );
 
 -- Index for efficient polling of pending outbox messages.
@@ -175,11 +186,11 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     actor_id TEXT NOT NULL,
 
     -- processed_at is the unix timestamp when processing completed.
-    processed_at INTEGER NOT NULL,
+    processed_at BIGINT NOT NULL,
 
     -- expires_at is the unix timestamp after which this entry can be deleted.
     -- Should exceed the maximum possible redelivery window.
-    expires_at INTEGER NOT NULL
+    expires_at BIGINT NOT NULL
 );
 
 -- Index for TTL-based cleanup of expired entries.
@@ -204,7 +215,7 @@ CREATE TABLE IF NOT EXISTS fsm_checkpoints (
     version INTEGER NOT NULL DEFAULT 0,
 
     -- updated_at is the unix timestamp of the last checkpoint.
-    updated_at INTEGER NOT NULL
+    updated_at BIGINT NOT NULL
 );
 
 -- Dead letter queue table.
@@ -233,7 +244,7 @@ CREATE TABLE IF NOT EXISTS dead_letters (
     attempts INTEGER NOT NULL,
 
     -- created_at is the unix timestamp when the message was dead-lettered.
-    created_at INTEGER NOT NULL
+    created_at BIGINT NOT NULL
 );
 
 -- Index for querying dead letters by actor.

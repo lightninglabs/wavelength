@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // OutboxPublisherConfig holds configuration for the OutboxPublisher.
@@ -28,6 +30,11 @@ type OutboxPublisherConfig struct {
 	// MaxDeliveryAttempts is the maximum delivery attempts before dead-lettering.
 	// Default: 10.
 	MaxDeliveryAttempts int
+
+	// ClaimDuration is how long the publisher holds a claim on outbox
+	// messages. After expiry, uncompleted messages become available for
+	// reclaim by another publisher instance. Default: 30s.
+	ClaimDuration time.Duration
 }
 
 // DefaultOutboxPublisherConfig returns configuration with sensible defaults.
@@ -44,6 +51,7 @@ func DefaultOutboxPublisherConfig(
 		PollInterval:        100 * time.Millisecond,
 		BatchSize:           100,
 		MaxDeliveryAttempts: 10,
+		ClaimDuration:       30 * time.Second,
 	}
 }
 
@@ -89,6 +97,9 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 	}
 	if cfg.MaxDeliveryAttempts == 0 {
 		cfg.MaxDeliveryAttempts = 10
+	}
+	if cfg.ClaimDuration == 0 {
+		cfg.ClaimDuration = 30 * time.Second
 	}
 
 	return &OutboxPublisher{
@@ -140,7 +151,18 @@ func (p *OutboxPublisher) run() {
 
 // publishBatch claims and delivers a batch of pending outbox messages.
 func (p *OutboxPublisher) publishBatch() {
-	messages, err := p.cfg.Store.ClaimOutboxBatch(p.ctx, p.cfg.BatchSize)
+	// Generate a unique claim token for this batch. All messages in the
+	// batch share the same token so CompleteOutbox/FailOutbox can
+	// validate ownership.
+	claimToken := uuid.Must(uuid.NewV7()).String()
+
+	messages, err := p.cfg.Store.ClaimOutboxBatch(
+		p.ctx, OutboxClaimParams{
+			Limit:         p.cfg.BatchSize,
+			ClaimToken:    claimToken,
+			ClaimDuration: p.cfg.ClaimDuration,
+		},
+	)
 	if err != nil {
 		log.WarnS(p.ctx, "Failed to claim outbox batch", err)
 		return
@@ -151,7 +173,8 @@ func (p *OutboxPublisher) publishBatch() {
 	}
 
 	log.TraceS(p.ctx, "Processing outbox batch",
-		"count", len(messages))
+		"count", len(messages),
+		"claim_token", claimToken)
 
 	for _, msg := range messages {
 		p.deliverMessage(msg)
@@ -170,8 +193,12 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			"attempts", msg.DeliveryAttempts,
 			"max_attempts", p.cfg.MaxDeliveryAttempts)
 
-		if dlErr := p.cfg.Store.FailOutbox(p.ctx, msg.ID); dlErr != nil {
-			log.WarnS(p.ctx, "Failed to dead-letter outbox message",
+		dlErr := p.cfg.Store.FailOutbox(
+			p.ctx, msg.ID, msg.ClaimToken,
+		)
+		if dlErr != nil {
+			log.WarnS(p.ctx,
+				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
 		}
 
@@ -186,8 +213,12 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			"message_type", msg.MessageType)
 
 		// Poison pill - mark as failed (dead letter).
-		if dlErr := p.cfg.Store.FailOutbox(p.ctx, msg.ID); dlErr != nil {
-			log.WarnS(p.ctx, "Failed to dead-letter outbox message",
+		dlErr := p.cfg.Store.FailOutbox(
+			p.ctx, msg.ID, msg.ClaimToken,
+		)
+		if dlErr != nil {
+			log.WarnS(p.ctx,
+				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
 		}
 
@@ -224,9 +255,12 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	}
 
 	// Mark as complete after successful durable send.
-	if err := p.cfg.Store.CompleteOutbox(p.ctx, msg.ID); err != nil {
-		log.WarnS(p.ctx, "Failed to complete outbox message", err,
-			"message_id", msg.ID)
+	completeErr := p.cfg.Store.CompleteOutbox(
+		p.ctx, msg.ID, msg.ClaimToken,
+	)
+	if completeErr != nil {
+		log.WarnS(p.ctx, "Failed to complete outbox message",
+			completeErr, "message_id", msg.ID)
 	}
 
 	log.TraceS(p.ctx, "Delivered outbox message",

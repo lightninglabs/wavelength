@@ -12,8 +12,8 @@ type AskResult struct {
 	PromiseID  string
 	ResultBlob []byte
 	ErrorText  sql.NullString
-	CreatedAt  int32
-	ExpiresAt  int32
+	CreatedAt  int64
+	ExpiresAt  int64
 }
 
 type BoardingAddress struct {
@@ -68,7 +68,7 @@ type DeadLetter struct {
 	Payload       []byte
 	FailureReason string
 	Attempts      int32
-	CreatedAt     int32
+	CreatedAt     int64
 }
 
 type FsmCheckpoint struct {
@@ -76,7 +76,7 @@ type FsmCheckpoint struct {
 	StateType string
 	StateData []byte
 	Version   int32
-	UpdatedAt int32
+	UpdatedAt int64
 }
 
 type MailboxMessage struct {
@@ -89,11 +89,11 @@ type MailboxMessage struct {
 	CorrelationID   sql.NullString
 	Priority        int32
 	LeaseToken      sql.NullString
-	LeaseUntil      sql.NullInt32
-	AvailableAt     int32
+	LeaseUntil      sql.NullInt64
+	AvailableAt     int64
 	Attempts        int32
 	MaxAttempts     int32
-	CreatedAt       int32
+	CreatedAt       int64
 }
 
 type OutboxMessage struct {
@@ -106,15 +106,17 @@ type OutboxMessage struct {
 	Version          int32
 	Status           string
 	DeliveryAttempts int32
-	CreatedAt        int32
-	CompletedAt      sql.NullInt32
+	ClaimToken       sql.NullString
+	ClaimedUntil     sql.NullInt64
+	CreatedAt        int64
+	CompletedAt      sql.NullInt64
 }
 
 type ProcessedMessage struct {
 	ID          string
 	ActorID     string
-	ProcessedAt int32
-	ExpiresAt   int32
+	ProcessedAt int64
+	ExpiresAt   int64
 }
 
 type Round struct {

@@ -151,30 +151,35 @@ INSERT INTO outbox_messages (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ClaimOutboxBatch :many
--- Claim a batch of pending outbox messages for delivery.
--- Updates status to 'pending' with incremented delivery_attempts.
--- Returns messages ordered by creation time.
+-- Claim a batch of pending outbox messages for delivery. Sets a claim token
+-- and expiry to prevent concurrent publishers from processing the same messages.
+-- Only selects rows that are unclaimed or whose claim has expired.
 UPDATE outbox_messages
-SET delivery_attempts = delivery_attempts + 1
+SET delivery_attempts = delivery_attempts + 1,
+    claim_token = $2,
+    claimed_until = $3
 WHERE id IN (
-    SELECT id FROM outbox_messages
-    WHERE status = 'pending'
-    ORDER BY created_at ASC
+    SELECT o.id FROM outbox_messages o
+    WHERE o.status = 'pending'
+      AND (o.claimed_until IS NULL OR o.claimed_until < $4)
+    ORDER BY o.created_at ASC
     LIMIT $1
 )
 RETURNING *;
 
 -- name: CompleteOutboxMessage :exec
--- Mark an outbox message as successfully delivered.
+-- Mark an outbox message as successfully delivered. The claim token must match
+-- to prevent stale publishers from completing messages they no longer own.
 UPDATE outbox_messages
 SET status = 'completed', completed_at = $2
-WHERE id = $1;
+WHERE id = $1 AND claim_token = $3;
 
 -- name: FailOutboxMessage :exec
--- Mark an outbox message as failed (dead letter).
+-- Mark an outbox message as failed (dead letter). The claim token must match
+-- to prevent stale publishers from failing messages they no longer own.
 UPDATE outbox_messages
 SET status = 'dead_letter', completed_at = $2
-WHERE id = $1;
+WHERE id = $1 AND claim_token = $3;
 
 -- name: GetOutboxMessage :one
 -- Get a specific outbox message by ID.
