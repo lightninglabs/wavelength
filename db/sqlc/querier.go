@@ -13,17 +13,18 @@ type Querier interface {
 	// Acknowledge successful processing. Deletes the message.
 	// Validates lease_token to prevent stale acks.
 	AckMailboxMessage(ctx context.Context, arg AckMailboxMessageParams) (int64, error)
-	// Claim a batch of pending outbox messages for delivery.
-	// Updates status to 'pending' with incremented delivery_attempts.
-	// Returns messages ordered by creation time.
-	ClaimOutboxBatch(ctx context.Context, limit int32) ([]OutboxMessage, error)
+	// Claim a batch of pending outbox messages for delivery. Sets a claim token
+	// and expiry to prevent concurrent publishers from processing the same messages.
+	// Only selects rows that are unclaimed or whose claim has expired.
+	ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxMessage, error)
 	// Delete Ask results that have expired.
-	CleanupExpiredAskResults(ctx context.Context, expiresAt int32) error
+	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
 	// Delete expired deduplication entries.
-	CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int32) error
+	CleanupExpiredProcessedMessages(ctx context.Context, expiresAt int64) error
 	// Delete dead letters older than a threshold.
-	CleanupOldDeadLetters(ctx context.Context, createdAt int32) error
-	// Mark an outbox message as successfully delivered.
+	CleanupOldDeadLetters(ctx context.Context, createdAt int64) error
+	// Mark an outbox message as successfully delivered. The claim token must match
+	// to prevent stale publishers from completing messages they no longer own.
 	CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	// Count total dead letters.
@@ -67,11 +68,12 @@ type Querier interface {
 	EnqueueOutboxMessage(ctx context.Context, arg EnqueueOutboxMessageParams) error
 	// Release all expired leases so messages can be redelivered.
 	// Called periodically by a background cleanup task.
-	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt32) error
+	ExpireMailboxLeases(ctx context.Context, leaseUntil sql.NullInt64) error
 	// Extend the lease for long-running message processing.
 	// Validates lease_token to prevent stale extensions.
 	ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLeaseParams) (int64, error)
-	// Mark an outbox message as failed (dead letter).
+	// Mark an outbox message as failed (dead letter). The claim token must match
+	// to prevent stale publishers from failing messages they no longer own.
 	FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) error
 	FinalizeRound(ctx context.Context, arg FinalizeRoundParams) error
 	// Retrieve the result of an Ask message.

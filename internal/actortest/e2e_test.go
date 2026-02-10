@@ -305,8 +305,14 @@ func TestDurableCounter_ForwardWritesToOutbox(t *testing.T) {
 		return behavior.ForwardCount() == 1
 	})
 
-	// Verify message is in outbox.
-	batch, err := h.store.ClaimOutboxBatch(h.ctx, 10)
+	// Verify message is in outbox by claiming with a test token.
+	batch, err := h.store.ClaimOutboxBatch(
+		h.ctx, actor.OutboxClaimParams{
+			Limit:         10,
+			ClaimToken:    "test-claim",
+			ClaimDuration: 30 * time.Second,
+		},
+	)
 	require.NoError(t, err)
 	require.Len(t, batch, 1)
 	require.Equal(t, actorID, batch[0].SourceActorID)
