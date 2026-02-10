@@ -135,32 +135,11 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 	}
 	d.mu.Unlock()
 
-	// For Ask messages, persist the result for crash recovery.
-	if d.IsAsk() && d.Promise != nil {
-		// Save the result to the database.
-		var resultBlob []byte
-		var errorText string
-
-		if err := result.Err(); err != nil {
-			errorText = err.Error()
-		} else {
-			// For standard Ask, only the success status is persisted,
-			// not the result value itself. See the doc comment above.
-			resultBlob = nil
-		}
-
-		err := d.store.SaveAskResult(ctx, AskResultParams{
-			PromiseID:  d.ID, // Use delivery ID as promise ID.
-			ResultBlob: resultBlob,
-			ErrorText:  errorText,
-			ExpiresAt:  time.Now().Add(24 * time.Hour),
-		})
-		if err != nil {
-			return fmt.Errorf("save ask result: %w", err)
-		}
-	}
-
-	// Delete the message from the mailbox.
+	// Validate lease ownership by acking the mailbox message first.
+	// This must happen before SaveAskResult to prevent stale lease
+	// holders from persisting results: ask_results uses ON CONFLICT
+	// DO NOTHING, so a stale write would silently block the valid
+	// worker's result.
 	rowsAffected, err := d.store.AckMessage(ctx, d.ID, d.LeaseToken)
 	if err != nil {
 		return fmt.Errorf("ack message: %w", err)
@@ -168,6 +147,33 @@ func (d *Delivery[M, R]) Ack(ctx context.Context, result fn.Result[R]) error {
 
 	if rowsAffected == 0 {
 		return ErrLeaseExpired
+	}
+
+	// For Ask messages, persist the result for crash recovery. This
+	// runs after AckMessage so only the valid lease holder writes the
+	// result.
+	if d.IsAsk() && d.Promise != nil {
+		var resultBlob []byte
+		var errorText string
+
+		if err := result.Err(); err != nil {
+			errorText = err.Error()
+		} else {
+			// For standard Ask, only the success status is
+			// persisted, not the result value itself. See the
+			// doc comment above.
+			resultBlob = nil
+		}
+
+		saveErr := d.store.SaveAskResult(ctx, AskResultParams{
+			PromiseID:  d.ID,
+			ResultBlob: resultBlob,
+			ErrorText:  errorText,
+			ExpiresAt:  time.Now().Add(24 * time.Hour),
+		})
+		if saveErr != nil {
+			return fmt.Errorf("save ask result: %w", saveErr)
+		}
 	}
 
 	d.mu.Lock()
