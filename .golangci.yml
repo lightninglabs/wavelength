@@ -239,6 +239,12 @@ issues:
         - forbidigo
         - godot
 
+    # Template files contain raw template text with long lines that
+    # represent generated code shape and cannot be wrapped.
+    - path: cmd/protoc-gen-mailboxrpc/internal/gen/templates\.go
+      linters:
+        - ll
+
     # Test harness has some special rules.
     - path: harness
       linters:
