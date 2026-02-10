@@ -65,13 +65,16 @@ func (m *mockServerConnRef) ID() string {
 	return m.id
 }
 
+// Tell records outgoing messages for assertion.
 func (m *mockServerConnRef) Tell(
 	_ context.Context, msg serverconn.ServerConnMsg,
-) {
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 func (m *mockServerConnRef) clearMessages() {
@@ -123,9 +126,10 @@ func (m *mockChainSourceRef) ID() string {
 	return m.id
 }
 
+// Tell captures chain source messages for assertion.
 func (m *mockChainSourceRef) Tell(
 	_ context.Context, msg chainsource.ChainSourceMsg,
-) {
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -140,6 +144,8 @@ func (m *mockChainSourceRef) Tell(
 			m.notifiers[req.CallerID] = notifier
 		}
 	}
+
+	return nil
 }
 
 // Ask implements actor.ActorRef for the mock. It returns a BestHeightResponse
@@ -190,9 +196,15 @@ func (m *mockWalletActorRef) ID() string {
 	return m.id
 }
 
-func (m *mockWalletActorRef) Tell(_ context.Context, msg wallet.WalletMsg) {
+// Tell implements actor.ActorRef, but is unused in these tests.
+func (m *mockWalletActorRef) Tell(_ context.Context,
+	msg wallet.WalletMsg) error {
+
 	// WalletActor uses Ask pattern for registration, so Tell is unused in
 	// these tests.
+	_ = msg
+
+	return nil
 }
 
 func (m *mockWalletActorRef) Ask(_ context.Context,
@@ -229,7 +241,7 @@ func (m *mockWalletActorRef) sendBoardingConfirmation(ctx context.Context,
 	event := wallet.BoardingUtxoConfirmedEvent{
 		BoardingIntent: intent,
 	}
-	notifier.Tell(ctx, event)
+	require.NoError(m.t, notifier.Tell(ctx, event))
 }
 
 // mockSelfRef captures messages that the round actor sends to itself,
@@ -255,7 +267,11 @@ func (m *mockSelfRef) ID() string {
 	return m.id
 }
 
-func (m *mockSelfRef) Tell(_ context.Context, msg actormsg.RoundReceivable) {
+// Tell records the message and also forwards it to a buffered channel.
+func (m *mockSelfRef) Tell(
+	_ context.Context, msg actormsg.RoundReceivable,
+) error {
+
 	m.mu.Lock()
 	m.messages = append(m.messages, msg)
 	m.mu.Unlock()
@@ -265,6 +281,8 @@ func (m *mockSelfRef) Tell(_ context.Context, msg actormsg.RoundReceivable) {
 	case m.msgChan <- msg:
 	default:
 	}
+
+	return nil
 }
 
 // waitForMessage blocks until a message arrives or the timeout expires,
@@ -303,10 +321,12 @@ func (m *mockVTXOManagerRef) ID() string {
 	return m.id
 }
 
-func (m *mockVTXOManagerRef) Tell(_ context.Context, msg actor.Message) {
+func (m *mockVTXOManagerRef) Tell(_ context.Context, msg actor.Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 // assertVTXOCreatedReceived verifies a VTXOCreatedNotification was received.

@@ -8,6 +8,14 @@ import (
 	"database/sql"
 )
 
+type AskResult struct {
+	PromiseID  string
+	ResultBlob []byte
+	ErrorText  sql.NullString
+	CreatedAt  int64
+	ExpiresAt  int64
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
@@ -50,6 +58,65 @@ type ClientTreeTxid struct {
 	ClientKey   []byte
 	TreeLevel   int32
 	OutputIndex int32
+}
+
+type DeadLetter struct {
+	ID            string
+	Source        string
+	ActorID       string
+	MessageType   string
+	Payload       []byte
+	FailureReason string
+	Attempts      int32
+	CreatedAt     int64
+}
+
+type FsmCheckpoint struct {
+	ActorID   string
+	StateType string
+	StateData []byte
+	Version   int32
+	UpdatedAt int64
+}
+
+type MailboxMessage struct {
+	ID              string
+	MailboxID       string
+	MessageType     string
+	Payload         []byte
+	PromiseID       sql.NullString
+	CallbackActorID sql.NullString
+	CorrelationID   sql.NullString
+	Priority        int32
+	LeaseToken      sql.NullString
+	LeaseUntil      sql.NullInt64
+	AvailableAt     int64
+	Attempts        int32
+	MaxAttempts     int32
+	CreatedAt       int64
+}
+
+type OutboxMessage struct {
+	ID               string
+	SourceActorID    string
+	TargetActorID    string
+	MessageType      string
+	Payload          []byte
+	DomainKey        sql.NullString
+	Version          int32
+	Status           string
+	DeliveryAttempts int32
+	ClaimToken       sql.NullString
+	ClaimedUntil     sql.NullInt64
+	CreatedAt        int64
+	CompletedAt      sql.NullInt64
+}
+
+type ProcessedMessage struct {
+	ID          string
+	ActorID     string
+	ProcessedAt int64
+	ExpiresAt   int64
 }
 
 type Round struct {

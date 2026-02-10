@@ -187,9 +187,12 @@ func (a *Ark) Stop(ctx context.Context) {
 		a.cancel()
 	}
 
-	a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
+	err := a.chainSource.Tell(ctx, &chainsource.UnsubscribeBlocksRequest{
 		CallerID: "boarding-wallet",
 	})
+	if err != nil {
+		a.log.WarnS(ctx, "Failed to unsubscribe blocks", err)
+	}
 
 	a.wg.Wait()
 
@@ -494,7 +497,10 @@ func (a *Ark) processUtxo(ctx context.Context,
 	}
 	for _, notifier := range a.notifiers {
 		if uint32(utxo.Confirmations) >= notifier.minConf {
-			notifier.actor.Tell(ctx, event)
+			if err := notifier.actor.Tell(ctx, event); err != nil {
+				a.log.WarnS(ctx, "Failed to notify confirmation",
+					err)
+			}
 		}
 	}
 }
@@ -525,7 +531,9 @@ func (a *Ark) sendBacklog(ctx context.Context,
 			BoardingIntent: intent,
 		}
 
-		notifier.Tell(ctx, event)
+		if err := notifier.Tell(ctx, event); err != nil {
+			a.log.WarnS(ctx, "Failed to deliver backlog event", err)
+		}
 	}
 
 	a.log.InfoS(ctx, "Backlog delivery completed",
@@ -549,10 +557,16 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
 
-		roundRef.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
+		err := roundRef.Tell(ctx, &actormsg.TriggerVTXORefreshMsg{
 			TargetOutpoints: req.TargetOutpoints,
 			ForceRefresh:    req.ForceRefresh,
 		})
+		if err != nil {
+			a.log.WarnS(ctx,
+				"Failed to forward refresh to "+
+					"round actor",
+				err)
+		}
 
 		a.log.DebugS(ctx, "Forwarded refresh request to round actor")
 	} else {
@@ -584,10 +598,13 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	if a.actorSystem != nil {
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
-		roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
+		if err := roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
 			TargetOutpoints: req.TargetOutpoints,
 			DestOutput:      req.DestOutput,
-		})
+		}); err != nil {
+			a.log.WarnS(ctx, "Failed to forward leave to "+
+				"round actor", err)
+		}
 	} else {
 		a.log.WarnS(ctx, "Cannot forward leave: no actor system "+
 			"configured", nil)

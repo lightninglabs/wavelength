@@ -92,6 +92,19 @@ type envelope[M Message, R any] struct {
 	message   M
 	promise   Promise[R]
 	callerCtx context.Context
+
+	// callbackActorID is set for DurableAsk to route the response.
+	// The response will be delivered to this actor's mailbox via outbox.
+	callbackActorID string
+
+	// correlationID links DurableAsk requests to their responses.
+	// The caller uses this to match responses to original requests.
+	correlationID string
+
+	// delivery is set by DurableMailbox to pass the Delivery object to the
+	// DurableActor without using a global map. This is nil for regular
+	// (non-durable) actors.
+	delivery any
 }
 
 // Actor represents a concrete actor implementation. It encapsulates a behavior,
@@ -300,12 +313,11 @@ type actorRefImpl[M Message, R any] struct {
 	actor *Actor[M, R]
 }
 
-// Tell sends a message without waiting for a response. If the context is
-// cancelled before the message can be sent to the actor's mailbox, the message
-// may be dropped.
+// Tell sends a message without waiting for a response. Returns an error if
+// the message could not be enqueued.
 //
 //nolint:lll
-func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
+func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 	log.TraceS(ctx, "Sending Tell message",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
@@ -319,24 +331,33 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) {
 	}
 	ok := ref.actor.mailbox.Send(ctx, env)
 
-	// If the send failed, determine whether to route to DLO. We only send
-	// to the DLO when the failure was due to actor termination or mailbox
-	// closure (actor-side failures). If the caller's context was cancelled,
-	// the message is intentionally dropped to preserve prior semantics
-	// where caller-aborted messages are not revived via the DLO.
+	// If the send failed, determine the error and whether to route to DLO.
 	if !ok {
-		if ctx.Err() == nil || ref.actor.ctx.Err() != nil {
+		// Check if actor is terminated.
+		if ref.actor.ctx.Err() != nil {
 			log.DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
 			ref.trySendToDLO(msg)
-		} else {
+
+			return ErrActorTerminated
+		}
+
+		// Check if caller's context was cancelled.
+		if ctx.Err() != nil {
 			log.TraceS(ctx, "Tell failed, caller cancelled",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
+
+			return ctx.Err()
 		}
+
+		// Mailbox full or other failure.
+		return ErrMailboxFull
 	}
+
+	return nil
 }
 
 // Ask sends a message and returns a Future for the response. The Future will be

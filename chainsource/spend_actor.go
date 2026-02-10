@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -72,6 +73,12 @@ type SpendActor struct {
 
 	// wg tracks background goroutines for graceful shutdown.
 	wg sync.WaitGroup
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *SpendActor) logger(ctx context.Context) btclog.Logger {
+	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // NewSpendActor creates a new SpendActor instance with the given configuration.
@@ -224,8 +231,12 @@ func (a *SpendActor) deliverSpend(event SpendEvent) {
 	})
 
 	a.notifyActor.WhenSome(func(ref actor.TellOnlyRef[SpendEvent]) {
+		log := a.logger(a.ctx)
+
 		// Actor mode: send to the registered actor.
-		ref.Tell(a.ctx, event)
+		if err := ref.Tell(a.ctx, event); err != nil {
+			log.WarnS(a.ctx, "Failed to deliver spend event", err)
+		}
 	})
 }
 

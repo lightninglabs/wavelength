@@ -22,11 +22,14 @@ func NewChannelTellOnlyRef[M Message](id string, bufSize int) *ChannelTellOnlyRe
 	}
 }
 
-// Tell sends the message to the internal channel.
-func (c *ChannelTellOnlyRef[M]) Tell(ctx context.Context, msg M) {
+// Tell sends the message to the internal channel. Returns an error if the
+// context is cancelled.
+func (c *ChannelTellOnlyRef[M]) Tell(ctx context.Context, msg M) error {
 	select {
 	case c.msgs <- msg:
+		return nil
 	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

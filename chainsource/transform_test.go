@@ -58,7 +58,7 @@ func TestMapConfirmationEvent(t *testing.T) {
 		NumConfs:    6,
 	}
 
-	adaptedRef.Tell(ctx, confEvent)
+	require.NoError(t, adaptedRef.Tell(ctx, confEvent))
 
 	// Verify the target received the transformed message.
 	received, ok := targetRef.AwaitMessage(time.Second)
@@ -106,7 +106,7 @@ func TestMapSpendEvent(t *testing.T) {
 		SpendingHeight:    200,
 	}
 
-	adaptedRef.Tell(ctx, spendEvent)
+	require.NoError(t, adaptedRef.Tell(ctx, spendEvent))
 
 	// Verify the target received the transformed message.
 	received, ok := targetRef.AwaitMessage(time.Second)
@@ -148,7 +148,7 @@ func TestMapBlockEpoch(t *testing.T) {
 		Timestamp: time.Now().Unix(),
 	}
 
-	adaptedRef.Tell(ctx, blockEpoch)
+	require.NoError(t, adaptedRef.Tell(ctx, blockEpoch))
 
 	// Verify the target received the transformed message.
 	received, ok := targetRef.AwaitMessage(time.Second)
@@ -181,10 +181,10 @@ func TestMapConfirmationEventTypeSafety(t *testing.T) {
 	// the types are correct.
 	ctx := t.Context()
 	testTxid := chainhash.Hash{}
-	adaptedRef.Tell(ctx, ConfirmationEvent{
+	require.NoError(t, adaptedRef.Tell(ctx, ConfirmationEvent{
 		Txid:        testTxid,
 		BlockHeight: 1,
-	})
+	}))
 
 	// Verify the message was transformed and delivered.
 	_, ok := targetRef.AwaitMessage(time.Second)
@@ -222,7 +222,7 @@ func TestMapSpendEventMultipleMessages(t *testing.T) {
 			SpenderInputIndex: uint32(i),
 			SpendingHeight:    int32(100 + i),
 		}
-		adaptedRef.Tell(ctx, spendEvent)
+		require.NoError(t, adaptedRef.Tell(ctx, spendEvent))
 	}
 
 	// Verify all messages were transformed and delivered.
