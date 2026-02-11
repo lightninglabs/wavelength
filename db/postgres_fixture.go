@@ -18,6 +18,7 @@ const (
 	testPgUser   = "test"
 	testPgPass   = "test"
 	testPgDBName = "test"
+	testPgRepo   = "mirror.gcr.io/library/postgres"
 	PostgresTag  = "15"
 )
 
@@ -44,7 +45,7 @@ func NewTestPgFixture(t testing.TB, expiry time.Duration,
 
 	// Pulls an image, creates a container based on it and runs it.
 	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
-		Repository: "postgres",
+		Repository: testPgRepo,
 		Tag:        PostgresTag,
 		Env: []string{
 			fmt.Sprintf("POSTGRES_USER=%v", testPgUser),
