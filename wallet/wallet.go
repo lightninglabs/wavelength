@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -33,6 +34,17 @@ const (
 
 	// Subsystem is the log subsystem code for the boarding wallet actor.
 	Subsystem = "ARKW"
+
+	// listUnspentMaxRetries is the maximum number of times we'll retry a
+	// ListUnspent query within a single block epoch if we didn't detect any
+	// new boarding UTXOs. This mitigates a race where we receive a block
+	// epoch notification before the wallet's UTXO set is fully updated.
+	listUnspentMaxRetries = 5
+
+	// listUnspentRetryDelay is the delay between ListUnspent retries.
+	// We keep this small so confirmed boarding UTXOs are detected
+	// promptly without waiting for another block.
+	listUnspentRetryDelay = 200 * time.Millisecond
 )
 
 // notifierInfo holds the configuration for a registered confirmation notifier.
@@ -403,29 +415,53 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 	a.log.InfoS(ctx, "Processing new block epoch",
 		slog.Int("height", int(epoch.Height)))
 
-	// A new block just arrived, we'll now poll ListUnspent for any new
-	// UTXOs since last time.
-	utxos, err := a.backend.ListUnspent(
-		ctx, MinBoardingConfs, MaxConfsForListUnspent,
+	// A new block just arrived, so poll ListUnspent for new UTXOs.
+	// Retry a few times because there can be a short lag between
+	// receiving the block epoch and the wallet reporting the UTXO with
+	// the expected confirmation count.
+	var (
+		lastUtxos []*Utxo
+		foundNew  bool
 	)
-	if err != nil {
-		a.log.WarnS(ctx, "Failed to list unspent UTXOs", err,
-			slog.Int("height", int(epoch.Height)))
+	for attempt := 0; attempt < listUnspentMaxRetries; attempt++ {
+		utxos, err := a.backend.ListUnspent(
+			ctx, MinBoardingConfs, MaxConfsForListUnspent,
+		)
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to list unspent UTXOs", err,
+				slog.Int("height", int(epoch.Height)))
 
-		// Return success to avoid disrupting the actor - we'll try
-		// again on the next block.
-		return fn.Ok[WalletResp](nil)
+			// Return success to avoid disrupting the actor.
+			// We'll try again on the next block.
+			return fn.Ok[WalletResp](nil)
+		}
+
+		lastUtxos = utxos
+
+		// For each UTXO, we'll check if it's new and belongs to a fresh
+		// boarding intent, dispatching notifications if needed.
+		for _, utxo := range utxos {
+			if a.processUtxo(ctx, epoch, utxo) {
+				foundNew = true
+			}
+		}
+
+		if foundNew || attempt == listUnspentMaxRetries-1 {
+			break
+		}
+
+		timer := time.NewTimer(listUnspentRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fn.Ok[WalletResp](nil)
+		case <-timer.C:
+		}
 	}
 
 	a.log.InfoS(ctx, "ListUnspent returned UTXOs",
 		slog.Int("height", int(epoch.Height)),
-		slog.Int("utxo_count", len(utxos)))
-
-	// For Each UTXO, we'll check if it's new and belongs to a fresh
-	// boarding intent, dispatching notifications if needed.
-	for _, utxo := range utxos {
-		a.processUtxo(ctx, epoch, utxo)
-	}
+		slog.Int("utxo_count", len(lastUtxos)))
 
 	// Block epoch handling doesn't require a response.
 	return fn.Ok[WalletResp](nil)
@@ -433,19 +469,19 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 
 // processUtxo checks if a UTXO is new and belongs to a boarding address.
 func (a *Ark) processUtxo(ctx context.Context,
-	epoch chainsource.BlockEpoch, utxo *Utxo) {
+	epoch chainsource.BlockEpoch, utxo *Utxo) bool {
 
 	// Make sure we haven't already seen this UTXO.
 	key := NewUtxoKey(utxo.Outpoint)
 	if a.seenUtxos.Contains(key) {
-		return
+		return false
 	}
 
 	// Check if this UTXO pays to a boarding address.
 	addr, err := a.store.LookupBoardingAddress(ctx, utxo.PkScript)
 	if err != nil {
 		// Not a boarding address, ignore.
-		return
+		return false
 	}
 
 	// New boarding UTXO detected!
@@ -462,7 +498,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 		a.log.WarnS(ctx, "Failed to fetch boarding transaction", err,
 			btclog.Fmt("txid", "%v", utxo.Outpoint.Hash))
 
-		return
+		return false
 	}
 
 	intent := BoardingIntent{
@@ -486,7 +522,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 		a.log.WarnS(ctx, "Failed to persist boarding intent", err,
 			btclog.Fmt("outpoint", "%v", utxo.Outpoint))
 
-		return
+		return false
 	}
 
 	a.seenUtxos.Add(key)
@@ -503,6 +539,8 @@ func (a *Ark) processUtxo(ctx context.Context,
 			}
 		}
 	}
+
+	return true
 }
 
 // sendBacklog sends recent confirmations to a newly registered notifier. It

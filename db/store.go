@@ -62,8 +62,7 @@ func (s *Store) Close() error {
 type Config struct {
 	// Backend specifies which database backend to use: "sqlite" or
 	// "postgres".
-	//nolint:ll
-	Backend string `long:"backend" description:"Database backend to use (sqlite or postgres)" choice:"sqlite" choice:"postgres"`
+	Backend string `long:"backend" choice:"sqlite" choice:"postgres"`
 
 	// Sqlite contains SQLite-specific configuration
 	Sqlite *SqliteConfig `group:"sqlite" namespace:"sqlite"`
