@@ -72,6 +72,8 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 			NextState: &ReceiveNotified{
 				SessionID: evt.SessionID,
 				ArkPSBT:   evt.ArkPSBT,
+				FinalCheckpointPSBTs: evt.
+					FinalCheckpointPSBTs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{

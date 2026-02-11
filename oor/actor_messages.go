@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -228,3 +229,102 @@ func (m *ExportSnapshotResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *ExportSnapshotResponse) actorRespSealed() {}
+
+// ReceiveTransferRequest asks the actor to process an incoming transfer
+// notification.
+type ReceiveTransferRequest struct {
+	actor.BaseMessage
+
+	// SessionID is the stable incoming session identifier.
+	SessionID SessionID
+
+	// ArkPSBT is the canonical incoming Ark transaction package.
+	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are finalized checkpoint packages for this transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+}
+
+// MessageType returns the type of this message.
+func (m *ReceiveTransferRequest) MessageType() string {
+	return "ReceiveTransferRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ReceiveTransferRequest) actorMsgSealed() {}
+
+// ReceiveTransferResponse acknowledges incoming-transfer processing.
+type ReceiveTransferResponse struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type of this message.
+func (m *ReceiveTransferResponse) MessageType() string {
+	return "ReceiveTransferResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *ReceiveTransferResponse) actorRespSealed() {}
+
+// ResumeIncomingRequest asks the actor to re-emit pending incoming outbox work
+// from durable state.
+type ResumeIncomingRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the incoming session to resume.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *ResumeIncomingRequest) MessageType() string {
+	return "ResumeIncomingRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ResumeIncomingRequest) actorMsgSealed() {}
+
+// ResumeIncomingResponse acknowledges incoming resume processing.
+type ResumeIncomingResponse struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type of this message.
+func (m *ResumeIncomingResponse) MessageType() string {
+	return "ResumeIncomingResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *ResumeIncomingResponse) actorRespSealed() {}
+
+// GetIncomingStateRequest asks the actor for the current incoming session
+// state.
+type GetIncomingStateRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the incoming session to query.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *GetIncomingStateRequest) MessageType() string {
+	return "GetIncomingStateRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *GetIncomingStateRequest) actorMsgSealed() {}
+
+// GetIncomingStateResponse returns the current incoming session FSM state.
+type GetIncomingStateResponse struct {
+	actor.BaseMessage
+
+	// State is the current incoming session state.
+	State ReceiveState
+}
+
+// MessageType returns the type of this message.
+func (m *GetIncomingStateResponse) MessageType() string {
+	return "GetIncomingStateResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *GetIncomingStateResponse) actorRespSealed() {}

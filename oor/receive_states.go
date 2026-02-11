@@ -37,6 +37,11 @@ type ReceiveNotified struct {
 	SessionID SessionID
 
 	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs carries finalized checkpoint packages that anchor
+	// this incoming transfer. We keep these in-state so restart/resume paths
+	// can re-drive deterministic materialization without re-fetching metadata.
+	FinalCheckpointPSBTs []*psbt.Packet
 }
 
 // String returns a human-readable representation of ReceiveNotified.

@@ -10,6 +10,9 @@ DROP TABLE IF EXISTS vtxos;
 DROP INDEX IF EXISTS idx_oor_outgoing_sessions_phase;
 DROP TABLE IF EXISTS oor_outgoing_sessions;
 
+DROP INDEX IF EXISTS idx_oor_incoming_sessions_phase;
+DROP TABLE IF EXISTS oor_incoming_sessions;
+
 DROP TABLE IF EXISTS round_client_trees;
 
 DROP TABLE IF EXISTS round_vtxo_requests;

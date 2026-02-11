@@ -343,3 +343,30 @@ CREATE TABLE IF NOT EXISTS oor_outgoing_sessions (
 -- Index on phase for operational queries and future resumable scans.
 CREATE INDEX IF NOT EXISTS idx_oor_outgoing_sessions_phase
     ON oor_outgoing_sessions(phase);
+
+-- OOR incoming session snapshots.
+-- Persists client incoming FSM snapshots for restart-safe materialization+ack.
+CREATE TABLE IF NOT EXISTS oor_incoming_sessions (
+    -- session_id is the Ark txid (32 bytes) for this incoming session.
+    session_id BLOB PRIMARY KEY,
+
+    -- snapshot_version identifies the encoding/version of snapshot_blob.
+    snapshot_version INTEGER NOT NULL,
+
+    -- phase is the coarse incoming transfer phase
+    -- (notified/awaiting_ack/completed).
+    phase TEXT NOT NULL,
+
+    -- snapshot_blob is the serialized incoming snapshot payload.
+    snapshot_blob BLOB NOT NULL,
+
+    -- created_at is the unix nano timestamp when this row was first created.
+    created_at BIGINT NOT NULL,
+
+    -- updated_at is the unix nano timestamp of the latest snapshot write.
+    updated_at BIGINT NOT NULL
+);
+
+-- Index on phase for operational queries and future resumable scans.
+CREATE INDEX IF NOT EXISTS idx_oor_incoming_sessions_phase
+    ON oor_incoming_sessions(phase);

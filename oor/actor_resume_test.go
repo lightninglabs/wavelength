@@ -643,6 +643,65 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
+// TestOORClientActorLazyHydrateFromStore verifies outgoing sessions can be
+// resumed from durable store state without explicit RestoreSessionRequest.
+func TestOORClientActorLazyHydrateFromStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	fixture := newResumeTestFixture(t)
+
+	store := NewInMemoryOutgoingSessionStore()
+	handler := &pausedSubmitHandler{
+		t:            t,
+		clientSigner: fixture.clientSigner,
+	}
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		SessionStore:  store,
+	})
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:     fixture.policy,
+		Inputs:     fixture.inputs,
+		Recipients: fixture.recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		SessionStore:  store,
+	})
+
+	stateResp := actor2.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
+
+	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, resumeResp.IsOk())
+
+	finalStateResp := actor2.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, finalStateResp.IsOk())
+
+	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
+}
+
 // TestOORClientActorResumeFromSnapshotSubmitSent verifies the client can resume
 // after submit was sent but the response was dropped.
 func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {

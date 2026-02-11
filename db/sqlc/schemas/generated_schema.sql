@@ -212,6 +212,9 @@ CREATE INDEX idx_mailbox_messages_promise
     ON mailbox_messages(promise_id)
     WHERE promise_id IS NOT NULL;
 
+CREATE INDEX idx_oor_incoming_sessions_phase
+    ON oor_incoming_sessions(phase);
+
 CREATE INDEX idx_oor_outgoing_sessions_phase
     ON oor_outgoing_sessions(phase);
 
@@ -303,6 +306,27 @@ CREATE TABLE mailbox_messages (
 
     -- created_at is the unix timestamp when the message was enqueued.
     created_at BIGINT NOT NULL
+);
+
+CREATE TABLE oor_incoming_sessions (
+    -- session_id is the Ark txid (32 bytes) for this incoming session.
+    session_id BLOB PRIMARY KEY,
+
+    -- snapshot_version identifies the encoding/version of snapshot_blob.
+    snapshot_version INTEGER NOT NULL,
+
+    -- phase is the coarse incoming transfer phase
+    -- (notified/awaiting_ack/completed).
+    phase TEXT NOT NULL,
+
+    -- snapshot_blob is the serialized incoming snapshot payload.
+    snapshot_blob BLOB NOT NULL,
+
+    -- created_at is the unix nano timestamp when this row was first created.
+    created_at BIGINT NOT NULL,
+
+    -- updated_at is the unix nano timestamp of the latest snapshot write.
+    updated_at BIGINT NOT NULL
 );
 
 CREATE TABLE oor_outgoing_sessions (

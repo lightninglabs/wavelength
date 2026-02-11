@@ -98,6 +98,7 @@ func TestOOROutgoingSessionStoreMissing(t *testing.T) {
 
 	_, err := store.GetOutgoing(ctx, testSessionID(t, 11))
 	require.Error(t, err)
+	require.ErrorIs(t, err, oor.ErrOutgoingSnapshotNotFound)
 }
 
 // testSessionID builds a deterministic session id from a one-byte seed.

@@ -13,16 +13,16 @@ import (
 	"github.com/lightningnetwork/lnd/clock"
 )
 
-// OOROutgoingSessionStore persists outgoing OOR snapshots in SQL.
-type OOROutgoingSessionStore struct {
+// OORIncomingSessionStore persists incoming OOR snapshots in SQL.
+type OORIncomingSessionStore struct {
 	tx *TransactionExecutor[*sqlc.Queries]
 
 	clock clock.Clock
 }
 
-// NewOOROutgoingSessionStore creates a DB-backed outgoing OOR snapshot store.
-func NewOOROutgoingSessionStore(dbq BatchedQuerier, clk clock.Clock,
-	log btclog.Logger) *OOROutgoingSessionStore {
+// NewOORIncomingSessionStore creates a DB-backed incoming OOR snapshot store.
+func NewOORIncomingSessionStore(dbq BatchedQuerier, clk clock.Clock,
+	log btclog.Logger) *OORIncomingSessionStore {
 
 	if clk == nil {
 		clk = clock.NewDefaultClock()
@@ -40,15 +40,15 @@ func NewOOROutgoingSessionStore(dbq BatchedQuerier, clk clock.Clock,
 		log,
 	)
 
-	return &OOROutgoingSessionStore{
+	return &OORIncomingSessionStore{
 		tx:    txExec,
 		clock: clk,
 	}
 }
 
-// UpsertOutgoing stores or replaces a snapshot for a session id.
-func (s *OOROutgoingSessionStore) UpsertOutgoing(ctx context.Context,
-	snapshot *oor.OutgoingSnapshot) error {
+// UpsertIncoming stores or replaces a snapshot for a session id.
+func (s *OORIncomingSessionStore) UpsertIncoming(ctx context.Context,
+	snapshot *oor.IncomingSnapshot) error {
 
 	if snapshot == nil {
 		return fmt.Errorf("snapshot must be provided")
@@ -60,15 +60,15 @@ func (s *OOROutgoingSessionStore) UpsertOutgoing(ctx context.Context,
 
 	blob, err := json.Marshal(snapshot)
 	if err != nil {
-		return fmt.Errorf("encode outgoing snapshot: %w", err)
+		return fmt.Errorf("encode incoming snapshot: %w", err)
 	}
 
 	now := s.clock.Now().UnixNano()
 
 	return s.tx.ExecTx(ctx, WriteTxOption(),
 		func(q *sqlc.Queries) error {
-			return q.UpsertOOROutgoingSession(
-				ctx, sqlc.UpsertOOROutgoingSessionParams{
+			return q.UpsertOORIncomingSession(
+				ctx, sqlc.UpsertOORIncomingSessionParams{
 					SessionID:       sessionIDBytes(snapshot.SessionID),
 					SnapshotVersion: int32(snapshot.Version),
 					Phase:           string(snapshot.Phase),
@@ -81,29 +81,29 @@ func (s *OOROutgoingSessionStore) UpsertOutgoing(ctx context.Context,
 	)
 }
 
-// GetOutgoing fetches the latest snapshot for a session id.
-func (s *OOROutgoingSessionStore) GetOutgoing(ctx context.Context,
-	sessionID oor.SessionID) (*oor.OutgoingSnapshot, error) {
+// GetIncoming fetches the latest snapshot for a session id.
+func (s *OORIncomingSessionStore) GetIncoming(ctx context.Context,
+	sessionID oor.SessionID) (*oor.IncomingSnapshot, error) {
 
 	if sessionID == (oor.SessionID{}) {
 		return nil, fmt.Errorf("session id must be provided")
 	}
 
-	var out *oor.OutgoingSnapshot
+	var out *oor.IncomingSnapshot
 
 	err := s.tx.ExecTx(ctx, ReadTxOption(),
 		func(q *sqlc.Queries) error {
-			row, err := q.GetOOROutgoingSession(
+			row, err := q.GetOORIncomingSession(
 				ctx, sessionIDBytes(sessionID),
 			)
 			if err != nil {
 				return err
 			}
 
-			var snap oor.OutgoingSnapshot
+			var snap oor.IncomingSnapshot
 			err = json.Unmarshal(row.SnapshotBlob, &snap)
 			if err != nil {
-				return fmt.Errorf("decode outgoing snapshot: %w", err)
+				return fmt.Errorf("decode incoming snapshot: %w", err)
 			}
 
 			if snap.SessionID != sessionID {
@@ -118,7 +118,7 @@ func (s *OOROutgoingSessionStore) GetOutgoing(ctx context.Context,
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %s",
-				oor.ErrOutgoingSnapshotNotFound, sessionID,
+				oor.ErrIncomingSnapshotNotFound, sessionID,
 			)
 		}
 
@@ -128,10 +128,4 @@ func (s *OOROutgoingSessionStore) GetOutgoing(ctx context.Context,
 	return out, nil
 }
 
-// sessionIDBytes converts a session id to 32 raw bytes for DB storage.
-func sessionIDBytes(id oor.SessionID) []byte {
-	h := [32]byte(id)
-	return h[:]
-}
-
-var _ oor.OutgoingSessionStore = (*OOROutgoingSessionStore)(nil)
+var _ oor.IncomingSessionStore = (*OORIncomingSessionStore)(nil)

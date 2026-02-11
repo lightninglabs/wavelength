@@ -2,8 +2,23 @@ package oor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+var (
+	// ErrOutgoingSnapshotNotFound signals that no durable outgoing snapshot
+	// exists for a requested session id.
+	ErrOutgoingSnapshotNotFound = errors.New(
+		"outgoing session snapshot not found",
+	)
+)
+
+// IsOutgoingSnapshotNotFound reports whether err indicates a missing outgoing
+// session snapshot.
+func IsOutgoingSnapshotNotFound(err error) bool {
+	return errors.Is(err, ErrOutgoingSnapshotNotFound)
+}
 
 // OutgoingSessionStore persists outgoing transfer session snapshots.
 //
@@ -74,7 +89,9 @@ func (s *InMemoryOutgoingSessionStore) GetOutgoing(ctx context.Context,
 
 	snap, ok := s.snapshots[sessionID]
 	if !ok {
-		return nil, fmt.Errorf("snapshot not found")
+		return nil, fmt.Errorf("%w: %s",
+			ErrOutgoingSnapshotNotFound, sessionID,
+		)
 	}
 
 	return snap, nil
