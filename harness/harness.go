@@ -290,9 +290,11 @@ func DefaultOptions() Options {
 	}
 
 	return Options{
-		BitcoindImage:       "lightninglabs/bitcoin-core:29",
-		LNDImage:            "lightninglabs/lnd:daily-testing-20260115",
-		TapdImage:           "lightninglabs/taproot-assets:v0.7.0-rc1",
+		BitcoindImage: "mirror.gcr.io/lightninglabs/bitcoin-core:29",
+		LNDImage: "mirror.gcr.io/lightninglabs/lnd:" +
+			"daily-testing-20260115",
+		TapdImage: "mirror.gcr.io/lightninglabs/taproot-assets:" +
+			"v0.7.0-rc1",
 		ArtifactsBaseDir:    artifactsBaseDir,
 		HarnessLogStdOut:    *harnessLogStdOut,
 		AlwaysKeepArtifacts: true,
@@ -1191,7 +1193,7 @@ func (h *Harness) startElectrs() {
 		*dockertest.Resource, error) {
 
 		return h.pool.RunWithOptions(&dockertest.RunOptions{
-			Repository:   "mempool/electrs",
+			Repository:   "mirror.gcr.io/mempool/electrs",
 			Tag:          "latest",
 			Cmd:          cmd,
 			Env:          []string{"RUST_BACKTRACE=1"},
@@ -1276,7 +1278,7 @@ func (h *Harness) startPostgres() {
 		*dockertest.Resource, error) {
 
 		return h.pool.RunWithOptions(&dockertest.RunOptions{
-			Repository: "postgres",
+			Repository: "mirror.gcr.io/library/postgres",
 			Tag:        "16-alpine",
 			Env: []string{
 				"POSTGRES_USER=ark",
