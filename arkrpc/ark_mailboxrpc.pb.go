@@ -28,6 +28,29 @@ type ArkServiceMailboxServer interface {
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
 }
 
+// mergeArkServiceMailboxRPCOptions merges multiple RPCOptions, where later
+// values overwrite earlier ones.
+func mergeArkServiceMailboxRPCOptions(opts ...rpc.RPCOptions) rpc.RPCOptions {
+	var out rpc.RPCOptions
+	for _, opt := range opts {
+		if opt.IdempotencyKey != "" {
+			out.IdempotencyKey = opt.IdempotencyKey
+		}
+		if opt.CorrelationID != "" {
+			out.CorrelationID = opt.CorrelationID
+		}
+		if len(opt.Headers) > 0 {
+			if out.Headers == nil {
+				out.Headers = make(map[string]string, len(opt.Headers))
+			}
+			for k, v := range opt.Headers {
+				out.Headers[k] = v
+			}
+		}
+	}
+	return out
+}
+
 // RegisterArkServiceMailboxServer registers handlers for ArkService.
 func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer) {
 	r.Handle("arkrpc.ArkService", "GetInfo", func() proto.Message {
@@ -44,10 +67,7 @@ func RegisterArkServiceMailboxServer(r rpc.Router, impl ArkServiceMailboxServer)
 
 // GetInfo calls the GetInfo RPC.
 func (c *ArkServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoRequest, opts ...rpc.RPCOptions) (*GetInfoResponse, error) {
-	var opt rpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
+	opt := mergeArkServiceMailboxRPCOptions(opts...)
 
 	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.ArkService", "GetInfo", req, opt)
 	if err != nil {

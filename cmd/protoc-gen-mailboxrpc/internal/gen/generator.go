@@ -1,7 +1,7 @@
 package gen
 
 import (
-	"bytes"
+	"fmt"
 	"strings"
 
 	"google.golang.org/protobuf/compiler/protogen"
@@ -50,9 +50,7 @@ func generateFile(plugin *protogen.Plugin, file *protogen.File,
 			continue
 		}
 
-		if err := generateService(g, svc, serviceFQN); err != nil {
-			return err
-		}
+		generateService(g, file, svc, serviceFQN)
 	}
 
 	return nil
@@ -75,63 +73,198 @@ func shouldGenerateFile(file *protogen.File, cfg Config) bool {
 	return false
 }
 
-// generateService generates typed mailbox RPC stubs for a single service by
-// populating template data and executing the service template into a buffer
-// before writing to g.
-func generateService(g *protogen.GeneratedFile,
-	svc *protogen.Service, serviceFQN string) error {
+// generateService generates a typed client and router registration helper for a
+// protobuf service.
+//nolint:funlen
+func generateService(g *protogen.GeneratedFile, file *protogen.File,
+	svc *protogen.Service, serviceFQN string) {
 
-	data := buildServiceData(g, svc, serviceFQN)
-
-	var buf bytes.Buffer
-	if err := serviceTmpl.Execute(&buf, data); err != nil {
-		return err
-	}
-
-	_, err := g.Write(buf.Bytes())
-
-	return err
-}
-
-// resolveIdent registers an import with g and returns the qualified Go
-// identifier string for use in templates.
-func resolveIdent(g *protogen.GeneratedFile, path, name string) string {
-	return g.QualifiedGoIdent(protogen.GoIdent{
-		GoImportPath: protogen.GoImportPath(path),
-		GoName:       name,
-	})
-}
-
-// buildServiceData constructs template data for a protobuf service. It calls
-// g.QualifiedGoIdent for each external type to register the necessary imports.
-func buildServiceData(g *protogen.GeneratedFile,
-	svc *protogen.Service, serviceFQN string) serviceData {
-
-	const mailboxrpcPath = "github.com/lightninglabs/darepo-client/" +
+	const mailboxrpcImportPath = "github.com/lightninglabs/darepo-client/" +
 		"mailbox/rpc"
-	const protoPath = "google.golang.org/protobuf/proto"
+	const protoImportPath = "google.golang.org/protobuf/proto"
 
-	data := serviceData{
-		ServiceName:  svc.GoName,
-		ServiceFQN:   serviceFQN,
-		RPCClient:    resolveIdent(g, mailboxrpcPath, "RPCClient"),
-		RPCOptions:   resolveIdent(g, mailboxrpcPath, "RPCOptions"),
-		Router:       resolveIdent(g, mailboxrpcPath, "Router"),
-		Context:      resolveIdent(g, "context", "Context"),
-		ProtoMessage: resolveIdent(g, protoPath, "Message"),
-		FmtErrorf:    resolveIdent(g, "fmt", "Errorf"),
+	serviceGoName := svc.GoName
+	hasMethods := len(svc.Methods) > 0
+
+	var contextContext protogen.GoIdent
+	var fmtErrorf protogen.GoIdent
+	mailboxrpcRPCClient := protogen.GoIdent{
+		GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
+		GoName:       "RPCClient",
 	}
+	var mailboxrpcRPCOptions protogen.GoIdent
+	mailboxrpcRouter := protogen.GoIdent{
+		GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
+		GoName:       "Router",
+	}
+	var protoMessage protogen.GoIdent
+
+	if hasMethods {
+		contextContext = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath("context"),
+			GoName:       "Context",
+		}
+		fmtErrorf = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath("fmt"),
+			GoName:       "Errorf",
+		}
+		mailboxrpcRPCOptions = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath(
+				mailboxrpcImportPath,
+			),
+			GoName: "RPCOptions",
+		}
+		protoMessage = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath(protoImportPath),
+			GoName:       "Message",
+		}
+	}
+
+	g.P("// ", serviceGoName,
+		"MailboxClient is a typed mailbox RPC client ", "for ",
+		serviceGoName, ".",
+	)
+	g.P("type ", serviceGoName, "MailboxClient struct {")
+	g.P("\t// C is the underlying RPC-over-mailbox runtime client.")
+	g.P("\tC ", g.QualifiedGoIdent(mailboxrpcRPCClient))
+	g.P("}")
+	g.P()
+
+	g.P("// New", serviceGoName,
+		"MailboxClient creates a typed mailbox client.",
+	)
+	g.P("func New", serviceGoName, "MailboxClient(c ",
+		g.QualifiedGoIdent(mailboxrpcRPCClient), ") *", serviceGoName,
+		"MailboxClient {",
+	)
+	g.P("\treturn &", serviceGoName, "MailboxClient{")
+	g.P("\t\tC: c,")
+	g.P("\t}")
+	g.P("}")
+	g.P()
+
+	serverIface := serviceGoName + "MailboxServer"
+	g.P("// ", serverIface, " is the mailbox server interface for ",
+		serviceGoName, ".",
+	)
+	g.P("type ", serverIface, " interface {")
+	for _, m := range svc.Methods {
+		req := g.QualifiedGoIdent(m.Input.GoIdent)
+		resp := g.QualifiedGoIdent(m.Output.GoIdent)
+
+		g.P("\t// ", m.GoName, " handles ", m.Desc.Name(), ".")
+		g.P("\t", m.GoName, "(ctx ", g.QualifiedGoIdent(contextContext),
+			", req *", req, ") (*", resp, ", error)")
+	}
+	g.P("}")
+	g.P()
+
+	mergeFn := ""
+	if hasMethods {
+		mergeFn = "merge" + serviceGoName + "MailboxRPCOptions"
+		g.P("// ", mergeFn, " merges multiple RPCOptions,")
+		g.P("// where later values overwrite earlier ones.")
+		g.P("func ", mergeFn, "(opts ...",
+			g.QualifiedGoIdent(mailboxrpcRPCOptions), ") ",
+			g.QualifiedGoIdent(mailboxrpcRPCOptions), " {",
+		)
+		g.P("\tvar out ", g.QualifiedGoIdent(mailboxrpcRPCOptions))
+		g.P("\tfor _, opt := range opts {")
+		g.P("\t\tif opt.IdempotencyKey != \"\" {")
+		g.P("\t\t\tout.IdempotencyKey = opt.IdempotencyKey")
+		g.P("\t\t}")
+		g.P("\t\tif opt.CorrelationID != \"\" {")
+		g.P("\t\t\tout.CorrelationID = opt.CorrelationID")
+		g.P("\t\t}")
+		g.P("\t\tif len(opt.Headers) > 0 {")
+		g.P("\t\t\tif out.Headers == nil {")
+		g.P("\t\t\t\tout.Headers = make(map[string]string, "+
+			"len(opt.Headers))")
+		g.P("\t\t\t}")
+		g.P("\t\t\tfor k, v := range opt.Headers {")
+		g.P("\t\t\t\tout.Headers[k] = v")
+		g.P("\t\t\t}")
+		g.P("\t\t}")
+		g.P("\t}")
+		g.P("\treturn out")
+		g.P("}")
+		g.P()
+	}
+
+	registerFn := "Register" + serviceGoName + "MailboxServer"
+	g.P("// ", registerFn, " registers handlers for ", serviceGoName, ".")
+	g.P("func ", registerFn, "(r ", g.QualifiedGoIdent(mailboxrpcRouter),
+		", impl ", serverIface, ") {")
+	for _, m := range svc.Methods {
+		serviceName := fmt.Sprintf("%q", serviceFQN)
+		methodName := fmt.Sprintf("%q", m.Desc.Name())
+
+		g.P("\tr.Handle(", serviceName, ", ", methodName,
+			", func() ", g.QualifiedGoIdent(protoMessage), " {",
+		)
+		g.P("\t\treturn &", g.QualifiedGoIdent(m.Input.GoIdent), "{}")
+		g.P("\t}, func(ctx ",
+			g.QualifiedGoIdent(contextContext), ", msg ",
+			g.QualifiedGoIdent(protoMessage), ") (",
+			g.QualifiedGoIdent(protoMessage), ", error) {",
+		)
+		g.P("\t\treq, ok := msg.(*",
+			g.QualifiedGoIdent(m.Input.GoIdent), ")",
+		)
+		g.P("\t\tif !ok {")
+		g.P("\t\t\treturn nil, ", g.QualifiedGoIdent(fmtErrorf),
+			"(\"unexpected request type: %T\", msg)")
+		g.P("\t\t}")
+		g.P()
+		g.P("\t\treturn impl.", m.GoName, "(ctx, req)")
+		g.P("\t})")
+	}
+	g.P("}")
+	g.P()
 
 	for _, m := range svc.Methods {
-		data.Methods = append(data.Methods, methodData{
-			Name:      m.GoName,
-			ProtoName: string(m.Desc.Name()),
-			ReqType:   g.QualifiedGoIdent(m.Input.GoIdent),
-			RespType:  g.QualifiedGoIdent(m.Output.GoIdent),
-		})
-	}
+		clientMethodComment(g, serviceGoName, m)
+		g.P("func (c *", serviceGoName, "MailboxClient) ", m.GoName,
+			"(ctx ", g.QualifiedGoIdent(contextContext), ", req *",
+			g.QualifiedGoIdent(m.Input.GoIdent), ", opts ...",
+			g.QualifiedGoIdent(mailboxrpcRPCOptions), ") (*",
+			g.QualifiedGoIdent(m.Output.GoIdent), ", error) {",
+		)
+		g.P("\topt := ", mergeFn, "(opts...)")
+		g.P()
 
-	return data
+		serviceName := fmt.Sprintf("%q", serviceFQN)
+		methodName := fmt.Sprintf("%q", m.Desc.Name())
+
+		g.P("\tcorrelationID, _, err := c.C.SendRPC(ctx, ",
+			serviceName, ", ", methodName, ", req, opt)",
+		)
+		g.P("\tif err != nil {")
+		g.P("\t\treturn nil, err")
+		g.P("\t}")
+		g.P()
+		g.P("\tresp := new(", g.QualifiedGoIdent(m.Output.GoIdent), ")")
+		g.P("\tif err := c.C.AwaitRPC(ctx, correlationID, resp); " +
+			"err != nil {",
+		)
+		g.P("\t\treturn nil, err")
+		g.P("\t}")
+		g.P()
+		g.P("\treturn resp, nil")
+		g.P("}")
+		g.P()
+	}
+}
+
+// clientMethodComment emits a GoDoc-style comment for a generated client
+// method.
+func clientMethodComment(g *protogen.GeneratedFile, serviceGoName string,
+	m *protogen.Method) {
+
+	_ = g
+	_ = serviceGoName
+
+	g.P("// ", m.GoName, " calls the ", m.Desc.Name(), " RPC.")
 }
 
 // protoServiceFQN returns "<proto package>.<ServiceName>" for a service.
