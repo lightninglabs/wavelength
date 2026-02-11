@@ -148,6 +148,34 @@ func generateService(g *protogen.GeneratedFile, file *protogen.File,
 	g.P("}")
 	g.P()
 
+	mergeFn := "merge" + serviceGoName + "MailboxRPCOptions"
+	g.P("// ", mergeFn, " merges multiple RPCOptions, where later values")
+	g.P("// overwrite earlier ones.")
+	g.P("func ", mergeFn, "(opts ...",
+		g.QualifiedGoIdent(mailboxrpcRPCOptions), ") ",
+		g.QualifiedGoIdent(mailboxrpcRPCOptions), " {",
+	)
+	g.P("\tvar out ", g.QualifiedGoIdent(mailboxrpcRPCOptions))
+	g.P("\tfor _, opt := range opts {")
+	g.P("\t\tif opt.IdempotencyKey != \"\" {")
+	g.P("\t\t\tout.IdempotencyKey = opt.IdempotencyKey")
+	g.P("\t\t}")
+	g.P("\t\tif opt.CorrelationID != \"\" {")
+	g.P("\t\t\tout.CorrelationID = opt.CorrelationID")
+	g.P("\t\t}")
+	g.P("\t\tif len(opt.Headers) > 0 {")
+	g.P("\t\t\tif out.Headers == nil {")
+	g.P("\t\t\t\tout.Headers = make(map[string]string, len(opt.Headers))")
+	g.P("\t\t\t}")
+	g.P("\t\t\tfor k, v := range opt.Headers {")
+	g.P("\t\t\t\tout.Headers[k] = v")
+	g.P("\t\t\t}")
+	g.P("\t\t}")
+	g.P("\t}")
+	g.P("\treturn out")
+	g.P("}")
+	g.P()
+
 	registerFn := "Register" + serviceGoName + "MailboxServer"
 	g.P("// ", registerFn, " registers handlers for ", serviceGoName, ".")
 	g.P("func ", registerFn, "(r ", g.QualifiedGoIdent(mailboxrpcRouter),
@@ -187,10 +215,7 @@ func generateService(g *protogen.GeneratedFile, file *protogen.File,
 			g.QualifiedGoIdent(mailboxrpcRPCOptions), ") (*",
 			g.QualifiedGoIdent(m.Output.GoIdent), ", error) {",
 		)
-		g.P("\tvar opt ", g.QualifiedGoIdent(mailboxrpcRPCOptions))
-		g.P("\tif len(opts) > 0 {")
-		g.P("\t\topt = opts[0]")
-		g.P("\t}")
+		g.P("\topt := ", mergeFn, "(opts...)")
 		g.P()
 
 		serviceName := fmt.Sprintf("%q", serviceFQN)

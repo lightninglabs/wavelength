@@ -28,6 +28,29 @@ type HelloServiceMailboxServer interface {
 	SayHello(ctx context.Context, req *HelloRequest) (*HelloResponse, error)
 }
 
+// mergeHelloServiceMailboxRPCOptions merges multiple RPCOptions, where later
+// values overwrite earlier ones.
+func mergeHelloServiceMailboxRPCOptions(opts ...rpc.RPCOptions) rpc.RPCOptions {
+	var out rpc.RPCOptions
+	for _, opt := range opts {
+		if opt.IdempotencyKey != "" {
+			out.IdempotencyKey = opt.IdempotencyKey
+		}
+		if opt.CorrelationID != "" {
+			out.CorrelationID = opt.CorrelationID
+		}
+		if len(opt.Headers) > 0 {
+			if out.Headers == nil {
+				out.Headers = make(map[string]string, len(opt.Headers))
+			}
+			for k, v := range opt.Headers {
+				out.Headers[k] = v
+			}
+		}
+	}
+	return out
+}
+
 // RegisterHelloServiceMailboxServer registers handlers for HelloService.
 func RegisterHelloServiceMailboxServer(r rpc.Router, impl HelloServiceMailboxServer) {
 	r.Handle("mailboxrpctest.v1.HelloService", "SayHello", func() proto.Message {
@@ -44,10 +67,7 @@ func RegisterHelloServiceMailboxServer(r rpc.Router, impl HelloServiceMailboxSer
 
 // SayHello calls the SayHello RPC.
 func (c *HelloServiceMailboxClient) SayHello(ctx context.Context, req *HelloRequest, opts ...rpc.RPCOptions) (*HelloResponse, error) {
-	var opt rpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
+	opt := mergeHelloServiceMailboxRPCOptions(opts...)
 
 	correlationID, _, err := c.C.SendRPC(ctx, "mailboxrpctest.v1.HelloService", "SayHello", req, opt)
 	if err != nil {
