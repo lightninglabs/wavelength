@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -107,8 +108,16 @@ func (a *Actor) handleSubmit(ctx context.Context,
 			"provided"))
 	}
 
-	arkTxid := req.ArkPSBT.UnsignedTx.TxHash()
-	sessionID := SessionID(arkTxid)
+	// Run structural submit validation before we touch lock state.
+	// Stateful/authoritative checks remain at the outbox boundary.
+	validated, err := oorlib.ValidateSubmitPackage(
+		req.ArkPSBT, req.CheckpointPSBTs,
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	sessionID := SessionID(validated.ArkTxid)
 
 	session, err := a.getOrCreateSessionFSM(ctx, sessionID)
 	if err != nil {

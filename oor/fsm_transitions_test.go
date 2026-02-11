@@ -47,48 +47,61 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestSubmitValidatedBeforeInputsLockedIsIgnored asserts that RequestedState
-// rejects early validation success before inputs are locked.
-func TestSubmitValidatedBeforeInputsLockedIsIgnored(t *testing.T) {
+// TestInputsLockedEventEmitsCoSign asserts locking success advances to the
+// co-signing gate and emits CoSignReq.
+func TestInputsLockedEventEmitsCoSign(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 
-	state := &RequestedState{
-		InputsLocked: false,
-	}
-
-	tr, err := state.ProcessEvent(ctx, &SubmitValidatedEvent{}, nil)
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
-	require.NotNil(t, tr)
-	require.Same(t, state, tr.NextState)
-
-	outbox := collectOutbox(t, tr)
-	require.Empty(t, outbox)
-}
-
-// TestInputsLockedEventEnablesValidation asserts that locking success marks the
-// requested state as lock-confirmed and emits submit validation.
-func TestInputsLockedEventEnablesValidation(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
 
 	state := &RequestedState{
-		InputsLocked: false,
+		ArkPSBT: arkPsbt,
 	}
 
 	tr, err := state.ProcessEvent(ctx, &InputsLockedEvent{}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	next, ok := tr.NextState.(*RequestedState)
+	next, ok := tr.NextState.(*ValidatedState)
 	require.True(t, ok)
-	require.True(t, next.InputsLocked)
+	require.Same(t, arkPsbt, next.ArkPSBT)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
-	require.IsType(t, &ValidateSubmitReq{}, outbox[0])
+	require.IsType(t, &CoSignReq{}, outbox[0])
+}
+
+// TestFinalizeRequestCarriesArkToValidation asserts finalize validation
+// receives the canonical Ark PSBT from session state.
+func TestFinalizeRequestCarriesArkToValidation(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	state := &CoSignedState{
+		ArkPSBT: arkPsbt,
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{
+		FinalCheckpointPSBTs: []*psbt.Packet{{}},
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	outbox := collectOutbox(t, tr)
+	require.Len(t, outbox, 1)
+
+	validateReq, ok := outbox[0].(*ValidateFinalizeReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, validateReq.ArkPSBT)
 }
 
 // TestSubmitRequestedPopulatesLockInputs asserts SubmitRequestedEvent derives

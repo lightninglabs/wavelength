@@ -46,7 +46,6 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		return &StateTransition{
 			NextState: &RequestedState{
 				Inputs:          inputs,
-				InputsLocked:    false,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: evt.CheckpointPSBTs,
 			},
@@ -73,36 +72,6 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 
 	switch event.(type) {
 	case *InputsLockedEvent:
-		validateReq := &ValidateSubmitReq{
-			ArkPSBT: s.ArkPSBT,
-			CheckpointPSBTs: s.
-				CheckpointPSBTs,
-		}
-
-		return &StateTransition{
-			NextState: &RequestedState{
-				Inputs:          s.Inputs,
-				InputsLocked:    true,
-				ArkPSBT:         s.ArkPSBT,
-				CheckpointPSBTs: s.CheckpointPSBTs,
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					validateReq,
-				},
-			}),
-		}, nil
-
-	case *SubmitValidatedEvent:
-		// Ignore validation success until locking has completed.
-		//
-		// The validate request is emitted only after InputsLockedEvent.
-		// This guard keeps the FSM robust against out-of-order actor
-		// deliveries.
-		if !s.InputsLocked {
-			return unexpectedEvent(s, s.String(), event, env), nil
-		}
-
 		return &StateTransition{
 			NextState: &ValidatedState{
 				Inputs:          s.Inputs,
@@ -111,18 +80,6 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{&CoSignReq{}},
-			}),
-		}, nil
-
-	case *SubmitFailedEvent:
-		return &StateTransition{
-			NextState: &FailedState{
-				Reason: "submit failed",
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{&UnlockInputsReq{
-					Inputs: s.Inputs,
-				}},
 			}),
 		}, nil
 
@@ -141,7 +98,9 @@ func (s *ValidatedState) ProcessEvent(ctx context.Context, event Event,
 	switch event.(type) {
 	case *OperatorSignedEvent:
 		return &StateTransition{
-			NextState: &CoSignedState{},
+			NextState: &CoSignedState{
+				ArkPSBT: s.ArkPSBT,
+			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
@@ -184,6 +143,7 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&ValidateFinalizeReq{
+						ArkPSBT: s.ArkPSBT,
 						FinalCheckpointPSBTs: evt.
 							FinalCheckpointPSBTs,
 					},

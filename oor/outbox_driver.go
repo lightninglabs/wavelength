@@ -2,10 +2,8 @@ package oor
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 )
 
@@ -24,16 +22,12 @@ import (
 type InProcessOutboxDriver struct {
 	mu sync.Mutex
 
-	arkBySession map[SessionID]*psbt.Packet
-
 	seen []string
 }
 
 // NewInProcessOutboxDriver creates a new in-process outbox driver.
 func NewInProcessOutboxDriver() *InProcessOutboxDriver {
-	return &InProcessOutboxDriver{
-		arkBySession: make(map[SessionID]*psbt.Packet),
-	}
+	return &InProcessOutboxDriver{}
 }
 
 // SeenOutboxTypes returns a snapshot of outbox types observed so far.
@@ -52,6 +46,7 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 	outbox OutboxEvent) ([]Event, error) {
 
 	_ = ctx
+	_ = sessionID
 
 	// Track the outbox types we executed so tests can assert that specific
 	// transitions emitted the expected side effects in the expected order.
@@ -63,41 +58,12 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 	case *LockInputsReq:
 		return []Event{&InputsLockedEvent{}}, nil
 
-	case *ValidateSubmitReq:
-		validated, err := oorlib.ValidateSubmitPackage(
-			msg.ArkPSBT, msg.CheckpointPSBTs,
-		)
-		if err != nil {
-			return []Event{&SubmitFailedEvent{
-				Reason: err.Error(),
-			}}, nil
-		}
-
-		d.mu.Lock()
-		d.arkBySession[sessionID] = msg.ArkPSBT
-		d.mu.Unlock()
-
-		return []Event{&SubmitValidatedEvent{
-			ArkTxid: validated.ArkTxid,
-		}}, nil
-
 	case *CoSignReq:
 		return []Event{&OperatorSignedEvent{}}, nil
 
 	case *ValidateFinalizeReq:
-		d.mu.Lock()
-		ark := d.arkBySession[sessionID]
-		d.mu.Unlock()
-
-		if ark == nil {
-			return nil, fmt.Errorf(
-				"missing ark psbt for session %s",
-				sessionID,
-			)
-		}
-
 		err := oorlib.ValidateFinalizePackage(
-			ark, msg.FinalCheckpointPSBTs,
+			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
 		)
 		if err != nil {
 			return []Event{&FinalizeFailedEvent{

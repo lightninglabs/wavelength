@@ -46,24 +46,7 @@ func (e *UnlockInputsReq) OutboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (e *UnlockInputsReq) outboxSealed() {}
 
-// ValidateSubmitReq asks the validator to validate a submit package.
-type ValidateSubmitReq struct {
-	// ArkPSBT is the Ark tx PSBT.
-	ArkPSBT *psbt.Packet
-
-	// CheckpointPSBTs are the checkpoint tx PSBTs.
-	CheckpointPSBTs []*psbt.Packet
-}
-
-// OutboxType returns the type of this outbox event.
-func (e *ValidateSubmitReq) OutboxType() string {
-	return "ValidateSubmitReq"
-}
-
-// outboxSealed marks this as implementing the sealed OutboxEvent interface.
-func (e *ValidateSubmitReq) outboxSealed() {}
-
-// CoSignReq asks the signing subsystem to co-sign the validated package.
+// CoSignReq asks the signing subsystem to co-sign the package.
 type CoSignReq struct{}
 
 // OutboxType returns the type of this outbox event.
@@ -76,6 +59,9 @@ func (e *CoSignReq) outboxSealed() {}
 
 // ValidateFinalizeReq asks the validator to validate a finalize package.
 type ValidateFinalizeReq struct {
+	// ArkPSBT is the canonical Ark tx PSBT for this session.
+	ArkPSBT *psbt.Packet
+
 	// FinalCheckpointPSBTs are checkpoint txs fully signed by the client.
 	FinalCheckpointPSBTs []*psbt.Packet
 }

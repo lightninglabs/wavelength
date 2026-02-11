@@ -157,9 +157,9 @@ func TestActorHappyPath(t *testing.T) {
 	require.IsType(t, &FinalizedState{}, state)
 }
 
-// TestActorSubmitMissingWitnessAssertsUnlock exercises a submit that fails
-// validation because the Ark PSBT input does not include a witness UTXO.
-func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
+// TestActorSubmitMissingWitnessRejectedBeforeLock asserts submit package
+// validation runs before any lock side effects.
+func TestActorSubmitMissingWitnessRejectedBeforeLock(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -210,20 +210,20 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
 	})
-	require.True(t, submitResp.IsOk())
+	require.True(t, submitResp.IsErr())
 
 	sessionID := SessionID(arkTx.TxHash())
-	state, err := actor.CurrentState(ctx, sessionID)
-	require.NoError(t, err)
-	require.IsType(t, &FailedState{}, state)
+	_, err = actor.CurrentState(ctx, sessionID)
+	require.ErrorContains(t, err, "unknown session")
 
 	seen := strings.Join(driver.SeenOutboxTypes(), ",")
-	require.Contains(t, seen, "UnlockInputsReq")
+	require.NotContains(t, seen, "LockInputsReq")
+	require.NotContains(t, seen, "UnlockInputsReq")
 }
 
-// TestActorSubmitMissingTapTreeAssertsUnlock exercises a submit that fails
-// validation because the Ark PSBT input does not include tap tree metadata.
-func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
+// TestActorSubmitMissingTapTreeRejectedBeforeLock asserts submit package
+// validation runs before any lock side effects.
+func TestActorSubmitMissingTapTreeRejectedBeforeLock(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -272,15 +272,15 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: []*psbt.Packet{checkpointPsbt},
 	})
-	require.True(t, submitResp.IsOk())
+	require.True(t, submitResp.IsErr())
 
 	sessionID := SessionID(arkTx.TxHash())
-	state, err := actor.CurrentState(ctx, sessionID)
-	require.NoError(t, err)
-	require.IsType(t, &FailedState{}, state)
+	_, err = actor.CurrentState(ctx, sessionID)
+	require.ErrorContains(t, err, "unknown session")
 
 	seen := strings.Join(driver.SeenOutboxTypes(), ",")
-	require.Contains(t, seen, "UnlockInputsReq")
+	require.NotContains(t, seen, "LockInputsReq")
+	require.NotContains(t, seen, "UnlockInputsReq")
 }
 
 // TestActorFinalizeMissingSigDoesNotUnlock asserts that finalize failures after

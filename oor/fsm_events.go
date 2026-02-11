@@ -2,15 +2,14 @@ package oor
 
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 )
 
 // Event is a sealed interface for all events that can drive an OOR session FSM.
 //
 // Events are split into:
 //   - external requests (submit/finalize) that enter the coordinator actor, and
-//   - internal events produced by outbox processing (locks acquired, validation
-//     results, signing results).
+//   - internal events produced by outbox processing (locks acquired, signing
+//     results, finalize validation results).
 type Event interface {
 	// EventType returns a stable string identifier for this event.
 	EventType() string
@@ -68,34 +67,6 @@ func (e *InputsLockFailedEvent) EventType() string {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *InputsLockFailedEvent) eventSealed() {}
-
-// SubmitValidatedEvent indicates submit package validation succeeded.
-type SubmitValidatedEvent struct {
-	// ArkTxid is the computed session identifier.
-	ArkTxid chainhash.Hash
-}
-
-// EventType returns the type of this event.
-func (e *SubmitValidatedEvent) EventType() string {
-	return "SubmitValidatedEvent"
-}
-
-// eventSealed marks this as implementing the sealed Event interface.
-func (e *SubmitValidatedEvent) eventSealed() {}
-
-// SubmitFailedEvent indicates submit package validation failed.
-type SubmitFailedEvent struct {
-	// Reason is a human-readable error string for logs/tests.
-	Reason string
-}
-
-// EventType returns the type of this event.
-func (e *SubmitFailedEvent) EventType() string {
-	return "SubmitFailedEvent"
-}
-
-// eventSealed marks this as implementing the sealed Event interface.
-func (e *SubmitFailedEvent) eventSealed() {}
 
 // OperatorSignedEvent indicates the operator has co-signed the package.
 type OperatorSignedEvent struct{}

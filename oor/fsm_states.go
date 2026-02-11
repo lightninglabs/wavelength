@@ -31,21 +31,15 @@ func (s *IdleState) IsTerminal() bool {
 func (s *IdleState) stateSealed() {}
 
 // RequestedState indicates a submit request has been received and inputs are in
-// the process of being locked/validated.
+// the process of being locked.
 type RequestedState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
 
-	// InputsLocked indicates whether the input lock request has succeeded.
-	//
-	// Validation success is only accepted after this flag is true so submit
-	// processing cannot bypass the lock boundary.
-	InputsLocked bool
-
-	// ArkPSBT is the submitted Ark tx PSBT.
+	// ArkPSBT is the pre-validated Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
-	// CheckpointPSBTs are the submitted checkpoint PSBTs.
+	// CheckpointPSBTs are the pre-validated checkpoint PSBTs.
 	CheckpointPSBTs []*psbt.Packet
 }
 
@@ -67,10 +61,10 @@ type ValidatedState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
 
-	// ArkPSBT is the validated Ark tx PSBT.
+	// ArkPSBT is the pre-validated Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
-	// CheckpointPSBTs are the validated checkpoint PSBTs.
+	// CheckpointPSBTs are the pre-validated checkpoint PSBTs.
 	CheckpointPSBTs []*psbt.Packet
 }
 
@@ -89,7 +83,10 @@ func (s *ValidatedState) stateSealed() {}
 
 // CoSignedState indicates the operator has co-signed the package and the
 // session has reached its point-of-no-return.
-type CoSignedState struct{}
+type CoSignedState struct {
+	// ArkPSBT is carried forward for finalize package validation.
+	ArkPSBT *psbt.Packet
+}
 
 // String returns a human-readable representation of CoSignedState.
 func (s *CoSignedState) String() string {
