@@ -138,8 +138,8 @@ func PutTapTreePSBTInput(pkt *psbt.Packet, inputIndex int,
 		return fmt.Errorf("encoded tap tree cannot be empty")
 	}
 
-	// Replace any existing entry to keep this idempotent and avoid ambiguous
-	// multiple values.
+	// Replace any existing entry to keep this idempotent and avoid
+	// ambiguous multiple values.
 	unknowns := pkt.Inputs[inputIndex].Unknowns
 	for _, u := range unknowns {
 		if bytes.Equal(u.Key, TapTreePSBTKey) {
@@ -148,10 +148,11 @@ func PutTapTreePSBTInput(pkt *psbt.Packet, inputIndex int,
 		}
 	}
 
-	pkt.Inputs[inputIndex].Unknowns = append(unknowns, &psbt.Unknown{
+	unknowns = append(unknowns, &psbt.Unknown{
 		Key:   TapTreePSBTKey,
 		Value: encodedTapTree,
 	})
+	pkt.Inputs[inputIndex].Unknowns = unknowns
 
 	return nil
 }
