@@ -62,11 +62,7 @@ func (s *Store) Close() error {
 type Config struct {
 	// Backend specifies which database backend to use: "sqlite" or
 	// "postgres".
-	//
-	// go-flags supports repeated `choice` tags to constrain values, but this
-	// triggers staticcheck's duplicate-struct-tag check.
-	//nolint:staticcheck
-	Backend string `long:"backend" description:"Database backend to use (sqlite or postgres)" choice:"sqlite" choice:"postgres"`
+	Backend string `long:"backend" choice:"sqlite" choice:"postgres"`
 
 	// Sqlite contains SQLite-specific configuration
 	Sqlite *SqliteConfig `group:"sqlite" namespace:"sqlite"`
