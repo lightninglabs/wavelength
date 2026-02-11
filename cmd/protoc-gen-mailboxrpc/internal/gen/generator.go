@@ -83,30 +83,38 @@ func generateService(g *protogen.GeneratedFile, file *protogen.File,
 	const protoImportPath = "google.golang.org/protobuf/proto"
 
 	serviceGoName := svc.GoName
+	hasMethods := len(svc.Methods) > 0
 
-	contextContext := protogen.GoIdent{
-		GoImportPath: protogen.GoImportPath("context"),
-		GoName:       "Context",
-	}
-	fmtErrorf := protogen.GoIdent{
-		GoImportPath: protogen.GoImportPath("fmt"),
-		GoName:       "Errorf",
-	}
+	var contextContext protogen.GoIdent
+	var fmtErrorf protogen.GoIdent
 	mailboxrpcRPCClient := protogen.GoIdent{
 		GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
 		GoName:       "RPCClient",
 	}
-	mailboxrpcRPCOptions := protogen.GoIdent{
-		GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
-		GoName:       "RPCOptions",
-	}
+	var mailboxrpcRPCOptions protogen.GoIdent
 	mailboxrpcRouter := protogen.GoIdent{
 		GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
 		GoName:       "Router",
 	}
-	protoMessage := protogen.GoIdent{
-		GoImportPath: protogen.GoImportPath(protoImportPath),
-		GoName:       "Message",
+	var protoMessage protogen.GoIdent
+
+	if hasMethods {
+		contextContext = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath("context"),
+			GoName:       "Context",
+		}
+		fmtErrorf = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath("fmt"),
+			GoName:       "Errorf",
+		}
+		mailboxrpcRPCOptions = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath(mailboxrpcImportPath),
+			GoName:       "RPCOptions",
+		}
+		protoMessage = protogen.GoIdent{
+			GoImportPath: protogen.GoImportPath(protoImportPath),
+			GoName:       "Message",
+		}
 	}
 
 	g.P("// ", serviceGoName,
@@ -148,33 +156,36 @@ func generateService(g *protogen.GeneratedFile, file *protogen.File,
 	g.P("}")
 	g.P()
 
-	mergeFn := "merge" + serviceGoName + "MailboxRPCOptions"
-	g.P("// ", mergeFn, " merges multiple RPCOptions, where later values")
-	g.P("// overwrite earlier ones.")
-	g.P("func ", mergeFn, "(opts ...",
-		g.QualifiedGoIdent(mailboxrpcRPCOptions), ") ",
-		g.QualifiedGoIdent(mailboxrpcRPCOptions), " {",
-	)
-	g.P("\tvar out ", g.QualifiedGoIdent(mailboxrpcRPCOptions))
-	g.P("\tfor _, opt := range opts {")
-	g.P("\t\tif opt.IdempotencyKey != \"\" {")
-	g.P("\t\t\tout.IdempotencyKey = opt.IdempotencyKey")
-	g.P("\t\t}")
-	g.P("\t\tif opt.CorrelationID != \"\" {")
-	g.P("\t\t\tout.CorrelationID = opt.CorrelationID")
-	g.P("\t\t}")
-	g.P("\t\tif len(opt.Headers) > 0 {")
-	g.P("\t\t\tif out.Headers == nil {")
-	g.P("\t\t\t\tout.Headers = make(map[string]string, len(opt.Headers))")
-	g.P("\t\t\t}")
-	g.P("\t\t\tfor k, v := range opt.Headers {")
-	g.P("\t\t\t\tout.Headers[k] = v")
-	g.P("\t\t\t}")
-	g.P("\t\t}")
-	g.P("\t}")
-	g.P("\treturn out")
-	g.P("}")
-	g.P()
+	mergeFn := ""
+	if hasMethods {
+		mergeFn = "merge" + serviceGoName + "MailboxRPCOptions"
+		g.P("// ", mergeFn, " merges multiple RPCOptions, where later values")
+		g.P("// overwrite earlier ones.")
+		g.P("func ", mergeFn, "(opts ...",
+			g.QualifiedGoIdent(mailboxrpcRPCOptions), ") ",
+			g.QualifiedGoIdent(mailboxrpcRPCOptions), " {",
+		)
+		g.P("\tvar out ", g.QualifiedGoIdent(mailboxrpcRPCOptions))
+		g.P("\tfor _, opt := range opts {")
+		g.P("\t\tif opt.IdempotencyKey != \"\" {")
+		g.P("\t\t\tout.IdempotencyKey = opt.IdempotencyKey")
+		g.P("\t\t}")
+		g.P("\t\tif opt.CorrelationID != \"\" {")
+		g.P("\t\t\tout.CorrelationID = opt.CorrelationID")
+		g.P("\t\t}")
+		g.P("\t\tif len(opt.Headers) > 0 {")
+		g.P("\t\t\tif out.Headers == nil {")
+		g.P("\t\t\t\tout.Headers = make(map[string]string, len(opt.Headers))")
+		g.P("\t\t\t}")
+		g.P("\t\t\tfor k, v := range opt.Headers {")
+		g.P("\t\t\t\tout.Headers[k] = v")
+		g.P("\t\t\t}")
+		g.P("\t\t}")
+		g.P("\t}")
+		g.P("\treturn out")
+		g.P("}")
+		g.P()
+	}
 
 	registerFn := "Register" + serviceGoName + "MailboxServer"
 	g.P("// ", registerFn, " registers handlers for ", serviceGoName, ".")
