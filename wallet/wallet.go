@@ -37,13 +37,13 @@ const (
 
 	// listUnspentMaxRetries is the maximum number of times we'll retry a
 	// ListUnspent query within a single block epoch if we didn't detect any
-	// new boarding UTXOs. This mitigates a race where we receive a block epoch
-	// notification before the wallet's UTXO set has been fully updated.
+	// new boarding UTXOs. This mitigates a race where we receive a block
+	// epoch notification before the wallet's UTXO set is fully updated.
 	listUnspentMaxRetries = 5
 
-	// listUnspentRetryDelay is the delay between ListUnspent retries. We keep
-	// this small so confirmed boarding UTXOs are detected promptly without
-	// waiting for another block.
+	// listUnspentRetryDelay is the delay between ListUnspent retries.
+	// We keep this small so confirmed boarding UTXOs are detected
+	// promptly without waiting for another block.
 	listUnspentRetryDelay = 200 * time.Millisecond
 )
 
@@ -415,10 +415,10 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 	a.log.InfoS(ctx, "Processing new block epoch",
 		slog.Int("height", int(epoch.Height)))
 
-	// A new block just arrived, we'll now poll ListUnspent for any new UTXOs
-	// since last time. We'll retry a few times because there can be a short
-	// lag between receiving the block epoch and the wallet reporting the UTXO
-	// with the expected confirmation count.
+	// A new block just arrived, so poll ListUnspent for new UTXOs.
+	// Retry a few times because there can be a short lag between
+	// receiving the block epoch and the wallet reporting the UTXO with
+	// the expected confirmation count.
 	var (
 		lastUtxos []*Utxo
 		foundNew  bool
@@ -431,8 +431,8 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 			a.log.WarnS(ctx, "Failed to list unspent UTXOs", err,
 				slog.Int("height", int(epoch.Height)))
 
-			// Return success to avoid disrupting the actor - we'll try
-			// again on the next block.
+			// Return success to avoid disrupting the actor.
+			// We'll try again on the next block.
 			return fn.Ok[WalletResp](nil)
 		}
 
