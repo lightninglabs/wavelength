@@ -142,9 +142,9 @@ func (s *AwaitingFinalizeAccepted) stateSealed() {}
 // AwaitingLocalVTXOUpdate indicates the server has accepted the finalize
 // package and the client must update its local VTXO persistence state.
 type AwaitingLocalVTXOUpdate struct {
-	// AwaitingLocalVTXOUpdate means the off-chain OOR protocol has completed
-	// successfully at the server boundary, but the local wallet state still
-	// needs to be updated to reflect that the inputs are spent.
+	// AwaitingLocalVTXOUpdate means the off-chain OOR protocol has
+	// completed successfully at the server boundary, but local wallet
+	// state still needs to be updated to reflect spent inputs.
 
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
