@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -82,59 +84,75 @@ func randomP2TRScript(t *testing.T) []byte {
 	return append([]byte{txscript.OP_1, 0x20}, key[:]...)
 }
 
+func randomCheckpointPolicy(t *testing.T) scripts.CheckpointPolicy {
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+}
+
+func makeValidSubmitPackage(t *testing.T,
+	policy scripts.CheckpointPolicy) (*psbt.Packet, *psbt.Packet) {
+
+	t.Helper()
+
+	vtxoWitness := &wire.TxOut{
+		Value:    5000,
+		PkScript: randomP2TRScript(t),
+	}
+
+	checkpointResult, err := oorlib.BuildCheckpointPSBT(
+		policy, oorlib.CheckpointInput{
+			Outpoint: wire.OutPoint{
+				Hash:  chainhash.Hash{1},
+				Index: 7,
+			},
+			WitnessUtxo:     vtxoWitness,
+			OwnerLeafScript: []byte{txscript.OP_TRUE},
+		},
+	)
+	require.NoError(t, err)
+
+	checkpointTx := checkpointResult.PSBT.UnsignedTx
+	require.NotNil(t, checkpointTx)
+	require.Len(t, checkpointTx.TxOut, 1)
+
+	arkPsbt, err := oorlib.BuildArkPSBT([]oorlib.CheckpointOutput{
+		{
+			Txid:           checkpointTx.TxHash(),
+			Output:         checkpointTx.TxOut[0],
+			TapTreeEncoded: checkpointResult.TapTreeEncoded,
+		},
+	}, []oorlib.RecipientOutput{
+		{
+			PkScript: randomP2TRScript(t),
+			Value:    btcutil.Amount(vtxoWitness.Value),
+		},
+	})
+	require.NoError(t, err)
+
+	return arkPsbt, checkpointResult.PSBT
+}
+
 // TestActorHappyPath exercises a submit and finalize flow through the actor
 // using the in-process outbox driver.
 func TestActorHappyPath(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-
-	checkpointTx := wire.NewMsgTx(2)
-	checkpointTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 7,
-		},
-	})
-	checkpointTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: randomP2TRScript(t),
-	})
-
-	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
-	require.NoError(t, err)
-
-	checkpointOutpoint := wire.OutPoint{
-		Hash:  checkpointTx.TxHash(),
-		Index: 0,
-	}
-
-	arkTx := wire.NewMsgTx(2)
-	arkTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: checkpointOutpoint,
-	})
-	arkTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: randomP2TRScript(t),
-	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
-
-	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
-	require.NoError(t, err)
-
-	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
-
-	encodedTapTree, err := oorlib.EncodeTapTree([][]byte{{0x51}})
-	require.NoError(t, err)
-
-	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
-	require.NoError(t, err)
-
+	policy := randomCheckpointPolicy(t)
+	arkPsbt, checkpointPsbt := makeValidSubmitPackage(t, policy)
 	checkpointPsbt.Inputs[0].FinalScriptWitness = []byte{0x01}
 
 	driver := NewInProcessOutboxDriver()
 	actor := NewActor(ActorCfg{
-		OutboxHandler: driver,
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
@@ -204,7 +222,10 @@ func TestActorSubmitMissingWitnessRejectedBeforeLock(t *testing.T) {
 	require.NoError(t, err)
 
 	driver := NewInProcessOutboxDriver()
-	actor := NewActor(ActorCfg{OutboxHandler: driver})
+	actor := NewActor(ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: randomCheckpointPolicy(t),
+	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
@@ -266,7 +287,10 @@ func TestActorSubmitMissingTapTreeRejectedBeforeLock(t *testing.T) {
 	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
 
 	driver := NewInProcessOutboxDriver()
-	actor := NewActor(ActorCfg{OutboxHandler: driver})
+	actor := NewActor(ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: randomCheckpointPolicy(t),
+	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
@@ -289,50 +313,14 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-
-	checkpointTx := wire.NewMsgTx(2)
-	checkpointTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 7,
-		},
-	})
-	checkpointTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: randomP2TRScript(t),
-	})
-
-	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
-	require.NoError(t, err)
-
-	checkpointOutpoint := wire.OutPoint{
-		Hash:  checkpointTx.TxHash(),
-		Index: 0,
-	}
-
-	arkTx := wire.NewMsgTx(2)
-	arkTx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: checkpointOutpoint,
-	})
-	arkTx.AddTxOut(&wire.TxOut{
-		Value:    1234,
-		PkScript: randomP2TRScript(t),
-	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
-
-	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
-	require.NoError(t, err)
-
-	arkPsbt.Inputs[0].WitnessUtxo = checkpointTx.TxOut[0]
-
-	encodedTapTree, err := oorlib.EncodeTapTree([][]byte{{0x51}})
-	require.NoError(t, err)
-
-	err = oorlib.PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
-	require.NoError(t, err)
+	policy := randomCheckpointPolicy(t)
+	arkPsbt, checkpointPsbt := makeValidSubmitPackage(t, policy)
 
 	driver := NewInProcessOutboxDriver()
-	actor := NewActor(ActorCfg{OutboxHandler: driver})
+	actor := NewActor(ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
@@ -340,7 +328,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	})
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkTx.TxHash())
+	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
 	state, err := actor.CurrentState(ctx, sessionID)
 	require.NoError(t, err)
 	require.IsType(t, &CoSignedState{}, state)
