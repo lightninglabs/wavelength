@@ -56,7 +56,7 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 
 	switch msg := outbox.(type) {
 	case *LockInputsReq:
-		return []Event{&InputsLockedEvent{}}, nil
+		return []Event{&InputsLockSucceededEvent{}}, nil
 
 	case *CoSignReq:
 		return []Event{&OperatorSignedEvent{}}, nil

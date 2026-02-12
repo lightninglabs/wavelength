@@ -47,9 +47,9 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestInputsLockedEventEmitsCoSign asserts locking success advances to the
-// co-signing gate and emits CoSignReq.
-func TestInputsLockedEventEmitsCoSign(t *testing.T) {
+// TestInputsLockSucceededEventEmitsCoSign asserts locking success advances
+// to the co-signing gate and emits CoSignReq.
+func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -62,7 +62,7 @@ func TestInputsLockedEventEmitsCoSign(t *testing.T) {
 		ArkPSBT: arkPsbt,
 	}
 
-	tr, err := state.ProcessEvent(ctx, &InputsLockedEvent{}, nil)
+	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
@@ -73,6 +73,28 @@ func TestInputsLockedEventEmitsCoSign(t *testing.T) {
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
 	require.IsType(t, &CoSignReq{}, outbox[0])
+}
+
+// TestInputsLockFailedEventMovesToFailedState asserts lock failures transition
+// to terminal failure without additional side effects.
+func TestInputsLockFailedEventMovesToFailedState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	state := &RequestedState{}
+	tr, err := state.ProcessEvent(
+		ctx, &InputsLockFailedEvent{Reason: "lock busy"}, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	failed, ok := tr.NextState.(*FailedState)
+	require.True(t, ok)
+	require.Equal(t, "lock busy", failed.Reason)
+
+	outbox := collectOutbox(t, tr)
+	require.Empty(t, outbox)
 }
 
 // TestFinalizeRequestCarriesArkToValidation asserts finalize validation

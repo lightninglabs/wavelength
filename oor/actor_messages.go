@@ -24,6 +24,11 @@ type ActorResp interface {
 }
 
 // SubmitOORRequest requests starting (or resuming) an OOR transfer session.
+//
+// Submit package vocabulary:
+//   - ArkPSBT is the transfer intent transaction.
+//   - CheckpointPSBTs are per-input checkpoint transactions before finalize
+//     signatures are attached by the client.
 type SubmitOORRequest struct {
 	actor.BaseMessage
 
@@ -62,6 +67,10 @@ func (m *SubmitOORResponse) MessageType() string {
 func (m *SubmitOORResponse) actorRespSealed() {}
 
 // FinalizeOORRequest requests finalizing an existing OOR transfer session.
+//
+// Finalize package vocabulary:
+//   - FinalCheckpointPSBTs are the same checkpoint transactions with client
+//     finalize signature material attached.
 type FinalizeOORRequest struct {
 	actor.BaseMessage
 

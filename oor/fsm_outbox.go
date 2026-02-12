@@ -58,6 +58,11 @@ func (e *CoSignReq) OutboxType() string {
 func (e *CoSignReq) outboxSealed() {}
 
 // ValidateFinalizeReq asks the validator to validate a finalize package.
+//
+// Finalize package vocabulary in outbox terms:
+//   - ArkPSBT is the canonical session Ark transaction.
+//   - FinalCheckpointPSBTs are checkpoint txs with finalize signatures from the
+//     client.
 type ValidateFinalizeReq struct {
 	// ArkPSBT is the canonical Ark tx PSBT for this session.
 	ArkPSBT *psbt.Packet

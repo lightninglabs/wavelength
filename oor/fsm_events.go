@@ -47,13 +47,6 @@ func (e *InputsLockSucceededEvent) EventType() string {
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *InputsLockSucceededEvent) eventSealed() {}
 
-// InputsLockedEvent is a compatibility alias for lock-success signaling.
-//
-// Legacy transitions in earlier split commits use this name. Keeping the alias
-// preserves compile-time compatibility while newer code uses the explicit
-// InputsLockSucceededEvent name.
-type InputsLockedEvent = InputsLockSucceededEvent
-
 // InputsLockFailedEvent indicates input locking failed.
 type InputsLockFailedEvent struct {
 	// Reason is a human-readable error string for logs/tests.

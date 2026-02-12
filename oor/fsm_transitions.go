@@ -70,8 +70,8 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	switch event.(type) {
-	case *InputsLockedEvent:
+	switch evt := event.(type) {
+	case *InputsLockSucceededEvent:
 		return &StateTransition{
 			NextState: &ValidatedState{
 				Inputs:          s.Inputs,
@@ -81,6 +81,19 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{&CoSignReq{}},
 			}),
+		}, nil
+
+	case *InputsLockFailedEvent:
+		reason := evt.Reason
+		if reason == "" {
+			reason = "inputs lock failed"
+		}
+
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: reason,
+			},
+			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
