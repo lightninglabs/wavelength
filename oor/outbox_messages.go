@@ -63,8 +63,9 @@ type RequestCheckpointSignatures struct {
 
 	// CoSignedCheckpointPSBTs are operator-co-signed checkpoint PSBTs.
 	//
-	// The signer should append client signature material directly in the PSBT
-	// input witness/signature fields and return finalized checkpoint PSBTs.
+	// The signer should append client signature material directly in
+	// PSBT input witness/signature fields and return finalized
+	// checkpoint PSBTs.
 	CoSignedCheckpointPSBTs []*psbt.Packet
 }
 

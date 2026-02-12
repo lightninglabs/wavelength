@@ -34,10 +34,10 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
-		inputOutpoints := make([]wire.OutPoint, 0, len(evt.CheckpointInputs))
-		for i := range evt.CheckpointInputs {
+		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
+		for i := range evt.VTXOInputs {
 			inputOutpoints = append(
-				inputOutpoints, evt.CheckpointInputs[i].Outpoint,
+				inputOutpoints, evt.VTXOInputs[i].Outpoint,
 			)
 		}
 
@@ -48,7 +48,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		// The Ark txid becomes the stable session identifier.
 		ark, checkpoints, err := buildSubmitPackage(
 			evt.Policy,
-			evt.CheckpointInputs,
+			evt.VTXOInputs,
 			evt.RecipientOutputs,
 		)
 		if err != nil {
