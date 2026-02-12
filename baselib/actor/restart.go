@@ -178,7 +178,9 @@ func PrependRestartMessage(
 		MessageType: msg.MessageType(),
 		Payload:     payload,
 		Priority:    RestartPriority,
-		AvailableAt: time.Now(),
+		// Use epoch so restart delivery never depends on wall-clock skew
+		// versus a test/fake delivery-store clock.
+		AvailableAt: time.Unix(0, 0),
 		MaxAttempts: 1, // Restart message should only be delivered once.
 	})
 }
