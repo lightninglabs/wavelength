@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -13,9 +14,14 @@ import (
 // We prefer this to returning an error because unexpected events can be a
 // normal consequence of retries, timeouts, or races at the actor boundary.
 func unexpectedEvent(state State, stateName string,
-	event Event) *StateTransition {
+	event Event, env *Environment) *StateTransition {
 
-	_ = stateName
+	if env != nil && env.Log != nil {
+		env.Log.WarnS(context.Background(), "Ignoring unexpected event", nil,
+			slog.String("state", stateName),
+			slog.String("event_type", fmt.Sprintf("%T", event)),
+		)
+	}
 
 	return &StateTransition{
 		NextState: state,
@@ -54,7 +60,7 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event), nil
+		return unexpectedEvent(s, s.String(), event, env), nil
 	}
 }
 
@@ -94,7 +100,7 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 		// This guard keeps the FSM robust against out-of-order actor
 		// deliveries.
 		if !s.InputsLocked {
-			return unexpectedEvent(s, s.String(), event), nil
+			return unexpectedEvent(s, s.String(), event, env), nil
 		}
 
 		return &StateTransition{
@@ -121,7 +127,7 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event), nil
+		return unexpectedEvent(s, s.String(), event, env), nil
 	}
 }
 
@@ -152,7 +158,7 @@ func (s *ValidatedState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event), nil
+		return unexpectedEvent(s, s.String(), event, env), nil
 	}
 }
 
@@ -194,7 +200,7 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event), nil
+		return unexpectedEvent(s, s.String(), event, env), nil
 	}
 }
 
@@ -229,7 +235,7 @@ func (s *AwaitingFinalCheckpointsState) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event), nil
+		return unexpectedEvent(s, s.String(), event, env), nil
 	}
 }
 
@@ -240,7 +246,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, s.String(), event), nil
+	return unexpectedEvent(s, s.String(), event, env), nil
 }
 
 // ProcessEvent handles events for FailedState.
@@ -250,5 +256,5 @@ func (s *FailedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, s.String(), event), nil
+	return unexpectedEvent(s, s.String(), event, env), nil
 }

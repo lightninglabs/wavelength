@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
 
@@ -56,6 +57,9 @@ func (id SessionID) LogPrefix() string {
 type Environment struct {
 	// SessionID identifies this FSM instance.
 	SessionID SessionID
+
+	// Log is the logger for the FSM.
+	Log btclog.Logger
 }
 
 // Name returns the unique identifier for this FSM instance.

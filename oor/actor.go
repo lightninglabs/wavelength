@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
@@ -37,7 +38,9 @@ type ActorCfg struct {
 type Actor struct {
 	cfg ActorCfg
 
-	sessions map[SessionID]*sessionHandle
+	// sessionsMu guards all access to sessions.
+	sessionsMu sync.RWMutex
+	sessions   map[SessionID]*sessionHandle
 }
 
 // NewActor creates a new coordinator actor instance.
@@ -56,7 +59,9 @@ func NewActor(cfg ActorCfg) *Actor {
 func (a *Actor) CurrentState(ctx context.Context,
 	sessionID SessionID) (State, error) {
 
+	a.sessionsMu.RLock()
 	handle, ok := a.sessions[sessionID]
+	a.sessionsMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown session: %s", sessionID)
 	}
@@ -135,7 +140,9 @@ func (a *Actor) handleFinalize(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
 	}
 
+	a.sessionsMu.RLock()
 	session, ok := a.sessions[req.SessionID]
+	a.sessionsMu.RUnlock()
 	if !ok {
 		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
 			req.SessionID))
@@ -167,16 +174,20 @@ type sessionHandle struct {
 func (a *Actor) getOrCreateSessionFSM(ctx context.Context,
 	sessionID SessionID) (*sessionHandle, error) {
 
+	a.sessionsMu.Lock()
+	defer a.sessionsMu.Unlock()
+
 	handle, ok := a.sessions[sessionID]
 	if ok {
 		return handle, nil
 	}
 
+	fsmLogger := a.cfg.Logger.WithPrefix(sessionID.LogPrefix())
 	env := &Environment{
 		SessionID: sessionID,
+		Log:       fsmLogger,
 	}
 
-	fsmLogger := a.cfg.Logger.WithPrefix(sessionID.LogPrefix())
 	fsmCfg := StateMachineCfg{
 		InitialState: &IdleState{},
 		Env:          env,

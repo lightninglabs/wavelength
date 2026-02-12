@@ -3,6 +3,7 @@ package oor
 import (
 	"crypto/rand"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -13,6 +14,62 @@ import (
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
+
+// TestActorGetOrCreateSessionFSMConcurrent verifies concurrent access to the
+// session map safely converges on a single handle instance.
+func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
+	t.Parallel()
+
+	const workers = 32
+
+	ctx := t.Context()
+	sessionID := SessionID(chainhash.Hash{1})
+	actor := NewActor(ActorCfg{})
+
+	handles := make(chan *sessionHandle, workers)
+	errs := make(chan error, workers)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+
+			handle, err := actor.getOrCreateSessionFSM(
+				ctx, sessionID,
+			)
+			if err != nil {
+				errs <- err
+				return
+			}
+
+			handles <- handle
+		}()
+	}
+
+	wg.Wait()
+	close(handles)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	var first *sessionHandle
+	for handle := range handles {
+		if first == nil {
+			first = handle
+			continue
+		}
+
+		require.Same(t, first, handle)
+	}
+
+	actor.sessionsMu.RLock()
+	require.Len(t, actor.sessions, 1)
+	actor.sessionsMu.RUnlock()
+}
 
 // randomP2TRScript returns a P2TR pkScript with a random key.
 func randomP2TRScript(t *testing.T) []byte {
