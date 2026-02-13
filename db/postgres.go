@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
-	postgres_migrate "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
+	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -37,12 +38,7 @@ var (
 	// postgresSchemaReplacements is a map of schema strings that need to be
 	// replaced for postgres. This is needed because we write the schemas
 	// to work with sqlite primarily, and postgres has some differences.
-	postgresSchemaReplacements = map[string]string{
-		"BLOB":                "BYTEA",
-		"INTEGER PRIMARY KEY": "BIGSERIAL PRIMARY KEY",
-		"TIMESTAMP":           "TIMESTAMP WITHOUT TIME ZONE",
-		"UNHEX":               "DECODE",
-	}
+	postgresSchemaReplacements = dbmigrate.PostgresSchemaReplacements()
 )
 
 // PostgresConfig holds the postgres database configuration.
@@ -144,6 +140,18 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		err = admigration.RunMigrations(
+			s.DB, s.Backend(), admigration.Config{
+				Log: s.log,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
+		}
 	}
 
 	return s, nil
@@ -159,19 +167,25 @@ func (s *PostgresStore) ExecuteMigrations(target MigrationTarget,
 		optFunc(opts)
 	}
 
-	driver, err := postgres_migrate.WithInstance(
-		s.DB, &postgres_migrate.Config{},
+	err := dbmigrate.RunMigrations(
+		s.DB,
+		s.Backend(),
+		sqlSchemas,
+		"sqlc/migrations",
+		dbmigrate.Target(target),
+		dbmigrate.Config{
+			DatabaseName:         s.cfg.DBName,
+			LatestVersion:        &opts.latestVersion,
+			PostStepCallbacks:    opts.postStepCallbacks,
+			PostgresReplacements: postgresSchemaReplacements,
+			Log:                  s.log,
+		},
 	)
 	if err != nil {
-		return fmt.Errorf("error creating postgres migration: %w", err)
+		return fmt.Errorf("apply postgres migrations: %w", err)
 	}
 
-	postgresFS := newReplacerFS(sqlSchemas, postgresSchemaReplacements)
-
-	return applyMigrations(
-		postgresFS, driver, "sqlc/migrations", s.cfg.DBName, target,
-		opts, s.log,
-	)
+	return nil
 }
 
 // NewTestPostgresDB is a helper function that creates a Postgres database for

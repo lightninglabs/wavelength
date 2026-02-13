@@ -11,7 +11,8 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
-	sqlite_migrate "github.com/golang-migrate/migrate/v4/database/sqlite"
+	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
+	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite" // Register relevant drivers.
@@ -37,13 +38,6 @@ const (
 	// defaultConnMaxLifetime is the maximum amount of time a connection can
 	// be reused for before it is closed.
 	defaultConnMaxLifetime = 10 * time.Minute
-)
-
-var (
-	// sqliteSchemaReplacements is a map of schema strings that need to be
-	// replaced for sqlite. There currently aren't any replacements, because
-	// the SQL files are written with SQLite compatibility in mind.
-	sqliteSchemaReplacements = map[string]string{}
 )
 
 // SqliteConfig holds all the config arguments needed to interact with our
@@ -154,6 +148,18 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		err = admigration.RunMigrations(
+			s.DB, s.Backend(), admigration.Config{
+				Log: s.log,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
+		}
 	}
 
 	return s, nil
@@ -258,19 +264,24 @@ func (s *SqliteStore) ExecuteMigrations(target MigrationTarget,
 		optFunc(opts)
 	}
 
-	driver, err := sqlite_migrate.WithInstance(
-		s.DB, &sqlite_migrate.Config{},
+	err := dbmigrate.RunMigrations(
+		s.DB,
+		s.Backend(),
+		sqlSchemas,
+		"sqlc/migrations",
+		dbmigrate.Target(target),
+		dbmigrate.Config{
+			DatabaseName:      "sqlite",
+			LatestVersion:     &opts.latestVersion,
+			PostStepCallbacks: opts.postStepCallbacks,
+			Log:               s.log,
+		},
 	)
 	if err != nil {
-		return fmt.Errorf("error creating sqlite migration: %w", err)
+		return fmt.Errorf("apply sqlite migrations: %w", err)
 	}
 
-	sqliteFS := newReplacerFS(sqlSchemas, sqliteSchemaReplacements)
-
-	return applyMigrations(
-		sqliteFS, driver, "sqlc/migrations", "sqlite", target, opts,
-		s.log,
-	)
+	return nil
 }
 
 // NewTestSqliteDB is a helper function that creates an SQLite database for
