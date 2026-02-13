@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/actordelivery"
+	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
@@ -29,7 +31,7 @@ type testHarness struct {
 	ctx context.Context //nolint:containedctx
 
 	cancel      context.CancelFunc
-	store       *db.ActorDeliveryStore
+	store       *actordelivery.Store
 	codec       *actor.MessageCodec
 	clock       *clock.TestClock
 	actorSystem *actor.ActorSystem
@@ -43,12 +45,13 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	// Create per-test in-memory SQLite database.
 	sqlDB := db.NewTestDB(t)
+	actorQueries := adsqlc.New(sqlDB.DB)
 
 	// Create the transaction executor for actor delivery operations.
 	actorDB := db.NewTransactionExecutor(
 		sqlDB.BaseDB,
-		func(tx *sql.Tx) db.ActorDeliveryQueries {
-			return sqlDB.WithTx(tx)
+		func(tx *sql.Tx) actordelivery.ActorDeliveryQueries {
+			return actorQueries.WithTx(tx)
 		},
 		btclog.Disabled,
 	)
@@ -57,7 +60,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	testClock := clock.NewTestClock(time.Now())
 
 	// Create the actor delivery store.
-	store := db.NewActorDeliveryStore(actorDB, testClock)
+	store := actordelivery.NewStore(actorDB, testClock)
 
 	// Create the message codec with counter messages registered.
 	codec := NewCounterCodec()

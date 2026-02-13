@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -11,23 +12,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func main() {
-	// Open an in-memory SQLite database.
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer db.Close()
-
-	// Read all migration files from db/sqlc/migrations/.
-	migrationDir := "db/sqlc/migrations"
+// applyMigrationDir executes all .up.sql migrations in lexicographic order for
+// the given directory.
+func applyMigrationDir(db *sql.DB, migrationDir string) error {
 	files, err := os.ReadDir(migrationDir)
 	if err != nil {
-		//nolint:gocritic
-		log.Fatalf("Failed to read migration directory: %v", err)
+		return fmt.Errorf("failed to read migration directory %s: %w",
+			migrationDir, err)
 	}
 
-	// Filter for .up.sql files and sort them.
 	var migrationFiles []string
 	upSQLPattern := regexp.MustCompile(`\.up\.sql$`)
 	for _, file := range files {
@@ -40,21 +33,47 @@ func main() {
 	}
 	sort.Strings(migrationFiles)
 
-	// Execute each migration in order.
 	for _, fileName := range migrationFiles {
 		filePath := filepath.Join(migrationDir, fileName)
 		content, err := os.ReadFile(filePath)
 		if err != nil {
-			log.Fatalf("Failed to read file %s: %v", fileName, err)
+			return fmt.Errorf(
+				"failed to read file %s: %w", filePath, err,
+			)
 		}
 
 		_, err = db.Exec(string(content))
 		if err != nil {
-			log.Fatalf("Failed to execute migration %s: %v",
-				fileName, err)
+			return fmt.Errorf("failed to execute migration %s: %w",
+				filePath, err)
 		}
 
-		log.Printf("Executed migration: %s", fileName)
+		log.Printf("Executed migration: %s", filePath)
+	}
+
+	return nil
+}
+
+func main() {
+	// Open an in-memory SQLite database.
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	migrationDirs := []string{
+		"db/sqlc/migrations",
+		"db/actordelivery/migrations",
+	}
+
+	for _, migrationDir := range migrationDirs {
+		err = applyMigrationDir(db, migrationDir)
+		if err != nil {
+			//nolint:gocritic
+			log.Fatalf("Failed to apply migrations for %s: %v",
+				migrationDir, err)
+		}
 	}
 
 	// Query the sqlite_master table to extract the schema.

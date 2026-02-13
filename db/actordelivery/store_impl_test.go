@@ -1,4 +1,4 @@
-package db
+package actordelivery
 
 import (
 	"crypto/rand"
@@ -9,6 +9,8 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/db"
+	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
 	"pgregory.net/rapid"
@@ -16,20 +18,21 @@ import (
 
 // testActorDeliveryStore holds the store and clock for testing.
 type testActorDeliveryStore struct {
-	*ActorDeliveryStore
+	*Store
 	clock *clock.TestClock
 }
 
-// newActorDeliveryStoreForTest creates a new ActorDeliveryStore using the
+// newActorDeliveryStoreForTest creates a new Store using the
 // transaction executor pattern for testing. Returns the store and a test clock
 // that can be manipulated to advance time.
 func newActorDeliveryStoreForTest(t *testing.T) *testActorDeliveryStore {
-	db := NewTestDB(t)
+	testDB := db.NewTestDB(t)
+	actorQueries := adsqlc.New(testDB.DB)
 
-	actorDB := NewTransactionExecutor(
-		db.BaseDB,
+	actorDB := db.NewTransactionExecutor(
+		testDB.BaseDB,
 		func(tx *sql.Tx) ActorDeliveryQueries {
-			return db.WithTx(tx)
+			return actorQueries.WithTx(tx)
 		},
 		btclog.Disabled,
 	)
@@ -37,8 +40,8 @@ func newActorDeliveryStoreForTest(t *testing.T) *testActorDeliveryStore {
 	testClock := clock.NewTestClock(time.Now())
 
 	return &testActorDeliveryStore{
-		ActorDeliveryStore: NewActorDeliveryStore(actorDB, testClock),
-		clock:              testClock,
+		Store: NewStore(actorDB, testClock),
+		clock: testClock,
 	}
 }
 

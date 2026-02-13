@@ -9,3 +9,14 @@ sql:
         package: sqlc
         emit_interface: true
         emit_exported_queries: true
+  - engine: "postgresql"
+    schema:
+      - "db/sqlc/migrations"
+      - "db/actordelivery/migrations"
+    queries: "db/actordelivery/queries"
+    gen:
+      go:
+        out: db/actordelivery/sqlc
+        package: sqlc
+        emit_interface: true
+        emit_exported_queries: true
