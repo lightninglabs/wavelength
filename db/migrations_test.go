@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btclog/v2"
+	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
 )
@@ -85,7 +86,7 @@ func TestMigrationDowngrade(t *testing.T) {
 	// version. But we'll have the DB think the latest version is actually
 	// less than the current version. This simulates downgrading.
 	err := db.ExecuteMigrations(TargetLatest, WithLatestVersion(0))
-	require.ErrorIs(t, err, ErrMigrationDowngrade)
+	require.ErrorIs(t, err, dbmigrate.ErrMigrationDowngrade)
 }
 
 // findDBBackupFilePath walks the directory of the given database file path and
