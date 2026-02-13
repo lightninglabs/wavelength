@@ -1,4 +1,4 @@
-package db
+package actordelivery
 
 import (
 	"context"
@@ -7,31 +7,32 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/db/sqlc"
+	"github.com/lightninglabs/darepo-client/db"
+	adsqlc "github.com/lightninglabs/darepo-client/db/actordelivery/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
 )
 
 // Type aliases for SQLC-generated types to reduce import noise.
 type (
-	MailboxMsgRow          = sqlc.MailboxMessage
-	OutboxMsgRow           = sqlc.OutboxMessage
-	AskResultRow           = sqlc.AskResult
-	FsmCheckpointRow       = sqlc.FsmCheckpoint
-	DeadLetterRow          = sqlc.DeadLetter
-	EnqueueMailboxParams   = sqlc.EnqueueMailboxMessageParams
-	EnqueueOutboxParams    = sqlc.EnqueueOutboxMessageParams
-	LeaseMailboxParams     = sqlc.LeaseNextMailboxMessageParams
-	AckMailboxParams       = sqlc.AckMailboxMessageParams
-	NackMailboxParams      = sqlc.NackMailboxMessageParams
-	ExtendMailboxParams    = sqlc.ExtendMailboxLeaseParams
-	InsertAskResultParams  = sqlc.InsertAskResultParams
-	ClaimOutboxBatchParams = sqlc.ClaimOutboxBatchParams
-	CompleteOutboxParams   = sqlc.CompleteOutboxMessageParams
-	FailOutboxParams       = sqlc.FailOutboxMessageParams
-	MarkProcessedParams    = sqlc.MarkMessageProcessedParams
-	SaveCheckpointParams   = sqlc.SaveFSMCheckpointParams
-	DeadLetterInsertParams = sqlc.MoveMailboxToDeadLetterParams
-	ListDeadLettersParams  = sqlc.ListDeadLettersByActorParams
+	MailboxMsgRow          = adsqlc.MailboxMessage
+	OutboxMsgRow           = adsqlc.OutboxMessage
+	AskResultRow           = adsqlc.AskResult
+	FsmCheckpointRow       = adsqlc.FsmCheckpoint
+	DeadLetterRow          = adsqlc.DeadLetter
+	EnqueueMailboxParams   = adsqlc.EnqueueMailboxMessageParams
+	EnqueueOutboxParams    = adsqlc.EnqueueOutboxMessageParams
+	LeaseMailboxParams     = adsqlc.LeaseNextMailboxMessageParams
+	AckMailboxParams       = adsqlc.AckMailboxMessageParams
+	NackMailboxParams      = adsqlc.NackMailboxMessageParams
+	ExtendMailboxParams    = adsqlc.ExtendMailboxLeaseParams
+	InsertAskResultParams  = adsqlc.InsertAskResultParams
+	ClaimOutboxBatchParams = adsqlc.ClaimOutboxBatchParams
+	CompleteOutboxParams   = adsqlc.CompleteOutboxMessageParams
+	FailOutboxParams       = adsqlc.FailOutboxMessageParams
+	MarkProcessedParams    = adsqlc.MarkMessageProcessedParams
+	SaveCheckpointParams   = adsqlc.SaveFSMCheckpointParams
+	DeadLetterInsertParams = adsqlc.MoveMailboxToDeadLetterParams
+	ListDeadLettersParams  = adsqlc.ListDeadLettersByActorParams
 )
 
 // ActorDeliveryQueries is the interface that groups all actor delivery-related
@@ -101,40 +102,38 @@ type ActorDeliveryQueries interface {
 	CleanupExpiredAskResults(ctx context.Context, expiresAt int64) error
 }
 
-// BatchedActorDeliveryQueries combines ActorDeliveryQueries with transaction
-// support via the BatchedTx generic interface. This enables atomic operations
-// across multiple queries.
+// BatchedActorDeliveryQueries provides transactional execution for actor
+// delivery operations via the BatchedTx generic interface.
 type BatchedActorDeliveryQueries interface {
-	ActorDeliveryQueries
-	BatchedTx[ActorDeliveryQueries]
+	db.BatchedTx[ActorDeliveryQueries]
 }
 
-// ActorDeliveryStore implements the actor.DeliveryStore interface using the
+// Store implements the actor.DeliveryStore interface using the
 // BatchedTx pattern for transaction-safe operations. All methods execute within
 // database transactions with automatic retry on serialization errors.
-type ActorDeliveryStore struct {
+type Store struct {
 	db    BatchedActorDeliveryQueries
 	clock clock.Clock
 }
 
-// NewActorDeliveryStore creates a new actor delivery store using the
+// NewStore creates a new actor delivery store using the
 // transaction executor pattern.
-func NewActorDeliveryStore(
+func NewStore(
 	db BatchedActorDeliveryQueries, clock clock.Clock,
-) *ActorDeliveryStore {
+) *Store {
 
-	return &ActorDeliveryStore{
+	return &Store{
 		db:    db,
 		clock: clock,
 	}
 }
 
 // EnqueueMessage persists a new message to an actor's mailbox.
-func (s *ActorDeliveryStore) EnqueueMessage(
+func (s *Store) EnqueueMessage(
 	ctx context.Context, params actor.EnqueueParams,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts,
 		func(q ActorDeliveryQueries) error {
@@ -166,14 +165,14 @@ func (s *ActorDeliveryStore) EnqueueMessage(
 }
 
 // LeaseNextMessage atomically claims the next available message for processing.
-func (s *ActorDeliveryStore) LeaseNextMessage(
+func (s *Store) LeaseNextMessage(
 	ctx context.Context,
 	mailboxID string,
 	leaseToken string,
 	leaseDuration time.Duration,
 ) (*actor.LeasedMessage, error) {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	var result *actor.LeasedMessage
 
@@ -231,11 +230,11 @@ func (s *ActorDeliveryStore) LeaseNextMessage(
 }
 
 // AckMessage acknowledges successful processing of a message.
-func (s *ActorDeliveryStore) AckMessage(
+func (s *Store) AckMessage(
 	ctx context.Context, id, leaseToken string,
 ) (int64, error) {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	var rows int64
 
@@ -257,13 +256,13 @@ func (s *ActorDeliveryStore) AckMessage(
 }
 
 // NackMessage releases a message for redelivery after the specified delay.
-func (s *ActorDeliveryStore) NackMessage(
+func (s *Store) NackMessage(
 	ctx context.Context,
 	id, leaseToken string,
 	retryAfter time.Duration,
 ) (int64, error) {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	var rows int64
 
@@ -288,13 +287,13 @@ func (s *ActorDeliveryStore) NackMessage(
 }
 
 // ExtendLease extends the lease for long-running message processing.
-func (s *ActorDeliveryStore) ExtendLease(
+func (s *Store) ExtendLease(
 	ctx context.Context,
 	id, leaseToken string,
 	extension time.Duration,
 ) (int64, error) {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	var rows int64
 
@@ -324,11 +323,11 @@ func (s *ActorDeliveryStore) ExtendLease(
 }
 
 // MoveToDeadLetter moves a failed message to the dead letter queue.
-func (s *ActorDeliveryStore) MoveToDeadLetter(
+func (s *Store) MoveToDeadLetter(
 	ctx context.Context, id, reason string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -356,11 +355,11 @@ func (s *ActorDeliveryStore) MoveToDeadLetter(
 }
 
 // DeleteMessage removes a message from the mailbox.
-func (s *ActorDeliveryStore) DeleteMessage(
+func (s *Store) DeleteMessage(
 	ctx context.Context, id string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -372,11 +371,11 @@ func (s *ActorDeliveryStore) DeleteMessage(
 }
 
 // SaveAskResult persists the result of an Ask message for caller retrieval.
-func (s *ActorDeliveryStore) SaveAskResult(
+func (s *Store) SaveAskResult(
 	ctx context.Context, params actor.AskResultParams,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -394,11 +393,11 @@ func (s *ActorDeliveryStore) SaveAskResult(
 }
 
 // GetAskResult retrieves the result of an Ask message.
-func (s *ActorDeliveryStore) GetAskResult(
+func (s *Store) GetAskResult(
 	ctx context.Context, promiseID string,
 ) (*actor.AskResult, error) {
 
-	readTxOpts := ReadTxOption()
+	readTxOpts := db.ReadTxOption()
 
 	var result *actor.AskResult
 
@@ -427,11 +426,11 @@ func (s *ActorDeliveryStore) GetAskResult(
 }
 
 // DeleteAskResult removes an Ask result after retrieval.
-func (s *ActorDeliveryStore) DeleteAskResult(
+func (s *Store) DeleteAskResult(
 	ctx context.Context, promiseID string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -443,11 +442,11 @@ func (s *ActorDeliveryStore) DeleteAskResult(
 }
 
 // EnqueueOutbox adds a message to the transactional outbox.
-func (s *ActorDeliveryStore) EnqueueOutbox(
+func (s *Store) EnqueueOutbox(
 	ctx context.Context, params actor.OutboxParams,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -468,11 +467,11 @@ func (s *ActorDeliveryStore) EnqueueOutbox(
 }
 
 // ClaimOutboxBatch claims a batch of pending outbox messages for delivery.
-func (s *ActorDeliveryStore) ClaimOutboxBatch(
+func (s *Store) ClaimOutboxBatch(
 	ctx context.Context, params actor.OutboxClaimParams,
 ) ([]actor.OutboxMessage, error) {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	var result []actor.OutboxMessage
 
@@ -533,11 +532,11 @@ func (s *ActorDeliveryStore) ClaimOutboxBatch(
 
 // CompleteOutbox marks an outbox message as successfully delivered. The
 // claim token must match the token set during ClaimOutboxBatch.
-func (s *ActorDeliveryStore) CompleteOutbox(
+func (s *Store) CompleteOutbox(
 	ctx context.Context, id, claimToken string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -561,11 +560,11 @@ func (s *ActorDeliveryStore) CompleteOutbox(
 
 // FailOutbox marks an outbox message as failed (dead letter). The claim
 // token must match the token set during ClaimOutboxBatch.
-func (s *ActorDeliveryStore) FailOutbox(
+func (s *Store) FailOutbox(
 	ctx context.Context, id, claimToken string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -583,11 +582,11 @@ func (s *ActorDeliveryStore) FailOutbox(
 }
 
 // IsProcessed checks if a message has already been processed.
-func (s *ActorDeliveryStore) IsProcessed(
+func (s *Store) IsProcessed(
 	ctx context.Context, id string,
 ) (bool, error) {
 
-	readTxOpts := ReadTxOption()
+	readTxOpts := db.ReadTxOption()
 
 	var processed bool
 
@@ -602,13 +601,13 @@ func (s *ActorDeliveryStore) IsProcessed(
 }
 
 // MarkProcessed records that a message has been processed.
-func (s *ActorDeliveryStore) MarkProcessed(
+func (s *Store) MarkProcessed(
 	ctx context.Context,
 	id, actorID string,
 	ttl time.Duration,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -628,11 +627,11 @@ func (s *ActorDeliveryStore) MarkProcessed(
 }
 
 // SaveCheckpoint saves or updates an FSM state checkpoint.
-func (s *ActorDeliveryStore) SaveCheckpoint(
+func (s *Store) SaveCheckpoint(
 	ctx context.Context, params actor.CheckpointParams,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -650,11 +649,11 @@ func (s *ActorDeliveryStore) SaveCheckpoint(
 }
 
 // LoadCheckpoint loads an FSM checkpoint for an actor.
-func (s *ActorDeliveryStore) LoadCheckpoint(
+func (s *Store) LoadCheckpoint(
 	ctx context.Context, actorID string,
 ) (*actor.Checkpoint, error) {
 
-	readTxOpts := ReadTxOption()
+	readTxOpts := db.ReadTxOption()
 
 	var result *actor.Checkpoint
 
@@ -683,11 +682,11 @@ func (s *ActorDeliveryStore) LoadCheckpoint(
 }
 
 // DeleteCheckpoint removes an FSM checkpoint.
-func (s *ActorDeliveryStore) DeleteCheckpoint(
+func (s *Store) DeleteCheckpoint(
 	ctx context.Context, actorID string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -699,11 +698,11 @@ func (s *ActorDeliveryStore) DeleteCheckpoint(
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
-func (s *ActorDeliveryStore) GetDeadLetter(
+func (s *Store) GetDeadLetter(
 	ctx context.Context, id string,
 ) (*actor.DeadLetter, error) {
 
-	readTxOpts := ReadTxOption()
+	readTxOpts := db.ReadTxOption()
 
 	var result *actor.DeadLetter
 
@@ -735,11 +734,11 @@ func (s *ActorDeliveryStore) GetDeadLetter(
 }
 
 // ListDeadLetters lists dead letters for an actor with pagination.
-func (s *ActorDeliveryStore) ListDeadLetters(
+func (s *Store) ListDeadLetters(
 	ctx context.Context, actorID string, limit int,
 ) ([]actor.DeadLetter, error) {
 
-	readTxOpts := ReadTxOption()
+	readTxOpts := db.ReadTxOption()
 
 	var result []actor.DeadLetter
 
@@ -778,11 +777,11 @@ func (s *ActorDeliveryStore) ListDeadLetters(
 }
 
 // DeleteDeadLetter removes a dead letter after manual processing.
-func (s *ActorDeliveryStore) DeleteDeadLetter(
+func (s *Store) DeleteDeadLetter(
 	ctx context.Context, id string,
 ) error {
 
-	writeTxOpts := WriteTxOption()
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -794,8 +793,8 @@ func (s *ActorDeliveryStore) DeleteDeadLetter(
 }
 
 // ExpireLeases releases all expired leases so messages can be redelivered.
-func (s *ActorDeliveryStore) ExpireLeases(ctx context.Context) error {
-	writeTxOpts := WriteTxOption()
+func (s *Store) ExpireLeases(ctx context.Context) error {
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -809,8 +808,8 @@ func (s *ActorDeliveryStore) ExpireLeases(ctx context.Context) error {
 }
 
 // CleanupExpired removes expired deduplication entries and ask results.
-func (s *ActorDeliveryStore) CleanupExpired(ctx context.Context) error {
-	writeTxOpts := WriteTxOption()
+func (s *Store) CleanupExpired(ctx context.Context) error {
+	writeTxOpts := db.WriteTxOption()
 
 	return s.db.ExecTx(
 		ctx,
@@ -865,7 +864,7 @@ func fromNullInt64Time(ni sql.NullInt64) time.Time {
 	return time.Unix(ni.Int64, 0)
 }
 
-// TxActorDeliveryStore is a transaction-scoped version of ActorDeliveryStore.
+// TxActorDeliveryStore is a transaction-scoped version of Store.
 // It wraps a specific transaction and provides DeliveryStore operations within
 // that transaction scope.
 type TxActorDeliveryStore struct {
@@ -1308,23 +1307,23 @@ func (s *TxActorDeliveryStore) CleanupExpired(ctx context.Context) error {
 // Compile-time check that TxActorDeliveryStore implements actor.DeliveryStore.
 var _ actor.DeliveryStore = (*TxActorDeliveryStore)(nil)
 
-// TxAwareActorDeliveryStore extends ActorDeliveryStore with transaction
+// TxAwareActorDeliveryStore extends Store with transaction
 // execution support for atomic multi-operation workflows.
 type TxAwareActorDeliveryStore struct {
-	*ActorDeliveryStore
-	querier BatchedQuerier
+	*Store
+	querier db.BatchedQuerier
 }
 
 // NewTxAwareActorDeliveryStore creates a new transaction-aware delivery store.
 func NewTxAwareActorDeliveryStore(
 	db BatchedActorDeliveryQueries,
-	querier BatchedQuerier,
+	querier db.BatchedQuerier,
 	clock clock.Clock,
 ) *TxAwareActorDeliveryStore {
 
 	return &TxAwareActorDeliveryStore{
-		ActorDeliveryStore: NewActorDeliveryStore(db, clock),
-		querier:            querier,
+		Store:   NewStore(db, clock),
+		querier: querier,
 	}
 }
 
@@ -1336,11 +1335,11 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 	ctx context.Context, readOnly bool, fn actor.TxFunc,
 ) error {
 
-	var txOpts TxOptions
+	var txOpts db.TxOptions
 	if readOnly {
-		txOpts = ReadTxOption()
+		txOpts = db.ReadTxOption()
 	} else {
-		txOpts = WriteTxOption()
+		txOpts = db.WriteTxOption()
 	}
 
 	tx, err := s.querier.BeginTx(ctx, txOpts)
@@ -1353,7 +1352,7 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 	}()
 
 	// Create a transaction-scoped queries object.
-	txQuerier := sqlc.New(tx)
+	txQuerier := adsqlc.New(tx)
 	txStore := newTxActorDeliveryStore(txQuerier, s.clock, tx)
 
 	// Attach transaction to context.
@@ -1367,8 +1366,8 @@ func (s *TxAwareActorDeliveryStore) ExecTx(
 	return tx.Commit()
 }
 
-// Compile-time check that ActorDeliveryStore implements actor.DeliveryStore.
-var _ actor.DeliveryStore = (*ActorDeliveryStore)(nil)
+// Compile-time check that Store implements actor.DeliveryStore.
+var _ actor.DeliveryStore = (*Store)(nil)
 
 // Compile-time check that TxAwareActorDeliveryStore implements
 // actor.TxAwareDeliveryStore.

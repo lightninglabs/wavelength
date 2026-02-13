@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
@@ -138,6 +139,18 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
+		}
+
+		err = admigration.RunMigrations(
+			s.DB, s.Backend(), admigration.Config{
+				Log: s.log,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
 		}
 	}
 

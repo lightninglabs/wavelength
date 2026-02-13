@@ -11,6 +11,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/golang-migrate/migrate/v4"
+	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/stretchr/testify/require"
@@ -146,6 +147,18 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
+		}
+
+		err = admigration.RunMigrations(
+			s.DB, s.Backend(), admigration.Config{
+				Log: s.log,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
 		}
 	}
 
