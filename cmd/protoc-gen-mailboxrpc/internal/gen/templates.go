@@ -18,6 +18,14 @@ type serviceData struct {
 	// RPCOptions is the qualified Go identifier for mailboxrpc.RPCOptions.
 	RPCOptions string
 
+	// ServiceMethod is the qualified Go identifier for
+	// mailboxrpc.ServiceMethod.
+	ServiceMethod string
+
+	// SendResult is the qualified Go identifier for
+	// mailboxrpc.SendResult.
+	SendResult string
+
 	// Router is the qualified Go identifier for mailboxrpc.Router.
 	Router string
 
@@ -103,13 +111,16 @@ func (c *{{$.ServiceName}}MailboxClient) {{.Name}}(ctx {{$.Context}}, req *{{.Re
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "{{$.ServiceFQN}}", "{{.ProtoName}}", req, opt)
+	result, err := c.C.SendRPC(ctx, {{$.ServiceMethod}}{
+		Service: "{{$.ServiceFQN}}",
+		Method:  "{{.ProtoName}}",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new({{.RespType}})
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 

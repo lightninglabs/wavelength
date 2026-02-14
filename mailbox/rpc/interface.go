@@ -33,17 +33,38 @@ type Router interface {
 		fn HandlerFunc)
 }
 
+// ServiceMethod identifies an RPC endpoint by its fully-qualified protobuf
+// service name and method name.
+type ServiceMethod struct {
+	// Service is the fully-qualified protobuf service name
+	// (e.g., "arkrpc.ArkService").
+	Service string
+
+	// Method is the protobuf method name (e.g., "GetInfo").
+	Method string
+}
+
+// SendResult holds the identifiers returned by a successful SendRPC call.
+type SendResult struct {
+	// CorrelationID uniquely identifies the request-response pair so the
+	// caller can match it with a subsequent AwaitRPC call.
+	CorrelationID string
+
+	// IdempotencyKey identifies the semantic operation for deduplication
+	// by the remote mailbox.
+	IdempotencyKey string
+}
+
 // RPCClient sends RPC-over-mailbox requests and awaits correlated responses.
 //
 // Implementations are expected to ensure concurrent in-flight calls are safe
 // under cursor-based acking by demultiplexing pulled responses by correlation
 // id before advancing any cursor.
 type RPCClient interface {
-	// SendRPC sends a request payload and returns the correlation id and
-	// idempotency key used for the send.
-	SendRPC(ctx context.Context, service string, method string,
-		req proto.Message, opts RPCOptions) (correlationID string,
-		idempotencyKey string, err error)
+	// SendRPC sends a request payload and returns a SendResult containing
+	// the correlation id and idempotency key used for the send.
+	SendRPC(ctx context.Context, method ServiceMethod,
+		req proto.Message, opts RPCOptions) (SendResult, error)
 
 	// AwaitRPC blocks until a response for correlationID is received.
 	//
