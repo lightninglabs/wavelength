@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/mock"
@@ -234,20 +235,21 @@ func TestFSMCreatedState(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		vtxo := &VTXO{
+		forfeitVTXO := &VTXO{
 			RoundID:          h.roundID,
 			BatchOutputIndex: 0,
 			Descriptor:       descriptor,
 			Status:           VTXOStatusLive,
 		}
-		h.expectVTXO(forfeitOutpoint, vtxo)
+		h.expectVTXO(forfeitOutpoint, forfeitVTXO)
 
 		// Set up the VTXO lock to fail (e.g., already locked by another
 		// round).
 		lockErr := fmt.Errorf("VTXO already locked")
-		h.vtxoStore.On(
-			"LockVTXO", mock.Anything, h.roundID,
-			[]wire.OutPoint{forfeitOutpoint},
+		owner := vtxo.RoundLockOwner(h.roundID.String())
+		h.vtxoLocker.On(
+			"LockMany", mock.Anything,
+			[]wire.OutPoint{forfeitOutpoint}, owner,
 		).Return(lockErr).Once()
 
 		// We also need to expect the boarding input to be unlocked when

@@ -47,7 +47,11 @@ func (e *UnlockInputsReq) OutboxType() string {
 func (e *UnlockInputsReq) outboxSealed() {}
 
 // CoSignReq asks the signing subsystem to co-sign the package.
-type CoSignReq struct{}
+type CoSignReq struct {
+	// Inputs are the VTXO outpoints to transition to in-flight at the
+	// point-of-no-return.
+	Inputs []wire.OutPoint
+}
 
 // OutboxType returns the type of this outbox event.
 func (e *CoSignReq) OutboxType() string {
@@ -80,7 +84,14 @@ func (e *ValidateFinalizeReq) OutboxType() string {
 func (e *ValidateFinalizeReq) outboxSealed() {}
 
 // FinalizeReq requests atomic VTXO set updates for a finalized transfer.
-type FinalizeReq struct{}
+type FinalizeReq struct {
+	// ArkPSBT is the canonical Ark tx PSBT. Its non-anchor outputs are
+	// materialized as new VTXOs in v0.
+	ArkPSBT *psbt.Packet
+
+	// Inputs are the VTXO outpoints consumed by this finalized transfer.
+	Inputs []wire.OutPoint
+}
 
 // OutboxType returns the type of this outbox event.
 func (e *FinalizeReq) OutboxType() string {

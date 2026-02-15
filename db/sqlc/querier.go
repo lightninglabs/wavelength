@@ -25,7 +25,7 @@ type Querier interface {
 	// The cascading foreign keys will handle deletion of outputs and cosigners.
 	DeleteVTXOTreeRecursive(ctx context.Context, arg DeleteVTXOTreeRecursiveParams) error
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
-	GetLockedVTXOs(ctx context.Context, lockedByRoundID []byte) ([]Vtxo, error)
+	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)

@@ -82,8 +82,8 @@ WHERE round_id = $1;
 -- name: InsertVTXO :exec
 INSERT INTO vtxos (
 	outpoint_hash, outpoint_index, round_id, batch_output_index,
-	amount, pk_script, cosigner_key, status, locked_by_round_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+	amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: GetVTXO :one
 SELECT * FROM vtxos
@@ -91,7 +91,7 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: UpdateVTXOsLiveByRound :exec
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE round_id = $1 AND status = 'pending';
 
 -- name: UpdateVTXOStatus :execrows
@@ -101,34 +101,39 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: LockVTXO :execrows
 UPDATE vtxos
-SET status = 'locked', locked_by_round_id = $3
+SET status = 'in_flight', lock_owner_kind = $3, lock_owner_id = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 	AND status = 'live'
-	AND (locked_by_round_id IS NULL OR locked_by_round_id = $3);
+	AND ((lock_owner_kind IS NULL AND lock_owner_id IS NULL) OR
+		(lock_owner_kind = $3 AND lock_owner_id = $4));
 
 -- name: UnlockVTXO :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE outpoint_hash = $1 AND outpoint_index = $2
-	AND status = 'locked'
-	AND locked_by_round_id = $3;
+	AND status = 'in_flight'
+	AND lock_owner_kind = $3
+	AND lock_owner_id = $4;
 
 -- name: GetLockedVTXOs :many
 SELECT * FROM vtxos
-WHERE locked_by_round_id = $1;
+WHERE lock_owner_kind = $1
+	AND lock_owner_id = $2;
 
 -- name: UnlockStaleVTXOs :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
-WHERE status = 'locked'
-	AND locked_by_round_id IS NOT NULL
-	AND locked_by_round_id NOT IN (sqlc.slice('pending_round_ids'));
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL
+	AND lock_owner_id NOT IN (sqlc.slice('pending_round_ids'));
 
 -- name: UnlockAllLockedVTXOs :execrows
 UPDATE vtxos
-SET status = 'live', locked_by_round_id = NULL
-WHERE status = 'locked'
-	AND locked_by_round_id IS NOT NULL;
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL;
 
 -- name: ListVTXOsByRound :many
 SELECT * FROM vtxos

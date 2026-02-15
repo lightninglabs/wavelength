@@ -221,9 +221,12 @@ type VTXO struct {
 	Status VTXOStatus
 }
 
-// VTXOStore provides persistent storage for VTXOs. The actor uses this to
-// persist VTXOs when they are created and update their status when the
-// commitment transaction is confirmed.
+// VTXOStore provides the rounds projection over persistent VTXO data.
+//
+// This interface intentionally includes round/tree/forfeit semantics that are
+// not part of the generic OOR-focused `vtxo.Store` yet. Keeping this
+// projection explicit avoids accidental coupling until both subsystems share
+// one canonical storage model.
 type VTXOStore interface {
 	// PersistVTXOs saves a batch of newly created VTXOs to storage. These
 	// VTXOs are in unconfirmed state until the commitment transaction is
@@ -248,15 +251,13 @@ type VTXOStore interface {
 	GetForfeitInfo(ctx context.Context,
 		outpoint wire.OutPoint) (*ForfeitInfo, error)
 
-	// LockVTXO locks VTXOs for forfeit in the specified round. This
-	// prevents the VTXOs from being forfeited in another round
-	// concurrently. The call should fail if any outpoint is already locked
-	// by another round.
+	// LockVTXO locks VTXOs for forfeit in the specified round. This exists
+	// as a legacy fallback while rounds migrates fully to the shared
+	// VTXOLocker interface.
 	LockVTXO(ctx context.Context, roundID RoundID,
 		outpoints ...wire.OutPoint) error
 
-	// UnlockVTXO releases the lock on VTXOs. Only the round that locked
-	// the VTXOs can unlock them.
+	// UnlockVTXO releases locks previously acquired via LockVTXO.
 	UnlockVTXO(ctx context.Context, roundID RoundID,
 		outpoints ...wire.OutPoint) error
 

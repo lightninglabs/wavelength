@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -59,6 +60,12 @@ type Environment struct {
 
 	// VTXOStore provides persistent storage for VTXOs.
 	VTXOStore VTXOStore
+
+	// VTXOLocker provides cross-subsystem locking for VTXO outpoints.
+	//
+	// This is the single lock authority shared with OOR, so rounds and OOR
+	// always use the same lock semantics.
+	VTXOLocker vtxo.Locker
 
 	// StartHeight is the block height when this round was created. Used as
 	// the height hint when subscribing to confirmation notifications to

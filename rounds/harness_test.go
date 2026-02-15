@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -48,6 +49,7 @@ type commonMockSetup struct {
 	walletController *mockWalletController
 	roundStore       *mockRoundStore
 	vtxoStore        *mockVTXOStore
+	vtxoLocker       *mockVTXOLocker
 }
 
 // newCommonMockSetup creates a new common mock setup with default
@@ -65,6 +67,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockWalletController := newMockWalletController(operatorSigner)
 	mockRoundStore := &mockRoundStore{}
 	mockVTXOStore := &mockVTXOStore{}
+	mockVTXOLocker := &mockVTXOLocker{}
 
 	// Allow confirmation bookkeeping calls by default.
 	mockRoundStore.On(
@@ -81,7 +84,12 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 	mockVTXOStore.On(
 		"UnlockStaleVTXOs", mock.Anything, mock.Anything,
 	).Return(nil).Maybe()
-
+	mockVTXOStore.On(
+		"LockVTXO", mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
+	mockVTXOStore.On(
+		"UnlockVTXO", mock.Anything, mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
 	m := &commonMockSetup{
 		t:                t,
 		operatorPub:      operatorPub,
@@ -92,6 +100,7 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		walletController: mockWalletController,
 		roundStore:       mockRoundStore,
 		vtxoStore:        mockVTXOStore,
+		vtxoLocker:       mockVTXOLocker,
 	}
 
 	// Register cleanup to automatically assert mock expectations.
@@ -157,6 +166,7 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 		WalletController:    common.walletController,
 		RoundStore:          common.roundStore,
 		VTXOStore:           common.vtxoStore,
+		VTXOLocker:          common.vtxoLocker,
 		ConfTarget:          6,
 		MinConfs:            1,
 		ForfeitScript:       []byte{0x51, 0x20, 0x01, 0x02},
@@ -491,8 +501,9 @@ func (c *commonMockSetup) expectVTXOLocked(roundID RoundID,
 	c.t.Helper()
 
 	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
-	c.vtxoStore.On(
-		"LockVTXO", mock.Anything, roundID, outpointsCopy,
+	owner := vtxo.RoundLockOwner(roundID.String())
+	c.vtxoLocker.On(
+		"LockMany", mock.Anything, outpointsCopy, owner,
 	).Return(nil).Once()
 }
 
@@ -505,8 +516,9 @@ func (c *commonMockSetup) expectVTXOUnlocked(roundID RoundID,
 	c.t.Helper()
 
 	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
-	c.vtxoStore.On(
-		"UnlockVTXO", mock.Anything, roundID, outpointsCopy,
+	owner := vtxo.RoundLockOwner(roundID.String())
+	c.vtxoLocker.On(
+		"UnlockMany", mock.Anything, outpointsCopy, owner,
 	).Return(nil).Once()
 }
 
@@ -897,6 +909,30 @@ func (h *fsmTestHarness) getClientVTXOAggSigs(
 // testing using testify/mock.
 type mockBoardingInputLocker struct {
 	mock.Mock
+}
+
+// mockVTXOLocker is a mock implementation of vtxo.Locker for testing using
+// testify/mock.
+type mockVTXOLocker struct {
+	mock.Mock
+}
+
+// LockMany is a mock implementation of vtxo.Locker.LockMany.
+func (m *mockVTXOLocker) LockMany(ctx context.Context,
+	outpoints []wire.OutPoint, owner vtxo.LockOwner) error {
+
+	args := m.Called(ctx, outpoints, owner)
+
+	return args.Error(0)
+}
+
+// UnlockMany is a mock implementation of vtxo.Locker.UnlockMany.
+func (m *mockVTXOLocker) UnlockMany(ctx context.Context,
+	outpoints []wire.OutPoint, owner vtxo.LockOwner) error {
+
+	args := m.Called(ctx, outpoints, owner)
+
+	return args.Error(0)
 }
 
 // Lock is a mock implementation of BoardingInputLocker.Lock.

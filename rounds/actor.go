@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/timeout"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -78,7 +79,11 @@ type ActorConfig struct {
 	// RoundStore provides persistent storage for rounds.
 	RoundStore RoundStore
 
-	// VTXOStore provides persistent storage for VTXOs.
+	// VTXOStore provides persistent storage for rounds VTXOs.
+	//
+	// Rounds persist additional metadata (tree descriptor + forfeit info)
+	// that the generic OOR-focused `vtxo.Store` does not carry yet, so this
+	// remains a rounds-scoped projection interface.
 	VTXOStore VTXOStore
 
 	// ChainSourceActor is a reference to the chain source actor for
@@ -96,6 +101,10 @@ type ActorConfig struct {
 	BatchWatcher fn.Option[actor.ActorRef[
 		batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
 	]]
+
+	// VTXOLocker provides mutual exclusion for VTXO outpoints across
+	// concurrent subsystems (rounds and OOR transfers).
+	VTXOLocker vtxo.Locker
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -110,7 +119,8 @@ type Actor struct {
 	// being processed.
 	rounds map[RoundID]*RoundFSM
 
-	// currentRoundID identifies the round currently accepting registrations.
+	// currentRoundID identifies the round that currently accepts new
+	// registrations.
 	// Access the round via rounds[currentRoundID].
 	currentRoundID RoundID
 
@@ -322,6 +332,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		MinConfs:            a.cfg.MinConfs,
 		RoundStore:          a.cfg.RoundStore,
 		VTXOStore:           a.cfg.VTXOStore,
+		VTXOLocker:          a.cfg.VTXOLocker,
 		StartHeight:         startHeight,
 	}
 

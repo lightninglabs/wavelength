@@ -214,6 +214,10 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 	createQuery QueryCreator[Querier], log btclog.Logger,
 	opts ...TxExecutorOption) *TransactionExecutor[Querier] {
 
+	if log == nil {
+		log = btclog.Disabled
+	}
+
 	txOpts := defaultTxExecutorOptions()
 	for _, optFunc := range opts {
 		optFunc(txOpts)

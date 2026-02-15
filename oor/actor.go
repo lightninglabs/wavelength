@@ -7,6 +7,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -27,6 +28,10 @@ type OutboxHandler interface {
 type ActorCfg struct {
 	// Logger is used for coordinator and FSM logging.
 	Logger btclog.Logger
+
+	// CheckpointPolicy is the expected operator policy for submitted
+	// checkpoint transactions.
+	CheckpointPolicy scripts.CheckpointPolicy
 
 	// OutboxHandler executes outbox side effects.
 	OutboxHandler OutboxHandler
@@ -109,9 +114,12 @@ func (a *Actor) handleSubmit(ctx context.Context,
 	}
 
 	// Run structural submit validation before we touch lock state.
-	// Stateful/authoritative checks remain at the outbox boundary.
-	validated, err := oorlib.ValidateSubmitPackage(
-		req.ArkPSBT, req.CheckpointPSBTs,
+	// Stateful/ownership checks remain at the outbox boundary.
+	//
+	// We still enforce static checkpoint policy values (operator key + CSV)
+	// here so malformed checkpoints fail before any session side effects.
+	validated, err := oorlib.ValidateSubmitPackageWithPolicy(
+		req.ArkPSBT, req.CheckpointPSBTs, a.cfg.CheckpointPolicy,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)

@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
+	vtxostate "github.com/lightninglabs/darepo/vtxo"
 )
 
 // VTXOStoreDB implements rounds.VTXOStore using sqlc-generated queries.
@@ -95,7 +96,9 @@ func (v *VTXOStoreDB) MarkVTXOForfeit(ctx context.Context,
 			sqlc.UpdateVTXOStatusParams{
 				OutpointHash:  outpoint.Hash[:],
 				OutpointIndex: int32(outpoint.Index),
-				Status:        "forfeited",
+				Status: string(
+					rounds.VTXOStatusForfeited,
+				),
 			})
 		if err != nil {
 			return fmt.Errorf("update vtxo status: %w", err)
@@ -252,12 +255,21 @@ func (v *VTXOStoreDB) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 	outpoints ...wire.OutPoint) error {
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		ownerKind, ownerID, err := lockOwnerFromRoundID(roundID[:])
+		if err != nil {
+			return err
+		}
+
 		for _, outpoint := range outpoints {
 			rowsAffected, err := qtx.LockVTXO(ctx,
 				sqlc.LockVTXOParams{
-					OutpointHash:    outpoint.Hash[:],
-					OutpointIndex:   int32(outpoint.Index),
-					LockedByRoundID: roundID[:],
+					OutpointHash:  outpoint.Hash[:],
+					OutpointIndex: int32(outpoint.Index),
+					LockOwnerKind: sql.NullString{
+						String: ownerKind,
+						Valid:  true,
+					},
+					LockOwnerID: ownerID,
 				})
 			if err != nil {
 				return fmt.Errorf("lock vtxo %v: %w",
@@ -288,26 +300,28 @@ func (v *VTXOStoreDB) LockVTXO(ctx context.Context, roundID rounds.RoundID,
 
 				// Idempotent case: VTXO already locked by
 				// this round.
-				if vtxo.Status == "locked" &&
-					len(vtxo.LockedByRoundID) > 0 &&
-					bytes.Equal(
-						vtxo.LockedByRoundID,
-						roundID[:],
-					) {
+				lockKindMatches := vtxo.LockOwnerKind.Valid &&
+					vtxo.LockOwnerKind.String == ownerKind
+				lockIDMatches := len(vtxo.LockOwnerID) > 0 &&
+					bytes.Equal(vtxo.LockOwnerID, ownerID)
+				if vtxo.Status ==
+					string(vtxostate.StatusInFlight) &&
+					lockKindMatches &&
+					lockIDMatches {
 
 					// Already locked by us, idempotent
 					// success.
 					continue
 				}
 
-				if vtxo.Status != "live" {
+				if vtxo.Status != string(vtxostate.StatusLive) {
 					return fmt.Errorf(
 						"vtxo %v not live, status: %s",
 						outpoint, vtxo.Status,
 					)
 				}
 
-				if len(vtxo.LockedByRoundID) > 0 {
+				if len(vtxo.LockOwnerID) > 0 {
 					return fmt.Errorf(
 						"vtxo %v locked by another "+
 							"round",
@@ -333,12 +347,21 @@ func (v *VTXOStoreDB) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
 	outpoints ...wire.OutPoint) error {
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		ownerKind, ownerID, err := lockOwnerFromRoundID(roundID[:])
+		if err != nil {
+			return err
+		}
+
 		for _, outpoint := range outpoints {
 			rowsAffected, err := qtx.UnlockVTXO(ctx,
 				sqlc.UnlockVTXOParams{
-					OutpointHash:    outpoint.Hash[:],
-					OutpointIndex:   int32(outpoint.Index),
-					LockedByRoundID: roundID[:],
+					OutpointHash:  outpoint.Hash[:],
+					OutpointIndex: int32(outpoint.Index),
+					LockOwnerKind: sql.NullString{
+						String: ownerKind,
+						Valid:  true,
+					},
+					LockOwnerID: ownerID,
 				})
 			if err != nil {
 				return fmt.Errorf("unlock vtxo %v: %w",
@@ -366,7 +389,9 @@ func (v *VTXOStoreDB) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
 					)
 				}
 
-				if vtxo.Status != "locked" {
+				if vtxo.Status !=
+					string(vtxostate.StatusInFlight) {
+
 					return fmt.Errorf(
 						"vtxo %v not locked: %s",
 						outpoint,
@@ -374,18 +399,24 @@ func (v *VTXOStoreDB) UnlockVTXO(ctx context.Context, roundID rounds.RoundID,
 					)
 				}
 
-				if len(vtxo.LockedByRoundID) == 0 {
+				if len(vtxo.LockOwnerID) == 0 ||
+					!vtxo.LockOwnerKind.Valid {
+
 					return fmt.Errorf(
 						"vtxo %v has no "+
-							"locked_by_round_id",
+							"lock owner",
 						outpoint,
 					)
 				}
 
-				if !bytes.Equal(
-					vtxo.LockedByRoundID, roundID[:],
-				) {
-
+				lockOwnerKindMatches :=
+					vtxo.LockOwnerKind.String == ownerKind
+				lockOwnerIDMatches := bytes.Equal(
+					vtxo.LockOwnerID, ownerID,
+				)
+				lockOwnerMatches := lockOwnerKindMatches &&
+					lockOwnerIDMatches
+				if !lockOwnerMatches {
 					return fmt.Errorf(
 						"vtxo %v locked by different "+
 							"round",

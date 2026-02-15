@@ -274,6 +274,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ConfTarget:          6,
 		MinConfs:            1,
 		ConfirmationTarget:  1,
+		VTXOLocker:          common.vtxoLocker,
 		Terms: &batch.Terms{
 			OperatorKey: keychain.KeyDescriptor{
 				PubKey: common.operatorPub,

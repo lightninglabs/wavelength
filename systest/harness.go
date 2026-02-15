@@ -506,6 +506,7 @@ func (h *E2EHarness) initActorSystem() {
 		ChainSourceActor:    h.chainSourceActorRef,
 		RoundStore:          h.roundStore,
 		VTXOStore:           h.vtxoStore,
+		VTXOLocker:          db.NewVTXOLockerDB(h.sqlStore, h.SubLogger("VTXOL")),
 		TimeoutActor:        h.mockTimeoutRef,
 		WalletController:    h.walletController,
 		FeeEstimator:        feeEstimator,

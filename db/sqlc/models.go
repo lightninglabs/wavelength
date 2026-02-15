@@ -67,7 +67,8 @@ type Vtxo struct {
 	PkScript         []byte
 	CosignerKey      []byte
 	Status           string
-	LockedByRoundID  []byte
+	LockOwnerKind    sql.NullString
+	LockOwnerID      []byte
 }
 
 type VtxoStatus struct {

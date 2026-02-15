@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 )
@@ -134,7 +135,8 @@ func unlockBoardingInputs(ctx context.Context, env *Environment,
 }
 
 // lockForfeitVTXOs attempts to lock all forfeit VTXOs for a client in the
-// VTXOStore. If any lock fails, it returns an error. If all locks succeed,
+// shared VTXO locker. If any lock fails, it returns an error. If all locks
+// succeed,
 // it returns nil.
 func lockForfeitVTXOs(ctx context.Context, env *Environment,
 	inputs []*ForfeitInput) error {
@@ -148,7 +150,21 @@ func lockForfeitVTXOs(ctx context.Context, env *Environment,
 		outpoints = append(outpoints, *input.Outpoint)
 	}
 
-	err := env.VTXOStore.LockVTXO(ctx, env.RoundID, outpoints...)
+	if env.VTXOLocker == nil {
+		// Preserve compatibility for tests and configurations that do
+		// not wire VTXOLocker yet.
+		err := env.VTXOStore.LockVTXO(ctx, env.RoundID, outpoints...)
+		if err != nil {
+			return fmt.Errorf(
+				"failed to lock forfeit VTXOs: %w", err,
+			)
+		}
+
+		return nil
+	}
+
+	owner := vtxo.RoundLockOwner(env.RoundID.String())
+	err := env.VTXOLocker.LockMany(ctx, outpoints, owner)
 	if err != nil {
 		return fmt.Errorf("failed to lock forfeit VTXOs: %w", err)
 	}
@@ -175,9 +191,21 @@ func unlockForfeitVTXOs(ctx context.Context, env *Environment,
 			outpoints = append(outpoints, *input.Outpoint)
 		}
 
-		err := env.VTXOStore.UnlockVTXO(
-			ctx, env.RoundID, outpoints...,
-		)
+		if env.VTXOLocker == nil {
+			err := env.VTXOStore.UnlockVTXO(
+				ctx, env.RoundID, outpoints...,
+			)
+			if err != nil {
+				env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
+					"VTXOs", err,
+					"count", len(outpoints))
+			}
+
+			continue
+		}
+
+		owner := vtxo.RoundLockOwner(env.RoundID.String())
+		err := env.VTXOLocker.UnlockMany(ctx, outpoints, owner)
 		if err != nil {
 			// Log the error but continue unlocking other
 			// VTXOs. We don't want one failure to prevent

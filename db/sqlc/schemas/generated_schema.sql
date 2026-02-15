@@ -33,7 +33,7 @@ CREATE INDEX idx_vtxo_tree_nodes_parent
 	ON vtxo_tree_nodes(round_id, batch_output_index, parent_node_id);
 
 CREATE INDEX idx_vtxos_locked
-	ON vtxos(locked_by_round_id) WHERE locked_by_round_id IS NOT NULL;
+	ON vtxos(lock_owner_kind, lock_owner_id) WHERE lock_owner_id IS NOT NULL;
 
 CREATE INDEX idx_vtxos_round
 	ON vtxos(round_id);
@@ -256,18 +256,26 @@ CREATE TABLE vtxos (
 	pk_script BLOB NOT NULL,
 
 	-- cosigner_key is the 33-byte compressed public key of the VTXO owner.
+	--
+	-- This key is always required for spend path reconstruction.
 	cosigner_key BLOB NOT NULL,
 
-	-- status tracks VTXO lifecycle (pending, live, locked, forfeited, spent).
+	-- status tracks VTXO lifecycle (pending, live, in_flight, forfeited, spent).
 	status TEXT NOT NULL DEFAULT 'pending',
 
-	-- locked_by_round_id tracks which round/operation has locked this VTXO.
-	-- NULL when unlocked, populated when status='locked'.
-	-- Prevents concurrent forfeits across multiple rounds.
-	locked_by_round_id BLOB,
+	-- lock_owner_kind identifies who owns the in-flight lock.
+	-- NULL when unlocked.
+	lock_owner_kind TEXT,
+
+	-- lock_owner_id identifies the lock owner instance within the kind.
+	-- NULL when unlocked.
+	lock_owner_id BLOB,
 
 	PRIMARY KEY (outpoint_hash, outpoint_index),
 	FOREIGN KEY (round_id) REFERENCES rounds(round_id),
-	FOREIGN KEY (status) REFERENCES vtxo_statuses(status)
+	FOREIGN KEY (status) REFERENCES vtxo_statuses(status),
+	CHECK (lock_owner_kind IS NULL OR lock_owner_kind IN ('round', 'oor')),
+	CHECK ((lock_owner_kind IS NULL) = (lock_owner_id IS NULL)),
+	CHECK ((status = 'in_flight') = (lock_owner_kind IS NOT NULL))
 );
 
