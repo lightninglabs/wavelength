@@ -64,7 +64,10 @@ func (m *mockWatcher) ID() string {
 }
 
 // Tell is a no-op for this mock.
-func (m *mockWatcher) Tell(_ context.Context, _ batchwatcher.BatchWatcherMsg) {
+func (m *mockWatcher) Tell(_ context.Context,
+	_ batchwatcher.BatchWatcherMsg) error {
+
+	return nil
 }
 
 // Ask captures the request and returns the preconfigured response.
@@ -117,7 +120,9 @@ func (m *mockChainSource) ID() string {
 
 // Tell is a no-op for this mock.
 func (m *mockChainSource) Tell(_ context.Context,
-	_ chainsource.ChainSourceMsg) {
+	_ chainsource.ChainSourceMsg) error {
+
+	return nil
 }
 
 // Ask handles supported ChainSource queries and records broadcasts.
@@ -178,13 +183,15 @@ func (r *selfRef) ID() string {
 }
 
 // Tell forwards the message into the actor and records any error.
-func (r *selfRef) Tell(ctx context.Context, msg Msg) {
+func (r *selfRef) Tell(ctx context.Context, msg Msg) error {
 	result := r.actor.Receive(ctx, msg)
 	if result.IsErr() {
 		r.mu.Lock()
 		r.lastErr = result.Err()
 		r.mu.Unlock()
 	}
+
+	return nil
 }
 
 // LastErr returns the last actor error observed through this ref.
@@ -332,9 +339,7 @@ func (bc *bddContext) batchWatcherNotifiesExpiry() error {
 		ExpiryHeight: 123,
 	}
 
-	bc.notify.Tell(context.Background(), notification)
-
-	return nil
+	return bc.notify.Tell(context.Background(), notification)
 }
 
 // aSweepTransactionShouldBeBroadcast verifies the ChainSource received a
