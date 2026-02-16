@@ -136,10 +136,6 @@ func (m *MarkInputsSpentRequest) ToProto() proto.Message {
 // IncomingTransferNotification is emitted when an incoming transfer has been
 // validated structurally and should be surfaced to the application layer.
 type IncomingTransferNotification struct {
-	// IncomingTransferNotification is an application-facing notification.
-	// It carries the canonical Ark PSBT and the derived recipients so the
-	// UI can display a stable summary of the transfer.
-
 	actor.BaseMessage
 
 	// SessionID is the stable v0 session identifier (Ark txid).
@@ -166,9 +162,6 @@ func (m *IncomingTransferNotification) outboxSealed() {}
 // This is the interface boundary where we eventually construct full VTXO
 // descriptors and hand them to the vtxo.Manager for lifecycle tracking.
 type MaterializeIncomingVTXOsRequest struct {
-	// MaterializeIncomingVTXOsRequest is the outbox boundary for updating
-	// local wallet/VTXO state as a result of an incoming transfer.
-
 	actor.BaseMessage
 
 	// SessionID identifies the incoming transfer session.
@@ -195,10 +188,6 @@ func (m *MaterializeIncomingVTXOsRequest) outboxSealed() {}
 // In the future this becomes an RPC call. For now it is left as an interface
 // boundary so client-side FSMs can be tested without a transport.
 type SendIncomingAckRequest struct {
-	// SendIncomingAckRequest is best-effort: an app may retry it until the
-	// server confirms the ack was recorded, depending on the chosen
-	// transport semantics.
-
 	actor.BaseMessage
 
 	// SessionID identifies the transfer being acknowledged.
