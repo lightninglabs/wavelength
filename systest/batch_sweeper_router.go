@@ -4,6 +4,8 @@ package systest
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -37,7 +39,7 @@ func (r *BatchSweeperRouter) ID() string {
 
 // Tell forwards the notification to all configured targets.
 func (r *BatchSweeperRouter) Tell(ctx context.Context,
-	msg batchwatcher.BatchSweeperMsg) {
+	msg batchwatcher.BatchSweeperMsg) error {
 
 	r.mu.Lock()
 	targets := append(
@@ -46,13 +48,22 @@ func (r *BatchSweeperRouter) Tell(ctx context.Context,
 	)
 	r.mu.Unlock()
 
+	var errs []error
+
 	for _, target := range targets {
 		if target == nil {
 			continue
 		}
 
-		target.Tell(ctx, msg)
+		err := target.Tell(ctx, msg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf(
+				"batch sweeper target %s: %w", target.ID(), err,
+			))
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // SetTargets replaces the set of notification recipients.

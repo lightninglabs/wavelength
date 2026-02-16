@@ -528,7 +528,15 @@ func (a *Actor) notifyVTXOOnChain(ctx context.Context, batchID BatchID,
 			VTXOOutput:   output.TxOut,
 		}
 
-		ref.Tell(ctx, notification)
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx, "Failed to notify FraudDetector of VTXO",
+				err,
+				"batch_id", batchID,
+				"outpoint", output.Outpoint,
+			)
+
+			return
+		}
 
 		a.log.DebugS(ctx, "Notified FraudDetector of VTXO on-chain",
 			"batch_id", batchID,
@@ -550,7 +558,15 @@ func (a *Actor) notifyBatchExpired(ctx context.Context, batchID BatchID,
 			ExpiryHeight: expiryHeight,
 		}
 
-		ref.Tell(ctx, notification)
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of expiry",
+				err,
+				"batch_id", batchID,
+				"expiry_height", expiryHeight,
+			)
+
+			return
+		}
 
 		a.log.DebugS(ctx, "Notified BatchSweeper of batch expiry",
 			"batch_id", batchID,
@@ -571,7 +587,14 @@ func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 			BatchID: batchID,
 		}
 
-		ref.Tell(ctx, notification)
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of state",
+				err,
+				"batch_id", batchID,
+			)
+
+			return
+		}
 
 		a.log.TraceS(ctx, "Notified BatchSweeper of tree state change",
 			"batch_id", batchID)

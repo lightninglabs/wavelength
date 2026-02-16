@@ -31,17 +31,24 @@ func (m *mockCallbackRef) ID() string {
 	return m.id
 }
 
-func (m *mockCallbackRef) Tell(_ context.Context, msg *ExpiredMsg) {
+func (m *mockCallbackRef) Tell(_ context.Context, msg *ExpiredMsg) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if msg == nil {
+		return nil
+	}
+
 	m.messages = append(m.messages, *msg)
+
+	return nil
 }
 
 // getMessages returns a copy of all received messages.
 func (m *mockCallbackRef) getMessages() []ExpiredMsg {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return append([]ExpiredMsg{}, m.messages...)
 }
 

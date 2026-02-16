@@ -39,7 +39,9 @@ func NewMockBatchSweeper() *MockBatchSweeper {
 }
 
 // Tell implements the actor.TellOnlyRef interface for BatchSweeperMsg.
-func (m *MockBatchSweeper) Tell(_ context.Context, msg batchwatcher.BatchSweeperMsg) {
+func (m *MockBatchSweeper) Tell(_ context.Context,
+	msg batchwatcher.BatchSweeperMsg) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -54,6 +56,8 @@ func (m *MockBatchSweeper) Tell(_ context.Context, msg batchwatcher.BatchSweeper
 			m.treeStateNotifications[batchIDStr], notification,
 		)
 	}
+
+	return nil
 }
 
 // GetExpiryNotification returns the expiry notification for a batch, if any.

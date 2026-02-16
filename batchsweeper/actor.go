@@ -652,7 +652,12 @@ func (a *Actor) registerSweepConfirmation(ctx context.Context,
 
 	// Fire-and-forget: we don't block on registration response. The
 	// confirmation will arrive asynchronously via SweepConfirmedEvent.
-	a.cfg.ChainSource.Tell(ctx, req)
+	if err := a.cfg.ChainSource.Tell(ctx, req); err != nil {
+		a.log.WarnS(ctx, "Unable to register sweep confirmation",
+			err,
+			"batch_id", batchID,
+			"txid", txid)
+	}
 
 	a.log.DebugS(ctx, "Registered for sweep confirmation",
 		"batch_id", batchID,
@@ -735,11 +740,16 @@ func (a *Actor) scheduleRetry(ctx context.Context, batchID batchwatcher.BatchID,
 			},
 		)
 
-		ref.Tell(ctx, &timeout.ScheduleTimeoutRequest{
+		if err := ref.Tell(ctx, &timeout.ScheduleTimeoutRequest{
 			ID:       timeoutID,
 			Duration: delay,
 			Callback: callbackRef,
-		})
+		}); err != nil {
+			a.log.WarnS(ctx, "Unable to schedule sweep retry timer",
+				err,
+				"batch_id", batchID,
+				"timeout_id", timeoutID)
+		}
 
 		a.log.DebugS(ctx, "Scheduled sweep retry",
 			"batch_id", batchID,

@@ -21,11 +21,13 @@ func (r *msgCaptureRef) ID() string {
 }
 
 // Tell captures the message.
-func (r *msgCaptureRef) Tell(_ context.Context, msg Msg) {
+func (r *msgCaptureRef) Tell(_ context.Context, msg Msg) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.msgs = append(r.msgs, msg)
+
+	return nil
 }
 
 // Messages returns a copy of all captured messages.
@@ -45,10 +47,10 @@ func TestMapBatchWatcherNotification(t *testing.T) {
 	ref := MapBatchWatcherNotification(capture)
 
 	expiry := &batchwatcher.BatchExpiredNotification{}
-	ref.Tell(t.Context(), expiry)
+	require.NoError(t, ref.Tell(t.Context(), expiry))
 
 	treeChanged := &batchwatcher.TreeStateChangedNotification{}
-	ref.Tell(t.Context(), treeChanged)
+	require.NoError(t, ref.Tell(t.Context(), treeChanged))
 
 	msgs := capture.Messages()
 	require.Len(t, msgs, 2)

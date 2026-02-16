@@ -38,21 +38,25 @@ func (r *batchWatcherNotificationRef) ID() string {
 
 // Tell forwards a BatchWatcher notification to the BatchSweeperActor.
 func (r *batchWatcherNotificationRef) Tell(ctx context.Context,
-	msg batchwatcher.BatchSweeperMsg) {
+	msg batchwatcher.BatchSweeperMsg) error {
 
 	if r.self == nil {
-		return
+		return fmt.Errorf("missing self ref")
 	}
 
 	switch m := msg.(type) {
 	case *batchwatcher.BatchExpiredNotification:
-		r.self.Tell(ctx, &BatchExpiredEvent{
+		return r.self.Tell(ctx, &BatchExpiredEvent{
 			Notification: m,
 		})
 
 	case *batchwatcher.TreeStateChangedNotification:
-		r.self.Tell(ctx, &TreeStateChangedEvent{
+		return r.self.Tell(ctx, &TreeStateChangedEvent{
 			Notification: m,
 		})
+
+	default:
+		// Ignore unknown notifications.
+		return nil
 	}
 }

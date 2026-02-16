@@ -697,10 +697,12 @@ func (m *mockTellOnlyRef[M]) ID() string {
 }
 
 // Tell sends a message to the mock actor.
-func (m *mockTellOnlyRef[M]) Tell(ctx context.Context, msg M) {
+func (m *mockTellOnlyRef[M]) Tell(ctx context.Context, msg M) error {
 	if m.tellFn != nil {
 		m.tellFn(ctx, msg)
 	}
+
+	return nil
 }
 
 // mockActorRef is a generic mock ActorRef implementation using testify/mock.
@@ -720,8 +722,9 @@ func (m *mockActorRef[M, R]) ID() string {
 }
 
 // Tell sends a message without waiting for a response.
-func (m *mockActorRef[M, R]) Tell(ctx context.Context, msg M) {
+func (m *mockActorRef[M, R]) Tell(ctx context.Context, msg M) error {
 	m.Called(ctx, msg)
+	return nil
 }
 
 // Ask sends a message and returns a future for the response.

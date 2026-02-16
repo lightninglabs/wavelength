@@ -46,7 +46,9 @@ func (m *mockBatchWatcherRef) ID() string {
 
 // Tell is a no-op for this mock.
 func (m *mockBatchWatcherRef) Tell(_ context.Context,
-	_ batchwatcher.BatchWatcherMsg) {
+	_ batchwatcher.BatchWatcherMsg) error {
+
+	return nil
 }
 
 // Ask captures the request and returns a completed future with the configured
@@ -90,7 +92,7 @@ func (m *mockChainSourceRef) ID() string {
 
 // Tell captures fire-and-forget messages like RegisterConfRequest.
 func (m *mockChainSourceRef) Tell(_ context.Context,
-	msg chainsource.ChainSourceMsg) {
+	msg chainsource.ChainSourceMsg) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -98,6 +100,8 @@ func (m *mockChainSourceRef) Tell(_ context.Context,
 	if req, ok := msg.(*chainsource.RegisterConfRequest); ok {
 		m.lastConfRegistration = req
 	}
+
+	return nil
 }
 
 // Ask returns the configured response based on request type.
@@ -162,16 +166,18 @@ func (m *mockTimeoutRef) ID() string {
 }
 
 // Tell captures schedule requests.
-func (m *mockTimeoutRef) Tell(_ context.Context, msg timeout.Msg) {
+func (m *mockTimeoutRef) Tell(_ context.Context, msg timeout.Msg) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	req, ok := msg.(*timeout.ScheduleTimeoutRequest)
 	if !ok {
-		return
+		return nil
 	}
 
 	m.lastSchedule = req
+
+	return nil
 }
 
 // LastSchedule returns the last scheduled timeout request.
@@ -191,7 +197,8 @@ func (n *nopSelfRef) ID() string {
 }
 
 // Tell discards all messages.
-func (n *nopSelfRef) Tell(_ context.Context, _ Msg) {
+func (n *nopSelfRef) Tell(_ context.Context, _ Msg) error {
+	return nil
 }
 
 // TestBatchExpiredQueriesWatcher verifies that an expiry notification causes

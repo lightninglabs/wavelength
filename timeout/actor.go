@@ -94,7 +94,7 @@ func (a *Actor) handleSchedule(_ context.Context,
 		//    processing the message.
 		delete(a.timers, req.ID)
 
-		req.Callback.Tell(context.Background(), &ExpiredMsg{
+		_ = req.Callback.Tell(context.Background(), &ExpiredMsg{
 			ID: req.ID,
 		})
 	})
