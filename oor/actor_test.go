@@ -114,7 +114,10 @@ func TestOORClientActorHappyPath(t *testing.T) {
 			t:            t,
 			clientSigner: clientSigner,
 		},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-test-happy",
 	})
+	defer actor.Stop()
 
 	startResp := actor.Receive(ctx, &StartTransferRequest{
 		Policy:     policy,
