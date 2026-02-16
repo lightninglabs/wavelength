@@ -102,9 +102,17 @@ type TestClient struct {
 	// vtxoManager is the real VTXO manager that spawns VTXO actors.
 	vtxoManager *vtxo.Manager
 
+	// vtxoManagerRef is the actor reference for the VTXO manager. This is used
+	// to stop and unregister the manager during restart tests.
+	vtxoManagerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+
 	// vtxoObserver receives VTXOCreatedNotification events from the round
 	// actor, enabling event-based detection of round completion.
 	vtxoObserver *VTXOObserver
+
+	// vtxoObserverRef is the actor reference for the VTXO observer. This is
+	// used to stop and unregister the observer during restart tests.
+	vtxoObserverRef actor.ActorRef[VTXOObserverMsg, VTXOObserverResp]
 
 	// eventSub is a long-lived subscriber to bridge events for this client.
 	// It receives all server->client events, allowing event-driven waiting
@@ -334,8 +342,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	roundActorInner := roundActorResult.UnwrapOrFail(t)
 
 	roundKey := actormsg.RoundActorServiceKey()
+	roundActorID := fmt.Sprintf("%s%s", actormsg.RoundActorServiceKeyName, opts.actorSuffix)
 	roundRef := roundKey.Spawn(
-		h.actorSystem, actormsg.RoundActorServiceKeyName, roundActorInner,
+		h.actorSystem, roundActorID, roundActorInner,
 	)
 
 	// Set SelfRef after spawning. Since roundRef is
@@ -420,27 +429,29 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	require.NoError(t, err, "failed to subscribe to bridge events")
 
 	client := &TestClient{
-		harness:        h,
-		clientID:       clientID,
-		lndInstance:    opts.lndInstance,
-		lndServices:    lndServices,
-		serverConn:     serverConn,
-		serverConnRef:  serverConnRef,
-		chainBackend:   chainBackend,
-		chainSourceRef: chainSourceRef,
-		walletActor:    walletActor,
-		walletRef:      walletRef,
-		roundActor:     roundActorInner,
-		roundRef:       roundRef,
-		sqlDB:          sqlDB,
-		dbPath:         opts.dbPath,
-		roundStore:     roundStore,
-		vtxoStore:      vtxoStore,
-		boardingStore:  boardingStore,
-		clientKeyDesc:  clientKeyDesc,
-		vtxoManager:    vtxoManagerActor,
-		vtxoObserver:   vtxoObserver,
-		eventSub:       eventSub,
+		harness:         h,
+		clientID:        clientID,
+		lndInstance:     opts.lndInstance,
+		lndServices:     lndServices,
+		serverConn:      serverConn,
+		serverConnRef:   serverConnRef,
+		chainBackend:    chainBackend,
+		chainSourceRef:  chainSourceRef,
+		walletActor:     walletActor,
+		walletRef:       walletRef,
+		roundActor:      roundActorInner,
+		roundRef:        roundRef,
+		sqlDB:           sqlDB,
+		dbPath:          opts.dbPath,
+		roundStore:      roundStore,
+		vtxoStore:       vtxoStore,
+		boardingStore:   boardingStore,
+		clientKeyDesc:   clientKeyDesc,
+		vtxoManager:     vtxoManagerActor,
+		vtxoManagerRef:  vtxoManagerActorRef,
+		vtxoObserver:    vtxoObserver,
+		vtxoObserverRef: vtxoObserverRef,
+		eventSub:        eventSub,
 	}
 
 	// Register the client with the harness.
@@ -960,17 +971,103 @@ func (c *TestClient) TriggerRegistration(ctx context.Context) error {
 // used for restart testing to simulate client process termination. The database
 // is left intact so a new client can recover state on restart.
 func (c *TestClient) Stop() {
+	ctx := c.harness.ctx
+	sys := c.harness.actorSystem
+
 	// Cancel event subscription to stop receiving server events.
 	if c.eventSub != nil {
 		c.eventSub.Cancel()
+		c.eventSub = nil
 	}
 
 	// Unregister from bridge to stop message routing to this client.
 	c.harness.bridge.UnregisterClient(c.clientID)
 
-	// Note: Actors are tied to the actor system and will be cleaned up
-	// when the harness stops. For restart testing, we leave the database
-	// intact so the new client can recover state.
+	// Unregister all of the client's actors from the receptionist to avoid
+	// duplicate routing during restart tests. This is especially important
+	// for the well-known round actor service key ("round-client"), since
+	// the wallet does a service key lookup to forward refresh/leave
+	// requests.
+	if c.roundRef != nil {
+		actormsg.RoundActorServiceKey().Unregister(sys, c.roundRef)
+	}
+	if c.chainSourceRef != nil {
+		chainsource.ChainSourceKey.Unregister(sys, c.chainSourceRef)
+	}
+	if c.walletRef != nil {
+		walletKey := actor.NewServiceKey[wallet.WalletMsg, wallet.WalletResp](
+			c.walletRef.ID(),
+		)
+		walletKey.Unregister(sys, c.walletRef)
+	}
+	if c.serverConnRef != nil {
+		serverConnKey := actor.NewServiceKey[
+			serverconn.ServerConnMsg, serverconn.ServerConnResp,
+		](c.serverConnRef.ID())
+		serverConnKey.Unregister(sys, c.serverConnRef)
+	}
+	if c.vtxoManagerRef != nil {
+		vtxoManagerKey := actor.NewServiceKey[
+			vtxo.ManagerMsg, vtxo.ManagerResp,
+		](c.vtxoManagerRef.ID())
+		vtxoManagerKey.Unregister(sys, c.vtxoManagerRef)
+	}
+	if c.vtxoObserverRef != nil {
+		vtxoObserverKey := actor.NewServiceKey[
+			VTXOObserverMsg, VTXOObserverResp,
+		](c.vtxoObserverRef.ID())
+		vtxoObserverKey.Unregister(sys, c.vtxoObserverRef)
+	}
+
+	// Stop any live VTXO actors. The VTXO manager does not currently stop
+	// its children on shutdown, so if we don't do this explicitly then a
+	// restart test can end up with duplicate per-VTXO actors (same actor
+	// IDs) being spawned and "leaking" in the shared actor system.
+	if c.vtxoStore != nil {
+		liveVTXOs, err := c.vtxoStore.ListLiveVTXOs(ctx)
+		if err == nil {
+			for _, v := range liveVTXOs {
+				if v == nil {
+					continue
+				}
+
+				key := actormsg.VTXOActorServiceKey(v.Outpoint)
+				key.UnregisterAll(sys)
+
+				actorID := fmt.Sprintf("vtxo.%s", v.Outpoint.String())
+				sys.StopAndRemoveActor(actorID)
+			}
+		}
+	}
+
+	// Stop actors and remove them from the system. Stop is non-blocking, but
+	// this is still much closer to a real process restart than leaving the
+	// actors running (which can keep writing to the same SQLite DB).
+	if c.chainSourceRef != nil {
+		sys.StopAndRemoveActor(c.chainSourceRef.ID())
+	}
+	if c.walletRef != nil {
+		sys.StopAndRemoveActor(c.walletRef.ID())
+	}
+	if c.serverConnRef != nil {
+		sys.StopAndRemoveActor(c.serverConnRef.ID())
+	}
+	if c.vtxoManagerRef != nil {
+		sys.StopAndRemoveActor(c.vtxoManagerRef.ID())
+	}
+	if c.vtxoObserverRef != nil {
+		sys.StopAndRemoveActor(c.vtxoObserverRef.ID())
+	}
+	if c.roundRef != nil {
+		sys.StopAndRemoveActor(c.roundRef.ID())
+	}
+
+	// Close the DB handle to release file locks. Restart tests reuse the same
+	// database file.
+	if c.sqlDB != nil {
+		_ = c.sqlDB.Close()
+		c.sqlDB = nil
+	}
 }
 
 // DBPath returns the path to the client's SQLite database file. This is used
