@@ -1,10 +1,26 @@
 package oor
 
 import (
+	"bytes"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+)
+
+const (
+	oorOutboxProtoTypeURLPrefix = "type.lightninglabs.dev/darepo-client/" +
+		"oor/"
+)
+
+const (
+	finalizePayloadArkPSBTRecordType     tlv.Type = 1
+	finalizePayloadCheckpointsRecordType tlv.Type = 3
 )
 
 // OutboxEvent is a sealed interface for side-effect requests emitted by the
@@ -52,10 +68,16 @@ func (m *SendSubmitPackageRequest) outboxType() string {
 func (m *SendSubmitPackageRequest) outboxSealed() {}
 
 // ToProto converts SendSubmitPackageRequest to a protobuf message.
-//
-// TODO: Implement once OOR RPC definitions exist.
 func (m *SendSubmitPackageRequest) ToProto() proto.Message {
-	return nil
+	payload, err := oortx.MarshalSubmitPackage(&oortx.SubmitPackage{
+		ArkPSBT:         m.ArkPSBT,
+		CheckpointPSBTs: m.CheckpointPSBTs,
+	})
+	if err != nil {
+		return protoErrorEnvelope("SendSubmitPackageRequest", err)
+	}
+
+	return protoEnvelope("SendSubmitPackageRequest", payload)
 }
 
 // RequestCheckpointSignatures asks the signing layer to add client signature
@@ -107,10 +129,15 @@ func (m *SendFinalizePackageRequest) outboxType() string {
 func (m *SendFinalizePackageRequest) outboxSealed() {}
 
 // ToProto converts SendFinalizePackageRequest to a protobuf message.
-//
-// TODO: Implement once OOR RPC definitions exist.
 func (m *SendFinalizePackageRequest) ToProto() proto.Message {
-	return nil
+	payload, err := encodeFinalizePayload(
+		m.ArkPSBT, m.FinalCheckpointPSBTs,
+	)
+	if err != nil {
+		return protoErrorEnvelope("SendFinalizePackageRequest", err)
+	}
+
+	return protoEnvelope("SendFinalizePackageRequest", payload)
 }
 
 // MarkInputsSpentRequest asks the persistence layer to mark the OOR inputs as
@@ -136,10 +163,13 @@ func (m *MarkInputsSpentRequest) outboxType() string {
 func (m *MarkInputsSpentRequest) outboxSealed() {}
 
 // ToProto converts MarkInputsSpentRequest to a protobuf message.
-//
-// TODO: Implement once OOR RPC definitions exist.
 func (m *MarkInputsSpentRequest) ToProto() proto.Message {
-	return nil
+	payload, err := encodeOutpoints(m.Outpoints)
+	if err != nil {
+		return protoErrorEnvelope("MarkInputsSpentRequest", err)
+	}
+
+	return protoEnvelope("MarkInputsSpentRequest", payload)
 }
 
 // IncomingTransferNotification is emitted when an incoming transfer has been
@@ -219,8 +249,67 @@ func (m *SendIncomingAckRequest) outboxType() string {
 func (m *SendIncomingAckRequest) outboxSealed() {}
 
 // ToProto converts SendIncomingAckRequest to a protobuf message.
-//
-// TODO: Implement once OOR RPC definitions exist.
 func (m *SendIncomingAckRequest) ToProto() proto.Message {
-	return nil
+	payload, err := encodeSessionPayload(m.SessionID)
+	if err != nil {
+		return protoErrorEnvelope("SendIncomingAckRequest", err)
+	}
+
+	return protoEnvelope("SendIncomingAckRequest", payload)
+}
+
+func protoEnvelope(typeName string, payload []byte) proto.Message {
+	return &anypb.Any{
+		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName,
+		Value:   payload,
+	}
+}
+
+func protoErrorEnvelope(typeName string, err error) proto.Message {
+	return &anypb.Any{
+		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName + ".error",
+		Value:   []byte(err.Error()),
+	}
+}
+
+func encodeFinalizePayload(ark *psbt.Packet,
+	checkpoints []*psbt.Packet) ([]byte, error) {
+
+	arkRaw, err := psbtutil.Serialize(ark)
+	if err != nil {
+		return nil, err
+	}
+
+	checkpointRaws, err := serializePSBTSlice(checkpoints)
+	if err != nil {
+		return nil, err
+	}
+
+	checkpointPayload, err := encodeLengthPrefixedBlobList(checkpointRaws)
+	if err != nil {
+		return nil, err
+	}
+
+	checkpointPayloadRecord := tlv.MakePrimitiveRecord(
+		finalizePayloadCheckpointsRecordType, &checkpointPayload,
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			finalizePayloadArkPSBTRecordType, &arkRaw,
+		),
+		checkpointPayloadRecord,
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
