@@ -89,6 +89,15 @@ func (a *OORClientActor) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
+	// StartTransferRequest is treated as idempotent: if the same
+	// deterministic transfer is submitted twice (e.g. due to retries or
+	// durable replay), we keep the existing session and return its ID.
+	if _, exists := a.sessions[session.ID]; exists {
+		return fn.Ok[ActorResp](&StartTransferResponse{
+			SessionID: session.ID,
+		})
+	}
+
 	handle := &sessionHandle{FSM: session.FSM}
 	a.sessions[session.ID] = handle
 
