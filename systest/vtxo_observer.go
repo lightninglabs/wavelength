@@ -4,6 +4,7 @@ package systest
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -150,10 +151,14 @@ func (f *VTXOManagerFanout) ID() string {
 }
 
 // Tell forwards the message to both the manager and observer.
-func (f *VTXOManagerFanout) Tell(ctx context.Context, msg actor.Message) {
+func (f *VTXOManagerFanout) Tell(ctx context.Context,
+	msg actor.Message) error {
+
 	// Forward to real manager first (spawns VTXO actors).
-	f.manager.Tell(ctx, msg)
+	managerErr := f.manager.Tell(ctx, msg)
 
 	// Then forward to observer (for test notifications).
-	f.observer.Tell(ctx, msg)
+	observerErr := f.observer.Tell(ctx, msg)
+
+	return errors.Join(managerErr, observerErr)
 }
