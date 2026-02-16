@@ -2,6 +2,7 @@ package rounds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -446,6 +447,28 @@ func (a *Actor) askEventAndProcessOutbox(ctx context.Context, fsm *StateMachine,
 // processOutbox processes messages emitted by the FSM via Outbox and routes
 // them to the appropriate destination.
 func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
+	var outboxErrs []error
+
+	appendOutboxErr := func(action string, msg OutboxEvent, err error) {
+		if err != nil {
+			wrapped := fmt.Errorf("%s: %w", action, err)
+			logFields := []any{
+				"outbox_event_type", fmt.Sprintf("%T", msg),
+				"action", action,
+			}
+			roundID := outboxRoundID(msg)
+			if roundID != "" {
+				logFields = append(
+					logFields, "round_id", roundID,
+				)
+			}
+			a.log.WarnS(
+				ctx, "Outbox dispatch failed", wrapped, logFields...,
+			)
+			outboxErrs = append(outboxErrs, wrapped)
+		}
+	}
+
 	for _, msg := range outbox {
 		switch m := msg.(type) {
 		// Check if this message should be sent to client(s). All
@@ -461,7 +484,10 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			sendReq := &clientconn.SendServerEventRequest{
 				Message: m,
 			}
-			a.cfg.ClientsConn.Tell(ctx, sendReq)
+			err := a.cfg.ClientsConn.Tell(ctx, sendReq)
+			if err != nil {
+				appendOutboxErr("send client event", msg, err)
+			}
 
 		case *StartTimeoutReq:
 			// Create composite timeout ID that includes the phase.
@@ -489,7 +515,10 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				Duration: m.Duration,
 				Callback: callbackRef,
 			}
-			a.cfg.TimeoutActor.Tell(ctx, req)
+			err := a.cfg.TimeoutActor.Tell(ctx, req)
+			if err != nil {
+				appendOutboxErr("schedule timeout", msg, err)
+			}
 
 		case *CancelTimeoutReq:
 			// Cancel timeout using composite ID constructed from
@@ -498,7 +527,10 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			cancelReq := &timeout.CancelTimeoutRequest{
 				ID: compositeID,
 			}
-			a.cfg.TimeoutActor.Tell(ctx, cancelReq)
+			err := a.cfg.TimeoutActor.Tell(ctx, cancelReq)
+			if err != nil {
+				appendOutboxErr("cancel timeout", msg, err)
+			}
 
 		case *RoundSealedReq:
 			// Round has been sealed - create a new round for new
@@ -568,7 +600,45 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 		}
 	}
 
+	if len(outboxErrs) > 0 {
+		// TODO(#91): Use durable outbox retries by message type
+		// (critical vs best-effort). Joined enqueue errors are only a
+		// short-term surface.
+		return errors.Join(outboxErrs...)
+	}
+
 	return nil
+}
+
+// outboxRoundID extracts the round identifier from an outbox event for
+// structured logging. Returns empty string if the event has no round context.
+func outboxRoundID(msg OutboxEvent) string {
+	switch m := msg.(type) {
+	case *ClientSuccessResp:
+		return m.RoundID.String()
+	case *ClientAwaitingInputSigsResp:
+		return m.RoundID.String()
+	case *ClientVTXOAggNonces:
+		return m.RoundID.String()
+	case *ClientVTXOAggSigs:
+		return m.RoundID.String()
+	case *ClientBatchInfo:
+		return m.RoundID.String()
+	case *ClientRoundFailedResp:
+		return m.RoundID.String()
+	case *RoundSealedReq:
+		return m.SealedRoundID.String()
+	case *StartTimeoutReq:
+		return m.RoundID.String()
+	case *CancelTimeoutReq:
+		return m.RoundID.String()
+	case *RoundFailedReq:
+		return m.FailedRoundID.String()
+	case *BroadcastRoundReq:
+		return m.RoundID.String()
+	default:
+		return ""
+	}
 }
 
 // newRoundFSM creates and starts a new round FSM instance with a unique round
@@ -814,7 +884,10 @@ func (a *Actor) broadcastAndSubscribe(ctx context.Context,
 	// needs to outlive the current request. The request context `ctx` would
 	// be cancelled when this function returns, which would cancel the
 	// ChainSourceActor's internal goroutines for monitoring confirmations.
-	a.cfg.ChainSourceActor.Tell(context.Background(), confReq)
+	err := a.cfg.ChainSourceActor.Tell(context.Background(), confReq)
+	if err != nil {
+		return fmt.Errorf("subscribe confirmation: %w", err)
+	}
 
 	a.log.DebugS(ctx, "Subscribed to transaction confirmation",
 		"round_id", req.RoundID,
@@ -861,7 +934,18 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 
 			// Send registration request using fire-and-forget since
 			// we don't need to wait for acknowledgment.
-			ref.Tell(ctx, req)
+			if err := ref.Tell(ctx, req); err != nil {
+				a.log.WarnS(ctx, "Failed to register batch with watcher",
+					err,
+					"round_id", roundID,
+					"batch_id", batchID,
+					"output_idx", outputIdx,
+					slog.Uint64("expiry_height",
+						uint64(expiryHeight)),
+				)
+
+				continue
+			}
 
 			a.log.InfoS(ctx, "Registered batch with watcher",
 				"round_id", roundID,

@@ -49,12 +49,14 @@ func (m *mockClientConnRef) ID() string {
 
 // Tell captures a message sent to clients.
 func (m *mockClientConnRef) Tell(_ context.Context,
-	msg clientconn.ClientConnMsg) {
+	msg clientconn.ClientConnMsg) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.messages = append(m.messages, msg)
+
+	return nil
 }
 
 // getMessages returns a copy of all captured messages.
@@ -112,8 +114,10 @@ func (r *actorRef) ID() string {
 }
 
 // Tell sends a message to the wrapped actor by calling Receive.
-func (r *actorRef) Tell(ctx context.Context, msg ActorMsg) {
+func (r *actorRef) Tell(ctx context.Context, msg ActorMsg) error {
 	_ = r.actor.Receive(ctx, msg)
+
+	return nil
 }
 
 // baseActorRefMarker implements the BaseActorRef sealed interface marker.
@@ -152,7 +156,7 @@ func (m *mockTimeoutActor) ID() string {
 }
 
 // Tell implements actor.TellOnlyRef[timeout.Msg].
-func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) {
+func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -166,6 +170,8 @@ func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) {
 		delete(m.callbacks, req.ID)
 		m.cancelledIDs = append(m.cancelledIDs, req.ID)
 	}
+
+	return nil
 }
 
 // FireTimeout simulates a timeout expiring for the given round ID and phase by
@@ -189,7 +195,7 @@ func (m *mockTimeoutActor) FireTimeout(ctx context.Context, roundID RoundID,
 		m.t.Fatalf("no callback registered for timeout ID %s", id)
 	}
 
-	callback.Tell(ctx, &timeout.ExpiredMsg{
+	_ = callback.Tell(ctx, &timeout.ExpiredMsg{
 		ID: id,
 	})
 }
@@ -846,7 +852,7 @@ func (m *mockChainSourceActor) Ask(_ context.Context,
 
 // Tell handles confirmation subscription requests.
 func (m *mockChainSourceActor) Tell(_ context.Context,
-	msg chainsource.ChainSourceMsg) {
+	msg chainsource.ChainSourceMsg) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -855,6 +861,8 @@ func (m *mockChainSourceActor) Tell(_ context.Context,
 	if ok {
 		m.confReqs = append(m.confReqs, req)
 	}
+
+	return nil
 }
 
 // getBroadcastReqs returns a copy of all broadcast requests.
