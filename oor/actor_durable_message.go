@@ -1,0 +1,819 @@
+package oor
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightningnetwork/lnd/tlv"
+)
+
+const (
+	oorDurableCommandTLVType tlv.Type = 42001
+
+	oorDurableCommandRecordType tlv.Type = 1
+	oorDurablePayloadRecordType tlv.Type = 3
+)
+
+const (
+	oorCommandStartTransfer uint64 = 1
+	oorCommandGetState      uint64 = 2
+	oorCommandResumeSession uint64 = 3
+	oorCommandExportSession uint64 = 4
+	oorCommandRestore       uint64 = 5
+)
+
+const (
+	startPayloadOperatorKeyRecordType tlv.Type = 1
+	startPayloadCSVDelayRecordType    tlv.Type = 3
+	startPayloadInputsRecordType      tlv.Type = 5
+	startPayloadRecipientsRecordType  tlv.Type = 7
+)
+
+const (
+	sessionPayloadSessionIDRecordType tlv.Type = 1
+)
+
+const (
+	transferInputOutpointRecordType      tlv.Type = 1
+	transferInputAmountSatRecordType     tlv.Type = 3
+	transferInputClientFamilyRecordType  tlv.Type = 5
+	transferInputClientIndexRecordType   tlv.Type = 7
+	transferInputClientPubKeyRecordType  tlv.Type = 9
+	transferInputOperatorPubKeyRecordType tlv.Type = 11
+	transferInputExitDelayRecordType     tlv.Type = 13
+	transferInputOwnerLeafScriptRecordType tlv.Type = 15
+)
+
+const (
+	recipientPkScriptRecordType tlv.Type = 1
+	recipientValueSatRecordType tlv.Type = 3
+)
+
+type durableActorCommandMessage struct {
+	actor.BaseMessage
+
+	Command uint64
+	Payload []byte
+}
+
+func (m *durableActorCommandMessage) MessageType() string {
+	return "oor.DurableCommand"
+}
+
+func (m *durableActorCommandMessage) TLVType() tlv.Type {
+	return oorDurableCommandTLVType
+}
+
+func (m *durableActorCommandMessage) Encode(w io.Writer) error {
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			oorDurableCommandRecordType, &m.Command,
+		),
+		tlv.MakePrimitiveRecord(
+			oorDurablePayloadRecordType, &m.Payload,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+func (m *durableActorCommandMessage) Decode(r io.Reader) error {
+	var (
+		command uint64
+		payload []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(oorDurableCommandRecordType, &command),
+		tlv.MakePrimitiveRecord(oorDurablePayloadRecordType, &payload),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return err
+	}
+
+	m.Command = command
+	m.Payload = payload
+
+	return nil
+}
+
+type startTransferPayload struct {
+	OperatorPubKey []byte
+	CSVDelay       uint32
+	Inputs         []*TransferInputSnapshot
+	Recipients     []recipientPayload
+}
+
+type recipientPayload struct {
+	PkScript []byte
+	ValueSat int64
+}
+
+type sessionPayload struct {
+	SessionID []byte `json:"session_id"`
+}
+
+type snapshotPayload struct {
+	Snapshot *OutgoingSnapshot `json:"snapshot"`
+}
+
+func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
+	error) {
+
+	if msg == nil {
+		return nil, fmt.Errorf("message must be provided")
+	}
+
+	switch req := msg.(type) {
+	case *StartTransferRequest:
+		payload := startTransferPayload{
+			CSVDelay: req.Policy.CSVDelay,
+			Recipients: make(
+				[]recipientPayload, 0, len(req.Recipients),
+			),
+			Inputs: make(
+				[]*TransferInputSnapshot, 0, len(req.Inputs),
+			),
+		}
+
+		if req.Policy.OperatorKey == nil {
+			return nil, fmt.Errorf("operator key must be provided")
+		}
+
+		payload.OperatorPubKey = req.Policy.OperatorKey.
+			SerializeCompressed()
+
+		for i := range req.Inputs {
+			snap, err := req.Inputs[i].ToSnapshot()
+			if err != nil {
+				return nil, err
+			}
+
+			payload.Inputs = append(payload.Inputs, snap)
+		}
+
+		for i := range req.Recipients {
+			payload.Recipients = append(
+				payload.Recipients, recipientPayload{
+					PkScript: req.Recipients[i].PkScript,
+					ValueSat: int64(
+						req.Recipients[i].Value,
+					),
+				},
+			)
+		}
+
+		raw, err := encodeStartTransferPayload(payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandStartTransfer,
+			Payload: raw,
+		}, nil
+
+	case *GetStateRequest:
+		raw, err := encodeSessionPayload(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandGetState,
+			Payload: raw,
+		}, nil
+
+	case *ResumeSessionRequest:
+		raw, err := encodeSessionPayload(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandResumeSession,
+			Payload: raw,
+		}, nil
+
+	case *ExportSnapshotRequest:
+		raw, err := encodeSessionPayload(req.SessionID)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandExportSession,
+			Payload: raw,
+		}, nil
+
+	case *RestoreSessionRequest:
+		payload := snapshotPayload{Snapshot: req.Snapshot}
+
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandRestore,
+			Payload: raw,
+		}, nil
+
+	case *DriveEventRequest:
+		return nil, fmt.Errorf(
+			"drive event is not supported by durable actor",
+		)
+
+	default:
+		return nil, fmt.Errorf("unknown actor message type: %T", req)
+	}
+}
+
+func actorMsgFromDurableCommand(cmd *durableActorCommandMessage) (ActorMsg,
+	error) {
+
+	if cmd == nil {
+		return nil, fmt.Errorf("command must be provided")
+	}
+
+	switch cmd.Command {
+	case oorCommandStartTransfer:
+		payload, err := decodeStartTransferPayload(cmd.Payload)
+		if err != nil {
+			return nil, err
+		}
+
+		operatorKey, err := btcec.ParsePubKey(payload.OperatorPubKey)
+		if err != nil {
+			return nil, err
+		}
+
+		inputs := make([]TransferInput, 0, len(payload.Inputs))
+		for i := range payload.Inputs {
+			in, err := TransferInputFromSnapshot(payload.Inputs[i])
+			if err != nil {
+				return nil, err
+			}
+
+			inputs = append(inputs, in)
+		}
+
+		recipients := make([]oortx.RecipientOutput, 0,
+			len(payload.Recipients))
+		for i := range payload.Recipients {
+			recipient := payload.Recipients[i]
+			recipients = append(recipients, oortx.RecipientOutput{
+				PkScript: recipient.PkScript,
+				Value:    btcutil.Amount(recipient.ValueSat),
+			})
+		}
+
+		return &StartTransferRequest{
+			Policy: scripts.CheckpointPolicy{
+				OperatorKey: operatorKey,
+				CSVDelay:    payload.CSVDelay,
+			},
+			Inputs:     inputs,
+			Recipients: recipients,
+		}, nil
+
+	case oorCommandGetState:
+		sessionID, err := decodeSessionPayload(cmd.Payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &GetStateRequest{SessionID: sessionID}, nil
+
+	case oorCommandResumeSession:
+		sessionID, err := decodeSessionPayload(cmd.Payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &ResumeSessionRequest{SessionID: sessionID}, nil
+
+	case oorCommandExportSession:
+		sessionID, err := decodeSessionPayload(cmd.Payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &ExportSnapshotRequest{SessionID: sessionID}, nil
+
+	case oorCommandRestore:
+		var payload snapshotPayload
+		err := json.Unmarshal(cmd.Payload, &payload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &RestoreSessionRequest{Snapshot: payload.Snapshot}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown command kind: %d", cmd.Command)
+	}
+}
+
+func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
+	inputs, err := encodeTransferInputSnapshots(payload.Inputs)
+	if err != nil {
+		return nil, err
+	}
+
+	recipients, err := encodeRecipientPayloads(payload.Recipients)
+	if err != nil {
+		return nil, err
+	}
+
+	operatorKey := payload.OperatorPubKey
+	csvDelay := payload.CSVDelay
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			startPayloadOperatorKeyRecordType, &operatorKey,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadCSVDelayRecordType, &csvDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadInputsRecordType, &inputs,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadRecipientsRecordType, &recipients,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeStartTransferPayload(raw []byte) (startTransferPayload, error) {
+	var (
+		operatorKey []byte
+		csvDelay    uint32
+		inputsRaw   []byte
+		recipients  []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			startPayloadOperatorKeyRecordType, &operatorKey,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadCSVDelayRecordType, &csvDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadInputsRecordType, &inputsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			startPayloadRecipientsRecordType, &recipients,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return startTransferPayload{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return startTransferPayload{}, err
+	}
+
+	inputs, err := decodeTransferInputSnapshots(inputsRaw)
+	if err != nil {
+		return startTransferPayload{}, err
+	}
+
+	recipientsPayload, err := decodeRecipientPayloads(recipients)
+	if err != nil {
+		return startTransferPayload{}, err
+	}
+
+	return startTransferPayload{
+		OperatorPubKey: operatorKey,
+		CSVDelay:       csvDelay,
+		Inputs:         inputs,
+		Recipients:     recipientsPayload,
+	}, nil
+}
+
+func encodeRecipientPayloads(payloads []recipientPayload) ([]byte, error) {
+	blobs := make([][]byte, 0, len(payloads))
+	for i := range payloads {
+		raw, err := encodeRecipientPayload(payloads[i])
+		if err != nil {
+			return nil, err
+		}
+
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeRecipientPayloads(raw []byte) ([]recipientPayload, error) {
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	payloads := make([]recipientPayload, 0, len(blobs))
+	for i := range blobs {
+		payload, err := decodeRecipientPayload(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		payloads = append(payloads, payload)
+	}
+
+	return payloads, nil
+}
+
+func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
+	pkScript := payload.PkScript
+	if payload.ValueSat < 0 {
+		return nil, fmt.Errorf("recipient value must be non-negative")
+	}
+	valueSat := uint64(payload.ValueSat)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(recipientPkScriptRecordType, &pkScript),
+		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
+	var (
+		pkScript []byte
+		valueSat uint64
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(recipientPkScriptRecordType, &pkScript),
+		tlv.MakePrimitiveRecord(recipientValueSatRecordType, &valueSat),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return recipientPayload{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return recipientPayload{}, err
+	}
+
+	return recipientPayload{
+		PkScript: pkScript,
+		ValueSat: int64(valueSat),
+	}, nil
+}
+
+func encodeTransferInputSnapshots(inputs []*TransferInputSnapshot) ([]byte,
+	error) {
+
+	blobs := make([][]byte, 0, len(inputs))
+	for i := range inputs {
+		raw, err := encodeTransferInputSnapshot(inputs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeTransferInputSnapshots(raw []byte) ([]*TransferInputSnapshot,
+	error) {
+
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	inputs := make([]*TransferInputSnapshot, 0, len(blobs))
+	for i := range blobs {
+		input, err := decodeTransferInputSnapshot(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		inputs = append(inputs, input)
+	}
+
+	return inputs, nil
+}
+
+func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
+	if input == nil {
+		return nil, fmt.Errorf(
+			"transfer input snapshot must be provided",
+		)
+	}
+
+	outpoint := outPointBytes(input.Outpoint)
+	amountSat := uint64(input.AmountSat)
+	clientFamily := uint32(input.ClientKeyFamily)
+	clientIndex := input.ClientKeyIndex
+	clientPubKey := input.ClientPubKey
+	operatorPubKey := input.OperatorPubKey
+	exitDelay := input.ExitDelay
+	ownerLeafScript := input.OwnerLeafScript
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			transferInputOutpointRecordType, &outpoint,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputAmountSatRecordType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientFamilyRecordType, &clientFamily,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientIndexRecordType, &clientIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientPubKeyRecordType, &clientPubKey,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputOperatorPubKeyRecordType, &operatorPubKey,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputExitDelayRecordType, &exitDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputOwnerLeafScriptRecordType,
+			&ownerLeafScript,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
+	var (
+		outpointRaw     []byte
+		amountSat       uint64
+		clientFamily    uint32
+		clientIndex     uint32
+		clientPubKey    []byte
+		operatorPubKey  []byte
+		exitDelay       uint32
+		ownerLeafScript []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			transferInputOutpointRecordType, &outpointRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputAmountSatRecordType, &amountSat,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientFamilyRecordType, &clientFamily,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientIndexRecordType, &clientIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputClientPubKeyRecordType, &clientPubKey,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputOperatorPubKeyRecordType, &operatorPubKey,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputExitDelayRecordType, &exitDelay,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputOwnerLeafScriptRecordType,
+			&ownerLeafScript,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return nil, err
+	}
+
+	outpoint, err := parseOutPointBytes(outpointRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TransferInputSnapshot{
+		Outpoint:        outpoint,
+		AmountSat:       int64(amountSat),
+		ClientKeyFamily: int32(clientFamily),
+		ClientKeyIndex:  clientIndex,
+		ClientPubKey:    clientPubKey,
+		OperatorPubKey:  operatorPubKey,
+		ExitDelay:       exitDelay,
+		OwnerLeafScript: ownerLeafScript,
+	}, nil
+}
+
+func encodeSessionPayload(sessionID SessionID) ([]byte, error) {
+	sessionBytes := sessionIDBytes(sessionID)
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			sessionPayloadSessionIDRecordType, &sessionBytes,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeSessionPayload(raw []byte) (SessionID, error) {
+	var sessionBytes []byte
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			sessionPayloadSessionIDRecordType, &sessionBytes,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return SessionID{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return SessionID{}, err
+	}
+
+	return parseSessionID(sessionBytes)
+}
+
+func outPointBytes(out wire.OutPoint) []byte {
+	raw := make([]byte, chainhash.HashSize+4)
+	copy(raw[:chainhash.HashSize], out.Hash[:])
+	binary.LittleEndian.PutUint32(raw[chainhash.HashSize:], out.Index)
+
+	return raw
+}
+
+func parseOutPointBytes(raw []byte) (wire.OutPoint, error) {
+	if len(raw) != chainhash.HashSize+4 {
+		return wire.OutPoint{}, fmt.Errorf("invalid outpoint length")
+	}
+
+	var out wire.OutPoint
+	copy(out.Hash[:], raw[:chainhash.HashSize])
+	out.Index = binary.LittleEndian.Uint32(raw[chainhash.HashSize:])
+
+	return out, nil
+}
+
+func encodeLengthPrefixedBlobList(blobs [][]byte) ([]byte, error) {
+	var (
+		buf     bytes.Buffer
+		scratch [8]byte
+	)
+
+	if err := tlv.WriteVarInt(
+		&buf, uint64(len(blobs)), &scratch,
+	); err != nil {
+		return nil, err
+	}
+
+	for i := range blobs {
+		element := blobs[i]
+
+		if err := tlv.WriteVarInt(
+			&buf, uint64(len(element)), &scratch,
+		); err != nil {
+			return nil, err
+		}
+
+		if _, err := buf.Write(element); err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
+	var scratch [8]byte
+
+	reader := bytes.NewReader(raw)
+	count, err := tlv.ReadVarInt(reader, &scratch)
+	if err != nil {
+		return nil, err
+	}
+
+	blobs := make([][]byte, 0, count)
+	for i := uint64(0); i < count; i++ {
+		elementLen, err := tlv.ReadVarInt(reader, &scratch)
+		if err != nil {
+			return nil, err
+		}
+
+		element := make([]byte, elementLen)
+		if _, err := io.ReadFull(reader, element); err != nil {
+			return nil, err
+		}
+
+		blobs = append(blobs, element)
+	}
+
+	if reader.Len() != 0 {
+		return nil, fmt.Errorf("trailing payload bytes")
+	}
+
+	return blobs, nil
+}
+
+func sessionIDBytes(sessionID SessionID) []byte {
+	h := [32]byte(sessionID)
+	raw := make([]byte, len(h))
+	copy(raw, h[:])
+
+	return raw
+}
+
+func parseSessionID(raw []byte) (SessionID, error) {
+	if len(raw) != chainhash.HashSize {
+		return SessionID{}, fmt.Errorf("invalid session id length")
+	}
+
+	var hash chainhash.Hash
+	copy(hash[:], raw)
+
+	return SessionID(hash), nil
+}
+
+var _ actor.TLVMessage = (*durableActorCommandMessage)(nil)
