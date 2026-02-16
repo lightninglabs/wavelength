@@ -8,6 +8,28 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// Incoming transfer receive flow (human-readable):
+//
+// IncomingTransferEvent (delivered by transport; server believes we are a
+// recipient)
+//   |
+//   v
+// ReceiveIdle
+//   - structural checks (SessionID/txid consistency)
+//   - canonical Ark PSBT validation (stable recipient extraction)
+//   - extract recipients (for UI summary and wallet materialization)
+//   emits outbox (in order):
+//   1) IncomingTransferNotification: app/UI summary of the transfer
+//   2) MaterializeIncomingVTXOsRequest: wallet/state update (filter + persist)
+//   3) SendIncomingAckRequest: best-effort ack to server
+//   |
+//   v
+// ReceiveNotified
+//   - waits for IncomingHandledEvent (app confirms it processed the transfer)
+//   |
+//   v
+// ReceiveCompleted
+
 // unexpectedReceiveEvent returns a transition that keeps the current state and
 // emits no outbox work for an unexpected event.
 func unexpectedReceiveEvent(state ReceiveState, event Event) *StateTransition {
@@ -56,6 +78,11 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 
 		// Extract recipients and surface the notification to the
 		// application layer.
+		//
+		// Note: the FSM intentionally does not decide which of these
+		// outputs belong to the local wallet. That check depends on
+		// local wallet keys and policy, so it lives behind the outbox
+		// boundary in the materialization step.
 		recipients, err := ExtractArkRecipients(evt.ArkPSBT)
 		if err != nil {
 			return nil, err
