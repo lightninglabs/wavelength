@@ -134,7 +134,11 @@ func (m *MarkInputsSpentRequest) ToProto() proto.Message {
 }
 
 // IncomingTransferNotification is emitted when an incoming transfer has been
-// validated structurally and should be surfaced to the application layer.
+// validated structurally and should be surfaced to the application/UI layer.
+//
+// This message is meant for "show/notify" semantics (eg. display a summary,
+// badge a notification, or queue a UX flow). It is not expected to persist
+// wallet state.
 type IncomingTransferNotification struct {
 	actor.BaseMessage
 
@@ -156,8 +160,11 @@ func (m *IncomingTransferNotification) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *IncomingTransferNotification) outboxSealed() {}
 
-// MaterializeIncomingVTXOsRequest asks the application/wallet layer to
-// materialize the incoming transfer into local VTXO records.
+// MaterializeIncomingVTXOsRequest asks the wallet/state layer to materialize
+// the incoming transfer into local VTXO records.
+//
+// This message is meant for "persist/track" semantics: decide which recipient
+// outputs belong to the local wallet and persist the corresponding VTXO state.
 //
 // This is the interface boundary where we eventually construct full VTXO
 // descriptors and hand them to the vtxo.Manager for lifecycle tracking.
