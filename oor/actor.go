@@ -116,10 +116,17 @@ func (a *Actor) handleSubmit(ctx context.Context,
 	// Run structural submit validation before we touch lock state.
 	// Stateful/ownership checks remain at the outbox boundary.
 	//
-	// We still enforce static checkpoint policy values (operator key + CSV)
-	// here so malformed checkpoints fail before any session side effects.
-	validated, err := oorlib.ValidateSubmitPackageWithPolicy(
-		req.ArkPSBT, req.CheckpointPSBTs, a.cfg.CheckpointPolicy,
+	validated, err := oorlib.ValidateSubmitPackage(
+		req.ArkPSBT, req.CheckpointPSBTs,
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	// Enforce static checkpoint policy values (operator key + CSV delay) so
+	// malformed checkpoints fail before any session side effects.
+	err = validateSubmitCheckpointPolicy(
+		req.ArkPSBT, a.cfg.CheckpointPolicy,
 	)
 	if err != nil {
 		return fn.Err[ActorResp](err)
