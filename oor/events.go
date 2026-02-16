@@ -98,6 +98,12 @@ func (e *FailEvent) eventSealed() {}
 // polling, or push-notification wakeup) once the server has accepted and
 // finalized the transfer.
 //
+// NOTE: This event is expected to be delivered only for transfers where the
+// server believes the client is a recipient. The client-side receive FSM still
+// performs structural/canonical validation, and the application/wallet layer is
+// responsible for filtering/materializing only the outputs that belong to the
+// local wallet.
+//
 // The incoming transfer FSM is intentionally separate from the outgoing FSM so
 // applications can handle notifications and acknowledgements independently of
 // initiating transfers.
