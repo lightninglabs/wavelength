@@ -150,6 +150,28 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Fatal("condition not met within timeout")
 }
 
+// eventuallyWithOutboxPublish retries a condition until it succeeds or times
+// out, forcing an outbox publish attempt on each iteration.
+//
+// This avoids test flakiness from relying solely on the publisher's ticker when
+// CI is under heavy scheduler pressure (for example, under the race detector).
+func eventuallyWithOutboxPublish(
+	t *testing.T, publisher *actor.OutboxPublisher,
+	timeout time.Duration, condition func() bool,
+) {
+
+	t.Helper()
+
+	eventually(t, timeout, func() bool {
+		publisher.PublishPending()
+		return condition()
+	})
+}
+
+// durableAskResponseTimeout is a shared timeout budget for DurableAsk response
+// delivery assertions in this test suite.
+const durableAskResponseTimeout = 10 * time.Second
+
 // durableCounterRef is a shorthand alias for the generic durable ref used in
 // these end-to-end tests.
 type durableCounterRef = actor.DurableActorRef[CounterMessage, CounterResult]
@@ -1324,11 +1346,14 @@ func TestDurableAskResponseViaOutbox(t *testing.T) {
 	// The sender behavior receives all messages, so we check for
 	// AskResponse.
 	var receivedResponse *actor.AskResponse
-	eventually(t, 3*time.Second, func() bool {
-		// Check if sender received an AskResponse.
-		receivedResponse = senderBehavior.LastAskResponse()
-		return receivedResponse != nil
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, durableAskResponseTimeout,
+		func() bool {
+			// Check if sender received an AskResponse.
+			receivedResponse = senderBehavior.LastAskResponse()
+			return receivedResponse != nil
+		},
+	)
 
 	require.NotNil(t, receivedResponse)
 	require.Equal(t, correlationID, receivedResponse.CorrelationID)
@@ -1383,10 +1408,13 @@ func TestDurableAskErrorResponse(t *testing.T) {
 
 	// Wait for the error response.
 	var receivedResponse *actor.AskResponse
-	eventually(t, 3*time.Second, func() bool {
-		receivedResponse = senderBehavior.LastAskResponse()
-		return receivedResponse != nil
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, durableAskResponseTimeout,
+		func() bool {
+			receivedResponse = senderBehavior.LastAskResponse()
+			return receivedResponse != nil
+		},
+	)
 
 	require.NotNil(t, receivedResponse)
 	require.Equal(t, correlationID, receivedResponse.CorrelationID)
@@ -1443,9 +1471,12 @@ func TestDurableAskConcurrentRequests(t *testing.T) {
 	}
 
 	// Wait for all responses.
-	eventually(t, 5*time.Second, func() bool {
-		return senderBehavior.AskResponseCount() >= numRequests
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, durableAskResponseTimeout,
+		func() bool {
+			return senderBehavior.AskResponseCount() >= numRequests
+		},
+	)
 
 	// Verify all correlation IDs received.
 	receivedIDs := senderBehavior.ReceivedCorrelationIDs()
@@ -1522,9 +1553,12 @@ func TestDurableAskWithSpecialCorrelationIDs(t *testing.T) {
 	}
 
 	// Wait for all responses.
-	eventually(t, 5*time.Second, func() bool {
-		return senderBehavior.AskResponseCount() >= len(testIDs)
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, durableAskResponseTimeout,
+		func() bool {
+			return senderBehavior.AskResponseCount() >= len(testIDs)
+		},
+	)
 
 	// INVARIANT: All correlation IDs preserved.
 	receivedIDs := senderBehavior.ReceivedCorrelationIDs()
@@ -1604,9 +1638,15 @@ func TestDurableAskErrorMessagePreserved(t *testing.T) {
 			require.NoError(t, err)
 
 			// Wait for error response.
-			eventually(t, 3*time.Second, func() bool {
-				return senderBehavior.AskResponseCount() >= 1
-			})
+			eventuallyWithOutboxPublish(
+				t, publisher, durableAskResponseTimeout,
+				func() bool {
+					count := senderBehavior.
+						AskResponseCount()
+
+					return count >= 1
+				},
+			)
 
 			response := senderBehavior.LastAskResponse()
 			require.NotNil(t, response)
