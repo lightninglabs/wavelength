@@ -51,6 +51,14 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 			},
 		}, nil
 
+	case *RetryBackoff:
+		return []OutboxEvent{
+			&ScheduleRetryRequest{
+				After:  s.RetryAfter,
+				Reason: s.Reason,
+			},
+		}, nil
+
 	case *Completed, *Failed:
 		return nil, nil
 
