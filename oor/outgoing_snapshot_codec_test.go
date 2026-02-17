@@ -134,7 +134,6 @@ func TestDecodeOutgoingCheckpointRejectsVersionOverflow(t *testing.T) {
 }
 
 func encodeSnapshotRawForDecodeTest(version uint64) ([]byte, error) {
-
 	sessionBytes := sessionIDBytes(SessionID(chainhash.Hash{1}))
 	phaseBytes := []byte(OutgoingPhaseCompleted)
 	arkPSBT := []byte(nil)

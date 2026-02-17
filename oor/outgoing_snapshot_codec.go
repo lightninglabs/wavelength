@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -316,14 +315,4 @@ func decodeUint64ToInt(value uint64, field string) (int, error) {
 	}
 
 	return int(value), nil
-}
-
-func decodeUint64ToDuration(value uint64, field string) (time.Duration, error) {
-	if value > math.MaxInt64 {
-		return 0, fmt.Errorf(
-			"%s overflows time.Duration: %d", field, value,
-		)
-	}
-
-	return time.Duration(int64(value)), nil
 }

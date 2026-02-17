@@ -236,8 +236,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 	switch snapshot.Phase {
 	case OutgoingPhaseSubmitSent:
-		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
-			snapshot.CheckpointPSBTs)
+		ark, cps, err := parseOutgoingPSBTs(
+			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -259,8 +260,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}, nil
 
 	case OutgoingPhaseCoSigned:
-		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
-			snapshot.CheckpointPSBTs)
+		ark, cps, err := parseOutgoingPSBTs(
+			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -283,8 +285,9 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}, nil
 
 	case OutgoingPhaseFinalizeSent:
-		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
-			snapshot.CheckpointPSBTs)
+		ark, cps, err := parseOutgoingPSBTs(
+			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
+		)
 		if err != nil {
 			return nil, err
 		}
