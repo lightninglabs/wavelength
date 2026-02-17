@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -30,6 +31,7 @@ const (
 	oorCommandResumeSession uint64 = 3
 	oorCommandExportSession uint64 = 4
 	oorCommandRestore       uint64 = 5
+	oorCommandDriveEvent    uint64 = 6
 )
 
 const (
@@ -45,6 +47,27 @@ const (
 
 const (
 	restorePayloadSnapshotRecordType tlv.Type = 1
+)
+
+const (
+	driveEventPayloadSessionIDRecordType tlv.Type = 1
+	driveEventPayloadEventRecordType     tlv.Type = 3
+)
+
+const (
+	eventPayloadKindRecordType            tlv.Type = 1
+	eventPayloadSubmitSessionIDRecordType tlv.Type = 3
+	eventPayloadArkPSBTRecordType         tlv.Type = 5
+	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
+	eventPayloadReasonRecordType          tlv.Type = 9
+)
+
+const (
+	eventKindSubmitAccepted    uint64 = 1
+	eventKindCheckpointsSigned uint64 = 2
+	eventKindFinalizeAccepted  uint64 = 3
+	eventKindInputsMarkedSpent uint64 = 4
+	eventKindFail              uint64 = 5
 )
 
 const (
@@ -235,9 +258,17 @@ func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
 		}, nil
 
 	case *DriveEventRequest:
-		return nil, fmt.Errorf(
-			"drive event is not supported by durable actor",
+		raw, err := encodeDriveEventRequestPayload(
+			req.SessionID, req.Event,
 		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &durableActorCommandMessage{
+			Command: oorCommandDriveEvent,
+			Payload: raw,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown actor message type: %T", req)
@@ -324,6 +355,19 @@ func actorMsgFromDurableCommand(cmd *durableActorCommandMessage) (ActorMsg,
 		}
 
 		return &RestoreSessionRequest{Snapshot: snapshot}, nil
+
+	case oorCommandDriveEvent:
+		sessionID, event, err := decodeDriveEventRequestPayload(
+			cmd.Payload,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &DriveEventRequest{
+			SessionID: sessionID,
+			Event:     event,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown command kind: %d", cmd.Command)
@@ -774,6 +818,300 @@ func decodeRestoreSnapshotPayload(raw []byte) (*OutgoingSnapshot, error) {
 	}
 
 	return decodeOutgoingSnapshot(snapshotRaw)
+}
+
+func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
+	error) {
+
+	if event == nil {
+		return nil, fmt.Errorf("event must be provided")
+	}
+
+	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
+		if err := validateSubmitAcceptedIdentity(
+			sessionID, submitAccepted,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	sessionBytes := sessionIDBytes(sessionID)
+	eventPayload, err := encodeEventPayload(event)
+	if err != nil {
+		return nil, err
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			driveEventPayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			driveEventPayloadEventRecordType, &eventPayload,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
+	var (
+		sessionBytes []byte
+		eventPayload []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			driveEventPayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			driveEventPayloadEventRecordType, &eventPayload,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return SessionID{}, nil, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return SessionID{}, nil, err
+	}
+
+	sessionID, err := parseSessionID(sessionBytes)
+	if err != nil {
+		return SessionID{}, nil, err
+	}
+
+	event, err := decodeEventPayload(eventPayload)
+	if err != nil {
+		return SessionID{}, nil, err
+	}
+
+	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
+		if err := validateSubmitAcceptedIdentity(
+			sessionID, submitAccepted,
+		); err != nil {
+			return SessionID{}, nil, err
+		}
+	}
+
+	return sessionID, event, nil
+}
+
+func encodeEventPayload(event Event) ([]byte, error) {
+	var (
+		eventKind      uint64
+		submitSession  []byte
+		arkPSBT        []byte
+		checkpointPSBT []byte
+		reason         []byte
+		err            error
+	)
+
+	switch evt := event.(type) {
+	case *SubmitAcceptedEvent:
+		eventKind = eventKindSubmitAccepted
+		submitSession = sessionIDBytes(evt.SessionID)
+		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := serializePSBTSlice(
+			evt.CoSignedCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+		checkpointPSBT, err = encodeLengthPrefixedBlobList(checkpoints)
+		if err != nil {
+			return nil, err
+		}
+
+	case *CheckpointsSignedEvent:
+		eventKind = eventKindCheckpointsSigned
+		checkpoints, err := serializePSBTSlice(evt.FinalCheckpointPSBTs)
+		if err != nil {
+			return nil, err
+		}
+		checkpointPSBT, err = encodeLengthPrefixedBlobList(checkpoints)
+		if err != nil {
+			return nil, err
+		}
+
+	case *FinalizeAcceptedEvent:
+		eventKind = eventKindFinalizeAccepted
+
+	case *InputsMarkedSpentEvent:
+		eventKind = eventKindInputsMarkedSpent
+
+	case *FailEvent:
+		eventKind = eventKindFail
+		reason = []byte(evt.Reason)
+
+	default:
+		return nil, fmt.Errorf("unsupported event type: %T", event)
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(eventPayloadKindRecordType, &eventKind),
+		tlv.MakePrimitiveRecord(
+			eventPayloadSubmitSessionIDRecordType, &submitSession,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadArkPSBTRecordType, &arkPSBT,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
+		),
+		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeEventPayload(raw []byte) (Event, error) {
+	var (
+		eventKind      uint64
+		submitSession  []byte
+		arkPSBT        []byte
+		checkpointPSBT []byte
+		reason         []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(eventPayloadKindRecordType, &eventKind),
+		tlv.MakePrimitiveRecord(
+			eventPayloadSubmitSessionIDRecordType, &submitSession,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadArkPSBTRecordType, &arkPSBT,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
+		),
+		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return nil, err
+	}
+
+	switch eventKind {
+	case eventKindSubmitAccepted:
+		sessionID, err := parseSessionID(submitSession)
+		if err != nil {
+			return nil, err
+		}
+
+		ark, err := psbtutil.Parse(arkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpointRaw, err := decodeLengthPrefixedBlobList(
+			checkpointPSBT,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := parsePSBTSlice(checkpointRaw)
+		if err != nil {
+			return nil, err
+		}
+
+		return &SubmitAcceptedEvent{
+			SessionID:               sessionID,
+			ArkPSBT:                 ark,
+			CoSignedCheckpointPSBTs: checkpoints,
+		}, nil
+
+	case eventKindCheckpointsSigned:
+		checkpointRaw, err := decodeLengthPrefixedBlobList(
+			checkpointPSBT,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := parsePSBTSlice(checkpointRaw)
+		if err != nil {
+			return nil, err
+		}
+
+		return &CheckpointsSignedEvent{
+			FinalCheckpointPSBTs: checkpoints,
+		}, nil
+
+	case eventKindFinalizeAccepted:
+		return &FinalizeAcceptedEvent{}, nil
+
+	case eventKindInputsMarkedSpent:
+		return &InputsMarkedSpentEvent{}, nil
+
+	case eventKindFail:
+		return &FailEvent{Reason: string(reason)}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
+	}
+}
+
+func validateSubmitAcceptedIdentity(sessionID SessionID,
+	event *SubmitAcceptedEvent) error {
+
+	if event == nil {
+		return fmt.Errorf("submit accepted event must be provided")
+	}
+
+	if event.SessionID != sessionID {
+		return fmt.Errorf("submit accepted event session id mismatch")
+	}
+
+	if event.ArkPSBT == nil || event.ArkPSBT.UnsignedTx == nil {
+		return fmt.Errorf(
+			"submit accepted event ark psbt must be provided",
+		)
+	}
+
+	arkSessionID, err := sessionIDFromArk(event.ArkPSBT)
+	if err != nil {
+		return err
+	}
+
+	if arkSessionID != sessionID {
+		return fmt.Errorf("submit accepted event ark txid mismatch")
+	}
+
+	return nil
 }
 
 func outPointBytes(out wire.OutPoint) []byte {

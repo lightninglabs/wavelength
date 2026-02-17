@@ -306,6 +306,15 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("event must be provided"))
 	}
 
+	if submitAccepted, ok := req.Event.(*SubmitAcceptedEvent); ok {
+		err := validateSubmitAcceptedIdentity(
+			req.SessionID, submitAccepted,
+		)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+	}
+
 	handle, ok := b.sessions[req.SessionID]
 	if !ok {
 		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
