@@ -4,6 +4,7 @@
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
 .PHONY: systest systest-verbose
+.PHONY: commitmsg-lint commitmsg-fmt commitmsg-reword
 
 # Default target.
 .DEFAULT_GOAL := build
@@ -260,6 +261,43 @@ check-go-version-yaml:
 check-migration-version: #? Check that LatestMigrationVersion matches migration files
 	@$(call print, "Checking migration version consistency.")
 	@./scripts/check-migration-latest-version.sh
+
+commitmsg-lint: #? Lint commit message(s). Use range=<rev-range>, commit=<rev>, or file=<path>
+	@$(call print, "Linting commit message(s).")
+	@if [ -n "$(range)" ]; then \
+		./scripts/commit_message.py lint --range "$(range)"; \
+	elif [ -n "$(commit)" ]; then \
+		./scripts/commit_message.py lint --commit "$(commit)"; \
+	elif [ -n "$(file)" ]; then \
+		./scripts/commit_message.py lint --file "$(file)"; \
+	else \
+		./scripts/commit_message.py lint --commit HEAD; \
+	fi
+
+commitmsg-fmt: #? Format commit message. Use file=<path> [inplace=1] or commit=<rev>
+	@$(call print, "Formatting commit message.")
+	@if [ -n "$(file)" ]; then \
+		if [ "$(inplace)" = "1" ]; then \
+			./scripts/commit_message.py fmt --file "$(file)" --in-place \
+				$(if $(filter 1,$(decode)),--decode-escaped-newlines,); \
+		else \
+			./scripts/commit_message.py fmt --file "$(file)" \
+				$(if $(filter 1,$(decode)),--decode-escaped-newlines,); \
+		fi; \
+	elif [ -n "$(commit)" ]; then \
+		./scripts/commit_message.py fmt --commit "$(commit)" \
+			$(if $(filter 1,$(decode)),--decode-escaped-newlines,); \
+	else \
+		echo "Error: provide file=<path> or commit=<rev>"; \
+		exit 1; \
+	fi
+
+commitmsg-reword: #? Reword a commit using formatted message. Use commit=<rev> (default HEAD)
+	@$(call print, "Rewording commit with formatted message.")
+	@./scripts/commit_message.py reword \
+		--commit "$(if $(commit),$(commit),HEAD)" \
+		$(if $(filter 1,$(decode)),--decode-escaped-newlines,) \
+		$(if $(filter 1,$(dryrun)),--dry-run,)
 
 # =======
 # TESTING
