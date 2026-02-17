@@ -320,6 +320,32 @@ func (s *RetryBackoff) ProcessEvent(ctx context.Context,
 	_ = env
 
 	switch evt := event.(type) {
+	case *RetryDueEvent:
+		_ = evt
+
+		if s.ResumeSnapshot == nil {
+			return nil, fmt.Errorf(
+				"resume snapshot must be provided",
+			)
+		}
+
+		nextState, err := OutgoingStateFromSnapshot(s.ResumeSnapshot)
+		if err != nil {
+			return nil, err
+		}
+
+		nextOutbox, err := OutboxForState(nextState)
+		if err != nil {
+			return nil, err
+		}
+
+		return &StateTransition{
+			NextState: nextState,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: nextOutbox,
+			}),
+		}, nil
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},

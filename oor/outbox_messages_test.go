@@ -2,6 +2,7 @@ package oor
 
 import (
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -113,6 +114,48 @@ func TestOutboxToProtoSendIncomingAckRequest(t *testing.T) {
 	require.Equal(
 		t,
 		oorOutboxProtoTypeURLPrefix+"SendIncomingAckRequest",
+		anyMsg.TypeUrl,
+	)
+	require.NotEmpty(t, anyMsg.Value)
+}
+
+func TestOutboxToProtoScheduleRetryRequest(t *testing.T) {
+	t.Parallel()
+
+	msg := &ScheduleRetryRequest{
+		After:  2 * time.Second,
+		Reason: "transport timeout",
+	}
+
+	protoMsg := msg.ToProto()
+	require.IsType(t, &anypb.Any{}, protoMsg)
+
+	anyMsg, ok := protoMsg.(*anypb.Any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		oorOutboxProtoTypeURLPrefix+"ScheduleRetryRequest",
+		anyMsg.TypeUrl,
+	)
+	require.NotEmpty(t, anyMsg.Value)
+}
+
+func TestOutboxToProtoScheduleRetryRequestNegativeDelay(t *testing.T) {
+	t.Parallel()
+
+	msg := &ScheduleRetryRequest{
+		After:  -1 * time.Second,
+		Reason: "transport timeout",
+	}
+
+	protoMsg := msg.ToProto()
+	require.IsType(t, &anypb.Any{}, protoMsg)
+
+	anyMsg, ok := protoMsg.(*anypb.Any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		oorOutboxProtoTypeURLPrefix+"ScheduleRetryRequest.error",
 		anyMsg.TypeUrl,
 	)
 	require.NotEmpty(t, anyMsg.Value)
