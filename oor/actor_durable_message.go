@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -276,8 +277,9 @@ func actorMsgFromDurableCommand(cmd *durableActorCommandMessage) (ActorMsg,
 			inputs = append(inputs, in)
 		}
 
-		recipients := make([]oortx.RecipientOutput, 0,
-			len(payload.Recipients))
+		recipients := make(
+			[]oortx.RecipientOutput, 0, len(payload.Recipients),
+		)
 		for i := range payload.Recipients {
 			recipient := payload.Recipients[i]
 			recipients = append(recipients, oortx.RecipientOutput{
@@ -504,9 +506,16 @@ func decodeRecipientPayload(raw []byte) (recipientPayload, error) {
 		return recipientPayload{}, err
 	}
 
+	decodedValueSat, err := uint64ToInt64(
+		valueSat, "recipient value sat",
+	)
+	if err != nil {
+		return recipientPayload{}, err
+	}
+
 	return recipientPayload{
 		PkScript: pkScript,
-		ValueSat: int64(valueSat),
+		ValueSat: decodedValueSat,
 	}, nil
 }
 
@@ -659,10 +668,22 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		return nil, err
 	}
 
+	decodedAmountSat, err := uint64ToInt64(amountSat, "amount sat")
+	if err != nil {
+		return nil, err
+	}
+
+	decodedClientFamily, err := uint32ToInt32(
+		clientFamily, "client key family",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TransferInputSnapshot{
 		Outpoint:        outpoint,
-		AmountSat:       int64(amountSat),
-		ClientKeyFamily: int32(clientFamily),
+		AmountSat:       decodedAmountSat,
+		ClientKeyFamily: decodedClientFamily,
 		ClientKeyIndex:  clientIndex,
 		ClientPubKey:    clientPubKey,
 		OperatorPubKey:  operatorPubKey,
@@ -856,6 +877,22 @@ func parseSessionID(raw []byte) (SessionID, error) {
 	copy(hash[:], raw)
 
 	return SessionID(hash), nil
+}
+
+func uint64ToInt64(value uint64, field string) (int64, error) {
+	if value > math.MaxInt64 {
+		return 0, fmt.Errorf("%s overflows int64: %d", field, value)
+	}
+
+	return int64(value), nil
+}
+
+func uint32ToInt32(value uint32, field string) (int32, error) {
+	if value > math.MaxInt32 {
+		return 0, fmt.Errorf("%s overflows int32: %d", field, value)
+	}
+
+	return int32(value), nil
 }
 
 var _ actor.TLVMessage = (*durableActorCommandMessage)(nil)
