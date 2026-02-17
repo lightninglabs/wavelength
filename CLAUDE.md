@@ -112,7 +112,7 @@ log.InfoS(ctx, "Channel open performed",
 
 ### Commit Message Format
 ```
-pkg: Short summary in present tense (≤50 chars)
+pkg: Short summary in present tense (≤69 chars)
 
 Longer explanation if needed, wrapped at 72 characters. Explain WHY
 this change is being made and any relevant context, not just WHAT
@@ -122,7 +122,7 @@ changed.
 **Commit message rules**:
 - First line: present tense ("Fix bug" not "Fixed bug")
 - Prefix with package name: `db:`, `rpc:`, `multi:` (for multiple packages)
-- Subject ≤50 characters
+- Subject ≤69 characters
 - Body wrapped at 72 characters
 - Blank line between subject and body
 
@@ -137,62 +137,26 @@ Separate commits for:
 - Integration of new functionality
 
 ### Commit Signing
-Sign commits with GPG when possible: `git commit -S -m "message"`
+Sign commits with GPG when possible: `git commit -S -F /path/to/message.txt`
 
-### Commit Message Newlines (Important)
+### Commit Message Tooling
 
-When creating multi-line commit messages, do **not** include literal `\n`
-sequences inside a `-m "..."` string. Git does not interpret escape sequences
-in `-m` arguments; it will store the backslash and `n` characters literally.
+Use `scripts/commit_message.py` to lint, format, and safely reword commit
+messages. The script enforces subject/body wrapping (`69`/`72`), keeps real
+newlines, and preserves markdown-like body structure (lists, quotes, fenced
+blocks, trailers).
 
-Use one of these instead (preferred order):
+Common workflows:
 
-- Commit message file (most robust): `git commit -S -F /path/to/message.txt`
-- Multiple `-m` flags (only for paragraphs):
-  `git commit -S -m "subject" -m "body paragraph 1" -m "body paragraph 2"`
-  - Note: each `-m` adds a real blank line between paragraphs. Do **not** use
-    one `-m` per wrapped line, or you will create "double spaced" commit
-    messages with extra blank lines.
-- Interactive editor (when in doubt): `git commit -S`
+- Lint the current commit message: `make commitmsg-lint commit=HEAD`
+- Lint a commit range: `make commitmsg-lint range=origin/main..HEAD`
+- Format a message file in place: `make commitmsg-fmt file=/tmp/msg inplace=1`
+- Reword a commit from formatted output: `make commitmsg-reword commit=<sha>`
+- Preview a reword without rewriting history:
+  `make commitmsg-reword commit=<sha> dryrun=1`
 
-Preferred approach (most robust):
-
-- Write a commit message file (wrapped to ≤72 columns) and use `-F`:
-  - `cat > /tmp/commit-msg.txt <<'EOF'`
-  - `pkg: Subject in present tense`
-  - ``
-  - `Body paragraph wrapped to 72 columns. Keep single newlines for wrapping`
-  - `and a blank line only between paragraphs.`
-  - `EOF`
-  - `git commit -S -F /tmp/commit-msg.txt`
-
-### Commit Message Line Length (Important)
-
-When the agent constructs commit messages (especially via `git commit -m ...`),
-it must ensure every non-empty body line is wrapped to ≤72 characters.
-
-Preferred approach:
-
-- Use `-F` with a pre-wrapped message file.
-- If using multiple `-m`, use them only for paragraphs (not wrapped lines), and
-  keep each paragraph line ≤72 characters.
-
-Before finishing a commit, validate the final message formatting:
-
-`git show -s --format='%B' HEAD | python3 - <<'PY'
-import sys
-
-bad = []
-for i, line in enumerate(sys.stdin.read().splitlines(), start=1):
-	if line.strip() and len(line) > 72:
-		bad.append((i, len(line), line))
-
-if not bad:
-	print("OK")
-else:
-	for i, n, line in bad:
-		print(f"Line {i} len {n}: {line}")
-PY`
+If a message was created with literal `\n` sequences, use `decode=1` with
+`commitmsg-fmt` or `commitmsg-reword` to convert them to real line breaks.
 
 ## Testing Philosophy
 
