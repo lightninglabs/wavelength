@@ -136,6 +136,12 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		stateTxid := s.ArkPSBT.UnsignedTx.TxHash()
+		if evt.SessionID != SessionID(stateTxid) {
+			return nil, fmt.Errorf(
+				"submit accepted session id mismatch",
+			)
+		}
+
 		evTxid := evt.ArkPSBT.UnsignedTx.TxHash()
 		if stateTxid != evTxid {
 			return nil, fmt.Errorf("ark txid mismatch")
