@@ -67,10 +67,6 @@ func PutTapTreePSBTInput(pkt *psbt.Packet, inputIndex int,
 	})
 	pkt.Inputs[inputIndex].Unknowns = unknowns
 
-	// We intentionally append instead of replacing existing values because
-	// PSBT unknown fields are conceptually a set. Validators should reject
-	// malformed packets rather than guessing which value is intended.
-
 	return nil
 }
 

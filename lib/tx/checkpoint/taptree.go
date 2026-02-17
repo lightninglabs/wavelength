@@ -38,8 +38,9 @@ func EncodeTapTree(leaves [][]byte) ([]byte, error) {
 			typeTapscriptLeaves,
 			&tapscriptLeaves,
 			func() uint64 {
-				return recordSize(leavesEncoder,
-					&tapscriptLeaves)
+				return recordSize(
+					leavesEncoder, &tapscriptLeaves,
+				)
 			},
 			leavesEncoder,
 			leavesDecoder,
@@ -154,7 +155,7 @@ func leavesDecoder(r io.Reader, val interface{}, buf *[8]byte, l uint64) error {
 		}
 
 		for {
-			blobSize, err := tlv.ReadVarInt(r, buf)
+			blobSize, err := tlv.ReadVarInt(&innerTlvReader, buf)
 			if errors.Is(err, io.EOF) {
 				break
 			} else if err != nil {
