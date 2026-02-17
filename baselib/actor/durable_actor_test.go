@@ -569,9 +569,6 @@ func TestDurableActorTransactionFailure(t *testing.T) {
 	cfg.PollInterval = 10 * time.Millisecond
 	actor := NewDurableActor(cfg)
 
-	actor.Start()
-	defer actor.Stop()
-
 	msg := &actorTestMsg{
 		Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
 	}
@@ -580,12 +577,17 @@ func TestDurableActorTransactionFailure(t *testing.T) {
 	err := actor.Ref().Tell(ctx, msg)
 	require.NoError(t, err)
 
-	// Verify message was enqueued.
+	// Verify message was enqueued before starting the actor to avoid races
+	// where the consumer goroutine processes/dead-letters the message before
+	// this assertion runs.
 	store.mu.Lock()
 	initialCount := len(store.messages)
 	store.mu.Unlock()
 	t.Logf("After Tell: %d messages in store", initialCount)
 	require.Equal(t, 1, initialCount, "message should be enqueued")
+
+	actor.Start()
+	defer actor.Stop()
 
 	// Wait for first transaction to be attempted.
 	require.Eventually(t, func() bool {
