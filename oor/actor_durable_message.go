@@ -72,6 +72,7 @@ const (
 	eventKindFinalizeAccepted  uint64 = 3
 	eventKindInputsMarkedSpent uint64 = 4
 	eventKindFail              uint64 = 5
+	eventKindRetryDue          uint64 = 6
 )
 
 const (
@@ -964,6 +965,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		eventKind = eventKindFail
 		reason = []byte(evt.Reason)
 
+	case *RetryDueEvent:
+		eventKind = eventKindRetryDue
+
 	default:
 		return nil, fmt.Errorf("unsupported event type: %T", event)
 	}
@@ -1083,6 +1087,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 	case eventKindFail:
 		return &FailEvent{Reason: string(reason)}, nil
+
+	case eventKindRetryDue:
+		return &RetryDueEvent{}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)

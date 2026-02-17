@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestStartTransferPayloadTLVRoundTrip asserts start-transfer payload TLV
+// encoding/decoding preserves all fields.
 func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -50,6 +52,8 @@ func TestStartTransferPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, payload.Inputs[0], decoded.Inputs[0])
 }
 
+// TestSessionPayloadTLVRoundTrip asserts session payload TLV encoding/decoding
+// preserves the session identifier.
 func TestSessionPayloadTLVRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +66,8 @@ func TestSessionPayloadTLVRoundTrip(t *testing.T) {
 	require.Equal(t, id, decoded)
 }
 
+// TestDecodeLengthPrefixedBlobListRejectsTrailingBytes asserts decode rejects
+// payloads with trailing bytes.
 func TestDecodeLengthPrefixedBlobListRejectsTrailingBytes(t *testing.T) {
 	t.Parallel()
 
@@ -75,6 +81,8 @@ func TestDecodeLengthPrefixedBlobListRejectsTrailingBytes(t *testing.T) {
 	require.ErrorContains(t, err, "trailing payload bytes")
 }
 
+// TestDriveEventCommandRoundTripFailEvent asserts durable encoding/decoding
+// round-trips FailEvent drive-event commands.
 func TestDriveEventCommandRoundTripFailEvent(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +110,8 @@ func TestDriveEventCommandRoundTripFailEvent(t *testing.T) {
 	require.Equal(t, "transport timeout", failEvt.Reason)
 }
 
+// TestDriveEventCommandRoundTripSubmitAcceptedEvent asserts durable
+// encoding/decoding round-trips SubmitAcceptedEvent drive-event commands.
 func TestDriveEventCommandRoundTripSubmitAcceptedEvent(t *testing.T) {
 	t.Parallel()
 
@@ -137,4 +147,39 @@ func TestDriveEventCommandRoundTripSubmitAcceptedEvent(t *testing.T) {
 
 	decodedTxID := submitEvt.ArkPSBT.UnsignedTx.TxHash()
 	require.Equal(t, chainhash.Hash(sessionID), decodedTxID)
+}
+
+// TestDriveEventCommandRoundTripRetryDueEvent asserts durable
+// encoding/decoding round-trips RetryDueEvent drive-event commands.
+func TestDriveEventCommandRoundTripRetryDueEvent(t *testing.T) {
+	t.Parallel()
+
+	sessionID := SessionID(chainhash.Hash{3, 3, 3})
+	msg := &DriveEventRequest{
+		SessionID: sessionID,
+		Event:     &RetryDueEvent{},
+	}
+
+	cmd, err := durableCommandFromActorMsg(msg)
+	require.NoError(t, err)
+	require.Equal(t, oorCommandDriveEvent, cmd.Command)
+
+	decoded, err := actorMsgFromDurableCommand(cmd)
+	require.NoError(t, err)
+
+	decodedReq, ok := decoded.(*DriveEventRequest)
+	require.True(t, ok)
+	require.Equal(t, sessionID, decodedReq.SessionID)
+	require.IsType(t, &RetryDueEvent{}, decodedReq.Event)
+}
+
+// TestDriveEventPayloadRequiresEvent asserts drive-event payload encoding
+// rejects nil events.
+func TestDriveEventPayloadRequiresEvent(t *testing.T) {
+	t.Parallel()
+
+	_, err := encodeDriveEventRequestPayload(
+		SessionID(chainhash.Hash{1, 2, 3}), nil,
+	)
+	require.ErrorContains(t, err, "event must be provided")
 }
