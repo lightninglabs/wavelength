@@ -2,6 +2,8 @@ package oor
 
 import (
 	"bytes"
+	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
@@ -21,6 +23,11 @@ const (
 const (
 	finalizePayloadArkPSBTRecordType     tlv.Type = 1
 	finalizePayloadCheckpointsRecordType tlv.Type = 3
+)
+
+const (
+	retryPayloadAfterNanosRecordType tlv.Type = 1
+	retryPayloadReasonRecordType     tlv.Type = 3
 )
 
 // OutboxEvent is a sealed interface for side-effect requests emitted by the
@@ -258,6 +265,33 @@ func (m *SendIncomingAckRequest) ToProto() proto.Message {
 	return protoEnvelope("SendIncomingAckRequest", payload)
 }
 
+// ScheduleRetryRequest asks the runtime to deliver a RetryDueEvent after the
+// requested delay.
+type ScheduleRetryRequest struct {
+	actor.BaseMessage
+
+	After  time.Duration
+	Reason string
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *ScheduleRetryRequest) outboxType() string {
+	return "ScheduleRetryRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *ScheduleRetryRequest) outboxSealed() {}
+
+// ToProto converts ScheduleRetryRequest to a protobuf message.
+func (m *ScheduleRetryRequest) ToProto() proto.Message {
+	payload, err := encodeRetryPayload(m.After, m.Reason)
+	if err != nil {
+		return protoErrorEnvelope("ScheduleRetryRequest", err)
+	}
+
+	return protoEnvelope("ScheduleRetryRequest", payload)
+}
+
 func protoEnvelope(typeName string, payload []byte) proto.Message {
 	return &anypb.Any{
 		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName,
@@ -299,6 +333,36 @@ func encodeFinalizePayload(ark *psbt.Packet,
 			finalizePayloadArkPSBTRecordType, &arkRaw,
 		),
 		checkpointPayloadRecord,
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func encodeRetryPayload(after time.Duration, reason string) ([]byte, error) {
+	if after < 0 {
+		return nil, fmt.Errorf("retry delay must be non-negative")
+	}
+
+	afterNanos := uint64(after)
+	reasonBytes := []byte(reason)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			retryPayloadAfterNanosRecordType, &afterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			retryPayloadReasonRecordType, &reasonBytes,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
