@@ -11,6 +11,11 @@ type Config struct {
 	// Edge is the gRPC client for the mailbox edge service.
 	Edge mailboxpb.MailboxServiceClient
 
+	// Store persists response payloads and pull cursor state.
+	//
+	// If unset, the client uses an in-memory store (not crash-safe).
+	Store Store
+
 	// LocalMailboxID is the mailbox id used to receive responses.
 	LocalMailboxID string
 
