@@ -160,7 +160,6 @@ func TestOutboxToProtoScheduleRetryRequestNegativeDelay(t *testing.T) {
 	)
 	require.NotEmpty(t, anyMsg.Value)
 }
-
 func testOutboxPSBTPair(t *testing.T) (*psbt.Packet, []*psbt.Packet) {
 	t.Helper()
 

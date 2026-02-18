@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
@@ -11,14 +12,16 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+// defaultRetryDelay is used when an outbox error is retryable but does not
+// specify an explicit backoff.
+const defaultRetryDelay = 1 * time.Second
+
 // unexpectedEvent returns a transition that stays in the current state and
 // emits no outbox work for an unexpected event.
 //
 // This makes the FSM resilient to retries and late deliveries at the actor
 // boundary.
-func unexpectedEvent(state State, event Event) *StateTransition {
-	_ = event
-
+func unexpectedEvent(state State) *StateTransition {
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
@@ -37,7 +40,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		// - checkpoint txs convert VTXOs into checkpoints
 		// - an Ark tx spends checkpoints and pays recipients
 		//
-		// The Ark txid is the stable session identifier.
+		// The Ark txid is the stable v0 session identifier.
 		ark, checkpoints, err := buildSubmitPackage(
 			evt.Policy,
 			evt.VTXOInputs,
@@ -68,10 +71,13 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			)
 		}
 
-		// If the environment is already bound to a stable session id,
-		// verify the derived Ark txid matches. A mismatch indicates
-		// non-determinism in the builder or inconsistent state
-		// reconstruction.
+		// If the FSM environment is already bound to a stable session
+		// id (for example via `NewSessionFromSnapshot`), verify the
+		// derived Ark txid matches.
+		//
+		// A mismatch here is a correctness bug. It implies either:
+		// - non-deterministic tx building; or
+		// - inconsistent input/recipient reconstruction from state.
 		if env != nil && env.SessionID != (SessionID{}) {
 			sessionID, err := sessionIDFromArk(ark)
 			if err != nil {
@@ -84,14 +90,13 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			}
 		}
 
-		submitReq := &SendSubmitPackageRequest{
-			ArkPSBT:         ark,
-			CheckpointPSBTs: checkpoints,
-			TransferInputs:  evt.VTXOInputs,
+		signReq := &RequestArkSignatures{
+			ArkPSBT:        ark,
+			TransferInputs: evt.VTXOInputs,
 		}
 
 		return &StateTransition{
-			NextState: &AwaitingSubmitAccepted{
+			NextState: &AwaitingArkSignatures{
 				InputOutpoints:  inputOutpoints,
 				ArkPSBT:         ark,
 				CheckpointPSBTs: checkpoints,
@@ -99,7 +104,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					submitReq,
+					signReq,
 				},
 			}),
 		}, nil
@@ -111,7 +116,66 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
+	}
+}
+
+// ProcessEvent handles events for AwaitingArkSignatures.
+func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *ArkSignedEvent:
+		if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
+			return nil, fmt.Errorf(
+				"signed ark psbt must be provided",
+			)
+		}
+
+		if s.ArkPSBT == nil || s.ArkPSBT.UnsignedTx == nil {
+			return nil, fmt.Errorf("internal: missing ark psbt")
+		}
+
+		originalTxid := s.ArkPSBT.UnsignedTx.TxHash()
+		signedTxid := evt.ArkPSBT.UnsignedTx.TxHash()
+		if signedTxid != originalTxid {
+			return nil, fmt.Errorf("ark txid mismatch")
+		}
+
+		submitReq := &SendSubmitPackageRequest{
+			ArkPSBT:         evt.ArkPSBT,
+			CheckpointPSBTs: s.CheckpointPSBTs,
+			TransferInputs:  s.TransferInputs,
+		}
+
+		return &StateTransition{
+			NextState: &AwaitingSubmitAccepted{
+				InputOutpoints:  s.InputOutpoints,
+				ArkPSBT:         evt.ArkPSBT,
+				CheckpointPSBTs: s.CheckpointPSBTs,
+				TransferInputs:  s.TransferInputs,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					submitReq,
+				},
+			}),
+		}, nil
+
+	case *OutboxErrorEvent:
+		return handleOutboxError(env, s, evt)
+
+	case *FailEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.Reason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -154,7 +218,8 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		checkpoints := evt.CoSignedCheckpointPSBTs
 
 		// Signature material is produced outside the FSM.
-		// Ask the outbox boundary to finalize checkpoints.
+		// Ask the outbox boundary to attach client checkpoint
+		// signatures.
 		signReq := &RequestCheckpointSignatures{
 			ArkPSBT:                 evt.ArkPSBT,
 			CoSignedCheckpointPSBTs: evt.CoSignedCheckpointPSBTs,
@@ -176,6 +241,9 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 			}),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return handleOutboxError(env, s, evt)
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -183,7 +251,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -196,6 +264,10 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 
 	switch evt := event.(type) {
 	case *CheckpointsSignedEvent:
+		// The client has signed the checkpoint PSBTs (owner leaf).
+		//
+		// Next it binds finalize metadata to the Ark PSBT and submits
+		// the finalize package.
 		if s.ArkPSBT == nil {
 			return nil, fmt.Errorf("internal: missing ark psbt")
 		}
@@ -229,6 +301,14 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
+					// Finalize is a pure "ack" boundary
+					// in v0.
+					//
+					// Retry and resume after crash is safe
+					// because the package is deterministic.
+					//
+					// The server should handle duplicates
+					// idempotently.
 					&SendFinalizePackageRequest{
 						ArkPSBT: s.ArkPSBT,
 						FinalCheckpointPSBTs: evt.
@@ -238,6 +318,9 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return handleOutboxError(env, s, evt)
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -245,7 +328,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -274,6 +357,9 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 			}),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return handleOutboxError(env, s, evt)
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -281,7 +367,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -301,6 +387,9 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return handleOutboxError(env, s, evt)
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -308,13 +397,13 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
 // ProcessEvent handles events for RetryBackoff.
-func (s *RetryBackoff) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
+func (s *RetryBackoff) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
 	_ = env
@@ -345,7 +434,6 @@ func (s *RetryBackoff) ProcessEvent(ctx context.Context,
 				Outbox: nextOutbox,
 			}),
 		}, nil
-
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -353,7 +441,7 @@ func (s *RetryBackoff) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, event), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -364,7 +452,7 @@ func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, event), nil
+	return unexpectedEvent(s), nil
 }
 
 // ProcessEvent handles events for Failed.
@@ -374,7 +462,54 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, event), nil
+	return unexpectedEvent(s), nil
+}
+
+// handleOutboxError transitions the FSM into a RetryBackoff state if the error
+// is retryable, otherwise returning a terminal failure.
+func handleOutboxError(env *Environment, current State,
+	evt *OutboxErrorEvent) (*StateTransition, error) {
+
+	if evt == nil {
+		return nil, fmt.Errorf("outbox error event must be provided")
+	}
+
+	if !evt.Retryable {
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.ErrorReason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+	}
+
+	if env == nil || env.SessionID == (SessionID{}) {
+		return nil, fmt.Errorf("internal: missing session id")
+	}
+
+	snap, err := NewOutgoingSnapshot(env.SessionID, current)
+	if err != nil {
+		return nil, err
+	}
+
+	after := evt.RetryAfter
+	if after == 0 {
+		after = defaultRetryDelay
+	}
+
+	return &StateTransition{
+		NextState: &RetryBackoff{
+			ResumeSnapshot: snap,
+			RetryAfter:     after,
+			Reason:         evt.ErrorReason,
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&ScheduleRetryRequest{
+					After:  after,
+					Reason: evt.ErrorReason,
+				},
+			},
+		}),
+	}, nil
 }
 
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
@@ -405,16 +540,12 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 
 		checkpoints = append(checkpoints, result.PSBT)
 
-		txid := result.PSBT.UnsignedTx.TxHash()
-		cpOut := result.PSBT.UnsignedTx.TxOut[0]
+		checkpointOut, err := result.ToCheckpointOutput()
+		if err != nil {
+			return nil, nil, err
+		}
 
-		checkpointOuts = append(checkpointOuts,
-			oortx.CheckpointOutput{
-				Txid:           txid,
-				Output:         cpOut,
-				TapTreeEncoded: result.TapTreeEncoded,
-			},
-		)
+		checkpointOuts = append(checkpointOuts, checkpointOut)
 	}
 
 	ark, err := oortx.BuildArkPSBT(checkpointOuts, outputs)

@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
@@ -17,6 +18,11 @@ import (
 type OutgoingPhase string
 
 const (
+	// OutgoingPhaseArkSignRequested indicates the submit package has been
+	// built and the client must attach Ark signatures before submit can be
+	// sent.
+	OutgoingPhaseArkSignRequested OutgoingPhase = "ark_sign_requested"
+
 	// OutgoingPhaseSubmitSent indicates the client has built the submit
 	// package and is waiting for the server to accept/co-sign it.
 	OutgoingPhaseSubmitSent OutgoingPhase = "submit_sent"
@@ -29,9 +35,13 @@ const (
 	// checkpoints and is awaiting server acknowledgement.
 	OutgoingPhaseFinalizeSent OutgoingPhase = "finalize_sent"
 
-	// OutgoingPhaseLocalVTXOUpdate indicates finalize was accepted, but the
-	// client still needs to update local VTXO state.
+	// OutgoingPhaseLocalVTXOUpdate indicates the server accepted finalize
+	// and the client is updating its local VTXO persistence state.
 	OutgoingPhaseLocalVTXOUpdate OutgoingPhase = "local_vtxo_update"
+
+	// OutgoingPhaseRetryBackoff indicates the client is waiting to retry a
+	// previously failed outbox request.
+	OutgoingPhaseRetryBackoff OutgoingPhase = "retry_backoff"
 
 	// OutgoingPhaseCompleted indicates the transfer is fully complete.
 	OutgoingPhaseCompleted OutgoingPhase = "completed"
@@ -76,8 +86,17 @@ type OutgoingSnapshot struct {
 	// TransferInputSnapshots are a portable encoding of TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot `json:"inputs"`
 
-	// InputOutpoints are the VTXO inputs consumed by this transfer session.
+	// InputOutpoints are the VTXO outpoints consumed by this session.
+	//
+	// This is required to support crash-resilient local persistence after
+	// the server accepts finalize.
 	InputOutpoints []wire.OutPoint `json:"input_outpoints,omitempty"`
+
+	// RetryAfter is the requested delay in retry backoff phases.
+	RetryAfter time.Duration `json:"retry_after,omitempty"`
+
+	// ResumeSnapshot is the snapshot to restore after retry backoff.
+	ResumeSnapshot *OutgoingSnapshot `json:"resume_snapshot,omitempty"`
 
 	// FailReason is the terminal failure reason, when Phase is Failed.
 	FailReason string `json:"fail_reason,omitempty"`
@@ -96,11 +115,35 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 	}
 
 	snap := &OutgoingSnapshot{
-		Version:   2,
+		Version:   3,
 		SessionID: sessionID,
 	}
 
 	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		// Snapshot the deterministic submit package before submit is sent so
+		// resume can re-drive Ark signing without rebuilding artifacts.
+		snap.Phase = OutgoingPhaseArkSignRequested
+
+		ark, err := psbtutil.Serialize(s.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+		snap.ArkPSBT = ark
+
+		cps, err := serializePSBTSlice(s.CheckpointPSBTs)
+		if err != nil {
+			return nil, err
+		}
+		snap.CheckpointPSBTs = cps
+		snap.TransferInputs = s.TransferInputs
+		inputSnaps, err := snapshotTransferInputs(s.TransferInputs)
+		if err != nil {
+			return nil, err
+		}
+		snap.TransferInputSnapshots = inputSnaps
+		snap.InputOutpoints = s.InputOutpoints
+
 	case *AwaitingSubmitAccepted:
 		// Snapshot the entire submit package because it is the
 		// canonical v0 payload, and the natural unit for idempotence.
@@ -126,6 +169,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
+		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingCheckpointSignatures:
 		// This is the "point-of-no-return" state from the client's
@@ -150,6 +194,7 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
+		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingFinalizeAccepted:
 		// Once finalize is sent, the client should only need the
@@ -170,6 +215,9 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingLocalVTXOUpdate:
+		// This phase is an off-chain bookkeeping step: after the server
+		// accepts finalize, the local wallet must update its VTXO store to
+		// reflect that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
 		snap.InputOutpoints = s.InputOutpoints
 
@@ -183,6 +231,16 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		snap.Phase = OutgoingPhaseFailed
 		snap.FailReason = s.Reason
 
+	case *RetryBackoff:
+		// RetryBackoff wraps another snapshot to support restart-safe
+		// retry.
+		// The intent is:
+		// 1) store the original "resume snapshot" that is safe to retry
+		// 2) store the requested delay and reason for UI/telemetry
+		snap.Phase = OutgoingPhaseRetryBackoff
+		snap.ResumeSnapshot = s.ResumeSnapshot
+		snap.RetryAfter = s.RetryAfter
+		snap.FailReason = s.Reason
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
 			state)
@@ -234,6 +292,30 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 	}
 
 	switch snapshot.Phase {
+	case OutgoingPhaseArkSignRequested:
+		ark, cps, err := parseOutgoingPSBTs(snapshot.ArkPSBT,
+			snapshot.CheckpointPSBTs)
+		if err != nil {
+			return nil, err
+		}
+
+		err = requireSessionIDMatchesArk(snapshot.SessionID, ark)
+		if err != nil {
+			return nil, err
+		}
+
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
+		}
+
+		return &AwaitingArkSignatures{
+			InputOutpoints:  snapshot.InputOutpoints,
+			ArkPSBT:         ark,
+			CheckpointPSBTs: cps,
+			TransferInputs:  inputs,
+		}, nil
+
 	case OutgoingPhaseSubmitSent:
 		ark, cps, err := parseOutgoingPSBTs(
 			snapshot.ArkPSBT, snapshot.CheckpointPSBTs,
@@ -253,6 +335,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
+			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
@@ -278,6 +361,7 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 		return &AwaitingCheckpointSignatures{
 			SessionID:               snapshot.SessionID,
+			InputOutpoints:          snapshot.InputOutpoints,
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
@@ -304,9 +388,29 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
+		if len(snapshot.InputOutpoints) == 0 {
+			return nil, fmt.Errorf("input outpoints required")
+		}
+
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
 			InputOutpoints: snapshot.InputOutpoints,
+		}, nil
+
+	case OutgoingPhaseRetryBackoff:
+		if snapshot.ResumeSnapshot == nil {
+			return nil, fmt.Errorf("resume snapshot required")
+		}
+
+		after := snapshot.RetryAfter
+		if after == 0 {
+			after = 1 * time.Second
+		}
+
+		return &RetryBackoff{
+			ResumeSnapshot: snapshot.ResumeSnapshot,
+			RetryAfter:     after,
+			Reason:         snapshot.FailReason,
 		}, nil
 
 	case OutgoingPhaseCompleted:
