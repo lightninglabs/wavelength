@@ -59,9 +59,6 @@ func (a *CheckpointArtifact) ToCheckpointOutput() (CheckpointOutput, error) {
 	}, nil
 }
 
-// CheckpointResult is a backwards-compatible alias for CheckpointArtifact.
-type CheckpointResult = CheckpointArtifact
-
 // RecipientOutput describes an Ark tx recipient output.
 type RecipientOutput struct {
 	// PkScript is the destination script.
