@@ -971,8 +971,10 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// Disable buffering and flush. Both clients receive their messages and
 	// start their signing phases simultaneously.
 	h.Bridge().SetBuffered(false)
-	h.Bridge().FlushAllFor(client1.ClientID())
-	h.Bridge().FlushAllFor(client2.ClientID())
+	err = h.Bridge().FlushAllFor(client1.ClientID())
+	require.NoError(t, err, "flush client1 buffered messages")
+	err = h.Bridge().FlushAllFor(client2.ClientID())
+	require.NoError(t, err, "flush client2 buffered messages")
 	t.Log("Flushed all buffered messages - both rounds now signing")
 
 	// Both rounds are now in their signing phases concurrently.

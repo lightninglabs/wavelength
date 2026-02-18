@@ -816,7 +816,8 @@ func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
 
 // TriggerAllTimeouts fires all pending timeouts.
 func (h *E2EHarness) TriggerAllTimeouts() {
-	h.mockTimeout.TriggerAll(h.ctx)
+	err := h.mockTimeout.TriggerAll(h.ctx)
+	require.NoError(h.t, err, "failed to trigger all pending timeouts")
 }
 
 // AssertTxInMempool verifies transaction was accepted into the mempool.

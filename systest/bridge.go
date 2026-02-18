@@ -129,15 +129,23 @@ func (b *BridgeServerConn) FlushNext() error {
 }
 
 // FlushAll delivers all buffered messages to the server in order.
-func (b *BridgeServerConn) FlushAll() {
+func (b *BridgeServerConn) FlushAll() error {
 	b.mu.Lock()
 	pending := b.pendingC2S
 	b.pendingC2S = nil
 	b.mu.Unlock()
 
 	for _, msg := range pending {
-		_ = b.roundsActor.Tell(context.Background(), msg.msg)
+		if err := b.roundsActor.Tell(
+			context.Background(), msg.msg,
+		); err != nil {
+			return fmt.Errorf(
+				"flush client->server message: %w", err,
+			)
+		}
 	}
+
+	return nil
 }
 
 // handleSendClientEvent converts a client outbox message to a server actor
@@ -492,7 +500,7 @@ func (b *BridgeClientConn) FlushNextFor(clientID clientconn.ClientID) error {
 }
 
 // FlushAllFor delivers all buffered messages to a specific client in order.
-func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) {
+func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) error {
 	b.mu.Lock()
 	pending := b.pendingS2C[clientID]
 	b.pendingS2C[clientID] = nil
@@ -500,12 +508,20 @@ func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) {
 	b.mu.Unlock()
 
 	if clientRef == nil {
-		return
+		return fmt.Errorf("client %s not registered", clientID)
 	}
 
 	for _, msg := range pending {
-		_ = clientRef.Tell(context.Background(), msg.msg)
+		if err := clientRef.Tell(
+			context.Background(), msg.msg,
+		); err != nil {
+			return fmt.Errorf(
+				"flush server->client message: %w", err,
+			)
+		}
 	}
+
+	return nil
 }
 
 // RegisterClient adds a client actor reference for message routing.
@@ -531,7 +547,15 @@ func (b *BridgeClientConn) UnregisterClient(id clientconn.ClientID) {
 
 	// Stop and remove event server for this client.
 	if server, ok := b.eventServers[id]; ok {
-		_ = server.Stop()
+		err := server.Stop()
+		if err != nil {
+			panic(
+				fmt.Sprintf(
+					"stop event server for client %s: %v",
+					id, err,
+				),
+			)
+		}
 		delete(b.eventServers, id)
 	}
 

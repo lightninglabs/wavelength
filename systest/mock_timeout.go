@@ -109,7 +109,7 @@ func (a *MockTimeoutActor) TriggerTimeout(ctx context.Context,
 
 // TriggerAll fires all pending timeouts. Useful for tests that want to advance
 // through all timeouts at once.
-func (a *MockTimeoutActor) TriggerAll(ctx context.Context) {
+func (a *MockTimeoutActor) TriggerAll(ctx context.Context) error {
 	a.mu.Lock()
 
 	// Collect all entries before releasing the lock.
@@ -124,10 +124,14 @@ func (a *MockTimeoutActor) TriggerAll(ctx context.Context) {
 
 	// Fire all callbacks outside the lock.
 	for id, entry := range entries {
-		_ = entry.callback.Tell(ctx, &timeout.ExpiredMsg{
+		if err := entry.callback.Tell(ctx, &timeout.ExpiredMsg{
 			ID: id,
-		})
+		}); err != nil {
+			return fmt.Errorf("send timeout callback: %w", err)
+		}
 	}
+
+	return nil
 }
 
 // PendingCount returns the number of pending timeouts.
