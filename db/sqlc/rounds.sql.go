@@ -582,6 +582,25 @@ func (q *Queries) LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, erro
 	return result.RowsAffected()
 }
 
+const MarkVTXOForfeited = `-- name: MarkVTXOForfeited :execrows
+UPDATE vtxos
+SET status = 'forfeited', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type MarkVTXOForfeitedParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXOForfeited, arg.OutpointHash, arg.OutpointIndex)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const UnlockAllLockedVTXOs = `-- name: UnlockAllLockedVTXOs :execrows
 UPDATE vtxos
 SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL

@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/stretchr/testify/require"
@@ -182,6 +183,46 @@ func TestVTXOStoreForfeit(t *testing.T) {
 	var storedBuf bytes.Buffer
 	require.NoError(t, stored.ForfeitTx.Serialize(&storedBuf))
 	require.Equal(t, buf.Bytes(), storedBuf.Bytes())
+}
+
+// TestVTXOStoreForfeitClearsInFlightLock tests forfeiting an in-flight VTXO
+// clears lock owner metadata atomically.
+func TestVTXOStoreForfeitClearsInFlightLock(t *testing.T) {
+	t.Parallel()
+
+	roundID := testRoundID("vtxo-round-forfeit-clears-lock")
+	ctx, vtxoStore := setupVTXOTest(t, roundID)
+
+	vtxo := createTestVTXO(t, roundID, 0)
+	vtxo.Status = rounds.VTXOStatusLive
+
+	err := vtxoStore.PersistVTXOs(ctx, []*rounds.VTXO{vtxo})
+	require.NoError(t, err)
+
+	// Put the VTXO into in_flight first to reproduce the CHECK-constraint
+	// sensitive transition to forfeited.
+	err = vtxoStore.LockVTXO(ctx, roundID, vtxo.Outpoint)
+	require.NoError(t, err)
+
+	forfeitInfo := &rounds.ForfeitInfo{
+		RoundID:              roundID,
+		ConnectorOutputIndex: 0,
+		LeafIndex:            0,
+		ForfeitTx: createTestFinalTx(
+			t, "forfeit-lock-clear",
+		),
+	}
+	err = vtxoStore.MarkVTXOForfeit(ctx, vtxo.Outpoint, forfeitInfo)
+	require.NoError(t, err)
+
+	row, err := vtxoStore.q.GetVTXO(ctx, sqlc.GetVTXOParams{
+		OutpointHash:  vtxo.Outpoint.Hash[:],
+		OutpointIndex: int32(vtxo.Outpoint.Index),
+	})
+	require.NoError(t, err)
+	require.Equal(t, string(rounds.VTXOStatusForfeited), row.Status)
+	require.False(t, row.LockOwnerKind.Valid)
+	require.Empty(t, row.LockOwnerID)
 }
 
 // TestVTXOStoreForfeitMissingVTXO tests forfeiting a missing VTXO.
