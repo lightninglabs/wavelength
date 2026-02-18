@@ -187,6 +187,103 @@ func (h *clientVTXOOutboxHandler) Handle(ctx context.Context,
 
 var _ clientoor.OutboxHandler = (*clientVTXOOutboxHandler)(nil)
 
+// incomingReceiveOutboxHandler is a test-only outbox handler for the incoming
+// transfer FSM. It materializes recipient outputs as client VTXO descriptors so
+// tests can assert receiver-side completion.
+type incomingReceiveOutboxHandler struct {
+	t *testing.T
+
+	recipientKey keychain.KeyDescriptor
+
+	operatorKey *btcec.PublicKey
+
+	exitDelay uint32
+
+	materialized []*clientvtxo.Descriptor
+}
+
+func (h *incomingReceiveOutboxHandler) Handle(_ context.Context,
+	_ clientoor.SessionID,
+	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+
+	h.t.Helper()
+
+	switch msg := outbox.(type) {
+	case *clientoor.IncomingTransferNotification:
+		return nil, nil
+
+	case *clientoor.MaterializeIncomingVTXOsRequest:
+		if msg.ArkPSBT == nil || msg.ArkPSBT.UnsignedTx == nil {
+			return nil, fmt.Errorf("ark psbt must be provided")
+		}
+
+		arkTxid := msg.ArkPSBT.UnsignedTx.TxHash()
+
+		for i := range msg.Recipients {
+			recipient := msg.Recipients[i]
+			desc := &clientvtxo.Descriptor{
+				Outpoint: wire.OutPoint{
+					Hash:  arkTxid,
+					Index: recipient.OutputIndex,
+				},
+				Amount:         recipient.Value,
+				PkScript:       recipient.PkScript,
+				ClientKey:      h.recipientKey,
+				OperatorKey:    h.operatorKey,
+				RelativeExpiry: h.exitDelay,
+				RoundID:        "oor_receive_systest",
+				CommitmentTxID: arkTxid,
+				Status:         clientvtxo.VTXOStatusLive,
+			}
+			h.materialized = append(h.materialized, desc)
+		}
+
+		return []clientoor.Event{
+			&clientoor.IncomingHandledEvent{},
+		}, nil
+
+	case *clientoor.SendIncomingAckRequest:
+		return []clientoor.Event{
+			&clientoor.IncomingAckSentEvent{},
+		}, nil
+
+	default:
+		return nil, nil
+	}
+}
+
+var _ clientoor.OutboxHandler = (*incomingReceiveOutboxHandler)(nil)
+
+// driveOutboxToFSM feeds outbox requests into a handler and recursively applies
+// follow-up events to the FSM until no more outbox actions are emitted.
+func driveOutboxToFSM(ctx context.Context, sessionID clientoor.SessionID,
+	fsm *clientoor.StateMachine, handler clientoor.OutboxHandler,
+	outbox []clientoor.OutboxEvent) error {
+
+	for _, msg := range outbox {
+		followUps, err := handler.Handle(ctx, sessionID, msg)
+		if err != nil {
+			return err
+		}
+
+		for _, evt := range followUps {
+			fut := fsm.AskEvent(ctx, evt)
+			result := fut.Await(ctx)
+			if result.IsErr() {
+				return result.Err()
+			}
+
+			next := result.UnwrapOr(nil)
+			err = driveOutboxToFSM(ctx, sessionID, fsm, handler, next)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // checkpointSignInput captures the client-side signing metadata required to
 // attach a client signature to a co-signed checkpoint PSBT.
 type checkpointSignInput struct {
@@ -790,6 +887,350 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 
 	blocks := h.Harness.GenerateAndWait(1)
 	require.NotEmpty(t, blocks)
+}
+
+// TestOORAliceBobRoundTripE2E verifies a true wallet-to-wallet OOR round-trip:
+// 1) Alice sends to Bob and Bob completes incoming receive.
+// 2) Bob sends that received output back to Alice and Alice completes receive.
+func TestOORAliceBobRoundTripE2E(t *testing.T) {
+	ParallelN(t)
+
+	h := NewE2EHarness(t)
+	h.Start()
+
+	ctx := t.Context()
+
+	aliceLND := h.PrimaryLND()
+	operatorLND := h.ServerLND()
+	bobInstance := h.StartClientLND("bob")
+	bobLND := bobInstance.Client
+
+	aliceKeyDesc, err := aliceLND.WalletKit.DeriveNextKey(
+		ctx, int32(987_150),
+	)
+	require.NoError(t, err)
+
+	bobKeyDesc, err := bobLND.WalletKit.DeriveNextKey(
+		ctx, int32(987_151),
+	)
+	require.NoError(t, err)
+
+	operatorKeyDesc := h.OperatorPubKey()
+	require.NotNil(t, operatorKeyDesc)
+
+	aliceSigner := NewLNDRPCSigner(aliceLND.Signer, 30*time.Second)
+	operatorSigner := NewLNDRPCSigner(operatorLND.Signer, 30*time.Second)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKeyDesc.PubKey,
+		CSVDelay:    oorExitDelay,
+	}
+
+	inputValue := btcutil.Amount(50_000)
+	aliceKey := keychain.KeyDescriptor{
+		KeyLocator: aliceKeyDesc.KeyLocator,
+		PubKey:     aliceKeyDesc.PubKey,
+	}
+	operatorKey := keychain.KeyDescriptor{
+		KeyLocator: operatorKeyDesc.KeyLocator,
+		PubKey:     operatorKeyDesc.PubKey,
+	}
+	minted := oorMintRealVTXO(
+		t, h, operatorSigner, operatorKey, aliceKey, oorExitDelay,
+		inputValue,
+	)
+
+	inputs := []clientoor.TransferInput{minted.TransferInput()}
+	vtxoDescs := []*clientvtxo.Descriptor{minted.VTXO}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: oorVTXOPkScript(
+				t,
+				bobKeyDesc.PubKey,
+				operatorKeyDesc.PubKey,
+				oorExitDelay,
+			),
+			Value: inputValue,
+		},
+	}
+
+	sqlStore := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
+		btclog.Disabled, clock.NewDefaultClock(),
+	)
+	locker := db.NewVTXOLockerDB(dbStore, btclog.Disabled)
+	store := dbStore.NewVTXORecordStore()
+	sessionStore := serveroor.NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	recipientEvents := serveroor.NewDBRecipientEventStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+
+	driver := serveroor.NewDriver(serveroor.DriverCfg{
+		Locker:          locker,
+		Store:           store,
+		SessionStore:    sessionStore,
+		RecipientEvents: recipientEvents,
+		OperatorSigner:  operatorSigner,
+		OperatorKey: keychain.KeyDescriptor{
+			KeyLocator: operatorKeyDesc.KeyLocator,
+			PubKey:     operatorKeyDesc.PubKey,
+		},
+	})
+
+	server := serveroor.NewActor(serveroor.ActorCfg{
+		CheckpointPolicy: policy,
+		OutboxHandler:    driver,
+		DeliveryStore:    newServerDeliveryStore(t),
+	})
+
+	err = server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	err = store.Create(ctx, &vtxo.Record{
+		Outpoint: minted.Outpoint,
+		Value:    int64(inputValue),
+		PkScript: minted.VTXO.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	adaptor := &oorClientToServerOutbox{
+		t:            t,
+		server:       server,
+		senderSigner: aliceSigner,
+		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
+			Outpoint:  minted.Outpoint,
+			OwnerKey:  minted.VTXO.ClientKey.PubKey,
+			ExitDelay: minted.VTXO.RelativeExpiry,
+		}},
+		signingInputs: []checkpointSignInput{{
+			Outpoint:    minted.Outpoint,
+			ClientKey:   minted.VTXO.ClientKey,
+			OperatorKey: minted.VTXO.OperatorKey,
+			ExitDelay:   minted.VTXO.RelativeExpiry,
+		}},
+	}
+
+	aliceStore := newClientVTXOStore(t, vtxoDescs)
+	aliceClient := clientoor.NewOORClientActor(clientoor.ClientActorCfg{
+		OutboxHandler: &clientVTXOOutboxHandler{
+			store: aliceStore,
+			next:  adaptor,
+		},
+		DeliveryStore: newClientDeliveryStore(t),
+	})
+
+	startResp := aliceClient.Receive(ctx, &clientoor.StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.Truef(t, startResp.IsOk(), "start transfer failed: %v",
+		startResp.Err(),
+	)
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	require.True(t, ok)
+
+	// The server cleans up finalized sessions from its in-memory map,
+	// so we derive the session ID from the client response instead.
+	sessionID := serveroor.SessionID(startMsg.SessionID)
+
+	aliceVTXO, err := aliceStore.GetVTXO(ctx, inputs[0].VTXO.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, clientvtxo.VTXOStatusSpent, aliceVTXO.Status)
+
+	events, err := recipientEvents.ListRecipientEvents(
+		ctx, recipients[0].PkScript, 0, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	event := events[0]
+	require.Equal(t, sessionID, event.SessionID)
+	require.Equal(t, recipients[0].PkScript, event.RecipientPkScript)
+	require.Equal(t, inputValue, event.Value)
+	require.NotNil(t, event.ArkPSBT)
+
+	bobReceive := &incomingReceiveOutboxHandler{
+		t: t,
+		recipientKey: keychain.KeyDescriptor{
+			KeyLocator: bobKeyDesc.KeyLocator,
+			PubKey:     bobKeyDesc.PubKey,
+		},
+		operatorKey: operatorKeyDesc.PubKey,
+		exitDelay:   oorExitDelay,
+	}
+
+	receiveSession, receiveOutbox, err := clientoor.DriveIncomingTransfer(
+		ctx, clientoor.SessionID(event.SessionID), event.ArkPSBT,
+	)
+	require.NoError(t, err)
+
+	err = driveOutboxToFSM(
+		ctx, receiveSession.ID, receiveSession.FSM, bobReceive, receiveOutbox,
+	)
+	require.NoError(t, err)
+
+	recvState, err := receiveSession.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &clientoor.ReceiveCompleted{}, recvState)
+
+	require.Len(t, bobReceive.materialized, 1)
+	received := bobReceive.materialized[0]
+	require.Equal(t, recipients[0].PkScript, received.PkScript)
+	require.Equal(t, inputValue, received.Amount)
+	require.Equal(t, clientvtxo.VTXOStatusLive, received.Status)
+
+	// Round-trip leg: Bob sends the received output back to Alice.
+	aliceReceiveKeyDesc, err := aliceLND.WalletKit.DeriveNextKey(
+		ctx, int32(987_152),
+	)
+	require.NoError(t, err)
+
+	require.NotNil(t, event.ArkPSBT)
+	require.NotNil(t, event.ArkPSBT.UnsignedTx)
+	require.Less(t, int(event.OutputIndex), len(event.ArkPSBT.UnsignedTx.TxOut))
+
+	bobOutpoint := wire.OutPoint{
+		Hash:  event.ArkPSBT.UnsignedTx.TxHash(),
+		Index: event.OutputIndex,
+	}
+	bobPrevOut := event.ArkPSBT.UnsignedTx.TxOut[event.OutputIndex]
+	require.NotNil(t, bobPrevOut)
+
+	bobTapScript, err := scripts.VTXOTapScript(
+		bobKeyDesc.PubKey, operatorKeyDesc.PubKey, oorExitDelay,
+	)
+	require.NoError(t, err)
+
+	bobDesc := &clientvtxo.Descriptor{
+		Outpoint: bobOutpoint,
+		Amount:   btcutil.Amount(bobPrevOut.Value),
+		PkScript: bobPrevOut.PkScript,
+		ClientKey: keychain.KeyDescriptor{
+			KeyLocator: bobKeyDesc.KeyLocator,
+			PubKey:     bobKeyDesc.PubKey,
+		},
+		OperatorKey:    operatorKeyDesc.PubKey,
+		TapScript:      bobTapScript,
+		RelativeExpiry: oorExitDelay,
+		Status:         clientvtxo.VTXOStatusLive,
+	}
+
+	bobStore := newClientVTXOStore(t, []*clientvtxo.Descriptor{bobDesc})
+	bobSigner := NewLNDRPCSigner(bobLND.Signer, 30*time.Second)
+
+	returnInputs := []clientoor.TransferInput{{
+		VTXO:            bobDesc,
+		OwnerLeafScript: []byte{txscript.OP_1},
+	}}
+
+	returnRecipients := []oortx.RecipientOutput{
+		{
+			PkScript: oorVTXOPkScript(
+				t,
+				aliceReceiveKeyDesc.PubKey,
+				operatorKeyDesc.PubKey,
+				oorExitDelay,
+			),
+			Value: inputValue,
+		},
+	}
+
+	returnAdaptor := &oorClientToServerOutbox{
+		t:            t,
+		server:       server,
+		senderSigner: bobSigner,
+		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
+			Outpoint:  bobOutpoint,
+			OwnerKey:  bobKeyDesc.PubKey,
+			ExitDelay: oorExitDelay,
+		}},
+		signingInputs: []checkpointSignInput{{
+			Outpoint: bobOutpoint,
+			ClientKey: keychain.KeyDescriptor{
+				KeyLocator: bobKeyDesc.KeyLocator,
+				PubKey:     bobKeyDesc.PubKey,
+			},
+			OperatorKey: operatorKeyDesc.PubKey,
+			ExitDelay:   oorExitDelay,
+		}},
+	}
+
+	bobClient := clientoor.NewOORClientActor(clientoor.ClientActorCfg{
+		OutboxHandler: &clientVTXOOutboxHandler{
+			store: bobStore,
+			next:  returnAdaptor,
+		},
+		DeliveryStore: newClientDeliveryStore(t),
+	})
+
+	returnResp := bobClient.Receive(ctx, &clientoor.StartTransferRequest{
+		Policy:     policy,
+		Inputs:     returnInputs,
+		Recipients: returnRecipients,
+	})
+	require.Truef(t, returnResp.IsOk(), "return transfer failed: %v",
+		returnResp.Err(),
+	)
+
+	returnMsg, ok := returnResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	require.True(t, ok)
+
+	returnSessionID := serveroor.SessionID(returnMsg.SessionID)
+
+	bobSpent, err := bobStore.GetVTXO(ctx, bobOutpoint)
+	require.NoError(t, err)
+	require.Equal(t, clientvtxo.VTXOStatusSpent, bobSpent.Status)
+
+	aliceEvents, err := recipientEvents.ListRecipientEvents(
+		ctx, returnRecipients[0].PkScript, 0, 10,
+	)
+	require.NoError(t, err)
+	require.Len(t, aliceEvents, 1)
+
+	aliceEvent := aliceEvents[0]
+	require.Equal(t, returnSessionID, aliceEvent.SessionID)
+	require.Equal(t, returnRecipients[0].PkScript, aliceEvent.RecipientPkScript)
+	require.Equal(t, inputValue, aliceEvent.Value)
+	require.NotNil(t, aliceEvent.ArkPSBT)
+
+	aliceReceive := &incomingReceiveOutboxHandler{
+		t: t,
+		recipientKey: keychain.KeyDescriptor{
+			KeyLocator: aliceReceiveKeyDesc.KeyLocator,
+			PubKey:     aliceReceiveKeyDesc.PubKey,
+		},
+		operatorKey: operatorKeyDesc.PubKey,
+		exitDelay:   oorExitDelay,
+	}
+
+	aliceReceiveSession, aliceReceiveOutbox, err := clientoor.DriveIncomingTransfer(
+		ctx, clientoor.SessionID(aliceEvent.SessionID), aliceEvent.ArkPSBT,
+	)
+	require.NoError(t, err)
+
+	err = driveOutboxToFSM(
+		ctx, aliceReceiveSession.ID, aliceReceiveSession.FSM,
+		aliceReceive, aliceReceiveOutbox,
+	)
+	require.NoError(t, err)
+
+	aliceRecvState, err := aliceReceiveSession.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &clientoor.ReceiveCompleted{}, aliceRecvState)
+
+	require.Len(t, aliceReceive.materialized, 1)
+	receivedBack := aliceReceive.materialized[0]
+	require.Equal(t, returnRecipients[0].PkScript, receivedBack.PkScript)
+	require.Equal(t, inputValue, receivedBack.Amount)
+	require.Equal(t, clientvtxo.VTXOStatusLive, receivedBack.Status)
 }
 
 // TestOORClientResumeAfterServerCoSignE2E simulates the mobile-safety edge where
