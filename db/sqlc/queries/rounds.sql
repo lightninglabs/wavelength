@@ -109,8 +109,8 @@ UPDATE vtxos
 SET status = 'in_flight', lock_owner_kind = $3, lock_owner_id = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 	AND status = 'live'
-	AND ((lock_owner_kind IS NULL AND lock_owner_id IS NULL) OR
-		(lock_owner_kind = $3 AND lock_owner_id = $4));
+	AND lock_owner_kind IS NULL
+	AND lock_owner_id IS NULL;
 
 -- name: UnlockVTXO :execrows
 UPDATE vtxos
