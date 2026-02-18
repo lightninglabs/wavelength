@@ -213,7 +213,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}
 
 		// Validate finalize package before emitting request.
-		err = oortx.ValidateFinalizePackageSigned(
+		err = oortx.ValidateFinalizePackage(
 			s.ArkPSBT, evt.FinalCheckpointPSBTs,
 		)
 		if err != nil {
@@ -299,51 +299,6 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &Completed{},
 			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	default:
-		return unexpectedEvent(s, event), nil
-	}
-}
-
-// ProcessEvent handles events for RetryBackoff.
-func (s *RetryBackoff) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
-
-	_ = ctx
-	_ = env
-
-	switch evt := event.(type) {
-	case *RetryDueEvent:
-		_ = evt
-
-		if s.ResumeSnapshot == nil {
-			return nil, fmt.Errorf(
-				"resume snapshot must be provided",
-			)
-		}
-
-		nextState, err := OutgoingStateFromSnapshot(s.ResumeSnapshot)
-		if err != nil {
-			return nil, err
-		}
-
-		nextOutbox, err := OutboxForState(nextState)
-		if err != nil {
-			return nil, err
-		}
-
-		return &StateTransition{
-			NextState: nextState,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: nextOutbox,
-			}),
 		}, nil
 
 	case *FailEvent:

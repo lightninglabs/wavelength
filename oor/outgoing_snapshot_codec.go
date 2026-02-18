@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -22,6 +23,8 @@ const (
 	snapshotCheckpointPSBTsRecordType tlv.Type = 9
 	snapshotTransferInputsRecordType  tlv.Type = 11
 	snapshotInputOutpointsRecordType  tlv.Type = 13
+	snapshotRetryAfterNanosRecordType tlv.Type = 15
+	snapshotResumeSnapshotRecordType  tlv.Type = 17
 	snapshotFailReasonRecordType      tlv.Type = 19
 )
 
@@ -142,7 +145,18 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		return nil, err
 	}
 
+	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
+
+	var resumeSnapshot []byte
+	if snapshot.ResumeSnapshot != nil {
+		resumeSnapshot, err = encodeOutgoingSnapshot(
+			snapshot.ResumeSnapshot,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -160,6 +174,12 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotInputOutpointsRecordType, &outpointsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotResumeSnapshotRecordType, &resumeSnapshot,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReason,
@@ -188,6 +208,8 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		checkpointPSBTsRaw []byte
 		inputSnapshotsRaw  []byte
 		outpointsRaw       []byte
+		retryAfterNanos    uint64
+		resumeSnapshotRaw  []byte
 		failReasonRaw      []byte
 	)
 
@@ -206,6 +228,12 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotInputOutpointsRecordType, &outpointsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,
@@ -255,7 +283,22 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		arkPSBT = nil
 	}
 
+	var resumeSnapshot *OutgoingSnapshot
+	if len(resumeSnapshotRaw) != 0 {
+		resumeSnapshot, err = decodeOutgoingSnapshot(resumeSnapshotRaw)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	decodedVersion, err := decodeUint64ToUint8(version, "snapshot version")
+	if err != nil {
+		return nil, err
+	}
+
+	decodedRetryAfter, err := decodeUint64ToDuration(
+		retryAfterNanos, "snapshot retry_after nanos",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +311,8 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
 		InputOutpoints:         outpoints,
+		RetryAfter:             decodedRetryAfter,
+		ResumeSnapshot:         resumeSnapshot,
 		FailReason:             string(failReasonRaw),
 	}, nil
 }
@@ -315,4 +360,14 @@ func decodeUint64ToInt(value uint64, field string) (int, error) {
 	}
 
 	return int(value), nil
+}
+
+func decodeUint64ToDuration(value uint64, field string) (time.Duration, error) {
+	if value > math.MaxInt64 {
+		return 0, fmt.Errorf(
+			"%s overflows time.Duration: %d", field, value,
+		)
+	}
+
+	return time.Duration(int64(value)), nil
 }

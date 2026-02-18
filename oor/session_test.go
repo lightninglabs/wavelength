@@ -14,6 +14,8 @@ import (
 
 // TestSessionHappyPath exercises the outgoing transfer FSM without the actor
 // wrapper.
+//
+// It asserts the canonical v0 phase progression and final terminal state.
 func TestSessionHappyPath(t *testing.T) {
 	t.Parallel()
 
@@ -60,6 +62,9 @@ func TestSessionHappyPath(t *testing.T) {
 	require.NotNil(t, session)
 	require.NotEmpty(t, outbox)
 
+	// Creating a new session always emits a submit outbox message. The FSM
+	// itself never calls the network; the caller must perform the side
+	// effect and then feed the result back as an event.
 	require.Len(t, outbox, 1)
 	submit, ok := outbox[0].(*SendSubmitPackageRequest)
 	require.True(t, ok)
@@ -92,6 +97,10 @@ func TestSessionHappyPath(t *testing.T) {
 	require.NotEmpty(t, signReq.TransferInputs)
 
 	// Step 2: Wallet attaches client signatures to checkpoints.
+	//
+	// This is the local signing boundary: no network calls are required,
+	// but the signing implementation is still modeled as a side effect
+	// outside the FSM for determinism and testability.
 	err = SignCheckpointPSBTs(
 		clientSigner, signReq.TransferInputs,
 		signReq.CoSignedCheckpointPSBTs,

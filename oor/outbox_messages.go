@@ -46,12 +46,37 @@ type OutboxEvent interface {
 	outboxSealed()
 }
 
+// RequestArkSignatures asks the signing layer to attach client signature
+// material for Ark inputs before submit.
+//
+// This is the explicit boundary where the client signs the Ark PSBT. The
+// resulting signed Ark PSBT is then forwarded in SendSubmitPackageRequest.
+type RequestArkSignatures struct {
+	actor.BaseMessage
+
+	// ArkPSBT is the canonical Ark transfer PSBT to sign.
+	ArkPSBT *psbt.Packet
+
+	// TransferInputs carry client signing context needed to authorize Ark
+	// inputs.
+	TransferInputs []TransferInput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *RequestArkSignatures) outboxType() string {
+	return "RequestArkSignatures"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *RequestArkSignatures) outboxSealed() {}
+
 // SendSubmitPackageRequest asks the transport layer to send the submit package
 // (Ark PSBT + checkpoint PSBTs) to the server.
 type SendSubmitPackageRequest struct {
 	actor.BaseMessage
 
-	// ArkPSBT is the canonical unsigned Ark transfer PSBT.
+	// ArkPSBT is the canonical Ark transfer PSBT with client signature
+	// material already attached for submit.
 	ArkPSBT *psbt.Packet
 
 	// CheckpointPSBTs are unsigned checkpoint PSBTs for the submit phase.
@@ -223,6 +248,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// ArkPSBT is the canonical Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
+	// FinalCheckpointPSBTs are the finalized checkpoint packages associated
+	// with this Ark transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
 	// Recipients are the non-anchor recipient outputs in the Ark tx.
 	Recipients []ArkRecipientOutput
 }
@@ -347,7 +376,6 @@ func encodeFinalizePayload(ark *psbt.Packet,
 
 	return buf.Bytes(), nil
 }
-
 func encodeRetryPayload(after time.Duration, reason string) ([]byte, error) {
 	if after < 0 {
 		return nil, fmt.Errorf("retry delay must be non-negative")
