@@ -212,6 +212,18 @@ CREATE INDEX idx_mailbox_messages_promise
     ON mailbox_messages(promise_id)
     WHERE promise_id IS NOT NULL;
 
+CREATE INDEX idx_oor_package_checkpoints_session
+    ON oor_package_checkpoints(session_id, checkpoint_index ASC);
+
+CREATE INDEX idx_oor_packages_direction_updated
+    ON oor_packages(direction, updated_at DESC);
+
+CREATE INDEX idx_oor_vtxo_bindings_script
+    ON oor_vtxo_bindings(recipient_pk_script);
+
+CREATE INDEX idx_oor_vtxo_bindings_session
+    ON oor_vtxo_bindings(session_id);
+
 CREATE INDEX idx_outbox_messages_domain_key
     ON outbox_messages(domain_key)
     WHERE domain_key IS NOT NULL;
@@ -302,6 +314,71 @@ CREATE TABLE mailbox_messages (
     created_at BIGINT NOT NULL
 );
 
+CREATE TABLE oor_package_checkpoints (
+    session_id BLOB NOT NULL,
+    checkpoint_index INTEGER NOT NULL CHECK (checkpoint_index >= 0),
+    checkpoint_psbt BLOB NOT NULL,
+    created_at BIGINT NOT NULL,
+
+    PRIMARY KEY (session_id, checkpoint_index),
+
+    FOREIGN KEY (session_id) REFERENCES oor_packages(session_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE oor_packages (
+    -- session_id is the stable OOR session identifier (Ark txid bytes).
+    session_id BLOB PRIMARY KEY NOT NULL,
+
+    -- direction indicates if this package was received or sent by this client.
+    direction TEXT NOT NULL CHECK (
+        direction IN ('incoming', 'outgoing')
+    ),
+
+    -- ark_psbt is the canonical Ark transaction package.
+    ark_psbt BLOB NOT NULL,
+
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+);
+
+CREATE TABLE oor_recipient_cursors (
+    recipient_pk_script BLOB PRIMARY KEY NOT NULL,
+    last_event_id BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    last_session_id BLOB
+);
+
+CREATE TABLE oor_vtxo_bindings (
+    -- outpoint identifies the local VTXO outpoint linked to this package.
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL CHECK (outpoint_index >= 0),
+
+    session_id BLOB NOT NULL,
+
+    -- output_index identifies the package output index (incoming) or
+    -- enumerated input index (outgoing consumed input).
+    output_index INTEGER NOT NULL CHECK (output_index >= 0),
+
+    -- link_kind identifies what this outpoint means relative to the package.
+    link_kind TEXT NOT NULL CHECK (
+        link_kind IN ('created_output', 'consumed_input')
+    ),
+
+    recipient_pk_script BLOB,
+    value_sat BIGINT,
+
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY (outpoint_hash, outpoint_index),
+
+    UNIQUE (session_id, output_index, link_kind),
+
+    FOREIGN KEY (session_id) REFERENCES oor_packages(session_id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE outbox_messages (
     -- id is a UUIDv7 providing time-ordering and uniqueness.
     id TEXT PRIMARY KEY,
@@ -350,6 +427,18 @@ CREATE TABLE outbox_messages (
 
     -- completed_at is the unix timestamp when delivery completed (or failed).
     completed_at BIGINT
+);
+
+CREATE TABLE owned_receive_scripts (
+    pk_script BLOB PRIMARY KEY NOT NULL,
+    client_key_family BIGINT NOT NULL,
+    client_key_index BIGINT NOT NULL,
+    client_pubkey BLOB NOT NULL,
+    operator_pubkey BLOB NOT NULL,
+    exit_delay BIGINT NOT NULL,
+    source TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    last_used_at BIGINT
 );
 
 CREATE TABLE processed_messages (

@@ -52,6 +52,52 @@ type ClientTreeTxid struct {
 	OutputIndex int32
 }
 
+type OorPackage struct {
+	SessionID []byte
+	Direction string
+	ArkPsbt   []byte
+	CreatedAt int64
+	UpdatedAt int64
+}
+
+type OorPackageCheckpoint struct {
+	SessionID       []byte
+	CheckpointIndex int32
+	CheckpointPsbt  []byte
+	CreatedAt       int64
+}
+
+type OorRecipientCursor struct {
+	RecipientPkScript []byte
+	LastEventID       int64
+	UpdatedAt         int64
+	LastSessionID     []byte
+}
+
+type OorVtxoBinding struct {
+	OutpointHash      []byte
+	OutpointIndex     int32
+	SessionID         []byte
+	OutputIndex       int32
+	LinkKind          string
+	RecipientPkScript []byte
+	ValueSat          sql.NullInt64
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+type OwnedReceiveScript struct {
+	PkScript        []byte
+	ClientKeyFamily int64
+	ClientKeyIndex  int64
+	ClientPubkey    []byte
+	OperatorPubkey  []byte
+	ExitDelay       int64
+	Source          string
+	CreatedAt       int64
+	LastUsedAt      sql.NullInt64
+}
+
 type Round struct {
 	RoundID               string
 	StartHeight           int32

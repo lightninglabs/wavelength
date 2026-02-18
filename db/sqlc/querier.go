@@ -14,6 +14,7 @@ type Querier interface {
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
+	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
 	// states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
@@ -24,6 +25,11 @@ type Querier interface {
 	GetClientTreeByTxid(ctx context.Context, txid []byte) (RoundClientTree, error)
 	GetClientTreeTxidInfo(ctx context.Context, txid []byte) (ClientTreeTxid, error)
 	GetClientTreeTxids(ctx context.Context, arg GetClientTreeTxidsParams) ([]GetClientTreeTxidsRow, error)
+	GetOORPackage(ctx context.Context, sessionID []byte) (OorPackage, error)
+	GetOORPackageByOutpoint(ctx context.Context, arg GetOORPackageByOutpointParams) (GetOORPackageByOutpointRow, error)
+	GetOORRecipientCursor(ctx context.Context, recipientPkScript []byte) (OorRecipientCursor, error)
+	GetOORVTXOBindingByOutpoint(ctx context.Context, arg GetOORVTXOBindingByOutpointParams) (OorVtxoBinding, error)
+	GetOwnedReceiveScript(ctx context.Context, pkScript []byte) (OwnedReceiveScript, error)
 	GetRound(ctx context.Context, roundID string) (Round, error)
 	GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error)
 	GetRoundByCommitmentTxid(ctx context.Context, commitmentTxid []byte) (Round, error)
@@ -43,6 +49,7 @@ type Querier interface {
 	InsertBoardingIntent(ctx context.Context, arg InsertBoardingIntentParams) error
 	// Client tree txids queries.
 	InsertClientTreeTxid(ctx context.Context, arg InsertClientTreeTxidParams) error
+	InsertOORPackageCheckpoint(ctx context.Context, arg InsertOORPackageCheckpointParams) error
 	// Round queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
 	// Round boarding intents queries.
@@ -73,6 +80,12 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the legacy
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
+	ListOORPackages(ctx context.Context) ([]OorPackage, error)
+	ListOORPackagesByDirection(ctx context.Context, direction string) ([]OorPackage, error)
+	ListOORRecipientCursors(ctx context.Context) ([]OorRecipientCursor, error)
+	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]OorVtxoBinding, error)
+	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)
@@ -100,6 +113,11 @@ type Querier interface {
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	// OOR artifact store queries.
+	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) error
+	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
+	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) error
+	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
 }
 
 var _ Querier = (*Queries)(nil)
