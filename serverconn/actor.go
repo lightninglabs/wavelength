@@ -287,6 +287,10 @@ type ServerConnectionActor struct {
 	// any data-race between the two methods.
 	cancelCh chan context.CancelFunc
 
+	// stopOnce ensures StopIngress cancels the ingress loop exactly
+	// once.
+	stopOnce sync.Once
+
 	// wg tracks the ingress loop goroutine for clean shutdown.
 	wg sync.WaitGroup
 }
@@ -481,22 +485,39 @@ func (a *ServerConnectionActor) deliverResponse(
 	return true
 }
 
-// StartIngress launches the background ingress loop goroutine that
-// continuously pulls envelopes from the remote mailbox and dispatches them
-// to local actors.
-func (a *ServerConnectionActor) StartIngress(ctx context.Context) {
+// StartIngress loads the ack checkpoint from the store and launches the
+// background ingress loop goroutine. If the checkpoint cannot be loaded,
+// an error is returned and the loop is not started — the caller should
+// treat this as a fatal startup failure.
+func (a *ServerConnectionActor) StartIngress(
+	ctx context.Context,
+) error {
+
+	state, err := a.loadCheckpoint(ctx)
+	if err != nil {
+		return fmt.Errorf("load ingress checkpoint: %w", err)
+	}
+
 	ingressCtx, cancel := context.WithCancel(ctx)
 
 	a.wg.Add(1)
 	a.cancelCh <- cancel
-	go a.ingressLoop(ingressCtx)
+	go a.ingressLoop(ingressCtx, state)
+
+	return nil
 }
 
-// StopIngress cancels the ingress loop and waits for it to exit.
+// StopIngress cancels the ingress loop and waits for it to exit. Safe to
+// call multiple times — the cancel is executed at most once.
 func (a *ServerConnectionActor) StopIngress() {
-	if a.cancel != nil {
-		a.cancel()
-	}
+	a.stopOnce.Do(func() {
+		select {
+		case fn := <-a.cancelCh:
+			fn()
+
+		default:
+		}
+	})
 
 	a.wg.Wait()
 }
