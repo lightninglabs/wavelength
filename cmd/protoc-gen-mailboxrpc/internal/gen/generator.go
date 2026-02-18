@@ -112,10 +112,14 @@ func buildServiceData(g *protogen.GeneratedFile,
 	const protoPath = "google.golang.org/protobuf/proto"
 
 	data := serviceData{
-		ServiceName:  svc.GoName,
-		ServiceFQN:   serviceFQN,
-		RPCClient:    resolveIdent(g, mailboxrpcPath, "RPCClient"),
-		RPCOptions:   resolveIdent(g, mailboxrpcPath, "RPCOptions"),
+		ServiceName: svc.GoName,
+		ServiceFQN:  serviceFQN,
+		RPCClient:   resolveIdent(g, mailboxrpcPath, "RPCClient"),
+		RPCOptions:  resolveIdent(g, mailboxrpcPath, "RPCOptions"),
+		ServiceMethod: resolveIdent(
+			g, mailboxrpcPath, "ServiceMethod",
+		),
+		SendResult:   resolveIdent(g, mailboxrpcPath, "SendResult"),
 		Router:       resolveIdent(g, mailboxrpcPath, "Router"),
 		Context:      resolveIdent(g, "context", "Context"),
 		ProtoMessage: resolveIdent(g, protoPath, "Message"),

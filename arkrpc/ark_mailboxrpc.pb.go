@@ -49,13 +49,16 @@ func (c *ArkServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoReque
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.ArkService", "GetInfo", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.ArkService",
+		Method:  "GetInfo",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(GetInfoResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
