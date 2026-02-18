@@ -7,6 +7,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -109,6 +111,37 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 
 var _ OutboxHandler = (*testOutboxHandler)(nil)
 
+// testOutgoingPackageStore records package persistence calls for assertions.
+type testOutgoingPackageStore struct {
+	packageCalls int
+	bindingCalls int
+
+	lastDirection string
+	lastSessionID chainhash.Hash
+}
+
+// UpsertPackage records one outgoing package persistence invocation.
+func (s *testOutgoingPackageStore) UpsertPackage(_ context.Context,
+	direction string, sessionID chainhash.Hash, _ *psbt.Packet,
+	_ []*psbt.Packet) error {
+
+	s.packageCalls++
+	s.lastDirection = direction
+	s.lastSessionID = sessionID
+
+	return nil
+}
+
+// UpsertBinding records one outgoing input-binding persistence invocation.
+func (s *testOutgoingPackageStore) UpsertBinding(_ context.Context,
+	_ wire.OutPoint, _ chainhash.Hash, _ uint32, _ string, _ []byte,
+	_ *int64) error {
+
+	s.bindingCalls++
+
+	return nil
+}
+
 // TestOORClientActorHappyPath exercises the outgoing transfer flow end-to-end
 // using the client actor wrapper and a stub outbox handler.
 func TestOORClientActorHappyPath(t *testing.T) {
@@ -135,6 +168,7 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	operatorSigner := input.NewMockSigner(
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
+	packageStore := &testOutgoingPackageStore{}
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -164,6 +198,7 @@ func TestOORClientActorHappyPath(t *testing.T) {
 			clientSigner:   clientSigner,
 			operatorSigner: operatorSigner,
 		},
+		PackageStore:  packageStore,
 		DeliveryStore: newTestDeliveryStore(t),
 		ActorID:       "oor-actor-test-happy",
 	})
@@ -191,6 +226,11 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
 	require.IsType(t, &Completed{}, stateMsg.State)
+	require.Equal(t, 1, packageStore.packageCalls)
+	require.Equal(t, len(inputs), packageStore.bindingCalls)
+	require.Equal(t, PackageDirectionOutgoing, packageStore.lastDirection)
+	require.Equal(t, chainhash.Hash(startMsg.SessionID),
+		packageStore.lastSessionID)
 }
 
 // retrySubmitOutboxHandler simulates a retryable transport error on the first

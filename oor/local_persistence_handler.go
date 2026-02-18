@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -21,8 +22,11 @@ var (
 	)
 )
 
-// IsIncomingRecipientNotOwned reports whether err indicates an incoming
-// recipient that should be skipped during materialization.
+// IsIncomingRecipientNotOwned reports whether an error means the recipient
+// output is not owned by this wallet.
+//
+// Callers use this to safely skip non-owned recipients while continuing
+// materialization for owned outputs in the same incoming transfer.
 func IsIncomingRecipientNotOwned(err error) bool {
 	return errors.Is(err, ErrIncomingRecipientNotOwned)
 }
@@ -56,6 +60,10 @@ type LocalPersistenceOutboxHandler struct {
 	// Store is the VTXO store to update.
 	Store vtxo.VTXOStore
 
+	// PackageStore persists finalized OOR package artifacts and local
+	// outpoint bindings.
+	PackageStore PackagePersistence
+
 	// OperatorKey is the operator key used to reconstruct incoming VTXO
 	// tapscripts.
 	OperatorKey *btcec.PublicKey
@@ -72,7 +80,10 @@ type LocalPersistenceOutboxHandler struct {
 	ResolveIncomingMetadata IncomingMetadataResolver
 }
 
-// Handle executes the outbox request and returns follow-up events.
+// Handle executes one outbox request and emits follow-up FSM events.
+//
+// Persistence-related requests are handled locally, while unknown requests are
+// delegated to Next when configured.
 func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
 
@@ -156,6 +167,17 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	}
 
 	ownedRecipients := 0
+	sessionIDHash := chainhash.Hash(msg.SessionID)
+
+	if h.PackageStore != nil {
+		err := h.PackageStore.UpsertPackage(ctx,
+			PackageDirectionIncoming, sessionIDHash,
+			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	for i := range msg.Recipients {
 		recipient := msg.Recipients[i]
@@ -193,24 +215,36 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		}
 
 		err = h.Store.SaveVTXO(ctx, desc)
-		if err == nil {
-			continue
+		if err != nil {
+			// SaveVTXO may fail for duplicates on retry/restart
+			// paths. Treat that case as idempotent only if the
+			// already-persisted descriptor matches the
+			// materialized recipient output.
+			existing, getErr := h.Store.GetVTXO(ctx, desc.Outpoint)
+			if getErr != nil || existing == nil {
+				return nil, err
+			}
+
+			if existing.Amount != desc.Amount {
+				return nil, err
+			}
+
+			if !bytes.Equal(existing.PkScript, desc.PkScript) {
+				return nil, err
+			}
 		}
 
-		// SaveVTXO may fail for duplicates on retry/restart paths.
-		// Treat that case as idempotent only if the already-persisted
-		// descriptor matches the materialized recipient output.
-		existing, getErr := h.Store.GetVTXO(ctx, desc.Outpoint)
-		if getErr != nil || existing == nil {
-			return nil, err
-		}
+		if h.PackageStore != nil {
+			valueSat := int64(desc.Amount)
 
-		if existing.Amount != desc.Amount {
-			return nil, err
-		}
-
-		if !bytes.Equal(existing.PkScript, desc.PkScript) {
-			return nil, err
+			err := h.PackageStore.UpsertBinding(ctx, desc.Outpoint,
+				sessionIDHash, recipient.OutputIndex,
+				PackageLinkKindCreatedOutput, desc.PkScript,
+				&valueSat,
+			)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
