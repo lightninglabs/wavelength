@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -35,6 +36,10 @@ type ClientActorCfg struct {
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
 
+	// PackageStore persists finalized outgoing packages and local input
+	// bindings used by unroll/recovery tooling.
+	PackageStore PackagePersistence
+
 	// DeliveryStore backs the durable actor mailbox/checkpoint operations.
 	DeliveryStore actor.DeliveryStore
 
@@ -57,7 +62,12 @@ type OORClientActor struct {
 	startupErr error
 }
 
-// NewOORClientActor creates a new outgoing-transfer OOR client actor.
+// NewOORClientActor creates a durable outgoing-transfer OOR client actor.
+//
+// Startup performs checkpoint loading and prepends a restart message so
+// recovery logic runs through the same behavior path as normal runtime
+// messages. If startup prerequisites fail, the returned actor stores the error
+// and surfaces it on Receive.
 func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	if cfg.Logger == nil {
 		cfg.Logger = btclog.Disabled
@@ -132,7 +142,11 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	return actorRef
 }
 
-// Receive processes a client actor message and returns a response.
+// Receive sends one actor API message through the durable command boundary and
+// returns the resulting response.
+//
+// Callers should treat this as the single public interaction point for
+// outgoing OOR session lifecycle operations.
 func (a *OORClientActor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
@@ -156,7 +170,9 @@ func (a *OORClientActor) Receive(ctx context.Context,
 	return fut.Await(ctx)
 }
 
-// Stop shuts down the underlying durable actor.
+// Stop shuts down the underlying durable actor and releases its goroutines.
+//
+// Stop is safe to call multiple times.
 func (a *OORClientActor) Stop() {
 	if a.durable != nil {
 		a.durable.Stop()
@@ -171,6 +187,7 @@ type oorDurableBehavior struct {
 	sessions map[SessionID]*sessionHandle
 }
 
+// Receive handles durable mailbox messages for outgoing OOR sessions.
 func (b *oorDurableBehavior) Receive(ctx context.Context,
 	msg actor.TLVMessage) fn.Result[ActorResp] {
 
@@ -218,6 +235,7 @@ func (b *oorDurableBehavior) Receive(ctx context.Context,
 	}
 }
 
+// handleRestart restores sessions from checkpoint and resumes pending outbox.
 func (b *oorDurableBehavior) handleRestart(ctx context.Context,
 	msg *actor.RestartMessage) fn.Result[ActorResp] {
 
@@ -321,9 +339,24 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 			req.SessionID))
 	}
 
+	finalizeState, err := b.captureFinalizeStateForEvent(
+		handle.FSM, req.Event,
+	)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
 	outbox, err := b.askEvent(ctx, handle.FSM, req.Event)
 	if err != nil {
 		return fn.Err[ActorResp](err)
+	}
+
+	if finalizeState != nil {
+		err := b.persistOutgoingPackage(ctx, req.SessionID,
+			finalizeState)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
 	}
 
 	err = b.persistCheckpoint(ctx)
@@ -337,6 +370,69 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// persistOutgoingPackage stores finalized outgoing package artifacts and input
+// bindings for unroll/recovery lookup.
+func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
+	sessionID SessionID, state *AwaitingFinalizeAccepted) error {
+
+	if b.cfg.PackageStore == nil || state == nil {
+		return nil
+	}
+
+	sessionHash := chainhash.Hash(sessionID)
+
+	err := b.cfg.PackageStore.UpsertPackage(ctx,
+		PackageDirectionOutgoing, sessionHash, state.ArkPSBT,
+		state.FinalCheckpointPSBTs,
+	)
+	if err != nil {
+		return err
+	}
+
+	for i := range state.InputOutpoints {
+		err := b.cfg.PackageStore.UpsertBinding(ctx,
+			state.InputOutpoints[i], sessionHash, uint32(i),
+			PackageLinkKindConsumedInput, nil, nil,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// captureFinalizeStateForEvent snapshots finalize-state context before
+// applying a follow-up event.
+func (b *oorDurableBehavior) captureFinalizeStateForEvent(fsm *StateMachine,
+	event Event) (*AwaitingFinalizeAccepted, error) {
+
+	if b.cfg.PackageStore == nil {
+		return nil, nil
+	}
+
+	if _, ok := event.(*FinalizeAcceptedEvent); !ok {
+		return nil, nil
+	}
+
+	current, err := fsm.CurrentState()
+	if err != nil {
+		return nil, err
+	}
+
+	state, ok := current.(State)
+	if !ok {
+		return nil, fmt.Errorf("unexpected state type: %T", current)
+	}
+
+	finalizeState, ok := state.(*AwaitingFinalizeAccepted)
+	if !ok {
+		return nil, nil
+	}
+
+	return finalizeState, nil
 }
 
 // handleRestoreSession restores a session from an exported snapshot.
@@ -467,6 +563,8 @@ func (b *oorDurableBehavior) handleGetState(ctx context.Context,
 	})
 }
 
+// restoreFromCheckpoint decodes and restores all outgoing sessions from raw
+// checkpoint bytes.
 func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 	raw []byte) error {
 
@@ -508,6 +606,8 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 	return nil
 }
 
+// resumeRestoredSessions re-drives outbox for restored sessions in stable
+// session-id order.
 func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 	sessionIDs := make([]SessionID, 0, len(b.sessions))
 	for sessionID := range b.sessions {
@@ -578,12 +678,27 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		}
 
 		for _, followUp := range followUps {
+			finalizeState, err := b.captureFinalizeStateForEvent(
+				fsm, followUp,
+			)
+			if err != nil {
+				return err
+			}
+
 			// Feed follow-up events into the FSM.
 			// Recursively execute any emitted outbox work.
 			// Stop when none remains.
 			nextOutbox, err := b.askEvent(ctx, fsm, followUp)
 			if err != nil {
 				return err
+			}
+
+			if finalizeState != nil {
+				err = b.persistOutgoingPackage(ctx, sessionID,
+					finalizeState)
+				if err != nil {
+					return err
+				}
 			}
 
 			err = b.persistCheckpoint(ctx)
@@ -601,6 +716,8 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	return nil
 }
 
+// persistCheckpoint snapshots all active sessions into the durable checkpoint
+// store.
 func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
 	if b.cfg.DeliveryStore == nil {
 		return fmt.Errorf("delivery store must be provided")
