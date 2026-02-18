@@ -63,13 +63,20 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 		return nil, nil, err
 	}
 
-	awaitingSubmit, ok := currentState.(*AwaitingSubmitAccepted)
-	if !ok {
+	var arkPSBT *psbt.Packet
+	switch s := currentState.(type) {
+	case *AwaitingArkSignatures:
+		arkPSBT = s.ArkPSBT
+
+	case *AwaitingSubmitAccepted:
+		arkPSBT = s.ArkPSBT
+
+	default:
 		return nil, nil, fmt.Errorf("unexpected start state: %T",
 			currentState)
 	}
 
-	sessionID, err := sessionIDFromArk(awaitingSubmit.ArkPSBT)
+	sessionID, err := sessionIDFromArk(arkPSBT)
 	if err != nil {
 		return nil, nil, err
 	}

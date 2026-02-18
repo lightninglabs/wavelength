@@ -90,8 +90,11 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 
 		// The outbox is intentionally ordered:
 		//   1) notify the app/UI so it can show the transfer;
-		//   2) materialize incoming VTXOs into local state; and
-		//   3) ack receipt to the server (best-effort, idempotent).
+		//   2) materialize incoming VTXOs into local state.
+		//
+		// Ack is emitted only after the application confirms incoming
+		// handling to avoid acknowledging transfers that were not
+		// durably materialized yet.
 		return &StateTransition{
 			NextState: &ReceiveNotified{
 				SessionID: evt.SessionID,
@@ -105,12 +108,11 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 						Recipients: recipients,
 					},
 					&MaterializeIncomingVTXOsRequest{
-						SessionID:  evt.SessionID,
-						ArkPSBT:    evt.ArkPSBT,
-						Recipients: recipients,
-					},
-					&SendIncomingAckRequest{
 						SessionID: evt.SessionID,
+						ArkPSBT:   evt.ArkPSBT,
+						FinalCheckpointPSBTs: evt.
+							FinalCheckpointPSBTs,
+						Recipients: recipients,
 					},
 				},
 			}),
@@ -137,12 +139,21 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 	switch evt := event.(type) {
 	case *IncomingHandledEvent:
 		// The application signals it has processed the notification.
-		// Wallet state has been updated (materialization complete).
+		// Wallet state has been updated (materialization complete), so
+		// we can now ack to the server.
 		_ = evt
 
 		return &StateTransition{
-			NextState: &ReceiveCompleted{},
-			NewEvents: fn.None[EmittedEvent](),
+			NextState: &ReceiveAwaitingAck{
+				SessionID: s.SessionID,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&SendIncomingAckRequest{
+						SessionID: s.SessionID,
+					},
+				},
+			}),
 		}, nil
 
 	case *FailEvent:
@@ -164,4 +175,31 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 	_ = env
 
 	return unexpectedReceiveEvent(s, event), nil
+}
+
+// ProcessEvent handles events for ReceiveAwaitingAck.
+func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *IncomingAckSentEvent:
+		_ = evt
+
+		return &StateTransition{
+			NextState: &ReceiveCompleted{},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	case *FailEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.Reason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedReceiveEvent(s, event), nil
+	}
 }
