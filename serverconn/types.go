@@ -2,148 +2,28 @@ package serverconn
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
-	"github.com/lightningnetwork/lnd/tlv"
 )
 
-// CorrelationID is an opaque identifier linking a mailbox request to its
-// response. Using a named type prevents accidental string swaps with other
-// identifiers.
-type CorrelationID string
+// CorrelationID links a mailbox request to its response.
+type CorrelationID = mailboxconn.CorrelationID
 
-// IdempotencyKey is a stable key for deduplicating semantic operations across
-// retries. Two sends with the same idempotency key are treated as the same
-// logical operation by the remote mailbox edge.
-type IdempotencyKey string
+// IdempotencyKey deduplicates a semantic operation across retries.
+type IdempotencyKey = mailboxconn.IdempotencyKey
 
-// ackStateType is the checkpoint state type used when persisting the ack
-// watermark to the delivery store.
-const ackStateType = "AckState"
+// AckState tracks connector ack watermark state for checkpoint persistence.
+type AckState = mailboxconn.AckState
 
-// TLV record type constants for AckState checkpoint serialization.
-const (
-	pullCursorRecordType          tlv.Type = 1
-	dispatchCommittedToRecordType tlv.Type = 2
-	ackTargetRecordType           tlv.Type = 3
-	ackCommittedToRecordType      tlv.Type = 4
-)
+// ResponseWaiter stores in-memory waiter state for unary response delivery.
+type ResponseWaiter = mailboxconn.ResponseWaiter
 
-// AckState tracks the four cursor variables that govern safe ack progression.
-// All fields are monotonic — they never decrease during normal operation.
-//
-// The state machine enforces the invariant:
-//
-//	ack_committed_to <= dispatch_committed_to
-//
-// Cursor never advances past non-durable local work. Repeated acks are safe
-// and idempotent.
-type AckState struct {
-	// PullCursor is the cursor for the next Pull call. After a successful
-	// ack, this advances to at least the acked position.
-	PullCursor uint64
-
-	// DispatchCommittedTo is the max cursor whose envelopes have been
-	// durably committed to local actor mailboxes via Tell.
-	DispatchCommittedTo uint64
-
-	// AckTarget is the max cursor that should be acked remotely. This is
-	// always >= DispatchCommittedTo.
-	AckTarget uint64
-
-	// AckCommittedTo is the last cursor successfully acked to the remote
-	// mailbox edge.
-	AckCommittedTo uint64
-}
-
-// AdvanceDispatch updates the state after a successful durable dispatch
-// through nextCursor. The ack target is advanced to match the dispatch
-// frontier.
-func (s *AckState) AdvanceDispatch(nextCursor uint64) {
-	if nextCursor > s.DispatchCommittedTo {
-		s.DispatchCommittedTo = nextCursor
-	}
-
-	if s.DispatchCommittedTo > s.AckTarget {
-		s.AckTarget = s.DispatchCommittedTo
-	}
-}
-
-// AdvanceAck updates the state after a successful AckUpTo call. The pull
-// cursor advances to at least the acked position so that subsequent pulls
-// do not re-fetch already-acked envelopes.
-func (s *AckState) AdvanceAck() {
-	s.AckCommittedTo = s.AckTarget
-
-	if s.AckCommittedTo > s.PullCursor {
-		s.PullCursor = s.AckCommittedTo
-	}
-}
-
-// NeedsAck returns true when there is an un-acked committed dispatch. This
-// means AckTarget has advanced past AckCommittedTo and a remote AckUpTo call
-// is needed.
-func (s *AckState) NeedsAck() bool {
-	return s.AckTarget > s.AckCommittedTo
-}
-
-// Encode serializes the AckState to the provided writer as a TLV stream.
-func (s *AckState) Encode(w io.Writer) error {
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
-			pullCursorRecordType, &s.PullCursor,
-		),
-		tlv.MakePrimitiveRecord(
-			dispatchCommittedToRecordType,
-			&s.DispatchCommittedTo,
-		),
-		tlv.MakePrimitiveRecord(
-			ackTargetRecordType, &s.AckTarget,
-		),
-		tlv.MakePrimitiveRecord(
-			ackCommittedToRecordType, &s.AckCommittedTo,
-		),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-// Decode deserializes the AckState from the provided reader.
-func (s *AckState) Decode(r io.Reader) error {
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
-			pullCursorRecordType, &s.PullCursor,
-		),
-		tlv.MakePrimitiveRecord(
-			dispatchCommittedToRecordType,
-			&s.DispatchCommittedTo,
-		),
-		tlv.MakePrimitiveRecord(
-			ackTargetRecordType, &s.AckTarget,
-		),
-		tlv.MakePrimitiveRecord(
-			ackCommittedToRecordType, &s.AckCommittedTo,
-		),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	_, err = stream.DecodeWithParsedTypes(r)
-
-	return err
-}
+// ackStateType is the checkpoint state type used for ack watermark storage.
+const ackStateType = mailboxconn.CheckpointStateType
 
 // EnvelopeDispatcher routes an inbound envelope to the correct local actor.
 // A nil error means the envelope was durably committed to the target actor's
@@ -153,18 +33,6 @@ func (s *AckState) Decode(r io.Reader) error {
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
-
-// ResponseWaiter is registered by unary facade callers so the ingress loop
-// can deliver KIND_RESPONSE envelopes without actor dispatch. The channel
-// has buffer size 1 to prevent the ingress loop from blocking.
-type ResponseWaiter struct {
-	// Ch receives the response envelope from the ingress loop.
-	Ch chan *mailboxpb.Envelope
-
-	// Created records when the waiter was registered, for diagnostics
-	// and stale waiter cleanup.
-	Created time.Time
-}
 
 // ConnectorConfig holds all dependencies and tuning knobs for the server
 // connection actor. The connector is the single boundary for all mailbox
@@ -216,6 +84,10 @@ type ConnectorConfig struct {
 
 	// RetryMaxDelay caps the exponential backoff delay.
 	RetryMaxDelay time.Duration
+
+	// ResponseWaiterTTL bounds how long a response waiter (or buffered
+	// early response) is retained before stale cleanup.
+	ResponseWaiterTTL time.Duration
 }
 
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
@@ -223,9 +95,10 @@ type ConnectorConfig struct {
 // and Store. Codec is optional — NewRuntime fills a default.
 func DefaultConnectorConfig() ConnectorConfig {
 	return ConnectorConfig{
-		PullMaxEnvelopes: 50,
-		PullWaitTimeout:  5 * time.Second,
-		RetryBaseDelay:   200 * time.Millisecond,
-		RetryMaxDelay:    30 * time.Second,
+		PullMaxEnvelopes:  50,
+		PullWaitTimeout:   5 * time.Second,
+		RetryBaseDelay:    200 * time.Millisecond,
+		RetryMaxDelay:     30 * time.Second,
+		ResponseWaiterTTL: mailboxconn.DefaultResponseWaiterTTL,
 	}
 }
