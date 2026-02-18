@@ -274,7 +274,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	// StartTransferRequest is treated as idempotent: if the same
 	// deterministic transfer is submitted twice (e.g. due to retries or
 	// durable replay), we keep the existing session and return its ID.
-	if _, exists := a.sessions[session.ID]; exists {
+	if _, exists := b.sessions[session.ID]; exists {
 		return fn.Ok[ActorResp](&StartTransferResponse{
 			SessionID: session.ID,
 		})
@@ -346,6 +346,13 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 		return fn.Err[ActorResp](
 			fmt.Errorf("snapshot must be provided"),
 		)
+	}
+
+	if _, exists := b.sessions[req.Snapshot.SessionID]; exists {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"duplicate session id during restore: %s",
+			req.Snapshot.SessionID,
+		))
 	}
 
 	session, err := NewSessionFromSnapshot(ctx, req.Snapshot)
@@ -479,6 +486,13 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 
 	for i := range checkpoint.Snapshots {
 		snapshot := checkpoint.Snapshots[i]
+
+		if _, exists := b.sessions[snapshot.SessionID]; exists {
+			return fmt.Errorf(
+				"duplicate session id in checkpoint: %s",
+				snapshot.SessionID,
+			)
+		}
 
 		session, err := NewSessionFromSnapshot(ctx, snapshot)
 		if err != nil {
