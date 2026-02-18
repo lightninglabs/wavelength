@@ -45,7 +45,15 @@ func parseLockOwner(owner vtxo.LockOwner) (string, []byte, error) {
 			)
 		}
 
-		ownerID := []byte(roundIDStr)
+		roundID, err := uuid.Parse(roundIDStr)
+		if err != nil {
+			return "", nil, fmt.Errorf(
+				"invalid round owner %q: %w", ownerStr, err,
+			)
+		}
+
+		ownerID := make([]byte, len(roundID))
+		copy(ownerID, roundID[:])
 
 		return lockOwnerKindRound, ownerID, nil
 
