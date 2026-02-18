@@ -98,9 +98,11 @@ func (a *MockTimeoutActor) TriggerTimeout(ctx context.Context,
 	a.mu.Unlock()
 
 	// Send the expiry message to the callback.
-	entry.callback.Tell(ctx, &timeout.ExpiredMsg{
+	if err := entry.callback.Tell(ctx, &timeout.ExpiredMsg{
 		ID: id,
-	})
+	}); err != nil {
+		return fmt.Errorf("send timeout callback: %w", err)
+	}
 
 	return nil
 }
@@ -122,7 +124,7 @@ func (a *MockTimeoutActor) TriggerAll(ctx context.Context) {
 
 	// Fire all callbacks outside the lock.
 	for id, entry := range entries {
-		entry.callback.Tell(ctx, &timeout.ExpiredMsg{
+		_ = entry.callback.Tell(ctx, &timeout.ExpiredMsg{
 			ID: id,
 		})
 	}
@@ -142,6 +144,7 @@ func (a *MockTimeoutActor) HasPendingTimeout(id timeout.ID) bool {
 	defer a.mu.Unlock()
 
 	_, ok := a.scheduled[id]
+
 	return ok
 }
 

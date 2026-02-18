@@ -3,7 +3,6 @@
 package systest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -33,7 +32,7 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet with enough for multiple rounds.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 3)
@@ -47,13 +46,17 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	t.Log("=== Phase 1: Initial boarding and VTXO creation ===")
 
 	// Create a boarding address.
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
 	// Fund the boarding address.
 	boardingAmount := btcutil.Amount(200_000)
-	txidStr := h.Harness.Faucet(boardingResp.Address.String(), boardingAmount)
+	txidStr := h.Harness.Faucet(
+		boardingResp.Address.String(), boardingAmount,
+	)
 	t.Logf("Funded boarding address with %d sats, txid: %s",
 		boardingAmount, txidStr)
 
@@ -78,7 +81,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	require.NoError(t, err, "should trigger registration")
 
 	// Wait for server response.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond")
 
 	// Seal round 1.
@@ -86,7 +91,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	t.Log("Round 1 sealed")
 
 	// Wait for signing completion.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 1: should complete signing")
 
 	// Wait for broadcast and mine to confirm.
@@ -139,7 +146,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	t.Logf("Leave destination: %s", destAddr.String())
 
 	// Trigger leave of the VTXO.
-	err = client.TriggerVTXOLeave(ctx, []wire.OutPoint{vtxo1Outpoint}, destAddr)
+	err = client.TriggerVTXOLeave(
+		ctx, []wire.OutPoint{vtxo1Outpoint}, destAddr,
+	)
 	require.NoError(t, err, "should trigger VTXO leave")
 	t.Logf("Triggered leave for VTXO %s", vtxo1Outpoint)
 
@@ -153,7 +162,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	t.Log("Triggered registration for leave round")
 
 	// Wait for server response to leave request (join round).
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond to leave registration")
 	t.Log("Server responded to leave request")
 
@@ -174,7 +185,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	// since they skip nonce/partial sig exchange (no VTXO trees to sign).
 	// Messages: JoinRound, CommitmentTx, InputSigs (forfeit).
 	msgsPerLeaveRound := 5
-	err = h.Transcript().WaitForEntryCount(msgsPerLeaveRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerLeaveRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 2: should complete signing")
 
 	t.Log("Round 2 signing completed")
@@ -209,7 +222,9 @@ func TestVTXOLeaveE2E(t *testing.T) {
 	expectedMinBalance := initialBalance + btcutil.Amount(
 		float64(vtxo1Amount)*0.9,
 	)
-	err = client.WaitForOnChainBalance(ctx, expectedMinBalance, 30*time.Second)
+	err = client.WaitForOnChainBalance(
+		ctx, expectedMinBalance, 30*time.Second,
+	)
 	require.NoError(t, err, "on-chain balance should increase")
 
 	finalBalance, err := client.GetOnChainBalance(ctx)

@@ -26,9 +26,15 @@ import (
 
 // pendingC2SMessage holds a buffered client-to-server message.
 type pendingC2SMessage struct {
-	ctx context.Context
 	msg rounds.ActorMsg
 }
+
+type roundReceivableRef = actor.TellOnlyRef[actormsg.RoundReceivable]
+type txNonces = map[clienttree.TxID]clienttree.Musig2PubNonce
+type txSigs = map[clienttree.TxID]*musig2.PartialSignature
+type signingNonces = map[rounds.SigningKeyHex]txNonces
+type signingSigs = map[rounds.SigningKeyHex]txSigs
+type connectorLeafMap = map[wire.OutPoint]*clientround.ConnectorLeafInfo
 
 // BridgeServerConn implements serverconn.ServerConnMsg interface to route
 // client outbox messages directly to the server rounds actor. This replaces
@@ -113,7 +119,11 @@ func (b *BridgeServerConn) FlushNext() error {
 	b.pendingC2S = b.pendingC2S[1:]
 	b.mu.Unlock()
 
-	b.roundsActor.Tell(msg.ctx, msg.msg)
+	if err := b.roundsActor.Tell(
+		context.Background(), msg.msg,
+	); err != nil {
+		return fmt.Errorf("flush client->server message: %w", err)
+	}
 
 	return nil
 }
@@ -126,15 +136,17 @@ func (b *BridgeServerConn) FlushAll() {
 	b.mu.Unlock()
 
 	for _, msg := range pending {
-		b.roundsActor.Tell(msg.ctx, msg.msg)
+		_ = b.roundsActor.Tell(context.Background(), msg.msg)
 	}
 }
 
 // handleSendClientEvent converts a client outbox message to a server actor
 // message and routes it directly to the rounds actor (or buffers it if
 // buffering is enabled).
-func (b *BridgeServerConn) handleSendClientEvent(ctx context.Context,
-	req *serverconn.SendClientEventRequest) fn.Result[serverconn.ServerConnResp] {
+func (b *BridgeServerConn) handleSendClientEvent(
+	ctx context.Context,
+	req *serverconn.SendClientEventRequest,
+) fn.Result[serverconn.ServerConnResp] {
 
 	// Record the message to the transcript first.
 	b.transcript.Record(ClientToServer, b.clientID, req.Message)
@@ -151,7 +163,6 @@ func (b *BridgeServerConn) handleSendClientEvent(ctx context.Context,
 	b.mu.Lock()
 	if b.buffered {
 		b.pendingC2S = append(b.pendingC2S, pendingC2SMessage{
-			ctx: ctx,
 			msg: actorMsg,
 		})
 		b.mu.Unlock()
@@ -165,11 +176,17 @@ func (b *BridgeServerConn) handleSendClientEvent(ctx context.Context,
 	b.mu.Unlock()
 
 	// Immediate delivery.
-	b.roundsActor.Tell(ctx, actorMsg)
+	if err := b.roundsActor.Tell(ctx, actorMsg); err != nil {
+		return fn.Err[serverconn.ServerConnResp](fmt.Errorf(
+			"send to rounds actor: %w", err,
+		))
+	}
 
-	return fn.Ok[serverconn.ServerConnResp](&serverconn.SendClientEventResponse{
-		Success: true,
-	})
+	return fn.Ok[serverconn.ServerConnResp](
+		&serverconn.SendClientEventResponse{
+			Success: true,
+		},
+	)
 }
 
 // convertToActorMsg converts a client outbox message to a server actor message.
@@ -183,12 +200,16 @@ func (b *BridgeServerConn) convertToActorMsg(
 		// BoardingRequests (by value) and VTXORequests (by value)
 		// which need to be converted to pointers for
 		// clienttypes.JoinRoundRequest.
-		boardingReqs := make([]*clienttypes.BoardingRequest, len(m.BoardingRequests))
+		boardingReqs := make(
+			[]*clienttypes.BoardingRequest, len(m.BoardingRequests),
+		)
 		for i := range m.BoardingRequests {
 			boardingReqs[i] = &m.BoardingRequests[i]
 		}
 
-		vtxoReqs := make([]*clienttypes.VTXORequest, len(m.VTXORequests))
+		vtxoReqs := make(
+			[]*clienttypes.VTXORequest, len(m.VTXORequests),
+		)
 		for i := range m.VTXORequests {
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
@@ -200,9 +221,11 @@ func (b *BridgeServerConn) convertToActorMsg(
 			len(m.ForfeitRequests),
 		)
 		for _, forfeitReq := range m.ForfeitRequests {
-			forfeitReqs = append(forfeitReqs, &clienttypes.ForfeitRequest{
-				VTXOOutpoint: &forfeitReq.VTXOOutpoint,
-			})
+			forfeitReqs = append(
+				forfeitReqs, &clienttypes.ForfeitRequest{
+					VTXOOutpoint: &forfeitReq.VTXOOutpoint,
+				},
+			)
 		}
 
 		// Convert LeaveRequests directly. Each leave specifies an
@@ -227,14 +250,12 @@ func (b *BridgeServerConn) convertToActorMsg(
 		}, nil
 
 	case *clientround.SubmitNoncesRequest:
-		// Convert client's SubmitNoncesRequest to server's RoundMsg with
-		// ClientVTXONoncesEvent.
+		// Convert client's SubmitNoncesRequest to server's RoundMsg
+		// with ClientVTXONoncesEvent.
 		//
 		// Convert nonces from SignerKey to SigningKeyHex (both are
 		// [33]byte).
-		serverNonces := make(
-			map[rounds.SigningKeyHex]map[clienttree.TxID]clienttree.Musig2PubNonce,
-		)
+		serverNonces := make(signingNonces)
 		for signerKey, txNonces := range m.Nonces {
 			var vertex route.Vertex
 			copy(vertex[:], signerKey[:])
@@ -252,9 +273,7 @@ func (b *BridgeServerConn) convertToActorMsg(
 	case *clientround.SubmitPartialSigRequest:
 		// Convert client's SubmitPartialSigRequest to server's
 		// RoundMsg with ClientVTXOPartialSigsEvent.
-		serverSigs := make(
-			map[rounds.SigningKeyHex]map[clienttree.TxID]*musig2.PartialSignature,
-		)
+		serverSigs := make(signingSigs)
 		for signerKey, txSigs := range m.Signatures {
 			var vertex route.Vertex
 			copy(vertex[:], signerKey[:])
@@ -294,10 +313,12 @@ func (b *BridgeServerConn) convertToActorMsg(
 						"outpoint %s", outpoint,
 				)
 			}
-			forfeitTxs = append(forfeitTxs, &clienttypes.ForfeitTxSig{
-				UnsignedTx:    unsignedTx,
-				ClientVTXOSig: sig,
-			})
+			forfeitTxs = append(
+				forfeitTxs, &clienttypes.ForfeitTxSig{
+					UnsignedTx:    unsignedTx,
+					ClientVTXOSig: sig,
+				},
+			)
 		}
 
 		return &rounds.RoundMsg{
@@ -309,13 +330,14 @@ func (b *BridgeServerConn) convertToActorMsg(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported client message type: %T", msg)
+		return nil, fmt.Errorf(
+			"unsupported client message type: %T", msg,
+		)
 	}
 }
 
 // pendingS2CMessage holds a buffered server-to-client message.
 type pendingS2CMessage struct {
-	ctx context.Context
 	msg clientround.ClientMsg
 }
 
@@ -327,7 +349,7 @@ type BridgeClientConn struct {
 	mu sync.RWMutex
 
 	// clients maps client IDs to their actor references.
-	clients map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]
+	clients map[clientconn.ClientID]roundReceivableRef
 
 	// eventServers maps client IDs to subscribe.Server instances that
 	// broadcast events to subscribers. This enables TestClient to observe
@@ -348,7 +370,7 @@ type BridgeClientConn struct {
 // NewBridgeClientConn creates a new bridge client connection.
 func NewBridgeClientConn(transcript *MessageTranscript) *BridgeClientConn {
 	return &BridgeClientConn{
-		clients:      make(map[clientconn.ClientID]actor.TellOnlyRef[actormsg.RoundReceivable]),
+		clients:      make(map[clientconn.ClientID]roundReceivableRef),
 		eventServers: make(map[clientconn.ClientID]*subscribe.Server),
 		transcript:   transcript,
 		pendingS2C:   make(map[clientconn.ClientID][]pendingS2CMessage),
@@ -462,7 +484,9 @@ func (b *BridgeClientConn) FlushNextFor(clientID clientconn.ClientID) error {
 		return fmt.Errorf("client %s not registered", clientID)
 	}
 
-	clientRef.Tell(msg.ctx, msg.msg)
+	if err := clientRef.Tell(context.Background(), msg.msg); err != nil {
+		return fmt.Errorf("flush server->client message: %w", err)
+	}
 
 	return nil
 }
@@ -480,7 +504,7 @@ func (b *BridgeClientConn) FlushAllFor(clientID clientconn.ClientID) {
 	}
 
 	for _, msg := range pending {
-		clientRef.Tell(msg.ctx, msg.msg)
+		_ = clientRef.Tell(context.Background(), msg.msg)
 	}
 }
 
@@ -507,7 +531,7 @@ func (b *BridgeClientConn) UnregisterClient(id clientconn.ClientID) {
 
 	// Stop and remove event server for this client.
 	if server, ok := b.eventServers[id]; ok {
-		server.Stop()
+		_ = server.Stop()
 		delete(b.eventServers, id)
 	}
 
@@ -533,8 +557,10 @@ func (b *BridgeClientConn) Receive(ctx context.Context,
 // handleSendServerEvent converts a server outbox message to a client actor
 // message and routes it to the appropriate client (or buffers it if buffering
 // is enabled).
-func (b *BridgeClientConn) handleSendServerEvent(ctx context.Context,
-	req *clientconn.SendServerEventRequest) fn.Result[clientconn.ClientConnResp] {
+func (b *BridgeClientConn) handleSendServerEvent(
+	ctx context.Context,
+	req *clientconn.SendServerEventRequest,
+) fn.Result[clientconn.ClientConnResp] {
 
 	// Get the target client ID from the message.
 	targetID := req.Message.ClientID()
@@ -568,7 +594,6 @@ func (b *BridgeClientConn) handleSendServerEvent(ctx context.Context,
 	if b.buffered {
 		b.pendingS2C[targetID] = append(
 			b.pendingS2C[targetID], pendingS2CMessage{
-				ctx: ctx,
 				msg: notification,
 			},
 		)
@@ -592,11 +617,17 @@ func (b *BridgeClientConn) handleSendServerEvent(ctx context.Context,
 	}
 
 	// Immediate delivery.
-	clientRef.Tell(ctx, notification)
+	if err := clientRef.Tell(ctx, notification); err != nil {
+		return fn.Err[clientconn.ClientConnResp](fmt.Errorf(
+			"send to client actor: %w", err,
+		))
+	}
 
-	return fn.Ok[clientconn.ClientConnResp](&clientconn.SendClientEventResponse{
-		Success: true,
-	})
+	return fn.Ok[clientconn.ClientConnResp](
+		&clientconn.SendClientEventResponse{
+			Success: true,
+		},
+	)
 }
 
 // convertToClientEvent converts a server outbox message to a client event.
@@ -605,30 +636,36 @@ func (b *BridgeClientConn) convertToClientEvent(
 
 	switch m := msg.(type) {
 	case *rounds.ClientSuccessResp:
-		return &clientround.RoundJoined{
-			RoundID:                   clientround.RoundID(m.RoundID),
+		joined := &clientround.RoundJoined{
 			AcceptedBoardingOutpoints: m.AcceptedBoardingOutpoints,
 			AcceptedVTXOOutpoints:     m.AcceptedVTXOOutpoints,
-		}, nil
+		}
+		joined.RoundID = clientround.RoundID(m.RoundID)
+
+		return joined, nil
 
 	case *rounds.ClientBatchInfo:
-		// Convert connector leaf map from server format to client format.
-		// The client format has additional fields (VTXOAmount, LeafIndex)
-		// that are looked up from local VTXO state by the client.
-		var forfeitMappings map[wire.OutPoint]*clientround.ConnectorLeafInfo
+		// Convert connector leaf map from server format to client
+		// format. The client format has additional fields
+		// (VTXOAmount, LeafIndex) that are looked up from local
+		// VTXO state by the client.
+		var forfeitMappings connectorLeafMap
 		if m.ConnectorLeafMap != nil {
 			forfeitMappings = make(
-				map[wire.OutPoint]*clientround.ConnectorLeafInfo,
-				len(m.ConnectorLeafMap),
+				connectorLeafMap, len(m.ConnectorLeafMap),
 			)
 			for outpoint, info := range m.ConnectorLeafMap {
-				forfeitMappings[outpoint] = &clientround.ConnectorLeafInfo{
-					ConnectorOutpoint: info.LeafOutpoint,
-					ConnectorPkScript: info.LeafOutput.PkScript,
-					ConnectorAmount:   info.LeafOutput.Value,
-					// VTXOAmount is looked up from client's
-					// local VTXO state.
+				connectorInfo := &clientround.ConnectorLeafInfo{
+					ConnectorPkScript: info.LeafOutput.
+						PkScript,
+					ConnectorAmount: info.LeafOutput.
+						Value,
+					// VTXOAmount is looked up from
+					// client's local VTXO state.
 				}
+				connectorInfo.ConnectorOutpoint =
+					info.LeafOutpoint
+				forfeitMappings[outpoint] = connectorInfo
 			}
 		}
 
@@ -669,7 +706,9 @@ func (b *BridgeClientConn) convertToClientEvent(
 		}, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported server message type: %T", msg)
+		return nil, fmt.Errorf(
+			"unsupported server message type: %T", msg,
+		)
 	}
 }
 

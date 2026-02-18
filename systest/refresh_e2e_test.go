@@ -3,7 +3,6 @@
 package systest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -31,7 +30,7 @@ func TestVTXORefreshE2E(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet with enough for multiple rounds.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 3) // 3 BTC
@@ -45,13 +44,17 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("=== Phase 1: Initial boarding and VTXO creation ===")
 
 	// Create a boarding address.
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
 	// Fund the boarding address.
 	boardingAmount := btcutil.Amount(200_000)
-	txidStr := h.Harness.Faucet(boardingResp.Address.String(), boardingAmount)
+	txidStr := h.Harness.Faucet(
+		boardingResp.Address.String(), boardingAmount,
+	)
 	t.Logf("Funded boarding address with %d sats, txid: %s",
 		boardingAmount, txidStr)
 
@@ -76,7 +79,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err, "should trigger registration")
 
 	// Wait for server response.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond")
 
 	// Seal round 1.
@@ -84,7 +89,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("Round 1 sealed")
 
 	// Wait for signing completion.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 1: should complete signing")
 
 	// Wait for broadcast and mine to confirm.
@@ -146,7 +153,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("Triggered registration for refresh round")
 
 	// Wait for server response.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond to refresh registration")
 
 	// Seal round 2.
@@ -154,7 +163,8 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("Round 2 sealed")
 
 	// Wait for VTXO status to transition to Forfeiting. This happens when
-	// the client receives the batch info and starts the forfeit signing flow.
+	// the client receives the batch info and starts the forfeit signing
+	// flow.
 	err = client.WaitForVTXOStatus(
 		vtxo1Outpoint, vtxo.VTXOStatusForfeiting, 15*time.Second,
 	)
@@ -163,7 +173,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 
 	// Wait for signing completion. For refresh rounds, the message count
 	// includes forfeit signature submission.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "round 2: should complete signing")
 
 	t.Log("Round 2 signing completed")
@@ -208,7 +220,8 @@ func TestVTXORefreshE2E(t *testing.T) {
 		"new VTXO should be Live")
 	t.Log("Verified: New VTXO is Live")
 
-	// Verify replacement relationship (this also checks amounts are similar).
+	// Verify replacement relationship (this also checks amounts are
+	// similar).
 	client.AssertVTXOReplacement(vtxo1Outpoint, vtxo2Desc.Outpoint)
 	t.Log("Verified: VTXO replacement relationship and value preservation")
 
@@ -221,6 +234,9 @@ func TestVTXORefreshE2E(t *testing.T) {
 	t.Log("Verified: Exactly 1 live VTXO (the refreshed one)")
 
 	t.Log("TestVTXORefreshE2E completed successfully!")
-	t.Log("Demonstrated: VTXO refresh lifecycle - Live -> RefreshRequested -> " +
-		"Forfeiting -> Forfeited (old) + Live (new)")
+	t.Log(
+		"Demonstrated: VTXO refresh lifecycle - Live -> " +
+			"RefreshRequested -> Forfeiting -> " +
+			"Forfeited (old) + Live (new)",
+	)
 }

@@ -4,7 +4,6 @@ package systest
 
 import (
 	"os"
-	"sync"
 	"testing"
 )
 
@@ -51,32 +50,6 @@ func ParallelN(t *testing.T) {
 	t.Cleanup(func() {
 		<-parallelSem
 	})
-}
-
-// testCleanup tracks cleanup functions for tests. This is used by tests that
-// need to register cleanup handlers outside of t.Cleanup (e.g., for parallel
-// cleanup ordering).
-type testCleanup struct {
-	mu       sync.Mutex
-	cleanups []func()
-}
-
-// Add registers a cleanup function.
-func (tc *testCleanup) Add(fn func()) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	tc.cleanups = append(tc.cleanups, fn)
-}
-
-// Run executes all cleanup functions in reverse order.
-func (tc *testCleanup) Run() {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	for i := len(tc.cleanups) - 1; i >= 0; i-- {
-		tc.cleanups[i]()
-	}
 }
 
 // TestMain is the entry point for the systest package. It sets up any

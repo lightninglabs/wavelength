@@ -3,7 +3,6 @@
 package systest
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -23,38 +22,37 @@ const (
 
 	// msgsPerClientRound is the total messages for one client's full round
 	// participation including the VTXO signing exchange:
-	// - JoinRoundRequest (C→S)
-	// - ClientSuccessResp (S→C)
-	// - ClientBatchInfo (S→C)
-	// - SubmitNoncesRequest (C→S)
-	// - ClientVTXOAggNonces (S→C)
-	// - SubmitPartialSigRequest (C→S)
-	// - ClientVTXOAggSigs (S→C)
-	// - ClientAwaitingInputSigsResp (S→C)
-	// - SubmitForfeitSigRequest (C→S)
+	// - JoinRoundRequest (C→S).
+	// - ClientSuccessResp (S→C).
+	// - ClientBatchInfo (S→C).
+	// - SubmitNoncesRequest (C→S).
+	// - ClientVTXOAggNonces (S→C).
+	// - SubmitPartialSigRequest (C→S).
+	// - ClientVTXOAggSigs (S→C).
+	// - ClientAwaitingInputSigsResp (S→C).
+	// - SubmitForfeitSigRequest (C→S).
 	msgsPerClientRound = 9
 )
 
 // TestBoardingE2ESingleClient tests the complete boarding flow for a single
 // client using the real wallet and on-chain funding:
-//  1. Client creates boarding address using wallet actor
-//  2. Harness funds that address on-chain via faucet
-//  3. Mine blocks to confirm funding
-//  4. Client joins round with the confirmed boarding input
-//  5. Server builds batch and sends ClientBatchInfo
-//  6. For boarding-only: server requests input signatures
-//  7. Client sends boarding signatures
-//  8. Server finalizes and broadcasts commitment tx
-//  9. Mine block to confirm
-//
-// 10. Client receives round completion
+// 1. Client creates boarding address using wallet actor.
+// 2. Harness funds that address on-chain via faucet.
+// 3. Mine blocks to confirm funding.
+// 4. Client joins round with the confirmed boarding input.
+// 5. Server builds batch and sends ClientBatchInfo.
+// 6. For boarding-only: server requests input signatures.
+// 7. Client sends boarding signatures.
+// 8. Server finalizes and broadcasts commitment tx.
+// 9. Mine block to confirm.
+// 10. Client receives round completion.
 func TestBoardingE2ESingleClient(t *testing.T) {
 	ParallelN(t)
 
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server's wallet. The server needs funds to add wallet
 	// inputs for change and fees when building the commitment transaction.
@@ -70,7 +68,9 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	// includes the client key (cooperative spend), operator key (server
 	// signing), and a CSV delay path for unilateral exit.
 	terms := h.Terms()
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	require.NotNil(t, boardingResp, "boarding response should not be nil")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
@@ -83,7 +83,10 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 	// Mine blocks to confirm the funding. Server requires
 	// MinBoardingConfirmations (typically 1 for regtest).
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm funding", terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm funding",
+		terms.MinBoardingConfirmations,
+	)
 
 	// Wait for the wallet actor to detect the boarding confirmation. The
 	// wallet polls ListUnspent on each block and sends
@@ -230,7 +233,7 @@ func TestBoardingE2ESingleClient(t *testing.T) {
 		C2S("SubmitForfeitSigRequest"),
 	})
 
-	t.Log("TestBoardingE2ESingleClient completed full E2E flow successfully!")
+	t.Log("TestBoardingE2ESingleClient completed successfully")
 }
 
 // TestBoardingE2EMultipleVTXOs tests that a client can board with a single
@@ -243,7 +246,7 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin) // 1 BTC
@@ -256,18 +259,28 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 
 	// Create a boarding address.
 	terms := h.Terms()
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
 	// Fund with 200,000 sats (N).
 	boardingAmount := btcutil.Amount(200_000)
-	txidStr := h.Harness.Faucet(boardingResp.Address.String(), boardingAmount)
-	t.Logf("Funded boarding address with %d sats, txid: %s", boardingAmount, txidStr)
+	txidStr := h.Harness.Faucet(
+		boardingResp.Address.String(), boardingAmount,
+	)
+	t.Logf(
+		"Funded boarding address with %d sats, txid: %s",
+		boardingAmount, txidStr,
+	)
 
 	// Mine blocks to confirm the funding.
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm funding", terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm funding",
+		terms.MinBoardingConfirmations,
+	)
 
 	// Wait for boarding confirmation.
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
@@ -275,7 +288,8 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	t.Log("Client FSM reached PendingRoundAssembly state")
 
 	// Register TWO VTXO requests of ~N/2 each (minus fees).
-	// Estimate 5000 sats total operator fee, so each VTXO gets ~97,500 sats.
+	// Estimate 5000 sats total operator fee, so each VTXO gets
+	// ~97,500 sats.
 	vtxoAmount := (boardingAmount - 5000) / 2
 	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{
 		vtxoAmount,
@@ -354,7 +368,8 @@ func TestBoardingE2EMultipleVTXOs(t *testing.T) {
 	for i, vtxo := range vtxos {
 		t.Logf("VTXO %d: outpoint=%s, amount=%d sats",
 			i+1, vtxo.Outpoint, vtxo.Amount)
-		// Each should be close to vtxoAmount (allow for small variance).
+		// Each should be close to vtxoAmount (allow for small
+		// variance).
 		require.InDelta(t, int64(vtxoAmount), int64(vtxo.Amount), 1000,
 			"VTXO amount should be approximately %d", vtxoAmount)
 	}
@@ -376,7 +391,7 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet with enough for multiple clients.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 2)
@@ -394,7 +409,9 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 		clients[i] = NewTestClient(h)
 		t.Logf("Created client %d: %s", i, clients[i].ClientID())
 
-		resp, err := clients[i].CreateBoardingAddress(terms.BoardingExitDelay)
+		resp, err := clients[i].CreateBoardingAddress(
+			terms.BoardingExitDelay,
+		)
 		require.NoError(t, err)
 		boardingAddrs[i] = resp.Address.String()
 		t.Logf("Client %d boarding address: %s", i, boardingAddrs[i])
@@ -403,17 +420,26 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	// Fund all boarding addresses.
 	for i := 0; i < numClients; i++ {
 		txid := h.Harness.Faucet(boardingAddrs[i], amounts[i])
-		t.Logf("Client %d funded with %d sats, txid: %s", i, amounts[i], txid)
+		t.Logf(
+			"Client %d funded with %d sats, txid: %s",
+			i, amounts[i], txid,
+		)
 	}
 
 	// Confirm funding and wait for all clients' FSMs to transition to
 	// PendingRoundAssembly.
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm funding", terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm funding",
+		terms.MinBoardingConfirmations,
+	)
 
 	for i, client := range clients {
 		err := client.WaitForBoardingConfirmation(30 * time.Second)
-		require.NoError(t, err, "client %d should reach PendingRoundAssembly", i)
+		require.NoError(
+			t, err,
+			"client %d should reach PendingRoundAssembly", i,
+		)
 	}
 	t.Log("All clients reached PendingRoundAssembly")
 
@@ -421,15 +447,21 @@ func TestBoardingE2EMultipleClients(t *testing.T) {
 	// with their boarding amount minus estimated fees.
 	for i, client := range clients {
 		vtxoAmount := amounts[i] - 5000
-		err := client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
-		require.NoError(t, err, "client %d should register VTXO requests", i)
+		err := client.RegisterVTXORequests(
+			ctx, []btcutil.Amount{vtxoAmount},
+		)
+		require.NoError(
+			t, err, "client %d should register VTXO requests", i,
+		)
 	}
 	t.Log("All clients registered VTXO requests")
 
 	// All clients trigger registration and join the same round.
 	for i, client := range clients {
 		err := client.TriggerRegistration(ctx)
-		require.NoError(t, err, "client %d should trigger registration", i)
+		require.NoError(
+			t, err, "client %d should trigger registration", i,
+		)
 	}
 
 	// Wait for server responses.
@@ -520,7 +552,7 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin * 3) // 3 BTC
@@ -585,8 +617,8 @@ func TestBoardingE2ESubsequentRounds(t *testing.T) {
 	// Clear transcript for round 2.
 	h.Transcript().Clear()
 
-	// Complete a second round with a new boarding input to verify the client
-	// can participate in multiple rounds.
+	// Complete a second round with a new boarding input to verify
+	// the client can participate in multiple rounds.
 	t.Log("Starting round 2")
 
 	addr2, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
@@ -656,7 +688,7 @@ func TestTranscriptMessageSequence(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a client and have it join.
 	client := NewTestClient(h)
@@ -715,17 +747,17 @@ func TestHarnessTimeoutTrigger(t *testing.T) {
 // TestBoardingRestartAfterRoundBroadcast tests client restart after the
 // commitment transaction has been broadcast but before it's confirmed.
 // The restarted client should:
-// 1. Load round state from the database
-// 2. Re-register for confirmation of the commitment tx
-// 3. Detect the confirmation when blocks are mined
-// 4. Complete the round and persist the VTXO
+// 1. Load round state from the database.
+// 2. Re-register for confirmation of the commitment tx.
+// 3. Detect the confirmation when blocks are mined.
+// 4. Complete the round and persist the VTXO.
 func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	ParallelN(t)
 
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin) // 1 BTC
@@ -736,9 +768,12 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	require.NotNil(t, client)
 	t.Logf("Created client: %s", client.ClientID())
 
-	// Complete the round flow up to broadcast but don't mine the confirmation.
+	// Complete the round flow up to broadcast but don't mine
+	// the confirmation.
 	terms := h.Terms()
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
@@ -760,12 +795,16 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond")
 
 	// Seal round and complete signing.
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "should complete signing")
 
 	// Wait for broadcast but DON'T mine yet.
@@ -790,8 +829,8 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 	t.Log("Mined block to confirm commitment transaction")
 
 	// The restarted client should have loaded the round state from the DB
-	// and re-registered for confirmations. It should detect the confirmation
-	// and complete the round.
+	// and re-registered for confirmations. It should detect the
+	// confirmation and complete the round.
 	//
 	// Note: We don't use WaitForRoundComplete() here because it waits for a
 	// RoundJoined event, which won't happen on restart (the round was
@@ -809,22 +848,18 @@ func TestBoardingRestartAfterRoundBroadcast(t *testing.T) {
 // time, with interleaved message processing.
 //
 // Timeline:
-//
-//	Setup:    Client1 boarding confirmed    Client2 boarding confirmed
-//	          ─────────────────────────────────────────────────────────
-//	Round1:   Client1 joins → Seal → BatchInfo → Signing... → Finalized
-//	Round2:                          Client2 joins → Seal → BatchInfo → Signing... → Finalized
-//	                                 ─────────────────────────────────────────────────
-//	                                 ↑ CONCURRENT WINDOW: Both rounds actively signing ↑
-//	          ────────────────────────────────────────────────────────────────────────
-//	Mine:                                                          [Block confirms both]
+// - Setup: both clients reach boarding-confirmed state.
+// - Round1: client1 joins, seals, and enters signing.
+// - Round2: client2 joins while round1 is still active.
+// - Concurrent window: both rounds are in signing at once.
+// - Mine: one block confirms both commitment transactions.
 func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	ParallelN(t)
 
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet with MULTIPLE UTXOs for concurrent rounds.
 	// Each round needs its own UTXO for the commitment transaction, so we
@@ -890,7 +925,9 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	require.NoError(t, err, "client1: should trigger registration")
 
 	// Wait for Client 1 to receive join response.
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "client1: should receive join response")
 	t.Log("Client1 joined Round 1")
 
@@ -925,7 +962,10 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// Check buffered message counts.
 	buffered1 := h.Bridge().PendingCountFor(client1.ClientID())
 	buffered2 := h.Bridge().PendingCountFor(client2.ClientID())
-	t.Logf("Buffered messages - Client1: %d, Client2: %d", buffered1, buffered2)
+	t.Logf(
+		"Buffered messages - Client1: %d, Client2: %d",
+		buffered1, buffered2,
+	)
 
 	// === Phase 4: Release All Messages - Both Rounds Sign Concurrently ===
 	// Disable buffering and flush. Both clients receive their messages and
@@ -938,7 +978,9 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// Both rounds are now in their signing phases concurrently.
 	// Total messages: 2 clients * 9 messages each = 18 messages
 	totalExpectedMsgs := msgsPerClientRound * 2
-	err = h.Transcript().WaitForEntryCount(totalExpectedMsgs, 60*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		totalExpectedMsgs, 60*time.Second,
+	)
 	require.NoError(t, err, "both rounds should complete signing")
 
 	t.Log("Both rounds completed signing phase")
@@ -947,12 +989,14 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// Give server time to broadcast both commitment transactions.
 	time.Sleep(1 * time.Second)
 
-	// === Verify: Both commitment transactions in mempool simultaneously ===
+	// === Verify: both commitment transactions are in mempool ===
 	rpcClient, err := h.BitcoinRPCClient()
 	require.NoError(t, err, "should get bitcoin RPC client")
 	mempoolTxs, err := rpcClient.GetRawMempool()
 	require.NoError(t, err, "should get mempool")
-	require.Len(t, mempoolTxs, 2, "BOTH commitment txs should be in mempool")
+	require.Len(
+		t, mempoolTxs, 2, "BOTH commitment txs should be in mempool",
+	)
 	t.Logf("Round 1 commitment tx: %s", mempoolTxs[0].String())
 	t.Logf("Round 2 commitment tx: %s", mempoolTxs[1].String())
 
@@ -992,22 +1036,25 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	client2.AssertVTXOProperties()
 
 	t.Log("TestBoardingE2EConcurrentRounds completed successfully!")
-	t.Log("Verified: Two rounds driven concurrently with interleaved signing")
+	t.Log(
+		"Verified: two rounds driven concurrently with " +
+			"interleaved signing",
+	)
 }
 
 // TestBoardingRestartBeforeConfirmation tests client restart before the
 // boarding UTXO has been confirmed. The restarted client should:
-// 1. Load the boarding address from the database
-// 2. Re-register for block epoch notifications
-// 3. Detect the confirmation when blocks are mined
-// 4. Complete the round normally
+// 1. Load the boarding address from the database.
+// 2. Re-register for block epoch notifications.
+// 3. Detect the confirmation when blocks are mined.
+// 4. Complete the round normally.
 func TestBoardingRestartBeforeConfirmation(t *testing.T) {
 	ParallelN(t)
 
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fund the server wallet.
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin) // 1 BTC
@@ -1020,7 +1067,9 @@ func TestBoardingRestartBeforeConfirmation(t *testing.T) {
 
 	// Create a boarding address and fund it, but don't mine yet.
 	terms := h.Terms()
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
@@ -1036,11 +1085,16 @@ func TestBoardingRestartBeforeConfirmation(t *testing.T) {
 
 	// Mine blocks to confirm the boarding UTXO.
 	h.MineBlocks(int(terms.MinBoardingConfirmations))
-	t.Logf("Mined %d blocks to confirm boarding", terms.MinBoardingConfirmations)
+	t.Logf(
+		"Mined %d blocks to confirm boarding",
+		terms.MinBoardingConfirmations,
+	)
 
 	// The restarted client should detect the boarding confirmation.
 	err = client.WaitForBoardingConfirmation(30 * time.Second)
-	require.NoError(t, err, "restarted client should detect boarding confirmation")
+	require.NoError(
+		t, err, "restarted client should detect boarding confirmation",
+	)
 	t.Log("Restarted client detected boarding confirmation")
 
 	// Register VTXO requests.
@@ -1052,11 +1106,15 @@ func TestBoardingRestartBeforeConfirmation(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, 10*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
 	require.NoError(t, err, "server should respond")
 
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, 30*time.Second)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
 	require.NoError(t, err, "should complete signing")
 
 	time.Sleep(1 * time.Second)
@@ -1101,7 +1159,9 @@ func TestBatchExpiryNotification(t *testing.T) {
 	require.Equal(t, sweepDelay, terms.SweepDelay,
 		"sweep delay should be configured to %d", sweepDelay)
 
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 	t.Logf("Created boarding address: %s", boardingResp.Address.String())
 
@@ -1122,11 +1182,15 @@ func TestBatchExpiryNotification(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, defaultTimeout)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, defaultTimeout,
+	)
 	require.NoError(t, err, "server should respond")
 
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, defaultTimeout)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, defaultTimeout,
+	)
 	require.NoError(t, err, "should complete signing")
 
 	// Wait for the commitment transaction to appear in the mempool.
@@ -1175,14 +1239,21 @@ func TestBatchExpiryNotification(t *testing.T) {
 	// for expiry when it receives NewBlockReceived messages.
 	blocksToMine := int(expiryHeight) - int(currentHeight)
 	require.Greater(t, blocksToMine, 0, "should have blocks to mine")
-	t.Logf("Mining %d blocks to reach expiry height %d", blocksToMine, expiryHeight)
+	t.Logf(
+		"Mining %d blocks to reach expiry height %d",
+		blocksToMine, expiryHeight,
+	)
 
 	h.MineBlocks(blocksToMine)
 
 	// Wait for the BatchSweeper to receive the expiry notification.
 	require.Eventually(t, func() bool {
 		return h.MockBatchSweeper().HasExpiryNotification(batchID)
-	}, defaultTimeout, pollInterval, "batch should have received expiry notification")
+	},
+		defaultTimeout,
+		pollInterval,
+		"batch should have received expiry notification",
+	)
 
 	notification := h.MockBatchSweeper().GetExpiryNotification(batchID)
 	require.NotNil(t, notification, "expiry notification should not be nil")
@@ -1217,11 +1288,15 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	require.Equal(t, sweepDelay, terms.SweepDelay,
 		"sweep delay should be configured to %d", sweepDelay)
 
-	boardingResp, err := client.CreateBoardingAddress(terms.BoardingExitDelay)
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
 	require.NoError(t, err, "should create boarding address")
 
 	amount := btcutil.Amount(100_000)
-	fundingTxidStr := h.Harness.Faucet(boardingResp.Address.String(), amount)
+	fundingTxidStr := h.Harness.Faucet(
+		boardingResp.Address.String(), amount,
+	)
 	fundingTxid, err := chainhash.NewHashFromStr(fundingTxidStr)
 	require.NoError(t, err, "should parse funding txid")
 	h.AssertTxInMempool(*fundingTxid)
@@ -1237,11 +1312,15 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err, "should trigger registration")
 
-	err = h.Transcript().WaitForEntryCount(msgsPerClientJoin, defaultTimeout)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, defaultTimeout,
+	)
 	require.NoError(t, err, "server should respond")
 
 	h.TriggerRoundSeal()
-	err = h.Transcript().WaitForEntryCount(msgsPerClientRound, defaultTimeout)
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, defaultTimeout,
+	)
 	require.NoError(t, err, "should complete signing")
 
 	// Wait for commitment tx to appear in mempool.
@@ -1300,6 +1379,7 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 
 		rootOutpoint = op
 		foundRoot = true
+
 		break
 	}
 	require.True(t, foundRoot, "expected an operator-controlled output")
@@ -1331,7 +1411,8 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	h.MineBlocksAndConfirm(1)
 
 	require.Eventually(t, func() bool {
-		resp, err := h.BatchWatcher().Ask(h.ctx, req).Await(h.ctx).Unpack()
+		future := h.BatchWatcher().Ask(h.ctx, req)
+		resp, err := future.Await(h.ctx).Unpack()
 		if err != nil {
 			return false
 		}
@@ -1341,9 +1422,9 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 			return false
 		}
 
-		// A non-presigned spend (the operator sweep tx) should not trigger
-		// progressive unrolling. The spend should simply remove the output
-		// from ExistingOutputs.
+		// A non-presigned spend (the operator sweep tx) should not
+		// trigger progressive unrolling. The spend should simply
+		// remove the output from ExistingOutputs.
 		return len(stateResp.TreeState.ExistingOutputs) == 0
 	}, defaultTimeout, pollInterval, "batch watcher state not updated")
 
