@@ -120,10 +120,9 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.CheckpointPSBTs = cps
-		snap.TransferInputs = s.TransferInputs
-		inputSnaps, err := snapshotTransferInputs(s.TransferInputs)
-		if err == nil {
-			snap.TransferInputSnapshots = inputSnaps
+		err = assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
 		}
 
 	case *AwaitingCheckpointSignatures:
@@ -145,10 +144,9 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.CheckpointPSBTs = cps
-		snap.TransferInputs = s.TransferInputs
-		inputSnaps, err := snapshotTransferInputs(s.TransferInputs)
-		if err == nil {
-			snap.TransferInputSnapshots = inputSnaps
+		err = assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
 		}
 
 	case *AwaitingFinalizeAccepted:
@@ -337,6 +335,23 @@ func snapshotTransferInputs(inputs []TransferInput) ([]*TransferInputSnapshot,
 	}
 
 	return out, nil
+}
+
+// assignTransferInputSnapshots stores transfer inputs and their portable
+// snapshot form on the outgoing snapshot.
+func assignTransferInputSnapshots(snap *OutgoingSnapshot,
+	inputs []TransferInput) error {
+
+	snap.TransferInputs = inputs
+
+	inputSnaps, err := snapshotTransferInputs(inputs)
+	if err != nil {
+		return err
+	}
+
+	snap.TransferInputSnapshots = inputSnaps
+
+	return nil
 }
 
 // restoreTransferInputs returns transfer inputs from either the in-memory

@@ -3,7 +3,6 @@ package oor
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -44,13 +43,17 @@ const (
 )
 
 const (
-	transferInputOutpointRecordType      tlv.Type = 1
-	transferInputAmountSatRecordType     tlv.Type = 3
-	transferInputClientFamilyRecordType  tlv.Type = 5
-	transferInputClientIndexRecordType   tlv.Type = 7
-	transferInputClientPubKeyRecordType  tlv.Type = 9
-	transferInputOperatorPubKeyRecordType tlv.Type = 11
-	transferInputExitDelayRecordType     tlv.Type = 13
+	restorePayloadSnapshotRecordType tlv.Type = 1
+)
+
+const (
+	transferInputOutpointRecordType        tlv.Type = 1
+	transferInputAmountSatRecordType       tlv.Type = 3
+	transferInputClientFamilyRecordType    tlv.Type = 5
+	transferInputClientIndexRecordType     tlv.Type = 7
+	transferInputClientPubKeyRecordType    tlv.Type = 9
+	transferInputOperatorPubKeyRecordType  tlv.Type = 11
+	transferInputExitDelayRecordType       tlv.Type = 13
 	transferInputOwnerLeafScriptRecordType tlv.Type = 15
 )
 
@@ -128,14 +131,6 @@ type startTransferPayload struct {
 type recipientPayload struct {
 	PkScript []byte
 	ValueSat int64
-}
-
-type sessionPayload struct {
-	SessionID []byte `json:"session_id"`
-}
-
-type snapshotPayload struct {
-	Snapshot *OutgoingSnapshot `json:"snapshot"`
 }
 
 func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
@@ -228,9 +223,7 @@ func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
 		}, nil
 
 	case *RestoreSessionRequest:
-		payload := snapshotPayload{Snapshot: req.Snapshot}
-
-		raw, err := json.Marshal(payload)
+		raw, err := encodeRestoreSnapshotPayload(req.Snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -323,13 +316,12 @@ func actorMsgFromDurableCommand(cmd *durableActorCommandMessage) (ActorMsg,
 		return &ExportSnapshotRequest{SessionID: sessionID}, nil
 
 	case oorCommandRestore:
-		var payload snapshotPayload
-		err := json.Unmarshal(cmd.Payload, &payload)
+		snapshot, err := decodeRestoreSnapshotPayload(cmd.Payload)
 		if err != nil {
 			return nil, err
 		}
 
-		return &RestoreSessionRequest{Snapshot: payload.Snapshot}, nil
+		return &RestoreSessionRequest{Snapshot: snapshot}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown command kind: %d", cmd.Command)
@@ -715,6 +707,52 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 	}
 
 	return parseSessionID(sessionBytes)
+}
+
+func encodeRestoreSnapshotPayload(snapshot *OutgoingSnapshot) ([]byte, error) {
+	snapshotRaw, err := encodeOutgoingSnapshot(snapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			restorePayloadSnapshotRecordType, &snapshotRaw,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeRestoreSnapshotPayload(raw []byte) (*OutgoingSnapshot, error) {
+	var snapshotRaw []byte
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			restorePayloadSnapshotRecordType, &snapshotRaw,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return nil, err
+	}
+
+	return decodeOutgoingSnapshot(snapshotRaw)
 }
 
 func outPointBytes(out wire.OutPoint) []byte {
