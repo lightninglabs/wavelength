@@ -30,6 +30,9 @@
 // that if the process crashes between dispatch and ack, envelopes will be
 // redelivered on restart.
 //
+// The AckState codec and related connector primitives are shared from
+// mailbox/conn so the server-side connector can mirror the same behavior.
+//
 // # Dispatch Table
 //
 // Inbound KIND_REQUEST and KIND_EVENT envelopes are routed via a
@@ -48,4 +51,11 @@
 // (synchronous, no actor mailbox — low-latency path for unary sends).
 // AwaitRPC registers a waiter in the response registry and blocks until the
 // ingress loop delivers a matching KIND_RESPONSE envelope.
+//
+// # Runtime Composition
+//
+// Runtime embeds a DurableActor so it can be registered directly with the
+// actor system — Ref and TellRef are promoted without wrapper methods.
+// Higher layers use Runtime for round actor egress (via TellRef) and typed
+// RPC stubs (via UnaryFacade).
 package serverconn
