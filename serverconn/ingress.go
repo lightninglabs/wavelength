@@ -346,7 +346,7 @@ func (a *ServerConnectionActor) loadCheckpoint(
 	ctx context.Context,
 ) (AckState, error) {
 
-	actorID := "serverconn-" + a.cfg.LocalMailboxID
+	actorID := DurableActorID(a.cfg.LocalMailboxID)
 
 	checkpoint, err := a.cfg.Store.LoadCheckpoint(ctx, actorID)
 	if err != nil {
@@ -383,7 +383,7 @@ func (a *ServerConnectionActor) saveCheckpoint(
 		return err
 	}
 
-	actorID := "serverconn-" + a.cfg.LocalMailboxID
+	actorID := DurableActorID(a.cfg.LocalMailboxID)
 
 	return a.cfg.Store.SaveCheckpoint(ctx, actor.CheckpointParams{
 		ActorID:   actorID,
