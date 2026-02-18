@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -20,11 +19,12 @@ type Session struct {
 	FSM *StateMachine
 }
 
-// NewSession builds a submit package and creates a new OOR transfer session
-// FSM that is ready to send the submit package to the server.
+// NewSession creates a new outgoing OOR transfer session and returns the first
+// outbox request produced by the FSM.
 //
-// This helper exists to ensure the FSM environment name is stable and derived
-// from the Ark txid, which is only known after building the Ark PSBT.
+// This helper lets the FSM build the submit package itself, then derives the
+// stable session ID from the resulting Ark txid before returning control to the
+// caller.
 //
 // The returned outbox contains the submit request and should be treated as the
 // only place where the caller performs I/O (transport, signing, timers). The
@@ -35,50 +35,53 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
-	inputOutpoints := make([]wire.OutPoint, 0, len(inputs))
-	for i := range inputs {
-		inputOutpoints = append(inputOutpoints, inputs[i].Outpoint)
-	}
-
-	ark, checkpoints, err := buildSubmitPackage(policy, inputs, outputs)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	sessionID, err := sessionIDFromArk(ark)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	env := &Environment{SessionID: sessionID}
+	env := &Environment{}
+	startupID := SessionID{}
 
 	fsmCfg := StateMachineCfg{
-		Logger:        log.WithPrefix(sessionID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(ctx, sessionID.LogPrefix()),
-		InitialState: &AwaitingSubmitAccepted{
-			InputOutpoints:  inputOutpoints,
-			ArkPSBT:         ark,
-			CheckpointPSBTs: checkpoints,
-			TransferInputs:  inputs,
-		},
-		Env: env,
+		Logger:        log.WithPrefix(startupID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(ctx, startupID.LogPrefix()),
+		InitialState:  &Idle{},
+		Env:           env,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)
 	sm.Start(ctx)
 
-	outbox := []OutboxEvent{
-		&SendSubmitPackageRequest{
-			ArkPSBT:         ark,
-			CheckpointPSBTs: checkpoints,
-			TransferInputs:  inputs,
-		},
+	fut := sm.AskEvent(ctx, &StartTransferEvent{
+		VTXOInputs:       inputs,
+		RecipientOutputs: outputs,
+		Policy:           policy,
+	})
+	result := fut.Await(ctx)
+	if result.IsErr() {
+		return nil, nil, result.Err()
 	}
+
+	currentState, err := sm.CurrentState()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	awaitingSubmit, ok := currentState.(*AwaitingSubmitAccepted)
+	if !ok {
+		return nil, nil, fmt.Errorf("unexpected start state: %T",
+			currentState)
+	}
+
+	sessionID, err := sessionIDFromArk(awaitingSubmit.ArkPSBT)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Bind the FSM environment to the stable session identifier only after
+	// StartTransfer has deterministically built the package.
+	env.SessionID = sessionID
 
 	return &Session{
 		ID:  sessionID,
 		FSM: &sm,
-	}, outbox, nil
+	}, result.UnwrapOr(nil), nil
 }
 
 // sessionIDFromArk derives the v0 session identifier from an Ark PSBT.

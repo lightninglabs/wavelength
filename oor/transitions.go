@@ -30,22 +30,14 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
-		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
-		for i := range evt.VTXOInputs {
-			inputOutpoints = append(
-				inputOutpoints, evt.VTXOInputs[i].VTXO.Outpoint,
-			)
-		}
-
 		// Build a deterministic submit package:
 		// - checkpoint txs convert VTXOs into checkpoints
 		// - an Ark tx spends checkpoints and pays recipients
 		//
-		// The Ark txid becomes the stable session identifier.
+		// The Ark txid is the stable session identifier.
 		ark, checkpoints, err := buildSubmitPackage(
 			evt.Policy,
 			evt.VTXOInputs,
@@ -53,6 +45,43 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		)
 		if err != nil {
 			return nil, err
+		}
+
+		if ark == nil || ark.UnsignedTx == nil {
+			return nil, fmt.Errorf("ark psbt must be provided")
+		}
+
+		if len(checkpoints) == 0 {
+			return nil, fmt.Errorf("checkpoint psbts must be " +
+				"provided")
+		}
+
+		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
+		for i := range evt.VTXOInputs {
+			if evt.VTXOInputs[i].VTXO == nil {
+				return nil, fmt.Errorf(
+					"checkpoint input vtxo required",
+				)
+			}
+			inputOutpoints = append(
+				inputOutpoints, evt.VTXOInputs[i].VTXO.Outpoint,
+			)
+		}
+
+		// If the environment is already bound to a stable session id,
+		// verify the derived Ark txid matches. A mismatch indicates
+		// non-determinism in the builder or inconsistent state
+		// reconstruction.
+		if env != nil && env.SessionID != (SessionID{}) {
+			sessionID, err := sessionIDFromArk(ark)
+			if err != nil {
+				return nil, err
+			}
+
+			if sessionID != env.SessionID {
+				return nil, fmt.Errorf("ark txid mismatch " +
+					"with session id")
+			}
 		}
 
 		submitReq := &SendSubmitPackageRequest{
