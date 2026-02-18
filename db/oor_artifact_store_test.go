@@ -124,6 +124,20 @@ func TestOORArtifactStoreListReceivedAndSentPackages(t *testing.T) {
 func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,
 	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
 
+	inputOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{seed, 0xaa},
+		Index: 0,
+	}
+
+	return buildTestOORPackageWithInput(t, seed, inputOutpoint)
+}
+
+// buildTestOORPackageWithInput builds a fixture package that spends the
+// provided input outpoint in its checkpoint transaction.
+func buildTestOORPackageWithInput(t *testing.T, seed byte,
+	inputOutpoint wire.OutPoint) (chainhash.Hash, *psbt.Packet,
+	[]*psbt.Packet, wire.OutPoint, []byte, int64, wire.OutPoint) {
+
 	t.Helper()
 
 	operatorKey, err := btcec.NewPrivateKey()
@@ -135,11 +149,6 @@ func buildTestOORPackage(t *testing.T, seed byte) (chainhash.Hash, *psbt.Packet,
 	policy := scripts.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
-	}
-
-	inputOutpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{seed, 0xaa},
-		Index: 0,
 	}
 
 	spentPkScript, err := txscript.PayToTaprootScript(operatorKey.PubKey())
