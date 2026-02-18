@@ -128,6 +128,57 @@ func TestUnaryFacade_AwaitRPC(t *testing.T) {
 	require.Equal(t, "world", resp.Value)
 }
 
+// TestUnaryFacade_ResponseBeforeAwait verifies that a response arriving before
+// AwaitRPC is still delivered to the caller.
+func TestUnaryFacade_ResponseBeforeAwait(t *testing.T) {
+	t.Parallel()
+
+	actor, mb, _ := newTestConnector(t, nil)
+	facade := NewUnaryFacade(actor)
+
+	// Start ingress so responses can be pulled and buffered.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	actor.StartIngress(ctx)
+	defer actor.StopIngress()
+
+	method := mailboxrpc.ServiceMethod{
+		Service: "test.Svc",
+		Method:  "GetInfo",
+	}
+
+	result, err := facade.SendRPC(
+		t.Context(), method,
+		wrapperspb.String("request"), mailboxrpc.RPCOptions{},
+	)
+	require.NoError(t, err)
+
+	responseMsg := wrapperspb.String("early")
+	responseBytes, err := proto.Marshal(responseMsg)
+	require.NoError(t, err)
+
+	sendResponseToMailbox(
+		t, mb, "client-1", result.CorrelationID, responseBytes,
+	)
+
+	// Ensure ingress had a chance to pull and process the response before
+	// we start awaiting it.
+	require.Eventually(t, func() bool {
+		return mb.getAckedUpTo("client-1") > 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	awaitCtx, awaitCancel := context.WithTimeout(
+		t.Context(), 5*time.Second,
+	)
+	defer awaitCancel()
+
+	var resp wrapperspb.StringValue
+	err = facade.AwaitRPC(awaitCtx, result.CorrelationID, &resp)
+	require.NoError(t, err)
+	require.Equal(t, "early", resp.Value)
+}
+
 // TestUnaryFacade_AwaitRPC_CancelledContext verifies that AwaitRPC returns
 // the context error when the context is cancelled.
 func TestUnaryFacade_AwaitRPC_CancelledContext(t *testing.T) {
