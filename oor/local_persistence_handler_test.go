@@ -18,6 +18,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testPackageStore records package persistence calls for handler assertions.
+type testPackageStore struct {
+	packageCalls int
+	bindingCalls int
+
+	lastDirection PackageDirection
+	lastSessionID chainhash.Hash
+}
+
+// UpsertPackage records one package upsert call.
+func (s *testPackageStore) UpsertPackage(_ context.Context,
+	direction PackageDirection, sessionID chainhash.Hash, _ *psbt.Packet,
+	_ []*psbt.Packet) error {
+
+	s.packageCalls++
+	s.lastDirection = direction
+	s.lastSessionID = sessionID
+
+	return nil
+}
+
+// UpsertBinding records one package binding upsert call.
+func (s *testPackageStore) UpsertBinding(_ context.Context, _ wire.OutPoint,
+	_ chainhash.Hash, _ uint32, _ PackageLinkKind) error {
+
+	s.bindingCalls++
+	return nil
+}
+
 // testVTXOStore is a minimal in-memory vtxo.VTXOStore used by handler tests.
 type testVTXOStore struct {
 	records map[wire.OutPoint]*vtxo.Descriptor
@@ -125,16 +154,26 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 
 	ctx := t.Context()
 
-	arkPSBT, recipients, parentCommitment, recipientKey, operatorKey :=
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
 		buildTestIncomingMaterialization(t)
 
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	store := newTestVTXOStore()
+	packageStore := &testPackageStore{}
+	notifyCalls := 0
 
 	handler := &LocalPersistenceOutboxHandler{
-		Store:       store,
-		OperatorKey: operatorKey,
-		ExitDelay:   10,
+		Store:        store,
+		PackageStore: packageStore,
+		OperatorKey:  operatorKey,
+		ExitDelay:    10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			notifyCalls++
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -169,9 +208,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	}
 
 	req := &MaterializeIncomingVTXOsRequest{
-		SessionID:  sessionID,
-		ArkPSBT:    arkPSBT,
-		Recipients: recipients,
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
 	}
 
 	events, err := handler.Handle(ctx, sessionID, req)
@@ -195,6 +235,11 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
+	require.Equal(t, 2, packageStore.packageCalls)
+	require.Equal(t, 2, packageStore.bindingCalls)
+	require.Equal(t, 2, notifyCalls)
+	require.Equal(t, PackageDirectionIncoming, packageStore.lastDirection)
+	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
 }
 
 // TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned asserts
@@ -206,7 +251,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 
 	ctx := t.Context()
 
-	arkPSBT, recipients, parentCommitment, recipientKey, operatorKey :=
+	arkPSBT, _, recipients, parentCommitment, recipientKey, operatorKey :=
 		buildTestIncomingMaterialization(t)
 
 	anchorIndex := uint32(len(arkPSBT.UnsignedTx.TxOut) - 1)
@@ -224,6 +269,11 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -291,7 +341,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 
 	ctx := t.Context()
 
-	arkPSBT, recipients, _, _, operatorKey :=
+	arkPSBT, _, recipients, _, _, operatorKey :=
 		buildTestIncomingMaterialization(t)
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	store := newTestVTXOStore()
@@ -300,6 +350,11 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -338,6 +393,141 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 	require.Empty(t, events)
 }
 
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure asserts
+// notifier failures abort incoming materialization completion.
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return fmt.Errorf("notify failed")
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				CreatedHeight:  700,
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "notify failed")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier asserts
+// notifier wiring is mandatory for incoming materialization.
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				CreatedHeight:  700,
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "incoming VTXO notifier")
+	require.Empty(t, events)
+}
+
 // TestLocalPersistenceOutboxHandlerIncomingAck asserts incoming ack requests
 // emit IncomingAckSentEvent.
 func TestLocalPersistenceOutboxHandlerIncomingAck(t *testing.T) {
@@ -355,7 +545,7 @@ func TestLocalPersistenceOutboxHandlerIncomingAck(t *testing.T) {
 // buildTestIncomingMaterialization returns a canonical Ark PSBT and its
 // recipient list for incoming materialization tests.
 func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
-	[]ArkRecipientOutput, chainhash.Hash, *btcec.PrivateKey,
+	[]*psbt.Packet, []ArkRecipientOutput, chainhash.Hash, *btcec.PrivateKey,
 	*btcec.PublicKey) {
 
 	t.Helper()
@@ -423,7 +613,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	recipients, err := ExtractArkRecipients(arkPSBT)
 	require.NoError(t, err)
 
-	return arkPSBT, recipients,
+	return arkPSBT, []*psbt.Packet{cp.PSBT}, recipients,
 		inputs[0].SpentVTXO.Outpoint.Hash, recipientKey,
 		operatorKey.PubKey()
 }

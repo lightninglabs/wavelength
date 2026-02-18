@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -21,8 +22,11 @@ var (
 	)
 )
 
-// IsIncomingRecipientNotOwned reports whether err indicates an incoming
-// recipient that should be skipped during materialization.
+// IsIncomingRecipientNotOwned reports whether an error means the recipient
+// output is not owned by this wallet.
+//
+// Callers use this to safely skip non-owned recipients while continuing
+// materialization for owned outputs in the same incoming transfer.
 func IsIncomingRecipientNotOwned(err error) bool {
 	return errors.Is(err, ErrIncomingRecipientNotOwned)
 }
@@ -37,6 +41,12 @@ type IncomingClientKeyResolver func(ctx context.Context,
 type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
+
+// IncomingVTXONotifier is called after incoming VTXOs are durably
+// materialized, allowing callers to spawn/manage VTXO actors for expiry and
+// spend monitoring.
+type IncomingVTXONotifier func(ctx context.Context,
+	vtxos []*vtxo.Descriptor) error
 
 // LocalPersistenceOutboxHandler implements the persistence-related outbox
 // requests emitted by the OOR FSM.
@@ -56,6 +66,10 @@ type LocalPersistenceOutboxHandler struct {
 	// Store is the VTXO store to update.
 	Store vtxo.VTXOStore
 
+	// PackageStore persists finalized OOR package artifacts and local
+	// outpoint bindings.
+	PackageStore PackagePersistence
+
 	// OperatorKey is the operator key used to reconstruct incoming VTXO
 	// tapscripts.
 	OperatorKey *btcec.PublicKey
@@ -70,9 +84,17 @@ type LocalPersistenceOutboxHandler struct {
 	// ResolveIncomingMetadata resolves authoritative lineage/expiry
 	// metadata for each incoming recipient output.
 	ResolveIncomingMetadata IncomingMetadataResolver
+
+	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
+	// Production wiring should use this to notify the VTXO manager so newly
+	// received OOR VTXOs are actively monitored.
+	NotifyIncomingVTXOs IncomingVTXONotifier
 }
 
-// Handle executes the outbox request and returns follow-up events.
+// Handle executes one outbox request and emits follow-up FSM events.
+//
+// Persistence-related requests are handled locally, while unknown requests are
+// delegated to Next when configured.
 func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
 
@@ -151,11 +173,29 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		)
 	}
 
+	if h.NotifyIncomingVTXOs == nil {
+		return nil, fmt.Errorf(
+			"incoming VTXO notifier must be provided",
+		)
+	}
+
 	if len(msg.Recipients) == 0 {
 		return nil, fmt.Errorf("incoming recipients must be provided")
 	}
 
 	ownedRecipients := 0
+	materializedVTXOs := make([]*vtxo.Descriptor, 0, len(msg.Recipients))
+	sessionIDHash := chainhash.Hash(msg.SessionID)
+
+	if h.PackageStore != nil {
+		err := h.PackageStore.UpsertPackage(ctx,
+			PackageDirectionIncoming, sessionIDHash,
+			msg.ArkPSBT, msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	for i := range msg.Recipients {
 		recipient := msg.Recipients[i]
@@ -193,30 +233,49 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		}
 
 		err = h.Store.SaveVTXO(ctx, desc)
-		if err == nil {
-			continue
+		if err != nil {
+			// SaveVTXO may fail for duplicates on retry/restart
+			// paths. Treat that case as idempotent only if the
+			// already-persisted descriptor matches the
+			// materialized recipient output.
+			existing, getErr := h.Store.GetVTXO(ctx, desc.Outpoint)
+			if getErr != nil || existing == nil {
+				return nil, err
+			}
+
+			if existing.Amount != desc.Amount {
+				return nil, err
+			}
+
+			if !bytes.Equal(existing.PkScript, desc.PkScript) {
+				return nil, err
+			}
+
+			desc = existing
 		}
 
-		// SaveVTXO may fail for duplicates on retry/restart paths.
-		// Treat that case as idempotent only if the already-persisted
-		// descriptor matches the materialized recipient output.
-		existing, getErr := h.Store.GetVTXO(ctx, desc.Outpoint)
-		if getErr != nil || existing == nil {
-			return nil, err
-		}
+		materializedVTXOs = append(materializedVTXOs, desc)
 
-		if existing.Amount != desc.Amount {
-			return nil, err
-		}
-
-		if !bytes.Equal(existing.PkScript, desc.PkScript) {
-			return nil, err
+		if h.PackageStore != nil {
+			err := h.PackageStore.UpsertBinding(
+				ctx, desc.Outpoint, sessionIDHash,
+				recipient.OutputIndex,
+				PackageLinkKindCreatedOutput,
+			)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	if ownedRecipients == 0 {
 		return nil, fmt.Errorf("incoming transfer contains no " +
 			"wallet-owned recipients")
+	}
+
+	err := h.NotifyIncomingVTXOs(ctx, materializedVTXOs)
+	if err != nil {
+		return nil, err
 	}
 
 	return []Event{&IncomingHandledEvent{}}, nil

@@ -142,7 +142,7 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 
 	ctx := t.Context()
 
-	arkPSBT, _, _, _, _ := buildTestIncomingMaterialization(t)
+	arkPSBT, _, _, _, _, _ := buildTestIncomingMaterialization(t)
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 
 	sess, outbox, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
