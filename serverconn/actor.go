@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -29,10 +30,12 @@ const (
 	SendRPCRequestMsgType tlv.Type = 2001
 )
 
-// TLV record type constants for message field serialization.
-const (
-	protoPayloadRecordType tlv.Type = 1
-	envelopeRecordType     tlv.Type = 2
+// TLV record type aliases for RecordT-style message field serialization.
+type (
+	protoPayloadRecordTLV = tlv.TlvType1
+	envelopeRecordTLV     = tlv.TlvType2
+	msgIDRecordTLV        = tlv.TlvType3
+	idempotencyRecordTLV  = tlv.TlvType4
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -95,6 +98,14 @@ type SendClientEventRequest struct {
 	// It must implement the ServerMessage interface which provides the
 	// ToProto() method for conversion to protobuf.
 	Message ServerMessage
+
+	// MsgID uniquely identifies this send attempt. When this request is
+	// durably persisted and later retried, the same MsgID is reused.
+	MsgID string
+
+	// IdempotencyKey identifies the semantic operation for remote dedupe.
+	// Retries of the same persisted request must reuse this key.
+	IdempotencyKey string
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -109,23 +120,55 @@ func (m *SendClientEventRequest) TLVType() tlv.Type {
 
 // Encode serializes the message to the provided writer. The ServerMessage is
 // converted to proto, wrapped in anypb.Any (preserving type information),
-// and marshaled to bytes for TLV storage.
+// and stored via a WrappedProto TLV record.
+//
+// We use TLV here (rather than storing raw proto bytes) because the
+// DurableActor runtime requires all messages to satisfy the TLVMessage
+// interface (TLVType, Encode, Decode). The MessageCodec uses these methods
+// to serialize messages into the durable mailbox. WrappedProto handles the
+// proto↔bytes conversion inside the TLV record, keeping the codec contract
+// simple and uniform across message types.
 func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	anyMsg, err := anypb.New(m.Message.ToProto())
 	if err != nil {
 		return fmt.Errorf("wrap proto in Any: %w", err)
 	}
 
-	anyBytes, err := proto.Marshal(anyMsg)
+	// We still need the raw bytes for stable ID derivation, so marshal
+	// deterministically before constructing the TLV records.
+	anyBytes, err := (proto.MarshalOptions{
+		Deterministic: true,
+	}).Marshal(anyMsg)
 	if err != nil {
 		return fmt.Errorf("marshal Any: %w", err)
 	}
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(protoPayloadRecordType, &anyBytes),
+	msgID := m.MsgID
+	if msgID == "" {
+		msgID = mailboxconn.StableEventMsgID(anyBytes)
 	}
+	msgIDBytes := []byte(msgID)
 
-	stream, err := tlv.NewStream(records...)
+	idempotencyKey := m.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = mailboxconn.
+			StableEventIdempotencyKey(anyBytes)
+	}
+	idempotencyBytes := []byte(idempotencyKey)
+
+	payload := tlv.NewRecordT[protoPayloadRecordTLV](
+		mailboxconn.WrappedProto[*anypb.Any]{Val: anyMsg},
+	)
+	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
+		msgIDBytes,
+	)
+	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
+		idempotencyBytes,
+	)
+
+	stream, err := tlv.NewStream(
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+	)
 	if err != nil {
 		return err
 	}
@@ -137,13 +180,18 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 // is stored as a rawServerMessage that lazily unmarshals via the global
 // protobuf type registry.
 func (m *SendClientEventRequest) Decode(r io.Reader) error {
-	var payload []byte
+	payload := tlv.ZeroRecordT[
+		protoPayloadRecordTLV,
+		mailboxconn.WrappedProto[*anypb.Any],
+	]()
+	payload.Val.Val = &anypb.Any{}
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(protoPayloadRecordType, &payload),
-	}
+	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
+	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
 
-	stream, err := tlv.NewStream(records...)
+	stream, err := tlv.NewStream(
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+	)
 	if err != nil {
 		return err
 	}
@@ -152,12 +200,9 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	anyMsg := &anypb.Any{}
-	if err := proto.Unmarshal(payload, anyMsg); err != nil {
-		return fmt.Errorf("unmarshal Any: %w", err)
-	}
-
-	m.Message = &rawServerMessage{anyMsg: anyMsg}
+	m.Message = &rawServerMessage{anyMsg: payload.Val.Val}
+	m.MsgID = string(msgIDRec.Val)
+	m.IdempotencyKey = string(idemRec.Val)
 
 	return nil
 }
@@ -184,6 +229,25 @@ func (m *SendClientEventResponse) MessageType() string {
 // serverConnRespSealed implements the ServerConnResp interface seal.
 func (m *SendClientEventResponse) serverConnRespSealed() {}
 
+// SendRPCResponse acknowledges that an RPC envelope was sent.
+type SendRPCResponse struct {
+	actor.BaseMessage
+
+	// Success indicates whether the send operation succeeded.
+	Success bool
+
+	// Error contains the error message if the send failed.
+	Error string
+}
+
+// MessageType returns a human-readable type name for logging.
+func (m *SendRPCResponse) MessageType() string {
+	return "SendRPCResponse"
+}
+
+// serverConnRespSealed implements the ServerConnResp interface seal.
+func (m *SendRPCResponse) serverConnRespSealed() {}
+
 // SendRPCRequest wraps a pre-built outbound unary RPC envelope. The unary
 // facade constructs the envelope with all metadata (correlation ID,
 // idempotency key, service/method) and hands it to the connector for
@@ -205,19 +269,16 @@ func (m *SendRPCRequest) TLVType() tlv.Type {
 	return SendRPCRequestMsgType
 }
 
-// Encode serializes the message to the provided writer. The entire mailbox
-// envelope is proto-marshaled for TLV storage.
+// Encode serializes the message to the provided writer. The mailbox
+// envelope is stored via a WrappedProto TLV record.
 func (m *SendRPCRequest) Encode(w io.Writer) error {
-	envBytes, err := proto.Marshal(m.Envelope)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
+	envRec := tlv.NewRecordT[envelopeRecordTLV](
+		mailboxconn.WrappedProto[*mailboxpb.Envelope]{
+			Val: m.Envelope,
+		},
+	)
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(envelopeRecordType, &envBytes),
-	}
-
-	stream, err := tlv.NewStream(records...)
+	stream, err := tlv.NewStream(envRec.Record())
 	if err != nil {
 		return err
 	}
@@ -227,13 +288,13 @@ func (m *SendRPCRequest) Encode(w io.Writer) error {
 
 // Decode deserializes the message from the provided reader.
 func (m *SendRPCRequest) Decode(r io.Reader) error {
-	var envBytes []byte
+	envRec := tlv.ZeroRecordT[
+		envelopeRecordTLV,
+		mailboxconn.WrappedProto[*mailboxpb.Envelope],
+	]()
+	envRec.Val.Val = &mailboxpb.Envelope{}
 
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(envelopeRecordType, &envBytes),
-	}
-
-	stream, err := tlv.NewStream(records...)
+	stream, err := tlv.NewStream(envRec.Record())
 	if err != nil {
 		return err
 	}
@@ -242,10 +303,7 @@ func (m *SendRPCRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	m.Envelope = &mailboxpb.Envelope{}
-	if err := proto.Unmarshal(envBytes, m.Envelope); err != nil {
-		return fmt.Errorf("unmarshal envelope: %w", err)
-	}
+	m.Envelope = envRec.Val.Val
 
 	return nil
 }
@@ -272,15 +330,10 @@ type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.
 	cfg ConnectorConfig
 
-	// responseRegistryMu protects concurrent access to the response
-	// registry from the ingress loop and unary facade callers.
-	responseRegistryMu sync.Mutex
-
-	// responseRegistry maps correlation IDs to unary RPC waiters. The
-	// ingress loop delivers KIND_RESPONSE envelopes to the appropriate
-	// waiter channel. This is in-memory only — if the process crashes,
-	// callers' contexts are cancelled and they retry.
-	responseRegistry map[CorrelationID]*ResponseWaiter
+	// responseRegistry maps correlation IDs to unary RPC waiters and
+	// buffers early responses that arrive before a waiter is registered.
+	// This is in-memory only.
+	responseRegistry *mailboxconn.ResponseRegistry
 
 	// cancelCh delivers the ingress loop cancel function from
 	// StartIngress to StopIngress without a shared field, avoiding
@@ -303,9 +356,11 @@ func NewServerConnectionActor(
 ) *ServerConnectionActor {
 
 	return &ServerConnectionActor{
-		cfg:              cfg,
-		responseRegistry: make(map[CorrelationID]*ResponseWaiter),
-		cancelCh:         make(chan context.CancelFunc, 1),
+		cfg: cfg,
+		responseRegistry: mailboxconn.NewResponseRegistry(
+			cfg.ResponseWaiterTTL,
+		),
+		cancelCh: make(chan context.CancelFunc, 1),
 	}
 }
 
@@ -424,65 +479,36 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 		))
 	}
 
-	return fn.Ok[ServerConnResp](&SendClientEventResponse{
+	return fn.Ok[ServerConnResp](&SendRPCResponse{
 		Success: true,
 	})
 }
 
 // RegisterWaiter adds a response waiter for the given correlation ID. The
-// returned channel will receive the response envelope when the ingress loop
-// pulls a KIND_RESPONSE with a matching correlation ID.
+// returned Future completes when the ingress loop delivers a KIND_RESPONSE
+// with a matching correlation ID, or errors if the waiter expires or is
+// cancelled.
 func (a *ServerConnectionActor) RegisterWaiter(
 	id CorrelationID,
-) <-chan *mailboxpb.Envelope {
+) actor.Future[*mailboxpb.Envelope] {
 
-	a.responseRegistryMu.Lock()
-	defer a.responseRegistryMu.Unlock()
-
-	waiter := &ResponseWaiter{
-		Ch:      make(chan *mailboxpb.Envelope, 1),
-		Created: time.Now(),
-	}
-
-	a.responseRegistry[id] = waiter
-
-	return waiter.Ch
+	return a.responseRegistry.RegisterWaiter(id)
 }
 
 // removeWaiter removes a previously registered waiter, preventing leaks on
 // cancellation or timeout.
 func (a *ServerConnectionActor) removeWaiter(id CorrelationID) {
-	a.responseRegistryMu.Lock()
-	defer a.responseRegistryMu.Unlock()
-
-	delete(a.responseRegistry, id)
+	a.responseRegistry.RemoveWaiter(id)
 }
 
 // deliverResponse looks up a waiter by correlation ID and delivers the
-// envelope. Returns true if a waiter was found and signaled.
+// envelope. If no waiter exists yet, the response is buffered so a later
+// AwaitRPC call can still observe it.
 func (a *ServerConnectionActor) deliverResponse(
 	id CorrelationID, env *mailboxpb.Envelope,
 ) bool {
 
-	a.responseRegistryMu.Lock()
-	waiter, ok := a.responseRegistry[id]
-	if ok {
-		delete(a.responseRegistry, id)
-	}
-	a.responseRegistryMu.Unlock()
-
-	if !ok {
-		return false
-	}
-
-	// Non-blocking send on buffered channel. If the waiter's context
-	// was already cancelled, the envelope is dropped (caller retries).
-	select {
-	case waiter.Ch <- env:
-	default:
-	}
-
-	return true
+	return a.responseRegistry.DeliverResponse(id, env)
 }
 
 // StartIngress loads the ack checkpoint from the store and launches the
@@ -549,6 +575,7 @@ var (
 	_ ServerConnMsg  = (*SendClientEventRequest)(nil)
 	_ ServerConnMsg  = (*SendRPCRequest)(nil)
 	_ ServerConnResp = (*SendClientEventResponse)(nil)
+	_ ServerConnResp = (*SendRPCResponse)(nil)
 
 	//nolint:ll
 	_ actor.ActorBehavior[ServerConnMsg, ServerConnResp] = (*ServerConnectionActor)(nil)
