@@ -1,0 +1,114 @@
+package serverconn
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestDurableActorID verifies the stable actor ID derivation helper.
+func TestDurableActorID(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "serverconn-client-1", DurableActorID("client-1"))
+}
+
+// TestNewRuntime_ValidateConfig verifies runtime construction rejects missing
+// required configuration.
+func TestNewRuntime_ValidateConfig(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewRuntime(ConnectorConfig{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "connector store is required")
+
+	_, err = NewRuntime(ConnectorConfig{
+		Store: newMemCheckpointStore(),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "connector edge is required")
+
+	mb := newInMemoryMailbox()
+	_, err = NewRuntime(ConnectorConfig{
+		Store: newMemCheckpointStore(),
+		Edge:  &fakeMailboxServiceClient{mb: mb},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "local mailbox id is required")
+
+	_, err = NewRuntime(ConnectorConfig{
+		Store:          newMemCheckpointStore(),
+		Edge:           &fakeMailboxServiceClient{mb: mb},
+		LocalMailboxID: "client-1",
+	})
+	require.Error(t, err)
+	require.Contains(
+		t, err.Error(), "remote mailbox id is required",
+	)
+}
+
+// TestNewRuntime_DefaultCodec verifies runtime construction fills a default
+// codec when one is not supplied.
+func TestNewRuntime_DefaultCodec(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	cfg := DefaultConnectorConfig()
+	cfg.Edge = &fakeMailboxServiceClient{mb: mb}
+	cfg.Store = newMemCheckpointStore()
+	cfg.LocalMailboxID = "client-1"
+	cfg.RemoteMailboxID = "server-1"
+	cfg.ProtocolVersion = 1
+	cfg.Codec = nil
+
+	runtime, err := NewRuntime(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	require.NotNil(t, runtime.Unary())
+	require.NotNil(t, runtime.Connector())
+	require.NotNil(t, runtime.TellRef())
+	require.NotNil(t, runtime.Ref())
+	require.Equal(
+		t, DurableActorID("client-1"), runtime.Ref().ID(),
+	)
+}
+
+// TestRuntime_StartStop verifies runtime lifecycle methods run and return
+// promptly when the parent context is cancelled.
+func TestRuntime_StartStop(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+
+	cfg := DefaultConnectorConfig()
+	cfg.Edge = &fakeMailboxServiceClient{mb: mb}
+	cfg.Store = newMemCheckpointStore()
+	cfg.LocalMailboxID = "client-1"
+	cfg.RemoteMailboxID = "server-1"
+	cfg.ProtocolVersion = 1
+	cfg.PullWaitTimeout = 25 * time.Millisecond
+
+	runtime, err := NewRuntime(cfg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	require.NoError(t, runtime.Start(ctx))
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		runtime.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime Stop did not return")
+	}
+}
