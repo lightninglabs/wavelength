@@ -72,6 +72,9 @@ ifneq ($(workers),)
 LINT_WORKERS = --concurrency=$(workers)
 endif
 
+# Keep this in sync with run.build-tags in .golangci.yml.
+LINT_BUILD_TAGS := test_postgres,test_sqlite
+
 # Docker cache mounting strategy:
 # - CI (GitHub Actions): Use bind mounts to host paths that GA caches persist.
 # - Local: Use Docker named volumes (much faster on macOS/Windows due to
@@ -176,6 +179,33 @@ docker-tools:
 lint-source: docker-tools
 	@$(call print, "Linting source.")
 	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
+	@$(call print, "Linting tag-guarded packages.")
+	$(DOCKER_TOOLS) sh -ec '\
+		base_pkgs=$$(mktemp); \
+		tagged_pkgs=$$(mktemp); \
+		guarded_tags=$$(mktemp); \
+		trap "rm -f $$base_pkgs $$tagged_pkgs $$guarded_tags" EXIT; \
+		go list ./... | sort -u > $$base_pkgs; \
+		find . -name "*.go" \
+			-not -path "./client/*" \
+			-not -path "./vendor/*" \
+			-not -path "./db/sqlc/*" \
+			-exec sed -n "s#^//go:build[[:space:]][[:space:]]*##p" {} + | \
+			tr "&|!()" "     " | tr "\t" " " | tr " " "\n" | \
+			grep -E "^[A-Za-z_][A-Za-z0-9_]*$$" | sort -u > $$guarded_tags; \
+		while IFS= read -r tag; do \
+			[ -z "$$tag" ] && continue; \
+			go list -tags "$$tag" ./... | sort -u > $$tagged_pkgs; \
+			extra_pkgs=$$(comm -13 $$base_pkgs $$tagged_pkgs); \
+			[ -z "$$extra_pkgs" ] && continue; \
+			pkg_patterns=$$(printf "%s\n" "$$extra_pkgs" | \
+				sed "s#^$(PKG)/#./#;s#^$(PKG)#.#"); \
+			echo "Linting tag=$$tag for packages:"; \
+			echo "$$pkg_patterns"; \
+			custom-gcl run -v $(LINT_WORKERS) \
+				--build-tags "$$tag,$(LINT_BUILD_TAGS)" \
+				$$pkg_patterns; \
+		done < $$guarded_tags'
 
 lint: check-go-version lint-source #? Run static code analysis
 
