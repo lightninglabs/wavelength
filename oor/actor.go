@@ -581,7 +581,9 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		// Outbox handler is the I/O boundary.
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
-			return err
+			followUps = []Event{
+				NewOutboxErrorEvent(msg, err),
+			}
 		}
 
 		for _, followUp := range followUps {

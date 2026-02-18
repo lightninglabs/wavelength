@@ -13,7 +13,7 @@ import (
 
 const (
 	retryDueTestRetryAfter        = 2 * time.Second
-	retryDueTestEventuallyTimeout = 2 * time.Second
+	retryDueTestEventuallyTimeout = retryDueTestRetryAfter + 2*time.Second
 	retryDueTestEventuallyPoll    = 20 * time.Millisecond
 )
 

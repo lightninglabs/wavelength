@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -40,6 +41,12 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 				Hash:  chainhash.Hash{12, 13, 14},
 				Index: 15,
 			},
+		},
+		RetryAfter: 3 * time.Second,
+		ResumeSnapshot: &OutgoingSnapshot{
+			Version:   3,
+			SessionID: SessionID(chainhash.Hash{16, 17}),
+			Phase:     OutgoingPhaseCompleted,
 		},
 		FailReason: "retry later",
 	}
@@ -101,12 +108,26 @@ func TestDecodeOutgoingSnapshotRejectsVersionOverflow(t *testing.T) {
 	t.Parallel()
 
 	raw, err := encodeSnapshotRawForDecodeTest(
-		uint64(math.MaxUint8) + 1,
+		uint64(math.MaxUint8)+1, 0,
 	)
 	require.NoError(t, err)
 
 	_, err = decodeOutgoingSnapshot(raw)
 	require.ErrorContains(t, err, "snapshot version overflows uint8")
+}
+
+func TestDecodeOutgoingSnapshotRejectsRetryAfterOverflow(t *testing.T) {
+	t.Parallel()
+
+	raw, err := encodeSnapshotRawForDecodeTest(
+		2, uint64(math.MaxInt64)+1,
+	)
+	require.NoError(t, err)
+
+	_, err = decodeOutgoingSnapshot(raw)
+	require.ErrorContains(
+		t, err, "snapshot retry_after nanos overflows time.Duration",
+	)
 }
 
 func TestDecodeOutgoingCheckpointRejectsVersionOverflow(t *testing.T) {
@@ -133,7 +154,9 @@ func TestDecodeOutgoingCheckpointRejectsVersionOverflow(t *testing.T) {
 	require.ErrorContains(t, err, "checkpoint version overflows int")
 }
 
-func encodeSnapshotRawForDecodeTest(version uint64) ([]byte, error) {
+func encodeSnapshotRawForDecodeTest(version uint64,
+	retryAfterNanos uint64) ([]byte, error) {
+
 	sessionBytes := sessionIDBytes(SessionID(chainhash.Hash{1}))
 	phaseBytes := []byte(OutgoingPhaseCompleted)
 	arkPSBT := []byte(nil)
@@ -153,6 +176,7 @@ func encodeSnapshotRawForDecodeTest(version uint64) ([]byte, error) {
 		return nil, err
 	}
 
+	resumeSnapshotRaw := []byte(nil)
 	failReasonRaw := []byte(nil)
 
 	records := []tlv.Record{
@@ -170,6 +194,12 @@ func encodeSnapshotRawForDecodeTest(version uint64) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotInputOutpointsRecordType, &outpointsRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,

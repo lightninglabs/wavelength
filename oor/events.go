@@ -1,6 +1,8 @@
 package oor
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -110,6 +112,24 @@ type FailEvent struct {
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *FailEvent) eventSealed() {}
 
+// OutboxErrorEvent notifies the FSM that a side effect request failed.
+//
+// The actor boundary is responsible for deciding whether the error is
+// retryable and for populating RetryAfter appropriately.
+//
+// Encoding retry semantics as an event (rather than returning a special Go
+// error) keeps the FSM deterministic and keeps all "should we retry" policy in
+// one place: the state transition logic.
+type OutboxErrorEvent struct {
+	OutboxType  string
+	Retryable   bool
+	RetryAfter  time.Duration
+	ErrorReason string
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *OutboxErrorEvent) eventSealed() {}
+
 // IncomingTransferEvent notifies the client about an incoming OOR transfer.
 //
 // This event is intended to be delivered by some higher layer (RPC push,
@@ -148,3 +168,10 @@ type IncomingHandledEvent struct{}
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *IncomingHandledEvent) eventSealed() {}
+
+// IncomingAckSentEvent indicates the server ack has been sent for this
+// incoming transfer session.
+type IncomingAckSentEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *IncomingAckSentEvent) eventSealed() {}
