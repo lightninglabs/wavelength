@@ -91,17 +91,15 @@ func (v *VTXOStoreDB) MarkVTXOForfeit(ctx context.Context,
 	}
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
-		// Update VTXO status to forfeited.
-		affected, err := qtx.UpdateVTXOStatus(ctx,
-			sqlc.UpdateVTXOStatusParams{
+		// Mark the VTXO forfeited and clear lock metadata.
+		// This keeps status/lock CHECK constraints satisfied.
+		affected, err := qtx.MarkVTXOForfeited(ctx,
+			sqlc.MarkVTXOForfeitedParams{
 				OutpointHash:  outpoint.Hash[:],
 				OutpointIndex: int32(outpoint.Index),
-				Status: string(
-					rounds.VTXOStatusForfeited,
-				),
 			})
 		if err != nil {
-			return fmt.Errorf("update vtxo status: %w", err)
+			return fmt.Errorf("mark vtxo forfeited: %w", err)
 		}
 		if affected == 0 {
 			return fmt.Errorf("vtxo %v not found", outpoint)

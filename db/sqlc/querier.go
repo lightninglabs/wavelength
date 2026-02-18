@@ -75,6 +75,7 @@ type Querier interface {
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
 	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
+	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
 	UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
 	UnlockVTXO(ctx context.Context, arg UnlockVTXOParams) (int64, error)

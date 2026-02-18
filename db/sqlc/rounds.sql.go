@@ -558,8 +558,8 @@ UPDATE vtxos
 SET status = 'in_flight', lock_owner_kind = $3, lock_owner_id = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 	AND status = 'live'
-	AND ((lock_owner_kind IS NULL AND lock_owner_id IS NULL) OR
-		(lock_owner_kind = $3 AND lock_owner_id = $4))
+	AND lock_owner_kind IS NULL
+	AND lock_owner_id IS NULL
 `
 
 type LockVTXOParams struct {
@@ -576,6 +576,25 @@ func (q *Queries) LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, erro
 		arg.LockOwnerKind,
 		arg.LockOwnerID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const MarkVTXOForfeited = `-- name: MarkVTXOForfeited :execrows
+UPDATE vtxos
+SET status = 'forfeited', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+`
+
+type MarkVTXOForfeitedParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXOForfeited, arg.OutpointHash, arg.OutpointIndex)
 	if err != nil {
 		return 0, err
 	}
