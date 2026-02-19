@@ -39,3 +39,31 @@ func RoundActorServiceKey() actor.ServiceKey[RoundReceivable, RoundActorResp] {
 		RoundActorServiceKeyName,
 	)
 }
+
+// ChainResolverServiceKeyName is the well-known service key name for the
+// chain resolver coordinator actor.
+const ChainResolverServiceKeyName = "chain-resolver"
+
+// ChainResolverMsg is the message type marker for the chain resolver actor.
+// The concrete chainresolver.ChainResolverMsg interface embeds this to
+// enable cross-package service key usage without import cycles.
+type ChainResolverMsg interface {
+	actor.Message
+	ChainResolverMsg()
+}
+
+// ChainResolverResp is the response type marker for the chain resolver actor.
+type ChainResolverResp interface {
+	ChainResolverResp()
+}
+
+// ChainResolverServiceKey returns the service key for looking up the chain
+// resolver coordinator actor.
+func ChainResolverServiceKey() actor.ServiceKey[
+	ChainResolverMsg, ChainResolverResp,
+] {
+
+	return actor.NewServiceKey[ChainResolverMsg, ChainResolverResp](
+		ChainResolverServiceKeyName,
+	)
+}
