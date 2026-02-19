@@ -21,14 +21,14 @@ func (q *Queries) GetMaxOORRecipientEventID(ctx context.Context, recipientPkScri
 	return column_1, err
 }
 
-const InsertOORRecipientEvent = `-- name: InsertOORRecipientEvent :exec
+const InsertOORRecipientEvent = `-- name: InsertOORRecipientEvent :execrows
 INSERT INTO oor_recipient_events (
     recipient_pk_script, event_id, session_db_id, output_index, value,
     created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6
 )
-ON CONFLICT (recipient_pk_script, session_db_id, output_index) DO NOTHING
+ON CONFLICT DO NOTHING
 `
 
 type InsertOORRecipientEventParams struct {
@@ -40,8 +40,8 @@ type InsertOORRecipientEventParams struct {
 	CreatedAt         int64
 }
 
-func (q *Queries) InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) error {
-	_, err := q.db.ExecContext(ctx, InsertOORRecipientEvent,
+func (q *Queries) InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, InsertOORRecipientEvent,
 		arg.RecipientPkScript,
 		arg.EventID,
 		arg.SessionDbID,
@@ -49,7 +49,10 @@ func (q *Queries) InsertOORRecipientEvent(ctx context.Context, arg InsertOORReci
 		arg.Value,
 		arg.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const ListOORRecipientEventsAfter = `-- name: ListOORRecipientEventsAfter :many

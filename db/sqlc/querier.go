@@ -61,7 +61,7 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
-	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) error
+	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error)
 	// Round queries for server-side round persistence.
 	// RoundStore queries.
 	InsertRound(ctx context.Context, arg InsertRoundParams) error
