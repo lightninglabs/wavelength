@@ -3,6 +3,7 @@ package serverconn
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -94,7 +95,7 @@ func TestUnaryFacade_AwaitRPC(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	actor.StartIngress(ctx)
+	require.NoError(t, actor.StartIngress(ctx))
 	defer actor.StopIngress()
 
 	// Send an RPC request.
@@ -140,7 +141,7 @@ func TestUnaryFacade_ResponseBeforeAwait(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	actor.StartIngress(ctx)
+	require.NoError(t, actor.StartIngress(ctx))
 	defer actor.StopIngress()
 
 	method := mailboxrpc.ServiceMethod{
@@ -193,7 +194,7 @@ func TestUnaryFacade_AwaitRPC_CancelledContext(t *testing.T) {
 	)
 	defer ingressCancel()
 
-	actor.StartIngress(ingressCtx)
+	require.NoError(t, actor.StartIngress(ingressCtx))
 	defer actor.StopIngress()
 
 	// Create a context that we cancel immediately.
@@ -217,7 +218,7 @@ func TestUnaryFacade_ConcurrentInflight(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	actor.StartIngress(ctx)
+	require.NoError(t, actor.StartIngress(ctx))
 	defer actor.StopIngress()
 
 	const numRequests = 20
@@ -299,6 +300,95 @@ func TestUnaryFacade_ConcurrentInflight(t *testing.T) {
 			t, "resp-"+trips[i].input, results[i],
 			"response mismatch for request %d", i,
 		)
+	}
+}
+
+// TestUnaryFacade_HighConcurrencyOutOfOrder verifies that many in-flight unary
+// requests can be resolved correctly when responses arrive out of order before
+// AwaitRPC begins.
+func TestUnaryFacade_HighConcurrencyOutOfOrder(t *testing.T) {
+	t.Parallel()
+
+	actor, mb, _ := newTestConnector(t, nil)
+	facade := NewUnaryFacade(actor)
+
+	ingressCtx, ingressCancel := context.WithCancel(t.Context())
+	defer ingressCancel()
+
+	require.NoError(t, actor.StartIngress(ingressCtx))
+	defer actor.StopIngress()
+
+	const numRequests = 200
+	method := mailboxrpc.ServiceMethod{
+		Service: "test.Svc",
+		Method:  "Bulk",
+	}
+
+	type requestPair struct {
+		correlationID string
+		expected      string
+	}
+
+	pairs := make([]requestPair, numRequests)
+	for i := 0; i < numRequests; i++ {
+		reqValue := fmt.Sprintf("bulk-req-%03d", i)
+		res, err := facade.SendRPC(
+			t.Context(),
+			method,
+			wrapperspb.String(reqValue),
+			mailboxrpc.RPCOptions{},
+		)
+		require.NoError(t, err)
+
+		pairs[i] = requestPair{
+			correlationID: res.CorrelationID,
+			expected:      "bulk-resp-" + reqValue,
+		}
+	}
+
+	order := rand.New(rand.NewSource(1337)).Perm(numRequests)
+	for _, idx := range order {
+		respBytes, err := proto.Marshal(
+			wrapperspb.String(pairs[idx].expected),
+		)
+		require.NoError(t, err)
+
+		sendResponseToMailbox(
+			t, mb, "client-1", pairs[idx].correlationID, respBytes,
+		)
+	}
+
+	var (
+		wg      sync.WaitGroup
+		errs    = make([]error, numRequests)
+		outputs = make([]string, numRequests)
+	)
+
+	for i := 0; i < numRequests; i++ {
+		i := i
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			awaitCtx, cancel := context.WithTimeout(
+				t.Context(), 15*time.Second,
+			)
+			defer cancel()
+
+			var resp wrapperspb.StringValue
+			errs[i] = facade.AwaitRPC(
+				awaitCtx, pairs[i].correlationID, &resp,
+			)
+			outputs[i] = resp.Value
+		}()
+	}
+
+	wg.Wait()
+
+	for i := 0; i < numRequests; i++ {
+		require.NoError(t, errs[i], "await failed for request %d", i)
+		require.Equal(t, pairs[i].expected, outputs[i])
 	}
 }
 
