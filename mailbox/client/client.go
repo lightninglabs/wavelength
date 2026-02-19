@@ -179,14 +179,15 @@ func (c *Client) AwaitRPC(ctx context.Context, correlationID string,
 	resp proto.Message) error {
 
 	for {
-		data, ok := c.popPending(correlationID)
-		if ok {
-			return (proto.UnmarshalOptions{
+		data, ch, hasPending := c.popPendingOrAddWaiter(correlationID)
+		if hasPending {
+			unmarshal := proto.UnmarshalOptions{
 				DiscardUnknown: true,
-			}).Unmarshal(data, resp)
+			}
+
+			return unmarshal.Unmarshal(data, resp)
 		}
 
-		ch := c.addWaiter(correlationID)
 		select {
 		case <-ch:
 		case <-ctx.Done():
@@ -341,31 +342,25 @@ func (c *Client) handleEnvelope(env *mailboxpb.Envelope) {
 	delete(c.waiters, correlationID)
 }
 
-// popPending returns and removes a cached response for correlationID.
-func (c *Client) popPending(correlationID string) ([]byte, bool) {
+// popPendingOrAddWaiter atomically checks for a pending response and, if one
+// is not present, registers a waiter channel for a future response.
+func (c *Client) popPendingOrAddWaiter(correlationID string) (
+	[]byte, chan struct{}, bool) {
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	data, ok := c.pending[correlationID]
-	if !ok {
-		return nil, false
+	if ok {
+		delete(c.pending, correlationID)
+
+		return data, nil, true
 	}
 
-	delete(c.pending, correlationID)
-
-	return data, true
-}
-
-// addWaiter registers a waiter for correlationID and returns its channel.
-func (c *Client) addWaiter(correlationID string) chan struct{} {
 	ch := make(chan struct{})
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.waiters[correlationID] = append(c.waiters[correlationID], ch)
 
-	return ch
+	return nil, ch, false
 }
 
 // removeWaiter removes a previously registered waiter channel.
