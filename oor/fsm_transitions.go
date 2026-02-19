@@ -62,13 +62,19 @@ func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
+
+	if env == nil {
+		return nil, fmt.Errorf("missing environment")
+	}
 
 	switch evt := event.(type) {
 	case *InputsLockSucceededEvent:
 		validateReq := &ValidateSubmitReq{
 			ArkPSBT:         s.ArkPSBT,
 			CheckpointPSBTs: s.CheckpointPSBTs,
+			VTXOSigningDescriptors: s.
+				VTXOSigningDescriptors,
+			CheckpointPolicy: env.CheckpointPolicy,
 		}
 
 		return &StateTransition{

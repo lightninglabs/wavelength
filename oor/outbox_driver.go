@@ -45,6 +45,8 @@ type InProcessOutboxDriver struct {
 	operatorKey keychain.KeyDescriptor
 
 	sessionExpiry time.Duration
+
+	operatorPolicy SubmitOutputPolicy
 }
 
 // DriverCfg configures the in-process outbox driver.
@@ -72,6 +74,9 @@ type DriverCfg struct {
 
 	// SessionExpiry is the optional lock/session lease duration.
 	SessionExpiry time.Duration
+
+	// OperatorPolicy provides optional submit output policy constraints.
+	OperatorPolicy SubmitOutputPolicy
 }
 
 // CheckpointCoSigner defines how operator signatures are attached to
@@ -144,6 +149,7 @@ func NewDriver(cfg DriverCfg) *InProcessOutboxDriver {
 		coSigner:        coSigner,
 		operatorKey:     cfg.OperatorKey,
 		sessionExpiry:   sessionExpiry,
+		operatorPolicy:  cfg.OperatorPolicy,
 	}
 }
 
@@ -175,7 +181,7 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 		return d.handleLockInputs(ctx, sessionID, msg)
 
 	case *ValidateSubmitReq:
-		return d.handleValidateSubmit(msg)
+		return d.handleValidateSubmit(ctx, msg)
 
 	case *CoSignReq:
 		return d.handleCoSign(ctx, sessionID, msg)
@@ -239,10 +245,10 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 
 // handleValidateSubmit validates the submit package and returns an inbox event
 // indicating success/failure.
-func (d *InProcessOutboxDriver) handleValidateSubmit(
+func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	msg *ValidateSubmitReq) ([]Event, error) {
 
-	validated, err := oorlib.ValidateSubmitPackage(
+	validated, err := oorlib.ValidateSubmitPackageSigned(
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
@@ -251,6 +257,21 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(
 				Reason: err.Error(),
 			},
 		}, nil
+	}
+
+	if d.store != nil {
+		err := validateSubmitRebuildAndPolicy(
+			ctx, msg.ArkPSBT, msg.CheckpointPSBTs,
+			msg.VTXOSigningDescriptors, msg.CheckpointPolicy, d.store,
+			d.operatorPolicy,
+		)
+		if err != nil {
+			return []Event{
+				&SubmitFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
 	}
 
 	return []Event{

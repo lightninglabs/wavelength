@@ -3,6 +3,7 @@ package oor
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
 
 // OutboxEvent is a sealed interface for all side-effect requests emitted by the
@@ -79,6 +80,10 @@ type ValidateSubmitReq struct {
 	// VTXOSigningDescriptors carry authoritative per-input owner and policy
 	// metadata used for server-side checkpoint policy validation.
 	VTXOSigningDescriptors []VTXOSigningDescriptor
+
+	// CheckpointPolicy is the operator policy used to derive checkpoint
+	// output scripts.
+	CheckpointPolicy scripts.CheckpointPolicy
 }
 
 // OutboxType returns the type of this outbox event.

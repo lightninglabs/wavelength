@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,7 +64,9 @@ func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
 		ArkPSBT: arkPsbt,
 	}
 
-	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{}, nil)
+	policy := scripts.CheckpointPolicy{CSVDelay: 7}
+	tr, err := state.ProcessEvent(ctx, &InputsLockSucceededEvent{},
+		&Environment{CheckpointPolicy: policy})
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
@@ -77,6 +80,7 @@ func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
 	validateReq, ok := outbox[0].(*ValidateSubmitReq)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, validateReq.ArkPSBT)
+	require.Equal(t, policy, validateReq.CheckpointPolicy)
 }
 
 // TestInputsLockFailedEventMovesToFailedState asserts lock failures transition
@@ -88,7 +92,8 @@ func TestInputsLockFailedEventMovesToFailedState(t *testing.T) {
 
 	state := &AwaitingInputsLockState{}
 	tr, err := state.ProcessEvent(
-		ctx, &InputsLockFailedEvent{Reason: "lock busy"}, nil,
+		ctx, &InputsLockFailedEvent{Reason: "lock busy"},
+		&Environment{},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, tr)

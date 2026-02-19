@@ -284,9 +284,9 @@ func (b *coordinatorBehavior) handleSubmit(ctx context.Context,
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
-	// Run structural submit validation before we touch lock state.
-	// Stateful/ownership checks remain at the outbox boundary.
-	validated, err := oorlib.ValidateSubmitPackage(
+	// Run submit validation before we touch lock state. Stateful/ownership
+	// checks remain at the outbox boundary.
+	validated, err := oorlib.ValidateSubmitPackageSigned(
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
@@ -449,7 +449,8 @@ func (b *coordinatorBehavior) createSessionFSM(ctx context.Context,
 	}
 
 	env := &Environment{
-		SessionID: sessionID,
+		SessionID:        sessionID,
+		CheckpointPolicy: b.cfg.CheckpointPolicy,
 	}
 
 	fsmLogger := b.cfg.Logger.WithPrefix(sessionID.LogPrefix())
