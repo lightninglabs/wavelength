@@ -226,7 +226,8 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 
 		finalCheckpoints := evt.FinalCheckpointPSBTs
 		validateFinalizeReq := &ValidateFinalizeReq{
-			ArkPSBT: s.ArkPSBT,
+			ArkPSBT:                 s.ArkPSBT,
+			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
 		}
 		validateFinalizeReq.FinalCheckpointPSBTs = finalCheckpoints
 
@@ -275,8 +276,9 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 		}
 
 		validateFinalizeReq := &ValidateFinalizeReq{
-			ArkPSBT:              s.ArkPSBT,
-			FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+			ArkPSBT:                 s.ArkPSBT,
+			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
+			FinalCheckpointPSBTs:    s.FinalCheckpointPSBTs,
 		}
 
 		return &StateTransition{

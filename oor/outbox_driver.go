@@ -262,7 +262,8 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	if d.store != nil {
 		err := validateSubmitRebuildAndPolicy(
 			ctx, msg.ArkPSBT, msg.CheckpointPSBTs,
-			msg.VTXOSigningDescriptors, msg.CheckpointPolicy, d.store,
+			msg.VTXOSigningDescriptors,
+			msg.CheckpointPolicy, d.store,
 			d.operatorPolicy,
 		)
 		if err != nil {
@@ -386,6 +387,24 @@ func (d *InProcessOutboxDriver) handleValidateFinalize(
 				Reason: err.Error(),
 			},
 		}, nil
+	}
+
+	// When an operator key is configured, enforce finalize signature
+	// correctness against the co-signed checkpoint set before the
+	// FSM advances to spent-state side effects.
+	if d.operatorKey.PubKey != nil {
+		err = validateFinalizeCheckpointSignatures(
+			d.operatorKey.PubKey,
+			msg.CoSignedCheckpointPSBTs,
+			msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return []Event{
+				&FinalizeFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
 	}
 
 	return []Event{

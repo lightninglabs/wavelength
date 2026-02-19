@@ -133,6 +133,10 @@ type ValidateFinalizeReq struct {
 	// ArkPSBT is the canonical Ark tx PSBT for this session.
 	ArkPSBT *psbt.Packet
 
+	// CoSignedCheckpointPSBTs are checkpoint PSBTs at point-of-no-return
+	// (operator co-signed, before client finalize signatures).
+	CoSignedCheckpointPSBTs []*psbt.Packet
+
 	// FinalCheckpointPSBTs are checkpoint txs fully signed by the client.
 	FinalCheckpointPSBTs []*psbt.Packet
 }

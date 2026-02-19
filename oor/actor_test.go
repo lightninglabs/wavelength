@@ -18,9 +18,14 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	clientoor "github.com/lightninglabs/darepo-client/oor"
+	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -105,6 +110,7 @@ func buildTestSubmitPackage(t *testing.T,
 		CSVDelay:    10,
 	}
 
+	ownerLeafScript := []byte{txscript.OP_TRUE}
 	checkpointRes, err := oorlib.BuildCheckpointPSBT(
 		policy, oorlib.CheckpointInput{
 			SpentVTXO: oorlib.SpentVTXORef{
@@ -117,7 +123,7 @@ func buildTestSubmitPackage(t *testing.T,
 					PkScript: randomP2TRScript(t),
 				},
 			},
-			OwnerLeafScript: []byte{txscript.OP_TRUE},
+			OwnerLeafScript: ownerLeafScript,
 		},
 	)
 	require.NoError(t, err)
@@ -144,7 +150,101 @@ func buildTestSubmitPackage(t *testing.T,
 	)
 	require.NoError(t, err)
 
+	leaf, err := oorlib.BuildTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, ownerLeafScript,
+	)
+	require.NoError(t, err)
+	arkPsbt.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+
 	return policy, arkPsbt, []*psbt.Packet{checkpointRes.PSBT}
+}
+
+// buildTestSubmitPackageWithDescriptor constructs a valid submit package and
+// returns the signing descriptor for the input VTXO.
+func buildTestSubmitPackageWithDescriptor(t *testing.T,
+	recipients []oorlib.RecipientOutput) (
+	scripts.CheckpointPolicy, *psbt.Packet, []*psbt.Packet,
+	VTXOSigningDescriptor, *btcec.PrivateKey, *btcec.PrivateKey,
+) {
+
+	t.Helper()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	exitDelay := uint32(10)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    exitDelay,
+	}
+
+	vtxoTapKey, err := scripts.VTXOTapKey(
+		ownerKey.PubKey(), policy.OperatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	vtxoPkScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+	require.NoError(t, err)
+
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  [32]byte{1},
+		Index: 7,
+	}
+
+	ownerLeafScript := []byte{txscript.OP_TRUE}
+	checkpointRes, err := oorlib.BuildCheckpointPSBT(
+		policy, oorlib.CheckpointInput{
+			SpentVTXO: oorlib.SpentVTXORef{
+				Outpoint: vtxoOutpoint,
+				Output: &wire.TxOut{
+					Value:    testVTXOValue,
+					PkScript: vtxoPkScript,
+				},
+			},
+			OwnerLeafScript: ownerLeafScript,
+		},
+	)
+	require.NoError(t, err)
+
+	if len(recipients) == 0 {
+		recipients = []oorlib.RecipientOutput{
+			{
+				PkScript: randomP2TRScript(t),
+				Value:    btcutil.Amount(testVTXOValue),
+			},
+		}
+	}
+
+	checkpointOutputs := []oorlib.CheckpointOutput{
+		{
+			Txid:           checkpointRes.PSBT.UnsignedTx.TxHash(),
+			Output:         checkpointRes.PSBT.UnsignedTx.TxOut[0],
+			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		},
+	}
+	arkPsbt, err := oorlib.BuildArkPSBT(checkpointOutputs, recipients)
+	require.NoError(t, err)
+
+	leaf, err := oorlib.BuildTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, ownerLeafScript,
+	)
+	require.NoError(t, err)
+	arkPsbt.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+
+	desc := VTXOSigningDescriptor{
+		Outpoint:  vtxoOutpoint,
+		OwnerKey:  ownerKey.PubKey(),
+		ExitDelay: exitDelay,
+	}
+
+	return policy, arkPsbt, []*psbt.Packet{checkpointRes.PSBT}, desc,
+		operatorKey, ownerKey
 }
 
 // buildFinalCheckpointPSBT creates a finalize checkpoint PSBT with placeholder
@@ -183,6 +283,68 @@ func startTestActor(t *testing.T, cfg ActorCfg) *Actor {
 	t.Cleanup(a.Stop)
 
 	return a
+}
+
+// clonePSBTSliceForTest deep-copies PSBTs by serialize/parse so tests avoid
+// sharing mutable packet pointers across actor boundaries.
+func clonePSBTSliceForTest(t *testing.T,
+	pkts []*psbt.Packet) []*psbt.Packet {
+
+	t.Helper()
+
+	out := make([]*psbt.Packet, 0, len(pkts))
+	for _, pkt := range pkts {
+		require.NotNil(t, pkt)
+		require.NotNil(t, pkt.UnsignedTx)
+
+		raw, err := psbtutil.Serialize(pkt)
+		require.NoError(t, err)
+
+		clone, err := psbtutil.Parse(raw)
+		require.NoError(t, err)
+		out = append(out, clone)
+	}
+
+	return out
+}
+
+// buildClientTransferInput constructs a minimal transfer input with all data
+// required for client-side collaborative checkpoint signing.
+func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
+	operatorKey *btcec.PublicKey, exitDelay uint32,
+	outpoint wire.OutPoint, amount btcutil.Amount,
+	ownerLeafScript []byte) clientoor.TransferInput {
+
+	t.Helper()
+
+	tapKey, err := scripts.VTXOTapKey(
+		ownerKey.PubKey(), operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	require.NoError(t, err)
+
+	tapscript, err := scripts.VTXOTapScript(
+		ownerKey.PubKey(), operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	return clientoor.TransferInput{
+		VTXO: &clientvtxo.Descriptor{
+			Outpoint: outpoint,
+			Amount:   amount,
+			PkScript: pkScript,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: ownerKey.PubKey(),
+			},
+			OperatorKey:    operatorKey,
+			TapScript:      tapscript,
+			RelativeExpiry: exitDelay,
+			Status:         clientvtxo.VTXOStatusLive,
+		},
+		OwnerLeafScript: ownerLeafScript,
+	}
 }
 
 // TestActorGetOrCreateSessionFSMConcurrent verifies concurrent access to the
@@ -264,14 +426,19 @@ func TestActorHappyPath(t *testing.T) {
 	})
 	require.True(t, submitResp.IsOk())
 
-	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
-	require.True(t, ok)
+	submitRaw := submitResp.UnwrapOr(nil)
+	submitMsg, ok := submitRaw.(*SubmitOORResponse)
+	if !ok {
+		t.Fatalf("unexpected submit response type: %T", submitRaw)
+	}
 
 	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
-	require.True(t, finalizeResp.IsOk())
+	if finalizeResp.IsErr() {
+		t.Fatalf("finalize failed: %v", finalizeResp.Err())
+	}
 
 	// Session is cleaned up from the map after reaching FinalizedState,
 	// so we verify via the response type instead.
@@ -374,10 +541,12 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
 	require.True(t, finalizeResp.IsErr())
+
+	// FailedState is terminal so the session is cleaned up from
+	// the in-memory map. Verify the error message confirms
+	// failure.
 	require.ErrorContains(t, finalizeResp.Err(), "finalize failed")
 
-	// Session is cleaned up from the map after reaching FailedState,
-	// so we verify the failure via the error response above.
 	seen := strings.Join(driver.SeenOutboxTypes(), ",")
 	require.NotContains(t, seen, "UnlockInputsReq")
 }
@@ -435,8 +604,8 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 	retryResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, retryResp.IsOk())
 
-	// Session is cleaned up after reaching FinalizedState, so we verify
-	// via the response type.
+	// Session is cleaned up from the map after reaching
+	// FinalizedState, so we verify via the response type instead.
 	_, ok = retryResp.UnwrapOr(nil).(*FinalizeOORResponse)
 	require.True(t, ok)
 }
@@ -493,8 +662,8 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	retryResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, retryResp.IsOk())
 
-	// Session is cleaned up after reaching FinalizedState, so we verify
-	// via the response type.
+	// Session is cleaned up from the map after reaching
+	// FinalizedState, so we verify via the response type instead.
 	_, ok := retryResp.UnwrapOr(nil).(*FinalizeOORResponse)
 	require.True(t, ok)
 }
@@ -754,13 +923,12 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 		},
 	}
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(
+	policy, arkPsbt, checkpointPsbts, signDesc, operatorKey,
+		ownerKey := buildTestSubmitPackageWithDescriptor(
 		t, recipients,
 	)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 
-	inputOutpoint := checkpointPsbts[0].UnsignedTx.
-		TxIn[0].PreviousOutPoint
+	inputOutpoint := signDesc.Outpoint
 
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
@@ -777,7 +945,17 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	driver := NewDriver(DriverCfg{Store: store})
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	driver := NewDriver(DriverCfg{
+		Store:          store,
+		OperatorSigner: operatorSigner,
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: policy.OperatorKey,
+		},
+	})
 	actor := startTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
@@ -786,17 +964,46 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
+		VTXOSigningDescriptors: []VTXOSigningDescriptor{
+			signDesc,
+		},
 	})
-	require.True(t, submitResp.IsOk())
+	if submitResp.IsErr() {
+		t.Fatalf("submit failed: %v", submitResp.Err())
+	}
 
-	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
-	require.True(t, ok)
+	submitRaw := submitResp.UnwrapOr(nil)
+	submitMsg, ok := submitRaw.(*SubmitOORResponse)
+	if !ok {
+		t.Fatalf("unexpected submit response type: %T", submitRaw)
+	}
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{ownerKey}, nil,
+	)
+	inputs := []clientoor.TransferInput{
+		buildClientTransferInput(
+			t, ownerKey, policy.OperatorKey,
+			signDesc.ExitDelay, signDesc.Outpoint,
+			btcutil.Amount(testVTXOValue),
+			[]byte{txscript.OP_TRUE},
+		),
+	}
+	finalized := clonePSBTSliceForTest(
+		t, submitMsg.CoSignedCheckpointPSBTs,
+	)
+	err = clientoor.SignCheckpointPSBTs(
+		clientSigner, inputs, finalized,
+	)
+	require.NoError(t, err)
 
 	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
-		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+		FinalCheckpointPSBTs: finalized,
 	})
-	require.True(t, finalizeResp.IsOk())
+	if finalizeResp.IsErr() {
+		t.Fatalf("finalize failed: %v", finalizeResp.Err())
+	}
 
 	// Input should be marked spent.
 	inRec, err := store.Get(ctx, inputOutpoint)
