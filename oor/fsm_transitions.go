@@ -3,7 +3,6 @@ package oor
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -13,16 +12,7 @@ import (
 //
 // We prefer this to returning an error because unexpected events can be a
 // normal consequence of retries, timeouts, or races at the actor boundary.
-func unexpectedEvent(state State, stateName string,
-	event Event, env *Environment) *StateTransition {
-
-	if env != nil && env.Log != nil {
-		env.Log.WarnS(context.Background(), "Ignoring unexpected event", nil,
-			slog.String("state", stateName),
-			slog.String("event_type", fmt.Sprintf("%T", event)),
-		)
-	}
-
+func unexpectedEvent(state State) *StateTransition {
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
@@ -44,10 +34,12 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		return &StateTransition{
-			NextState: &RequestedState{
+			NextState: &AwaitingInputsLockState{
 				Inputs:          inputs,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: evt.CheckpointPSBTs,
+				VTXOSigningDescriptors: evt.
+					VTXOSigningDescriptors,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -59,12 +51,12 @@ func (s *IdleState) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event, env), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
-// ProcessEvent handles events for RequestedState.
-func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
+// ProcessEvent handles events for AwaitingInputsLockState.
+func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
@@ -72,32 +64,87 @@ func (s *RequestedState) ProcessEvent(ctx context.Context, event Event,
 
 	switch evt := event.(type) {
 	case *InputsLockSucceededEvent:
+		validateReq := &ValidateSubmitReq{
+			ArkPSBT:         s.ArkPSBT,
+			CheckpointPSBTs: s.CheckpointPSBTs,
+		}
+
 		return &StateTransition{
-			NextState: &ValidatedState{
+			NextState: &AwaitingSubmitValidationState{
 				Inputs:          s.Inputs,
 				ArkPSBT:         s.ArkPSBT,
 				CheckpointPSBTs: s.CheckpointPSBTs,
+				VTXOSigningDescriptors: s.
+					VTXOSigningDescriptors,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{&CoSignReq{}},
+				Outbox: []OutboxEvent{
+					validateReq,
+				},
 			}),
 		}, nil
 
 	case *InputsLockFailedEvent:
-		reason := evt.Reason
-		if reason == "" {
-			reason = "inputs lock failed"
-		}
-
 		return &StateTransition{
 			NextState: &FailedState{
-				Reason: reason,
+				Reason: evt.Reason,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event, env), nil
+		return unexpectedEvent(s), nil
+	}
+}
+
+// ProcessEvent handles events for AwaitingSubmitValidationState.
+func (s *AwaitingSubmitValidationState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *SubmitValidatedEvent:
+
+		return &StateTransition{
+			NextState: &ValidatedState{
+				Inputs:          s.Inputs,
+				ArkPSBT:         s.ArkPSBT,
+				CheckpointPSBTs: s.CheckpointPSBTs,
+				VTXOSigningDescriptors: s.
+					VTXOSigningDescriptors,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&CoSignReq{
+						Inputs:  s.Inputs,
+						ArkPSBT: s.ArkPSBT,
+						CheckpointPSBTs: s.
+							CheckpointPSBTs,
+						VTXOSigningDescriptors: s.
+							VTXOSigningDescriptors,
+					},
+				},
+			}),
+		}, nil
+
+	case *SubmitFailedEvent:
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: evt.Reason,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&UnlockInputsReq{
+						Inputs: s.Inputs,
+					},
+				},
+			}),
+		}, nil
+
+	default:
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -108,11 +155,13 @@ func (s *ValidatedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *OperatorSignedEvent:
 		return &StateTransition{
 			NextState: &CoSignedState{
-				ArkPSBT: s.ArkPSBT,
+				Inputs:                  s.Inputs,
+				ArkPSBT:                 s.ArkPSBT,
+				CoSignedCheckpointPSBTs: s.CheckpointPSBTs,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
@@ -120,17 +169,19 @@ func (s *ValidatedState) ProcessEvent(ctx context.Context, event Event,
 	case *SignFailedEvent:
 		return &StateTransition{
 			NextState: &FailedState{
-				Reason: "sign failed",
+				Reason: evt.Reason,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{&UnlockInputsReq{
-					Inputs: s.Inputs,
-				}},
+				Outbox: []OutboxEvent{
+					&UnlockInputsReq{
+						Inputs: s.Inputs,
+					},
+				},
 			}),
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event, env), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -151,15 +202,23 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 				"provided")
 		}
 
+		finalCheckpoints := evt.FinalCheckpointPSBTs
+		validateFinalizeReq := &ValidateFinalizeReq{
+			ArkPSBT: s.ArkPSBT,
+		}
+		validateFinalizeReq.FinalCheckpointPSBTs = finalCheckpoints
+
 		return &StateTransition{
-			NextState: &AwaitingFinalCheckpointsState{},
+			NextState: &AwaitingFinalizeValidationState{
+				Inputs:  s.Inputs,
+				ArkPSBT: s.ArkPSBT,
+				CoSignedCheckpointPSBTs: s.
+					CoSignedCheckpointPSBTs,
+				FinalCheckpointPSBTs: finalCheckpoints,
+			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&ValidateFinalizeReq{
-						ArkPSBT: s.ArkPSBT,
-						FinalCheckpointPSBTs: evt.
-							FinalCheckpointPSBTs,
-					},
+					validateFinalizeReq,
 				},
 			}),
 		}, nil
@@ -167,48 +226,69 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 	case *SignFailedEvent:
 		return &StateTransition{
 			NextState: &FailedState{
-				Reason: "sign failed after cosign",
+				Reason: evt.Reason,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event, env), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
-// ProcessEvent handles events for AwaitingFinalCheckpointsState.
-func (s *AwaitingFinalCheckpointsState) ProcessEvent(ctx context.Context,
+// ProcessEvent handles events for AwaitingFinalizeValidationState.
+func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
 
 	_ = ctx
 	_ = env
 
-	switch event.(type) {
+	switch evt := event.(type) {
 	case *FinalizeValidatedEvent:
+		finalizeReq := &FinalizeReq{
+			ArkPSBT:              s.ArkPSBT,
+			FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+			Inputs:               s.Inputs,
+		}
+
 		return &StateTransition{
-			NextState: s,
+			// Re-enter CoSignedState so FinalizeSucceededEvent and
+			// FinalizeFailedEvent share one post-validation path.
+			NextState: &CoSignedState{
+				Inputs:  s.Inputs,
+				ArkPSBT: s.ArkPSBT,
+				CoSignedCheckpointPSBTs: s.
+					CoSignedCheckpointPSBTs,
+			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{&FinalizeReq{}},
+				Outbox: []OutboxEvent{
+					finalizeReq,
+				},
 			}),
 		}, nil
 
 	case *FinalizeSucceededEvent:
 		return &StateTransition{
 			NextState: &FinalizedState{},
-			NewEvents: fn.None[EmittedEvent](),
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&NotifyRecipientsReq{
+						ArkPSBT: s.ArkPSBT,
+					},
+				},
+			}),
 		}, nil
 
 	case *FinalizeFailedEvent:
 		return &StateTransition{
 			NextState: &FailedState{
-				Reason: "finalize failed",
+				Reason: evt.Reason,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
 	default:
-		return unexpectedEvent(s, s.String(), event, env), nil
+		return unexpectedEvent(s), nil
 	}
 }
 
@@ -219,7 +299,7 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, s.String(), event, env), nil
+	return unexpectedEvent(s), nil
 }
 
 // ProcessEvent handles events for FailedState.
@@ -229,5 +309,5 @@ func (s *FailedState) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s, s.String(), event, env), nil
+	return unexpectedEvent(s), nil
 }
