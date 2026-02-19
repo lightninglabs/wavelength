@@ -264,17 +264,33 @@ func (c *fakeMailboxServiceClient) AckUpTo(
 }
 
 // memCheckpointStore is a minimal in-memory implementation of the checkpoint
-// subset of actor.DeliveryStore needed for ingress loop tests. Only
-// SaveCheckpoint and LoadCheckpoint are implemented; all other methods panic.
+// and delivery portions of actor.DeliveryStore used by serverconn tests.
 type memCheckpointStore struct {
 	mu          sync.Mutex
 	checkpoints map[string]*actor.Checkpoint
+
+	messages    map[string]*storeMessage
+	askResults  map[string]*actor.AskResult
+	processed   map[string]bool
+	deadLetters map[string]*actor.DeadLetter
+	outbox      map[string]*actor.OutboxMessage
+}
+
+// storeMessage tracks mailbox delivery state in memory.
+type storeMessage struct {
+	leased      actor.LeasedMessage
+	availableAt time.Time
 }
 
 // newMemCheckpointStore creates a new empty checkpoint store.
 func newMemCheckpointStore() *memCheckpointStore {
 	return &memCheckpointStore{
 		checkpoints: make(map[string]*actor.Checkpoint),
+		messages:    make(map[string]*storeMessage),
+		askResults:  make(map[string]*actor.AskResult),
+		processed:   make(map[string]bool),
+		deadLetters: make(map[string]*actor.DeadLetter),
+		outbox:      make(map[string]*actor.OutboxMessage),
 	}
 }
 
@@ -313,165 +329,536 @@ func (s *memCheckpointStore) LoadCheckpoint(
 	return cp, nil
 }
 
-// The remaining DeliveryStore methods are unused in connector tests and panic
-// if called.
-
+// EnqueueMessage persists a mailbox message in memory.
 func (s *memCheckpointStore) EnqueueMessage(
 	ctx context.Context, params actor.EnqueueParams,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Mirror production ON CONFLICT DO NOTHING semantics for receiver-side
+	// deduplication on retry deliveries.
+	if _, exists := s.messages[params.ID]; exists {
+		return nil
+	}
+
+	payloadCopy := append([]byte(nil), params.Payload...)
+
+	s.messages[params.ID] = &storeMessage{
+		leased: actor.LeasedMessage{
+			ID:              params.ID,
+			MailboxID:       params.MailboxID,
+			MessageType:     params.MessageType,
+			Payload:         payloadCopy,
+			PromiseID:       params.PromiseID,
+			CallbackActorID: params.CallbackActorID,
+			CorrelationID:   params.CorrelationID,
+			Priority:        params.Priority,
+			Attempts:        0,
+			MaxAttempts:     params.MaxAttempts,
+			CreatedAt:       time.Now(),
+		},
+		availableAt: params.AvailableAt,
+	}
+
+	return nil
 }
 
+// LeaseNextMessage leases the next available mailbox message.
 func (s *memCheckpointStore) LeaseNextMessage(
 	ctx context.Context, mailboxID string, leaseToken string,
 	leaseDuration time.Duration,
 ) (*actor.LeasedMessage, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+
+	var selected *storeMessage
+	for _, msg := range s.messages {
+		if msg.leased.MailboxID != mailboxID {
+			continue
+		}
+
+		if msg.availableAt.After(now) {
+			continue
+		}
+
+		if msg.leased.LeaseToken != "" &&
+			msg.leased.LeaseUntil.After(now) {
+
+			continue
+		}
+
+		if selected == nil ||
+			msg.availableAt.Before(selected.availableAt) {
+
+			selected = msg
+		}
+	}
+
+	if selected == nil {
+		return nil, nil
+	}
+
+	selected.leased.LeaseToken = leaseToken
+	selected.leased.LeaseUntil = now.Add(leaseDuration)
+	selected.leased.Attempts++
+
+	leasedCopy := selected.leased
+	leasedCopy.Payload = append(
+		[]byte(nil), selected.leased.Payload...,
+	)
+
+	return &leasedCopy, nil
 }
 
+// AckMessage acknowledges a leased message by ID and lease token.
 func (s *memCheckpointStore) AckMessage(
 	ctx context.Context, id, leaseToken string,
 ) (int64, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	delete(s.messages, id)
+
+	return 1, nil
 }
 
+// NackMessage releases a leased message for later redelivery.
 func (s *memCheckpointStore) NackMessage(
 	ctx context.Context, id, leaseToken string,
 	retryAfter time.Duration,
 ) (int64, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	msg.leased.LeaseToken = ""
+	msg.leased.LeaseUntil = time.Time{}
+	msg.availableAt = time.Now().Add(retryAfter)
+
+	return 1, nil
 }
 
+// ExtendLease extends a message lease when lease token matches.
 func (s *memCheckpointStore) ExtendLease(
 	ctx context.Context, id, leaseToken string,
 	extension time.Duration,
 ) (int64, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	msg.leased.LeaseUntil = time.Now().Add(extension)
+
+	return 1, nil
 }
 
+// MoveToDeadLetter moves a mailbox message to the dead letter map.
 func (s *memCheckpointStore) MoveToDeadLetter(
 	ctx context.Context, id, reason string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return nil
+	}
+
+	payloadCopy := append([]byte(nil), msg.leased.Payload...)
+
+	s.deadLetters[id] = &actor.DeadLetter{
+		ID:            id,
+		Source:        "mailbox",
+		ActorID:       msg.leased.MailboxID,
+		MessageType:   msg.leased.MessageType,
+		Payload:       payloadCopy,
+		FailureReason: reason,
+		Attempts:      msg.leased.Attempts,
+		CreatedAt:     time.Now(),
+	}
+
+	return nil
 }
 
+// DeleteMessage removes a mailbox message by ID.
 func (s *memCheckpointStore) DeleteMessage(
 	ctx context.Context, id string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.messages, id)
+
+	return nil
 }
 
+// SaveAskResult stores an ask result in memory.
 func (s *memCheckpointStore) SaveAskResult(
 	ctx context.Context, params actor.AskResultParams,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	resultBlob := append([]byte(nil), params.ResultBlob...)
+
+	s.askResults[params.PromiseID] = &actor.AskResult{
+		PromiseID:  params.PromiseID,
+		ResultBlob: resultBlob,
+		ErrorText:  params.ErrorText,
+		CreatedAt:  time.Now(),
+		ExpiresAt:  params.ExpiresAt,
+	}
+
+	return nil
 }
 
+// GetAskResult retrieves an ask result from memory.
 func (s *memCheckpointStore) GetAskResult(
 	ctx context.Context, promiseID string,
 ) (*actor.AskResult, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, ok := s.askResults[promiseID]
+	if !ok {
+		return nil, nil
+	}
+
+	clone := *result
+	clone.ResultBlob = append([]byte(nil), result.ResultBlob...)
+
+	return &clone, nil
 }
 
+// DeleteAskResult removes an ask result by promise ID.
 func (s *memCheckpointStore) DeleteAskResult(
 	ctx context.Context, promiseID string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.askResults, promiseID)
+
+	return nil
 }
 
+// EnqueueOutbox stores an outbox message in memory.
 func (s *memCheckpointStore) EnqueueOutbox(
 	ctx context.Context, params actor.OutboxParams,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	payloadCopy := append([]byte(nil), params.Payload...)
+
+	s.outbox[params.ID] = &actor.OutboxMessage{
+		ID:            params.ID,
+		SourceActorID: params.SourceActorID,
+		TargetActorID: params.TargetActorID,
+		MessageType:   params.MessageType,
+		Payload:       payloadCopy,
+		DomainKey:     params.DomainKey,
+		Version:       params.Version,
+		Status:        "pending",
+		CreatedAt:     time.Now(),
+	}
+
+	return nil
 }
 
+// ClaimOutboxBatch claims pending outbox messages up to the given limit.
 func (s *memCheckpointStore) ClaimOutboxBatch(
 	ctx context.Context, params actor.OutboxClaimParams,
 ) ([]actor.OutboxMessage, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var result []actor.OutboxMessage
+
+	for _, msg := range s.outbox {
+		if msg.Status != "pending" {
+			continue
+		}
+
+		msg.ClaimToken = params.ClaimToken
+		msg.DeliveryAttempts++
+
+		copyMsg := *msg
+		copyMsg.Payload = append([]byte(nil), msg.Payload...)
+		result = append(result, copyMsg)
+
+		if len(result) >= params.Limit {
+			break
+		}
+	}
+
+	return result, nil
 }
 
+// CompleteOutbox marks a claimed outbox message as completed.
 func (s *memCheckpointStore) CompleteOutbox(
 	ctx context.Context, id, claimToken string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.outbox[id]
+	if !ok {
+		return nil
+	}
+
+	if msg.ClaimToken != claimToken {
+		return nil
+	}
+
+	msg.Status = "completed"
+
+	return nil
 }
 
+// FailOutbox marks a claimed outbox message as dead-lettered.
 func (s *memCheckpointStore) FailOutbox(
 	ctx context.Context, id, claimToken string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.outbox[id]
+	if !ok {
+		return nil
+	}
+
+	if msg.ClaimToken != claimToken {
+		return nil
+	}
+
+	msg.Status = "dead_letter"
+
+	return nil
 }
 
+// IsProcessed returns true when the message ID is marked processed.
 func (s *memCheckpointStore) IsProcessed(
 	ctx context.Context, id string,
 ) (bool, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.processed[id], nil
 }
 
+// MarkProcessed records a processed message ID.
 func (s *memCheckpointStore) MarkProcessed(
 	ctx context.Context, id, actorID string,
 	ttl time.Duration,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+	_ = actorID
+	_ = ttl
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.processed[id] = true
+
+	return nil
 }
 
+// DeleteCheckpoint deletes the checkpoint for actorID.
 func (s *memCheckpointStore) DeleteCheckpoint(
 	ctx context.Context, actorID string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.checkpoints, actorID)
+
+	return nil
 }
 
+// GetDeadLetter returns a dead letter entry by ID.
 func (s *memCheckpointStore) GetDeadLetter(
 	ctx context.Context, id string,
 ) (*actor.DeadLetter, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	deadLetter, ok := s.deadLetters[id]
+	if !ok {
+		return nil, nil
+	}
+
+	copyDeadLetter := *deadLetter
+	copyDeadLetter.Payload = append([]byte(nil), deadLetter.Payload...)
+
+	return &copyDeadLetter, nil
 }
 
+// ListDeadLetters lists dead letters for the given actor ID.
 func (s *memCheckpointStore) ListDeadLetters(
 	ctx context.Context, actorID string, limit int,
 ) ([]actor.DeadLetter, error) {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var result []actor.DeadLetter
+
+	for _, deadLetter := range s.deadLetters {
+		if deadLetter.ActorID != actorID {
+			continue
+		}
+
+		copyDeadLetter := *deadLetter
+		copyDeadLetter.Payload = append(
+			[]byte(nil), deadLetter.Payload...,
+		)
+		result = append(result, copyDeadLetter)
+
+		if len(result) >= limit {
+			break
+		}
+	}
+
+	return result, nil
 }
 
+// DeleteDeadLetter deletes a dead-letter entry by ID.
 func (s *memCheckpointStore) DeleteDeadLetter(
 	ctx context.Context, id string,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.deadLetters, id)
+
+	return nil
 }
 
+// ExpireLeases clears lease tokens for expired messages.
 func (s *memCheckpointStore) ExpireLeases(
 	ctx context.Context,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for _, msg := range s.messages {
+		if msg.leased.LeaseUntil.Before(now) {
+			msg.leased.LeaseToken = ""
+			msg.leased.LeaseUntil = time.Time{}
+		}
+	}
+
+	return nil
 }
 
+// CleanupExpired removes expired ask results.
 func (s *memCheckpointStore) CleanupExpired(
 	ctx context.Context,
 ) error {
 
-	panic("not implemented")
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for id, askResult := range s.askResults {
+		if askResult.ExpiresAt.Before(now) {
+			delete(s.askResults, id)
+		}
+	}
+
+	return nil
 }
 
 // Compile-time check.
