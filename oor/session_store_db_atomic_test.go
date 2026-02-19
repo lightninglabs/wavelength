@@ -1,0 +1,478 @@
+package oor
+
+import (
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
+	"github.com/stretchr/testify/require"
+)
+
+// makeTestPSBT builds a compact PSBT fixture with one input/output.
+func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
+	t.Helper()
+
+	tx := wire.NewMsgTx(2)
+
+	var hash chainhash.Hash
+	hash[0] = seed
+
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  hash,
+			Index: uint32(seed),
+		},
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    int64(1000 + int(seed)),
+		PkScript: []byte{0x51, seed},
+	})
+
+	pkt, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(t, err)
+
+	// Populate WitnessUtxo so callers can read input value/script.
+	pkt.Inputs[0].WitnessUtxo = &wire.TxOut{
+		Value:    1000,
+		PkScript: []byte{0x51, seed},
+	}
+
+	return pkt
+}
+
+// makeTestSessionID returns a deterministic session ID from an Ark PSBT.
+func makeTestSessionID(arkPSBT *psbt.Packet) SessionID {
+	return SessionID(arkPSBT.UnsignedTx.TxHash())
+}
+
+// newTestSessionStore creates a session store backed by a test DB.
+func newTestSessionStore(t *testing.T) (*DBSessionStore,
+	db.BatchedQuerier) {
+
+	t.Helper()
+
+	dbh := db.NewTestDB(t)
+
+	return NewDBSessionStore(
+		dbh, clock.NewDefaultClock(), btclog.Disabled,
+	), dbh
+}
+
+// TestUpsertCoSignedBasic verifies basic UpsertCoSigned persistence and
+// retrieval via LoadActiveSessions.
+func TestUpsertCoSignedBasic(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 1)
+	checkpoint := makeTestPSBT(t, 2)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	sessions, err := store.LoadActiveSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+
+	s := sessions[0]
+	require.Equal(t, sessionID, s.SessionID)
+	require.Equal(t, oorStateCoSigned, s.State)
+	require.Len(t, s.Inputs, 1)
+	require.Equal(t, input, s.Inputs[0])
+	require.NotNil(t, s.ArkPSBT)
+	require.Len(t, s.CheckpointPSBTs, 1)
+}
+
+// TestUpsertCoSignedIdempotent verifies that UpsertCoSigned is idempotent
+// when called with the same payload.
+func TestUpsertCoSignedIdempotent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 10)
+	checkpoint := makeTestPSBT(t, 11)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	for i := 0; i < 3; i++ {
+		err := store.UpsertCoSigned(
+			ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+			[]*psbt.Packet{checkpoint},
+			time.Now().Add(DefaultSessionExpiry),
+		)
+		require.NoError(t, err)
+	}
+
+	sessions, err := store.LoadActiveSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+}
+
+// TestApplyFinalizeFromCoSigned verifies the cosigned -> awaiting_notify
+// transition.
+func TestApplyFinalizeFromCoSigned(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 20)
+	checkpoint := makeTestPSBT(t, 21)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	// Build a "finalized" checkpoint (use a different seed for
+	// distinct bytes).
+	finalCheckpoint := makeTestPSBT(t, 22)
+
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	// Session should now be awaiting_notify.
+	sessions, err := store.LoadActiveSessions(ctx)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.Equal(t, oorStateAwaitingNotify, sessions[0].State)
+}
+
+// TestApplyFinalizeIdempotentSamePayload verifies repeat ApplyFinalize with
+// the same checkpoint payload succeeds.
+func TestApplyFinalizeIdempotentSamePayload(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 30)
+	checkpoint := makeTestPSBT(t, 31)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 32)
+
+	// First call transitions cosigned -> awaiting_notify.
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	// Second call with same payload is idempotent.
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+}
+
+// TestApplyFinalizeRejectsDifferentPayload verifies repeat ApplyFinalize with
+// different checkpoint payload returns an error.
+func TestApplyFinalizeRejectsDifferentPayload(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 40)
+	checkpoint := makeTestPSBT(t, 41)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 42)
+
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	// Different payload should fail.
+	differentCheckpoint := makeTestPSBT(t, 43)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{differentCheckpoint},
+	)
+	require.ErrorContains(t, err, "payload mismatch")
+}
+
+// TestApplyFinalizeOnAlreadyFinalizedSucceeds verifies that calling
+// ApplyFinalize on a session already past awaiting_notify (i.e. finalized)
+// returns success.
+func TestApplyFinalizeOnAlreadyFinalizedSucceeds(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 50)
+	checkpoint := makeTestPSBT(t, 51)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 52)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	err = store.MarkNotified(ctx, sessionID)
+	require.NoError(t, err)
+
+	// ApplyFinalize on already-finalized returns success.
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+}
+
+// TestMarkNotifiedTransition verifies awaiting_notify -> finalized.
+func TestMarkNotifiedTransition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 60)
+	checkpoint := makeTestPSBT(t, 61)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 62)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	err = store.MarkNotified(ctx, sessionID)
+	require.NoError(t, err)
+
+	// After MarkNotified, session should no longer be in active list.
+	sessions, err := store.LoadActiveSessions(ctx)
+	require.NoError(t, err)
+	require.Empty(t, sessions)
+}
+
+// TestMarkNotifiedIdempotent verifies MarkNotified is idempotent when
+// already finalized.
+func TestMarkNotifiedIdempotent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 70)
+	checkpoint := makeTestPSBT(t, 71)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 72)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	// First MarkNotified succeeds.
+	err = store.MarkNotified(ctx, sessionID)
+	require.NoError(t, err)
+
+	// Second MarkNotified is idempotent.
+	err = store.MarkNotified(ctx, sessionID)
+	require.NoError(t, err)
+}
+
+// TestLoadFinalizedPackage verifies the finalized package can be loaded
+// after ApplyFinalize.
+func TestLoadFinalizedPackage(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 80)
+	checkpoint := makeTestPSBT(t, 81)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 82)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	pkg, err := store.LoadFinalizedPackage(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, pkg)
+	require.NotNil(t, pkg.ArkPSBT)
+	require.Len(t, pkg.FinalCheckpointPSBTs, 1)
+
+	// Verify Ark txid matches.
+	expectedTxid := arkPSBT.UnsignedTx.TxHash()
+	actualTxid := pkg.ArkPSBT.UnsignedTx.TxHash()
+	require.Equal(t, expectedTxid, actualTxid)
+}
+
+// TestAtomicCoSignedAndMarkInFlight verifies atomic session+lock persistence.
+func TestAtomicCoSignedAndMarkInFlight(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	dbh := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		dbh.DB, dbh.Queries, dbh.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
+	)
+
+	store := NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	recordStore := dbStore.NewVTXORecordStore()
+
+	arkPSBT := makeTestPSBT(t, 90)
+	checkpoint := makeTestPSBT(t, 91)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	// Create the VTXO record so it can be locked.
+	err := recordStore.Create(ctx, &vtxo.Record{
+		Outpoint: input,
+		Value:    checkpoint.Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpoint.Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	owner := vtxo.OORLockOwner(sessionID.String())
+	err = store.UpsertCoSignedAndMarkInFlight(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry), owner,
+	)
+	require.NoError(t, err)
+
+	// Verify session persisted.
+	row, err := dbh.Queries.GetOORSession(
+		ctx, sessionIDBytes(sessionID),
+	)
+	require.NoError(t, err)
+	require.Equal(t, string(oorStateCoSigned), row.State)
+
+	// Verify VTXO locked.
+	record, err := recordStore.Get(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, vtxo.StatusInFlight, record.Status)
+	require.Equal(t, owner, record.InFlightOwner)
+}
+
+// TestAtomicCoSignedRollbackOnLockFailure verifies session is rolled back when
+// VTXO lock fails (e.g. unknown VTXO).
+func TestAtomicCoSignedRollbackOnLockFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	dbh := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		dbh.DB, dbh.Queries, dbh.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
+	)
+
+	store := NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+
+	arkPSBT := makeTestPSBT(t, 95)
+	checkpoint := makeTestPSBT(t, 96)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	// Don't create the VTXO record — lock should fail.
+	err := store.UpsertCoSignedAndMarkInFlight(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+		vtxo.OORLockOwner(sessionID.String()),
+	)
+	require.Error(t, err)
+
+	// Session should not be persisted.
+	_, err = dbh.Queries.GetOORSession(
+		ctx, sessionIDBytes(sessionID),
+	)
+	require.True(t, errors.Is(err, sql.ErrNoRows))
+}
