@@ -11,6 +11,11 @@ import (
 type Querier interface {
 	CountBoardingIntentsByStatus(ctx context.Context, status string) (int64, error)
 	CountUnspentVTXOs(ctx context.Context) (int64, error)
+	// Chain resolver state persistence queries.
+	DeleteChainResolverState(ctx context.Context, arg DeleteChainResolverStateParams) error
+	GetChainResolverState(ctx context.Context, arg GetChainResolverStateParams) (ChainResolverState, error)
+	ListActiveChainResolverStates(ctx context.Context) ([]ChainResolverState, error)
+	UpsertChainResolverState(ctx context.Context, arg UpsertChainResolverStateParams) error
 	// CountVTXOsByStatus returns the count of VTXOs with the specified status.
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error

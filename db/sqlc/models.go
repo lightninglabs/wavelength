@@ -44,6 +44,15 @@ type ChainInfo struct {
 	GenesisHash []byte
 }
 
+type ChainResolverState struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+	State         string
+	StateDetails  []byte
+	CreatedAt     int64
+	UpdatedAt     int64
+}
+
 type ClientTreeTxid struct {
 	Txid        []byte
 	RoundID     string
