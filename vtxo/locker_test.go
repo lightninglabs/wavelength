@@ -115,3 +115,36 @@ func TestInMemoryLockerExpiry(t *testing.T) {
 	err = locker.LockMany(ctx, []wire.OutPoint{outpoint}, ownerB)
 	require.NoError(t, err)
 }
+
+// TestLockOwnerHelpers asserts subsystem-specific owner helpers use stable
+// prefixes to avoid collisions.
+func TestLockOwnerHelpers(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, LockOwner("round:abc"), RoundLockOwner("abc"))
+	require.Equal(t, LockOwner("oor:def"), OORLockOwner("def"))
+}
+
+// TestLockerErrorStrings asserts the concrete error types render useful error
+// messages.
+func TestLockerErrorStrings(t *testing.T) {
+	t.Parallel()
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{1},
+		Index: 2,
+	}
+
+	errLocked := &ErrLocked{
+		Outpoint: outpoint,
+		Owner:    LockOwner("oor:session"),
+	}
+	require.Contains(t, errLocked.Error(), "locked")
+
+	errNotOwner := &ErrNotOwner{
+		Outpoint: outpoint,
+		Owner:    LockOwner("oor:session"),
+		Attempt:  LockOwner("round:round"),
+	}
+	require.Contains(t, errNotOwner.Error(), "attempt")
+}
