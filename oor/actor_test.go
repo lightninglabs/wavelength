@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +18,8 @@ import (
 // drive the FSM forward.
 type testOutboxHandler struct {
 	t *testing.T
+
+	clientSigner input.Signer
 }
 
 // Handle processes the outbox request and returns follow-up events.
@@ -30,23 +33,34 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
 
-		return []Event{&SubmitAcceptedEvent{
-			SessionID:               sessionID,
-			ArkPSBT:                 msg.ArkPSBT,
-			CoSignedCheckpointPSBTs: msg.CheckpointPSBTs,
-		}}, nil
+		return []Event{
+			&SubmitAcceptedEvent{
+				SessionID:               sessionID,
+				ArkPSBT:                 msg.ArkPSBT,
+				CoSignedCheckpointPSBTs: msg.CheckpointPSBTs,
+			},
+		}, nil
 
 	case *RequestCheckpointSignatures:
-		finalCheckpoints := msg.CoSignedCheckpointPSBTs
-		finalCheckpoints[0].Inputs[0].TaprootKeySpendSig = []byte{0x01}
+		err := SignCheckpointPSBTs(
+			h.clientSigner, msg.TransferInputs,
+			msg.CoSignedCheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
-		return []Event{&CheckpointsSignedEvent{
-			FinalCheckpointPSBTs: finalCheckpoints,
-		}}, nil
+		finalCheckpoints := msg.CoSignedCheckpointPSBTs
+
+		return []Event{
+			&CheckpointsSignedEvent{
+				FinalCheckpointPSBTs: finalCheckpoints,
+			},
+		}, nil
 
 	case *SendFinalizePackageRequest:
 		_ = msg
-		return []Event{&FinalizeAcceptedEvent{}}, nil
+		return []Event{
+			&FinalizeAcceptedEvent{},
+		}, nil
 
 	default:
 		return nil, nil
@@ -72,26 +86,38 @@ func TestOORClientActorHappyPath(t *testing.T) {
 
 	inputValue := btcutil.Amount(10000)
 
-	inputs := []oortx.CheckpointInput{{
-		Outpoint: wire.OutPoint{
-			Hash:  [32]byte{0x01},
-			Index: 0,
-		},
-		WitnessUtxo: &wire.TxOut{
-			Value:    int64(inputValue),
-			PkScript: []byte{0x51},
-		},
-		OwnerLeafScript: []byte{0x51},
-	}}
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
 
-	recipients := []oortx.RecipientOutput{{
-		PkScript: []byte{0x51},
-		Value:    inputValue,
-	}}
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
 
 	actor := NewOORClientActor(ClientActorCfg{
-		OutboxHandler: &testOutboxHandler{t: t},
+		OutboxHandler: &testOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-test-happy",
 	})
+	defer actor.Stop()
 
 	startResp := actor.Receive(ctx, &StartTransferRequest{
 		Policy:     policy,

@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 )
 
 // ValidatedSubmitPackage contains derived facts from a submit package that are
@@ -54,7 +55,7 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 		return nil, fmt.Errorf("checkpoint psbts must be provided")
 	}
 
-	err := ValidateCanonicalArkPSBT(ark)
+	err := arktx.ValidateCanonicalPSBT(ark)
 	if err != nil {
 		return nil, err
 	}

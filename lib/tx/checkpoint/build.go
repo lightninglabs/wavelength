@@ -1,0 +1,145 @@
+package checkpoint
+
+import (
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+)
+
+// MinCheckpointCSVDelay is the minimum acceptable checkpoint CSV delay for v0
+// OOR checkpoint policies.
+const MinCheckpointCSVDelay = uint32(10)
+
+// Input describes the VTXO input being transformed into a checkpoint output for
+// an OOR transfer.
+type Input struct {
+	// SpentVTXO identifies and describes the VTXO output being spent.
+	SpentVTXO SpentVTXORef
+
+	// OwnerLeafScript is the spent VTXO's collaborative leaf script.
+	//
+	// It is committed into the checkpoint output tap tree together with
+	// the operator timeout leaf.
+	//
+	// This is deliberately a raw script for the draft implementation. Once
+	// the closure system is canonical, higher layers should construct this
+	// leaf using closure helpers and pass the resulting script bytes here.
+	OwnerLeafScript []byte
+}
+
+// SpentVTXORef groups the spent VTXO outpoint and output data in one value so
+// callers cannot accidentally mismatch identity and witness material.
+type SpentVTXORef struct {
+	// Outpoint is the outpoint of the VTXO output being spent.
+	Outpoint wire.OutPoint
+
+	// Output is the previous output being spent (value + pkScript).
+	//
+	// This must match the server's stored VTXO descriptor later, but at the
+	// primitive level we only need it so PSBT has enough material to be
+	// signed and validated structurally.
+	Output *wire.TxOut
+}
+
+// Result is the result of building a checkpoint PSBT.
+type Result struct {
+	// PSBT is the unsigned checkpoint transaction.
+	PSBT *psbt.Packet
+
+	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
+	//
+	// This is intended to be attached to the Ark tx PSBT inputs under the
+	// `taptree` unknown key so finalization can later copy it onto the
+	// checkpoint output metadata.
+	TapTreeEncoded []byte
+}
+
+// BuildPSBT constructs an unsigned checkpoint PSBT that spends a VTXO input and
+// pays the entire input value to a checkpoint P2TR output.
+//
+// The checkpoint output pkScript is derived deterministically from:
+//
+// - the operator checkpoint policy, and
+// - the caller-provided owner leaf script.
+//
+// This function does not attempt to sign the checkpoint tx. It also does not
+// validate that the owner leaf is a canonical Ark closure (draft phase).
+func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
+	switch {
+	case policy.CSVDelay < MinCheckpointCSVDelay:
+		return nil, fmt.Errorf(
+			"checkpoint csv delay %d below minimum %d",
+			policy.CSVDelay, MinCheckpointCSVDelay,
+		)
+
+	case in.SpentVTXO.Output == nil:
+		return nil, fmt.Errorf("spent output must be provided")
+
+	case in.SpentVTXO.Output.Value <= 0:
+		return nil, fmt.Errorf("spent output value must be " +
+			"positive")
+
+	case len(in.SpentVTXO.Output.PkScript) == 0:
+		return nil, fmt.Errorf("spent output pkScript must be " +
+			"provided")
+	}
+
+	tapscript, err := scripts.CheckpointTapScript(
+		policy, in.OwnerLeafScript,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	encodedTapTree, err := EncodeTapTree(tapLeafScripts(tapscript.Leaves))
+	if err != nil {
+		return nil, err
+	}
+
+	tapKey, err := tapscript.TaprootKey()
+	if err != nil {
+		return nil, fmt.Errorf("unable to compute taproot key: %w", err)
+	}
+
+	checkpointPkScript, err := txscript.PayToTaprootScript(tapKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create p2tr script: %w", err)
+	}
+
+	tx := wire.NewMsgTx(arktx.TxVersion)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: in.SpentVTXO.Outpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+	tx.AddTxOut(&wire.TxOut{
+		Value:    in.SpentVTXO.Output.Value,
+		PkScript: checkpointPkScript,
+	})
+
+	pkt, err := psbt.NewFromUnsignedTx(tx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create checkpoint psbt: %w",
+			err)
+	}
+
+	pkt.Inputs[0].WitnessUtxo = in.SpentVTXO.Output
+
+	return &Result{
+		PSBT:           pkt,
+		TapTreeEncoded: encodedTapTree,
+	}, nil
+}
+
+// tapLeafScripts extracts raw script bytes from a list of tap leaves.
+func tapLeafScripts(leaves []txscript.TapLeaf) [][]byte {
+	scripts := make([][]byte, 0, len(leaves))
+	for _, leaf := range leaves {
+		scripts = append(scripts, leaf.Script)
+	}
+
+	return scripts
+}

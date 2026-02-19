@@ -52,6 +52,15 @@ type AwaitingSubmitAccepted struct {
 
 	// CheckpointPSBTs are the checkpoint tx PSBTs for this session.
 	CheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the VTXO descriptors and scripts needed to
+	// sign checkpoint PSBTs at the co-sign step.
+	//
+	// These are not used by the FSM's transition logic. They are threaded
+	// through the state so the FSM can emit complete outbox events (which
+	// need the signing context) and so checkpoint snapshots capture them
+	// for crash-resume.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.
@@ -87,6 +96,13 @@ type AwaitingCheckpointSignatures struct {
 
 	// CoSignedCheckpointPSBTs are the operator co-signed checkpoint PSBTs.
 	CoSignedCheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the client-side VTXO signing context needed
+	// for the checkpoint signing outbox event.
+	//
+	// See AwaitingSubmitAccepted.TransferInputs for rationale on why
+	// this is carried on the FSM state.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of
@@ -185,6 +201,8 @@ func (s *Completed) stateSealed() {}
 
 // Failed is the terminal failure state for the OOR client transfer session.
 type Failed struct {
+	// Reason is a human-readable failure reason intended for logs and
+	// tests.
 	Reason string
 }
 

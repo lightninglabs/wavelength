@@ -24,13 +24,17 @@ type ActorResp interface {
 type StartTransferRequest struct {
 	actor.BaseMessage
 
-	// Policy defines the checkpoint output tap tree policy.
+	// Policy defines the operator checkpoint policy used to build the
+	// transfer package.
 	Policy scripts.CheckpointPolicy
 
-	// Inputs are the VTXO inputs to convert into checkpoint txs.
-	Inputs []oortx.CheckpointInput
+	// Inputs are the VTXOs to transfer.
+	//
+	// Each input includes enough context for the outbox boundary to request
+	// wallet signatures deterministically.
+	Inputs []TransferInput
 
-	// Recipients are the Ark tx recipient outputs.
+	// Recipients are the Ark tx output scripts/amounts.
 	Recipients []oortx.RecipientOutput
 }
 
@@ -46,6 +50,7 @@ func (m *StartTransferRequest) actorMsgSealed() {}
 type StartTransferResponse struct {
 	actor.BaseMessage
 
+	// SessionID is the stable v0 session identifier (Ark txid).
 	SessionID SessionID
 }
 
@@ -63,7 +68,7 @@ func (m *StartTransferResponse) actorRespSealed() {}
 type DriveEventRequest struct {
 	actor.BaseMessage
 
-	// SessionID selects the session to drive.
+	// SessionID identifies the session to drive.
 	SessionID SessionID
 
 	// Event is the follow-up event produced by an outbox handler, or by a
@@ -96,6 +101,7 @@ func (m *DriveEventResponse) actorRespSealed() {}
 type GetStateRequest struct {
 	actor.BaseMessage
 
+	// SessionID identifies the session to query.
 	SessionID SessionID
 }
 
@@ -111,6 +117,7 @@ func (m *GetStateRequest) actorMsgSealed() {}
 type GetStateResponse struct {
 	actor.BaseMessage
 
+	// State is the current session state machine state.
 	State State
 }
 
@@ -121,3 +128,103 @@ func (m *GetStateResponse) MessageType() string {
 
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *GetStateResponse) actorRespSealed() {}
+
+// RestoreSessionRequest asks the actor to restore an outgoing transfer session
+// from a previously exported snapshot.
+type RestoreSessionRequest struct {
+	actor.BaseMessage
+
+	// Snapshot is the durable-ish client-side snapshot for an outgoing
+	// transfer.
+	Snapshot *OutgoingSnapshot
+}
+
+// MessageType returns the type of this message.
+func (m *RestoreSessionRequest) MessageType() string {
+	return "RestoreSessionRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *RestoreSessionRequest) actorMsgSealed() {}
+
+// RestoreSessionResponse returns the restored session identifier.
+type RestoreSessionResponse struct {
+	actor.BaseMessage
+
+	// SessionID is the restored session identifier.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *RestoreSessionResponse) MessageType() string {
+	return "RestoreSessionResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *RestoreSessionResponse) actorRespSealed() {}
+
+// ResumeSessionRequest asks the actor to re-emit the outbox request implied by
+// the current session state.
+//
+// This supports retries after app restart or temporary transport failures (for
+// example, re-sending submit/finalize requests).
+type ResumeSessionRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the session to resume.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *ResumeSessionRequest) MessageType() string {
+	return "ResumeSessionRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ResumeSessionRequest) actorMsgSealed() {}
+
+// ResumeSessionResponse acknowledges the resume request.
+type ResumeSessionResponse struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type of this message.
+func (m *ResumeSessionResponse) MessageType() string {
+	return "ResumeSessionResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *ResumeSessionResponse) actorRespSealed() {}
+
+// ExportSnapshotRequest asks the actor to export a snapshot for the requested
+// session.
+type ExportSnapshotRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the session to snapshot.
+	SessionID SessionID
+}
+
+// MessageType returns the type of this message.
+func (m *ExportSnapshotRequest) MessageType() string {
+	return "ExportSnapshotRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ExportSnapshotRequest) actorMsgSealed() {}
+
+// ExportSnapshotResponse returns an exported outgoing session snapshot.
+type ExportSnapshotResponse struct {
+	actor.BaseMessage
+
+	// Snapshot is the exported outgoing snapshot.
+	Snapshot *OutgoingSnapshot
+}
+
+// MessageType returns the type of this message.
+func (m *ExportSnapshotResponse) MessageType() string {
+	return "ExportSnapshotResponse"
+}
+
+// actorRespSealed marks this as implementing the sealed ActorResp interface.
+func (m *ExportSnapshotResponse) actorRespSealed() {}

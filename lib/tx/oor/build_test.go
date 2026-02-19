@@ -56,11 +56,13 @@ func TestBuildCheckpointAndArkPSBT(t *testing.T) {
 	}
 
 	cpResult, err := BuildCheckpointPSBT(policy, CheckpointInput{
-		Outpoint: wire.OutPoint{
-			Hash:  chainhash.Hash{1},
-			Index: 0,
+		SpentVTXO: SpentVTXORef{
+			Outpoint: wire.OutPoint{
+				Hash:  chainhash.Hash{1},
+				Index: 0,
+			},
+			Output: vtxoWitness,
 		},
-		WitnessUtxo:     vtxoWitness,
 		OwnerLeafScript: ownerLeafScript,
 	})
 	require.NoError(t, err)

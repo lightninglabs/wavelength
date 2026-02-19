@@ -30,22 +30,14 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
 
 	switch evt := event.(type) {
 	case *StartTransferEvent:
-		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
-		for i := range evt.VTXOInputs {
-			inputOutpoints = append(
-				inputOutpoints, evt.VTXOInputs[i].Outpoint,
-			)
-		}
-
 		// Build a deterministic submit package:
 		// - checkpoint txs convert VTXOs into checkpoints
 		// - an Ark tx spends checkpoints and pays recipients
 		//
-		// The Ark txid becomes the stable session identifier.
+		// The Ark txid is the stable session identifier.
 		ark, checkpoints, err := buildSubmitPackage(
 			evt.Policy,
 			evt.VTXOInputs,
@@ -55,18 +47,59 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 			return nil, err
 		}
 
+		if ark == nil || ark.UnsignedTx == nil {
+			return nil, fmt.Errorf("ark psbt must be provided")
+		}
+
+		if len(checkpoints) == 0 {
+			return nil, fmt.Errorf("checkpoint psbts must be " +
+				"provided")
+		}
+
+		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
+		for i := range evt.VTXOInputs {
+			if evt.VTXOInputs[i].VTXO == nil {
+				return nil, fmt.Errorf(
+					"checkpoint input vtxo required",
+				)
+			}
+			inputOutpoints = append(
+				inputOutpoints, evt.VTXOInputs[i].VTXO.Outpoint,
+			)
+		}
+
+		// If the environment is already bound to a stable session id,
+		// verify the derived Ark txid matches. A mismatch indicates
+		// non-determinism in the builder or inconsistent state
+		// reconstruction.
+		if env != nil && env.SessionID != (SessionID{}) {
+			sessionID, err := sessionIDFromArk(ark)
+			if err != nil {
+				return nil, err
+			}
+
+			if sessionID != env.SessionID {
+				return nil, fmt.Errorf("ark txid mismatch " +
+					"with session id")
+			}
+		}
+
+		submitReq := &SendSubmitPackageRequest{
+			ArkPSBT:         ark,
+			CheckpointPSBTs: checkpoints,
+			TransferInputs:  evt.VTXOInputs,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingSubmitAccepted{
 				InputOutpoints:  inputOutpoints,
 				ArkPSBT:         ark,
 				CheckpointPSBTs: checkpoints,
+				TransferInputs:  evt.VTXOInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&SendSubmitPackageRequest{
-						ArkPSBT:         ark,
-						CheckpointPSBTs: checkpoints,
-					},
+					submitReq,
 				},
 			}),
 		}, nil
@@ -103,6 +136,12 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		stateTxid := s.ArkPSBT.UnsignedTx.TxHash()
+		if evt.SessionID != SessionID(stateTxid) {
+			return nil, fmt.Errorf(
+				"submit accepted session id mismatch",
+			)
+		}
+
 		evTxid := evt.ArkPSBT.UnsignedTx.TxHash()
 		if stateTxid != evTxid {
 			return nil, fmt.Errorf("ark txid mismatch")
@@ -115,21 +154,24 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		checkpoints := evt.CoSignedCheckpointPSBTs
 
 		// Signature material is produced outside the FSM.
-		// The actor boundary uses a wallet to finalize checkpoints.
+		// Ask the outbox boundary to finalize checkpoints.
+		signReq := &RequestCheckpointSignatures{
+			ArkPSBT:                 evt.ArkPSBT,
+			CoSignedCheckpointPSBTs: evt.CoSignedCheckpointPSBTs,
+			TransferInputs:          s.TransferInputs,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingCheckpointSignatures{
 				SessionID:               evt.SessionID,
 				InputOutpoints:          s.InputOutpoints,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
+				TransferInputs:          s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					&RequestCheckpointSignatures{
-						ArkPSBT: evt.ArkPSBT,
-						CoSignedCheckpointPSBTs: evt.
-							CoSignedCheckpointPSBTs,
-					},
+					signReq,
 				},
 			}),
 		}, nil
@@ -293,7 +335,7 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
 // darepo-client lib/tx/oor primitives.
 func buildSubmitPackage(policy scripts.CheckpointPolicy,
-	inputs []oortx.CheckpointInput,
+	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet, error) {
 
 	if len(inputs) == 0 {
@@ -304,7 +346,14 @@ func buildSubmitPackage(policy scripts.CheckpointPolicy,
 	checkpointOuts := make([]oortx.CheckpointOutput, 0, len(inputs))
 
 	for i := range inputs {
-		result, err := oortx.BuildCheckpointPSBT(policy, inputs[i])
+		checkpointInput, err := inputs[i].CheckpointInput()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		result, err := oortx.BuildCheckpointPSBT(
+			policy, checkpointInput,
+		)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tx/checkpoint"
 )
 
 var (
@@ -16,109 +15,23 @@ var (
 	// We treat this as part of the OOR PSBT profile so client and server
 	// implementations can deterministically attach, validate, and later use
 	// the same metadata during finalization.
+	//
+	// NOTE: PSBT unknown keys are a shared namespace. We use a short,
+	// stable key here for v0 tests and in-process wiring.
+	//
+	// A future version should consider namespacing this (for example,
+	// `ark/taptree`) to reduce collision risk with other PSBT extensions.
 	TapTreePSBTKey = []byte("taptree")
 )
 
 // EncodeTapTree encodes a set of tapscript leaves into a single byte blob.
-//
-// EncodeTapTree intentionally uses a simple leaf list representation that is
-// sufficient for v0 OOR transfers. Each leaf is encoded at depth 1 with the
-// base tapscript leaf version. The encoding uses Bitcoin varint (compact size)
-// lengths and is compatible with how many BIP-371 encodings represent tap
-// trees.
-//
-// This encoding is part of the PSBT profile for OOR transfers. If we ever need
-// to support richer trees (multiple depths), this function must become
-// versioned rather than changing behavior silently.
 func EncodeTapTree(leaves [][]byte) ([]byte, error) {
-	var buf bytes.Buffer
-
-	err := wire.WriteVarInt(&buf, 0, uint64(len(leaves)))
-	if err != nil {
-		return nil, fmt.Errorf("unable to write leaf count: %w",
-			err)
-	}
-
-	for _, leaf := range leaves {
-		err := buf.WriteByte(1)
-		if err != nil {
-			return nil, fmt.Errorf("unable to write depth: %w",
-				err)
-		}
-
-		err = buf.WriteByte(byte(txscript.BaseLeafVersion))
-		if err != nil {
-			return nil, fmt.Errorf("unable to write leaf "+
-				"version: %w", err)
-		}
-
-		err = wire.WriteVarInt(&buf, 0, uint64(len(leaf)))
-		if err != nil {
-			return nil, fmt.Errorf("unable to write leaf "+
-				"length: %w", err)
-		}
-
-		_, err = buf.Write(leaf)
-		if err != nil {
-			return nil, fmt.Errorf("unable to write leaf "+
-				"script: %w", err)
-		}
-	}
-
-	return buf.Bytes(), nil
+	return checkpoint.EncodeTapTree(leaves)
 }
 
 // DecodeTapTree decodes a tap tree encoding produced by EncodeTapTree.
-//
-// DecodeTapTree is intentionally lenient about leaf depth and version in v0:
-// it reads and ignores them. The returned value is the list of raw script
-// bytes for each leaf.
 func DecodeTapTree(data []byte) ([][]byte, error) {
-	buf := bytes.NewReader(data)
-
-	leafCount, err := wire.ReadVarInt(buf, 0)
-	if err != nil {
-		return nil, fmt.Errorf("unable to read leaf count: %w",
-			err)
-	}
-
-	leaves := make([][]byte, 0, leafCount)
-	for i := uint64(0); i < leafCount; i++ {
-		_, err := buf.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("unable to read depth: %w",
-				err)
-		}
-
-		_, err = buf.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("unable to read leaf "+
-				"version: %w", err)
-		}
-
-		scriptLen, err := wire.ReadVarInt(buf, 0)
-		if err != nil {
-			return nil, fmt.Errorf("unable to read script "+
-				"length: %w", err)
-		}
-
-		scriptBytes := make([]byte, scriptLen)
-		_, err = buf.Read(scriptBytes)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"unable to read script bytes: %w", err,
-			)
-		}
-
-		leaves = append(leaves, scriptBytes)
-	}
-
-	if buf.Len() != 0 {
-		return nil, fmt.Errorf("trailing bytes in tap tree "+
-			"encoding (%d bytes)", buf.Len())
-	}
-
-	return leaves, nil
+	return checkpoint.DecodeTapTree(data)
 }
 
 // PutTapTreePSBTInput stores an encoded tap tree blob into the given PSBT input

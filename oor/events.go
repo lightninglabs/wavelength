@@ -23,8 +23,8 @@ type Event interface {
 // StartTransferEvent requests starting an OOR transfer by building a submit
 // package (checkpoint PSBTs + Ark PSBT).
 type StartTransferEvent struct {
-	// VTXOInputs is the set of VTXO inputs to convert into checkpoints.
-	VTXOInputs []oortx.CheckpointInput
+	// VTXOInputs is the set of client VTXOs to spend for this transfer.
+	VTXOInputs []TransferInput
 
 	// RecipientOutputs are the Ark tx outputs to produce.
 	RecipientOutputs []oortx.RecipientOutput
@@ -36,8 +36,17 @@ type StartTransferEvent struct {
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *StartTransferEvent) eventSealed() {}
 
+// ArkSignedEvent is emitted after the client signs the Ark PSBT.
+type ArkSignedEvent struct {
+	// ArkPSBT is the signed Ark PSBT.
+	ArkPSBT *psbt.Packet
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *ArkSignedEvent) eventSealed() {}
+
 // SubmitAcceptedEvent is emitted when the server accepts the submit package and
-// co-signs checkpoint PSBTs (point-of-no-return for the outgoing flow).
+// co-signs checkpoint PSBTs (the point-of-no-return for the outgoing flow).
 //
 // After this event, the client must be able to resume and obtain the same
 // co-signed checkpoint artifacts even if the submit response was lost.
@@ -46,7 +55,9 @@ type SubmitAcceptedEvent struct {
 	SessionID SessionID
 
 	// ArkPSBT is the canonical session artifact for consistency checks and
-	// stateless finalize retries.
+	// stateless finalize retries. The operator does not add Ark signature
+	// material in submit-accepted.
+	// Operator co-signing applies to checkpoints.
 	ArkPSBT *psbt.Packet
 
 	// CoSignedCheckpointPSBTs are checkpoint PSBTs co-signed by the
@@ -113,6 +124,12 @@ type IncomingTransferEvent struct {
 
 	// ArkPSBT is the canonical Ark tx PSBT for this transfer.
 	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the finalized checkpoint packages associated
+	// with the Ark PSBT.
+	// These can be used by the materialization boundary to derive parent
+	// lineage and future unroll proofs.
+	FinalCheckpointPSBTs []*psbt.Packet
 }
 
 // eventSealed marks this as implementing the sealed Event interface.
