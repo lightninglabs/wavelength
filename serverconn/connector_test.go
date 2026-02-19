@@ -9,9 +9,21 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+// testServerMessage is a minimal ServerMessage implementation for egress
+// tests.
+type testServerMessage struct {
+	value string
+}
+
+// ToProto converts the test message to a protobuf payload.
+func (m *testServerMessage) ToProto() proto.Message {
+	return wrapperspb.String(m.value)
+}
 
 // newTestConnector builds a ServerConnectionActor with in-memory test
 // dependencies.
@@ -394,7 +406,7 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 					Status: &mailboxpb.Status{
 						Ok:      false,
 						Code:    "INTERNAL",
-						Message: "injected batch failure",
+						Message: "injected failure",
 					},
 				}
 			}
@@ -438,6 +450,7 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 			"(1 fail + 1 retry)",
 	)
 }
+
 // TestRetryDelay verifies the exponential backoff formula with jitter.
 func TestRetryDelay(t *testing.T) {
 	t.Parallel()
