@@ -189,6 +189,33 @@ func (s *AwaitingFinalizeValidationState) IsTerminal() bool {
 // State interface.
 func (s *AwaitingFinalizeValidationState) stateSealed() {}
 
+// AwaitingRecipientsNotifyState indicates finalize side effects succeeded and
+// the FSM is waiting for durable recipient notification persistence.
+type AwaitingRecipientsNotifyState struct {
+	// ArkPSBT is the canonical Ark tx PSBT used to derive recipient
+	// outputs.
+	ArkPSBT *psbt.Packet
+
+	// LastNotifyFailureReason stores the most recent recipient-notify
+	// persistence failure reason, if any.
+	LastNotifyFailureReason string
+}
+
+// String returns a human-readable representation of
+// AwaitingRecipientsNotifyState.
+func (s *AwaitingRecipientsNotifyState) String() string {
+	return "AwaitingRecipientsNotifyState"
+}
+
+// IsTerminal returns false as AwaitingRecipientsNotifyState is not terminal.
+func (s *AwaitingRecipientsNotifyState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingRecipientsNotifyState as implementing the sealed
+// State interface.
+func (s *AwaitingRecipientsNotifyState) stateSealed() {}
+
 // FinalizedState is the terminal success state.
 type FinalizedState struct{}
 

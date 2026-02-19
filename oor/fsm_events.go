@@ -203,3 +203,30 @@ func (e *FinalizeSucceededEvent) EventType() string {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *FinalizeSucceededEvent) eventSealed() {}
+
+// NotifyRecipientsSucceededEvent indicates recipient notification persistence
+// completed successfully.
+type NotifyRecipientsSucceededEvent struct{}
+
+// EventType returns the type of this event.
+func (e *NotifyRecipientsSucceededEvent) EventType() string {
+	return "NotifyRecipientsSucceededEvent"
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *NotifyRecipientsSucceededEvent) eventSealed() {}
+
+// NotifyRecipientsFailedEvent indicates recipient notification persistence
+// failed.
+type NotifyRecipientsFailedEvent struct {
+	// Reason is a human-readable error string for logs/tests.
+	Reason string
+}
+
+// EventType returns the type of this event.
+func (e *NotifyRecipientsFailedEvent) EventType() string {
+	return "NotifyRecipientsFailedEvent"
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *NotifyRecipientsFailedEvent) eventSealed() {}

@@ -16,6 +16,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// makeTestP2TRScript returns a deterministic 34-byte P2TR pkScript seeded by
+// the provided byte so DB-backed tests accept the script length.
+func makeTestP2TRScript(seed byte) []byte {
+	script := make([]byte, 34)
+	script[0] = 0x51 // OP_1
+	script[1] = 0x20 // PUSH 32
+	script[2] = seed
+
+	return script
+}
+
 // makeTestPSBT builds a compact PSBT fixture with one input/output.
 func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
 	t.Helper()
@@ -33,7 +44,7 @@ func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
 	})
 	tx.AddTxOut(&wire.TxOut{
 		Value:    int64(1000 + int(seed)),
-		PkScript: []byte{0x51, seed},
+		PkScript: makeTestP2TRScript(seed),
 	})
 
 	pkt, err := psbt.NewFromUnsignedTx(tx)
@@ -42,7 +53,7 @@ func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
 	// Populate WitnessUtxo so callers can read input value/script.
 	pkt.Inputs[0].WitnessUtxo = &wire.TxOut{
 		Value:    1000,
-		PkScript: []byte{0x51, seed},
+		PkScript: makeTestP2TRScript(seed),
 	}
 
 	return pkt

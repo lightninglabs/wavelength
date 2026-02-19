@@ -193,10 +193,9 @@ func (d *InProcessOutboxDriver) Handle(ctx context.Context, sessionID SessionID,
 		return d.handleUnlockInputs(ctx, sessionID, msg)
 
 	default:
-		// Unknown outbox types are ignored in the in-process driver.
-		// Real implementations are expected to return errors for
-		// unsupported requests.
-		return nil, nil
+		return nil, fmt.Errorf(
+			"unsupported outbox event type: %T", outbox,
+		)
 	}
 }
 
@@ -459,42 +458,76 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 }
 
 // handleNotifyRecipients appends durable recipient events for the finalized
-// Ark transaction if the recipient event store is configured.
+// Ark transaction and returns an FSM event indicating success or failure.
 func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 	sessionID SessionID,
 	msg *NotifyRecipientsReq) ([]Event, error) {
 
 	if d.recipientEvents == nil {
-		return nil, nil
+		// Mark the session as fully notified even when there is no
+		// recipient event store, completing the awaiting_notify →
+		// finalized DB transition.
+		if d.sessionStore != nil {
+			err := d.sessionStore.MarkNotified(ctx, sessionID)
+			if err != nil {
+				return []Event{
+					&NotifyRecipientsFailedEvent{
+						Reason: err.Error(),
+					},
+				}, nil
+			}
+		}
+
+		return []Event{
+			&NotifyRecipientsSucceededEvent{},
+		}, nil
 	}
 
 	ark := msg.ArkPSBT
 	if ark == nil {
-		return nil, fmt.Errorf("ark psbt must be provided")
+		return []Event{
+			&NotifyRecipientsFailedEvent{
+				Reason: "ark psbt must be provided",
+			},
+		}, nil
 	}
 
 	recipients, err := clientoor.ExtractArkRecipients(ark)
 	if err != nil {
-		return nil, err
+		return []Event{
+			&NotifyRecipientsFailedEvent{
+				Reason: err.Error(),
+			},
+		}, nil
 	}
 
 	err = d.recipientEvents.AppendRecipientEvents(
 		ctx, sessionID, ark, recipients,
 	)
 	if err != nil {
-		return nil, err
+		return []Event{
+			&NotifyRecipientsFailedEvent{
+				Reason: err.Error(),
+			},
+		}, nil
 	}
 
 	// Mark the session as fully notified, completing the
-	// awaiting_notify → finalized transition.
+	// awaiting_notify → finalized DB transition.
 	if d.sessionStore != nil {
 		err := d.sessionStore.MarkNotified(ctx, sessionID)
 		if err != nil {
-			return nil, err
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
 		}
 	}
 
-	return nil, nil
+	return []Event{
+		&NotifyRecipientsSucceededEvent{},
+	}, nil
 }
 
 // handleUnlockInputs unlocks inputs if a locker is configured. This is only
@@ -505,7 +538,10 @@ func (d *InProcessOutboxDriver) handleUnlockInputs(ctx context.Context,
 
 	if d.locker != nil {
 		owner := vtxo.OORLockOwner(sessionID.String())
-		_ = d.locker.UnlockMany(ctx, msg.Inputs, owner)
+		err := d.locker.UnlockMany(ctx, msg.Inputs, owner)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return nil, nil

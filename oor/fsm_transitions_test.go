@@ -47,9 +47,9 @@ func TestSignFailedAfterPointOfNoReturnDoesNotUnlock(t *testing.T) {
 	require.Empty(t, outbox)
 }
 
-// TestInputsLockSucceededEventEmitsCoSign asserts locking success advances
-// to the co-signing gate and emits CoSignReq.
-func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
+// TestInputsLockSucceededEventEmitsValidateSubmit asserts locking success
+// advances to submit validation and emits ValidateSubmitReq.
+func TestInputsLockSucceededEventEmitsValidateSubmit(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -58,7 +58,8 @@ func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
-	state := &RequestedState{
+	state := &AwaitingInputsLockState{
+		Inputs:  []wire.OutPoint{{Index: 42}},
 		ArkPSBT: arkPsbt,
 	}
 
@@ -66,13 +67,16 @@ func TestInputsLockSucceededEventEmitsCoSign(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
-	next, ok := tr.NextState.(*ValidatedState)
+	next, ok := tr.NextState.(*AwaitingSubmitValidationState)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, next.ArkPSBT)
+	require.Equal(t, uint32(42), next.Inputs[0].Index)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
-	require.IsType(t, &CoSignReq{}, outbox[0])
+	validateReq, ok := outbox[0].(*ValidateSubmitReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, validateReq.ArkPSBT)
 }
 
 // TestInputsLockFailedEventMovesToFailedState asserts lock failures transition
@@ -82,7 +86,7 @@ func TestInputsLockFailedEventMovesToFailedState(t *testing.T) {
 
 	ctx := t.Context()
 
-	state := &RequestedState{}
+	state := &AwaitingInputsLockState{}
 	tr, err := state.ProcessEvent(
 		ctx, &InputsLockFailedEvent{Reason: "lock busy"}, nil,
 	)
@@ -124,6 +128,152 @@ func TestFinalizeRequestCarriesArkToValidation(t *testing.T) {
 	validateReq, ok := outbox[0].(*ValidateFinalizeReq)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, validateReq.ArkPSBT)
+}
+
+// TestAwaitingFinalizeValidationRetryKeepsCanonicalPackage asserts finalize
+// retries in AwaitingFinalizeValidationState re-emit validation with the
+// already accepted canonical checkpoint package when payload matches.
+func TestAwaitingFinalizeValidationRetryKeepsCanonicalPackage(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	storedCheckpoints := makeCheckpointPSBTs(t, wire.OutPoint{Index: 11})
+	retryCheckpoints := makeCheckpointPSBTs(t, wire.OutPoint{Index: 11})
+
+	state := &AwaitingFinalizeValidationState{
+		ArkPSBT:              arkPsbt,
+		FinalCheckpointPSBTs: storedCheckpoints,
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{
+		FinalCheckpointPSBTs: retryCheckpoints,
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.Same(t, state, tr.NextState)
+
+	outbox := collectOutbox(t, tr)
+	require.Len(t, outbox, 1)
+
+	validateReq, ok := outbox[0].(*ValidateFinalizeReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, validateReq.ArkPSBT)
+	require.Equal(t, storedCheckpoints, validateReq.FinalCheckpointPSBTs)
+}
+
+// TestAwaitingFinalizeValidationRetryRejectsMismatchedPackage asserts finalize
+// retries that change checkpoint payload are rejected explicitly.
+func TestAwaitingFinalizeValidationRetryRejectsMismatchedPackage(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	state := &AwaitingFinalizeValidationState{
+		FinalCheckpointPSBTs: makeCheckpointPSBTs(
+			t, wire.OutPoint{Index: 21},
+		),
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{
+		FinalCheckpointPSBTs: makeCheckpointPSBTs(
+			t, wire.OutPoint{Index: 22},
+		),
+	}, nil)
+	require.ErrorContains(t, err, "final checkpoint package mismatch")
+	require.Nil(t, tr)
+}
+
+// TestFinalizeSucceededTransitionsToRecipientNotifyState asserts finalize
+// success emits notify work before entering the terminal finalized state.
+func TestFinalizeSucceededTransitionsToRecipientNotifyState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	state := &CoSignedState{
+		ArkPSBT: arkPsbt,
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeSucceededEvent{}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+
+	next, ok := tr.NextState.(*AwaitingRecipientsNotifyState)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, next.ArkPSBT)
+
+	outbox := collectOutbox(t, tr)
+	require.Len(t, outbox, 1)
+	notifyReq, ok := outbox[0].(*NotifyRecipientsReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, notifyReq.ArkPSBT)
+}
+
+// TestAwaitingRecipientsNotifyFinalizeRetryReemitsNotify asserts finalize
+// retries re-emit recipient notifications when notification is still pending.
+func TestAwaitingRecipientsNotifyFinalizeRetryReemitsNotify(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	state := &AwaitingRecipientsNotifyState{
+		ArkPSBT: arkPsbt,
+	}
+
+	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	require.Same(t, state, tr.NextState)
+
+	outbox := collectOutbox(t, tr)
+	require.Len(t, outbox, 1)
+	notifyReq, ok := outbox[0].(*NotifyRecipientsReq)
+	require.True(t, ok)
+	require.Same(t, arkPsbt, notifyReq.ArkPSBT)
+}
+
+// TestAwaitingRecipientsNotifyEvents asserts recipient notification success
+// reaches finalized and notification failure remains retryable with an
+// observable failure reason.
+func TestAwaitingRecipientsNotifyEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	state := &AwaitingRecipientsNotifyState{}
+
+	successTr, err := state.ProcessEvent(
+		ctx, &NotifyRecipientsSucceededEvent{}, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, successTr)
+	require.IsType(t, &FinalizedState{}, successTr.NextState)
+	require.Empty(t, collectOutbox(t, successTr))
+
+	failTr, err := state.ProcessEvent(
+		ctx, &NotifyRecipientsFailedEvent{Reason: "notify failed"}, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, failTr)
+
+	next, ok := failTr.NextState.(*AwaitingRecipientsNotifyState)
+	require.True(t, ok)
+	require.Same(t, state.ArkPSBT, next.ArkPSBT)
+	require.Equal(t, "notify failed", next.LastNotifyFailureReason)
+	require.Empty(t, collectOutbox(t, failTr))
 }
 
 // TestSubmitRequestedPopulatesLockInputs asserts SubmitRequestedEvent derives

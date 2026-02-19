@@ -1,9 +1,11 @@
 package oor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -196,6 +198,20 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 	_ = env
 
 	switch evt := event.(type) {
+	case *FinalizeSucceededEvent:
+		return &StateTransition{
+			NextState: &AwaitingRecipientsNotifyState{
+				ArkPSBT: s.ArkPSBT,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&NotifyRecipientsReq{
+						ArkPSBT: s.ArkPSBT,
+					},
+				},
+			}),
+		}, nil
+
 	case *FinalizeRequestedEvent:
 		if len(evt.FinalCheckpointPSBTs) == 0 {
 			return nil, fmt.Errorf("final checkpoints must be " +
@@ -244,6 +260,28 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 	_ = env
 
 	switch evt := event.(type) {
+	case *FinalizeRequestedEvent:
+		err := requireFinalCheckpointPackageMatch(
+			s.FinalCheckpointPSBTs, evt.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		validateFinalizeReq := &ValidateFinalizeReq{
+			ArkPSBT:              s.ArkPSBT,
+			FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+		}
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					validateFinalizeReq,
+				},
+			}),
+		}, nil
+
 	case *FinalizeValidatedEvent:
 		finalizeReq := &FinalizeReq{
 			ArkPSBT:              s.ArkPSBT,
@@ -267,9 +305,80 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 			}),
 		}, nil
 
-	case *FinalizeSucceededEvent:
+	case *FinalizeFailedEvent:
 		return &StateTransition{
-			NextState: &FinalizedState{},
+			NextState: &FailedState{
+				Reason: evt.Reason,
+			},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		return unexpectedEvent(s), nil
+	}
+}
+
+// requireFinalCheckpointPackageMatch enforces idempotent finalize retry
+// semantics by requiring retried finalize payloads to be byte-identical to the
+// checkpoint package already accepted into session state.
+func requireFinalCheckpointPackageMatch(expected, retry []*psbt.Packet) error {
+	if len(retry) == 0 {
+		return fmt.Errorf("final checkpoints must be provided")
+	}
+
+	if len(expected) == 0 {
+		return fmt.Errorf(
+			"internal: missing finalized checkpoint package",
+		)
+	}
+
+	if len(expected) != len(retry) {
+		return fmt.Errorf(
+			"final checkpoint package mismatch: expected %d "+
+				"checkpoints, got %d",
+			len(expected), len(retry),
+		)
+	}
+
+	for i := range expected {
+		expectedBlob, err := serializePSBT(expected[i])
+		if err != nil {
+			return fmt.Errorf(
+				"serialize expected checkpoint %d: %w",
+				i, err,
+			)
+		}
+
+		retryBlob, err := serializePSBT(retry[i])
+		if err != nil {
+			return fmt.Errorf("serialize retry checkpoint %d: %w",
+				i, err)
+		}
+
+		if !bytes.Equal(expectedBlob, retryBlob) {
+			return fmt.Errorf(
+				"final checkpoint package mismatch at index %d",
+				i,
+			)
+		}
+	}
+
+	return nil
+}
+
+// ProcessEvent handles events for AwaitingRecipientsNotifyState.
+func (s *AwaitingRecipientsNotifyState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	_ = ctx
+	_ = env
+
+	switch evt := event.(type) {
+	case *FinalizeRequestedEvent:
+		_ = evt
+
+		return &StateTransition{
+			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&NotifyRecipientsReq{
@@ -279,10 +388,17 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 			}),
 		}, nil
 
-	case *FinalizeFailedEvent:
+	case *NotifyRecipientsSucceededEvent:
 		return &StateTransition{
-			NextState: &FailedState{
-				Reason: evt.Reason,
+			NextState: &FinalizedState{},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	case *NotifyRecipientsFailedEvent:
+		return &StateTransition{
+			NextState: &AwaitingRecipientsNotifyState{
+				ArkPSBT:                 s.ArkPSBT,
+				LastNotifyFailureReason: evt.Reason,
 			},
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil

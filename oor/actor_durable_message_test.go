@@ -12,32 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// makeTestPSBT builds a compact PSBT fixture with one input/output.
-func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
-	t.Helper()
-
-	tx := wire.NewMsgTx(2)
-
-	var hash chainhash.Hash
-	hash[0] = seed
-
-	tx.AddTxIn(&wire.TxIn{
-		PreviousOutPoint: wire.OutPoint{
-			Hash:  hash,
-			Index: uint32(seed),
-		},
-	})
-	tx.AddTxOut(&wire.TxOut{
-		Value:    int64(1000 + int(seed)),
-		PkScript: []byte{0x51},
-	})
-
-	pkt, err := psbt.NewFromUnsignedTx(tx)
-	require.NoError(t, err)
-
-	return pkt
-}
-
 // serializePSBTForAssert serializes a PSBT so comparisons are deterministic.
 func serializePSBTForAssert(t *testing.T, pkt *psbt.Packet) []byte {
 	t.Helper()
