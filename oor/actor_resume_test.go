@@ -21,7 +21,8 @@ import (
 type pausedFinalizeHandler struct {
 	t *testing.T
 
-	clientSigner input.Signer
+	clientSigner   input.Signer
+	operatorSigner input.Signer
 
 	finalizePaused bool
 }
@@ -36,6 +37,13 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
+
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
 		return []Event{
 			&SubmitAcceptedEvent{
@@ -81,7 +89,8 @@ var _ OutboxHandler = (*pausedFinalizeHandler)(nil)
 type pausedSubmitHandler struct {
 	t *testing.T
 
-	clientSigner input.Signer
+	clientSigner   input.Signer
+	operatorSigner input.Signer
 
 	submitPaused bool
 }
@@ -96,6 +105,13 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
+
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
 		if !h.submitPaused {
 			h.submitPaused = true
@@ -144,7 +160,8 @@ var _ OutboxHandler = (*pausedSubmitHandler)(nil)
 type pausedCoSignedHandler struct {
 	t *testing.T
 
-	clientSigner input.Signer
+	clientSigner   input.Signer
+	operatorSigner input.Signer
 
 	signPaused bool
 }
@@ -159,6 +176,13 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
+
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
 		return []Event{
 			&SubmitAcceptedEvent{
@@ -210,7 +234,8 @@ var _ OutboxHandler = (*pausedCoSignedHandler)(nil)
 type cosignedButDroppedHandler struct {
 	t *testing.T
 
-	clientSigner input.Signer
+	clientSigner   input.Signer
+	operatorSigner input.Signer
 
 	firstSubmitDropped bool
 
@@ -230,6 +255,13 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
+
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
 		arkRaw, err := psbtutil.Serialize(msg.ArkPSBT)
 		require.NoError(h.t, err)
@@ -320,6 +352,9 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -342,8 +377,9 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 	deliveryStore := newTestDeliveryStore(t)
 
 	handler := &pausedFinalizeHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -437,6 +473,9 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -458,8 +497,9 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	deliveryStore := newTestDeliveryStore(t)
 	handler := &cosignedButDroppedHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -554,6 +594,9 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -575,8 +618,9 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	deliveryStore := newTestDeliveryStore(t)
 	handler := &pausedSubmitHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -667,6 +711,9 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -688,8 +735,9 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	deliveryStore := newTestDeliveryStore(t)
 	handler := &pausedCoSignedHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	actor1 := NewOORClientActor(ClientActorCfg{
@@ -780,6 +828,9 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -801,8 +852,9 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 
 	deliveryStore := newTestDeliveryStore(t)
 	handler := &pausedFinalizeHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	const actorID = "oor-durable-restart-actor"

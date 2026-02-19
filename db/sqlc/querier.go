@@ -70,7 +70,7 @@ type Querier interface {
 	// ListLiveVTXOs returns all VTXOs that are not in a terminal state.
 	// Terminal states are: Forfeited (3), Spent (4), Expiring (5), Failed (6).
 	// This is used during startup to recover active VTXO actors.
-	// Also filter on spent = FALSE to handle VTXOs marked spent via the legacy
+	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
