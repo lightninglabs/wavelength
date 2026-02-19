@@ -48,6 +48,11 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// SQLDB returns the underlying SQL handle.
+func (s *Store) SQLDB() *sql.DB {
+	return s.db
+}
+
 // Backend returns the type of database backend.
 func (s *Store) Backend() sqlc.BackendType {
 	return s.backend
