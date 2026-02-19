@@ -71,11 +71,6 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, arkSignReq.ArkPSBT)
 
-	err = coSignCheckpointPSBTsForTest(
-		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
-	)
-	require.NoError(t, err)
-
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
 	_, ok = state.(*AwaitingArkSignatures)
@@ -94,6 +89,11 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, submit.ArkPSBT)
 	require.NotEmpty(t, submit.CheckpointPSBTs)
+
+	err = coSignCheckpointPSBTsForTest(
+		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
 
 	// Step 2: Server accepts submit and returns co-signed checkpoints.
 	fut = session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
