@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -133,8 +134,10 @@ func TestSqliteMigrationBackup(t *testing.T) {
 		require.NoError(t, db.DB.Close())
 	})
 
-	// Manually run migrations to the latest version.
-	err = db.ExecuteMigrations(TargetLatest)
+	// Manually run migrations to one version behind the latest so that when
+	// we re-open the database with migrations enabled, a migration is
+	// required and we can assert the backup behavior.
+	err = db.ExecuteMigrations(TargetVersion(LatestMigrationVersion - 1))
 	require.NoError(t, err)
 
 	// Insert some test data.
@@ -148,9 +151,8 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now close and reopen the database, which will trigger a migration
-	// with backup if we add a new migration. For now, since we only have
-	// one migration, we'll just verify the backup isn't created when
-	// already at latest version.
+	// with backup. Since this DB is at an earlier version than the latest,
+	// we expect a backup to be created before applying migrations.
 	require.NoError(t, db.DB.Close())
 
 	db2, err := NewSqliteStore(&SqliteConfig{
@@ -170,12 +172,36 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "regtest", chainName)
 
-	// Since we're already at the latest version, no backup should be
-	// created. This test verifies the backup logic works correctly by
-	// NOT creating a backup when unnecessary.
+	// Since this database was upgraded, we should have created a backup
+	// just before applying the new migration(s).
 	dbBackupFilePath := findDBBackupFilePath(t, dbFileName)
-	require.Empty(t, dbBackupFilePath, "no backup should be created "+
-		"when already at latest version")
+	require.NotEmpty(t, dbBackupFilePath, "backup should be created "+
+		"when a migration is required")
+
+	// Open the backup (created pre-migration) and verify it has the chain
+	// info data, but does not include schema elements introduced in later
+	// migrations.
+	backupDB, err := NewSqliteStore(&SqliteConfig{
+		DatabaseFileName: dbBackupFilePath,
+		SkipMigrations:   true,
+	}, btclog.Disabled)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, backupDB.DB.Close())
+	})
+
+	err = backupDB.QueryRowContext(
+		ctx, `SELECT chain_name FROM chain_info WHERE id = 2`,
+	).Scan(&chainName)
+	require.NoError(t, err)
+	require.Equal(t, "regtest", chainName)
+
+	var mailboxTableName string
+	err = backupDB.QueryRowContext(ctx, `
+		SELECT name FROM sqlite_master
+		WHERE type='table' AND name='mailbox_messages'
+	`).Scan(&mailboxTableName)
+	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
 // TestDirtySqliteVersion tests that if a migration fails and leaves a SQLite

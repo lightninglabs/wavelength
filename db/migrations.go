@@ -22,7 +22,7 @@ const (
 	// daemon.
 	//
 	// NOTE: This MUST be updated when a new migration is added.
-	LatestMigrationVersion uint = 3
+	LatestMigrationVersion uint = 5
 )
 
 // MigrationTarget is a functional option that can be passed to applyMigrations
@@ -273,6 +273,8 @@ type replacerFile struct {
 // interface.
 var _ fs.File = (*replacerFile)(nil)
 
+// newReplacerFile materializes a file and applies string replacements so the
+// migration framework sees backend-specific SQL.
 func newReplacerFile(parent fs.File, replaces map[string]string) (*replacerFile,
 	error) {
 

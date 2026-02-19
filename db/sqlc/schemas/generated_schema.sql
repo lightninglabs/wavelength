@@ -10,6 +10,12 @@ CREATE UNIQUE INDEX idx_forfeit_infos_outpoint
 CREATE INDEX idx_forfeit_infos_round
 	ON round_forfeit_infos(round_id);
 
+CREATE INDEX idx_oor_recipient_events_session_db_id
+    ON oor_recipient_events(session_db_id);
+
+CREATE INDEX idx_oor_sessions_state_updated
+    ON oor_sessions(state, updated_at);
+
 CREATE INDEX idx_rounds_created_at
 	ON rounds(created_at DESC);
 
@@ -40,6 +46,93 @@ CREATE INDEX idx_vtxos_round
 
 CREATE INDEX idx_vtxos_status
 	ON vtxos(status);
+
+CREATE TABLE oor_checkpoints (
+    -- session_db_id references the parent OOR session integer PK.
+    session_db_id INTEGER NOT NULL
+        REFERENCES oor_sessions(id) ON DELETE CASCADE,
+
+    -- checkpoint_index preserves deterministic package ordering.
+    checkpoint_index INTEGER NOT NULL,
+
+    -- input_txid is the 32-byte outpoint transaction hash for the claimed
+    -- input.
+    input_txid BLOB NOT NULL,
+
+    -- input_vout is the outpoint index for the claimed input.
+    input_vout INTEGER NOT NULL,
+
+    -- checkpoint_psbt is the serialized checkpoint PSBT bytes (co-signed
+    -- initially, finalized after ApplyFinalize).
+    checkpoint_psbt BLOB NOT NULL,
+
+    PRIMARY KEY(session_db_id, checkpoint_index),
+
+    -- Ensure no two sessions can claim the same input.
+    UNIQUE(input_txid, input_vout)
+);
+
+CREATE TABLE oor_recipient_events (
+    -- recipient_pk_script is the destination script that owns this cursor
+    -- sequence.
+    recipient_pk_script BLOB NOT NULL,
+
+    -- event_id is a per-recipient monotonic cursor assigned by the server.
+    event_id BIGINT NOT NULL,
+
+    -- session_db_id references the finalized OOR session integer PK.
+    session_db_id INTEGER NOT NULL REFERENCES oor_sessions(id)
+        ON DELETE CASCADE,
+
+    -- output_index is the recipient output index in the Ark transaction.
+    output_index INTEGER NOT NULL,
+
+    -- value is the recipient output amount in satoshis.
+    value BIGINT NOT NULL,
+
+    -- created_at is the unix nano timestamp when the event row was written.
+    created_at BIGINT NOT NULL,
+
+    PRIMARY KEY(recipient_pk_script, event_id),
+
+    -- Ensure idempotent inserts for the same recipient/session/output.
+    UNIQUE (recipient_pk_script, session_db_id, output_index)
+);
+
+CREATE TABLE oor_sessions (
+    -- id is the auto-assigned integer primary key used as a compact FK
+    -- target by child tables.
+    id INTEGER PRIMARY KEY,
+
+    -- session_id is the deterministic Ark txid (32 bytes) and the
+    -- external natural key used by callers.
+    session_id BLOB NOT NULL UNIQUE,
+
+    -- state tracks the session lifecycle stage.
+    state TEXT NOT NULL CHECK (state IN (
+        'cosigned', 'awaiting_notify', 'finalized', 'failed'
+    )),
+
+    -- ark_psbt stores the canonical Ark package PSBT bytes, written at
+    -- co-sign time and never overwritten.
+    ark_psbt BLOB NOT NULL,
+
+    -- created_at is the unix nano timestamp when this session row was
+    -- first created.
+    created_at BIGINT NOT NULL,
+
+    -- updated_at is the unix nano timestamp of the most recent session
+    -- update.
+    updated_at BIGINT NOT NULL,
+
+    -- expires_at is the unix nano timestamp used to garbage-collect stale
+    -- co-signed sessions.
+    expires_at BIGINT NOT NULL,
+
+    -- finalized_at is the unix nano timestamp when finalize succeeded.
+    -- It remains NULL until ApplyFinalize succeeds.
+    finalized_at BIGINT
+);
 
 CREATE TABLE round_client_registrations (
 	-- round_id links to the parent round.
