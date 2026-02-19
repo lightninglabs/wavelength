@@ -19,9 +19,6 @@ type IdempotencyKey = mailboxconn.IdempotencyKey
 // AckState tracks connector ack watermark state for checkpoint persistence.
 type AckState = mailboxconn.AckState
 
-// ResponseWaiter stores in-memory waiter state for unary response delivery.
-type ResponseWaiter = mailboxconn.ResponseWaiter
-
 // ackStateType is the checkpoint state type used for ack watermark storage.
 const ackStateType = mailboxconn.CheckpointStateType
 

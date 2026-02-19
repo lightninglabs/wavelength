@@ -123,6 +123,94 @@ func TestSendRPCRequest_TLVRoundTrip(t *testing.T) {
 	require.True(t, proto.Equal(original.Envelope, decoded.Envelope))
 }
 
+// TestServerConnMessageMetadata verifies static message metadata methods.
+func TestServerConnMessageMetadata(t *testing.T) {
+	t.Parallel()
+
+	eventReq := &SendClientEventRequest{}
+	require.Equal(t, "SendClientEventRequest", eventReq.MessageType())
+	require.Equal(t, SendClientEventRequestMsgType, eventReq.TLVType())
+	eventReq.serverConnMsgSealed()
+
+	eventResp := &SendClientEventResponse{}
+	require.Equal(t, "SendClientEventResponse", eventResp.MessageType())
+	eventResp.serverConnRespSealed()
+
+	rpcReq := &SendRPCRequest{}
+	require.Equal(t, "SendRPCRequest", rpcReq.MessageType())
+	require.Equal(t, SendRPCRequestMsgType, rpcReq.TLVType())
+	rpcReq.serverConnMsgSealed()
+}
+
+// TestRawServerMessage_ToProtoDecodeFailure verifies ToProto returns nil when
+// the Any payload cannot be resolved through the protobuf type registry.
+func TestRawServerMessage_ToProtoDecodeFailure(t *testing.T) {
+	t.Parallel()
+
+	raw := &rawServerMessage{
+		anyMsg: &anypb.Any{
+			TypeUrl: "type.googleapis.com/test.unknown.Message",
+			Value:   []byte{0x01},
+		},
+	}
+
+	require.Nil(t, raw.ToProto())
+}
+
+// TestServerConnCodec_RoundTrip verifies both serverconn message types can be
+// encoded and decoded via NewServerConnCodec.
+func TestServerConnCodec_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	codec := NewServerConnCodec()
+
+	eventPayload := []byte("codec-event")
+	eventReq := &SendClientEventRequest{
+		Message: &bytesServerMessage{
+			payload: eventPayload,
+		},
+		MsgID:          "msg-codec-event",
+		IdempotencyKey: "idem-codec-event",
+	}
+
+	eventBytes, err := codec.Encode(eventReq)
+	require.NoError(t, err)
+
+	decodedEvent, err := codec.Decode(eventBytes)
+	require.NoError(t, err)
+
+	typedEvent, ok := decodedEvent.(*SendClientEventRequest)
+	require.True(t, ok)
+	require.Equal(t, eventReq.MsgID, typedEvent.MsgID)
+	require.Equal(
+		t, eventReq.IdempotencyKey, typedEvent.IdempotencyKey,
+	)
+
+	body, err := anypb.New(wrapperspb.String("codec-rpc"))
+	require.NoError(t, err)
+
+	rpcReq := &SendRPCRequest{
+		Envelope: &mailboxpb.Envelope{
+			ProtocolVersion: 1,
+			MsgId:           "msg-codec-rpc",
+			Sender:          "client-1",
+			Recipient:       "server-1",
+			Body:            body,
+		},
+	}
+
+	rpcBytes, err := codec.Encode(rpcReq)
+	require.NoError(t, err)
+
+	decodedRPC, err := codec.Decode(rpcBytes)
+	require.NoError(t, err)
+
+	typedRPC, ok := decodedRPC.(*SendRPCRequest)
+	require.True(t, ok)
+	require.Equal(t, rpcReq.Envelope.MsgId, typedRPC.Envelope.MsgId)
+	require.Equal(t, rpcReq.Envelope.Sender, typedRPC.Envelope.Sender)
+}
+
 // unknownServerConnMsg is a test-only unsupported message for Receive.
 type unknownServerConnMsg struct {
 	actor.BaseMessage
