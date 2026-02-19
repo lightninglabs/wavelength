@@ -53,8 +53,13 @@ type AwaitingSubmitAccepted struct {
 	// CheckpointPSBTs are the checkpoint tx PSBTs for this session.
 	CheckpointPSBTs []*psbt.Packet
 
-	// TransferInputs are the vtxo descriptors and scripts needed later on
-	// to sign the checkpoint PSBTs.
+	// TransferInputs carry the VTXO descriptors and scripts needed to
+	// sign checkpoint PSBTs at the co-sign step.
+	//
+	// These are not used by the FSM's transition logic. They are threaded
+	// through the state so the FSM can emit complete outbox events (which
+	// need the signing context) and so checkpoint snapshots capture them
+	// for crash-resume.
 	TransferInputs []TransferInput
 }
 
@@ -92,7 +97,11 @@ type AwaitingCheckpointSignatures struct {
 	// CoSignedCheckpointPSBTs are the operator co-signed checkpoint PSBTs.
 	CoSignedCheckpointPSBTs []*psbt.Packet
 
-	// TransferInputs carry the client-side VTXO signing context.
+	// TransferInputs carry the client-side VTXO signing context needed
+	// for the checkpoint signing outbox event.
+	//
+	// See AwaitingSubmitAccepted.TransferInputs for rationale on why
+	// this is carried on the FSM state.
 	TransferInputs []TransferInput
 }
 
