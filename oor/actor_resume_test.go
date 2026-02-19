@@ -656,6 +656,9 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -677,8 +680,9 @@ func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
 
 	deliveryStore := newTestDeliveryStore(t)
 	handler := &cosignedButDroppedHandler{
-		t:            t,
-		clientSigner: clientSigner,
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
 	}
 
 	const actorID = "oor-resume-cosigned-from-store-actor"
