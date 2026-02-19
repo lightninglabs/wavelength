@@ -236,6 +236,17 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *clientoor.RequestArkSignatures:
+		// Client split-4 introduces an explicit Ark signing
+		// step before submit. In tests the Ark PSBT does not
+		// require additional client signatures, so pass it
+		// through.
+		return []clientoor.Event{
+			&clientoor.ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *clientoor.SendSubmitPackageRequest:
 		attachArkLeafScriptsForTest(
 			h.t, msg.ArkPSBT, msg.TransferInputs,
@@ -380,7 +391,11 @@ func (h *inProcessReceiveOutbox) Handle(_ context.Context,
 		}, nil
 
 	case *clientoor.SendIncomingAckRequest:
-		return nil, nil
+		// Client split-4 requires an explicit ack event to
+		// transition from ReceiveAwaitingAck to ReceiveCompleted.
+		return []clientoor.Event{
+			&clientoor.IncomingAckSentEvent{},
+		}, nil
 
 	default:
 		return nil, nil
@@ -454,6 +469,15 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *clientoor.RequestArkSignatures:
+		// See inProcessClientToServerOutbox.Handle for
+		// rationale — pass the Ark PSBT through unchanged.
+		return []clientoor.Event{
+			&clientoor.ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *clientoor.SendSubmitPackageRequest:
 		attachArkLeafScriptsForTest(
 			h.t, msg.ArkPSBT, msg.TransferInputs,
