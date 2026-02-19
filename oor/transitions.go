@@ -213,7 +213,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}
 
 		// Validate finalize package before emitting request.
-		err = oortx.ValidateFinalizePackage(
+		err = oortx.ValidateFinalizePackageSigned(
 			s.ArkPSBT, evt.FinalCheckpointPSBTs,
 		)
 		if err != nil {

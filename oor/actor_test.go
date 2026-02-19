@@ -19,7 +19,8 @@ import (
 type testOutboxHandler struct {
 	t *testing.T
 
-	clientSigner input.Signer
+	clientSigner   input.Signer
+	operatorSigner input.Signer
 }
 
 // Handle processes the outbox request and returns follow-up events.
@@ -32,6 +33,13 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
+
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
 
 		return []Event{
 			&SubmitAcceptedEvent{
@@ -90,6 +98,9 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -111,8 +122,9 @@ func TestOORClientActorHappyPath(t *testing.T) {
 
 	actor := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: &testOutboxHandler{
-			t:            t,
-			clientSigner: clientSigner,
+			t:              t,
+			clientSigner:   clientSigner,
+			operatorSigner: operatorSigner,
 		},
 		DeliveryStore: newTestDeliveryStore(t),
 		ActorID:       "oor-actor-test-happy",

@@ -33,6 +33,9 @@ func TestSessionHappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
 
 	inputs := []TransferInput{
 		newTestTransferInput(
@@ -62,6 +65,11 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, submit.ArkPSBT)
 	require.NotEmpty(t, submit.CheckpointPSBTs)
+
+	err = coSignCheckpointPSBTsForTest(
+		operatorSigner, submit.TransferInputs, submit.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
