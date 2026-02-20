@@ -668,6 +668,107 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestActorFinalizeRetryAfterCleanupIsIdempotent asserts that a repeated
+// finalize request returns the same success response after terminal session
+// cleanup by consulting the durable session store.
+func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+
+	dbh := db.NewTestDB(t)
+	sessionStore := NewDBSessionStore(
+		dbh, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	driver := NewDriver(DriverCfg{
+		SessionStore: sessionStore,
+	})
+	actor := startTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		SessionStore:     sessionStore,
+	})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	require.True(t, submitResp.IsOk())
+
+	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	finalizeReq := &FinalizeOORRequest{
+		SessionID:            sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+	}
+
+	firstFinalize := actor.Receive(ctx, finalizeReq)
+	require.True(t, firstFinalize.IsOk())
+
+	// Session has been removed from memory after terminalization; retry
+	// should succeed via durable store fallback.
+	retryFinalize := actor.Receive(ctx, finalizeReq)
+	require.True(t, retryFinalize.IsOk())
+
+	_, ok := retryFinalize.UnwrapOr(nil).(*FinalizeOORResponse)
+	require.True(t, ok)
+}
+
+// TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload asserts that
+// finalize retries after terminal cleanup must match the originally finalized
+// checkpoint payload.
+func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+
+	dbh := db.NewTestDB(t)
+	sessionStore := NewDBSessionStore(
+		dbh, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	driver := NewDriver(DriverCfg{
+		SessionStore: sessionStore,
+	})
+	actor := startTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		SessionStore:     sessionStore,
+	})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	require.True(t, submitResp.IsOk())
+
+	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+
+	firstFinalize := actor.Receive(ctx, &FinalizeOORRequest{
+		SessionID:            sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
+	})
+	require.True(t, firstFinalize.IsOk())
+
+	mismatch := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	mismatch.Inputs[0].FinalScriptWitness = []byte{0x02}
+
+	retryFinalize := actor.Receive(ctx, &FinalizeOORRequest{
+		SessionID:            sessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{mismatch},
+	})
+	require.True(t, retryFinalize.IsErr())
+	require.ErrorContains(
+		t, retryFinalize.Err(), "final checkpoint package mismatch",
+	)
+}
+
 // TestActorSubmitNonCanonicalOutputsAssertsUnlock exercises a submit that fails
 // because the Ark tx recipient outputs are not in canonical order.
 func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {

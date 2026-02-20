@@ -102,5 +102,5 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 		ctx, sessionIDBytes(submitMsg.SessionID),
 	)
 	require.NoError(t, err)
-	require.Equal(t, "finalized", row.State)
+	require.Equal(t, string(oorStateFinalized), row.State)
 }

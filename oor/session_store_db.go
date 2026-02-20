@@ -254,6 +254,46 @@ func (s *DBSessionStore) MarkNotified(ctx context.Context,
 	)
 }
 
+// GetSessionState returns the persisted lifecycle state for a session.
+//
+// If no session row exists, found is false and err is nil.
+func (s *DBSessionStore) GetSessionState(ctx context.Context,
+	sessionID SessionID) (sessionState, bool, error) {
+
+	if sessionID == (SessionID{}) {
+		return "", false, fmt.Errorf("session id must be provided")
+	}
+
+	var out sessionState
+
+	err := s.tx.ExecTx(ctx, db.ReadTxOption(),
+		func(q *sqlc.Queries) error {
+			row, err := q.GetOORSession(
+				ctx, sessionIDBytes(sessionID),
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+
+			out = sessionState(row.State)
+
+			return nil
+		},
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	if out == "" {
+		return "", false, nil
+	}
+
+	return out, true, nil
+}
+
 // LoadActiveSessions returns durable snapshots for sessions that require
 // processing after restart (state = cosigned or awaiting_notify).
 func (s *DBSessionStore) LoadActiveSessions(ctx context.Context) (
@@ -376,6 +416,31 @@ func (s *DBSessionStore) upsertCoSignedSnapshot(ctx context.Context,
 
 	now := s.clock.Now()
 	id := sessionIDBytes(sessionID)
+
+	existing, err := q.GetOORSession(ctx, id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// New session row; continue with upsert.
+
+	case err != nil:
+		return err
+
+	default:
+		switch sessionState(existing.State) {
+		case oorStateFinalized, oorStateAwaitingNotify:
+			return fmt.Errorf("cannot upsert co-signed session %s "+
+				"from state %s", sessionID, existing.State)
+
+		case oorStateCoSigned:
+			if !bytes.Equal(existing.ArkPsbt, arkBytes) {
+				return fmt.Errorf("co-signed ark psbt mismatch")
+			}
+
+		default:
+			return fmt.Errorf("session %s in unexpected state: %s",
+				sessionID, existing.State)
+		}
+	}
 
 	dbID, err := q.UpsertOORSession(ctx, sqlc.UpsertOORSessionParams{
 		SessionID:   id,
