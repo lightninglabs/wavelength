@@ -692,10 +692,42 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 			"no current round available"))
 	}
 
+	// Query current best height so join-auth freshness checks can evaluate
+	// against the latest chain tip.
+	var currentBlockHeight uint32
+	if a.cfg.ChainSourceActor != nil {
+		heightFuture := a.cfg.ChainSourceActor.Ask(
+			ctx, &chainsource.BestHeightRequest{},
+		)
+		heightResult := heightFuture.Await(ctx)
+		heightResp, err := heightResult.Unpack()
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to query best height for "+
+				"join auth validation", err)
+		} else {
+			bestHeightResp, ok := heightResp.(*chainsource.
+				BestHeightResponse)
+			if !ok {
+				a.log.WarnS(ctx,
+					"Unexpected best height "+
+						"response type", nil,
+					slog.String("type",
+						fmt.Sprintf("%T",
+							heightResp)),
+				)
+			} else {
+				currentBlockHeight = uint32(
+					bestHeightResp.Height,
+				)
+			}
+		}
+	}
+
 	// Convert the actor message to an FSM event.
 	joinEvent := &ClientJoinRequestEvent{
-		ClientID: msg.ClientID,
-		Request:  msg.Request,
+		ClientID:           msg.ClientID,
+		Request:            msg.Request,
+		CurrentBlockHeight: currentBlockHeight,
 	}
 
 	err := a.askEventAndProcessOutbox(ctx, currentRound.FSM, joinEvent)

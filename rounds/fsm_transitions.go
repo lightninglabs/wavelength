@@ -28,6 +28,12 @@ var (
 	// ErrJoinRequestInvalid is returned when a client's join request fails
 	// validation.
 	ErrJoinRequestInvalid = fmt.Errorf("join request invalid")
+
+	// ErrJoinAuthHeightUnavailable is returned when join-auth validation
+	// is enabled but no usable chain height is available.
+	ErrJoinAuthHeightUnavailable = fmt.Errorf(
+		"join auth validation height unavailable",
+	)
 )
 
 // unexpectedEvent returns a StateTransition that remains in the current state
@@ -265,6 +271,26 @@ func extractVTXOOutpoints(inputs []*ForfeitInput) []wire.OutPoint {
 	return outpoints
 }
 
+// validateJoinRequestForAdmission validates a join request using the best
+// available block height for auth freshness checks.
+func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
+	req *types.JoinRoundRequest,
+	currentBlockHeight uint32) (*JoinRequestResult, error) {
+
+	validationHeight := currentBlockHeight
+	if validationHeight == 0 {
+		validationHeight = env.StartHeight
+	}
+
+	if !env.DisableJoinRequestAuth && validationHeight == 0 {
+		return nil, ErrJoinAuthHeightUnavailable
+	}
+
+	return ValidateJoinRequestAtHeight(
+		ctx, env, req, validationHeight,
+	)
+}
+
 // ProcessEvent handles the events from the CreatedState state.
 //
 // Event handling:
@@ -291,7 +317,9 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 
 		// Validate the join request. If this fails, this is not an FSM
 		// error, but we should respond to the client accordingly.
-		result, err := ValidateJoinRequest(ctx, env, evt.Request)
+		result, err := validateJoinRequestForAdmission(
+			ctx, env, evt.Request, evt.CurrentBlockHeight,
+		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed", err,
 				LogClientID(evt.ClientID))
@@ -403,7 +431,9 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		// Validate the join request.
-		result, err := ValidateJoinRequest(ctx, env, evt.Request)
+		result, err := validateJoinRequestForAdmission(
+			ctx, env, evt.Request, evt.CurrentBlockHeight,
+		)
 		if err != nil {
 			env.Log.WarnS(ctx, "Join request validation failed", err,
 				LogClientID(evt.ClientID))
