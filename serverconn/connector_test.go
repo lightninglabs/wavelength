@@ -35,17 +35,10 @@ func newTestConnector(
 	t.Helper()
 
 	mb := newInMemoryMailbox()
-	edge := &fakeMailboxServiceClient{mb: mb}
 	store := newMemCheckpointStore()
 
-	cfg := DefaultConnectorConfig()
-	cfg.Edge = edge
-	cfg.LocalMailboxID = "client-1"
-	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
+	cfg := newTestConnectorConfig(mb, store)
 	cfg.Dispatchers = dispatchers
-	cfg.Store = store
-	cfg.PullWaitTimeout = 50 * time.Millisecond
 	cfg.RetryBaseDelay = 10 * time.Millisecond
 	cfg.RetryMaxDelay = 50 * time.Millisecond
 
