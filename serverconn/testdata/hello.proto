@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package hellotest.v1;
+
+option go_package = "github.com/lightninglabs/darepo-client/serverconn/hellotestpb;hellotestpb";
+
+// HelloService is a simple unary echo service used to exercise the mailbox
+// unary facade in e2e tests. SayHello and SayGoodbye are pure request/response
+// RPCs sent as KIND_REQUEST/KIND_RESPONSE envelope pairs via the unary facade.
+service HelloService {
+    rpc SayHello (HelloRequest) returns (HelloResponse);
+    rpc SayGoodbye (GoodbyeRequest) returns (GoodbyeResponse);
+}
+
+// HelloRequest is the request message for HelloService.SayHello.
+message HelloRequest {
+    // name is the caller's name, echoed back in the response greeting.
+    string name = 1;
+}
+
+// HelloResponse is the response message for HelloService.SayHello.
+message HelloResponse {
+    // greeting is the server's reply (e.g., "Hello, Alice!").
+    string greeting = 1;
+}
+
+// GoodbyeRequest is the request message for HelloService.SayGoodbye.
+message GoodbyeRequest {
+    // name is the caller's name, echoed back in the farewell.
+    string name = 1;
+}
+
+// GoodbyeResponse is the response message for HelloService.SayGoodbye.
+message GoodbyeResponse {
+    // farewell is the server's parting message.
+    string farewell = 1;
+}
+
+// JoinGreetingRequest is a client-to-server fire-and-forget event sent as a
+// KIND_EVENT envelope. The client dispatches it via SendClientEventRequest
+// through the durable actor mailbox; no response is expected.
+message JoinGreetingRequest {
+    // session_id identifies the greeting session the client wishes to join.
+    string session_id = 1;
+}
+
+// HelloStartedEvent is a server-to-client push notification sent as a
+// KIND_EVENT envelope when the server opens a new greeting session. Clients
+// receive this via the EventRouter dispatcher registered on
+// "hellotest.v1.HelloService"/"HelloStarted".
+message HelloStartedEvent {
+    // session_id uniquely identifies the started greeting session.
+    string session_id = 1;
+}
+
+// HelloFinalizedEvent is a server-to-client push notification sent as a
+// KIND_EVENT envelope when a greeting session ends with a farewell message.
+message HelloFinalizedEvent {
+    // session_id identifies the finalized greeting session.
+    string session_id = 1;
+
+    // farewell_message is the closing message from the server.
+    string farewell_message = 2;
+}
