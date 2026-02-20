@@ -9,14 +9,21 @@ import (
 //
 // This is used to support explicit retry/resume logic: after a restart, the app
 // can either rely on durable-actor restart handling or explicitly call
-// ResumeSessionRequest to re-send the submit/finalize request (or re-request
-// checkpoint signing).
+// submit/finalize request (or re-request signing steps).
 func OutboxForState(state State) ([]OutboxEvent, error) {
 	if state == nil {
 		return nil, fmt.Errorf("state must be provided")
 	}
 
 	switch s := state.(type) {
+	case *AwaitingArkSignatures:
+		return []OutboxEvent{
+			&RequestArkSignatures{
+				ArkPSBT:        s.ArkPSBT,
+				TransferInputs: s.TransferInputs,
+			},
+		}, nil
+
 	case *AwaitingSubmitAccepted:
 		return []OutboxEvent{
 			&SendSubmitPackageRequest{
@@ -51,6 +58,13 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 			},
 		}, nil
 
+	case *RetryBackoff:
+		return []OutboxEvent{
+			&ScheduleRetryRequest{
+				After:  s.RetryAfter,
+				Reason: s.Reason,
+			},
+		}, nil
 	case *Completed, *Failed:
 		return nil, nil
 

@@ -21,6 +21,10 @@ type ReceiveSession struct {
 //
 // The caller should drive the returned FSM by sending an IncomingTransferEvent
 // (or by using DriveIncomingTransfer).
+//
+// Ownership checks are intentionally deferred to the incoming materialization
+// boundary (LocalPersistenceOutboxHandler + resolver callbacks), where wallet
+// key ownership is available.
 func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	sessionID SessionID) (*ReceiveSession, error) {
 
@@ -58,14 +62,27 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 func DriveIncomingTransfer(ctx context.Context, sessionID SessionID,
 	ark *psbt.Packet) (*ReceiveSession, []OutboxEvent, error) {
 
+	return DriveIncomingTransferWithCheckpoints(
+		ctx, sessionID, ark, nil,
+	)
+}
+
+// DriveIncomingTransferWithCheckpoints is DriveIncomingTransfer with optional
+// finalized checkpoints attached to the incoming event.
+func DriveIncomingTransferWithCheckpoints(ctx context.Context,
+	sessionID SessionID, ark *psbt.Packet,
+	finalCheckpoints []*psbt.Packet) (
+	*ReceiveSession, []OutboxEvent, error) {
+
 	sess, err := NewReceiveSession(ctx, ark, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	fut := sess.FSM.AskEvent(ctx, &IncomingTransferEvent{
-		SessionID: sessionID,
-		ArkPSBT:   ark,
+		SessionID:            sessionID,
+		ArkPSBT:              ark,
+		FinalCheckpointPSBTs: finalCheckpoints,
 	})
 
 	result := fut.Await(ctx)

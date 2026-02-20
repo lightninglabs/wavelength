@@ -2,6 +2,8 @@ package oor
 
 import (
 	"bytes"
+	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
@@ -23,6 +25,11 @@ const (
 	finalizePayloadCheckpointsRecordType tlv.Type = 3
 )
 
+const (
+	retryPayloadAfterNanosRecordType tlv.Type = 1
+	retryPayloadReasonRecordType     tlv.Type = 3
+)
+
 // OutboxEvent is a sealed interface for side-effect requests emitted by the
 // OOR transfer FSM.
 //
@@ -39,12 +46,37 @@ type OutboxEvent interface {
 	outboxSealed()
 }
 
+// RequestArkSignatures asks the signing layer to attach client signature
+// material for Ark inputs before submit.
+//
+// This is the explicit boundary where the client signs the Ark PSBT. The
+// resulting signed Ark PSBT is then forwarded in SendSubmitPackageRequest.
+type RequestArkSignatures struct {
+	actor.BaseMessage
+
+	// ArkPSBT is the canonical Ark transfer PSBT to sign.
+	ArkPSBT *psbt.Packet
+
+	// TransferInputs carry client signing context needed to authorize Ark
+	// inputs.
+	TransferInputs []TransferInput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *RequestArkSignatures) outboxType() string {
+	return "RequestArkSignatures"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *RequestArkSignatures) outboxSealed() {}
+
 // SendSubmitPackageRequest asks the transport layer to send the submit package
 // (Ark PSBT + checkpoint PSBTs) to the server.
 type SendSubmitPackageRequest struct {
 	actor.BaseMessage
 
-	// ArkPSBT is the canonical unsigned Ark transfer PSBT.
+	// ArkPSBT is the canonical Ark transfer PSBT with client signature
+	// material already attached for submit.
 	ArkPSBT *psbt.Packet
 
 	// CheckpointPSBTs are unsigned checkpoint PSBTs for the submit phase.
@@ -216,6 +248,10 @@ type MaterializeIncomingVTXOsRequest struct {
 	// ArkPSBT is the canonical Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
+	// FinalCheckpointPSBTs are the finalized checkpoint packages associated
+	// with this Ark transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
 	// Recipients are the non-anchor recipient outputs in the Ark tx.
 	Recipients []ArkRecipientOutput
 }
@@ -256,6 +292,33 @@ func (m *SendIncomingAckRequest) ToProto() proto.Message {
 	}
 
 	return protoEnvelope("SendIncomingAckRequest", payload)
+}
+
+// ScheduleRetryRequest asks the runtime to deliver a RetryDueEvent after the
+// requested delay.
+type ScheduleRetryRequest struct {
+	actor.BaseMessage
+
+	After  time.Duration
+	Reason string
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *ScheduleRetryRequest) outboxType() string {
+	return "ScheduleRetryRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *ScheduleRetryRequest) outboxSealed() {}
+
+// ToProto converts ScheduleRetryRequest to a protobuf message.
+func (m *ScheduleRetryRequest) ToProto() proto.Message {
+	payload, err := encodeRetryPayload(m.After, m.Reason)
+	if err != nil {
+		return protoErrorEnvelope("ScheduleRetryRequest", err)
+	}
+
+	return protoEnvelope("ScheduleRetryRequest", payload)
 }
 
 func protoEnvelope(typeName string, payload []byte) proto.Message {
@@ -299,6 +362,35 @@ func encodeFinalizePayload(ark *psbt.Packet,
 			finalizePayloadArkPSBTRecordType, &arkRaw,
 		),
 		checkpointPayloadRecord,
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+func encodeRetryPayload(after time.Duration, reason string) ([]byte, error) {
+	if after < 0 {
+		return nil, fmt.Errorf("retry delay must be non-negative")
+	}
+
+	afterNanos := uint64(after)
+	reasonBytes := []byte(reason)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			retryPayloadAfterNanosRecordType, &afterNanos,
+		),
+		tlv.MakePrimitiveRecord(
+			retryPayloadReasonRecordType, &reasonBytes,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)

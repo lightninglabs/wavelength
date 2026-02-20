@@ -34,6 +34,13 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -77,6 +84,10 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -102,6 +113,13 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -147,6 +165,10 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -173,6 +195,13 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -218,6 +247,10 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -252,6 +285,13 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 	h.t.Helper()
 
 	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		return []Event{
+			&ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
 	case *SendSubmitPackageRequest:
 		txid := msg.ArkPSBT.UnsignedTx.TxHash()
 		require.Equal(h.t, SessionID(txid), sessionID)
@@ -324,6 +364,10 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 			&FinalizeAcceptedEvent{},
 		}, nil
 
+	case *MarkInputsSpentRequest:
+		_ = msg
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
 	default:
 		return nil, nil
 	}
@@ -338,6 +382,9 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	ctx := t.Context()
 
+	// Build a deterministic transfer with a mocked client signer. The
+	// outbox handler will pause on finalize to simulate a transport/UI
+	// interruption that requires an explicit resume.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -382,6 +429,8 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 		operatorSigner: operatorSigner,
 	}
 
+	// Start a session and drive it until finalize is sent (but "dropped"
+	// by the outbox handler).
 	actor1 := NewOORClientActor(ClientActorCfg{
 		OutboxHandler: handler,
 		DeliveryStore: deliveryStore,
@@ -409,6 +458,11 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
 
+	// Export a portable snapshot, then create a new actor and restore from
+	// it to simulate an app restart.
+	//
+	// The key property is that the snapshot contains enough information to
+	// re-emit the outbox work implied by the state (idempotently).
 	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
 		SessionID: startMsg.SessionID,
 	})
@@ -448,7 +502,7 @@ func TestOORClientActorResumeFromSnapshot(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorResumeAfterServerCoSigned verifies the client can resume
@@ -459,6 +513,13 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	ctx := t.Context()
 
+	// This test covers the "point of no return" edge:
+	//
+	// - The server has accepted the submit package and co-signed it.
+	// - The client did not receive SubmitAcceptedEvent.
+	//
+	// On resume, the client must send the exact same submit bytes and the
+	// server must return the same co-signed artifacts.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -570,7 +631,117 @@ func TestOORClientActorResumeAfterServerCoSigned(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
+}
+
+// TestOORClientActorResumeAfterServerCoSignedFromStore verifies the client can
+// resume after a crash using only the persisted snapshot (no explicit export)
+// even if the server already co-signed but the submit response was dropped.
+func TestOORClientActorResumeAfterServerCoSignedFromStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
+
+	deliveryStore := newTestDeliveryStore(t)
+	handler := &cosignedButDroppedHandler{
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
+	}
+
+	const actorID = "oor-resume-cosigned-from-store-actor"
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+	defer actor1.Stop()
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	// At this point the server has co-signed but the response was dropped,
+	// so the client should still be waiting for submit acceptance.
+	stateResp := actor1.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
+
+	actor1.Stop()
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+	defer actor2.Stop()
+
+	require.Eventually(t, func() bool {
+		finalStateResp := actor2.Receive(ctx, &GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if finalStateResp.IsErr() {
+			return false
+		}
+
+		respMsg := finalStateResp.UnwrapOr(nil)
+		finalStateMsg, ok := respMsg.(*GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		_, ok = finalStateMsg.State.(*Completed)
+
+		return ok
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 // TestOORClientActorResumeFromSnapshotSubmitSent verifies the client can resume
@@ -686,7 +857,7 @@ func TestOORClientActorResumeFromSnapshotSubmitSent(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorResumeFromSnapshotCoSigned verifies the client can resume
@@ -803,7 +974,7 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 
 	finalStateMsg, ok := finalStateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
-	require.IsType(t, &AwaitingLocalVTXOUpdate{}, finalStateMsg.State)
+	require.IsType(t, &Completed{}, finalStateMsg.State)
 }
 
 // TestOORClientActorDurableRestartAutoResume verifies the durable actor can
@@ -906,8 +1077,11 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 			return false
 		}
 
-		_, ok = got.State.(*AwaitingLocalVTXOUpdate)
-
-		return ok
+		switch got.State.(type) {
+		case *AwaitingLocalVTXOUpdate, *Completed:
+			return true
+		default:
+			return false
+		}
 	}, 5*time.Second, 50*time.Millisecond)
 }

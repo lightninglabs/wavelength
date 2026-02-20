@@ -1,6 +1,8 @@
 package oor
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
@@ -95,6 +97,13 @@ type InputsMarkedSpentEvent struct{}
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *InputsMarkedSpentEvent) eventSealed() {}
 
+// RetryDueEvent indicates that a previously requested retry backoff timer has
+// elapsed and the session can resume from the stored retry snapshot.
+type RetryDueEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *RetryDueEvent) eventSealed() {}
+
 // FailEvent forces the session to enter a terminal failure state.
 type FailEvent struct {
 	Reason string
@@ -102,6 +111,24 @@ type FailEvent struct {
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *FailEvent) eventSealed() {}
+
+// OutboxErrorEvent notifies the FSM that a side effect request failed.
+//
+// The actor boundary is responsible for deciding whether the error is
+// retryable and for populating RetryAfter appropriately.
+//
+// Encoding retry semantics as an event (rather than returning a special Go
+// error) keeps the FSM deterministic and keeps all "should we retry" policy in
+// one place: the state transition logic.
+type OutboxErrorEvent struct {
+	OutboxType  string
+	Retryable   bool
+	RetryAfter  time.Duration
+	ErrorReason string
+}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *OutboxErrorEvent) eventSealed() {}
 
 // IncomingTransferEvent notifies the client about an incoming OOR transfer.
 //
@@ -141,3 +168,10 @@ type IncomingHandledEvent struct{}
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *IncomingHandledEvent) eventSealed() {}
+
+// IncomingAckSentEvent indicates the server ack has been sent for this
+// incoming transfer session.
+type IncomingAckSentEvent struct{}
+
+// eventSealed marks this as implementing the sealed Event interface.
+func (e *IncomingAckSentEvent) eventSealed() {}
