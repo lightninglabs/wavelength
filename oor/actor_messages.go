@@ -37,6 +37,15 @@ type SubmitOORRequest struct {
 
 	// CheckpointPSBTs are the per-input checkpoint transactions.
 	CheckpointPSBTs []*psbt.Packet
+
+	// VTXOSigningDescriptors carry enough information for the operator to
+	// co-sign each checkpoint tx by spending the collaborative leaf of the
+	// input VTXO script.
+	//
+	// In the full server implementation this will be derived from the
+	// server-side VTXO store, but in test-only in-process adaptors we pass
+	// it explicitly to de-risk the core state machine.
+	VTXOSigningDescriptors []VTXOSigningDescriptor
 }
 
 // MessageType returns the type of this message.
@@ -56,6 +65,10 @@ type SubmitOORResponse struct {
 
 	// SessionID identifies the OOR session.
 	SessionID SessionID
+
+	// CoSignedCheckpointPSBTs are the checkpoint PSBTs after the operator
+	// has attached its signature material.
+	CoSignedCheckpointPSBTs []*psbt.Packet
 }
 
 // MessageType returns the type of this message.

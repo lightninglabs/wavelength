@@ -6,10 +6,15 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/fn/v2"
+)
+
+const (
+	defaultDurableActorID = "oor.transfer.coordinator"
 )
 
 // OutboxHandler executes FSM outbox requests and returns zero or more follow-up
@@ -35,39 +40,220 @@ type ActorCfg struct {
 
 	// OutboxHandler executes outbox side effects.
 	OutboxHandler OutboxHandler
+
+	// DeliveryStore persists actor mailbox state/checkpoints.
+	DeliveryStore actor.DeliveryStore
+
+	// SessionStore provides DB-authoritative session state for restart
+	// recovery. When set, handleRestart loads active sessions from the
+	// database instead of relying on actor checkpoint blobs.
+	SessionStore SessionStore
+
+	// ActorID is the mailbox/checkpoint identifier for this coordinator.
+	ActorID string
 }
 
-// Actor is a minimal OORTransferCoordinator actor implementation.
+// Actor is a durable OORTransferCoordinator actor wrapper.
 //
 // It owns a map of session ID to per-session protofsm state machines, and it
 // drives the session FSM by executing outbox requests via an OutboxHandler.
 type Actor struct {
 	cfg ActorCfg
 
-	// sessionsMu guards all access to sessions.
-	sessionsMu sync.RWMutex
-	sessions   map[SessionID]*sessionHandle
+	actorID string
+
+	behavior *coordinatorBehavior
+
+	durable *actor.DurableActor[actor.TLVMessage, ActorResp]
+	ref     actor.ActorRef[actor.TLVMessage, ActorResp]
 }
 
 // NewActor creates a new coordinator actor instance.
+//
+// This is a pure constructor that performs no I/O. Call Start to initialize the
+// durable runtime and begin processing.
 func NewActor(cfg ActorCfg) *Actor {
 	if cfg.Logger == nil {
 		cfg.Logger = btclog.Disabled
 	}
 
+	actorID := cfg.ActorID
+	if actorID == "" {
+		actorID = defaultDurableActorID
+	}
+
+	behavior := newCoordinatorBehavior(cfg, actorID)
+
 	return &Actor{
 		cfg:      cfg,
-		sessions: make(map[SessionID]*sessionHandle),
+		actorID:  actorID,
+		behavior: behavior,
+	}
+}
+
+// Start loads durable mailbox state and starts the actor runtime.
+//
+// On restart the delivery store's checkpoint is used only to track the mailbox
+// cursor. Active session state is rebuilt from the DB via
+// SessionStore.LoadActiveSessions inside handleRestart.
+func (a *Actor) Start(ctx context.Context) error {
+	if a.cfg.DeliveryStore == nil {
+		return fmt.Errorf("delivery store must be provided")
+	}
+
+	codec := newActorCodec()
+
+	durableCfg := actor.DefaultDurableActorConfig[
+		actor.TLVMessage, ActorResp,
+	](
+		a.actorID, a.behavior, a.cfg.DeliveryStore, codec,
+	)
+	a.durable = actor.NewDurableActor(durableCfg)
+	a.ref = a.durable.Ref()
+
+	checkpoint, err := a.cfg.DeliveryStore.LoadCheckpoint(
+		ctx, a.actorID,
+	)
+	if err != nil {
+		return err
+	}
+
+	err = actor.PrependRestartMessage(
+		ctx, a.cfg.DeliveryStore, codec, a.actorID, checkpoint,
+	)
+	if err != nil {
+		return err
+	}
+
+	a.durable.Start()
+
+	return nil
+}
+
+// Stop stops the durable coordinator actor.
+func (a *Actor) Stop() {
+	if a.durable != nil {
+		a.durable.Stop()
 	}
 }
 
 // CurrentState returns the current FSM state for the given session.
-func (a *Actor) CurrentState(ctx context.Context,
+func (a *Actor) CurrentState(_ context.Context,
 	sessionID SessionID) (State, error) {
 
-	a.sessionsMu.RLock()
-	handle, ok := a.sessions[sessionID]
-	a.sessionsMu.RUnlock()
+	if a.behavior == nil {
+		return nil, fmt.Errorf("actor not initialized")
+	}
+
+	return a.behavior.currentState(sessionID)
+}
+
+// Receive processes an actor message and returns a response.
+func (a *Actor) Receive(ctx context.Context,
+	msg ActorMsg) fn.Result[ActorResp] {
+
+	if a.ref == nil {
+		return fn.Err[ActorResp](
+			fmt.Errorf("actor not started"),
+		)
+	}
+
+	var durableMsg actor.TLVMessage
+
+	switch m := msg.(type) {
+	case *SubmitOORRequest:
+		durableMsg = newSubmitDurableMessage(m)
+
+	case *FinalizeOORRequest:
+		durableMsg = newFinalizeDurableMessage(m)
+
+	default:
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown message type: %T", m),
+		)
+	}
+
+	result := a.ref.Ask(ctx, durableMsg).Await(ctx)
+	if result.IsErr() {
+		return fn.Err[ActorResp](result.Err())
+	}
+
+	return fn.Ok[ActorResp](result.UnwrapOr(nil))
+}
+
+// coordinatorBehavior contains the deterministic session FSM logic. The
+// durable runtime drives this behavior with persisted inbox delivery.
+type coordinatorBehavior struct {
+	cfg ActorCfg
+
+	actorID string
+
+	sessionsMu sync.RWMutex
+	sessions   map[SessionID]*sessionHandle
+}
+
+// newCoordinatorBehavior initializes the durable coordinator behavior state.
+func newCoordinatorBehavior(cfg ActorCfg,
+	actorID string) *coordinatorBehavior {
+
+	return &coordinatorBehavior{
+		cfg:      cfg,
+		actorID:  actorID,
+		sessions: make(map[SessionID]*sessionHandle),
+	}
+}
+
+type coordinatorActorBehavior = actor.ActorBehavior[
+	actor.TLVMessage, ActorResp,
+]
+
+var _ coordinatorActorBehavior = (*coordinatorBehavior)(nil)
+
+// Receive processes one durable message. Session state changes are persisted
+// through outbox side effects (session store, VTXO store) rather than actor
+// checkpoint blobs.
+func (b *coordinatorBehavior) Receive(ctx context.Context,
+	msg actor.TLVMessage) fn.Result[ActorResp] {
+
+	switch m := msg.(type) {
+	case *actor.RestartMessage:
+		err := b.handleRestart(ctx, m)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		return fn.Ok[ActorResp](nil)
+
+	case *submitDurableMessage:
+		resp, err := b.handleSubmit(ctx, m)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		return fn.Ok[ActorResp](resp)
+
+	case *finalizeDurableMessage:
+		resp, err := b.handleFinalize(ctx, m)
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		return fn.Ok[ActorResp](resp)
+
+	default:
+		return fn.Err[ActorResp](
+			fmt.Errorf("unknown message type: %T", msg),
+		)
+	}
+}
+
+// currentState returns the currently materialized FSM state for one session.
+func (b *coordinatorBehavior) currentState(
+	sessionID SessionID) (State, error) {
+
+	b.sessionsMu.RLock()
+	handle, ok := b.sessions[sessionID]
+	b.sessionsMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown session: %s", sessionID)
 	}
@@ -79,141 +265,196 @@ func (a *Actor) CurrentState(ctx context.Context,
 
 	state, ok := current.(State)
 	if !ok {
-		return nil, fmt.Errorf("unexpected state type: %T",
-			current)
+		return nil, fmt.Errorf("unexpected state type: %T", current)
 	}
 
 	return state, nil
 }
 
-// Receive processes an actor message and returns a response.
-func (a *Actor) Receive(ctx context.Context,
-	msg ActorMsg) fn.Result[ActorResp] {
+// handleSubmit validates submit inputs and drives the session FSM through the
+// submit flow.
+//
+// Validate structure and policy before touching any session or lock state. This
+// is intentional DoS protection: malformed packages are rejected before any
+// durable side effects.
+func (b *coordinatorBehavior) handleSubmit(ctx context.Context,
+	msg *submitDurableMessage) (ActorResp, error) {
 
-	switch m := msg.(type) {
-	case *SubmitOORRequest:
-		return a.handleSubmit(ctx, m)
-
-	case *FinalizeOORRequest:
-		return a.handleFinalize(ctx, m)
-
-	default:
-		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
-			m))
-	}
-}
-
-// handleSubmit processes a submit request by creating (or reusing) the session
-// FSM and feeding it a SubmitRequestedEvent.
-func (a *Actor) handleSubmit(ctx context.Context,
-	req *SubmitOORRequest) fn.Result[ActorResp] {
-
-	if req == nil || req.ArkPSBT == nil || req.ArkPSBT.UnsignedTx == nil {
-		return fn.Err[ActorResp](fmt.Errorf("ark psbt must be " +
-			"provided"))
+	if msg == nil || msg.ArkPSBT == nil || msg.ArkPSBT.UnsignedTx == nil {
+		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
 	// Run structural submit validation before we touch lock state.
 	// Stateful/ownership checks remain at the outbox boundary.
-	//
 	validated, err := oorlib.ValidateSubmitPackage(
-		req.ArkPSBT, req.CheckpointPSBTs,
+		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+		return nil, err
 	}
 
-	// Enforce static checkpoint policy values (operator key + CSV delay) so
-	// malformed checkpoints fail before any session side effects.
+	// Enforce static checkpoint policy values (operator key + CSV delay)
+	// so malformed checkpoints fail before any session side effects.
 	err = validateSubmitCheckpointPolicy(
-		req.ArkPSBT, a.cfg.CheckpointPolicy,
+		msg.ArkPSBT, b.cfg.CheckpointPolicy,
 	)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+		return nil, err
 	}
 
 	sessionID := SessionID(validated.ArkTxid)
 
-	session, err := a.getOrCreateSessionFSM(ctx, sessionID)
+	session, err := b.getOrCreateSessionFSM(ctx, sessionID)
 	if err != nil {
-		return fn.Err[ActorResp](err)
+		return nil, err
 	}
 
-	outbox, err := a.askAndDrive(ctx, sessionID, session.FSM,
+	_, err = b.askAndDrive(ctx, sessionID, session.FSM,
 		&SubmitRequestedEvent{
-			ArkPSBT:         req.ArkPSBT,
-			CheckpointPSBTs: req.CheckpointPSBTs,
+			ArkPSBT:                msg.ArkPSBT,
+			CheckpointPSBTs:        msg.CheckpointPSBTs,
+			VTXOSigningDescriptors: msg.VTXOSigningDescriptors,
 		})
 	if err != nil {
-		return fn.Err[ActorResp](err)
+		return nil, err
 	}
 
-	_ = outbox
-
-	return fn.Ok[ActorResp](&SubmitOORResponse{
-		SessionID: sessionID,
-	})
-}
-
-// handleFinalize processes a finalize request by feeding the session FSM a
-// FinalizeRequestedEvent.
-func (a *Actor) handleFinalize(ctx context.Context,
-	req *FinalizeOORRequest) fn.Result[ActorResp] {
-
-	if req == nil {
-		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
+	current, err := session.FSM.CurrentState()
+	if err != nil {
+		return nil, err
 	}
 
-	a.sessionsMu.RLock()
-	session, ok := a.sessions[req.SessionID]
-	a.sessionsMu.RUnlock()
+	state, ok := current.(State)
 	if !ok {
-		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
-			req.SessionID))
+		return nil, fmt.Errorf("unexpected state type: %T", current)
 	}
 
-	outbox, err := a.askAndDrive(ctx, req.SessionID, session.FSM,
+	switch s := state.(type) {
+	case *CoSignedState:
+		return &SubmitOORResponse{
+			SessionID:               sessionID,
+			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
+		}, nil
+
+	case *FailedState:
+		return nil, fmt.Errorf("submit failed: %s", s.Reason)
+
+	default:
+		return nil, fmt.Errorf(
+			"submit did not reach co-signed state: %T", state,
+		)
+	}
+}
+
+// handleFinalize drives an existing session FSM through finalize processing.
+func (b *coordinatorBehavior) handleFinalize(ctx context.Context,
+	msg *finalizeDurableMessage) (ActorResp, error) {
+
+	if msg == nil {
+		return nil, fmt.Errorf("request must be provided")
+	}
+
+	b.sessionsMu.RLock()
+	session, ok := b.sessions[msg.SessionID]
+	b.sessionsMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
+	}
+
+	_, err := b.askAndDrive(ctx, msg.SessionID, session.FSM,
 		&FinalizeRequestedEvent{
-			FinalCheckpointPSBTs: req.FinalCheckpointPSBTs,
+			FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
 		})
 	if err != nil {
-		return fn.Err[ActorResp](err)
+		return nil, err
 	}
 
-	_ = outbox
+	current, err := session.FSM.CurrentState()
+	if err != nil {
+		return nil, err
+	}
 
-	return fn.Ok[ActorResp](&FinalizeOORResponse{
-		SessionID: req.SessionID,
-	})
+	state, ok := current.(State)
+	if !ok {
+		return nil, fmt.Errorf("unexpected state type: %T", current)
+	}
+
+	switch s := state.(type) {
+	case *FinalizedState:
+		// Clean up the session from the map now that it has reached
+		// a terminal state.
+		b.sessionsMu.Lock()
+		delete(b.sessions, msg.SessionID)
+		b.sessionsMu.Unlock()
+
+		return &FinalizeOORResponse{
+			SessionID: msg.SessionID,
+		}, nil
+
+	case *AwaitingRecipientsNotifyState:
+		if s.LastNotifyFailureReason != "" {
+			return nil, fmt.Errorf(
+				"notify recipients failed: %s",
+				s.LastNotifyFailureReason,
+			)
+		}
+
+		return nil, fmt.Errorf("notify recipients pending")
+
+	case *FailedState:
+		// Clean up the session from the map now that it has reached
+		// a terminal state.
+		b.sessionsMu.Lock()
+		delete(b.sessions, msg.SessionID)
+		b.sessionsMu.Unlock()
+
+		return nil, fmt.Errorf("finalize failed: %s", s.Reason)
+
+	default:
+		return nil, fmt.Errorf(
+			"finalize did not reach finalized state: %T", state,
+		)
+	}
 }
 
-// sessionHandle ties a session ID to its running state machine instance.
-type sessionHandle struct {
-	// FSM is the per-session state machine.
-	FSM *StateMachine
-}
-
-// getOrCreateSessionFSM returns the session FSM handle for the given
-// session ID.
-func (a *Actor) getOrCreateSessionFSM(ctx context.Context,
+// getOrCreateSessionFSM returns an existing session FSM or creates one in the
+// idle state.
+func (b *coordinatorBehavior) getOrCreateSessionFSM(ctx context.Context,
 	sessionID SessionID) (*sessionHandle, error) {
 
-	a.sessionsMu.Lock()
-	defer a.sessionsMu.Unlock()
+	b.sessionsMu.Lock()
+	defer b.sessionsMu.Unlock()
 
-	handle, ok := a.sessions[sessionID]
+	handle, ok := b.sessions[sessionID]
 	if ok {
 		return handle, nil
 	}
 
-	fsmLogger := a.cfg.Logger.WithPrefix(sessionID.LogPrefix())
-	env := &Environment{
-		SessionID: sessionID,
-		Log:       fsmLogger,
+	handle, err := b.createSessionFSM(ctx, sessionID, &IdleState{})
+	if err != nil {
+		return nil, err
 	}
 
+	b.sessions[sessionID] = handle
+
+	return handle, nil
+}
+
+// createSessionFSM constructs and starts a per-session state machine instance.
+func (b *coordinatorBehavior) createSessionFSM(ctx context.Context,
+	sessionID SessionID, initial State) (*sessionHandle, error) {
+
+	if initial == nil {
+		return nil, fmt.Errorf("initial state must be provided")
+	}
+
+	env := &Environment{
+		SessionID: sessionID,
+	}
+
+	fsmLogger := b.cfg.Logger.WithPrefix(sessionID.LogPrefix())
 	fsmCfg := StateMachineCfg{
-		InitialState: &IdleState{},
+		InitialState: initial,
 		Env:          env,
 		Logger:       fsmLogger,
 		ErrorReporter: &contextErrorReporter{
@@ -224,26 +465,26 @@ func (a *Actor) getOrCreateSessionFSM(ctx context.Context,
 	sm := protofsm.NewStateMachine(fsmCfg)
 	sm.Start(ctx)
 
-	handle = &sessionHandle{
+	return &sessionHandle{
 		FSM: &sm,
-	}
-
-	a.sessions[sessionID] = handle
-
-	return handle, nil
+	}, nil
 }
 
-// askAndDrive asks an event on the given FSM and drives any outbox work using
-// the configured OutboxHandler.
-func (a *Actor) askAndDrive(ctx context.Context, sessionID SessionID,
-	fsm *StateMachine, event Event) ([]OutboxEvent, error) {
+// askAndDrive runs one inbox event through the FSM and then exhausts all
+// follow-up outbox/inbox hops until the queue is empty.
+func (b *coordinatorBehavior) askAndDrive(ctx context.Context,
+	sessionID SessionID, fsm *StateMachine,
+	event Event) ([]OutboxEvent, error) {
 
 	if fsm == nil {
 		return nil, fmt.Errorf("fsm must be provided")
 	}
 
-	handler := a.cfg.OutboxHandler
+	handler := b.cfg.OutboxHandler
 	var allOutbox []OutboxEvent
+
+	// queue is breadth-first across follow-up events so one durable
+	// inbox message executes as one deterministic mini-workflow.
 	queue := []Event{event}
 
 	for len(queue) > 0 {
@@ -265,18 +506,10 @@ func (a *Actor) askAndDrive(ctx context.Context, sessionID SessionID,
 			continue
 		}
 
-		for _, msg := range outbox {
-			// The outbox boundary is responsible for side effects:
-			// - VTXO locking and in-flight marking
-			// - operator signing
-			// - persistence of point-of-no-return snapshots
-			// - recipient event log writes
-			//
-			// The handler returns follow-up inbox events.
-			// This keeps the coordinator logic
-			// deterministic and keeps retry/backoff in the state
-			// machine instead of ad-hoc control flow.
-			followUps, err := handler.Handle(ctx, sessionID, msg)
+		for _, out := range outbox {
+			followUps, err := handler.Handle(
+				ctx, sessionID, out,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -288,4 +521,70 @@ func (a *Actor) askAndDrive(ctx context.Context, sessionID SessionID,
 	}
 
 	return allOutbox, nil
+}
+
+// handleRestart rebuilds in-memory session FSMs from DB-authoritative state.
+//
+// Active sessions (cosigned and awaiting_notify) are loaded from the session
+// store and materialized as running FSM instances. The durable mailbox replay
+// then delivers any pending messages on top of this restored state.
+func (b *coordinatorBehavior) handleRestart(ctx context.Context,
+	restart *actor.RestartMessage) error {
+
+	if restart == nil {
+		return fmt.Errorf("restart message must be provided")
+	}
+
+	b.sessionsMu.Lock()
+	defer b.sessionsMu.Unlock()
+
+	b.sessions = make(map[SessionID]*sessionHandle)
+
+	if b.cfg.SessionStore == nil {
+		return nil
+	}
+
+	active, err := b.cfg.SessionStore.LoadActiveSessions(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, session := range active {
+		var state State
+
+		switch session.State {
+		case oorStateCoSigned:
+			state = &CoSignedState{
+				Inputs:  session.Inputs,
+				ArkPSBT: session.ArkPSBT,
+				CoSignedCheckpointPSBTs: session.
+					CheckpointPSBTs,
+			}
+
+		case oorStateAwaitingNotify:
+			state = &AwaitingRecipientsNotifyState{
+				ArkPSBT: session.ArkPSBT,
+			}
+
+		default:
+			continue
+		}
+
+		handle, err := b.createSessionFSM(
+			ctx, session.SessionID, state,
+		)
+		if err != nil {
+			return err
+		}
+
+		b.sessions[session.SessionID] = handle
+	}
+
+	return nil
+}
+
+// sessionHandle ties a session ID to its running state machine instance.
+type sessionHandle struct {
+	// FSM is the per-session state machine.
+	FSM *StateMachine
 }

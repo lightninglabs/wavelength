@@ -154,6 +154,14 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		err = runActorDeliveryMigrations(s.DB, s.Backend())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
+		}
 	}
 
 	return s, nil

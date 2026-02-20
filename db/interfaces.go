@@ -329,6 +329,11 @@ type BaseDB struct {
 	*sqlc.Queries
 }
 
+// SQLDB returns the underlying SQL handle.
+func (s *BaseDB) SQLDB() *sql.DB {
+	return s.DB
+}
+
 // BeginTx wraps the normal sql specific BeginTx method with the TxOptions
 // interface. This interface is then mapped to the concrete sql tx options
 // struct.

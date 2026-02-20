@@ -14,6 +14,34 @@ type ChainInfo struct {
 	GenesisHash []byte
 }
 
+type OorCheckpoint struct {
+	SessionDbID     int32
+	CheckpointIndex int32
+	InputTxid       []byte
+	InputVout       int32
+	CheckpointPsbt  []byte
+}
+
+type OorRecipientEvent struct {
+	RecipientPkScript []byte
+	EventID           int64
+	SessionDbID       int32
+	OutputIndex       int32
+	Value             int64
+	CreatedAt         int64
+}
+
+type OorSession struct {
+	ID          int64
+	SessionID   []byte
+	State       string
+	ArkPsbt     []byte
+	CreatedAt   int64
+	UpdatedAt   int64
+	ExpiresAt   int64
+	FinalizedAt sql.NullInt64
+}
+
 type Round struct {
 	RoundID               []byte
 	FinalTx               []byte

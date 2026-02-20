@@ -144,6 +144,14 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		err = runActorDeliveryMigrations(s.DB, s.Backend())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"error executing actor-delivery migrations: %w",
+				err,
+			)
+		}
 	}
 
 	return s, nil
