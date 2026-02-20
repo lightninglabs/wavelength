@@ -2,6 +2,7 @@ package oor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -22,6 +23,10 @@ var (
 	// A future version should consider namespacing this (for example,
 	// `ark/taptree`) to reduce collision risk with other PSBT extensions.
 	TapTreePSBTKey = []byte("taptree")
+
+	// ErrTapTreeNotFound indicates that a PSBT input does not include
+	// TapTreePSBTKey metadata.
+	ErrTapTreeNotFound = errors.New("tap tree not found")
 )
 
 // EncodeTapTree encodes a set of tapscript leaves into a single byte blob.
@@ -97,7 +102,7 @@ func GetTapTreePSBTInput(input psbt.PInput) ([]byte, error) {
 	}
 
 	if !found {
-		return nil, fmt.Errorf("tap tree not found")
+		return nil, ErrTapTreeNotFound
 	}
 
 	return tapTreeValue, nil

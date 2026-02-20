@@ -17,7 +17,7 @@ func WeightByBtcAmount() PartitionWeightFunc {
 
 // partitionLeaves divides leaves into balanced groups. When a weight function
 // is provided, groups are balanced by cumulative weight; otherwise, leaves are
-// distributed purely by count (legacy behavior).
+// distributed purely by count.
 func partitionLeaves(leaves []LeafDescriptor, radix int,
 	weightFn PartitionWeightFunc) [][]LeafDescriptor {
 
