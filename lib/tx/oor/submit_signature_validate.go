@@ -2,6 +2,7 @@ package oor
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -78,8 +79,16 @@ func validatePSBTSpends(pkt *psbt.Packet, label string) error {
 
 		tapTreeEncoded, err := GetTapTreePSBTInput(in)
 		if err != nil {
-			return fmt.Errorf("%s input %d: get tap tree: %w",
-				label, i, err)
+			// The full tap tree is optional when the witness has
+			// enough data (for example FinalScriptWitness or a
+			// TaprootLeafScript path).
+			// Keep malformed tree metadata as hard errors.
+			if !errors.Is(err, ErrTapTreeNotFound) {
+				return fmt.Errorf(
+					"%s input %d: get tap tree: %w",
+					label, i, err,
+				)
+			}
 		}
 
 		witness, err := buildTaprootWitness(in, tapTreeEncoded)
