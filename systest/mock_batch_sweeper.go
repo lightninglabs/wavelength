@@ -20,9 +20,10 @@ type MockBatchSweeper struct {
 	// received, keyed by BatchID string for easy lookup.
 	expiryNotifications map[string]*batchwatcher.BatchExpiredNotification
 
-	// treeStateNotifications stores all TreeStateChangedNotification messages
-	// received, keyed by BatchID string.
-	treeStateNotifications map[string][]*batchwatcher.TreeStateChangedNotification
+	// treeStateNotifications stores all TreeStateChangedNotification
+	// messages received, keyed by BatchID string.
+	treeStateNotifications map[string][]*batchwatcher.
+				TreeStateChangedNotification
 }
 
 // ID implements actor.BaseActorRef for the mock.
@@ -33,8 +34,12 @@ func (m *MockBatchSweeper) ID() string {
 // NewMockBatchSweeper creates a new mock batch sweeper.
 func NewMockBatchSweeper() *MockBatchSweeper {
 	return &MockBatchSweeper{
-		expiryNotifications:    make(map[string]*batchwatcher.BatchExpiredNotification),
-		treeStateNotifications: make(map[string][]*batchwatcher.TreeStateChangedNotification),
+		expiryNotifications: make(
+			map[string]*batchwatcher.BatchExpiredNotification,
+		),
+		treeStateNotifications: make(
+			map[string][]*batchwatcher.TreeStateChangedNotification,
+		),
 	}
 }
 
@@ -79,6 +84,7 @@ func (m *MockBatchSweeper) HasExpiryNotification(
 	defer m.mu.Unlock()
 
 	_, ok := m.expiryNotifications[batchID.String()]
+
 	return ok
 }
 
@@ -94,7 +100,8 @@ func (m *MockBatchSweeper) ExpiryNotificationCount() int {
 // GetTreeStateNotifications returns all tree state change notifications for a
 // batch.
 func (m *MockBatchSweeper) GetTreeStateNotifications(
-	batchID batchwatcher.BatchID) []*batchwatcher.TreeStateChangedNotification {
+	batchID batchwatcher.BatchID,
+) []*batchwatcher.TreeStateChangedNotification {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -106,7 +113,8 @@ func (m *MockBatchSweeper) GetTreeStateNotifications(
 
 	// Return a copy to prevent external modification.
 	result := make(
-		[]*batchwatcher.TreeStateChangedNotification, len(notifications),
+		[]*batchwatcher.TreeStateChangedNotification,
+		len(notifications),
 	)
 	copy(result, notifications)
 

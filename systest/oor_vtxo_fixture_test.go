@@ -29,15 +29,16 @@ type oorRealChainVTXO struct {
 	// ParentTx is the tx that creates the VTXO output.
 	ParentTx *wire.MsgTx
 
-	// Outpoint is the real-chain UTXO outpoint that the test treats as the VTXO
-	// being spent by the checkpoint transaction.
+	// Outpoint is the real-chain UTXO outpoint that the test
+	// treats as the VTXO being spent by the checkpoint
+	// transaction.
 	Outpoint wire.OutPoint
 
 	// PrevOut is the previous output data for Outpoint.
 	PrevOut *wire.TxOut
 
-	// FundingTxid is the txid of the faucet transaction that created the input
-	// outpoint spent by ParentTx.
+	// FundingTxid is the txid of the faucet transaction that
+	// created the input outpoint spent by ParentTx.
 	FundingTxid chainhash.Hash
 
 	// VTXO is the client-side VTXO descriptor used for local persistence in
@@ -82,8 +83,9 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 	pkScript, err := txscript.PayToTaprootScript(tapKey)
 	require.NoError(t, err)
 
-	// Fund a BIP-0086 P2TR output controlled by the operator. We'll spend it to
-	// create the VTXO output, ensuring the VTXO outpoint has a real parent tx.
+	// Fund a BIP-0086 P2TR output controlled by the operator.
+	// We'll spend it to create the VTXO output, ensuring the
+	// VTXO outpoint has a real parent tx.
 	//
 	// The operator signer needs to be told this is a BIP-0086 key-spend by
 	// providing an empty TapTweak (non-nil, zero-length slice) in the sign
@@ -116,9 +118,10 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 	)
 	require.NoError(t, err)
 
-	// Create and sign a parent tx that mints a VTXO output. This is a minimal
-	// "realized VTXO" fixture: the parent tx is a normal on-chain tx, and the
-	// VTXO output script matches the standard v0 VTXO pkScript.
+	// Create and sign a parent tx that mints a VTXO output.
+	// This is a minimal "realized VTXO" fixture: the parent tx
+	// is a normal on-chain tx, and the VTXO output script
+	// matches the standard v0 VTXO pkScript.
 	parent := wire.NewMsgTx(3)
 	parent.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: outpoint,

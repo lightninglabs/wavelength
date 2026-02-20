@@ -123,7 +123,8 @@ func (t *MessageTranscript) Clear() {
 
 // ExpectedMessage describes an expected message in the transcript.
 type ExpectedMessage struct {
-	// Direction indicates whether we expect client→server or server→client.
+	// Direction indicates whether we expect client→server or
+	// server→client.
 	Direction MessageDirection
 
 	// MsgType is the expected type name of the message.
@@ -201,7 +202,8 @@ func (t *MessageTranscript) AssertMessageSequence(tb testing.TB,
 		if exp.ClientID != "" {
 			require.Equal(
 				tb, exp.ClientID, entry.ClientID,
-				"message %d client ID mismatch: got %s, expected %s",
+				"message %d client ID mismatch: got %s, "+
+					"expected %s",
 				i, entry.ClientID, exp.ClientID,
 			)
 		}
@@ -218,7 +220,9 @@ func (t *MessageTranscript) AssertClientReceivedTypes(tb testing.TB,
 
 	var receivedTypes []string
 	for _, entry := range entries {
-		if entry.Direction == ServerToClient && entry.ClientID == clientID {
+		if entry.Direction == ServerToClient &&
+			entry.ClientID == clientID {
+
 			receivedTypes = append(receivedTypes, entry.MsgType)
 		}
 	}
@@ -239,7 +243,9 @@ func (t *MessageTranscript) AssertClientSentTypes(tb testing.TB,
 
 	var sentTypes []string
 	for _, entry := range entries {
-		if entry.Direction == ClientToServer && entry.ClientID == clientID {
+		if entry.Direction == ClientToServer &&
+			entry.ClientID == clientID {
+
 			sentTypes = append(sentTypes, entry.MsgType)
 		}
 	}
@@ -266,7 +272,9 @@ func (t *MessageTranscript) AssertContainsMessage(tb testing.TB,
 		if entry.MsgType != expected.MsgType {
 			continue
 		}
-		if expected.ClientID != "" && entry.ClientID != expected.ClientID {
+		if expected.ClientID != "" &&
+			entry.ClientID != expected.ClientID {
+
 			continue
 		}
 
@@ -300,7 +308,9 @@ func (t *MessageTranscript) AssertNotContainsMessage(tb testing.TB,
 		if entry.MsgType != unexpected.MsgType {
 			continue
 		}
-		if unexpected.ClientID != "" && entry.ClientID != unexpected.ClientID {
+		if unexpected.ClientID != "" &&
+			entry.ClientID != unexpected.ClientID {
+
 			continue
 		}
 
@@ -308,8 +318,8 @@ func (t *MessageTranscript) AssertNotContainsMessage(tb testing.TB,
 		require.Fail(
 			tb,
 			fmt.Sprintf(
-				"transcript unexpectedly contains message: %s %s "+
-					"(client: %s)",
+				"transcript unexpectedly contains "+
+					"message: %s %s (client: %s)",
 				unexpected.Direction, unexpected.MsgType,
 				entry.ClientID,
 			),
@@ -340,7 +350,9 @@ func (t *MessageTranscript) WaitForEntryCount(count int,
 	current := len(t.entries)
 	t.mu.Unlock()
 
-	return fmt.Errorf("timeout waiting for %d entries, got %d", count, current)
+	return fmt.Errorf(
+		"timeout waiting for %d entries, got %d", count, current,
+	)
 }
 
 // GetLastEntryOfType returns the most recent entry matching the given direction

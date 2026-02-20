@@ -65,7 +65,7 @@ func newClientVTXOStore(t *testing.T,
 				desc.Outpoint.Hash.String())
 		}
 
-		// Ensure the round exists so the VTXO foreign key constraint can be
+		// Ensure the round exists so the VTXO foreign key can be
 		// satisfied in the client DB.
 		err := roundDB.InsertRound(ctx, clientdb.InsertRoundParams{
 			RoundID:               desc.RoundID,
@@ -81,9 +81,10 @@ func newClientVTXOStore(t *testing.T,
 		})
 		require.NoError(t, err)
 
-		// The client-side vtxo persistence schema currently requires a
-		// TLV-encoded tree path blob. OOR fixtures mint standalone VTXOs
-		// without a tree, so we stub an empty tree for persistence tests.
+		// The client-side vtxo persistence schema currently requires
+		// a TLV-encoded tree path blob. OOR fixtures mint standalone
+		// VTXOs without a tree, so we stub an empty tree for
+		// persistence tests.
 		if desc.TreePath == nil {
 			desc.TreePath = &clienttree.Tree{}
 		}
@@ -99,9 +100,10 @@ func newClientVTXOStore(t *testing.T,
 // non-transactional DeliveryStore interface. The durable actor checks for
 // TxAwareDeliveryStore at runtime to decide between processInTransaction and
 // processWithoutTransaction. The client OOR behavior calls persistCheckpoint
-// (which starts its own DB transaction) inside the behavior handler, so wrapping
-// the entire handler in an outer transaction causes SQLite deadlocks. The shim
-// forces the non-transactional path, matching the server-side deliveryStoreShim.
+// (which starts its own DB transaction) inside the behavior handler.
+// Wrapping the entire handler in an outer transaction causes SQLite deadlocks.
+// The shim forces the non-transactional path, matching the server-side
+// deliveryStoreShim.
 type clientDeliveryStoreShim struct {
 	actor.DeliveryStore
 }
@@ -274,7 +276,9 @@ func driveOutboxToFSM(ctx context.Context, sessionID clientoor.SessionID,
 			}
 
 			next := result.UnwrapOr(nil)
-			err = driveOutboxToFSM(ctx, sessionID, fsm, handler, next)
+			err = driveOutboxToFSM(
+				ctx, sessionID, fsm, handler, next,
+			)
 			if err != nil {
 				return err
 			}
@@ -309,7 +313,9 @@ func signCheckpointPSBTs(signer input.Signer, inputs []checkpointSignInput,
 		return fmt.Errorf("checkpoint psbts must be provided")
 	}
 
-	inputByOutpoint := make(map[wire.OutPoint]*checkpointSignInput, len(inputs))
+	inputByOutpoint := make(
+		map[wire.OutPoint]*checkpointSignInput, len(inputs),
+	)
 	for i := range inputs {
 		in := inputs[i]
 		inputByOutpoint[in.Outpoint] = &in
@@ -318,24 +324,32 @@ func signCheckpointPSBTs(signer input.Signer, inputs []checkpointSignInput,
 	for i := range checkpoints {
 		checkpoint := checkpoints[i]
 		if checkpoint == nil || checkpoint.UnsignedTx == nil {
-			return fmt.Errorf("checkpoint psbt must include unsigned tx")
+			return fmt.Errorf(
+				"checkpoint psbt must include unsigned tx",
+			)
 		}
 
 		if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 			len(checkpoint.Inputs) != 1 {
 
-			return fmt.Errorf("checkpoint must have exactly one input")
+			return fmt.Errorf(
+				"checkpoint must have exactly one input",
+			)
 		}
 
 		prevOutpoint := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
 		in := inputByOutpoint[prevOutpoint]
 		if in == nil {
-			return fmt.Errorf("missing signing input for outpoint %s",
-				prevOutpoint)
+			return fmt.Errorf(
+				"missing signing input for outpoint %s",
+				prevOutpoint,
+			)
 		}
 
 		if in.ClientKey.PubKey == nil || in.OperatorKey == nil {
-			return fmt.Errorf("missing pubkeys for checkpoint input")
+			return fmt.Errorf(
+				"missing pubkeys for checkpoint input",
+			)
 		}
 
 		tapscript, err := scripts.VTXOTapScript(
@@ -347,7 +361,9 @@ func signCheckpointPSBTs(signer input.Signer, inputs []checkpointSignInput,
 
 		prevOut := checkpoint.Inputs[0].WitnessUtxo
 		if prevOut == nil {
-			return fmt.Errorf("checkpoint must include witness utxo")
+			return fmt.Errorf(
+				"checkpoint must include witness utxo",
+			)
 		}
 
 		prevFetcher := txscript.NewCannedPrevOutputFetcher(
@@ -357,22 +373,25 @@ func signCheckpointPSBTs(signer input.Signer, inputs []checkpointSignInput,
 			checkpoint.UnsignedTx, prevFetcher,
 		)
 
-		signDesc, spendInfo, err := clienttx.NewVTXOCollabSignDescriptor(
-			&clienttx.VTXOSpendContext{
-				Outpoint:  prevOutpoint,
-				Output:    prevOut,
-				TapScript: tapscript,
-			},
-			in.ClientKey,
-			0,
-			sigHashes,
-			prevFetcher,
-		)
+		signDesc, spendInfo, err :=
+			clienttx.NewVTXOCollabSignDescriptor(
+				&clienttx.VTXOSpendContext{
+					Outpoint:  prevOutpoint,
+					Output:    prevOut,
+					TapScript: tapscript,
+				},
+				in.ClientKey,
+				0,
+				sigHashes,
+				prevFetcher,
+			)
 		if err != nil {
 			return fmt.Errorf("build sign descriptor: %w", err)
 		}
 
-		sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
+		sig, err := signer.SignOutputRaw(
+			checkpoint.UnsignedTx, signDesc,
+		)
 		if err != nil {
 			return fmt.Errorf("sign output: %w", err)
 		}
@@ -536,8 +555,10 @@ func (h *oorClientToServerOutbox) Handle(ctx context.Context,
 
 		return []clientoor.Event{
 			&clientoor.SubmitAcceptedEvent{
-				SessionID: clientoor.SessionID(serverMsg.SessionID),
-				ArkPSBT:   msg.ArkPSBT,
+				SessionID: clientoor.SessionID(
+					serverMsg.SessionID,
+				),
+				ArkPSBT: msg.ArkPSBT,
 				CoSignedCheckpointPSBTs: serverMsg.
 					CoSignedCheckpointPSBTs,
 			},
@@ -564,7 +585,8 @@ func (h *oorClientToServerOutbox) Handle(ctx context.Context,
 
 		return []clientoor.Event{
 			&clientoor.CheckpointsSignedEvent{
-				FinalCheckpointPSBTs: msg.CoSignedCheckpointPSBTs,
+				FinalCheckpointPSBTs: msg.
+					CoSignedCheckpointPSBTs,
 			},
 		}, nil
 
@@ -587,7 +609,9 @@ func (h *oorClientToServerOutbox) Handle(ctx context.Context,
 		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
 		require.True(h.t, ok)
 
-		return []clientoor.Event{&clientoor.FinalizeAcceptedEvent{}}, nil
+		return []clientoor.Event{
+			&clientoor.FinalizeAcceptedEvent{},
+		}, nil
 
 	case *clientoor.MarkInputsSpentRequest:
 		return nil, fmt.Errorf("unexpected MarkInputsSpentRequest in " +
@@ -814,13 +838,14 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, checkpointTx)
 
-	// The v0 OOR primitives build a fee-less checkpoint tx. Since bitcoind's
+	// The v0 OOR primitives build a fee-less checkpoint tx.
+	// Since bitcoind's
 	// mempool policy rejects 0-fee txs, we CPFP it by submitting a package:
 	//
 	//   submitpackage {checkpoint, cpfp-child}
 	//
-	// The child spends the checkpoint output via the owner leaf. For this test,
-	// the leaf is OP_TRUE so no signature is required.
+	// The child spends the checkpoint output via the owner leaf.
+	// For this test, the leaf is OP_TRUE so no signature is required.
 	bitcoind, err := h.BitcoindClient()
 	require.NoError(t, err)
 
@@ -834,7 +859,9 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 	checkpointInternalKey := &scripts.ARKNUMSKey
 
 	cpLeaf := txscript.NewBaseTapLeaf(ownerLeafScript)
-	tree := txscript.AssembleTaprootScriptTree(checkpointTapscript.Leaves...)
+	tree := txscript.AssembleTaprootScriptTree(
+		checkpointTapscript.Leaves...,
+	)
 	proofIdx, ok := tree.LeafProofIndex[cpLeaf.TapHash()]
 	require.True(t, ok)
 	proof := tree.LeafMerkleProofs[proofIdx]
@@ -1034,7 +1061,8 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 		startResp.Err(),
 	)
 
-	startMsg, ok := startResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	startRespMsg := startResp.UnwrapOr(nil)
+	startMsg, ok := startRespMsg.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 
 	// The server cleans up finalized sessions from its in-memory map,
@@ -1073,7 +1101,8 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	err = driveOutboxToFSM(
-		ctx, receiveSession.ID, receiveSession.FSM, bobReceive, receiveOutbox,
+		ctx, receiveSession.ID, receiveSession.FSM,
+		bobReceive, receiveOutbox,
 	)
 	require.NoError(t, err)
 
@@ -1095,7 +1124,9 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 
 	require.NotNil(t, event.ArkPSBT)
 	require.NotNil(t, event.ArkPSBT.UnsignedTx)
-	require.Less(t, int(event.OutputIndex), len(event.ArkPSBT.UnsignedTx.TxOut))
+	require.Less(
+		t, int(event.OutputIndex), len(event.ArkPSBT.UnsignedTx.TxOut),
+	)
 
 	bobOutpoint := wire.OutPoint{
 		Hash:  event.ArkPSBT.UnsignedTx.TxHash(),
@@ -1180,7 +1211,8 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 		returnResp.Err(),
 	)
 
-	returnMsg, ok := returnResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	returnRespMsg := returnResp.UnwrapOr(nil)
+	returnMsg, ok := returnRespMsg.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 
 	returnSessionID := serveroor.SessionID(returnMsg.SessionID)
@@ -1197,7 +1229,9 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 
 	aliceEvent := aliceEvents[0]
 	require.Equal(t, returnSessionID, aliceEvent.SessionID)
-	require.Equal(t, returnRecipients[0].PkScript, aliceEvent.RecipientPkScript)
+	require.Equal(
+		t, returnRecipients[0].PkScript, aliceEvent.RecipientPkScript,
+	)
 	require.Equal(t, inputValue, aliceEvent.Value)
 	require.NotNil(t, aliceEvent.ArkPSBT)
 
@@ -1211,9 +1245,11 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 		exitDelay:   oorExitDelay,
 	}
 
-	aliceReceiveSession, aliceReceiveOutbox, err := clientoor.DriveIncomingTransfer(
-		ctx, clientoor.SessionID(aliceEvent.SessionID), aliceEvent.ArkPSBT,
-	)
+	aliceReceiveSession, aliceReceiveOutbox, err :=
+		clientoor.DriveIncomingTransfer(
+			ctx, clientoor.SessionID(aliceEvent.SessionID),
+			aliceEvent.ArkPSBT,
+		)
 	require.NoError(t, err)
 
 	err = driveOutboxToFSM(
@@ -1233,9 +1269,9 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	require.Equal(t, clientvtxo.VTXOStatusLive, receivedBack.Status)
 }
 
-// TestOORClientResumeAfterServerCoSignE2E simulates the mobile-safety edge where
-// the server co-signs a submit package but the client crashes before observing
-// SubmitAcceptedEvent, then resumes and completes to finalization.
+// TestOORClientResumeAfterServerCoSignE2E simulates the mobile-safety edge
+// where the server co-signs a submit package but the client crashes before
+// observing SubmitAcceptedEvent, then resumes and completes to finalization.
 func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	ParallelN(t)
 
@@ -1299,9 +1335,9 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 		},
 	}
 
-	// Create a minimal in-process server actor. The outbox driver does signing
-	// and persistence locally so the test can focus on the state-machine
-	// semantics.
+	// Create a minimal in-process server actor.
+	// The outbox driver does signing and persistence locally so the test
+	// can focus on the state-machine semantics.
 	sqlStore := db.NewTestDB(t)
 	dbStore := db.NewStore(
 		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
@@ -1373,15 +1409,17 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 		startResp.Err(),
 	)
 
-	startMsg, ok := startResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	startRespMsg := startResp.UnwrapOr(nil)
+	startMsg, ok := startRespMsg.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 	require.NotEqual(t, clientoor.SessionID{}, startMsg.SessionID)
 
 	require.NotEmpty(t, dropper.coSignedCheckpointBytes)
 
-	// 2) Simulate crash: create a new actor and attempt the same deterministic
-	// transfer again. The server should return the same co-signed checkpoint
-	// bytes, and the client should complete to finalization.
+	// 2) Simulate crash: create a new actor and attempt the same
+	// deterministic transfer again. The server should return the same
+	// co-signed checkpoint bytes, and the client should complete to
+	// finalization.
 	adaptor := &oorClientToServerOutbox{
 		t:            t,
 		server:       server,
@@ -1416,7 +1454,8 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 		startResp2.Err(),
 	)
 
-	startMsg2, ok := startResp2.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	startRespMsg2 := startResp2.UnwrapOr(nil)
+	startMsg2, ok := startRespMsg2.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 	require.Equal(t, startMsg.SessionID, startMsg2.SessionID)
 
@@ -1448,8 +1487,9 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, checkpointTx)
 
-	// Confirm the finalized checkpoint tx by CPFP'ing it in a package. The child
-	// spends via the owner OP_TRUE leaf, so no signatures required.
+	// Confirm the finalized checkpoint tx by CPFP'ing it in a package.
+	// The child spends via the owner OP_TRUE leaf, so no signatures
+	// are required.
 	bitcoind, err := h.BitcoindClient()
 	require.NoError(t, err)
 
@@ -1463,7 +1503,9 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	checkpointInternalKey := &scripts.ARKNUMSKey
 
 	cpLeaf := txscript.NewBaseTapLeaf(ownerLeafScript)
-	tree := txscript.AssembleTaprootScriptTree(checkpointTapscript.Leaves...)
+	tree := txscript.AssembleTaprootScriptTree(
+		checkpointTapscript.Leaves...,
+	)
 	proofIdx, ok := tree.LeafProofIndex[cpLeaf.TapHash()]
 	require.True(t, ok)
 	proof := tree.LeafMerkleProofs[proofIdx]
@@ -1596,7 +1638,9 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	)
 	locker := db.NewVTXOLockerDB(dbStore, btclog.Disabled)
 	store := dbStore.NewVTXORecordStore()
-	sessionStore1 := serveroor.NewDBSessionStore(dbStore, clock.NewDefaultClock(), btclog.Disabled)
+	sessionStore1 := serveroor.NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
 
 	driver1 := serveroor.NewDriver(serveroor.DriverCfg{
 		Locker:         locker,
@@ -1655,7 +1699,8 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	})
 	require.True(t, startResp.IsOk())
 
-	startMsg, ok := startResp.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	startRespMsg := startResp.UnwrapOr(nil)
+	startMsg, ok := startRespMsg.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 	require.NotEqual(t, clientoor.SessionID{}, startMsg.SessionID)
 
@@ -1666,7 +1711,9 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	// Restart server: re-create actor, restore co-signed sessions from DB.
 	server1.Stop()
 
-	sessionStore2 := serveroor.NewDBSessionStore(dbStore, clock.NewDefaultClock(), btclog.Disabled)
+	sessionStore2 := serveroor.NewDBSessionStore(
+		dbStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
 	driver2 := serveroor.NewDriver(serveroor.DriverCfg{
 		Locker:         locker,
 		Store:          store,
@@ -1688,15 +1735,16 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	err = server2.Start(ctx)
 	require.NoError(t, err)
 
-	// Assert the server has rehydrated the session into the CoSigned point-of-no-
-	// return state before any client resume traffic arrives.
+	// Assert the server has rehydrated the session into the CoSigned
+	// point-of-no-return state before any client resume traffic arrives.
 	restoredSnapshots, err := sessionStore2.LoadActiveSessions(ctx)
 	require.NoError(t, err)
 	require.Len(t, restoredSnapshots, 1)
 	require.Equal(t, serverSessionID, restoredSnapshots[0].SessionID)
 
-	// Durable restart delivery is asynchronous. Wait until the restarted actor
-	// has replayed its checkpoint and rehydrated the session in memory.
+	// Durable restart delivery is asynchronous.
+	// Wait until the restarted actor has replayed its checkpoint and
+	// rehydrated the session in memory.
 	var restoredState serveroor.State
 	require.Eventually(t, func() bool {
 		state, stateErr := server2.CurrentState(ctx, serverSessionID)
@@ -1705,6 +1753,7 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 		}
 
 		restoredState = state
+
 		return true
 	}, 3*time.Second, 25*time.Millisecond)
 
@@ -1759,7 +1808,8 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 		startResp2.Err(),
 	)
 
-	startMsg2, ok := startResp2.UnwrapOr(nil).(*clientoor.StartTransferResponse)
+	startRespMsg2 := startResp2.UnwrapOr(nil)
+	startMsg2, ok := startRespMsg2.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
 	require.Equal(t, startMsg.SessionID, startMsg2.SessionID)
 
@@ -1805,7 +1855,9 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	checkpointInternalKey := &scripts.ARKNUMSKey
 
 	cpLeaf := txscript.NewBaseTapLeaf(ownerLeafScript)
-	tree := txscript.AssembleTaprootScriptTree(checkpointTapscript.Leaves...)
+	tree := txscript.AssembleTaprootScriptTree(
+		checkpointTapscript.Leaves...,
+	)
 	proofIdx, ok := tree.LeafProofIndex[cpLeaf.TapHash()]
 	require.True(t, ok)
 	proof := tree.LeafMerkleProofs[proofIdx]

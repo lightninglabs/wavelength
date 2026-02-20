@@ -109,8 +109,8 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 
 	checkpointInternalKey := &scripts.ARKNUMSKey
 
-	// 1) Build a checkpoint tx and sign the collaborative leaf with both sender
-	// and operator keys.
+	// 1) Build a checkpoint tx and sign the collaborative leaf
+	// with both sender and operator keys.
 	checkpointPkScript, err := scripts.CheckpointPkScript(
 		policy, ownerLeafScript,
 	)
@@ -187,7 +187,7 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 		Value:    int64(inputValue),
 		PkScript: checkpointPkScript,
 	})
-	sponsorChange := int64(sponsorPrevOut.Value) - oorCheckpointFeeSat
+	sponsorChange := sponsorPrevOut.Value - oorCheckpointFeeSat
 	require.Greater(t, sponsorChange, int64(0),
 		"sponsor utxo too small for checkpoint fee",
 	)
@@ -242,8 +242,9 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// The witness stack must provide the cosigner signature first so the owner
-	// signature is on top for the initial OP_CHECKSIGVERIFY.
+	// The witness stack must provide the cosigner signature first
+	// so the owner signature is on top for the initial
+	// OP_CHECKSIGVERIFY.
 	checkpointTx.TxIn[0].Witness = wire.TxWitness{
 		operatorSig.Serialize(),
 		clientSig.Serialize(),
@@ -272,8 +273,9 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	// virtual chain (ark + cpfp) before broadcasting anything.
 	checkpointTxid := checkpointTx.TxHash()
 
-	// 2) Build the Ark tx PSBT (fee-less), spending the checkpoint output. We
-	// reuse the checkpoint builder to compute the canonical tap tree encoding.
+	// 2) Build the Ark tx PSBT (fee-less), spending the
+	// checkpoint output. We reuse the checkpoint builder to compute
+	// the canonical tap tree encoding.
 	checkpointInput := oortx.CheckpointInput{
 		SpentVTXO: oortx.SpentVTXORef{
 			Outpoint: fundingOutpoint,
@@ -294,8 +296,8 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	arkPkt, err := oortx.BuildArkPSBT(checkpointOutputs, recipients)
 	require.NoError(t, err)
 
-	// 3) Sign the Ark tx by spending the checkpoint output using the owner leaf
-	// script, then submitpackage {ark, cpfp-child}.
+	// 3) Sign the Ark tx by spending the checkpoint output using
+	// the owner leaf script, then submitpackage {ark, cpfp-child}.
 	arkTx := arkPkt.UnsignedTx.Copy()
 
 	cpOut := checkpointTx.TxOut[0]
@@ -305,7 +307,9 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	arkSigHashes := txscript.NewTxSigHashes(arkTx, arkPrevFetcher)
 
 	cpLeaf := txscript.NewBaseTapLeaf(ownerLeafScript)
-	tree := txscript.AssembleTaprootScriptTree(checkpointTapscript.Leaves...)
+	tree := txscript.AssembleTaprootScriptTree(
+		checkpointTapscript.Leaves...,
+	)
 	proofIdx, ok := tree.LeafProofIndex[cpLeaf.TapHash()]
 	require.True(t, ok)
 	proof := tree.LeafMerkleProofs[proofIdx]
@@ -342,7 +346,7 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 		Index: anchorIndex,
 	}
 
-	cpfpChange := int64(cpfpPrevOut.Value) - oorCPFPPackageFeeSat
+	cpfpChange := cpfpPrevOut.Value - oorCPFPPackageFeeSat
 	require.Greater(t, cpfpChange, int64(0),
 		"cpfp utxo too small for package fee",
 	)
@@ -378,8 +382,8 @@ func TestOORPackageOnRealChainE2E(t *testing.T) {
 	child.TxIn[1].Witness = childScript.Witness
 	child.TxIn[1].SignatureScript = childScript.SigScript
 
-	// Now that the full virtual chain is constructed and signed, broadcast and
-	// mine gradually.
+	// Now that the full virtual chain is constructed and signed,
+	// broadcast and mine gradually.
 	checkpointTxidPtr, err := rpc.SendRawTransaction(checkpointTx, false)
 	require.NoError(t, err, "broadcast checkpoint tx")
 	require.Equal(t, checkpointTx.TxHash(), *checkpointTxidPtr)

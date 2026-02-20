@@ -106,6 +106,8 @@ type E2EHarness struct {
 	t *testing.T
 
 	// ctx is the context for actor operations.
+	//
+	//nolint:containedctx
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -167,20 +169,26 @@ type E2EHarness struct {
 	// implementation yet.
 	mockBoardingLocker *MockBoardingLocker
 
-	// chainSourceActor is the real ChainSourceActor from the client package.
-	// It handles transaction broadcasts and confirmation subscriptions using
-	// the server's LND for chain notifications.
+	// chainSourceActor is the real ChainSourceActor from the client
+	// package. It handles transaction broadcasts and confirmation
+	// subscriptions using the server's LND for chain notifications.
 	chainSourceActor *chainsource.ChainSourceActor
 
 	// chainSourceActorRef is the actor reference for the chain source.
-	chainSourceActorRef actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp]
+	chainSourceActorRef actor.ActorRef[
+		chainsource.ChainSourceMsg,
+		chainsource.ChainSourceResp,
+	]
 
 	// batchWatcher is the BatchWatcherActor that monitors on-chain tree
 	// state for all registered batches.
 	batchWatcher *batchwatcher.Actor
 
 	// batchWatcherRef is the actor reference for the batch watcher.
-	batchWatcherRef actor.ActorRef[batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp]
+	batchWatcherRef actor.ActorRef[
+		batchwatcher.BatchWatcherMsg,
+		batchwatcher.BatchWatcherResp,
+	]
 
 	// mockBatchSweeper captures batch expiry and tree state notifications
 	// from the BatchWatcher for test assertions.
@@ -241,7 +249,7 @@ func NewE2EHarness(t *testing.T, opts ...HarnessOption) *E2EHarness {
 		SkipArkd:      true,
 	})
 
-	baseCtx, cancel := context.WithCancel(context.Background())
+	baseCtx, cancel := context.WithCancel(t.Context())
 
 	// Create a log handler for creating subsystem-specific loggers. Each
 	// subsystem gets its own logger created via handler.SubSystem() which
@@ -357,9 +365,9 @@ func (h *E2EHarness) initActorSystem() {
 	h.bridge = NewBridgeClientConn(h.transcript)
 
 	// Spawn the bridge actor.
-	bridgeKey := actor.NewServiceKey[clientconn.ClientConnMsg, clientconn.ClientConnResp](
-		"bridge-client-conn",
-	)
+	bridgeKey := actor.NewServiceKey[
+		clientconn.ClientConnMsg, clientconn.ClientConnResp,
+	]("bridge-client-conn")
 	bridgeRef := bridgeKey.Spawn(
 		h.actorSystem, "bridge-client-conn", h.bridge,
 	)
@@ -451,14 +459,15 @@ func (h *E2EHarness) initActorSystem() {
 	)
 
 	// Spawn the chain source actor.
-	chainSourceKey := actor.NewServiceKey[chainsource.ChainSourceMsg, chainsource.ChainSourceResp](
-		"chain-source-actor",
-	)
+	chainSourceKey := actor.NewServiceKey[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]("chain-source-actor")
 	h.chainSourceActorRef = chainSourceKey.Spawn(
 		h.actorSystem, "chain-source-actor", h.chainSourceActor,
 	)
 
-	// Create mock BatchSweeper to capture expiry and tree state notifications.
+	// Create mock BatchSweeper to capture expiry and tree state
+	// notifications.
 	h.mockBatchSweeper = NewMockBatchSweeper()
 
 	// Create a notification router so we can attach a real sweeper actor
@@ -466,14 +475,19 @@ func (h *E2EHarness) initActorSystem() {
 	h.batchSweeperRouter = NewBatchSweeperRouter(h.mockBatchSweeper)
 
 	// Create BatchWatcher actor config. FraudDetector is not implemented
-	// yet, so we pass None. BatchSweeper uses the mock for test assertions.
+	// yet, so we pass None. BatchSweeper uses the mock for test
+	// assertions.
+	type fraudDetectorRef = actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]
+	type batchSweeperRef = actor.TellOnlyRef[batchwatcher.BatchSweeperMsg]
+
+	fraudDetector := fn.None[fraudDetectorRef]()
+	batchSweeper := fn.Some[batchSweeperRef](h.batchSweeperRouter)
+
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Logger:        h.SubLogger("BWCH"),
 		ChainSource:   h.chainSourceActorRef,
-		FraudDetector: fn.None[actor.TellOnlyRef[batchwatcher.FraudDetectorMsg]](),
-		BatchSweeper: fn.Some[actor.TellOnlyRef[batchwatcher.BatchSweeperMsg]](
-			h.batchSweeperRouter,
-		),
+		FraudDetector: fraudDetector,
+		BatchSweeper:  batchSweeper,
 	}
 
 	h.batchWatcher = batchwatcher.NewActor(batchWatcherCfg)
@@ -506,15 +520,17 @@ func (h *E2EHarness) initActorSystem() {
 		ChainSourceActor:    h.chainSourceActorRef,
 		RoundStore:          h.roundStore,
 		VTXOStore:           h.vtxoStore,
-		VTXOLocker:          db.NewVTXOLockerDB(h.sqlStore, h.SubLogger("VTXOL")),
-		TimeoutActor:        h.mockTimeoutRef,
-		WalletController:    h.walletController,
-		FeeEstimator:        feeEstimator,
-		WalletAccount:       "",
-		ConfTarget:          defaultConfirmationTarget,
-		MinConfs:            1,
-		ConfirmationTarget:  uint32(defaultConfirmationTarget),
-		BatchWatcher:        fn.Some(h.batchWatcherRef),
+		VTXOLocker: db.NewVTXOLockerDB(
+			h.sqlStore, h.SubLogger("VTXOL"),
+		),
+		TimeoutActor:       h.mockTimeoutRef,
+		WalletController:   h.walletController,
+		FeeEstimator:       feeEstimator,
+		WalletAccount:      "",
+		ConfTarget:         defaultConfirmationTarget,
+		MinConfs:           1,
+		ConfirmationTarget: uint32(defaultConfirmationTarget),
+		BatchWatcher:       fn.Some(h.batchWatcherRef),
 	}
 
 	// Create rounds actor.
@@ -580,7 +596,9 @@ func (h *E2EHarness) getOperatorKeyFromLND() *keychain.KeyDescriptor {
 	keyDesc, err := h.serverLNDServices.WalletKit.DeriveNextKey(
 		h.ctx, int32(keychain.KeyFamilyMultiSig),
 	)
-	require.NoError(h.t, err, "failed to derive operator key from server LND")
+	require.NoError(
+		h.t, err, "failed to derive operator key from server LND",
+	)
 
 	return keyDesc
 }
@@ -649,7 +667,9 @@ func (h *E2EHarness) FundServerWallet(amount btcutil.Amount) {
 	addrResp, err := h.serverLNDServices.WalletKit.NextAddr(
 		h.ctx, "", walletrpc.AddressType_WITNESS_PUBKEY_HASH, false,
 	)
-	require.NoError(h.t, err, "failed to get wallet address from server LND")
+	require.NoError(
+		h.t, err, "failed to get wallet address from server LND",
+	)
 
 	// Fund the address via the faucet.
 	h.Harness.Faucet(addrResp.String(), amount)
@@ -739,9 +759,13 @@ func (h *E2EHarness) AssertBatchRegistered(
 
 		// Verify the expiry height.
 		expectedExpiry := confirmationHeight + h.terms.SweepDelay
-		require.Equal(h.t, expectedExpiry, stateResp.TreeState.ExpiryHeight,
-			"batch %s expiry height should be %d (confirm=%d + sweep=%d)",
-			batchID, expectedExpiry, confirmationHeight, h.terms.SweepDelay)
+		require.Equal(
+			h.t, expectedExpiry, stateResp.TreeState.ExpiryHeight,
+			"batch %s expiry height should be %d "+
+				"(confirm=%d + sweep=%d)",
+			batchID, expectedExpiry, confirmationHeight,
+			h.terms.SweepDelay,
+		)
 
 		h.t.Logf("Verified batch %s registered with expiry height %d",
 			batchID, stateResp.TreeState.ExpiryHeight)
@@ -751,7 +775,6 @@ func (h *E2EHarness) AssertBatchRegistered(
 // AssertBatchExpired verifies that a batch expiry notification was sent to the
 // mock BatchSweeper. The roundID parameter accepts any type based on uuid.UUID.
 func (h *E2EHarness) AssertBatchExpired(roundID uuid.UUID, outputIdx int) {
-
 	batchID := ComputeBatchID(roundID, outputIdx)
 	require.True(h.t, h.mockBatchSweeper.HasExpiryNotification(batchID),
 		"batch %s should have received expiry notification", batchID)
@@ -777,8 +800,11 @@ func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
 		if containsPhase(string(id), string(phase)) {
 			err := h.mockTimeout.TriggerTimeout(h.ctx, id)
 			if err != nil {
-				h.t.Logf("Warning: failed to trigger timeout %s: %v",
-					id, err)
+				h.t.Logf(
+					"Warning: failed to trigger timeout "+
+						"%s: %v",
+					id, err,
+				)
 			}
 
 			return
@@ -790,7 +816,8 @@ func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
 
 // TriggerAllTimeouts fires all pending timeouts.
 func (h *E2EHarness) TriggerAllTimeouts() {
-	h.mockTimeout.TriggerAll(h.ctx)
+	err := h.mockTimeout.TriggerAll(h.ctx)
+	require.NoError(h.t, err, "failed to trigger all pending timeouts")
 }
 
 // AssertTxInMempool verifies transaction was accepted into the mempool.

@@ -7,7 +7,7 @@
 ### Building and Testing
 - `make build` - Compile the project
 - `make tidy-module-check` - Verify module files are tidy
-- `make lint` - Run the linter (must pass before committing)
+- `make lint-changed` - Run the linter on changes vs base (must pass before committing)
 - `make fmt` - Format all Go source files
 - `make clean` - Remove build artifacts
 
@@ -273,7 +273,7 @@ See `docs/development_guidelines.md` for full dependency management details.
 5. **Do not use 4-space tabs** - Configure editor for 8-space tabs
 6. **Do not nest error handling** - Use early returns and check errors immediately
 7. **Do not batch actor messages without backpressure** - Follow quote coalescing patterns
-8. **Do not commit without running `make lint`** - Linter must pass
+8. **Do not commit without running `make lint-changed`** - Linter must pass
 9. **Do not write comments that restate code** - Comments explain WHY and HOW, not WHAT
 
 ## Additional Resources

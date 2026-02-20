@@ -34,21 +34,24 @@ const (
 	// oorExitDelay is the VTXO/Checkpoint CSV delay used for OOR systests.
 	oorExitDelay = uint32(10)
 
-	// oorConfirmDepth is the number of blocks we mine to make sure the funding
-	// txs are confirmed and available for package relay.
+	// oorConfirmDepth is the number of blocks we mine to make
+	// sure the funding txs are confirmed and available for
+	// package relay.
 	oorConfirmDepth = 6
 
-	// oorVTXOParentFeeSat is the fee we pay in the "VTXO creation" transaction
-	// that mints a spendable VTXO UTXO for tests.
+	// oorVTXOParentFeeSat is the fee we pay in the
+	// "VTXO creation" transaction that mints a spendable
+	// VTXO UTXO for tests.
 	oorVTXOParentFeeSat = int64(2_000)
 
-	// oorCheckpointFeeSat is the sat amount we pay in the checkpoint tx by
-	// adding a sponsor input + change output. This makes the checkpoint relayable
-	// under default minrelaytxfee policy.
+	// oorCheckpointFeeSat is the sat amount we pay in the
+	// checkpoint tx by adding a sponsor input + change output.
+	// This makes the checkpoint relayable under default
+	// minrelaytxfee policy.
 	oorCheckpointFeeSat = int64(5_000)
 
-	// oorCPFPPackageFeeSat is the sat amount we pay in the CPFP child to cover
-	// the fee-less Ark tx.
+	// oorCPFPPackageFeeSat is the sat amount we pay in the
+	// CPFP child to cover the fee-less Ark tx.
 	oorCPFPPackageFeeSat = int64(15_000)
 )
 
@@ -91,7 +94,9 @@ func (s *lndRPCSigner) SignOutputRaw(tx *wire.MsgTx,
 	}
 
 	if signDesc.Output == nil {
-		return nil, fmt.Errorf("sign descriptor output must be provided")
+		return nil, fmt.Errorf(
+			"sign descriptor output must be provided",
+		)
 	}
 
 	prevOutputs := make([]*wire.TxOut, len(tx.TxIn))
@@ -100,9 +105,10 @@ func (s *lndRPCSigner) SignOutputRaw(tx *wire.MsgTx,
 			signDesc.InputIndex)
 	}
 
-	// If a prev output fetcher is provided, use it to populate the full prev
-	// outputs slice. For taproot (SegWit v1) sighashes, the signature commits to
-	// all input prev outputs, so the remote signer must see the full vector.
+	// If a prev output fetcher is provided, use it to populate the full
+	// prev outputs slice. For taproot (SegWit v1) sighashes, the signature
+	// commits to all input prev outputs, so the remote signer must see the
+	// full vector.
 	if signDesc.PrevOutputFetcher != nil {
 		for i := range tx.TxIn {
 			op := tx.TxIn[i].PreviousOutPoint
@@ -118,9 +124,9 @@ func (s *lndRPCSigner) SignOutputRaw(tx *wire.MsgTx,
 	} else {
 		prevOutputs[signDesc.InputIndex] = signDesc.Output
 
-		// lndclient's RPC marshaller does not accept nil prev outputs. We fill
-		// missing outputs with empty placeholders for segwit v0 signing and
-		// single-input cases.
+		// lndclient's RPC marshaller does not accept nil prev outputs.
+		// We fill missing outputs with empty placeholders for segwit v0
+		// signing and single-input cases.
 		for i := range prevOutputs {
 			if prevOutputs[i] == nil {
 				prevOutputs[i] = &wire.TxOut{}
@@ -174,7 +180,9 @@ func (s *lndRPCSigner) ComputeInputScript(tx *wire.MsgTx,
 	}
 
 	if signDesc.Output == nil {
-		return nil, fmt.Errorf("sign descriptor output must be provided")
+		return nil, fmt.Errorf(
+			"sign descriptor output must be provided",
+		)
 	}
 
 	prevOutputs := make([]*wire.TxOut, len(tx.TxIn))
@@ -280,7 +288,9 @@ func (s *lndRPCSigner) MuSig2Sign(_ input.MuSig2SessionID, _ [32]byte,
 func (s *lndRPCSigner) MuSig2CombineSig(_ input.MuSig2SessionID,
 	_ []*musig2.PartialSignature) (*schnorr.Signature, bool, error) {
 
-	return nil, false, fmt.Errorf("musig2 not implemented in systest signer")
+	return nil, false, fmt.Errorf(
+		"musig2 not implemented in systest signer",
+	)
 }
 
 // MuSig2Cleanup is not required by the current OOR system tests.
@@ -329,7 +339,9 @@ func oorFindOutpoint(tx *wire.MsgTx, txid chainhash.Hash,
 	}
 
 	if len(pkScript) == 0 {
-		return wire.OutPoint{}, nil, fmt.Errorf("pkScript must be provided")
+		return wire.OutPoint{}, nil, fmt.Errorf(
+			"pkScript must be provided",
+		)
 	}
 
 	for i, out := range tx.TxOut {
