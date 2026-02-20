@@ -62,13 +62,19 @@ func (s *AwaitingInputsLockState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
 	_ = ctx
-	_ = env
+
+	if env == nil {
+		return nil, fmt.Errorf("missing environment")
+	}
 
 	switch evt := event.(type) {
 	case *InputsLockSucceededEvent:
 		validateReq := &ValidateSubmitReq{
 			ArkPSBT:         s.ArkPSBT,
 			CheckpointPSBTs: s.CheckpointPSBTs,
+			VTXOSigningDescriptors: s.
+				VTXOSigningDescriptors,
+			CheckpointPolicy: env.CheckpointPolicy,
 		}
 
 		return &StateTransition{
@@ -220,7 +226,8 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 
 		finalCheckpoints := evt.FinalCheckpointPSBTs
 		validateFinalizeReq := &ValidateFinalizeReq{
-			ArkPSBT: s.ArkPSBT,
+			ArkPSBT:                 s.ArkPSBT,
+			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
 		}
 		validateFinalizeReq.FinalCheckpointPSBTs = finalCheckpoints
 
@@ -269,8 +276,9 @@ func (s *AwaitingFinalizeValidationState) ProcessEvent(ctx context.Context,
 		}
 
 		validateFinalizeReq := &ValidateFinalizeReq{
-			ArkPSBT:              s.ArkPSBT,
-			FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+			ArkPSBT:                 s.ArkPSBT,
+			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
+			FinalCheckpointPSBTs:    s.FinalCheckpointPSBTs,
 		}
 
 		return &StateTransition{

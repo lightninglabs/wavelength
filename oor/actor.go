@@ -284,9 +284,9 @@ func (b *coordinatorBehavior) handleSubmit(ctx context.Context,
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
-	// Run structural submit validation before we touch lock state.
-	// Stateful/ownership checks remain at the outbox boundary.
-	validated, err := oorlib.ValidateSubmitPackage(
+	// Run submit validation before we touch lock state. Stateful/ownership
+	// checks remain at the outbox boundary.
+	validated, err := oorlib.ValidateSubmitPackageSigned(
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
@@ -358,7 +358,7 @@ func (b *coordinatorBehavior) handleFinalize(ctx context.Context,
 	session, ok := b.sessions[msg.SessionID]
 	b.sessionsMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
+		return b.handleMissingFinalizeSession(ctx, msg)
 	}
 
 	_, err := b.askAndDrive(ctx, msg.SessionID, session.FSM,
@@ -417,6 +417,70 @@ func (b *coordinatorBehavior) handleFinalize(ctx context.Context,
 	}
 }
 
+// handleMissingFinalizeSession handles finalize requests for sessions that are
+// no longer materialized in memory.
+//
+// This path supports idempotent finalize retries after terminal in-memory
+// cleanup by consulting the durable session store.
+func (b *coordinatorBehavior) handleMissingFinalizeSession(
+	ctx context.Context, msg *finalizeDurableMessage) (ActorResp, error) {
+
+	if b.cfg.SessionStore == nil {
+		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
+	}
+
+	state, found, err := b.cfg.SessionStore.GetSessionState(
+		ctx, msg.SessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
+	}
+
+	switch state {
+	case oorStateFinalized:
+		pkg, err := b.cfg.SessionStore.LoadFinalizedPackage(
+			ctx, msg.SessionID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		err = requireFinalCheckpointPackageMatch(
+			pkg.FinalCheckpointPSBTs, msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &FinalizeOORResponse{
+			SessionID: msg.SessionID,
+		}, nil
+
+	case oorStateAwaitingNotify:
+		pkg, err := b.cfg.SessionStore.LoadFinalizedPackage(
+			ctx, msg.SessionID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		err = requireFinalCheckpointPackageMatch(
+			pkg.FinalCheckpointPSBTs, msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return nil, fmt.Errorf("notify recipients pending")
+
+	default:
+		return nil, fmt.Errorf("unknown session: %s", msg.SessionID)
+	}
+}
+
 // getOrCreateSessionFSM returns an existing session FSM or creates one in the
 // idle state.
 func (b *coordinatorBehavior) getOrCreateSessionFSM(ctx context.Context,
@@ -449,7 +513,8 @@ func (b *coordinatorBehavior) createSessionFSM(ctx context.Context,
 	}
 
 	env := &Environment{
-		SessionID: sessionID,
+		SessionID:        sessionID,
+		CheckpointPolicy: b.cfg.CheckpointPolicy,
 	}
 
 	fsmLogger := b.cfg.Logger.WithPrefix(sessionID.LogPrefix())

@@ -252,8 +252,8 @@ type VTXOStore interface {
 		outpoint wire.OutPoint) (*ForfeitInfo, error)
 
 	// LockVTXO locks VTXOs for forfeit in the specified round. This exists
-	// as a legacy fallback while rounds migrates fully to the shared
-	// VTXOLocker interface.
+	// as a temporary compatibility path while rounds migrates fully to the
+	// shared VTXOLocker interface.
 	LockVTXO(ctx context.Context, roundID RoundID,
 		outpoints ...wire.OutPoint) error
 

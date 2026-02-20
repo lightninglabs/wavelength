@@ -139,6 +139,111 @@ func TestUpsertCoSignedIdempotent(t *testing.T) {
 	require.Len(t, sessions, 1)
 }
 
+// TestUpsertCoSignedRejectsAwaitingNotifyRegression verifies that a session
+// already advanced to awaiting_notify cannot be regressed to co-signed.
+func TestUpsertCoSignedRejectsAwaitingNotifyRegression(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 12)
+	checkpoint := makeTestPSBT(t, 13)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 14)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	err = store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.ErrorContains(t, err, "cannot upsert co-signed session")
+	require.ErrorContains(t, err, string(oorStateAwaitingNotify))
+}
+
+// TestUpsertCoSignedRejectsFinalizedRegression verifies that a finalized
+// session cannot be regressed to co-signed.
+func TestUpsertCoSignedRejectsFinalizedRegression(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 15)
+	checkpoint := makeTestPSBT(t, 16)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	finalCheckpoint := makeTestPSBT(t, 17)
+	err = store.ApplyFinalize(
+		ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+	)
+	require.NoError(t, err)
+
+	err = store.MarkNotified(ctx, sessionID)
+	require.NoError(t, err)
+
+	err = store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.ErrorContains(t, err, "cannot upsert co-signed session")
+	require.ErrorContains(t, err, string(oorStateFinalized))
+}
+
+// TestUpsertCoSignedRejectsArkPSBTMismatch verifies that upsert retries for an
+// existing co-signed session must use the same Ark PSBT bytes.
+func TestUpsertCoSignedRejectsArkPSBTMismatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	store, _ := newTestSessionStore(t)
+
+	arkPSBT := makeTestPSBT(t, 18)
+	checkpoint := makeTestPSBT(t, 19)
+	input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+	sessionID := makeTestSessionID(arkPSBT)
+
+	err := store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.NoError(t, err)
+
+	mismatchArk := makeTestPSBT(t, 20)
+	err = store.UpsertCoSigned(
+		ctx, sessionID, []wire.OutPoint{input}, mismatchArk,
+		[]*psbt.Packet{checkpoint},
+		time.Now().Add(DefaultSessionExpiry),
+	)
+	require.ErrorContains(t, err, "co-signed ark psbt mismatch")
+}
+
 // TestApplyFinalizeFromCoSigned verifies the cosigned -> awaiting_notify
 // transition.
 func TestApplyFinalizeFromCoSigned(t *testing.T) {

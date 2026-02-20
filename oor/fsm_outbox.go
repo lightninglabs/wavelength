@@ -3,6 +3,7 @@ package oor
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
 
 // OutboxEvent is a sealed interface for all side-effect requests emitted by the
@@ -79,6 +80,10 @@ type ValidateSubmitReq struct {
 	// VTXOSigningDescriptors carry authoritative per-input owner and policy
 	// metadata used for server-side checkpoint policy validation.
 	VTXOSigningDescriptors []VTXOSigningDescriptor
+
+	// CheckpointPolicy is the operator policy used to derive checkpoint
+	// output scripts.
+	CheckpointPolicy scripts.CheckpointPolicy
 }
 
 // OutboxType returns the type of this outbox event.
@@ -127,6 +132,10 @@ func (e *CoSignReq) outboxSealed() {}
 type ValidateFinalizeReq struct {
 	// ArkPSBT is the canonical Ark tx PSBT for this session.
 	ArkPSBT *psbt.Packet
+
+	// CoSignedCheckpointPSBTs are checkpoint PSBTs at point-of-no-return
+	// (operator co-signed, before client finalize signatures).
+	CoSignedCheckpointPSBTs []*psbt.Packet
 
 	// FinalCheckpointPSBTs are checkpoint txs fully signed by the client.
 	FinalCheckpointPSBTs []*psbt.Packet

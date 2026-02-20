@@ -10,6 +10,7 @@ ON CONFLICT (session_id) DO UPDATE SET
     updated_at = excluded.updated_at,
     expires_at = excluded.expires_at,
     finalized_at = excluded.finalized_at
+WHERE oor_sessions.state = 'cosigned'
 RETURNING id;
 
 -- name: GetOORSession :one

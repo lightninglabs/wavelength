@@ -38,6 +38,13 @@ type SessionStore interface {
 	// finalized. If already finalized, returns success (idempotent).
 	MarkNotified(ctx context.Context, sessionID SessionID) error
 
+	// GetSessionState returns the persisted lifecycle state for sessionID.
+	//
+	// found=false indicates the session does not exist.
+	GetSessionState(ctx context.Context, sessionID SessionID) (
+		sessionState, bool, error,
+	)
+
 	// LoadActiveSessions returns durable snapshots for sessions that
 	// require processing after restart (state = cosigned or
 	// awaiting_notify). This is the DB-authoritative restart source.

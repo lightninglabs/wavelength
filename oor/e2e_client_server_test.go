@@ -1,18 +1,22 @@
 package oor_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo/db"
@@ -63,9 +67,11 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 	}
 }
 
-// finalizeCheckpointPSBTsForTest clones co-signed checkpoint PSBTs and
-// marks them finalized for finalize-path tests.
+// finalizeCheckpointPSBTsForTest clones co-signed checkpoints and
+// attaches client signatures so the finalize package is spendable and
+// deterministic.
 func finalizeCheckpointPSBTsForTest(t *testing.T,
+	clientSigner input.Signer, inputs []clientoor.TransferInput,
 	coSigned []*psbt.Packet) []*psbt.Packet {
 
 	t.Helper()
@@ -75,13 +81,17 @@ func finalizeCheckpointPSBTsForTest(t *testing.T,
 		require.NotNil(t, pkt)
 		require.NotNil(t, pkt.UnsignedTx)
 
-		finalPkt, err := psbt.NewFromUnsignedTx(pkt.UnsignedTx)
+		raw, err := psbtutil.Serialize(pkt)
+		require.NoError(t, err)
+
+		finalPkt, err := psbtutil.Parse(raw)
 		require.NoError(t, err)
 		require.NotEmpty(t, finalPkt.Inputs)
-
-		finalPkt.Inputs[0].FinalScriptWitness = []byte{0x01}
 		finalized = append(finalized, finalPkt)
 	}
+
+	err := clientoor.SignCheckpointPSBTs(clientSigner, inputs, finalized)
+	require.NoError(t, err)
 
 	return finalized
 }
@@ -103,9 +113,108 @@ func startE2EServerActor(t *testing.T,
 	return server
 }
 
-// inProcessClientToServerOutbox is a test-only adaptor that connects the
-// client OOR FSM outbox messages to the server OOR coordinator actor,
-// without RPC.
+// attachArkLeafScriptsForTest attaches the owner leaf spend path to
+// each Ark input so submit package validation can reconstruct a
+// spendable witness.
+//
+// The Ark inputs are keyed by checkpoint txid while transfer inputs are
+// keyed by spent VTXO outpoint. This helper bridges them through the
+// checkpoint mapping and uses the embedded tap tree metadata on the Ark
+// PSBT inputs to derive the concrete tapleaf path.
+func attachArkLeafScriptsForTest(t *testing.T, ark *psbt.Packet,
+	transferInputs []clientoor.TransferInput,
+	checkpoints []*psbt.Packet) {
+
+	t.Helper()
+
+	require.NotNil(t, ark)
+	require.NotNil(t, ark.UnsignedTx)
+	require.NotEmpty(t, transferInputs)
+	require.NotEmpty(t, checkpoints)
+	require.Len(t, ark.Inputs, len(ark.UnsignedTx.TxIn))
+
+	inputBySpentOutpoint := make(
+		map[wire.OutPoint]clientoor.TransferInput,
+		len(transferInputs),
+	)
+	for i := range transferInputs {
+		in := transferInputs[i]
+		require.NoError(t, in.Validate())
+		inputBySpentOutpoint[in.VTXO.Outpoint] = in
+	}
+
+	leafByCheckpointTxid := make(
+		map[chainhash.Hash][]byte, len(checkpoints),
+	)
+	for i := range checkpoints {
+		checkpoint := checkpoints[i]
+		require.NotNil(t, checkpoint)
+		require.NotNil(t, checkpoint.UnsignedTx)
+		require.Len(t, checkpoint.UnsignedTx.TxIn, 1)
+
+		spentOutpoint := checkpoint.UnsignedTx.
+			TxIn[0].PreviousOutPoint
+
+		transferInput, ok := inputBySpentOutpoint[spentOutpoint]
+		require.True(
+			t, ok,
+			"missing transfer input for spent outpoint",
+		)
+
+		checkpointTxid := checkpoint.UnsignedTx.TxHash()
+		leafByCheckpointTxid[checkpointTxid] = append(
+			[]byte(nil),
+			transferInput.OwnerLeafScript...,
+		)
+	}
+
+	for i := range ark.Inputs {
+		prevOut := ark.UnsignedTx.TxIn[i].PreviousOutPoint
+		ownerLeaf, ok := leafByCheckpointTxid[prevOut.Hash]
+		require.True(
+			t, ok, "missing owner leaf for ark input",
+		)
+
+		tapTreeEncoded, err := oortx.GetTapTreePSBTInput(
+			ark.Inputs[i],
+		)
+		require.NoError(t, err)
+
+		leaf, err := oortx.BuildTaprootTapLeafScript(
+			tapTreeEncoded, ownerLeaf,
+		)
+		require.NoError(t, err)
+
+		ark.Inputs[i].TaprootLeafScript =
+			[]*psbt.TaprootTapLeafScript{leaf}
+	}
+}
+
+// clonePSBTSliceForTest deep-copies a PSBT slice via serialize/parse
+// so tests do not share mutable packet pointers across actor
+// boundaries.
+func clonePSBTSliceForTest(t *testing.T,
+	packets []*psbt.Packet) []*psbt.Packet {
+
+	t.Helper()
+
+	clones := make([]*psbt.Packet, 0, len(packets))
+	for i := range packets {
+		raw, err := psbtutil.Serialize(packets[i])
+		require.NoError(t, err)
+
+		clone, err := psbtutil.Parse(raw)
+		require.NoError(t, err)
+
+		clones = append(clones, clone)
+	}
+
+	return clones
+}
+
+// inProcessClientToServerOutbox is a test-only adaptor that connects
+// the client OOR FSM outbox messages to the server OOR coordinator
+// actor, without RPC.
 type inProcessClientToServerOutbox struct {
 	t *testing.T
 
@@ -114,7 +223,8 @@ type inProcessClientToServerOutbox struct {
 
 	lastFinalizeArkPSBT *psbt.Packet
 
-	signDescs []serveroor.VTXOSigningDescriptor
+	signDescs    []serveroor.VTXOSigningDescriptor
+	clientSigner input.Signer
 }
 
 // Handle processes a client outbox request and returns follow-up
@@ -127,6 +237,11 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 
 	switch msg := outbox.(type) {
 	case *clientoor.SendSubmitPackageRequest:
+		attachArkLeafScriptsForTest(
+			h.t, msg.ArkPSBT, msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+
 		resp := h.server.Receive(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
@@ -141,7 +256,9 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 		require.True(h.t, ok)
 		h.sessionID = serverMsg.SessionID
 
-		coSigned := serverMsg.CoSignedCheckpointPSBTs
+		coSigned := clonePSBTSliceForTest(
+			h.t, serverMsg.CoSignedCheckpointPSBTs,
+		)
 
 		return []clientoor.Event{
 			&clientoor.SubmitAcceptedEvent{
@@ -155,7 +272,8 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 
 	case *clientoor.RequestCheckpointSignatures:
 		finalCheckpointPSBTs := finalizeCheckpointPSBTsForTest(
-			h.t, msg.CoSignedCheckpointPSBTs,
+			h.t, h.clientSigner, msg.TransferInputs,
+			msg.CoSignedCheckpointPSBTs,
 		)
 
 		return []clientoor.Event{
@@ -324,7 +442,8 @@ type pausedFinalizeAdaptor struct {
 
 	finalCheckpointPSBTs []*psbt.Packet
 
-	signDescs []serveroor.VTXOSigningDescriptor
+	signDescs    []serveroor.VTXOSigningDescriptor
+	clientSigner input.Signer
 }
 
 // Handle processes the outbox request and returns follow-up events.
@@ -336,6 +455,11 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 
 	switch msg := outbox.(type) {
 	case *clientoor.SendSubmitPackageRequest:
+		attachArkLeafScriptsForTest(
+			h.t, msg.ArkPSBT, msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+
 		resp := h.server.Receive(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
@@ -353,7 +477,9 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 			serverMsg.SessionID,
 		)
 
-		coSigned := serverMsg.CoSignedCheckpointPSBTs
+		coSigned := clonePSBTSliceForTest(
+			h.t, serverMsg.CoSignedCheckpointPSBTs,
+		)
 
 		return []clientoor.Event{
 			&clientoor.SubmitAcceptedEvent{
@@ -365,7 +491,8 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 
 	case *clientoor.RequestCheckpointSignatures:
 		finalCheckpointPSBTs := finalizeCheckpointPSBTsForTest(
-			h.t, msg.CoSignedCheckpointPSBTs,
+			h.t, h.clientSigner, msg.TransferInputs,
+			msg.CoSignedCheckpointPSBTs,
 		)
 
 		return []clientoor.Event{
@@ -476,6 +603,9 @@ func TestOORClientServerE2E(t *testing.T) {
 
 	senderKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{senderKey}, nil,
+	)
 
 	senderInputOutpoint := wire.OutPoint{
 		Hash:  [32]byte{0x01},
@@ -518,8 +648,9 @@ func TestOORClientServerE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	adaptor := &inProcessClientToServerOutbox{
-		t:      t,
-		server: server,
+		t:            t,
+		server:       server,
+		clientSigner: clientSigner,
 		signDescs: []serveroor.VTXOSigningDescriptor{
 			{
 				Outpoint:  senderInputOutpoint,
@@ -655,6 +786,9 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 
 	senderKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{senderKey}, nil,
+	)
 
 	senderInputOutpoint := wire.OutPoint{
 		Hash:  [32]byte{0x02},
@@ -692,6 +826,7 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 		t:             t,
 		server:        server1,
 		pauseFinalize: true,
+		clientSigner:  clientSigner,
 		signDescs: []serveroor.VTXOSigningDescriptor{
 			{
 				Outpoint:  senderInputOutpoint,
@@ -802,4 +937,186 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	).(*clientoor.GetStateResponse)
 	require.True(t, ok)
 	require.IsType(t, &clientoor.Completed{}, stateMsg.State)
+}
+
+// TestOORServerRejectsTamperedFinalizeSignature ensures finalize fails
+// if the client tampers with checkpoint signature material after
+// co-signing.
+func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	sqlStore := db.NewTestDB(t)
+	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
+		sqlStore, clock.NewDefaultClock(), btclog.Disabled,
+	)
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	driver := serveroor.NewDriver(serveroor.DriverCfg{
+		OperatorSigner: operatorSigner,
+		OperatorKey: keychain.KeyDescriptor{
+			PubKey: operatorKey.PubKey(),
+		},
+	})
+
+	server := startE2EServerActor(t, serveroor.ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
+	})
+
+	inputValue := btcutil.Amount(10000)
+	exitDelay := uint32(10)
+
+	senderKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{senderKey}, nil,
+	)
+
+	senderOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x03},
+		Index: 0,
+	}
+
+	inputs := []clientoor.TransferInput{
+		newClientTransferInput(
+			t, senderKey, policy.OperatorKey, exitDelay,
+			senderOutpoint, inputValue,
+		),
+	}
+
+	recipientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	recipientTapKey, err := scripts.VTXOTapKey(
+		recipientKey.PubKey(), policy.OperatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := txscript.PayToTaprootScript(
+		recipientTapKey,
+	)
+	require.NoError(t, err)
+
+	checkpointRes, err := oortx.BuildCheckpointPSBT(
+		policy, oortx.CheckpointInput{
+			SpentVTXO: oortx.SpentVTXORef{
+				Outpoint: senderOutpoint,
+				Output: &wire.TxOut{
+					Value:    int64(inputValue),
+					PkScript: inputs[0].VTXO.PkScript,
+				},
+			},
+			OwnerLeafScript: inputs[0].OwnerLeafScript,
+		},
+	)
+	require.NoError(t, err)
+
+	arkPSBT, err := oortx.BuildArkPSBT(
+		[]oortx.CheckpointOutput{{
+			Txid: checkpointRes.PSBT.
+				UnsignedTx.TxHash(),
+			Output: checkpointRes.PSBT.
+				UnsignedTx.TxOut[0],
+			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		}}, []oortx.RecipientOutput{{
+			PkScript: recipientPkScript,
+			Value:    inputValue,
+		}},
+	)
+	require.NoError(t, err)
+
+	leaf, err := oortx.BuildTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded,
+		inputs[0].OwnerLeafScript,
+	)
+	require.NoError(t, err)
+	arkPSBT.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+
+	submitResp := server.Receive(
+		ctx, &serveroor.SubmitOORRequest{
+			ArkPSBT: arkPSBT,
+			CheckpointPSBTs: []*psbt.Packet{
+				checkpointRes.PSBT,
+			},
+			VTXOSigningDescriptors: []serveroor.
+				VTXOSigningDescriptor{{
+				Outpoint:  senderOutpoint,
+				OwnerKey:  senderKey.PubKey(),
+				ExitDelay: exitDelay,
+			}},
+		},
+	)
+	require.True(t, submitResp.IsOk(), submitResp.Err())
+
+	submitMsg, ok := submitResp.UnwrapOr(
+		nil,
+	).(*serveroor.SubmitOORResponse)
+	require.True(t, ok)
+
+	finalized := finalizeCheckpointPSBTsForTest(
+		t, clientSigner, inputs, clonePSBTSliceForTest(
+			t, submitMsg.CoSignedCheckpointPSBTs,
+		),
+	)
+	tampered := clonePSBTSliceForTest(t, finalized)
+	require.NotEmpty(t, tampered)
+	require.NotEmpty(t, tampered[0].Inputs)
+	require.NotEmpty(
+		t, tampered[0].Inputs[0].TaprootScriptSpendSig,
+	)
+
+	operatorXOnly := schnorr.SerializePubKey(
+		policy.OperatorKey,
+	)
+
+	var tamperedOwner bool
+	for i := range tampered[0].Inputs[0].TaprootScriptSpendSig {
+		sigRec := tampered[0].Inputs[0].
+			TaprootScriptSpendSig[i]
+
+		if sigRec == nil {
+			continue
+		}
+
+		// Tamper the non-operator signature while preserving
+		// operator signature bytes as sent in
+		// submit-accepted.
+		if bytes.Equal(sigRec.XOnlyPubKey, operatorXOnly) {
+			continue
+		}
+
+		require.NotEmpty(t, sigRec.Signature)
+		sigRec.Signature[0] ^= 0x01
+		tamperedOwner = true
+
+		break
+	}
+	require.True(t, tamperedOwner)
+
+	finalizeResp := server.Receive(
+		ctx, &serveroor.FinalizeOORRequest{
+			SessionID:            submitMsg.SessionID,
+			FinalCheckpointPSBTs: tampered,
+		},
+	)
+	require.True(t, finalizeResp.IsErr())
+	require.ErrorContains(
+		t, finalizeResp.Err(), "owner signature invalid",
+	)
 }
