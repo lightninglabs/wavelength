@@ -47,6 +47,21 @@ type ServerMessage interface {
 	ToProto() proto.Message
 }
 
+// InboundServerMessage is implemented by actor messages that arrive from the
+// server via the mailbox ingress loop. FromProto mirrors the ToProto method
+// on ServerMessage, completing the bidirectional proto<->actor message
+// conversion pair.
+//
+// Callers that implement this interface on their actor message types can use
+// the NewEventRoute helper to avoid writing explicit Adapt functions.
+type InboundServerMessage interface {
+	// FromProto populates the receiver from a server-pushed proto message.
+	// It is called by the EventRouter dispatch closure after the envelope
+	// body has been unmarshaled into the expected proto type. Return an
+	// error to reject events whose proto fields cannot be converted.
+	FromProto(proto.Message) error
+}
+
 // rawServerMessage wraps a protobuf Any for reconstructing a ServerMessage
 // after TLV deserialization. The original concrete type is recovered using
 // the global protobuf type registry via anypb.UnmarshalNew.
