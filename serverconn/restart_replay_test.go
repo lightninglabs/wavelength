@@ -108,13 +108,9 @@ func TestEgress_RestartReplayPreservesStableIDs(t *testing.T) {
 	edge := newFailFirstSendEdge(mb)
 	store := newMemCheckpointStore()
 
-	cfg := DefaultConnectorConfig()
+	cfg := newTestConnectorConfig(mb, store)
 	cfg.Edge = edge
-	cfg.Store = store
 	cfg.Codec = NewServerConnCodec()
-	cfg.LocalMailboxID = "client-1"
-	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
 
 	// First actor instance fails once and nacks the message for retry.
 	durable1 := newDurableConnectorForTest(cfg, 500*time.Millisecond)

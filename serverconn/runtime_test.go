@@ -55,12 +55,7 @@ func TestNewRuntime_DefaultCodec(t *testing.T) {
 	t.Parallel()
 
 	mb := newInMemoryMailbox()
-	cfg := DefaultConnectorConfig()
-	cfg.Edge = &fakeMailboxServiceClient{mb: mb}
-	cfg.Store = newMemCheckpointStore()
-	cfg.LocalMailboxID = "client-1"
-	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
 	cfg.Codec = nil
 
 	runtime, err := NewRuntime(cfg)
@@ -81,13 +76,7 @@ func TestRuntime_StartStop(t *testing.T) {
 	t.Parallel()
 
 	mb := newInMemoryMailbox()
-
-	cfg := DefaultConnectorConfig()
-	cfg.Edge = &fakeMailboxServiceClient{mb: mb}
-	cfg.Store = newMemCheckpointStore()
-	cfg.LocalMailboxID = "client-1"
-	cfg.RemoteMailboxID = "server-1"
-	cfg.ProtocolVersion = 1
+	cfg := newTestConnectorConfig(mb, newMemCheckpointStore())
 	cfg.PullWaitTimeout = 25 * time.Millisecond
 
 	runtime, err := NewRuntime(cfg)
