@@ -179,6 +179,15 @@ func (f *UnaryFacade) AwaitRPC(ctx context.Context,
 		)
 	}
 
+	// Check for a server-side gRPC status error before inspecting
+	// the body. This covers servers that set error headers with or
+	// without a populated body field.
+	if rpcErr := mailboxrpc.DecodeErrorHeaders(
+		env.Headers,
+	); rpcErr != nil {
+		return rpcErr
+	}
+
 	if env.Body == nil {
 		return fmt.Errorf("response envelope has nil body")
 	}
