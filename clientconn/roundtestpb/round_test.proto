@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package roundtest.v1;
+
+option go_package = "github.com/lightninglabs/darepo/clientconn/roundtestpb;roundtestpb";
+
+// RoundNotifyService is a simple server-to-client notification service used
+// to exercise the clientconn mailbox connector in e2e tests.
+// NotifyRoundStarted and NotifyBatchReady are unary RPCs sent from the server
+// to the client as KIND_REQUEST/KIND_RESPONSE envelope pairs via the per-client
+// UnaryFacade.
+service RoundNotifyService {
+    // NotifyRoundStarted tells a client that a new round has begun.
+    rpc NotifyRoundStarted (RoundStartedNotification) returns (RoundStartedAck);
+
+    // NotifyBatchReady tells a client that a batch is ready for signing.
+    rpc NotifyBatchReady (BatchReadyNotification) returns (BatchReadyAck);
+}
+
+// RoundStartedNotification is the request message for NotifyRoundStarted.
+message RoundStartedNotification {
+    // round_id identifies the started round.
+    string round_id = 1;
+}
+
+// RoundStartedAck acknowledges that the client received the notification.
+message RoundStartedAck {
+}
+
+// BatchReadyNotification is the request message for NotifyBatchReady.
+message BatchReadyNotification {
+    // round_id identifies the round the batch belongs to.
+    string round_id = 1;
+
+    // batch_data is the raw batch payload for the client to process.
+    bytes batch_data = 2;
+}
+
+// BatchReadyAck acknowledges that the client received the batch.
+message BatchReadyAck {
+}
+
+// RoundStartedEvent is a server-to-client push notification sent as a
+// KIND_EVENT envelope when the server starts a new round. Clients receive
+// this via the EventRouter dispatcher.
+message RoundStartedEvent {
+    // round_id uniquely identifies the started round.
+    string round_id = 1;
+}
+
+// ClientJoinedEvent is a client-to-server fire-and-forget event sent as a
+// KIND_EVENT envelope. The client dispatches it through the client-side
+// serverconn durable actor mailbox; no response is expected.
+message ClientJoinedEvent {
+    // client_id identifies the client that joined.
+    string client_id = 1;
+
+    // round_id identifies the round the client is joining.
+    string round_id = 2;
+}
