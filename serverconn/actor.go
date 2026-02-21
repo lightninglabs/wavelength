@@ -3,10 +3,39 @@ package serverconn
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+)
+
+// TLV type constants for server connection messages. These are stable
+// identifiers used for message serialization and dispatch within the durable
+// actor mailbox.
+const (
+	// SendClientEventRequestMsgType is the TLV type for outbound FSM
+	// events from the round actor to the server.
+	SendClientEventRequestMsgType tlv.Type = 2000
+
+	// SendRPCRequestMsgType is the TLV type for outbound unary RPC
+	// envelopes from the unary facade.
+	SendRPCRequestMsgType tlv.Type = 2001
+)
+
+// TLV record type aliases for RecordT-style message field serialization.
+type (
+	protoPayloadRecordTLV = tlv.TlvType1
+	envelopeRecordTLV     = tlv.TlvType2
+	msgIDRecordTLV        = tlv.TlvType3
+	idempotencyRecordTLV  = tlv.TlvType4
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -18,11 +47,37 @@ type ServerMessage interface {
 	ToProto() proto.Message
 }
 
+// rawServerMessage wraps a protobuf Any for reconstructing a ServerMessage
+// after TLV deserialization. The original concrete type is recovered using
+// the global protobuf type registry via anypb.UnmarshalNew.
+type rawServerMessage struct {
+	anyMsg *anypb.Any
+}
+
+// ToProto reconstructs the original proto message from the stored Any
+// wrapper. Returns nil if the type cannot be resolved from the global
+// protobuf registry.
+func (m *rawServerMessage) ToProto() proto.Message {
+	msg, err := m.anyMsg.UnmarshalNew()
+	if err != nil {
+		log.ErrorS(context.Background(),
+			"Failed to unmarshal Any type from registry",
+			err,
+			slog.String("type_url",
+				m.anyMsg.GetTypeUrl()))
+
+		return nil
+	}
+
+	return msg
+}
+
 // ServerConnMsg is the sealed interface for messages that can be sent to the
 // ServerConnectionActor. These are typically FSM outbox messages from the
-// client that need to be relayed to the server.
+// client that need to be relayed to the server. The interface extends
+// TLVMessage for durable actor mailbox persistence.
 type ServerConnMsg interface {
-	actor.Message
+	actor.TLVMessage
 	serverConnMsgSealed()
 }
 
@@ -35,7 +90,7 @@ type ServerConnResp interface {
 
 // SendClientEventRequest wraps a client FSM outbox message and requests it be
 // sent to the server. The actor will convert it to the appropriate proto
-// message and send via gRPC.
+// message and send via the mailbox edge.
 type SendClientEventRequest struct {
 	actor.BaseMessage
 
@@ -43,52 +98,274 @@ type SendClientEventRequest struct {
 	// It must implement the ServerMessage interface which provides the
 	// ToProto() method for conversion to protobuf.
 	Message ServerMessage
+
+	// MsgID uniquely identifies this send attempt. When this request is
+	// durably persisted and later retried, the same MsgID is reused.
+	MsgID string
+
+	// IdempotencyKey identifies the semantic operation for remote dedupe.
+	// Retries of the same persisted request must reuse this key.
+	IdempotencyKey string
 }
 
+// MessageType returns a human-readable type name for logging.
 func (m *SendClientEventRequest) MessageType() string {
 	return "SendClientEventRequest"
 }
 
+// TLVType returns the unique TLV type identifier for this message.
+func (m *SendClientEventRequest) TLVType() tlv.Type {
+	return SendClientEventRequestMsgType
+}
+
+// Encode serializes the message to the provided writer. The ServerMessage is
+// converted to proto, wrapped in anypb.Any (preserving type information),
+// and stored via a WrappedProto TLV record.
+//
+// We use TLV here (rather than storing raw proto bytes) because the
+// DurableActor runtime requires all messages to satisfy the TLVMessage
+// interface (TLVType, Encode, Decode). The MessageCodec uses these methods
+// to serialize messages into the durable mailbox. WrappedProto handles the
+// proto↔bytes conversion inside the TLV record, keeping the codec contract
+// simple and uniform across message types.
+func (m *SendClientEventRequest) Encode(w io.Writer) error {
+	anyMsg, err := anypb.New(m.Message.ToProto())
+	if err != nil {
+		return fmt.Errorf("wrap proto in Any: %w", err)
+	}
+
+	// We still need the raw bytes for stable ID derivation, so marshal
+	// deterministically before constructing the TLV records.
+	anyBytes, err := (proto.MarshalOptions{
+		Deterministic: true,
+	}).Marshal(anyMsg)
+	if err != nil {
+		return fmt.Errorf("marshal Any: %w", err)
+	}
+
+	msgID := m.MsgID
+	if msgID == "" {
+		msgID = mailboxconn.StableEventMsgID(anyBytes)
+	}
+	msgIDBytes := []byte(msgID)
+
+	idempotencyKey := m.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = mailboxconn.
+			StableEventIdempotencyKey(anyBytes)
+	}
+	idempotencyBytes := []byte(idempotencyKey)
+
+	payload := tlv.NewRecordT[protoPayloadRecordTLV](
+		mailboxconn.WrappedProto[*anypb.Any]{Val: anyMsg},
+	)
+	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
+		msgIDBytes,
+	)
+	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
+		idempotencyBytes,
+	)
+
+	stream, err := tlv.NewStream(
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from the provided reader. The proto payload
+// is stored as a rawServerMessage that lazily unmarshals via the global
+// protobuf type registry.
+func (m *SendClientEventRequest) Decode(r io.Reader) error {
+	payload := tlv.ZeroRecordT[
+		protoPayloadRecordTLV,
+		mailboxconn.WrappedProto[*anypb.Any],
+	]()
+	payload.Val.Val = &anypb.Any{}
+
+	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
+	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
+
+	stream, err := tlv.NewStream(
+		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return err
+	}
+
+	m.Message = &rawServerMessage{anyMsg: payload.Val.Val}
+	m.MsgID = string(msgIDRec.Val)
+	m.IdempotencyKey = string(idemRec.Val)
+
+	return nil
+}
+
+// serverConnMsgSealed implements the ServerConnMsg interface seal.
 func (m *SendClientEventRequest) serverConnMsgSealed() {}
 
 // SendClientEventResponse acknowledges that the message was sent.
 type SendClientEventResponse struct {
 	actor.BaseMessage
 
+	// Success indicates whether the send operation succeeded.
 	Success bool
-	Error   string
+
+	// Error contains the error message if the send failed.
+	Error string
 }
 
+// MessageType returns a human-readable type name for logging.
 func (m *SendClientEventResponse) MessageType() string {
 	return "SendClientEventResponse"
 }
 
+// serverConnRespSealed implements the ServerConnResp interface seal.
 func (m *SendClientEventResponse) serverConnRespSealed() {}
 
-// ServerConnectionActor is a simple relay actor that accepts client FSM outbox
-// messages and sends them to the server via gRPC or other transport. This
-// decouples the client FSM from the transport layer.
+// SendRPCResponse acknowledges that an RPC envelope was sent.
+type SendRPCResponse struct {
+	actor.BaseMessage
+
+	// Success indicates whether the send operation succeeded.
+	Success bool
+
+	// Error contains the error message if the send failed.
+	Error string
+}
+
+// MessageType returns a human-readable type name for logging.
+func (m *SendRPCResponse) MessageType() string {
+	return "SendRPCResponse"
+}
+
+// serverConnRespSealed implements the ServerConnResp interface seal.
+func (m *SendRPCResponse) serverConnRespSealed() {}
+
+// SendRPCRequest wraps a pre-built outbound unary RPC envelope. The unary
+// facade constructs the envelope with all metadata (correlation ID,
+// idempotency key, service/method) and hands it to the connector for
+// transport via Edge.Send.
+type SendRPCRequest struct {
+	actor.BaseMessage
+
+	// Envelope is the pre-built mailbox envelope ready for sending.
+	Envelope *mailboxpb.Envelope
+}
+
+// MessageType returns a human-readable type name for logging.
+func (m *SendRPCRequest) MessageType() string {
+	return "SendRPCRequest"
+}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *SendRPCRequest) TLVType() tlv.Type {
+	return SendRPCRequestMsgType
+}
+
+// Encode serializes the message to the provided writer. The mailbox
+// envelope is stored via a WrappedProto TLV record.
+func (m *SendRPCRequest) Encode(w io.Writer) error {
+	envRec := tlv.NewRecordT[envelopeRecordTLV](
+		mailboxconn.WrappedProto[*mailboxpb.Envelope]{
+			Val: m.Envelope,
+		},
+	)
+
+	stream, err := tlv.NewStream(envRec.Record())
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *SendRPCRequest) Decode(r io.Reader) error {
+	envRec := tlv.ZeroRecordT[
+		envelopeRecordTLV,
+		mailboxconn.WrappedProto[*mailboxpb.Envelope],
+	]()
+	envRec.Val.Val = &mailboxpb.Envelope{}
+
+	stream, err := tlv.NewStream(envRec.Record())
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return err
+	}
+
+	m.Envelope = envRec.Val.Val
+
+	return nil
+}
+
+// serverConnMsgSealed implements the ServerConnMsg interface seal.
+func (m *SendRPCRequest) serverConnMsgSealed() {}
+
+// ServerConnectionActor is the unified connector boundary for all mailbox
+// traffic between the client and the remote server. It serves as both:
 //
-// The actor maintains a connection to the server and handles:
-//   - Converting FSM events to proto messages.
-//   - Sending messages over gRPC.
-//   - Handling connection failures and retries (TODO).
-//   - Notifying the client actor of server responses (TODO).
+//  1. An egress actor: receives outbound messages from the round actor (FSM
+//     events) and unary facade (RPC requests), then sends them via the
+//     mailbox edge.
+//
+//  2. An ingress loop: continuously pulls envelopes from the remote mailbox,
+//     dispatches them to local actors via ServiceKey-based routing, and
+//     manages the ack watermark state machine to ensure at-least-once
+//     delivery with crash safety.
+//
+// The actor is backed by a DurableActor for crash-safe egress. Outbound
+// messages from the round actor persist in the durable mailbox before
+// processing, ensuring no message loss on crashes.
 type ServerConnectionActor struct {
-	// TODO: Add gRPC client connection
-	// grpcClient pb.ArkServiceClient
+	// cfg holds all dependencies and tuning knobs for the connector.
+	cfg ConnectorConfig
 
-	// TODO: Add client actor reference for sending server responses back
-	// clientRef actor.TellOnlyRef[round.ServerMessageNotification]
+	// responseRegistry maps correlation IDs to unary RPC waiters and
+	// buffers early responses that arrive before a waiter is registered.
+	// This is in-memory only.
+	responseRegistry *mailboxconn.ResponseRegistry
+
+	// cancelCh delivers the ingress loop cancel function from
+	// StartIngress to StopIngress without a shared field, avoiding
+	// any data-race between the two methods.
+	cancelCh chan context.CancelFunc
+
+	// stopOnce ensures StopIngress cancels the ingress loop exactly
+	// once.
+	stopOnce sync.Once
+
+	// wg tracks the ingress loop goroutine for clean shutdown.
+	wg sync.WaitGroup
 }
 
-// NewServerConnectionActor creates a new server connection actor.
-// TODO: Add parameters for gRPC connection and client actor reference.
-func NewServerConnectionActor() *ServerConnectionActor {
-	return &ServerConnectionActor{}
+// NewServerConnectionActor creates a new server connection actor with the
+// given configuration. The actor must be started via its DurableActor wrapper
+// and the ingress loop must be started separately via StartIngress.
+func NewServerConnectionActor(
+	cfg ConnectorConfig,
+) *ServerConnectionActor {
+
+	return &ServerConnectionActor{
+		cfg: cfg,
+		responseRegistry: mailboxconn.NewResponseRegistry(
+			cfg.ResponseWaiterTTL,
+		),
+		cancelCh: make(chan context.CancelFunc, 1),
+	}
 }
 
-// Receive processes incoming messages.
+// Receive processes incoming egress messages. This is called by the durable
+// actor runtime when messages arrive in the actor's mailbox.
 func (a *ServerConnectionActor) Receive(ctx context.Context,
 	msg ServerConnMsg) fn.Result[ServerConnResp] {
 
@@ -96,40 +373,210 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 	case *SendClientEventRequest:
 		return a.handleSendClientEvent(ctx, m)
 
+	case *SendRPCRequest:
+		return a.handleSendRPCRequest(ctx, m)
+
 	default:
 		return fn.Err[ServerConnResp](fmt.Errorf(
-			"unknown message type: %T", msg))
+			"unknown message type: %T", msg,
+		))
 	}
 }
 
 // handleSendClientEvent converts a client FSM outbox message to a proto
-// message and sends it to the server.
+// message and sends it to the server via the mailbox edge.
 func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest) fn.Result[ServerConnResp] {
 
-	// Convert the message to proto using the ServerMessage interface.
 	protoMsg := req.Message.ToProto()
 
-	// TODO: Send the proto message via gRPC. For now, this is a no-op.
-	// In production, this would:
-	//  1. Type switch on protoMsg to determine gRPC method.
-	//  2. Call the appropriate grpcClient method.
-	//  3. Handle response and notify the client actor.
-	_ = protoMsg
+	body, err := anypb.New(protoMsg)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"wrap proto in Any: %w", err,
+		))
+	}
+
+	msgID := req.MsgID
+	idempotencyKey := req.IdempotencyKey
+
+	// Only marshal the body bytes when we need to derive stable IDs.
+	// On replay (both IDs already set from the persisted TLV), this
+	// marshal is skipped.
+	if msgID == "" || idempotencyKey == "" {
+		bodyBytes, marshalErr := (proto.MarshalOptions{
+			Deterministic: true,
+		}).Marshal(body)
+		if marshalErr != nil {
+			return fn.Err[ServerConnResp](fmt.Errorf(
+				"marshal event body: %w", marshalErr,
+			))
+		}
+
+		if msgID == "" {
+			msgID = mailboxconn.StableEventMsgID(bodyBytes)
+		}
+
+		if idempotencyKey == "" {
+			idempotencyKey = mailboxconn.
+				StableEventIdempotencyKey(bodyBytes)
+		}
+	}
+
+	envelope := &mailboxpb.Envelope{
+		ProtocolVersion: a.cfg.ProtocolVersion,
+		MsgId:           msgID,
+		IdempotencyKey:  idempotencyKey,
+		Sender:          a.cfg.LocalMailboxID,
+		Recipient:       a.cfg.RemoteMailboxID,
+		CreatedAtUnixMs: time.Now().UnixMilli(),
+		Body:            body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+			ReplyTo: a.cfg.LocalMailboxID,
+		},
+	}
+
+	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
+		Envelope: envelope,
+	})
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send client event: %w", err,
+		))
+	}
+
+	if resp.Status != nil && !resp.Status.Ok {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send client event: %s (%s)",
+			resp.Status.Message, resp.Status.Code,
+		))
+	}
 
 	return fn.Ok[ServerConnResp](&SendClientEventResponse{
 		Success: true,
 	})
 }
 
-// Start initializes the server connection.
-// TODO: Establish gRPC connection to server.
-func (a *ServerConnectionActor) Start() error {
+// handleSendRPCRequest sends a pre-built unary RPC envelope via the mailbox
+// edge.
+func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
+	req *SendRPCRequest) fn.Result[ServerConnResp] {
+
+	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
+		Envelope: req.Envelope,
+	})
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send rpc request: %w", err,
+		))
+	}
+
+	if resp.Status != nil && !resp.Status.Ok {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send rpc request: %s (%s)",
+			resp.Status.Message, resp.Status.Code,
+		))
+	}
+
+	return fn.Ok[ServerConnResp](&SendRPCResponse{
+		Success: true,
+	})
+}
+
+// RegisterWaiter adds a response waiter for the given correlation ID. The
+// returned Future completes when the ingress loop delivers a KIND_RESPONSE
+// with a matching correlation ID, or errors if the waiter expires or is
+// cancelled.
+func (a *ServerConnectionActor) RegisterWaiter(
+	id CorrelationID,
+) actor.Future[*mailboxpb.Envelope] {
+
+	return a.responseRegistry.RegisterWaiter(id)
+}
+
+// removeWaiter removes a previously registered waiter, preventing leaks on
+// cancellation or timeout.
+func (a *ServerConnectionActor) removeWaiter(id CorrelationID) {
+	a.responseRegistry.RemoveWaiter(id)
+}
+
+// deliverResponse looks up a waiter by correlation ID and delivers the
+// envelope. If no waiter exists yet, the response is buffered so a later
+// AwaitRPC call can still observe it.
+func (a *ServerConnectionActor) deliverResponse(
+	id CorrelationID, env *mailboxpb.Envelope,
+) bool {
+
+	return a.responseRegistry.DeliverResponse(id, env)
+}
+
+// StartIngress loads the ack checkpoint from the store and launches the
+// background ingress loop goroutine. If the checkpoint cannot be loaded,
+// an error is returned and the loop is not started — the caller should
+// treat this as a fatal startup failure.
+func (a *ServerConnectionActor) StartIngress(
+	ctx context.Context,
+) error {
+
+	state, err := a.loadCheckpoint(ctx)
+	if err != nil {
+		return fmt.Errorf("load ingress checkpoint: %w", err)
+	}
+
+	ingressCtx, cancel := context.WithCancel(ctx)
+
+	a.wg.Add(1)
+	a.cancelCh <- cancel
+	go a.ingressLoop(ingressCtx, state)
+
 	return nil
 }
 
-// Stop cleanly shuts down the server connection.
-// TODO: Close gRPC connection.
-func (a *ServerConnectionActor) Stop() error {
-	return nil
+// StopIngress cancels the ingress loop and waits for it to exit. Safe to
+// call multiple times — the cancel is executed at most once.
+func (a *ServerConnectionActor) StopIngress() {
+	a.stopOnce.Do(func() {
+		select {
+		case fn := <-a.cancelCh:
+			fn()
+
+		default:
+		}
+	})
+
+	a.wg.Wait()
 }
+
+// NewServerConnCodec creates a MessageCodec with all server connection
+// message types registered.
+func NewServerConnCodec() *actor.MessageCodec {
+	codec := actor.NewMessageCodec()
+
+	codec.MustRegister(
+		SendClientEventRequestMsgType,
+		func() actor.TLVMessage {
+			return &SendClientEventRequest{}
+		},
+	)
+
+	codec.MustRegister(
+		SendRPCRequestMsgType,
+		func() actor.TLVMessage {
+			return &SendRPCRequest{}
+		},
+	)
+
+	return codec
+}
+
+// Compile-time interface checks.
+var (
+	_ ServerConnMsg  = (*SendClientEventRequest)(nil)
+	_ ServerConnMsg  = (*SendRPCRequest)(nil)
+	_ ServerConnResp = (*SendClientEventResponse)(nil)
+	_ ServerConnResp = (*SendRPCResponse)(nil)
+
+	//nolint:ll
+	_ actor.ActorBehavior[ServerConnMsg, ServerConnResp] = (*ServerConnectionActor)(nil)
+)
