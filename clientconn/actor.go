@@ -431,14 +431,22 @@ type ClientConnectionActor struct {
 	// This is in-memory only.
 	responseRegistry *mailboxconn.ResponseRegistry
 
-	// cancelCh delivers the ingress loop cancel function from
-	// StartIngress to StopIngress without a shared field, avoiding any
-	// data-race between the two methods.
-	cancelCh chan context.CancelFunc
+	// ingressMu guards the ingress lifecycle state (cancelFn and
+	// started) to prevent races between StartIngress and
+	// StopIngress.
+	ingressMu sync.Mutex
 
-	// stopOnce ensures StopIngress cancels the ingress loop exactly
-	// once.
-	stopOnce sync.Once
+	// cancelFn cancels the ingress loop's background context. Nil
+	// when the ingress loop is not running.
+	cancelFn context.CancelFunc
+
+	// started tracks whether StartIngress has been called. Once
+	// true, subsequent calls to StartIngress return an error.
+	started bool
+
+	// stopped tracks whether StopIngress has been called. Once
+	// true, subsequent calls are no-ops (idempotent shutdown).
+	stopped bool
 
 	// wg tracks the ingress loop goroutine for clean shutdown.
 	wg sync.WaitGroup
@@ -457,7 +465,6 @@ func NewClientConnectionActor(
 		responseRegistry: mailboxconn.NewResponseRegistry(
 			cfg.ResponseWaiterTTL,
 		),
-		cancelCh: make(chan context.CancelFunc, 1),
 	}
 }
 
@@ -621,12 +628,27 @@ func (a *ClientConnectionActor) deliverResponse(
 // so that a request-scoped caller context does not inadvertently kill
 // the long-running loop.
 //
-// If the checkpoint cannot be loaded, an error is returned and the loop
-// is not started — the caller should treat this as a fatal startup
-// failure.
+// StartIngress must be called exactly once. Calling it a second time
+// returns an error. If the checkpoint cannot be loaded, an error is
+// returned and the loop is not started — the caller should treat this
+// as a fatal startup failure.
 func (a *ClientConnectionActor) StartIngress(
 	ctx context.Context,
 ) error {
+
+	a.ingressMu.Lock()
+	if a.started {
+		a.ingressMu.Unlock()
+
+		return fmt.Errorf("ingress already started")
+	}
+	if a.stopped {
+		a.ingressMu.Unlock()
+
+		return fmt.Errorf("ingress already stopped")
+	}
+	a.started = true
+	a.ingressMu.Unlock()
 
 	state, err := a.loadCheckpoint(ctx)
 	if err != nil {
@@ -640,24 +662,34 @@ func (a *ClientConnectionActor) StartIngress(
 		context.Background(),
 	)
 
+	a.ingressMu.Lock()
+	a.cancelFn = cancel
+	a.ingressMu.Unlock()
+
 	a.wg.Add(1)
-	a.cancelCh <- cancel
 	go a.ingressLoop(ingressCtx, state)
 
 	return nil
 }
 
-// StopIngress cancels the ingress loop and waits for it to exit. Safe to
-// call multiple times — the cancel is executed at most once.
+// StopIngress cancels the ingress loop and waits for it to exit. Safe
+// to call multiple times — subsequent calls are no-ops. Also safe to
+// call before StartIngress (marks the actor as stopped so a later
+// StartIngress returns an error).
 func (a *ClientConnectionActor) StopIngress() {
-	a.stopOnce.Do(func() {
-		select {
-		case cancelFn := <-a.cancelCh:
-			cancelFn()
+	a.ingressMu.Lock()
+	if a.stopped {
+		a.ingressMu.Unlock()
+		a.wg.Wait()
 
-		default:
-		}
-	})
+		return
+	}
+	a.stopped = true
+
+	if a.cancelFn != nil {
+		a.cancelFn()
+	}
+	a.ingressMu.Unlock()
 
 	a.wg.Wait()
 }
