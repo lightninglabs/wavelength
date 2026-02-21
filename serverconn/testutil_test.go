@@ -863,3 +863,24 @@ func (s *memCheckpointStore) CleanupExpired(
 
 // Compile-time check.
 var _ actor.DeliveryStore = (*memCheckpointStore)(nil)
+
+// newTestConnectorConfig returns a ConnectorConfig pre-populated with test
+// defaults: an in-memory mailbox edge, the given store, fixed mailbox IDs
+// ("client-1" / "server-1"), protocol version 1, and a short pull wait
+// timeout suitable for test speed. Callers can override individual fields
+// on the returned config before passing it to NewRuntime or
+// NewServerConnectionActor.
+func newTestConnectorConfig(
+	mb *inMemoryMailbox, store *memCheckpointStore,
+) ConnectorConfig {
+
+	cfg := DefaultConnectorConfig()
+	cfg.Edge = &fakeMailboxServiceClient{mb: mb}
+	cfg.Store = store
+	cfg.LocalMailboxID = "client-1"
+	cfg.RemoteMailboxID = "server-1"
+	cfg.ProtocolVersion = 1
+	cfg.PullWaitTimeout = 50 * time.Millisecond
+
+	return cfg
+}
