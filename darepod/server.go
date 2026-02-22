@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/lndclient"
@@ -93,7 +94,7 @@ func (s *Server) RunUntilShutdown(
 	s.rpcServer = NewRPCServer(s)
 
 	s.grpcServer = grpc.NewServer()
-	RegisterDaemonServiceServer(s.grpcServer, s.rpcServer)
+	daemonrpc.RegisterDaemonServiceServer(s.grpcServer, s.rpcServer)
 
 	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
 	if err != nil {

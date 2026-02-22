@@ -30,7 +30,9 @@ function generate() {
 		#
 		# The mailbox edge proto (mailboxpb) defines the underlying transport and
 		# should not get an RPC-over-mailbox overlay, so we exclude it.
-		if [ "${package}" != "mailbox/pb" ]; then
+		# The daemonrpc package is a local gRPC service (not transported over
+		# mailbox), so we also exclude it from mailboxrpc generation.
+		if [ "${package}" != "mailbox/pb" ] && [ "${package}" != "daemonrpc" ]; then
 			protoc -I/usr/local/include -I. -I.. \
 				--mailboxrpc_out=. --mailboxrpc_opt=paths=source_relative \
 				"${file}"
@@ -56,6 +58,9 @@ function generate() {
 # Generate protos for mailbox edge transport and arkrpc.
 generate "mailbox/pb"
 generate "arkrpc"
+
+# Generate daemonrpc protos for the client daemon's own gRPC API.
+generate "daemonrpc"
 
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then
