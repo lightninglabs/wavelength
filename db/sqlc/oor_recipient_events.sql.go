@@ -21,6 +21,36 @@ func (q *Queries) GetMaxOORRecipientEventID(ctx context.Context, recipientPkScri
 	return column_1, err
 }
 
+const GetOORRecipientEventBySessionOutput = `-- name: GetOORRecipientEventBySessionOutput :one
+SELECT re.recipient_pk_script, re.event_id, re.session_db_id,
+       re.output_index, re.value, re.created_at
+FROM oor_recipient_events re
+JOIN oor_sessions s ON s.id = re.session_db_id
+WHERE re.recipient_pk_script = $1
+    AND s.session_id = $2
+    AND re.output_index = $3
+`
+
+type GetOORRecipientEventBySessionOutputParams struct {
+	RecipientPkScript []byte
+	SessionID         []byte
+	OutputIndex       int32
+}
+
+func (q *Queries) GetOORRecipientEventBySessionOutput(ctx context.Context, arg GetOORRecipientEventBySessionOutputParams) (OorRecipientEvent, error) {
+	row := q.db.QueryRowContext(ctx, GetOORRecipientEventBySessionOutput, arg.RecipientPkScript, arg.SessionID, arg.OutputIndex)
+	var i OorRecipientEvent
+	err := row.Scan(
+		&i.RecipientPkScript,
+		&i.EventID,
+		&i.SessionDbID,
+		&i.OutputIndex,
+		&i.Value,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const InsertOORRecipientEvent = `-- name: InsertOORRecipientEvent :execrows
 INSERT INTO oor_recipient_events (
     recipient_pk_script, event_id, session_db_id, output_index, value,
@@ -83,6 +113,61 @@ func (q *Queries) ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRe
 			&i.RecipientPkScript,
 			&i.EventID,
 			&i.SessionDbID,
+			&i.OutputIndex,
+			&i.Value,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListOORRecipientEventsAfterWithSession = `-- name: ListOORRecipientEventsAfterWithSession :many
+SELECT re.recipient_pk_script, re.event_id, s.session_id,
+       re.output_index, re.value, re.created_at
+FROM oor_recipient_events re
+JOIN oor_sessions s ON s.id = re.session_db_id
+WHERE re.recipient_pk_script = $1 AND re.event_id > $2
+ORDER BY re.event_id ASC
+LIMIT $3
+`
+
+type ListOORRecipientEventsAfterWithSessionParams struct {
+	RecipientPkScript []byte
+	EventID           int64
+	Limit             int32
+}
+
+type ListOORRecipientEventsAfterWithSessionRow struct {
+	RecipientPkScript []byte
+	EventID           int64
+	SessionID         []byte
+	OutputIndex       int32
+	Value             int64
+	CreatedAt         int64
+}
+
+func (q *Queries) ListOORRecipientEventsAfterWithSession(ctx context.Context, arg ListOORRecipientEventsAfterWithSessionParams) ([]ListOORRecipientEventsAfterWithSessionRow, error) {
+	rows, err := q.db.QueryContext(ctx, ListOORRecipientEventsAfterWithSession, arg.RecipientPkScript, arg.EventID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOORRecipientEventsAfterWithSessionRow
+	for rows.Next() {
+		var i ListOORRecipientEventsAfterWithSessionRow
+		if err := rows.Scan(
+			&i.RecipientPkScript,
+			&i.EventID,
+			&i.SessionID,
 			&i.OutputIndex,
 			&i.Value,
 			&i.CreatedAt,

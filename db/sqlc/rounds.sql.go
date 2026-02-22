@@ -473,6 +473,56 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 	return items, nil
 }
 
+const ListVTXOsByPkScripts = `-- name: ListVTXOsByPkScripts :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+WHERE pk_script IN (/*SLICE:pk_scripts*/?)
+ORDER BY outpoint_hash, outpoint_index
+`
+
+func (q *Queries) ListVTXOsByPkScripts(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error) {
+	query := ListVTXOsByPkScripts
+	var queryParams []interface{}
+	if len(pkScripts) > 0 {
+		for _, v := range pkScripts {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:pk_scripts*/?", makeQueryParams(len(queryParams), len(pkScripts)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:pk_scripts*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE round_id = $1

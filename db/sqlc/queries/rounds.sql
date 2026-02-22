@@ -149,3 +149,8 @@ ORDER BY outpoint_hash, outpoint_index;
 SELECT * FROM vtxos
 WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index;
+
+-- name: ListVTXOsByPkScripts :many
+SELECT * FROM vtxos
+WHERE pk_script IN (sqlc.slice('pk_scripts')/*SLICE:pk_scripts*/)
+ORDER BY outpoint_hash, outpoint_index;
