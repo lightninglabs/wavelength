@@ -287,8 +287,9 @@ func (s *Server) dialServer(ctx context.Context) (
 
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(certBytes) {
-			return nil, fmt.Errorf("unable to parse server " +
-				"TLS cert")
+			return nil, fmt.Errorf("unable to parse server "+
+				"TLS cert at %s",
+				s.cfg.Server.TLSCertPath)
 		}
 
 		creds := credentials.NewTLS(&tls.Config{
