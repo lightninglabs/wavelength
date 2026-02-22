@@ -36,9 +36,17 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	if r.server.lnd != nil {
 		resp.LndIdentityPubkey = r.server.lnd.NodePubkey.String()
 		resp.LndAlias = r.server.lnd.NodeAlias
+
+		// Fetch the current best block height from the chain
+		// backend via lnd's ChainKit interface.
+		_, height, err := r.server.lnd.ChainKit.GetBestBlock(ctx)
+		if err != nil {
+			log.WarnS(ctx, "Unable to fetch block height", err)
+		} else {
+			resp.BlockHeight = uint32(height)
+		}
 	}
 
-	// TODO(roasbeef): populate block height from lnd chain client.
 	// TODO(roasbeef): populate server connection status from runtime.
 
 	return resp, nil

@@ -30,9 +30,7 @@ function generate() {
 		#
 		# The mailbox edge proto (mailboxpb) defines the underlying transport and
 		# should not get an RPC-over-mailbox overlay, so we exclude it.
-		# The daemonrpc package is a local gRPC service (not transported over
-		# mailbox), so we also exclude it from mailboxrpc generation.
-		if [ "${package}" != "mailbox/pb" ] && [ "${package}" != "daemonrpc" ]; then
+		if [ "${package}" != "mailbox/pb" ]; then
 			protoc -I/usr/local/include -I. -I.. \
 				--mailboxrpc_out=. --mailboxrpc_opt=paths=source_relative \
 				"${file}"

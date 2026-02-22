@@ -2,16 +2,22 @@ package darepod
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -34,6 +40,8 @@ type Server struct {
 	lnd     *lndclient.GrpcLndServices
 	runtime *serverconn.Runtime
 	indexer *indexer.Client
+
+	serverConn *grpc.ClientConn
 
 	grpcServer *grpc.Server
 	rpcServer  *RPCServer
@@ -89,12 +97,38 @@ func (s *Server) RunUntilShutdown(
 		"pubkey", s.lnd.NodePubkey)
 
 	// -------------------------------------------------------
-	// 2. Start the daemon's own gRPC server.
+	// 2. Connect to the ark operator's mailbox edge server.
+	// -------------------------------------------------------
+	log.InfoS(ctx, "Connecting to ark server",
+		"host", s.cfg.Server.Host)
+
+	serverConn, err := s.dialServer(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to connect to server: %w", err)
+	}
+	s.serverConn = serverConn
+	defer s.serverConn.Close()
+
+	log.InfoS(ctx, "Connected to ark server")
+
+	// -------------------------------------------------------
+	// 3. Create the mailbox transport runtime.
+	// -------------------------------------------------------
+	// TODO(roasbeef): wire a persistent DeliveryStore (DB-backed)
+	// once the database layer is initialized. For now we log
+	// that the runtime is not yet started.
+	log.InfoS(ctx, "Mailbox runtime not yet wired (needs "+
+		"DeliveryStore)")
+
+	// -------------------------------------------------------
+	// 4. Start the daemon's own gRPC server.
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
 	s.grpcServer = grpc.NewServer()
-	daemonrpc.RegisterDaemonServiceServer(s.grpcServer, s.rpcServer)
+	daemonrpc.RegisterDaemonServiceServer(
+		s.grpcServer, s.rpcServer,
+	)
 
 	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
 	if err != nil {
@@ -115,7 +149,7 @@ func (s *Server) RunUntilShutdown(
 	log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
-	// 3. Block until shutdown.
+	// 5. Block until shutdown.
 	// -------------------------------------------------------
 	<-interceptor.ShutdownChannel()
 
@@ -124,8 +158,8 @@ func (s *Server) RunUntilShutdown(
 	return nil
 }
 
-// connectLnd establishes a connection to the lnd node using the
-// lndclient SDK.
+// connectLnd establishes a connection to the lnd node using the lndclient
+// SDK. The call blocks until lnd is fully synced and the wallet is unlocked.
 func (s *Server) connectLnd(ctx context.Context) (
 	*lndclient.GrpcLndServices, error) {
 
@@ -149,6 +183,64 @@ func (s *Server) connectLnd(ctx context.Context) (
 		CallerCtx:             ctx,
 		RPCTimeout:            rpcTimeout,
 	})
+}
+
+// dialServer establishes a gRPC connection to the ark operator's mailbox
+// edge server. When TLSCertPath is set, the connection uses a custom cert
+// pool anchored to that certificate. When Insecure is set, TLS is disabled
+// entirely (for regtest/development only).
+func (s *Server) dialServer(ctx context.Context) (
+	*grpc.ClientConn, error) {
+
+	var dialOpts []grpc.DialOption
+
+	switch {
+	case s.cfg.Server.Insecure:
+		dialOpts = append(
+			dialOpts,
+			grpc.WithTransportCredentials(
+				insecure.NewCredentials(),
+			),
+		)
+
+	case s.cfg.Server.TLSCertPath != "":
+		certBytes, err := os.ReadFile(s.cfg.Server.TLSCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to read server "+
+				"TLS cert: %w", err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(certBytes) {
+			return nil, fmt.Errorf("unable to parse server " +
+				"TLS cert")
+		}
+
+		creds := credentials.NewTLS(&tls.Config{
+			RootCAs: pool,
+		})
+		dialOpts = append(
+			dialOpts,
+			grpc.WithTransportCredentials(creds),
+		)
+
+	default:
+		// Use the system certificate pool when no explicit cert
+		// is provided.
+		creds := credentials.NewTLS(&tls.Config{})
+		dialOpts = append(
+			dialOpts,
+			grpc.WithTransportCredentials(creds),
+		)
+	}
+
+	return grpc.NewClient(s.cfg.Server.Host, dialOpts...)
+}
+
+// newMailboxEdge creates a MailboxServiceClient from the established server
+// connection.
+func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
+	return mailboxpb.NewMailboxServiceClient(s.serverConn)
 }
 
 // networkToLndclient maps our network string to the lndclient network type.
