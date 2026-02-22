@@ -33,6 +33,10 @@ const (
 
 	// DefaultDebugLevel is the default logging verbosity.
 	DefaultDebugLevel = "info"
+
+	// DefaultShutdownTimeout is the maximum duration to wait for
+	// graceful shutdown of the actor system and subsystems.
+	DefaultShutdownTimeout = 10 * time.Second
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -94,6 +98,15 @@ type ServerConfig struct {
 	// Insecure disables TLS for the server connection. This should only
 	// be used in regtest or development environments.
 	Insecure bool `mapstructure:"insecure"`
+
+	// LocalMailboxID is this client's mailbox identifier within the
+	// mailbox edge transport. Inbound envelopes are pulled from this
+	// mailbox and outbound envelopes carry it as the sender.
+	LocalMailboxID string `mapstructure:"localmailboxid"`
+
+	// RemoteMailboxID is the remote server's mailbox identifier.
+	// Outbound envelopes are addressed to this mailbox.
+	RemoteMailboxID string `mapstructure:"remotemailboxid"`
 }
 
 // RPCConfig holds configuration for the daemon's own gRPC server.

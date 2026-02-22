@@ -83,6 +83,16 @@ func newRootCmd() *cobra.Command {
 		cfg.Server.Insecure,
 		"disable TLS for the server connection (dev only)",
 	)
+	f.StringVar(
+		&cfg.Server.LocalMailboxID, "server.localmailboxid",
+		cfg.Server.LocalMailboxID,
+		"this client's mailbox identifier",
+	)
+	f.StringVar(
+		&cfg.Server.RemoteMailboxID, "server.remotemailboxid",
+		cfg.Server.RemoteMailboxID,
+		"remote server's mailbox identifier",
+	)
 
 	// Daemon RPC server flags.
 	f.StringVar(

@@ -8,7 +8,10 @@ import (
 	"net"
 	"os"
 
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -40,6 +43,9 @@ type Server struct {
 	lnd     *lndclient.GrpcLndServices
 	runtime *serverconn.Runtime
 	indexer *indexer.Client
+
+	actorSystem  *actor.ActorSystem
+	chainBackend chainsource.ChainBackend
 
 	serverConn *grpc.ClientConn
 
@@ -112,16 +118,67 @@ func (s *Server) RunUntilShutdown(
 	log.InfoS(ctx, "Connected to ark server")
 
 	// -------------------------------------------------------
-	// 3. Create the mailbox transport runtime.
+	// 3. Initialize the actor system.
 	// -------------------------------------------------------
-	// TODO(roasbeef): wire a persistent DeliveryStore (DB-backed)
-	// once the database layer is initialized. For now we log
-	// that the runtime is not yet started.
+	s.actorSystem = actor.NewActorSystem()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		_ = s.actorSystem.Shutdown(shutdownCtx)
+	}()
+
+	log.InfoS(ctx, "Actor system initialized")
+
+	// -------------------------------------------------------
+	// 4. Create and register the chain source actor.
+	// -------------------------------------------------------
+	// The chain backend adapts lndclient's chain notifier, fee
+	// estimator, and wallet kit into the unified ChainBackend
+	// interface used by the chainsource actor.
+	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+		chainbackends.LNDBackendFromLndClientConfig{
+			LND: &s.lnd.LndServices,
+		},
+	)
+
+	if err := s.chainBackend.Start(); err != nil {
+		return fmt.Errorf("unable to start chain backend: %w", err)
+	}
+	defer func() {
+		_ = s.chainBackend.Stop()
+	}()
+
+	chainActor := chainsource.NewChainSourceActor(
+		chainsource.ChainSourceConfig{
+			Backend: s.chainBackend,
+			System:  s.actorSystem,
+		},
+	)
+	actor.RegisterWithSystem(
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
+	)
+
+	log.InfoS(ctx, "Chain source actor registered")
+
+	// -------------------------------------------------------
+	// 5. Create the mailbox transport runtime.
+	// -------------------------------------------------------
+	// The serverconn runtime requires a persistent DeliveryStore
+	// for durable message processing. Once the database layer is
+	// initialized, we wire it here along with the mailbox edge
+	// client and mailbox ID pair.
+	//
+	// TODO(roasbeef): Wire a persistent DeliveryStore (DB-backed)
+	// once the database layer is initialized.
 	log.InfoS(ctx, "Mailbox runtime not yet wired (needs "+
 		"DeliveryStore)")
 
 	// -------------------------------------------------------
-	// 4. Start the daemon's own gRPC server.
+	// 6. Start the daemon's own gRPC server.
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
@@ -149,7 +206,7 @@ func (s *Server) RunUntilShutdown(
 	log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
-	// 5. Block until shutdown.
+	// 7. Block until shutdown.
 	// -------------------------------------------------------
 	<-interceptor.ShutdownChannel()
 
