@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	ApplyFinalizeOORSession(ctx context.Context, arg ApplyFinalizeOORSessionParams) (int64, error)
+	DeleteIndexerReceiveScript(ctx context.Context, arg DeleteIndexerReceiveScriptParams) (int64, error)
 	DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) error
 	// NOTE: This recursive query can be implemented in application code.
 	//
@@ -61,6 +62,7 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
 	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error)
 	// Round queries for server-side round persistence.
 	// RoundStore queries.
@@ -76,8 +78,11 @@ type Querier interface {
 	// These queries support storing and retrieving VTXO trees in normalized form.
 	InsertVTXOTreeNode(ctx context.Context, arg InsertVTXOTreeNodeParams) error
 	InsertVTXOTreeNodeOutput(ctx context.Context, arg InsertVTXOTreeNodeOutputParams) error
+	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
+	ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context, arg ListActiveIndexerReceiveScriptsByPrincipalParams) ([]IndexerReceiveScript, error)
 	ListActiveOORSessions(ctx context.Context) ([]OorSession, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListIndexerVTXOEventsAfterByScripts(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsParams) ([]IndexerVtxoEvent, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
 	ListPendingRounds(ctx context.Context) ([]Round, error)
@@ -93,6 +98,7 @@ type Querier interface {
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) (int64, error)
 	UpdateVTXOsLiveByRound(ctx context.Context, roundID []byte) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	UpsertIndexerReceiveScript(ctx context.Context, arg UpsertIndexerReceiveScriptParams) error
 	UpsertOORCheckpoint(ctx context.Context, arg UpsertOORCheckpointParams) error
 	UpsertOORSession(ctx context.Context, arg UpsertOORSessionParams) (int64, error)
 	UpsertRoundForfeitInfo(ctx context.Context, arg UpsertRoundForfeitInfoParams) error

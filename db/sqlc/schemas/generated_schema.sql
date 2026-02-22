@@ -10,6 +10,12 @@ CREATE UNIQUE INDEX idx_forfeit_infos_outpoint
 CREATE INDEX idx_forfeit_infos_round
 	ON round_forfeit_infos(round_id);
 
+CREATE INDEX idx_indexer_receive_scripts_script
+    ON indexer_receive_scripts(pk_script);
+
+CREATE INDEX idx_indexer_vtxo_events_script_event
+    ON indexer_vtxo_events(pk_script, event_id);
+
 CREATE INDEX idx_oor_recipient_events_session_db_id
     ON oor_recipient_events(session_db_id);
 
@@ -46,6 +52,51 @@ CREATE INDEX idx_vtxos_round
 
 CREATE INDEX idx_vtxos_status
 	ON vtxos(status);
+
+CREATE TABLE indexer_receive_scripts (
+    -- principal_mailbox_id is the canonical mailbox id of the authenticated
+    -- wallet principal (for example, "client:<id>").
+    principal_mailbox_id TEXT NOT NULL,
+
+    -- pk_script is the receive script bytes controlled by the principal.
+    pk_script BLOB NOT NULL,
+
+    -- expires_at_unix_s is an optional unix timestamp (seconds) after which
+    -- this registration should be treated as inactive. Zero means no expiry.
+    expires_at_unix_s BIGINT NOT NULL DEFAULT 0,
+
+    -- label is optional client-provided metadata for debugging and UX.
+    label TEXT NOT NULL DEFAULT '',
+
+    -- updated_at is the unix nano timestamp of the latest registration write.
+    updated_at BIGINT NOT NULL,
+
+    PRIMARY KEY(principal_mailbox_id, pk_script)
+);
+
+CREATE TABLE indexer_vtxo_events (
+    -- event_id is the global monotonic event cursor.
+    event_id INTEGER PRIMARY KEY,
+
+    -- pk_script is the script this event is scoped to.
+    pk_script BLOB NOT NULL,
+
+    -- event_type is one of:
+    --   - created
+    --   - status_changed
+    --   - terminated
+    event_type TEXT NOT NULL,
+
+    -- outpoint_hash + outpoint_index identify the affected VTXO.
+    outpoint_hash BLOB NOT NULL,
+    outpoint_index INTEGER NOT NULL,
+
+    -- status is the resulting VTXO status after the transition.
+    status TEXT NOT NULL,
+
+    -- created_at is the unix nano timestamp when the event row was written.
+    created_at BIGINT NOT NULL
+);
 
 CREATE TABLE oor_checkpoints (
     -- session_db_id references the parent OOR session integer PK.

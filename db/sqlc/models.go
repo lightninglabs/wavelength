@@ -14,6 +14,24 @@ type ChainInfo struct {
 	GenesisHash []byte
 }
 
+type IndexerReceiveScript struct {
+	PrincipalMailboxID string
+	PkScript           []byte
+	ExpiresAtUnixS     int64
+	Label              string
+	UpdatedAt          int64
+}
+
+type IndexerVtxoEvent struct {
+	EventID       int64
+	PkScript      []byte
+	EventType     string
+	OutpointHash  []byte
+	OutpointIndex int32
+	Status        string
+	CreatedAt     int64
+}
+
 type OorCheckpoint struct {
 	SessionDbID     int32
 	CheckpointIndex int32
