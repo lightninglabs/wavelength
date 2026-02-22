@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/indexer"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/signal"
@@ -51,6 +52,7 @@ type Server struct {
 
 	grpcServer *grpc.Server
 	rpcServer  *RPCServer
+	mailboxMux *mailboxrpc.ServeMux
 }
 
 // NewServer allocates a Server from a validated Config. The server is inert
@@ -170,7 +172,12 @@ func (s *Server) RunUntilShutdown(
 	// The serverconn runtime requires a persistent DeliveryStore
 	// for durable message processing. Once the database layer is
 	// initialized, we wire it here along with the mailbox edge
-	// client and mailbox ID pair.
+	// client, mailbox ID pair, and inbound RPC dispatchers.
+	//
+	// The mailboxMux (created in step 6 below) should be
+	// plugged into the ConnectorConfig.Dispatchers map so the
+	// ingress loop routes inbound KIND_REQUEST envelopes to
+	// the DaemonService handlers.
 	//
 	// TODO(roasbeef): Wire a persistent DeliveryStore (DB-backed)
 	// once the database layer is initialized.
@@ -178,13 +185,24 @@ func (s *Server) RunUntilShutdown(
 		"DeliveryStore)")
 
 	// -------------------------------------------------------
-	// 6. Start the daemon's own gRPC server.
+	// 6. Start the daemon's own gRPC server and mailbox mux.
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
+	// Register the DaemonService for local gRPC access (CLI, GUI).
 	s.grpcServer = grpc.NewServer()
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
+	)
+
+	// Register the DaemonService for mailbox RPC access. The
+	// ServeMux handles incoming KIND_REQUEST envelopes routed
+	// by the serverconn ingress loop. The RPCServer implements
+	// both the gRPC and mailbox server interfaces, so the same
+	// handler serves both transports.
+	s.mailboxMux = mailboxrpc.NewServeMux()
+	daemonrpc.RegisterDaemonServiceMailboxServer(
+		s.mailboxMux, s.rpcServer,
 	)
 
 	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
