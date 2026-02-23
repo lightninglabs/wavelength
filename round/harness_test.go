@@ -362,7 +362,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 	env := NewClientEnvironment(
 		roundStore, vtxoStore, wallet, terms,
 		&chaincfg.RegressionNetParams, defaultMaxOperatorFee,
-		btclog.Disabled, testStartHeight,
+		btclog.Disabled, testStartHeight, nil,
 	)
 	env.DisableJoinRequestAuth = true
 
