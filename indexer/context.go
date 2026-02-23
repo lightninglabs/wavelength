@@ -12,7 +12,10 @@ type Principal struct {
 	MailboxID string
 }
 
-// ContextWithPrincipal attaches principal to ctx.
+// ContextWithPrincipal attaches principal to ctx. Context-passing is
+// used here because arkrpc.IndexerServiceServer is a generated gRPC
+// interface whose handler signatures are fixed and cannot be extended
+// with a Principal parameter.
 func ContextWithPrincipal(ctx context.Context,
 	principal Principal) context.Context {
 

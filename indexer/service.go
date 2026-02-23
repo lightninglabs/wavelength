@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -197,8 +198,7 @@ func (s *Service) ListMyReceiveScripts(ctx context.Context,
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return hex.EncodeToString(out[i].PkScript) <
-			hex.EncodeToString(out[j].PkScript)
+		return bytes.Compare(out[i].PkScript, out[j].PkScript) < 0
 	})
 
 	return &arkrpc.ListMyReceiveScriptsResponse{
@@ -481,6 +481,13 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		limit = defaultVTXOLimit
 	}
 
+	// TODO(follow-up): The cursor is currently an integer offset into
+	// the in-memory sorted slice. This means concurrent inserts or
+	// deletes can cause items to be skipped or duplicated across
+	// pages. Replace with keyset pagination: change the proto cursor
+	// from uint64 to bytes, encode (outpoint_hash, outpoint_index)
+	// as the opaque cursor, and push the WHERE clause down to the
+	// DB query for stable, index-backed iteration.
 	cursor := req.Cursor
 	if cursor > uint64(len(all)) {
 		return nil, status.Error(codes.InvalidArgument,
@@ -828,6 +835,23 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 			s.now(),
 		)
 		if insertErr != nil {
+			// If the CAS loop exhausted retries, it may be
+			// because a concurrent goroutine already inserted
+			// the row for this exact VTXO (same
+			// session+output). Re-check once: if the row now
+			// exists, the event was successfully stored by the
+			// other writer and we can return it.
+			storedEvent, err = q.GetOORRecipientEventBySessionOutput(
+				ctx,
+				append([]byte(nil), ev.RecipientPkScript...),
+				append([]byte(nil), ev.SessionId...),
+				int32(ev.OutputIndex),
+			)
+			if err == nil {
+				// Concurrent insert won — use its row.
+				goto buildResponse
+			}
+
 			return nil, nil, insertErr
 		}
 
@@ -842,12 +866,12 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 				"load inserted recipient event: %w", err,
 			)
 		}
-		// Override with the authoritative event ID returned by
-		// insertRecipientEvent, since the DB row's event_id may
-		// differ if a concurrent insert won the race.
+		// Use the event ID from our insert, which is the
+		// authoritative monotonic ID for this recipient script.
 		storedEvent.EventID = int64(eventID)
 	}
 
+buildResponse:
 	rows, err := q.ListActiveReceivePrincipalsByScript(
 		ctx,
 		append([]byte(nil), ev.RecipientPkScript...),
@@ -897,12 +921,17 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	copy(op.Hash[:], outpoint.Txid)
 	op.Index = outpoint.Vout
 
+	vtxoStatus, err := storeVTXOStatusFromRPC(st)
+	if err != nil {
+		return nil, nil, fmt.Errorf("map vtxo status: %w", err)
+	}
+
 	insertedEventID, err := s.store.InsertVTXOEvent(
 		ctx,
 		append([]byte(nil), pkScript...),
 		vtxoEventTypeToStore(evType),
 		op,
-		storeVTXOStatusFromRPC(st),
+		vtxoStatus,
 		now,
 	)
 	if err != nil {
@@ -953,25 +982,25 @@ func scopeProofToStatus(err error) error {
 	return status.Error(codes.Unauthenticated, err.Error())
 }
 
-func storeVTXOStatusFromRPC(st arkrpc.VTXOStatus) string {
+func storeVTXOStatusFromRPC(st arkrpc.VTXOStatus) (string, error) {
 	switch st {
 	case arkrpc.VTXOStatus_VTXO_STATUS_UNCONFIRMED:
-		return storeVTXOStatusPending
+		return storeVTXOStatusPending, nil
 
 	case arkrpc.VTXOStatus_VTXO_STATUS_LIVE:
-		return storeVTXOStatusLive
+		return storeVTXOStatusLive, nil
 
 	case arkrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
-		return storeVTXOStatusInFlight
+		return storeVTXOStatusInFlight, nil
 
 	case arkrpc.VTXOStatus_VTXO_STATUS_FORFEITED:
-		return storeVTXOStatusForfeited
+		return storeVTXOStatusForfeited, nil
 
 	case arkrpc.VTXOStatus_VTXO_STATUS_SPENT:
-		return storeVTXOStatusSpent
+		return storeVTXOStatusSpent, nil
 
 	default:
-		return storeVTXOStatusPending
+		return "", fmt.Errorf("unrecognized VTXOStatus: %v", st)
 	}
 }
 

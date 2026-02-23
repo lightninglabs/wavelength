@@ -298,6 +298,10 @@ func enrichVirtualLeafProofs(ctx context.Context, q OORReader,
 		}
 		leaf := virtualLeaf.leaf
 
+		// For OOR VTXOs, the outpoint txid is the Ark txid, which is
+		// also the OOR session identifier (see oor/interfaces.go
+		// SessionID and oor/actor.go sessionID :=
+		// SessionID(validated.ArkTxid)).
 		_, err := q.GetOORRecipientEventBySessionOutput(
 			ctx,
 			append([]byte(nil), virtualLeaf.row.PkScript...),
