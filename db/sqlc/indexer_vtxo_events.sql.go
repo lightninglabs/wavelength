@@ -8,6 +8,8 @@ package sqlc
 import (
 	"context"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 const InsertIndexerVTXOEvent = `-- name: InsertIndexerVTXOEvent :one
@@ -42,7 +44,54 @@ func (q *Queries) InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerV
 	return event_id, err
 }
 
-const ListIndexerVTXOEventsAfterByScripts = `-- name: ListIndexerVTXOEventsAfterByScripts :many
+const ListIndexerVTXOEventsAfterByScriptsPostgres = `-- name: ListIndexerVTXOEventsAfterByScriptsPostgres :many
+SELECT event_id, pk_script, event_type, outpoint_hash, outpoint_index, status,
+       created_at
+FROM indexer_vtxo_events
+WHERE pk_script = ANY($1::bytea[])
+    AND event_id > $2
+ORDER BY event_id ASC
+LIMIT $3
+`
+
+type ListIndexerVTXOEventsAfterByScriptsPostgresParams struct {
+	PkScripts    [][]byte
+	AfterEventID int64
+	QueryLimit   int32
+}
+
+func (q *Queries) ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsPostgresParams) ([]IndexerVtxoEvent, error) {
+	rows, err := q.db.QueryContext(ctx, ListIndexerVTXOEventsAfterByScriptsPostgres, pq.Array(arg.PkScripts), arg.AfterEventID, arg.QueryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IndexerVtxoEvent
+	for rows.Next() {
+		var i IndexerVtxoEvent
+		if err := rows.Scan(
+			&i.EventID,
+			&i.PkScript,
+			&i.EventType,
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.Status,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListIndexerVTXOEventsAfterByScriptsSqlite = `-- name: ListIndexerVTXOEventsAfterByScriptsSqlite :many
 SELECT event_id, pk_script, event_type, outpoint_hash, outpoint_index, status,
        created_at
 FROM indexer_vtxo_events
@@ -52,14 +101,14 @@ ORDER BY event_id ASC
 LIMIT $2
 `
 
-type ListIndexerVTXOEventsAfterByScriptsParams struct {
+type ListIndexerVTXOEventsAfterByScriptsSqliteParams struct {
 	EventID   int64
 	Limit     int32
 	PkScripts [][]byte
 }
 
-func (q *Queries) ListIndexerVTXOEventsAfterByScripts(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsParams) ([]IndexerVtxoEvent, error) {
-	query := ListIndexerVTXOEventsAfterByScripts
+func (q *Queries) ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsSqliteParams) ([]IndexerVtxoEvent, error) {
+	query := ListIndexerVTXOEventsAfterByScriptsSqlite
 	var queryParams []interface{}
 	queryParams = append(queryParams, arg.EventID)
 	queryParams = append(queryParams, arg.Limit)
