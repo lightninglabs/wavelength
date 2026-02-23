@@ -501,16 +501,13 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			totalOutput += vtxo.Amount
 		}
 
-		// Include refresh amounts in inputs only. The forfeited VTXO
-		// value contributes to totalInput. Outputs are determined by
-		// VTXOReqs and LeaveReqs (not assumed 1:1 with refresh).
-		for _, req := range s.RefreshingVTXOs {
-			totalInput += btcutil.Amount(req.Amount)
-		}
+		// Include all forfeited VTXO amounts as inputs. These values
+		// come from refresh and leave requests.
+		totalInput += computeTotalForfeitAmount(
+			s.RefreshingVTXOs, s.LeavingVTXOs,
+		)
 
-		// Include leave amounts in both inputs and outputs. The
-		// forfeited VTXO value contributes to totalInput, and the
-		// on-chain leave output contributes to totalOutput.
+		// Include leave amounts as requested on-chain outputs.
 		for _, req := range s.LeavingVTXOs {
 			if req.Output == nil {
 				return failWithNotification(
@@ -522,7 +519,6 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 				), nil
 			}
 
-			totalInput += btcutil.Amount(req.Amount)
 			totalOutput += btcutil.Amount(req.Output.Value)
 		}
 
@@ -576,29 +572,15 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		// Build forfeit requests for VTXOs being refreshed or exited
 		// on-chain. Forfeits are listed separately from outputs.
-		numForfeit := len(s.RefreshingVTXOs) + len(s.LeavingVTXOs)
-		forfeitReqs := make([]*ForfeitRequest, 0, numForfeit)
-		for _, req := range s.RefreshingVTXOs {
-			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
-				VTXOOutpoint: req.VTXOOutpoint,
-			})
-		}
-		for _, req := range s.LeavingVTXOs {
-			forfeitReqs = append(forfeitReqs, &ForfeitRequest{
-				VTXOOutpoint: req.VTXOOutpoint,
-			})
-		}
+		// Sorted for deterministic ordering across map iterations.
+		forfeitReqs := sortedForfeitRequests(
+			s.RefreshingVTXOs, s.LeavingVTXOs,
+		)
 
 		// Build leave requests for VTXOs being exited to on-chain
 		// outputs. Each leave forfeits a VTXO and creates an on-chain
-		// output in the batch transaction.
-		numLeave := len(s.LeavingVTXOs)
-		leaveReqs := make([]*LeaveRequest, 0, numLeave)
-		for _, req := range s.LeavingVTXOs {
-			leaveReqs = append(leaveReqs, &LeaveRequest{
-				Output: req.Output,
-			})
-		}
+		// output in the batch transaction. Sorted for determinism.
+		leaveReqs := sortedLeaveRequests(s.LeavingVTXOs)
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
