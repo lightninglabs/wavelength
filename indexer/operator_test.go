@@ -462,15 +462,11 @@ func TestOperatorPublishVTXOEvent(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Verify the event was persisted by querying via sqlc directly.
-	// Using the service List method would require script-scope proofs,
-	// so direct DB verification is more practical for unit tests.
-	events, err := store.Queries.ListIndexerVTXOEventsAfterByScripts(
-		ctx, sqlc.ListIndexerVTXOEventsAfterByScriptsParams{
-			EventID:   0,
-			Limit:     10,
-			PkScripts: [][]byte{pkScript},
-		},
+	// Verify the event was persisted by querying via the SQLCStore
+	// adapter. This exercises the Backend() dispatch and works with
+	// both SQLite and PostgreSQL build tags.
+	events, err := sqlcStore.ListVTXOEventsAfterByScripts(
+		ctx, 0, [][]byte{pkScript}, 10,
 	)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
