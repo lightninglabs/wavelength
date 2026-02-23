@@ -72,6 +72,10 @@ type Environment struct {
 	// ensure we don't miss confirmations that occur between round creation
 	// and broadcast.
 	StartHeight uint32
+
+	// DisableJoinRequestAuth skips join-request BIP-322 validation.
+	// This should only be enabled in focused unit tests.
+	DisableJoinRequestAuth bool
 }
 
 // Name returns the unique identifier for this FSM instance.

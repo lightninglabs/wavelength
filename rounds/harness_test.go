@@ -157,19 +157,20 @@ func newTestHarness(t *testing.T, initialState ...State) *fsmTestHarness {
 	rootLog.SetLevel(btclog.LevelTrace)
 
 	env := Environment{
-		RoundID:             roundID,
-		ChainParams:         &chaincfg.RegressionNetParams,
-		BoardingInputLocker: common.boardingLocker,
-		ChainSource:         common.chainSource,
-		FeeEstimator:        common.feeEstimator,
-		Log:                 rootLog,
-		WalletController:    common.walletController,
-		RoundStore:          common.roundStore,
-		VTXOStore:           common.vtxoStore,
-		VTXOLocker:          common.vtxoLocker,
-		ConfTarget:          6,
-		MinConfs:            1,
-		ForfeitScript:       []byte{0x51, 0x20, 0x01, 0x02},
+		RoundID:                roundID,
+		ChainParams:            &chaincfg.RegressionNetParams,
+		BoardingInputLocker:    common.boardingLocker,
+		ChainSource:            common.chainSource,
+		FeeEstimator:           common.feeEstimator,
+		Log:                    rootLog,
+		WalletController:       common.walletController,
+		RoundStore:             common.roundStore,
+		VTXOStore:              common.vtxoStore,
+		VTXOLocker:             common.vtxoLocker,
+		ConfTarget:             6,
+		MinConfs:               1,
+		ForfeitScript:          []byte{0x51, 0x20, 0x01, 0x02},
+		DisableJoinRequestAuth: true,
 		Terms: &batch.Terms{
 			OperatorKey: operatorKey,
 			SweepKey: keychain.KeyDescriptor{

@@ -106,6 +106,10 @@ type ActorConfig struct {
 	// VTXOLocker provides mutual exclusion for VTXO outpoints across
 	// concurrent subsystems (rounds and OOR transfers).
 	VTXOLocker vtxo.Locker
+
+	// DisableJoinRequestAuth skips join-request BIP-322 validation.
+	// This should only be enabled in focused unit tests.
+	DisableJoinRequestAuth bool
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -319,22 +323,23 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
 
 	env := &Environment{
-		RoundID:             roundID,
-		Log:                 fsmLogger,
-		ChainParams:         a.cfg.ChainParams,
-		BoardingInputLocker: a.cfg.BoardingInputLocker,
-		ChainSource:         a.cfg.ChainSource,
-		Terms:               a.cfg.Terms,
-		ForfeitScript:       a.cfg.ForfeitScript,
-		WalletController:    a.cfg.WalletController,
-		FeeEstimator:        a.cfg.FeeEstimator,
-		WalletAccount:       a.cfg.WalletAccount,
-		ConfTarget:          a.cfg.ConfTarget,
-		MinConfs:            a.cfg.MinConfs,
-		RoundStore:          a.cfg.RoundStore,
-		VTXOStore:           a.cfg.VTXOStore,
-		VTXOLocker:          a.cfg.VTXOLocker,
-		StartHeight:         startHeight,
+		RoundID:                roundID,
+		Log:                    fsmLogger,
+		ChainParams:            a.cfg.ChainParams,
+		BoardingInputLocker:    a.cfg.BoardingInputLocker,
+		ChainSource:            a.cfg.ChainSource,
+		Terms:                  a.cfg.Terms,
+		ForfeitScript:          a.cfg.ForfeitScript,
+		WalletController:       a.cfg.WalletController,
+		FeeEstimator:           a.cfg.FeeEstimator,
+		WalletAccount:          a.cfg.WalletAccount,
+		ConfTarget:             a.cfg.ConfTarget,
+		MinConfs:               a.cfg.MinConfs,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		VTXOLocker:             a.cfg.VTXOLocker,
+		StartHeight:            startHeight,
+		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 
 	fsmCfg := StateMachineCfg{
