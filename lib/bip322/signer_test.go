@@ -155,19 +155,15 @@ func TestBuildAndSignFullTxTaprootProofOfFunds(t *testing.T) {
 		PkScript: challengeScript,
 	}
 
-	const (
-		toSignLockTime = 100
-		toSignSequence = 200
-	)
-
 	message := []byte("tx signer bip322 signing")
 	sig, err := BuildAndSignFullTx(
 		message,
 		challengeScript,
 		&taprootTxSigner{privateKey: privateKey},
-		WithToSignVersion(2),
-		WithToSignLockTime(toSignLockTime),
-		WithToSignSequence(toSignSequence),
+		WithBlockWindow(BlockWindow{
+			ValidFromBlock:  100,
+			ValidUntilBlock: 200,
+		}),
 		WithToSignAdditionalInputs(
 			AdditionalInput{
 				PreviousOutPoint: additionalOutPoint,
@@ -195,8 +191,8 @@ func TestBuildAndSignFullTxTaprootProofOfFunds(t *testing.T) {
 		},
 	})
 	require.Equal(t, VerificationStateValid, result.State)
-	require.Equal(t, uint32(toSignLockTime), result.ValidAtTime)
-	require.Equal(t, uint32(toSignSequence), result.ValidAtAge)
+	require.Equal(t, uint32(100), result.ValidAtTime)
+	require.Equal(t, uint32(200), result.ValidAtAge)
 }
 
 // TestBuildAndSignFullTxRejectsMissingSigner asserts the tx-signer helper

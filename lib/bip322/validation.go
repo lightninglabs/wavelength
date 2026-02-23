@@ -64,9 +64,57 @@ type AuthPkg struct {
 	ProofPrevOutputs map[wire.OutPoint]*wire.TxOut
 }
 
-// ValidateAuthPkg validates the provided authentication package according to
-// BIP-322.
-func ValidateAuthPkg(pkg *AuthPkg) VerificationResult {
+// ValidateAuthOption configures optional application-level checks in
+// ValidateAuthPkg.
+type ValidateAuthOption func(*validateAuthOptions) error
+
+// validateAuthOptions carries optional policy checks layered above core
+// BIP-322 validation.
+type validateAuthOptions struct {
+	// currentBlockHeight enables BlockWindow enforcement when provided.
+	currentBlockHeight *uint32
+}
+
+// defaultValidateAuthOptions returns default validation policy options.
+func defaultValidateAuthOptions() validateAuthOptions {
+	return validateAuthOptions{}
+}
+
+// applyValidateAuthOptions applies validation options and returns final
+// settings.
+func applyValidateAuthOptions(opts []ValidateAuthOption) (validateAuthOptions,
+	error) {
+
+	validationOpts := defaultValidateAuthOptions()
+
+	for i := 0; i < len(opts); i++ {
+		opt := opts[i]
+		if opt == nil {
+			return validateAuthOptions{}, fmt.Errorf(
+				"validate auth option %d must be provided", i,
+			)
+		}
+
+		err := opt(&validationOpts)
+		if err != nil {
+			return validateAuthOptions{}, err
+		}
+	}
+
+	return validationOpts, nil
+}
+
+// ValidateAuthPkg validates the provided authentication package according
+// to BIP-322 and then applies optional application-level policy checks.
+func ValidateAuthPkg(pkg *AuthPkg,
+	opts ...ValidateAuthOption) VerificationResult {
+
+	// Step 0: Parse application-level validation options.
+	validationOpts, err := applyValidateAuthOptions(opts)
+	if err != nil {
+		return invalidResult(err.Error())
+	}
+
 	// Step 1: Ensure the package is complete enough to construct
 	// the BIP-322 virtual transactions deterministically.
 	if pkg == nil {
@@ -152,8 +200,11 @@ func ValidateAuthPkg(pkg *AuthPkg) VerificationResult {
 		}
 	}
 
-	// Step 8: Surface the lock metadata exactly as BIP-322 specifies.
-	return validResult(toSign.LockTime, toSign.TxIn[0].Sequence)
+	// Step 8: Surface the lock metadata exactly as BIP-322 specifies,
+	// then apply any application-level policy checks.
+	result := validResult(toSign.LockTime, toSign.TxIn[0].Sequence)
+
+	return applyBlockWindowValidationPolicy(result, validationOpts)
 }
 
 // validateFullToSignShape enforces the BIP-322 full-format structural rules.
