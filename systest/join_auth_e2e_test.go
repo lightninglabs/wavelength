@@ -32,7 +32,7 @@ func TestJoinAuthE2EForgedBoardingInputRejected(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
@@ -97,14 +97,15 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
 
 	client := NewTestClient(h)
 
-	// Use a larger boarding exit delay so the test can mine enough blocks
-	// to expire join auth without tripping boarding delay-path safety checks.
+	// Use a larger boarding exit delay so the test can mine
+	// enough blocks to expire join auth without tripping
+	// boarding delay-path safety checks.
 	terms := h.Terms()
 	boardingExitDelay := terms.BoardingExitDelay + 500
 	prepareClientWithBoardingIntentWithExitDelay(
@@ -122,16 +123,21 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	require.Equal(t, 1, client.serverConn.PendingCount(),
 		"join request should remain buffered")
 
-	joinReq := latestClientJoinRoundRequest(t, h.Transcript(), client.ClientID())
-	require.NotNil(t, joinReq.Auth, "join request should include auth payload")
+	joinReq := latestClientJoinRoundRequest(
+		t, h.Transcript(), client.ClientID(),
+	)
+	require.NotNil(t, joinReq.Auth,
+		"join request should include auth payload")
 
 	sig, err := bip322.DecodeSig(joinReq.Auth.Signature)
 	require.NoError(t, err, "join auth signature should decode")
-	require.NotNil(t, sig.ToSign, "decoded signature should include to_sign tx")
+	require.NotNil(t, sig.ToSign,
+		"decoded signature should include to_sign tx")
 	require.NotEmpty(t, sig.ToSign.TxIn, "to_sign tx must contain input 0")
 
 	validUntil := sig.ToSign.TxIn[0].Sequence
-	require.NotZero(t, validUntil, "join auth should include valid-until block")
+	require.NotZero(t, validUntil,
+		"join auth should include valid-until block")
 
 	rpcClient, err := h.BitcoinRPCClient()
 	require.NoError(t, err, "should get bitcoin RPC client")
@@ -150,7 +156,8 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	h.MineBlocks(blocksToMine)
 
 	client.serverConn.SetBuffered(false)
-	client.serverConn.FlushAll()
+	err = client.serverConn.FlushAll()
+	require.NoError(t, err, "should flush buffered messages")
 
 	failed := waitForBoardingFailedEvent(
 		t, h, client.ClientID(), 20*time.Second,
@@ -187,7 +194,7 @@ func prepareClientWithBoardingIntent(t *testing.T, h *E2EHarness,
 func prepareClientWithBoardingIntentWithExitDelay(t *testing.T, h *E2EHarness,
 	client *TestClient, amount btcutil.Amount, exitDelay uint32) {
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	boardingResp, err := client.CreateBoardingAddress(exitDelay)
 	require.NoError(t, err, "should create boarding address")
@@ -222,7 +229,9 @@ func latestClientJoinRoundRequest(t *testing.T, transcript *MessageTranscript,
 		}
 
 		joinReq, ok := entry.Msg.(*clientround.JoinRoundRequest)
-		require.True(t, ok, "transcript entry should contain JoinRoundRequest")
+		require.True(t, ok,
+			"transcript entry should be JoinRoundRequest")
+
 		return joinReq
 	}
 
@@ -272,7 +281,8 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 		ctx, keychain.KeyFamilyNodeKey,
 	)
 	require.NoError(t, err, "should derive attacker identifier key")
-	require.NotNil(t, identifierKey, "identifier key descriptor should exist")
+	require.NotNil(t, identifierKey,
+		"identifier key descriptor should exist")
 
 	forgedProofKey, err := walletSigner.DeriveNextKey(
 		ctx, keychain.KeyFamilyNodeKey,
@@ -286,8 +296,8 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 	prevOut := fetchChainPrevOut(t, h, *boardingReq.Outpoint)
 
 	forgedAuth := buildForgedJoinRoundAuth(
-		t, walletSigner, forgedReq, boardingReq, prevOut, *identifierKey,
-		*forgedProofKey,
+		t, walletSigner, forgedReq, boardingReq,
+		prevOut, *identifierKey, *forgedProofKey,
 	)
 
 	forgedReq.Identifier = identifierKey.PubKey
@@ -300,9 +310,12 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 // by the attacker and the proof input witness is also signed by attacker keys.
 // This intentionally mismatches the boarding script's owner key.
 func buildForgedJoinRoundAuth(t *testing.T,
-	signer *lndbackend.LndWalletController, req *clientround.JoinRoundRequest,
-	boardingReq clienttypes.BoardingRequest, boardingPrevOut *wire.TxOut,
-	identifierKey keychain.KeyDescriptor, forgedProofKey keychain.KeyDescriptor,
+	signer *lndbackend.LndWalletController,
+	req *clientround.JoinRoundRequest,
+	boardingReq clienttypes.BoardingRequest,
+	boardingPrevOut *wire.TxOut,
+	identifierKey keychain.KeyDescriptor,
+	forgedProofKey keychain.KeyDescriptor,
 ) *clienttypes.JoinRoundAuth {
 
 	sharedReq := toSharedJoinRoundRequest(req, identifierKey.PubKey, nil)
@@ -317,7 +330,9 @@ func buildForgedJoinRoundAuth(t *testing.T,
 
 	require.NotNil(t, boardingReq.Outpoint, "boarding outpoint must be set")
 	tapScript, err := scripts.VTXOTapScript(
-		boardingReq.ClientKey, boardingReq.OperatorKey, boardingReq.ExitDelay,
+		boardingReq.ClientKey,
+		boardingReq.OperatorKey,
+		boardingReq.ExitDelay,
 	)
 	require.NoError(t, err, "should rebuild boarding tapscript")
 
@@ -360,13 +375,26 @@ func toSharedJoinRoundRequest(req *clientround.JoinRoundRequest,
 	identifier *btcec.PublicKey,
 	auth *clienttypes.JoinRoundAuth) *clienttypes.JoinRoundRequest {
 
+	nBoarding := len(req.BoardingRequests)
+	nVTXO := len(req.VTXORequests)
+	nForfeit := len(req.ForfeitRequests)
+	nLeave := len(req.LeaveRequests)
+
 	shared := &clienttypes.JoinRoundRequest{
-		Identifier:   identifier,
-		BoardingReqs: make([]*clienttypes.BoardingRequest, 0, len(req.BoardingRequests)),
-		VTXOReqs:     make([]*clienttypes.VTXORequest, 0, len(req.VTXORequests)),
-		ForfeitReqs:  make([]*clienttypes.ForfeitRequest, 0, len(req.ForfeitRequests)),
-		LeaveReqs:    make([]*clienttypes.LeaveRequest, 0, len(req.LeaveRequests)),
-		Auth:         auth,
+		Identifier: identifier,
+		BoardingReqs: make(
+			[]*clienttypes.BoardingRequest, 0, nBoarding,
+		),
+		VTXOReqs: make(
+			[]*clienttypes.VTXORequest, 0, nVTXO,
+		),
+		ForfeitReqs: make(
+			[]*clienttypes.ForfeitRequest, 0, nForfeit,
+		),
+		LeaveReqs: make(
+			[]*clienttypes.LeaveRequest, 0, nLeave,
+		),
+		Auth: auth,
 	}
 
 	for i := 0; i < len(req.BoardingRequests); i++ {
@@ -381,16 +409,22 @@ func toSharedJoinRoundRequest(req *clientround.JoinRoundRequest,
 
 	for i := 0; i < len(req.ForfeitRequests); i++ {
 		forfeitReq := req.ForfeitRequests[i]
-		shared.ForfeitReqs = append(shared.ForfeitReqs, &clienttypes.ForfeitRequest{
+		clone := &clienttypes.ForfeitRequest{
 			VTXOOutpoint: &forfeitReq.VTXOOutpoint,
-		})
+		}
+		shared.ForfeitReqs = append(
+			shared.ForfeitReqs, clone,
+		)
 	}
 
 	for i := 0; i < len(req.LeaveRequests); i++ {
 		leaveReq := req.LeaveRequests[i]
-		shared.LeaveReqs = append(shared.LeaveReqs, &clienttypes.LeaveRequest{
+		leaveClone := &clienttypes.LeaveRequest{
 			Output: cloneWireTxOut(leaveReq.Output),
-		})
+		}
+		shared.LeaveReqs = append(
+			shared.LeaveReqs, leaveClone,
+		)
 	}
 
 	return shared
@@ -405,14 +439,27 @@ func cloneClientJoinRoundRequest(
 		return nil
 	}
 
+	nBoarding := len(src.BoardingRequests)
+	nVTXO := len(src.VTXORequests)
+	nForfeit := len(src.ForfeitRequests)
+	nLeave := len(src.LeaveRequests)
+
 	dst := &clientround.JoinRoundRequest{
-		BoardingRequests: make([]clienttypes.BoardingRequest, len(src.BoardingRequests)),
-		VTXORequests:     make([]clienttypes.VTXORequest, len(src.VTXORequests)),
-		ForfeitRequests:  make([]*clientround.ForfeitRequest, len(src.ForfeitRequests)),
-		LeaveRequests:    make([]*clientround.LeaveRequest, len(src.LeaveRequests)),
-		RoundID:          src.RoundID,
-		Identifier:       src.Identifier,
-		Auth:             src.Auth,
+		BoardingRequests: make(
+			[]clienttypes.BoardingRequest, nBoarding,
+		),
+		VTXORequests: make(
+			[]clienttypes.VTXORequest, nVTXO,
+		),
+		ForfeitRequests: make(
+			[]*clientround.ForfeitRequest, nForfeit,
+		),
+		LeaveRequests: make(
+			[]*clientround.LeaveRequest, nLeave,
+		),
+		RoundID:    src.RoundID,
+		Identifier: src.Identifier,
+		Auth:       src.Auth,
 	}
 
 	copy(dst.BoardingRequests, src.BoardingRequests)

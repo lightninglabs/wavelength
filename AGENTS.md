@@ -78,6 +78,23 @@ func (m *ScheduleTimeoutRequest) timeoutMsgSealed() {}
 - Add explanatory comments between stanzas
 - Spacing between switch/select cases
 - When wrapping function calls, put closing paren on its own line with all args on new lines
+- When wrapping function **definitions**, keep the first parameter on the same line as the function name, and the closing `)` on the same line as the last parameter (no trailing comma). This differs from function calls.
+
+```go
+// WRONG: expanded style with dangling close paren
+func foo(
+	arg1 Type1,
+	arg2 Type2,
+) RetType {
+
+// RIGHT: first param on same line, close paren with last param
+func foo(arg1 Type1,
+	arg2 Type2) RetType {
+
+// RIGHT: same rule applies to methods
+func (r *Receiver) bar(ctx context.Context,
+	param Type) error {
+```
 
 ### ast-grep for Code Search and Linting
 
