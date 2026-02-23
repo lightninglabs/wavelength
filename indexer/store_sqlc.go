@@ -330,7 +330,13 @@ func (s *SQLCStore) InsertOORRecipientEvent(ctx context.Context,
 	value int64,
 	createdAt time.Time) (int64, error) {
 
-	rowID, err := s.q.InsertOORRecipientEvent(
+	// The SQL uses ON CONFLICT DO NOTHING, so a PK collision on
+	// (recipient_pk_script, event_id) silently returns
+	// rowsAffected=0 with err=nil instead of raising a constraint
+	// error. We detect this case and surface ErrUniqueViolation so
+	// the CAS retry loop in insertRecipientEvent can increment the
+	// candidate event ID.
+	rowsAffected, err := s.q.InsertOORRecipientEvent(
 		ctx,
 		sqlc.InsertOORRecipientEventParams{
 			RecipientPkScript: recipientPkScript,
@@ -351,7 +357,11 @@ func (s *SQLCStore) InsertOORRecipientEvent(ctx context.Context,
 		return 0, mapped
 	}
 
-	return rowID, nil
+	if rowsAffected == 0 {
+		return 0, ErrUniqueViolation
+	}
+
+	return eventID, nil
 }
 
 // GetMaxOORRecipientEventID implements Store.

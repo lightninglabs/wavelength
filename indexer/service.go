@@ -63,13 +63,12 @@ func (s *Service) SetScriptAuthorizer(authorizer ScriptAuthorizer) {
 }
 
 // authorizeScripts applies the configured script authorization policy.
+//
+// The authorizer is always non-nil: NewService installs AllowAll and
+// SetScriptAuthorizer replaces nil with AllowAll.
 func (s *Service) authorizeScripts(ctx context.Context,
 	principalMailboxID string, purpose string,
 	pkScripts [][]byte) error {
-
-	if s.authorizer == nil {
-		return nil
-	}
 
 	return s.authorizer.AuthorizeScripts(
 		ctx,

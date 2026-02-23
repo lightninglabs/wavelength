@@ -75,6 +75,9 @@ func rpcVTXOFromDB(v VTXORow, roundRow *RoundRow) (*arkrpc.VTXO, error) {
 
 // loadSubtreeInputs queries VTXOs by script and groups them into tree
 // targets and virtual leaves for downstream subtree extraction.
+//
+// Round metadata is batch-fetched in a single query rather than
+// per-round to avoid N+1 round lookups.
 func loadSubtreeInputs(ctx context.Context, q Store,
 	allowedScripts map[string]struct{},
 	allowedScriptBytes [][]byte) (*subtreeDBInputs, error) {
@@ -82,6 +85,44 @@ func loadSubtreeInputs(ctx context.Context, q Store,
 	rows, err := q.ListVTXOsByPkScripts(ctx, allowedScriptBytes)
 	if err != nil {
 		return nil, fmt.Errorf("list vtxos by script: %w", err)
+	}
+
+	// First pass: collect unique round IDs referenced by the
+	// filtered VTXO rows so we can batch-fetch them.
+	uniqueRoundIDs := make(map[rounds.RoundID]struct{})
+	for _, row := range rows {
+		scriptHex := hex.EncodeToString(row.PkScript)
+		if _, ok := allowedScripts[scriptHex]; !ok {
+			continue
+		}
+
+		if row.RoundID != nil {
+			uniqueRoundIDs[*row.RoundID] = struct{}{}
+		}
+	}
+
+	// Batch-fetch all referenced rounds in a single query.
+	roundRowByHex := make(map[string]*RoundRow, len(uniqueRoundIDs))
+	if len(uniqueRoundIDs) > 0 {
+		roundIDSlice := make(
+			[]rounds.RoundID, 0, len(uniqueRoundIDs),
+		)
+		for id := range uniqueRoundIDs {
+			roundIDSlice = append(roundIDSlice, id)
+		}
+
+		roundRows, err := q.ListRoundsByIDs(ctx, roundIDSlice)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"batch fetch rounds: %w", err,
+			)
+		}
+
+		for i := range roundRows {
+			rr := &roundRows[i]
+			hexKey := hex.EncodeToString(rr.RoundID[:])
+			roundRowByHex[hexKey] = rr
+		}
 	}
 
 	inputs := &subtreeDBInputs{
@@ -92,8 +133,8 @@ func loadSubtreeInputs(ctx context.Context, q Store,
 		virtualLeaves:         nil,
 	}
 
-	roundRowByHex := make(map[string]*RoundRow)
-
+	// Second pass: build subtree inputs using pre-fetched round
+	// data.
 	for _, row := range rows {
 		scriptHex := hex.EncodeToString(row.PkScript)
 		if _, ok := allowedScripts[scriptHex]; !ok {
@@ -109,27 +150,9 @@ func loadSubtreeInputs(ctx context.Context, q Store,
 		)
 
 		if hasRound {
-			roundHex = hex.EncodeToString(
-				row.RoundID[:],
-			)
+			roundHex = hex.EncodeToString(row.RoundID[:])
 			inputs.roundIDByHex[roundHex] = *row.RoundID
-
-			rr, ok := roundRowByHex[roundHex]
-			if !ok {
-				rowCopy, err := q.GetRound(
-					ctx, *row.RoundID,
-				)
-				if err != nil {
-					return nil, fmt.Errorf(
-						"get round: %w", err,
-					)
-				}
-
-				rr = &rowCopy
-				roundRowByHex[roundHex] = rr
-			}
-
-			roundRow = rr
+			roundRow = roundRowByHex[roundHex]
 		}
 
 		vtxo, err := rpcVTXOFromDB(row, roundRow)

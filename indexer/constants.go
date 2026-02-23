@@ -15,18 +15,11 @@ const (
 	// envelopes when the operator does not override protocol version.
 	defaultOperatorProtocolVersion = 1
 
-	// defaultOperatorPullMaxEnvelopes is the pull batch size used
-	// by the draft operator loop.
-	defaultOperatorPullMaxEnvelopes = 50
-
 	// indexerServiceName is the protobuf service name used in mailbox meta.
 	indexerServiceName = "arkrpc.IndexerService"
 
 	// responseMsgIDPrefix prefixes mailbox response envelopes.
 	responseMsgIDPrefix = "resp-"
-
-	// eventMsgIDPrefix prefixes mailbox event envelopes.
-	eventMsgIDPrefix = "evt-"
 
 	// purposeListVTXOsByScripts is the canonical purpose string used in
 	// script-scope proofs for ListVTXOsByScripts.
