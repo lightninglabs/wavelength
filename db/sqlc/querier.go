@@ -88,6 +88,7 @@ type Querier interface {
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
 	ListOORRecipientEventsAfterWithSession(ctx context.Context, arg ListOORRecipientEventsAfterWithSessionParams) ([]ListOORRecipientEventsAfterWithSessionRow, error)
 	ListPendingRounds(ctx context.Context) ([]Round, error)
+	ListRoundsByIDs(ctx context.Context, roundIds [][]byte) ([]Round, error)
 	ListVTXOsByPkScripts(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
 	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)

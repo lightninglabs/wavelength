@@ -42,6 +42,10 @@ DO UPDATE SET
 -- name: GetRound :one
 SELECT * FROM rounds WHERE round_id = $1;
 
+-- name: ListRoundsByIDs :many
+SELECT * FROM rounds
+WHERE round_id IN (sqlc.slice('round_ids')/*SLICE:round_ids*/);
+
 -- name: GetRoundVTXOTrees :many
 SELECT * FROM round_vtxo_tree
 WHERE round_id = $1

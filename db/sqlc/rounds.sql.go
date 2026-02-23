@@ -473,6 +473,55 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 	return items, nil
 }
 
+const ListRoundsByIDs = `-- name: ListRoundsByIDs :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+WHERE round_id IN (/*SLICE:round_ids*/?)
+`
+
+func (q *Queries) ListRoundsByIDs(ctx context.Context, roundIds [][]byte) ([]Round, error) {
+	query := ListRoundsByIDs
+	var queryParams []interface{}
+	if len(roundIds) > 0 {
+		for _, v := range roundIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:round_ids*/?", makeQueryParams(len(queryParams), len(roundIds)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:round_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByPkScripts = `-- name: ListVTXOsByPkScripts :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE pk_script IN (/*SLICE:pk_scripts*/?)
