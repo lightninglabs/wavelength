@@ -42,6 +42,10 @@ type JoinRoundRequest struct {
 	// RoundID is optional; when empty it instructs the server to assign
 	// a new round. When non-empty, the request is for the specified round.
 	RoundID string
+
+	// Auth contains the BIP-322 authorization payload for this
+	// request. Nil when join request auth is disabled (tests).
+	Auth *types.JoinRoundAuth
 }
 
 // ForfeitRequest describes a VTXO that will be forfeited in the round.

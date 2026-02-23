@@ -364,6 +364,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		&chaincfg.RegressionNetParams, defaultMaxOperatorFee,
 		btclog.Disabled, testStartHeight,
 	)
+	env.DisableJoinRequestAuth = true
 
 	// The join-round transition always derives a fresh identifier key,
 	// so wire up a default mock that returns a valid key descriptor.
