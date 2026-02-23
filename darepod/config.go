@@ -164,6 +164,14 @@ func (c *Config) Validate() error {
 	if c.Server.Host == "" {
 		return fmt.Errorf("server host is required")
 	}
+	if c.Server.LocalMailboxID == "" {
+		return fmt.Errorf("server local mailbox ID is " +
+			"required")
+	}
+	if c.Server.RemoteMailboxID == "" {
+		return fmt.Errorf("server remote mailbox ID is " +
+			"required")
+	}
 
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
@@ -186,7 +194,8 @@ func (c *Config) LogDir() string {
 	return filepath.Join(expandTilde(c.DataDir), "logs", c.Network)
 }
 
-// expandTilde replaces a leading ~ with the user's home directory.
+// expandTilde replaces a leading ~ or ~/ with the user's home
+// directory. For example, "~/.darepod" becomes "/home/user/.darepod".
 func expandTilde(path string) string {
 	if len(path) == 0 || path[0] != '~' {
 		return path
@@ -197,5 +206,14 @@ func expandTilde(path string) string {
 		return path
 	}
 
-	return filepath.Join(home, path[1:])
+	// Strip the leading "~" and any path separator that follows
+	// it, so filepath.Join receives a relative suffix. Without
+	// this, "~/.darepod" would produce path[1:] == "/.darepod"
+	// which is absolute and causes Join to discard home.
+	suffix := path[1:]
+	if len(suffix) > 0 && os.IsPathSeparator(suffix[0]) {
+		suffix = suffix[1:]
+	}
+
+	return filepath.Join(home, suffix)
 }

@@ -29,9 +29,10 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "darepod",
 		Short: "Ark client daemon",
-		Long: "darepod is the Ark protocol client daemon. It connects " +
-			"to an lnd node and an ark operator server, exposing " +
-			"a gRPC API for wallet operations.",
+		Long: "darepod is the Ark protocol client daemon. " +
+			"It connects to an lnd node and an ark " +
+			"operator server, exposing a gRPC API " +
+			"for wallet operations.",
 		Version: build.Version(),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			// Merge flags, environment variables, and config

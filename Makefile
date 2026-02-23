@@ -360,7 +360,6 @@ install: #? Build and install binaries to GOPATH/bin
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
 	$(RM) ./merge-sql-schemas
-	$(RM) -r ./bin/darepod
 	$(RM) -r ./bin
 
 # ============
