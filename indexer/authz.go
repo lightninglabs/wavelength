@@ -5,9 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
-
-	"github.com/lightninglabs/darepo/db"
-	"github.com/lightninglabs/darepo/db/sqlc"
 )
 
 // ScriptAuthorizationRequest describes a script-scoped access check.
@@ -51,12 +48,12 @@ func (a *AllowAllScriptAuthorizer) AuthorizeScripts(_ context.Context,
 // RegistrationScriptAuthorizer enforces that principals can only access scripts
 // they currently registered through the indexer registration API.
 type RegistrationScriptAuthorizer struct {
-	store *db.Store
+	store ScriptRegistrationReader
 }
 
 // NewRegistrationScriptAuthorizer creates a registration-backed authorizer.
 func NewRegistrationScriptAuthorizer(
-	store *db.Store) *RegistrationScriptAuthorizer {
+	store ScriptRegistrationReader) *RegistrationScriptAuthorizer {
 
 	return &RegistrationScriptAuthorizer{
 		store: store,
@@ -78,12 +75,8 @@ func (a *RegistrationScriptAuthorizer) AuthorizeScripts(ctx context.Context,
 		return nil
 	}
 
-	rows, err := a.store.Queries.ListActiveIndexerReceiveScriptsByPrincipal(
-		ctx,
-		sqlc.ListActiveIndexerReceiveScriptsByPrincipalParams{
-			PrincipalMailboxID: req.PrincipalMailboxID,
-			ExpiresAtUnixS:     req.Now.Unix(),
-		},
+	rows, err := a.store.ListActiveReceiveScriptsByPrincipal(
+		ctx, req.PrincipalMailboxID, req.Now,
 	)
 	if err != nil {
 		return fmt.Errorf("list active scripts: %w", err)

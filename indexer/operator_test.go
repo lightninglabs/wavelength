@@ -187,7 +187,8 @@ func TestOperatorDispatchers(t *testing.T) {
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
 
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	op, err := indexer.NewOperator(indexer.OperatorConfig{
 		Edge:            edge,
 		SenderMailboxID: testSenderMailboxID,
@@ -229,9 +230,10 @@ func TestOperatorDispatcherRegisterAndList(t *testing.T) {
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
 
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	svc.SetScriptAuthorizer(
-		indexer.NewRegistrationScriptAuthorizer(store),
+		indexer.NewRegistrationScriptAuthorizer(sqlcStore),
 	)
 
 	op, err := indexer.NewOperator(indexer.OperatorConfig{
@@ -325,9 +327,10 @@ func TestOperatorPublishOORRecipientEvent(t *testing.T) {
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
 
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	svc.SetScriptAuthorizer(
-		indexer.NewRegistrationScriptAuthorizer(store),
+		indexer.NewRegistrationScriptAuthorizer(sqlcStore),
 	)
 
 	op, err := indexer.NewOperator(indexer.OperatorConfig{
@@ -410,9 +413,10 @@ func TestOperatorPublishVTXOEvent(t *testing.T) {
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
 
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	svc.SetScriptAuthorizer(
-		indexer.NewRegistrationScriptAuthorizer(store),
+		indexer.NewRegistrationScriptAuthorizer(sqlcStore),
 	)
 
 	op, err := indexer.NewOperator(indexer.OperatorConfig{
@@ -480,7 +484,8 @@ func TestNewOperatorValidation(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	edge := &recordingEdge{}
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
@@ -538,7 +543,8 @@ func TestOperatorDispatcherNilEnvelope(t *testing.T) {
 	bridge := clientconn.NewClientsConnBridge()
 	defer bridge.Stop()
 
-	svc := indexer.NewService(testServerID, store)
+	sqlcStore := indexer.NewSQLCStore(store.Queries)
+	svc := indexer.NewService(testServerID, sqlcStore)
 	op, err := indexer.NewOperator(indexer.OperatorConfig{
 		Edge:            edge,
 		SenderMailboxID: testSenderMailboxID,

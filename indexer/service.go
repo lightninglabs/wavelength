@@ -2,16 +2,15 @@ package indexer
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo/db"
-	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -29,7 +28,7 @@ type Service struct {
 	serverID string
 	now      func() time.Time
 
-	store *db.Store
+	store Store
 
 	authorizer ScriptAuthorizer
 }
@@ -40,7 +39,7 @@ type Service struct {
 // SetScriptAuthorizer with a restrictive policy (e.g.
 // RegistrationScriptAuthorizer) before serving production traffic. The
 // server's setupIndexerSubsystem wires this automatically.
-func NewService(serverID string, store *db.Store) *Service {
+func NewService(serverID string, store Store) *Service {
 	return &Service{
 		serverID: serverID,
 		now:      time.Now,
@@ -136,7 +135,7 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 			req.GetTaprootSchnorr().GetMessage(),
 		)
 		if err == nil && msg.ExpiresAt > 0 {
-			expiresAt = uint64(msg.ExpiresAt)
+			expiresAt = msg.ExpiresAt
 		}
 	}
 
@@ -147,15 +146,13 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 		)
 	}
 
-	err := s.store.Queries.UpsertIndexerReceiveScript(
+	err := s.store.UpsertReceiveScript(
 		ctx,
-		sqlc.UpsertIndexerReceiveScriptParams{
-			PrincipalMailboxID: principal.MailboxID,
-			PkScript:           append([]byte(nil), pkScript...),
-			ExpiresAtUnixS:     int64(expiresAt),
-			Label:              req.Label,
-			UpdatedAt:          s.now().UnixNano(),
-		},
+		principal.MailboxID,
+		append([]byte(nil), pkScript...),
+		time.Unix(int64(expiresAt), 0),
+		req.Label,
+		s.now(),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -184,14 +181,9 @@ func (s *Service) ListMyReceiveScripts(ctx context.Context,
 		)
 	}
 
-	query := sqlc.ListActiveIndexerReceiveScriptsByPrincipalParams{
-		PrincipalMailboxID: principal.MailboxID,
-		ExpiresAtUnixS:     s.now().Unix(),
-	}
-	scripts, err := s.store.Queries.
-		ListActiveIndexerReceiveScriptsByPrincipal(
-			ctx, query,
-		)
+	scripts, err := s.store.ListActiveReceiveScriptsByPrincipal(
+		ctx, principal.MailboxID, s.now(),
+	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -200,7 +192,7 @@ func (s *Service) ListMyReceiveScripts(ctx context.Context,
 	for _, reg := range scripts {
 		out = append(out, &arkrpc.RegisteredReceiveScript{
 			PkScript:       append([]byte(nil), reg.PkScript...),
-			ExpiresAtUnixS: uint64(reg.ExpiresAtUnixS),
+			ExpiresAtUnixS: uint64(reg.ExpiresAt.Unix()),
 			Label:          reg.Label,
 		})
 	}
@@ -243,12 +235,10 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 		)
 	}
 
-	_, err := s.store.Queries.DeleteIndexerReceiveScript(
+	_, err := s.store.DeleteReceiveScript(
 		ctx,
-		sqlc.DeleteIndexerReceiveScriptParams{
-			PrincipalMailboxID: principal.MailboxID,
-			PkScript:           append([]byte(nil), pkScript...),
-		},
+		principal.MailboxID,
+		append([]byte(nil), pkScript...),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -312,13 +302,11 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 		)
 	}
 
-	rows, err := s.store.Queries.ListOORRecipientEventsAfterWithSession(
+	rows, err := s.store.ListOORRecipientEventsAfterWithSession(
 		ctx,
-		sqlc.ListOORRecipientEventsAfterWithSessionParams{
-			RecipientPkScript: append([]byte(nil), pkScript...),
-			EventID:           int64(req.AfterEventId),
-			Limit:             int32(limit),
-		},
+		append([]byte(nil), pkScript...),
+		int64(req.AfterEventId),
+		int32(limit),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -413,7 +401,7 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		)
 	}
 
-	q := s.store.Queries
+	q := s.store
 
 	rows, err := q.ListVTXOsByPkScripts(ctx, allowedScriptBytes)
 	if err != nil {
@@ -422,23 +410,24 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 
 	// Collect unique round IDs so we can batch-fetch round metadata
 	// in a single query rather than issuing one query per VTXO.
-	roundIDSet := make(map[string][]byte)
+	roundIDSet := make(map[rounds.RoundID]struct{})
 	for _, row := range rows {
-		if len(row.RoundID) == 0 {
+		if row.RoundID == nil {
 			continue
 		}
 
-		roundHex := hex.EncodeToString(row.RoundID)
-		if _, ok := roundIDSet[roundHex]; !ok {
-			roundIDSet[roundHex] = row.RoundID
-		}
+		roundIDSet[*row.RoundID] = struct{}{}
 	}
 
-	roundRowByHex := make(map[string]*sqlc.Round, len(roundIDSet))
+	roundRowByID := make(
+		map[rounds.RoundID]*RoundRow, len(roundIDSet),
+	)
 
 	if len(roundIDSet) > 0 {
-		uniqueIDs := make([][]byte, 0, len(roundIDSet))
-		for _, id := range roundIDSet {
+		uniqueIDs := make(
+			[]rounds.RoundID, 0, len(roundIDSet),
+		)
+		for id := range roundIDSet {
 			uniqueIDs = append(uniqueIDs, id)
 		}
 
@@ -451,8 +440,7 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 
 		for i := range roundRows {
 			rr := &roundRows[i]
-			rHex := hex.EncodeToString(rr.RoundID)
-			roundRowByHex[rHex] = rr
+			roundRowByID[rr.RoundID] = rr
 		}
 	}
 
@@ -465,8 +453,10 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 			continue
 		}
 
-		roundHex := hex.EncodeToString(row.RoundID)
-		rr := roundRowByHex[roundHex]
+		var rr *RoundRow
+		if row.RoundID != nil {
+			rr = roundRowByID[*row.RoundID]
+		}
 
 		vtxo, err := rpcVTXOFromDB(row, rr)
 		if err != nil {
@@ -578,10 +568,8 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 		)
 	}
 
-	q := s.store.Queries
-
 	inputs, err := loadSubtreeInputs(
-		ctx, q, allowedScripts, allowedScriptBytes,
+		ctx, s.store, allowedScripts, allowedScriptBytes,
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -594,8 +582,8 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 	for key, targets := range inputs.targetOutpointsByTree {
 		roundID := inputs.roundIDByHex[key.roundIDHex]
 
-		fullTree, err := loadRoundVTXOTree(
-			ctx, q, roundID, key.batchIdx,
+		fullTree, err := s.store.LoadVTXOTree(
+			ctx, roundID, key.batchIdx,
 		)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
@@ -626,7 +614,7 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 	}
 
 	if err := enrichVirtualLeafProofs(
-		ctx, q, inputs.virtualLeaves,
+		ctx, s.store, inputs.virtualLeaves,
 	); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -751,13 +739,11 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 		)
 	}
 
-	rows, err := s.store.Queries.ListIndexerVTXOEventsAfterByScripts(
+	rows, err := s.store.ListVTXOEventsAfterByScripts(
 		ctx,
-		sqlc.ListIndexerVTXOEventsAfterByScriptsParams{
-			EventID:   int64(req.AfterEventId),
-			Limit:     int32(limit),
-			PkScripts: allowedScriptBytes,
-		},
+		int64(req.AfterEventId),
+		allowedScriptBytes,
+		int32(limit),
 	)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -766,23 +752,15 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 	var out []*arkrpc.VTXOEvent
 	var nextCursor uint64
 	for _, row := range rows {
-		outpoint, err := wireOutPointFromDBRow(
-			row.OutpointHash, row.OutpointIndex,
-		)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-
 		event := &arkrpc.VTXOEvent{
 			EventId: uint64(row.EventID),
 			Type:    vtxoEventTypeFromStore(row.EventType),
 			Outpoint: &arkrpc.OutPoint{
-				Txid: outpoint.Hash[:],
-				Vout: outpoint.Index,
+				Txid: row.Outpoint.Hash[:],
+				Vout: row.Outpoint.Index,
 			},
-			Status: VTXOStatusFromStore(row.Status),
-			CreatedAtUnixMs: row.CreatedAt /
-				int64(time.Millisecond),
+			Status:          VTXOStatusFromStore(row.Status),
+			CreatedAtUnixMs: row.CreatedAt.UnixMilli(),
 		}
 
 		out = append(out, event)
@@ -815,25 +793,21 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 		return nil, nil, fmt.Errorf("indexer database not configured")
 	}
 
-	q := s.store.Queries
+	q := s.store
 
-	params := sqlc.GetOORRecipientEventBySessionOutputParams{
-		RecipientPkScript: append([]byte(nil),
-			ev.RecipientPkScript...),
-		SessionID: append([]byte(nil),
-			ev.SessionId...),
-		OutputIndex: int32(ev.OutputIndex),
-	}
 	storedEvent, err := q.GetOORRecipientEventBySessionOutput(
-		ctx, params,
+		ctx,
+		append([]byte(nil), ev.RecipientPkScript...),
+		append([]byte(nil), ev.SessionId...),
+		int32(ev.OutputIndex),
 	)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, nil, fmt.Errorf(
 			"get existing recipient event: %w", err,
 		)
 	}
 
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, ErrNotFound) {
 		// Look up the OOR session's internal DB ID from the
 		// session_id bytes so we can reference it as a foreign key
 		// in the recipient event row.
@@ -852,7 +826,7 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 			int32(sessionRow.ID),
 			int32(ev.OutputIndex),
 			int64(ev.Value),
-			s.now().UnixNano(),
+			s.now(),
 		)
 		if insertErr != nil {
 			return nil, nil, insertErr
@@ -860,13 +834,9 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 
 		storedEvent, err = q.GetOORRecipientEventBySessionOutput(
 			ctx,
-			sqlc.GetOORRecipientEventBySessionOutputParams{
-				RecipientPkScript: append([]byte(nil),
-					ev.RecipientPkScript...),
-				SessionID: append([]byte(nil),
-					ev.SessionId...),
-				OutputIndex: int32(ev.OutputIndex),
-			},
+			append([]byte(nil), ev.RecipientPkScript...),
+			append([]byte(nil), ev.SessionId...),
+			int32(ev.OutputIndex),
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf(
@@ -879,13 +849,10 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 		storedEvent.EventID = int64(eventID)
 	}
 
-	rows, err := q.ListActiveIndexerReceivePrincipalsByScript(
+	rows, err := q.ListActiveReceivePrincipalsByScript(
 		ctx,
-		sqlc.ListActiveIndexerReceivePrincipalsByScriptParams{
-			PkScript: append([]byte(nil),
-				ev.RecipientPkScript...),
-			ExpiresAtUnixS: s.now().Unix(),
-		},
+		append([]byte(nil), ev.RecipientPkScript...),
+		s.now(),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list active principals: %w", err)
@@ -926,27 +893,25 @@ func (s *Service) AddVTXOEvent(ctx context.Context, pkScript []byte,
 	}
 
 	now := s.now()
-	insertedEventID, err := s.store.Queries.InsertIndexerVTXOEvent(
+
+	var op wire.OutPoint
+	copy(op.Hash[:], outpoint.Txid)
+	op.Index = outpoint.Vout
+
+	insertedEventID, err := s.store.InsertVTXOEvent(
 		ctx,
-		sqlc.InsertIndexerVTXOEventParams{
-			PkScript:      append([]byte(nil), pkScript...),
-			EventType:     vtxoEventTypeToStore(evType),
-			OutpointHash:  append([]byte(nil), outpoint.Txid...),
-			OutpointIndex: int32(outpoint.Vout),
-			Status:        storeVTXOStatusFromRPC(st),
-			CreatedAt:     now.UnixNano(),
-		},
+		append([]byte(nil), pkScript...),
+		vtxoEventTypeToStore(evType),
+		op,
+		storeVTXOStatusFromRPC(st),
+		now,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("insert vtxo event: %w", err)
 	}
 
-	rows, err := s.store.Queries.ListActiveIndexerReceivePrincipalsByScript(
-		ctx,
-		sqlc.ListActiveIndexerReceivePrincipalsByScriptParams{
-			PkScript:       append([]byte(nil), pkScript...),
-			ExpiresAtUnixS: now.Unix(),
-		},
+	rows, err := s.store.ListActiveReceivePrincipalsByScript(
+		ctx, append([]byte(nil), pkScript...), now,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list active principals: %w", err)
@@ -1025,8 +990,8 @@ func cloneOutPoint(op *arkrpc.OutPoint) *arkrpc.OutPoint {
 // insertRecipientEvent inserts a per-script monotonic recipient event id with
 // retry on unique-constraint races.
 func (s *Service) insertRecipientEvent(ctx context.Context,
-	pkScript []byte, sessionDbID, outputIndex int32,
-	value, createdAt int64) (uint64, error) {
+	pkScript []byte, sessionDBID, outputIndex int32,
+	value int64, createdAt time.Time) (uint64, error) {
 
 	// maxRecipientInsertAttempts bounds the CAS retry loop for allocating
 	// a per-script monotonic event ID. Under contention multiple writers
@@ -1034,7 +999,7 @@ func (s *Service) insertRecipientEvent(ctx context.Context,
 	// for realistic concurrency without spinning indefinitely.
 	const maxRecipientInsertAttempts = 32
 
-	nextID, err := s.store.Queries.GetMaxOORRecipientEventID(ctx, pkScript)
+	nextID, err := s.store.GetMaxOORRecipientEventID(ctx, pkScript)
 	if err != nil {
 		return 0, fmt.Errorf("get max recipient event id: %w", err)
 	}
@@ -1042,30 +1007,22 @@ func (s *Service) insertRecipientEvent(ctx context.Context,
 	nextID++
 
 	for i := 0; i < maxRecipientInsertAttempts; i++ {
-		_, err = s.store.Queries.InsertOORRecipientEvent(
+		_, err = s.store.InsertOORRecipientEvent(
 			ctx,
-			sqlc.InsertOORRecipientEventParams{
-				RecipientPkScript: append([]byte(nil),
-					pkScript...),
-				EventID:     nextID,
-				SessionDbID: sessionDbID,
-				OutputIndex: outputIndex,
-				Value:       value,
-				CreatedAt:   createdAt,
-			},
+			append([]byte(nil), pkScript...),
+			nextID, sessionDBID, outputIndex,
+			value, createdAt,
 		)
 		if err == nil {
 			return uint64(nextID), nil
 		}
 
-		mapped := db.MapSQLError(err)
-		var uniqueErr *db.ErrSQLUniqueConstraintViolation
-		if errors.As(mapped, &uniqueErr) {
+		if errors.Is(err, ErrUniqueViolation) {
 			nextID++
 			continue
 		}
 
-		return 0, mapped
+		return 0, err
 	}
 
 	return 0, fmt.Errorf(

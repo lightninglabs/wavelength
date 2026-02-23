@@ -3,19 +3,14 @@ package indexer
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
-	"github.com/lightninglabs/darepo/db"
-	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 )
 
@@ -25,7 +20,7 @@ type subtreeTreeKey struct {
 }
 
 type subtreeVirtualLeaf struct {
-	row  sqlc.Vtxo
+	row  VTXORow
 	leaf *arkrpc.VTXO
 }
 
@@ -41,50 +36,18 @@ type subtreeDBInputs struct {
 	virtualLeaves []*subtreeVirtualLeaf
 }
 
-func roundIDFromBytes(b []byte) (rounds.RoundID, error) {
-	if len(b) != 16 {
-		return rounds.RoundID{}, fmt.Errorf(
-			"unexpected round_id length: %d", len(b),
-		)
-	}
-
-	var id rounds.RoundID
-	copy(id[:], b)
-
-	return id, nil
-}
-
-func wireOutPointFromDBRow(outHash []byte, outIndex int32) (wire.OutPoint,
-	error) {
-
-	if len(outHash) != 32 {
-		return wire.OutPoint{}, fmt.Errorf(
-			"unexpected outpoint hash length: %d", len(outHash),
-		)
-	}
-
-	var op wire.OutPoint
-	copy(op.Hash[:], outHash)
-	op.Index = uint32(outIndex)
-
-	return op, nil
-}
-
-func rpcVTXOFromDB(v sqlc.Vtxo, roundRow *sqlc.Round) (*arkrpc.VTXO, error) {
-	op, err := wireOutPointFromDBRow(v.OutpointHash, v.OutpointIndex)
-	if err != nil {
-		return nil, err
-	}
-
+// rpcVTXOFromDB converts an indexer VTXORow and optional RoundRow
+// into the proto VTXO representation used in RPC responses.
+func rpcVTXOFromDB(v VTXORow, roundRow *RoundRow) (*arkrpc.VTXO, error) {
 	var batchIndex uint32
-	if v.BatchOutputIndex.Valid {
-		batchIndex = uint32(v.BatchOutputIndex.Int32)
+	if v.BatchOutputIndex != nil {
+		batchIndex = uint32(*v.BatchOutputIndex)
 	}
 
 	out := &arkrpc.VTXO{
 		Outpoint: &arkrpc.OutPoint{
-			Txid: op.Hash[:],
-			Vout: op.Index,
+			Txid: v.Outpoint.Hash[:],
+			Vout: v.Outpoint.Index,
 		},
 		ValueSat:         uint64(v.Amount),
 		PkScript:         append([]byte(nil), v.PkScript...),
@@ -92,34 +55,16 @@ func rpcVTXOFromDB(v sqlc.Vtxo, roundRow *sqlc.Round) (*arkrpc.VTXO, error) {
 		BatchOutputIndex: batchIndex,
 	}
 
-	switch len(v.RoundID) {
-	case 0:
-		// Virtual/OOR VTXOs have no direct round linkage.
-
-	case 16:
-		roundID, err := roundIDFromBytes(v.RoundID)
-		if err != nil {
-			return nil, err
-		}
-
-		out.RoundId = roundID.String()
-
-	default:
-		return nil, fmt.Errorf(
-			"unexpected round_id length: %d", len(v.RoundID),
-		)
+	if v.RoundID != nil {
+		out.RoundId = v.RoundID.String()
 	}
 
 	if roundRow != nil {
-		if roundRow.CommitmentTxid != "" {
-			txidHex := roundRow.CommitmentTxid
-			txidBytes, err := hex.DecodeString(txidHex)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"decode commitment_txid: %w", err,
-				)
-			}
-			out.CommitmentTxid = txidBytes
+		// CommitmentTxid is a chainhash.Hash; zero-value means
+		// no commitment yet.
+		zeroHash := [32]byte{}
+		if roundRow.CommitmentTxid != zeroHash {
+			out.CommitmentTxid = roundRow.CommitmentTxid[:]
 		}
 
 		out.RelativeExpiry = uint32(roundRow.CsvDelay)
@@ -128,9 +73,11 @@ func rpcVTXOFromDB(v sqlc.Vtxo, roundRow *sqlc.Round) (*arkrpc.VTXO, error) {
 	return out, nil
 }
 
-func loadSubtreeInputs(ctx context.Context, q *sqlc.Queries,
-	allowedScripts map[string]struct{}, allowedScriptBytes [][]byte) (
-	*subtreeDBInputs, error) {
+// loadSubtreeInputs queries VTXOs by script and groups them into tree
+// targets and virtual leaves for downstream subtree extraction.
+func loadSubtreeInputs(ctx context.Context, q Store,
+	allowedScripts map[string]struct{},
+	allowedScriptBytes [][]byte) (*subtreeDBInputs, error) {
 
 	rows, err := q.ListVTXOsByPkScripts(ctx, allowedScriptBytes)
 	if err != nil {
@@ -145,7 +92,7 @@ func loadSubtreeInputs(ctx context.Context, q *sqlc.Queries,
 		virtualLeaves:         nil,
 	}
 
-	roundRowByHex := make(map[string]*sqlc.Round)
+	roundRowByHex := make(map[string]*RoundRow)
 
 	for _, row := range rows {
 		scriptHex := hex.EncodeToString(row.PkScript)
@@ -153,22 +100,25 @@ func loadSubtreeInputs(ctx context.Context, q *sqlc.Queries,
 			continue
 		}
 
-		roundHex := hex.EncodeToString(row.RoundID)
-		hasRound := len(row.RoundID) > 0
-		hasTreeLink := hasRound && row.BatchOutputIndex.Valid
+		hasRound := row.RoundID != nil
+		hasTreeLink := hasRound && row.BatchOutputIndex != nil
 
-		var roundRow *sqlc.Round
+		var (
+			roundHex string
+			roundRow *RoundRow
+		)
+
 		if hasRound {
-			rid, err := roundIDFromBytes(row.RoundID)
-			if err != nil {
-				return nil, err
-			}
-
-			inputs.roundIDByHex[roundHex] = rid
+			roundHex = hex.EncodeToString(
+				row.RoundID[:],
+			)
+			inputs.roundIDByHex[roundHex] = *row.RoundID
 
 			rr, ok := roundRowByHex[roundHex]
 			if !ok {
-				rowCopy, err := q.GetRound(ctx, row.RoundID)
+				rowCopy, err := q.GetRound(
+					ctx, *row.RoundID,
+				)
 				if err != nil {
 					return nil, fmt.Errorf(
 						"get round: %w", err,
@@ -194,7 +144,8 @@ func loadSubtreeInputs(ctx context.Context, q *sqlc.Queries,
 		}
 
 		if !hasTreeLink {
-			inputs.virtualLeaves = append(inputs.virtualLeaves,
+			inputs.virtualLeaves = append(
+				inputs.virtualLeaves,
 				&subtreeVirtualLeaf{
 					row:  row,
 					leaf: vtxo,
@@ -204,80 +155,22 @@ func loadSubtreeInputs(ctx context.Context, q *sqlc.Queries,
 			continue
 		}
 
-		wireOP, err := wireOutPointFromDBRow(
-			row.OutpointHash, row.OutpointIndex,
-		)
-		if err != nil {
-			return nil, err
-		}
-
 		key := subtreeTreeKey{
 			roundIDHex: roundHex,
-			batchIdx:   int(row.BatchOutputIndex.Int32),
+			batchIdx:   int(*row.BatchOutputIndex),
 		}
 
 		inputs.targetOutpointsByTree[key] = append(
-			inputs.targetOutpointsByTree[key], wireOP,
+			inputs.targetOutpointsByTree[key],
+			row.Outpoint,
 		)
 	}
 
 	return inputs, nil
 }
 
-func loadRoundVTXOTree(ctx context.Context, q *sqlc.Queries,
-	roundID rounds.RoundID, batchOutputIndex int) (*tree.Tree, error) {
-
-	roundRow, err := q.GetRound(ctx, roundID[:])
-	if err != nil {
-		return nil, fmt.Errorf("get round: %w", err)
-	}
-
-	if len(roundRow.FinalTx) == 0 {
-		return nil, fmt.Errorf("missing final tx")
-	}
-
-	finalTx := &wire.MsgTx{}
-	if err := finalTx.Deserialize(
-		bytes.NewReader(roundRow.FinalTx),
-	); err != nil {
-		return nil, fmt.Errorf("deserialize final tx: %w", err)
-	}
-
-	sweepKey, err := btcec.ParsePubKey(roundRow.SweepKey)
-	if err != nil {
-		return nil, fmt.Errorf("parse sweep key: %w", err)
-	}
-
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
-		sweepKey, uint32(roundRow.CsvDelay),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("compute sweep tapscript: %w", err)
-	}
-	sweepTapRoot := sweepTapLeaf.TapHash()
-
-	commitmentTxid := finalTx.TxHash()
-	batchOutpoint := wire.OutPoint{
-		Hash:  commitmentTxid,
-		Index: uint32(batchOutputIndex),
-	}
-
-	if batchOutputIndex < 0 || batchOutputIndex >= len(finalTx.TxOut) {
-		return nil, fmt.Errorf("batch output index out of range")
-	}
-	batchOutput := finalTx.TxOut[batchOutputIndex]
-
-	vtxoTree, err := db.DeserializeTreeRecursive(
-		ctx, q, roundID, batchOutputIndex,
-		batchOutpoint, batchOutput, sweepTapRoot[:],
-	)
-	if err != nil {
-		return nil, fmt.Errorf("deserialize tree: %w", err)
-	}
-
-	return vtxoTree, nil
-}
-
+// extractTreeForOutpoints extracts the minimal subtree containing the
+// paths to the given target outpoints from the full VTXO tree.
 func extractTreeForOutpoints(fullTree *tree.Tree,
 	targetOutpoints []wire.OutPoint) (*tree.Tree, error) {
 
@@ -306,13 +199,17 @@ func extractTreeForOutpoints(fullTree *tree.Tree,
 	for _, op := range targetOutpoints {
 		idx, ok := leafIndexByOutpoint[op.String()]
 		if !ok {
-			return nil, fmt.Errorf("outpoint not found in tree")
+			return nil, fmt.Errorf(
+				"outpoint not found in tree",
+			)
 		}
 
 		targetLeafIndices = append(targetLeafIndices, idx)
 	}
 
-	extracted, err := fullTree.ExtractPathForIndices(targetLeafIndices...)
+	extracted, err := fullTree.ExtractPathForIndices(
+		targetLeafIndices...,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("extract subtree: %w", err)
 	}
@@ -320,6 +217,8 @@ func extractTreeForOutpoints(fullTree *tree.Tree,
 	return extracted, nil
 }
 
+// serializeNodeSignedTx extracts and serializes the signed (or
+// unsigned) transaction from a tree node.
 func serializeNodeSignedTx(node *tree.Node) ([]byte, error) {
 	tx, err := node.ToSignedTx()
 	if err != nil {
@@ -337,7 +236,11 @@ func serializeNodeSignedTx(node *tree.Node) ([]byte, error) {
 	return signedTxBuf.Bytes(), nil
 }
 
-func collectLeafProofTXs(extracted *tree.Tree) (map[string][]byte, error) {
+// collectLeafProofTXs serializes every leaf transaction in the
+// extracted subtree, keyed by txid hex.
+func collectLeafProofTXs(
+	extracted *tree.Tree) (map[string][]byte, error) {
+
 	if extracted == nil || extracted.Root == nil {
 		return nil, fmt.Errorf("missing extracted tree")
 	}
@@ -360,7 +263,10 @@ func collectLeafProofTXs(extracted *tree.Tree) (map[string][]byte, error) {
 	return leafTXByTxid, nil
 }
 
-func enrichVirtualLeafProofs(ctx context.Context, q *sqlc.Queries,
+// enrichVirtualLeafProofs populates OOR proof data (Ark PSBT,
+// checkpoint PSBTs, leaf tx) for virtual VTXO leaves that are linked
+// to finalized OOR sessions.
+func enrichVirtualLeafProofs(ctx context.Context, q OORReader,
 	virtualLeaves []*subtreeVirtualLeaf) error {
 
 	for _, virtualLeaf := range virtualLeaves {
@@ -369,18 +275,13 @@ func enrichVirtualLeafProofs(ctx context.Context, q *sqlc.Queries,
 		}
 		leaf := virtualLeaf.leaf
 
-		lookupParams := sqlc.GetOORRecipientEventBySessionOutputParams{
-			RecipientPkScript: append([]byte(nil),
-				virtualLeaf.row.PkScript...),
-			SessionID: append([]byte(nil),
-				virtualLeaf.row.OutpointHash...),
-			OutputIndex: virtualLeaf.row.OutpointIndex,
-		}
-
 		_, err := q.GetOORRecipientEventBySessionOutput(
-			ctx, lookupParams,
+			ctx,
+			append([]byte(nil), virtualLeaf.row.PkScript...),
+			virtualLeaf.row.Outpoint.Hash[:],
+			int32(virtualLeaf.row.Outpoint.Index),
 		)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
@@ -388,15 +289,17 @@ func enrichVirtualLeafProofs(ctx context.Context, q *sqlc.Queries,
 		}
 
 		sessionID := append(
-			[]byte(nil), virtualLeaf.row.OutpointHash...,
+			[]byte(nil),
+			virtualLeaf.row.Outpoint.Hash[:]...,
 		)
 		sessionRow, err := q.GetOORSession(ctx, sessionID)
 		if err != nil {
 			return err
 		}
 
-		leaf.OorArkPsbt = append([]byte(nil),
-			sessionRow.ArkPsbt...)
+		leaf.OorArkPsbt = append(
+			[]byte(nil), sessionRow.ArkPsbt...,
+		)
 
 		if len(sessionRow.ArkPsbt) > 0 {
 			leafTx := extractSerializedPSBTTX(
@@ -407,20 +310,23 @@ func enrichVirtualLeafProofs(ctx context.Context, q *sqlc.Queries,
 			}
 		}
 
-		checkpointRows, err := q.ListOORCheckpoints(
+		checkpoints, err := q.ListOORCheckpoints(
 			ctx, int32(sessionRow.ID),
 		)
 		if err != nil {
 			return err
 		}
 
-		for _, checkpointRow := range checkpointRows {
+		for _, cp := range checkpoints {
+			cpBytes, err := serializePSBT(cp.Psbt)
+			if err != nil {
+				return fmt.Errorf(
+					"serialize checkpoint: %w", err,
+				)
+			}
+
 			leaf.OorFinalCheckpointPsbts = append(
-				leaf.OorFinalCheckpointPsbts,
-				append(
-					[]byte(nil),
-					checkpointRow.CheckpointPsbt...,
-				),
+				leaf.OorFinalCheckpointPsbts, cpBytes,
 			)
 		}
 	}
@@ -428,12 +334,15 @@ func enrichVirtualLeafProofs(ctx context.Context, q *sqlc.Queries,
 	return nil
 }
 
-// extractSerializedPSBTTX extracts and serializes the final TX from a PSBT.
+// extractSerializedPSBTTX extracts and serializes the final TX from a
+// PSBT.
 //
-// The indexer treats this proof material as optional and returns nil when the
-// PSBT cannot be decoded or extracted.
+// The indexer treats this proof material as optional and returns nil
+// when the PSBT cannot be decoded or extracted.
 func extractSerializedPSBTTX(packet []byte) []byte {
-	pkt, err := psbt.NewFromRawBytes(bytes.NewReader(packet), false)
+	pkt, err := psbt.NewFromRawBytes(
+		bytes.NewReader(packet), false,
+	)
 	if err != nil {
 		return nil
 	}
@@ -451,8 +360,26 @@ func extractSerializedPSBTTX(packet []byte) []byte {
 	return append([]byte(nil), txBuf.Bytes()...)
 }
 
-func recordSubtreeRPCView(extracted *tree.Tree, includeInternal bool,
-	leafTxids map[string]struct{}, nodesByTxid map[string]*arkrpc.TreeNode,
+// serializePSBT serializes a parsed PSBT packet to raw bytes.
+func serializePSBT(pkt *psbt.Packet) ([]byte, error) {
+	if pkt == nil {
+		return nil, fmt.Errorf("nil psbt packet")
+	}
+
+	var buf bytes.Buffer
+	if err := pkt.Serialize(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// recordSubtreeRPCView populates the RPC node and edge maps from
+// the extracted subtree for the GetSubtreeByScripts response.
+func recordSubtreeRPCView(extracted *tree.Tree,
+	includeInternal bool,
+	leafTxids map[string]struct{},
+	nodesByTxid map[string]*arkrpc.TreeNode,
 	edgesByKey map[string]*arkrpc.TreeEdge) error {
 
 	if extracted == nil || extracted.Root == nil {
@@ -484,8 +411,10 @@ func recordSubtreeRPCView(extracted *tree.Tree, includeInternal bool,
 						Txid: n.Input.Hash[:],
 						Vout: n.Input.Index,
 					},
-					NumOutputs: uint32(len(n.Outputs)),
-					RawTx:      rawTX,
+					NumOutputs: uint32(
+						len(n.Outputs),
+					),
+					RawTx: rawTX,
 				}
 			}
 		}
@@ -502,8 +431,10 @@ func recordSubtreeRPCView(extracted *tree.Tree, includeInternal bool,
 				ChildTxid:         childTxid[:],
 			}
 
-			edgeKey := fmt.Sprintf("%s:%d:%s",
-				txid.String(), outIdx, childTxid.String(),
+			edgeKey := fmt.Sprintf(
+				"%s:%d:%s",
+				txid.String(), outIdx,
+				childTxid.String(),
 			)
 			edgesByKey[edgeKey] = edge
 
