@@ -462,18 +462,19 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	const defaultMaxOperatorFee = btcutil.Amount(100000)
 
 	cfg := &RoundClientConfig{
-		Name:           "test-round-actor",
-		Wallet:         walletMock,
-		RoundStore:     roundStore,
-		VTXOStore:      vtxoStore,
-		OperatorTerms:  operatorTerms,
-		ServerConn:     serverConn,
-		ChainSource:    chainSource,
-		WalletActor:    walletActor,
-		SelfRef:        selfRef,
-		VTXOManager:    vtxoManager,
-		ChainParams:    &chaincfg.MainNetParams,
-		MaxOperatorFee: defaultMaxOperatorFee,
+		Name:                   "test-round-actor",
+		Wallet:                 walletMock,
+		RoundStore:             roundStore,
+		VTXOStore:              vtxoStore,
+		OperatorTerms:          operatorTerms,
+		ServerConn:             serverConn,
+		ChainSource:            chainSource,
+		WalletActor:            walletActor,
+		SelfRef:                selfRef,
+		VTXOManager:            vtxoManager,
+		ChainParams:            &chaincfg.MainNetParams,
+		MaxOperatorFee:         defaultMaxOperatorFee,
+		DisableJoinRequestAuth: true,
 	}
 
 	actorResult := NewRoundClientActor(cfg)

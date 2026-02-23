@@ -46,6 +46,11 @@ type ClientEnvironment struct {
 	// missing confirmations if the transaction was broadcast before the
 	// registration request is processed.
 	StartHeight uint32
+
+	// DisableJoinRequestAuth skips BIP-322 join authorization
+	// generation. This should only be set in focused unit tests
+	// that exercise FSM mechanics without real signing.
+	DisableJoinRequestAuth bool
 }
 
 // Name returns the unique identifier for this FSM instance.
