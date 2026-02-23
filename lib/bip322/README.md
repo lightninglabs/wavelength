@@ -18,6 +18,8 @@ What is implemented:
 - low-level raw `to_sign` construction (`BuildToSignTx`)
 - full signature encoding/decoding (`Sig`, `DecodeSig`, base64 helpers)
 - validation with BIP-322 result states (`ValidateAuthPkg`)
+- application-level block window policy (`WithBlockWindow`,
+  `WithCurrentBlockHeight`)
 - proof-of-funds additional inputs on `to_sign`
 
 What is intentionally not implemented:
@@ -161,6 +163,29 @@ It validates using this sequence:
 BIP-322 upgradeable behavior (for example unsupported versions/features or
 missing proof prevout data).
 
+## Block Window Layer
+
+For application policy, this package provides `BlockWindow`:
+- `ValidFromBlock` (inclusive lower bound)
+- `ValidUntilBlock` (inclusive upper bound, `0` = no expiry)
+
+This is an **application-layer wrapper** over core BIP-322 checks.
+
+BIP-322 verification returns `valid at time T and age S`
+([verification](https://bips.xyz/322#verification)), and the timelock
+extension notes that applications may interpret these fields according to
+their own policy ([timelocks](https://bips.xyz/322#timelocks)).
+
+This package chooses the following policy mapping:
+- `BlockWindow.ValidFromBlock` -> `to_sign.nLockTime`
+- `BlockWindow.ValidUntilBlock` -> `to_sign.vin[0].nSequence`
+
+Use:
+- `BuildAndSignFullTx(..., WithBlockWindow(window), ...)` to embed the
+  window while signing. This automatically sets version to 2.
+- `ValidateAuthPkg(..., WithCurrentBlockHeight(height))` to enforce the
+  window after core BIP-322 verification succeeds.
+
 ## Usage
 
 ### Sign with TxSigner (raw tx workflow)
@@ -294,4 +319,38 @@ case bip322.VerificationStateInvalid:
 case bip322.VerificationStateInconclusive:
 	// result.Reason describes what couldn't be evaluated
 }
+```
+
+### Sign and verify with a block window
+
+`WithBlockWindow` embeds a block-height validity range into the signature
+and automatically sets version 2. `WithCurrentBlockHeight` enforces the
+window on the verification side.
+
+```go
+// Define the window: valid from block 840,000 through 840,144.
+window := bip322.BlockWindow{
+	ValidFromBlock:  840_000,
+	ValidUntilBlock: 840_144, // 0 = no expiry
+}
+
+// Sign — version is set to 2 automatically.
+sig, err := bip322.BuildAndSignFullTx(
+	msg, challengeScript, mySigner,
+	bip322.WithBlockWindow(window),
+)
+if err != nil {
+	return err
+}
+
+// Verify — pass the current chain height to enforce the window.
+result := bip322.ValidateAuthPkg(
+	&bip322.AuthPkg{
+		Message:          msg,
+		MessageChallenge: challengeScript,
+		Sig:              sig,
+	},
+	bip322.WithCurrentBlockHeight(840_050),
+)
+// result.State == VerificationStateValid (840_050 is in range)
 ```
