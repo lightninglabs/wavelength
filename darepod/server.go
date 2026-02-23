@@ -190,6 +190,9 @@ func (s *Server) RunUntilShutdown(
 	s.rpcServer = NewRPCServer(s)
 
 	// Register the DaemonService for local gRPC access (CLI, GUI).
+	//
+	// TODO(roasbeef): Wire RPC.TLSCertPath/TLSKeyPath into
+	// grpc.Creds() once the auto-gen TLS material is in place.
 	s.grpcServer = grpc.NewServer()
 	daemonrpc.RegisterDaemonServiceServer(
 		s.grpcServer, s.rpcServer,
@@ -317,7 +320,10 @@ func (s *Server) dialServer(ctx context.Context) (
 }
 
 // newMailboxEdge creates a MailboxServiceClient from the established server
-// connection.
+// connection. This is used by the serverconn.Runtime to send and pull
+// envelopes through the operator's mailbox edge service.
+//
+// TODO(roasbeef): Wire into ConnectorConfig once DeliveryStore is available.
 func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 	return mailboxpb.NewMailboxServiceClient(s.serverConn)
 }
