@@ -420,27 +420,40 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	// Pre-load round metadata for each VTXO. The dedup map ensures each
-	// unique round ID is fetched at most once. A batch query (e.g.
-	// ListRoundsByIDs) would reduce this to a single round-trip and is
-	// a worthwhile future optimization if VTXO result sets grow large.
-	roundRowByHex := make(map[string]*sqlc.Round)
-
+	// Collect unique round IDs so we can batch-fetch round metadata
+	// in a single query rather than issuing one query per VTXO.
+	roundIDSet := make(map[string][]byte)
 	for _, row := range rows {
 		if len(row.RoundID) == 0 {
 			continue
 		}
 
 		roundHex := hex.EncodeToString(row.RoundID)
-		if _, ok := roundRowByHex[roundHex]; ok {
-			continue
+		if _, ok := roundIDSet[roundHex]; !ok {
+			roundIDSet[roundHex] = row.RoundID
+		}
+	}
+
+	roundRowByHex := make(map[string]*sqlc.Round, len(roundIDSet))
+
+	if len(roundIDSet) > 0 {
+		uniqueIDs := make([][]byte, 0, len(roundIDSet))
+		for _, id := range roundIDSet {
+			uniqueIDs = append(uniqueIDs, id)
 		}
 
-		rr, err := q.GetRound(ctx, row.RoundID)
+		roundRows, err := q.ListRoundsByIDs(ctx, uniqueIDs)
 		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+			return nil, status.Error(
+				codes.Internal, err.Error(),
+			)
 		}
-		roundRowByHex[roundHex] = &rr
+
+		for i := range roundRows {
+			rr := &roundRows[i]
+			rHex := hex.EncodeToString(rr.RoundID)
+			roundRowByHex[rHex] = rr
+		}
 	}
 
 	var all []*arkrpc.VTXO
