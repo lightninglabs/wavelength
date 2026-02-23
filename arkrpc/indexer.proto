@@ -75,8 +75,10 @@ message RegisterReceiveScriptRequest {
 }
 
 message TaprootSchnorrProof {
-    // message is the canonical JSON message the signature commits to.
-    string message = 1;
+    // message is the canonical TLV-encoded proof message the signature
+    // commits to. The wire format uses base64 encoding for REST/JSON
+    // transport.
+    bytes message = 1;
 
     // sig64 is a 64-byte BIP-340 schnorr signature over sha256(message).
     bytes sig64 = 2;

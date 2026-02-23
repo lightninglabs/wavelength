@@ -268,8 +268,10 @@ func (*RegisterReceiveScriptRequest_Bip322) isRegisterReceiveScriptRequest_Proof
 
 type TaprootSchnorrProof struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// message is the canonical JSON message the signature commits to.
-	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// message is the canonical TLV-encoded proof message the signature
+	// commits to. The wire format uses base64 encoding for REST/JSON
+	// transport.
+	Message []byte `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
 	// sig64 is a 64-byte BIP-340 schnorr signature over sha256(message).
 	Sig64         []byte `protobuf:"bytes,2,opt,name=sig64,proto3" json:"sig64,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -306,11 +308,11 @@ func (*TaprootSchnorrProof) Descriptor() ([]byte, []int) {
 	return file_indexer_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *TaprootSchnorrProof) GetMessage() string {
+func (x *TaprootSchnorrProof) GetMessage() []byte {
 	if x != nil {
 		return x.Message
 	}
-	return ""
+	return nil
 }
 
 func (x *TaprootSchnorrProof) GetSig64() []byte {
@@ -1920,7 +1922,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
 	"\x05proof\"E\n" +
 	"\x13TaprootSchnorrProof\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\x12\x14\n" +
+	"\amessage\x18\x01 \x01(\fR\amessage\x12\x14\n" +
 	"\x05sig64\x18\x02 \x01(\fR\x05sig64\"L\n" +
 	"\vBIP322Proof\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12#\n" +
