@@ -187,13 +187,20 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 
 	// No FSM is created here. FSMs are created on-demand when boarding
 	// intents arrive via createNewRound().
-	return fn.Ok(&RoundClientActor{
+	actor := &RoundClientActor{
 		cfg:               cfg,
 		log:               actorLog,
 		rounds:            make(map[RoundKeyStr]*RoundFSM),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
 		env:               env,
-	})
+	}
+
+	// The base env is used as a template for per-round FSM environments.
+	// Wire in the actor height query function so join-auth can anchor
+	// validity windows to the current chain height at signing time.
+	actor.env.QueryBestHeight = actor.queryBestHeight
+
+	return fn.Ok(actor)
 }
 
 // queryBestHeight queries the ChainSource for the current best block height.
@@ -246,6 +253,7 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
+		QueryBestHeight:        a.queryBestHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 	fsmCfg := ClientStateMachineCfg{
@@ -302,6 +310,7 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 		MaxOperatorFee:         a.cfg.MaxOperatorFee,
 		Log:                    fsmLogger,
 		StartHeight:            startHeight,
+		QueryBestHeight:        a.queryBestHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 	fsmCfg := ClientStateMachineCfg{

@@ -610,8 +610,29 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		idPub := identifierKeyDesc.PubKey
 
-		// With all this extracted, we'll now send the JoinRoundRequest
-		// to kick off the signing process.
+		// When auth is enabled, produce a BIP-322 proof that
+		// binds the request contents to the identifier key.
+		var joinAuth *types.JoinRoundAuth
+		if !env.DisableJoinRequestAuth {
+			auth, err := buildJoinRoundAuth(
+				ctx, env, identifierKeyDesc, intent, vtxoReqs,
+				forfeitReqs, leaveReqs,
+			)
+			if err != nil {
+				return failWithNotification(
+					"failed to build round auth",
+					fmt.Errorf(
+						"join auth: %w", err,
+					),
+					true, fn.None[RoundID](),
+				), nil
+			}
+
+			joinAuth = auth
+		}
+
+		// With all this extracted, we'll now send the
+		// JoinRoundRequest to kick off the signing process.
 		return &ClientStateTransition{
 			NextState: &RegistrationSentState{
 				Intents: intent,
@@ -624,6 +645,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 						ForfeitRequests:  forfeitReqs,
 						LeaveRequests:    leaveReqs,
 						Identifier:       idPub,
+						Auth:             joinAuth,
 					},
 				},
 			}),

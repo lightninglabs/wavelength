@@ -1,6 +1,8 @@
 package round
 
 import (
+	"context"
+
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -47,6 +49,10 @@ type ClientEnvironment struct {
 	// registration request is processed.
 	StartHeight uint32
 
+	// QueryBestHeight returns the current chain tip height. Join-auth uses
+	// this to anchor validity windows at signing time.
+	QueryBestHeight func(context.Context) (uint32, error)
+
 	// DisableJoinRequestAuth skips BIP-322 join authorization
 	// generation. This should only be set in focused unit tests
 	// that exercise FSM mechanics without real signing.
@@ -60,20 +66,24 @@ func (e *ClientEnvironment) Name() string {
 
 // NewClientEnvironment creates a new client environment with the provided
 // dependencies. The startHeight parameter should be the current block height
-// when the FSM is created, used as a HeightHint for confirmation registration.
+// when the FSM is created, used as a HeightHint for confirmation
+// registration. The queryBestHeight callback is used by join-auth to fetch
+// signing-time chain tip height for block-window anchoring.
 func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
 	chainParams *chaincfg.Params, maxOperatorFee btcutil.Amount,
-	logger btclog.Logger, startHeight uint32) *ClientEnvironment {
+	logger btclog.Logger, startHeight uint32,
+	queryBestHeight func(context.Context) (uint32, error)) *ClientEnvironment {
 
 	return &ClientEnvironment{
-		RoundStore:     roundStore,
-		VTXOStore:      vtxoStore,
-		Wallet:         wallet,
-		OperatorTerms:  terms,
-		ChainParams:    chainParams,
-		MaxOperatorFee: maxOperatorFee,
-		Log:            logger,
-		StartHeight:    startHeight,
+		RoundStore:      roundStore,
+		VTXOStore:       vtxoStore,
+		Wallet:          wallet,
+		OperatorTerms:   terms,
+		ChainParams:     chainParams,
+		MaxOperatorFee:  maxOperatorFee,
+		Log:             logger,
+		StartHeight:     startHeight,
+		QueryBestHeight: queryBestHeight,
 	}
 }
