@@ -3,7 +3,6 @@ package indexer_test
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"sync"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -142,7 +142,9 @@ func buildTestRegistrationProof(t *testing.T, priv *btcec.PrivateKey,
 	)
 	require.NoError(t, err)
 
-	msgHash := sha256.Sum256(msgBytes)
+	msgHash := chainhash.TaggedHash(
+		indexer.ProofTagHash, msgBytes,
+	)
 	sig, err := schnorr.Sign(priv, msgHash[:])
 	require.NoError(t, err)
 

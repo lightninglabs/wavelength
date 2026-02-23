@@ -2,13 +2,13 @@ package indexer
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -43,6 +43,12 @@ const (
 	// schnorrSignatureLen is the length of a BIP-340 schnorr signature.
 	schnorrSignatureLen = 64
 )
+
+// ProofTagHash is the BIP-340 tagged hash domain separator for indexer
+// proof signatures. Using a tagged hash ensures that signatures produced
+// for the indexer cannot be replayed in other protocols that also use
+// BIP-340 Schnorr signatures (e.g., taproot key-path spends).
+var ProofTagHash = []byte("darepo/indexer/v1")
 
 // TLV type constants for proof message fields. Types are allocated
 // sequentially from a private range. The canonical TLV stream must be
@@ -492,8 +498,12 @@ func validateScriptScopeProofMessage(now time.Time,
 	return nil
 }
 
-// taprootOutputKeyFromPkScript extracts the taproot output key from a P2TR
-// pkScript.
+// taprootOutputKeyFromPkScript extracts the taproot output key Q from a
+// P2TR pkScript. Proof verification signs against Q directly, which means
+// it only works for key-path spends where the wallet holds the private key
+// corresponding to Q (the tweaked output key). For outputs with non-trivial
+// script trees, Q = P + H(P||script_tree) and the wallet would need to
+// sign with the tweaked key, not the internal key P.
 func taprootOutputKeyFromPkScript(pkScript []byte) (*btcec.PublicKey, error) {
 	// P2TR script is: OP_1 OP_DATA_32 <x-only pubkey>
 	if len(pkScript) != p2trPkScriptLen {
@@ -547,7 +557,7 @@ func verifyTaprootSchnorrProof(now time.Time, pkScript []byte,
 		return err
 	}
 
-	msgHash := sha256.Sum256(proof.Message)
+	msgHash := chainhash.TaggedHash(ProofTagHash, proof.Message)
 	if !sig.Verify(msgHash[:], pubKey) {
 		return fmt.Errorf("invalid schnorr signature")
 	}
@@ -611,7 +621,7 @@ func verifyTaprootSchnorrScopeProof(now time.Time, pkScript []byte,
 		return err
 	}
 
-	msgHash := sha256.Sum256(proof.Message)
+	msgHash := chainhash.TaggedHash(ProofTagHash, proof.Message)
 	if !sig.Verify(msgHash[:], pubKey) {
 		return fmt.Errorf("invalid schnorr signature")
 	}
@@ -622,7 +632,8 @@ func verifyTaprootSchnorrScopeProof(now time.Time, pkScript []byte,
 // BuildReceiveScriptProofMessage constructs and TLV-encodes a
 // receive-script registration proof message from the given parameters.
 // The returned bytes are the canonical message that should be hashed
-// (sha256) and signed with the P2TR internal key.
+// with chainhash.TaggedHash(ProofTagHash, msg) and signed with the
+// P2TR output key using BIP-340 Schnorr.
 func BuildReceiveScriptProofMessage(serverID, principal string,
 	pkScript, nonce []byte,
 	issuedAt, expiresAt time.Time) ([]byte, error) {
@@ -641,8 +652,9 @@ func BuildReceiveScriptProofMessage(serverID, principal string,
 
 // BuildScriptScopeProofMessage constructs and TLV-encodes a script-scope
 // proof message from the given parameters. The returned bytes are the
-// canonical message that should be hashed (sha256) and signed with the
-// P2TR internal key.
+// canonical message that should be hashed with
+// chainhash.TaggedHash(ProofTagHash, msg) and signed with the P2TR
+// output key using BIP-340 Schnorr.
 func BuildScriptScopeProofMessage(serverID, principal, purpose string,
 	pkScript, nonce []byte,
 	issuedAt, expiresAt time.Time) ([]byte, error) {
