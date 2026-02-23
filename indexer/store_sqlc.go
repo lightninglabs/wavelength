@@ -125,7 +125,25 @@ func (s *SQLCStore) ListOORRecipientEventsAfterWithSession(
 func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 	pkScripts [][]byte) ([]VTXORow, error) {
 
-	rows, err := s.q.ListVTXOsByPkScripts(ctx, pkScripts)
+	var rows []sqlc.Vtxo
+	var err error
+
+	switch s.q.Backend() {
+	case sqlc.BackendTypeSqlite:
+		rows, err = s.q.ListVTXOsByPkScriptsSqlite(
+			ctx, pkScripts,
+		)
+
+	case sqlc.BackendTypePostgres:
+		rows, err = s.q.ListVTXOsByPkScriptsPostgres(
+			ctx, pkScripts,
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown backend: %v", s.q.Backend(),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +187,21 @@ func (s *SQLCStore) ListRoundsByIDs(ctx context.Context,
 		rawIDs[i] = idCopy[:]
 	}
 
-	rows, err := s.q.ListRoundsByIDs(ctx, rawIDs)
+	var rows []sqlc.Round
+	var err error
+
+	switch s.q.Backend() {
+	case sqlc.BackendTypeSqlite:
+		rows, err = s.q.ListRoundsByIDsSqlite(ctx, rawIDs)
+
+	case sqlc.BackendTypePostgres:
+		rows, err = s.q.ListRoundsByIDsPostgres(ctx, rawIDs)
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown backend: %v", s.q.Backend(),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -400,14 +432,35 @@ func (s *SQLCStore) ListVTXOEventsAfterByScripts(ctx context.Context,
 	afterEventID int64, pkScripts [][]byte,
 	limit int32) ([]VTXOEvent, error) {
 
-	rows, err := s.q.ListIndexerVTXOEventsAfterByScripts(
-		ctx,
-		sqlc.ListIndexerVTXOEventsAfterByScriptsParams{
-			EventID:   afterEventID,
-			PkScripts: pkScripts,
-			Limit:     limit,
-		},
-	)
+	var rows []sqlc.IndexerVtxoEvent
+	var err error
+
+	switch s.q.Backend() {
+	case sqlc.BackendTypeSqlite:
+		rows, err = s.q.ListIndexerVTXOEventsAfterByScriptsSqlite(
+			ctx,
+			sqlc.ListIndexerVTXOEventsAfterByScriptsSqliteParams{
+				EventID:   afterEventID,
+				PkScripts: pkScripts,
+				Limit:     limit,
+			},
+		)
+
+	case sqlc.BackendTypePostgres:
+		rows, err = s.q.ListIndexerVTXOEventsAfterByScriptsPostgres(
+			ctx,
+			sqlc.ListIndexerVTXOEventsAfterByScriptsPostgresParams{
+				PkScripts:    pkScripts,
+				AfterEventID: afterEventID,
+				QueryLimit:   limit,
+			},
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown backend: %v", s.q.Backend(),
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
