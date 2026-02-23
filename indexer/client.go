@@ -1,10 +1,9 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 // Client is a small convenience wrapper around the generated
@@ -34,15 +34,16 @@ const (
 	// registrationMessageVersion is the current message version.
 	registrationMessageVersion = 0
 
-	// registrationNonceBytes is the number of random bytes used for nonces.
+	// registrationNonceBytes is the number of random bytes used for
+	// nonces.
 	registrationNonceBytes = 32
 
 	// offlineReceiveProofTTL is the lifetime used for proof-gated script
 	// queries. It should be short to limit replay windows.
 	offlineReceiveProofTTL = 10 * time.Minute
 
-	// scriptScopeMessageType is the canonical proof "type" string used for
-	// script-scoped queries (option B).
+	// scriptScopeMessageType is the canonical proof "type" string used
+	// for script-scoped queries (option B).
 	scriptScopeMessageType = "script_scope"
 
 	// scriptScopeMessageVersion is the current script-scope message
@@ -70,8 +71,48 @@ const (
 	purposeListOORRecipientEventsByScript = "list_oor_recipient_events_by_script"
 )
 
+// TLV type constants for proof message fields. These MUST match the
+// server-side constants defined in the indexer verifier. Types are
+// allocated sequentially and the canonical TLV stream must be encoded
+// with records sorted by type in ascending order.
+const (
+	// proofTLVTypeType identifies the proof type string
+	// (e.g. "receive_script_registration" or "script_scope").
+	proofTLVTypeType tlv.Type = 1
+
+	// proofTLVTypeVersion identifies the proof schema version.
+	proofTLVTypeVersion tlv.Type = 2
+
+	// proofTLVTypeServerID identifies the operator's server identifier.
+	proofTLVTypeServerID tlv.Type = 3
+
+	// proofTLVTypePrincipal identifies the mailbox principal
+	// (client ID).
+	proofTLVTypePrincipal tlv.Type = 4
+
+	// proofTLVTypePkScript identifies the raw pkScript bytes.
+	proofTLVTypePkScript tlv.Type = 5
+
+	// proofTLVTypeIssuedAt identifies the proof issuance unix
+	// timestamp.
+	proofTLVTypeIssuedAt tlv.Type = 6
+
+	// proofTLVTypeExpiresAt identifies the proof expiration unix
+	// timestamp.
+	proofTLVTypeExpiresAt tlv.Type = 7
+
+	// proofTLVTypeNonce identifies the unique nonce bytes.
+	proofTLVTypeNonce tlv.Type = 8
+
+	// proofTLVTypePurpose identifies the purpose string for
+	// script-scope proofs.
+	proofTLVTypePurpose tlv.Type = 9
+)
+
 // New creates an Indexer client wrapper.
-func New(rpc mailboxrpc.RPCClient, serverID string, principal string) *Client {
+func New(rpc mailboxrpc.RPCClient, serverID string,
+	principal string) *Client {
+
 	return &Client{
 		rpc:       arkrpc.NewIndexerServiceMailboxClient(rpc),
 		serverID:  serverID,
@@ -79,67 +120,136 @@ func New(rpc mailboxrpc.RPCClient, serverID string, principal string) *Client {
 	}
 }
 
-// ReceiveScriptRegistrationMessage is the canonical JSON message signed to
-// bind a receive script to a mailbox principal.
-type ReceiveScriptRegistrationMessage struct {
-	Type        string `json:"type"`
-	Version     int    `json:"version"`
-	ServerID    string `json:"server_id"`
-	Principal   string `json:"principal"`
-	PkScriptHex string `json:"pk_script_hex"`
-	IssuedAt    int64  `json:"issued_at"`
-	ExpiresAt   int64  `json:"expires_at"`
-	Nonce       string `json:"nonce"`
-}
+// encodeRegistrationProofTLV encodes a receive-script registration proof
+// message to its canonical TLV byte representation.
+func encodeRegistrationProofTLV(serverID, principal string,
+	pkScript, nonce []byte,
+	issuedAt, expiresAt uint64) ([]byte, error) {
 
-// ScriptScopeMessage is the canonical JSON message signed to prove control of
-// a script for a specific purpose (RPC method / feed).
-type ScriptScopeMessage struct {
-	Type        string `json:"type"`
-	Version     int    `json:"version"`
-	ServerID    string `json:"server_id"`
-	Principal   string `json:"principal"`
-	Purpose     string `json:"purpose"`
-	PkScriptHex string `json:"pk_script_hex"`
-	IssuedAt    int64  `json:"issued_at"`
-	ExpiresAt   int64  `json:"expires_at"`
-	Nonce       string `json:"nonce"`
-}
+	proofType := []byte(registrationMessageType)
+	version := uint32(registrationMessageVersion)
+	serverIDBytes := []byte(serverID)
+	principalBytes := []byte(principal)
 
-// MarshalCanonical returns the canonical JSON encoding for m.
-func (m *ReceiveScriptRegistrationMessage) MarshalCanonical() (string, error) {
-	if m.Type == "" {
-		m.Type = registrationMessageType
-	}
-
-	b, err := json.Marshal(m)
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofType,
+			tlv.SizeVarBytes(&proofType),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeVersion, &version,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverIDBytes,
+			tlv.SizeVarBytes(&serverIDBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principalBytes,
+			tlv.SizeVarBytes(&principalBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePkScript, &pkScript,
+			tlv.SizeVarBytes(&pkScript),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeIssuedAt, &issuedAt,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeExpiresAt, &expiresAt,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &nonce,
+			tlv.SizeVarBytes(&nonce),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("build TLV stream: %w", err)
 	}
 
-	return string(b), nil
+	var buf bytes.Buffer
+	if err := tlvStream.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode TLV proof: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
-// MarshalCanonical returns the canonical JSON encoding for m.
-func (m *ScriptScopeMessage) MarshalCanonical() (string, error) {
-	if m.Type == "" {
-		m.Type = scriptScopeMessageType
-	}
+// encodeScopeProofTLV encodes a script-scope proof message to its
+// canonical TLV byte representation.
+func encodeScopeProofTLV(serverID, principal, purpose string,
+	pkScript, nonce []byte,
+	issuedAt, expiresAt uint64) ([]byte, error) {
 
-	b, err := json.Marshal(m)
+	proofType := []byte(scriptScopeMessageType)
+	version := uint32(scriptScopeMessageVersion)
+	serverIDBytes := []byte(serverID)
+	principalBytes := []byte(principal)
+	purposeBytes := []byte(purpose)
+
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofType,
+			tlv.SizeVarBytes(&proofType),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeVersion, &version,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverIDBytes,
+			tlv.SizeVarBytes(&serverIDBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principalBytes,
+			tlv.SizeVarBytes(&principalBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePkScript, &pkScript,
+			tlv.SizeVarBytes(&pkScript),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeIssuedAt, &issuedAt,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeExpiresAt, &expiresAt,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &nonce,
+			tlv.SizeVarBytes(&nonce),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePurpose, &purposeBytes,
+			tlv.SizeVarBytes(&purposeBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("build TLV stream: %w", err)
 	}
 
-	return string(b), nil
+	var buf bytes.Buffer
+	if err := tlvStream.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode TLV proof: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // schnorrSigOverMessage returns a 64-byte schnorr signature over
 // sha256(message).
-func schnorrSigOverMessage(message string,
+func schnorrSigOverMessage(message []byte,
 	priv *btcec.PrivateKey) ([]byte, error) {
 
-	msgHash := sha256.Sum256([]byte(message))
+	msgHash := sha256.Sum256(message)
 	sig, err := schnorr.Sign(priv, msgHash[:])
 	if err != nil {
 		return nil, err
@@ -148,14 +258,17 @@ func schnorrSigOverMessage(message string,
 	return sig.Serialize(), nil
 }
 
-// TaprootScriptScope selects a pkScript and its corresponding signing key.
+// TaprootScriptScope selects a pkScript and its corresponding signing
+// key.
 //
 // The signing key must be the P2TR output key for pkScript.
 type TaprootScriptScope struct {
-	PkScript   []byte
+	PkScript  []byte
 	SigningKey *btcec.PrivateKey
 }
 
+// newTaprootScope builds a ScriptScope proto with a TLV-encoded
+// script-scope proof signed under signingKey.
 func (c *Client) newTaprootScope(
 	pkScript []byte,
 	signingKey *btcec.PrivateKey,
@@ -172,30 +285,23 @@ func (c *Client) newTaprootScope(
 		return nil, fmt.Errorf("missing purpose")
 	}
 
-	expiresAt := time.Now().Add(offlineReceiveProofTTL)
+	now := time.Now()
+	expiresAt := now.Add(offlineReceiveProofTTL)
 
-	msg := &ScriptScopeMessage{
-		Type:        scriptScopeMessageType,
-		Version:     scriptScopeMessageVersion,
-		ServerID:    c.serverID,
-		Principal:   c.principal,
-		Purpose:     purpose,
-		PkScriptHex: hex.EncodeToString(pkScript),
-		IssuedAt:    time.Now().Unix(),
-		ExpiresAt:   expiresAt.Unix(),
-	}
-	nonce, err := randomNonceHex(registrationNonceBytes)
-	if err != nil {
-		return nil, err
-	}
-	msg.Nonce = nonce
-
-	msgStr, err := msg.MarshalCanonical()
+	nonce, err := randomNonce(registrationNonceBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgStr, signingKey)
+	msgBytes, err := encodeScopeProofTLV(
+		c.serverID, c.principal, purpose, pkScript, nonce,
+		uint64(now.Unix()), uint64(expiresAt.Unix()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
 	if err != nil {
 		return nil, err
 	}
@@ -204,18 +310,19 @@ func (c *Client) newTaprootScope(
 		PkScript: pkScript,
 		Proof: &arkrpc.ScriptScope_TaprootSchnorr{
 			TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
-				Message: msgStr,
+				Message: msgBytes,
 				Sig64:   sig64,
 			},
 		},
 	}, nil
 }
 
-// ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one or more
-// pkScripts.
+// ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
+// or more pkScripts.
 func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
-	statusFilter []arkrpc.VTXOStatus, opts ...mailboxrpc.RPCOptions) (
+	statusFilter []arkrpc.VTXOStatus,
+	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOsByScriptsResponse, error) {
 
 	var scriptScopes []*arkrpc.ScriptScope
@@ -246,8 +353,8 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	return c.rpc.ListVTXOsByScripts(ctx, req, opt)
 }
 
-// GetSubtreeByScriptsTaproot performs a proof-gated subtree query for one or
-// more pkScripts.
+// GetSubtreeByScriptsTaproot performs a proof-gated subtree query for
+// one or more pkScripts.
 func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, includeInternalNodes bool,
 	opts ...mailboxrpc.RPCOptions) (
@@ -279,8 +386,8 @@ func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 	return c.rpc.GetSubtreeByScripts(ctx, req, opt)
 }
 
-// ListVTXOEventsByScriptsTaproot performs a proof-gated, monotonic VTXO event
-// feed query for one or more pkScripts.
+// ListVTXOEventsByScriptsTaproot performs a proof-gated, monotonic VTXO
+// event feed query for one or more pkScripts.
 func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, afterEventID uint64, limit uint32,
 	opts ...mailboxrpc.RPCOptions) (
@@ -313,8 +420,8 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 	return c.rpc.ListVTXOEventsByScripts(ctx, req, opt)
 }
 
-// RegisterReceiveScriptTaproot registers a single P2TR receive script using a
-// schnorr signature proof under the output key.
+// RegisterReceiveScriptTaproot registers a single P2TR receive script
+// using a schnorr signature proof under the output key.
 func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	pkScript []byte, signingKey *btcec.PrivateKey,
 	expiresAt time.Time, label string,
@@ -325,27 +432,22 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		return nil, fmt.Errorf("missing signing key")
 	}
 
-	msg := &ReceiveScriptRegistrationMessage{
-		Type:        registrationMessageType,
-		Version:     registrationMessageVersion,
-		ServerID:    c.serverID,
-		Principal:   c.principal,
-		PkScriptHex: hex.EncodeToString(pkScript),
-		IssuedAt:    time.Now().Unix(),
-		ExpiresAt:   expiresAt.Unix(),
-	}
-	nonce, err := randomNonceHex(registrationNonceBytes)
-	if err != nil {
-		return nil, err
-	}
-	msg.Nonce = nonce
+	now := time.Now()
 
-	msgStr, err := msg.MarshalCanonical()
+	nonce, err := randomNonce(registrationNonceBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgStr, signingKey)
+	msgBytes, err := encodeRegistrationProofTLV(
+		c.serverID, c.principal, pkScript, nonce,
+		uint64(now.Unix()), uint64(expiresAt.Unix()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +458,7 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		Label:          label,
 		Proof: &arkrpc.RegisterReceiveScriptRequest_TaprootSchnorr{
 			TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
-				Message: msgStr,
+				Message: msgBytes,
 				Sig64:   sig64,
 			},
 		},
@@ -387,12 +489,14 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 	return c.rpc.UnregisterReceiveScript(ctx, req, opt)
 }
 
-// ListOORRecipientEventsByScriptTaproot performs a proof-gated script-keyed
-// recipient event query. This enables "offline receive without registration"
-// while preventing third-party enumeration (proof-of-control required).
-func (c *Client) ListOORRecipientEventsByScriptTaproot(ctx context.Context,
-	pkScript []byte, signingKey *btcec.PrivateKey,
-	afterEventID uint64, limit uint32,
+// ListOORRecipientEventsByScriptTaproot performs a proof-gated
+// script-keyed recipient event query. This enables "offline receive
+// without registration" while preventing third-party enumeration
+// (proof-of-control required).
+func (c *Client) ListOORRecipientEventsByScriptTaproot(
+	ctx context.Context, pkScript []byte,
+	signingKey *btcec.PrivateKey, afterEventID uint64,
+	limit uint32,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
@@ -400,36 +504,31 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(ctx context.Context,
 		return nil, fmt.Errorf("missing signing key")
 	}
 
-	expiresAt := time.Now().Add(offlineReceiveProofTTL)
+	now := time.Now()
+	expiresAt := now.Add(offlineReceiveProofTTL)
 
-	msg := &ScriptScopeMessage{
-		Type:        scriptScopeMessageType,
-		Version:     scriptScopeMessageVersion,
-		ServerID:    c.serverID,
-		Principal:   c.principal,
-		Purpose:     purposeListOORRecipientEventsByScript,
-		PkScriptHex: hex.EncodeToString(pkScript),
-		IssuedAt:    time.Now().Unix(),
-		ExpiresAt:   expiresAt.Unix(),
-	}
-	nonce, err := randomNonceHex(registrationNonceBytes)
-	if err != nil {
-		return nil, err
-	}
-	msg.Nonce = nonce
-
-	msgStr, err := msg.MarshalCanonical()
+	nonce, err := randomNonce(registrationNonceBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgStr, signingKey)
+	msgBytes, err := encodeScopeProofTLV(
+		c.serverID, c.principal,
+		purposeListOORRecipientEventsByScript, pkScript,
+		nonce, uint64(now.Unix()),
+		uint64(expiresAt.Unix()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
 	if err != nil {
 		return nil, err
 	}
 
 	proof := &arkrpc.TaprootSchnorrProof{
-		Message: msgStr,
+		Message: msgBytes,
 		Sig64:   sig64,
 	}
 
