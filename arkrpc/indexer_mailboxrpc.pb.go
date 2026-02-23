@@ -121,13 +121,16 @@ func (c *IndexerServiceMailboxClient) RegisterReceiveScript(ctx context.Context,
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "RegisterReceiveScript", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "RegisterReceiveScript",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(RegisterReceiveScriptResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -141,13 +144,16 @@ func (c *IndexerServiceMailboxClient) ListMyReceiveScripts(ctx context.Context, 
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "ListMyReceiveScripts", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListMyReceiveScripts",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(ListMyReceiveScriptsResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -161,13 +167,16 @@ func (c *IndexerServiceMailboxClient) UnregisterReceiveScript(ctx context.Contex
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "UnregisterReceiveScript", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "UnregisterReceiveScript",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(UnregisterReceiveScriptResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -181,13 +190,16 @@ func (c *IndexerServiceMailboxClient) ListOORRecipientEventsByScript(ctx context
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "ListOORRecipientEventsByScript", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListOORRecipientEventsByScript",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(ListOORRecipientEventsByScriptResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -201,13 +213,16 @@ func (c *IndexerServiceMailboxClient) ListVTXOsByScripts(ctx context.Context, re
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "ListVTXOsByScripts", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListVTXOsByScripts",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(ListVTXOsByScriptsResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -221,13 +236,16 @@ func (c *IndexerServiceMailboxClient) GetSubtreeByScripts(ctx context.Context, r
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "GetSubtreeByScripts", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "GetSubtreeByScripts",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(GetSubtreeByScriptsResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
@@ -241,13 +259,16 @@ func (c *IndexerServiceMailboxClient) ListVTXOEventsByScripts(ctx context.Contex
 		opt = opts[0]
 	}
 
-	correlationID, _, err := c.C.SendRPC(ctx, "arkrpc.IndexerService", "ListVTXOEventsByScripts", req, opt)
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListVTXOEventsByScripts",
+	}, req, opt)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := new(ListVTXOEventsByScriptsResponse)
-	if err := c.C.AwaitRPC(ctx, correlationID, resp); err != nil {
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
 
