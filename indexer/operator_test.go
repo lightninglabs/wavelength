@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -125,22 +123,8 @@ func newTestP2TRScript(
 	return pkScript, priv
 }
 
-// receiveScriptProofMessage mirrors the unexported canonical JSON type used
-// by the indexer proof verification. Tests must construct this manually since
-// the helpers are package-private.
-type receiveScriptProofMessage struct {
-	Type        string `json:"type"`
-	Version     int    `json:"version"`
-	ServerID    string `json:"server_id"`
-	Principal   string `json:"principal"`
-	PkScriptHex string `json:"pk_script_hex"`
-	IssuedAt    int64  `json:"issued_at"`
-	ExpiresAt   int64  `json:"expires_at"`
-	Nonce       string `json:"nonce"`
-}
-
 // buildTestRegistrationProof constructs a valid TaprootSchnorrProof for a
-// receive-script registration request.
+// receive-script registration request using TLV-encoded proof messages.
 func buildTestRegistrationProof(t *testing.T, priv *btcec.PrivateKey,
 	pkScript []byte, serverID string,
 	principal string) *arkrpc.TaprootSchnorrProof {
@@ -152,26 +136,18 @@ func buildTestRegistrationProof(t *testing.T, priv *btcec.PrivateKey,
 	require.NoError(t, err)
 
 	now := time.Now()
-	msg := receiveScriptProofMessage{
-		Type:        "receive_script_registration",
-		Version:     0,
-		ServerID:    serverID,
-		Principal:   principal,
-		PkScriptHex: hex.EncodeToString(pkScript),
-		IssuedAt:    now.Unix(),
-		ExpiresAt:   now.Add(10 * time.Minute).Unix(),
-		Nonce:       hex.EncodeToString(nonce),
-	}
-
-	msgJSON, err := json.Marshal(msg)
+	msgBytes, err := indexer.BuildReceiveScriptProofMessage(
+		serverID, principal, pkScript, nonce,
+		now, now.Add(10*time.Minute),
+	)
 	require.NoError(t, err)
 
-	msgHash := sha256.Sum256(msgJSON)
+	msgHash := sha256.Sum256(msgBytes)
 	sig, err := schnorr.Sign(priv, msgHash[:])
 	require.NoError(t, err)
 
 	return &arkrpc.TaprootSchnorrProof{
-		Message: string(msgJSON),
+		Message: msgBytes,
 		Sig64:   sig.Serialize(),
 	}
 }
