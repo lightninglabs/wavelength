@@ -3,12 +3,12 @@ package indexer
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -244,12 +244,18 @@ func encodeScopeProofTLV(serverID, principal, purpose string,
 	return buf.Bytes(), nil
 }
 
-// schnorrSigOverMessage returns a 64-byte schnorr signature over
-// sha256(message).
+// proofTagHash is the BIP-340 tagged hash domain separator for indexer
+// proof signatures. This must match the server-side ProofTagHash constant
+// in the indexer package.
+var proofTagHash = []byte("darepo/indexer/v1")
+
+// schnorrSigOverMessage returns a 64-byte schnorr signature over a
+// BIP-340 tagged hash of the message. The tag provides domain separation
+// so indexer proof signatures cannot be replayed in other protocols.
 func schnorrSigOverMessage(message []byte,
 	priv *btcec.PrivateKey) ([]byte, error) {
 
-	msgHash := sha256.Sum256(message)
+	msgHash := chainhash.TaggedHash(proofTagHash, message)
 	sig, err := schnorr.Sign(priv, msgHash[:])
 	if err != nil {
 		return nil, err
