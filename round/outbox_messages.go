@@ -1,6 +1,7 @@
 package round
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -16,6 +17,10 @@ import (
 // This implements ClientEvent and is emitted via Outbox.
 type JoinRoundRequest struct {
 	actor.BaseMessage
+
+	// Identifier is the participant key used for the join-auth
+	// challenge script and input-0 signature.
+	Identifier *btcec.PublicKey
 
 	// BoardingRequests contains all boarding UTXO details for this
 	// session. Each confirmed intent contributes exactly one boarding

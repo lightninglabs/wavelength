@@ -614,6 +614,20 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			Leaves:   leaveReqs,
 		}
 
+		// Derive a fresh identifier key for the join-request
+		// authorization challenge.
+		identifierKeyDesc, err := deriveJoinAuthIdentifierKey(
+			ctx, env.Wallet,
+		)
+		if err != nil {
+			return failWithNotification(
+				"failed to derive join auth identifier",
+				err, true, fn.None[RoundID](),
+			), nil
+		}
+
+		idPub := identifierKeyDesc.PubKey
+
 		// With all this extracted, we'll now send the JoinRoundRequest
 		// to kick off the signing process.
 		return &ClientStateTransition{
@@ -627,6 +641,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 						VTXORequests:     vtxoReqs,
 						ForfeitRequests:  forfeitReqs,
 						LeaveRequests:    leaveReqs,
+						Identifier:       idPub,
 					},
 				},
 			}),
