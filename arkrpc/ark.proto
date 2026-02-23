@@ -17,7 +17,7 @@ message GetInfoResponse {
     string version = 1;
 
     // The ark operator's main public key. This pub key must be used in the
-    // construction of boarding scripts
+    // construction of boarding scripts.
     bytes pubkey = 2;
 
     // The network the operator is running on.
@@ -25,4 +25,38 @@ message GetInfoResponse {
 
     // The current block height tip that the operator is aware of.
     uint32 block_height = 4;
+
+    // The minimum CSV delay (blocks) required on boarding outputs.
+    uint32 boarding_exit_delay = 5;
+
+    // The minimum CSV delay (blocks) for VTXO unilateral exit paths.
+    uint32 vtxo_exit_delay = 6;
+
+    // The output script that clients must use for the penalty output in
+    // forfeit transactions.
+    bytes forfeit_script = 7;
+
+    // The operator key used in VTXO sweep paths.
+    bytes sweep_key = 8;
+
+    // The batch-wide absolute timelock (blocks) for sweep transactions.
+    uint32 sweep_delay = 9;
+
+    // The minimum output value (satoshis) enforced for boarding/funding
+    // flows.
+    int64 dust_limit = 10;
+
+    // The minimum amount (satoshis) clients must contribute per boarding
+    // input.
+    int64 min_boarding_amount = 11;
+
+    // The maximum amount (satoshis) accepted per boarding request. Zero
+    // means no cap.
+    int64 max_boarding_amount = 12;
+
+    // The operator's target package feerate (sat/vByte).
+    int64 fee_rate = 13;
+
+    // The minimum confirmations required on boarding inputs.
+    uint32 min_confirmations = 14;
 }
