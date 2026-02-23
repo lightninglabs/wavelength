@@ -120,9 +120,9 @@ func (a *ClientConnectionActor) ingressLoop(
 		// safely-processed envelope (dispatched or skipped), NOT
 		// the failing one — the failing envelope is preserved for
 		// retry.
-		committedCursor, dispatchErr := a.dispatchBatch(
-			ctx, envelopes, nextCursor,
-		)
+		committedCursor, anyProcessed, dispatchErr :=
+			a.dispatchBatch(ctx, envelopes, nextCursor)
+
 		if dispatchErr != nil {
 			log.WarnS(ctx, "Dispatch failed", dispatchErr,
 				slog.Uint64("committed_to",
@@ -132,7 +132,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			// so we don't re-process them. Adding 1 converts
 			// from inclusive to exclusive cursor position.
 			advanceCursor := committedCursor + 1
-			if committedCursor > 0 &&
+			if anyProcessed &&
 				advanceCursor > state.PullCursor {
 
 				state.AdvanceDispatch(advanceCursor)
@@ -214,7 +214,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 	ctx context.Context,
 	envelopes []*mailboxpb.Envelope,
 	batchNextCursor uint64,
-) (uint64, error) {
+) (lastSafe uint64, anyProcessed bool, _ error) {
 
 	// Track the cursor of the last safely-processed envelope. An
 	// envelope is "safe" if it was either successfully dispatched
@@ -224,7 +224,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 	// advances the pull cursor to lastSafe+1, which skips
 	// already-processed envelopes but preserves the failing
 	// envelope for retry.
-	lastSafe := uint64(0)
+	lastSafe = uint64(0)
 
 	for _, env := range envelopes {
 		if env.Rpc == nil {
@@ -237,6 +237,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 			// so it isn't re-pulled on retry.
 			if env.EventSeq > lastSafe {
 				lastSafe = env.EventSeq
+				anyProcessed = true
 			}
 
 			continue
@@ -318,7 +319,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 				// envelope) so the caller advances
 				// past skipped envelopes but
 				// preserves this one for retry.
-				return lastSafe, err
+				return lastSafe, anyProcessed, err
 			}
 
 		default:
@@ -331,6 +332,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 			// Safe to skip.
 			if env.EventSeq > lastSafe {
 				lastSafe = env.EventSeq
+				anyProcessed = true
 			}
 
 			continue
@@ -350,7 +352,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 		lastSafe = batchNextCursor
 	}
 
-	return lastSafe, nil
+	return lastSafe, true, nil
 }
 
 // ackRemote calls Edge.AckUpTo with the given cursor.
