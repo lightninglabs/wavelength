@@ -293,7 +293,8 @@ func (s *Server) dialServer(ctx context.Context) (
 		}
 
 		creds := credentials.NewTLS(&tls.Config{
-			RootCAs: pool,
+			RootCAs:    pool,
+			MinVersion: tls.VersionTLS12,
 		})
 		dialOpts = append(
 			dialOpts,
@@ -303,7 +304,9 @@ func (s *Server) dialServer(ctx context.Context) (
 	default:
 		// Use the system certificate pool when no explicit cert
 		// is provided.
-		creds := credentials.NewTLS(&tls.Config{})
+		creds := credentials.NewTLS(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+		})
 		dialOpts = append(
 			dialOpts,
 			grpc.WithTransportCredentials(creds),
