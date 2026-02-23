@@ -435,6 +435,18 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	vtxoStore := &MockVTXOStore{}
 	walletMock := &MockClientWallet{}
 
+	// The join-round transition always derives a fresh identifier key,
+	// so wire up a default mock that returns a valid key descriptor.
+	identifierPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	walletMock.On(
+		"DeriveNextKey", mock.Anything,
+		joinRoundAuthIdentifierKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: identifierPrivKey.PubKey(),
+	}, nil)
+
 	operatorTerms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
 		BoardingExitDelay: 144,

@@ -365,6 +365,18 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 		btclog.Disabled, testStartHeight,
 	)
 
+	// The join-round transition always derives a fresh identifier key,
+	// so wire up a default mock that returns a valid key descriptor.
+	identifierPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	wallet.On(
+		"DeriveNextKey", mock.Anything,
+		joinRoundAuthIdentifierKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: identifierPrivKey.PubKey(),
+	}, nil)
+
 	h := &boardingTestHarness{
 		t:               t,
 		ctx:             ctx,

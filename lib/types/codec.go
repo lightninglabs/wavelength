@@ -1039,7 +1039,6 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 // encodeJoinAuthForfeitRequests serializes requested forfeit outpoints in
 // request order.
 func encodeJoinAuthForfeitRequests(requests []*ForfeitRequest) ([]byte, error) {
-
 	entries := make([][]byte, 0, len(requests))
 	for i := 0; i < len(requests); i++ {
 		req := requests[i]
