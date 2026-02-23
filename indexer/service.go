@@ -35,6 +35,11 @@ type Service struct {
 }
 
 // NewService creates a new indexer service.
+//
+// The default script authorization policy is allow-all. Callers MUST call
+// SetScriptAuthorizer with a restrictive policy (e.g.
+// RegistrationScriptAuthorizer) before serving production traffic. The
+// server's setupIndexerSubsystem wires this automatically.
 func NewService(serverID string, store *db.Store) *Service {
 	return &Service{
 		serverID: serverID,
@@ -415,6 +420,10 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	// Pre-load round metadata for each VTXO. The dedup map ensures each
+	// unique round ID is fetched at most once. A batch query (e.g.
+	// ListRoundsByIDs) would reduce this to a single round-trip and is
+	// a worthwhile future optimization if VTXO result sets grow large.
 	roundRowByHex := make(map[string]*sqlc.Round)
 
 	for _, row := range rows {
@@ -851,6 +860,9 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 				"load inserted recipient event: %w", err,
 			)
 		}
+		// Override with the authoritative event ID returned by
+		// insertRecipientEvent, since the DB row's event_id may
+		// differ if a concurrent insert won the race.
 		storedEvent.EventID = int64(eventID)
 	}
 
@@ -1003,6 +1015,10 @@ func (s *Service) insertRecipientEvent(ctx context.Context,
 	pkScript []byte, sessionDbID, outputIndex int32,
 	value, createdAt int64) (uint64, error) {
 
+	// maxRecipientInsertAttempts bounds the CAS retry loop for allocating
+	// a per-script monotonic event ID. Under contention multiple writers
+	// may race for the same next ID; 32 attempts provides ample headroom
+	// for realistic concurrency without spinning indefinitely.
 	const maxRecipientInsertAttempts = 32
 
 	nextID, err := s.store.Queries.GetMaxOORRecipientEventID(ctx, pkScript)
