@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -204,6 +205,344 @@ func TestValidateJoinRequestAuthForfeitValid(t *testing.T) {
 
 	_, err = ValidateJoinRequestAtHeight(t.Context(), h.env, req, 500)
 	require.NoError(t, err)
+}
+
+// TestValidateJoinRequestAuthNegative covers rejection paths in
+// validateJoinRequestAuth using table-driven subtests. Each subtest
+// starts from a valid base state and mutates one aspect to trigger
+// a specific error.
+func TestValidateJoinRequestAuthNegative(t *testing.T) {
+	t.Parallel()
+
+	// Build shared base state: one boarding input with valid auth.
+	clientPub, clientSigner := testutils.CreateKey(80)
+	operatorPub, _ := testutils.CreateKey(81)
+
+	outpointA := wire.OutPoint{
+		Hash:  [32]byte{0x50},
+		Index: 0,
+	}
+	const exitDelay uint32 = 144
+
+	tapscript, err := scripts.VTXOTapScript(
+		clientPub, operatorPub, exitDelay,
+	)
+	require.NoError(t, err)
+
+	pkScript := buildExpectedPkScript(
+		t, clientPub, operatorPub, exitDelay,
+	)
+
+	prevOut := &wire.TxOut{
+		Value:    100_000,
+		PkScript: pkScript,
+	}
+
+	proofInput := joinAuthProofInput{
+		Outpoint:  outpointA,
+		PrevOut:   prevOut,
+		Tapscript: tapscript,
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: clientPub,
+		},
+		Sequence: exitDelay,
+		Signer:   clientSigner,
+	}
+
+	boardingInput := &BoardingInput{
+		Outpoint:  &outpointA,
+		Tapscript: tapscript,
+		Value:     100_000,
+		PkScript:  pkScript,
+		ClientKey: clientPub,
+	}
+
+	// makeValidReq builds a fresh valid request and auth payload.
+	// Each subtest must call this to get an independent copy.
+	makeValidReq := func(t *testing.T) *types.JoinRoundRequest {
+		t.Helper()
+
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{
+				{
+					Outpoint:    &outpointA,
+					ClientKey:   clientPub,
+					OperatorKey: operatorPub,
+					ExitDelay:   exitDelay,
+				},
+			},
+		}
+		req.Auth = buildTestJoinAuth(
+			t, req, 500, []joinAuthProofInput{proofInput},
+		)
+
+		return req
+	}
+
+	// authNegativeCase describes a single negative test case for
+	// validateJoinRequestAuth.
+	type authNegativeCase struct {
+		name string
+
+		// mutate modifies the valid request to trigger a
+		// specific error path.
+		mutate func(t *testing.T, req *types.JoinRoundRequest)
+
+		// boardingInputs overrides the default single boarding
+		// input when set.
+		boardingInputs []*BoardingInput
+
+		// wantErr is the sentinel error expected, checked via
+		// errors.Is. Nil when wantContains is used instead.
+		wantErr error
+
+		// wantContains is a substring expected in the error
+		// message when wantErr is nil.
+		wantContains string
+	}
+
+	cases := []authNegativeCase{
+		{
+			name: "auth_missing",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				req.Auth = nil
+			},
+			wantErr: ErrJoinRequestAuthMissing,
+		},
+
+		{
+			name: "identifier_missing",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				req.Identifier = nil
+			},
+			wantErr: ErrJoinRequestIdentifierMissing,
+		},
+
+		{
+			name: "message_empty",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				req.Auth.Message = nil
+			},
+			wantContains: "message must be provided",
+		},
+
+		{
+			name: "signature_empty",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				req.Auth.Signature = nil
+			},
+			wantContains: "signature must be provided",
+		},
+
+		{
+			name: "signature_too_large",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				req.Auth.Signature = make(
+					[]byte, joinAuthMaxSignatureSize+1,
+				)
+			},
+			wantContains: "signature size",
+		},
+
+		{
+			name: "message_mismatch",
+			mutate: func(_ *testing.T,
+				req *types.JoinRoundRequest) {
+
+				// Flip a byte so the message no longer
+				// matches the canonical encoding.
+				req.Auth.Message[0] ^= 0xff
+			},
+			wantErr: ErrJoinRequestAuthMessageMismatch,
+		},
+
+		{
+			name: "input_count_mismatch",
+			mutate: func(t *testing.T,
+				req *types.JoinRoundRequest) {
+
+				t.Helper()
+
+				// Build request with 2 boarding inputs
+				// so the message is canonical for both.
+				extra := wire.OutPoint{
+					Hash:  [32]byte{0x51},
+					Index: 0,
+				}
+				req.BoardingReqs = append(
+					req.BoardingReqs,
+					&types.BoardingRequest{
+						Outpoint:    &extra,
+						ClientKey:   clientPub,
+						OperatorKey: operatorPub,
+						ExitDelay:   exitDelay,
+					},
+				)
+
+				// Sign auth for only 1 input so the
+				// signature has fewer inputs than the
+				// request expects.
+				req.Auth = buildTestJoinAuth(
+					t, req, 500,
+					[]joinAuthProofInput{
+						proofInput,
+					},
+				)
+			},
+			boardingInputs: []*BoardingInput{
+				boardingInput,
+				{
+					Outpoint: &wire.OutPoint{
+						Hash:  [32]byte{0x51},
+						Index: 0,
+					},
+					Tapscript: tapscript,
+					Value:     50_000,
+					PkScript:  pkScript,
+					ClientKey: clientPub,
+				},
+			},
+			wantErr: ErrJoinRequestAuthInputCountMismatch,
+		},
+
+		{
+			name: "input_order_mismatch",
+			mutate: func(t *testing.T,
+				req *types.JoinRoundRequest) {
+
+				t.Helper()
+
+				// Build request with [B, A] order so
+				// the canonical message encodes [B, A].
+				outpointB := wire.OutPoint{
+					Hash:  [32]byte{0x52},
+					Index: 0,
+				}
+				req.BoardingReqs = []*types.BoardingRequest{
+					{
+						Outpoint:    &outpointB,
+						ClientKey:   clientPub,
+						OperatorKey: operatorPub,
+						ExitDelay:   exitDelay,
+					},
+					{
+						Outpoint:    &outpointA,
+						ClientKey:   clientPub,
+						OperatorKey: operatorPub,
+						ExitDelay:   exitDelay,
+					},
+				}
+
+				// Sign auth with proof inputs in
+				// [A, B] order so the signature's
+				// inputs don't match the request's
+				// [B, A] outpoint order.
+				proofB := proofInput
+				proofB.Outpoint = outpointB
+
+				req.Auth = buildTestJoinAuth(
+					t, req, 500,
+					[]joinAuthProofInput{
+						proofInput, proofB,
+					},
+				)
+			},
+			boardingInputs: []*BoardingInput{
+				{
+					Outpoint: &wire.OutPoint{
+						Hash:  [32]byte{0x52},
+						Index: 0,
+					},
+					Tapscript: tapscript,
+					Value:     50_000,
+					PkScript:  pkScript,
+					ClientKey: clientPub,
+				},
+				boardingInput,
+			},
+			wantErr: ErrJoinRequestAuthInputOrderMismatch,
+		},
+
+		{
+			name: "wrong_signer",
+			mutate: func(t *testing.T,
+				req *types.JoinRoundRequest) {
+
+				t.Helper()
+
+				// Sign the auth with a different key
+				// than the one in the boarding input.
+				attackerPub, attackerSigner :=
+					testutils.CreateKey(82)
+
+				attackerProof := joinAuthProofInput{
+					Outpoint:  outpointA,
+					PrevOut:   prevOut,
+					Tapscript: tapscript,
+					KeyDesc: keychain.KeyDescriptor{
+						PubKey: attackerPub,
+					},
+					Sequence: exitDelay,
+					Signer:   attackerSigner,
+				}
+
+				// Set attacker as identifier so the
+				// message challenge uses their key.
+				req.Identifier = attackerPub
+				req.Auth = buildTestJoinAuth(
+					t, req, 500,
+					[]joinAuthProofInput{
+						attackerProof,
+					},
+				)
+			},
+			wantContains: "join request auth verification",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := makeValidReq(t)
+			tc.mutate(t, req)
+
+			// Use override boarding inputs if provided,
+			// otherwise use the default single input.
+			inputs := []*BoardingInput{boardingInput}
+			if tc.boardingInputs != nil {
+				inputs = tc.boardingInputs
+			}
+
+			err := validateJoinRequestAuth(
+				req, inputs, nil, 500,
+			)
+			require.Error(t, err)
+
+			if tc.wantErr != nil {
+				require.True(t,
+					errors.Is(err, tc.wantErr),
+					"expected %v, got: %v",
+					tc.wantErr, err,
+				)
+			} else {
+				require.Contains(t,
+					err.Error(),
+					tc.wantContains,
+				)
+			}
+		})
+	}
 }
 
 // buildTestJoinAuth builds a full-format BIP-322 join-auth payload for tests.
