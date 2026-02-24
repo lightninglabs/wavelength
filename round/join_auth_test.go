@@ -299,8 +299,17 @@ func (f *joinAuthTestFixture) validateAuth(t *testing.T,
 	)
 	require.NoError(t, err)
 
+	intent := &bip322.Intent{
+		Payload:    auth.Message,
+		ValidFrom:  auth.ValidFrom,
+		ValidUntil: auth.ValidUntil,
+	}
+
+	intentMessage, err := intent.SigningMessage()
+	require.NoError(t, err)
+
 	return bip322.ValidateAuthPkg(&bip322.AuthPkg{
-		Message:          auth.Message,
+		Message:          intentMessage,
 		MessageChallenge: challenge,
 		Sig:              sig,
 		ProofPrevOutputs: proofPrevOuts,
@@ -351,18 +360,20 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	require.NotEmpty(t, auth.Message)
 	require.NotEmpty(t, auth.Signature)
 
-	// Ensure we encode the configured block window on input 0 of
-	// the to_sign transaction.
+	// Ensure join-auth validity metadata is carried in the auth
+	// payload, not encoded in to_sign input 0 lock metadata.
+	require.Equal(t, f.signingHeight, auth.ValidFrom)
+	require.Equal(
+		t, joinAuthValidUntil(f.signingHeight), auth.ValidUntil,
+	)
+
 	sig, err := bip322.DecodeSig(auth.Signature)
 	require.NoError(t, err)
 
 	require.Equal(t, int32(2), sig.ToSign.Version)
-	require.Equal(t, f.signingHeight, sig.ToSign.LockTime)
+	require.Equal(t, uint32(0), sig.ToSign.LockTime)
 	require.NotEmpty(t, sig.ToSign.TxIn)
-	require.Equal(
-		t, joinAuthValidUntil(f.signingHeight),
-		sig.ToSign.TxIn[0].Sequence,
-	)
+	require.Equal(t, uint32(0), sig.ToSign.TxIn[0].Sequence)
 
 	// Build the proof prevouts needed by the validator. Each
 	// boarding UTXO must be supplied so the script engine can
@@ -435,12 +446,25 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 	require.NoError(t, err)
 
 	tamperedAuth := &types.JoinRoundAuth{
-		Message:   append([]byte(nil), auth.Message...),
-		Signature: tamperedRawSig,
+		Message:    append([]byte(nil), auth.Message...),
+		ValidFrom:  auth.ValidFrom,
+		ValidUntil: auth.ValidUntil,
+		Signature:  tamperedRawSig,
 	}
 
 	result := f.validateAuth(t, tamperedAuth, proofPrevOuts)
 	require.Equal(t, bip322.VerificationStateInvalid, result.State)
+
+	// Mutating intent metadata without re-signing must also fail.
+	tamperedIntent := &types.JoinRoundAuth{
+		Message:    append([]byte(nil), auth.Message...),
+		ValidFrom:  auth.ValidFrom,
+		ValidUntil: auth.ValidUntil + 1,
+		Signature:  append([]byte(nil), auth.Signature...),
+	}
+
+	intentResult := f.validateAuth(t, tamperedIntent, proofPrevOuts)
+	require.Equal(t, bip322.VerificationStateInvalid, intentResult.State)
 }
 
 // TestBuildJoinRoundAuthWithForfeit verifies that buildJoinRoundAuth
@@ -639,7 +663,7 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 
 // TestBuildJoinRoundAuthRejectsMissingValidFromQuery verifies that
 // buildJoinRoundAuth returns an error when the environment cannot query the
-// current height for block-window anchoring.
+// current height for intent validity metadata.
 func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 	t.Parallel()
 

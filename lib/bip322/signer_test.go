@@ -160,10 +160,9 @@ func TestBuildAndSignFullTxTaprootProofOfFunds(t *testing.T) {
 		message,
 		challengeScript,
 		&taprootTxSigner{privateKey: privateKey},
-		WithBlockWindow(BlockWindow{
-			ValidFromBlock:  100,
-			ValidUntilBlock: 200,
-		}),
+		WithToSignVersion(2),
+		WithToSignLockTime(100),
+		WithToSignSequence(200),
 		WithToSignAdditionalInputs(
 			AdditionalInput{
 				PreviousOutPoint: additionalOutPoint,

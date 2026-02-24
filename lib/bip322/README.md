@@ -18,8 +18,7 @@ What is implemented:
 - low-level raw `to_sign` construction (`BuildToSignTx`)
 - full signature encoding/decoding (`Sig`, `DecodeSig`, base64 helpers)
 - validation with BIP-322 result states (`ValidateAuthPkg`)
-- application-level block window policy (`WithBlockWindow`,
-  `WithCurrentBlockHeight`)
+- application-level intent envelope (`Intent`)
 - proof-of-funds additional inputs on `to_sign`
 
 What is intentionally not implemented:
@@ -163,28 +162,18 @@ It validates using this sequence:
 BIP-322 upgradeable behavior (for example unsupported versions/features or
 missing proof prevout data).
 
-## Block Window Layer
+## Intent Layer
 
-For application policy, this package provides `BlockWindow`:
-- `ValidFromBlock` (inclusive lower bound)
-- `ValidUntilBlock` (inclusive upper bound, `0` = no expiry)
+For application policy, this package provides `Intent`:
+- `Payload` (the canonical application message)
+- `ValidFrom` (inclusive lower bound)
+- `ValidUntil` (inclusive upper bound, `0` = no expiry)
 
-This is an **application-layer wrapper** over core BIP-322 checks.
+`Intent.SigningMessage` deterministically serializes this metadata so
+application validity fields are part of the BIP-322 message commitment.
 
-BIP-322 verification returns `valid at time T and age S`
-([verification](https://bips.xyz/322#verification)), and the timelock
-extension notes that applications may interpret these fields according to
-their own policy ([timelocks](https://bips.xyz/322#timelocks)).
-
-This package chooses the following policy mapping:
-- `BlockWindow.ValidFromBlock` -> `to_sign.nLockTime`
-- `BlockWindow.ValidUntilBlock` -> `to_sign.vin[0].nSequence`
-
-Use:
-- `BuildAndSignFullTx(..., WithBlockWindow(window), ...)` to embed the
-  window while signing. This automatically sets version to 2.
-- `ValidateAuthPkg(..., WithCurrentBlockHeight(height))` to enforce the
-  window after core BIP-322 verification succeeds.
+`Intent.Validate` and `Intent.ValidateAtHeight` provide local checks for
+metadata consistency and chain-height validity.
 
 ## Usage
 
@@ -321,36 +310,38 @@ case bip322.VerificationStateInconclusive:
 }
 ```
 
-### Sign and verify with a block window
+### Sign and verify with intent metadata
 
-`WithBlockWindow` embeds a block-height validity range into the signature
-and automatically sets version 2. `WithCurrentBlockHeight` enforces the
-window on the verification side.
+`Intent` keeps validity metadata at the application layer while still
+committing to it in the BIP-322 digest.
 
 ```go
-// Define the window: valid from block 840,000 through 840,144.
-window := bip322.BlockWindow{
-	ValidFromBlock:  840_000,
-	ValidUntilBlock: 840_144, // 0 = no expiry
+intent := &bip322.Intent{
+	Payload:    msg,
+	ValidFrom:  840_000,
+	ValidUntil: 840_144, // 0 = no expiry
 }
 
-// Sign — version is set to 2 automatically.
+intentMsg, err := intent.SigningMessage()
+if err != nil {
+	return err
+}
+
 sig, err := bip322.BuildAndSignFullTx(
-	msg, challengeScript, mySigner,
-	bip322.WithBlockWindow(window),
+	intentMsg, challengeScript, mySigner,
+	bip322.WithToSignVersion(2),
 )
 if err != nil {
 	return err
 }
 
-// Verify — pass the current chain height to enforce the window.
-result := bip322.ValidateAuthPkg(
-	&bip322.AuthPkg{
-		Message:          msg,
-		MessageChallenge: challengeScript,
-		Sig:              sig,
-	},
-	bip322.WithCurrentBlockHeight(840_050),
-)
-// result.State == VerificationStateValid (840_050 is in range)
+if err := intent.ValidateAtHeight(840_050); err != nil {
+	return err
+}
+
+result := bip322.ValidateAuthPkg(&bip322.AuthPkg{
+	Message:          intentMsg,
+	MessageChallenge: challengeScript,
+	Sig:              sig,
+})
 ```

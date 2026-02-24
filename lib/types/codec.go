@@ -82,6 +82,14 @@ type JoinRoundAuth struct {
 	// Message is the canonical join message signed by the client.
 	Message []byte
 
+	// ValidFrom is the first block height where this auth intent is
+	// accepted.
+	ValidFrom uint32
+
+	// ValidUntil is the last block height where this auth intent is
+	// accepted. A value of 0 means no upper bound.
+	ValidUntil uint32
+
 	// Signature is the serialized full-format BIP-322 signature
 	// payload.
 	Signature []byte

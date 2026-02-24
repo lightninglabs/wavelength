@@ -244,15 +244,27 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	)
 
 	// Query the chain tip at signing time and use that height as the
-	// lower bound for this auth signature's validity window.
+	// lower bound for this auth intent.
 	validFrom, err := joinAuthValidFrom(ctx, env)
 	if err != nil {
 		return nil, err
 	}
 
-	// Compute the block-window upper bound so the server can
-	// reject stale proofs.
+	// Compute the upper bound so the server can reject stale
+	// proofs.
 	validUntil := joinAuthValidUntil(validFrom)
+
+	intent, err := bip322.NewIntent(
+		message, validFrom, validUntil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("join auth intent: %w", err)
+	}
+
+	intentMessage, err := intent.SigningMessage()
+	if err != nil {
+		return nil, fmt.Errorf("join auth intent: %w", err)
+	}
 
 	// Step 5: Build and sign the full BIP-322 proof. This
 	// constructs the virtual to_spend and to_sign transactions,
@@ -260,7 +272,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	// witnesses: a key-path spend for input 0 (identifier) and
 	// script-path timeout spends for each proof-of-funds input.
 	sig, err := bip322.BuildAndSignFullTx(
-		message,
+		intentMessage,
 		messageChallenge,
 		&joinRoundBIP322Signer{
 			wallet:            env.Wallet,
@@ -270,10 +282,6 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 			ctx:               ctx,
 		},
 		bip322.WithToSignVersion(2),
-		bip322.WithBlockWindow(bip322.BlockWindow{
-			ValidFromBlock:  validFrom,
-			ValidUntilBlock: validUntil,
-		}),
 		bip322.WithToSignAdditionalInputs(
 			additionalInputs...,
 		),
@@ -305,8 +313,10 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		slog.Int("valid_until_block", int(validUntil)))
 
 	return &types.JoinRoundAuth{
-		Message:   message,
-		Signature: rawSig,
+		Message:    message,
+		ValidFrom:  validFrom,
+		ValidUntil: validUntil,
+		Signature:  rawSig,
 	}, nil
 }
 
@@ -648,7 +658,7 @@ func signJoinAuthMessageInput(wallet ClientWallet,
 }
 
 // joinAuthValidFrom queries the current best height used as the lower
-// bound in join-auth block-window encoding.
+// bound in join-auth intent validity metadata.
 func joinAuthValidFrom(ctx context.Context,
 	env *ClientEnvironment) (uint32, error) {
 
