@@ -78,9 +78,6 @@ type ValidateAuthOption func(*validateAuthOptions) error
 // validateAuthOptions carries optional policy checks layered above core
 // BIP-322 validation.
 type validateAuthOptions struct {
-	// currentBlockHeight enables BlockWindow enforcement when provided.
-	currentBlockHeight *uint32
-
 	// maxProofInputs bounds additional proof-of-funds inputs (vin[1..N])
 	// accepted during validation.
 	maxProofInputs int
@@ -233,10 +230,8 @@ func ValidateAuthPkg(pkg *AuthPkg,
 	}
 
 	// Step 8: Surface the lock metadata exactly as BIP-322 specifies,
-	// then apply any application-level policy checks.
-	result := validResult(toSign.LockTime, toSign.TxIn[0].Sequence)
-
-	return applyBlockWindowValidationPolicy(result, validationOpts)
+	// then return to the caller.
+	return validResult(toSign.LockTime, toSign.TxIn[0].Sequence)
 }
 
 // validateFullToSignShape enforces the BIP-322 full-format structural rules.

@@ -197,7 +197,7 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 
 	// The base env is used as a template for per-round FSM environments.
 	// Wire in the actor height query function so join-auth can anchor
-	// validity windows to the current chain height at signing time.
+	// intent validity metadata to the current chain height at signing time.
 	actor.env.QueryBestHeight = actor.queryBestHeight
 
 	return fn.Ok(actor)

@@ -236,6 +236,25 @@ func TestValidateAuthPkgRejectsNegativeMaxProofInputs(t *testing.T) {
 	)
 }
 
+// TestValidateAuthPkgRejectsNilValidationOption asserts nil validation options
+// are rejected as invalid input.
+func TestValidateAuthPkgRejectsNilValidationOption(t *testing.T) {
+	t.Parallel()
+
+	result := ValidateAuthPkg(
+		&AuthPkg{
+			Message:          []byte("x"),
+			MessageChallenge: []byte{txscript.OP_TRUE},
+			Sig: &Sig{
+				ToSign: wire.NewMsgTx(0),
+			},
+		},
+		nil,
+	)
+
+	require.Equal(t, VerificationStateInvalid, result.State)
+}
+
 // TestValidateAuthPkgProofOfFundsValid asserts proof-of-funds signatures can
 // validate when prevout metadata is provided.
 func TestValidateAuthPkgProofOfFundsValid(t *testing.T) {

@@ -50,7 +50,7 @@ type ClientEnvironment struct {
 	StartHeight uint32
 
 	// QueryBestHeight returns the current chain tip height. Join-auth uses
-	// this to anchor validity windows at signing time.
+	// this to anchor intent validity metadata at signing time.
 	QueryBestHeight func(context.Context) (uint32, error)
 
 	// DisableJoinRequestAuth skips BIP-322 join authorization
@@ -68,7 +68,7 @@ func (e *ClientEnvironment) Name() string {
 // dependencies. The startHeight parameter should be the current block height
 // when the FSM is created, used as a HeightHint for confirmation
 // registration. The queryBestHeight callback is used by join-auth to fetch
-// signing-time chain tip height for block-window anchoring.
+// signing-time chain tip height for intent validity anchoring.
 func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
 	chainParams *chaincfg.Params, maxOperatorFee btcutil.Amount,
