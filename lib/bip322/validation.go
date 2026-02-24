@@ -31,6 +31,13 @@ const (
 	VerificationStateInvalid VerificationState = "invalid"
 )
 
+const (
+	// defaultMaxProofInputs bounds proof-of-funds input count accepted
+	// during validation to cap worst-case script-engine work per auth
+	// package.
+	defaultMaxProofInputs = 128
+)
+
 // VerificationResult contains the result of validating a BIP-322 auth package.
 type VerificationResult struct {
 	// State is the verification state.
@@ -73,11 +80,34 @@ type ValidateAuthOption func(*validateAuthOptions) error
 type validateAuthOptions struct {
 	// currentBlockHeight enables BlockWindow enforcement when provided.
 	currentBlockHeight *uint32
+
+	// maxProofInputs bounds additional proof-of-funds inputs (vin[1..N])
+	// accepted during validation.
+	maxProofInputs int
 }
 
 // defaultValidateAuthOptions returns default validation policy options.
 func defaultValidateAuthOptions() validateAuthOptions {
-	return validateAuthOptions{}
+	return validateAuthOptions{
+		maxProofInputs: defaultMaxProofInputs,
+	}
+}
+
+// WithMaxProofInputs sets the maximum number of proof-of-funds inputs
+// accepted by ValidateAuthPkg. This limit applies to additional inputs
+// only; input 0 (the to_spend reference) is not counted.
+func WithMaxProofInputs(maxProofInputs int) ValidateAuthOption {
+	return func(opts *validateAuthOptions) error {
+		if maxProofInputs < 0 {
+			return fmt.Errorf(
+				"max proof inputs must be non-negative",
+			)
+		}
+
+		opts.maxProofInputs = maxProofInputs
+
+		return nil
+	}
 }
 
 // applyValidateAuthOptions applies validation options and returns final
@@ -151,7 +181,9 @@ func ValidateAuthPkg(pkg *AuthPkg,
 
 	// Step 4: Apply BIP-322 full-format structural checks before
 	// running the script engine.
-	err = validateFullToSignShape(toSign, toSpend)
+	err = validateFullToSignShape(
+		toSign, toSpend, validationOpts.maxProofInputs,
+	)
 	if err != nil {
 		return invalidResult(err.Error())
 	}
@@ -208,10 +240,20 @@ func ValidateAuthPkg(pkg *AuthPkg,
 }
 
 // validateFullToSignShape enforces the BIP-322 full-format structural rules.
-func validateFullToSignShape(toSign *wire.MsgTx, toSpend *wire.MsgTx) error {
+func validateFullToSignShape(toSign *wire.MsgTx, toSpend *wire.MsgTx,
+	maxProofInputs int) error {
+
 	if len(toSign.TxIn) == 0 {
 		return fmt.Errorf(
 			"full signature tx must include at least one input",
+		)
+	}
+
+	proofInputCount := len(toSign.TxIn) - 1
+	if proofInputCount > maxProofInputs {
+		return fmt.Errorf(
+			"full signature tx proof input count %d exceeds max %d",
+			proofInputCount, maxProofInputs,
 		)
 	}
 

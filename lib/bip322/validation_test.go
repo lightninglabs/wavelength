@@ -132,6 +132,110 @@ func TestValidateAuthPkgProofOfFundsNeedsPrevOuts(t *testing.T) {
 	require.Equal(t, VerificationStateInconclusive, result.State)
 }
 
+// TestValidateAuthPkgRejectsTooManyProofInputs asserts validation rejects
+// full-format signatures that exceed the maximum allowed proof input count.
+func TestValidateAuthPkgRejectsTooManyProofInputs(t *testing.T) {
+	t.Parallel()
+
+	message := []byte("too many proof inputs")
+	messageHash := MessageHash(message)
+
+	challengeScript := []byte{txscript.OP_TRUE}
+	toSpend, err := BuildToSpend(messageHash, challengeScript)
+	require.NoError(t, err)
+
+	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
+	for i := 0; i < len(additionalInputs); i++ {
+		additionalInputs[i] = AdditionalInput{
+			PreviousOutPoint: wire.OutPoint{
+				Hash: chainhash.Hash{
+					byte(i),
+				},
+				Index: uint32(i),
+			},
+		}
+	}
+
+	toSign, err := BuildToSignTx(
+		toSpend,
+		WithToSignAdditionalInputs(additionalInputs...),
+	)
+	require.NoError(t, err)
+
+	result := ValidateAuthPkg(&AuthPkg{
+		Message:          message,
+		MessageChallenge: challengeScript,
+		Sig: &Sig{
+			ToSign: toSign,
+		},
+	})
+
+	require.Equal(t, VerificationStateInvalid, result.State)
+	require.Contains(t, result.Reason, "proof input count")
+	require.Contains(t, result.Reason, "exceeds max")
+}
+
+// TestValidateAuthPkgAllowsConfiguredProofInputLimit asserts callers can raise
+// the proof-input limit via validation options.
+func TestValidateAuthPkgAllowsConfiguredProofInputLimit(t *testing.T) {
+	t.Parallel()
+
+	message := []byte("configured proof input limit")
+	messageHash := MessageHash(message)
+
+	challengeScript := []byte{txscript.OP_TRUE}
+	toSpend, err := BuildToSpend(messageHash, challengeScript)
+	require.NoError(t, err)
+
+	additionalInputs := make([]AdditionalInput, defaultMaxProofInputs+1)
+	for i := 0; i < len(additionalInputs); i++ {
+		additionalInputs[i] = AdditionalInput{
+			PreviousOutPoint: wire.OutPoint{
+				Hash: chainhash.Hash{
+					byte(i),
+				},
+				Index: uint32(i),
+			},
+		}
+	}
+
+	toSign, err := BuildToSignTx(
+		toSpend,
+		WithToSignAdditionalInputs(additionalInputs...),
+	)
+	require.NoError(t, err)
+
+	result := ValidateAuthPkg(
+		&AuthPkg{
+			Message:          message,
+			MessageChallenge: challengeScript,
+			Sig: &Sig{
+				ToSign: toSign,
+			},
+		},
+		WithMaxProofInputs(defaultMaxProofInputs+1),
+	)
+
+	require.Equal(t, VerificationStateInconclusive, result.State)
+	require.Contains(t, result.Reason, "missing proof prevout")
+}
+
+// TestValidateAuthPkgRejectsNegativeMaxProofInputs asserts invalid max proof
+// input option values are rejected.
+func TestValidateAuthPkgRejectsNegativeMaxProofInputs(t *testing.T) {
+	t.Parallel()
+
+	result := ValidateAuthPkg(
+		&AuthPkg{},
+		WithMaxProofInputs(-1),
+	)
+
+	require.Equal(t, VerificationStateInvalid, result.State)
+	require.Contains(
+		t, result.Reason, "max proof inputs must be non-negative",
+	)
+}
+
 // TestValidateAuthPkgProofOfFundsValid asserts proof-of-funds signatures can
 // validate when prevout metadata is provided.
 func TestValidateAuthPkgProofOfFundsValid(t *testing.T) {
