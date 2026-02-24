@@ -464,7 +464,9 @@ func attachToSignPSBTInputMetadata(packet *psbt.Packet, toSpend *wire.MsgTx,
 		)
 	}
 
-	err = updater.AddInSighashType(txscript.SigHashAll, 0)
+	toSpendSighashType := psbtInputSighashType(toSpend.TxOut[0].PkScript)
+
+	err = updater.AddInSighashType(toSpendSighashType, 0)
 	if err != nil {
 		return fmt.Errorf(
 			"attach to_sign input 0 sighash type: %w", err,
@@ -483,7 +485,13 @@ func attachToSignPSBTInputMetadata(packet *psbt.Packet, toSpend *wire.MsgTx,
 				"utxo: %w", packetIndex, err)
 		}
 
-		err = updater.AddInSighashType(txscript.SigHashAll, packetIndex)
+		additionalSighashType := psbtInputSighashType(
+			additionalIn.WitnessUtxo.PkScript,
+		)
+
+		err = updater.AddInSighashType(
+			additionalSighashType, packetIndex,
+		)
 		if err != nil {
 			return fmt.Errorf("attach to_sign input %d sighash "+
 				"type: %w", packetIndex, err)
@@ -491,6 +499,16 @@ func attachToSignPSBTInputMetadata(packet *psbt.Packet, toSpend *wire.MsgTx,
 	}
 
 	return nil
+}
+
+// psbtInputSighashType returns the default sighash metadata to attach for a
+// PSBT input based on its prevout script type.
+func psbtInputSighashType(pkScript []byte) txscript.SigHashType {
+	if txscript.IsPayToTaproot(pkScript) {
+		return txscript.SigHashDefault
+	}
+
+	return txscript.SigHashAll
 }
 
 // validateToSignVersion enforces the BIP-322 upgradeable rule for transaction

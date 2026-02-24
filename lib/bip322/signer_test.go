@@ -89,6 +89,71 @@ func TestBuildToSignShapeAndMetadata(t *testing.T) {
 	)
 }
 
+// TestBuildToSignUsesTaprootAwareSighashType asserts PSBT sighash metadata is
+// selected from each input's script type.
+func TestBuildToSignUsesTaprootAwareSighashType(t *testing.T) {
+	t.Parallel()
+
+	messageHash := MessageHash(
+		[]byte("psbt taproot-aware sighash metadata"),
+	)
+
+	privateKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	taprootKey := txscript.ComputeTaprootKeyNoScript(privateKey.PubKey())
+	taprootScript, err := txscript.PayToTaprootScript(taprootKey)
+	require.NoError(t, err)
+
+	toSpend, err := BuildToSpend(messageHash, taprootScript)
+	require.NoError(t, err)
+
+	nonTaprootScript, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_0).
+		AddData(make([]byte, 20)).
+		Script()
+	require.NoError(t, err)
+
+	packet, err := BuildToSign(
+		toSpend,
+		WithToSignAdditionalInputs(
+			AdditionalInput{
+				PreviousOutPoint: wire.OutPoint{
+					Hash:  chainhash.Hash{0x11},
+					Index: 5,
+				},
+				Sequence: 10,
+				WitnessUtxo: &wire.TxOut{
+					Value:    1_000,
+					PkScript: nonTaprootScript,
+				},
+			},
+			AdditionalInput{
+				PreviousOutPoint: wire.OutPoint{
+					Hash:  chainhash.Hash{0x22},
+					Index: 6,
+				},
+				Sequence: 11,
+				WitnessUtxo: &wire.TxOut{
+					Value:    2_000,
+					PkScript: taprootScript,
+				},
+			},
+		),
+	)
+	require.NoError(t, err)
+	require.Len(t, packet.Inputs, 3)
+	require.Equal(
+		t, txscript.SigHashDefault, packet.Inputs[0].SighashType,
+	)
+	require.Equal(
+		t, txscript.SigHashAll, packet.Inputs[1].SighashType,
+	)
+	require.Equal(
+		t, txscript.SigHashDefault, packet.Inputs[2].SighashType,
+	)
+}
+
 // TestBuildToSignRejectsInvalidAdditionalInput asserts invalid additional
 // input metadata is rejected before PSBT creation.
 func TestBuildToSignRejectsInvalidAdditionalInput(t *testing.T) {
