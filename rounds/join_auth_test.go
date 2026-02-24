@@ -561,10 +561,19 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 	message, err := types.JoinRoundAuthMessage(req)
 	require.NoError(t, err)
 
+	intent := &bip322.Intent{
+		Payload:    message,
+		ValidFrom:  0,
+		ValidUntil: validUntil,
+	}
+
+	intentMessage, err := intent.SigningMessage()
+	require.NoError(t, err)
+
 	challengeScript, err := bip322.JoinRoundMessageChallenge(req.Identifier)
 	require.NoError(t, err)
 
-	messageHash := bip322.MessageHash(message)
+	messageHash := bip322.MessageHash(intentMessage)
 	toSpend, err := bip322.BuildToSpend(
 		messageHash, challengeScript,
 	)
@@ -584,10 +593,6 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 	toSign, err := bip322.BuildToSignTx(
 		toSpend,
 		bip322.WithToSignVersion(2),
-		bip322.WithBlockWindow(bip322.BlockWindow{
-			ValidFromBlock:  0,
-			ValidUntilBlock: validUntil,
-		}),
 		bip322.WithToSignAdditionalInputs(additionalInputs...),
 	)
 	require.NoError(t, err)
@@ -636,8 +641,10 @@ func buildTestJoinAuth(t *testing.T, req *types.JoinRoundRequest,
 	require.NoError(t, err)
 
 	return &types.JoinRoundAuth{
-		Message:   message,
-		Signature: rawSig,
+		Message:    message,
+		ValidFrom:  0,
+		ValidUntil: validUntil,
+		Signature:  rawSig,
 	}
 }
 

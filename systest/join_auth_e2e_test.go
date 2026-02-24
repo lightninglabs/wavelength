@@ -129,13 +129,7 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	require.NotNil(t, joinReq.Auth,
 		"join request should include auth payload")
 
-	sig, err := bip322.DecodeSig(joinReq.Auth.Signature)
-	require.NoError(t, err, "join auth signature should decode")
-	require.NotNil(t, sig.ToSign,
-		"decoded signature should include to_sign tx")
-	require.NotEmpty(t, sig.ToSign.TxIn, "to_sign tx must contain input 0")
-
-	validUntil := sig.ToSign.TxIn[0].Sequence
+	validUntil := joinReq.Auth.ValidUntil
 	require.NotZero(t, validUntil,
 		"join auth should include valid-until block")
 
@@ -323,6 +317,15 @@ func buildForgedJoinRoundAuth(t *testing.T,
 	message, err := clienttypes.JoinRoundAuthMessage(sharedReq)
 	require.NoError(t, err, "should build canonical join auth message")
 
+	intent := &bip322.Intent{
+		Payload:    message,
+		ValidFrom:  0,
+		ValidUntil: 0,
+	}
+
+	intentMessage, err := intent.SigningMessage()
+	require.NoError(t, err, "should build intent message")
+
 	challengeScript, err := bip322.JoinRoundMessageChallenge(
 		identifierKey.PubKey,
 	)
@@ -342,7 +345,7 @@ func buildForgedJoinRoundAuth(t *testing.T,
 	require.NoError(t, err, "should derive boarding timeout spend info")
 
 	forgedSig, err := bip322.BuildAndSignFullTx(
-		message,
+		intentMessage,
 		challengeScript,
 		&forgedJoinAuthSigner{
 			wallet:         signer,
@@ -364,8 +367,10 @@ func buildForgedJoinRoundAuth(t *testing.T,
 	require.NoError(t, err, "should encode forged signature")
 
 	return &clienttypes.JoinRoundAuth{
-		Message:   message,
-		Signature: rawSig,
+		Message:    message,
+		ValidFrom:  intent.ValidFrom,
+		ValidUntil: intent.ValidUntil,
+		Signature:  rawSig,
 	}
 }
 
@@ -487,8 +492,10 @@ func cloneClientJoinRoundRequest(
 
 	if src.Auth != nil {
 		dst.Auth = &clienttypes.JoinRoundAuth{
-			Message:   append([]byte(nil), src.Auth.Message...),
-			Signature: append([]byte(nil), src.Auth.Signature...),
+			Message:    append([]byte(nil), src.Auth.Message...),
+			ValidFrom:  src.Auth.ValidFrom,
+			ValidUntil: src.Auth.ValidUntil,
+			Signature:  append([]byte(nil), src.Auth.Signature...),
 		}
 	}
 
