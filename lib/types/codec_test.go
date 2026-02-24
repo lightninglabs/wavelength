@@ -389,7 +389,6 @@ func testJoinAuthBlobListCountOnly(t *testing.T, count uint64) []byte {
 // testJoinRoundAuthRequest builds a minimal request fixture for join-auth
 // message encoding tests.
 func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
-
 	t.Helper()
 
 	clientKey := testJoinAuthPubKey(t)
