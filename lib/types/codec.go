@@ -202,7 +202,9 @@ func JoinRoundAuthMessage(req *JoinRoundRequest) ([]byte, error) {
 // into a JoinRoundRequest while enforcing decode-time size limits.
 func DecodeJoinRoundAuthMessage(raw []byte) (*JoinRoundRequest, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("join auth message bytes must be provided")
+		return nil, fmt.Errorf(
+			"join auth message bytes must be provided",
+		)
 	}
 
 	var (
@@ -364,7 +366,9 @@ func requireJoinAuthRecord(parsedTypes tlv.TypeMap, recordType tlv.Type,
 // decodeJoinAuthBoardingRequests parses a boarding request list from blob-list
 // bytes.
 func decodeJoinAuthBoardingRequests(raw []byte) ([]*BoardingRequest, error) {
-	entries, err := decodeJoinAuthBlobList(raw, joinRoundAuthMaxRequestCount)
+	entries, err := decodeJoinAuthBlobList(
+		raw, joinRoundAuthMaxRequestCount,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("decode boarding requests: %w", err)
 	}
@@ -431,31 +435,41 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 	}
 
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthOutPointHashRecordType, "outpoint hash",
+		parsedTypes,
+		joinRoundAuthOutPointHashRecordType,
+		"outpoint hash",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthOutPointIndexRecordType, "outpoint index",
+		parsedTypes,
+		joinRoundAuthOutPointIndexRecordType,
+		"outpoint index",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthBoardClientKeyRecordType, "client key",
+		parsedTypes,
+		joinRoundAuthBoardClientKeyRecordType,
+		"client key",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthBoardOperatorKeyRecordType, "operator key",
+		parsedTypes,
+		joinRoundAuthBoardOperatorKeyRecordType,
+		"operator key",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthBoardExitDelayRecordType, "exit delay",
+		parsedTypes,
+		joinRoundAuthBoardExitDelayRecordType,
+		"exit delay",
 	)
 	if err != nil {
 		return nil, err
@@ -493,7 +507,9 @@ func decodeJoinAuthBoardingRequest(raw []byte) (*BoardingRequest, error) {
 
 // decodeJoinAuthVTXORequests parses a VTXO request list from blob-list bytes.
 func decodeJoinAuthVTXORequests(raw []byte) ([]*VTXORequest, error) {
-	entries, err := decodeJoinAuthBlobList(raw, joinRoundAuthMaxRequestCount)
+	entries, err := decodeJoinAuthBlobList(
+		raw, joinRoundAuthMaxRequestCount,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("decode vtxo requests: %w", err)
 	}
@@ -646,7 +662,9 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 // decodeJoinAuthForfeitRequests parses a forfeit request list from blob-list
 // bytes.
 func decodeJoinAuthForfeitRequests(raw []byte) ([]*ForfeitRequest, error) {
-	entries, err := decodeJoinAuthBlobList(raw, joinRoundAuthMaxRequestCount)
+	entries, err := decodeJoinAuthBlobList(
+		raw, joinRoundAuthMaxRequestCount,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("decode forfeit requests: %w", err)
 	}
@@ -701,13 +719,17 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 	}
 
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthOutPointHashRecordType, "outpoint hash",
+		parsedTypes,
+		joinRoundAuthOutPointHashRecordType,
+		"outpoint hash",
 	)
 	if err != nil {
 		return nil, err
 	}
 	err = requireJoinAuthRecord(
-		parsedTypes, joinRoundAuthOutPointIndexRecordType, "outpoint index",
+		parsedTypes,
+		joinRoundAuthOutPointIndexRecordType,
+		"outpoint index",
 	)
 	if err != nil {
 		return nil, err
@@ -725,7 +747,9 @@ func decodeJoinAuthForfeitRequest(raw []byte) (*ForfeitRequest, error) {
 
 // decodeJoinAuthLeaveRequests parses a leave request list from blob-list bytes.
 func decodeJoinAuthLeaveRequests(raw []byte) ([]*LeaveRequest, error) {
-	entries, err := decodeJoinAuthBlobList(raw, joinRoundAuthMaxRequestCount)
+	entries, err := decodeJoinAuthBlobList(
+		raw, joinRoundAuthMaxRequestCount,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("decode leave requests: %w", err)
 	}
@@ -819,7 +843,10 @@ func decodeJoinAuthOutPoint(hash []byte, index uint64) (*wire.OutPoint, error) {
 	}
 
 	if index > math.MaxUint32 {
-		return nil, fmt.Errorf("outpoint index %d exceeds uint32", index)
+		return nil, fmt.Errorf(
+			"outpoint index %d exceeds uint32",
+			index,
+		)
 	}
 
 	var outpointHash chainhash.Hash

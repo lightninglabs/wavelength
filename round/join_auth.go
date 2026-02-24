@@ -510,6 +510,10 @@ func buildJoinAuthAdditionalInputs(
 // joinRoundBIP322Signer signs to_sign input 0 with the request
 // identifier key and signs all additional proof-of-funds inputs via
 // unilateral script-path witnesses.
+//
+// TxSigner has no context parameter; this field is cached only for logging.
+//
+//nolint:containedctx
 type joinRoundBIP322Signer struct {
 	// wallet performs transaction-level signing operations.
 	wallet ClientWallet
@@ -674,7 +678,9 @@ func joinAuthValidFrom(ctx context.Context,
 
 	height, err := env.QueryBestHeight(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("query join auth valid-from height: %w", err)
+		return 0, fmt.Errorf(
+			"query join auth valid-from height: %w", err,
+		)
 	}
 
 	return height, nil
