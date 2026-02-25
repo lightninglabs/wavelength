@@ -282,6 +282,22 @@ func TestFSMCreatedState(t *testing.T) {
 	})
 }
 
+// TestValidateJoinRequestForAdmissionRequiresHeight asserts join-auth
+// validation fails fast when no validation height is available.
+func TestValidateJoinRequestForAdmissionRequiresHeight(t *testing.T) {
+	t.Parallel()
+
+	env := &Environment{
+		DisableJoinRequestAuth: false,
+		StartHeight:            0,
+	}
+
+	_, err := validateJoinRequestForAdmission(
+		t.Context(), env, &types.JoinRoundRequest{}, 0,
+	)
+	require.ErrorIs(t, err, ErrJoinAuthHeightUnavailable)
+}
+
 // TestFSMRegistrationState tests the FSM transitions from RegistrationState.
 func TestFSMRegistrationState(t *testing.T) {
 	t.Parallel()

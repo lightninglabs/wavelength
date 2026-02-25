@@ -250,10 +250,12 @@ func (b *BridgeServerConn) convertToActorMsg(
 		return &rounds.JoinRoundRequest{
 			ClientID: b.clientID,
 			Request: &clienttypes.JoinRoundRequest{
+				Identifier:   m.Identifier,
 				BoardingReqs: boardingReqs,
 				VTXOReqs:     vtxoReqs,
 				ForfeitReqs:  forfeitReqs,
 				LeaveReqs:    leaveReqs,
+				Auth:         m.Auth,
 			},
 		}, nil
 

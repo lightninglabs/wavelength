@@ -27,6 +27,10 @@ type ClientJoinRequestEvent struct {
 
 	// Request contains the client's full join round request.
 	Request *types.JoinRoundRequest
+
+	// CurrentBlockHeight is the server's best-known height at the time the
+	// request is processed. This is used for join-auth freshness checks.
+	CurrentBlockHeight uint32
 }
 
 // eventSealed marks ClientJoinRequestEvent as implementing the sealed Event

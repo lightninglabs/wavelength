@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/bip322"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
@@ -139,6 +140,47 @@ var (
 	// ErrDuplicateForfeitRequest is returned when a join request contains
 	// duplicate forfeit request outpoints.
 	ErrDuplicateForfeitRequest = errors.New("duplicate forfeit request")
+
+	// ErrJoinRequestAuthMissing is returned when a join request does not
+	// include an authorization payload.
+	ErrJoinRequestAuthMissing = errors.New("join request auth is missing")
+
+	// ErrJoinRequestIdentifierMissing is returned when a join request does
+	// not include the identifier key used for the join-auth challenge
+	// script.
+	ErrJoinRequestIdentifierMissing = errors.New(
+		"join request identifier is missing",
+	)
+
+	// ErrJoinRequestAuthMessageMismatch is returned when the request's auth
+	// message does not match the canonical request encoding.
+	ErrJoinRequestAuthMessageMismatch = errors.New(
+		"join request auth message does not match request",
+	)
+
+	// ErrJoinRequestAuthInputCountMismatch is returned when the signed
+	// proof-of-funds inputs do not match the number of expected ownership
+	// proofs.
+	ErrJoinRequestAuthInputCountMismatch = errors.New(
+		"join request auth input count mismatch",
+	)
+
+	// ErrJoinRequestAuthInputOrderMismatch is returned when the signed
+	// proof-of-funds input outpoints do not match the request.
+	ErrJoinRequestAuthInputOrderMismatch = errors.New(
+		"join request auth input order mismatch",
+	)
+)
+
+const (
+	// joinAuthMaxSignatureSize caps the serialized BIP-322 full-format
+	// signature payload accepted in a join request. This bounds tx
+	// deserialization work before signature validation.
+	joinAuthMaxSignatureSize = 256 * 1024
+
+	// joinAuthMaxProofInputs bounds decoded proof-of-funds inputs to cap
+	// script-engine work during join-auth verification.
+	joinAuthMaxProofInputs = 128
 )
 
 // JoinRequestResult holds the validated results from a join request.
@@ -163,20 +205,28 @@ type JoinRequestResult struct {
 	SigningKeys map[SigningKeyHex]*btcec.PublicKey
 }
 
-// ValidateJoinRequest validates a client's join request for the round. It
-// verifies:
-//   - Each boarding request is valid (no duplicates, passes individual
-//     validation).
-//   - Each forfeit request is valid (VTXO exists and is live).
-//   - Each leave request is valid (non-nil output, positive value, non-empty
-//     pkScript).
-//   - Each VTXO request is valid (passes individual validation).
-//   - The total output value (leave + VTXO) does not exceed the total input
-//     value (boarding + forfeit).
-//
-// On success, returns JoinRequestResult containing all validated data.
+// ValidateJoinRequest validates a client's join request for the round using
+// the environment's start height for join-auth freshness checks.
 func ValidateJoinRequest(ctx context.Context, env *Environment,
 	req *types.JoinRoundRequest) (*JoinRequestResult, error) {
+
+	return validateJoinRequest(ctx, env, req, env.StartHeight)
+}
+
+// ValidateJoinRequestAtHeight validates a client's join request for the round
+// using the specified chain height for join-auth freshness checks.
+func ValidateJoinRequestAtHeight(ctx context.Context, env *Environment,
+	req *types.JoinRoundRequest, currentBlockHeight uint32) (
+	*JoinRequestResult, error) {
+
+	return validateJoinRequest(ctx, env, req, currentBlockHeight)
+}
+
+// validateJoinRequest validates all join-request contents, balance
+// constraints, and optional BIP-322 ownership proofs.
+func validateJoinRequest(ctx context.Context, env *Environment,
+	req *types.JoinRoundRequest, currentBlockHeight uint32) (
+	*JoinRequestResult, error) {
 
 	var (
 		boardingInputs  []*BoardingInput
@@ -279,6 +329,21 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 			totalInputValue)
 	}
 
+	// Validate the join authorization proof once all request components
+	// have passed semantic validation. This allows tests targeting earlier
+	// validation failures to remain focused on those specific errors.
+	if !env.DisableJoinRequestAuth {
+		err := validateJoinRequestAuth(
+			req, boardingInputs, forfeitInputs,
+			currentBlockHeight,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"join request auth invalid: %w", err,
+			)
+		}
+	}
+
 	return &JoinRequestResult{
 		BoardingInputs:  boardingInputs,
 		ForfeitInputs:   forfeitInputs,
@@ -286,6 +351,192 @@ func ValidateJoinRequest(ctx context.Context, env *Environment,
 		VTXODescriptors: vtxoDescriptors,
 		SigningKeys:     signingKeys,
 	}, nil
+}
+
+// validateJoinRequestAuth validates the BIP-322 authorization payload attached
+// to a join request.
+func validateJoinRequestAuth(req *types.JoinRoundRequest,
+	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
+	currentBlockHeight uint32) error {
+
+	if req == nil {
+		return fmt.Errorf("join request must be provided")
+	}
+
+	if req.Identifier == nil {
+		return ErrJoinRequestIdentifierMissing
+	}
+
+	if req.Auth == nil {
+		return ErrJoinRequestAuthMissing
+	}
+
+	if len(req.Auth.Message) == 0 {
+		return fmt.Errorf("join request auth message must be provided")
+	}
+
+	if len(req.Auth.Signature) == 0 {
+		return fmt.Errorf(
+			"join request auth signature must be provided",
+		)
+	}
+
+	if len(req.Auth.Signature) > joinAuthMaxSignatureSize {
+		return fmt.Errorf(
+			"join request auth signature size %d exceeds max %d",
+			len(req.Auth.Signature), joinAuthMaxSignatureSize,
+		)
+	}
+
+	expectedMessage, err := types.JoinRoundAuthMessage(req)
+	if err != nil {
+		return fmt.Errorf("canonical join auth message: %w", err)
+	}
+
+	if !bytes.Equal(expectedMessage, req.Auth.Message) {
+		return ErrJoinRequestAuthMessageMismatch
+	}
+
+	messageChallenge, err := bip322.JoinRoundMessageChallenge(
+		req.Identifier,
+	)
+	if err != nil {
+		return fmt.Errorf("join request message challenge: %w", err)
+	}
+
+	proofPrevOutputs, err := mapJoinAuthPrevOutputs(
+		boardingInputs, forfeitInputs,
+	)
+	if err != nil {
+		return err
+	}
+
+	var currentHeightPtr *uint32
+	if currentBlockHeight != 0 {
+		currentHeight := currentBlockHeight
+		currentHeightPtr = &currentHeight
+	}
+
+	authCtx, err := bip322.NewIntentAuthContext(
+		expectedMessage, req.Auth.ValidFrom, req.Auth.ValidUntil,
+		messageChallenge, req.Auth.Signature, proofPrevOutputs,
+		currentHeightPtr,
+		bip322.WithMaxProofInputs(joinAuthMaxProofInputs),
+	)
+	if err != nil {
+		return fmt.Errorf("join request auth context: %w", err)
+	}
+
+	expectedOutpoints := expectedJoinAuthOutpoints(req)
+	if len(expectedOutpoints) == 0 {
+		return fmt.Errorf("join request must include at least one " +
+			"boarding or forfeit input")
+	}
+
+	if authCtx.Sig.ToSign == nil {
+		return fmt.Errorf("join auth signature transaction is missing")
+	}
+
+	if len(authCtx.Sig.ToSign.TxIn) != len(expectedOutpoints)+1 {
+		return fmt.Errorf("%w: expected %d signed inputs, got %d",
+			ErrJoinRequestAuthInputCountMismatch,
+			len(expectedOutpoints), len(authCtx.Sig.ToSign.TxIn)-1)
+	}
+
+	for i := 0; i < len(expectedOutpoints); i++ {
+		expectedOutpoint := expectedOutpoints[i]
+		actualOutpoint := authCtx.Sig.ToSign.TxIn[i+1].PreviousOutPoint
+		if actualOutpoint != expectedOutpoint {
+			return fmt.Errorf("%w at input %d: expected %s, got %s",
+				ErrJoinRequestAuthInputOrderMismatch, i+1,
+				expectedOutpoint, actualOutpoint)
+		}
+	}
+
+	result := authCtx.Validate()
+	if result.State != bip322.VerificationStateValid {
+		return fmt.Errorf("join request auth verification %s: %s",
+			result.State, result.Reason)
+	}
+
+	return nil
+}
+
+// expectedJoinAuthOutpoints returns the ownership-proof outpoints expected in
+// the join auth signature. Order is boarding requests first, then forfeit
+// requests, both in request order.
+func expectedJoinAuthOutpoints(
+	req *types.JoinRoundRequest) []wire.OutPoint {
+
+	outpoints := make(
+		[]wire.OutPoint, 0, len(req.BoardingReqs)+len(req.ForfeitReqs),
+	)
+
+	for i := 0; i < len(req.BoardingReqs); i++ {
+		boardingReq := req.BoardingReqs[i]
+		outpoints = append(outpoints, *boardingReq.Outpoint)
+	}
+
+	for i := 0; i < len(req.ForfeitReqs); i++ {
+		forfeitReq := req.ForfeitReqs[i]
+		outpoints = append(outpoints, *forfeitReq.VTXOOutpoint)
+	}
+
+	return outpoints
+}
+
+// mapJoinAuthPrevOutputs builds prevout metadata for all join-auth
+// proof-of-funds inputs using validated boarding and forfeit inputs.
+func mapJoinAuthPrevOutputs(boardingInputs []*BoardingInput,
+	forfeitInputs []*ForfeitInput) (map[wire.OutPoint]*wire.TxOut, error) {
+
+	prevOutputs := make(
+		map[wire.OutPoint]*wire.TxOut,
+		len(boardingInputs)+len(forfeitInputs),
+	)
+
+	for i := 0; i < len(boardingInputs); i++ {
+		boardingInput := boardingInputs[i]
+		if boardingInput.Outpoint == nil {
+			return nil, fmt.Errorf(
+				"boarding input %d has nil outpoint",
+				i,
+			)
+		}
+
+		prevOutputs[*boardingInput.Outpoint] = &wire.TxOut{
+			Value:    int64(boardingInput.Value),
+			PkScript: bytes.Clone(boardingInput.PkScript),
+		}
+	}
+
+	for i := 0; i < len(forfeitInputs); i++ {
+		forfeitInput := forfeitInputs[i]
+		if forfeitInput.Outpoint == nil {
+			return nil, fmt.Errorf(
+				"forfeit input %d has nil outpoint",
+				i,
+			)
+		}
+
+		if forfeitInput.VTXO == nil ||
+			forfeitInput.VTXO.Descriptor == nil {
+
+			return nil, fmt.Errorf(
+				"forfeit input %d descriptor missing",
+				i,
+			)
+		}
+
+		prevOutputs[*forfeitInput.Outpoint] = &wire.TxOut{
+			Value: int64(forfeitInput.VTXO.Descriptor.Amount),
+			PkScript: bytes.Clone(
+				forfeitInput.VTXO.Descriptor.PkScript,
+			),
+		}
+	}
+
+	return prevOutputs, nil
 }
 
 // ValidateLeaveRequest validates a single leave request. It verifies:
@@ -328,8 +579,8 @@ func ValidateLeaveRequest(terms *batch.Terms,
 //   - The UTXO's confirmations are not too close to the exit delay (ensures
 //     the delay path isn't about to be hit).
 //   - The UTXO's script matches the expected tapscript.
-//
-// TODO(elle): Add proof of ownership check.
+//   - Ownership proof is enforced at join-request scope in
+//     validateJoinRequestAuth.
 //
 // On success, returns a BoardingInput containing all data needed for
 // transaction construction.
@@ -770,11 +1021,6 @@ func validateForfeitVTXOSignature(
 //   - The VTXO is in "live" status (confirmed on-chain).
 //
 // On success, returns a ForfeitInput containing the VTXO data.
-//
-// TODO(elle): There should be a proof of ownership check so that we can check
-// at validation time that the client owns the VTXO they are forfeiting.
-// Otherwise any client could request to forfeit any live VTXO and then
-// fail at signing time which would cause the round to fail.
 func ValidateForfeitRequest(ctx context.Context, env *Environment,
 	req *types.ForfeitRequest) (*ForfeitInput, error) {
 

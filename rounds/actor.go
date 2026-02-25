@@ -106,6 +106,10 @@ type ActorConfig struct {
 	// VTXOLocker provides mutual exclusion for VTXO outpoints across
 	// concurrent subsystems (rounds and OOR transfers).
 	VTXOLocker vtxo.Locker
+
+	// DisableJoinRequestAuth skips join-request BIP-322 validation.
+	// This should only be enabled in focused unit tests.
+	DisableJoinRequestAuth bool
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -319,22 +323,23 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
 
 	env := &Environment{
-		RoundID:             roundID,
-		Log:                 fsmLogger,
-		ChainParams:         a.cfg.ChainParams,
-		BoardingInputLocker: a.cfg.BoardingInputLocker,
-		ChainSource:         a.cfg.ChainSource,
-		Terms:               a.cfg.Terms,
-		ForfeitScript:       a.cfg.ForfeitScript,
-		WalletController:    a.cfg.WalletController,
-		FeeEstimator:        a.cfg.FeeEstimator,
-		WalletAccount:       a.cfg.WalletAccount,
-		ConfTarget:          a.cfg.ConfTarget,
-		MinConfs:            a.cfg.MinConfs,
-		RoundStore:          a.cfg.RoundStore,
-		VTXOStore:           a.cfg.VTXOStore,
-		VTXOLocker:          a.cfg.VTXOLocker,
-		StartHeight:         startHeight,
+		RoundID:                roundID,
+		Log:                    fsmLogger,
+		ChainParams:            a.cfg.ChainParams,
+		BoardingInputLocker:    a.cfg.BoardingInputLocker,
+		ChainSource:            a.cfg.ChainSource,
+		Terms:                  a.cfg.Terms,
+		ForfeitScript:          a.cfg.ForfeitScript,
+		WalletController:       a.cfg.WalletController,
+		FeeEstimator:           a.cfg.FeeEstimator,
+		WalletAccount:          a.cfg.WalletAccount,
+		ConfTarget:             a.cfg.ConfTarget,
+		MinConfs:               a.cfg.MinConfs,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		VTXOLocker:             a.cfg.VTXOLocker,
+		StartHeight:            startHeight,
+		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 
 	fsmCfg := StateMachineCfg{
@@ -687,10 +692,42 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 			"no current round available"))
 	}
 
+	// Query current best height so join-auth freshness checks can evaluate
+	// against the latest chain tip.
+	var currentBlockHeight uint32
+	if a.cfg.ChainSourceActor != nil {
+		heightFuture := a.cfg.ChainSourceActor.Ask(
+			ctx, &chainsource.BestHeightRequest{},
+		)
+		heightResult := heightFuture.Await(ctx)
+		heightResp, err := heightResult.Unpack()
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to query best height for "+
+				"join auth validation", err)
+		} else {
+			bestHeightResp, ok := heightResp.(*chainsource.
+				BestHeightResponse)
+			if !ok {
+				a.log.WarnS(ctx,
+					"Unexpected best height "+
+						"response type", nil,
+					slog.String("type",
+						fmt.Sprintf("%T",
+							heightResp)),
+				)
+			} else {
+				currentBlockHeight = uint32(
+					bestHeightResp.Height,
+				)
+			}
+		}
+	}
+
 	// Convert the actor message to an FSM event.
 	joinEvent := &ClientJoinRequestEvent{
-		ClientID: msg.ClientID,
-		Request:  msg.Request,
+		ClientID:           msg.ClientID,
+		Request:            msg.Request,
+		CurrentBlockHeight: currentBlockHeight,
 	}
 
 	err := a.askEventAndProcessOutbox(ctx, currentRound.FSM, joinEvent)
