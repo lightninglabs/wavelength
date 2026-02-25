@@ -529,7 +529,7 @@ func (q *Queries) ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveSc
 	return items, nil
 }
 
-const UpsertOORPackage = `-- name: UpsertOORPackage :exec
+const UpsertOORPackage = `-- name: UpsertOORPackage :execrows
 
 INSERT INTO oor_packages (
     session_id, direction, ark_psbt, created_at, updated_at
@@ -539,6 +539,7 @@ INSERT INTO oor_packages (
 ON CONFLICT (session_id) DO UPDATE SET
     ark_psbt = EXCLUDED.ark_psbt,
     updated_at = EXCLUDED.updated_at
+WHERE oor_packages.direction = EXCLUDED.direction
 `
 
 type UpsertOORPackageParams struct {
@@ -550,15 +551,18 @@ type UpsertOORPackageParams struct {
 }
 
 // OOR artifact store queries.
-func (q *Queries) UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) error {
-	_, err := q.db.ExecContext(ctx, UpsertOORPackage,
+func (q *Queries) UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpsertOORPackage,
 		arg.SessionID,
 		arg.Direction,
 		arg.ArkPsbt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const UpsertOORRecipientCursor = `-- name: UpsertOORRecipientCursor :exec
@@ -590,7 +594,7 @@ func (q *Queries) UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRec
 	return err
 }
 
-const UpsertOORVTXOBinding = `-- name: UpsertOORVTXOBinding :exec
+const UpsertOORVTXOBinding = `-- name: UpsertOORVTXOBinding :execrows
 INSERT INTO oor_vtxo_bindings (
     outpoint_hash, outpoint_index, session_id, output_index, link_kind,
     created_at, updated_at
@@ -598,8 +602,9 @@ INSERT INTO oor_vtxo_bindings (
     $1, $2, $3, $4, $5, $6, $7
 )
 ON CONFLICT (outpoint_hash, outpoint_index, link_kind) DO UPDATE SET
-    output_index = EXCLUDED.output_index,
     updated_at = EXCLUDED.updated_at
+WHERE oor_vtxo_bindings.session_id = EXCLUDED.session_id
+    AND oor_vtxo_bindings.output_index = EXCLUDED.output_index
 `
 
 type UpsertOORVTXOBindingParams struct {
@@ -612,8 +617,8 @@ type UpsertOORVTXOBindingParams struct {
 	UpdatedAt     int64
 }
 
-func (q *Queries) UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) error {
-	_, err := q.db.ExecContext(ctx, UpsertOORVTXOBinding,
+func (q *Queries) UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UpsertOORVTXOBinding,
 		arg.OutpointHash,
 		arg.OutpointIndex,
 		arg.SessionID,
@@ -622,7 +627,10 @@ func (q *Queries) UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBin
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const UpsertOwnedReceiveScript = `-- name: UpsertOwnedReceiveScript :exec
