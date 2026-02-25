@@ -66,9 +66,10 @@ type Server struct {
 
 	serverConn *grpc.ClientConn
 
-	grpcServer *grpc.Server
-	rpcServer  *RPCServer
-	mailboxMux *mailboxrpc.ServeMux
+	grpcServer  *grpc.Server
+	rpcServer   *RPCServer
+	rpcListener net.Addr
+	mailboxMux  *mailboxrpc.ServeMux
 }
 
 // NewServer allocates a Server from a validated Config. The server is inert
@@ -79,16 +80,19 @@ func NewServer(cfg *Config) (*Server, error) {
 	}, nil
 }
 
-// RunUntilShutdown starts all subsystems and blocks until the shutdown
-// interceptor fires or a fatal error occurs.
+// RunUntilShutdown starts all subsystems and blocks until the
+// shutdown interceptor fires or a fatal error occurs. It wraps
+// RunWithContext by translating the interceptor signal into a
+// context cancellation.
 func (s *Server) RunUntilShutdown(
 	interceptor signal.Interceptor) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Cancel the context when the interceptor fires so blocking calls
-	// (like lndclient chain sync) unblock promptly.
+	// Cancel the context when the interceptor fires so
+	// blocking calls (like lndclient chain sync) unblock
+	// promptly.
 	go func() {
 		select {
 		case <-interceptor.ShutdownChannel():
@@ -98,6 +102,14 @@ func (s *Server) RunUntilShutdown(
 		}
 	}()
 
+	return s.RunWithContext(ctx)
+}
+
+// RunWithContext starts all subsystems and blocks until the given
+// context is cancelled. This is the test-friendly entry point:
+// tests manage daemon lifecycle via context cancellation instead
+// of requiring a signal.Interceptor (which is process-global).
+func (s *Server) RunWithContext(ctx context.Context) error {
 	log.InfoS(ctx, "Starting darepod",
 		"version", build.Version(),
 		"commit", build.CommitHash,
@@ -197,7 +209,8 @@ func (s *Server) RunUntilShutdown(
 	// -------------------------------------------------------
 	s.rpcServer = NewRPCServer(s)
 
-	// Register the DaemonService for local gRPC access (CLI, GUI).
+	// Register the DaemonService for local gRPC access (CLI,
+	// GUI).
 	//
 	// TODO(roasbeef): Wire RPC.TLSCertPath/TLSKeyPath into
 	// grpc.Creds() once the auto-gen TLS material is in place.
@@ -216,15 +229,22 @@ func (s *Server) RunUntilShutdown(
 		s.mailboxMux, s.rpcServer,
 	)
 
-	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("unable to listen on %s: %w",
-			s.cfg.RPC.ListenAddr, err)
+	// Use a pre-supplied listener (e.g., bufconn) when available,
+	// otherwise bind a new TCP listener.
+	lis := s.cfg.RPC.Listener
+	if lis == nil {
+		var lisErr error
+		lis, lisErr = net.Listen("tcp", s.cfg.RPC.ListenAddr)
+		if lisErr != nil {
+			return fmt.Errorf("unable to listen on %s: %w",
+				s.cfg.RPC.ListenAddr, lisErr)
+		}
 	}
+	s.rpcListener = lis.Addr()
 
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			"addr", s.cfg.RPC.ListenAddr)
+			"addr", lis.Addr())
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
@@ -295,11 +315,24 @@ func (s *Server) RunUntilShutdown(
 	// -------------------------------------------------------
 	// 11. Block until shutdown.
 	// -------------------------------------------------------
-	<-interceptor.ShutdownChannel()
+	<-ctx.Done()
 
 	log.InfoS(ctx, "Shutting down darepod")
 
 	return nil
+}
+
+// RPCAddr returns the address the daemon's gRPC server is listening
+// on. Returns nil if the server has not started yet.
+func (s *Server) RPCAddr() net.Addr {
+	if s.grpcServer == nil {
+		return nil
+	}
+
+	// The listener is embedded in the gRPC server; we track
+	// the address via the config's resolved listen address.
+	// This is set after net.Listen in RunWithContext.
+	return s.rpcListener
 }
 
 // connectLnd establishes a connection to the lnd node using the lndclient
