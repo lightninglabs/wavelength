@@ -146,6 +146,10 @@ type RoundClientConfig struct {
 	// keys. Used to send ForfeitRequestEvent, RefreshAcknowledgedEvent, and
 	// ForfeitConfirmedEvent to specific VTXO actors.
 	ActorSystem *actor.ActorSystem
+
+	// DisableJoinRequestAuth skips BIP-322 join authorization
+	// generation. This should only be set in focused unit tests.
+	DisableJoinRequestAuth bool
 }
 
 // NewRoundClientActor creates a new client actor with the provided
@@ -165,13 +169,14 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
 	// to 0 here and will be set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:     cfg.RoundStore,
-		VTXOStore:      cfg.VTXOStore,
-		Wallet:         cfg.Wallet,
-		OperatorTerms:  cfg.OperatorTerms,
-		ChainParams:    cfg.ChainParams,
-		MaxOperatorFee: cfg.MaxOperatorFee,
-		Log:            actorLog,
+		RoundStore:             cfg.RoundStore,
+		VTXOStore:              cfg.VTXOStore,
+		Wallet:                 cfg.Wallet,
+		OperatorTerms:          cfg.OperatorTerms,
+		ChainParams:            cfg.ChainParams,
+		MaxOperatorFee:         cfg.MaxOperatorFee,
+		Log:                    actorLog,
+		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 	}
 
 	if err := ValidateDelayParameters(
@@ -182,13 +187,20 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 
 	// No FSM is created here. FSMs are created on-demand when boarding
 	// intents arrive via createNewRound().
-	return fn.Ok(&RoundClientActor{
+	actor := &RoundClientActor{
 		cfg:               cfg,
 		log:               actorLog,
 		rounds:            make(map[RoundKeyStr]*RoundFSM),
 		commitmentTxIndex: make(map[chainhash.Hash]RoundKeyStr),
 		env:               env,
-	})
+	}
+
+	// The base env is used as a template for per-round FSM environments.
+	// Wire in the actor height query function so join-auth can anchor
+	// intent validity metadata to the current chain height at signing time.
+	actor.env.QueryBestHeight = actor.queryBestHeight
+
+	return fn.Ok(actor)
 }
 
 // queryBestHeight queries the ChainSource for the current best block height.
@@ -233,14 +245,16 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:     a.cfg.RoundStore,
-		VTXOStore:      a.cfg.VTXOStore,
-		Wallet:         a.cfg.Wallet,
-		OperatorTerms:  a.cfg.OperatorTerms,
-		ChainParams:    a.cfg.ChainParams,
-		MaxOperatorFee: a.cfg.MaxOperatorFee,
-		Log:            fsmLogger,
-		StartHeight:    startHeight,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		Wallet:                 a.cfg.Wallet,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		Log:                    fsmLogger,
+		StartHeight:            startHeight,
+		QueryBestHeight:        a.queryBestHeight,
+		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
@@ -288,14 +302,16 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
 	env := &ClientEnvironment{
-		RoundStore:     a.cfg.RoundStore,
-		VTXOStore:      a.cfg.VTXOStore,
-		Wallet:         a.cfg.Wallet,
-		OperatorTerms:  a.cfg.OperatorTerms,
-		ChainParams:    a.cfg.ChainParams,
-		MaxOperatorFee: a.cfg.MaxOperatorFee,
-		Log:            fsmLogger,
-		StartHeight:    startHeight,
+		RoundStore:             a.cfg.RoundStore,
+		VTXOStore:              a.cfg.VTXOStore,
+		Wallet:                 a.cfg.Wallet,
+		OperatorTerms:          a.cfg.OperatorTerms,
+		ChainParams:            a.cfg.ChainParams,
+		MaxOperatorFee:         a.cfg.MaxOperatorFee,
+		Log:                    fsmLogger,
+		StartHeight:            startHeight,
+		QueryBestHeight:        a.queryBestHeight,
+		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 	}
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,

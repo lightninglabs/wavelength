@@ -435,6 +435,18 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	vtxoStore := &MockVTXOStore{}
 	walletMock := &MockClientWallet{}
 
+	// The join-round transition always derives a fresh identifier key,
+	// so wire up a default mock that returns a valid key descriptor.
+	identifierPrivKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	walletMock.On(
+		"DeriveNextKey", mock.Anything,
+		joinRoundAuthIdentifierKeyFamily,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: identifierPrivKey.PubKey(),
+	}, nil)
+
 	operatorTerms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
 		BoardingExitDelay: 144,
@@ -450,18 +462,19 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	const defaultMaxOperatorFee = btcutil.Amount(100000)
 
 	cfg := &RoundClientConfig{
-		Name:           "test-round-actor",
-		Wallet:         walletMock,
-		RoundStore:     roundStore,
-		VTXOStore:      vtxoStore,
-		OperatorTerms:  operatorTerms,
-		ServerConn:     serverConn,
-		ChainSource:    chainSource,
-		WalletActor:    walletActor,
-		SelfRef:        selfRef,
-		VTXOManager:    vtxoManager,
-		ChainParams:    &chaincfg.MainNetParams,
-		MaxOperatorFee: defaultMaxOperatorFee,
+		Name:                   "test-round-actor",
+		Wallet:                 walletMock,
+		RoundStore:             roundStore,
+		VTXOStore:              vtxoStore,
+		OperatorTerms:          operatorTerms,
+		ServerConn:             serverConn,
+		ChainSource:            chainSource,
+		WalletActor:            walletActor,
+		SelfRef:                selfRef,
+		VTXOManager:            vtxoManager,
+		ChainParams:            &chaincfg.MainNetParams,
+		MaxOperatorFee:         defaultMaxOperatorFee,
+		DisableJoinRequestAuth: true,
 	}
 
 	actorResult := NewRoundClientActor(cfg)

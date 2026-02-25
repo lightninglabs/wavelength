@@ -73,6 +73,10 @@ type JoinRoundRequest struct {
 
 	// ForfeitReqs specifies the requests to forfeit VTXOs.
 	ForfeitReqs []*ForfeitRequest
+
+	// Auth contains the BIP-322 payload that authorizes this join
+	// request.
+	Auth *JoinRoundAuth
 }
 
 // LeaveRequest represents a request to leave the Ark with an on-chain UTXO.
