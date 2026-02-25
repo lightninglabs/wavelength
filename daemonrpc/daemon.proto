@@ -42,4 +42,55 @@ message GetInfoResponse {
 
     // lnd_alias is the alias of the connected lnd node.
     string lnd_alias = 7;
+
+    // server_info contains operator terms fetched from the ark server
+    // during startup. Nil if the server connection has not been
+    // established yet.
+    ServerInfo server_info = 8;
+}
+
+// ServerInfo contains operator terms and metadata received from the
+// ark server's GetInfo RPC. These govern round participation
+// parameters.
+message ServerInfo {
+    // operator_pubkey is the compressed public key of the ark
+    // operator.
+    bytes operator_pubkey = 1;
+
+    // boarding_exit_delay is the minimum CSV delay for boarding
+    // outputs (blocks).
+    uint32 boarding_exit_delay = 2;
+
+    // vtxo_exit_delay is the minimum CSV delay for VTXO outputs
+    // (blocks).
+    uint32 vtxo_exit_delay = 3;
+
+    // forfeit_script is the output script for penalty outputs in
+    // forfeit transactions.
+    bytes forfeit_script = 4;
+
+    // sweep_key is the operator key used in VTXO sweep paths.
+    bytes sweep_key = 5;
+
+    // sweep_delay is the batch-wide absolute timelock (blocks).
+    uint32 sweep_delay = 6;
+
+    // dust_limit is the minimum output value for boarding/funding
+    // flows (satoshis).
+    uint64 dust_limit = 7;
+
+    // min_boarding_amount is the minimum amount clients must
+    // contribute (satoshis).
+    uint64 min_boarding_amount = 8;
+
+    // max_boarding_amount caps the amount accepted per request
+    // (satoshis, 0 means no cap).
+    uint64 max_boarding_amount = 9;
+
+    // fee_rate is the operator's target fee rate (sat/vByte).
+    uint64 fee_rate = 10;
+
+    // min_confirmations is the minimum confirmations required on
+    // boarding inputs.
+    uint32 min_confirmations = 11;
 }
