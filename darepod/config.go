@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -113,6 +114,12 @@ type ServerConfig struct {
 type RPCConfig struct {
 	// ListenAddr is the network address the gRPC server binds to.
 	ListenAddr string `mapstructure:"listenaddr"`
+
+	// Listener is an optional pre-created listener. When non-nil,
+	// the daemon serves on this listener instead of binding to
+	// ListenAddr. This enables SDK-style embedding and in-memory
+	// transports such as bufconn for tests.
+	Listener net.Listener
 
 	// TLSCertPath is the path to the daemon's TLS certificate. If empty,
 	// one is auto-generated in the data directory.
