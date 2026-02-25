@@ -683,8 +683,11 @@ func TestOORClientServerE2E(t *testing.T) {
 			},
 		},
 	}
+	// The client uses its own database for the delivery store since
+	// in production the client and server have separate databases.
+	clientSQLStore := db.NewTestDB(t)
 	clientDeliveryStore, err := db.NewActorDeliveryStoreFromDB(
-		sqlStore, clock.NewDefaultClock(), btclog.Disabled,
+		clientSQLStore, clock.NewDefaultClock(), btclog.Disabled,
 	)
 	require.NoError(t, err)
 
@@ -859,8 +862,11 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 			},
 		},
 	}
+	// The client uses its own database for the delivery store since
+	// in production the client and server have separate databases.
+	clientDB := db.NewTestDB(t)
 	clientDeliveryStore, err := db.NewActorDeliveryStoreFromDB(
-		db1, clock.NewDefaultClock(), btclog.Disabled,
+		clientDB, clock.NewDefaultClock(), btclog.Disabled,
 	)
 	require.NoError(t, err)
 

@@ -16,14 +16,6 @@ type sqlDBProvider interface {
 	SQLDB() *sql.DB
 }
 
-// deliveryStoreShim intentionally exposes only actor.DeliveryStore methods.
-// The wrapped client store may also implement TxAwareDeliveryStore, but server
-// OOR currently relies on non-transactional processing because the rest of the
-// OOR persistence path is not yet transaction-context-aware.
-type deliveryStoreShim struct {
-	actor.DeliveryStore
-}
-
 // toClientBackendType maps server sqlc backend types to shared client db/sqlc
 // backend types.
 func toClientBackendType(backend sqlc.BackendType) (clientsqlc.BackendType,
@@ -82,5 +74,5 @@ func NewActorDeliveryStoreFromDB(dbq BatchedQuerier, clk clock.Clock,
 		return nil, err
 	}
 
-	return &deliveryStoreShim{DeliveryStore: store}, nil
+	return store, nil
 }
