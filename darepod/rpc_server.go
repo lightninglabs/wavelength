@@ -47,6 +47,30 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 		}
 	}
 
+	// Populate server info if operator terms have been fetched.
+	if r.server.operatorTerms != nil {
+		terms := r.server.operatorTerms
+
+		si := &daemonrpc.ServerInfo{
+			OperatorPubkey:    terms.PubKey.SerializeCompressed(),
+			BoardingExitDelay: terms.BoardingExitDelay,
+			VtxoExitDelay:     terms.VTXOExitDelay,
+			ForfeitScript:     terms.ForfeitScript,
+			SweepDelay:        terms.SweepDelay,
+			DustLimit:         uint64(terms.DustLimit),
+			MinBoardingAmount: uint64(terms.MinBoardingAmount),
+			MaxBoardingAmount: uint64(terms.MaxBoardingAmount),
+			FeeRate:           uint64(terms.FeeRate),
+			MinConfirmations:  terms.MinConfirmations,
+		}
+
+		if terms.SweepKey != nil {
+			si.SweepKey = terms.SweepKey.SerializeCompressed()
+		}
+
+		resp.ServerInfo = si
+	}
+
 	// TODO(roasbeef): populate server connection status from runtime.
 
 	return resp, nil

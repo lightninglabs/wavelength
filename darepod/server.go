@@ -64,6 +64,11 @@ type Server struct {
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
 
+	// operatorTerms holds the operator's terms fetched from
+	// the server during startup. Exposed via the daemon's
+	// GetInfo RPC so CLI/GUI clients can inspect them.
+	operatorTerms *types.OperatorTerms
+
 	serverConn *grpc.ClientConn
 
 	grpcServer  *grpc.Server
@@ -653,6 +658,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 			"terms: %w", err)
 	}
 
+	// Store operator terms so the daemon's own GetInfo RPC
+	// can expose them to CLI/GUI clients.
+	s.operatorTerms = operatorTerms
+
 	roundCfg := &round.RoundClientConfig{
 		Name:          "round-client",
 		Logger:        log,
@@ -701,10 +710,15 @@ func (s *Server) initRoundActor(ctx context.Context,
 // operator pubkey, sweep delay, VTXO exit delay, forfeit script, dust
 // limit, and fee rate. These are required before the round actor can
 // start, as they govern all round signing and validation parameters.
+//
+// This uses the direct gRPC connection (not the mailbox transport)
+// because operator terms are needed during bootstrap, before the
+// mailbox transport is fully established.
 func (s *Server) fetchOperatorTerms(
 	ctx context.Context) (*types.OperatorTerms, error) {
 
-	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{})
+	client := arkrpc.NewArkServiceClient(s.serverConn)
+	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
