@@ -76,7 +76,11 @@ type GetInfoResponse struct {
 	// operator is active and pulling envelopes.
 	ServerConnected bool `protobuf:"varint,6,opt,name=server_connected,json=serverConnected,proto3" json:"server_connected,omitempty"`
 	// lnd_alias is the alias of the connected lnd node.
-	LndAlias      string `protobuf:"bytes,7,opt,name=lnd_alias,json=lndAlias,proto3" json:"lnd_alias,omitempty"`
+	LndAlias string `protobuf:"bytes,7,opt,name=lnd_alias,json=lndAlias,proto3" json:"lnd_alias,omitempty"`
+	// server_info contains operator terms fetched from the ark server
+	// during startup. Nil if the server connection has not been
+	// established yet.
+	ServerInfo    *ServerInfo `protobuf:"bytes,8,opt,name=server_info,json=serverInfo,proto3" json:"server_info,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -160,12 +164,165 @@ func (x *GetInfoResponse) GetLndAlias() string {
 	return ""
 }
 
+func (x *GetInfoResponse) GetServerInfo() *ServerInfo {
+	if x != nil {
+		return x.ServerInfo
+	}
+	return nil
+}
+
+// ServerInfo contains operator terms and metadata received from the
+// ark server's GetInfo RPC. These govern round participation
+// parameters.
+type ServerInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// operator_pubkey is the compressed public key of the ark
+	// operator.
+	OperatorPubkey []byte `protobuf:"bytes,1,opt,name=operator_pubkey,json=operatorPubkey,proto3" json:"operator_pubkey,omitempty"`
+	// boarding_exit_delay is the minimum CSV delay for boarding
+	// outputs (blocks).
+	BoardingExitDelay uint32 `protobuf:"varint,2,opt,name=boarding_exit_delay,json=boardingExitDelay,proto3" json:"boarding_exit_delay,omitempty"`
+	// vtxo_exit_delay is the minimum CSV delay for VTXO outputs
+	// (blocks).
+	VtxoExitDelay uint32 `protobuf:"varint,3,opt,name=vtxo_exit_delay,json=vtxoExitDelay,proto3" json:"vtxo_exit_delay,omitempty"`
+	// forfeit_script is the output script for penalty outputs in
+	// forfeit transactions.
+	ForfeitScript []byte `protobuf:"bytes,4,opt,name=forfeit_script,json=forfeitScript,proto3" json:"forfeit_script,omitempty"`
+	// sweep_key is the operator key used in VTXO sweep paths.
+	SweepKey []byte `protobuf:"bytes,5,opt,name=sweep_key,json=sweepKey,proto3" json:"sweep_key,omitempty"`
+	// sweep_delay is the batch-wide absolute timelock (blocks).
+	SweepDelay uint32 `protobuf:"varint,6,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
+	// dust_limit is the minimum output value for boarding/funding
+	// flows (satoshis).
+	DustLimit uint64 `protobuf:"varint,7,opt,name=dust_limit,json=dustLimit,proto3" json:"dust_limit,omitempty"`
+	// min_boarding_amount is the minimum amount clients must
+	// contribute (satoshis).
+	MinBoardingAmount uint64 `protobuf:"varint,8,opt,name=min_boarding_amount,json=minBoardingAmount,proto3" json:"min_boarding_amount,omitempty"`
+	// max_boarding_amount caps the amount accepted per request
+	// (satoshis, 0 means no cap).
+	MaxBoardingAmount uint64 `protobuf:"varint,9,opt,name=max_boarding_amount,json=maxBoardingAmount,proto3" json:"max_boarding_amount,omitempty"`
+	// fee_rate is the operator's target fee rate (sat/vByte).
+	FeeRate uint64 `protobuf:"varint,10,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
+	// min_confirmations is the minimum confirmations required on
+	// boarding inputs.
+	MinConfirmations uint32 `protobuf:"varint,11,opt,name=min_confirmations,json=minConfirmations,proto3" json:"min_confirmations,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ServerInfo) Reset() {
+	*x = ServerInfo{}
+	mi := &file_daemon_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerInfo) ProtoMessage() {}
+
+func (x *ServerInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerInfo.ProtoReflect.Descriptor instead.
+func (*ServerInfo) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ServerInfo) GetOperatorPubkey() []byte {
+	if x != nil {
+		return x.OperatorPubkey
+	}
+	return nil
+}
+
+func (x *ServerInfo) GetBoardingExitDelay() uint32 {
+	if x != nil {
+		return x.BoardingExitDelay
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetVtxoExitDelay() uint32 {
+	if x != nil {
+		return x.VtxoExitDelay
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetForfeitScript() []byte {
+	if x != nil {
+		return x.ForfeitScript
+	}
+	return nil
+}
+
+func (x *ServerInfo) GetSweepKey() []byte {
+	if x != nil {
+		return x.SweepKey
+	}
+	return nil
+}
+
+func (x *ServerInfo) GetSweepDelay() uint32 {
+	if x != nil {
+		return x.SweepDelay
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetDustLimit() uint64 {
+	if x != nil {
+		return x.DustLimit
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetMinBoardingAmount() uint64 {
+	if x != nil {
+		return x.MinBoardingAmount
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetMaxBoardingAmount() uint64 {
+	if x != nil {
+		return x.MaxBoardingAmount
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetFeeRate() uint64 {
+	if x != nil {
+		return x.FeeRate
+	}
+	return 0
+}
+
+func (x *ServerInfo) GetMinConfirmations() uint32 {
+	if x != nil {
+		return x.MinConfirmations
+	}
+	return 0
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"\fdaemon.proto\x12\tdaemonrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\xf8\x01\n" +
+	"\x0eGetInfoRequest\"\xb0\x02\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x18\n" +
@@ -173,7 +330,25 @@ const file_daemon_proto_rawDesc = "" +
 	"\x13lnd_identity_pubkey\x18\x04 \x01(\tR\x11lndIdentityPubkey\x12!\n" +
 	"\fblock_height\x18\x05 \x01(\rR\vblockHeight\x12)\n" +
 	"\x10server_connected\x18\x06 \x01(\bR\x0fserverConnected\x12\x1b\n" +
-	"\tlnd_alias\x18\a \x01(\tR\blndAlias2Q\n" +
+	"\tlnd_alias\x18\a \x01(\tR\blndAlias\x126\n" +
+	"\vserver_info\x18\b \x01(\v2\x15.daemonrpc.ServerInfoR\n" +
+	"serverInfo\"\xb9\x03\n" +
+	"\n" +
+	"ServerInfo\x12'\n" +
+	"\x0foperator_pubkey\x18\x01 \x01(\fR\x0eoperatorPubkey\x12.\n" +
+	"\x13boarding_exit_delay\x18\x02 \x01(\rR\x11boardingExitDelay\x12&\n" +
+	"\x0fvtxo_exit_delay\x18\x03 \x01(\rR\rvtxoExitDelay\x12%\n" +
+	"\x0eforfeit_script\x18\x04 \x01(\fR\rforfeitScript\x12\x1b\n" +
+	"\tsweep_key\x18\x05 \x01(\fR\bsweepKey\x12\x1f\n" +
+	"\vsweep_delay\x18\x06 \x01(\rR\n" +
+	"sweepDelay\x12\x1d\n" +
+	"\n" +
+	"dust_limit\x18\a \x01(\x04R\tdustLimit\x12.\n" +
+	"\x13min_boarding_amount\x18\b \x01(\x04R\x11minBoardingAmount\x12.\n" +
+	"\x13max_boarding_amount\x18\t \x01(\x04R\x11maxBoardingAmount\x12\x19\n" +
+	"\bfee_rate\x18\n" +
+	" \x01(\x04R\afeeRate\x12+\n" +
+	"\x11min_confirmations\x18\v \x01(\rR\x10minConfirmations2Q\n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
 
@@ -189,19 +364,21 @@ func file_daemon_proto_rawDescGZIP() []byte {
 	return file_daemon_proto_rawDescData
 }
 
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_daemon_proto_goTypes = []any{
 	(*GetInfoRequest)(nil),  // 0: daemonrpc.GetInfoRequest
 	(*GetInfoResponse)(nil), // 1: daemonrpc.GetInfoResponse
+	(*ServerInfo)(nil),      // 2: daemonrpc.ServerInfo
 }
 var file_daemon_proto_depIdxs = []int32{
-	0, // 0: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
-	1, // 1: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: daemonrpc.GetInfoResponse.server_info:type_name -> daemonrpc.ServerInfo
+	0, // 1: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
+	1, // 2: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -215,7 +392,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
