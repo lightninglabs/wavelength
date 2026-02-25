@@ -143,7 +143,11 @@ WHERE outpoint_hash = $1 AND outpoint_index = $2;
 SELECT * FROM vtxos ORDER BY creation_time DESC;
 
 -- name: ListUnspentVTXOs :many
-SELECT * FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC;
+-- Unspent requires both spent=false and status!=Spent(4).
+SELECT * FROM vtxos
+WHERE spent = FALSE
+    AND status != 4
+ORDER BY creation_time DESC;
 
 -- name: ListVTXOsByRound :many
 SELECT * FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC;
@@ -154,7 +158,11 @@ UPDATE vtxos SET spent = TRUE, status = 4, last_update_time = $3
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: CountUnspentVTXOs :one
-SELECT COUNT(*) FROM vtxos WHERE spent = FALSE;
+SELECT COUNT(*) FROM vtxos
+WHERE spent = FALSE
+    AND status != 4;
 
 -- name: SumUnspentVTXOAmounts :one
-SELECT COALESCE(SUM(amount), 0) as total FROM vtxos WHERE spent = FALSE;
+SELECT COALESCE(SUM(amount), 0) as total FROM vtxos
+WHERE spent = FALSE
+    AND status != 4;

@@ -22,7 +22,11 @@ ORDER BY creation_time DESC;
 -- UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 -- method for state transitions that don't require additional data.
 UPDATE vtxos
-SET status = $3, last_update_time = $4
+SET status = $3,
+    -- Keep spent flag in sync when status transitions to Spent (4).
+    -- We intentionally do not clear spent once set.
+    spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
+    last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
 -- name: MarkVTXOForfeiting :exec

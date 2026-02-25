@@ -272,7 +272,11 @@ func (q *Queries) MarkVTXOForfeiting(ctx context.Context, arg MarkVTXOForfeiting
 
 const UpdateVTXOStatus = `-- name: UpdateVTXOStatus :exec
 UPDATE vtxos
-SET status = $3, last_update_time = $4
+SET status = $3,
+    -- Keep spent flag in sync when status transitions to Spent (4).
+    -- We intentionally do not clear spent once set.
+    spent = CASE WHEN $3 = 4 THEN TRUE ELSE spent END,
+    last_update_time = $4
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
