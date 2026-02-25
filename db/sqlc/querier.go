@@ -117,9 +117,9 @@ type Querier interface {
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	// OOR artifact store queries.
-	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) error
+	UpsertOORPackage(ctx context.Context, arg UpsertOORPackageParams) (int64, error)
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
-	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) error
+	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
 }
 

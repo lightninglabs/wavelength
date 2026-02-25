@@ -1,6 +1,6 @@
 -- OOR artifact store queries.
 
--- name: UpsertOORPackage :exec
+-- name: UpsertOORPackage :execrows
 INSERT INTO oor_packages (
     session_id, direction, ark_psbt, created_at, updated_at
 ) VALUES (
@@ -8,7 +8,8 @@ INSERT INTO oor_packages (
 )
 ON CONFLICT (session_id) DO UPDATE SET
     ark_psbt = EXCLUDED.ark_psbt,
-    updated_at = EXCLUDED.updated_at;
+    updated_at = EXCLUDED.updated_at
+WHERE oor_packages.direction = EXCLUDED.direction;
 
 -- name: GetOORPackage :one
 SELECT * FROM oor_packages
@@ -41,7 +42,7 @@ SELECT * FROM oor_package_checkpoints
 WHERE session_id = $1
 ORDER BY checkpoint_index ASC;
 
--- name: UpsertOORVTXOBinding :exec
+-- name: UpsertOORVTXOBinding :execrows
 INSERT INTO oor_vtxo_bindings (
     outpoint_hash, outpoint_index, session_id, output_index, link_kind,
     created_at, updated_at
@@ -49,8 +50,9 @@ INSERT INTO oor_vtxo_bindings (
     $1, $2, $3, $4, $5, $6, $7
 )
 ON CONFLICT (outpoint_hash, outpoint_index, link_kind) DO UPDATE SET
-    output_index = EXCLUDED.output_index,
-    updated_at = EXCLUDED.updated_at;
+    updated_at = EXCLUDED.updated_at
+WHERE oor_vtxo_bindings.session_id = EXCLUDED.session_id
+    AND oor_vtxo_bindings.output_index = EXCLUDED.output_index;
 
 -- name: GetOORVTXOBindingByOutpoint :one
 SELECT * FROM oor_vtxo_bindings
