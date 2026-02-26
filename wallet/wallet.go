@@ -147,6 +147,31 @@ func (a *Ark) Start(ctx context.Context,
 	a.log.InfoS(ctx, "Loaded boarding addresses from database",
 		slog.Int("count", len(addresses)))
 
+	// Re-import each persisted boarding address into the boarding
+	// backend. For in-memory backends (lwwallet), this restores
+	// tracked scripts lost on restart. For persistent backends
+	// (LND), the script may already exist and the import will
+	// return a benign "already exists" error which we log and
+	// skip since the backend is already tracking the address.
+	for _, addr := range addresses {
+		_, err := a.backend.ImportTaprootScript(
+			ctx, addr.Tapscript,
+		)
+		if err != nil {
+			// The import may fail if the backend already
+			// tracks this script (e.g., LND persists
+			// imports internally and returns "already
+			// exists"). This is expected during restart
+			// recovery so we log and continue.
+			a.log.DebugS(ctx,
+				"Boarding address re-import skipped",
+				slog.String("address",
+					addr.Address.String()),
+				slog.String("reason",
+					err.Error()))
+		}
+	}
+
 	// Load just the outpoints of existing intents to populate seenUtxos.
 	// This is more efficient than loading full intents since we only need
 	// the outpoints to avoid duplicate notifications.
