@@ -1,0 +1,388 @@
+syntax = "proto3";
+
+package arkrpc;
+
+option go_package = "github.com/lightninglabs/darepo-client/arkrpc";
+
+// IndexerService is a wallet-facing query + notification facade over operator
+// state. It is intended to be transported over MailboxRPC (RPC-over-mailbox),
+// not exposed as a public explorer.
+service IndexerService {
+    // RegisterReceiveScript binds a receive script (pkScript) to the
+    // authenticated mailbox principal so the operator can route incoming OOR
+    // notifications to the correct mailbox.
+    rpc RegisterReceiveScript (RegisterReceiveScriptRequest)
+        returns (RegisterReceiveScriptResponse);
+
+    // ListMyReceiveScripts lists receive scripts currently registered to the
+    // caller's principal.
+    rpc ListMyReceiveScripts (ListMyReceiveScriptsRequest)
+        returns (ListMyReceiveScriptsResponse);
+
+    // UnregisterReceiveScript removes a script registration for the caller's
+    // principal.
+    rpc UnregisterReceiveScript (UnregisterReceiveScriptRequest)
+        returns (UnregisterReceiveScriptResponse);
+
+    // ListOORRecipientEventsByScript is an optional "offline receive" feature:
+    // list incoming OOR recipient events for a pkScript without prior
+    // registration, gated by a proof-of-control for that pkScript.
+    rpc ListOORRecipientEventsByScript (ListOORRecipientEventsByScriptRequest)
+        returns (ListOORRecipientEventsByScriptResponse);
+
+    // ListVTXOsByScripts returns the authoritative VTXO set matching the
+    // provided scripts, gated by a proof-of-control for each script.
+    //
+    // This is the primary "wallet inventory" query surface.
+    rpc ListVTXOsByScripts (ListVTXOsByScriptsRequest)
+        returns (ListVTXOsByScriptsResponse);
+
+    // GetSubtreeByScripts returns a minimal spanning subtree containing all
+    // VTXO leaves matching the provided scripts and the intermediate nodes
+    // needed to connect them.
+    //
+    // The returned subtree is intended to avoid redundant per-VTXO path
+    // duplication when a wallet controls multiple leaves in the same tree.
+    rpc GetSubtreeByScripts (GetSubtreeByScriptsRequest)
+        returns (GetSubtreeByScriptsResponse);
+
+    // ListVTXOEventsByScripts returns a monotonic change feed for VTXOs
+    // matching the provided scripts, gated by proof-of-control.
+    //
+    // Wallets can use this to catch up after being offline and to reconcile
+    // local state deterministically.
+    rpc ListVTXOEventsByScripts (ListVTXOEventsByScriptsRequest)
+        returns (ListVTXOEventsByScriptsResponse);
+}
+
+message RegisterReceiveScriptRequest {
+    bytes pk_script = 1;
+
+    // expires_at_unix_s controls server-side retention of this registration.
+    // If unset (0), server default policy applies.
+    uint64 expires_at_unix_s = 2;
+
+    // label is informational and can be used by clients for debugging.
+    string label = 3;
+
+    oneof proof {
+        // taproot_schnorr proves control of the P2TR output key.
+        TaprootSchnorrProof taproot_schnorr = 10;
+
+        // bip322 is reserved for future BIP-322 script-satisfaction proofs.
+        BIP322Proof bip322 = 11;
+    }
+}
+
+message TaprootSchnorrProof {
+    // message is the canonical TLV-encoded proof message the signature
+    // commits to. The wire format uses base64 encoding for REST/JSON
+    // transport.
+    bytes message = 1;
+
+    // sig64 is a 64-byte BIP-340 schnorr signature over the BIP-340
+    // tagged hash of message: sha256(sha256(tag) || sha256(tag) || msg),
+    // where tag = "darepo/indexer/v1".
+    bytes sig64 = 2;
+}
+
+// TODO(indexer): BIP322Proof is defined for forward-compatibility but
+// not yet implemented by any client. Callers must use TaprootSchnorrProof
+// until BIP-322 script-satisfaction support is added.
+message BIP322Proof {
+    // message is the canonical JSON message the signature commits to.
+    string message = 1;
+
+    // signature_b64 is a base64-encoded consensus transaction as produced by
+    // a BIP-322 proof.
+    string signature_b64 = 2;
+}
+
+message RegisterReceiveScriptResponse {
+}
+
+message UnregisterReceiveScriptRequest {
+    bytes pk_script = 1;
+
+    oneof proof {
+        // taproot_schnorr proves control of the P2TR output key.
+        TaprootSchnorrProof taproot_schnorr = 10;
+
+        // bip322 is reserved for future BIP-322 script-satisfaction
+        // proofs.
+        BIP322Proof bip322 = 11;
+    }
+}
+
+message ListMyReceiveScriptsRequest {
+}
+
+message ListMyReceiveScriptsResponse {
+    repeated RegisteredReceiveScript scripts = 1;
+}
+
+message RegisteredReceiveScript {
+    bytes pk_script = 1;
+    uint64 expires_at_unix_s = 2;
+    string label = 3;
+}
+
+message UnregisterReceiveScriptResponse {
+}
+
+message ListOORRecipientEventsByScriptRequest {
+    bytes pk_script = 1;
+    uint64 after_event_id = 2;
+    uint32 limit = 3;
+
+    oneof proof {
+        TaprootSchnorrProof taproot_schnorr = 10;
+        BIP322Proof bip322 = 11;
+    }
+}
+
+message ListOORRecipientEventsByScriptResponse {
+    repeated OORRecipientEvent events = 1;
+    uint64 next_cursor = 2;
+}
+
+message OORRecipientEvent {
+    bytes recipient_pk_script = 1;
+    uint64 event_id = 2;
+    bytes session_id = 3;
+    uint32 output_index = 4;
+    uint64 value = 5;
+}
+
+// IncomingOOREvent is delivered as a mailbox EVENT envelope. It is
+// intentionally bounded and acts as a durable hint that a wallet should fetch
+// full OOR proof material via wallet-scoped queries if needed.
+message IncomingOOREvent {
+    bytes recipient_pk_script = 1;
+    uint64 recipient_event_id = 2;
+    bytes session_id = 3;
+    uint32 output_index = 4;
+    uint64 value = 5;
+}
+
+// OutPoint identifies an output of a Bitcoin transaction.
+//
+// txid is the raw 32-byte transaction id.
+message OutPoint {
+    bytes txid = 1;
+    uint32 vout = 2;
+}
+
+// ScriptScope selects a pkScript and carries a proof-of-control for that
+// script.
+//
+// Proofs MUST commit to pk_script and should also commit to:
+//   - server_id (operator instance),
+//   - principal (mailbox id),
+//   - purpose (RPC method or event stream),
+//   - expiry (replay window bound), and
+//   - nonce (uniqueness).
+message ScriptScope {
+    bytes pk_script = 1;
+
+    oneof proof {
+        TaprootSchnorrProof taproot_schnorr = 10;
+        BIP322Proof bip322 = 11;
+    }
+}
+
+// VTXOStatus is the lifecycle status of a VTXO.
+enum VTXOStatus {
+    VTXO_STATUS_UNSPECIFIED = 0;
+
+    // VTXO_STATUS_UNCONFIRMED indicates the VTXO exists but is not yet
+    // confirmed on-chain (commitment not confirmed).
+    VTXO_STATUS_UNCONFIRMED = 1;
+
+    // VTXO_STATUS_LIVE indicates the VTXO is active and can be spent.
+    VTXO_STATUS_LIVE = 2;
+
+    // VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been requested
+    // but not yet completed via a new round.
+    VTXO_STATUS_REFRESH_REQUESTED = 3;
+
+    // VTXO_STATUS_FORFEITING indicates the VTXO is being forfeited in a
+    // round.
+    VTXO_STATUS_FORFEITING = 4;
+
+    // VTXO_STATUS_FORFEITED indicates the VTXO has been forfeited (terminal).
+    VTXO_STATUS_FORFEITED = 5;
+
+    // VTXO_STATUS_SPENT indicates the VTXO was spent via an out-of-round
+    // transaction (terminal).
+    VTXO_STATUS_SPENT = 6;
+
+    // VTXO_STATUS_EXPIRING indicates the VTXO is close to expiry and has been
+    // escalated to chain resolution (terminal for the VTXO actor).
+    VTXO_STATUS_EXPIRING = 7;
+
+    // VTXO_STATUS_FAILED indicates an unrecoverable error (terminal).
+    VTXO_STATUS_FAILED = 8;
+}
+
+// VTXO describes a virtual transaction output and its authoritative indexer
+// metadata.
+message VTXO {
+    OutPoint outpoint = 1;
+
+    // value_sat is the output value in satoshis.
+    uint64 value_sat = 2;
+
+    // pk_script is the output script for this VTXO.
+    bytes pk_script = 3;
+
+    VTXOStatus status = 4;
+
+    // round_id identifies the round that created this VTXO.
+    string round_id = 5;
+
+    // commitment_txid is the txid of the commitment transaction (if known).
+    bytes commitment_txid = 6;
+
+    // batch_output_index is the output index in the commitment transaction
+    // that roots the VTXO tree.
+    uint32 batch_output_index = 7;
+
+    // created_height is the chain height where this VTXO became relevant.
+    // int32 follows btcd's block-height convention; negative values are
+    // invalid and must be rejected by the server.
+    int32 created_height = 8;
+
+    // batch_expiry_height is the absolute height at which the batch
+    // expires. int32 follows btcd's block-height convention; negative
+    // values are invalid and must be rejected by the server.
+    int32 batch_expiry_height = 9;
+
+    // relative_expiry is the CSV delay for the unilateral exit path.
+    uint32 relative_expiry = 10;
+
+    // tree_depth is the depth of this leaf within the VTXO tree.
+    uint32 tree_depth = 11;
+
+    // leaf_tx is the serialized signed leaf virtual transaction when available.
+    bytes leaf_tx = 12;
+
+    // oor_ark_psbt is the serialized finalized Ark PSBT for virtual/OOR VTXOs.
+    bytes oor_ark_psbt = 13;
+
+    // oor_final_checkpoint_psbts are serialized finalized checkpoint PSBTs for
+    // virtual/OOR VTXOs.
+    repeated bytes oor_final_checkpoint_psbts = 14;
+}
+
+message ListVTXOsByScriptsRequest {
+    repeated ScriptScope scripts = 1;
+
+    // status_filter optionally restricts results to VTXOs in the provided
+    // statuses. If empty, server default policy applies.
+    repeated VTXOStatus status_filter = 2;
+
+    // cursor is an opaque pagination cursor returned by a prior response.
+    uint64 cursor = 3;
+
+    // limit bounds the number of results returned.
+    uint32 limit = 4;
+}
+
+message ListVTXOsByScriptsResponse {
+    repeated VTXO vtxos = 1;
+    uint64 next_cursor = 2;
+}
+
+// TreeNode is a node in a virtual transaction tree.
+//
+// The indexer may return internal nodes that do not correspond to leaf VTXOs.
+message TreeNode {
+    // txid identifies the virtual transaction.
+    bytes txid = 1;
+
+    // input is the outpoint this node spends.
+    OutPoint input = 2;
+
+    // num_outputs is the number of outputs created by this node transaction.
+    uint32 num_outputs = 3;
+
+    // raw_tx is the serialized signed virtual transaction for this node.
+    bytes raw_tx = 4;
+}
+
+// TreeEdge describes a parent->child relationship in a virtual tree.
+message TreeEdge {
+    // parent_txid is the txid of the parent node.
+    bytes parent_txid = 1;
+
+    // parent_output_index selects the parent output that is spent by child.
+    uint32 parent_output_index = 2;
+
+    // child_txid is the txid of the child node.
+    bytes child_txid = 3;
+}
+
+message GetSubtreeByScriptsRequest {
+    repeated ScriptScope scripts = 1;
+
+    // include_internal_nodes controls whether the response includes internal
+    // nodes (branch txs). If false, only leaf metadata is returned.
+    bool include_internal_nodes = 2;
+}
+
+message GetSubtreeByScriptsResponse {
+    // vtxos contains the leaf VTXOs in the subtree.
+    repeated VTXO vtxos = 1;
+
+    // nodes contains any internal tree nodes required to connect leaves.
+    repeated TreeNode nodes = 2;
+
+    // edges contains directed edges between returned nodes.
+    repeated TreeEdge edges = 3;
+}
+
+// VTXOEventType describes a change applied by the indexer.
+enum VTXOEventType {
+    VTXO_EVENT_TYPE_UNSPECIFIED = 0;
+    VTXO_EVENT_TYPE_CREATED = 1;
+    VTXO_EVENT_TYPE_STATUS_CHANGED = 2;
+    VTXO_EVENT_TYPE_TERMINATED = 3;
+}
+
+// VTXOEvent is a monotonic state transition applied by the indexer.
+message VTXOEvent {
+    uint64 event_id = 1;
+    VTXOEventType type = 2;
+
+    OutPoint outpoint = 3;
+
+    VTXOStatus status = 4;
+
+    // created_at_unix_ms is informational.
+    int64 created_at_unix_ms = 5;
+}
+
+message ListVTXOEventsByScriptsRequest {
+    repeated ScriptScope scripts = 1;
+
+    // after_event_id filters out events with event_id <= after_event_id.
+    uint64 after_event_id = 2;
+
+    // limit bounds the number of events returned.
+    uint32 limit = 3;
+}
+
+message ListVTXOEventsByScriptsResponse {
+    repeated VTXOEvent events = 1;
+    uint64 next_cursor = 2;
+}
+
+// IncomingVTXOEvent is delivered as a mailbox EVENT envelope. It is a durable
+// hint that a wallet should reconcile state by polling event feeds.
+message IncomingVTXOEvent {
+    uint64 event_id = 1;
+    VTXOEventType type = 2;
+    OutPoint outpoint = 3;
+    VTXOStatus status = 4;
+}
