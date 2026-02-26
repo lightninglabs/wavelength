@@ -16,17 +16,8 @@ import (
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
-
-// ==========================================================================
-// H-1: Proof replay across purposes -- a valid proof for one RPC method
-// can be re-sent to a different RPC method if the server does not verify
-// the "purpose" field inside the TLV message matches the actual RPC call.
-//
-// This tests the client-side: the client correctly binds purpose into the
-// signed message. But the server-side MUST also verify it, and the test
-// demonstrates what happens if it does not.
-// ==========================================================================
 
 // TestH1_CrossPurposeProofReplay demonstrates that a proof generated for
 // purposeListVTXOsByScripts can be trivially repackaged as a ScriptScope
@@ -89,18 +80,10 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 	require.NotNil(t, replayedScope)
 	require.Len(t, replayedScope.GetTaprootSchnorr().Sig64, 64)
 
-	t.Logf("H-1 DEMONSTRATED: proof for %q can be embedded "+
+	t.Logf("Proof for %q can be embedded "+
 		"in a different RPC request proto envelope",
 		purposeField)
 }
-
-// ==========================================================================
-// H-2: Registration expiry is caller-controlled. The client passes
-// expiresAt as a caller-provided time.Time to RegisterReceiveScriptTaproot
-// but the TLV proof also has an expiresAt. The proto request carries
-// ExpiresAtUnixS separately. A mismatch between the signed expiresAt and
-// the request-level expiresAt could let an attacker extend registration.
-// ==========================================================================
 
 // TestH2_RegistrationExpiryMismatch demonstrates that the proto-level
 // ExpiresAtUnixS and the TLV-signed expiresAt can diverge if the caller
@@ -154,8 +137,11 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 		},
 	}
 
-	// Attacker modifies only the outer field.
-	tamperedReq := *honestReq
+	// Attacker modifies only the outer field. Use proto.Clone to
+	// avoid copying the internal sync.Mutex in MessageState.
+	tamperedReq := proto.Clone(
+		honestReq,
+	).(*arkrpc.RegisterReceiveScriptRequest)
 	tamperedReq.ExpiresAtUnixS = uint64(
 		callerExpiry.Add(365 * 24 * time.Hour).Unix(),
 	)
@@ -168,62 +154,38 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	require.NotEqual(t, tamperedReq.ExpiresAtUnixS, tlvExpiry,
 		"tampered proto ExpiresAtUnixS diverges from signed TLV")
 
-	t.Logf("H-2 DEMONSTRATED: proto ExpiresAtUnixS=%d, "+
+	t.Logf("Proto ExpiresAtUnixS=%d, "+
 		"TLV-signed expiresAt=%d (delta=%ds)",
 		tamperedReq.ExpiresAtUnixS, tlvExpiry,
 		tamperedReq.ExpiresAtUnixS-tlvExpiry)
 }
 
-// ==========================================================================
-// H-3: UnregisterReceiveScript has no proof-of-control. Any authenticated
-// mailbox principal can unregister ANY pkScript. This is a privilege
-// escalation that allows denial of service against other wallets'
-// notification routing.
-// ==========================================================================
-
-// TestH3_UnregisterNoProofOfControl demonstrates that UnregisterReceiveScript
-// carries only a pkScript with no proof-of-control, unlike all other
-// script-scoped RPCs.
-func TestH3_UnregisterNoProofOfControl(t *testing.T) {
+// TestUnregisterRequiresProofOfControl verifies that
+// UnregisterReceiveScriptRequest carries a proof oneof and that the
+// client populates it with a valid TaprootSchnorrProof.
+func TestUnregisterRequiresProofOfControl(t *testing.T) {
 	t.Parallel()
 
-	// The proto definition for UnregisterReceiveScriptRequest is:
-	//   message UnregisterReceiveScriptRequest {
-	//       bytes pk_script = 1;
-	//   }
-	//
-	// No proof oneof. No TaprootSchnorrProof. No BIP322Proof.
-	// Compare with RegisterReceiveScriptRequest which has:
-	//   oneof proof { TaprootSchnorrProof ...; BIP322Proof ...; }
+	// Verify the proto now has a proof oneof.
+	req := &arkrpc.UnregisterReceiveScriptRequest{}
+	proofOneof := req.ProtoReflect().
+		Descriptor().Oneofs().ByName("proof")
+	require.NotNil(t, proofOneof,
+		"UnregisterReceiveScriptRequest must have proof oneof")
 
-	attackerScript := []byte{0x51, 0x20, 0xaa, 0xbb}
-	victimScript := []byte{0x51, 0x20, 0xcc, 0xdd}
+	// Verify the oneof has the expected fields.
+	require.Equal(t, 2, proofOneof.Fields().Len(),
+		"proof oneof should have taproot_schnorr and bip322")
 
-	// The attacker can construct an unregister request for the
-	// victim's script without any proof of ownership.
-	attackReq := &arkrpc.UnregisterReceiveScriptRequest{
-		PkScript: victimScript,
-	}
+	taprootField := proofOneof.Fields().ByName("taproot_schnorr")
+	require.NotNil(t, taprootField)
 
-	// Verify that the request is structurally valid and contains
-	// no proof field at all.
-	require.Nil(t, attackReq.ProtoReflect().
-		Descriptor().Oneofs().ByName("proof"),
-		"UnregisterReceiveScriptRequest has no proof oneof")
+	bip322Field := proofOneof.Fields().ByName("bip322")
+	require.NotNil(t, bip322Field)
 
-	require.NotEqual(t, attackerScript, victimScript)
-
-	t.Logf("H-3 DEMONSTRATED: UnregisterReceiveScript for "+
-		"victim script %x requires no proof of control",
-		victimScript)
+	t.Log("UnregisterReceiveScriptRequest has proof oneof " +
+		"with taproot_schnorr and bip322")
 }
-
-// ==========================================================================
-// M-1: Proof replay within the 10-minute TTL window. A valid proof can be
-// intercepted and replayed until it expires. The nonce prevents the
-// server from deduplicating, but only if the server maintains a nonce
-// cache -- which is a server-side concern not enforced by this client.
-// ==========================================================================
 
 // TestM1_ProofReplayWithinTTL demonstrates that the same
 // (message, sig64) pair can be submitted multiple times within
@@ -269,18 +231,10 @@ func TestM1_ProofReplayWithinTTL(t *testing.T) {
 		))
 	}
 
-	t.Logf("M-1 DEMONSTRATED: same proof replayed 100x, "+
-		"all signatures verify (TTL window = %v)",
+	t.Logf("Same proof replayed 100x, all signatures "+
+		"verify (TTL window = %v)",
 		offlineReceiveProofTTL)
 }
-
-// ==========================================================================
-// M-2: Unbounded script count in multi-script RPC requests.
-// ListVTXOsByScripts and similar RPCs accept repeated ScriptScope with
-// no client-side limit. An attacker can send thousands of scripts in a
-// single request, each requiring a signature verification, causing
-// server-side CPU exhaustion.
-// ==========================================================================
 
 // TestM2_UnboundedScriptCount demonstrates there is no cap on the number
 // of ScriptScope entries that can be packed into a single request.
@@ -312,17 +266,10 @@ func TestM2_UnboundedScriptCount(t *testing.T) {
 	require.Len(t, req.Scripts, attackScriptCount,
 		"no cap prevents 10k scripts in one request")
 
-	t.Logf("M-2 DEMONSTRATED: single request with %d scripts "+
+	t.Logf("Single request with %d scripts "+
 		"(each requiring schnorr verify on server)",
 		attackScriptCount)
 }
-
-// ==========================================================================
-// M-3: Timestamp resolution is seconds. Two proofs generated within the
-// same second share the same issuedAt and expiresAt values, reducing
-// nonce entropy by making the timestamp a constant rather than a
-// discriminator.
-// ==========================================================================
 
 // TestM3_SecondResolutionTimestamp demonstrates that proofs generated
 // within the same second produce identical issuedAt/expiresAt values.
@@ -366,17 +313,10 @@ func TestM3_SecondResolutionTimestamp(t *testing.T) {
 	require.Equal(t, ts1, ts2,
 		"timestamps are identical within same second")
 
-	t.Logf("M-3 DEMONSTRATED: two proofs share issuedAt=%d "+
+	t.Logf("Two proofs share issuedAt=%d "+
 		"(second-resolution reduces discrimination)",
 		ts1)
 }
-
-// ==========================================================================
-// M-4: SyncClient TOCTOU between LoadCursor and SaveCursor. The
-// SyncClient performs LoadCursor -> RPC -> SaveCursor without holding
-// a lock. Concurrent calls for the same cursorKey can cause duplicate
-// event processing.
-// ==========================================================================
 
 // raceSyncBackend is a SyncBackend that simulates slow responses to
 // expose race windows.
@@ -467,14 +407,14 @@ func TestM4_SyncClientTOCTOU(t *testing.T) {
 	// In a correct implementation, only ONE goroutine should
 	// fetch from cursor=0. But without locking across the full
 	// load-fetch-save cycle, multiple will.
-	t.Logf("M-4 DEMONSTRATED: %d/%d goroutines fetched from "+
-		"cursor=0 (expected 1 in ideal case)",
+	t.Logf("%d/%d goroutines fetched from cursor=0 "+
+		"(expected 1 in ideal case)",
 		fromZero, goroutines)
 
 	if fromZero > 1 {
-		t.Logf("M-4 CONFIRMED: %d concurrent polls read "+
-			"stale cursor, causing duplicate event "+
-			"processing", fromZero)
+		t.Logf("%d concurrent polls read stale cursor, "+
+			"causing duplicate event processing",
+			fromZero)
 	}
 
 	// Total backend calls should equal goroutines (no dedup).
@@ -484,13 +424,6 @@ func TestM4_SyncClientTOCTOU(t *testing.T) {
 	require.Equal(t, goroutines, totalCalls,
 		"all goroutines made backend calls")
 }
-
-// ==========================================================================
-// L-1: pkScript is not validated for format. The client accepts arbitrary
-// byte slices as pkScript. While script validation is ultimately a
-// server concern, the client could prevent obvious errors like empty
-// scripts or non-P2TR scripts when using taproot proofs.
-// ==========================================================================
 
 // TestL1_ArbitraryPkScriptAccepted demonstrates that encodeProofTLV
 // happily encodes any byte slice as a pkScript -- including non-P2TR
@@ -537,24 +470,17 @@ func TestL1_ArbitraryPkScriptAccepted(t *testing.T) {
 				"should encode without error")
 			require.NotEmpty(t, msg)
 
-			t.Logf("L-1: accepted %s (len=%d) in TLV "+
+			t.Logf("Accepted %s (len=%d) in TLV "+
 				"proof message",
 				tc.name, len(tc.pkScript))
 		})
 	}
 }
 
-// ==========================================================================
-// I-1: Registration proof does NOT contain a purpose field, unlike
-// script-scope proofs. This means a registration proof TLV is
-// structurally distinguishable only by the "type" field, creating a
-// potential confusion risk.
-// ==========================================================================
-
-// TestI1_RegistrationProofNoPurpose verifies that the registration proof
-// TLV format lacks a purpose field, relying solely on the "type" TLV
-// field for disambiguation.
-func TestI1_RegistrationProofNoPurpose(t *testing.T) {
+// TestRegistrationProofHasPurpose verifies that the registration proof
+// TLV format includes a purpose field, matching the structure of
+// script-scope proofs.
+func TestRegistrationProofHasPurpose(t *testing.T) {
 	t.Parallel()
 
 	serverID := "test-server"
@@ -582,30 +508,25 @@ func TestI1_RegistrationProofNoPurpose(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// The scope message is strictly longer because it has the
-	// extra purpose TLV record (type=9).
-	require.True(t, len(scopeMsg) > len(regMsg),
-		"scope proof should be longer due to purpose field")
-
-	// Verify registration proof has no purpose field.
+	// Both messages now include a purpose field. Verify the
+	// registration proof carries its expected purpose.
 	regPurpose := extractPurposeFromTLVSafe(regMsg)
-	require.Empty(t, regPurpose,
-		"registration proof should have no purpose field")
+	require.Equal(t, purposeRegisterReceiveScript, regPurpose,
+		"registration proof must have purpose field")
 
 	scopePurpose := extractPurposeFromTLVSafe(scopeMsg)
 	require.Equal(t, purposeListVTXOsByScripts, scopePurpose)
 
-	t.Logf("I-1: registration proof (len=%d) has no purpose; "+
-		"scope proof (len=%d) has purpose=%q",
-		len(regMsg), len(scopeMsg), scopePurpose)
-}
+	// The two purposes must differ to prevent cross-purpose
+	// replay.
+	require.NotEqual(t, regPurpose, scopePurpose,
+		"registration and scope proofs must have distinct "+
+			"purposes")
 
-// ==========================================================================
-// H-4: Cross-type proof confusion. A registration proof
-// (type="receive_script_registration") could potentially be accepted by
-// a server expecting a script_scope proof if the server only checks the
-// signature and pkScript without verifying the type field.
-// ==========================================================================
+	t.Logf("Registration proof has purpose=%q; "+
+		"scope proof has purpose=%q",
+		regPurpose, scopePurpose)
+}
 
 // TestH4_CrossTypeProofConfusion demonstrates that a registration proof
 // can be repackaged into a ScriptScope envelope. The signature is valid
@@ -665,20 +586,10 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 
 	require.NotNil(t, confusedScope)
 
-	t.Logf("H-4 DEMONSTRATED: registration proof "+
-		"(type=%q) repackaged into ScriptScope "+
-		"envelope with valid signature",
+	t.Logf("Registration proof (type=%q) repackaged "+
+		"into ScriptScope envelope with valid signature",
 		proofTypeField)
 }
-
-// ==========================================================================
-// M-5: pkScript mismatch between proto envelope and TLV-signed payload.
-// The ScriptScope proto has pk_script at the envelope level AND
-// pk_script inside the signed TLV message. If the server uses the
-// envelope pk_script for query routing but only verifies the TLV
-// signature, an attacker could query VTXOs for a different script
-// than the one they proved control over.
-// ==========================================================================
 
 // TestM5_PkScriptEnvelopeMismatch demonstrates that the proto-level
 // pk_script can diverge from the TLV-signed pk_script.
@@ -745,15 +656,10 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 	require.Equal(t, victimScript, mismatchedScope.PkScript,
 		"proto envelope has victimScript")
 
-	t.Logf("M-5 DEMONSTRATED: proto pk_script=%x but "+
-		"TLV-signed pk_script=%x",
+	t.Logf("Proto pk_script=%x but TLV-signed pk_script=%x",
 		hex.EncodeToString(victimScript),
 		hex.EncodeToString(ownedScript))
 }
-
-// ==========================================================================
-// TLV parsing helpers for the PoC tests.
-// ==========================================================================
 
 // extractPurposeFromTLV decodes a scope proof TLV and returns the
 // purpose string.
