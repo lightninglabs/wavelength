@@ -11,7 +11,9 @@ import (
 )
 
 const CountUnspentVTXOs = `-- name: CountUnspentVTXOs :one
-SELECT COUNT(*) FROM vtxos WHERE spent = FALSE
+SELECT COUNT(*) FROM vtxos
+WHERE spent = FALSE
+    AND status != 4
 `
 
 func (q *Queries) CountUnspentVTXOs(ctx context.Context) (int64, error) {
@@ -711,9 +713,13 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos WHERE spent = FALSE ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos
+WHERE spent = FALSE
+    AND status != 4
+ORDER BY creation_time DESC
 `
 
+// Unspent requires both spent=false and status!=Spent(4).
 func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 	rows, err := q.db.QueryContext(ctx, ListUnspentVTXOs)
 	if err != nil {
@@ -832,7 +838,9 @@ func (q *Queries) MarkVTXOSpent(ctx context.Context, arg MarkVTXOSpentParams) er
 }
 
 const SumUnspentVTXOAmounts = `-- name: SumUnspentVTXOAmounts :one
-SELECT COALESCE(SUM(amount), 0) as total FROM vtxos WHERE spent = FALSE
+SELECT COALESCE(SUM(amount), 0) as total FROM vtxos
+WHERE spent = FALSE
+    AND status != 4
 `
 
 func (q *Queries) SumUnspentVTXOAmounts(ctx context.Context) (interface{}, error) {

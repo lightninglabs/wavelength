@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 )
 
@@ -235,6 +236,13 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 // related to a storage object.
 func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
+
+	// If a durable actor transaction is already attached to the context,
+	// participate in that transaction instead of starting a nested one.
+	// Retry semantics are handled by the outer transaction executor.
+	if tx, ok := actor.TxFromContext(ctx); ok {
+		return txBody(t.createQuery(tx))
+	}
 
 	waitBeforeRetry := func(attemptNumber int) {
 		retryDelay := t.opts.randRetryDelay(attemptNumber)

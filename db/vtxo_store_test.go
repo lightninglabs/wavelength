@@ -296,6 +296,50 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 	require.Len(t, liveVTXOs, 0)
 }
 
+// TestVTXOPersistenceStoreSpentStatusSynchronizesSpentFlag verifies that
+// setting status=Spent via UpdateVTXOStatus also marks spent=true and removes
+// the VTXO from round unspent listings.
+func TestVTXOPersistenceStoreSpentStatusSynchronizesSpentFlag(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, db := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-status-spent-sync")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	desc := createTestVTXODescriptor(t, roundID, 11)
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	listed, err := roundStore.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+
+	err = vtxoStore.UpdateVTXOStatus(
+		ctx, desc.Outpoint, vtxo.VTXOStatusSpent,
+	)
+	require.NoError(t, err)
+
+	row, err := db.GetVTXO(ctx, sqlc.GetVTXOParams{
+		OutpointHash:  desc.Outpoint.Hash[:],
+		OutpointIndex: int32(desc.Outpoint.Index),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int32(vtxo.VTXOStatusSpent), row.Status)
+	require.True(t, row.Spent)
+
+	listed, err = roundStore.ListVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, listed, 0)
+}
+
 // TestVTXOPersistenceStoreForfeitTxPersistence tests that MarkForfeiting
 // correctly persists the forfeit transaction and GetForfeitTx retrieves it.
 func TestVTXOPersistenceStoreForfeitTxPersistence(t *testing.T) {
