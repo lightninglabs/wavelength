@@ -7,7 +7,9 @@ import (
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/build"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 )
 
@@ -88,6 +90,13 @@ func NewSyncClient(backend SyncBackend,
 	}, nil
 }
 
+// logger returns the logger for this sync client, extracting it from
+// the context. If no logger is present in the context, returns
+// btclog.Disabled which safely no-ops all log calls.
+func (c *SyncClient) logger(ctx context.Context) btclog.Logger {
+	return build.LoggerFromContext(ctx)
+}
+
 // VTXOSyncResult wraps a VTXO event response and defers cursor
 // persistence until the caller explicitly acknowledges the batch via
 // Ack. This prevents the cursor from advancing when the caller fails
@@ -143,6 +152,11 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 		return nil, fmt.Errorf("load vtxo cursor: %w", err)
 	}
 
+	c.logger(ctx).TraceS(ctx, "Polling VTXO events",
+		"cursor_key", cursorKey,
+		"cursor", cursor,
+		"limit", limit)
+
 	resp, err := c.backend.ListVTXOEventsByScriptsTaproot(
 		ctx, scopes, cursor, limit, opts...,
 	)
@@ -189,6 +203,11 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("load oor cursor: %w", err)
 	}
+
+	c.logger(ctx).TraceS(ctx, "Polling OOR recipient events",
+		"pk_script", scriptKey,
+		"cursor", cursor,
+		"limit", limit)
 
 	resp, err := c.backend.ListOORRecipientEventsByScriptTaproot(
 		ctx, pkScript, signingKey, cursor, limit, opts...,

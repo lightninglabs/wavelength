@@ -3,6 +3,7 @@ package indexer
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/build"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -31,6 +34,13 @@ type Client struct {
 
 	serverID  string
 	principal string
+}
+
+// logger returns the logger for this client, extracting it from the
+// context. If no logger is present in the context, returns
+// btclog.Disabled which safely no-ops all log calls.
+func (c *Client) logger(ctx context.Context) btclog.Logger {
+	return build.LoggerFromContext(ctx)
 }
 
 const (
@@ -447,6 +457,11 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		return nil, err
 	}
 
+	c.logger(ctx).TraceS(ctx, "Registering receive script",
+		"pk_script", hex.EncodeToString(pkScript),
+		"label", label,
+		"expires_at", expiresAt)
+
 	req := &arkrpc.RegisterReceiveScriptRequest{
 		PkScript:       pkScript,
 		ExpiresAtUnixS: uint64(expiresAt.Unix()),
@@ -499,6 +514,9 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	c.logger(ctx).TraceS(ctx, "Unregistering receive script",
+		"pk_script", hex.EncodeToString(pkScript))
 
 	req := &arkrpc.UnregisterReceiveScriptRequest{
 		PkScript: pkScript,
@@ -576,6 +594,11 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		&arkrpc.ListOORRecipientEventsByScriptRequest_TaprootSchnorr{
 			TaprootSchnorr: proof,
 		}
+
+	c.logger(ctx).TraceS(ctx, "Listing OOR recipient events",
+		"pk_script", hex.EncodeToString(pkScript),
+		"after_event_id", afterEventID,
+		"limit", limit)
 
 	req := &arkrpc.ListOORRecipientEventsByScriptRequest{
 		PkScript:     pkScript,
