@@ -57,6 +57,9 @@ function generate() {
 generate "mailbox/pb"
 generate "arkrpc"
 
+# Generate daemonrpc protos for the client daemon's own gRPC API.
+generate "daemonrpc"
+
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then
 	generate "adminrpc"
