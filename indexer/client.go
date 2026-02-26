@@ -43,7 +43,7 @@ const (
 	offlineReceiveProofTTL = 10 * time.Minute
 
 	// scriptScopeMessageType is the canonical proof "type" string used
-	// for script-scoped queries (option B).
+	// for script-scoped queries.
 	scriptScopeMessageType = "script_scope"
 
 	// scriptScopeMessageVersion is the current script-scope message
@@ -244,10 +244,13 @@ func encodeScopeProofTLV(serverID, principal, purpose string,
 	return buf.Bytes(), nil
 }
 
-// proofTagHash is the BIP-340 tagged hash domain separator for indexer
-// proof signatures. This must match the server-side ProofTagHash constant
-// in the indexer package.
-var proofTagHash = []byte("darepo/indexer/v1")
+// proofTag returns the BIP-340 tagged hash domain separator for indexer
+// proof signatures. A fresh slice is returned each call to prevent
+// accidental mutation. This must match the server-side ProofTagHash
+// constant in the indexer package.
+func proofTag() []byte {
+	return []byte("darepo/indexer/v1")
+}
 
 // schnorrSigOverMessage returns a 64-byte schnorr signature over a
 // BIP-340 tagged hash of the message. The tag provides domain separation
@@ -255,7 +258,7 @@ var proofTagHash = []byte("darepo/indexer/v1")
 func schnorrSigOverMessage(message []byte,
 	priv *btcec.PrivateKey) ([]byte, error) {
 
-	msgHash := chainhash.TaggedHash(proofTagHash, message)
+	msgHash := chainhash.TaggedHash(proofTag(), message)
 	sig, err := schnorr.Sign(priv, msgHash[:])
 	if err != nil {
 		return nil, err

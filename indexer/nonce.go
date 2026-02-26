@@ -6,9 +6,13 @@ import (
 )
 
 // randomNonce returns n random bytes suitable for use as a proof nonce.
+// It returns an error if n is not positive, since a zero-length nonce
+// provides no replay protection.
 func randomNonce(n int) ([]byte, error) {
 	if n <= 0 {
-		return nil, nil
+		return nil, fmt.Errorf(
+			"nonce length must be positive, got %d", n,
+		)
 	}
 
 	b := make([]byte, n)
