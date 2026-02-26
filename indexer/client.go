@@ -127,6 +127,18 @@ func New(rpc mailboxrpc.RPCClient, serverID string,
 	}
 }
 
+// firstOpt returns the first RPCOptions from opts, or the zero value
+// if none were provided.
+func firstOpt(
+	opts []mailboxrpc.RPCOptions) mailboxrpc.RPCOptions {
+
+	if len(opts) > 0 {
+		return opts[0]
+	}
+
+	return mailboxrpc.RPCOptions{}
+}
+
 // encodeProofTLV encodes a proof message to its canonical TLV byte
 // representation. The msgType distinguishes registration proofs from
 // scope proofs, and purpose binds the proof to a specific RPC method
@@ -323,12 +335,7 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 		Limit:        limit,
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.ListVTXOsByScripts(ctx, req, opt)
+	return c.rpc.ListVTXOsByScripts(ctx, req, firstOpt(opts))
 }
 
 // GetSubtreeByScriptsTaproot performs a proof-gated subtree query for
@@ -356,12 +363,7 @@ func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 		IncludeInternalNodes: includeInternalNodes,
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.GetSubtreeByScripts(ctx, req, opt)
+	return c.rpc.GetSubtreeByScripts(ctx, req, firstOpt(opts))
 }
 
 // ListVTXOEventsByScriptsTaproot performs a proof-gated, monotonic VTXO
@@ -390,12 +392,7 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 		Limit:        limit,
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.ListVTXOEventsByScripts(ctx, req, opt)
+	return c.rpc.ListVTXOEventsByScripts(ctx, req, firstOpt(opts))
 }
 
 // RegisterReceiveScriptTaproot registers a single P2TR receive script
@@ -414,6 +411,12 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	}
 
 	now := time.Now()
+	if !expiresAt.After(now) {
+		return nil, fmt.Errorf(
+			"expiresAt must be in the future (got %v, now %v)",
+			expiresAt, now,
+		)
+	}
 
 	nonce, err := randomNonce(registrationNonceBytes)
 	if err != nil {
@@ -447,29 +450,58 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		},
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.RegisterReceiveScript(ctx, req, opt)
+	return c.rpc.RegisterReceiveScript(ctx, req, firstOpt(opts))
 }
 
-// UnregisterReceiveScript removes a receive script registration.
+// UnregisterReceiveScript removes a receive script registration. The
+// caller must provide the signing key that controls the P2TR output so
+// that the server can verify ownership before removing the binding.
 func (c *Client) UnregisterReceiveScript(ctx context.Context,
-	pkScript []byte, opts ...mailboxrpc.RPCOptions) (
+	pkScript []byte, signingKey *btcec.PrivateKey,
+	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.UnregisterReceiveScriptResponse, error) {
+
+	if signingKey == nil {
+		return nil, fmt.Errorf("missing signing key")
+	}
+	if err := validateTaprootPkScript(pkScript); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(offlineReceiveProofTTL)
+
+	nonce, err := randomNonce(registrationNonceBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	msgBytes, err := encodeProofTLV(
+		registrationMessageType,
+		c.serverID, c.principal,
+		purposeUnregisterReceiveScript, pkScript, nonce,
+		uint64(now.Unix()), uint64(expiresAt.Unix()),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
+	if err != nil {
+		return nil, err
+	}
 
 	req := &arkrpc.UnregisterReceiveScriptRequest{
 		PkScript: pkScript,
+		Proof: &arkrpc.UnregisterReceiveScriptRequest_TaprootSchnorr{
+			TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
+				Message: msgBytes,
+				Sig64:   sig64,
+			},
+		},
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.UnregisterReceiveScript(ctx, req, opt)
+	return c.rpc.UnregisterReceiveScript(ctx, req, firstOpt(opts))
 }
 
 // ListOORRecipientEventsByScriptTaproot performs a proof-gated
@@ -531,10 +563,5 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		Proof:        proofOneof,
 	}
 
-	var opt mailboxrpc.RPCOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
-	return c.rpc.ListOORRecipientEventsByScript(ctx, req, opt)
+	return c.rpc.ListOORRecipientEventsByScript(ctx, req, firstOpt(opts))
 }
