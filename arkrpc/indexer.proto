@@ -80,10 +80,15 @@ message TaprootSchnorrProof {
     // transport.
     bytes message = 1;
 
-    // sig64 is a 64-byte BIP-340 schnorr signature over sha256(message).
+    // sig64 is a 64-byte BIP-340 schnorr signature over the BIP-340
+    // tagged hash of message: sha256(sha256(tag) || sha256(tag) || msg),
+    // where tag = "darepo/indexer/v1".
     bytes sig64 = 2;
 }
 
+// TODO(indexer): BIP322Proof is defined for forward-compatibility but
+// not yet implemented by any client. Callers must use TaprootSchnorrProof
+// until BIP-322 script-satisfaction support is added.
 message BIP322Proof {
     // message is the canonical JSON message the signature commits to.
     string message = 1;
@@ -98,6 +103,15 @@ message RegisterReceiveScriptResponse {
 
 message UnregisterReceiveScriptRequest {
     bytes pk_script = 1;
+
+    oneof proof {
+        // taproot_schnorr proves control of the P2TR output key.
+        TaprootSchnorrProof taproot_schnorr = 10;
+
+        // bip322 is reserved for future BIP-322 script-satisfaction
+        // proofs.
+        BIP322Proof bip322 = 11;
+    }
 }
 
 message ListMyReceiveScriptsRequest {
@@ -235,9 +249,13 @@ message VTXO {
     uint32 batch_output_index = 7;
 
     // created_height is the chain height where this VTXO became relevant.
+    // int32 follows btcd's block-height convention; negative values are
+    // invalid and must be rejected by the server.
     int32 created_height = 8;
 
-    // batch_expiry_height is the absolute height at which the batch expires.
+    // batch_expiry_height is the absolute height at which the batch
+    // expires. int32 follows btcd's block-height convention; negative
+    // values are invalid and must be rejected by the server.
     int32 batch_expiry_height = 9;
 
     // relative_expiry is the CSV delay for the unilateral exit path.
