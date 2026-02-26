@@ -62,14 +62,38 @@ type GetInfoResponse struct {
 	// The version of the protocol that the operator is running.
 	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
 	// The ark operator's main public key. This pub key must be used in the
-	// construction of boarding scripts
+	// construction of boarding scripts.
 	Pubkey []byte `protobuf:"bytes,2,opt,name=pubkey,proto3" json:"pubkey,omitempty"`
 	// The network the operator is running on.
 	Network string `protobuf:"bytes,3,opt,name=network,proto3" json:"network,omitempty"`
 	// The current block height tip that the operator is aware of.
-	BlockHeight   uint32 `protobuf:"varint,4,opt,name=block_height,json=blockHeight,proto3" json:"block_height,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BlockHeight uint32 `protobuf:"varint,4,opt,name=block_height,json=blockHeight,proto3" json:"block_height,omitempty"`
+	// The minimum CSV delay (blocks) required on boarding outputs.
+	BoardingExitDelay uint32 `protobuf:"varint,5,opt,name=boarding_exit_delay,json=boardingExitDelay,proto3" json:"boarding_exit_delay,omitempty"`
+	// The minimum CSV delay (blocks) for VTXO unilateral exit paths.
+	VtxoExitDelay uint32 `protobuf:"varint,6,opt,name=vtxo_exit_delay,json=vtxoExitDelay,proto3" json:"vtxo_exit_delay,omitempty"`
+	// The output script that clients must use for the penalty output in
+	// forfeit transactions.
+	ForfeitScript []byte `protobuf:"bytes,7,opt,name=forfeit_script,json=forfeitScript,proto3" json:"forfeit_script,omitempty"`
+	// The operator key used in VTXO sweep paths.
+	SweepKey []byte `protobuf:"bytes,8,opt,name=sweep_key,json=sweepKey,proto3" json:"sweep_key,omitempty"`
+	// The batch-wide absolute timelock (blocks) for sweep transactions.
+	SweepDelay uint32 `protobuf:"varint,9,opt,name=sweep_delay,json=sweepDelay,proto3" json:"sweep_delay,omitempty"`
+	// The minimum output value (satoshis) enforced for boarding/funding
+	// flows.
+	DustLimit int64 `protobuf:"varint,10,opt,name=dust_limit,json=dustLimit,proto3" json:"dust_limit,omitempty"`
+	// The minimum amount (satoshis) clients must contribute per boarding
+	// input.
+	MinBoardingAmount int64 `protobuf:"varint,11,opt,name=min_boarding_amount,json=minBoardingAmount,proto3" json:"min_boarding_amount,omitempty"`
+	// The maximum amount (satoshis) accepted per boarding request. Zero
+	// means no cap.
+	MaxBoardingAmount int64 `protobuf:"varint,12,opt,name=max_boarding_amount,json=maxBoardingAmount,proto3" json:"max_boarding_amount,omitempty"`
+	// The operator's target package feerate (sat/vByte).
+	FeeRate int64 `protobuf:"varint,13,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
+	// The minimum confirmations required on boarding inputs.
+	MinConfirmations uint32 `protobuf:"varint,14,opt,name=min_confirmations,json=minConfirmations,proto3" json:"min_confirmations,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -130,17 +154,100 @@ func (x *GetInfoResponse) GetBlockHeight() uint32 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetBoardingExitDelay() uint32 {
+	if x != nil {
+		return x.BoardingExitDelay
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetVtxoExitDelay() uint32 {
+	if x != nil {
+		return x.VtxoExitDelay
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetForfeitScript() []byte {
+	if x != nil {
+		return x.ForfeitScript
+	}
+	return nil
+}
+
+func (x *GetInfoResponse) GetSweepKey() []byte {
+	if x != nil {
+		return x.SweepKey
+	}
+	return nil
+}
+
+func (x *GetInfoResponse) GetSweepDelay() uint32 {
+	if x != nil {
+		return x.SweepDelay
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetDustLimit() int64 {
+	if x != nil {
+		return x.DustLimit
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetMinBoardingAmount() int64 {
+	if x != nil {
+		return x.MinBoardingAmount
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetMaxBoardingAmount() int64 {
+	if x != nil {
+		return x.MaxBoardingAmount
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetFeeRate() int64 {
+	if x != nil {
+		return x.FeeRate
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetMinConfirmations() uint32 {
+	if x != nil {
+		return x.MinConfirmations
+	}
+	return 0
+}
+
 var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\x80\x01\n" +
+	"\x0eGetInfoRequest\"\x84\x04\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
 	"\anetwork\x18\x03 \x01(\tR\anetwork\x12!\n" +
-	"\fblock_height\x18\x04 \x01(\rR\vblockHeight2H\n" +
+	"\fblock_height\x18\x04 \x01(\rR\vblockHeight\x12.\n" +
+	"\x13boarding_exit_delay\x18\x05 \x01(\rR\x11boardingExitDelay\x12&\n" +
+	"\x0fvtxo_exit_delay\x18\x06 \x01(\rR\rvtxoExitDelay\x12%\n" +
+	"\x0eforfeit_script\x18\a \x01(\fR\rforfeitScript\x12\x1b\n" +
+	"\tsweep_key\x18\b \x01(\fR\bsweepKey\x12\x1f\n" +
+	"\vsweep_delay\x18\t \x01(\rR\n" +
+	"sweepDelay\x12\x1d\n" +
+	"\n" +
+	"dust_limit\x18\n" +
+	" \x01(\x03R\tdustLimit\x12.\n" +
+	"\x13min_boarding_amount\x18\v \x01(\x03R\x11minBoardingAmount\x12.\n" +
+	"\x13max_boarding_amount\x18\f \x01(\x03R\x11maxBoardingAmount\x12\x19\n" +
+	"\bfee_rate\x18\r \x01(\x03R\afeeRate\x12+\n" +
+	"\x11min_confirmations\x18\x0e \x01(\rR\x10minConfirmations2H\n" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"

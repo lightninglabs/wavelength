@@ -487,6 +487,16 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		)
 	}
 
+	// A zero time means "use server default", so we leave the
+	// field at 0 rather than casting time.Time{}.Unix() which
+	// would wrap to a huge uint64. We derive the safe value
+	// before encoding the TLV proof so both the signed message
+	// and the proto request field use the same expiry.
+	var expiresAtUnixS uint64
+	if !expiresAt.IsZero() {
+		expiresAtUnixS = uint64(expiresAt.Unix())
+	}
+
 	nonce, err := randomNonce(registrationNonceBytes)
 	if err != nil {
 		return nil, err
@@ -516,7 +526,7 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 
 	req := &arkrpc.RegisterReceiveScriptRequest{
 		PkScript:       pkScript,
-		ExpiresAtUnixS: uint64(expiresAt.Unix()),
+		ExpiresAtUnixS: expiresAtUnixS,
 		Label:          label,
 		Proof: &arkrpc.RegisterReceiveScriptRequest_TaprootSchnorr{
 			TaprootSchnorr: &arkrpc.TaprootSchnorrProof{

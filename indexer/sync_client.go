@@ -43,7 +43,8 @@ type SyncBackend interface {
 	) (*arkrpc.ListOORRecipientEventsByScriptResponse, error)
 }
 
-// SyncCursorStore persists monotonic cursors used by SyncClient.
+// SyncCursorStore persists monotonic cursors used by
+// SyncClient.
 type SyncCursorStore interface {
 	// LoadCursor returns the cursor for (namespace, key).
 	// Unknown keys should return 0, nil.

@@ -1,0 +1,355 @@
+package lndbackend
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+)
+
+// ClientWallet adapts lndclient's remote signing interfaces to the
+// round.ClientWallet interface (input.Signer + DeriveNextKey). This
+// allows the round actor's FSM to sign VTXO tree branches and forfeit
+// transactions through lnd's remote signer without requiring a local
+// wallet.
+//
+// Because input.Signer does not carry context, the adapter uses a
+// background context for all RPC calls. The underlying gRPC deadline
+// from the lndclient dial options still applies.
+type ClientWallet struct {
+	signer    lndclient.SignerClient
+	walletKit lndclient.WalletKitClient
+}
+
+// NewClientWallet creates a new ClientWallet from the lndclient signer
+// and wallet kit clients.
+func NewClientWallet(
+	signer lndclient.SignerClient,
+	walletKit lndclient.WalletKitClient,
+) *ClientWallet {
+
+	return &ClientWallet{
+		signer:    signer,
+		walletKit: walletKit,
+	}
+}
+
+// Compile-time check that ClientWallet satisfies the interface
+// expected by round.RoundClientConfig.Wallet. We can't import the
+// round package here (that would create a cycle), so we check against
+// input.Signer which is the signing half of round.ClientWallet.
+//
+// NOTE: Full round.ClientWallet check (which adds DeriveNextKey and
+// MuSig2* methods) is omitted to avoid the import cycle. Any drift
+// will surface as a compile error in darepod/server.go where
+// ClientWallet is passed to the round config.
+var _ input.Signer = (*ClientWallet)(nil)
+
+// DeriveNextKey derives the next key in the specified key family via
+// lnd's WalletKit RPC. This is used by the round actor to generate
+// fresh VTXO signing keys for each round.
+func (c *ClientWallet) DeriveNextKey(ctx context.Context,
+	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
+
+	return c.walletKit.DeriveNextKey(ctx, int32(family))
+}
+
+// SignOutputRaw generates a schnorr/ECDSA signature for a single input
+// of the provided transaction according to the sign descriptor. The
+// call is forwarded to lnd's remote signer via gRPC.
+func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	lndDesc := inputDescToLndclient(signDesc)
+
+	// Collect prevouts for taproot sighash computation. When the
+	// caller provides a PrevOutputFetcher we extract every input's
+	// previous output; otherwise we fall back to the single output
+	// in the sign descriptor.
+	prevOuts := prevOutputsFromDesc(tx, signDesc)
+
+	sigs, err := c.signer.SignOutputRaw(
+		context.Background(), tx, []*lndclient.SignDescriptor{
+			lndDesc,
+		}, prevOuts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign output raw: %w", err)
+	}
+
+	if len(sigs) == 0 {
+		return nil, fmt.Errorf("no signatures returned")
+	}
+
+	return parseSigBytes(sigs[0], signDesc.SignMethod)
+}
+
+// ComputeInputScript generates a complete input script (witness) for
+// the specified input. This is used for standard p2wkh and np2wkh
+// spends.
+func (c *ClientWallet) ComputeInputScript(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (*input.Script, error) {
+
+	lndDesc := inputDescToLndclient(signDesc)
+	prevOuts := prevOutputsFromDesc(tx, signDesc)
+
+	scripts, err := c.signer.ComputeInputScript(
+		context.Background(), tx, []*lndclient.SignDescriptor{
+			lndDesc,
+		}, prevOuts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("compute input script: %w", err)
+	}
+
+	if len(scripts) == 0 {
+		return nil, fmt.Errorf("no scripts returned")
+	}
+
+	return scripts[0], nil
+}
+
+// MuSig2CreateSession creates a new MuSig2 signing session via lnd's
+// remote signer. The session is identified by the returned session ID
+// and manages nonce aggregation and partial signing state.
+func (c *ClientWallet) MuSig2CreateSession(
+	version input.MuSig2Version,
+	locator keychain.KeyLocator,
+	allSignerPubkeys []*btcec.PublicKey,
+	tweaks *input.MuSig2Tweaks,
+	otherNonces [][musig2.PubNonceSize]byte,
+	localNonces *musig2.Nonces,
+) (*input.MuSig2SessionInfo, error) {
+
+	// Convert pubkeys to serialized form for lndclient. The
+	// remote signer expects either 33-byte compressed keys
+	// (MuSig2Version040) or 32-byte x-only keys
+	// (MuSig2Version100RC2+). lndclient passes the bytes
+	// through to lnd as-is, so we must match the format to
+	// the version.
+	signerBytes := make([][]byte, len(allSignerPubkeys))
+	for i, pk := range allSignerPubkeys {
+		switch version {
+		case input.MuSig2Version100RC2:
+			signerBytes[i] = schnorr.SerializePubKey(pk)
+
+		default:
+			signerBytes[i] = pk.SerializeCompressed()
+		}
+	}
+
+	var opts []lndclient.MuSig2SessionOpts
+
+	// Apply taproot tweaks if specified. The lndclient API uses
+	// a separate option for taproot key path tweaks.
+	if tweaks != nil {
+		if tweaks.TaprootBIP0086Tweak || len(tweaks.TaprootTweak) > 0 {
+			opts = append(
+				opts, lndclient.MuSig2TaprootTweakOpt(
+					tweaks.TaprootTweak,
+					tweaks.TaprootBIP0086Tweak,
+				),
+			)
+		}
+	}
+
+	if len(otherNonces) > 0 {
+		opts = append(opts, lndclient.MuSig2NonceOpt(
+			otherNonces,
+		))
+	}
+
+	if localNonces != nil {
+		opts = append(opts, lndclient.MuSig2LocalNonceOpt(
+			localNonces.SecNonce,
+		))
+	}
+
+	return c.signer.MuSig2CreateSession(
+		context.Background(), version, &locator,
+		signerBytes, opts...,
+	)
+}
+
+// MuSig2RegisterNonces registers additional public nonces for a
+// MuSig2 session. Returns true once all nonces have been collected.
+func (c *ClientWallet) MuSig2RegisterNonces(
+	sessionID input.MuSig2SessionID,
+	nonces [][musig2.PubNonceSize]byte,
+) (bool, error) {
+
+	return c.signer.MuSig2RegisterNonces(
+		context.Background(), sessionID, nonces,
+	)
+}
+
+// MuSig2RegisterCombinedNonce registers a pre-aggregated combined
+// nonce for a session, bypassing individual nonce registration.
+func (c *ClientWallet) MuSig2RegisterCombinedNonce(
+	sessionID input.MuSig2SessionID,
+	combinedNonce [musig2.PubNonceSize]byte,
+) error {
+
+	return c.signer.MuSig2RegisterCombinedNonce(
+		context.Background(), sessionID, combinedNonce,
+	)
+}
+
+// MuSig2GetCombinedNonce retrieves the combined nonce for a session
+// after all individual nonces have been registered.
+func (c *ClientWallet) MuSig2GetCombinedNonce(
+	sessionID input.MuSig2SessionID,
+) ([musig2.PubNonceSize]byte, error) {
+
+	return c.signer.MuSig2GetCombinedNonce(
+		context.Background(), sessionID,
+	)
+}
+
+// MuSig2Sign creates a partial signature using the local key for the
+// specified session. The message must be a 32-byte SHA256 digest.
+func (c *ClientWallet) MuSig2Sign(
+	sessionID input.MuSig2SessionID,
+	message [sha256.Size]byte,
+	cleanup bool,
+) (*musig2.PartialSignature, error) {
+
+	sigBytes, err := c.signer.MuSig2Sign(
+		context.Background(), sessionID, message, cleanup,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("musig2 sign: %w", err)
+	}
+
+	var partialSig musig2.PartialSignature
+	reader := bytes.NewReader(sigBytes)
+	if err := partialSig.Decode(reader); err != nil {
+		return nil, fmt.Errorf("decode partial sig: %w", err)
+	}
+
+	return &partialSig, nil
+}
+
+// MuSig2CombineSig combines partial signatures from all participants
+// and returns the final Schnorr signature once all are registered.
+func (c *ClientWallet) MuSig2CombineSig(
+	sessionID input.MuSig2SessionID,
+	otherPartialSigs []*musig2.PartialSignature,
+) (*schnorr.Signature, bool, error) {
+
+	sigBytes := make([][]byte, len(otherPartialSigs))
+	for i, ps := range otherPartialSigs {
+		var buf bytes.Buffer
+		if err := ps.Encode(&buf); err != nil {
+			return nil, false, fmt.Errorf(
+				"encode partial sig %d: %w", i, err,
+			)
+		}
+
+		sigBytes[i] = buf.Bytes()
+	}
+
+	haveAll, finalSigBytes, err := c.signer.MuSig2CombineSig(
+		context.Background(), sessionID, sigBytes,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"musig2 combine sig: %w", err,
+		)
+	}
+
+	if !haveAll || len(finalSigBytes) == 0 {
+		return nil, haveAll, nil
+	}
+
+	finalSig, err := schnorr.ParseSignature(finalSigBytes)
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"parse final sig: %w", err,
+		)
+	}
+
+	return finalSig, true, nil
+}
+
+// MuSig2Cleanup removes a session from lnd's memory.
+func (c *ClientWallet) MuSig2Cleanup(
+	sessionID input.MuSig2SessionID) error {
+
+	return c.signer.MuSig2Cleanup(
+		context.Background(), sessionID,
+	)
+}
+
+// parseSigBytes interprets raw signature bytes according to the sign
+// method. Taproot key/script spends use schnorr (64 bytes), while
+// legacy SegWit uses DER-encoded ECDSA.
+func parseSigBytes(sigBytes []byte,
+	method input.SignMethod) (input.Signature, error) {
+
+	switch method {
+	case input.TaprootKeySpendBIP0086SignMethod,
+		input.TaprootKeySpendSignMethod,
+		input.TaprootScriptSpendSignMethod:
+
+		return schnorr.ParseSignature(sigBytes)
+
+	default:
+		return ecdsa.ParseDERSignature(sigBytes)
+	}
+}
+
+// inputDescToLndclient converts an input.SignDescriptor to a
+// lndclient.SignDescriptor. The two types have nearly identical fields
+// but different Go types.
+func inputDescToLndclient(
+	desc *input.SignDescriptor) *lndclient.SignDescriptor {
+
+	return &lndclient.SignDescriptor{
+		KeyDesc:       desc.KeyDesc,
+		SingleTweak:   desc.SingleTweak,
+		DoubleTweak:   desc.DoubleTweak,
+		TapTweak:      desc.TapTweak,
+		WitnessScript: desc.WitnessScript,
+		SignMethod:    desc.SignMethod,
+		Output:        desc.Output,
+		HashType:      desc.HashType,
+		InputIndex:    desc.InputIndex,
+	}
+}
+
+// prevOutputsFromDesc extracts the previous outputs needed for taproot
+// sighash computation. If the sign descriptor includes a
+// PrevOutputFetcher, we use it to collect all inputs' prev outputs.
+// Otherwise we return just the single output from the descriptor.
+func prevOutputsFromDesc(tx *wire.MsgTx,
+	desc *input.SignDescriptor) []*wire.TxOut {
+
+	if desc.PrevOutputFetcher != nil {
+		prevOuts := make([]*wire.TxOut, len(tx.TxIn))
+		for i, txIn := range tx.TxIn {
+			prevOuts[i] = desc.PrevOutputFetcher.FetchPrevOutput(
+				txIn.PreviousOutPoint,
+			)
+		}
+
+		return prevOuts
+	}
+
+	// Fall back to a single-entry slice using the descriptor's
+	// Output field.
+	if desc.Output != nil {
+		return []*wire.TxOut{desc.Output}
+	}
+
+	return nil
+}

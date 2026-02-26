@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package daemonrpc;
+
+option go_package = "github.com/lightninglabs/darepo-client/daemonrpc";
+
+// DaemonService is the client daemon's own gRPC API. External tools such as
+// CLI wallets and GUIs connect to this service to interact with the running
+// daemon.
+service DaemonService {
+    // GetInfo returns basic status information about the running daemon
+    // including version, network, lnd connection state, and server
+    // connection state.
+    rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+}
+
+message GetInfoRequest {
+}
+
+message GetInfoResponse {
+    // version is the daemon's semantic version string.
+    string version = 1;
+
+    // commit is the short git commit hash of this build.
+    string commit = 2;
+
+    // network is the active bitcoin network (mainnet, testnet, regtest,
+    // etc.).
+    string network = 3;
+
+    // lnd_identity_pubkey is the hex-encoded identity public key of the
+    // connected lnd node.
+    string lnd_identity_pubkey = 4;
+
+    // block_height is the current best block height known to the
+    // connected lnd node.
+    uint32 block_height = 5;
+
+    // server_connected indicates whether the mailbox transport to the ark
+    // operator is active and pulling envelopes.
+    bool server_connected = 6;
+
+    // lnd_alias is the alias of the connected lnd node.
+    string lnd_alias = 7;
+}
