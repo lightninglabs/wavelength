@@ -32,6 +32,12 @@ type Client struct {
 	// boundary.
 	rpc *arkrpc.IndexerServiceMailboxClient
 
+	// signer produces BIP-340 Schnorr signatures for
+	// proof-of-control messages. The implementation is
+	// responsible for selecting the correct key based on the
+	// pkScript passed to each signing call.
+	signer SchnorrSigner
+
 	serverID  string
 	principal string
 }
@@ -138,19 +144,23 @@ const (
 	proofTLVTypePurpose tlv.Type = 9
 )
 
-// New creates an Indexer client wrapper.
-func New(rpc mailboxrpc.RPCClient, serverID string,
-	principal string) *Client {
+// New creates an Indexer client wrapper. The signer is used for all
+// proof-of-control operations; its SignSchnorr method receives the
+// pkScript so it can select the appropriate key.
+func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
+	serverID string, principal string) *Client {
 
 	return &Client{
 		rpc:       arkrpc.NewIndexerServiceMailboxClient(rpc),
+		signer:    signer,
 		serverID:  serverID,
 		principal: principal,
 	}
 }
 
 // firstOpt returns the first RPCOptions from opts, or the zero value
-// if none were provided.
+// if none were provided. At most one option should be passed; any
+// additional options beyond the first are silently ignored.
 func firstOpt(
 	opts []mailboxrpc.RPCOptions) mailboxrpc.RPCOptions {
 
@@ -228,6 +238,39 @@ func encodeProofTLV(msgType, serverID, principal, purpose string,
 	return buf.Bytes(), nil
 }
 
+// SchnorrSigner produces 64-byte BIP-340 Schnorr signatures. This
+// interface abstracts signing so that callers need not hold raw
+// private keys; implementations may delegate to hardware wallets,
+// remote signers, or test stubs. The pkScript parameter identifies
+// which key to use when the signer manages multiple keys.
+type SchnorrSigner interface {
+	// SignSchnorr signs the 32-byte hash for the key that
+	// controls pkScript and returns a 64-byte BIP-340 Schnorr
+	// signature.
+	SignSchnorr(pkScript []byte, hash [32]byte) ([]byte, error)
+}
+
+// PrivKeySchnorrSigner wraps a single btcec.PrivateKey to satisfy
+// SchnorrSigner. It ignores pkScript since it always signs with the
+// same key. Suitable for tests and single-key setups.
+type PrivKeySchnorrSigner struct {
+	Key *btcec.PrivateKey
+}
+
+// SignSchnorr signs the 32-byte hash and returns a 64-byte BIP-340
+// Schnorr signature. The pkScript parameter is ignored since this
+// signer wraps a single key.
+func (s *PrivKeySchnorrSigner) SignSchnorr(
+	_ []byte, hash [32]byte) ([]byte, error) {
+
+	sig, err := schnorr.Sign(s.Key, hash[:])
+	if err != nil {
+		return nil, err
+	}
+
+	return sig.Serialize(), nil
+}
+
 // proofTag returns the BIP-340 tagged hash domain separator for indexer
 // proof signatures. A fresh slice is returned each call to prevent
 // accidental mutation. This must match the server-side ProofTagHash
@@ -239,16 +282,13 @@ func proofTag() []byte {
 // schnorrSigOverMessage returns a 64-byte schnorr signature over a
 // BIP-340 tagged hash of the message. The tag provides domain separation
 // so indexer proof signatures cannot be replayed in other protocols.
-func schnorrSigOverMessage(message []byte,
-	priv *btcec.PrivateKey) ([]byte, error) {
+// The pkScript identifies which key the signer should use.
+func schnorrSigOverMessage(message []byte, pkScript []byte,
+	signer SchnorrSigner) ([]byte, error) {
 
 	msgHash := chainhash.TaggedHash(proofTag(), message)
-	sig, err := schnorr.Sign(priv, msgHash[:])
-	if err != nil {
-		return nil, err
-	}
 
-	return sig.Serialize(), nil
+	return signer.SignSchnorr(pkScript, *msgHash)
 }
 
 // validateTaprootPkScript returns an error if pkScript is not a valid
@@ -269,26 +309,23 @@ func validateTaprootPkScript(pkScript []byte) error {
 	return nil
 }
 
-// TaprootScriptScope selects a pkScript and its corresponding signing
-// key.
-//
-// The signing key must be the P2TR output key for pkScript.
+// TaprootScriptScope identifies a P2TR output script to query. The
+// client's SchnorrSigner (provided at construction) signs the
+// proof-of-control for each scope using the pkScript to select the
+// appropriate key.
 type TaprootScriptScope struct {
-	PkScript  []byte
-	SigningKey *btcec.PrivateKey
+	// PkScript is the raw P2TR output script to query. Must be
+	// a valid pay-to-taproot script (OP_1 <32-byte key>).
+	PkScript []byte
 }
 
 // newTaprootScope builds a ScriptScope proto with a TLV-encoded
-// script-scope proof signed under signingKey.
+// script-scope proof signed via the client's signer.
 func (c *Client) newTaprootScope(
 	pkScript []byte,
-	signingKey *btcec.PrivateKey,
 	purpose string,
 ) (*arkrpc.ScriptScope, error) {
 
-	if signingKey == nil {
-		return nil, fmt.Errorf("missing signing key")
-	}
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
 	}
@@ -313,7 +350,9 @@ func (c *Client) newTaprootScope(
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
+	sig64, err := schnorrSigOverMessage(
+		msgBytes, pkScript, c.signer,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +378,7 @@ func (c *Client) buildTaprootScopes(
 	out := make([]*arkrpc.ScriptScope, 0, len(scopes))
 	for _, scope := range scopes {
 		ss, err := c.newTaprootScope(
-			scope.PkScript, scope.SigningKey, purpose,
+			scope.PkScript, purpose,
 		)
 		if err != nil {
 			return nil, err
@@ -432,14 +471,10 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 // proof TTL is the expected configuration: the binding persists, but
 // each proof is only valid for minutes.
 func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
-	pkScript []byte, signingKey *btcec.PrivateKey,
-	expiresAt time.Time, label string,
+	pkScript []byte, expiresAt time.Time, label string,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.RegisterReceiveScriptResponse, error) {
 
-	if signingKey == nil {
-		return nil, fmt.Errorf("missing signing key")
-	}
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
 	}
@@ -467,7 +502,9 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
+	sig64, err := schnorrSigOverMessage(
+		msgBytes, pkScript, c.signer,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -496,13 +533,10 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 // caller must provide the signing key that controls the P2TR output so
 // that the server can verify ownership before removing the binding.
 func (c *Client) UnregisterReceiveScript(ctx context.Context,
-	pkScript []byte, signingKey *btcec.PrivateKey,
+	pkScript []byte,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.UnregisterReceiveScriptResponse, error) {
 
-	if signingKey == nil {
-		return nil, fmt.Errorf("missing signing key")
-	}
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
 	}
@@ -525,7 +559,9 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
+	sig64, err := schnorrSigOverMessage(
+		msgBytes, pkScript, c.signer,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -564,14 +600,10 @@ func (c *Client) ListMyReceiveScripts(ctx context.Context,
 // (proof-of-control required).
 func (c *Client) ListOORRecipientEventsByScriptTaproot(
 	ctx context.Context, pkScript []byte,
-	signingKey *btcec.PrivateKey, afterEventID uint64,
-	limit uint32,
+	afterEventID uint64, limit uint32,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
-	if signingKey == nil {
-		return nil, fmt.Errorf("missing signing key")
-	}
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
 	}
@@ -595,7 +627,9 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		return nil, err
 	}
 
-	sig64, err := schnorrSigOverMessage(msgBytes, signingKey)
+	sig64, err := schnorrSigOverMessage(
+		msgBytes, pkScript, c.signer,
+	)
 	if err != nil {
 		return nil, err
 	}

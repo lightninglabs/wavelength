@@ -31,7 +31,10 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 	require.NoError(t, err)
 
 	pkScript := []byte{0x51, 0x20}
-	pkScript = append(pkScript, privKey.PubKey().SerializeCompressed()[1:]...)
+	pkScript = append(
+		pkScript,
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
 
 	serverID := "test-server"
 	principal := "client:test"
@@ -51,7 +54,8 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	sig64, err := schnorrSigOverMessage(msgBytes, privKey)
+	signer := &PrivKeySchnorrSigner{Key: privKey}
+	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
 	require.NoError(t, err)
 
 	// The attacker now takes the (msgBytes, sig64) pair -- which was
@@ -70,8 +74,8 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 
 	// Decode the TLV and verify the purpose field says
 	// "list_vtxos_by_scripts" NOT "list_vtxo_events_by_scripts".
-	purposeField := extractPurposeFromTLV(t, msgBytes)
-	require.Equal(t, purposeListVTXOsByScripts, purposeField,
+	decoded := decodeProofTLVBytes(t, msgBytes)
+	require.Equal(t, purposeListVTXOsByScripts, decoded.purpose,
 		"proof purpose should be for VTXOs, not events")
 
 	// The envelope is perfectly valid protobuf. A server that only
@@ -82,7 +86,7 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 
 	t.Logf("Proof for %q can be embedded "+
 		"in a different RPC request proto envelope",
-		purposeField)
+		decoded.purpose)
 }
 
 // TestH2_RegistrationExpiryMismatch demonstrates that the proto-level
@@ -95,7 +99,10 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	pkScript := []byte{0x51, 0x20}
-	pkScript = append(pkScript, privKey.PubKey().SerializeCompressed()[1:]...)
+	pkScript = append(
+		pkScript,
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
 
 	serverID := "test-server"
 	principal := "client:test"
@@ -122,7 +129,8 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	sig64, err := schnorrSigOverMessage(msgBytes, privKey)
+	signer := &PrivKeySchnorrSigner{Key: privKey}
+	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
 	require.NoError(t, err)
 
 	// Build the registration request as the honest client would.
@@ -139,9 +147,9 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 
 	// Attacker modifies only the outer field. Use proto.Clone to
 	// avoid copying the internal sync.Mutex in MessageState.
-	tamperedReq := proto.Clone(
-		honestReq,
-	).(*arkrpc.RegisterReceiveScriptRequest)
+	cloned := proto.Clone(honestReq)
+	tamperedReq, ok := cloned.(*arkrpc.RegisterReceiveScriptRequest)
+	require.True(t, ok)
 	tamperedReq.ExpiresAtUnixS = uint64(
 		callerExpiry.Add(365 * 24 * time.Hour).Unix(),
 	)
@@ -149,7 +157,7 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	// The signature is still valid -- it signed the TLV payload
 	// which has the original expiresAt. But the request-level
 	// ExpiresAtUnixS is now 1 year later.
-	tlvExpiry := extractExpiresAtFromTLV(t, msgBytes)
+	tlvExpiry := decodeProofTLVBytes(t, msgBytes).expiresAt
 
 	require.NotEqual(t, tamperedReq.ExpiresAtUnixS, tlvExpiry,
 		"tampered proto ExpiresAtUnixS diverges from signed TLV")
@@ -197,7 +205,10 @@ func TestM1_ProofReplayWithinTTL(t *testing.T) {
 	require.NoError(t, err)
 
 	pkScript := []byte{0x51, 0x20}
-	pkScript = append(pkScript, privKey.PubKey().SerializeCompressed()[1:]...)
+	pkScript = append(
+		pkScript,
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
 
 	serverID := "test-server"
 	principal := "client:test"
@@ -216,7 +227,8 @@ func TestM1_ProofReplayWithinTTL(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	sig64, err := schnorrSigOverMessage(msgBytes, privKey)
+	signer := &PrivKeySchnorrSigner{Key: privKey}
+	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
 	require.NoError(t, err)
 
 	// Replay the exact same proof 100 times. Each is
@@ -251,8 +263,10 @@ func TestM2_UnboundedScriptCount(t *testing.T) {
 			PkScript: []byte{0x51, 0x20, byte(i >> 8), byte(i)},
 			Proof: &arkrpc.ScriptScope_TaprootSchnorr{
 				TaprootSchnorr: &arkrpc.TaprootSchnorrProof{
-					Message: bytes.Repeat([]byte{0xaa}, 200),
-					Sig64:   bytes.Repeat([]byte{0xbb}, 64),
+					Message: bytes.Repeat(
+						[]byte{0xaa}, 200,
+					),
+					Sig64: bytes.Repeat([]byte{0xbb}, 64),
 				},
 			},
 		}
@@ -308,8 +322,8 @@ func TestM3_SecondResolutionTimestamp(t *testing.T) {
 	// expiresAt are identical because of second-granularity.
 	require.NotEqual(t, msg1, msg2, "nonces differ so messages differ")
 
-	ts1 := extractIssuedAtFromTLV(t, msg1)
-	ts2 := extractIssuedAtFromTLV(t, msg2)
+	ts1 := decodeProofTLVBytes(t, msg1).issuedAt
+	ts2 := decodeProofTLVBytes(t, msg2).issuedAt
 	require.Equal(t, ts1, ts2,
 		"timestamps are identical within same second")
 
@@ -351,7 +365,7 @@ func (b *raceSyncBackend) ListVTXOEventsByScriptsTaproot(
 
 // ListOORRecipientEventsByScriptTaproot is unused in this test.
 func (b *raceSyncBackend) ListOORRecipientEventsByScriptTaproot(
-	_ context.Context, _ []byte, _ *btcec.PrivateKey,
+	_ context.Context, _ []byte,
 	_ uint64, _ uint32, _ ...mailboxrpc.RPCOptions,
 ) (*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
 
@@ -379,7 +393,7 @@ func TestM4_SyncClientTOCTOU(t *testing.T) {
 			defer wg.Done()
 
 			result, syncErr := syncClient.SyncVTXOEventsTaproot(
-				context.Background(), "same-key",
+				t.Context(), "same-key",
 				nil, 100,
 			)
 			if syncErr == nil {
@@ -446,8 +460,11 @@ func TestL1_ArbitraryPkScriptAccepted(t *testing.T) {
 			pkScript: []byte{},
 		},
 		{
-			name:     "P2PKH script",
-			pkScript: append([]byte{0x76, 0xa9, 0x14}, bytes.Repeat([]byte{0x01}, 20)...),
+			name: "P2PKH script",
+			pkScript: append(
+				[]byte{0x76, 0xa9, 0x14},
+				bytes.Repeat([]byte{0x01}, 20)...,
+			),
 		},
 		{
 			name:     "oversized script (1MB)",
@@ -461,7 +478,7 @@ func TestL1_ArbitraryPkScriptAccepted(t *testing.T) {
 			require.NoError(t, err)
 
 			msg, err := encodeProofTLV(
-		scriptScopeMessageType,
+				scriptScopeMessageType,
 				serverID, principal, purpose,
 				tc.pkScript, nonce,
 				now, expires,
@@ -538,7 +555,10 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 	require.NoError(t, err)
 
 	pkScript := []byte{0x51, 0x20}
-	pkScript = append(pkScript, privKey.PubKey().SerializeCompressed()[1:]...)
+	pkScript = append(
+		pkScript,
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
 
 	serverID := "test-server"
 	principal := "client:test"
@@ -558,7 +578,8 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	regSig, err := schnorrSigOverMessage(regMsg, privKey)
+	signer := &PrivKeySchnorrSigner{Key: privKey}
+	regSig, err := schnorrSigOverMessage(regMsg, pkScript, signer)
 	require.NoError(t, err)
 
 	// Package the registration proof into a ScriptScope envelope
@@ -581,14 +602,14 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 
 	// Extract the type -- it says "receive_script_registration",
 	// not "script_scope".
-	proofTypeField := extractTypeFromTLV(t, regMsg)
-	require.Equal(t, registrationMessageType, proofTypeField)
+	decoded := decodeProofTLVBytes(t, regMsg)
+	require.Equal(t, registrationMessageType, decoded.proofType)
 
 	require.NotNil(t, confusedScope)
 
 	t.Logf("Registration proof (type=%q) repackaged "+
 		"into ScriptScope envelope with valid signature",
-		proofTypeField)
+		decoded.proofType)
 }
 
 // TestM5_PkScriptEnvelopeMismatch demonstrates that the proto-level
@@ -627,7 +648,10 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	sig64, err := schnorrSigOverMessage(msgBytes, privKey)
+	signer := &PrivKeySchnorrSigner{Key: privKey}
+	sig64, err := schnorrSigOverMessage(
+		msgBytes, ownedScript, signer,
+	)
 	require.NoError(t, err)
 
 	// Construct a ScriptScope with victimScript in the envelope
@@ -648,10 +672,10 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, sig.Verify(msgHash[:], privKey.PubKey()))
 
-	tlvPkScript := extractPkScriptFromTLV(t, msgBytes)
-	require.Equal(t, ownedScript, tlvPkScript,
+	decoded := decodeProofTLVBytes(t, msgBytes)
+	require.Equal(t, ownedScript, decoded.pkScript,
 		"TLV payload has ownedScript")
-	require.NotEqual(t, victimScript, tlvPkScript,
+	require.NotEqual(t, victimScript, decoded.pkScript,
 		"TLV payload does NOT have victimScript")
 	require.Equal(t, victimScript, mismatchedScope.PkScript,
 		"proto envelope has victimScript")
@@ -661,19 +685,109 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 		hex.EncodeToString(ownedScript))
 }
 
-// extractPurposeFromTLV decodes a scope proof TLV and returns the
-// purpose string.
-func extractPurposeFromTLV(t *testing.T, msg []byte) string {
+// decodedProof holds all fields decoded from a proof TLV message.
+type decodedProof struct {
+	proofType string
+	version   uint32
+	serverID  string
+	principal string
+	pkScript  []byte
+	issuedAt  uint64
+	expiresAt uint64
+	nonce     []byte
+	purpose   string
+
+	// hasPurpose indicates whether the purpose field was present
+	// in the TLV stream.
+	hasPurpose bool
+}
+
+// decodeProofTLVBytes decodes all fields from a TLV-encoded proof
+// message into a decodedProof struct. This is the single test helper
+// for extracting any field from a proof message.
+func decodeProofTLVBytes(
+	t *testing.T, msg []byte) decodedProof {
+
 	t.Helper()
 
-	result := extractPurposeFromTLVSafe(msg)
-	require.NotEmpty(t, result, "purpose field not found in TLV")
+	var (
+		proofType      []byte
+		version        uint32
+		serverIDBytes  []byte
+		principalBytes []byte
+		pkScript       []byte
+		issuedAt       uint64
+		expiresAt      uint64
+		nonce          []byte
+		purposeBytes   []byte
+	)
 
-	return result
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofType,
+			tlv.SizeVarBytes(&proofType),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeVersion, &version,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverIDBytes,
+			tlv.SizeVarBytes(&serverIDBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principalBytes,
+			tlv.SizeVarBytes(&principalBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePkScript, &pkScript,
+			tlv.SizeVarBytes(&pkScript),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeIssuedAt, &issuedAt,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeExpiresAt, &expiresAt,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &nonce,
+			tlv.SizeVarBytes(&nonce),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePurpose, &purposeBytes,
+			tlv.SizeVarBytes(&purposeBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	)
+	require.NoError(t, err)
+
+	r := bytes.NewReader(msg)
+	parsedTypes, err := tlvStream.DecodeWithParsedTypes(r)
+	require.NoError(t, err)
+
+	_, hasPurpose := parsedTypes[proofTLVTypePurpose]
+
+	return decodedProof{
+		proofType:  string(proofType),
+		version:    version,
+		serverID:   string(serverIDBytes),
+		principal:  string(principalBytes),
+		pkScript:   pkScript,
+		issuedAt:   issuedAt,
+		expiresAt:  expiresAt,
+		nonce:      nonce,
+		purpose:    string(purposeBytes),
+		hasPurpose: hasPurpose,
+	}
 }
 
 // extractPurposeFromTLVSafe attempts to decode the purpose field,
-// returning empty string if not present.
+// returning empty string if not present. Unlike decodeProofTLVBytes
+// this does not require a *testing.T and returns "" on any error.
 func extractPurposeFromTLVSafe(msg []byte) string {
 	var (
 		proofType      []byte
@@ -743,248 +857,6 @@ func extractPurposeFromTLVSafe(msg []byte) string {
 	}
 
 	return string(purposeBytes)
-}
-
-// extractExpiresAtFromTLV decodes a proof TLV and returns the expiresAt
-// value.
-func extractExpiresAtFromTLV(t *testing.T, msg []byte) uint64 {
-	t.Helper()
-
-	var (
-		proofType      []byte
-		version        uint32
-		serverIDBytes  []byte
-		principalBytes []byte
-		pkScript       []byte
-		issuedAt       uint64
-		expiresAt      uint64
-		nonce          []byte
-	)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &issuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &expiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	require.NoError(t, err)
-
-	r := bytes.NewReader(msg)
-	err = tlvStream.Decode(r)
-	require.NoError(t, err)
-
-	return expiresAt
-}
-
-// extractIssuedAtFromTLV decodes a proof TLV and returns the issuedAt
-// value.
-func extractIssuedAtFromTLV(t *testing.T, msg []byte) uint64 {
-	t.Helper()
-
-	var (
-		proofType      []byte
-		version        uint32
-		serverIDBytes  []byte
-		principalBytes []byte
-		pkScript       []byte
-		issuedAt       uint64
-		expiresAt      uint64
-		nonce          []byte
-	)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &issuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &expiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	require.NoError(t, err)
-
-	r := bytes.NewReader(msg)
-	err = tlvStream.Decode(r)
-	require.NoError(t, err)
-
-	return issuedAt
-}
-
-// extractTypeFromTLV decodes a proof TLV and returns the type string.
-func extractTypeFromTLV(t *testing.T, msg []byte) string {
-	t.Helper()
-
-	var (
-		proofType      []byte
-		version        uint32
-		serverIDBytes  []byte
-		principalBytes []byte
-		pkScript       []byte
-		issuedAt       uint64
-		expiresAt      uint64
-		nonce          []byte
-	)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &issuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &expiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	require.NoError(t, err)
-
-	r := bytes.NewReader(msg)
-	err = tlvStream.Decode(r)
-	require.NoError(t, err)
-
-	return string(proofType)
-}
-
-// extractPkScriptFromTLV decodes a proof TLV and returns the pkScript.
-func extractPkScriptFromTLV(t *testing.T, msg []byte) []byte {
-	t.Helper()
-
-	var (
-		proofType      []byte
-		version        uint32
-		serverIDBytes  []byte
-		principalBytes []byte
-		pkScript       []byte
-		issuedAt       uint64
-		expiresAt      uint64
-		nonce          []byte
-	)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &issuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &expiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	require.NoError(t, err)
-
-	r := bytes.NewReader(msg)
-	err = tlvStream.Decode(r)
-	require.NoError(t, err)
-
-	return pkScript
 }
 
 // Ensure test helpers don't accidentally get used as unused imports.
