@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -267,6 +268,24 @@ func schnorrSigOverMessage(message []byte,
 	return sig.Serialize(), nil
 }
 
+// validateTaprootPkScript returns an error if pkScript is not a valid
+// pay-to-taproot output script. This catches obvious misuse before
+// signing a proof that the server would reject anyway.
+func validateTaprootPkScript(pkScript []byte) error {
+	if len(pkScript) == 0 {
+		return fmt.Errorf("empty pkScript")
+	}
+
+	if !txscript.IsPayToTaproot(pkScript) {
+		return fmt.Errorf(
+			"pkScript is not P2TR (len=%d, version=%d)",
+			len(pkScript), pkScript[0],
+		)
+	}
+
+	return nil
+}
+
 // TaprootScriptScope selects a pkScript and its corresponding signing
 // key.
 //
@@ -287,8 +306,8 @@ func (c *Client) newTaprootScope(
 	if signingKey == nil {
 		return nil, fmt.Errorf("missing signing key")
 	}
-	if len(pkScript) == 0 {
-		return nil, fmt.Errorf("missing pkScript")
+	if err := validateTaprootPkScript(pkScript); err != nil {
+		return nil, err
 	}
 	if purpose == "" {
 		return nil, fmt.Errorf("missing purpose")
@@ -440,6 +459,9 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	if signingKey == nil {
 		return nil, fmt.Errorf("missing signing key")
 	}
+	if err := validateTaprootPkScript(pkScript); err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
 
@@ -511,6 +533,9 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 
 	if signingKey == nil {
 		return nil, fmt.Errorf("missing signing key")
+	}
+	if err := validateTaprootPkScript(pkScript); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
