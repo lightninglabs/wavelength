@@ -57,40 +57,81 @@ type SyncCursorStore interface {
 		cursor uint64) error
 }
 
-// SyncClient provides cursor-aware, restart-friendly polling helpers over the
-// indexer RPC surface.
+// SyncClient provides cursor-aware, restart-friendly polling helpers
+// over the indexer RPC surface.
+//
+// Callers must ensure that at most one goroutine calls a given
+// sync method with the same cursor key at a time. Concurrent calls
+// with different keys are safe. Violating this constraint causes a
+// time-of-check/time-of-use race on the stored cursor that may skip
+// or re-deliver events.
 type SyncClient struct {
 	backend SyncBackend
 	cursors SyncCursorStore
 }
 
-// NewSyncClient creates a SyncClient.
-//
-// If store is nil, a process-local in-memory store is used.
-func NewSyncClient(backend SyncBackend, store SyncCursorStore) *SyncClient {
+// NewSyncClient creates a SyncClient. Both backend and store are
+// required; passing nil for either is a programming error.
+func NewSyncClient(backend SyncBackend,
+	store SyncCursorStore) (*SyncClient, error) {
+
+	if backend == nil {
+		return nil, fmt.Errorf("sync backend must not be nil")
+	}
 	if store == nil {
-		store = NewMemorySyncCursorStore()
+		return nil, fmt.Errorf("sync cursor store must not be nil")
 	}
 
 	return &SyncClient{
 		backend: backend,
 		cursors: store,
-	}
+	}, nil
 }
 
-// SyncVTXOEventsTaproot polls VTXO events starting from the stored cursor for
-// cursorKey, then persists NextCursor on success.
+// VTXOSyncResult wraps a VTXO event response and defers cursor
+// persistence until the caller explicitly acknowledges the batch via
+// Ack. This prevents the cursor from advancing when the caller fails
+// to fully process the events.
+type VTXOSyncResult struct {
+	// Response is the raw RPC response containing the events.
+	Response *arkrpc.ListVTXOEventsByScriptsResponse
+
+	ack func() error
+}
+
+// Ack persists the response's NextCursor to the store, advancing
+// the cursor past the returned events. Callers should only call Ack
+// after they have fully processed the batch. Ack is idempotent
+// within a single result but must not be called concurrently.
+func (r *VTXOSyncResult) Ack() error {
+	return r.ack()
+}
+
+// OORSyncResult wraps an OOR recipient event response and defers
+// cursor persistence until the caller explicitly acknowledges the
+// batch via Ack.
+type OORSyncResult struct {
+	// Response is the raw RPC response containing the events.
+	Response *arkrpc.ListOORRecipientEventsByScriptResponse
+
+	ack func() error
+}
+
+// Ack persists the response's NextCursor to the store, advancing
+// the cursor past the returned events. Callers should only call Ack
+// after they have fully processed the batch. Ack is idempotent
+// within a single result but must not be called concurrently.
+func (r *OORSyncResult) Ack() error {
+	return r.ack()
+}
+
+// SyncVTXOEventsTaproot polls VTXO events starting from the stored
+// cursor for cursorKey. The cursor is NOT advanced until the caller
+// invokes Ack on the returned result.
 func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 	cursorKey string, scopes []TaprootScriptScope, limit uint32,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListVTXOEventsByScriptsResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*VTXOSyncResult, error) {
 
-	if c == nil || c.backend == nil {
-		return nil, fmt.Errorf("missing sync backend")
-	}
-	if c.cursors == nil {
-		return nil, fmt.Errorf("missing sync cursor store")
-	}
 	if cursorKey == "" {
 		return nil, fmt.Errorf("missing cursor key")
 	}
@@ -109,31 +150,34 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 		return nil, err
 	}
 
-	if resp.NextCursor > cursor {
-		err := c.cursors.SaveCursor(
-			ctx, vtxoCursorNamespace, cursorKey, resp.NextCursor,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("save vtxo cursor: %w", err)
-		}
-	}
+	// Capture the cursor for the ack closure. The cursor is
+	// only persisted when the caller calls Ack, preventing
+	// advancement on incomplete processing.
+	nextCursor := resp.NextCursor
+	prevCursor := cursor
 
-	return resp, nil
+	return &VTXOSyncResult{
+		Response: resp,
+		ack: func() error {
+			if nextCursor <= prevCursor {
+				return nil
+			}
+
+			return c.cursors.SaveCursor(
+				ctx, vtxoCursorNamespace,
+				cursorKey, nextCursor,
+			)
+		},
+	}, nil
 }
 
-// SyncOORRecipientEventsTaproot polls OOR recipient events for pkScript
-// starting from the stored cursor, then persists NextCursor on success.
+// SyncOORRecipientEventsTaproot polls OOR recipient events for
+// pkScript starting from the stored cursor. The cursor is NOT
+// advanced until the caller invokes Ack on the returned result.
 func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	pkScript []byte, signingKey *btcec.PrivateKey, limit uint32,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+	opts ...mailboxrpc.RPCOptions) (*OORSyncResult, error) {
 
-	if c == nil || c.backend == nil {
-		return nil, fmt.Errorf("missing sync backend")
-	}
-	if c.cursors == nil {
-		return nil, fmt.Errorf("missing sync cursor store")
-	}
 	if len(pkScript) == 0 {
 		return nil, fmt.Errorf("missing pkScript")
 	}
@@ -153,21 +197,29 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 		return nil, err
 	}
 
-	if resp.NextCursor > cursor {
-		err := c.cursors.SaveCursor(
-			ctx, oorCursorNamespace, scriptKey, resp.NextCursor,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("save oor cursor: %w", err)
-		}
-	}
+	// Capture the cursor for the ack closure.
+	nextCursor := resp.NextCursor
+	prevCursor := cursor
 
-	return resp, nil
+	return &OORSyncResult{
+		Response: resp,
+		ack: func() error {
+			if nextCursor <= prevCursor {
+				return nil
+			}
+
+			return c.cursors.SaveCursor(
+				ctx, oorCursorNamespace,
+				scriptKey, nextCursor,
+			)
+		},
+	}, nil
 }
 
-// MemorySyncCursorStore is an in-memory SyncCursorStore implementation.
+// MemorySyncCursorStore is an in-memory SyncCursorStore
+// implementation.
 type MemorySyncCursorStore struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	cursors map[string]uint64
 }
 
@@ -182,8 +234,8 @@ func NewMemorySyncCursorStore() *MemorySyncCursorStore {
 func (s *MemorySyncCursorStore) LoadCursor(_ context.Context,
 	namespace string, key string) (uint64, error) {
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	namespacedKey := s.namespacedKey(namespace, key)
 
@@ -208,11 +260,12 @@ func (s *MemorySyncCursorStore) SaveCursor(_ context.Context,
 	return nil
 }
 
-// namespacedKey returns the canonical map key for (namespace, key).
+// namespacedKey returns the canonical map key for
+// (namespace, key).
 func (s *MemorySyncCursorStore) namespacedKey(namespace string,
 	key string) string {
 
-	return namespace + ":" + key
+	return namespace + "/" + key
 }
 
 var _ SyncCursorStore = (*MemorySyncCursorStore)(nil)
