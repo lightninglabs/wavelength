@@ -54,8 +54,15 @@ const (
 	// nonces.
 	registrationNonceBytes = 32
 
-	// offlineReceiveProofTTL is the lifetime used for proof-gated script
-	// queries. It should be short to limit replay windows.
+	// offlineReceiveProofTTL is the lifetime used for proof-gated
+	// script queries (ListOORRecipientEventsByScript, ListVTXOs,
+	// etc.) and for unregister proofs. This TTL is signed into the
+	// proof's TLV expiresAt field and limits the window in which a
+	// captured proof can be replayed.
+	//
+	// This is independent of the registration expiry
+	// (expiresAt param in RegisterReceiveScriptTaproot), which
+	// controls how long the server retains the script binding.
 	offlineReceiveProofTTL = 10 * time.Minute
 
 	// scriptScopeMessageType is the canonical proof "type" string used
@@ -416,6 +423,14 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 
 // RegisterReceiveScriptTaproot registers a single P2TR receive script
 // using a schnorr signature proof under the output key.
+//
+// expiresAt controls server-side retention of the script registration
+// (proto ExpiresAtUnixS). The server may garbage-collect the binding
+// after this time. This is distinct from the proof TTL
+// (offlineReceiveProofTTL), which limits the replay window of the
+// signed TLV proof itself. A long registration expiry with a short
+// proof TTL is the expected configuration: the binding persists, but
+// each proof is only valid for minutes.
 func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	pkScript []byte, signingKey *btcec.PrivateKey,
 	expiresAt time.Time, label string,
