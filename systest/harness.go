@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,7 +229,11 @@ func NewE2EHarness(t *testing.T, opts ...HarnessOption) *E2EHarness {
 	// rather than starting the full arkd binary.
 	clientOpts := clientharness.DefaultOptions()
 	clientOpts.StartTapd = false // Don't need tapd for e2e tests.
-	clientOpts.GroupName = t.Name()
+	// Replace slashes in the test name with dashes so Docker
+	// container names remain valid. Subtests created by
+	// runWithBackends produce names like
+	// "TestFoo/lnd" which contain a slash.
+	clientOpts.GroupName = strings.ReplaceAll(t.Name(), "/", "-")
 
 	// Allow overriding LND image via environment variable. This is needed
 	// for testing with custom LND builds that include newer RPC methods.
@@ -906,29 +911,35 @@ func containsPhase(timeoutID, phase string) bool {
 		timeoutID[len(timeoutID)-len(phase):] == phase
 }
 
-// RestartClient simulates a client process restart. It stops the existing
-// client and creates a new one using the same database and LND instance.
-// The new client should:
+// RestartClient simulates a client process restart. It stops the
+// existing client and creates a new one using the same database and a
+// cloned backend (same wallet identity). The new client will:
 // 1. Load persisted state from the database
 // 2. Re-register for chain confirmations via new ChainSourceActor
 // 3. Resume any in-progress round operations
 //
-// This is used for testing restart/recovery scenarios where a client terminates
-// mid-round (after broadcast but before confirmation, etc.).
+// This is used for testing restart/recovery scenarios where a client
+// terminates mid-round (after broadcast but before confirmation,
+// etc.).
 func (h *E2EHarness) RestartClient(client *TestClient) *TestClient {
-	// Capture resources before stopping.
-	lndInstance := client.LNDInstance()
 	dbPath := client.DBPath()
 
-	h.t.Logf("Restarting client %s (db: %s)", client.ClientID(), dbPath)
+	h.t.Logf("Restarting client %s (db: %s)",
+		client.ClientID(), dbPath)
 
-	// Stop the old client (unregisters from bridge, cancels subscriptions).
+	// Stop the old client first (unregisters from bridge, cancels
+	// subscriptions, stops backend).
 	client.Stop()
 
-	// Create new client with existing state.
-	newClient := NewTestClientWithExistingDB(h, lndInstance, dbPath)
+	// Clone the backend after stopping. This creates a new backend
+	// from the same identity (same LND instance or same seed).
+	clonedBackend := client.Backend().Clone()
 
-	h.t.Logf("Client %s restarted successfully", newClient.ClientID())
+	// Create new client with existing state.
+	newClient := NewTestClientWithExistingDB(h, clonedBackend, dbPath)
+
+	h.t.Logf("Client %s restarted successfully",
+		newClient.ClientID())
 
 	return newClient
 }

@@ -15,31 +15,26 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/db"
-	clientharness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	clientlnd "github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
-	"github.com/lightninglabs/darepo/lndbackend"
-	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/stretchr/testify/require"
 )
 
 // TestClient represents a client participating in rounds for e2e tests. It
-// uses REAL actors wired up with real LND backends and SQLite persistence.
-// Only the ServerConn is a bridge routing messages to the in-process server.
+// uses REAL actors wired up with a pluggable wallet backend (LND or lwwallet)
+// and SQLite persistence. Only the ServerConn is a bridge routing messages
+// to the in-process server.
 type TestClient struct {
 	// harness is a reference to the parent E2E harness.
 	harness *E2EHarness
@@ -47,12 +42,8 @@ type TestClient struct {
 	// clientID is the unique identifier for this client.
 	clientID clientconn.ClientID
 
-	// lndInstance is this client's dedicated LND instance. Each client
-	// has its own LND for proper wallet isolation.
-	lndInstance *clientharness.LndInstance
-
-	// lndServices provides easy access to the client's LND services.
-	lndServices *lndclient.LndServices
+	// backend is the pluggable wallet backend (LND or lwwallet).
+	backend ClientBackend
 
 	// serverConn is the bridge connection to the server for C→S messages.
 	serverConn *BridgeServerConn
@@ -63,9 +54,6 @@ type TestClient struct {
 		serverconn.ServerConnMsg,
 		serverconn.ServerConnResp,
 	]
-
-	// chainBackend is the LND-backed chain backend.
-	chainBackend *chainbackends.LNDBackend
 
 	// chainSourceRef is the reference to the chain source actor.
 	chainSourceRef actor.ActorRef[
@@ -109,7 +97,11 @@ type TestClient struct {
 	// boardingStore provides boarding address persistence.
 	boardingStore *db.BoardingWalletStore
 
-	// clientKeyDesc is this client's identity key from LND.
+	// stopped tracks whether Stop() has been called already.
+	stopped bool
+
+	// clientKeyDesc is this client's identity key from the wallet
+	// backend.
 	clientKeyDesc *keychain.KeyDescriptor
 
 	// vtxoManager is the real VTXO manager that spawns VTXO actors.
@@ -150,46 +142,49 @@ type pendingRoundState struct {
 
 // testClientOpts contains options for creating a test client.
 type testClientOpts struct {
-	lndInstance *clientharness.LndInstance
-	dbPath      string
+	// backend is the pluggable wallet backend (LND or lwwallet).
+	backend ClientBackend
 
-	// actorSuffix differentiates actor IDs for restart actor instances.
+	// dbPath is the path to the client's database file.
+	dbPath string
+
+	// actorSuffix differentiates actor IDs for restart actor
+	// instances.
 	actorSuffix string
 }
 
-// NewTestClient creates a new test client connected to the E2E harness.
-// This creates REAL actors with REAL LND backends and SQLite persistence.
-// Only the ServerConn is a bridge routing messages to the in-process server.
+// NewTestClient creates a new test client connected to the E2E
+// harness. The wallet backend (LND or lwwallet) is selected by the
+// -systest.backend flag, allowing CI to run each backend as a
+// separate parallel job without changing any test code.
 func NewTestClient(h *E2EHarness) *TestClient {
 	h.mu.Lock()
 	h.clientCounter++
 	clientNum := h.clientCounter
 	h.mu.Unlock()
 
-	// Start dedicated LND instance for this client.
-	clientLNDName := fmt.Sprintf("client-%d", clientNum)
-	lndInstance := h.StartClientLND(clientLNDName)
-
 	// Create database path in temp directory.
 	dbPath := fmt.Sprintf("%s/client-%d.db", h.t.TempDir(), clientNum)
 
 	return newTestClientInternal(h, testClientOpts{
-		lndInstance: lndInstance,
+		backend:     NewBackend(h),
 		dbPath:      dbPath,
 		actorSuffix: fmt.Sprintf("-%d", clientNum),
 	})
 }
 
-// NewTestClientWithExistingDB creates a new test client reusing an existing
-// LND instance and database. This simulates a client restart where the process
-// terminates and restarts with persisted state. The new client will:
+// NewTestClientWithExistingDB creates a new test client reusing an
+// existing backend and database. This simulates a client restart where
+// the process terminates and restarts with persisted state. The new
+// client will:
 // 1. Load persisted state from the existing database
 // 2. Re-register for chain confirmations via a new ChainSourceActor
 // 3. Resume any in-progress round operations
 //
-// This function is used by RestartClient() to implement restart testing.
+// This function is used by RestartClient() to implement restart
+// testing.
 func NewTestClientWithExistingDB(
-	h *E2EHarness, lndInstance *clientharness.LndInstance,
+	h *E2EHarness, backend ClientBackend,
 	existingDBPath string,
 ) *TestClient {
 
@@ -199,7 +194,7 @@ func NewTestClientWithExistingDB(
 	h.mu.Unlock()
 
 	return newTestClientInternal(h, testClientOpts{
-		lndInstance: lndInstance,
+		backend:     backend,
 		dbPath:      existingDBPath,
 		actorSuffix: fmt.Sprintf("-restart-%d", clientNum),
 	})
@@ -211,27 +206,22 @@ func NewTestClientWithExistingDB(
 func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	ctx := h.ctx
 	t := h.t
-	lndServices := opts.lndInstance.Client
 
 	// Open or create the database.
 	sqlDB := db.NewTestDBHandleFromPath(t, opts.dbPath)
 
-	// Derive client identity key from LND.
-	clientKeyDesc, err := lndServices.WalletKit.DeriveNextKey(
-		ctx, int32(keychain.KeyFamilyNodeKey),
-	)
+	// Derive client identity key from the backend.
+	clientKeyDesc, err := opts.backend.DeriveClientKey(ctx)
 	require.NoError(t, err, "failed to derive client identity key")
 
 	clientID := ClientIDFromPubKey(
 		clientKeyDesc.PubKey.SerializeCompressed(),
 	)
 
-	// Create ChainBackend using client's LND.
-	chainBackend := chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
-			LND: lndServices,
-		}.WithLogger(h.SubLogger(chainbackends.LndClientSubsystem)),
-	)
+	// Get backends from the pluggable backend interface.
+	chainBackend := opts.backend.ChainBackend()
+	boardingBackend := opts.backend.BoardingBackend()
+	clientWallet := opts.backend.ClientWallet()
 
 	// Create and spawn ChainSourceActor.
 	chainSourceActor := chainsource.NewChainSourceActor(
@@ -257,9 +247,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		boardingDB, &chaincfg.RegressionNetParams,
 		clock.NewDefaultClock(),
 	)
-
-	// Create BoardingBackend using client's LND.
-	boardingBackend := clientlnd.NewBoardingBackend(lndServices.WalletKit)
 
 	// Create and spawn WalletActor (Ark). The wallet uses service key
 	// lookup to find the round actor when forwarding refresh requests.
@@ -305,11 +292,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	](serverConnActorID)
 	serverConnRef := serverConnKey.Spawn(
 		h.actorSystem, serverConnActorID, serverConn,
-	)
-
-	// Create ClientWallet (LndWalletController implements input.Signer).
-	clientWallet := lndbackend.NewLndWalletController(
-		lndServices.WalletKit, lndServices.Signer,
 	)
 
 	// Build operator terms for client.
@@ -467,11 +449,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	client := &TestClient{
 		harness:         h,
 		clientID:        clientID,
-		lndInstance:     opts.lndInstance,
-		lndServices:     lndServices,
+		backend:         opts.backend,
 		serverConn:      serverConn,
 		serverConnRef:   serverConnRef,
-		chainBackend:    chainBackend,
 		chainSourceRef:  chainSourceRef,
 		walletActor:     walletActor,
 		walletRef:       walletRef,
@@ -493,6 +473,15 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// Register the client with the harness.
 	h.RegisterClient(client)
 
+	// Ensure the client is stopped on test cleanup. This is
+	// especially important for the lwwallet backend, which runs
+	// a polling goroutine that would otherwise leak past test
+	// completion. Stop() is idempotent so this is safe even if
+	// the test calls Stop() explicitly.
+	t.Cleanup(func() {
+		client.Stop()
+	})
+
 	return client
 }
 
@@ -501,9 +490,10 @@ func (c *TestClient) ClientID() clientconn.ClientID {
 	return c.clientID
 }
 
-// LND returns the client's dedicated LND services.
-func (c *TestClient) LND() *lndclient.LndServices {
-	return c.lndServices
+// Backend returns the client's wallet backend. This is used for
+// restart testing to clone the backend for the new client instance.
+func (c *TestClient) Backend() ClientBackend {
+	return c.backend
 }
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.
@@ -1031,10 +1021,18 @@ func (c *TestClient) TriggerRegistration(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully shuts down the client's actors and subscriptions. This is
-// used for restart testing to simulate client process termination. The database
-// is left intact so a new client can recover state on restart.
+// Stop gracefully shuts down the client's actors, subscriptions, and
+// backend. This is used for restart testing to simulate client process
+// termination. The database is left intact so a new client can recover
+// state on restart.
 func (c *TestClient) Stop() {
+	// Guard against double-stop (e.g., explicit Stop followed
+	// by t.Cleanup).
+	if c.stopped {
+		return
+	}
+	c.stopped = true
+
 	ctx := c.harness.ctx
 	sys := c.harness.actorSystem
 
@@ -1046,6 +1044,9 @@ func (c *TestClient) Stop() {
 
 	// Unregister from bridge to stop message routing to this client.
 	c.harness.bridge.UnregisterClient(c.clientID)
+
+	// Stop the backend (e.g., chain polling loop for lwwallet).
+	c.backend.Stop()
 
 	// Unregister all of the client's actors from the receptionist to avoid
 	// duplicate routing during restart tests. This is especially important
@@ -1143,13 +1144,6 @@ func (c *TestClient) Stop() {
 // for restart testing.
 func (c *TestClient) DBPath() string {
 	return c.dbPath
-}
-
-// LNDInstance returns the client's dedicated LND instance. This is used when
-// creating a new client instance that should reuse the existing LND for restart
-// testing, ensuring the same wallet and keys are available.
-func (c *TestClient) LNDInstance() *clientharness.LndInstance {
-	return c.lndInstance
 }
 
 // TriggerVTXORefresh sends a RefreshVTXOsRequest to the wallet actor to trigger
@@ -1350,17 +1344,12 @@ func (c *TestClient) TriggerVTXOLeave(ctx context.Context,
 	return nil
 }
 
-// GetOnChainBalance returns the client's confirmed on-chain wallet balance.
-// This queries the LND wallet for the total confirmed balance.
+// GetOnChainBalance returns the client's confirmed on-chain wallet
+// balance. This delegates to the pluggable backend (LND or lwwallet).
 func (c *TestClient) GetOnChainBalance(ctx context.Context) (
 	btcutil.Amount, error) {
 
-	balance, err := c.lndServices.Client.WalletBalance(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("get wallet balance: %w", err)
-	}
-
-	return balance.Confirmed, nil
+	return c.backend.GetOnChainBalance(ctx)
 }
 
 // WaitForOnChainBalance waits for the client's on-chain balance to be at least
@@ -1385,18 +1374,11 @@ func (c *TestClient) WaitForOnChainBalance(ctx context.Context,
 	}, timeout)
 }
 
-// GetNewAddress generates a new on-chain address from the client's LND wallet.
-// This is used as the destination for leave operations.
+// GetNewAddress generates a new on-chain address from the client's
+// wallet. This delegates to the pluggable backend (LND or lwwallet)
+// and is used as the destination for leave operations.
 func (c *TestClient) GetNewAddress(ctx context.Context) (
 	btcutil.Address, error) {
 
-	// Use the WalletKit to get a taproot address.
-	addr, err := c.lndServices.WalletKit.NextAddr(
-		ctx, "", walletrpc.AddressType_TAPROOT_PUBKEY, false,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("get new address: %w", err)
-	}
-
-	return addr, nil
+	return c.backend.GetNewAddress(ctx)
 }

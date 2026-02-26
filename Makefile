@@ -327,16 +327,18 @@ ifdef CI
 SYSTEST_PARALLEL ?= 2
 endif
 
-systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
+systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet to select backend.
 	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
 	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
 		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \
+		$(if $(backend),-systest.backend $(backend),) \
 		$(if $(case),-run $(case),)
 
-systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test.
+systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet to select backend.
 	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
 	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
 		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \
+		$(if $(backend),-systest.backend $(backend),) \
 		-harness.logstdout $(if $(case),-run $(case),)
 
 # ============

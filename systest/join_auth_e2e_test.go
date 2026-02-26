@@ -18,7 +18,6 @@ import (
 	clientround "github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo/clientconn"
-	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
@@ -267,9 +266,7 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 
 	forgedReq := cloneClientJoinRoundRequest(source)
 
-	walletSigner := lndbackend.NewLndWalletController(
-		attacker.lndServices.WalletKit, attacker.lndServices.Signer,
-	)
+	walletSigner := attacker.Backend().ClientWallet()
 
 	identifierKey, err := walletSigner.DeriveNextKey(
 		ctx, keychain.KeyFamilyNodeKey,
@@ -304,7 +301,7 @@ func buildForgedJoinRoundRequest(ctx context.Context, t *testing.T,
 // by the attacker and the proof input witness is also signed by attacker keys.
 // This intentionally mismatches the boarding script's owner key.
 func buildForgedJoinRoundAuth(t *testing.T,
-	signer *lndbackend.LndWalletController,
+	signer clientround.ClientWallet,
 	req *clientround.JoinRoundRequest,
 	boardingReq clienttypes.BoardingRequest,
 	boardingPrevOut *wire.TxOut,
