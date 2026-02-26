@@ -47,10 +47,6 @@ const (
 	// for script-scoped queries.
 	scriptScopeMessageType = "script_scope"
 
-	// scriptScopeMessageVersion is the current script-scope message
-	// version.
-	scriptScopeMessageVersion = 0
-
 	// purposeListVTXOsByScripts is the canonical purpose string expected
 	// by the server when verifying script-scope proofs for
 	// ListVTXOsByScripts.
@@ -70,6 +66,16 @@ const (
 	// expected by the server when verifying script-scope proofs
 	// for ListOORRecipientEventsByScript.
 	purposeOORRecipientEvents = "list_oor_recipient_events_by_script"
+
+	// purposeRegisterReceiveScript is the canonical purpose string
+	// expected by the server when verifying proofs for
+	// RegisterReceiveScript.
+	purposeRegisterReceiveScript = "register_receive_script"
+
+	// purposeUnregisterReceiveScript is the canonical purpose
+	// string expected by the server when verifying proofs for
+	// UnregisterReceiveScript.
+	purposeUnregisterReceiveScript = "unregister_receive_script"
 )
 
 // TLV type constants for proof message fields. These MUST match the
@@ -121,81 +127,24 @@ func New(rpc mailboxrpc.RPCClient, serverID string,
 	}
 }
 
-// encodeRegistrationProofTLV encodes a receive-script registration proof
-// message to its canonical TLV byte representation.
-func encodeRegistrationProofTLV(serverID, principal string,
+// encodeProofTLV encodes a proof message to its canonical TLV byte
+// representation. The msgType distinguishes registration proofs from
+// scope proofs, and purpose binds the proof to a specific RPC method
+// to prevent cross-purpose replay.
+func encodeProofTLV(msgType, serverID, principal, purpose string,
 	pkScript, nonce []byte,
 	issuedAt, expiresAt uint64) ([]byte, error) {
 
-	proofType := []byte(registrationMessageType)
+	proofTypeBytes := []byte(msgType)
 	version := uint32(registrationMessageVersion)
-	serverIDBytes := []byte(serverID)
-	principalBytes := []byte(principal)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverIDBytes,
-			tlv.SizeVarBytes(&serverIDBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principalBytes,
-			tlv.SizeVarBytes(&principalBytes),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript,
-			tlv.SizeVarBytes(&pkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &issuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &expiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce,
-			tlv.SizeVarBytes(&nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build TLV stream: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := tlvStream.Encode(&buf); err != nil {
-		return nil, fmt.Errorf("encode TLV proof: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// encodeScopeProofTLV encodes a script-scope proof message to its
-// canonical TLV byte representation.
-func encodeScopeProofTLV(serverID, principal, purpose string,
-	pkScript, nonce []byte,
-	issuedAt, expiresAt uint64) ([]byte, error) {
-
-	proofType := []byte(scriptScopeMessageType)
-	version := uint32(scriptScopeMessageVersion)
 	serverIDBytes := []byte(serverID)
 	principalBytes := []byte(principal)
 	purposeBytes := []byte(purpose)
 
 	tlvStream, err := tlv.NewStream(
 		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
+			proofTLVTypeType, &proofTypeBytes,
+			tlv.SizeVarBytes(&proofTypeBytes),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
 		tlv.MakePrimitiveRecord(
@@ -321,7 +270,8 @@ func (c *Client) newTaprootScope(
 		return nil, err
 	}
 
-	msgBytes, err := encodeScopeProofTLV(
+	msgBytes, err := encodeProofTLV(
+		scriptScopeMessageType,
 		c.serverID, c.principal, purpose, pkScript, nonce,
 		uint64(now.Unix()), uint64(expiresAt.Unix()),
 	)
@@ -470,8 +420,10 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 		return nil, err
 	}
 
-	msgBytes, err := encodeRegistrationProofTLV(
-		c.serverID, c.principal, pkScript, nonce,
+	msgBytes, err := encodeProofTLV(
+		registrationMessageType,
+		c.serverID, c.principal,
+		purposeRegisterReceiveScript, pkScript, nonce,
 		uint64(now.Unix()), uint64(expiresAt.Unix()),
 	)
 	if err != nil {
@@ -546,7 +498,8 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		return nil, err
 	}
 
-	msgBytes, err := encodeScopeProofTLV(
+	msgBytes, err := encodeProofTLV(
+		scriptScopeMessageType,
 		c.serverID, c.principal,
 		purposeOORRecipientEvents, pkScript,
 		nonce, uint64(now.Unix()),
