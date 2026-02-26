@@ -148,6 +148,12 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 
 	h.MineBlocks(blocksToMine)
 
+	// Wait for the server's LND to observe the new chain tip.
+	// Without this, the server's ChainSourceActor may still be
+	// at an older height and could accept the expired join auth
+	// before catching up.
+	h.WaitForServerBlockHeight(targetHeight)
+
 	client.serverConn.SetBuffered(false)
 	err = client.serverConn.FlushAll()
 	require.NoError(t, err, "should flush buffered messages")

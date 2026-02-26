@@ -875,6 +875,27 @@ func (h *E2EHarness) MineBlocksAndConfirm(n int) {
 	h.Harness.Generate(n)
 }
 
+// WaitForServerBlockHeight polls the server's LND until it reports a
+// block height >= the target. This is necessary after MineBlocks when
+// the test relies on the server having observed the new chain tip
+// before sending messages, since LND's chain sync is asynchronous.
+func (h *E2EHarness) WaitForServerBlockHeight(targetHeight uint32) {
+	h.t.Helper()
+
+	require.Eventually(h.t, func() bool {
+		info, err := h.serverLNDServices.Client.GetInfo(
+			h.t.Context(),
+		)
+		if err != nil {
+			return false
+		}
+
+		return info.BlockHeight >= targetHeight
+	}, defaultTimeout, pollInterval,
+		"server LND did not reach height %d", targetHeight,
+	)
+}
+
 // RegisterClient registers a client with the bridge for message routing.
 func (h *E2EHarness) RegisterClient(client *TestClient) {
 	h.mu.Lock()
