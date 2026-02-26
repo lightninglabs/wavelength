@@ -25,6 +25,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/roundwire"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -33,7 +34,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -449,19 +452,68 @@ func (s *Server) buildRPCDispatchers(
 		return s.handleInboundRPC(ctx, edge, env)
 	}
 
+	dispatchRoundEvent := func(ctx context.Context,
+		env *mailboxpb.Envelope) error {
+
+		if env == nil || env.Rpc == nil || env.Body == nil {
+			return fmt.Errorf("invalid round event envelope")
+		}
+
+		wrapped := &wrapperspb.BytesValue{}
+		if err := proto.Unmarshal(env.Body.Value, wrapped); err != nil {
+			return fmt.Errorf("unmarshal round payload: %w", err)
+		}
+
+		event, err := round.DecodeServerMailboxPayload(
+			env.Rpc.Method, wrapped.Value,
+		)
+		if err != nil {
+			return fmt.Errorf("decode round event: %w", err)
+		}
+
+		msg := &round.ServerMessageNotification{
+			Message: event,
+		}
+
+		roundKey := round.NewServiceKey()
+
+		return roundKey.Ref(s.actorSystem).Tell(ctx, msg)
+	}
+
 	// TODO(roasbeef): Add indexer and wallet service methods
 	// here once their clients are initialized (e.g.,
 	// WalletService.SignVTXO, RoundService.SubmitNonces).
 	// Missing entries will cause the ingress loop to silently
 	// drop inbound KIND_REQUEST envelopes for unregistered
 	// methods.
-	return map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher{
-		// DaemonService.GetInfo — server queries client status.
-		{
-			Service: "daemonrpc.DaemonService",
-			Method:  "GetInfo",
-		}: dispatch,
+	dispatchers := make(
+		map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher,
+	)
+
+	// DaemonService.GetInfo — server queries client status.
+	dispatchers[mailboxrpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetInfo",
+	}] = dispatch
+
+	roundMethods := []string{
+		roundwire.MethodClientErrorResp,
+		roundwire.MethodClientSuccessResp,
+		roundwire.MethodClientAwaitingInputSigsResp,
+		roundwire.MethodClientVTXOAggNonces,
+		roundwire.MethodClientVTXOAggSigs,
+		roundwire.MethodClientBatchInfo,
+		roundwire.MethodClientRoundFailedResp,
 	}
+
+	for _, method := range roundMethods {
+		dispatchers[mailboxrpc.ServiceMethod{
+			Service: roundwire.ServiceName,
+			Method:  method,
+		}] = dispatchRoundEvent
+	}
+
+	return dispatchers
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through

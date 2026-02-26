@@ -1,0 +1,217 @@
+syntax = "proto3";
+
+package roundwire;
+
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/lightninglabs/darepo-client/roundwire";
+
+// RoundMailboxService defines round mailbox method payloads.
+//
+// These methods are transported over mailbox envelopes and are not used as
+// strict unary RPCs in the round FSM path.
+service RoundMailboxService {
+    rpc JoinRoundRequest (JoinRoundRequestPayload)
+        returns (google.protobuf.Empty);
+    rpc SubmitNoncesRequest (SubmitNoncesPayload)
+        returns (google.protobuf.Empty);
+    rpc SubmitPartialSigRequest (SubmitPartialSigsPayload)
+        returns (google.protobuf.Empty);
+    rpc SubmitForfeitSigRequest (SubmitForfeitSigsPayload)
+        returns (google.protobuf.Empty);
+    rpc SubmitVTXOForfeitSigsRequest (SubmitVTXOForfeitSigsPayload)
+        returns (google.protobuf.Empty);
+
+    rpc ClientErrorResp (ClientErrorRespPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientSuccessResp (ClientSuccessRespPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientAwaitingInputSigsResp (ClientAwaitingInputSigsRespPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientVTXOAggNonces (ClientVTXOAggNoncesPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientVTXOAggSigs (ClientVTXOAggSigsPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientBatchInfo (ClientBatchInfoPayload)
+        returns (google.protobuf.Empty);
+    rpc ClientRoundFailedResp (ClientRoundFailedRespPayload)
+        returns (google.protobuf.Empty);
+}
+
+message OutPointPayload {
+    string tx_id = 1;
+    uint32 vout = 2;
+}
+
+message TxOutPayload {
+    int64 value = 1;
+    string pk_script = 2;
+}
+
+message KeyDescriptorPayload {
+    int32 key_family = 1;
+    uint32 key_index = 2;
+    string pub_key_hex = 3;
+}
+
+message JoinRoundAuthPayload {
+    string message_hex = 1;
+    uint32 valid_from = 2;
+    uint32 valid_until = 3;
+    string signature_hex = 4;
+}
+
+message BoardingRequestPayload {
+    OutPointPayload outpoint = 1;
+    string client_key = 2;
+    string operator_key = 3;
+    uint32 exit_delay = 4;
+}
+
+message VTXORequestPayload {
+    int64 amount = 1;
+    string pk_script_hex = 2;
+    uint32 expiry = 3;
+    string client_key = 4;
+    string operator_key = 5;
+    KeyDescriptorPayload signing_key = 6;
+}
+
+message ForfeitRequestPayload {
+    OutPointPayload vtxo_outpoint = 1;
+}
+
+message LeaveRequestPayload {
+    TxOutPayload output = 1;
+}
+
+message JoinRoundRequestPayload {
+    string round_id = 1;
+    string identifier = 2;
+    repeated BoardingRequestPayload boarding_requests = 3;
+    repeated VTXORequestPayload vtxo_requests = 4;
+    repeated ForfeitRequestPayload forfeit_requests = 5;
+    repeated LeaveRequestPayload leave_requests = 6;
+    JoinRoundAuthPayload auth = 7;
+}
+
+message TxNonceEntry {
+    string tx_id_hex = 1;
+    string nonce_hex = 2;
+}
+
+message SignerNonceBundle {
+    string signer_key_hex = 1;
+    repeated TxNonceEntry nonces = 2;
+}
+
+message SubmitNoncesPayload {
+    string round_id = 1;
+    repeated SignerNonceBundle entries = 2;
+}
+
+message TxSigEntry {
+    string tx_id_hex = 1;
+    string signature_hex = 2;
+}
+
+message SignerSigBundle {
+    string signer_key_hex = 1;
+    repeated TxSigEntry signatures = 2;
+}
+
+message SubmitPartialSigsPayload {
+    string round_id = 1;
+    repeated SignerSigBundle entries = 2;
+}
+
+message BoardingInputSigPayload {
+    int32 input_index = 1;
+    OutPointPayload outpoint = 2;
+    string signature_hex = 3;
+}
+
+message SubmitForfeitSigsPayload {
+    string round_id = 1;
+    repeated BoardingInputSigPayload signatures = 2;
+}
+
+message VTXOForfeitSigPayload {
+    OutPointPayload vtxo_outpoint = 1;
+    string signature_hex = 2;
+    string unsigned_tx_hex = 3;
+}
+
+message SubmitVTXOForfeitSigsPayload {
+    string round_id = 1;
+    repeated VTXOForfeitSigPayload entries = 2;
+}
+
+message ClientErrorRespPayload {
+    string error = 1;
+}
+
+message ClientSuccessRespPayload {
+    string round_id = 1;
+    repeated OutPointPayload accepted_boarding_outpoints = 2;
+    repeated OutPointPayload accepted_vtxo_outpoints = 3;
+}
+
+message ClientAwaitingInputSigsRespPayload {
+    string round_id = 1;
+}
+
+message ClientVTXOAggNoncesPayload {
+    string round_id = 1;
+    repeated TxNonceEntry nonces = 2;
+}
+
+message ClientVTXOAggSigsPayload {
+    string round_id = 1;
+    repeated TxSigEntry signatures = 2;
+}
+
+message NodePayload {
+    OutPointPayload input = 1;
+    repeated TxOutPayload outputs = 2;
+    repeated string co_signers = 3;
+    repeated NodeChildPayload children = 4;
+    int64 amount = 5;
+    string signature_hex = 6;
+    string final_key_hex = 7;
+}
+
+message NodeChildPayload {
+    uint32 index = 1;
+    NodePayload node = 2;
+}
+
+message TreePayload {
+    NodePayload root = 1;
+    OutPointPayload batch_outpoint = 2;
+    TxOutPayload batch_output = 3;
+    string sweep_tapscript_root = 4;
+}
+
+message TreePathPayload {
+    int32 output_index = 1;
+    TreePayload tree = 2;
+}
+
+message ConnectorLeafPayload {
+    OutPointPayload vtxo_outpoint = 1;
+    OutPointPayload leaf_outpoint = 2;
+    TxOutPayload leaf_output = 3;
+}
+
+message ClientBatchInfoPayload {
+    string round_id = 1;
+    string batch_psbt_hex = 2;
+    repeated TreePathPayload vtxo_tree_paths = 3;
+    repeated ConnectorLeafPayload connector_leaves = 4;
+}
+
+message ClientRoundFailedRespPayload {
+    string round_id = 1;
+    string reason = 2;
+}

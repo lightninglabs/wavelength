@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -83,6 +84,17 @@ const (
 	// starting a container when Docker fails to bind a randomly assigned
 	// host port due to a race with parallel test execution.
 	maxPortBindRetries = 15
+
+	// dockerCleanupOpTimeout bounds best-effort Docker cleanup calls so a
+	// wedged daemon does not stall the entire test harness startup.
+	dockerCleanupOpTimeout = 10 * time.Second
+
+	// dockerStartOpTimeout bounds one container start attempt so a wedged
+	// daemon cannot hang the harness for the full test timeout.
+	dockerStartOpTimeout = 90 * time.Second
+
+	// mirrorGCRPrefix is the Docker registry mirror prefix used in CI.
+	mirrorGCRPrefix = "mirror.gcr.io/"
 )
 
 var (
@@ -619,8 +631,10 @@ func (h *Harness) killContainer(
 		return
 	}
 
-	err := h.pool.Client.KillContainer(docker.KillContainerOptions{
-		ID: res.Container.ID,
+	err := h.runDockerOpWithTimeout("kill container", func() error {
+		return h.pool.Client.KillContainer(docker.KillContainerOptions{
+			ID: res.Container.ID,
+		})
 	})
 	if err != nil {
 		h.Logf("failed to kill %s: %v", name, err)
@@ -664,7 +678,9 @@ func (h *Harness) purgeResource(
 		return
 	}
 
-	err := h.pool.Purge(res)
+	err := h.runDockerOpWithTimeout("purge container", func() error {
+		return h.pool.Purge(res)
+	})
 	if err != nil {
 		h.Logf("failed to purge %s: %v", name, err)
 	}
@@ -752,23 +768,29 @@ func (h *Harness) forceRemoveNetwork() {
 	networkID := h.network.Network.ID
 
 	// Get the network details to find connected containers.
-	network, err := h.pool.Client.NetworkInfo(networkID)
+	network, err := h.networkInfoWithTimeout(networkID)
 	if err != nil {
 		h.Logf("[DEBUG] Failed to get network info: %v", err)
 
 		// Try to remove anyway.
-		_ = h.pool.Client.RemoveNetwork(networkID)
+		_ = h.runDockerOpWithTimeout("remove network", func() error {
+			return h.pool.Client.RemoveNetwork(networkID)
+		})
 
 		return
 	}
 
 	// Disconnect all containers from the network.
 	for containerID := range network.Containers {
-		err := h.pool.Client.DisconnectNetwork(
-			networkID,
-			docker.NetworkConnectionOptions{
-				Container: containerID,
-				Force:     true,
+		err := h.runDockerOpWithTimeout(
+			"disconnect network", func() error {
+				return h.pool.Client.DisconnectNetwork(
+					networkID,
+					docker.NetworkConnectionOptions{
+						Container: containerID,
+						Force:     true,
+					},
+				)
 			},
 		)
 		if err != nil {
@@ -781,7 +803,9 @@ func (h *Harness) forceRemoveNetwork() {
 	}
 
 	// Now remove the network.
-	err = h.pool.Client.RemoveNetwork(networkID)
+	err = h.runDockerOpWithTimeout("remove network", func() error {
+		return h.pool.Client.RemoveNetwork(networkID)
+	})
 	if err != nil {
 		h.Logf("[DEBUG] Failed to remove network: %v", err)
 	}
@@ -791,8 +815,17 @@ func (h *Harness) forceRemoveNetwork() {
 // best-effort operation used to clean up leftover containers from previous
 // failed runs.
 func (h *Harness) removeContainerByName(name string) {
+	// Prefer the Docker CLI path first. It avoids long hangs observed in
+	// go-dockerclient cleanup calls when the daemon is under load.
+	if err := h.removeContainerByNameCLI(name); err == nil {
+		return
+	} else {
+		h.Logf("[DEBUG] CLI container cleanup fallback for %s: %v",
+			name, err)
+	}
+
 	// Best-effort, ignore errors.
-	containers, err := h.pool.Client.ListContainers(
+	containers, err := h.listContainersWithTimeout(
 		docker.ListContainersOptions{
 			All: true,
 			Filters: map[string][]string{
@@ -806,26 +839,130 @@ func (h *Harness) removeContainerByName(name string) {
 	}
 
 	for _, container := range containers {
-		// Kill container if it's still running.
-		err := h.pool.Client.KillContainer(docker.KillContainerOptions{
-			ID: container.ID,
-		})
-		if err != nil {
-			h.Logf("[DEBUG] Failed to kill container %s: %v",
-				container.ID[:12], err)
-		}
-
-		// Remove the container.
-		err = h.pool.Client.RemoveContainer(
-			docker.RemoveContainerOptions{
-				ID:    container.ID,
-				Force: true,
+		// Force remove also stops running containers.
+		// Skipping explicit kill avoids an extra daemon call.
+		// That extra call can wedge under load.
+		err := h.runDockerOpWithTimeout(
+			"remove container", func() error {
+				return h.pool.Client.RemoveContainer(
+					docker.RemoveContainerOptions{
+						ID:    container.ID,
+						Force: true,
+					},
+				)
 			},
 		)
 		if err != nil {
 			h.Logf("[DEBUG] Failed to remove container %s: %v",
 				container.ID[:12], err)
 		}
+	}
+}
+
+// removeContainerByNameCLI force-removes a container by name via the docker
+// CLI with a hard timeout.
+func (h *Harness) removeContainerByNameCLI(name string) error {
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), dockerCleanupOpTimeout,
+	)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, dockerPath, "rm", "-f", name)
+	output, err := cmd.CombinedOutput()
+	outputMsg := strings.TrimSpace(string(output))
+	if err != nil {
+		if strings.Contains(outputMsg, "No such container") {
+			return nil
+		}
+
+		return fmt.Errorf("docker rm -f %s failed: %w: %s",
+			name, err, outputMsg)
+	}
+
+	return nil
+}
+
+// listContainersWithTimeout executes ListContainers with a hard timeout so
+// startup cannot hang indefinitely on a stuck Docker daemon.
+func (h *Harness) listContainersWithTimeout(
+	opts docker.ListContainersOptions,
+) (
+	[]docker.APIContainers, error,
+) {
+
+	type listResult struct {
+		containers []docker.APIContainers
+		err        error
+	}
+
+	resultChan := make(chan listResult, 1)
+	go func() {
+		containers, err := h.pool.Client.ListContainers(opts)
+		resultChan <- listResult{
+			containers: containers,
+			err:        err,
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		return result.containers, result.err
+
+	case <-time.After(dockerCleanupOpTimeout):
+		return nil, fmt.Errorf("docker list containers timed out")
+	}
+}
+
+// networkInfoWithTimeout executes NetworkInfo with a hard timeout so teardown
+// cannot block indefinitely when Docker is wedged.
+func (h *Harness) networkInfoWithTimeout(
+	networkID string,
+) (
+	*docker.Network, error,
+) {
+
+	type networkResult struct {
+		network *docker.Network
+		err     error
+	}
+
+	resultChan := make(chan networkResult, 1)
+	go func() {
+		network, err := h.pool.Client.NetworkInfo(networkID)
+		resultChan <- networkResult{
+			network: network,
+			err:     err,
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		return result.network, result.err
+
+	case <-time.After(dockerCleanupOpTimeout):
+		return nil, fmt.Errorf("docker network info timed out")
+	}
+}
+
+// runDockerOpWithTimeout executes a best-effort Docker cleanup operation with
+// a hard timeout so harness setup can proceed when Docker cleanup wedges.
+func (h *Harness) runDockerOpWithTimeout(op string, fn func() error) error {
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- fn()
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+
+	case <-time.After(dockerCleanupOpTimeout):
+		return fmt.Errorf("%s timed out", op)
 	}
 }
 
@@ -849,7 +986,8 @@ func (h *Harness) waitContainerRunning(res *dockertest.Resource) {
 }
 
 // runWithPortBindRetry starts a container using run and retries if Docker
-// fails due to a host port bind conflict.
+// fails due to transient startup errors (for example host port bind conflicts
+// or flaky image pull errors).
 func (h *Harness) runWithPortBindRetry(containerName string,
 	run func() (*dockertest.Resource, error)) (*dockertest.Resource,
 	error) {
@@ -857,14 +995,13 @@ func (h *Harness) runWithPortBindRetry(containerName string,
 	var backoff time.Duration = 25 * time.Millisecond
 	var lastErr error
 	for attempt := 1; attempt <= maxPortBindRetries; attempt++ {
-		res, err := run()
+		res, err := h.runContainerStartWithTimeout(containerName, run)
 		if err == nil {
 			return res, nil
 		}
 		lastErr = err
 
-		// If it's not a port bind error, fail immediately.
-		if !isDockerPortBindError(err) {
+		if !isDockerRetriableStartError(err) {
 			return nil, err
 		}
 
@@ -874,8 +1011,11 @@ func (h *Harness) runWithPortBindRetry(containerName string,
 			break
 		}
 
-		h.Logf("Port bind conflict for %s (attempt %d/%d): %v",
-			containerName, attempt, maxPortBindRetries, err)
+		h.Logf(
+			"Transient container start error for %s "+
+				"(attempt %d/%d): %v",
+			containerName, attempt, maxPortBindRetries, err,
+		)
 
 		// The failing start may leave a stopped container behind.
 		// Remove it so the retry can reuse the same name.
@@ -894,8 +1034,49 @@ func (h *Harness) runWithPortBindRetry(containerName string,
 		}
 	}
 
-	return nil, fmt.Errorf("exhausted port bind retries for %s: %w",
-		containerName, lastErr)
+	return nil, fmt.Errorf(
+		"exhausted startup retries for %s: %w", containerName, lastErr,
+	)
+}
+
+// runContainerStartWithTimeout executes one container start attempt with a hard
+// timeout to avoid indefinite hangs in Docker API calls.
+func (h *Harness) runContainerStartWithTimeout(
+	containerName string,
+	run func() (*dockertest.Resource, error),
+) (
+	*dockertest.Resource, error,
+) {
+
+	type startResult struct {
+		resource *dockertest.Resource
+		err      error
+	}
+
+	resultChan := make(chan startResult, 1)
+	go func() {
+		resource, err := run()
+		resultChan <- startResult{
+			resource: resource,
+			err:      err,
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		return result.resource, result.err
+
+	case <-time.After(dockerStartOpTimeout):
+		return nil, fmt.Errorf("docker start timed out for %s",
+			containerName)
+	}
+}
+
+// isDockerRetriableStartError returns true when err is a transient container
+// startup failure that is worth retrying.
+func isDockerRetriableStartError(err error) bool {
+	return isDockerPortBindError(err) || isDockerImagePullError(err) ||
+		isDockerContainerNameConflictError(err)
 }
 
 // isDockerPortBindError returns true if err indicates that Docker failed to
@@ -914,6 +1095,64 @@ func isDockerPortBindError(err error) bool {
 	}
 
 	for _, errStr := range portBindErrors {
+		if strings.Contains(msg, errStr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isDockerContainerNameConflictError returns true when Docker reports a name
+// conflict for a container that should be cleaned up and retried.
+func isDockerContainerNameConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := err.Error()
+	conflicts := []string{
+		"container already exists",
+		"is already in use by container",
+		"Conflict. The container name",
+	}
+
+	for _, s := range conflicts {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isDockerStartTimeoutError returns true when a Docker start operation exceeds
+// dockerStartOpTimeout.
+func isDockerStartTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(err.Error(), "docker start timed out")
+}
+
+// isDockerImagePullError returns true if err indicates a transient image pull
+// failure from a registry mirror (for example "unknown blob" during manifest
+// or layer fetches).
+func isDockerImagePullError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := err.Error()
+	imagePullErrors := []string{
+		"error pulling image configuration",
+		"unknown blob",
+		"received unexpected http status",
+		"toomanyrequests",
+	}
+
+	for _, errStr := range imagePullErrors {
 		if strings.Contains(msg, errStr) {
 			return true
 		}
@@ -1082,48 +1321,72 @@ func (h *Harness) startBitcoind() {
 	require.NoError(h.T, err, "failed to get absolute path "+
 		"for bitcoind data dir")
 
-	res, err := h.runWithPortBindRetry(containerName, func() (
-		*dockertest.Resource, error) {
+	startBitcoindWithImage := func(image string) (*dockertest.Resource,
+		error) {
 
-		return h.pool.RunWithOptions(&dockertest.RunOptions{
-			Repository: imageRepo(h.opts.BitcoindImage),
-			Tag:        imageTag(h.opts.BitcoindImage),
-			Cmd:        cmd,
-			Env:        []string{},
-			ExposedPorts: []string{
-				"18443/tcp", "28332/tcp", "28333/tcp",
-			},
-			Name:     containerName,
-			Networks: []*dockertest.Network{h.network},
-			Labels: map[string]string{
-				"ark.harness":                h.group,
-				"com.docker.compose.project": h.group,
-			},
-			Mounts: []string{
-				fmt.Sprintf("%s:%s", btcHostDir,
-					"/home/bitcoin/.bitcoin"),
-			},
-		}, func(hc *docker.HostConfig) {
-			// Keep container for logs on failure; Purge() will
-			// clean up.
-			hc.AutoRemove = false
-			hc.PortBindings =
-				map[docker.Port][]docker.PortBinding{
-					"18443/tcp": {{
-						HostIP:   "0.0.0.0",
-						HostPort: "",
-					}},
-					"28332/tcp": {{
-						HostIP:   "0.0.0.0",
-						HostPort: "",
-					}},
-					"28333/tcp": {{
-						HostIP:   "0.0.0.0",
-						HostPort: "",
-					}},
-				}
+		return h.runWithPortBindRetry(containerName, func() (
+			*dockertest.Resource, error) {
+
+			return h.pool.RunWithOptions(&dockertest.RunOptions{
+				Repository: imageRepo(image),
+				Tag:        imageTag(image),
+				Cmd:        cmd,
+				Env:        []string{},
+				ExposedPorts: []string{
+					"18443/tcp", "28332/tcp", "28333/tcp",
+				},
+				Name:     containerName,
+				Networks: []*dockertest.Network{h.network},
+				Labels: map[string]string{
+					"ark.harness":                h.group,
+					"com.docker.compose.project": h.group,
+				},
+				Mounts: []string{
+					fmt.Sprintf("%s:%s", btcHostDir,
+						"/home/bitcoin/.bitcoin"),
+				},
+			}, func(hc *docker.HostConfig) {
+				// Keep container for logs on failure.
+				// Purge() will clean up.
+				hc.AutoRemove = false
+				hc.PortBindings =
+					map[docker.Port][]docker.PortBinding{
+						"18443/tcp": {{
+							HostIP:   "0.0.0.0",
+							HostPort: "",
+						}},
+						"28332/tcp": {{
+							HostIP:   "0.0.0.0",
+							HostPort: "",
+						}},
+						"28333/tcp": {{
+							HostIP:   "0.0.0.0",
+							HostPort: "",
+						}},
+					}
+			})
 		})
-	})
+	}
+
+	res, err := startBitcoindWithImage(h.opts.BitcoindImage)
+	if err != nil && (isDockerImagePullError(err) ||
+		isDockerStartTimeoutError(err)) {
+
+		fallbackImage, ok := mirrorFallbackImage(h.opts.BitcoindImage)
+		if ok {
+			h.Logf(
+				"bitcoind startup failed for %s, retrying %s",
+				h.opts.BitcoindImage, fallbackImage,
+			)
+
+			// Remove stale containers from previous retries before
+			// retrying with the fallback image.
+			h.removeContainerByName(containerName)
+
+			res, err = startBitcoindWithImage(fallbackImage)
+		}
+	}
+
 	require.NoError(h.T, err, "failed to start bitcoind")
 	h.bitcoind = res
 
@@ -2189,14 +2452,24 @@ func imageTag(image string) string {
 	return ""
 }
 
-// containerName returns a container name, optionally with random suffix. If the
-// harness has an explicit GroupName, use it without suffix for predictable
-// names.
-func (h *Harness) containerName(prefix string) string {
-	if h.opts.GroupName != "" {
-		return prefix + "-" + h.group
+// mirrorFallbackImage rewrites a mirror.gcr.io image reference to the direct
+// Docker Hub image reference.
+func mirrorFallbackImage(image string) (string, bool) {
+	if !strings.HasPrefix(image, mirrorGCRPrefix) {
+		return "", false
 	}
 
+	fallback := strings.TrimPrefix(image, mirrorGCRPrefix)
+	if fallback == "" {
+		return "", false
+	}
+
+	return fallback, true
+}
+
+// containerName returns a unique container name using a stable group prefix
+// plus a random suffix for collision resistance.
+func (h *Harness) containerName(prefix string) string {
 	return prefix + "-" + h.group + "-" + randSuffix()
 }
 

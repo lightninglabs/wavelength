@@ -36,6 +36,8 @@ type (
 	envelopeRecordTLV     = tlv.TlvType2
 	msgIDRecordTLV        = tlv.TlvType3
 	idempotencyRecordTLV  = tlv.TlvType4
+	serviceRecordTLV      = tlv.TlvType5
+	methodRecordTLV       = tlv.TlvType6
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -45,6 +47,16 @@ type ServerMessage interface {
 	// ToProto converts the message to a protobuf message that can be sent
 	// over gRPC.
 	ToProto() proto.Message
+}
+
+// RoutedServerMessage is implemented by outbox messages that carry explicit
+// mailbox RPC routing metadata for EVENT envelopes.
+type RoutedServerMessage interface {
+	// RPCService returns the mailbox service name.
+	RPCService() string
+
+	// RPCMethod returns the mailbox method name.
+	RPCMethod() string
 }
 
 // InboundServerMessage is implemented by actor messages that arrive from the
@@ -121,6 +133,12 @@ type SendClientEventRequest struct {
 	// IdempotencyKey identifies the semantic operation for remote dedupe.
 	// Retries of the same persisted request must reuse this key.
 	IdempotencyKey string
+
+	// Service is the mailbox RPC service used for EVENT routing.
+	Service string
+
+	// Method is the mailbox RPC method used for EVENT routing.
+	Method string
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -144,7 +162,12 @@ func (m *SendClientEventRequest) TLVType() tlv.Type {
 // proto↔bytes conversion inside the TLV record, keeping the codec contract
 // simple and uniform across message types.
 func (m *SendClientEventRequest) Encode(w io.Writer) error {
-	anyMsg, err := anypb.New(m.Message.ToProto())
+	protoMsg := m.Message.ToProto()
+	if protoMsg == nil {
+		return fmt.Errorf("nil proto message")
+	}
+
+	anyMsg, err := anypb.New(protoMsg)
 	if err != nil {
 		return fmt.Errorf("wrap proto in Any: %w", err)
 	}
@@ -170,6 +193,20 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 			StableEventIdempotencyKey(anyBytes)
 	}
 	idempotencyBytes := []byte(idempotencyKey)
+	service := m.Service
+	method := m.Method
+	if (service == "" || method == "") && m.Message != nil {
+		if routed, ok := m.Message.(RoutedServerMessage); ok {
+			if service == "" {
+				service = routed.RPCService()
+			}
+			if method == "" {
+				method = routed.RPCMethod()
+			}
+		}
+	}
+	serviceBytes := []byte(service)
+	methodBytes := []byte(method)
 
 	payload := tlv.NewRecordT[protoPayloadRecordTLV](
 		mailboxconn.WrappedProto[*anypb.Any]{Val: anyMsg},
@@ -180,9 +217,16 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
 		idempotencyBytes,
 	)
+	serviceRec := tlv.NewPrimitiveRecord[serviceRecordTLV](
+		serviceBytes,
+	)
+	methodRec := tlv.NewPrimitiveRecord[methodRecordTLV](
+		methodBytes,
+	)
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		serviceRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -203,9 +247,12 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 
 	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
 	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
+	serviceRec := tlv.ZeroRecordT[serviceRecordTLV, []byte]()
+	methodRec := tlv.ZeroRecordT[methodRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		serviceRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -218,6 +265,8 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	m.Message = &rawServerMessage{anyMsg: payload.Val.Val}
 	m.MsgID = string(msgIDRec.Val)
 	m.IdempotencyKey = string(idemRec.Val)
+	m.Service = string(serviceRec.Val)
+	m.Method = string(methodRec.Val)
 
 	return nil
 }
@@ -404,6 +453,12 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest) fn.Result[ServerConnResp] {
 
 	protoMsg := req.Message.ToProto()
+	if protoMsg == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"message ToProto() returned nil for mailbox %q",
+			a.cfg.RemoteMailboxID,
+		))
+	}
 
 	body, err := anypb.New(protoMsg)
 	if err != nil {
@@ -414,6 +469,19 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 	msgID := req.MsgID
 	idempotencyKey := req.IdempotencyKey
+	service := req.Service
+	method := req.Method
+
+	if service == "" || method == "" {
+		if routed, ok := req.Message.(RoutedServerMessage); ok {
+			if service == "" {
+				service = routed.RPCService()
+			}
+			if method == "" {
+				method = routed.RPCMethod()
+			}
+		}
+	}
 
 	// Only marshal the body bytes when we need to derive stable IDs.
 	// On replay (both IDs already set from the persisted TLV), this
@@ -449,6 +517,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			ReplyTo: a.cfg.LocalMailboxID,
+			Service: service,
+			Method:  method,
 		},
 	}
 

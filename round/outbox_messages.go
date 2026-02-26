@@ -1,6 +1,10 @@
 package round
 
 import (
+	"encoding/hex"
+	"fmt"
+	"sort"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
@@ -9,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/roundwire"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -115,40 +120,213 @@ type SubmitForfeitSigRequest struct {
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
 
-// ToProto converts JoinRoundRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// RPCService returns the mailbox RPC service for this message.
+func (m *JoinRoundRequest) RPCService() string {
+	return roundwire.ServiceName
+}
+
+// RPCMethod returns the mailbox RPC method for this message.
+func (m *JoinRoundRequest) RPCMethod() string {
+	return roundwire.MethodJoinRoundRequest
+}
+
+// ToProto converts JoinRoundRequest to a protobuf payload message.
 func (m *JoinRoundRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.JoinRoundRequest{...}
-	return nil
+	payload, err := joinRoundRequestPayload(m)
+	if err != nil {
+		log.ErrorS(nil, "Encode JoinRoundRequest failed", err)
+
+		return nil
+	}
+
+	msg, err := roundwire.WrapPayload(payload)
+	if err != nil {
+		log.ErrorS(nil, "Wrap JoinRoundRequest payload failed", err)
+
+		return nil
+	}
+
+	return msg
 }
 
-// ToProto converts SubmitNoncesRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// RPCService returns the mailbox RPC service for this message.
+func (m *SubmitNoncesRequest) RPCService() string {
+	return roundwire.ServiceName
+}
+
+// RPCMethod returns the mailbox RPC method for this message.
+func (m *SubmitNoncesRequest) RPCMethod() string {
+	return roundwire.MethodSubmitNoncesRequest
+}
+
+// ToProto converts SubmitNoncesRequest to a protobuf payload message.
 func (m *SubmitNoncesRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitNoncesRequest{...}
-	return nil
+	payload := &roundwire.SubmitNoncesPayload{
+		RoundId: m.RoundID.String(),
+		Entries: make(
+			[]*roundwire.SignerNonceBundle, 0,
+			len(m.Nonces),
+		),
+	}
+
+	for signerKey, txNonces := range m.Nonces {
+		entry := &roundwire.SignerNonceBundle{
+			SignerKeyHex: hex.EncodeToString(signerKey[:]),
+			Nonces: make(
+				[]*roundwire.TxNonceEntry, 0, len(txNonces),
+			),
+		}
+
+		for txID, nonce := range txNonces {
+			entry.Nonces = append(entry.Nonces,
+				&roundwire.TxNonceEntry{
+					TxIdHex:  txID.String(),
+					NonceHex: roundwire.EncodeNonce(nonce),
+				},
+			)
+		}
+
+		roundwire.SortTxNonceEntries(entry.Nonces)
+		payload.Entries = append(payload.Entries, entry)
+	}
+
+	roundwire.SortSignerNonceBundles(payload.Entries)
+
+	msg, err := roundwire.WrapPayload(payload)
+	if err != nil {
+		log.ErrorS(nil, "Wrap SubmitNoncesRequest payload failed", err)
+
+		return nil
+	}
+
+	return msg
 }
 
-// ToProto converts SubmitPartialSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// RPCService returns the mailbox RPC service for this message.
+func (m *SubmitPartialSigRequest) RPCService() string {
+	return roundwire.ServiceName
+}
+
+// RPCMethod returns the mailbox RPC method for this message.
+func (m *SubmitPartialSigRequest) RPCMethod() string {
+	return roundwire.MethodSubmitPartialSigRequest
+}
+
+// ToProto converts SubmitPartialSigRequest to a protobuf payload message.
 func (m *SubmitPartialSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitPartialSigRequest{...}
-	return nil
+	payload := &roundwire.SubmitPartialSigsPayload{
+		RoundId: m.RoundID.String(),
+		Entries: make(
+			[]*roundwire.SignerSigBundle, 0,
+			len(m.Signatures),
+		),
+	}
+
+	for signerKey, txSigs := range m.Signatures {
+		entry := &roundwire.SignerSigBundle{
+			SignerKeyHex: hex.EncodeToString(signerKey[:]),
+			Signatures: make(
+				[]*roundwire.TxSigEntry, 0, len(txSigs),
+			),
+		}
+
+		for txID, sig := range txSigs {
+			sigHex, err := roundwire.EncodePartialSignature(sig)
+			if err != nil {
+				log.ErrorS(nil, "Encode partial signature failed", err)
+
+				return nil
+			}
+
+			entry.Signatures = append(entry.Signatures,
+				&roundwire.TxSigEntry{
+					TxIdHex:      txID.String(),
+					SignatureHex: sigHex,
+				},
+			)
+		}
+
+		roundwire.SortTxSigEntries(entry.Signatures)
+		payload.Entries = append(payload.Entries, entry)
+	}
+
+	roundwire.SortSignerSigBundles(payload.Entries)
+
+	msg, err := roundwire.WrapPayload(payload)
+	if err != nil {
+		log.ErrorS(nil, "Wrap SubmitPartialSigRequest payload failed",
+			err)
+
+		return nil
+	}
+
+	return msg
 }
 
-// ToProto converts SubmitForfeitSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// RPCService returns the mailbox RPC service for this message.
+func (m *SubmitForfeitSigRequest) RPCService() string {
+	return roundwire.ServiceName
+}
+
+// RPCMethod returns the mailbox RPC method for this message.
+func (m *SubmitForfeitSigRequest) RPCMethod() string {
+	return roundwire.MethodSubmitForfeitSigRequest
+}
+
+// ToProto converts SubmitForfeitSigRequest to a protobuf payload message.
 func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitForfeitSigRequest{...}
-	return nil
+	payload := &roundwire.SubmitForfeitSigsPayload{
+		RoundId: m.RoundID.String(),
+		Signatures: make(
+			[]*roundwire.BoardingInputSigPayload, 0,
+			len(m.Signatures),
+		),
+	}
+
+	for _, sig := range m.Signatures {
+		encodedOutpoint := roundwire.EncodeOutPoint(sig.Outpoint)
+		payload.Signatures = append(payload.Signatures,
+			&roundwire.BoardingInputSigPayload{
+				InputIndex: int32(sig.InputIndex),
+				Outpoint: &roundwire.OutPointPayload{
+					TxId: encodedOutpoint.TxId,
+					Vout: encodedOutpoint.Vout,
+				},
+				SignatureHex: roundwire.EncodeSchnorrSignature(
+					sig.ClientSignature,
+				),
+			},
+		)
+	}
+
+	sort.Slice(payload.Signatures, func(i, j int) bool {
+		if payload.Signatures[i].Outpoint.TxId !=
+			payload.Signatures[j].Outpoint.TxId {
+
+			return payload.Signatures[i].Outpoint.TxId <
+				payload.Signatures[j].Outpoint.TxId
+		}
+
+		if payload.Signatures[i].Outpoint.Vout !=
+			payload.Signatures[j].Outpoint.Vout {
+
+			return payload.Signatures[i].Outpoint.Vout <
+				payload.Signatures[j].Outpoint.Vout
+		}
+
+		return payload.Signatures[i].InputIndex <
+			payload.Signatures[j].InputIndex
+	})
+
+	msg, err := roundwire.WrapPayload(payload)
+	if err != nil {
+		log.ErrorS(nil, "Wrap SubmitForfeitSigRequest payload failed",
+			err)
+
+		return nil
+	}
+
+	return msg
 }
 
 // ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
@@ -242,10 +420,207 @@ func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
 	return "SubmitVTXOForfeitSigsToServer"
 }
 
-// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// RPCService returns the mailbox RPC service for this message.
+func (m *SubmitVTXOForfeitSigsToServer) RPCService() string {
+	return roundwire.ServiceName
+}
+
+// RPCMethod returns the mailbox RPC method for this message.
+func (m *SubmitVTXOForfeitSigsToServer) RPCMethod() string {
+	return roundwire.MethodSubmitVTXOForfeitSigsRequest
+}
+
+// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf payload.
 func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
-	return nil
+	payload := &roundwire.SubmitVTXOForfeitSigsPayload{
+		RoundId: m.RoundID.String(),
+		Entries: make(
+			[]*roundwire.VTXOForfeitSigPayload, 0,
+			len(m.ForfeitSigs),
+		),
+	}
+
+	for outpoint, sig := range m.ForfeitSigs {
+		unsignedTx, ok := m.ForfeitTxs[outpoint]
+		if !ok {
+			log.ErrorS(nil,
+				"Missing forfeit tx for outpoint in "+
+					"SubmitVTXOForfeitSigsToServer",
+				fmt.Errorf("forfeit tx missing"),
+			)
+
+			return nil
+		}
+
+		txHex, err := roundwire.EncodeMsgTx(unsignedTx)
+		if err != nil {
+			log.ErrorS(nil, "Encode forfeit tx failed", err)
+
+			return nil
+		}
+
+		encodedOutpoint := roundwire.EncodeOutPoint(outpoint)
+		payload.Entries = append(payload.Entries,
+			&roundwire.VTXOForfeitSigPayload{
+				VtxoOutpoint: &roundwire.OutPointPayload{
+					TxId: encodedOutpoint.TxId,
+					Vout: encodedOutpoint.Vout,
+				},
+				SignatureHex: roundwire.EncodeSchnorrSignature(
+					sig,
+				),
+				UnsignedTxHex: txHex,
+			},
+		)
+	}
+
+	sort.Slice(payload.Entries, func(i, j int) bool {
+		if payload.Entries[i].VtxoOutpoint.TxId !=
+			payload.Entries[j].VtxoOutpoint.TxId {
+
+			return payload.Entries[i].VtxoOutpoint.TxId <
+				payload.Entries[j].VtxoOutpoint.TxId
+		}
+
+		return payload.Entries[i].VtxoOutpoint.Vout <
+			payload.Entries[j].VtxoOutpoint.Vout
+	})
+
+	msg, err := roundwire.WrapPayload(payload)
+	if err != nil {
+		log.ErrorS(nil,
+			"Wrap SubmitVTXOForfeitSigsToServer payload failed",
+			err,
+		)
+
+		return nil
+	}
+
+	return msg
+}
+
+func joinRoundRequestPayload(
+	msg *JoinRoundRequest,
+) (*roundwire.JoinRoundRequestPayload, error) {
+
+	payload := &roundwire.JoinRoundRequestPayload{
+		RoundId:    msg.RoundID,
+		Identifier: roundwire.EncodePubKey(msg.Identifier),
+		BoardingRequests: make(
+			[]*roundwire.BoardingRequestPayload, 0,
+			len(msg.BoardingRequests),
+		),
+		VtxoRequests: make(
+			[]*roundwire.VTXORequestPayload, 0,
+			len(msg.VTXORequests),
+		),
+		ForfeitRequests: make(
+			[]*roundwire.ForfeitRequestPayload, 0,
+			len(msg.ForfeitRequests),
+		),
+		LeaveRequests: make(
+			[]*roundwire.LeaveRequestPayload, 0,
+			len(msg.LeaveRequests),
+		),
+	}
+
+	for i := range msg.BoardingRequests {
+		req := msg.BoardingRequests[i]
+		if req.Outpoint == nil {
+			return nil, fmt.Errorf(
+				"boarding request %d has nil outpoint", i,
+			)
+		}
+
+		if req.TxProof.IsSome() {
+			return nil, fmt.Errorf(
+				"boarding request %d has unsupported tx proof",
+				i,
+			)
+		}
+
+		outpoint := roundwire.EncodeOutPoint(*req.Outpoint)
+		payload.BoardingRequests = append(
+			payload.BoardingRequests,
+			&roundwire.BoardingRequestPayload{
+				Outpoint: &roundwire.OutPointPayload{
+					TxId: outpoint.TxId,
+					Vout: outpoint.Vout,
+				},
+				ClientKey: roundwire.EncodePubKey(
+					req.ClientKey,
+				),
+				OperatorKey: roundwire.EncodePubKey(
+					req.OperatorKey,
+				),
+				ExitDelay: req.ExitDelay,
+			},
+		)
+	}
+
+	for i := range msg.VTXORequests {
+		req := msg.VTXORequests[i]
+		signingKey := roundwire.EncodeKeyDescriptor(req.SigningKey)
+		payload.VtxoRequests = append(
+			payload.VtxoRequests,
+			&roundwire.VTXORequestPayload{
+				Amount: int64(req.Amount),
+				PkScriptHex: hex.EncodeToString(
+					req.PkScript,
+				),
+				Expiry: req.Expiry,
+				ClientKey: roundwire.EncodePubKey(
+					req.ClientKey,
+				),
+				OperatorKey: roundwire.EncodePubKey(
+					req.OperatorKey,
+				),
+				SigningKey: &roundwire.KeyDescriptorPayload{
+					KeyFamily: signingKey.KeyFamily,
+					KeyIndex:  signingKey.KeyIndex,
+					PubKeyHex: signingKey.PubKeyHex,
+				},
+			},
+		)
+	}
+
+	for _, req := range msg.ForfeitRequests {
+		encodedOutpoint := roundwire.EncodeOutPoint(req.VTXOOutpoint)
+		payload.ForfeitRequests = append(
+			payload.ForfeitRequests,
+			&roundwire.ForfeitRequestPayload{
+				VtxoOutpoint: &roundwire.OutPointPayload{
+					TxId: encodedOutpoint.TxId,
+					Vout: encodedOutpoint.Vout,
+				},
+			},
+		)
+	}
+
+	for i := range msg.LeaveRequests {
+		req := msg.LeaveRequests[i]
+		output := roundwire.EncodeTxOut(req.Output)
+		payload.LeaveRequests = append(
+			payload.LeaveRequests,
+			&roundwire.LeaveRequestPayload{
+				Output: &roundwire.TxOutPayload{
+					Value:    output.Value,
+					PkScript: output.PkScript,
+				},
+			},
+		)
+	}
+
+	if msg.Auth != nil {
+		payload.Auth = &roundwire.JoinRoundAuthPayload{
+			MessageHex:   hex.EncodeToString(msg.Auth.Message),
+			ValidFrom:    msg.Auth.ValidFrom,
+			ValidUntil:   msg.Auth.ValidUntil,
+			SignatureHex: hex.EncodeToString(msg.Auth.Signature),
+		}
+	}
+
+	return payload, nil
 }
 
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring

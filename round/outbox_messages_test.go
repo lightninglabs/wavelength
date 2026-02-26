@@ -22,10 +22,8 @@ func testRoundIDForMsg(seed string) RoundID {
 	return RoundID(id)
 }
 
-// TestOutboxMessagesToProto ensures that ToProto() methods compile and return
-// the expected nil placeholders. These placeholders will be replaced with
-// actual proto marshaling once the proto definitions are finalized, but this
-// test prevents accidental breakage of the interface contract in the meantime.
+// TestOutboxMessagesToProto ensures that ToProto() methods return non-nil
+// payload wrappers for mailbox transport.
 func TestOutboxMessagesToProto(t *testing.T) {
 	t.Parallel()
 
@@ -36,15 +34,23 @@ func TestOutboxMessagesToProto(t *testing.T) {
 	t.Run("JoinRoundRequest_ToProto", func(t *testing.T) {
 		t.Parallel()
 
+		boardingHash := chainhash.HashH([]byte("boarding"))
+
 		msg := &JoinRoundRequest{
 			BoardingRequests: []types.BoardingRequest{
-				{ClientKey: pubKey, OperatorKey: pubKey},
+				{
+					Outpoint: &wire.OutPoint{
+						Hash: boardingHash,
+					},
+					ClientKey:   pubKey,
+					OperatorKey: pubKey,
+				},
 			},
 			VTXORequests: []types.VTXORequest{},
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitNoncesRequest_ToProto", func(t *testing.T) {
@@ -65,7 +71,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitPartialSigRequest_ToProto", func(t *testing.T) {
@@ -89,7 +95,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitForfeitSigRequest_ToProto", func(t *testing.T) {
@@ -106,7 +112,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 }
 
