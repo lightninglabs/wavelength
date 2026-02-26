@@ -23,7 +23,12 @@ import (
 // minted or stored; callers provide the canonical principal identifier string
 // used in the signed message (typically the mailbox ID, e.g. "client:<id>").
 type Client struct {
-	rpc       *arkrpc.IndexerServiceMailboxClient
+	// rpc is the generated mailbox-RPC client. It is a concrete type
+	// rather than an interface because the generated variadic
+	// RPCOptions parameter does not lend itself to a clean interface
+	// boundary.
+	rpc *arkrpc.IndexerServiceMailboxClient
+
 	serverID  string
 	principal string
 }
@@ -307,6 +312,28 @@ func (c *Client) newTaprootScope(
 	}, nil
 }
 
+// buildTaprootScopes converts a slice of TaprootScriptScope into
+// proto ScriptScope messages, constructing a signed proof for each
+// entry under the given purpose.
+func (c *Client) buildTaprootScopes(
+	scopes []TaprootScriptScope, purpose string,
+) ([]*arkrpc.ScriptScope, error) {
+
+	out := make([]*arkrpc.ScriptScope, 0, len(scopes))
+	for _, scope := range scopes {
+		ss, err := c.newTaprootScope(
+			scope.PkScript, scope.SigningKey, purpose,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, ss)
+	}
+
+	return out, nil
+}
+
 // ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
 // or more pkScripts.
 func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
@@ -315,17 +342,11 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOsByScriptsResponse, error) {
 
-	var scriptScopes []*arkrpc.ScriptScope
-	for _, scope := range scopes {
-		ss, err := c.newTaprootScope(
-			scope.PkScript, scope.SigningKey,
-			purposeListVTXOsByScripts,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		scriptScopes = append(scriptScopes, ss)
+	scriptScopes, err := c.buildTaprootScopes(
+		scopes, purposeListVTXOsByScripts,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	req := &arkrpc.ListVTXOsByScriptsRequest{
@@ -345,17 +366,11 @@ func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.GetSubtreeByScriptsResponse, error) {
 
-	var scriptScopes []*arkrpc.ScriptScope
-	for _, scope := range scopes {
-		ss, err := c.newTaprootScope(
-			scope.PkScript, scope.SigningKey,
-			purposeGetSubtreeByScripts,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		scriptScopes = append(scriptScopes, ss)
+	scriptScopes, err := c.buildTaprootScopes(
+		scopes, purposeGetSubtreeByScripts,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	req := &arkrpc.GetSubtreeByScriptsRequest{
@@ -373,17 +388,11 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOEventsByScriptsResponse, error) {
 
-	var scriptScopes []*arkrpc.ScriptScope
-	for _, scope := range scopes {
-		ss, err := c.newTaprootScope(
-			scope.PkScript, scope.SigningKey,
-			purposeListVTXOEventsByScripts,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		scriptScopes = append(scriptScopes, ss)
+	scriptScopes, err := c.buildTaprootScopes(
+		scopes, purposeListVTXOEventsByScripts,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	req := &arkrpc.ListVTXOEventsByScriptsRequest{
@@ -502,6 +511,18 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 	}
 
 	return c.rpc.UnregisterReceiveScript(ctx, req, firstOpt(opts))
+}
+
+// ListMyReceiveScripts lists the receive scripts currently registered
+// to the caller's mailbox principal. No proof is required because the
+// request is implicitly scoped to the authenticated principal.
+func (c *Client) ListMyReceiveScripts(ctx context.Context,
+	opts ...mailboxrpc.RPCOptions) (
+	*arkrpc.ListMyReceiveScriptsResponse, error) {
+
+	req := &arkrpc.ListMyReceiveScriptsRequest{}
+
+	return c.rpc.ListMyReceiveScripts(ctx, req, firstOpt(opts))
 }
 
 // ListOORRecipientEventsByScriptTaproot performs a proof-gated
