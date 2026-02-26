@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
@@ -39,8 +38,7 @@ type SyncBackend interface {
 	// ListOORRecipientEventsByScriptTaproot returns
 	// script-scoped OOR recipient events.
 	ListOORRecipientEventsByScriptTaproot(ctx context.Context,
-		pkScript []byte, signingKey *btcec.PrivateKey,
-		afterEventID uint64, limit uint32,
+		pkScript []byte, afterEventID uint64, limit uint32,
 		opts ...mailboxrpc.RPCOptions,
 	) (*arkrpc.ListOORRecipientEventsByScriptResponse, error)
 }
@@ -112,6 +110,13 @@ type VTXOSyncResult struct {
 // the cursor past the returned events. Callers should only call Ack
 // after they have fully processed the batch. Ack is idempotent
 // within a single result but must not be called concurrently.
+//
+// NOTE: The ack closure captures the context from the
+// SyncVTXOEventsTaproot call. If that context is cancelled before
+// Ack is invoked (e.g., during shutdown), the cursor persist will
+// fail even though the batch was processed. Callers that need to
+// persist cursors on shutdown should call Ack before cancelling the
+// polling context.
 func (r *VTXOSyncResult) Ack() error {
 	return r.ack()
 }
@@ -130,6 +135,12 @@ type OORSyncResult struct {
 // the cursor past the returned events. Callers should only call Ack
 // after they have fully processed the batch. Ack is idempotent
 // within a single result but must not be called concurrently.
+//
+// NOTE: The ack closure captures the context from the
+// SyncOORRecipientEventsTaproot call. If that context is cancelled
+// before Ack is invoked, the cursor persist will fail even though
+// the batch was processed. Callers that need to persist cursors on
+// shutdown should call Ack before cancelling the polling context.
 func (r *OORSyncResult) Ack() error {
 	return r.ack()
 }
@@ -189,7 +200,7 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 // pkScript starting from the stored cursor. The cursor is NOT
 // advanced until the caller invokes Ack on the returned result.
 func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
-	pkScript []byte, signingKey *btcec.PrivateKey, limit uint32,
+	pkScript []byte, limit uint32,
 	opts ...mailboxrpc.RPCOptions) (*OORSyncResult, error) {
 
 	if len(pkScript) == 0 {
@@ -210,7 +221,7 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 		"limit", limit)
 
 	resp, err := c.backend.ListOORRecipientEventsByScriptTaproot(
-		ctx, pkScript, signingKey, cursor, limit, opts...,
+		ctx, pkScript, cursor, limit, opts...,
 	)
 	if err != nil {
 		return nil, err

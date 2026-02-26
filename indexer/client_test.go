@@ -109,21 +109,25 @@ func TestEncodeProofTLVRoundTrip(t *testing.T) {
 func TestEncodeProofTLVDeterministic(t *testing.T) {
 	t.Parallel()
 
-	args := []interface{}{
-		"script_scope", "srv", "prin", "list_vtxos_by_scripts",
-		[]byte{0x51, 0x20, 0x01},
-		[]byte{0xde, 0xad, 0xbe, 0xef},
-		uint64(1700000000), uint64(1700000600),
-	}
+	const (
+		msgType  = "script_scope"
+		serverID = "srv"
+		prin     = "prin"
+		purpose  = "list_vtxos_by_scripts"
+		issued   = uint64(1700000000)
+		expires  = uint64(1700000600)
+	)
+
+	pkScript := []byte{0x51, 0x20, 0x01}
+	nonce := []byte{0xde, 0xad, 0xbe, 0xef}
 
 	encode := func() []byte {
 		b, err := encodeProofTLV(
-			args[0].(string), args[1].(string),
-			args[2].(string), args[3].(string),
-			args[4].([]byte), args[5].([]byte),
-			args[6].(uint64), args[7].(uint64),
+			msgType, serverID, prin, purpose,
+			pkScript, nonce, issued, expires,
 		)
 		require.NoError(t, err)
+
 		return b
 	}
 
@@ -143,6 +147,7 @@ func TestEncodeProofTLVDistinctPurposes(t *testing.T) {
 			1700000000, 1700000600,
 		)
 		require.NoError(t, err)
+
 		return b
 	}
 
@@ -163,7 +168,8 @@ func TestSchnorrSigOverMessageSignVerify(t *testing.T) {
 
 	msg := []byte("test proof message content")
 
-	sig64, err := schnorrSigOverMessage(msg, priv)
+	signer := &PrivKeySchnorrSigner{Key: priv}
+	sig64, err := schnorrSigOverMessage(msg, nil, signer)
 	require.NoError(t, err)
 	require.Len(t, sig64, 64)
 
@@ -187,10 +193,11 @@ func TestSchnorrSigOverMessageDeterministic(t *testing.T) {
 
 	msg := []byte("deterministic signing test")
 
-	sig1, err := schnorrSigOverMessage(msg, priv)
+	signer := &PrivKeySchnorrSigner{Key: priv}
+	sig1, err := schnorrSigOverMessage(msg, nil, signer)
 	require.NoError(t, err)
 
-	sig2, err := schnorrSigOverMessage(msg, priv)
+	sig2, err := schnorrSigOverMessage(msg, nil, signer)
 	require.NoError(t, err)
 
 	require.Equal(t, sig1, sig2)
@@ -209,7 +216,8 @@ func TestSchnorrSigOverMessageWrongKeyFails(t *testing.T) {
 
 	msg := []byte("wrong key test")
 
-	sig64, err := schnorrSigOverMessage(msg, priv1)
+	signer1 := &PrivKeySchnorrSigner{Key: priv1}
+	sig64, err := schnorrSigOverMessage(msg, nil, signer1)
 	require.NoError(t, err)
 
 	// Parse and verify against the wrong key.

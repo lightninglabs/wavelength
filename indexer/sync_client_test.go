@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/stretchr/testify/require"
@@ -49,7 +48,7 @@ func (b *testSyncBackend) ListVTXOEventsByScriptsTaproot(
 // ListOORRecipientEventsByScriptTaproot records afterEventID and
 // returns queued responses.
 func (b *testSyncBackend) ListOORRecipientEventsByScriptTaproot(
-	_ context.Context, _ []byte, _ *btcec.PrivateKey,
+	_ context.Context, _ []byte,
 	afterEventID uint64, _ uint32,
 	_ ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
@@ -142,9 +141,6 @@ func TestSyncClientVTXOEventCursorPersistence(t *testing.T) {
 func TestSyncClientOORCursorPersistence(t *testing.T) {
 	t.Parallel()
 
-	priv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
 	backend := &testSyncBackend{
 		oorResponses: []*arkrpc.ListOORRecipientEventsByScriptResponse{
 			{
@@ -168,7 +164,7 @@ func TestSyncClientOORCursorPersistence(t *testing.T) {
 
 	// First poll: receives one event at cursor 0.
 	result1, err := syncClient.SyncOORRecipientEventsTaproot(
-		t.Context(), pkScript, priv, 100,
+		t.Context(), pkScript, 100,
 	)
 	require.NoError(t, err)
 	require.Len(t, result1.Response.Events, 1)
@@ -179,7 +175,7 @@ func TestSyncClientOORCursorPersistence(t *testing.T) {
 
 	// Second poll: starts from cursor 2 (advanced by ack).
 	result2, err := syncClient.SyncOORRecipientEventsTaproot(
-		t.Context(), pkScript, priv, 100,
+		t.Context(), pkScript, 100,
 	)
 	require.NoError(t, err)
 	require.Empty(t, result2.Response.Events)
