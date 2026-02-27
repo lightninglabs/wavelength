@@ -170,3 +170,23 @@ type TransactionConfirmedEvent struct {
 // eventSealed marks TransactionConfirmedEvent as implementing the sealed Event
 // interface.
 func (e *TransactionConfirmedEvent) eventSealed() {}
+
+// ConfirmRoundSucceededEvent is sent by the OutboxHandler after it has
+// successfully persisted all round confirmation data (VTXOs marked live,
+// forfeits recorded, round marked confirmed).
+type ConfirmRoundSucceededEvent struct{}
+
+// eventSealed marks ConfirmRoundSucceededEvent as implementing the sealed
+// Event interface.
+func (e *ConfirmRoundSucceededEvent) eventSealed() {}
+
+// ConfirmRoundFailedEvent is sent by the OutboxHandler when persisting round
+// confirmation data fails.
+type ConfirmRoundFailedEvent struct {
+	// Reason describes why the confirmation persistence failed.
+	Reason string
+}
+
+// eventSealed marks ConfirmRoundFailedEvent as implementing the sealed Event
+// interface.
+func (e *ConfirmRoundFailedEvent) eventSealed() {}

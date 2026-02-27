@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -354,3 +355,30 @@ type BroadcastRoundReq struct {
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
+
+// ConfirmRoundReq is an outbox event emitted when a round's transaction has
+// been confirmed on-chain. The OutboxHandler should persist confirmation data
+// (mark VTXOs live, record forfeits, mark the round confirmed) and return a
+// ConfirmRoundSucceededEvent or ConfirmRoundFailedEvent.
+type ConfirmRoundReq struct {
+	// RoundID is the identifier of the confirmed round.
+	RoundID RoundID
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// When non-empty the handler marks the round's VTXOs as live.
+	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	// Each entry is persisted via MarkVTXOForfeit.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// BlockHeight is the height of the confirming block.
+	BlockHeight int32
+
+	// BlockHash is the hash of the confirming block.
+	BlockHash chainhash.Hash
+}
+
+// outboxEventSealed marks ConfirmRoundReq as implementing the sealed
+// OutboxEvent interface.
+func (c *ConfirmRoundReq) outboxEventSealed() {}

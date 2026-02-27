@@ -2152,14 +2152,23 @@ func TestFSMFinalizedState(t *testing.T) {
 		err := h.sendEvent(confirmEvent)
 		require.NoError(t, err)
 
-		// Should transition to ConfirmedState.
+		// Should transition to AwaitingConfirmPersistState with
+		// a ConfirmRoundReq outbox event.
+		assertStateType[*AwaitingConfirmPersistState](h)
+		h.assertOutboxLen(1)
+		assertOutboxContains[*ConfirmRoundReq](h)
+
+		// Feed the handler success event to complete the
+		// confirmation.
+		h.outboxMessages = nil
+		err = h.sendEvent(&ConfirmRoundSucceededEvent{})
+		require.NoError(t, err)
+
 		confirmedState := assertStateType[*ConfirmedState](h)
 		require.Equal(t, int32(100), confirmedState.BlockHeight)
 		require.Equal(t, blockHash, confirmedState.BlockHash)
 		require.Equal(t, finalTx, confirmedState.FinalTx)
 		require.Len(t, confirmedState.ClientRegistrations, 1)
-
-		// No outbox messages emitted.
 		h.assertOutboxLen(0)
 	})
 
@@ -2673,22 +2682,25 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 
 	require.True(t, foundBroadcast, "broadcast should be requested")
 
-	// Simulate confirmation and ensure round + VTXOs are updated.
+	// Simulate confirmation — the FSM emits a ConfirmRoundReq outbox
+	// event and transitions to AwaitingConfirmPersistState.
 	h.outboxMessages = nil
 	err = h.sendEvent(&TransactionConfirmedEvent{
 		BlockHeight: 100,
 		BlockHash:   chainhash.Hash{},
 	})
 	require.NoError(t, err)
+	assertStateType[*AwaitingConfirmPersistState](h)
+	h.assertOutboxLen(1)
+	confirmReq := assertOutboxContains[*ConfirmRoundReq](h)
+	require.Equal(t, h.roundID, confirmReq.RoundID)
+
+	// Feed success to complete the confirmation cycle.
+	h.outboxMessages = nil
+	err = h.sendEvent(&ConfirmRoundSucceededEvent{})
+	require.NoError(t, err)
 	assertStateType[*ConfirmedState](h)
 	h.assertOutboxLen(0)
-	h.vtxoStore.AssertCalled(t,
-		"MarkVTXOsLive", mock.Anything, h.roundID,
-	)
-	h.roundStore.AssertCalled(t,
-		"MarkRoundConfirmed", mock.Anything, h.roundID,
-		int32(100), mock.Anything,
-	)
 }
 
 // TestFSMForfeitSigningFlowE2ERealSigs exercises the full forfeit signing flow
@@ -2839,6 +2851,8 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 		)
 	})
 
+	// Simulate confirmation — the FSM emits a ConfirmRoundReq and
+	// transitions to the intermediate AwaitingConfirmPersistState.
 	h.outboxMessages = nil
 	err = h.sendEvent(&TransactionConfirmedEvent{
 		BlockHeight: 100,
@@ -2846,11 +2860,17 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 		NumConfs:    6,
 	})
 	require.NoError(t, err)
+	assertStateType[*AwaitingConfirmPersistState](h)
+	h.assertOutboxLen(1)
+	confirmReq := assertOutboxContains[*ConfirmRoundReq](h)
+	require.Contains(t, confirmReq.ForfeitInfos, forfeitOutpoint)
+	require.Equal(t, forfeitInfo, confirmReq.ForfeitInfos[forfeitOutpoint])
+
+	// Feed success to complete the confirmation cycle.
+	h.outboxMessages = nil
+	err = h.sendEvent(&ConfirmRoundSucceededEvent{})
+	require.NoError(t, err)
 	assertStateType[*ConfirmedState](h)
-	h.vtxoStore.AssertCalled(t,
-		"MarkVTXOForfeit", mock.Anything, forfeitOutpoint,
-		forfeitInfo,
-	)
 }
 
 // TestFSMVTXOMultiClientRealSigs covers two clients each with a VTXO, ensuring

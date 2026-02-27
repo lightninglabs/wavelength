@@ -2570,6 +2570,10 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 // ProcessEvent handles events in the FinalizedState. This state holds the
 // fully signed transaction ready for broadcast.
 //
+// On TransactionConfirmedEvent the FSM emits a ConfirmRoundReq outbox event
+// and transitions to AwaitingConfirmPersistState. The OutboxHandler performs
+// the actual DB persistence and feeds back a success or failure event.
+//
 // TODO(elle): handle re-broadcast logic.
 func (s *FinalizedState) ProcessEvent(ctx context.Context,
 	event Event, env *Environment) (*StateTransition, error) {
@@ -2584,61 +2588,94 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 			slog.Int("block_height", int(e.BlockHeight)),
 			slog.Int("vtxo_trees", len(s.VTXOTrees)))
 
-		// Mark VTXOs live upon confirmation.
-		if len(s.VTXOTrees) > 0 {
-			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
-			if err != nil {
-				env.Log.WarnS(ctx, "Failed to mark VTXOs live", err)
-
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("mark VTXOs live: %v", err),
-				), nil
-			}
+		// Emit an outbox event requesting the handler to persist
+		// confirmation data. The handler will mark VTXOs live,
+		// record forfeits, and mark the round confirmed.
+		outbox := []OutboxEvent{
+			&ConfirmRoundReq{
+				RoundID:      env.RoundID,
+				VTXOTrees:    s.VTXOTrees,
+				ForfeitInfos: s.ForfeitInfos,
+				BlockHeight:  e.BlockHeight,
+				BlockHash:    e.BlockHash,
+			},
 		}
-
-		// Mark forfeited VTXOs after confirmation.
-		for outpoint, info := range s.ForfeitInfos {
-			err := env.VTXOStore.MarkVTXOForfeit(
-				ctx, outpoint, info,
-			)
-			if err != nil {
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("mark VTXO forfeit: %v",
-						err),
-				), nil
-			}
-		}
-
-		// Persist the round as confirmed for bookkeeping.
-		err := env.RoundStore.MarkRoundConfirmed(
-			ctx, env.RoundID, e.BlockHeight, e.BlockHash,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Failed to mark round confirmed", err)
-
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("mark round confirmed: %v", err),
-			), nil
-		}
-
-		env.Log.InfoS(ctx, "Round confirmed and complete",
-			slog.Int("block_height", int(e.BlockHeight)))
 
 		return &StateTransition{
-			NextState: &ConfirmedState{
+			NextState: &AwaitingConfirmPersistState{
 				ClientRegistrations: s.ClientRegistrations,
 				FinalTx:             s.FinalTx,
 				VTXOTrees:           s.VTXOTrees,
 				BlockHeight:         e.BlockHeight,
 				BlockHash:           e.BlockHash,
 			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outbox,
+			}),
 		}, nil
 
 	default:
 		return unexpectedEvent(s, "finalised", event, env), nil
+	}
+}
+
+// ProcessEvent handles events in the AwaitingConfirmPersistState. This state
+// waits for the OutboxHandler to complete persistence of round confirmation
+// data.
+func (s *AwaitingConfirmPersistState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingConfirmPersist"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *ConfirmRoundSucceededEvent:
+		env.Log.InfoS(ctx, "Round confirmed and complete",
+			slog.Int("block_height", int(s.BlockHeight)))
+
+		return &StateTransition{
+			NextState: &ConfirmedState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             s.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				BlockHeight:         s.BlockHeight,
+				BlockHash:           s.BlockHash,
+			},
+		}, nil
+
+	case *ConfirmRoundFailedEvent:
+		// The transaction IS confirmed on-chain so unlocking
+		// inputs is nonsensical — only notify clients and the
+		// actor of the persistence failure.
+		var outboxMsgs []OutboxEvent
+		for clientID := range s.ClientRegistrations {
+			outboxMsgs = append(
+				outboxMsgs, &ClientRoundFailedResp{
+					Client:  clientID,
+					RoundID: env.RoundID,
+					Reason:  e.Reason,
+				},
+			)
+		}
+		outboxMsgs = append(outboxMsgs, &RoundFailedReq{
+			FailedRoundID: env.RoundID,
+			Reason:        e.Reason,
+		})
+
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: e.Reason,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outboxMsgs,
+			}),
+		}, nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_confirm_persist", event, env,
+		), nil
 	}
 }
 

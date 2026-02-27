@@ -1,6 +1,9 @@
 package rounds
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // OutboxHandler executes FSM outbox requests and returns zero or more
 // follow-up inbox events to feed back into the FSM. This mirrors the OOR
@@ -39,13 +42,67 @@ func NewInProcessOutboxHandler(roundStore RoundStore,
 	}
 }
 
-// Handle executes the outbox request and returns follow-up events.
-func (h *InProcessOutboxHandler) Handle(_ context.Context, _ RoundID,
-	_ OutboxEvent) ([]Event, error) {
+// Handle executes the outbox request and returns follow-up events. Outbox
+// event types that are not yet migrated return nil, allowing the legacy
+// processOutbox path to handle them.
+func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
+	outbox OutboxEvent) ([]Event, error) {
 
-	// No outbox event types are handled yet. As individual FSM
-	// transitions are purified, cases will be added here.
-	return nil, nil
+	switch msg := outbox.(type) {
+	case *ConfirmRoundReq:
+		return h.handleConfirmRound(ctx, msg)
+
+	default:
+		return nil, nil
+	}
+}
+
+// handleConfirmRound persists round confirmation data: marks VTXOs live,
+// records forfeits, and marks the round as confirmed. Returns a
+// ConfirmRoundSucceededEvent on success or a ConfirmRoundFailedEvent on
+// any persistence error.
+func (h *InProcessOutboxHandler) handleConfirmRound(ctx context.Context,
+	msg *ConfirmRoundReq) ([]Event, error) {
+
+	// Mark VTXOs live upon confirmation.
+	if len(msg.VTXOTrees) > 0 {
+		err := h.vtxoStore.MarkVTXOsLive(ctx, msg.RoundID)
+		if err != nil {
+			return []Event{&ConfirmRoundFailedEvent{
+				Reason: fmt.Sprintf(
+					"mark VTXOs live: %v", err,
+				),
+			}}, nil
+		}
+	}
+
+	// Mark forfeited VTXOs after confirmation.
+	for outpoint, info := range msg.ForfeitInfos {
+		err := h.vtxoStore.MarkVTXOForfeit(
+			ctx, outpoint, info,
+		)
+		if err != nil {
+			return []Event{&ConfirmRoundFailedEvent{
+				Reason: fmt.Sprintf(
+					"mark VTXO forfeit: %v", err,
+				),
+			}}, nil
+		}
+	}
+
+	// Persist the round as confirmed.
+	err := h.roundStore.MarkRoundConfirmed(
+		ctx, msg.RoundID, msg.BlockHeight, msg.BlockHash,
+	)
+	if err != nil {
+		return []Event{&ConfirmRoundFailedEvent{
+			Reason: fmt.Sprintf(
+				"mark round confirmed: %v", err,
+			),
+		}}, nil
+	}
+
+	return []Event{&ConfirmRoundSucceededEvent{}}, nil
 }
 
 // Compile-time check that InProcessOutboxHandler implements OutboxHandler.
