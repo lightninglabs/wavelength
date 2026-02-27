@@ -171,6 +171,25 @@ type TransactionConfirmedEvent struct {
 // interface.
 func (e *TransactionConfirmedEvent) eventSealed() {}
 
+// PersistServerSigningSucceededEvent is sent by the OutboxHandler after it
+// has successfully persisted the round and VTXOs following server signing.
+type PersistServerSigningSucceededEvent struct{}
+
+// eventSealed marks PersistServerSigningSucceededEvent as implementing the
+// sealed Event interface.
+func (e *PersistServerSigningSucceededEvent) eventSealed() {}
+
+// PersistServerSigningFailedEvent is sent by the OutboxHandler when
+// persisting the round or VTXOs after server signing fails.
+type PersistServerSigningFailedEvent struct {
+	// Reason describes why the persistence failed.
+	Reason string
+}
+
+// eventSealed marks PersistServerSigningFailedEvent as implementing the
+// sealed Event interface.
+func (e *PersistServerSigningFailedEvent) eventSealed() {}
+
 // ConfirmRoundSucceededEvent is sent by the OutboxHandler after it has
 // successfully persisted all round confirmation data (VTXOs marked live,
 // forfeits recorded, round marked confirmed).

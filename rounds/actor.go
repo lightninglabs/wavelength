@@ -718,6 +718,8 @@ func outboxRoundID(msg OutboxEvent) string {
 		return m.FailedRoundID.String()
 	case *BroadcastRoundReq:
 		return m.RoundID.String()
+	case *PersistServerSigningReq:
+		return m.RoundID.String()
 	case *ConfirmRoundReq:
 		return m.RoundID.String()
 	default:

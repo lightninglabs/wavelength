@@ -435,6 +435,45 @@ func (s *ServerSigningState) IsTerminal() bool {
 // interface.
 func (s *ServerSigningState) stateSealed() {}
 
+// AwaitingServerSignPersistState waits for the OutboxHandler to persist
+// the round and VTXOs after server signing completes. This intermediate
+// state exists so that handleServerSigning remains pure — it emits a
+// PersistServerSigningReq outbox event and transitions here, then the
+// handler feeds back a success or failure event.
+type AwaitingServerSignPersistState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// StartHeight is the block height when the round was created. Needed
+	// to construct the BroadcastRoundReq on persistence success.
+	StartHeight uint32
+}
+
+// String returns a human-readable representation of
+// AwaitingServerSignPersistState.
+func (s *AwaitingServerSignPersistState) String() string {
+	return "AwaitingServerSignPersistState"
+}
+
+// IsTerminal returns false as AwaitingServerSignPersistState is not a
+// terminal state.
+func (s *AwaitingServerSignPersistState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingServerSignPersistState as implementing the
+// sealed State interface.
+func (s *AwaitingServerSignPersistState) stateSealed() {}
+
 // FinalizedState holds the fully signed transaction ready for broadcast. The
 // transaction has all boarding input signatures (client + operator) and wallet
 // input signatures applied.

@@ -3,6 +3,7 @@ package rounds
 import (
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -355,6 +356,43 @@ type BroadcastRoundReq struct {
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
+
+// PersistServerSigningReq is an outbox event emitted after the server has
+// signed all inputs and finalized the PSBT. The OutboxHandler should persist
+// the round and its VTXOs, then return a PersistServerSigningSucceededEvent
+// or PersistServerSigningFailedEvent.
+type PersistServerSigningReq struct {
+	// RoundID is the identifier of the round to persist.
+	RoundID RoundID
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// ClientRegistrations contains client registration data needed
+	// to build the VTXO descriptor index during persistence.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock in blocks for the VTXO sweep
+	// timeout path.
+	CSVDelay uint32
+}
+
+// outboxEventSealed marks PersistServerSigningReq as implementing the sealed
+// OutboxEvent interface.
+func (p *PersistServerSigningReq) outboxEventSealed() {}
 
 // ConfirmRoundReq is an outbox event emitted when a round's transaction has
 // been confirmed on-chain. The OutboxHandler should persist confirmation data
