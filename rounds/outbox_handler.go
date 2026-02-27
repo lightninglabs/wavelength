@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -30,31 +31,37 @@ type OutboxHandler interface {
 // (no follow-up events, no error), allowing the legacy processOutbox path
 // to handle them.
 type InProcessOutboxHandler struct {
-	roundStore       RoundStore
-	vtxoStore        VTXOStore
-	walletController WalletController
-	feeEstimator     chainfee.Estimator
-	confTarget       uint32
-	minConfs         int32
-	walletAccount    string
+	roundStore          RoundStore
+	vtxoStore           VTXOStore
+	walletController    WalletController
+	feeEstimator        chainfee.Estimator
+	boardingInputLocker BoardingInputLocker
+	vtxoLocker          vtxo.Locker
+	confTarget          uint32
+	minConfs            int32
+	walletAccount       string
 }
 
 // NewInProcessOutboxHandler creates an InProcessOutboxHandler with the given
-// store, wallet, and fee estimation dependencies.
+// store, wallet, locking, and fee estimation dependencies.
 func NewInProcessOutboxHandler(roundStore RoundStore,
 	vtxoStore VTXOStore, walletController WalletController,
-	feeEstimator chainfee.Estimator, confTarget uint32,
+	feeEstimator chainfee.Estimator,
+	boardingInputLocker BoardingInputLocker,
+	vtxoLocker vtxo.Locker, confTarget uint32,
 	minConfs int32,
 	walletAccount string) *InProcessOutboxHandler {
 
 	return &InProcessOutboxHandler{
-		roundStore:       roundStore,
-		vtxoStore:        vtxoStore,
-		walletController: walletController,
-		feeEstimator:     feeEstimator,
-		confTarget:       confTarget,
-		minConfs:         minConfs,
-		walletAccount:    walletAccount,
+		roundStore:          roundStore,
+		vtxoStore:           vtxoStore,
+		walletController:    walletController,
+		feeEstimator:        feeEstimator,
+		boardingInputLocker: boardingInputLocker,
+		vtxoLocker:          vtxoLocker,
+		confTarget:          confTarget,
+		minConfs:            minConfs,
+		walletAccount:       walletAccount,
 	}
 }
 
@@ -76,6 +83,14 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 
 	case *ConfirmRoundReq:
 		return h.handleConfirmRound(ctx, msg)
+
+	case *UnlockBoardingInputsReq:
+		h.handleUnlockBoardingInputs(ctx, msg)
+		return nil, nil
+
+	case *UnlockForfeitVTXOsReq:
+		h.handleUnlockForfeitVTXOs(ctx, msg)
+		return nil, nil
 
 	default:
 		return nil, nil
@@ -321,6 +336,76 @@ func (h *InProcessOutboxHandler) handleConfirmRound(ctx context.Context,
 	}
 
 	return []Event{&ConfirmRoundSucceededEvent{}}, nil
+}
+
+// handleUnlockBoardingInputs unlocks all boarding inputs for the given client
+// registrations. This is fire-and-forget: errors are logged but do not produce
+// follow-up events, ensuring we attempt to unlock all inputs even if some fail.
+func (h *InProcessOutboxHandler) handleUnlockBoardingInputs(
+	ctx context.Context, msg *UnlockBoardingInputsReq) {
+
+	for _, reg := range msg.ClientRegistrations {
+		for _, bi := range reg.BoardingInputs {
+			err := h.boardingInputLocker.Unlock(
+				ctx, bi.Outpoint, msg.RoundID,
+			)
+			if err != nil {
+				h.log.ErrorS(
+					ctx, "Failed to unlock "+
+						"boarding input", err,
+					"outpoint",
+					bi.Outpoint.String(),
+				)
+			}
+		}
+	}
+}
+
+// handleUnlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
+// registrations. This is fire-and-forget: errors are logged but do not produce
+// follow-up events, ensuring we attempt to unlock all VTXOs even if some fail.
+func (h *InProcessOutboxHandler) handleUnlockForfeitVTXOs(
+	ctx context.Context, msg *UnlockForfeitVTXOsReq) {
+
+	for _, reg := range msg.ClientRegistrations {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
+		)
+		for _, fi := range reg.ForfeitInputs {
+			outpoints = append(outpoints, *fi.Outpoint)
+		}
+
+		if h.vtxoLocker == nil {
+			err := h.vtxoStore.UnlockVTXO(
+				ctx, msg.RoundID, outpoints...,
+			)
+			if err != nil {
+				h.log.ErrorS(
+					ctx, "Failed to unlock "+
+						"forfeit VTXOs", err,
+					"count", len(outpoints),
+				)
+			}
+
+			continue
+		}
+
+		owner := vtxo.RoundLockOwner(msg.RoundID.String())
+		err := h.vtxoLocker.UnlockMany(
+			ctx, outpoints, owner,
+		)
+		if err != nil {
+			h.log.ErrorS(
+				ctx, "Failed to unlock "+
+					"forfeit VTXOs", err,
+				"count", len(outpoints),
+			)
+		}
+	}
 }
 
 // Compile-time check that InProcessOutboxHandler implements OutboxHandler.

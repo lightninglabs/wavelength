@@ -1332,10 +1332,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 		// Should be in AwaitingBatchBuildState.
 		assertStateType[*AwaitingBatchBuildState](h)
 
-		// Set up expectation for boarding input unlock when round
-		// fails.
-		h.expectInputUnlocked(&outpoint, h.env.RoundID)
-
 		// Feed batch build failure.
 		h.outboxMessages = nil
 		err = h.sendEvent(&BuildBatchFailedEvent{
@@ -1349,12 +1345,14 @@ func TestFSMFailureScenarios(t *testing.T) {
 
 		// Verify outbox messages:
 		// 1. ClientRoundFailedResp for client1
-		// 2. RoundFailedReq for the actor
-		// Note: Boarding inputs are unlocked directly by the FSM, not
-		// via outbox message.
+		// 2. UnlockBoardingInputsReq
+		// 3. UnlockForfeitVTXOsReq
+		// 4. RoundFailedReq for the actor
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
+			foundUnlockBI     bool
+			foundUnlockVTXO   bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1365,6 +1363,14 @@ func TestFSMFailureScenarios(t *testing.T) {
 				require.Contains(t, m.Reason, "insufficient "+
 					"funds")
 
+			case *UnlockBoardingInputsReq:
+				foundUnlockBI = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
+			case *UnlockForfeitVTXOsReq:
+				foundUnlockVTXO = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -1373,6 +1379,10 @@ func TestFSMFailureScenarios(t *testing.T) {
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlockBI,
+			"boarding inputs should be unlocked via outbox")
+		require.True(t, foundUnlockVTXO,
+			"forfeit VTXOs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 
@@ -1441,11 +1451,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 			// Should be in AwaitingBatchBuildState.
 			assertStateType[*AwaitingBatchBuildState](h)
 
-			// Set up expectations for both boarding input and
-			// forfeit VTXO unlock when round fails.
-			h.expectInputUnlocked(&boardingOutpoint, h.env.RoundID)
-			h.expectVTXOUnlocked(h.env.RoundID, forfeitOutpoint)
-
 			// Feed batch build failure.
 			h.outboxMessages = nil
 			err = h.sendEvent(&BuildBatchFailedEvent{
@@ -1460,12 +1465,12 @@ func TestFSMFailureScenarios(t *testing.T) {
 				t, failedState.Reason, "insufficient funds",
 			)
 
-			// Verify outbox messages:
-			// 1. ClientRoundFailedResp for client1
-			// 2. RoundFailedReq for the actor
+			// Verify outbox messages include unlock events.
 			var (
 				foundClientFailed bool
 				foundRoundFailed  bool
+				foundUnlockBI     bool
+				foundUnlockVTXO   bool
 			)
 			for _, msg := range h.outboxMessages {
 				switch m := msg.(type) {
@@ -1474,6 +1479,18 @@ func TestFSMFailureScenarios(t *testing.T) {
 					require.Equal(
 						t, ClientID("client1"),
 						m.Client,
+					)
+
+				case *UnlockBoardingInputsReq:
+					foundUnlockBI = true
+					require.Equal(
+						t, h.env.RoundID, m.RoundID,
+					)
+
+				case *UnlockForfeitVTXOsReq:
+					foundUnlockVTXO = true
+					require.Equal(
+						t, h.env.RoundID, m.RoundID,
 					)
 
 				case *RoundFailedReq:
@@ -1487,6 +1504,14 @@ func TestFSMFailureScenarios(t *testing.T) {
 			require.True(
 				t, foundClientFailed,
 				"client should be notified",
+			)
+			require.True(
+				t, foundUnlockBI,
+				"boarding inputs should be unlocked",
+			)
+			require.True(
+				t, foundUnlockVTXO,
+				"forfeit VTXOs should be unlocked",
 			)
 			require.True(
 				t, foundRoundFailed,
@@ -1568,10 +1593,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 		// Clear outbox.
 		h.outboxMessages = nil
 
-		// Set up expectation for boarding input unlock when round
-		// fails.
-		h.expectInputUnlocked(&outpoint, h.env.RoundID)
-
 		// Send InputSignaturesTimeoutEvent.
 		err = h.sendEvent(&InputSignaturesTimeoutEvent{})
 		require.NoError(t, err)
@@ -1580,12 +1601,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 		failedState := assertStateType[*FailedState](h)
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages.
-		// Note: Boarding inputs are unlocked directly by the FSM, not
-		// via outbox message.
+		// Verify outbox messages include unlock events.
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
+			foundUnlockBI     bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1593,12 +1613,18 @@ func TestFSMFailureScenarios(t *testing.T) {
 				foundClientFailed = true
 				require.Equal(t, ClientID("client1"), m.Client)
 
+			case *UnlockBoardingInputsReq:
+				foundUnlockBI = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
 			}
 		}
 		require.True(t, foundClientFailed, "client notified of failure")
+		require.True(t, foundUnlockBI,
+			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor notified of failure")
 	})
 }
@@ -2322,10 +2348,6 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 
 		h := newTestHarness(t, awaitState)
 
-		// Set up expectation for boarding input unlock when round
-		// fails.
-		h.expectInputUnlocked(&outpoint, h.env.RoundID)
-
 		// Send VTXONoncesTimeoutEvent.
 		err := h.sendEvent(&VTXONoncesTimeoutEvent{})
 		require.NoError(t, err)
@@ -2335,14 +2357,11 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "VTXO nonce collection")
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages:
-		// 1. ClientRoundFailedResp for client1
-		// 2. RoundFailedReq for the actor
-		// Note: Boarding inputs are unlocked directly by the FSM, not
-		// via outbox message.
+		// Verify outbox messages include unlock events.
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
+			foundUnlockBI     bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -2352,6 +2371,10 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				require.Equal(t, h.env.RoundID, m.RoundID)
 				require.Contains(t, m.Reason, "VTXO nonce")
 
+			case *UnlockBoardingInputsReq:
+				foundUnlockBI = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -2359,6 +2382,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlockBI,
+			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 
@@ -3362,10 +3387,6 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		)
 		h := newTestHarness(t, awaitState)
 
-		// Set up expectation for boarding input unlock when round
-		// fails.
-		h.expectInputUnlocked(&outpoint, h.env.RoundID)
-
 		// Send VTXOSignaturesTimeoutEvent.
 		err := h.sendEvent(&VTXOSignaturesTimeoutEvent{})
 		require.NoError(t, err)
@@ -3375,12 +3396,11 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "VTXO signature")
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages.
-		// Note: Boarding inputs are unlocked directly by the FSM, not
-		// via outbox message.
+		// Verify outbox messages include unlock events.
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
+			foundUnlockBI     bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -3389,12 +3409,18 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				require.Equal(t, ClientID("client1"), m.Client)
 				require.Equal(t, h.env.RoundID, m.RoundID)
 
+			case *UnlockBoardingInputsReq:
+				foundUnlockBI = true
+				require.Equal(t, h.env.RoundID, m.RoundID)
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
+		require.True(t, foundUnlockBI,
+			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 

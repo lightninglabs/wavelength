@@ -179,6 +179,7 @@ func NewActor(cfg *ActorConfig) *Actor {
 		cfg.OutboxHandler = NewInProcessOutboxHandler(
 			cfg.RoundStore, cfg.VTXOStore,
 			cfg.WalletController, cfg.FeeEstimator,
+			cfg.BoardingInputLocker, cfg.VTXOLocker,
 			cfg.ConfTarget, cfg.MinConfs,
 			cfg.WalletAccount,
 		)
@@ -729,6 +730,10 @@ func outboxRoundID(msg OutboxEvent) string {
 	case *PersistServerSigningReq:
 		return m.RoundID.String()
 	case *ConfirmRoundReq:
+		return m.RoundID.String()
+	case *UnlockBoardingInputsReq:
+		return m.RoundID.String()
+	case *UnlockForfeitVTXOsReq:
 		return m.RoundID.String()
 	default:
 		return ""

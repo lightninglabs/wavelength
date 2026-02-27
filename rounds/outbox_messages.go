@@ -504,3 +504,37 @@ type ConfirmRoundReq struct {
 // outboxEventSealed marks ConfirmRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (c *ConfirmRoundReq) outboxEventSealed() {}
+
+// UnlockBoardingInputsReq is an outbox event emitted when a round fails and
+// all locked boarding inputs must be released. The OutboxHandler should unlock
+// each boarding input for each registered client. This is fire-and-forget:
+// errors are logged but do not produce follow-up events.
+type UnlockBoardingInputsReq struct {
+	// RoundID is the identifier of the round whose inputs are unlocked.
+	RoundID RoundID
+
+	// ClientRegistrations contains the client registrations whose boarding
+	// inputs should be unlocked.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
+// OutboxEvent interface.
+func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
+
+// UnlockForfeitVTXOsReq is an outbox event emitted when a round fails and
+// all locked forfeit VTXOs must be released. The OutboxHandler should unlock
+// each forfeit VTXO for each registered client. This is fire-and-forget:
+// errors are logged but do not produce follow-up events.
+type UnlockForfeitVTXOsReq struct {
+	// RoundID is the identifier of the round whose VTXOs are unlocked.
+	RoundID RoundID
+
+	// ClientRegistrations contains the client registrations whose forfeit
+	// VTXOs should be unlocked.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// outboxEventSealed marks UnlockForfeitVTXOsReq as implementing the sealed
+// OutboxEvent interface.
+func (u *UnlockForfeitVTXOsReq) outboxEventSealed() {}

@@ -440,8 +440,9 @@ func feedBatchBuildViaHandler(h *fsmTestHarness) {
 
 	handler := NewInProcessOutboxHandler(
 		h.roundStore, h.vtxoStore, h.walletController,
-		h.feeEstimator, h.env.ConfTarget,
-		h.env.MinConfs, h.env.WalletAccount,
+		h.feeEstimator, h.boardingLocker, h.vtxoLocker,
+		h.env.ConfTarget, h.env.MinConfs,
+		h.env.WalletAccount,
 	)
 
 	events, err := handler.Handle(
@@ -502,8 +503,9 @@ func (c *commonMockSetup) setupBoardingInputWithUnlock(outpoint *wire.OutPoint,
 }
 
 // expectInputUnlocked sets up an expectation that the FSM will unlock a
-// boarding input when the round fails. This should be called before triggering
-// a failure condition.
+// boarding input inline (e.g., during join-path rollback via
+// unlockBoardingInputsList). For failure-path unlocks routed via outbox,
+// assert on UnlockBoardingInputsReq instead.
 func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
 	roundID RoundID) {
 
@@ -524,21 +526,6 @@ func (c *commonMockSetup) expectVTXOLocked(roundID RoundID,
 	owner := vtxo.RoundLockOwner(roundID.String())
 	c.vtxoLocker.On(
 		"LockMany", mock.Anything, outpointsCopy, owner,
-	).Return(nil).Once()
-}
-
-// expectVTXOUnlocked sets up an expectation that the FSM will unlock VTXOs
-// when the round fails. This should be called before triggering a failure
-// condition.
-func (c *commonMockSetup) expectVTXOUnlocked(roundID RoundID,
-	outpoints ...wire.OutPoint) {
-
-	c.t.Helper()
-
-	outpointsCopy := append([]wire.OutPoint(nil), outpoints...)
-	owner := vtxo.RoundLockOwner(roundID.String())
-	c.vtxoLocker.On(
-		"UnlockMany", mock.Anything, outpointsCopy, owner,
 	).Return(nil).Once()
 }
 

@@ -117,30 +117,6 @@ func unlockBoardingInputsList(ctx context.Context, env *Environment,
 	}
 }
 
-// unlockBoardingInputs unlocks all boarding inputs for the given client
-// registrations. This is called when a round fails to release all locked
-// inputs. Errors are logged but don't stop the unlocking process, ensuring
-// we attempt to unlock all inputs even if some fail.
-func unlockBoardingInputs(ctx context.Context, env *Environment,
-	clientRegs map[clientconn.ClientID]*ClientRegistration) {
-
-	for _, reg := range clientRegs {
-		for _, input := range reg.BoardingInputs {
-			err := env.BoardingInputLocker.Unlock(
-				ctx, input.Outpoint, env.RoundID,
-			)
-			if err != nil {
-				// Log the error but continue unlocking other
-				// inputs. We don't want one failure to prevent
-				// releasing other locked inputs.
-				env.Log.ErrorS(ctx, "Failed to unlock boarding "+
-					"input", err,
-					"outpoint", input.Outpoint.String())
-			}
-		}
-	}
-}
-
 // lockForfeitVTXOs attempts to lock all forfeit VTXOs for a client in the
 // shared VTXO locker. If any lock fails, it returns an error. If all locks
 // succeed,
@@ -177,51 +153,6 @@ func lockForfeitVTXOs(ctx context.Context, env *Environment,
 	}
 
 	return nil
-}
-
-// unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
-// registrations. This is called when a round fails to release all locked
-// VTXOs. Errors are logged but don't stop the unlocking process, ensuring
-// we attempt to unlock all VTXOs even if some fail.
-func unlockForfeitVTXOs(ctx context.Context, env *Environment,
-	clientRegs map[clientconn.ClientID]*ClientRegistration) {
-
-	for _, reg := range clientRegs {
-		if len(reg.ForfeitInputs) == 0 {
-			continue
-		}
-
-		outpoints := make(
-			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
-		)
-		for _, input := range reg.ForfeitInputs {
-			outpoints = append(outpoints, *input.Outpoint)
-		}
-
-		if env.VTXOLocker == nil {
-			err := env.VTXOStore.UnlockVTXO(
-				ctx, env.RoundID, outpoints...,
-			)
-			if err != nil {
-				env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
-					"VTXOs", err,
-					"count", len(outpoints))
-			}
-
-			continue
-		}
-
-		owner := vtxo.RoundLockOwner(env.RoundID.String())
-		err := env.VTXOLocker.UnlockMany(ctx, outpoints, owner)
-		if err != nil {
-			// Log the error but continue unlocking other
-			// VTXOs. We don't want one failure to prevent
-			// releasing other locked VTXOs.
-			env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
-				"VTXOs", err,
-				"count", len(outpoints))
-		}
-	}
 }
 
 // newClientRegistration creates a ClientRegistration from a validated join
@@ -882,9 +813,10 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
-// the necessary outbox events to notify clients and inform the actor of the
-// failure. It also directly unlocks all boarding inputs.
-func buildFailureTransition(ctx context.Context, env *Environment,
+// the necessary outbox events to notify clients, unlock locked inputs, and
+// inform the actor of the failure. Unlocking is emitted as outbox events
+// so the FSM transition itself performs no I/O.
+func buildFailureTransition(_ context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string) *StateTransition {
 
@@ -903,11 +835,17 @@ func buildFailureTransition(ctx context.Context, env *Environment,
 		})
 	}
 
-	// Unlock all boarding inputs directly in the FSM.
-	unlockBoardingInputs(ctx, env, clientRegs)
-
-	// Unlock all forfeit VTXOs directly in the FSM.
-	unlockForfeitVTXOs(ctx, env, clientRegs)
+	// Emit unlock outbox events. The handler will execute the actual
+	// unlock I/O — this keeps buildFailureTransition pure with respect
+	// to locking side effects.
+	outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
+		RoundID:             env.RoundID,
+		ClientRegistrations: clientRegs,
+	})
+	outboxMsgs = append(outboxMsgs, &UnlockForfeitVTXOsReq{
+		RoundID:             env.RoundID,
+		ClientRegistrations: clientRegs,
+	})
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
