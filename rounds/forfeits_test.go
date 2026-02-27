@@ -161,7 +161,11 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: clientSig,
 			}},
-			reg, connectorAssignments, h.env,
+			reg, connectorAssignments,
+			h.env.WalletController,
+			h.env.Terms.OperatorKey,
+			h.env.Terms.VTXOExitDelay,
+			h.env.RoundID,
 		)
 		require.NoError(t, err)
 		require.Len(t, spent, 1)
@@ -345,7 +349,11 @@ func TestCompleteForfeitTxs(t *testing.T) {
 				UnsignedTx:    forfeitTx,
 				ClientVTXOSig: clientSig,
 			}},
-			reg, connectorAssignments, h.env,
+			reg, connectorAssignments,
+			h.env.WalletController,
+			h.env.Terms.OperatorKey,
+			h.env.Terms.VTXOExitDelay,
+			h.env.RoundID,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),

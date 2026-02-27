@@ -2220,131 +2220,56 @@ func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 	}
 }
 
-// handleServerSigning performs server-side signing of all inputs in the PSBT.
-// For boarding inputs, it adds the operator's signature to complete the
-// collaborative spend path. For wallet inputs, it calls FinalizePsbt.
+// handleServerSigning emits a SignAndFinalizeRoundReq outbox event for
+// the handler to perform signing I/O (SignOutputRaw, FinalizePsbt) and
+// transitions to AwaitingSignAndFinalizeState. This keeps the FSM pure.
 func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env *Environment) (*StateTransition, error) {
 
-	env.Log.DebugS(ctx, "Server signing inputs",
+	env.Log.DebugS(ctx, "Emitting sign-and-finalize request",
 		slog.Int("input_count", len(s.PSBT.Inputs)),
 		LogClientCount(len(s.CollectedSignatures)))
 
-	// First, sign and finalize all boarding inputs with the collected
-	// client signatures and the operator's signatures.
-	err := s.signBoardingInputs(env)
-	if err != nil {
-		env.Log.WarnS(ctx, "Failed to sign boarding inputs", err)
-
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to sign boarding inputs: %v", err),
-		), nil
-	}
-
-	forfeitInfos := make(map[wire.OutPoint]*ForfeitInfo)
-
-	// Complete forfeit transactions with the server's signatures.
-	for clientID, reg := range s.ClientRegistrations {
-		if len(reg.ForfeitInputs) == 0 {
-			continue
-		}
-
-		if len(s.ConnectorAssignments) == 0 {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("connector assignments missing "+
-					"for client %s", clientID),
-			), nil
-		}
-
-		forfeitTxs, ok := s.CollectedForfeitTxs[clientID]
-		if !ok {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("missing forfeit txs for "+
-					"client %s", clientID),
-			), nil
-		}
-
-		spent, err := completeForfeitTxs(
-			forfeitTxs, reg, s.ConnectorAssignments, env,
-		)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("complete forfeit txs for "+
-					"client %s: %v", clientID, err),
-			), nil
-		}
-
-		for _, spentVTXO := range spent {
-			if spentVTXO.ForfeitInfo == nil {
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("missing forfeit info for "+
-						"client %s", clientID),
-				), nil
-			}
-
-			forfeitInfos[spentVTXO.VTXOOutpoint] =
-				spentVTXO.ForfeitInfo
-		}
-	}
-
-	env.Log.DebugS(ctx, "Boarding inputs and forfeit txs signed, "+
-		"finalizing PSBT")
-
-	// Now finalize the PSBT which signs all wallet-controlled inputs.
-	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
-	if err != nil {
-		env.Log.WarnS(ctx, "Failed to finalize PSBT", err)
-
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to finalize PSBT: %v", err),
-		), nil
-	}
-
-	env.Log.DebugS(ctx, "PSBT finalized",
-		LogTxID(finalTx.TxHash().String()))
-
-	// Emit a persistence request for the handler to execute. The
-	// FSM transitions to AwaitingServerSignPersistState while the
-	// handler persists the round and VTXOs asynchronously.
-	persistReq := &PersistServerSigningReq{
-		RoundID:     env.RoundID,
-		FinalTx:     finalTx,
-		VTXOTrees:   s.VTXOTrees,
-		ForfeitInfos: forfeitInfos,
+	signReq := &SignAndFinalizeRoundReq{
+		RoundID:              env.RoundID,
+		PSBT:                 s.PSBT,
+		CollectedSignatures:  s.CollectedSignatures,
+		CollectedForfeitTxs:  s.CollectedForfeitTxs,
 		ClientRegistrations:  s.ClientRegistrations,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		SweepKey: env.Terms.SweepKey.PubKey,
-		CSVDelay: env.Terms.SweepDelay,
+		ConnectorAssignments: s.ConnectorAssignments,
+		OperatorKey:          env.Terms.OperatorKey,
+		VTXOExitDelay:        env.Terms.VTXOExitDelay,
 	}
 
 	return &StateTransition{
-		NextState: &AwaitingServerSignPersistState{
-			ClientRegistrations: s.ClientRegistrations,
-			FinalTx:             finalTx,
-			VTXOTrees:           s.VTXOTrees,
-			ForfeitInfos:        forfeitInfos,
-			StartHeight:         env.StartHeight,
+		NextState: &AwaitingSignAndFinalizeState{
+			ClientRegistrations:  s.ClientRegistrations,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorDescriptors: s.ConnectorDescriptors,
+			SweepKey:             env.Terms.SweepKey.PubKey,
+			CSVDelay:             env.Terms.SweepDelay,
+			StartHeight:          env.StartHeight,
 		},
 		NewEvents: fn.Some(EmittedEvent{
-			Outbox: []OutboxEvent{persistReq},
+			Outbox: []OutboxEvent{signReq},
 		}),
 	}, nil
 }
 
 // signBoardingInputs signs all boarding inputs with both the client's
 // signature (from CollectedSignatures) and the operator's signature.
-func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
-	tx := s.PSBT.UnsignedTx
+// This is a free function so it can be called from both FSM transitions
+// and the OutboxHandler.
+func signBoardingInputs(psbtPacket *psbt.Packet,
+	collectedSigs InputSigsMap,
+	clientRegs map[clientconn.ClientID]*ClientRegistration,
+	walletCtrl WalletController) error {
+
+	tx := psbtPacket.UnsignedTx
 
 	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
 	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for i, pIn := range s.PSBT.Inputs {
+	for i, pIn := range psbtPacket.Inputs {
 		if pIn.WitnessUtxo == nil {
 			return fmt.Errorf("missing WitnessUtxo for input %d", i)
 		}
@@ -2358,8 +2283,8 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
 
 	// Process each client's boarding inputs.
-	for clientID, clientSigs := range s.CollectedSignatures {
-		reg, exists := s.ClientRegistrations[clientID]
+	for clientID, clientSigs := range collectedSigs {
+		reg, exists := clientRegs[clientID]
 		if !exists {
 			return fmt.Errorf("client %s not found in "+
 				"registrations", clientID)
@@ -2367,9 +2292,10 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 
 		// Sign each boarding input for this client.
 		for _, clientSig := range clientSigs {
-			err := s.signSingleBoardingInput(
-				env, reg, clientSig, tx, sigHashes,
-				prevOutFetcher,
+			err := signSingleBoardingInput(
+				psbtPacket, reg, clientSig, tx,
+				sigHashes, prevOutFetcher,
+				walletCtrl,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to sign input %d: %w",
@@ -2381,12 +2307,15 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 	return nil
 }
 
-// signSingleBoardingInput signs a single boarding input with both the client's
-// and operator's signatures, then sets the final script witness on the PSBT.
-func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
+// signSingleBoardingInput signs a single boarding input with both the
+// client's and operator's signatures, then sets the final script witness
+// on the PSBT. This is a free function so it can be called from both FSM
+// transitions and the OutboxHandler.
+func signSingleBoardingInput(psbtPacket *psbt.Packet,
 	reg *ClientRegistration, clientSig *types.BoardingInputSignature,
 	tx *wire.MsgTx, sigHashes *txscript.TxSigHashes,
-	prevOutFetcher txscript.PrevOutputFetcher) error {
+	prevOutFetcher txscript.PrevOutputFetcher,
+	walletCtrl WalletController) error {
 
 	// Find the boarding input that matches this signature's outpoint.
 	var boardingInput *BoardingInput
@@ -2413,12 +2342,12 @@ func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
 
 	inputIdx := clientSig.InputIndex
 
-	if inputIdx < 0 || inputIdx >= len(s.PSBT.Inputs) {
+	if inputIdx < 0 || inputIdx >= len(psbtPacket.Inputs) {
 		return fmt.Errorf("invalid input index: %d", inputIdx)
 	}
 
 	// Use a pointer to modify the actual PSBT input, not a copy.
-	input := &s.PSBT.Inputs[inputIdx]
+	input := &psbtPacket.Inputs[inputIdx]
 
 	// Get the prevout for this input.
 	prevOut := input.WitnessUtxo
@@ -2428,7 +2357,7 @@ func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
 
 	// Sign with the operator's key.
 	operatorSig, err := scripts.SignVTXOCollabInput(
-		env.WalletController, tx, inputIdx, spendInfo,
+		walletCtrl, tx, inputIdx, spendInfo,
 		boardingInput.OperatorKeyDesc, prevOut, sigHashes,
 		prevOutFetcher,
 	)
@@ -2531,6 +2460,62 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 	}
 
 	return vtxos, nil
+}
+
+// ProcessEvent handles events in AwaitingSignAndFinalizeState. This state
+// waits for the OutboxHandler to complete signing and PSBT finalization.
+//
+// On success the FSM emits a PersistServerSigningReq and transitions to
+// AwaitingServerSignPersistState. On failure it transitions to FailedState
+// via buildFailureTransition.
+func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingSignAndFinalize"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *SignAndFinalizeSucceededEvent:
+		env.Log.InfoS(ctx, "Signing and finalization complete",
+			LogTxID(e.FinalTx.TxHash().String()))
+
+		// Construct the persistence request from the state's
+		// carried-forward data and the event's signing results.
+		persistReq := &PersistServerSigningReq{
+			RoundID:              env.RoundID,
+			FinalTx:              e.FinalTx,
+			VTXOTrees:            s.VTXOTrees,
+			ForfeitInfos:         e.ForfeitInfos,
+			ClientRegistrations:  s.ClientRegistrations,
+			ConnectorDescriptors: s.ConnectorDescriptors,
+			SweepKey:             s.SweepKey,
+			CSVDelay:             s.CSVDelay,
+		}
+
+		return &StateTransition{
+			NextState: &AwaitingServerSignPersistState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             e.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				ForfeitInfos:        e.ForfeitInfos,
+				StartHeight:         s.StartHeight,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{persistReq},
+			}),
+		}, nil
+
+	case *SignAndFinalizeFailedEvent:
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, e.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_sign_and_finalize", event, env,
+		), nil
+	}
 }
 
 // ProcessEvent handles events in AwaitingServerSignPersistState. This state

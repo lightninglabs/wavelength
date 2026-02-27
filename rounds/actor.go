@@ -178,6 +178,7 @@ func NewActor(cfg *ActorConfig) *Actor {
 	if cfg.OutboxHandler == nil {
 		cfg.OutboxHandler = NewInProcessOutboxHandler(
 			cfg.RoundStore, cfg.VTXOStore,
+			cfg.WalletController,
 		)
 	}
 

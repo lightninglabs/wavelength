@@ -3,6 +3,8 @@ package rounds
 import (
 	"context"
 	"fmt"
+
+	"github.com/btcsuite/btcd/wire"
 )
 
 // OutboxHandler executes FSM outbox requests and returns zero or more
@@ -20,25 +22,28 @@ type OutboxHandler interface {
 }
 
 // InProcessOutboxHandler is a concrete OutboxHandler that executes outbox
-// requests in-process using the provided store interfaces. It is used by
-// both the actor (production wiring) and tests.
+// requests in-process using the provided store and wallet interfaces. It is
+// used by both the actor (production wiring) and tests.
 //
 // Outbox event types that are not yet migrated to the handler return nil
 // (no follow-up events, no error), allowing the legacy processOutbox path
 // to handle them.
 type InProcessOutboxHandler struct {
-	roundStore RoundStore
-	vtxoStore  VTXOStore
+	roundStore       RoundStore
+	vtxoStore        VTXOStore
+	walletController WalletController
 }
 
 // NewInProcessOutboxHandler creates an InProcessOutboxHandler with the given
-// store dependencies.
+// store and wallet dependencies.
 func NewInProcessOutboxHandler(roundStore RoundStore,
-	vtxoStore VTXOStore) *InProcessOutboxHandler {
+	vtxoStore VTXOStore,
+	walletController WalletController) *InProcessOutboxHandler {
 
 	return &InProcessOutboxHandler{
-		roundStore: roundStore,
-		vtxoStore:  vtxoStore,
+		roundStore:       roundStore,
+		vtxoStore:        vtxoStore,
+		walletController: walletController,
 	}
 }
 
@@ -49,6 +54,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	outbox OutboxEvent) ([]Event, error) {
 
 	switch msg := outbox.(type) {
+	case *SignAndFinalizeRoundReq:
+		return h.handleSignAndFinalize(ctx, msg)
+
 	case *PersistServerSigningReq:
 		return h.handlePersistServerSigning(ctx, msg)
 
@@ -58,6 +66,101 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	default:
 		return nil, nil
 	}
+}
+
+// handleSignAndFinalize signs all boarding inputs, completes forfeit
+// transactions, and finalizes the PSBT. Returns a
+// SignAndFinalizeSucceededEvent on success or a
+// SignAndFinalizeFailedEvent on any signing/finalization error.
+func (h *InProcessOutboxHandler) handleSignAndFinalize(ctx context.Context,
+	msg *SignAndFinalizeRoundReq) ([]Event, error) {
+
+	// Sign all boarding inputs with the collected client signatures
+	// and the operator's signatures.
+	err := signBoardingInputs(
+		msg.PSBT, msg.CollectedSignatures,
+		msg.ClientRegistrations, h.walletController,
+	)
+	if err != nil {
+		return []Event{&SignAndFinalizeFailedEvent{
+			Reason: fmt.Sprintf(
+				"sign boarding inputs: %v", err,
+			),
+		}}, nil
+	}
+
+	forfeitInfos := make(map[wire.OutPoint]*ForfeitInfo)
+
+	// Complete forfeit transactions with the server's signatures.
+	for clientID, reg := range msg.ClientRegistrations {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		if len(msg.ConnectorAssignments) == 0 {
+			return []Event{&SignAndFinalizeFailedEvent{
+				Reason: fmt.Sprintf(
+					"connector assignments missing "+
+						"for client %s", clientID,
+				),
+			}}, nil
+		}
+
+		forfeitTxs, ok := msg.CollectedForfeitTxs[clientID]
+		if !ok {
+			return []Event{&SignAndFinalizeFailedEvent{
+				Reason: fmt.Sprintf(
+					"missing forfeit txs for "+
+						"client %s", clientID,
+				),
+			}}, nil
+		}
+
+		spent, err := completeForfeitTxs(
+			forfeitTxs, reg, msg.ConnectorAssignments,
+			h.walletController, msg.OperatorKey,
+			msg.VTXOExitDelay, msg.RoundID,
+		)
+		if err != nil {
+			return []Event{&SignAndFinalizeFailedEvent{
+				Reason: fmt.Sprintf(
+					"complete forfeit txs for "+
+						"client %s: %v",
+					clientID, err,
+				),
+			}}, nil
+		}
+
+		for _, spentVTXO := range spent {
+			if spentVTXO.ForfeitInfo == nil {
+				return []Event{&SignAndFinalizeFailedEvent{
+					Reason: fmt.Sprintf(
+						"missing forfeit info "+
+							"for client %s",
+						clientID,
+					),
+				}}, nil
+			}
+
+			forfeitInfos[spentVTXO.VTXOOutpoint] =
+				spentVTXO.ForfeitInfo
+		}
+	}
+
+	// Finalize the PSBT which signs all wallet-controlled inputs.
+	finalTx, err := h.walletController.FinalizePsbt(ctx, msg.PSBT)
+	if err != nil {
+		return []Event{&SignAndFinalizeFailedEvent{
+			Reason: fmt.Sprintf(
+				"finalize PSBT: %v", err,
+			),
+		}}, nil
+	}
+
+	return []Event{&SignAndFinalizeSucceededEvent{
+		FinalTx:      finalTx,
+		ForfeitInfos: forfeitInfos,
+	}}, nil
 }
 
 // handlePersistServerSigning persists the round and its VTXOs after server
