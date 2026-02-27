@@ -841,7 +841,7 @@ func (s *Service) AddOORRecipientEvent(ctx context.Context,
 			// session+output). Re-check once: if the row now
 			// exists, the event was successfully stored by the
 			// other writer and we can return it.
-			storedEvent, err = q.GetOORRecipientEventBySessionOutput(
+			storedEvent, err = q.GetOORRecipientEventBySessionOutput( //nolint:ll
 				ctx,
 				append([]byte(nil), ev.RecipientPkScript...),
 				append([]byte(nil), ev.SessionId...),

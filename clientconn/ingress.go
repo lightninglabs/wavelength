@@ -210,6 +210,8 @@ func (a *ClientConnectionActor) pullBatch(
 // envelope). On partial failure, returns the inclusive event_seq of the
 // last successfully dispatched envelope along with the error. The caller
 // must add 1 to the error-path return value to get the exclusive cursor.
+//
+//nolint:nonamedreturns
 func (a *ClientConnectionActor) dispatchBatch(
 	ctx context.Context,
 	envelopes []*mailboxpb.Envelope,
