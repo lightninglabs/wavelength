@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -37,18 +40,24 @@ type InProcessOutboxHandler struct {
 	feeEstimator        chainfee.Estimator
 	boardingInputLocker BoardingInputLocker
 	vtxoLocker          vtxo.Locker
+	chainSource         ChainSource
+	chainParams         *chaincfg.Params
+	terms               *batch.Terms
+	log                 btclog.Logger
 	confTarget          uint32
 	minConfs            int32
 	walletAccount       string
 }
 
 // NewInProcessOutboxHandler creates an InProcessOutboxHandler with the given
-// store, wallet, locking, and fee estimation dependencies.
+// store, wallet, locking, validation, and fee estimation dependencies.
 func NewInProcessOutboxHandler(roundStore RoundStore,
 	vtxoStore VTXOStore, walletController WalletController,
 	feeEstimator chainfee.Estimator,
 	boardingInputLocker BoardingInputLocker,
-	vtxoLocker vtxo.Locker, confTarget uint32,
+	vtxoLocker vtxo.Locker, chainSource ChainSource,
+	chainParams *chaincfg.Params, terms *batch.Terms,
+	log btclog.Logger, confTarget uint32,
 	minConfs int32,
 	walletAccount string) *InProcessOutboxHandler {
 
@@ -59,6 +68,10 @@ func NewInProcessOutboxHandler(roundStore RoundStore,
 		feeEstimator:        feeEstimator,
 		boardingInputLocker: boardingInputLocker,
 		vtxoLocker:          vtxoLocker,
+		chainSource:         chainSource,
+		chainParams:         chainParams,
+		terms:               terms,
+		log:                 log,
 		confTarget:          confTarget,
 		minConfs:            minConfs,
 		walletAccount:       walletAccount,
@@ -91,6 +104,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	case *UnlockForfeitVTXOsReq:
 		h.handleUnlockForfeitVTXOs(ctx, msg)
 		return nil, nil
+
+	case *ValidateAndLockJoinReq:
+		return h.handleValidateAndLockJoin(ctx, msg)
 
 	default:
 		return nil, nil
@@ -406,6 +422,70 @@ func (h *InProcessOutboxHandler) handleUnlockForfeitVTXOs(
 			)
 		}
 	}
+}
+
+// handleValidateAndLockJoin validates a client join request and locks the
+// required inputs. Returns a ValidateAndLockSucceededEvent on success or a
+// ValidateAndLockFailedEvent on any validation or locking error.
+func (h *InProcessOutboxHandler) handleValidateAndLockJoin(
+	ctx context.Context,
+	msg *ValidateAndLockJoinReq) ([]Event, error) {
+
+	// Construct a minimal Environment with the fields needed by the
+	// validation and locking functions.
+	env := &Environment{
+		RoundID:                msg.RoundID,
+		ChainParams:            h.chainParams,
+		BoardingInputLocker:    h.boardingInputLocker,
+		ChainSource:            h.chainSource,
+		Terms:                  h.terms,
+		VTXOStore:              h.vtxoStore,
+		VTXOLocker:             h.vtxoLocker,
+		StartHeight:            msg.StartHeight,
+		DisableJoinRequestAuth: msg.DisableJoinRequestAuth,
+		Log:                    h.log,
+	}
+
+	// Determine the validation height.
+	result, err := validateJoinRequestForAdmission(
+		ctx, env, msg.Request, msg.CurrentBlockHeight,
+	)
+	if err != nil {
+		return []Event{&ValidateAndLockFailedEvent{
+			ClientID: msg.ClientID,
+			Reason: fmt.Sprintf(
+				"%v: %v", ErrJoinRequestInvalid, err,
+			),
+		}}, nil
+	}
+
+	// Lock boarding inputs.
+	err = lockBoardingInputs(ctx, env, result.BoardingInputs)
+	if err != nil {
+		return []Event{&ValidateAndLockFailedEvent{
+			ClientID: msg.ClientID,
+			Reason:   err.Error(),
+		}}, nil
+	}
+
+	// Lock forfeit VTXOs.
+	err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
+	if err != nil {
+		// Unlock the boarding inputs we just locked.
+		unlockBoardingInputsList(
+			ctx, env, result.BoardingInputs,
+		)
+
+		return []Event{&ValidateAndLockFailedEvent{
+			ClientID: msg.ClientID,
+			Reason:   err.Error(),
+		}}, nil
+	}
+
+	return []Event{&ValidateAndLockSucceededEvent{
+		ClientID: msg.ClientID,
+		Result:   result,
+	}}, nil
 }
 
 // Compile-time check that InProcessOutboxHandler implements OutboxHandler.

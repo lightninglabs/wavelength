@@ -180,6 +180,8 @@ func NewActor(cfg *ActorConfig) *Actor {
 			cfg.RoundStore, cfg.VTXOStore,
 			cfg.WalletController, cfg.FeeEstimator,
 			cfg.BoardingInputLocker, cfg.VTXOLocker,
+			cfg.ChainSource, cfg.ChainParams,
+			cfg.Terms, cfg.Logger,
 			cfg.ConfTarget, cfg.MinConfs,
 			cfg.WalletAccount,
 		)
@@ -734,6 +736,8 @@ func outboxRoundID(msg OutboxEvent) string {
 	case *UnlockBoardingInputsReq:
 		return m.RoundID.String()
 	case *UnlockForfeitVTXOsReq:
+		return m.RoundID.String()
+	case *ValidateAndLockJoinReq:
 		return m.RoundID.String()
 	default:
 		return ""

@@ -1,7 +1,6 @@
 package rounds
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -15,7 +14,6 @@ import (
 "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
-	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/mock"
@@ -33,35 +31,32 @@ func TestFSMCreatedState(t *testing.T) {
 		h := newTestHarness(t)
 		h.setupPermissiveMocks()
 
-		outpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("bad")),
-			Index: 0,
-		}
-
-		// Set up the boarding locker mock to simulate that the input is
-		// already locked. This will cause validation to fail.
-		otherRoundID, err := NewRoundID()
-		require.NoError(t, err)
-		h.lockBoardingInput(&outpoint, otherRoundID)
-
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Now, send a ClientJoinRequestEvent. Since we simulated a
-		// failure in validation, we expect to remain in CreatedState
-		// and receive a client error outbox message.
+		// Send a ClientJoinRequestEvent. The FSM now delegates
+		// validation to the OutboxHandler, so we feed a failure
+		// event to simulate validation rejection.
 		joinReqEvent := &ClientJoinRequestEvent{
 			ClientID: "client1",
 			Request: &types.JoinRoundRequest{
 				BoardingReqs: []*types.BoardingRequest{
 					{
-						Outpoint: &outpoint,
+						Outpoint: &wire.OutPoint{
+							Hash: chainhash.HashH(
+								[]byte("bad"),
+							),
+							Index: 0,
+						},
 					},
 				},
 			},
 		}
-		err = h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+		feedJoinFailure(
+			h, joinReqEvent,
+			ErrJoinRequestInvalid.Error()+": boarding "+
+				"input already locked",
+		)
 
 		// Assert we are still in CreatedState.
 		assertStateType[*CreatedState](h)
@@ -79,32 +74,29 @@ func TestFSMCreatedState(t *testing.T) {
 		h := newTestHarness(t)
 		h.setupPermissiveMocks()
 
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("good")),
 			Index: 0,
 		}
 
-		// Set up mocks to allow the boarding input to pass validation.
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
-		)
-
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Send a ClientJoinRequestEvent with valid parameters.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinReqEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
+		// Send a ClientJoinRequestEvent. The FSM emits a
+		// ValidateAndLockJoinReq outbox and transitions to
+		// AwaitingJoinValidationState.
+		joinReqEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &outpoint},
+				},
+			},
+		}
+		result := buildJoinResult(
+			&BoardingInput{Outpoint: &outpoint},
 		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+		feedJoinSuccess(h, "client1", joinReqEvent, result)
 
 		// Assert we transitioned to RegistrationState.
 		regState := assertStateType[*RegistrationState](h)
@@ -133,56 +125,49 @@ func TestFSMCreatedState(t *testing.T) {
 		h := newTestHarness(t)
 		h.setupPermissiveMocks()
 
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-
-		// Create a boarding input outpoint.
+		// Create outpoints.
 		boardingOutpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("boarding")),
 			Index: 0,
 		}
-
-		// Create a forfeit VTXO outpoint.
 		forfeitOutpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("forfeit")),
 			Index: 0,
 		}
 
-		// Set up mocks to allow boarding input and forfeit VTXO to pass
-		// validation.
-		h.setupValidBoardingInput(
-			&boardingOutpoint, client.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-		h.setupValidForfeitVTXO(
-			&forfeitOutpoint, client.boardingKey, h.roundID,
-		)
-		h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Send a ClientJoinRequestEvent with both boarding and forfeit.
-		boardingReq := client.createBoardingRequest(&boardingOutpoint)
-		forfeitReq := &types.ForfeitRequest{
-			VTXOOutpoint: &forfeitOutpoint,
+		// Send a ClientJoinRequestEvent with both boarding and
+		// forfeit. The FSM delegates to the OutboxHandler, so we
+		// feed a success event with pre-built result.
+		joinReqEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
+				},
+			},
 		}
-		joinReqEvent := client.createJoinRequestWithForfeits(
-			[]*types.BoardingRequest{boardingReq},
-			[]*types.ForfeitRequest{forfeitReq},
+		result := buildJoinResultWithForfeits(
+			[]*BoardingInput{
+				{Outpoint: &boardingOutpoint},
+			},
+			[]*ForfeitInput{
+				{Outpoint: &forfeitOutpoint},
+			},
 		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+		feedJoinSuccess(h, "client1", joinReqEvent, result)
 
 		// Assert we transitioned to RegistrationState.
 		regState := assertStateType[*RegistrationState](h)
 		require.Len(t, regState.getAllBoardingInputs(), 1)
 
-		// Verify that the forfeit VTXO was locked by checking the
-		// ClientRegistration stored in the state.
+		// Verify that the forfeit input is stored in the
+		// ClientRegistration.
 		reg, exists := regState.ClientRegistrations["client1"]
 		require.True(t, exists)
 		require.Len(t, reg.ForfeitInputs, 1)
@@ -203,72 +188,37 @@ func TestFSMCreatedState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
-
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
-
-		// Create a boarding input outpoint.
-		boardingOutpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("boarding")),
-			Index: 0,
-		}
-
-		// Create a forfeit VTXO outpoint.
-		forfeitOutpoint := wire.OutPoint{
-			Hash:  chainhash.HashH([]byte("forfeit")),
-			Index: 0,
-		}
-
-		// Set up valid boarding input.
-		h.setupValidBoardingInput(
-			&boardingOutpoint, client.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-
-		// Set up valid forfeit VTXO but make locking fail.
-		descriptor, err := tree.NewVTXODescriptor(
-			50000, client.boardingKey, h.operatorPub, 144,
-		)
-		require.NoError(t, err)
-
-		forfeitVTXO := &VTXO{
-			RoundID:          h.roundID,
-			BatchOutputIndex: 0,
-			Descriptor:       descriptor,
-			Status:           VTXOStatusLive,
-		}
-		h.expectVTXO(forfeitOutpoint, forfeitVTXO)
-
-		// Set up the VTXO lock to fail (e.g., already locked by another
-		// round).
-		lockErr := fmt.Errorf("VTXO already locked")
-		owner := vtxo.RoundLockOwner(h.roundID.String())
-		h.vtxoLocker.On(
-			"LockMany", mock.Anything,
-			[]wire.OutPoint{forfeitOutpoint}, owner,
-		).Return(lockErr).Once()
-
-		// We also need to expect the boarding input to be unlocked when
-		// the forfeit VTXO lock fails.
-		h.expectInputUnlocked(&boardingOutpoint, h.roundID)
+		h.setupPermissiveMocks()
 
 		// Assert the initial state is CreatedState.
 		assertStateType[*CreatedState](h)
 
-		// Send a ClientJoinRequestEvent with both boarding and forfeit.
-		boardingReq := client.createBoardingRequest(&boardingOutpoint)
-		forfeitReq := &types.ForfeitRequest{
-			VTXOOutpoint: &forfeitOutpoint,
+		// Send a ClientJoinRequestEvent with both boarding and
+		// forfeit. The FSM delegates to the OutboxHandler, so we
+		// feed a failure event to simulate the lock failure.
+		boardingOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("boarding")),
+			Index: 0,
 		}
-		joinReqEvent := client.createJoinRequestWithForfeits(
-			[]*types.BoardingRequest{boardingReq},
-			[]*types.ForfeitRequest{forfeitReq},
+		forfeitOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("forfeit")),
+			Index: 0,
+		}
+		joinReqEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
+				},
+			},
+		}
+		feedJoinFailure(
+			h, joinReqEvent, "failed to lock forfeit VTXOs: "+
+				"VTXO already locked",
 		)
-		err = h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
 
 		// Assert we remain in CreatedState due to lock failure.
 		assertStateType[*CreatedState](h)
@@ -304,9 +254,6 @@ func TestFSMRegistrationState(t *testing.T) {
 	t.Run("second client joins successfully", func(t *testing.T) {
 		t.Parallel()
 
-		const exitDelay = 144
-		const expiry = 144
-
 		outpoint1 := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
@@ -328,22 +275,21 @@ func TestFSMRegistrationState(t *testing.T) {
 		}
 
 		h := newTestHarness(t, regState)
+		h.setupPermissiveMocks()
 
-		client2 := newClientHarness(
-			t, "client2", 20, h.operatorPub, exitDelay, expiry,
+		// Second client joins via the two-hop outbox pattern.
+		joinEvent := &ClientJoinRequestEvent{
+			ClientID: "client2",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &outpoint2},
+				},
+			},
+		}
+		result := buildJoinResult(
+			&BoardingInput{Outpoint: &outpoint2},
 		)
-		h.setupValidBoardingInput(
-			&outpoint2, client2.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-
-		// Second client joins from RegistrationState.
-		boardingReq2 := client2.createBoardingRequest(&outpoint2)
-		joinReqEvent2 := client2.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq2},
-		)
-		err := h.sendEvent(joinReqEvent2)
-		require.NoError(t, err)
+		feedJoinSuccess(h, "client2", joinEvent, result)
 
 		// Assert we remain in RegistrationState with both clients.
 		regState = assertStateType[*RegistrationState](h)
@@ -419,21 +365,7 @@ func TestFSMRegistrationState(t *testing.T) {
 
 			// Set up the test harness.
 			h := newTestHarness(t)
-
-			const exitDelay = 144
-			const expiry = 144
-			client1 := newClientHarness(
-				t, "client1", 10, h.operatorPub, exitDelay,
-				expiry,
-			)
-			client2 := newClientHarness(
-				t, "client2", 20, h.operatorPub, exitDelay,
-				expiry,
-			)
-			client3 := newClientHarness(
-				t, "client3", 30, h.operatorPub, exitDelay,
-				expiry,
-			)
+			h.setupPermissiveMocks()
 
 			outpoint1 := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("input1")),
@@ -448,37 +380,22 @@ func TestFSMRegistrationState(t *testing.T) {
 				Index: 0,
 			}
 
-			// Set up valid boarding inputs for all three clients,
-			// but client2's lock will fail.
-			h.setupValidBoardingInput(
-				&outpoint1, client1.boardingKey, exitDelay, 10,
-				h.roundID,
+			// First client joins successfully from CreatedState
+			// via the two-hop outbox pattern.
+			joinEvent1 := &ClientJoinRequestEvent{
+				ClientID: "client1",
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &outpoint1},
+					},
+				},
+			}
+			result1 := buildJoinResult(
+				&BoardingInput{Outpoint: &outpoint1},
 			)
-
-			// For client2, set up validation to succeed but lock to
-			// fail.
-			h.setupBoardingInputValidationOnly(
-				&outpoint2, client2.boardingKey, exitDelay, 10,
+			feedJoinSuccess(
+				h, "client1", joinEvent1, result1,
 			)
-			h.expectFailedLock(
-				&outpoint2, h.roundID,
-				fmt.Errorf("lock failed"),
-			)
-
-			h.setupValidBoardingInput(
-				&outpoint3, client3.boardingKey, exitDelay, 10,
-				h.roundID,
-			)
-
-			// First client joins successfully from CreatedState.
-			boardingReq1 := client1.createBoardingRequest(
-				&outpoint1,
-			)
-			joinReqEvent1 := client1.createJoinRequest(
-				[]*types.BoardingRequest{boardingReq1},
-			)
-			err := h.sendEvent(joinReqEvent1)
-			require.NoError(t, err)
 
 			// Assert we transitioned to RegistrationState with
 			// client1.
@@ -486,25 +403,29 @@ func TestFSMRegistrationState(t *testing.T) {
 			require.Len(t, regState.getAllBoardingInputs(), 1)
 			require.True(t, regState.isClientRegistered("client1"))
 
-			// Clear outbox for next test.
-			h.outboxMessages = nil
-
 			// Second client attempts to join but lock fails.
-			boardingReq2 := client2.createBoardingRequest(
-				&outpoint2,
+			// Feed a failure event.
+			joinEvent2 := &ClientJoinRequestEvent{
+				ClientID: "client2",
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &outpoint2},
+					},
+				},
+			}
+			feedJoinFailure(
+				h, joinEvent2,
+				"failed to lock boarding input",
 			)
-			joinReqEvent2 := client2.createJoinRequest(
-				[]*types.BoardingRequest{boardingReq2},
-			)
-			err = h.sendEvent(joinReqEvent2)
-			require.NoError(t, err)
 
 			// Assert we remain in RegistrationState with only
 			// client1.
 			regState = assertStateType[*RegistrationState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 1)
 			require.True(t, regState.isClientRegistered("client1"))
-			require.False(t, regState.isClientRegistered("client2"))
+			require.False(
+				t, regState.isClientRegistered("client2"),
+			)
 
 			// Assert client2 received an error response.
 			h.assertOutboxLen(1)
@@ -516,26 +437,31 @@ func TestFSMRegistrationState(t *testing.T) {
 				t, errorResp.ErrorMsg, "failed to lock",
 			)
 
-			// Clear outbox for next test.
-			h.outboxMessages = nil
-
-			// Third client joins successfully, proving the FSM is
-			// still functional after the lock failure.
-			boardingReq3 := client3.createBoardingRequest(
-				&outpoint3,
+			// Third client joins successfully, proving the FSM
+			// is still functional after the lock failure.
+			joinEvent3 := &ClientJoinRequestEvent{
+				ClientID: "client3",
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &outpoint3},
+					},
+				},
+			}
+			result3 := buildJoinResult(
+				&BoardingInput{Outpoint: &outpoint3},
 			)
-			joinReqEvent3 := client3.createJoinRequest(
-				[]*types.BoardingRequest{boardingReq3},
+			feedJoinSuccess(
+				h, "client3", joinEvent3, result3,
 			)
-			err = h.sendEvent(joinReqEvent3)
-			require.NoError(t, err)
 
 			// Assert we remain in RegistrationState with client1
 			// and client3 (client2 was rejected).
 			regState = assertStateType[*RegistrationState](h)
 			require.Len(t, regState.getAllBoardingInputs(), 2)
 			require.True(t, regState.isClientRegistered("client1"))
-			require.False(t, regState.isClientRegistered("client2"))
+			require.False(
+				t, regState.isClientRegistered("client2"),
+			)
 			require.True(t, regState.isClientRegistered("client3"))
 
 			// Assert client3 received a success response.
@@ -552,30 +478,26 @@ func TestFSMRegistrationState(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
-
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
+		h.setupPermissiveMocks()
 
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
 		}
 
-		// Set up mocks for successful registration.
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		// Join to get to RegistrationState via outbox pattern.
+		joinEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &outpoint},
+				},
+			},
+		}
+		result := buildJoinResult(
+			&BoardingInput{Outpoint: &outpoint},
 		)
-
-		// Join to get to RegistrationState.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinReqEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+		feedJoinSuccess(h, "client1", joinEvent, result)
 
 		// Assert we're in RegistrationState.
 		assertStateType[*RegistrationState](h)
@@ -584,7 +506,7 @@ func TestFSMRegistrationState(t *testing.T) {
 		h.outboxMessages = nil
 
 		// Send RegistrationTimeoutEvent.
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		// Verify RoundSealedReq emitted before batch build clears
@@ -723,12 +645,12 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
 			const exitDelay = 144
-			const expiry = 144
 			client := newClientHarness(
 				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
+				exitDelay, 144,
 			)
 
 			boardingOutpoint := wire.OutPoint{
@@ -740,32 +662,38 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Index: 0,
 			}
 
-			h.setupValidBoardingInput(
-				&boardingOutpoint, client.boardingKey,
-				exitDelay, 10, h.roundID,
+			// Build a real boarding input for batch building.
+			bi := buildTestBoardingInput(
+				t, &boardingOutpoint, 100_000,
+				h.operatorPub,
 			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint, client.boardingKey, h.roundID,
-			)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-			h.setupBatchBuildingMocks()
-
-			boardingReq := client.createBoardingRequest(
-				&boardingOutpoint,
-			)
-			forfeitReq := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint,
+			fi := &ForfeitInput{
+				Outpoint: &forfeitOutpoint,
 			}
-			joinReqEvent := client.createJoinRequestWithForfeits(
-				[]*types.BoardingRequest{boardingReq},
-				[]*types.ForfeitRequest{forfeitReq},
+
+			// Join via outbox pattern with pre-built result.
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: client.clientID,
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &boardingOutpoint},
+					},
+					ForfeitReqs: []*types.ForfeitRequest{
+						{VTXOOutpoint: &forfeitOutpoint},
+					},
+				},
+			}
+			result := buildJoinResultWithForfeits(
+				[]*BoardingInput{bi},
+				[]*ForfeitInput{fi},
 			)
-			err := h.sendEvent(joinReqEvent)
-			require.NoError(t, err)
+			feedJoinSuccess(
+				h, client.clientID, joinReq, result,
+			)
 			assertStateType[*RegistrationState](h)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			feedBatchBuildViaHandler(h)
@@ -778,33 +706,39 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
-
-			const exitDelay = 144
-			const expiry = 144
-			client := newClientHarness(
-				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
-			)
+			// Only set boarding locker permissive — custom
+			// FundPsbt with change output is needed below.
+			h.boardingLocker.On("Lock", mock.Anything,
+				mock.Anything, mock.Anything,
+			).Return(nil).Maybe()
+			h.boardingLocker.On("Unlock", mock.Anything,
+				mock.Anything, mock.Anything,
+			).Return(nil).Maybe()
+			h.boardingLocker.On("IsLocked", mock.Anything,
+				mock.Anything,
+			).Return(false, RoundID{}, nil).Maybe()
 
 			forfeitOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("forfeit-vtxo")),
 				Index: 0,
 			}
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint, client.boardingKey, h.roundID,
-			)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
 
-			h.feeEstimator.On("EstimateFeePerKW", uint32(6)).
-				Return(chainfee.SatPerKWeight(1000), nil).Once()
-			h.walletController.On("FundPsbt", mock.Anything,
-				mock.Anything, mock.Anything, mock.Anything,
+			h.feeEstimator.On(
+				"EstimateFeePerKW", uint32(6),
+			).Return(
+				chainfee.SatPerKWeight(1000), nil,
+			).Once()
+			h.walletController.On("FundPsbt",
+				mock.Anything, mock.Anything,
+				mock.Anything, mock.Anything,
 				mock.Anything).
 				Run(func(args mock.Arguments) {
 					p, ok := args.Get(1).(*psbt.Packet)
 					require.True(t, ok)
 
-					changeScript := []byte{0x00, 0x14, 0xaa}
+					changeScript := []byte{
+						0x00, 0x14, 0xaa,
+					}
 					changeOut := &wire.TxOut{
 						Value:    1000,
 						PkScript: changeScript,
@@ -821,31 +755,36 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Return(int32(0), nil).Once()
 
 			leaveScript := []byte{0x00, 0x14, 0x01, 0x02}
-			leaveReq := &types.LeaveRequest{
-				Output: &wire.TxOut{
-					Value:    30000,
-					PkScript: leaveScript,
-				},
+			leaveOutput := &wire.TxOut{
+				Value:    30000,
+				PkScript: leaveScript,
 			}
-			forfeitReq := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint,
+
+			// Build join result with forfeit + leave.
+			fi := &ForfeitInput{Outpoint: &forfeitOutpoint}
+			joinResult := &JoinRequestResult{
+				ForfeitInputs: []*ForfeitInput{fi},
+				RequiredOutputs: []*wire.TxOut{
+					leaveOutput,
+				},
 			}
 			joinReq := &ClientJoinRequestEvent{
-				ClientID: client.clientID,
+				ClientID: "client1",
 				Request: &types.JoinRoundRequest{
 					ForfeitReqs: []*types.ForfeitRequest{
-						forfeitReq,
+						{VTXOOutpoint: &forfeitOutpoint},
 					},
 					LeaveReqs: []*types.LeaveRequest{
-						leaveReq,
+						{Output: leaveOutput},
 					},
 				},
 			}
-			err := h.sendEvent(joinReq)
-			require.NoError(t, err)
+			feedJoinSuccess(
+				h, "client1", joinReq, joinResult,
+			)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			// Run the BuildBatchReq through the handler to
@@ -881,48 +820,45 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 			h.env.Terms.MaxConnectorsPerTree = 2
-
-			const exitDelay = 144
-			const expiry = 144
-			client := newClientHarness(
-				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
-			)
 
 			forfeitOutpoints := []wire.OutPoint{
 				{Hash: chainhash.HashH([]byte("forfeit-a"))},
 				{Hash: chainhash.HashH([]byte("forfeit-b"))},
 				{Hash: chainhash.HashH([]byte("forfeit-c"))},
 			}
-			var forfeitReqs []*types.ForfeitRequest
+			var (
+				forfeitReqs   []*types.ForfeitRequest
+				forfeitInputs []*ForfeitInput
+			)
 			for i := range forfeitOutpoints {
-				h.setupValidForfeitVTXO(
-					&forfeitOutpoints[i],
-					client.boardingKey,
-					h.roundID,
-				)
 				outpoint := &forfeitOutpoints[i]
 				forfeitReqs = append(forfeitReqs,
 					&types.ForfeitRequest{
 						VTXOOutpoint: outpoint,
 					},
 				)
+				forfeitInputs = append(forfeitInputs,
+					&ForfeitInput{Outpoint: outpoint},
+				)
 			}
-			h.expectVTXOLocked(h.roundID, forfeitOutpoints...)
-			h.setupBatchBuildingMocks()
 
 			joinReq := &ClientJoinRequestEvent{
-				ClientID: client.clientID,
+				ClientID: "client1",
 				Request: &types.JoinRoundRequest{
 					ForfeitReqs: forfeitReqs,
 				},
 			}
-			err := h.sendEvent(joinReq)
-			require.NoError(t, err)
+			joinResult := buildJoinResultWithForfeits(
+				nil, forfeitInputs,
+			)
+			feedJoinSuccess(
+				h, "client1", joinReq, joinResult,
+			)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			// Verify the FSM emits a BuildBatchReq with
@@ -941,12 +877,12 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
 			const exitDelay = 144
-			const expiry = 144
 			client := newClientHarness(
 				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
+				exitDelay, 144,
 			)
 
 			boardingOutpoint := wire.OutPoint{
@@ -957,39 +893,44 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Hash:  chainhash.HashH([]byte("forfeit")),
 				Index: 0,
 			}
-			h.setupValidBoardingInput(
-				&boardingOutpoint, client.boardingKey,
-				exitDelay, 10, h.roundID,
-			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint, client.boardingKey, h.roundID,
-			)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-			h.setupBatchBuildingMocks()
 
-			boardingReq := client.createBoardingRequest(
-				&boardingOutpoint,
+			bi := buildTestBoardingInput(
+				t, &boardingOutpoint, 100_000,
+				h.operatorPub,
 			)
-			vtxoReq := client.createVTXORequest(
-				btcutil.Amount(50000),
+			fi := &ForfeitInput{Outpoint: &forfeitOutpoint}
+
+			// Build a VTXO descriptor to put in the join
+			// result so that BuildBatchReq will contain
+			// VTXODescriptors.
+			desc, err := tree.NewVTXODescriptor(
+				50000, client.boardingKey,
+				h.operatorPub, exitDelay,
 			)
-			forfeitReq := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint,
+			require.NoError(t, err)
+			keyHex := route.NewVertex(client.boardingKey)
+
+			joinResult := &JoinRequestResult{
+				BoardingInputs: []*BoardingInput{bi},
+				ForfeitInputs:  []*ForfeitInput{fi},
+				VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
+					keyHex: desc,
+				},
 			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: client.clientID,
 				Request: &types.JoinRoundRequest{
 					BoardingReqs: []*types.BoardingRequest{
-						boardingReq,
+						{Outpoint: &boardingOutpoint},
 					},
-					VTXOReqs: []*types.VTXORequest{vtxoReq},
 					ForfeitReqs: []*types.ForfeitRequest{
-						forfeitReq,
+						{VTXOOutpoint: &forfeitOutpoint},
 					},
 				},
 			}
-			err := h.sendEvent(joinReq)
-			require.NoError(t, err)
+			feedJoinSuccess(
+				h, client.clientID, joinReq, joinResult,
+			)
 
 			h.outboxMessages = nil
 			err = h.sendEvent(&RegistrationTimeoutEvent{})
@@ -1014,17 +955,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
-
-			const exitDelay = 144
-			const expiry = 144
-			client1 := newClientHarness(
-				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
-			)
-			client2 := newClientHarness(
-				t, "client2", 10, h.operatorPub,
-				exitDelay, expiry,
-			)
+			h.setupPermissiveMocks()
 
 			boardingOutpoint1 := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("boarding1")),
@@ -1043,56 +974,59 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Index: 0,
 			}
 
-			h.setupValidBoardingInput(
-				&boardingOutpoint1, client1.boardingKey,
-				exitDelay, 10, h.roundID,
+			bi1 := buildTestBoardingInput(
+				t, &boardingOutpoint1, 100_000,
+				h.operatorPub,
 			)
-			h.setupValidBoardingInput(
-				&boardingOutpoint2, client2.boardingKey,
-				exitDelay, 10, h.roundID,
+			bi2 := buildTestBoardingInput(
+				t, &boardingOutpoint2, 100_000,
+				h.operatorPub,
 			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint1, client1.boardingKey,
-				h.roundID,
-			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint2, client2.boardingKey,
-				h.roundID,
-			)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint1)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint2)
-			h.setupBatchBuildingMocks()
 
-			boardingReq1 := client1.createBoardingRequest(
-				&boardingOutpoint1,
-			)
-			forfeitReq1 := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint1,
-			}
-			err := h.sendEvent(
-				client1.createJoinRequestWithForfeits(
-					[]*types.BoardingRequest{boardingReq1},
-					[]*types.ForfeitRequest{forfeitReq1},
+			// Client 1 joins.
+			feedJoinSuccess(h, "client1",
+				&ClientJoinRequestEvent{
+					ClientID: "client1",
+					Request: &types.JoinRoundRequest{
+						BoardingReqs: []*types.BoardingRequest{
+							{Outpoint: &boardingOutpoint1},
+						},
+						ForfeitReqs: []*types.ForfeitRequest{
+							{VTXOOutpoint: &forfeitOutpoint1},
+						},
+					},
+				},
+				buildJoinResultWithForfeits(
+					[]*BoardingInput{bi1},
+					[]*ForfeitInput{
+						{Outpoint: &forfeitOutpoint1},
+					},
 				),
 			)
-			require.NoError(t, err)
 
-			boardingReq2 := client2.createBoardingRequest(
-				&boardingOutpoint2,
-			)
-			forfeitReq2 := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint2,
-			}
-			err = h.sendEvent(
-				client2.createJoinRequestWithForfeits(
-					[]*types.BoardingRequest{boardingReq2},
-					[]*types.ForfeitRequest{forfeitReq2},
+			// Client 2 joins.
+			feedJoinSuccess(h, "client2",
+				&ClientJoinRequestEvent{
+					ClientID: "client2",
+					Request: &types.JoinRoundRequest{
+						BoardingReqs: []*types.BoardingRequest{
+							{Outpoint: &boardingOutpoint2},
+						},
+						ForfeitReqs: []*types.ForfeitRequest{
+							{VTXOOutpoint: &forfeitOutpoint2},
+						},
+					},
+				},
+				buildJoinResultWithForfeits(
+					[]*BoardingInput{bi2},
+					[]*ForfeitInput{
+						{Outpoint: &forfeitOutpoint2},
+					},
 				),
 			)
-			require.NoError(t, err)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			// Verify the FSM emits a BuildBatchReq with
@@ -1111,13 +1045,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
-
-			const exitDelay = 144
-			const expiry = 144
-			client := newClientHarness(
-				t, "client1", 10, h.operatorPub,
-				exitDelay, expiry,
-			)
+			h.setupPermissiveMocks()
 
 			boardingOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("boarding")),
@@ -1132,45 +1060,34 @@ func TestFSMBatchBuilding(t *testing.T) {
 				Index: 0,
 			}
 
-			h.setupValidBoardingInput(
-				&boardingOutpoint, client.boardingKey,
-				exitDelay, 10, h.roundID,
+			bi := buildTestBoardingInput(
+				t, &boardingOutpoint, 100_000,
+				h.operatorPub,
 			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint1, client.boardingKey,
-				h.roundID,
-			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint2, client.boardingKey,
-				h.roundID,
-			)
-			h.expectVTXOLocked(
-				h.roundID, forfeitOutpoint1, forfeitOutpoint2,
-			)
-			h.setupBatchBuildingMocks()
-
-			boardingReq := client.createBoardingRequest(
-				&boardingOutpoint,
-			)
-			forfeitReq1 := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint1,
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: "client1",
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &boardingOutpoint},
+					},
+					ForfeitReqs: []*types.ForfeitRequest{
+						{VTXOOutpoint: &forfeitOutpoint1},
+						{VTXOOutpoint: &forfeitOutpoint2},
+					},
+				},
 			}
-			forfeitReq2 := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint2,
-			}
-			err := h.sendEvent(
-				client.createJoinRequestWithForfeits(
-					[]*types.BoardingRequest{boardingReq},
-					[]*types.ForfeitRequest{
-						forfeitReq1,
-						forfeitReq2,
+			feedJoinSuccess(h, "client1", joinReq,
+				buildJoinResultWithForfeits(
+					[]*BoardingInput{bi},
+					[]*ForfeitInput{
+						{Outpoint: &forfeitOutpoint1},
+						{Outpoint: &forfeitOutpoint2},
 					},
 				),
 			)
-			require.NoError(t, err)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			assertStateType[*AwaitingBatchBuildState](h)
@@ -1294,30 +1211,25 @@ func TestFSMFailureScenarios(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
-
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
+		h.setupPermissiveMocks()
 
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
 		}
 
-		// Set up mocks for successful registration but failing batch
-		// building.
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		// Join via outbox pattern.
+		joinEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &outpoint},
+				},
+			},
+		}
+		feedJoinSuccess(h, "client1", joinEvent,
+			buildJoinResult(&BoardingInput{Outpoint: &outpoint}),
 		)
-		// Join to get to RegistrationState.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinReqEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
 
 		// Assert we're in RegistrationState.
 		assertStateType[*RegistrationState](h)
@@ -1326,7 +1238,7 @@ func TestFSMFailureScenarios(t *testing.T) {
 		h.outboxMessages = nil
 
 		// Seal the round to trigger batch building.
-		err = h.sendEvent(&SealEvent{})
+		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
 		// Should be in AwaitingBatchBuildState.
@@ -1392,51 +1304,39 @@ func TestFSMFailureScenarios(t *testing.T) {
 
 			// Set up the test harness.
 			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
-			const exitDelay = 144
-			const expiry = 144
-			client := newClientHarness(
-				t, "client1", 10, h.operatorPub, exitDelay,
-				expiry,
-			)
-
-			// Create a boarding input outpoint.
 			boardingOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("boarding")),
 				Index: 0,
 			}
-
-			// Create a forfeit VTXO outpoint.
 			forfeitOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("forfeit")),
 				Index: 0,
 			}
 
-			// Set up mocks for successful registration with both
-			// boarding and forfeit inputs.
-			h.setupValidBoardingInput(
-				&boardingOutpoint, client.boardingKey,
-				exitDelay, 10, h.roundID,
-			)
-			h.setupValidForfeitVTXO(
-				&forfeitOutpoint, client.boardingKey, h.roundID,
-			)
-			h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-
-			// Join with both boarding and forfeit to get to
-			// RegistrationState.
-			boardingReq := client.createBoardingRequest(
-				&boardingOutpoint,
-			)
-			forfeitReq := &types.ForfeitRequest{
-				VTXOOutpoint: &forfeitOutpoint,
+			// Join with both boarding and forfeit via outbox.
+			joinReq := &ClientJoinRequestEvent{
+				ClientID: "client1",
+				Request: &types.JoinRoundRequest{
+					BoardingReqs: []*types.BoardingRequest{
+						{Outpoint: &boardingOutpoint},
+					},
+					ForfeitReqs: []*types.ForfeitRequest{
+						{VTXOOutpoint: &forfeitOutpoint},
+					},
+				},
 			}
-			joinReqEvent := client.createJoinRequestWithForfeits(
-				[]*types.BoardingRequest{boardingReq},
-				[]*types.ForfeitRequest{forfeitReq},
+			feedJoinSuccess(h, "client1", joinReq,
+				buildJoinResultWithForfeits(
+					[]*BoardingInput{
+						{Outpoint: &boardingOutpoint},
+					},
+					[]*ForfeitInput{
+						{Outpoint: &forfeitOutpoint},
+					},
+				),
 			)
-			err := h.sendEvent(joinReqEvent)
-			require.NoError(t, err)
 
 			// Assert we're in RegistrationState.
 			assertStateType[*RegistrationState](h)
@@ -1445,7 +1345,7 @@ func TestFSMFailureScenarios(t *testing.T) {
 			h.outboxMessages = nil
 
 			// Seal the round to trigger batch building.
-			err = h.sendEvent(&SealEvent{})
+			err := h.sendEvent(&SealEvent{})
 			require.NoError(t, err)
 
 			// Should be in AwaitingBatchBuildState.
@@ -1554,34 +1454,29 @@ func TestFSMFailureScenarios(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
-
-		const exitDelay = 144
-		const expiry = 144
-		client := newClientHarness(
-			t, "client1", 10, h.operatorPub, exitDelay, expiry,
-		)
+		h.setupPermissiveMocks()
 
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
 			Index: 0,
 		}
 
-		// Set up mocks for successful registration and batch building.
-		h.setupValidBoardingInput(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		// Join via outbox pattern.
+		joinEvent := &ClientJoinRequestEvent{
+			ClientID: "client1",
+			Request: &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &outpoint},
+				},
+			},
+		}
+		feedJoinSuccess(h, "client1", joinEvent,
+			buildJoinResult(&BoardingInput{Outpoint: &outpoint}),
 		)
-
-		// Join to get to RegistrationState.
-		boardingReq := client.createBoardingRequest(&outpoint)
-		joinReqEvent := client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
 
 		// Seal via RegistrationTimeoutEvent.
 		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		// Feed batch build success to advance past batch building.
@@ -1650,24 +1545,28 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up complete registration flow (join + batch building).
-		h.setupCompleteRegistrationFlow(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
-		)
-		h.setupBatchBuildingMocks()
+		h.setupPermissiveMocks()
 
-		// Join to get to RegistrationState.
+		// Build a real boarding input for batch building.
+		bi := buildTestBoardingInputForClient(
+			t, &outpoint, 100_000, client.boardingKey,
+			h.operatorPub, exitDelay,
+		)
+
+		// Join via outbox pattern.
 		boardingReq := client.createBoardingRequest(&outpoint)
 		joinReqEvent := client.createJoinRequest(
 			[]*types.BoardingRequest{boardingReq},
 		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
+		feedJoinSuccess(
+			h, client.clientID, joinReqEvent,
+			buildJoinResult(bi),
+		)
 
 		// Seal and run the batch build through the handler to
 		// produce a real PSBT needed for signature creation.
 		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildViaHandler(h)
@@ -1751,33 +1650,40 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up complete registration flow for both clients.
-		h.setupCompleteRegistrationFlow(
-			&outpoint1, client1.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-		h.setupValidBoardingInput(
-			&outpoint2, client2.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-		h.setupBatchBuildingMocks()
+		h.setupPermissiveMocks()
 
-		// Both clients join.
+		// Build real boarding inputs for batch building.
+		bi1 := buildTestBoardingInputForClient(
+			t, &outpoint1, 100_000, client1.boardingKey,
+			h.operatorPub, exitDelay,
+		)
+		bi2 := buildTestBoardingInputForClient(
+			t, &outpoint2, 100_000, client2.boardingKey,
+			h.operatorPub, exitDelay,
+		)
+
+		// Both clients join via outbox pattern.
 		boardingReq1 := client1.createBoardingRequest(&outpoint1)
-		err := h.sendEvent(client1.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq1},
-		))
-		require.NoError(t, err)
+		feedJoinSuccess(
+			h, client1.clientID,
+			client1.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq1},
+			),
+			buildJoinResult(bi1),
+		)
 
 		boardingReq2 := client2.createBoardingRequest(&outpoint2)
-		err = h.sendEvent(client2.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq2},
-		))
-		require.NoError(t, err)
+		feedJoinSuccess(
+			h, client2.clientID,
+			client2.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq2},
+			),
+			buildJoinResult(bi2),
+		)
 
 		// Seal and run batch build through handler.
 		h.outboxMessages = nil
-		err = h.sendEvent(&SealEvent{})
+		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildViaHandler(h)
@@ -1865,21 +1771,27 @@ func TestFSMBoardingSignatures(t *testing.T) {
 				Index: 0,
 			}
 
-			h.setupCompleteRegistrationFlow(
-				&outpoint, client.boardingKey, exitDelay,
-				10, h.roundID,
-			)
-			h.setupBatchBuildingMocks()
+			h.setupPermissiveMocks()
 
-			boardingReq := client.createBoardingRequest(&outpoint)
+			bi := buildTestBoardingInputForClient(
+				t, &outpoint, 100_000,
+				client.boardingKey, h.operatorPub,
+				exitDelay,
+			)
+
+			boardingReq := client.createBoardingRequest(
+				&outpoint,
+			)
 			joinReqEvent := client.createJoinRequest(
 				[]*types.BoardingRequest{boardingReq},
 			)
-			err := h.sendEvent(joinReqEvent)
-			require.NoError(t, err)
+			feedJoinSuccess(
+				h, client.clientID, joinReqEvent,
+				buildJoinResult(bi),
+			)
 
 			h.outboxMessages = nil
-			err = h.sendEvent(&RegistrationTimeoutEvent{})
+			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
 			feedBatchBuildViaHandler(h)
@@ -1907,6 +1819,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 
 		// Set up the test harness.
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -1919,21 +1832,23 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up complete registration flow.
-		h.setupCompleteRegistrationFlow(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		bi := buildTestBoardingInputForClient(
+			t, &outpoint, 100_000, client.boardingKey,
+			h.operatorPub, exitDelay,
 		)
-		h.setupBatchBuildingMocks()
 
-		// Join and seal.
+		// Join and seal via outbox pattern.
 		boardingReq := client.createBoardingRequest(&outpoint)
-		err := h.sendEvent(client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		))
-		require.NoError(t, err)
+		feedJoinSuccess(
+			h, client.clientID,
+			client.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			),
+			buildJoinResult(bi),
+		)
 
 		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildViaHandler(h)
@@ -1992,6 +1907,7 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
+		h.setupPermissiveMocks()
 
 		const exitDelay = 144
 		const expiry = 144
@@ -2008,17 +1924,15 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		h.setupValidBoardingInput(
-			&boardingOutpoint, client.boardingKey,
-			exitDelay, 10, h.roundID,
+		bi := buildTestBoardingInputForClient(
+			t, &boardingOutpoint, 100_000,
+			client.boardingKey, h.operatorPub, exitDelay,
 		)
-		h.setupValidForfeitVTXO(
-			&forfeitOutpoint, client.boardingKey, h.roundID,
-		)
-		h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-		h.setupBatchBuildingMocks()
+		fi := &ForfeitInput{Outpoint: &forfeitOutpoint}
 
-		boardingReq := client.createBoardingRequest(&boardingOutpoint)
+		boardingReq := client.createBoardingRequest(
+			&boardingOutpoint,
+		)
 		forfeitReq := &types.ForfeitRequest{
 			VTXOOutpoint: &forfeitOutpoint,
 		}
@@ -2026,12 +1940,16 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			[]*types.BoardingRequest{boardingReq},
 			[]*types.ForfeitRequest{forfeitReq},
 		)
-		err := h.sendEvent(joinReqEvent)
-		require.NoError(t, err)
-		assertStateType[*RegistrationState](h)
+		feedJoinSuccess(
+			h, client.clientID, joinReqEvent,
+			buildJoinResultWithForfeits(
+				[]*BoardingInput{bi},
+				[]*ForfeitInput{fi},
+			),
+		)
 
 		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildViaHandler(h)
@@ -2074,35 +1992,45 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up complete registration flow for both clients.
-		h.setupCompleteRegistrationFlow(
-			&outpoint1, client1.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-		h.setupValidBoardingInput(
-			&outpoint2, client2.boardingKey, exitDelay, 10,
-			h.roundID,
-		)
-		h.setupBatchBuildingMocks()
+		h.setupPermissiveMocks()
 
-		// Both clients join.
-		err := h.sendEvent(client1.createJoinRequest(
-			[]*types.BoardingRequest{
-				client1.createBoardingRequest(&outpoint1),
-			},
-		))
-		require.NoError(t, err)
+		// Build real boarding inputs for batch building.
+		bi1 := buildTestBoardingInputForClient(
+			t, &outpoint1, 100_000, client1.boardingKey,
+			h.operatorPub, exitDelay,
+		)
+		bi2 := buildTestBoardingInputForClient(
+			t, &outpoint2, 100_000, client2.boardingKey,
+			h.operatorPub, exitDelay,
+		)
 
-		err = h.sendEvent(client2.createJoinRequest(
-			[]*types.BoardingRequest{
-				client2.createBoardingRequest(&outpoint2),
-			},
-		))
-		require.NoError(t, err)
+		// Both clients join via outbox pattern.
+		feedJoinSuccess(
+			h, client1.clientID,
+			client1.createJoinRequest(
+				[]*types.BoardingRequest{
+					client1.createBoardingRequest(
+						&outpoint1,
+					),
+				},
+			),
+			buildJoinResult(bi1),
+		)
+		feedJoinSuccess(
+			h, client2.clientID,
+			client2.createJoinRequest(
+				[]*types.BoardingRequest{
+					client2.createBoardingRequest(
+						&outpoint2,
+					),
+				},
+			),
+			buildJoinResult(bi2),
+		)
 
 		// Seal and run batch build through handler.
 		h.outboxMessages = nil
-		err = h.sendEvent(&SealEvent{})
+		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildViaHandler(h)
@@ -2154,20 +2082,25 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			Index: 0,
 		}
 
-		// Set up complete registration flow.
-		h.setupCompleteRegistrationFlow(
-			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+		h.setupPermissiveMocks()
+
+		bi := buildTestBoardingInputForClient(
+			t, &outpoint, 100_000, client.boardingKey,
+			h.operatorPub, exitDelay,
 		)
 
-		// Join and seal.
+		// Join and seal via outbox pattern.
 		boardingReq := client.createBoardingRequest(&outpoint)
-		err := h.sendEvent(client.createJoinRequest(
-			[]*types.BoardingRequest{boardingReq},
-		))
-		require.NoError(t, err)
+		feedJoinSuccess(
+			h, client.clientID,
+			client.createJoinRequest(
+				[]*types.BoardingRequest{boardingReq},
+			),
+			buildJoinResult(bi),
+		)
 
 		h.outboxMessages = nil
-		err = h.sendEvent(&RegistrationTimeoutEvent{})
+		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
 		feedBatchBuildSuccess(h)
@@ -2659,27 +2592,31 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 		Index: 0,
 	}
 
-	// Allow the boarding input and set up funding expectations for the
-	// handler that will execute BuildBatchReq.
-	h.setupCompleteRegistrationFlow(
-		&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	h.setupPermissiveMocks()
+
+	bi := buildTestBoardingInputForClient(
+		t, &outpoint, 100_000, client.boardingKey,
+		h.operatorPub, exitDelay,
 	)
-	h.setupBatchBuildingMocks()
 
 	boardingReq := client.createBoardingRequest(&outpoint)
 	vtxoReq := client.createVTXORequest(btcutil.Amount(50000))
 
-	err := h.sendEvent(client.createJoinRequestWithVTXOs(
-		[]*types.BoardingRequest{boardingReq},
-		[]*types.VTXORequest{vtxoReq},
-	))
-	require.NoError(t, err)
-	assertStateType[*RegistrationState](h)
+	feedJoinSuccess(
+		h, client.clientID,
+		client.createJoinRequestWithVTXOs(
+			[]*types.BoardingRequest{boardingReq},
+			[]*types.VTXORequest{vtxoReq},
+		),
+		buildJoinResultWithVTXOs(
+			[]*BoardingInput{bi}, client,
+		),
+	)
 
 	// Seal via timeout, then run the batch build through the handler
 	// to produce real VTXO trees needed for the nonce/signature flow.
 	h.outboxMessages = nil
-	err = h.sendEvent(&RegistrationTimeoutEvent{})
+	err := h.sendEvent(&RegistrationTimeoutEvent{})
 	require.NoError(t, err)
 
 	feedBatchBuildViaHandler(h)
@@ -2829,26 +2766,43 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 		Index: 0,
 	}
 
-	h.setupValidBoardingInput(
-		&boardingOutpoint, client.boardingKey, exitDelay, 10,
-		h.roundID,
+	h.setupPermissiveMocks()
+
+	bi := buildTestBoardingInputForClient(
+		t, &boardingOutpoint, 100_000, client.boardingKey,
+		h.operatorPub, exitDelay,
 	)
-	vtxo := h.setupValidForfeitVTXO(
-		&forfeitOutpoint, client.boardingKey, h.roundID,
+
+	// Build a VTXO descriptor for the forfeit input — needed later
+	// for building the forfeit transaction and its signature.
+	vtxoDescriptor, err := tree.NewVTXODescriptor(
+		50000, client.boardingKey, h.operatorPub, 144,
 	)
-	h.expectVTXOLocked(h.roundID, forfeitOutpoint)
-	h.setupBatchBuildingMocks()
+	require.NoError(t, err)
+	vtxo := &VTXO{
+		RoundID:          h.roundID,
+		BatchOutputIndex: 0,
+		Descriptor:       vtxoDescriptor,
+		Status:           VTXOStatusLive,
+	}
+
+	fi := &ForfeitInput{Outpoint: &forfeitOutpoint, VTXO: vtxo}
 
 	boardingReq := client.createBoardingRequest(&boardingOutpoint)
 	forfeitReq := &types.ForfeitRequest{
 		VTXOOutpoint: &forfeitOutpoint,
 	}
-	err = h.sendEvent(client.createJoinRequestWithForfeits(
-		[]*types.BoardingRequest{boardingReq},
-		[]*types.ForfeitRequest{forfeitReq},
-	))
-	require.NoError(t, err)
-	assertStateType[*RegistrationState](h)
+	feedJoinSuccess(
+		h, client.clientID,
+		client.createJoinRequestWithForfeits(
+			[]*types.BoardingRequest{boardingReq},
+			[]*types.ForfeitRequest{forfeitReq},
+		),
+		buildJoinResultWithForfeits(
+			[]*BoardingInput{bi},
+			[]*ForfeitInput{fi},
+		),
+	)
 
 	h.outboxMessages = nil
 	err = h.sendEvent(&RegistrationTimeoutEvent{})
@@ -2978,44 +2932,50 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 		Index: 0,
 	}
 
-	// Prepare mocks: validate both boarding inputs, fund once via
-	// handler.
-	h.setupCompleteRegistrationFlow(
-		&outpoint1, client1.boardingKey, exitDelay, 10, h.roundID,
+	h.setupPermissiveMocks()
+
+	bi1 := buildTestBoardingInputForClient(
+		t, &outpoint1, 100_000, client1.boardingKey,
+		h.operatorPub, exitDelay,
 	)
-	h.setupValidBoardingInput(
-		&outpoint2, client2.boardingKey, exitDelay, 10, h.roundID,
+	bi2 := buildTestBoardingInputForClient(
+		t, &outpoint2, 100_000, client2.boardingKey,
+		h.operatorPub, exitDelay,
 	)
-	h.setupBatchBuildingMocks()
 
 	vtxoReq1 := client1.createVTXORequest(btcutil.Amount(50_000))
 	vtxoReq2 := client2.createVTXORequest(btcutil.Amount(60_000))
 
-	// Both clients join with boarding + VTXO requests.
-	err := h.sendEvent(client1.createJoinRequestWithVTXOs(
-		[]*types.BoardingRequest{
-			client1.createBoardingRequest(&outpoint1),
-		},
-		[]*types.VTXORequest{
-			vtxoReq1,
-		},
-	))
-	require.NoError(t, err)
-
-	err = h.sendEvent(client2.createJoinRequestWithVTXOs(
-		[]*types.BoardingRequest{
-			client2.createBoardingRequest(&outpoint2),
-		},
-		[]*types.VTXORequest{
-			vtxoReq2,
-		},
-	))
-	require.NoError(t, err)
+	// Both clients join with boarding + VTXO requests via outbox.
+	feedJoinSuccess(
+		h, client1.clientID,
+		client1.createJoinRequestWithVTXOs(
+			[]*types.BoardingRequest{
+				client1.createBoardingRequest(&outpoint1),
+			},
+			[]*types.VTXORequest{vtxoReq1},
+		),
+		buildJoinResultWithVTXOs(
+			[]*BoardingInput{bi1}, client1,
+		),
+	)
+	feedJoinSuccess(
+		h, client2.clientID,
+		client2.createJoinRequestWithVTXOs(
+			[]*types.BoardingRequest{
+				client2.createBoardingRequest(&outpoint2),
+			},
+			[]*types.VTXORequest{vtxoReq2},
+		),
+		buildJoinResultWithVTXOs(
+			[]*BoardingInput{bi2}, client2,
+		),
+	)
 
 	// Seal and run the batch build through the handler to produce
 	// real VTXO trees.
 	h.outboxMessages = nil
-	err = h.sendEvent(&SealEvent{})
+	err := h.sendEvent(&SealEvent{})
 	require.NoError(t, err)
 
 	feedBatchBuildViaHandler(h)
@@ -3146,26 +3106,33 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 		Index: 0,
 	}
 
-	h.setupCompleteRegistrationFlow(
-		&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	h.setupPermissiveMocks()
+
+	bi := buildTestBoardingInputForClient(
+		t, &outpoint, 100_000, client.boardingKey,
+		h.operatorPub, exitDelay,
 	)
-	h.setupBatchBuildingMocks()
 
 	// Two VTXO requests with distinct signing keys.
 	vtxoReq1 := client.createVTXORequest(btcutil.Amount(40_000))
 	vtxoReq2 := client.createVTXORequest(btcutil.Amount(50_000))
 
-	err := h.sendEvent(client.createJoinRequestWithVTXOs(
-		[]*types.BoardingRequest{
-			client.createBoardingRequest(&outpoint),
-		},
-		[]*types.VTXORequest{vtxoReq1, vtxoReq2},
-	))
-	require.NoError(t, err)
+	feedJoinSuccess(
+		h, client.clientID,
+		client.createJoinRequestWithVTXOs(
+			[]*types.BoardingRequest{
+				client.createBoardingRequest(&outpoint),
+			},
+			[]*types.VTXORequest{vtxoReq1, vtxoReq2},
+		),
+		buildJoinResultWithVTXOs(
+			[]*BoardingInput{bi}, client,
+		),
+	)
 
 	// Seal and run the batch build through the handler.
 	h.outboxMessages = nil
-	err = h.sendEvent(&RegistrationTimeoutEvent{})
+	err := h.sendEvent(&RegistrationTimeoutEvent{})
 	require.NoError(t, err)
 
 	feedBatchBuildViaHandler(h)

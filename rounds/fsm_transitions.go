@@ -227,11 +227,10 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If validation fails,
-//     remains in CreatedState and sends ClientErrorResp. On success,
-//     transitions to RegistrationState with the first client registered,
-//     sends ClientSuccessResp, requests boarding input locks, and starts
-//     the registration timeout.
+//   - ClientJoinRequestEvent: Emits a ValidateAndLockJoinReq outbox event
+//     and transitions to AwaitingJoinValidationState. The OutboxHandler
+//     validates and locks the inputs, then feeds back a success or failure
+//     event.
 func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
@@ -247,72 +246,25 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			LogBoardingCount(len(evt.Request.BoardingReqs)),
 			LogLeaveCount(len(evt.Request.LeaveReqs)))
 
-		// Validate the join request. If this fails, this is not an FSM
-		// error, but we should respond to the client accordingly.
-		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Join request validation failed", err,
-				LogClientID(evt.ClientID))
-
-			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
-				err)
-
-			return clientErrorTransition(s, evt.ClientID, errMsg),
-				nil
-		}
-
-		// Attempt to lock all boarding inputs for this client.
-		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
-		if err != nil {
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Attempt to lock all forfeit VTXOs for this client.
-		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
-		if err != nil {
-			// Unlock the boarding inputs since we can't proceed.
-			unlockBoardingInputsList(
-				ctx, env, result.BoardingInputs,
-			)
-
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Create the initial client registrations map with the first
-		// client.
-		reg := newClientRegistration(evt.ClientID, result)
-		clientRegs := map[clientconn.ClientID]*ClientRegistration{
-			evt.ClientID: reg,
-		}
-
-		env.Log.InfoS(ctx, "First client registered, starting registration phase",
-			LogClientID(evt.ClientID))
-
-		successResp := &ClientSuccessResp{
-			Client:  evt.ClientID,
-			RoundID: env.RoundID,
-			AcceptedBoardingOutpoints: extractBoardingOutpoints(
-				result.BoardingInputs,
-			),
-			AcceptedVTXOOutpoints: extractVTXOOutpoints(
-				result.ForfeitInputs,
-			),
-		}
-
+		// Emit validation + locking to the OutboxHandler.
 		return &StateTransition{
-			NextState: newRegistrationState(clientRegs),
+			NextState: &AwaitingJoinValidationState{
+				ExistingRegistrations: make(
+					map[clientconn.ClientID]*ClientRegistration,
+				),
+				PendingClientID: evt.ClientID,
+				IsFirstClient:   true,
+			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
-					successResp,
-					newStartTimeoutReq(
-						env, TimeoutPhaseRegistration,
-					),
+					&ValidateAndLockJoinReq{
+						RoundID:    env.RoundID,
+						ClientID:   evt.ClientID,
+						Request:    evt.Request,
+						CurrentBlockHeight: evt.CurrentBlockHeight,
+						StartHeight:        env.StartHeight,
+						DisableJoinRequestAuth: env.DisableJoinRequestAuth,
+					},
 				},
 			}),
 		}, nil
@@ -326,10 +278,9 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If the client is
-//     already registered or validation fails, sends ClientErrorResp. On
-//     success, adds the client to registrations, sends ClientSuccessResp,
-//     and requests boarding input locks.
+//   - ClientJoinRequestEvent: If the client is already registered, sends
+//     ClientErrorResp. Otherwise emits a ValidateAndLockJoinReq outbox
+//     event and transitions to AwaitingJoinValidationState.
 //
 //   - RegistrationTimeoutEvent: Registration phase timed out. Emits
 //     RoundSealedReq to notify actor, then internal SealEvent to seal.
@@ -362,63 +313,24 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Validate the join request.
-		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Join request validation failed", err,
-				LogClientID(evt.ClientID))
-
-			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
-				err)
-
-			return clientErrorTransition(
-				s, evt.ClientID, errMsg,
-			), nil
-		}
-
-		// Attempt to lock all boarding inputs for this client.
-		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
-		if err != nil {
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Attempt to lock all forfeit VTXOs for this client.
-		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
-		if err != nil {
-			// Unlock the boarding inputs since we can't proceed.
-			unlockBoardingInputsList(
-				ctx, env, result.BoardingInputs,
-			)
-
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		newClientCount := len(s.ClientRegistrations) + 1
-		env.Log.InfoS(ctx, "Client registered successfully",
-			LogClientID(evt.ClientID),
-			LogClientCount(newClientCount))
-
-		successResp := &ClientSuccessResp{
-			Client:  evt.ClientID,
-			RoundID: env.RoundID,
-			AcceptedBoardingOutpoints: extractBoardingOutpoints(
-				result.BoardingInputs,
-			),
-			AcceptedVTXOOutpoints: extractVTXOOutpoints(
-				result.ForfeitInputs,
-			),
-		}
-
+		// Emit validation + locking to the OutboxHandler.
 		return &StateTransition{
-			NextState: s.withNewClient(evt.ClientID, result),
+			NextState: &AwaitingJoinValidationState{
+				ExistingRegistrations: s.ClientRegistrations,
+				PendingClientID:       evt.ClientID,
+				IsFirstClient:         false,
+			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{successResp},
+				Outbox: []OutboxEvent{
+					&ValidateAndLockJoinReq{
+						RoundID:    env.RoundID,
+						ClientID:   evt.ClientID,
+						Request:    evt.Request,
+						CurrentBlockHeight: evt.CurrentBlockHeight,
+						StartHeight:        env.StartHeight,
+						DisableJoinRequestAuth: env.DisableJoinRequestAuth,
+					},
+				},
 			}),
 		}, nil
 
@@ -461,6 +373,98 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 
 	default:
 		return unexpectedEvent(s, "registration", event, env), nil
+	}
+}
+
+// ProcessEvent handles the events from the AwaitingJoinValidationState state.
+//
+// Event handling:
+//
+//   - ValidateAndLockSucceededEvent: Validation and locking succeeded.
+//     Transitions to RegistrationState with the new client added. Emits a
+//     ClientSuccessResp and, if this is the first client, a StartTimeoutReq
+//     for the registration phase.
+//
+//   - ValidateAndLockFailedEvent: Validation or locking failed. Returns to
+//     CreatedState (first client) or RegistrationState (subsequent client)
+//     with a ClientErrorResp.
+func (s *AwaitingJoinValidationState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingJoinValidation"),
+		LogEvent(event))
+
+	switch evt := event.(type) {
+	case *ValidateAndLockSucceededEvent:
+		env.Log.InfoS(ctx, "Join validation succeeded",
+			LogClientID(evt.ClientID))
+
+		// Build the new registrations map with the validated client.
+		newRegs := make(
+			map[clientconn.ClientID]*ClientRegistration,
+		)
+		for id, reg := range s.ExistingRegistrations {
+			newRegs[id] = reg
+		}
+		newRegs[evt.ClientID] = newClientRegistration(
+			evt.ClientID, evt.Result,
+		)
+
+		// Build the success response for the client.
+		successResp := &ClientSuccessResp{
+			Client:  evt.ClientID,
+			RoundID: env.RoundID,
+			AcceptedBoardingOutpoints: extractBoardingOutpoints(
+				evt.Result.BoardingInputs,
+			),
+			AcceptedVTXOOutpoints: extractVTXOOutpoints(
+				evt.Result.ForfeitInputs,
+			),
+		}
+
+		outbox := []OutboxEvent{successResp}
+
+		// First client triggers the registration timeout.
+		if s.IsFirstClient {
+			outbox = append(
+				outbox,
+				newStartTimeoutReq(
+					env, TimeoutPhaseRegistration,
+				),
+			)
+		}
+
+		return &StateTransition{
+			NextState: newRegistrationState(newRegs),
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outbox,
+			}),
+		}, nil
+
+	case *ValidateAndLockFailedEvent:
+		env.Log.WarnS(ctx, "Join validation failed", nil,
+			LogClientID(evt.ClientID),
+			slog.String("reason", evt.Reason))
+
+		// Return to the previous state with a client error.
+		var prevState State
+		if s.IsFirstClient {
+			prevState = &CreatedState{}
+		} else {
+			prevState = newRegistrationState(
+				s.ExistingRegistrations,
+			)
+		}
+
+		return clientErrorTransition(
+			prevState, evt.ClientID, evt.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting-join-validation", event, env,
+		), nil
 	}
 }
 

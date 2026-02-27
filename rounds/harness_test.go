@@ -441,6 +441,8 @@ func feedBatchBuildViaHandler(h *fsmTestHarness) {
 	handler := NewInProcessOutboxHandler(
 		h.roundStore, h.vtxoStore, h.walletController,
 		h.feeEstimator, h.boardingLocker, h.vtxoLocker,
+		h.chainSource, h.env.ChainParams,
+		h.env.Terms, h.env.Log,
 		h.env.ConfTarget, h.env.MinConfs,
 		h.env.WalletAccount,
 	)
@@ -454,6 +456,106 @@ func feedBatchBuildViaHandler(h *fsmTestHarness) {
 	h.outboxMessages = nil
 	err = h.sendEvent(events[0])
 	require.NoError(h, err)
+}
+
+// feedJoinSuccess performs the two-hop join pattern: sends a
+// ClientJoinRequestEvent, asserts the intermediate AwaitingJoinValidationState
+// and ValidateAndLockJoinReq outbox, then feeds a ValidateAndLockSucceededEvent
+// with the given result. Outbox is cleared between hops. After this call the
+// FSM should be in RegistrationState with the new client.
+func feedJoinSuccess(h *fsmTestHarness, clientID ClientID,
+	joinEvent *ClientJoinRequestEvent,
+	result *JoinRequestResult) {
+
+	h.Helper()
+
+	h.outboxMessages = nil
+	err := h.sendEvent(joinEvent)
+	require.NoError(h, err)
+
+	// Assert intermediate state and outbox.
+	assertStateType[*AwaitingJoinValidationState](h)
+	assertOutboxContains[*ValidateAndLockJoinReq](h)
+
+	// Feed validation success back.
+	h.outboxMessages = nil
+	err = h.sendEvent(&ValidateAndLockSucceededEvent{
+		ClientID: clientID,
+		Result:   result,
+	})
+	require.NoError(h, err)
+}
+
+// feedJoinFailure performs the two-hop join pattern for a failure case: sends
+// a ClientJoinRequestEvent, asserts the intermediate state, then feeds a
+// ValidateAndLockFailedEvent with the given reason. The FSM should return to
+// its previous state with a ClientErrorResp outbox.
+func feedJoinFailure(h *fsmTestHarness,
+	joinEvent *ClientJoinRequestEvent, reason string) {
+
+	h.Helper()
+
+	h.outboxMessages = nil
+	err := h.sendEvent(joinEvent)
+	require.NoError(h, err)
+
+	// Assert intermediate state.
+	assertStateType[*AwaitingJoinValidationState](h)
+
+	// Feed validation failure back.
+	h.outboxMessages = nil
+	err = h.sendEvent(&ValidateAndLockFailedEvent{
+		ClientID: joinEvent.ClientID,
+		Reason:   reason,
+	})
+	require.NoError(h, err)
+}
+
+// buildJoinResult creates a JoinRequestResult from boarding inputs. This is
+// used by FSM tests that need to provide a pre-built result to the
+// ValidateAndLockSucceededEvent without going through actual validation.
+func buildJoinResult(
+	boardingInputs ...*BoardingInput) *JoinRequestResult {
+
+	return &JoinRequestResult{
+		BoardingInputs: boardingInputs,
+	}
+}
+
+// buildJoinResultWithForfeits creates a JoinRequestResult from boarding and
+// forfeit inputs. Used by FSM tests with forfeit VTXOs.
+func buildJoinResultWithForfeits(boardingInputs []*BoardingInput,
+	forfeitInputs []*ForfeitInput) *JoinRequestResult {
+
+	return &JoinRequestResult{
+		BoardingInputs: boardingInputs,
+		ForfeitInputs:  forfeitInputs,
+	}
+}
+
+// buildJoinResultWithVTXOs creates a JoinRequestResult from boarding inputs
+// and VTXO descriptors/signing keys extracted from the client harness. Used
+// by E2E tests that need real VTXO tree construction.
+func buildJoinResultWithVTXOs(boardingInputs []*BoardingInput,
+	clients ...*clientHarness) *JoinRequestResult {
+
+	vtxoDescs := make(map[SigningKeyHex]*tree.VTXODescriptor)
+	signingKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+
+	for _, c := range clients {
+		for keyHex, desc := range c.vtxoDescriptors {
+			vtxoDescs[keyHex] = desc
+		}
+		for keyHex, keyDesc := range c.vtxoKeys {
+			signingKeys[keyHex] = keyDesc.PubKey
+		}
+	}
+
+	return &JoinRequestResult{
+		BoardingInputs:  boardingInputs,
+		VTXODescriptors: vtxoDescs,
+		SigningKeys:      signingKeys,
+	}
 }
 
 // expectPSBTFinalized sets up the wallet controller mock to expect a
@@ -694,6 +796,43 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 	require.NoError(t, err)
 
 	// Build the P2TR pkScript.
+	outputKey, err := tapscript.TaprootKey()
+	require.NoError(t, err)
+	pkScript, err := input.PayToTaprootScript(outputKey)
+	require.NoError(t, err)
+
+	return &BoardingInput{
+		Outpoint:  outpoint,
+		Tapscript: tapscript,
+		Value:     value,
+		PkScript:  pkScript,
+		ClientKey: clientKey,
+		OperatorKeyDesc: &keychain.KeyDescriptor{
+			PubKey: operatorKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(42),
+				Index:  0,
+			},
+		},
+	}
+}
+
+// buildTestBoardingInputForClient creates a fully-populated BoardingInput using
+// the given client key and exit delay. This is the same as buildTestBoardingInput
+// but uses a specific client key so that signatures created by the corresponding
+// client harness will be valid.
+func buildTestBoardingInputForClient(t *testing.T,
+	outpoint *wire.OutPoint, value btcutil.Amount,
+	clientKey, operatorKey *btcec.PublicKey,
+	exitDelay uint32) *BoardingInput {
+
+	t.Helper()
+
+	tapscript, err := scripts.VTXOTapScript(
+		clientKey, operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
 	outputKey, err := tapscript.TaprootKey()
 	require.NoError(t, err)
 	pkScript, err := input.PayToTaprootScript(outputKey)
