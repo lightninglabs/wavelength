@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -434,6 +435,53 @@ func (s *ServerSigningState) IsTerminal() bool {
 // stateSealed marks ServerSigningState as implementing the sealed State
 // interface.
 func (s *ServerSigningState) stateSealed() {}
+
+// AwaitingSignAndFinalizeState waits for the OutboxHandler to sign all
+// boarding inputs, complete forfeit transactions, and finalize the PSBT.
+// This intermediate state exists so that ServerSigningState remains pure
+// — it emits a SignAndFinalizeRoundReq outbox event and transitions
+// here, then the handler feeds back a success or failure event.
+type AwaitingSignAndFinalizeState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	// Carried forward for persistence and failure transitions.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// Carried forward for the persistence outbox request.
+	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// Carried forward for the persistence outbox request.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts. Carried forward for the persistence outbox request.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock for the VTXO sweep timeout
+	// path. Carried forward for the persistence outbox request.
+	CSVDelay uint32
+
+	// StartHeight is the block height when the round was created.
+	// Carried forward for the BroadcastRoundReq.
+	StartHeight uint32
+}
+
+// String returns a human-readable representation of
+// AwaitingSignAndFinalizeState.
+func (s *AwaitingSignAndFinalizeState) String() string {
+	return "AwaitingSignAndFinalizeState"
+}
+
+// IsTerminal returns false as AwaitingSignAndFinalizeState is not a
+// terminal state.
+func (s *AwaitingSignAndFinalizeState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingSignAndFinalizeState as implementing the
+// sealed State interface.
+func (s *AwaitingSignAndFinalizeState) stateSealed() {}
 
 // AwaitingServerSignPersistState waits for the OutboxHandler to persist
 // the round and VTXOs after server signing completes. This intermediate

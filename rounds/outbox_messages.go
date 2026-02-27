@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -356,6 +357,52 @@ type BroadcastRoundReq struct {
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
+
+// SignAndFinalizeRoundReq is an outbox event emitted when the FSM has
+// collected all client signatures and is ready for the server to sign
+// boarding inputs, complete forfeit transactions, and finalize the PSBT.
+// The OutboxHandler should perform the signing I/O and return a
+// SignAndFinalizeSucceededEvent or SignAndFinalizeFailedEvent.
+type SignAndFinalizeRoundReq struct {
+	// RoundID is the identifier of the round being signed.
+	RoundID RoundID
+
+	// PSBT is the funded but unsigned commitment transaction. Boarding
+	// inputs already have PSBT metadata set; the handler will apply
+	// signatures and then finalize.
+	PSBT *psbt.Packet
+
+	// CollectedSignatures contains client boarding input signatures,
+	// keyed by client ID. The handler applies these alongside the
+	// operator's signatures to complete boarding input witnesses.
+	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs contains client forfeit transactions with
+	// client VTXO signatures, keyed by client ID. The handler adds the
+	// server's signatures to complete forfeit witnesses.
+	CollectedForfeitTxs ForfeitTxsMap
+
+	// ClientRegistrations contains client registration data needed
+	// to look up boarding inputs and forfeit inputs during signing.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// ConnectorAssignments maps forfeited outpoints to connector
+	// leaves. Needed by the handler to complete forfeit transactions.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// OperatorKey is the key descriptor for the operator's identity
+	// key. Used by the handler for SignOutputRaw calls on boarding
+	// and forfeit inputs.
+	OperatorKey keychain.KeyDescriptor
+
+	// VTXOExitDelay is the exit delay for VTXOs. Used by the handler
+	// to reconstruct VTXO tapscripts for forfeit signing.
+	VTXOExitDelay uint32
+}
+
+// outboxEventSealed marks SignAndFinalizeRoundReq as implementing the
+// sealed OutboxEvent interface.
+func (s *SignAndFinalizeRoundReq) outboxEventSealed() {}
 
 // PersistServerSigningReq is an outbox event emitted after the server has
 // signed all inputs and finalized the PSBT. The OutboxHandler should persist

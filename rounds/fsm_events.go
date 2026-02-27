@@ -3,6 +3,7 @@ package rounds
 import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -170,6 +171,34 @@ type TransactionConfirmedEvent struct {
 // eventSealed marks TransactionConfirmedEvent as implementing the sealed Event
 // interface.
 func (e *TransactionConfirmedEvent) eventSealed() {}
+
+// SignAndFinalizeSucceededEvent is sent by the OutboxHandler after it has
+// successfully signed all boarding inputs, completed forfeit transactions,
+// and finalized the PSBT. It carries the results back to the FSM so the
+// next state can emit the persistence outbox request.
+type SignAndFinalizeSucceededEvent struct {
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata
+	// produced during forfeit transaction completion.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+}
+
+// eventSealed marks SignAndFinalizeSucceededEvent as implementing the
+// sealed Event interface.
+func (e *SignAndFinalizeSucceededEvent) eventSealed() {}
+
+// SignAndFinalizeFailedEvent is sent by the OutboxHandler when signing
+// or finalization fails.
+type SignAndFinalizeFailedEvent struct {
+	// Reason describes why the signing or finalization failed.
+	Reason string
+}
+
+// eventSealed marks SignAndFinalizeFailedEvent as implementing the
+// sealed Event interface.
+func (e *SignAndFinalizeFailedEvent) eventSealed() {}
 
 // PersistServerSigningSucceededEvent is sent by the OutboxHandler after it
 // has successfully persisted the round and VTXOs following server signing.
