@@ -127,6 +127,30 @@ func (s *BatchBuildingState) IsTerminal() bool {
 // interface.
 func (s *BatchBuildingState) stateSealed() {}
 
+// AwaitingBatchBuildState waits for the OutboxHandler to finish building the
+// commitment transaction (fee estimation, wallet funding, tree construction).
+// On success it transitions to BatchBuiltState; on failure to FailedState.
+type AwaitingBatchBuildState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	// Preserved across the intermediate state for the BatchBuiltState
+	// transition.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// String returns a human-readable representation of AwaitingBatchBuildState.
+func (s *AwaitingBatchBuildState) String() string {
+	return "AwaitingBatchBuildState"
+}
+
+// IsTerminal returns false as AwaitingBatchBuildState is not a terminal state.
+func (s *AwaitingBatchBuildState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingBatchBuildState as implementing the sealed State
+// interface.
+func (s *AwaitingBatchBuildState) stateSealed() {}
+
 // BatchBuiltState holds the funded PSBT after successful construction.
 // The PSBT contains boarding inputs and leave outputs, plus wallet inputs
 // and change added by FundPsbt. All inputs are unsigned at this point.

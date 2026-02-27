@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
@@ -357,6 +358,42 @@ type BroadcastRoundReq struct {
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
+
+// BuildBatchReq is an outbox event emitted when the FSM is ready to build
+// the commitment transaction. The OutboxHandler should call buildCommitmentTx
+// to perform fee estimation and wallet funding, then return a
+// BuildBatchSucceededEvent or BuildBatchFailedEvent.
+type BuildBatchReq struct {
+	// RoundID is the identifier of the round being built.
+	RoundID RoundID
+
+	// BoardingInputs are the client boarding inputs to include in the
+	// commitment transaction.
+	BoardingInputs []*BoardingInput
+
+	// ForfeitInputs are the client forfeit inputs whose connector trees
+	// must be constructed.
+	ForfeitInputs []*ForfeitInput
+
+	// RequiredOutputs are the leave outputs to include in the commitment
+	// transaction.
+	RequiredOutputs []*wire.TxOut
+
+	// VTXODescriptors describe the VTXO tree outputs to construct.
+	VTXODescriptors []tree.VTXODescriptor
+
+	// Terms contains the operator's terms for batch building (tree radix,
+	// dust amounts, connector configuration, etc.).
+	Terms *batch.Terms
+
+	// ForfeitScript is the output script for penalty outputs in forfeit
+	// transactions.
+	ForfeitScript []byte
+}
+
+// outboxEventSealed marks BuildBatchReq as implementing the sealed
+// OutboxEvent interface.
+func (b *BuildBatchReq) outboxEventSealed() {}
 
 // SignAndFinalizeRoundReq is an outbox event emitted when the FSM has
 // collected all client signatures and is ready for the server to sign
