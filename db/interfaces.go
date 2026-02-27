@@ -237,9 +237,12 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
 
-	// If a durable actor transaction is already attached to the context,
-	// participate in that transaction instead of starting a nested one.
-	// Retry semantics are handled by the outer transaction executor.
+	// If the context already carries a database transaction from the
+	// durable actor framework, join it instead of creating a new one.
+	// This ensures that all store operations within a single actor
+	// message are executed atomically in the same transaction. The
+	// provided txOptions are ignored in this case; isolation level
+	// and read-only semantics are governed by the outer transaction.
 	if tx, ok := actor.TxFromContext(ctx); ok {
 		return txBody(t.createQuery(tx))
 	}
