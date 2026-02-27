@@ -2309,64 +2309,30 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env.Log.DebugS(ctx, "PSBT finalized",
 		LogTxID(finalTx.TxHash().String()))
 
-	// Persist the round to storage.
-	round := &Round{
-		RoundID:              env.RoundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            s.VTXOTrees,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
+	// Emit a persistence request for the handler to execute. The
+	// FSM transitions to AwaitingServerSignPersistState while the
+	// handler persists the round and VTXOs asynchronously.
+	persistReq := &PersistServerSigningReq{
+		RoundID:     env.RoundID,
+		FinalTx:     finalTx,
+		VTXOTrees:   s.VTXOTrees,
+		ForfeitInfos: forfeitInfos,
 		ClientRegistrations:  s.ClientRegistrations,
-		SweepKey:             env.Terms.SweepKey.PubKey,
-		CSVDelay:             env.Terms.SweepDelay,
+		ConnectorDescriptors: s.ConnectorDescriptors,
+		SweepKey: env.Terms.SweepKey.PubKey,
+		CSVDelay: env.Terms.SweepDelay,
 	}
-
-	err = env.RoundStore.PersistRound(ctx, round)
-	if err != nil {
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to persist round: %v", err),
-		), nil
-	}
-
-	// Persist VTXOs in unconfirmed state before broadcast.
-	if len(s.VTXOTrees) > 0 {
-		vtxos, err := collectVTXOs(
-			env.RoundID, s.VTXOTrees, s.ClientRegistrations,
-		)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("collect VTXOs: %v", err),
-			), nil
-		}
-
-		err = env.VTXOStore.PersistVTXOs(ctx, vtxos)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("persist VTXOs: %v", err),
-			), nil
-		}
-	}
-
-	env.Log.InfoS(ctx, "Persisted round", "round_id", env.RoundID)
 
 	return &StateTransition{
-		NextState: &FinalizedState{
+		NextState: &AwaitingServerSignPersistState{
 			ClientRegistrations: s.ClientRegistrations,
 			FinalTx:             finalTx,
 			VTXOTrees:           s.VTXOTrees,
 			ForfeitInfos:        forfeitInfos,
+			StartHeight:         env.StartHeight,
 		},
 		NewEvents: fn.Some(EmittedEvent{
-			Outbox: []OutboxEvent{
-				&BroadcastRoundReq{
-					RoundID:     env.RoundID,
-					SignedTx:    finalTx,
-					StartHeight: env.StartHeight,
-				},
-			},
+			Outbox: []OutboxEvent{persistReq},
 		}),
 	}, nil
 }
@@ -2565,6 +2531,54 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 	}
 
 	return vtxos, nil
+}
+
+// ProcessEvent handles events in AwaitingServerSignPersistState. This state
+// waits for the OutboxHandler to complete persistence of the round and VTXOs.
+//
+// On success the FSM transitions to FinalizedState and emits a
+// BroadcastRoundReq. On failure it transitions to FailedState via
+// buildFailureTransition.
+func (s *AwaitingServerSignPersistState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingServerSignPersist"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *PersistServerSigningSucceededEvent:
+		env.Log.InfoS(ctx, "Persisted round",
+			"round_id", env.RoundID)
+
+		return &StateTransition{
+			NextState: &FinalizedState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             s.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				ForfeitInfos:        s.ForfeitInfos,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&BroadcastRoundReq{
+						RoundID:     env.RoundID,
+						SignedTx:    s.FinalTx,
+						StartHeight: s.StartHeight,
+					},
+				},
+			}),
+		}, nil
+
+	case *PersistServerSigningFailedEvent:
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, e.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_server_sign_persist", event, env,
+		), nil
+	}
 }
 
 // ProcessEvent handles events in the FinalizedState. This state holds the

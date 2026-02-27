@@ -49,12 +49,70 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	outbox OutboxEvent) ([]Event, error) {
 
 	switch msg := outbox.(type) {
+	case *PersistServerSigningReq:
+		return h.handlePersistServerSigning(ctx, msg)
+
 	case *ConfirmRoundReq:
 		return h.handleConfirmRound(ctx, msg)
 
 	default:
 		return nil, nil
 	}
+}
+
+// handlePersistServerSigning persists the round and its VTXOs after server
+// signing completes. Returns a PersistServerSigningSucceededEvent on success
+// or a PersistServerSigningFailedEvent on any persistence error.
+func (h *InProcessOutboxHandler) handlePersistServerSigning(
+	ctx context.Context,
+	msg *PersistServerSigningReq) ([]Event, error) {
+
+	// Build the Round struct from the request fields.
+	round := &Round{
+		RoundID:              msg.RoundID,
+		FinalTx:              msg.FinalTx,
+		VTXOTrees:            msg.VTXOTrees,
+		ConnectorDescriptors: msg.ConnectorDescriptors,
+		ForfeitInfos:         msg.ForfeitInfos,
+		ClientRegistrations:  msg.ClientRegistrations,
+		SweepKey:             msg.SweepKey,
+		CSVDelay:             msg.CSVDelay,
+	}
+
+	err := h.roundStore.PersistRound(ctx, round)
+	if err != nil {
+		return []Event{&PersistServerSigningFailedEvent{
+			Reason: fmt.Sprintf(
+				"persist round: %v", err,
+			),
+		}}, nil
+	}
+
+	// Persist VTXOs in unconfirmed state before broadcast.
+	if len(msg.VTXOTrees) > 0 {
+		vtxos, err := collectVTXOs(
+			msg.RoundID, msg.VTXOTrees,
+			msg.ClientRegistrations,
+		)
+		if err != nil {
+			return []Event{&PersistServerSigningFailedEvent{
+				Reason: fmt.Sprintf(
+					"collect VTXOs: %v", err,
+				),
+			}}, nil
+		}
+
+		err = h.vtxoStore.PersistVTXOs(ctx, vtxos)
+		if err != nil {
+			return []Event{&PersistServerSigningFailedEvent{
+				Reason: fmt.Sprintf(
+					"persist VTXOs: %v", err,
+				),
+			}}, nil
+		}
+	}
+
+	return []Event{&PersistServerSigningSucceededEvent{}}, nil
 }
 
 // handleConfirmRound persists round confirmation data: marks VTXOs live,

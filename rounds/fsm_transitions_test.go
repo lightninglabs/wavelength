@@ -1650,9 +1650,8 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
 		)
 
-		// We expect the round building and signing to succeed and
-		// therefore for the round to be finalized and persisted.
-		h.expectRoundFinalized(wire.NewMsgTx(2))
+		// We expect the PSBT finalization to succeed.
+		h.expectPSBTFinalized(wire.NewMsgTx(2))
 
 		// Join to get to RegistrationState.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -1678,11 +1677,10 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should transition through ServerSigningState to
-		// FinalizedState since all clients have submitted and signing
-		// completes.
-		finalState := assertStateType[*FinalizedState](h)
-		require.NotNil(t, finalState.FinalTx)
-		require.Len(t, finalState.ClientRegistrations, 1)
+		// AwaitingServerSignPersistState with a persistence
+		// outbox request.
+		assertStateType[*AwaitingServerSignPersistState](h)
+		assertOutboxContains[*PersistServerSigningReq](h)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -1699,6 +1697,16 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.True(
 			t, foundCancelTimeout, "timeout should be cancelled",
 		)
+
+		// Feed persistence success to complete the transition.
+		h.outboxMessages = nil
+		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
+		require.NoError(t, err)
+
+		finalState := assertStateType[*FinalizedState](h)
+		require.NotNil(t, finalState.FinalTx)
+		require.Len(t, finalState.ClientRegistrations, 1)
+		assertOutboxContains[*BroadcastRoundReq](h)
 	})
 
 	t.Run("multi-client signature collection", func(t *testing.T) {
@@ -1737,9 +1745,8 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			h.roundID,
 		)
 
-		// We expect the round building and signing to succeed and
-		// therefore for the round to be persisted.
-		h.expectRoundFinalized(wire.NewMsgTx(2))
+		// We expect the PSBT finalization to succeed.
+		h.expectPSBTFinalized(wire.NewMsgTx(2))
 
 		// Both clients join.
 		boardingReq1 := client1.createBoardingRequest(&outpoint1)
@@ -1780,13 +1787,13 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.assertOutboxLen(0)
 
 		// Client2 submits - should transition through
-		// ServerSigningState to FinalizedState.
+		// ServerSigningState to AwaitingServerSignPersistState.
 		sig2Event := client2.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sig2Event)
 		require.NoError(t, err)
 
-		finalState := assertStateType[*FinalizedState](h)
-		require.Len(t, finalState.ClientRegistrations, 2)
+		assertStateType[*AwaitingServerSignPersistState](h)
+		assertOutboxContains[*PersistServerSigningReq](h)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -1802,6 +1809,15 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.True(
 			t, foundCancelTimeout, "timeout should be cancelled",
 		)
+
+		// Feed persistence success.
+		h.outboxMessages = nil
+		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
+		require.NoError(t, err)
+
+		finalState := assertStateType[*FinalizedState](h)
+		require.Len(t, finalState.ClientRegistrations, 2)
+		assertOutboxContains[*BroadcastRoundReq](h)
 	})
 
 	t.Run("server signing state carries forfeit txs map",
@@ -1878,9 +1894,8 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			&outpoint, client.boardingKey, exitDelay, 10, h.roundID,
 		)
 
-		// We expect the round building and signing to succeed and
-		// therefore for the round to be persisted.
-		h.expectRoundFinalized(wire.NewMsgTx(2))
+		// We expect the PSBT finalization to succeed.
+		h.expectPSBTFinalized(wire.NewMsgTx(2))
 
 		// Join and seal.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -1917,6 +1932,15 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.outboxMessages = nil
 		sigEvent := client.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sigEvent)
+		require.NoError(t, err)
+
+		// Should be in AwaitingServerSignPersistState.
+		assertStateType[*AwaitingServerSignPersistState](h)
+		assertOutboxContains[*PersistServerSigningReq](h)
+
+		// Feed persistence success.
+		h.outboxMessages = nil
+		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 		require.NoError(t, err)
 
 		finalState := assertStateType[*FinalizedState](h)
@@ -2594,11 +2618,10 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	)
 
 	finalTx := wire.NewMsgTx(2)
-	h.expectRoundFinalized(finalTx)
+	h.expectPSBTFinalized(finalTx)
 
 	boardingReq := client.createBoardingRequest(&outpoint)
 	vtxoReq := client.createVTXORequest(btcutil.Amount(50000))
-	h.expectPersistVTXOs(client.vtxoPkScripts()...)
 
 	err := h.sendEvent(client.createJoinRequestWithVTXOs(
 		[]*types.BoardingRequest{boardingReq},
@@ -2666,6 +2689,16 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 		awaitBoarding,
 	)
 	err = h.sendEvent(boardingSigEvent)
+	require.NoError(t, err)
+
+	// Should be in AwaitingServerSignPersistState with a persistence
+	// request in the outbox.
+	assertStateType[*AwaitingServerSignPersistState](h)
+	assertOutboxContains[*PersistServerSigningReq](h)
+
+	// Feed persistence success to transition to FinalizedState.
+	h.outboxMessages = nil
+	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 	require.NoError(t, err)
 
 	finalState := assertStateType[*FinalizedState](h)
@@ -2746,7 +2779,7 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	h.setupBatchBuildingMocks()
 
 	finalTx := wire.NewMsgTx(2)
-	h.expectRoundFinalized(finalTx)
+	h.expectPSBTFinalized(finalTx)
 
 	boardingReq := client.createBoardingRequest(&boardingOutpoint)
 	forfeitReq := &types.ForfeitRequest{
@@ -2793,8 +2826,10 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	err = h.sendEvent(sigEvent)
 	require.NoError(t, err)
 
-	finalState := assertStateType[*FinalizedState](h)
-	forfeitInfo := finalState.ForfeitInfos[forfeitOutpoint]
+	// Should be in AwaitingServerSignPersistState.
+	awaitPersist :=
+		assertStateType[*AwaitingServerSignPersistState](h)
+	forfeitInfo := awaitPersist.ForfeitInfos[forfeitOutpoint]
 	require.NotNil(t, forfeitInfo)
 
 	signedForfeitTx := forfeitInfo.ForfeitTx
@@ -2850,6 +2885,15 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 			sigHashes, assignment.LeafOutput.Value, prevFetcher,
 		)
 	})
+
+	// Feed persistence success to transition to FinalizedState.
+	h.outboxMessages = nil
+	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
+	require.NoError(t, err)
+
+	finalState := assertStateType[*FinalizedState](h)
+	require.NotNil(t, finalState.FinalTx)
+	require.Contains(t, finalState.ForfeitInfos, forfeitOutpoint)
 
 	// Simulate confirmation — the FSM emits a ConfirmRoundReq and
 	// transitions to the intermediate AwaitingConfirmPersistState.
@@ -2908,13 +2952,10 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	)
 
 	finalTx := wire.NewMsgTx(2)
-	h.expectRoundFinalized(finalTx)
+	h.expectPSBTFinalized(finalTx)
 
 	vtxoReq1 := client1.createVTXORequest(btcutil.Amount(50_000))
 	vtxoReq2 := client2.createVTXORequest(btcutil.Amount(60_000))
-	h.expectPersistVTXOs(
-		append(client1.vtxoPkScripts(), client2.vtxoPkScripts()...)...,
-	)
 
 	// Both clients join with boarding + VTXO requests.
 	err := h.sendEvent(client1.createJoinRequestWithVTXOs(
@@ -3025,6 +3066,15 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	))
 	require.NoError(t, err)
 
+	// Should be in AwaitingServerSignPersistState.
+	assertStateType[*AwaitingServerSignPersistState](h)
+	assertOutboxContains[*PersistServerSigningReq](h)
+
+	// Feed persistence success.
+	h.outboxMessages = nil
+	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
+	require.NoError(t, err)
+
 	finalState := assertStateType[*FinalizedState](h)
 	require.NotNil(t, finalState.FinalTx)
 	require.Len(t, finalState.ClientRegistrations, 2)
@@ -3053,12 +3103,11 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	)
 
 	finalTx := wire.NewMsgTx(2)
-	h.expectRoundFinalized(finalTx)
+	h.expectPSBTFinalized(finalTx)
 
 	// Two VTXO requests with distinct signing keys.
 	vtxoReq1 := client.createVTXORequest(btcutil.Amount(40_000))
 	vtxoReq2 := client.createVTXORequest(btcutil.Amount(50_000))
-	h.expectPersistVTXOs(client.vtxoPkScripts()...)
 
 	err := h.sendEvent(client.createJoinRequestWithVTXOs(
 		[]*types.BoardingRequest{
@@ -3111,6 +3160,15 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	// Finish boarding signatures.
 	h.outboxMessages = nil
 	err = h.sendEvent(client.createInputSignaturesEvent(awaitBoarding))
+	require.NoError(t, err)
+
+	// Should be in AwaitingServerSignPersistState.
+	assertStateType[*AwaitingServerSignPersistState](h)
+	assertOutboxContains[*PersistServerSigningReq](h)
+
+	// Feed persistence success.
+	h.outboxMessages = nil
+	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 	require.NoError(t, err)
 
 	finalState := assertStateType[*FinalizedState](h)

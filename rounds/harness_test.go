@@ -2,7 +2,6 @@ package rounds
 
 import (
 	"context"
-	"encoding/hex"
 	"os"
 	"testing"
 	"time"
@@ -407,55 +406,26 @@ func (c *commonMockSetup) setupCompleteRegistrationFlow(
 	c.setupBatchBuildingMocks()
 }
 
-// expectRoundFinalized sets up the round store mock to expect a PersistRound
-// call that succeeds and for the wallet to finalise the PSBT.
-func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
+// expectPSBTFinalized sets up the wallet controller mock to expect a
+// FinalizePsbt call that succeeds. Used by FSM tests where persistence
+// is handled by the OutboxHandler (not the FSM directly).
+func (c *commonMockSetup) expectPSBTFinalized(tx *wire.MsgTx) {
 	c.t.Helper()
 
 	c.walletController.On("FinalizePsbt", mock.Anything, mock.Anything).
 		Return(tx, nil).Once()
+}
+
+// expectRoundFinalized sets up the round store mock to expect a PersistRound
+// call that succeeds and for the wallet to finalise the PSBT. Used by actor
+// tests where the OutboxHandler executes persistence.
+func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
+	c.t.Helper()
+
+	c.expectPSBTFinalized(tx)
 
 	c.roundStore.On("PersistRound", mock.Anything, mock.Anything).
 		Return(nil).Once()
-}
-
-// expectPersistVTXOs sets up the VTXO store mock to expect a PersistVTXOs call
-// with VTXOs matching the provided pkScripts.
-func (c *commonMockSetup) expectPersistVTXOs(pkScripts ...[]byte) {
-	c.t.Helper()
-
-	expected := make(map[string]int)
-	for _, pk := range pkScripts {
-		expected[hex.EncodeToString(pk)]++
-	}
-
-	c.vtxoStore.On(
-		"PersistVTXOs", mock.Anything,
-		mock.MatchedBy(func(v []*VTXO) bool {
-			if len(v) != len(pkScripts) {
-				return false
-			}
-
-			actual := make(map[string]int)
-			for _, item := range v {
-				if item == nil || item.Descriptor == nil {
-					return false
-				}
-
-				actual[hex.EncodeToString(
-					item.Descriptor.PkScript,
-				)]++
-			}
-
-			for key, expectedCount := range expected {
-				if actual[key] != expectedCount {
-					return false
-				}
-			}
-
-			return true
-		}),
-	).Return(nil).Once()
 }
 
 // setActiveRounds configures the round store mock to return the given rounds
@@ -1520,24 +1490,6 @@ func (c *clientHarness) vtxoSigningKeys() []SigningKeyHex {
 	copy(keys, c.vtxoKeyOrder)
 
 	return keys
-}
-
-// vtxoPkScripts returns the pkScripts for all VTXO requests made by this
-// client in insertion order.
-func (c *clientHarness) vtxoPkScripts() [][]byte {
-	scripts := make([][]byte, 0, len(c.vtxoKeyOrder))
-	for _, key := range c.vtxoKeyOrder {
-		desc := c.vtxoDescriptors[key]
-		if desc == nil {
-			continue
-		}
-
-		pk := make([]byte, len(desc.PkScript))
-		copy(pk, desc.PkScript)
-		scripts = append(scripts, pk)
-	}
-
-	return scripts
 }
 
 // buildOrGetMuSigSession builds MuSig2 signing sessions for the provided tree
