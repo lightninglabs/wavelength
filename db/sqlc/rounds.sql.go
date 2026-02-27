@@ -9,6 +9,8 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
@@ -473,6 +475,184 @@ func (q *Queries) ListPendingRounds(ctx context.Context) ([]Round, error) {
 	return items, nil
 }
 
+const ListRoundsByIDsPostgres = `-- name: ListRoundsByIDsPostgres :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+WHERE round_id = ANY($1::bytea[])
+`
+
+func (q *Queries) ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListRoundsByIDsPostgres, pq.Array(roundIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListRoundsByIDsSqlite = `-- name: ListRoundsByIDsSqlite :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+WHERE round_id IN (/*SLICE:round_ids*/?)
+`
+
+func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) ([]Round, error) {
+	query := ListRoundsByIDsSqlite
+	var queryParams []interface{}
+	if len(roundIds) > 0 {
+		for _, v := range roundIds {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:round_ids*/?", makeQueryParams(len(queryParams), len(roundIds)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:round_ids*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOsByPkScriptsPostgres = `-- name: ListVTXOsByPkScriptsPostgres :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+WHERE pk_script = ANY($1::bytea[])
+ORDER BY outpoint_hash, outpoint_index
+`
+
+func (q *Queries) ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOsByPkScriptsPostgres, pq.Array(pkScripts))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOsByPkScriptsSqlite = `-- name: ListVTXOsByPkScriptsSqlite :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+WHERE pk_script IN (/*SLICE:pk_scripts*/?)
+ORDER BY outpoint_hash, outpoint_index
+`
+
+func (q *Queries) ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error) {
+	query := ListVTXOsByPkScriptsSqlite
+	var queryParams []interface{}
+	if len(pkScripts) > 0 {
+		for _, v := range pkScripts {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:pk_scripts*/?", makeQueryParams(len(queryParams), len(pkScripts)), 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:pk_scripts*/?", "NULL", 1)
+	}
+	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE round_id = $1
@@ -617,7 +797,24 @@ func (q *Queries) UnlockAllLockedVTXOs(ctx context.Context) (int64, error) {
 	return result.RowsAffected()
 }
 
-const UnlockStaleVTXOs = `-- name: UnlockStaleVTXOs :execrows
+const UnlockStaleVTXOsPostgres = `-- name: UnlockStaleVTXOsPostgres :execrows
+UPDATE vtxos
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL
+	AND NOT (lock_owner_id = ANY($1::bytea[]))
+`
+
+func (q *Queries) UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, UnlockStaleVTXOsPostgres, pq.Array(pendingRoundIds))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const UnlockStaleVTXOsSqlite = `-- name: UnlockStaleVTXOsSqlite :execrows
 UPDATE vtxos
 SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE status = 'in_flight'
@@ -626,8 +823,8 @@ WHERE status = 'in_flight'
 	AND lock_owner_id NOT IN ($1)
 `
 
-func (q *Queries) UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte) (int64, error) {
-	query := UnlockStaleVTXOs
+func (q *Queries) UnlockStaleVTXOsSqlite(ctx context.Context, pendingRoundIds [][]byte) (int64, error) {
+	query := UnlockStaleVTXOsSqlite
 	var queryParams []interface{}
 	if len(pendingRoundIds) > 0 {
 		for _, v := range pendingRoundIds {

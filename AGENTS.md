@@ -96,6 +96,39 @@ func (r *Receiver) bar(ctx context.Context,
 	param Type) error {
 ```
 
+### Line Folding for Function Calls
+When wrapping multi-argument function calls, **pack parameters densely** rather
+than putting each argument on its own line. Group related or short arguments
+together on the same line, staying within the 80-column limit.
+
+```go
+// WRONG: One argument per line wastes vertical space.
+_, err = s.store.InsertOORRecipientEvent(
+	ctx,
+	pkScript,
+	nextID,
+	sessionDBID,
+	outputIndex,
+	value,
+	createdAt,
+)
+
+// CORRECT: Pack related arguments together on fewer lines.
+_, err = s.store.InsertOORRecipientEvent(
+	ctx, pkScript,
+	nextID, sessionDBID, outputIndex,
+	value, createdAt,
+)
+
+// CORRECT: Short calls can fit on one or two lines.
+rows, err := q.ListActiveReceiveScriptsByPrincipal(
+	ctx, principal.MailboxID, s.now(),
+)
+```
+
+The same principle applies to struct literals—group related fields where they
+fit naturally within the line width.
+
 ### ast-grep for Code Search and Linting
 
 This project uses ast-grep (`sg`) for AST-level code search and style enforcement.

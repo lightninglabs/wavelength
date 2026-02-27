@@ -10,6 +10,7 @@ import (
 
 type Querier interface {
 	ApplyFinalizeOORSession(ctx context.Context, arg ApplyFinalizeOORSessionParams) (int64, error)
+	DeleteIndexerReceiveScript(ctx context.Context, arg DeleteIndexerReceiveScriptParams) (int64, error)
 	DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) error
 	// NOTE: This recursive query can be implemented in application code.
 	//
@@ -29,6 +30,7 @@ type Querier interface {
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
 	GetMaxOORRecipientEventID(ctx context.Context, recipientPkScript []byte) (int64, error)
+	GetOORRecipientEventBySessionOutput(ctx context.Context, arg GetOORRecipientEventBySessionOutputParams) (OorRecipientEvent, error)
 	GetOORSession(ctx context.Context, sessionID []byte) (OorSession, error)
 	GetOORSessionByID(ctx context.Context, id int64) (OorSession, error)
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
@@ -61,6 +63,7 @@ type Querier interface {
 	GetVTXOTreeLeavesByCoSigner(ctx context.Context, arg GetVTXOTreeLeavesByCoSignerParams) ([]GetVTXOTreeLeavesByCoSignerRow, error)
 	GetVTXOTreeNodeOutputs(ctx context.Context, arg GetVTXOTreeNodeOutputsParams) ([]GetVTXOTreeNodeOutputsRow, error)
 	GetVTXOTreeNodes(ctx context.Context, arg GetVTXOTreeNodesParams) ([]GetVTXOTreeNodesRow, error)
+	InsertIndexerVTXOEvent(ctx context.Context, arg InsertIndexerVTXOEventParams) (int64, error)
 	InsertOORRecipientEvent(ctx context.Context, arg InsertOORRecipientEventParams) (int64, error)
 	// Round queries for server-side round persistence.
 	// RoundStore queries.
@@ -76,23 +79,34 @@ type Querier interface {
 	// These queries support storing and retrieving VTXO trees in normalized form.
 	InsertVTXOTreeNode(ctx context.Context, arg InsertVTXOTreeNodeParams) error
 	InsertVTXOTreeNodeOutput(ctx context.Context, arg InsertVTXOTreeNodeOutputParams) error
+	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
+	ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context, arg ListActiveIndexerReceiveScriptsByPrincipalParams) ([]IndexerReceiveScript, error)
 	ListActiveOORSessions(ctx context.Context) ([]OorSession, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
+	ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsPostgresParams) ([]IndexerVtxoEvent, error)
+	ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsSqliteParams) ([]IndexerVtxoEvent, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
+	ListOORRecipientEventsAfterWithSession(ctx context.Context, arg ListOORRecipientEventsAfterWithSessionParams) ([]ListOORRecipientEventsAfterWithSessionRow, error)
 	ListPendingRounds(ctx context.Context) ([]Round, error)
+	ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte) ([]Round, error)
+	ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) ([]Round, error)
+	ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
+	ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
 	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
-	UnlockStaleVTXOs(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
+	UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
+	UnlockStaleVTXOsSqlite(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
 	UnlockVTXO(ctx context.Context, arg UnlockVTXOParams) (int64, error)
 	UpdateRoundConfirmed(ctx context.Context, arg UpdateRoundConfirmedParams) error
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) (int64, error)
 	UpdateVTXOsLiveByRound(ctx context.Context, roundID []byte) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
+	UpsertIndexerReceiveScript(ctx context.Context, arg UpsertIndexerReceiveScriptParams) error
 	UpsertOORCheckpoint(ctx context.Context, arg UpsertOORCheckpointParams) error
 	UpsertOORSession(ctx context.Context, arg UpsertOORSessionParams) (int64, error)
 	UpsertRoundForfeitInfo(ctx context.Context, arg UpsertRoundForfeitInfoParams) error

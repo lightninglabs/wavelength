@@ -453,8 +453,25 @@ func (v *VTXOStoreDB) UnlockStaleVTXOs(ctx context.Context,
 			pendingRoundIds[i] = roundID[:]
 		}
 
-		_, err := q.UnlockStaleVTXOs(ctx, pendingRoundIds)
+		switch q.Backend() {
+		case sqlc.BackendTypeSqlite:
+			_, err := q.UnlockStaleVTXOsSqlite(
+				ctx, pendingRoundIds,
+			)
 
-		return err
+			return err
+
+		case sqlc.BackendTypePostgres:
+			_, err := q.UnlockStaleVTXOsPostgres(
+				ctx, pendingRoundIds,
+			)
+
+			return err
+
+		default:
+			return fmt.Errorf(
+				"unknown backend: %v", q.Backend(),
+			)
+		}
 	})
 }

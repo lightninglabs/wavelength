@@ -209,9 +209,13 @@ func (f *UnaryFacade) AwaitRPC(ctx context.Context,
 	// Unmarshal the raw Value bytes directly into the caller's
 	// response message, discarding unknown fields for forward
 	// compatibility. We intentionally skip TypeUrl validation here:
-	// the generated stubs always pass the correct concrete type, and
-	// a server-side type mismatch would surface as garbled fields
-	// rather than silent data loss (proto3 zero-values).
+	// the generated stubs always pass the correct concrete type.
+	//
+	// TODO(review): A server-side type mismatch will unmarshal
+	// cleanly with all proto3 fields at zero values (since
+	// proto3 zero == absent). Consider adding TypeUrl
+	// validation to surface mismatches loudly instead of
+	// producing silent all-zero responses.
 	err := (proto.UnmarshalOptions{
 		DiscardUnknown: true,
 	}).Unmarshal(env.Body.Value, resp)

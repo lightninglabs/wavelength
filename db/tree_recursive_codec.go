@@ -15,6 +15,33 @@ import (
 	"github.com/lightninglabs/darepo/rounds"
 )
 
+// TreeReader is the read-only query surface required by
+// DeserializeTreeRecursive. Accepting an interface rather than the concrete
+// *sqlc.Queries allows callers in other packages to supply their own
+// narrower store interfaces without a hard dependency on sqlc.Queries.
+type TreeReader interface {
+	// GetVTXOTreeNodes returns all tree nodes for a given round and
+	// batch output index.
+	GetVTXOTreeNodes(ctx context.Context,
+		arg sqlc.GetVTXOTreeNodesParams,
+	) ([]sqlc.GetVTXOTreeNodesRow, error)
+
+	// GetVTXOTreeNodeOutputs returns all outputs for every node in a
+	// given tree.
+	GetVTXOTreeNodeOutputs(ctx context.Context,
+		arg sqlc.GetVTXOTreeNodeOutputsParams,
+	) ([]sqlc.GetVTXOTreeNodeOutputsRow, error)
+
+	// GetVTXOTreeCosigners returns all cosigner keys for every node
+	// in a given tree.
+	GetVTXOTreeCosigners(ctx context.Context,
+		arg sqlc.GetVTXOTreeCosignersParams,
+	) ([]sqlc.GetVTXOTreeCosignersRow, error)
+}
+
+// Compile-time check that *sqlc.Queries satisfies the TreeReader interface.
+var _ TreeReader = (*sqlc.Queries)(nil)
+
 // SerializeTreeRecursive stores a tree in normalized recursive format.
 // This allows SQL queries to traverse the tree structure and answer
 // questions like "find all leaves for a given cosigner" or "get the path
@@ -172,7 +199,7 @@ func serializeNodeRecursive(ctx context.Context, q *sqlc.Queries,
 
 // DeserializeTreeRecursive reconstructs a tree from normalized recursive
 // format.
-func DeserializeTreeRecursive(ctx context.Context, q *sqlc.Queries,
+func DeserializeTreeRecursive(ctx context.Context, q TreeReader,
 	roundID rounds.RoundID, batchOutputIndex int,
 	batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 	sweepTapscriptRoot []byte) (*tree.Tree, error) {

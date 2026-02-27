@@ -8,7 +8,10 @@ import (
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/fn"
 )
@@ -40,6 +43,22 @@ type Server struct {
 	// wg is used to manage and monitor all goroutines started by the
 	// server.
 	wg sync.WaitGroup
+
+	// mailboxStore is the in-process mailbox store used by all
+	// subsystems for envelope persistence and delivery.
+	mailboxStore mailbox.Store
+
+	// clientBridge is the shared per-client connection bridge that
+	// multiplexes round, indexer, and other RPC dispatchers across
+	// all registered clients.
+	clientBridge *clientconn.ClientsConnBridge
+
+	// indexerService is the transport-free indexer business logic.
+	indexerService *indexer.Service
+
+	// indexerOperator provides RPC dispatchers and event publication
+	// for the indexer service through the shared bridge.
+	indexerOperator *indexer.Operator
 }
 
 // NewServer creates a new operator server.
@@ -84,6 +103,13 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client RPC server: %w",
 			err)
+	}
+
+	// Initialize the indexer subsystem (service, operator, bridge).
+	if err := s.setupIndexerSubsystem(ctx); err != nil {
+		return nil, fmt.Errorf(
+			"failed to setup indexer subsystem: %w", err,
+		)
 	}
 
 	return s, nil
@@ -152,6 +178,9 @@ func (s *Server) stop(ctx context.Context) error {
 			s.log.ErrorS(ctx, "Could not stop rpc server", err)
 		}
 	}
+
+	// Stop the indexer subsystem and shared bridge.
+	s.stopIndexerSubsystem(ctx)
 
 	// Close database connection
 	if s.db != nil {

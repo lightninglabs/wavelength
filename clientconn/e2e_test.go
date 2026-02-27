@@ -1036,7 +1036,7 @@ func TestDispatchBatchCursorAdvancesPastSkipped(t *testing.T) {
 		},
 	}
 
-	cursor, err := connector.dispatchBatch(
+	cursor, _, err := connector.dispatchBatch(
 		t.Context(), envelopes, 4,
 	)
 
@@ -1281,7 +1281,7 @@ func TestDispatchBatchCursorInvariants_Property(t *testing.T) {
 		connector := NewClientConnectionActor(cfg)
 
 		batchNextCursor := uint64(batchSize + 1)
-		cursor, err := connector.dispatchBatch(
+		cursor, _, err := connector.dispatchBatch(
 			t.Context(), envelopes, batchNextCursor,
 		)
 
@@ -1499,7 +1499,7 @@ func TestDispatchBatchSkipOnly_Property(t *testing.T) {
 		connector := NewClientConnectionActor(cfg)
 
 		batchNextCursor := uint64(batchSize + 1)
-		cursor, err := connector.dispatchBatch(
+		cursor, _, err := connector.dispatchBatch(
 			t.Context(), envelopes, batchNextCursor,
 		)
 

@@ -42,6 +42,14 @@ DO UPDATE SET
 -- name: GetRound :one
 SELECT * FROM rounds WHERE round_id = $1;
 
+-- name: ListRoundsByIDsSqlite :many
+SELECT * FROM rounds
+WHERE round_id IN (sqlc.slice('round_ids')/*SLICE:round_ids*/);
+
+-- name: ListRoundsByIDsPostgres :many
+SELECT * FROM rounds
+WHERE round_id = ANY(@round_ids::bytea[]);
+
 -- name: GetRoundVTXOTrees :many
 SELECT * FROM round_vtxo_tree
 WHERE round_id = $1
@@ -125,13 +133,21 @@ SELECT * FROM vtxos
 WHERE lock_owner_kind = $1
 	AND lock_owner_id = $2;
 
--- name: UnlockStaleVTXOs :execrows
+-- name: UnlockStaleVTXOsSqlite :execrows
 UPDATE vtxos
 SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE status = 'in_flight'
 	AND lock_owner_kind = 'round'
 	AND lock_owner_id IS NOT NULL
 	AND lock_owner_id NOT IN (sqlc.slice('pending_round_ids'));
+
+-- name: UnlockStaleVTXOsPostgres :execrows
+UPDATE vtxos
+SET status = 'live', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE status = 'in_flight'
+	AND lock_owner_kind = 'round'
+	AND lock_owner_id IS NOT NULL
+	AND NOT (lock_owner_id = ANY(@pending_round_ids::bytea[]));
 
 -- name: UnlockAllLockedVTXOs :execrows
 UPDATE vtxos
@@ -148,4 +164,14 @@ ORDER BY outpoint_hash, outpoint_index;
 -- name: ListVTXOsByStatus :many
 SELECT * FROM vtxos
 WHERE status = $1
+ORDER BY outpoint_hash, outpoint_index;
+
+-- name: ListVTXOsByPkScriptsSqlite :many
+SELECT * FROM vtxos
+WHERE pk_script IN (sqlc.slice('pk_scripts')/*SLICE:pk_scripts*/)
+ORDER BY outpoint_hash, outpoint_index;
+
+-- name: ListVTXOsByPkScriptsPostgres :many
+SELECT * FROM vtxos
+WHERE pk_script = ANY(@pk_scripts::bytea[])
 ORDER BY outpoint_hash, outpoint_index;
