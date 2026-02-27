@@ -296,5 +296,11 @@ See `docs/development_guidelines.md` for full dependency management details.
 ## Additional Resources
 
 - **[`docs/development_guidelines.md`](docs/development_guidelines.md)** - Complete style guide with extensive WRONG/RIGHT examples
+- **[`docs/clientconn_architecture.md`](docs/clientconn_architecture.md)** - Server-side 1:N mailbox connector architecture
+- **[`docs/layered_testing_guide.md`](docs/layered_testing_guide.md)** - Test layering strategy and patterns
 - **`PLANS.md`** - ExecPlan specification for complex features
 - **`.editorconfig`** - Automatic editor configuration (8-space tabs, 80-char lines)
+
+The `docs/` folder contains architecture documentation useful for understanding
+subsystem internals. Package-level READMEs (e.g., `clientconn/README.md`)
+provide quickstart guides and API references for individual packages.
