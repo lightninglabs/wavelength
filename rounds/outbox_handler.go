@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // OutboxHandler executes FSM outbox requests and returns zero or more
@@ -32,18 +33,28 @@ type InProcessOutboxHandler struct {
 	roundStore       RoundStore
 	vtxoStore        VTXOStore
 	walletController WalletController
+	feeEstimator     chainfee.Estimator
+	confTarget       uint32
+	minConfs         int32
+	walletAccount    string
 }
 
 // NewInProcessOutboxHandler creates an InProcessOutboxHandler with the given
-// store and wallet dependencies.
+// store, wallet, and fee estimation dependencies.
 func NewInProcessOutboxHandler(roundStore RoundStore,
-	vtxoStore VTXOStore,
-	walletController WalletController) *InProcessOutboxHandler {
+	vtxoStore VTXOStore, walletController WalletController,
+	feeEstimator chainfee.Estimator, confTarget uint32,
+	minConfs int32,
+	walletAccount string) *InProcessOutboxHandler {
 
 	return &InProcessOutboxHandler{
 		roundStore:       roundStore,
 		vtxoStore:        vtxoStore,
 		walletController: walletController,
+		feeEstimator:     feeEstimator,
+		confTarget:       confTarget,
+		minConfs:         minConfs,
+		walletAccount:    walletAccount,
 	}
 }
 
@@ -54,6 +65,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	outbox OutboxEvent) ([]Event, error) {
 
 	switch msg := outbox.(type) {
+	case *BuildBatchReq:
+		return h.handleBuildBatch(ctx, msg)
+
 	case *SignAndFinalizeRoundReq:
 		return h.handleSignAndFinalize(ctx, msg)
 
@@ -66,6 +80,49 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	default:
 		return nil, nil
 	}
+}
+
+// handleBuildBatch builds the commitment transaction by performing fee
+// estimation, wallet funding, and tree construction. Returns a
+// BuildBatchSucceededEvent on success or a BuildBatchFailedEvent on any
+// error.
+func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
+	msg *BuildBatchReq) ([]Event, error) {
+
+	packet, _, vtxoTrees, connectorTrees,
+		connectorAssignments, err := buildCommitmentTx(
+		ctx, msg.Terms,
+		h.feeEstimator, h.confTarget,
+		h.walletController, h.minConfs, h.walletAccount,
+		msg.BoardingInputs, msg.ForfeitInputs,
+		msg.RequiredOutputs, msg.VTXODescriptors,
+	)
+	if err != nil {
+		return []Event{&BuildBatchFailedEvent{
+			Reason: fmt.Sprintf(
+				"build commitment tx: %v", err,
+			),
+		}}, nil
+	}
+
+	connectorDescriptors, err := buildConnectorDescriptors(
+		connectorAssignments, msg.ForfeitScript,
+	)
+	if err != nil {
+		return []Event{&BuildBatchFailedEvent{
+			Reason: fmt.Sprintf(
+				"build connector descriptors: %v", err,
+			),
+		}}, nil
+	}
+
+	return []Event{&BuildBatchSucceededEvent{
+		PSBT:                 packet,
+		VTXOTrees:            vtxoTrees,
+		ConnectorTrees:       connectorTrees,
+		ConnectorAssignments: connectorAssignments,
+		ConnectorDescriptors: connectorDescriptors,
+	}}, nil
 }
 
 // handleSignAndFinalize signs all boarding inputs, completes forfeit

@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 var (
@@ -575,63 +576,82 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			LogLeaveCount(len(allLeaveOutputs)),
 			LogVTXOCount(len(allVTXODescriptors)))
 
-		// Build the commitment transaction PSBT.
-		psbtPacket, _, vtxoTrees, connectorTrees,
-			connectorAssignments, err := buildCommitmentTx(
-			ctx, env, allBoardingInputs, allForfeitInputs,
-			allLeaveOutputs, allVTXODescriptors,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Commitment tx build failed", err)
-
-			// Batch building failed - transition to FailedState.
-			reason := fmt.Sprintf("build commitment tx: %v", err)
-
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations, reason,
-			), nil
+		// Emit a BuildBatchReq for the OutboxHandler to perform
+		// fee estimation, wallet funding, and tree construction.
+		buildReq := &BuildBatchReq{
+			RoundID:         env.RoundID,
+			BoardingInputs:  allBoardingInputs,
+			ForfeitInputs:   allForfeitInputs,
+			RequiredOutputs: allLeaveOutputs,
+			VTXODescriptors: allVTXODescriptors,
+			Terms:           env.Terms,
+			ForfeitScript:   env.ForfeitScript,
 		}
 
-		connectorDescriptors, err := buildConnectorDescriptors(
-			connectorAssignments, env.ForfeitScript,
-		)
-		if err != nil {
-			reason := fmt.Sprintf(
-				"build connector descriptors: %v", err,
-			)
+		return &StateTransition{
+			NextState: &AwaitingBatchBuildState{
+				ClientRegistrations: s.ClientRegistrations,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{buildReq},
+			}),
+		}, nil
 
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations, reason,
-			), nil
-		}
+	default:
+		return unexpectedEvent(s, "batch-building", event, env), nil
+	}
+}
 
-		env.Log.InfoS(ctx, "Commitment transaction built successfully",
-			slog.Int("tree_count", len(vtxoTrees)),
-			slog.Int("input_count", len(psbtPacket.Inputs)),
-			slog.Int("output_count", len(psbtPacket.Outputs)))
+// ProcessEvent handles the events from the AwaitingBatchBuildState state.
+// It waits for the OutboxHandler to finish building the commitment transaction.
+func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingBatchBuild"),
+		LogEvent(event))
+
+	switch msg := event.(type) {
+	case *BuildBatchSucceededEvent:
+		env.Log.InfoS(ctx,
+			"Commitment transaction built successfully",
+			slog.Int("tree_count", len(msg.VTXOTrees)),
+			slog.Int("input_count",
+				len(msg.PSBT.Inputs)),
+			slog.Int("output_count",
+				len(msg.PSBT.Outputs)))
 
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
 			NextState: &BatchBuiltState{
 				ClientRegistrations:  s.ClientRegistrations,
-				PSBT:                 psbtPacket,
-				VTXOTrees:            vtxoTrees,
-				ConnectorTrees:       connectorTrees,
-				ConnectorAssignments: connectorAssignments,
-				ConnectorDescriptors: connectorDescriptors,
+				PSBT:                 msg.PSBT,
+				VTXOTrees:            msg.VTXOTrees,
+				ConnectorTrees:       msg.ConnectorTrees,
+				ConnectorAssignments: msg.ConnectorAssignments,
+				ConnectorDescriptors: msg.ConnectorDescriptors,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				// Emit the internal event to prepare client
-				// notifications. This event is handled in
-				// BatchBuiltState.
+				// Emit the internal event to prepare
+				// client notifications.
 				InternalEvent: []Event{
 					&PrepareClientNotificationsEvent{},
 				},
 			}),
 		}, nil
 
+	case *BuildBatchFailedEvent:
+		env.Log.WarnS(ctx, "Batch build failed", nil,
+			slog.String("reason", msg.Reason))
+
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, msg.Reason,
+		), nil
+
 	default:
-		return unexpectedEvent(s, "batch-building", event, env), nil
+		return unexpectedEvent(
+			s, "awaiting-batch-build", event, env,
+		), nil
 	}
 }
 
@@ -1150,7 +1170,10 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 // 4. Adjust change output to account for boarding input contribution.
 //
 //nolint:funlen
-func buildCommitmentTx(ctx context.Context, env *Environment,
+func buildCommitmentTx(ctx context.Context,
+	terms *batch.Terms,
+	feeEstimator chainfee.Estimator, confTarget uint32,
+	walletCtrl WalletController, minConfs int32, walletAccount string,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
 	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
@@ -1163,7 +1186,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		totalBoardingValue += bi.Value
 	}
 
-	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
+	feeRate, err := feeEstimator.EstimateFeePerKW(confTarget)
 	if err != nil {
 		return nil, -1, nil, nil, nil,
 			fmt.Errorf("estimate fee: %w", err)
@@ -1203,7 +1226,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	if len(vtxoDescriptors) > 0 {
 		var err error
 		vtxoTreeCtx, err = batch.BuildTreeContext(
-			env.Terms, vtxoDescriptors,
+			terms, vtxoDescriptors,
 		)
 		if err != nil {
 			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
@@ -1220,7 +1243,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	numForfeits := len(forfeitInputs)
 	var connectorOutputs []*wire.TxOut
 	if numForfeits > 0 {
-		maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+		maxPerTree := int(terms.MaxConnectorsPerTree)
 		if maxPerTree <= 0 {
 			return nil, -1, nil, nil, nil, fmt.Errorf(
 				"max connectors per tree must be > 0",
@@ -1234,8 +1257,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			}
 
 			connectorOutput, err := tree.BuildConnectorOutput(
-				numInOutput, env.Terms.ConnectorDustAmount,
-				env.Terms.ConnectorAddress,
+				numInOutput, terms.ConnectorDustAmount,
+				terms.ConnectorAddress,
 			)
 			if err != nil {
 				return nil, -1, nil, nil, nil, fmt.Errorf(
@@ -1260,8 +1283,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	//
 	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
 	// before this call will be invalid.
-	changeIdx, err := env.WalletController.FundPsbt(
-		ctx, packet, env.MinConfs, feeRate, env.WalletAccount,
+	changeIdx, err := walletCtrl.FundPsbt(
+		ctx, packet, minConfs, feeRate, walletAccount,
 	)
 	if err != nil {
 		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
@@ -1386,7 +1409,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 
 		connectorTrees, connectorAssignments, err =
 			buildConnectorTreesAndAssignments(
-				env, packet.UnsignedTx, forfeitInputs,
+				terms, packet.UnsignedTx, forfeitInputs,
 				connectorOutputIndices,
 			)
 		if err != nil {
@@ -1486,9 +1509,10 @@ func buildConnectorDescriptors(
 
 // buildConnectorTreesAndAssignments builds connector trees and assigns each
 // forfeit input to a connector leaf.
-func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
-	forfeitInputs []*ForfeitInput, connectorOutputIndices []int) (
-	map[int]*tree.Tree, map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+func buildConnectorTreesAndAssignments(terms *batch.Terms,
+	tx *wire.MsgTx, forfeitInputs []*ForfeitInput,
+	connectorOutputIndices []int) (map[int]*tree.Tree,
+	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
 
 	numForfeits := len(forfeitInputs)
 	if numForfeits == 0 {
@@ -1510,28 +1534,28 @@ func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
 			sortedForfeits[j].Outpoint.String()
 	})
 
-	maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+	maxPerTree := int(terms.MaxConnectorsPerTree)
 	if maxPerTree <= 0 {
 		return nil, nil, fmt.Errorf(
 			"max connectors per tree must be > 0",
 		)
 	}
 
-	if env.Terms.ConnectorDustAmount <= 0 {
+	if terms.ConnectorDustAmount <= 0 {
 		return nil, nil, fmt.Errorf(
 			"connector dust amount must be > 0",
 		)
 	}
 
-	if env.Terms.ConnectorAddress == nil {
+	if terms.ConnectorAddress == nil {
 		return nil, nil, fmt.Errorf("connector address cannot be nil")
 	}
 
-	if env.Terms.OperatorKey.PubKey == nil {
+	if terms.OperatorKey.PubKey == nil {
 		return nil, nil, fmt.Errorf("operator key cannot be nil")
 	}
 
-	radix := int(env.Terms.TreeRadix)
+	radix := int(terms.TreeRadix)
 	if radix < 2 {
 		return nil, nil, fmt.Errorf("tree radix must be at least 2")
 	}
@@ -1565,12 +1589,12 @@ func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
 		connectorDesc := tree.ConnectorDescriptor{
 			PkScript:  connectorOutput.PkScript,
 			NumLeaves: numInOutput,
-			Amount:    env.Terms.ConnectorDustAmount,
+			Amount:    terms.ConnectorDustAmount,
 		}
 
 		connectorTree, err := tree.BuildConnectorTree(
 			connectorOutpoint, connectorOutput, connectorDesc,
-			env.Terms.OperatorKey.PubKey, radix,
+			terms.OperatorKey.PubKey, radix,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf(
