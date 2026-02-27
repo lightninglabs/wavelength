@@ -39,8 +39,48 @@ function generate() {
 	popd > /dev/null
 }
 
+# generate_with_mailboxrpc compiles *.pb.go stubs including mailbox RPC
+# service stubs via the protoc-gen-mailboxrpc plugin from the client
+# submodule.
+function generate_with_mailboxrpc() {
+	local package=$1
+	echo "Generating protos with mailboxrpc for ${package}"
+
+	# Install the mailboxrpc protoc plugin from the client submodule.
+	# The client submodule is a separate Go module (darepo-client), so
+	# we must cd into it before running go install.
+	(cd /build/client && go install -buildvcs=false ./cmd/protoc-gen-mailboxrpc)
+
+	pushd "${package}" > /dev/null
+
+	# Format proto files with clang-format using the proto-specific style.
+	find . -name "*.proto" -print0 | xargs -0 clang-format --style=file:/build/scripts/.clang-format-proto -i
+
+	# Generate the protos for each .proto file.
+	for file in *.proto; do
+		echo "  Generating ${file}"
+
+		# Generate the standard Go protos.
+		protoc -I/usr/local/include -I. -I.. \
+			--go_out=. --go_opt=paths=source_relative \
+			--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+			"${file}"
+
+		# Generate RPC-over-mailbox stubs for service definitions.
+		protoc -I/usr/local/include -I. -I.. \
+			--mailboxrpc_out=. --mailboxrpc_opt=paths=source_relative \
+			"${file}"
+	done
+
+	popd > /dev/null
+}
+
 # Generate protos for both arkrpc and adminrpc packages.
 generate "arkrpc"
 generate "adminrpc"
+
+# Generate protos with mailbox RPC stubs for test packages that use
+# the mailbox transport layer.
+generate_with_mailboxrpc "clientconn/roundtestpb"
 
 echo "Proto generation complete"
