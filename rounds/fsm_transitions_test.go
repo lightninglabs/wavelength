@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
-"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/internal/testutils"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -672,16 +672,17 @@ func TestFSMBatchBuilding(t *testing.T) {
 			}
 
 			// Join via outbox pattern with pre-built result.
+			req := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
+				},
+			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: client.clientID,
-				Request: &types.JoinRoundRequest{
-					BoardingReqs: []*types.BoardingRequest{
-						{Outpoint: &boardingOutpoint},
-					},
-					ForfeitReqs: []*types.ForfeitRequest{
-						{VTXOOutpoint: &forfeitOutpoint},
-					},
-				},
+				Request:  req,
 			}
 			result := buildJoinResultWithForfeits(
 				[]*BoardingInput{bi},
@@ -768,16 +769,17 @@ func TestFSMBatchBuilding(t *testing.T) {
 					leaveOutput,
 				},
 			}
+			req := &types.JoinRoundRequest{
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
+				},
+				LeaveReqs: []*types.LeaveRequest{
+					{Output: leaveOutput},
+				},
+			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: "client1",
-				Request: &types.JoinRoundRequest{
-					ForfeitReqs: []*types.ForfeitRequest{
-						{VTXOOutpoint: &forfeitOutpoint},
-					},
-					LeaveReqs: []*types.LeaveRequest{
-						{Output: leaveOutput},
-					},
-				},
+				Request:  req,
 			}
 			feedJoinSuccess(
 				h, "client1", joinReq, joinResult,
@@ -910,23 +912,25 @@ func TestFSMBatchBuilding(t *testing.T) {
 			require.NoError(t, err)
 			keyHex := route.NewVertex(client.boardingKey)
 
+			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
+				keyHex: desc,
+			}
 			joinResult := &JoinRequestResult{
-				BoardingInputs: []*BoardingInput{bi},
-				ForfeitInputs:  []*ForfeitInput{fi},
-				VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
-					keyHex: desc,
+				BoardingInputs:  []*BoardingInput{bi},
+				ForfeitInputs:   []*ForfeitInput{fi},
+				VTXODescriptors: vtxoDescs,
+			}
+			req := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
 				},
 			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: client.clientID,
-				Request: &types.JoinRoundRequest{
-					BoardingReqs: []*types.BoardingRequest{
-						{Outpoint: &boardingOutpoint},
-					},
-					ForfeitReqs: []*types.ForfeitRequest{
-						{VTXOOutpoint: &forfeitOutpoint},
-					},
-				},
+				Request:  req,
 			}
 			feedJoinSuccess(
 				h, client.clientID, joinReq, joinResult,
@@ -984,18 +988,19 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 
 			// Client 1 joins.
-			feedJoinSuccess(h, "client1",
-				&ClientJoinRequestEvent{
-					ClientID: "client1",
-					Request: &types.JoinRoundRequest{
-						BoardingReqs: []*types.BoardingRequest{
-							{Outpoint: &boardingOutpoint1},
-						},
-						ForfeitReqs: []*types.ForfeitRequest{
-							{VTXOOutpoint: &forfeitOutpoint1},
-						},
-					},
+			req1 := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint1},
 				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint1},
+				},
+			}
+			joinReq1 := &ClientJoinRequestEvent{
+				ClientID: "client1",
+				Request:  req1,
+			}
+			feedJoinSuccess(h, "client1", joinReq1,
 				buildJoinResultWithForfeits(
 					[]*BoardingInput{bi1},
 					[]*ForfeitInput{
@@ -1005,18 +1010,19 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 
 			// Client 2 joins.
-			feedJoinSuccess(h, "client2",
-				&ClientJoinRequestEvent{
-					ClientID: "client2",
-					Request: &types.JoinRoundRequest{
-						BoardingReqs: []*types.BoardingRequest{
-							{Outpoint: &boardingOutpoint2},
-						},
-						ForfeitReqs: []*types.ForfeitRequest{
-							{VTXOOutpoint: &forfeitOutpoint2},
-						},
-					},
+			req2 := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint2},
 				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint2},
+				},
+			}
+			joinReq2 := &ClientJoinRequestEvent{
+				ClientID: "client2",
+				Request:  req2,
+			}
+			feedJoinSuccess(h, "client2", joinReq2,
 				buildJoinResultWithForfeits(
 					[]*BoardingInput{bi2},
 					[]*ForfeitInput{
@@ -1064,17 +1070,18 @@ func TestFSMBatchBuilding(t *testing.T) {
 				t, &boardingOutpoint, 100_000,
 				h.operatorPub,
 			)
+			req := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint1},
+					{VTXOOutpoint: &forfeitOutpoint2},
+				},
+			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: "client1",
-				Request: &types.JoinRoundRequest{
-					BoardingReqs: []*types.BoardingRequest{
-						{Outpoint: &boardingOutpoint},
-					},
-					ForfeitReqs: []*types.ForfeitRequest{
-						{VTXOOutpoint: &forfeitOutpoint1},
-						{VTXOOutpoint: &forfeitOutpoint2},
-					},
-				},
+				Request:  req,
 			}
 			feedJoinSuccess(h, "client1", joinReq,
 				buildJoinResultWithForfeits(
@@ -1316,16 +1323,17 @@ func TestFSMFailureScenarios(t *testing.T) {
 			}
 
 			// Join with both boarding and forfeit via outbox.
+			req := &types.JoinRoundRequest{
+				BoardingReqs: []*types.BoardingRequest{
+					{Outpoint: &boardingOutpoint},
+				},
+				ForfeitReqs: []*types.ForfeitRequest{
+					{VTXOOutpoint: &forfeitOutpoint},
+				},
+			}
 			joinReq := &ClientJoinRequestEvent{
 				ClientID: "client1",
-				Request: &types.JoinRoundRequest{
-					BoardingReqs: []*types.BoardingRequest{
-						{Outpoint: &boardingOutpoint},
-					},
-					ForfeitReqs: []*types.ForfeitRequest{
-						{VTXOOutpoint: &forfeitOutpoint},
-					},
-				},
+				Request:  req,
 			}
 			feedJoinSuccess(h, "client1", joinReq,
 				buildJoinResultWithForfeits(

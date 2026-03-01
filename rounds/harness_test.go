@@ -333,17 +333,6 @@ func (c *commonMockSetup) setupBoardingInputValidationOnly(
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
 }
 
-// expectFailedLock sets up the boarding locker mock to expect a lock call that
-// fails with the given error.
-func (c *commonMockSetup) expectFailedLock(outpoint *wire.OutPoint,
-	roundID RoundID, err error) {
-
-	c.t.Helper()
-
-	c.boardingLocker.On("Lock", mock.Anything, outpoint, roundID).
-		Return(err).Once()
-}
-
 // expectVTXO sets up the VTXO store mock to return the given VTXO when
 // GetVTXO is called with the specified outpoint. If vtxo is nil, GetVTXO
 // will return nil (indicating the VTXO doesn't exist).
@@ -554,7 +543,7 @@ func buildJoinResultWithVTXOs(boardingInputs []*BoardingInput,
 	return &JoinRequestResult{
 		BoardingInputs:  boardingInputs,
 		VTXODescriptors: vtxoDescs,
-		SigningKeys:      signingKeys,
+		SigningKeys:     signingKeys,
 	}
 }
 
@@ -602,19 +591,6 @@ func (c *commonMockSetup) setupBoardingInputWithUnlock(outpoint *wire.OutPoint,
 	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
 		Return(nil).Once()
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
-}
-
-// expectInputUnlocked sets up an expectation that the FSM will unlock a
-// boarding input inline (e.g., during join-path rollback via
-// unlockBoardingInputsList). For failure-path unlocks routed via outbox,
-// assert on UnlockBoardingInputsReq instead.
-func (c *commonMockSetup) expectInputUnlocked(outpoint *wire.OutPoint,
-	roundID RoundID) {
-
-	c.t.Helper()
-
-	c.boardingLocker.On("Unlock", mock.Anything, outpoint, roundID).
-		Return(nil).Once()
 }
 
 // expectVTXOLocked sets up an expectation that the FSM will lock VTXOs
@@ -817,10 +793,11 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 	}
 }
 
-// buildTestBoardingInputForClient creates a fully-populated BoardingInput using
-// the given client key and exit delay. This is the same as buildTestBoardingInput
-// but uses a specific client key so that signatures created by the corresponding
-// client harness will be valid.
+// buildTestBoardingInputForClient creates a fully-populated
+// BoardingInput using the given client key and exit delay. This is
+// the same as buildTestBoardingInput but uses a specific client key
+// so that signatures created by the corresponding client harness
+// will be valid.
 func buildTestBoardingInputForClient(t *testing.T,
 	outpoint *wire.OutPoint, value btcutil.Amount,
 	clientKey, operatorKey *btcec.PublicKey,

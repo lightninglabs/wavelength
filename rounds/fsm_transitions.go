@@ -247,25 +247,27 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			LogLeaveCount(len(evt.Request.LeaveReqs)))
 
 		// Emit validation + locking to the OutboxHandler.
+		regs := make(
+			map[clientconn.ClientID]*ClientRegistration,
+		)
+		req := &ValidateAndLockJoinReq{
+			RoundID:  env.RoundID,
+			ClientID: evt.ClientID,
+			Request:  evt.Request,
+
+			CurrentBlockHeight:     evt.CurrentBlockHeight,
+			StartHeight:            env.StartHeight,
+			DisableJoinRequestAuth: env.DisableJoinRequestAuth,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingJoinValidationState{
-				ExistingRegistrations: make(
-					map[clientconn.ClientID]*ClientRegistration,
-				),
-				PendingClientID: evt.ClientID,
-				IsFirstClient:   true,
+				ExistingRegistrations: regs,
+				PendingClientID:       evt.ClientID,
+				IsFirstClient:         true,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&ValidateAndLockJoinReq{
-						RoundID:    env.RoundID,
-						ClientID:   evt.ClientID,
-						Request:    evt.Request,
-						CurrentBlockHeight: evt.CurrentBlockHeight,
-						StartHeight:        env.StartHeight,
-						DisableJoinRequestAuth: env.DisableJoinRequestAuth,
-					},
-				},
+				Outbox: []OutboxEvent{req},
 			}),
 		}, nil
 
@@ -314,6 +316,16 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		// Emit validation + locking to the OutboxHandler.
+		req := &ValidateAndLockJoinReq{
+			RoundID:  env.RoundID,
+			ClientID: evt.ClientID,
+			Request:  evt.Request,
+
+			CurrentBlockHeight:     evt.CurrentBlockHeight,
+			StartHeight:            env.StartHeight,
+			DisableJoinRequestAuth: env.DisableJoinRequestAuth,
+		}
+
 		return &StateTransition{
 			NextState: &AwaitingJoinValidationState{
 				ExistingRegistrations: s.ClientRegistrations,
@@ -321,16 +333,7 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 				IsFirstClient:         false,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&ValidateAndLockJoinReq{
-						RoundID:    env.RoundID,
-						ClientID:   evt.ClientID,
-						Request:    evt.Request,
-						CurrentBlockHeight: evt.CurrentBlockHeight,
-						StartHeight:        env.StartHeight,
-						DisableJoinRequestAuth: env.DisableJoinRequestAuth,
-					},
-				},
+				Outbox: []OutboxEvent{req},
 			}),
 		}, nil
 
