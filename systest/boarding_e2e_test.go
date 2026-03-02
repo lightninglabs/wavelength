@@ -1432,3 +1432,77 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 
 	t.Logf("Verified sweep tx %s spent %s", sweepTxid, rootOutpoint)
 }
+
+// TestBoardingE2EInsufficientOperatorFee verifies that a client is rejected
+// when requesting VTXO amounts that leave an operator fee below the minimum.
+// The server enforces MinOperatorFee to prevent free UTXO consolidation.
+//
+// Flow:
+//  1. Client boards with 100,000 sats.
+//  2. Client requests a VTXO for 99,800 sats (implied fee = 200 sats).
+//  3. The operator's MinOperatorFee is 1,000 sats.
+//  4. The client's local min-fee check catches this and transitions to
+//     ClientFailedState without sending a join request.
+func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
+	ParallelN(t)
+
+	h := NewE2EHarness(t)
+	h.Start()
+
+	ctx := t.Context()
+
+	// Fund the server wallet.
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
+
+	// Verify that the harness enforces a minimum operator fee.
+	require.Greater(
+		t, int64(h.Terms().MinOperatorFee), int64(0),
+		"harness should enforce a non-zero minimum operator fee",
+	)
+	t.Logf("MinOperatorFee: %d sats", h.Terms().MinOperatorFee)
+
+	// Create a test client.
+	client := NewTestClient(h)
+
+	// Create boarding address.
+	terms := h.Terms()
+	boardingResp, err := client.CreateBoardingAddress(
+		terms.BoardingExitDelay,
+	)
+	require.NoError(t, err)
+
+	// Fund the boarding address.
+	amount := btcutil.Amount(100_000)
+	h.Harness.Faucet(boardingResp.Address.String(), amount)
+	h.MineBlocks(int(terms.MinBoardingConfirmations))
+
+	// Wait for the wallet to detect the boarding confirmation.
+	err = client.WaitForBoardingConfirmation(30 * time.Second)
+	require.NoError(t, err)
+	t.Log("Client FSM reached PendingRoundAssembly state")
+
+	// Register VTXO request with almost the full boarding amount,
+	// leaving a fee that is just below the minimum.
+	vtxoAmount := amount - (h.Terms().MinOperatorFee - 1)
+	err = client.RegisterVTXORequests(ctx, []btcutil.Amount{vtxoAmount})
+	require.NoError(t, err)
+	t.Logf("Registered VTXO request for %d sats (fee=%d)",
+		vtxoAmount, amount-vtxoAmount)
+
+	// Trigger registration. The client-side min-fee check should catch
+	// the insufficient fee and transition to ClientFailedState locally,
+	// without sending a join request to the server.
+	err = client.TriggerRegistration(ctx)
+	require.NoError(t, err)
+
+	// Wait for the FSM to reach ClientFailedState.
+	err = client.WaitForFSMState("ClientFailedState", 10*time.Second)
+	require.NoError(t, err, "FSM should reach ClientFailedState "+
+		"due to insufficient operator fee")
+	t.Log("Client correctly rejected: operator fee below minimum")
+
+	// Verify that no join request was sent to the server. The client
+	// should have caught the error locally.
+	h.Transcript().AssertNotContainsMessage(t, C2S("JoinRoundRequest"))
+	t.Log("Confirmed: no JoinRoundRequest sent to server")
+}

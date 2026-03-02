@@ -61,6 +61,12 @@ type Terms struct {
 	// MinLeaveAmount is the minimum amount for a leave request output.
 	MinLeaveAmount btcutil.Amount
 
+	// MinOperatorFee is the minimum fee the operator requires per
+	// join request. The fee is the difference between total input
+	// value and total output value. Requests below this threshold
+	// are rejected to prevent free UTXO consolidation.
+	MinOperatorFee btcutil.Amount
+
 	// RegistrationTimeout is the duration to wait for client registrations
 	// before sealing a round.
 	RegistrationTimeout time.Duration

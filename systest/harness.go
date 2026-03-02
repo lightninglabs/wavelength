@@ -653,6 +653,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		MaxVTXOAmount:                 btcutil.Amount(100_000_000_000),
 		VTXOExitDelay:                 defaultVTXOExitDelay,
 		MinLeaveAmount:                btcutil.Amount(1000),
+		MinOperatorFee:                btcutil.Amount(1000),
 		RegistrationTimeout:           defaultRegistrationTimeout,
 		SignatureCollectionTimeout:    defaultSigCollectionTimeout,
 	}
