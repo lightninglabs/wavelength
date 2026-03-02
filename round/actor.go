@@ -179,6 +179,11 @@ type RoundClientActor struct {
 	// env is the base FSM environment template containing all dependencies.
 	// Each new round FSM gets a copy with a fresh StartHeight.
 	env *ClientEnvironment
+
+	// outboxHandler processes OutboxRequest messages emitted by the
+	// FSM. The actor's askAndDrive loop routes requests here and
+	// feeds follow-up events back into the FSM.
+	outboxHandler OutboxHandler
 }
 
 // RoundClientConfig houses the configuration for a RoundClientActor.
@@ -294,6 +299,21 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 	// Wire in the actor height query function so join-auth can anchor
 	// intent validity metadata to the current chain height at signing time.
 	actor.env.QueryBestHeight = actor.queryBestHeight
+
+	// Construct the default in-process outbox handler from the same
+	// dependencies the FSM environment uses. This handler performs
+	// I/O on behalf of FSM OutboxRequest messages.
+	actor.outboxHandler = &InProcessOutboxHandler{
+		RoundStore:             cfg.RoundStore,
+		VTXOStore:              cfg.VTXOStore,
+		Wallet:                 cfg.Wallet,
+		QueryBestHeight:        actor.queryBestHeight,
+		OperatorTerms:          cfg.OperatorTerms,
+		ChainParams:            cfg.ChainParams,
+		MaxOperatorFee:         cfg.MaxOperatorFee,
+		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
+		Log:                    actorLog,
+	}
 
 	return fn.Ok(actor)
 }
@@ -583,32 +603,67 @@ func (a *RoundClientActor) registerCommitmentConfirmation(ctx context.Context,
 	}
 }
 
-// askEventAndProcessOutbox sends an event to the FSM and processes any
-// emitted outbox messages. This consolidates a common pattern throughout
-// the actor where FSM events trigger outbox processing.
-func (a *RoundClientActor) askEventAndProcessOutbox(
-	ctx context.Context, fsm *ClientStateMachine, event ClientEvent) error {
+// askAndDrive sends an event to the FSM and processes any emitted
+// outbox messages. OutboxRequest messages are routed through the
+// OutboxHandler, which performs the I/O and returns follow-up events
+// that are fed back into the FSM. Non-request outbox messages go
+// through the existing processOutbox path.
+//
+// The loop drains a breadth-first queue: each handler response may
+// produce new events, which may in turn produce more outbox requests.
+// The loop terminates when the queue is empty.
+func (a *RoundClientActor) askAndDrive(ctx context.Context,
+	fsm *ClientStateMachine, event ClientEvent) error {
 
-	future := fsm.AskEvent(ctx, event)
-	result := future.Await(ctx)
+	queue := []ClientEvent{event}
 
-	events, err := result.Unpack()
-	if err != nil {
-		return err
-	}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
 
-	a.log.DebugS(ctx, "askEventAndProcessOutbox: FSM returned outbox events",
-		slog.Int("event_count", len(events)),
-		slog.String("input_event_type", fmt.Sprintf("%T", event)))
+		future := fsm.AskEvent(ctx, next)
+		result := future.Await(ctx)
 
-	if len(events) > 0 {
-		for i, e := range events {
-			a.log.DebugS(ctx, "askEventAndProcessOutbox: outbox event",
-				slog.Int("index", i),
-				slog.String("type", fmt.Sprintf("%T", e)))
+		outbox, err := result.Unpack()
+		if err != nil {
+			return err
 		}
-		if err := a.processOutbox(ctx, events); err != nil {
-			return fmt.Errorf("failed to process outbox: %w", err)
+
+		a.log.DebugS(ctx, "askAndDrive: FSM returned outbox",
+			slog.Int("outbox_count", len(outbox)),
+			slog.String("event_type",
+				fmt.Sprintf("%T", next)))
+
+		// Partition outbox into requests (handler) and regular
+		// messages (processOutbox).
+		var regular []ClientOutMsg
+		for _, msg := range outbox {
+			req, isReq := msg.(OutboxRequest)
+			if !isReq {
+				regular = append(regular, msg)
+				continue
+			}
+
+			// Route through the outbox handler. Follow-up
+			// events re-enter the FSM via the queue.
+			followUps, hErr := a.outboxHandler.Handle(
+				ctx, req,
+			)
+			if hErr != nil {
+				return fmt.Errorf("outbox handler "+
+					"(%T): %w", req, hErr)
+			}
+
+			queue = append(queue, followUps...)
+		}
+
+		if len(regular) > 0 {
+			if err := a.processOutbox(
+				ctx, regular,
+			); err != nil {
+				return fmt.Errorf("process outbox: %w",
+					err)
+			}
 		}
 	}
 
@@ -822,7 +877,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	pkg := &IntentPackage{
 		Boarding: []BoardingIntent{intent},
 	}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
+	err := a.askAndDrive(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing boarding confirmation: %w", err))
@@ -881,7 +936,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		VTXOs: requests,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
+	err := a.askAndDrive(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err,
@@ -923,7 +978,7 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	pkg := &IntentPackage{
 		VTXOs: req.Requests,
 	}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
+	err := a.askAndDrive(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err))
@@ -1003,7 +1058,7 @@ func (a *RoundClientActor) handleRoundJoined(ctx context.Context,
 		slog.Int("num_vtxo", len(event.AcceptedVTXOOutpoints)))
 
 	// Now process the event normally.
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	err := a.askAndDrive(ctx, roundFSM.FSM, event)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing RoundJoined: %w", err))
@@ -1079,7 +1134,7 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 			slog.String("key", roundFSM.Key.KeyString()))
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, msg.Message)
+	err := a.askAndDrive(ctx, roundFSM.FSM, msg.Message)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing server message: %w", err))
@@ -1185,7 +1240,7 @@ func (a *RoundClientActor) handleCancelRound(ctx context.Context,
 		Recoverable: true,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, targetFSM.FSM, cancelEvent)
+	err := a.askAndDrive(ctx, targetFSM.FSM, cancelEvent)
 	if err != nil {
 		a.log.WarnS(ctx, "Failed to cancel round", err)
 
@@ -1270,7 +1325,7 @@ func (a *RoundClientActor) handleConfirmation(ctx context.Context,
 		Confirmations: int32(event.Confirmations),
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
+	err := a.askAndDrive(ctx, roundFSM.FSM, confirmEvt)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing commitment confirmation: %w", err))
@@ -1591,7 +1646,7 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 			buildVTXORequestFromRefresh(req),
 		},
 	}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
+	err := a.askAndDrive(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing refresh package: %w", err,
@@ -1646,7 +1701,7 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 		}},
 		Leaves: []*types.LeaveRequest{{Output: req.Output}},
 	}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
+	err := a.askAndDrive(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing leave package: %w", err,
@@ -1683,7 +1738,7 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 
 	// Forward to round FSM. The FSM tracks collected signatures and emits
 	// a server message when all expected signatures are collected.
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, resp)
+	err := a.askAndDrive(ctx, roundFSM.FSM, resp)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing forfeit signature: %w", err,
