@@ -348,3 +348,18 @@ func (e *ForfeitSignatureResponse) RoundReceivable() {}
 func (e *ForfeitSignatureResponse) MessageType() string {
 	return "ForfeitSignatureResponse"
 }
+
+// SaveVTXOsSucceeded is the follow-up event returned by the outbox
+// handler after VTXOStore.SaveVTXOs completes successfully.
+type SaveVTXOsSucceeded struct{}
+
+func (e *SaveVTXOsSucceeded) clientEventSealed() {}
+
+// SaveVTXOsFailed is the follow-up event returned by the outbox
+// handler when VTXOStore.SaveVTXOs fails.
+type SaveVTXOsFailed struct {
+	// Error is the underlying persistence error.
+	Error error
+}
+
+func (e *SaveVTXOsFailed) clientEventSealed() {}

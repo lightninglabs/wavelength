@@ -71,6 +71,18 @@ type InProcessOutboxHandler struct {
 	Log btclog.Logger
 }
 
+// SaveVTXOsReq requests persistence of newly created VTXOs after a
+// round's commitment transaction confirms. The handler calls
+// VTXOStore.SaveVTXOs and returns SaveVTXOsSucceeded or
+// SaveVTXOsFailed.
+type SaveVTXOsReq struct {
+	// VTXOs are the client VTXOs to persist.
+	VTXOs []*ClientVTXO
+}
+
+func (r *SaveVTXOsReq) clientOutMsgSealed()   {}
+func (r *SaveVTXOsReq) outboxRequestSealed()  {}
+
 // Compile-time assertion that InProcessOutboxHandler implements
 // OutboxHandler.
 var _ OutboxHandler = (*InProcessOutboxHandler)(nil)

@@ -409,6 +409,42 @@ func (s *InputSigSentState) IsTerminal() bool {
 
 func (s *InputSigSentState) clientStateSealed() {}
 
+// AwaitingSaveVTXOsState is an intermediate state between InputSigSent
+// and Confirmed. The FSM has built the client VTXOs and emitted a
+// SaveVTXOsReq; it is now waiting for the outbox handler to persist
+// them. On success, the FSM transitions to ConfirmedState with
+// notifications; on failure, it transitions to ClientFailedState.
+type AwaitingSaveVTXOsState struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// VTXOs are the built client VTXOs pending persistence.
+	VTXOs []*ClientVTXO
+
+	// ConfEvent is the BoardingConfirmed event that triggered this
+	// state. Carried forward so the FSM can build ConfirmedState
+	// with the confirmation details after save succeeds.
+	ConfEvent *BoardingConfirmed
+
+	// ForfeitedVTXOs contains outpoints of VTXOs being refreshed.
+	// Carried forward for ForfeitConfirmedToVTXO notifications.
+	ForfeitedVTXOs []wire.OutPoint
+
+	// Intents contains all the client's intents for this round.
+	// Needed for computing batch expiry via OperatorTerms.
+	Intents Intents
+}
+
+func (s *AwaitingSaveVTXOsState) String() string {
+	return "AwaitingSaveVTXOs"
+}
+
+func (s *AwaitingSaveVTXOsState) IsTerminal() bool {
+	return false
+}
+
+func (s *AwaitingSaveVTXOsState) clientStateSealed() {}
+
 // ConfirmedState is a terminal state indicating the boarding process has
 // completed successfully. The client now owns VTXOs.
 type ConfirmedState struct {
