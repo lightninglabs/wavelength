@@ -547,6 +547,25 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// Calculate the implicit operator fee (inputs - outputs).
 		operatorFee := totalInput - totalOutput
 
+		// Ensure the fee meets the operator's minimum when
+		// boarding inputs are present. The min fee prevents free
+		// UTXO consolidation via boarding; refresh and leave
+		// operations (forfeit-only) are exempt because the
+		// operator already collected a fee when the VTXO was
+		// originally created.
+		minFee := env.OperatorTerms.MinOperatorFee
+		if len(s.Boarding) > 0 && operatorFee < minFee {
+			return failWithNotification(
+				"operator fee below minimum",
+				fmt.Errorf(
+					"operator fee (%d) is below "+
+						"operator minimum (%d)",
+					operatorFee, minFee,
+				),
+				true, fn.None[RoundID](),
+			), nil
+		}
+
 		// Validate that the operator fee is within acceptable limits.
 		if operatorFee > env.MaxOperatorFee {
 			return failWithNotification(

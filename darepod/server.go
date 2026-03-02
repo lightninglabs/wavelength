@@ -706,6 +706,7 @@ func (s *Server) fetchOperatorTerms(
 		MinBoardingAmount: btcutil.Amount(resp.MinBoardingAmount),
 		MaxBoardingAmount: btcutil.Amount(resp.MaxBoardingAmount),
 		FeeRate:           btcutil.Amount(resp.FeeRate),
+		MinOperatorFee:    btcutil.Amount(resp.MinOperatorFee),
 		MinConfirmations:  resp.MinConfirmations,
 	}, nil
 }

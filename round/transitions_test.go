@@ -730,6 +730,74 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		)
 	})
 
+	t.Run("fee_below_operator_minimum_fails", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Set a high minimum operator fee (20,000 sats).
+		h.env.OperatorTerms.MinOperatorFee = btcutil.Amount(20000)
+
+		// Create intent with 50,000 sats.
+		intent := h.newTestBoardingIntent()
+		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
+
+		// Create VTXO request for 45,000 sats, implying only
+		// 5,000 sat fee (below 20,000 minimum).
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.Amount = btcutil.Amount(45000)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		})
+
+		event := &RegistrationRequested{}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(
+			t, failedState.Reason,
+			"operator fee below minimum",
+		)
+	})
+
+	t.Run("fee_exactly_at_operator_minimum_succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Set minimum operator fee to 5,000 sats.
+		h.env.OperatorTerms.MinOperatorFee = btcutil.Amount(5000)
+
+		// Create intent with 50,000 sats.
+		intent := h.newTestBoardingIntent()
+		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
+
+		// Create VTXO request for 45,000 sats, implying exactly
+		// 5,000 sat fee (equal to minimum).
+		vtxoReq := h.newTestVTXORequestForIntent(intent)
+		vtxoReq.Amount = btcutil.Amount(45000)
+
+		h.withState(&PendingRoundAssembly{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		})
+
+		event := &RegistrationRequested{}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		// Should succeed — fee is exactly at the minimum.
+		nextState := assertStateType[*RegistrationSentState](h)
+		require.Len(t, nextState.Intents.Boarding, 1)
+	})
+
 	t.Run("valid_fee_within_limit_succeeds", func(t *testing.T) {
 		t.Parallel()
 
