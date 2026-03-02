@@ -457,8 +457,8 @@ func (s *ClientFailedState) String() string {
 }
 
 func (s *ClientFailedState) IsTerminal() bool {
-	// ClientFailedState is NOT terminal - it can recover by accepting the
-	// same events as Idle (BoardingUTXOConfirmed, ResumeBoardingIntents).
+	// ClientFailedState is NOT terminal - it can recover by accepting
+	// IntentPackage events, which transition through Idle.
 	return false
 }
 

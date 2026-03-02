@@ -27,24 +27,14 @@ type ClientTransitionTable = protofsm.TransitionTable[
 var BoardingClientTransitions = ClientTransitionTable{
 	MachineName: "BoardingClient",
 	States: []ClientStateTransitions{
-		// Idle: Initial state, waiting for boarding intents.
+		// Idle: Initial state, waiting for intent packages.
 		{
 			FromState: &Idle{},
 			Transitions: []ClientTransitionEntry{
 				{
-					Event:       &ResumeBoardingIntents{},
+					Event:       &IntentPackage{},
 					ToState:     &PendingRoundAssembly{},
-					Description: "Resume monitoring existing intents",
-				},
-				{
-					Event:       &BoardingUTXOConfirmed{},
-					ToState:     &PendingRoundAssembly{},
-					Description: "First UTXO confirmed, start assembly",
-				},
-				{
-					Event:       &VTXORequestsReceived{},
-					ToState:     &PendingRoundAssembly{},
-					Description: "VTXO requests received, start assembly",
+					Description: "Intent package received, start assembly",
 				},
 				{
 					Event:       &BoardingFailed{},
@@ -55,19 +45,14 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// PendingRoundAssembly: Collecting confirmed boarding intents.
+		// PendingRoundAssembly: Collecting intents for the round.
 		{
 			FromState: &PendingRoundAssembly{},
 			Transitions: []ClientTransitionEntry{
 				{
-					Event:       &BoardingUTXOConfirmed{},
+					Event:       &IntentPackage{},
 					ToState:     &PendingRoundAssembly{},
-					Description: "Additional boarding UTXO confirmed",
-				},
-				{
-					Event:       &VTXORequestsReceived{},
-					ToState:     &PendingRoundAssembly{},
-					Description: "Additional VTXO requests received",
+					Description: "Additional intents received",
 				},
 				{
 					Event:       &RegistrationRequested{},
@@ -262,10 +247,17 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// ClientFailedState: Terminal failure state.
+		// ClientFailedState: Recoverable failure state. Recovery
+		// transitions to Idle and re-dispatches the IntentPackage,
+		// so the net destination is PendingRoundAssembly.
 		{
 			FromState: &ClientFailedState{},
 			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &IntentPackage{},
+					ToState:     &Idle{},
+					Description: "Recover from failure with new intents",
+				},
 				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
