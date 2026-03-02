@@ -1,9 +1,17 @@
-# Ark Boarding State Machine
+# Ark Round State Machine
 
-The round package implements the client-side protocol for boarding Bitcoin
-outputs into an Ark virtual UTXO tree through coordinated multi-party rounds.
-Boarding converts on-chain Bitcoin into off-chain VTXOs that enable instant,
-private transfers within the Ark system.
+The round package implements the client-side protocol for participating in Ark
+rounds. Rounds coordinate multiple clients to batch operations into a single
+commitment transaction containing a VTXO tree. The package supports three
+operations:
+
+- **Boarding**: Converting on-chain Bitcoin into off-chain VTXOs by spending
+  boarding UTXOs into the commitment transaction.
+- **Refresh**: Rolling existing VTXOs into a new tree with extended expirations,
+  preventing timeout-based expiry. Old VTXOs are atomically forfeited via
+  connector outputs.
+- **Leave**: Exiting the Ark by converting a VTXO back to an on-chain output
+  included in the commitment transaction.
 
 The architecture strictly separates business logic from side effects. The finite
 state machine (FSM) owns all protocol logic, validation, and state transitions.
@@ -60,23 +68,28 @@ transaction. Once confirmed via `BoardingUTXOConfirmed`, the FSM transitions
 from Idle to PendingRoundAssembly, registering a boarding intent containing
 the address and on-chain UTXO information.
 
-Boarding intents and VTXO requests are managed separately, enabling flexible
-input-output mappings. The FSM collects boarding intents (inputs to spend) and
-VTXO requests (outputs to create) independently:
+Boarding intents, VTXO requests, refresh requests, and leave requests are
+managed separately, enabling flexible input-output mappings. The FSM collects
+them independently as self-loops in PendingRoundAssembly:
 
-- `BoardingUTXOConfirmed` adds a boarding intent to the pending set
+- `BoardingUTXOConfirmed` adds a boarding intent (on-chain input to spend)
 - `VTXORequestsReceived` adds VTXO requests specifying desired output amounts
+- `RefreshVTXORequest` adds a VTXO to be rolled into a new tree (from VTXO
+  actors whose VTXOs are approaching expiry)
+- `LeaveVTXORequest` adds a VTXO to be exited on-chain (from VTXO actors or
+  the wallet when the user wants to offboard)
 
-This separation supports future fan-in (multiple inputs funding one output) and
-fan-out (one input creating multiple outputs) scenarios. The FSM accumulates
-both types as self-loops in PendingRoundAssembly.
+This separation supports fan-in (multiple inputs funding one output) and
+fan-out (one input creating multiple outputs) scenarios, as well as mixed
+rounds containing any combination of boarding, refresh, and leave operations.
+Refresh-only rounds (no boarding inputs) are also supported.
 
 When `RegistrationRequested` is received, the FSM validates that total outputs
 do not exceed inputs, then transitions to RegistrationSentState, emitting a
 `JoinRoundRequest` that aggregates all intents into a single server request.
 The join request carries boarding inputs, VTXO outputs, explicit forfeit
-outpoints, and optional leave outputs. The FSM can also resume existing intents
-on restart via `ResumeBoardingIntents`.
+outpoints, and leave outputs. The FSM can also resume existing intents on
+restart via `ResumeBoardingIntents`.
 
 ### RegistrationSent and RoundJoined States
 
@@ -124,6 +137,26 @@ partial signatures via `SubmitPartialSigRequest`.
 The operator aggregates all partial signatures to produce complete Schnorr
 signatures over every tree branch, making each VTXO spendable through the
 cooperative path.
+
+### ForfeitSignaturesCollecting State
+
+When a round includes refresh or leave requests, the FSM enters
+ForfeitSignaturesCollecting after the operator returns signed tree
+branches. Old VTXOs must be forfeited before boarding inputs are
+released, ensuring atomic replacement.
+
+For each refresh or leave VTXO, the FSM sends a `ForfeitRequestToVTXO`
+outbox message to the corresponding VTXO actor. The VTXO actor builds
+a forfeit transaction spending the old VTXO through a connector output
+tied to the new commitment transaction, signs it, and returns a
+`ForfeitSignatureResponse`.
+
+The FSM tracks expected vs collected forfeits. Once all expected forfeit
+signatures arrive, they are submitted to the server via
+`SubmitVTXOForfeitSigsToServer` and the FSM transitions to
+InputSigSent. If the round has no refresh or leave requests, this state
+is skipped entirely and PartialSigsSent transitions directly to
+InputSigSent.
 
 ### InputSigSent State: The Point of No Return
 
@@ -211,7 +244,10 @@ from depending on external interfaces. The FSM emits side effects as data
 outbox contents and dispatches to appropriate subsystems:
 
 - **Server messages**: `JoinRoundRequest`, `SubmitNoncesRequest`,
-  `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`
+  `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`,
+  `SubmitVTXOForfeitSigsToServer`
+- **VTXO actor messages**: `ForfeitRequestToVTXO`,
+  `ForfeitConfirmedToVTXO`
 - **Chain monitoring**: `RegisterConfirmationRequest`
 - **Wallet notifications**: `VTXOCreatedNotification`, `AddressReceived`
 
@@ -231,6 +267,7 @@ and server during a successful boarding round:
 
 ```mermaid
 sequenceDiagram
+    participant V as VTXO Actors
     participant C as Client FSM
     participant A as Actor
     participant S as Server
@@ -245,6 +282,12 @@ sequenceDiagram
     A->>C: BoardingUTXOConfirmed
     Note over A: User specifies VTXO amounts
     A->>C: VTXORequestsReceived
+    opt Refresh / Leave
+        V->>A: RefreshVTXORequest
+        A->>C: RefreshVTXORequest
+        V->>A: LeaveVTXORequest
+        A->>C: LeaveVTXORequest
+    end
 
     Note over C,B: Round Registration Phase
     A->>C: RegistrationRequested
@@ -270,6 +313,15 @@ sequenceDiagram
     S->>A: OperatorSigned(signatures)
     A->>C: OperatorSigned
 
+    opt Forfeit Signature Collection (refresh/leave)
+        C->>A: ForfeitRequestToVTXO (outbox)
+        A->>V: ForfeitRequestEvent
+        V->>A: ForfeitSignatureResponse
+        A->>C: ForfeitSignatureResponse
+        C->>A: SubmitVTXOForfeitSigsToServer (outbox)
+        A->>S: SubmitVTXOForfeitSigs
+    end
+
     Note over C,B: Boarding Input Signing (Point of No Return)
     Note over C: Validate all tree signatures
     Note over C: Sign boarding inputs
@@ -289,6 +341,8 @@ sequenceDiagram
     Note over C,B: VTXO Creation
     Note over C: Build ClientVTXO descriptors
     C->>A: VTXOCreatedNotification (outbox)
+    C->>A: ForfeitConfirmedToVTXO (outbox)
+    A->>V: ForfeitConfirmedEvent
     Note over C: Transition to Idle
 ```
 
@@ -337,6 +391,8 @@ stateDiagram-v2
     Idle --> PendingRoundAssembly: ResumeBoardingIntents
     PendingRoundAssembly --> PendingRoundAssembly: BoardingUTXOConfirmed
     PendingRoundAssembly --> PendingRoundAssembly: VTXORequestsReceived
+    PendingRoundAssembly --> PendingRoundAssembly: RefreshVTXORequest
+    PendingRoundAssembly --> PendingRoundAssembly: LeaveVTXORequest
     PendingRoundAssembly --> RegistrationSent: RegistrationRequested
     RegistrationSent --> RoundJoined: RoundJoined
     RoundJoined --> CommitmentTxReceived: CommitmentTxBuilt
@@ -344,7 +400,10 @@ stateDiagram-v2
     CommitmentTxValidated --> NoncesSent: GenerateNonces
     NoncesSent --> NoncesAggregated: NoncesAggregated
     NoncesAggregated --> PartialSigsSent: GeneratePartialSigs
-    PartialSigsSent --> InputSigSent: OperatorSigned
+    PartialSigsSent --> ForfeitSignaturesCollecting: OperatorSigned (with forfeits)
+    PartialSigsSent --> InputSigSent: OperatorSigned (no forfeits)
+    ForfeitSignaturesCollecting --> ForfeitSignaturesCollecting: ForfeitSignatureResponse (partial)
+    ForfeitSignaturesCollecting --> InputSigSent: ForfeitSignatureResponse (all collected)
     InputSigSent --> Confirmed: BoardingConfirmed
     Confirmed --> Idle: RoundComplete
 
@@ -356,6 +415,7 @@ stateDiagram-v2
     NoncesSent --> ClientFailed: BoardingFailed
     NoncesAggregated --> ClientFailed: BoardingFailed
     PartialSigsSent --> ClientFailed: BoardingFailed
+    ForfeitSignaturesCollecting --> ClientFailed: BoardingFailed
     InputSigSent --> ClientFailed: BoardingFailed
     InputSigSent --> RecoveryInitiated: RecoveryInitiated
 ```
@@ -364,22 +424,56 @@ The diagram omits internal events for clarity, showing only major transitions
 triggered by external events. Each state may perform significant computation
 (validation, cryptography, checkpoint operations) before transitioning.
 
+## Refresh and Leave Flows
+
+Refresh and leave operations participate in the same round lifecycle as
+boarding, sharing the MuSig2 signing ceremony and commitment transaction. They
+differ in how intents are assembled and how old VTXOs are handled.
+
+### Refresh
+
+When a VTXO approaches its CSV expiry, the VTXO actor sends a
+`RefreshVTXORequest` to the round actor (either automatically or via manual
+`TriggerRefreshEvent`). The round FSM accumulates these in
+`PendingRoundAssembly.RefreshingVTXOs` alongside any boarding intents. During
+registration, refresh requests are included in the `JoinRoundRequest` as
+forfeit outpoints with corresponding new VTXO outputs.
+
+After the operator signs the VTXO tree, the FSM enters
+ForfeitSignaturesCollecting and sends `ForfeitRequestToVTXO` to each VTXO
+actor. The VTXO actor builds a forfeit transaction spending the old VTXO
+through a connector output tied to the new commitment transaction, signs it,
+and returns a `ForfeitSignatureResponse`. This ensures atomic replacement: the
+old VTXO becomes unspendable only when the new commitment transaction
+confirms.
+
+On the VTXO actor side, the flow progresses through `RefreshRequestedState` →
+`ForfeitingState` → `ForfeitedState` as the forfeit is requested, signed, and
+confirmed.
+
+### Leave
+
+Leave follows the same mechanics as refresh, but the output is an on-chain
+destination rather than a new VTXO. The user (or wallet) sends a
+`LeaveVTXORequest`, accumulated in `PendingRoundAssembly.LeavingVTXOs`. During
+commitment transaction validation, the FSM verifies all leave outputs appear
+in the transaction via `validateLeaveOutputs()`.
+
+### Mixed Rounds
+
+A single round can contain any combination of boarding, refresh, and leave
+operations. Refresh-only rounds (no boarding inputs) are supported, allowing
+VTXO rollovers without requiring new on-chain deposits.
+
 ## Future Extensions
 
-The current implementation supports boarding, the entry point for Ark
-participation. Future extensions will add exit paths (unilateral timeout-based
-and cooperative), VTXO transfers between participants, and refresh rounds
-implemented by combining forfeit requests with new VTXO requests
-preventing timeouts by moving VTXOs into new trees with extended expirations.
+Future extensions may add VTXO transfers between participants, requiring their
+own round coordination that potentially reuses portions of the MuSig2 ceremony
+with different validation and output construction. Unilateral exit paths
+(timeout-based) coordinate with the operator but follow distinct state
+progressions without multi-party coordination.
 
-These extensions may introduce additional states or entirely separate FSMs for
-different protocol flows. Exit flows coordinate with the operator but follow
-distinct state progressions (no multi-party coordination required). VTXO
-transfers need their own round coordination, potentially reusing portions of the
-boarding FSM's MuSig2 ceremony with different validation and output
-construction.
-
-The actor's primary/dedicated FSM pattern should extend naturally. Each protocol
-type (boarding, exit, transfer) can maintain a primary FSM for interactive
-phases and spawn dedicated FSMs for monitoring, ensuring responsiveness
-regardless of simultaneous operation count.
+The actor's primary/dedicated FSM pattern extends naturally to these flows.
+Each protocol type can maintain a primary FSM for interactive phases and spawn
+dedicated FSMs for monitoring, ensuring responsiveness regardless of
+simultaneous operation count.
