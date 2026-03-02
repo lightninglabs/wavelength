@@ -50,6 +50,11 @@ type OperatorTerms struct {
 	// FeeRate reflects the operator's target package feerate (sat/vByte).
 	FeeRate btcutil.Amount
 
+	// MinOperatorFee is the minimum fee (satoshis) the operator
+	// requires per join request. The fee is the difference between
+	// total input value and total output value.
+	MinOperatorFee btcutil.Amount
+
 	// MinConfirmations is the minimum confs required on boarding inputs.
 	MinConfirmations uint32
 }
