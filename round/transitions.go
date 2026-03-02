@@ -27,20 +27,6 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	return intent.Request
 }
 
-// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
-// RefreshVTXORequest. The refresh request contains all info needed to create
-// the new VTXO output in the round.
-func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
-	return types.VTXORequest{
-		Amount:      btcutil.Amount(req.Amount),
-		PkScript:    req.PkScript,
-		Expiry:      req.Expiry,
-		ClientKey:   req.NewVTXOKey,
-		OperatorKey: req.OperatorKey,
-		SigningKey:  req.SigningKey,
-	}
-}
-
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
