@@ -1,6 +1,7 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -79,21 +80,6 @@ func (s *RegistrationState) isClientRegistered(
 	return exists
 }
 
-// withNewClient returns a new RegistrationState with the given client added.
-// The original state is not modified (immutable pattern).
-func (s *RegistrationState) withNewClient(clientID clientconn.ClientID,
-	result *JoinRequestResult) *RegistrationState {
-
-	newRegs := make(map[clientconn.ClientID]*ClientRegistration)
-	for id, reg := range s.ClientRegistrations {
-		newRegs[id] = reg
-	}
-
-	newRegs[clientID] = newClientRegistration(clientID, result)
-
-	return newRegistrationState(newRegs)
-}
-
 // getAllBoardingInputs returns all boarding inputs from all clients.
 func (s *RegistrationState) getAllBoardingInputs() []*BoardingInput {
 	var all []*BoardingInput
@@ -103,6 +89,41 @@ func (s *RegistrationState) getAllBoardingInputs() []*BoardingInput {
 
 	return all
 }
+
+// AwaitingJoinValidationState waits for the OutboxHandler to validate a
+// client join request and lock the required inputs. On success it transitions
+// to RegistrationState with the client added; on failure it returns to the
+// previous state (CreatedState or RegistrationState) with a client error.
+type AwaitingJoinValidationState struct {
+	// ExistingRegistrations are the client registrations accumulated
+	// before this join request. Empty map when transitioning from
+	// CreatedState.
+	ExistingRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// PendingClientID is the client whose join is being validated.
+	PendingClientID clientconn.ClientID
+
+	// IsFirstClient is true when transitioning from CreatedState (no
+	// prior registrations). A successful validation from CreatedState
+	// starts the registration timeout.
+	IsFirstClient bool
+}
+
+// String returns a human-readable representation of
+// AwaitingJoinValidationState.
+func (s *AwaitingJoinValidationState) String() string {
+	return "AwaitingJoinValidationState"
+}
+
+// IsTerminal returns false as AwaitingJoinValidationState is not a terminal
+// state.
+func (s *AwaitingJoinValidationState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingJoinValidationState as implementing the sealed
+// State interface.
+func (s *AwaitingJoinValidationState) stateSealed() {}
 
 // BatchBuildingState is a transitional state where the commitment transaction
 // PSBT is being constructed. This state processes BuildBatchTxEvent to build
@@ -125,6 +146,30 @@ func (s *BatchBuildingState) IsTerminal() bool {
 // stateSealed marks BatchBuildingState as implementing the sealed State
 // interface.
 func (s *BatchBuildingState) stateSealed() {}
+
+// AwaitingBatchBuildState waits for the OutboxHandler to finish building the
+// commitment transaction (fee estimation, wallet funding, tree construction).
+// On success it transitions to BatchBuiltState; on failure to FailedState.
+type AwaitingBatchBuildState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	// Preserved across the intermediate state for the BatchBuiltState
+	// transition.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// String returns a human-readable representation of AwaitingBatchBuildState.
+func (s *AwaitingBatchBuildState) String() string {
+	return "AwaitingBatchBuildState"
+}
+
+// IsTerminal returns false as AwaitingBatchBuildState is not a terminal state.
+func (s *AwaitingBatchBuildState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingBatchBuildState as implementing the sealed State
+// interface.
+func (s *AwaitingBatchBuildState) stateSealed() {}
 
 // BatchBuiltState holds the funded PSBT after successful construction.
 // The PSBT contains boarding inputs and leave outputs, plus wallet inputs
@@ -435,6 +480,92 @@ func (s *ServerSigningState) IsTerminal() bool {
 // interface.
 func (s *ServerSigningState) stateSealed() {}
 
+// AwaitingSignAndFinalizeState waits for the OutboxHandler to sign all
+// boarding inputs, complete forfeit transactions, and finalize the PSBT.
+// This intermediate state exists so that ServerSigningState remains pure
+// — it emits a SignAndFinalizeRoundReq outbox event and transitions
+// here, then the handler feeds back a success or failure event.
+type AwaitingSignAndFinalizeState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	// Carried forward for persistence and failure transitions.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// Carried forward for the persistence outbox request.
+	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	// Carried forward for the persistence outbox request.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts. Carried forward for the persistence outbox request.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock for the VTXO sweep timeout
+	// path. Carried forward for the persistence outbox request.
+	CSVDelay uint32
+
+	// StartHeight is the block height when the round was created.
+	// Carried forward for the BroadcastRoundReq.
+	StartHeight uint32
+}
+
+// String returns a human-readable representation of
+// AwaitingSignAndFinalizeState.
+func (s *AwaitingSignAndFinalizeState) String() string {
+	return "AwaitingSignAndFinalizeState"
+}
+
+// IsTerminal returns false as AwaitingSignAndFinalizeState is not a
+// terminal state.
+func (s *AwaitingSignAndFinalizeState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingSignAndFinalizeState as implementing the
+// sealed State interface.
+func (s *AwaitingSignAndFinalizeState) stateSealed() {}
+
+// AwaitingServerSignPersistState waits for the OutboxHandler to persist
+// the round and VTXOs after server signing completes. This intermediate
+// state exists so that handleServerSigning remains pure — it emits a
+// PersistServerSigningReq outbox event and transitions here, then the
+// handler feeds back a success or failure event.
+type AwaitingServerSignPersistState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// StartHeight is the block height when the round was created. Needed
+	// to construct the BroadcastRoundReq on persistence success.
+	StartHeight uint32
+}
+
+// String returns a human-readable representation of
+// AwaitingServerSignPersistState.
+func (s *AwaitingServerSignPersistState) String() string {
+	return "AwaitingServerSignPersistState"
+}
+
+// IsTerminal returns false as AwaitingServerSignPersistState is not a
+// terminal state.
+func (s *AwaitingServerSignPersistState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingServerSignPersistState as implementing the
+// sealed State interface.
+func (s *AwaitingServerSignPersistState) stateSealed() {}
+
 // FinalizedState holds the fully signed transaction ready for broadcast. The
 // transaction has all boarding input signatures (client + operator) and wallet
 // input signatures applied.
@@ -466,6 +597,44 @@ func (s *FinalizedState) IsTerminal() bool {
 
 // stateSealed marks FinalizedState as implementing the sealed State interface.
 func (s *FinalizedState) stateSealed() {}
+
+// AwaitingConfirmPersistState waits for the OutboxHandler to persist round
+// confirmation data (mark VTXOs live, record forfeits, mark round confirmed).
+// This intermediate state exists so that the FinalizedState transition remains
+// pure — it emits a ConfirmRoundReq outbox event and transitions here, then
+// the handler feeds back a success or failure event.
+type AwaitingConfirmPersistState struct {
+	// ClientRegistrations maps client IDs to their registration data.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// BlockHeight is the height of the confirming block.
+	BlockHeight int32
+
+	// BlockHash is the hash of the confirming block.
+	BlockHash chainhash.Hash
+}
+
+// String returns a human-readable representation of
+// AwaitingConfirmPersistState.
+func (s *AwaitingConfirmPersistState) String() string {
+	return "AwaitingConfirmPersistState"
+}
+
+// IsTerminal returns false as AwaitingConfirmPersistState is not a terminal
+// state.
+func (s *AwaitingConfirmPersistState) IsTerminal() bool {
+	return false
+}
+
+// stateSealed marks AwaitingConfirmPersistState as implementing the sealed
+// State interface.
+func (s *AwaitingConfirmPersistState) stateSealed() {}
 
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock

@@ -3,12 +3,16 @@ package rounds
 import (
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -354,3 +358,214 @@ type BroadcastRoundReq struct {
 // outboxEventSealed marks BroadcastRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
+
+// BuildBatchReq is an outbox event emitted when the FSM is ready to build
+// the commitment transaction. The OutboxHandler should call buildCommitmentTx
+// to perform fee estimation and wallet funding, then return a
+// BuildBatchSucceededEvent or BuildBatchFailedEvent.
+type BuildBatchReq struct {
+	// RoundID is the identifier of the round being built.
+	RoundID RoundID
+
+	// BoardingInputs are the client boarding inputs to include in the
+	// commitment transaction.
+	BoardingInputs []*BoardingInput
+
+	// ForfeitInputs are the client forfeit inputs whose connector trees
+	// must be constructed.
+	ForfeitInputs []*ForfeitInput
+
+	// RequiredOutputs are the leave outputs to include in the commitment
+	// transaction.
+	RequiredOutputs []*wire.TxOut
+
+	// VTXODescriptors describe the VTXO tree outputs to construct.
+	VTXODescriptors []tree.VTXODescriptor
+
+	// Terms contains the operator's terms for batch building (tree radix,
+	// dust amounts, connector configuration, etc.).
+	Terms *batch.Terms
+
+	// ForfeitScript is the output script for penalty outputs in forfeit
+	// transactions.
+	ForfeitScript []byte
+}
+
+// outboxEventSealed marks BuildBatchReq as implementing the sealed
+// OutboxEvent interface.
+func (b *BuildBatchReq) outboxEventSealed() {}
+
+// SignAndFinalizeRoundReq is an outbox event emitted when the FSM has
+// collected all client signatures and is ready for the server to sign
+// boarding inputs, complete forfeit transactions, and finalize the PSBT.
+// The OutboxHandler should perform the signing I/O and return a
+// SignAndFinalizeSucceededEvent or SignAndFinalizeFailedEvent.
+type SignAndFinalizeRoundReq struct {
+	// RoundID is the identifier of the round being signed.
+	RoundID RoundID
+
+	// PSBT is the funded but unsigned commitment transaction. Boarding
+	// inputs already have PSBT metadata set; the handler will apply
+	// signatures and then finalize.
+	PSBT *psbt.Packet
+
+	// CollectedSignatures contains client boarding input signatures,
+	// keyed by client ID. The handler applies these alongside the
+	// operator's signatures to complete boarding input witnesses.
+	CollectedSignatures InputSigsMap
+
+	// CollectedForfeitTxs contains client forfeit transactions with
+	// client VTXO signatures, keyed by client ID. The handler adds the
+	// server's signatures to complete forfeit witnesses.
+	CollectedForfeitTxs ForfeitTxsMap
+
+	// ClientRegistrations contains client registration data needed
+	// to look up boarding inputs and forfeit inputs during signing.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// ConnectorAssignments maps forfeited outpoints to connector
+	// leaves. Needed by the handler to complete forfeit transactions.
+	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
+
+	// OperatorKey is the key descriptor for the operator's identity
+	// key. Used by the handler for SignOutputRaw calls on boarding
+	// and forfeit inputs.
+	OperatorKey keychain.KeyDescriptor
+
+	// VTXOExitDelay is the exit delay for VTXOs. Used by the handler
+	// to reconstruct VTXO tapscripts for forfeit signing.
+	VTXOExitDelay uint32
+}
+
+// outboxEventSealed marks SignAndFinalizeRoundReq as implementing the
+// sealed OutboxEvent interface.
+func (s *SignAndFinalizeRoundReq) outboxEventSealed() {}
+
+// PersistServerSigningReq is an outbox event emitted after the server has
+// signed all inputs and finalized the PSBT. The OutboxHandler should persist
+// the round and its VTXOs, then return a PersistServerSigningSucceededEvent
+// or PersistServerSigningFailedEvent.
+type PersistServerSigningReq struct {
+	// RoundID is the identifier of the round to persist.
+	RoundID RoundID
+
+	// FinalTx is the fully signed commitment transaction.
+	FinalTx *wire.MsgTx
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	VTXOTrees map[int]*tree.Tree
+
+	// ConnectorDescriptors describe connector outputs for this round.
+	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// ClientRegistrations contains client registration data needed
+	// to build the VTXO descriptor index during persistence.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+
+	// SweepKey is the operator public key used in VTXO sweep timeout
+	// scripts.
+	SweepKey *btcec.PublicKey
+
+	// CSVDelay is the relative timelock in blocks for the VTXO sweep
+	// timeout path.
+	CSVDelay uint32
+}
+
+// outboxEventSealed marks PersistServerSigningReq as implementing the sealed
+// OutboxEvent interface.
+func (p *PersistServerSigningReq) outboxEventSealed() {}
+
+// ConfirmRoundReq is an outbox event emitted when a round's transaction has
+// been confirmed on-chain. The OutboxHandler should persist confirmation data
+// (mark VTXOs live, record forfeits, mark the round confirmed) and return a
+// ConfirmRoundSucceededEvent or ConfirmRoundFailedEvent.
+type ConfirmRoundReq struct {
+	// RoundID is the identifier of the confirmed round.
+	RoundID RoundID
+
+	// VTXOTrees maps commitment tx output indices to their VTXO trees.
+	// When non-empty the handler marks the round's VTXOs as live.
+	VTXOTrees map[int]*tree.Tree
+
+	// ForfeitInfos maps forfeited VTXO outpoints to forfeit metadata.
+	// Each entry is persisted via MarkVTXOForfeit.
+	ForfeitInfos map[wire.OutPoint]*ForfeitInfo
+
+	// BlockHeight is the height of the confirming block.
+	BlockHeight int32
+
+	// BlockHash is the hash of the confirming block.
+	BlockHash chainhash.Hash
+}
+
+// outboxEventSealed marks ConfirmRoundReq as implementing the sealed
+// OutboxEvent interface.
+func (c *ConfirmRoundReq) outboxEventSealed() {}
+
+// UnlockBoardingInputsReq is an outbox event emitted when a round fails and
+// all locked boarding inputs must be released. The OutboxHandler should unlock
+// each boarding input for each registered client. This is fire-and-forget:
+// errors are logged but do not produce follow-up events.
+type UnlockBoardingInputsReq struct {
+	// RoundID is the identifier of the round whose inputs are unlocked.
+	RoundID RoundID
+
+	// ClientRegistrations contains the client registrations whose boarding
+	// inputs should be unlocked.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
+// OutboxEvent interface.
+func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
+
+// UnlockForfeitVTXOsReq is an outbox event emitted when a round fails and
+// all locked forfeit VTXOs must be released. The OutboxHandler should unlock
+// each forfeit VTXO for each registered client. This is fire-and-forget:
+// errors are logged but do not produce follow-up events.
+type UnlockForfeitVTXOsReq struct {
+	// RoundID is the identifier of the round whose VTXOs are unlocked.
+	RoundID RoundID
+
+	// ClientRegistrations contains the client registrations whose forfeit
+	// VTXOs should be unlocked.
+	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
+}
+
+// outboxEventSealed marks UnlockForfeitVTXOsReq as implementing the sealed
+// OutboxEvent interface.
+func (u *UnlockForfeitVTXOsReq) outboxEventSealed() {}
+
+// ValidateAndLockJoinReq is an outbox event emitted when a client join request
+// needs validation and input locking. The OutboxHandler validates the request
+// (UTXO lookups, lock checks, forfeit VTXO lookups), then locks the boarding
+// inputs and forfeit VTXOs. Returns a ValidateAndLockSucceededEvent with the
+// validated result or a ValidateAndLockFailedEvent with the reason.
+type ValidateAndLockJoinReq struct {
+	// RoundID identifies the round being joined.
+	RoundID RoundID
+
+	// ClientID identifies the client making the join request.
+	ClientID clientconn.ClientID
+
+	// Request is the client's raw join round request.
+	Request *types.JoinRoundRequest
+
+	// CurrentBlockHeight is the best-known chain height at the time of
+	// the request. Used for join-auth freshness checks.
+	CurrentBlockHeight uint32
+
+	// StartHeight is the round's creation height, used as a fallback
+	// when CurrentBlockHeight is zero.
+	StartHeight uint32
+
+	// DisableJoinRequestAuth skips BIP-322 auth validation when true.
+	DisableJoinRequestAuth bool
+}
+
+// outboxEventSealed marks ValidateAndLockJoinReq as implementing the sealed
+// OutboxEvent interface.
+func (v *ValidateAndLockJoinReq) outboxEventSealed() {}

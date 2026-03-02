@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // SpentVTXO captures a forfeited VTXO outpoint and its completed forfeit
@@ -32,7 +33,9 @@ type SpentVTXO struct {
 func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
-	env *Environment) ([]*SpentVTXO, error) {
+	walletCtrl WalletController, operatorKey keychain.KeyDescriptor,
+	vtxoExitDelay uint32,
+	roundID RoundID) ([]*SpentVTXO, error) {
 
 	forfeitInputs := make(map[wire.OutPoint]*ForfeitInput)
 	for _, input := range reg.ForfeitInputs {
@@ -94,7 +97,8 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 
 		if err := signForfeitVTXOInput(
 			ftx, forfeitInput, forfeitTxSig.ClientVTXOSig,
-			assignment.LeafOutput, env,
+			assignment.LeafOutput, walletCtrl,
+			operatorKey, vtxoExitDelay,
 		); err != nil {
 			return nil, fmt.Errorf("failed to sign VTXO input for "+
 				"%v: %w", vtxoOutpoint, err)
@@ -105,7 +109,8 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 			PkScript: forfeitInput.VTXO.Descriptor.PkScript,
 		}
 		if err := signForfeitConnectorInput(
-			ftx, vtxoOutput, assignment.LeafOutput, env,
+			ftx, vtxoOutput, assignment.LeafOutput,
+			walletCtrl, operatorKey,
 		); err != nil {
 			return nil, fmt.Errorf("failed to sign connector "+
 				"input for %v: %w", vtxoOutpoint, err)
@@ -115,7 +120,7 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 		spentVTXOs = append(spentVTXOs, &SpentVTXO{
 			VTXOOutpoint: vtxoOutpoint,
 			ForfeitInfo: &ForfeitInfo{
-				RoundID:              env.RoundID,
+				RoundID:              roundID,
 				ConnectorOutputIndex: connOutIdx,
 				LeafIndex:            assignment.LeafIndex,
 				ForfeitTx:            ftx,
@@ -131,7 +136,9 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 // which requires both client and operator signatures.
 func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	clientSig *schnorr.Signature, connectorOutput *wire.TxOut,
-	env *Environment) error {
+	walletCtrl WalletController,
+	operatorKey keychain.KeyDescriptor,
+	vtxoExitDelay uint32) error {
 
 	if forfeitInput == nil || forfeitInput.VTXO == nil {
 		return fmt.Errorf("forfeit VTXO must be provided")
@@ -149,8 +156,8 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
 	vtxoTapScript, err := scripts.VTXOTapScript(
-		vtxo.Descriptor.CoSignerKey, env.Terms.OperatorKey.PubKey,
-		env.Terms.VTXOExitDelay,
+		vtxo.Descriptor.CoSignerKey, operatorKey.PubKey,
+		vtxoExitDelay,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to reconstruct VTXO tapscript: %w",
@@ -179,7 +186,7 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
 	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, env.Terms.OperatorKey,
+		vtxoCtx, operatorKey,
 		tx.ForfeitVTXOInputIndex, sigHashes, prevOutFetcher,
 	)
 	if err != nil {
@@ -187,9 +194,7 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 			err)
 	}
 
-	serverSig, err := env.WalletController.SignOutputRaw(
-		ftx, signDesc,
-	)
+	serverSig, err := walletCtrl.SignOutputRaw(ftx, signDesc)
 	if err != nil {
 		return fmt.Errorf("failed to sign VTXO input: %w", err)
 	}
@@ -210,7 +215,9 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 // transaction. The connector is spent via keyspend (operator-only). This
 // assumes the VTXO input witness has already been set.
 func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
-	connectorLeafOutput *wire.TxOut, env *Environment) error {
+	connectorLeafOutput *wire.TxOut,
+	walletCtrl WalletController,
+	operatorKey keychain.KeyDescriptor) error {
 
 	vtxoOutpoint :=
 		ftx.TxIn[tx.ForfeitVTXOInputIndex].PreviousOutPoint
@@ -226,7 +233,7 @@ func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
 	connectorSignDesc := &input.SignDescriptor{
-		KeyDesc:           env.Terms.OperatorKey,
+		KeyDesc:           operatorKey,
 		Output:            connectorLeafOutput,
 		HashType:          txscript.SigHashDefault,
 		InputIndex:        tx.ForfeitConnectorInputIndex,
@@ -236,7 +243,7 @@ func signForfeitConnectorInput(ftx *wire.MsgTx, vtxoOutput *wire.TxOut,
 		TapTweak:          []byte{},
 	}
 
-	connectorSig, err := env.WalletController.SignOutputRaw(
+	connectorSig, err := walletCtrl.SignOutputRaw(
 		ftx, connectorSignDesc,
 	)
 	if err != nil {

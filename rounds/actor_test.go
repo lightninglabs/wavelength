@@ -576,6 +576,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			originalRoundID,
 		)
+		h.setupBatchBuildingMocks()
 
 		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -631,6 +632,7 @@ func TestActorRegistrationTimeout(t *testing.T) {
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			originalRoundID,
 		)
+		h.setupBatchBuildingMocks()
 
 		// Create the boarding request.
 		boardingReq := client.createBoardingRequest(&outpoint)
@@ -907,6 +909,7 @@ func TestActorBoardingSignatures(t *testing.T) {
 			&outpoint, client.boardingKey, client.exitDelay, 10,
 			roundID,
 		)
+		h.setupBatchBuildingMocks()
 
 		// We expect the round building and signing to succeed and
 		// therefore for the round to be persisted.
@@ -1413,6 +1416,7 @@ func TestActorConcurrentRounds(t *testing.T) {
 			&outpointA, clientA.boardingKey, clientA.exitDelay, 10,
 			round1ID,
 		)
+		h.setupBatchBuildingMocks()
 
 		// Client A joins Round 1.
 		boardingReqA := clientA.createBoardingRequest(&outpointA)

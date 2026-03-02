@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 var (
@@ -116,30 +117,6 @@ func unlockBoardingInputsList(ctx context.Context, env *Environment,
 	}
 }
 
-// unlockBoardingInputs unlocks all boarding inputs for the given client
-// registrations. This is called when a round fails to release all locked
-// inputs. Errors are logged but don't stop the unlocking process, ensuring
-// we attempt to unlock all inputs even if some fail.
-func unlockBoardingInputs(ctx context.Context, env *Environment,
-	clientRegs map[clientconn.ClientID]*ClientRegistration) {
-
-	for _, reg := range clientRegs {
-		for _, input := range reg.BoardingInputs {
-			err := env.BoardingInputLocker.Unlock(
-				ctx, input.Outpoint, env.RoundID,
-			)
-			if err != nil {
-				// Log the error but continue unlocking other
-				// inputs. We don't want one failure to prevent
-				// releasing other locked inputs.
-				env.Log.ErrorS(ctx, "Failed to unlock boarding "+
-					"input", err,
-					"outpoint", input.Outpoint.String())
-			}
-		}
-	}
-}
-
 // lockForfeitVTXOs attempts to lock all forfeit VTXOs for a client in the
 // shared VTXO locker. If any lock fails, it returns an error. If all locks
 // succeed,
@@ -176,51 +153,6 @@ func lockForfeitVTXOs(ctx context.Context, env *Environment,
 	}
 
 	return nil
-}
-
-// unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
-// registrations. This is called when a round fails to release all locked
-// VTXOs. Errors are logged but don't stop the unlocking process, ensuring
-// we attempt to unlock all VTXOs even if some fail.
-func unlockForfeitVTXOs(ctx context.Context, env *Environment,
-	clientRegs map[clientconn.ClientID]*ClientRegistration) {
-
-	for _, reg := range clientRegs {
-		if len(reg.ForfeitInputs) == 0 {
-			continue
-		}
-
-		outpoints := make(
-			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
-		)
-		for _, input := range reg.ForfeitInputs {
-			outpoints = append(outpoints, *input.Outpoint)
-		}
-
-		if env.VTXOLocker == nil {
-			err := env.VTXOStore.UnlockVTXO(
-				ctx, env.RoundID, outpoints...,
-			)
-			if err != nil {
-				env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
-					"VTXOs", err,
-					"count", len(outpoints))
-			}
-
-			continue
-		}
-
-		owner := vtxo.RoundLockOwner(env.RoundID.String())
-		err := env.VTXOLocker.UnlockMany(ctx, outpoints, owner)
-		if err != nil {
-			// Log the error but continue unlocking other
-			// VTXOs. We don't want one failure to prevent
-			// releasing other locked VTXOs.
-			env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
-				"VTXOs", err,
-				"count", len(outpoints))
-		}
-	}
 }
 
 // newClientRegistration creates a ClientRegistration from a validated join
@@ -295,11 +227,10 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If validation fails,
-//     remains in CreatedState and sends ClientErrorResp. On success,
-//     transitions to RegistrationState with the first client registered,
-//     sends ClientSuccessResp, requests boarding input locks, and starts
-//     the registration timeout.
+//   - ClientJoinRequestEvent: Emits a ValidateAndLockJoinReq outbox event
+//     and transitions to AwaitingJoinValidationState. The OutboxHandler
+//     validates and locks the inputs, then feeds back a success or failure
+//     event.
 func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
@@ -315,73 +246,28 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			LogBoardingCount(len(evt.Request.BoardingReqs)),
 			LogLeaveCount(len(evt.Request.LeaveReqs)))
 
-		// Validate the join request. If this fails, this is not an FSM
-		// error, but we should respond to the client accordingly.
-		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
+		// Emit validation + locking to the OutboxHandler.
+		regs := make(
+			map[clientconn.ClientID]*ClientRegistration,
 		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Join request validation failed", err,
-				LogClientID(evt.ClientID))
+		req := &ValidateAndLockJoinReq{
+			RoundID:  env.RoundID,
+			ClientID: evt.ClientID,
+			Request:  evt.Request,
 
-			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
-				err)
-
-			return clientErrorTransition(s, evt.ClientID, errMsg),
-				nil
-		}
-
-		// Attempt to lock all boarding inputs for this client.
-		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
-		if err != nil {
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Attempt to lock all forfeit VTXOs for this client.
-		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
-		if err != nil {
-			// Unlock the boarding inputs since we can't proceed.
-			unlockBoardingInputsList(
-				ctx, env, result.BoardingInputs,
-			)
-
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Create the initial client registrations map with the first
-		// client.
-		reg := newClientRegistration(evt.ClientID, result)
-		clientRegs := map[clientconn.ClientID]*ClientRegistration{
-			evt.ClientID: reg,
-		}
-
-		env.Log.InfoS(ctx, "First client registered, starting registration phase",
-			LogClientID(evt.ClientID))
-
-		successResp := &ClientSuccessResp{
-			Client:  evt.ClientID,
-			RoundID: env.RoundID,
-			AcceptedBoardingOutpoints: extractBoardingOutpoints(
-				result.BoardingInputs,
-			),
-			AcceptedVTXOOutpoints: extractVTXOOutpoints(
-				result.ForfeitInputs,
-			),
+			CurrentBlockHeight:     evt.CurrentBlockHeight,
+			StartHeight:            env.StartHeight,
+			DisableJoinRequestAuth: env.DisableJoinRequestAuth,
 		}
 
 		return &StateTransition{
-			NextState: newRegistrationState(clientRegs),
+			NextState: &AwaitingJoinValidationState{
+				ExistingRegistrations: regs,
+				PendingClientID:       evt.ClientID,
+				IsFirstClient:         true,
+			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					successResp,
-					newStartTimeoutReq(
-						env, TimeoutPhaseRegistration,
-					),
-				},
+				Outbox: []OutboxEvent{req},
 			}),
 		}, nil
 
@@ -394,10 +280,9 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 //
 // Event handling:
 //
-//   - ClientJoinRequestEvent: Validates the join request. If the client is
-//     already registered or validation fails, sends ClientErrorResp. On
-//     success, adds the client to registrations, sends ClientSuccessResp,
-//     and requests boarding input locks.
+//   - ClientJoinRequestEvent: If the client is already registered, sends
+//     ClientErrorResp. Otherwise emits a ValidateAndLockJoinReq outbox
+//     event and transitions to AwaitingJoinValidationState.
 //
 //   - RegistrationTimeoutEvent: Registration phase timed out. Emits
 //     RoundSealedReq to notify actor, then internal SealEvent to seal.
@@ -430,63 +315,25 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			), nil
 		}
 
-		// Validate the join request.
-		result, err := validateJoinRequestForAdmission(
-			ctx, env, evt.Request, evt.CurrentBlockHeight,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Join request validation failed", err,
-				LogClientID(evt.ClientID))
+		// Emit validation + locking to the OutboxHandler.
+		req := &ValidateAndLockJoinReq{
+			RoundID:  env.RoundID,
+			ClientID: evt.ClientID,
+			Request:  evt.Request,
 
-			errMsg := fmt.Sprintf("%v: %v", ErrJoinRequestInvalid,
-				err)
-
-			return clientErrorTransition(
-				s, evt.ClientID, errMsg,
-			), nil
-		}
-
-		// Attempt to lock all boarding inputs for this client.
-		err = lockBoardingInputs(ctx, env, result.BoardingInputs)
-		if err != nil {
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		// Attempt to lock all forfeit VTXOs for this client.
-		err = lockForfeitVTXOs(ctx, env, result.ForfeitInputs)
-		if err != nil {
-			// Unlock the boarding inputs since we can't proceed.
-			unlockBoardingInputsList(
-				ctx, env, result.BoardingInputs,
-			)
-
-			return clientErrorTransition(
-				s, evt.ClientID, err.Error(),
-			), nil
-		}
-
-		newClientCount := len(s.ClientRegistrations) + 1
-		env.Log.InfoS(ctx, "Client registered successfully",
-			LogClientID(evt.ClientID),
-			LogClientCount(newClientCount))
-
-		successResp := &ClientSuccessResp{
-			Client:  evt.ClientID,
-			RoundID: env.RoundID,
-			AcceptedBoardingOutpoints: extractBoardingOutpoints(
-				result.BoardingInputs,
-			),
-			AcceptedVTXOOutpoints: extractVTXOOutpoints(
-				result.ForfeitInputs,
-			),
+			CurrentBlockHeight:     evt.CurrentBlockHeight,
+			StartHeight:            env.StartHeight,
+			DisableJoinRequestAuth: env.DisableJoinRequestAuth,
 		}
 
 		return &StateTransition{
-			NextState: s.withNewClient(evt.ClientID, result),
+			NextState: &AwaitingJoinValidationState{
+				ExistingRegistrations: s.ClientRegistrations,
+				PendingClientID:       evt.ClientID,
+				IsFirstClient:         false,
+			},
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{successResp},
+				Outbox: []OutboxEvent{req},
 			}),
 		}, nil
 
@@ -529,6 +376,98 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 
 	default:
 		return unexpectedEvent(s, "registration", event, env), nil
+	}
+}
+
+// ProcessEvent handles the events from the AwaitingJoinValidationState state.
+//
+// Event handling:
+//
+//   - ValidateAndLockSucceededEvent: Validation and locking succeeded.
+//     Transitions to RegistrationState with the new client added. Emits a
+//     ClientSuccessResp and, if this is the first client, a StartTimeoutReq
+//     for the registration phase.
+//
+//   - ValidateAndLockFailedEvent: Validation or locking failed. Returns to
+//     CreatedState (first client) or RegistrationState (subsequent client)
+//     with a ClientErrorResp.
+func (s *AwaitingJoinValidationState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingJoinValidation"),
+		LogEvent(event))
+
+	switch evt := event.(type) {
+	case *ValidateAndLockSucceededEvent:
+		env.Log.InfoS(ctx, "Join validation succeeded",
+			LogClientID(evt.ClientID))
+
+		// Build the new registrations map with the validated client.
+		newRegs := make(
+			map[clientconn.ClientID]*ClientRegistration,
+		)
+		for id, reg := range s.ExistingRegistrations {
+			newRegs[id] = reg
+		}
+		newRegs[evt.ClientID] = newClientRegistration(
+			evt.ClientID, evt.Result,
+		)
+
+		// Build the success response for the client.
+		successResp := &ClientSuccessResp{
+			Client:  evt.ClientID,
+			RoundID: env.RoundID,
+			AcceptedBoardingOutpoints: extractBoardingOutpoints(
+				evt.Result.BoardingInputs,
+			),
+			AcceptedVTXOOutpoints: extractVTXOOutpoints(
+				evt.Result.ForfeitInputs,
+			),
+		}
+
+		outbox := []OutboxEvent{successResp}
+
+		// First client triggers the registration timeout.
+		if s.IsFirstClient {
+			outbox = append(
+				outbox,
+				newStartTimeoutReq(
+					env, TimeoutPhaseRegistration,
+				),
+			)
+		}
+
+		return &StateTransition{
+			NextState: newRegistrationState(newRegs),
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outbox,
+			}),
+		}, nil
+
+	case *ValidateAndLockFailedEvent:
+		env.Log.WarnS(ctx, "Join validation failed", nil,
+			LogClientID(evt.ClientID),
+			slog.String("reason", evt.Reason))
+
+		// Return to the previous state with a client error.
+		var prevState State
+		if s.IsFirstClient {
+			prevState = &CreatedState{}
+		} else {
+			prevState = newRegistrationState(
+				s.ExistingRegistrations,
+			)
+		}
+
+		return clientErrorTransition(
+			prevState, evt.ClientID, evt.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting-join-validation", event, env,
+		), nil
 	}
 }
 
@@ -575,63 +514,82 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			LogLeaveCount(len(allLeaveOutputs)),
 			LogVTXOCount(len(allVTXODescriptors)))
 
-		// Build the commitment transaction PSBT.
-		psbtPacket, _, vtxoTrees, connectorTrees,
-			connectorAssignments, err := buildCommitmentTx(
-			ctx, env, allBoardingInputs, allForfeitInputs,
-			allLeaveOutputs, allVTXODescriptors,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Commitment tx build failed", err)
-
-			// Batch building failed - transition to FailedState.
-			reason := fmt.Sprintf("build commitment tx: %v", err)
-
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations, reason,
-			), nil
+		// Emit a BuildBatchReq for the OutboxHandler to perform
+		// fee estimation, wallet funding, and tree construction.
+		buildReq := &BuildBatchReq{
+			RoundID:         env.RoundID,
+			BoardingInputs:  allBoardingInputs,
+			ForfeitInputs:   allForfeitInputs,
+			RequiredOutputs: allLeaveOutputs,
+			VTXODescriptors: allVTXODescriptors,
+			Terms:           env.Terms,
+			ForfeitScript:   env.ForfeitScript,
 		}
 
-		connectorDescriptors, err := buildConnectorDescriptors(
-			connectorAssignments, env.ForfeitScript,
-		)
-		if err != nil {
-			reason := fmt.Sprintf(
-				"build connector descriptors: %v", err,
-			)
+		return &StateTransition{
+			NextState: &AwaitingBatchBuildState{
+				ClientRegistrations: s.ClientRegistrations,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{buildReq},
+			}),
+		}, nil
 
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations, reason,
-			), nil
-		}
+	default:
+		return unexpectedEvent(s, "batch-building", event, env), nil
+	}
+}
 
-		env.Log.InfoS(ctx, "Commitment transaction built successfully",
-			slog.Int("tree_count", len(vtxoTrees)),
-			slog.Int("input_count", len(psbtPacket.Inputs)),
-			slog.Int("output_count", len(psbtPacket.Outputs)))
+// ProcessEvent handles the events from the AwaitingBatchBuildState state.
+// It waits for the OutboxHandler to finish building the commitment transaction.
+func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingBatchBuild"),
+		LogEvent(event))
+
+	switch msg := event.(type) {
+	case *BuildBatchSucceededEvent:
+		env.Log.InfoS(ctx,
+			"Commitment transaction built successfully",
+			slog.Int("tree_count", len(msg.VTXOTrees)),
+			slog.Int("input_count",
+				len(msg.PSBT.Inputs)),
+			slog.Int("output_count",
+				len(msg.PSBT.Outputs)))
 
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
 			NextState: &BatchBuiltState{
 				ClientRegistrations:  s.ClientRegistrations,
-				PSBT:                 psbtPacket,
-				VTXOTrees:            vtxoTrees,
-				ConnectorTrees:       connectorTrees,
-				ConnectorAssignments: connectorAssignments,
-				ConnectorDescriptors: connectorDescriptors,
+				PSBT:                 msg.PSBT,
+				VTXOTrees:            msg.VTXOTrees,
+				ConnectorTrees:       msg.ConnectorTrees,
+				ConnectorAssignments: msg.ConnectorAssignments,
+				ConnectorDescriptors: msg.ConnectorDescriptors,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				// Emit the internal event to prepare client
-				// notifications. This event is handled in
-				// BatchBuiltState.
+				// Emit the internal event to prepare
+				// client notifications.
 				InternalEvent: []Event{
 					&PrepareClientNotificationsEvent{},
 				},
 			}),
 		}, nil
 
+	case *BuildBatchFailedEvent:
+		env.Log.WarnS(ctx, "Batch build failed", nil,
+			slog.String("reason", msg.Reason))
+
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, msg.Reason,
+		), nil
+
 	default:
-		return unexpectedEvent(s, "batch-building", event, env), nil
+		return unexpectedEvent(
+			s, "awaiting-batch-build", event, env,
+		), nil
 	}
 }
 
@@ -862,9 +820,10 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 }
 
 // buildFailureTransition creates a state transition to FailedState with all
-// the necessary outbox events to notify clients and inform the actor of the
-// failure. It also directly unlocks all boarding inputs.
-func buildFailureTransition(ctx context.Context, env *Environment,
+// the necessary outbox events to notify clients, unlock locked inputs, and
+// inform the actor of the failure. Unlocking is emitted as outbox events
+// so the FSM transition itself performs no I/O.
+func buildFailureTransition(_ context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string) *StateTransition {
 
@@ -883,11 +842,17 @@ func buildFailureTransition(ctx context.Context, env *Environment,
 		})
 	}
 
-	// Unlock all boarding inputs directly in the FSM.
-	unlockBoardingInputs(ctx, env, clientRegs)
-
-	// Unlock all forfeit VTXOs directly in the FSM.
-	unlockForfeitVTXOs(ctx, env, clientRegs)
+	// Emit unlock outbox events. The handler will execute the actual
+	// unlock I/O — this keeps buildFailureTransition pure with respect
+	// to locking side effects.
+	outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
+		RoundID:             env.RoundID,
+		ClientRegistrations: clientRegs,
+	})
+	outboxMsgs = append(outboxMsgs, &UnlockForfeitVTXOsReq{
+		RoundID:             env.RoundID,
+		ClientRegistrations: clientRegs,
+	})
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
@@ -1150,7 +1115,10 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 // 4. Adjust change output to account for boarding input contribution.
 //
 //nolint:funlen
-func buildCommitmentTx(ctx context.Context, env *Environment,
+func buildCommitmentTx(ctx context.Context,
+	terms *batch.Terms,
+	feeEstimator chainfee.Estimator, confTarget uint32,
+	walletCtrl WalletController, minConfs int32, walletAccount string,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
 	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
@@ -1163,7 +1131,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 		totalBoardingValue += bi.Value
 	}
 
-	feeRate, err := env.FeeEstimator.EstimateFeePerKW(env.ConfTarget)
+	feeRate, err := feeEstimator.EstimateFeePerKW(confTarget)
 	if err != nil {
 		return nil, -1, nil, nil, nil,
 			fmt.Errorf("estimate fee: %w", err)
@@ -1203,7 +1171,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	if len(vtxoDescriptors) > 0 {
 		var err error
 		vtxoTreeCtx, err = batch.BuildTreeContext(
-			env.Terms, vtxoDescriptors,
+			terms, vtxoDescriptors,
 		)
 		if err != nil {
 			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
@@ -1220,7 +1188,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	numForfeits := len(forfeitInputs)
 	var connectorOutputs []*wire.TxOut
 	if numForfeits > 0 {
-		maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+		maxPerTree := int(terms.MaxConnectorsPerTree)
 		if maxPerTree <= 0 {
 			return nil, -1, nil, nil, nil, fmt.Errorf(
 				"max connectors per tree must be > 0",
@@ -1234,8 +1202,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 			}
 
 			connectorOutput, err := tree.BuildConnectorOutput(
-				numInOutput, env.Terms.ConnectorDustAmount,
-				env.Terms.ConnectorAddress,
+				numInOutput, terms.ConnectorDustAmount,
+				terms.ConnectorAddress,
 			)
 			if err != nil {
 				return nil, -1, nil, nil, nil, fmt.Errorf(
@@ -1260,8 +1228,8 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 	//
 	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
 	// before this call will be invalid.
-	changeIdx, err := env.WalletController.FundPsbt(
-		ctx, packet, env.MinConfs, feeRate, env.WalletAccount,
+	changeIdx, err := walletCtrl.FundPsbt(
+		ctx, packet, minConfs, feeRate, walletAccount,
 	)
 	if err != nil {
 		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
@@ -1386,7 +1354,7 @@ func buildCommitmentTx(ctx context.Context, env *Environment,
 
 		connectorTrees, connectorAssignments, err =
 			buildConnectorTreesAndAssignments(
-				env, packet.UnsignedTx, forfeitInputs,
+				terms, packet.UnsignedTx, forfeitInputs,
 				connectorOutputIndices,
 			)
 		if err != nil {
@@ -1486,9 +1454,10 @@ func buildConnectorDescriptors(
 
 // buildConnectorTreesAndAssignments builds connector trees and assigns each
 // forfeit input to a connector leaf.
-func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
-	forfeitInputs []*ForfeitInput, connectorOutputIndices []int) (
-	map[int]*tree.Tree, map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+func buildConnectorTreesAndAssignments(terms *batch.Terms,
+	tx *wire.MsgTx, forfeitInputs []*ForfeitInput,
+	connectorOutputIndices []int) (map[int]*tree.Tree,
+	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
 
 	numForfeits := len(forfeitInputs)
 	if numForfeits == 0 {
@@ -1510,28 +1479,28 @@ func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
 			sortedForfeits[j].Outpoint.String()
 	})
 
-	maxPerTree := int(env.Terms.MaxConnectorsPerTree)
+	maxPerTree := int(terms.MaxConnectorsPerTree)
 	if maxPerTree <= 0 {
 		return nil, nil, fmt.Errorf(
 			"max connectors per tree must be > 0",
 		)
 	}
 
-	if env.Terms.ConnectorDustAmount <= 0 {
+	if terms.ConnectorDustAmount <= 0 {
 		return nil, nil, fmt.Errorf(
 			"connector dust amount must be > 0",
 		)
 	}
 
-	if env.Terms.ConnectorAddress == nil {
+	if terms.ConnectorAddress == nil {
 		return nil, nil, fmt.Errorf("connector address cannot be nil")
 	}
 
-	if env.Terms.OperatorKey.PubKey == nil {
+	if terms.OperatorKey.PubKey == nil {
 		return nil, nil, fmt.Errorf("operator key cannot be nil")
 	}
 
-	radix := int(env.Terms.TreeRadix)
+	radix := int(terms.TreeRadix)
 	if radix < 2 {
 		return nil, nil, fmt.Errorf("tree radix must be at least 2")
 	}
@@ -1565,12 +1534,12 @@ func buildConnectorTreesAndAssignments(env *Environment, tx *wire.MsgTx,
 		connectorDesc := tree.ConnectorDescriptor{
 			PkScript:  connectorOutput.PkScript,
 			NumLeaves: numInOutput,
-			Amount:    env.Terms.ConnectorDustAmount,
+			Amount:    terms.ConnectorDustAmount,
 		}
 
 		connectorTree, err := tree.BuildConnectorTree(
 			connectorOutpoint, connectorOutput, connectorDesc,
-			env.Terms.OperatorKey.PubKey, radix,
+			terms.OperatorKey.PubKey, radix,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf(
@@ -2220,165 +2189,56 @@ func (s *ServerSigningState) ProcessEvent(ctx context.Context,
 	}
 }
 
-// handleServerSigning performs server-side signing of all inputs in the PSBT.
-// For boarding inputs, it adds the operator's signature to complete the
-// collaborative spend path. For wallet inputs, it calls FinalizePsbt.
+// handleServerSigning emits a SignAndFinalizeRoundReq outbox event for
+// the handler to perform signing I/O (SignOutputRaw, FinalizePsbt) and
+// transitions to AwaitingSignAndFinalizeState. This keeps the FSM pure.
 func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 	env *Environment) (*StateTransition, error) {
 
-	env.Log.DebugS(ctx, "Server signing inputs",
+	env.Log.DebugS(ctx, "Emitting sign-and-finalize request",
 		slog.Int("input_count", len(s.PSBT.Inputs)),
 		LogClientCount(len(s.CollectedSignatures)))
 
-	// First, sign and finalize all boarding inputs with the collected
-	// client signatures and the operator's signatures.
-	err := s.signBoardingInputs(env)
-	if err != nil {
-		env.Log.WarnS(ctx, "Failed to sign boarding inputs", err)
-
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to sign boarding inputs: %v", err),
-		), nil
-	}
-
-	forfeitInfos := make(map[wire.OutPoint]*ForfeitInfo)
-
-	// Complete forfeit transactions with the server's signatures.
-	for clientID, reg := range s.ClientRegistrations {
-		if len(reg.ForfeitInputs) == 0 {
-			continue
-		}
-
-		if len(s.ConnectorAssignments) == 0 {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("connector assignments missing "+
-					"for client %s", clientID),
-			), nil
-		}
-
-		forfeitTxs, ok := s.CollectedForfeitTxs[clientID]
-		if !ok {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("missing forfeit txs for "+
-					"client %s", clientID),
-			), nil
-		}
-
-		spent, err := completeForfeitTxs(
-			forfeitTxs, reg, s.ConnectorAssignments, env,
-		)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("complete forfeit txs for "+
-					"client %s: %v", clientID, err),
-			), nil
-		}
-
-		for _, spentVTXO := range spent {
-			if spentVTXO.ForfeitInfo == nil {
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("missing forfeit info for "+
-						"client %s", clientID),
-				), nil
-			}
-
-			forfeitInfos[spentVTXO.VTXOOutpoint] =
-				spentVTXO.ForfeitInfo
-		}
-	}
-
-	env.Log.DebugS(ctx, "Boarding inputs and forfeit txs signed, "+
-		"finalizing PSBT")
-
-	// Now finalize the PSBT which signs all wallet-controlled inputs.
-	finalTx, err := env.WalletController.FinalizePsbt(ctx, s.PSBT)
-	if err != nil {
-		env.Log.WarnS(ctx, "Failed to finalize PSBT", err)
-
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to finalize PSBT: %v", err),
-		), nil
-	}
-
-	env.Log.DebugS(ctx, "PSBT finalized",
-		LogTxID(finalTx.TxHash().String()))
-
-	// Persist the round to storage.
-	round := &Round{
+	signReq := &SignAndFinalizeRoundReq{
 		RoundID:              env.RoundID,
-		FinalTx:              finalTx,
-		VTXOTrees:            s.VTXOTrees,
-		ConnectorDescriptors: s.ConnectorDescriptors,
-		ForfeitInfos:         forfeitInfos,
+		PSBT:                 s.PSBT,
+		CollectedSignatures:  s.CollectedSignatures,
+		CollectedForfeitTxs:  s.CollectedForfeitTxs,
 		ClientRegistrations:  s.ClientRegistrations,
-		SweepKey:             env.Terms.SweepKey.PubKey,
-		CSVDelay:             env.Terms.SweepDelay,
+		ConnectorAssignments: s.ConnectorAssignments,
+		OperatorKey:          env.Terms.OperatorKey,
+		VTXOExitDelay:        env.Terms.VTXOExitDelay,
 	}
-
-	err = env.RoundStore.PersistRound(ctx, round)
-	if err != nil {
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations,
-			fmt.Sprintf("failed to persist round: %v", err),
-		), nil
-	}
-
-	// Persist VTXOs in unconfirmed state before broadcast.
-	if len(s.VTXOTrees) > 0 {
-		vtxos, err := collectVTXOs(
-			env.RoundID, s.VTXOTrees, s.ClientRegistrations,
-		)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("collect VTXOs: %v", err),
-			), nil
-		}
-
-		err = env.VTXOStore.PersistVTXOs(ctx, vtxos)
-		if err != nil {
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("persist VTXOs: %v", err),
-			), nil
-		}
-	}
-
-	env.Log.InfoS(ctx, "Persisted round", "round_id", env.RoundID)
 
 	return &StateTransition{
-		NextState: &FinalizedState{
-			ClientRegistrations: s.ClientRegistrations,
-			FinalTx:             finalTx,
-			VTXOTrees:           s.VTXOTrees,
-			ForfeitInfos:        forfeitInfos,
+		NextState: &AwaitingSignAndFinalizeState{
+			ClientRegistrations:  s.ClientRegistrations,
+			VTXOTrees:            s.VTXOTrees,
+			ConnectorDescriptors: s.ConnectorDescriptors,
+			SweepKey:             env.Terms.SweepKey.PubKey,
+			CSVDelay:             env.Terms.SweepDelay,
+			StartHeight:          env.StartHeight,
 		},
 		NewEvents: fn.Some(EmittedEvent{
-			Outbox: []OutboxEvent{
-				&BroadcastRoundReq{
-					RoundID:     env.RoundID,
-					SignedTx:    finalTx,
-					StartHeight: env.StartHeight,
-				},
-			},
+			Outbox: []OutboxEvent{signReq},
 		}),
 	}, nil
 }
 
 // signBoardingInputs signs all boarding inputs with both the client's
 // signature (from CollectedSignatures) and the operator's signature.
-func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
-	tx := s.PSBT.UnsignedTx
+// This is a free function so it can be called from both FSM transitions
+// and the OutboxHandler.
+func signBoardingInputs(psbtPacket *psbt.Packet,
+	collectedSigs InputSigsMap,
+	clientRegs map[clientconn.ClientID]*ClientRegistration,
+	walletCtrl WalletController) error {
+
+	tx := psbtPacket.UnsignedTx
 
 	// Build a prevout fetcher from the PSBT's WitnessUtxo fields.
 	prevOutFetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for i, pIn := range s.PSBT.Inputs {
+	for i, pIn := range psbtPacket.Inputs {
 		if pIn.WitnessUtxo == nil {
 			return fmt.Errorf("missing WitnessUtxo for input %d", i)
 		}
@@ -2392,8 +2252,8 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
 
 	// Process each client's boarding inputs.
-	for clientID, clientSigs := range s.CollectedSignatures {
-		reg, exists := s.ClientRegistrations[clientID]
+	for clientID, clientSigs := range collectedSigs {
+		reg, exists := clientRegs[clientID]
 		if !exists {
 			return fmt.Errorf("client %s not found in "+
 				"registrations", clientID)
@@ -2401,9 +2261,10 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 
 		// Sign each boarding input for this client.
 		for _, clientSig := range clientSigs {
-			err := s.signSingleBoardingInput(
-				env, reg, clientSig, tx, sigHashes,
-				prevOutFetcher,
+			err := signSingleBoardingInput(
+				psbtPacket, reg, clientSig, tx,
+				sigHashes, prevOutFetcher,
+				walletCtrl,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to sign input %d: %w",
@@ -2415,12 +2276,15 @@ func (s *ServerSigningState) signBoardingInputs(env *Environment) error {
 	return nil
 }
 
-// signSingleBoardingInput signs a single boarding input with both the client's
-// and operator's signatures, then sets the final script witness on the PSBT.
-func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
+// signSingleBoardingInput signs a single boarding input with both the
+// client's and operator's signatures, then sets the final script witness
+// on the PSBT. This is a free function so it can be called from both FSM
+// transitions and the OutboxHandler.
+func signSingleBoardingInput(psbtPacket *psbt.Packet,
 	reg *ClientRegistration, clientSig *types.BoardingInputSignature,
 	tx *wire.MsgTx, sigHashes *txscript.TxSigHashes,
-	prevOutFetcher txscript.PrevOutputFetcher) error {
+	prevOutFetcher txscript.PrevOutputFetcher,
+	walletCtrl WalletController) error {
 
 	// Find the boarding input that matches this signature's outpoint.
 	var boardingInput *BoardingInput
@@ -2447,12 +2311,12 @@ func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
 
 	inputIdx := clientSig.InputIndex
 
-	if inputIdx < 0 || inputIdx >= len(s.PSBT.Inputs) {
+	if inputIdx < 0 || inputIdx >= len(psbtPacket.Inputs) {
 		return fmt.Errorf("invalid input index: %d", inputIdx)
 	}
 
 	// Use a pointer to modify the actual PSBT input, not a copy.
-	input := &s.PSBT.Inputs[inputIdx]
+	input := &psbtPacket.Inputs[inputIdx]
 
 	// Get the prevout for this input.
 	prevOut := input.WitnessUtxo
@@ -2462,7 +2326,7 @@ func (s *ServerSigningState) signSingleBoardingInput(env *Environment,
 
 	// Sign with the operator's key.
 	operatorSig, err := scripts.SignVTXOCollabInput(
-		env.WalletController, tx, inputIdx, spendInfo,
+		walletCtrl, tx, inputIdx, spendInfo,
 		boardingInput.OperatorKeyDesc, prevOut, sigHashes,
 		prevOutFetcher,
 	)
@@ -2567,8 +2431,116 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 	return vtxos, nil
 }
 
+// ProcessEvent handles events in AwaitingSignAndFinalizeState. This state
+// waits for the OutboxHandler to complete signing and PSBT finalization.
+//
+// On success the FSM emits a PersistServerSigningReq and transitions to
+// AwaitingServerSignPersistState. On failure it transitions to FailedState
+// via buildFailureTransition.
+func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingSignAndFinalize"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *SignAndFinalizeSucceededEvent:
+		env.Log.InfoS(ctx, "Signing and finalization complete",
+			LogTxID(e.FinalTx.TxHash().String()))
+
+		// Construct the persistence request from the state's
+		// carried-forward data and the event's signing results.
+		persistReq := &PersistServerSigningReq{
+			RoundID:              env.RoundID,
+			FinalTx:              e.FinalTx,
+			VTXOTrees:            s.VTXOTrees,
+			ForfeitInfos:         e.ForfeitInfos,
+			ClientRegistrations:  s.ClientRegistrations,
+			ConnectorDescriptors: s.ConnectorDescriptors,
+			SweepKey:             s.SweepKey,
+			CSVDelay:             s.CSVDelay,
+		}
+
+		return &StateTransition{
+			NextState: &AwaitingServerSignPersistState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             e.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				ForfeitInfos:        e.ForfeitInfos,
+				StartHeight:         s.StartHeight,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{persistReq},
+			}),
+		}, nil
+
+	case *SignAndFinalizeFailedEvent:
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, e.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_sign_and_finalize", event, env,
+		), nil
+	}
+}
+
+// ProcessEvent handles events in AwaitingServerSignPersistState. This state
+// waits for the OutboxHandler to complete persistence of the round and VTXOs.
+//
+// On success the FSM transitions to FinalizedState and emits a
+// BroadcastRoundReq. On failure it transitions to FailedState via
+// buildFailureTransition.
+func (s *AwaitingServerSignPersistState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingServerSignPersist"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *PersistServerSigningSucceededEvent:
+		env.Log.InfoS(ctx, "Persisted round",
+			"round_id", env.RoundID)
+
+		return &StateTransition{
+			NextState: &FinalizedState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             s.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				ForfeitInfos:        s.ForfeitInfos,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&BroadcastRoundReq{
+						RoundID:     env.RoundID,
+						SignedTx:    s.FinalTx,
+						StartHeight: s.StartHeight,
+					},
+				},
+			}),
+		}, nil
+
+	case *PersistServerSigningFailedEvent:
+		return buildFailureTransition(
+			ctx, env, s.ClientRegistrations, e.Reason,
+		), nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_server_sign_persist", event, env,
+		), nil
+	}
+}
+
 // ProcessEvent handles events in the FinalizedState. This state holds the
 // fully signed transaction ready for broadcast.
+//
+// On TransactionConfirmedEvent the FSM emits a ConfirmRoundReq outbox event
+// and transitions to AwaitingConfirmPersistState. The OutboxHandler performs
+// the actual DB persistence and feeds back a success or failure event.
 //
 // TODO(elle): handle re-broadcast logic.
 func (s *FinalizedState) ProcessEvent(ctx context.Context,
@@ -2584,61 +2556,94 @@ func (s *FinalizedState) ProcessEvent(ctx context.Context,
 			slog.Int("block_height", int(e.BlockHeight)),
 			slog.Int("vtxo_trees", len(s.VTXOTrees)))
 
-		// Mark VTXOs live upon confirmation.
-		if len(s.VTXOTrees) > 0 {
-			err := env.VTXOStore.MarkVTXOsLive(ctx, env.RoundID)
-			if err != nil {
-				env.Log.WarnS(ctx, "Failed to mark VTXOs live", err)
-
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("mark VTXOs live: %v", err),
-				), nil
-			}
+		// Emit an outbox event requesting the handler to persist
+		// confirmation data. The handler will mark VTXOs live,
+		// record forfeits, and mark the round confirmed.
+		outbox := []OutboxEvent{
+			&ConfirmRoundReq{
+				RoundID:      env.RoundID,
+				VTXOTrees:    s.VTXOTrees,
+				ForfeitInfos: s.ForfeitInfos,
+				BlockHeight:  e.BlockHeight,
+				BlockHash:    e.BlockHash,
+			},
 		}
-
-		// Mark forfeited VTXOs after confirmation.
-		for outpoint, info := range s.ForfeitInfos {
-			err := env.VTXOStore.MarkVTXOForfeit(
-				ctx, outpoint, info,
-			)
-			if err != nil {
-				return buildFailureTransition(
-					ctx, env, s.ClientRegistrations,
-					fmt.Sprintf("mark VTXO forfeit: %v",
-						err),
-				), nil
-			}
-		}
-
-		// Persist the round as confirmed for bookkeeping.
-		err := env.RoundStore.MarkRoundConfirmed(
-			ctx, env.RoundID, e.BlockHeight, e.BlockHash,
-		)
-		if err != nil {
-			env.Log.WarnS(ctx, "Failed to mark round confirmed", err)
-
-			return buildFailureTransition(
-				ctx, env, s.ClientRegistrations,
-				fmt.Sprintf("mark round confirmed: %v", err),
-			), nil
-		}
-
-		env.Log.InfoS(ctx, "Round confirmed and complete",
-			slog.Int("block_height", int(e.BlockHeight)))
 
 		return &StateTransition{
-			NextState: &ConfirmedState{
+			NextState: &AwaitingConfirmPersistState{
 				ClientRegistrations: s.ClientRegistrations,
 				FinalTx:             s.FinalTx,
 				VTXOTrees:           s.VTXOTrees,
 				BlockHeight:         e.BlockHeight,
 				BlockHash:           e.BlockHash,
 			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outbox,
+			}),
 		}, nil
 
 	default:
 		return unexpectedEvent(s, "finalised", event, env), nil
+	}
+}
+
+// ProcessEvent handles events in the AwaitingConfirmPersistState. This state
+// waits for the OutboxHandler to complete persistence of round confirmation
+// data.
+func (s *AwaitingConfirmPersistState) ProcessEvent(ctx context.Context,
+	event Event, env *Environment) (*StateTransition, error) {
+
+	env.Log.DebugS(ctx, "Processing event",
+		LogState("AwaitingConfirmPersist"),
+		LogEvent(event))
+
+	switch e := event.(type) {
+	case *ConfirmRoundSucceededEvent:
+		env.Log.InfoS(ctx, "Round confirmed and complete",
+			slog.Int("block_height", int(s.BlockHeight)))
+
+		return &StateTransition{
+			NextState: &ConfirmedState{
+				ClientRegistrations: s.ClientRegistrations,
+				FinalTx:             s.FinalTx,
+				VTXOTrees:           s.VTXOTrees,
+				BlockHeight:         s.BlockHeight,
+				BlockHash:           s.BlockHash,
+			},
+		}, nil
+
+	case *ConfirmRoundFailedEvent:
+		// The transaction IS confirmed on-chain so unlocking
+		// inputs is nonsensical — only notify clients and the
+		// actor of the persistence failure.
+		var outboxMsgs []OutboxEvent
+		for clientID := range s.ClientRegistrations {
+			outboxMsgs = append(
+				outboxMsgs, &ClientRoundFailedResp{
+					Client:  clientID,
+					RoundID: env.RoundID,
+					Reason:  e.Reason,
+				},
+			)
+		}
+		outboxMsgs = append(outboxMsgs, &RoundFailedReq{
+			FailedRoundID: env.RoundID,
+			Reason:        e.Reason,
+		})
+
+		return &StateTransition{
+			NextState: &FailedState{
+				Reason: e.Reason,
+			},
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: outboxMsgs,
+			}),
+		}, nil
+
+	default:
+		return unexpectedEvent(
+			s, "awaiting_confirm_persist", event, env,
+		), nil
 	}
 }
 

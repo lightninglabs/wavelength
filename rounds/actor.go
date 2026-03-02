@@ -107,6 +107,13 @@ type ActorConfig struct {
 	// concurrent subsystems (rounds and OOR transfers).
 	VTXOLocker vtxo.Locker
 
+	// OutboxHandler executes FSM outbox requests that require I/O and
+	// returns follow-up inbox events. When non-nil, askAndDrive routes
+	// outbox events through this handler before passing them to
+	// processOutbox for legacy dispatch. A nil handler is safe — the
+	// event pump simply skips the handler call.
+	OutboxHandler OutboxHandler
+
 	// DisableJoinRequestAuth skips join-request BIP-322 validation.
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
@@ -166,6 +173,20 @@ func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 // and resume them. It will create a new "live" round that will accept new
 // registrations.
 func NewActor(cfg *ActorConfig) *Actor {
+	// Default-initialise the OutboxHandler from the config stores when
+	// the caller has not provided one explicitly.
+	if cfg.OutboxHandler == nil {
+		cfg.OutboxHandler = NewInProcessOutboxHandler(
+			cfg.RoundStore, cfg.VTXOStore,
+			cfg.WalletController, cfg.FeeEstimator,
+			cfg.BoardingInputLocker, cfg.VTXOLocker,
+			cfg.ChainSource, cfg.ChainParams,
+			cfg.Terms, cfg.Logger,
+			cfg.ConfTarget, cfg.MinConfs,
+			cfg.WalletAccount,
+		)
+	}
+
 	clientRounds := make(map[clientconn.ClientID]map[RoundID]struct{})
 
 	return &Actor{
@@ -401,7 +422,9 @@ func (a *Actor) handleRoundEvent(ctx context.Context,
 			msg.RoundID))
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, round.FSM, msg.Event)
+	err := a.askEventAndProcessOutbox(
+		ctx, msg.RoundID, round.FSM, msg.Event,
+	)
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing event: %w", err))
@@ -429,24 +452,84 @@ func (a *Actor) handleGetClientRounds(_ context.Context,
 // askEventAndProcessOutbox sends an event to the FSM and processes any emitted
 // outbox messages. This consolidates a common pattern throughout the actor
 // where FSM events trigger outbox processing.
-func (a *Actor) askEventAndProcessOutbox(ctx context.Context, fsm *StateMachine,
-	event Event) error {
+func (a *Actor) askEventAndProcessOutbox(ctx context.Context,
+	roundID RoundID, fsm *StateMachine, event Event) error {
 
-	future := fsm.AskEvent(ctx, event)
-	result := future.Await(ctx)
-
-	events, err := result.Unpack()
+	outbox, err := a.askAndDrive(ctx, roundID, fsm, event)
 	if err != nil {
 		return err
 	}
 
-	if len(events) > 0 {
-		if err := a.processOutbox(ctx, events); err != nil {
+	if len(outbox) > 0 {
+		if err := a.processOutbox(ctx, outbox); err != nil {
 			return fmt.Errorf("failed to process outbox: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// askAndDrive runs one inbox event through the FSM and then exhausts all
+// follow-up outbox/inbox hops via the OutboxHandler until the queue is empty.
+// This mirrors the OOR package's askAndDrive event pump: each outbox event is
+// offered to the handler, which may return follow-up inbox events that get
+// appended to the breadth-first queue. The accumulated outbox is returned for
+// legacy processOutbox routing.
+//
+// When the OutboxHandler is nil the method degrades to a single AskEvent call
+// with no follow-up processing, preserving existing behavior.
+func (a *Actor) askAndDrive(ctx context.Context, roundID RoundID,
+	fsm *StateMachine, event Event) ([]OutboxEvent, error) {
+
+	if fsm == nil {
+		return nil, fmt.Errorf("fsm must be provided")
+	}
+
+	handler := a.cfg.OutboxHandler
+	var allOutbox []OutboxEvent
+
+	// Breadth-first queue of inbox events so one durable inbox
+	// message executes as one deterministic mini-workflow.
+	queue := []Event{event}
+
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+
+		fut := fsm.AskEvent(ctx, next)
+		result := fut.Await(ctx)
+
+		outbox, err := result.Unpack()
+		if err != nil {
+			return nil, err
+		}
+
+		if len(outbox) > 0 {
+			allOutbox = append(allOutbox, outbox...)
+		}
+
+		// When no handler is configured, skip follow-up
+		// processing. The outbox will be routed entirely through
+		// the legacy processOutbox path.
+		if handler == nil {
+			continue
+		}
+
+		for _, out := range outbox {
+			followUps, err := handler.Handle(
+				ctx, roundID, out,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			if len(followUps) > 0 {
+				queue = append(queue, followUps...)
+			}
+		}
+	}
+
+	return allOutbox, nil
 }
 
 // processOutbox processes messages emitted by the FSM via Outbox and routes
@@ -641,6 +724,21 @@ func outboxRoundID(msg OutboxEvent) string {
 		return m.FailedRoundID.String()
 	case *BroadcastRoundReq:
 		return m.RoundID.String()
+	case *BuildBatchReq:
+		return m.RoundID.String()
+	case *SignAndFinalizeRoundReq:
+		return m.RoundID.String()
+
+	case *PersistServerSigningReq:
+		return m.RoundID.String()
+	case *ConfirmRoundReq:
+		return m.RoundID.String()
+	case *UnlockBoardingInputsReq:
+		return m.RoundID.String()
+	case *UnlockForfeitVTXOsReq:
+		return m.RoundID.String()
+	case *ValidateAndLockJoinReq:
+		return m.RoundID.String()
 	default:
 		return ""
 	}
@@ -730,7 +828,9 @@ func (a *Actor) handleJoinRoundRequest(ctx context.Context,
 		CurrentBlockHeight: currentBlockHeight,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, currentRound.FSM, joinEvent)
+	err := a.askEventAndProcessOutbox(
+		ctx, currentRound.RoundID, currentRound.FSM, joinEvent,
+	)
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing join request: %w", err))
@@ -790,7 +890,9 @@ func (a *Actor) handleTimeout(ctx context.Context,
 	}
 
 	// Send the phase-specific timeout event to the FSM.
-	err = a.askEventAndProcessOutbox(ctx, round.FSM, timeoutEvent)
+	err = a.askEventAndProcessOutbox(
+		ctx, roundID, round.FSM, timeoutEvent,
+	)
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing %s timeout: %w", phase, err))
@@ -822,7 +924,9 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 		NumConfs:    msg.NumConfs,
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, round.FSM, confirmedEvent)
+	err := a.askEventAndProcessOutbox(
+		ctx, msg.RoundID, round.FSM, confirmedEvent,
+	)
 	if err != nil {
 		return fn.Err[ActorResp](fmt.Errorf(
 			"FSM error processing confirmation: %w", err))
