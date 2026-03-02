@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
@@ -135,6 +138,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context,
 	case *CommitRoundStateReq:
 		return h.handleCommitRoundState(ctx, req)
 
+	case *SignBoardingInputsReq:
+		return h.handleSignBoardingInputs(ctx, req)
+
 	default:
 		return nil, fmt.Errorf("unhandled outbox request "+
 			"type: %T", msg)
@@ -170,4 +176,120 @@ func (h *InProcessOutboxHandler) handleCommitRoundState(
 	}
 
 	return []ClientEvent{&CommitRoundStateSucceeded{}}, nil
+}
+
+// handleSignBoardingInputs signs all boarding inputs in the
+// commitment transaction using the wallet and returns the
+// appropriate follow-up event.
+func (h *InProcessOutboxHandler) handleSignBoardingInputs(
+	_ context.Context,
+	req *SignBoardingInputsReq) ([]ClientEvent, error) {
+
+	sigs, err := signBoardingInputs(
+		h.Wallet, req.CommitmentTx, req.Intents,
+		req.BoardingInputIndices,
+	)
+	if err != nil {
+		return []ClientEvent{
+			&SignBoardingInputsFailed{Error: err},
+		}, nil
+	}
+
+	return []ClientEvent{
+		&SignBoardingInputsSucceeded{InputSigs: sigs},
+	}, nil
+}
+
+// signBoardingInputs signs all boarding inputs for a commitment
+// transaction. It builds the PrevOutputFetcher, sigHashes, and
+// generates Schnorr signatures for each boarding intent's input.
+func signBoardingInputs(wallet ClientWallet,
+	commitmentTx *psbt.Packet, intents Intents,
+	boardingInputIndices map[wire.OutPoint]int,
+) ([]*types.BoardingInputSignature, error) {
+
+	tx := commitmentTx.UnsignedTx
+
+	// Build a PrevOutputFetcher from ALL PSBT inputs. Taproot
+	// sighash (BIP341) requires prevout info for all inputs.
+	prevOuts := make(map[wire.OutPoint]*wire.TxOut)
+	for i, pIn := range commitmentTx.Inputs {
+		if pIn.WitnessUtxo == nil {
+			return nil, fmt.Errorf("PSBT input %d "+
+				"missing WitnessUtxo", i)
+		}
+		outpoint := tx.TxIn[i].PreviousOutPoint
+		prevOuts[outpoint] = pIn.WitnessUtxo
+	}
+	prevOutFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
+
+	// Build structured boarding input signatures for each
+	// intent.
+	var boardingInputSigs []*types.BoardingInputSignature
+	for _, boardingIntent := range intents.Boarding {
+		outpoint := boardingIntent.Request.Outpoint
+		inputIdx, found := boardingInputIndices[*outpoint]
+		if !found {
+			return nil, fmt.Errorf("no input index "+
+				"found for boarding outpoint %s",
+				outpoint)
+		}
+
+		spendInfo, err := scripts.NewVTXOSpendInfo(
+			boardingIntent.Address.Tapscript,
+			scripts.VTXOCollabPathLeaf,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		chainInfo := boardingIntent.ChainInfo
+		addr := boardingIntent.Address.Address
+		amt := chainInfo.Amount
+
+		// Use PayToAddrScript to get the full pkScript
+		// with OP_1 OP_PUSHBYTES_32 prefix for P2TR
+		// addresses. ScriptAddress() only returns the
+		// 32-byte witness program.
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"pay to addr script: %w", err,
+			)
+		}
+
+		output := &wire.TxOut{
+			Value:    int64(amt),
+			PkScript: pkScript,
+		}
+
+		signature, err := scripts.SignVTXOCollabInput(
+			wallet, tx, inputIdx, spendInfo,
+			&boardingIntent.Address.KeyDesc, output,
+			sigHashes, prevOutFetcher,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign "+
+				"boarding input %d: %w",
+				inputIdx, err)
+		}
+
+		schnorrSig, ok := signature.(*schnorr.Signature)
+		if !ok {
+			return nil, fmt.Errorf("signature is not " +
+				"a schnorr signature")
+		}
+
+		inputSig := &types.BoardingInputSignature{
+			InputIndex:      inputIdx,
+			Outpoint:        *outpoint,
+			ClientSignature: schnorrSig,
+		}
+		boardingInputSigs = append(
+			boardingInputSigs, inputSig,
+		)
+	}
+
+	return boardingInputSigs, nil
 }

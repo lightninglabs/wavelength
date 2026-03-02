@@ -110,6 +110,11 @@ func TestStateProperties(t *testing.T) {
 				"InputSigSent",
 			},
 			{
+				"AwaitingBoardingSignatures",
+				&AwaitingBoardingSignaturesState{},
+				"AwaitingBoardingSignatures",
+			},
+			{
 				"AwaitingRoundCheckpoint",
 				&AwaitingRoundCheckpointState{},
 				"AwaitingRoundCheckpoint",
@@ -1051,7 +1056,6 @@ func TestPartialSigsSentState(t *testing.T) {
 			Musig2Sessions: make(map[SignerKey]*tree.SignerSession),
 		}
 
-		h.setupMockWalletForBoardingSigning()
 		h.withState(state)
 
 		event := &OperatorSigned{
@@ -1059,16 +1063,40 @@ func TestPartialSigsSentState(t *testing.T) {
 			AggSigs: validSigs,
 		}
 
+		expectedRoundID := testRoundIDTr("round-real-sig-001")
+
 		// Hop 1: OperatorSigned →
-		// AwaitingRoundCheckpointState with
-		// CommitRoundStateReq in outbox.
+		// AwaitingBoardingSignaturesState with
+		// SignBoardingInputsReq in outbox.
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		//nolint:ll
+		boardingSigState := assertStateType[*AwaitingBoardingSignaturesState](h.boardingTestHarness)
+		require.Equal(
+			t, expectedRoundID, boardingSigState.RoundID,
+		)
+		h.assertOutboxContainsType(
+			"*round.SignBoardingInputsReq",
+		)
+		h.clearOutbox()
+
+		// Hop 2: SignBoardingInputsSucceeded →
+		// AwaitingRoundCheckpointState with
+		// CommitRoundStateReq in outbox.
+		transition, err = h.sendEvent(
+			&SignBoardingInputsSucceeded{
+				InputSigs: []*types.BoardingInputSignature{
+					{InputIndex: 0},
+				},
+			},
+		)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		//nolint:ll
 		checkpointState := assertStateType[*AwaitingRoundCheckpointState](h.boardingTestHarness)
-		expectedRoundID := testRoundIDTr("round-real-sig-001")
 		require.Equal(
 			t, expectedRoundID, checkpointState.RoundID,
 		)
@@ -1078,7 +1106,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		)
 		h.clearOutbox()
 
-		// Hop 2: CommitRoundStateSucceeded →
+		// Hop 3: CommitRoundStateSucceeded →
 		// InputSigSentState.
 		transition, err = h.sendEvent(
 			&CommitRoundStateSucceeded{},
@@ -1752,7 +1780,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
-		h.setupMockWalletForBoardingSigning()
 
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint := h.newTestOutpoint()
@@ -1791,26 +1818,46 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		}
 
 		// Hop 1: ForfeitSignatureResponse →
-		// AwaitingRoundCheckpointState with
-		// CommitRoundStateReq in outbox.
+		// AwaitingBoardingSignaturesState with
+		// SignBoardingInputsReq in outbox.
 		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		//nolint:ll
+		boardingSigState := assertStateType[*AwaitingBoardingSignaturesState](h)
+		require.Equal(t, roundID, boardingSigState.RoundID)
+		require.Len(t, boardingSigState.ForfeitedVTXOs, 1)
+		require.Equal(
+			t, vtxoOutpoint,
+			boardingSigState.ForfeitedVTXOs[0],
+		)
+		h.assertOutboxContainsType(
+			"*round.SignBoardingInputsReq",
+		)
+		h.clearOutbox()
+
+		// Hop 2: SignBoardingInputsSucceeded →
+		// AwaitingRoundCheckpointState.
+		transition, err = h.sendEvent(
+			&SignBoardingInputsSucceeded{
+				InputSigs: []*types.BoardingInputSignature{
+					{InputIndex: 0},
+				},
+			},
+		)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		//nolint:ll
 		checkpointState := assertStateType[*AwaitingRoundCheckpointState](h)
 		require.Equal(t, roundID, checkpointState.RoundID)
-		require.Len(t, checkpointState.ForfeitedVTXOs, 1)
-		require.Equal(
-			t, vtxoOutpoint,
-			checkpointState.ForfeitedVTXOs[0],
-		)
 		h.assertOutboxContainsType(
 			"*round.CommitRoundStateReq",
 		)
 		h.clearOutbox()
 
-		// Hop 2: CommitRoundStateSucceeded →
+		// Hop 3: CommitRoundStateSucceeded →
 		// InputSigSentState.
 		transition, err = h.sendEvent(
 			&CommitRoundStateSucceeded{},
@@ -1835,7 +1882,6 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
-		h.setupMockWalletForBoardingSigning()
 
 		intent := h.newTestBoardingIntent()
 		vtxoOutpoint1 := h.newTestOutpoint()
@@ -1901,20 +1947,38 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		}
 
 		// Hop 1: Second forfeit →
-		// AwaitingRoundCheckpointState.
+		// AwaitingBoardingSignaturesState.
 		transition, err := h.sendEvent(event2)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		//nolint:ll
-		checkpointState := assertStateType[*AwaitingRoundCheckpointState](h)
-		require.Len(t, checkpointState.ForfeitedVTXOs, 2)
+		boardingSigState := assertStateType[*AwaitingBoardingSignaturesState](h)
+		require.Len(t, boardingSigState.ForfeitedVTXOs, 2)
+		h.assertOutboxContainsType(
+			"*round.SignBoardingInputsReq",
+		)
+		h.clearOutbox()
+
+		// Hop 2: SignBoardingInputsSucceeded →
+		// AwaitingRoundCheckpointState.
+		transition, err = h.sendEvent(
+			&SignBoardingInputsSucceeded{
+				InputSigs: []*types.BoardingInputSignature{
+					{InputIndex: 0},
+				},
+			},
+		)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		_ = assertStateType[*AwaitingRoundCheckpointState](h)
 		h.assertOutboxContainsType(
 			"*round.CommitRoundStateReq",
 		)
 		h.clearOutbox()
 
-		// Hop 2: CommitRoundStateSucceeded →
+		// Hop 3: CommitRoundStateSucceeded →
 		// InputSigSentState.
 		transition, err = h.sendEvent(
 			&CommitRoundStateSucceeded{},

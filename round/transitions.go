@@ -10,11 +10,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -59,92 +56,6 @@ func selfLoop(state ClientState) *ClientStateTransition {
 	return &ClientStateTransition{
 		NextState: state,
 	}
-}
-
-// signBoardingInputs signs all boarding inputs for a commitment transaction.
-// This builds the PrevOutputFetcher, sigHashes, and generates Schnorr
-// signatures for each boarding intent's input.
-func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
-	intents Intents, boardingInputIndices map[wire.OutPoint]int,
-) ([]*types.BoardingInputSignature, error) {
-
-	tx := commitmentTx.UnsignedTx
-
-	// Build a PrevOutputFetcher from ALL PSBT inputs. Taproot sighash
-	// (BIP341) requires prevout info for all inputs.
-	prevOuts := make(map[wire.OutPoint]*wire.TxOut)
-	for i, pIn := range commitmentTx.Inputs {
-		if pIn.WitnessUtxo == nil {
-			return nil, fmt.Errorf("PSBT input %d missing "+
-				"WitnessUtxo", i)
-		}
-		outpoint := tx.TxIn[i].PreviousOutPoint
-		prevOuts[outpoint] = pIn.WitnessUtxo
-	}
-	prevOutFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
-	sigHashes := txscript.NewTxSigHashes(tx, prevOutFetcher)
-
-	// Build structured boarding input signatures for each intent.
-	var boardingInputSigs []*types.BoardingInputSignature
-	for _, boardingIntent := range intents.Boarding {
-		outpoint := boardingIntent.Request.Outpoint
-		inputIdx, found := boardingInputIndices[*outpoint]
-		if !found {
-			return nil, fmt.Errorf("no input index "+
-				"found for boarding outpoint %s",
-				outpoint)
-		}
-
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			boardingIntent.Address.Tapscript,
-			scripts.VTXOCollabPathLeaf,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		chainInfo := boardingIntent.ChainInfo
-		addr := boardingIntent.Address.Address
-		amt := chainInfo.Amount
-
-		// Use PayToAddrScript to get the full pkScript with OP_1
-		// OP_PUSHBYTES_32 prefix for P2TR addresses. ScriptAddress()
-		// only returns the 32-byte witness program.
-		pkScript, err := txscript.PayToAddrScript(addr)
-		if err != nil {
-			return nil, fmt.Errorf("pay to addr script: %w", err)
-		}
-
-		output := &wire.TxOut{
-			Value:    int64(amt),
-			PkScript: pkScript,
-		}
-
-		signature, err := scripts.SignVTXOCollabInput(
-			wallet, tx, inputIdx, spendInfo,
-			&boardingIntent.Address.KeyDesc, output,
-			sigHashes, prevOutFetcher,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign "+
-				"boarding input %d: %w", inputIdx, err)
-		}
-
-		schnorrSig, ok := signature.(*schnorr.Signature)
-		if !ok {
-			return nil, fmt.Errorf("signature is not a " +
-				"schnorr signature")
-		}
-
-		inputSig := &types.BoardingInputSignature{
-			InputIndex:      inputIdx,
-			Outpoint:        *outpoint,
-			ClientSignature: schnorrSig,
-		}
-		boardingInputSigs = append(boardingInputSigs, inputSig)
-	}
-
-	return boardingInputSigs, nil
 }
 
 // ProcessEvent handles events in the Idle state. The only pool-addition
@@ -1038,68 +949,34 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			forfeitedVTXOs = append(forfeitedVTXOs, outpoint)
 		}
 
-		env.Log.InfoS(ctx, "All forfeit signatures collected, signing boarding inputs",
+		env.Log.InfoS(ctx, "All forfeit signatures collected, requesting boarding signing",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("forfeit_count", len(forfeitedVTXOs)),
-			slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
+			slog.Int("boarding_intent_count",
+				len(s.Intents.Boarding)))
 
-		// Sign all boarding inputs using the shared helper.
-		boardingInputSigs, err := signBoardingInputs(
-			env.Wallet, s.CommitmentTx, s.Intents,
-			s.BoardingInputIndices,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("sign boarding inputs: %w", err)
-		}
-
-		// Build the Round object for checkpointing.
-		intents := s.Intents.Clone()
-		for i := range intents.Boarding {
-			intents.Boarding[i].Status = BoardingStatusAdopted
-		}
-		round := &Round{
-			RoundID:       s.RoundID,
-			StartHeight:   env.StartHeight,
-			CommitmentTx:  fn.Some(s.CommitmentTx),
-			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
-			Intents:       intents,
-		}
-
-		checkpointState := &InputSigSentState{
-			RoundID:        s.RoundID,
-			CommitmentTx:   s.CommitmentTx,
-			VTXOTreePaths:  s.VTXOTreePaths,
-			Intents:        s.Intents.Clone(),
-			ClientTrees:    s.ClientTrees,
-			InputSigs:      boardingInputSigs,
-			ForfeitedVTXOs: forfeitedVTXOs,
-		}
-
-		env.Log.InfoS(ctx, "Signed boarding inputs, requesting checkpoint",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("boarding_sig_count", len(boardingInputSigs)),
-			slog.Int("forfeit_sig_count", len(forfeitSigs)))
-
-		// Emit CommitRoundStateReq for the outbox handler to
-		// persist the round checkpoint.
+		// Emit SignBoardingInputsReq for the outbox handler
+		// to sign the boarding inputs. Carry forfeit data
+		// forward so the checkpoint state can include it.
 		return &ClientStateTransition{
-			NextState: &AwaitingRoundCheckpointState{
+			NextState: &AwaitingBoardingSignaturesState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				BoardingInputIndices: s.BoardingInputIndices,
-				InputSigs:            boardingInputSigs,
 				ForfeitedVTXOs:       forfeitedVTXOs,
 				ForfeitSigs:          forfeitSigs,
 				ForfeitTxs:           forfeitTxs,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{
-					&CommitRoundStateReq{
-						Round: round,
-						State: checkpointState,
+					&SignBoardingInputsReq{
+						CommitmentTx: s.CommitmentTx,
+						Intents:      s.Intents.Clone(),
+						BoardingInputIndices: s.
+							BoardingInputIndices,
 					},
 				},
 			}),
@@ -1314,66 +1191,29 @@ func (s *PartialSigsSentState) ProcessEvent(
 			return s.transitionToForfeitCollection(ctx, env)
 		}
 
-		// No refresh requests - proceed to sign boarding inputs.
-		env.Log.InfoS(ctx, "Signing boarding inputs",
+		// No refresh requests - emit SignBoardingInputsReq for
+		// the outbox handler to sign the boarding inputs.
+		env.Log.InfoS(ctx, "Requesting boarding input signing",
 			slog.String("round_id", s.RoundID.String()),
-			slog.Int("boarding_intent_count", len(s.Intents.Boarding)))
+			slog.Int("boarding_intent_count",
+				len(s.Intents.Boarding)))
 
-		// Sign all boarding inputs using the shared helper.
-		boardingInputSigs, err := signBoardingInputs(
-			env.Wallet, s.CommitmentTx, s.Intents,
-			s.BoardingInputIndices,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("sign boarding inputs: %w", err)
-		}
-
-		// Build the Round object for checkpointing. Mark all
-		// intents as Adopted (frozen in this round).
-		intents := s.Intents.Clone()
-		for i := range intents.Boarding {
-			intents.Boarding[i].Status = BoardingStatusAdopted
-		}
-		round := &Round{
-			RoundID:       s.RoundID,
-			StartHeight:   env.StartHeight,
-			CommitmentTx:  fn.Some(s.CommitmentTx),
-			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
-			Intents:       intents,
-		}
-
-		// Build the next state for the checkpoint.
-		checkpointState := &InputSigSentState{
-			RoundID:       s.RoundID,
-			CommitmentTx:  s.CommitmentTx,
-			VTXOTreePaths: s.VTXOTreePaths,
-			Intents:       s.Intents.Clone(),
-			ClientTrees:   s.ClientTrees,
-			InputSigs:     boardingInputSigs,
-		}
-
-		env.Log.InfoS(ctx, "Signed boarding inputs, requesting checkpoint",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("boarding_sig_count", len(boardingInputSigs)))
-
-		// Emit CommitRoundStateReq for the outbox handler to
-		// persist the round checkpoint. The FSM transitions to
-		// an awaiting state until the handler responds.
 		return &ClientStateTransition{
-			NextState: &AwaitingRoundCheckpointState{
+			NextState: &AwaitingBoardingSignaturesState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
 				BoardingInputIndices: s.BoardingInputIndices,
-				InputSigs:            boardingInputSigs,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{
-					&CommitRoundStateReq{
-						Round: round,
-						State: checkpointState,
+					&SignBoardingInputsReq{
+						CommitmentTx: s.CommitmentTx,
+						Intents:      s.Intents.Clone(),
+						BoardingInputIndices: s.
+							BoardingInputIndices,
 					},
 				},
 			}),
@@ -1481,6 +1321,82 @@ func buildClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 }
 
 // ProcessEvent for AwaitingRoundCheckpointState. Handles the outbox
+// ProcessEvent for AwaitingBoardingSignaturesState handles the outbox
+// handler response after boarding input signing is attempted. On
+// success, builds the Round object and emits CommitRoundStateReq to
+// persist the checkpoint, transitioning to
+// AwaitingRoundCheckpointState.
+func (s *AwaitingBoardingSignaturesState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *SignBoardingInputsSucceeded:
+		env.Log.InfoS(ctx, "Boarding inputs signed, requesting checkpoint",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("boarding_sig_count",
+				len(evt.InputSigs)))
+
+		// Build the Round object for checkpointing. Mark all
+		// intents as Adopted (frozen in this round).
+		intents := s.Intents.Clone()
+		for i := range intents.Boarding {
+			intents.Boarding[i].Status =
+				BoardingStatusAdopted
+		}
+		round := &Round{
+			RoundID:       s.RoundID,
+			StartHeight:   env.StartHeight,
+			CommitmentTx:  fn.Some(s.CommitmentTx),
+			VTXOTreePaths: fn.Some(s.VTXOTreePaths),
+			Intents:       intents,
+		}
+
+		// Build the state that the checkpoint will persist.
+		checkpointState := &InputSigSentState{
+			RoundID:        s.RoundID,
+			CommitmentTx:   s.CommitmentTx,
+			VTXOTreePaths:  s.VTXOTreePaths,
+			Intents:        s.Intents.Clone(),
+			ClientTrees:    s.ClientTrees,
+			InputSigs:      evt.InputSigs,
+			ForfeitedVTXOs: s.ForfeitedVTXOs,
+		}
+
+		return &ClientStateTransition{
+			NextState: &AwaitingRoundCheckpointState{
+				RoundID:       s.RoundID,
+				CommitmentTx:  s.CommitmentTx,
+				VTXOTreePaths: s.VTXOTreePaths,
+				Intents:       s.Intents.Clone(),
+				ClientTrees:   s.ClientTrees,
+				BoardingInputIndices: s.
+					BoardingInputIndices,
+				InputSigs:      evt.InputSigs,
+				ForfeitedVTXOs: s.ForfeitedVTXOs,
+				ForfeitSigs:    s.ForfeitSigs,
+				ForfeitTxs:     s.ForfeitTxs,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{
+					&CommitRoundStateReq{
+						Round: round,
+						State: checkpointState,
+					},
+				},
+			}),
+		}, nil
+
+	case *SignBoardingInputsFailed:
+		return nil, fmt.Errorf("failed to sign boarding "+
+			"inputs: %w", evt.Error)
+
+	default:
+		return selfLoop(s), nil
+	}
+}
+
+// ProcessEvent for AwaitingRoundCheckpointState handles the outbox
 // handler response after round checkpoint persistence is attempted.
 // On success, transitions to InputSigSentState and emits server
 // submission messages (forfeit sigs, boarding sigs, confirmation

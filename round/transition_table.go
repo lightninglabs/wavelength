@@ -188,11 +188,12 @@ var BoardingClientTransitions = ClientTransitionTable{
 			FromState: &PartialSigsSentState{},
 			Transitions: []ClientTransitionEntry{
 				{
-					Event:       &OperatorSigned{},
-					ToState:     &AwaitingRoundCheckpointState{},
-					Description: "Received VTXT sigs, checkpointing",
+					Event:   &OperatorSigned{},
+					ToState: &AwaitingBoardingSignaturesState{},
+					Description: "Received VTXT sigs, " +
+						"signing boarding inputs",
 					EmitsOutbox: []ClientOutMsg{
-						&CommitRoundStateReq{},
+						&SignBoardingInputsReq{},
 					},
 				},
 				{
@@ -200,6 +201,28 @@ var BoardingClientTransitions = ClientTransitionTable{
 					ToState:     &ClientFailedState{},
 					Description: "Operator signing failed",
 					IsTerminal:  true,
+				},
+			},
+		},
+
+		// AwaitingBoardingSignaturesState: Waiting for boarding
+		// input signing.
+		{
+			FromState: &AwaitingBoardingSignaturesState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:   &SignBoardingInputsSucceeded{},
+					ToState: &AwaitingRoundCheckpointState{},
+					Description: "Boarding inputs signed," +
+						" checkpointing",
+					EmitsOutbox: []ClientOutMsg{
+						&CommitRoundStateReq{},
+					},
+				},
+				{
+					Event:       &SignBoardingInputsFailed{},
+					ToState:     nil,
+					Description: "Boarding signing failed (fatal)",
 				},
 			},
 		},

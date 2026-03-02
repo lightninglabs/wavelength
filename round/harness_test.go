@@ -1040,16 +1040,6 @@ func (h *boardingTestHarness) setupMockWalletForMuSig2() {
 	).Return(partialSig, nil)
 }
 
-func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
-	h.t.Helper()
-
-	sig := &schnorr.Signature{}
-
-	h.wallet.On("SignOutputRaw", mock.Anything, mock.Anything).Return(
-		sig, nil,
-	)
-}
-
 //nolint:unused
 func (h *boardingTestHarness) newNoncesSentState(
 	roundID RoundID, intents []BoardingIntent) *NoncesSentState {
@@ -1555,21 +1545,6 @@ func newRealSigningTestHarness(t *testing.T) *realSigningTestHarness {
 		clientSigner:        newRealMuSig2Signer(base.clientPrivKey),
 		operatorSigner:      newRealMuSig2Signer(base.operatorPrivKey),
 	}
-}
-
-// setupMockWalletForBoardingSigning configures the wallet mock to return valid
-// Schnorr signatures for boarding inputs, using the client's real private key
-// to ensure signature correctness.
-func (h *realSigningTestHarness) setupMockWalletForBoardingSigning() {
-	h.t.Helper()
-
-	msgHash := sha256.Sum256([]byte("test-boarding-sig"))
-	sig, err := schnorr.Sign(h.clientPrivKey, msgHash[:])
-	require.NoError(h.t, err)
-
-	h.wallet.On("SignOutputRaw", mock.Anything, mock.Anything).Return(
-		sig, nil,
-	)
 }
 
 // newTestBoardingIntentWithTapscript creates a boarding intent with real
