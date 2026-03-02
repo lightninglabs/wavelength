@@ -49,12 +49,18 @@ type ResumeBoardingIntents struct {
 	// VTXOs contains the collected VTXO requests to include in the next
 	// round.
 	VTXOs []types.VTXORequest
+
+	// Forfeits contains forfeited VTXOs to resume as inputs.
+	Forfeits []ForfeitIntent
+
+	// Leaves contains leave requests to resume as outputs.
+	Leaves []*LeaveRequest
 }
 
-// isEmpty returns true if there are no boarding intents or VTXO requests
-// to resume.
+// isEmpty returns true if there are no intents of any kind to resume.
 func (e *ResumeBoardingIntents) isEmpty() bool {
-	return len(e.Boarding) == 0 && len(e.VTXOs) == 0
+	return len(e.Boarding) == 0 && len(e.VTXOs) == 0 &&
+		len(e.Forfeits) == 0 && len(e.Leaves) == 0
 }
 
 // logAttributes returns a map of attributes for logging purposes.
@@ -62,6 +68,8 @@ func (e *ResumeBoardingIntents) logAttributes() []slog.Attr {
 	return []slog.Attr{
 		slog.Int("boarding_intents", len(e.Boarding)),
 		slog.Int("vtxo_requests", len(e.VTXOs)),
+		slog.Int("forfeits", len(e.Forfeits)),
+		slog.Int("leaves", len(e.Leaves)),
 	}
 }
 
@@ -338,6 +346,36 @@ type RoundComplete struct{}
 
 func (e *RoundComplete) clientEventSealed() {}
 
+// IntentPackage is an atomic bundle of related intents submitted to the FSM
+// as a single event. The FSM unpacks the package and appends each item to its
+// respective pool. All items in a package are accepted together — the upstream
+// caller decides what must travel as a unit.
+//
+// Examples:
+//   - Refresh: {Forfeits: [1], VTXOs: [1]}
+//   - Leave:   {Forfeits: [1], Leaves: [1]}
+//   - Consolidate N-to-1: {Forfeits: [N], VTXOs: [1]}
+//   - Split 1-to-N: {Forfeits: [1], VTXOs: [N]}
+type IntentPackage struct {
+	// Forfeits contains VTXOs being forfeited as round inputs.
+	Forfeits []ForfeitIntent
+
+	// VTXOs contains new VTXO output requests.
+	VTXOs []types.VTXORequest
+
+	// Leaves contains on-chain exit output requests.
+	Leaves []*LeaveRequest
+}
+
+// isEmpty returns true if the package contains no intents.
+func (e *IntentPackage) isEmpty() bool {
+	return len(e.Forfeits) == 0 && len(e.VTXOs) == 0 &&
+		len(e.Leaves) == 0
+}
+
+// clientEventSealed prevents external implementations.
+func (e *IntentPackage) clientEventSealed() {}
+
 // RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
 // expiry and needs to be refreshed in a new round. The round actor should
 // queue this VTXO for inclusion in the next batch swap.
@@ -345,6 +383,9 @@ func (e *RoundComplete) clientEventSealed() {}
 // This request contains all information needed to build a forfeit request
 // (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
 // The same client key is typically reused for the new VTXO.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], VTXOs: [1]}.
 type RefreshVTXORequest struct {
 	actor.BaseMessage
 
@@ -371,8 +412,6 @@ type RefreshVTXORequest struct {
 	SigningKey keychain.KeyDescriptor
 }
 
-func (e *RefreshVTXORequest) clientEventSealed() {}
-
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (e *RefreshVTXORequest) RoundReceivable() {}
 
@@ -389,6 +428,9 @@ func (e *RefreshVTXORequest) MessageType() string {
 // The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
 // forfeited via a connector output, and the leave output is included directly
 // in the batch transaction.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], Leaves: [1]}.
 type LeaveVTXORequest struct {
 	actor.BaseMessage
 
@@ -403,9 +445,6 @@ type LeaveVTXORequest struct {
 	// leave output.
 	Output *wire.TxOut
 }
-
-// clientEventSealed prevents external implementations.
-func (e *LeaveVTXORequest) clientEventSealed() {}
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (e *LeaveVTXORequest) RoundReceivable() {}

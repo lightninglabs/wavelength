@@ -1124,11 +1124,18 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, ok, "expected PendingRoundAssembly, got %T",
 			tempState.State)
 
-		// Verify the refresh request is tracked.
-		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+		// Verify the forfeit input is tracked.
+		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, refreshReq, assembly.RefreshingVTXOs[vtxoOutpoint],
+			t, vtxoOutpoint, assembly.Forfeits[0].VTXOOutpoint,
 		)
+		require.Equal(
+			t, btcutil.Amount(refreshReq.Amount),
+			assembly.Forfeits[0].Amount,
+		)
+
+		// Verify the VTXO output request is tracked.
+		require.Len(t, assembly.VTXOs, 1)
 	})
 
 	t.Run("queues_refresh_alongside_boarding_intent", func(t *testing.T) {
@@ -1174,7 +1181,11 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, ok, "expected PendingRoundAssembly, got %T",
 			tempState.State)
 		require.Len(t, assembly.Boarding, 1)
-		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+		require.Len(t, assembly.Forfeits, 1)
+		require.Equal(
+			t, vtxoOutpoint,
+			assembly.Forfeits[0].VTXOOutpoint,
+		)
 	})
 }
 

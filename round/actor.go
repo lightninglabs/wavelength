@@ -1452,8 +1452,8 @@ func (a *RoundClientActor) processConfirmationRequest(
 
 // handleRefreshVTXORequest processes a refresh request from a VTXO actor.
 // The VTXO is approaching expiry and needs to be included in the next batch
-// swap round. The request is forwarded to a pending round FSM which tracks it
-// alongside boarding intents.
+// swap round. The actor translates the request into a single IntentPackage
+// containing one forfeit input and one new VTXO output.
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1469,12 +1469,20 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		}
 	}
 
-	// Forward to the round FSM. The FSM tracks refreshing VTXOs in its
-	// state (similar to how it tracks boarding intents).
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	// Bundle the forfeit input and new VTXO output atomically.
+	pkg := &IntentPackage{
+		Forfeits: []ForfeitIntent{{
+			VTXOOutpoint: req.VTXOOutpoint,
+			Amount:       btcutil.Amount(req.Amount),
+		}},
+		VTXOs: []types.VTXORequest{
+			buildVTXORequestFromRefresh(req),
+		},
+	}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing refresh request: %w", err,
+			"FSM error processing refresh package: %w", err,
 		))
 	}
 
@@ -1502,9 +1510,8 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 }
 
 // handleLeaveVTXORequest processes a leave (offboard) request from a VTXO
-// actor. The VTXO is being exited to an on-chain output. The request is
-// forwarded to a pending round FSM which tracks it alongside boarding intents
-// and refresh requests.
+// actor. The actor translates the request into a single IntentPackage
+// containing one forfeit input and one leave output.
 func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 	req *LeaveVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1520,12 +1527,18 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 		}
 	}
 
-	// Forward to the round FSM. The FSM tracks leaving VTXOs in its
-	// state (similar to how it tracks boarding intents and refreshes).
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	// Bundle the forfeit input and leave output atomically.
+	pkg := &IntentPackage{
+		Forfeits: []ForfeitIntent{{
+			VTXOOutpoint: req.VTXOOutpoint,
+			Amount:       btcutil.Amount(req.Amount),
+		}},
+		Leaves: []*LeaveRequest{{Output: req.Output}},
+	}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing leave request: %w", err,
+			"FSM error processing leave package: %w", err,
 		))
 	}
 

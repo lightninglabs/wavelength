@@ -213,6 +213,18 @@ const (
 	BoardingStatusSwept = wallet.BoardingStatusSwept
 )
 
+// ForfeitIntent captures one VTXO being forfeited as an input to a round.
+// This is decoupled from the output side (VTXO or leave) so the FSM can
+// track forfeit inputs independently, enabling many-to-many operations
+// like consolidation or splitting.
+type ForfeitIntent struct {
+	// VTXOOutpoint identifies the VTXO being forfeited.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the value of the forfeited VTXO in satoshis.
+	Amount btcutil.Amount
+}
+
 // Intents captures all the client's intents to be included in a single round
 // join request.
 type Intents struct {
@@ -228,6 +240,11 @@ type Intents struct {
 	// outputs. Each leave forfeits a VTXO and creates an on-chain output
 	// in the batch transaction instead of a new VTXO.
 	Leaves []*LeaveRequest
+
+	// Forfeits contains the VTXOs being forfeited as inputs. Decoupled
+	// from outputs (VTXOs/Leaves) to allow many-to-many operations like
+	// consolidation, splitting, or mixing forfeits with boarding inputs.
+	Forfeits []ForfeitIntent
 }
 
 // Clone creates a copy of the Intents.
@@ -236,6 +253,7 @@ func (i *Intents) Clone() Intents {
 		Boarding: slices.Clone(i.Boarding),
 		VTXOs:    slices.Clone(i.VTXOs),
 		Leaves:   slices.Clone(i.Leaves),
+		Forfeits: slices.Clone(i.Forfeits),
 	}
 }
 

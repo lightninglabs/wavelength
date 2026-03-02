@@ -188,6 +188,8 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			NextState: &PendingRoundAssembly{
 				Boarding: slices.Clone(evt.Boarding),
 				VTXOs:    slices.Clone(evt.VTXOs),
+				Forfeits: slices.Clone(evt.Forfeits),
+				Leaves:   slices.Clone(evt.Leaves),
 			},
 		}, nil
 
@@ -277,40 +279,18 @@ func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 			},
 		}, nil
 
-	case *RefreshVTXORequest:
-		// A VTXO actor requested refresh. Start assembling a round with
-		// this refresh request. Similar to boarding intents, we track
-		// refreshing VTXOs in the PendingRoundAssembly state.
-		//
-		// The refresh request contains all info to build both the
-		// RefreshRequest (forfeit) and VTXORequest (new output).
-		refreshMap := make(map[wire.OutPoint]*RefreshVTXORequest)
-		refreshMap[evt.VTXOOutpoint] = evt
-
-		// Create the VTXORequest for the new VTXO output.
-		vtxoReq := buildVTXORequestFromRefresh(evt)
+	case *IntentPackage:
+		// An atomic bundle of intents was submitted. Start
+		// assembling a round with all items from the package.
+		if evt.isEmpty() {
+			return selfLoop(s), nil
+		}
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding:        nil,
-				VTXOs:           []types.VTXORequest{vtxoReq},
-				RefreshingVTXOs: refreshMap,
-			},
-		}, nil
-
-	case *LeaveVTXORequest:
-		// A VTXO actor (or wallet) requested to exit the Ark. Start
-		// assembling a round with this leave request. Similar to
-		// refresh requests, we track leaving VTXOs in the
-		// PendingRoundAssembly state.
-		leaveMap := make(map[wire.OutPoint]*LeaveVTXORequest)
-		leaveMap[evt.VTXOOutpoint] = evt
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:     nil,
-				VTXOs:        nil,
-				LeavingVTXOs: leaveMap,
+				Forfeits: slices.Clone(evt.Forfeits),
+				VTXOs:    slices.Clone(evt.VTXOs),
+				Leaves:   slices.Clone(evt.Leaves),
 			},
 		}, nil
 
@@ -409,9 +389,10 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding:        updatedBoardingIntents,
-				VTXOs:           slices.Clone(s.VTXOs),
-				RefreshingVTXOs: s.RefreshingVTXOs,
+				Boarding: updatedBoardingIntents,
+				VTXOs:    slices.Clone(s.VTXOs),
+				Forfeits: slices.Clone(s.Forfeits),
+				Leaves:   slices.Clone(s.Leaves),
 			},
 		}, nil
 
@@ -427,57 +408,36 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           updatedVTXOIntents,
-				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
+				Boarding: slices.Clone(s.Boarding),
+				VTXOs:    updatedVTXOIntents,
+				Forfeits: slices.Clone(s.Forfeits),
+				Leaves:   slices.Clone(s.Leaves),
 			},
 		}, nil
 
-	case *RefreshVTXORequest:
-		// A VTXO actor requested refresh. Add to our refreshing map.
-		// We stay in this state and accumulate refresh requests.
-		//
-		// Also create a VTXORequest for the new VTXO output.
-		updatedRefreshing := maps.Clone(s.RefreshingVTXOs)
-		if updatedRefreshing == nil {
-			updatedRefreshing = make(
-				map[wire.OutPoint]*RefreshVTXORequest,
-			)
+	case *IntentPackage:
+		// An atomic bundle of intents. Unpack into our pools.
+		if evt.isEmpty() {
+			return selfLoop(s), nil
 		}
-		updatedRefreshing[evt.VTXOOutpoint] = evt
 
-		// Add the VTXORequest for this refresh to the VTXOs list.
-		vtxoReq := buildVTXORequestFromRefresh(evt)
+		updatedForfeits := slices.Clone(s.Forfeits)
+		updatedForfeits = append(
+			updatedForfeits, evt.Forfeits...,
+		)
+
 		updatedVTXOs := slices.Clone(s.VTXOs)
-		updatedVTXOs = append(updatedVTXOs, vtxoReq)
+		updatedVTXOs = append(updatedVTXOs, evt.VTXOs...)
+
+		updatedLeaves := slices.Clone(s.Leaves)
+		updatedLeaves = append(updatedLeaves, evt.Leaves...)
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           updatedVTXOs,
-				RefreshingVTXOs: updatedRefreshing,
-				LeavingVTXOs:    maps.Clone(s.LeavingVTXOs),
-			},
-		}, nil
-
-	case *LeaveVTXORequest:
-		// A VTXO actor (or wallet) requested to exit the Ark. Add to
-		// our leaving map. We stay in this state and accumulate leave
-		// requests alongside boarding intents and refresh requests.
-		updatedLeaving := maps.Clone(s.LeavingVTXOs)
-		if updatedLeaving == nil {
-			updatedLeaving = make(
-				map[wire.OutPoint]*LeaveVTXORequest,
-			)
-		}
-		updatedLeaving[evt.VTXOOutpoint] = evt
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           slices.Clone(s.VTXOs),
-				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
-				LeavingVTXOs:    updatedLeaving,
+				Boarding: slices.Clone(s.Boarding),
+				VTXOs:    updatedVTXOs,
+				Forfeits: updatedForfeits,
+				Leaves:   updatedLeaves,
 			},
 		}, nil
 
@@ -501,20 +461,16 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			totalOutput += vtxo.Amount
 		}
 
-		// Include all forfeited VTXO amounts as inputs. These values
-		// come from refresh and leave requests.
-		totalInput += computeTotalForfeitAmount(
-			s.RefreshingVTXOs, s.LeavingVTXOs,
-		)
+		// Include all forfeited VTXO amounts as inputs.
+		totalInput += computeTotalForfeitAmount(s.Forfeits)
 
 		// Include leave amounts as requested on-chain outputs.
-		for _, req := range s.LeavingVTXOs {
+		for i, req := range s.Leaves {
 			if req.Output == nil {
 				return failWithNotification(
 					"leave request has nil output",
-					fmt.Errorf("leave request for %v "+
-						"has nil output",
-						req.VTXOOutpoint),
+					fmt.Errorf("leave request %d "+
+						"has nil output", i),
 					true, fn.None[RoundID](),
 				), nil
 			}
@@ -589,17 +545,11 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Build forfeit requests for VTXOs being refreshed or exited
-		// on-chain. Forfeits are listed separately from outputs.
-		// Sorted for deterministic ordering across map iterations.
-		forfeitReqs := sortedForfeitRequests(
-			s.RefreshingVTXOs, s.LeavingVTXOs,
-		)
+		// Build forfeit requests from the decoupled forfeit pool.
+		forfeitReqs := sortedForfeitRequests(s.Forfeits)
 
-		// Build leave requests for VTXOs being exited to on-chain
-		// outputs. Each leave forfeits a VTXO and creates an on-chain
-		// output in the batch transaction. Sorted for determinism.
-		leaveReqs := sortedLeaveRequests(s.LeavingVTXOs)
+		// Leave requests are already in append order.
+		leaveReqs := slices.Clone(s.Leaves)
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
@@ -607,12 +557,12 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			slog.Int("forfeit_requests", len(forfeitReqs)),
 			slog.Int("leave_requests", len(leaveReqs)))
 
-		// Build Intents with all VTXOs and leaves for downstream
-		// validation.
+		// Build Intents with all pools for downstream validation.
 		intent := Intents{
 			Boarding: slices.Clone(s.Boarding),
 			VTXOs:    vtxoReqs,
 			Leaves:   leaveReqs,
+			Forfeits: slices.Clone(s.Forfeits),
 		}
 
 		// Derive a fresh identifier key for the join-request
@@ -1968,6 +1918,23 @@ func (s *ClientFailedState) ProcessEvent(
 		// Recovery path: transition to Idle and forward the event
 		// to be processed there. This avoids duplicating the
 		// BoardingUTXOConfirmed handling logic.
+		return &ClientStateTransition{
+			NextState: &Idle{},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				InternalEvent: []ClientEvent{evt},
+			}),
+		}, nil
+
+	case *IntentPackage:
+		if evt.isEmpty() {
+			return selfLoop(s), nil
+		}
+
+		env.Log.InfoS(ctx, "Recovering from failed state with intent package",
+			slog.Int("forfeits", len(evt.Forfeits)),
+			slog.Int("vtxos", len(evt.VTXOs)),
+			slog.Int("leaves", len(evt.Leaves)))
+
 		return &ClientStateTransition{
 			NextState: &Idle{},
 			NewEvents: fn.Some(ClientEmittedEvent{
