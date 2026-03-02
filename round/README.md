@@ -64,20 +64,26 @@ instance to process additional addresses across different rounds.
 ### PendingRoundAssembly State
 
 After receiving an address, the user funds it by broadcasting a Bitcoin
-transaction. Once confirmed via `BoardingUTXOConfirmed`, the FSM transitions
-from Idle to PendingRoundAssembly, registering a boarding intent containing
-the address and on-chain UTXO information.
+transaction. Once confirmed, the actor builds a `BoardingIntent` and delivers
+it to the FSM via `IntentPackage`. The FSM transitions from Idle to
+PendingRoundAssembly, registering the boarding intent containing the address
+and on-chain UTXO information.
 
-Boarding intents, VTXO requests, refresh requests, and leave requests are
-managed separately, enabling flexible input-output mappings. The FSM collects
-them independently as self-loops in PendingRoundAssembly:
+All pool additions flow through a single `IntentPackage` event, which carries
+four independent pools:
 
-- `BoardingUTXOConfirmed` adds a boarding intent (on-chain input to spend)
-- `VTXORequestsReceived` adds VTXO requests specifying desired output amounts
-- `RefreshVTXORequest` adds a VTXO to be rolled into a new tree (from VTXO
-  actors whose VTXOs are approaching expiry)
-- `LeaveVTXORequest` adds a VTXO to be exited on-chain (from VTXO actors or
-  the wallet when the user wants to offboard)
+- **Boarding** — on-chain inputs to spend (from confirmed boarding UTXOs)
+- **VTXOs** — requested output amounts for new virtual UTXOs
+- **Forfeits** — VTXOs to be rolled into a new tree (from VTXO actors whose
+  VTXOs are approaching expiry)
+- **Leaves** — VTXOs to be exited on-chain (from VTXO actors or the wallet
+  when the user wants to offboard)
+
+The actor translates external messages (`RefreshVTXORequest`,
+`LeaveVTXORequest`, wallet confirmations, VTXO requests) into `IntentPackage`
+before sending to the FSM. This keeps input validation and construction in the
+actor layer, while the FSM focuses purely on pool accumulation and state
+management.
 
 This separation supports fan-in (multiple inputs funding one output) and
 fan-out (one input creating multiple outputs) scenarios, as well as mixed
@@ -88,8 +94,7 @@ When `RegistrationRequested` is received, the FSM validates that total outputs
 do not exceed inputs, then transitions to RegistrationSentState, emitting a
 `JoinRoundRequest` that aggregates all intents into a single server request.
 The join request carries boarding inputs, VTXO outputs, explicit forfeit
-outpoints, and leave outputs. The FSM can also resume existing intents on
-restart via `ResumeBoardingIntents`.
+outpoints, and leave outputs.
 
 ### RegistrationSent and RoundJoined States
 
@@ -279,14 +284,14 @@ sequenceDiagram
 
     Note over C,B: Intent Assembly Phase
     B->>A: UTXO confirmed
-    A->>C: BoardingUTXOConfirmed
+    A->>C: IntentPackage(boarding)
     Note over A: User specifies VTXO amounts
-    A->>C: VTXORequestsReceived
+    A->>C: IntentPackage(vtxos)
     opt Refresh / Leave
         V->>A: RefreshVTXORequest
-        A->>C: RefreshVTXORequest
+        A->>C: IntentPackage(forfeit + vtxo)
         V->>A: LeaveVTXORequest
-        A->>C: LeaveVTXORequest
+        A->>C: IntentPackage(forfeit + leave)
     end
 
     Note over C,B: Round Registration Phase
@@ -386,13 +391,8 @@ during checkpoint.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> PendingRoundAssembly: BoardingUTXOConfirmed
-    Idle --> PendingRoundAssembly: VTXORequestsReceived
-    Idle --> PendingRoundAssembly: ResumeBoardingIntents
-    PendingRoundAssembly --> PendingRoundAssembly: BoardingUTXOConfirmed
-    PendingRoundAssembly --> PendingRoundAssembly: VTXORequestsReceived
-    PendingRoundAssembly --> PendingRoundAssembly: RefreshVTXORequest
-    PendingRoundAssembly --> PendingRoundAssembly: LeaveVTXORequest
+    Idle --> PendingRoundAssembly: IntentPackage
+    PendingRoundAssembly --> PendingRoundAssembly: IntentPackage
     PendingRoundAssembly --> RegistrationSent: RegistrationRequested
     RegistrationSent --> RoundJoined: RoundJoined
     RoundJoined --> CommitmentTxReceived: CommitmentTxBuilt
@@ -418,6 +418,7 @@ stateDiagram-v2
     ForfeitSignaturesCollecting --> ClientFailed: BoardingFailed
     InputSigSent --> ClientFailed: BoardingFailed
     InputSigSent --> RecoveryInitiated: RecoveryInitiated
+    ClientFailed --> Idle: IntentPackage (recovery)
 ```
 
 The diagram omits internal events for clarity, showing only major transitions
@@ -434,8 +435,10 @@ differ in how intents are assembled and how old VTXOs are handled.
 
 When a VTXO approaches its CSV expiry, the VTXO actor sends a
 `RefreshVTXORequest` to the round actor (either automatically or via manual
-`TriggerRefreshEvent`). The round FSM accumulates these in
-`PendingRoundAssembly.RefreshingVTXOs` alongside any boarding intents. During
+`TriggerRefreshEvent`). The round actor translates these into an
+`IntentPackage` with a forfeit request and corresponding VTXO output, which
+the FSM accumulates in `PendingRoundAssembly.Forfeits` and
+`PendingRoundAssembly.VTXOs` alongside any boarding intents. During
 registration, refresh requests are included in the `JoinRoundRequest` as
 forfeit outpoints with corresponding new VTXO outputs.
 
@@ -455,7 +458,7 @@ confirmed.
 
 Leave follows the same mechanics as refresh, but the output is an on-chain
 destination rather than a new VTXO. The user (or wallet) sends a
-`LeaveVTXORequest`, accumulated in `PendingRoundAssembly.LeavingVTXOs`. During
+`LeaveVTXORequest`, accumulated in `PendingRoundAssembly.Leaves`. During
 commitment transaction validation, the FSM verifies all leave outputs appear
 in the transaction via `validateLeaveOutputs()`.
 
