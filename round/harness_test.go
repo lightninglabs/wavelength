@@ -607,35 +607,6 @@ func generateTestKeyPair(t *testing.T) (*btcec.PrivateKey, *btcec.PublicKey) {
 	return privKey, privKey.PubKey()
 }
 
-func (h *boardingTestHarness) newBoardingUTXOConfirmedEvent(
-	intent BoardingIntent) *BoardingUTXOConfirmed {
-
-	h.t.Helper()
-
-	// Create a pkScript from the boarding address.
-	pkScript, err := txscript.PayToAddrScript(intent.Address.Address)
-	require.NoError(h.t, err)
-
-	tx := wire.NewMsgTx(2)
-	tx.AddTxOut(&wire.TxOut{
-		Value:    int64(intent.ChainInfo.Amount),
-		PkScript: pkScript,
-	})
-
-	var blockHash chainhash.Hash
-	_, err = rand.Read(blockHash[:])
-	require.NoError(h.t, err)
-
-	return &BoardingUTXOConfirmed{
-		Outpoint:      intent.Outpoint,
-		Address:       intent.Address,
-		BlockHeight:   intent.ChainInfo.ConfHeight,
-		BlockHash:     blockHash,
-		Confirmations: 6,
-		Tx:            tx,
-	}
-}
-
 const (
 	testExitDelay = uint32(144) // 1 day in blocks.
 )
