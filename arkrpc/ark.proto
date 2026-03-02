@@ -59,4 +59,9 @@ message GetInfoResponse {
 
     // The minimum confirmations required on boarding inputs.
     uint32 min_confirmations = 14;
+
+    // The minimum operator fee (satoshis) required per join request. The
+    // fee is the difference between total input value and total output
+    // value. Requests below this threshold are rejected.
+    int64 min_operator_fee = 15;
 }
