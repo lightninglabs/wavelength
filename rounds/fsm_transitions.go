@@ -3,6 +3,7 @@ package rounds
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -516,6 +517,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 
 		// Emit a BuildBatchReq for the OutboxHandler to perform
 		// fee estimation, wallet funding, and tree construction.
+		lockID := roundLockID(env.RoundID)
 		buildReq := &BuildBatchReq{
 			RoundID:         env.RoundID,
 			BoardingInputs:  allBoardingInputs,
@@ -524,6 +526,10 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			VTXODescriptors: allVTXODescriptors,
 			Terms:           env.Terms,
 			ForfeitScript:   env.ForfeitScript,
+			FundingOpts: &FundingOpts{
+				LockID:       lockID,
+				LockDuration: env.Terms.FundPsbtLockDuration,
+			},
 		}
 
 		return &StateTransition{
@@ -656,7 +662,8 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
 						"client %s: %v", clientID, err),
-					[32]byte{}, s.LockedOutpoints,
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 		}
@@ -680,7 +687,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 							"connector assignment "+
 							"for client %s",
 							clientID),
-						[32]byte{},
+						roundLockID(env.RoundID),
 						s.LockedOutpoints,
 					), nil
 				}
@@ -739,7 +746,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
 					"output %d: %v", idx, err),
-				[32]byte{}, s.LockedOutpoints,
+				roundLockID(env.RoundID), s.LockedOutpoints,
 			), nil
 		}
 
@@ -920,7 +927,7 @@ func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, reason,
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1123,6 +1130,13 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	return &StateTransition{
 		NextState: newState,
 	}, nil
+}
+
+// roundLockID derives a deterministic 32-byte UTXO lease identifier from
+// the round ID. Using a deterministic ID allows the caller to release
+// leases explicitly when a round fails.
+func roundLockID(roundID RoundID) [32]byte {
+	return sha256.Sum256(roundID[:])
 }
 
 // buildCommitmentTx constructs the commitment transaction PSBT with boarding
@@ -1684,7 +1698,7 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO nonce collection timeout",
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1866,7 +1880,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
 					idx, err),
-				[32]byte{}, s.LockedOutpoints,
+				roundLockID(env.RoundID), s.LockedOutpoints,
 			), nil
 		}
 	}
@@ -1904,7 +1918,8 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("get agg nonces for %s: %v",
 						clientID, err),
-					[32]byte{}, s.LockedOutpoints,
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 
@@ -1970,7 +1985,7 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO signature collection timeout",
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2163,7 +2178,8 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 				return buildFailureTransition(
 					ctx, env, s.ClientRegistrations, errMsg,
-					[32]byte{}, s.LockedOutpoints,
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 
@@ -2209,7 +2225,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("build connector descriptors: %v", err),
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 	}
 
@@ -2543,7 +2559,7 @@ func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
 	case *SignAndFinalizeFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2592,7 +2608,7 @@ func (s *AwaitingServerSignPersistState) ProcessEvent(ctx context.Context,
 	case *PersistServerSigningFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
-			[32]byte{}, s.LockedOutpoints,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:

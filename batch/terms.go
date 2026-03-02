@@ -74,4 +74,9 @@ type Terms struct {
 	// SignatureCollectionTimeout is the duration to wait for collecting
 	// vtxo nonces, vtxo signatures and boarding signatures from clients.
 	SignatureCollectionTimeout time.Duration
+
+	// FundPsbtLockDuration is how long LND should hold the UTXO
+	// lease when FundPsbt is called. When zero, LND uses its
+	// default (10 minutes).
+	FundPsbtLockDuration time.Duration
 }
