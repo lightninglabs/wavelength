@@ -80,6 +80,35 @@ func (s *PendingRoundAssembly) IsTerminal() bool {
 
 func (s *PendingRoundAssembly) clientStateSealed() {}
 
+// AwaitingRegistrationBuildState is an intermediate state between
+// PendingRoundAssembly and RegistrationSent. The FSM has validated
+// structural requirements and emitted a BuildRegistrationReq; it is
+// now waiting for the outbox handler to build the JoinRoundRequest
+// (which involves VTXOStore lookups, key derivation, and signing).
+type AwaitingRegistrationBuildState struct {
+	// Boarding are the confirmed boarding intents.
+	Boarding []BoardingIntent
+
+	// VTXOs are the VTXO output requests.
+	VTXOs []types.VTXORequest
+
+	// Forfeits are the forfeit input requests.
+	Forfeits []types.ForfeitRequest
+
+	// Leaves are the on-chain exit output requests.
+	Leaves []*types.LeaveRequest
+}
+
+func (s *AwaitingRegistrationBuildState) String() string {
+	return "AwaitingRegistrationBuild"
+}
+
+func (s *AwaitingRegistrationBuildState) IsTerminal() bool {
+	return false
+}
+
+func (s *AwaitingRegistrationBuildState) clientStateSealed() {}
+
 // RegistrationSentState indicates the client has sent a JoinRoundRequest
 // to the server and is waiting for confirmation.
 type RegistrationSentState struct {

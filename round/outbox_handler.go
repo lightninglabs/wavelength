@@ -103,6 +103,29 @@ type CommitRoundStateReq struct {
 func (r *CommitRoundStateReq) clientOutMsgSealed()  {}
 func (r *CommitRoundStateReq) outboxRequestSealed() {}
 
+// BuildRegistrationReq requests construction of the JoinRoundRequest
+// including forfeit amount computation, amount validation, key
+// derivation, and BIP-322 authorization. The handler performs all
+// I/O (VTXOStore lookups, Wallet key derivation, Wallet signing,
+// QueryBestHeight) and returns BuildRegistrationSucceeded or
+// BuildRegistrationFailed.
+type BuildRegistrationReq struct {
+	// Boarding are the confirmed boarding intents.
+	Boarding []BoardingIntent
+
+	// VTXOs are the VTXO output requests.
+	VTXOs []types.VTXORequest
+
+	// Forfeits are the forfeit input requests.
+	Forfeits []types.ForfeitRequest
+
+	// Leaves are the on-chain exit output requests.
+	Leaves []*types.LeaveRequest
+}
+
+func (r *BuildRegistrationReq) clientOutMsgSealed()  {}
+func (r *BuildRegistrationReq) outboxRequestSealed() {}
+
 // SignBoardingInputsReq requests signing of all boarding inputs in the
 // commitment transaction. The handler calls signBoardingInputs with
 // the Wallet and returns SignBoardingInputsSucceeded or

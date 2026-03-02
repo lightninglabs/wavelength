@@ -397,3 +397,28 @@ type SignBoardingInputsFailed struct {
 }
 
 func (e *SignBoardingInputsFailed) clientEventSealed() {}
+
+// BuildRegistrationSucceeded is the follow-up event returned by the
+// outbox handler after successfully building the JoinRoundRequest.
+type BuildRegistrationSucceeded struct {
+	// JoinReq is the fully constructed join round request ready
+	// for the server.
+	JoinReq *JoinRoundRequest
+
+	// Intents are the validated intents for downstream use.
+	Intents Intents
+}
+
+func (e *BuildRegistrationSucceeded) clientEventSealed() {}
+
+// BuildRegistrationFailed is the follow-up event returned by the
+// outbox handler when registration building fails.
+type BuildRegistrationFailed struct {
+	// Error is the underlying error.
+	Error error
+
+	// Recoverable indicates whether the client can retry.
+	Recoverable bool
+}
+
+func (e *BuildRegistrationFailed) clientEventSealed() {}
