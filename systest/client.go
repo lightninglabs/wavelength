@@ -303,7 +303,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		SweepDelay:        h.terms.SweepDelay,
 		SweepKey:          h.terms.SweepKey.PubKey,
 		MinConfirmations:  h.terms.MinBoardingConfirmations,
-		MinOperatorFee:    h.terms.MinOperatorFee,
 		ForfeitScript:     h.ForfeitScript(),
 	}
 
