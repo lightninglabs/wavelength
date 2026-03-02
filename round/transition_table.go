@@ -143,16 +143,17 @@ var BoardingClientTransitions = ClientTransitionTable{
 			},
 		},
 
-		// CommitmentTxValidatedState: Generate and send nonces.
+		// CommitmentTxValidatedState: Emit signing session
+		// creation or go to forfeit collection (leave-only).
 		{
 			FromState: &CommitmentTxValidatedState{},
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &GenerateNonces{},
-					ToState:     &NoncesSentState{},
-					Description: "Generated nonces, sending to server",
+					ToState:     &AwaitingSigningSessionsState{},
+					Description: "Creating signing sessions",
 					EmitsOutbox: []ClientOutMsg{
-						&SubmitNoncesRequest{},
+						&CreateSigningSessionsReq{},
 					},
 				},
 				{
@@ -160,6 +161,27 @@ var BoardingClientTransitions = ClientTransitionTable{
 					ToState:     &ClientFailedState{},
 					Description: "Nonce generation failed",
 					IsTerminal:  true,
+				},
+			},
+		},
+
+		// AwaitingSigningSessionsState: Waiting for MuSig2
+		// session creation.
+		{
+			FromState: &AwaitingSigningSessionsState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &CreateSigningSessionsSucceeded{},
+					ToState:     &NoncesSentState{},
+					Description: "Sessions created, sending nonces",
+					EmitsOutbox: []ClientOutMsg{
+						&SubmitNoncesRequest{},
+					},
+				},
+				{
+					Event:       &CreateSigningSessionsFailed{},
+					ToState:     nil,
+					Description: "Session creation failed (fatal)",
 				},
 			},
 		},

@@ -1040,6 +1040,72 @@ func (h *boardingTestHarness) setupMockWalletForMuSig2() {
 	).Return(partialSig, nil)
 }
 
+// feedSigningSessionsSuccess simulates the outbox handler creating
+// MuSig2 signing sessions. It asserts the FSM is in
+// AwaitingSigningSessionsState, extracts the CreateSigningSessionsReq
+// from the outbox, creates real sessions using the mock wallet, and
+// sends CreateSigningSessionsSucceeded back to the FSM. Returns the
+// resulting NoncesSentState.
+func (h *boardingTestHarness) feedSigningSessionsSuccess() *NoncesSentState {
+	h.t.Helper()
+
+	_ = assertStateType[*AwaitingSigningSessionsState](h)
+
+	// Extract the request from outbox.
+	require.NotEmpty(h.t, h.outboxMessages)
+	var req *CreateSigningSessionsReq
+	for _, msg := range h.outboxMessages {
+		if r, ok := msg.(*CreateSigningSessionsReq); ok {
+			req = r
+
+			break
+		}
+	}
+	require.NotNil(h.t, req)
+
+	// Create real sessions using the mock wallet, same as the
+	// handler would.
+	sessions := make(map[SignerKey]*tree.SignerSession)
+	allNonces := make(
+		map[SignerKey]map[tree.TxID]tree.Musig2PubNonce,
+	)
+
+	for _, vtxoReq := range req.VTXORequests {
+		signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
+		clientTree := req.ClientTrees[signerKey]
+		require.NotNil(h.t, clientTree)
+
+		sweepTweak := clientTree.SweepTapscriptRoot
+		batchOut := clientTree.BatchOutput
+		root := clientTree.Root
+
+		prevOutFetcher, err := root.PrevOutputFetcher(
+			batchOut,
+		)
+		require.NoError(h.t, err)
+
+		session, err := tree.NewSignerSession(
+			h.wallet, &vtxoReq.SigningKey,
+			sweepTweak, prevOutFetcher,
+			clientTree.Root,
+		)
+		require.NoError(h.t, err)
+
+		sessions[signerKey] = session
+		allNonces[signerKey] = session.GetNonces()
+	}
+
+	h.clearOutbox()
+
+	_, err := h.sendEvent(&CreateSigningSessionsSucceeded{
+		Sessions:  sessions,
+		AllNonces: allNonces,
+	})
+	require.NoError(h.t, err)
+
+	return assertStateType[*NoncesSentState](h)
+}
+
 //nolint:unused
 func (h *boardingTestHarness) newNoncesSentState(
 	roundID RoundID, intents []BoardingIntent) *NoncesSentState {

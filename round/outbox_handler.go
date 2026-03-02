@@ -187,6 +187,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context,
 	case *BuildRegistrationReq:
 		return h.handleBuildRegistration(ctx, req)
 
+	case *CreateSigningSessionsReq:
+		return h.handleCreateSigningSessions(ctx, req)
+
 	default:
 		return nil, fmt.Errorf("unhandled outbox request "+
 			"type: %T", msg)
@@ -457,6 +460,94 @@ func (h *InProcessOutboxHandler) handleBuildRegistration(
 		&BuildRegistrationSucceeded{
 			JoinReq: joinReq,
 			Intents: intents,
+		},
+	}, nil
+}
+
+// handleCreateSigningSessions creates MuSig2 signing sessions for
+// each VTXO using the Wallet, collects nonces from each session, and
+// returns CreateSigningSessionsSucceeded or
+// CreateSigningSessionsFailed.
+func (h *InProcessOutboxHandler) handleCreateSigningSessions(
+	_ context.Context,
+	req *CreateSigningSessionsReq) ([]ClientEvent, error) {
+
+	musig2Sessions := make(map[SignerKey]*tree.SignerSession)
+
+	for _, vtxoReq := range req.VTXORequests {
+		signerKey := NewSignerKey(
+			vtxoReq.SigningKey.PubKey,
+		)
+
+		// Get the client tree for this signer key. The sweep
+		// tweak and batch output are properties of the tree
+		// that were set when the operator built it.
+		clientTree := req.ClientTrees[signerKey]
+		if clientTree == nil {
+			return []ClientEvent{
+				&CreateSigningSessionsFailed{
+					Error: fmt.Errorf(
+						"no client tree for "+
+							"signer key %x",
+						signerKey[:],
+					),
+				},
+			}, nil
+		}
+
+		sweepTweak := clientTree.SweepTapscriptRoot
+		batchOut := clientTree.BatchOutput
+		root := clientTree.Root
+
+		prevOutFetcher, err := root.PrevOutputFetcher(
+			batchOut,
+		)
+		if err != nil {
+			return []ClientEvent{
+				&CreateSigningSessionsFailed{
+					Error: fmt.Errorf(
+						"prev output fetcher "+
+							"for signer %x: %w",
+						signerKey[:], err,
+					),
+				},
+			}, nil
+		}
+
+		session, err := tree.NewSignerSession(
+			h.Wallet, &vtxoReq.SigningKey,
+			sweepTweak, prevOutFetcher,
+			clientTree.Root,
+		)
+		if err != nil {
+			return []ClientEvent{
+				&CreateSigningSessionsFailed{
+					Error: fmt.Errorf(
+						"create signing session "+
+							"for signer %x: %w",
+						signerKey[:], err,
+					),
+				},
+			}, nil
+		}
+
+		musig2Sessions[signerKey] = session
+	}
+
+	// Collect nonces from each session. The server expects
+	// nonces grouped by signer key first, then by txid.
+	allNonces := make(
+		map[SignerKey]map[tree.TxID]tree.Musig2PubNonce,
+	)
+	for signerKey, session := range musig2Sessions {
+		nonces := session.GetNonces()
+		allNonces[signerKey] = nonces
+	}
+
+	return []ClientEvent{
+		&CreateSigningSessionsSucceeded{
+			Sessions:  musig2Sessions,
+			AllNonces: allNonces,
 		},
 	}, nil
 }

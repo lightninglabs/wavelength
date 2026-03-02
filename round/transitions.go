@@ -663,97 +663,84 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 			}, nil
 		}
 
-		// At this point, all the basic validation checks have passed.
-		// So now we'll generate a musig2 session to create nonces to
-		// sign the VTXO tree. Each VTXO that we created will
-		// effectively be a new musig session.
-		musig2Sessions := make(map[SignerKey]*tree.SignerSession)
-		for _, vtxoReq := range s.Intents.VTXOs {
-			signerKey := NewSignerKey(
-				vtxoReq.SigningKey.PubKey,
-			)
-
-			// Get the client tree for this signer key.
-			// The sweep tweak and batch output are
-			// properties of the tree that were set when
-			// the operator built it.
-			clientTree := s.ClientTrees[signerKey]
-			if clientTree == nil {
-				return nil, fmt.Errorf(
-					"no client tree for signer "+
-						"key %x", signerKey[:],
-				)
-			}
-
-			sweepTweak := clientTree.SweepTapscriptRoot
-			batchOut := clientTree.BatchOutput
-			root := clientTree.Root
-			prevOutFetcher, err := root.PrevOutputFetcher(batchOut)
-			if err != nil {
-				return nil, fmt.Errorf("failed to "+
-					"create prev output fetcher "+
-					"for signer %x: %w",
-					signerKey[:], err)
-			}
-
-			// TODO(roasbeef): actually use the interface
-			// in front of this?
-			session, err := tree.NewSignerSession(
-				env.Wallet, &vtxoReq.SigningKey,
-				sweepTweak, prevOutFetcher,
-				clientTree.Root,
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to "+
-					"create signing session for "+
-					"client %x: %w",
-					signerKey[:], err)
-			}
-
-			musig2Sessions[signerKey] = session
-		}
-
-		// Now that we have all our sessions created, we'll have each
-		// of them generate nonces to use in tree signing. The server
-		// expects nonces grouped by signer key first, then by txid.
-		allNonces := make(
-			map[SignerKey]map[tree.TxID]tree.Musig2PubNonce,
-		)
-		for signerKey, session := range musig2Sessions {
-			nonces := session.GetNonces()
-			allNonces[signerKey] = nonces
-		}
-
-		env.Log.InfoS(ctx, "Generated MuSig2 nonces, sending to server",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("session_count", len(musig2Sessions)),
-			slog.Int("signer_key_count", len(allNonces)))
-
-		// MuSig2 nonces have been generated locally. Send them to the
-		// server to participate in the aggregated nonce computation.
-		nonceMsg := &SubmitNoncesRequest{
-			RoundID: s.RoundID,
-			Nonces:  allNonces,
-		}
-
+		// Emit CreateSigningSessionsReq for the outbox handler
+		// to create MuSig2 signing sessions per VTXO using the
+		// Wallet. The handler returns sessions and nonces.
 		return &ClientStateTransition{
-			NextState: &NoncesSentState{
+			NextState: &AwaitingSigningSessionsState{
 				RoundID:              s.RoundID,
 				CommitmentTx:         s.CommitmentTx,
 				VTXOTreePaths:        s.VTXOTreePaths,
 				Intents:              s.Intents.Clone(),
 				ClientTrees:          s.ClientTrees,
-				Musig2Sessions:       musig2Sessions,
 				BoardingInputIndices: s.BoardingInputIndices,
 				ForfeitMappings:      s.ForfeitMappings,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{
+					&CreateSigningSessionsReq{
+						VTXORequests: slices.Clone(
+							s.Intents.VTXOs,
+						),
+						ClientTrees: maps.Clone(
+							s.ClientTrees,
+						),
+					},
+				},
+			}),
+		}, nil
+
+	default:
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
+	}
+}
+
+// ProcessEvent for AwaitingSigningSessionsState handles the outbox
+// handler response after creating MuSig2 signing sessions. On success,
+// transitions to NoncesSentState with nonces in the outbox; on
+// failure, the error is fatal.
+func (s *AwaitingSigningSessionsState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *CreateSigningSessionsSucceeded:
+		env.Log.InfoS(ctx, "Signing sessions created, "+
+			"sending nonces to server",
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("session_count", len(evt.Sessions)),
+			slog.Int("signer_key_count", len(evt.AllNonces)))
+
+		nonceMsg := &SubmitNoncesRequest{
+			RoundID: s.RoundID,
+			Nonces:  evt.AllNonces,
+		}
+
+		return &ClientStateTransition{
+			NextState: &NoncesSentState{
+				RoundID:        s.RoundID,
+				CommitmentTx:   s.CommitmentTx,
+				VTXOTreePaths:  s.VTXOTreePaths,
+				Intents:        s.Intents.Clone(),
+				ClientTrees:    s.ClientTrees,
+				Musig2Sessions: evt.Sessions,
+				BoardingInputIndices: s.
+					BoardingInputIndices,
+				ForfeitMappings: s.ForfeitMappings,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{nonceMsg},
 			}),
 		}, nil
 
+	case *CreateSigningSessionsFailed:
+		return nil, fmt.Errorf(
+			"signing session creation failed: %w",
+			evt.Error,
+		)
+
 	default:
-		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
 	}
 }

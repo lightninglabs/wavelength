@@ -130,6 +130,11 @@ func TestStateProperties(t *testing.T) {
 				"AwaitingRegistrationBuild",
 			},
 			{
+				"AwaitingSigningSessions",
+				&AwaitingSigningSessionsState{},
+				"AwaitingSigningSessions",
+			},
+			{
 				"ClientFailed",
 				&ClientFailedState{Reason: "test"},
 				"ClientFailed: test",
@@ -313,6 +318,26 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				}
 			},
 			event: &RoundJoined{RoundID: testRoundIDTr("other")},
+		},
+		{
+			name: "AwaitingRegistrationBuild_self_loops",
+			setup: func(h *boardingTestHarness) ClientState {
+				return &AwaitingRegistrationBuildState{}
+			},
+			event: &RoundJoined{
+				RoundID: testRoundIDTr("test"),
+			},
+		},
+		{
+			name: "AwaitingSigningSessions_self_loops",
+			setup: func(h *boardingTestHarness) ClientState {
+				return &AwaitingSigningSessionsState{
+					RoundID: testRoundIDTr("round-001"),
+				}
+			},
+			event: &RoundJoined{
+				RoundID: testRoundIDTr("other"),
+			},
 		},
 		{
 			name: "ClientFailed_self_loops_on_unknown",
@@ -873,17 +898,31 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		)
 		h.withState(state)
 
+		// Hop 1: GenerateNonces →
+		// AwaitingSigningSessionsState +
+		// CreateSigningSessionsReq.
 		transition, err := h.sendEvent(&GenerateNonces{})
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		noncesSentState := assertStateType[*NoncesSentState](h)
+		awaitState := assertStateType[*AwaitingSigningSessionsState](h) //nolint:ll
 		expectedID := testRoundIDTr("round-001")
+		require.Equal(t, expectedID, awaitState.RoundID)
+
+		h.assertOutboxContainsType(
+			"*round.CreateSigningSessionsReq",
+		)
+
+		// Hop 2: CreateSigningSessionsSucceeded →
+		// NoncesSentState.
+		noncesSentState := h.feedSigningSessionsSuccess()
 		require.Equal(t, expectedID, noncesSentState.RoundID)
 		require.NotNil(t, noncesSentState.Musig2Sessions)
 
 		h.assertOutboxLen(1)
-		h.assertOutboxContainsType("*round.SubmitNoncesRequest")
+		h.assertOutboxContainsType(
+			"*round.SubmitNoncesRequest",
+		)
 	})
 }
 
@@ -907,9 +946,10 @@ func TestNoncesSentState(t *testing.T) {
 
 		_, err := h.sendEvent(&GenerateNonces{})
 		require.NoError(t, err)
-		h.clearOutbox()
 
-		noncesSentState := assertStateType[*NoncesSentState](h)
+		// Hop through signing session creation.
+		noncesSentState := h.feedSigningSessionsSuccess()
+		h.clearOutbox()
 
 		event := h.newNoncesAggregatedEvent(
 			testRoundIDTr("round-001"),
@@ -920,7 +960,7 @@ func TestNoncesSentState(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		noncesAggState := assertStateType[*NoncesAggregatedState](h)
+		noncesAggState := assertStateType[*NoncesAggregatedState](h) //nolint:ll
 		expectedID := testRoundIDTr("round-001")
 		require.Equal(t, expectedID, noncesAggState.RoundID)
 		assertTransitionEmitsInternalEvent[*GeneratePartialSigs](
@@ -940,8 +980,8 @@ func TestNoncesAggregatedState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 
-		// We build through the full state machine flow to ensure MuSig2
-		// sessions are properly initialized with real nonce state.
+		// Build through the full state machine flow to ensure
+		// MuSig2 sessions are properly initialized.
 		validatedState := h.newCommitmentTxValidatedState(
 			testRoundIDTr("round-001"),
 			[]BoardingIntent{intent},
@@ -950,9 +990,10 @@ func TestNoncesAggregatedState(t *testing.T) {
 
 		_, err := h.sendEvent(&GenerateNonces{})
 		require.NoError(t, err)
-		h.clearOutbox()
 
-		noncesSentState := assertStateType[*NoncesSentState](h)
+		// Hop through signing session creation.
+		noncesSentState := h.feedSigningSessionsSuccess()
+		h.clearOutbox()
 
 		aggEvent := h.newNoncesAggregatedEvent(
 			testRoundIDTr("round-001"),
@@ -968,10 +1009,12 @@ func TestNoncesAggregatedState(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
-		partialSigsState := assertStateType[*PartialSigsSentState](h)
+		partialSigsState := assertStateType[*PartialSigsSentState](h) //nolint:ll
 		expectedID := testRoundIDTr("round-001")
 		require.Equal(t, expectedID, partialSigsState.RoundID)
-		h.assertOutboxContainsType("*round.SubmitPartialSigRequest")
+		h.assertOutboxContainsType(
+			"*round.SubmitPartialSigRequest",
+		)
 	})
 }
 
@@ -1702,11 +1745,12 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 	require.NotEmpty(t, ctxValidatedState.BoardingInputIndices)
 	h.clearOutbox()
 
-	// Step 3: CommitmentTxValidated → NoncesSent.
+	// Step 3: CommitmentTxValidated →
+	// AwaitingSigningSessions → NoncesSent.
 	_, err = h.sendEvent(&GenerateNonces{})
 	require.NoError(t, err)
 
-	noncesSentState := assertStateType[*NoncesSentState](h)
+	noncesSentState := h.feedSigningSessionsSuccess()
 	require.NotEmpty(t, noncesSentState.Musig2Sessions)
 	h.clearOutbox()
 
@@ -2229,13 +2273,14 @@ func TestForfeitMappingsCarriedThroughSigningStates(t *testing.T) {
 	validatedState.ForfeitMappings = forfeitMappings
 	h.withState(validatedState)
 
-	// Generate nonces.
+	// Generate nonces and hop through signing sessions.
 	_, err := h.sendEvent(&GenerateNonces{})
 	require.NoError(t, err)
+
+	noncesSentState := h.feedSigningSessionsSuccess()
 	h.clearOutbox()
 
 	// Check NoncesSentState has ForfeitMappings.
-	noncesSentState := assertStateType[*NoncesSentState](h)
 	require.Len(t, noncesSentState.ForfeitMappings, 1)
 	require.Contains(t, noncesSentState.ForfeitMappings, vtxoOutpoint)
 
