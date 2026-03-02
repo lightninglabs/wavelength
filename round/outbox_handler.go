@@ -3,6 +3,8 @@ package round
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"slices"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
@@ -164,6 +166,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context,
 	case *SignBoardingInputsReq:
 		return h.handleSignBoardingInputs(ctx, req)
 
+	case *BuildRegistrationReq:
+		return h.handleBuildRegistration(ctx, req)
+
 	default:
 		return nil, fmt.Errorf("unhandled outbox request "+
 			"type: %T", msg)
@@ -220,6 +225,221 @@ func (h *InProcessOutboxHandler) handleSignBoardingInputs(
 
 	return []ClientEvent{
 		&SignBoardingInputsSucceeded{InputSigs: sigs},
+	}, nil
+}
+
+// handleBuildRegistration performs all I/O needed to construct a
+// JoinRoundRequest: forfeit amount lookups, amount validation, key
+// derivation, and BIP-322 authorization signing. Returns
+// BuildRegistrationSucceeded with the complete request or
+// BuildRegistrationFailed if any step fails.
+//
+//nolint:funlen
+func (h *InProcessOutboxHandler) handleBuildRegistration(
+	ctx context.Context,
+	req *BuildRegistrationReq) ([]ClientEvent, error) {
+
+	// Calculate total input amount from all boarding intents.
+	var totalInput btcutil.Amount
+	for _, boarding := range req.Boarding {
+		totalInput += boarding.ChainInfo.Amount
+	}
+
+	// Include all forfeited VTXO amounts as inputs. This
+	// requires VTXOStore lookups to resolve each outpoint to
+	// its persisted amount.
+	forfeitAmt, err := computeTotalForfeitAmount(
+		ctx, h.VTXOStore, req.Forfeits,
+	)
+	if err != nil {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"compute forfeit amount: %w",
+					err,
+				),
+				Recoverable: true,
+			},
+		}, nil
+	}
+	totalInput += forfeitAmt
+
+	// Calculate total output amount from all VTXO requests.
+	var totalOutput btcutil.Amount
+	for _, vtxo := range req.VTXOs {
+		totalOutput += vtxo.Amount
+	}
+
+	// Include leave amounts as requested on-chain outputs.
+	for i, leaveReq := range req.Leaves {
+		if leaveReq.Output == nil {
+			return []ClientEvent{
+				&BuildRegistrationFailed{
+					Error: fmt.Errorf(
+						"leave request %d has "+
+							"nil output", i,
+					),
+					Recoverable: true,
+				},
+			}, nil
+		}
+
+		totalOutput += btcutil.Amount(
+			leaveReq.Output.Value,
+		)
+	}
+
+	// Validate that we have outputs to create.
+	if totalOutput == 0 {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"total VTXO output is zero",
+				),
+				Recoverable: true,
+			},
+		}, nil
+	}
+
+	// Validate that outputs don't exceed inputs.
+	if totalOutput > totalInput {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"total output (%d) exceeds "+
+						"total input (%d)",
+					totalOutput, totalInput,
+				),
+				Recoverable: true,
+			},
+		}, nil
+	}
+
+	// Calculate the implicit operator fee (inputs - outputs)
+	// and validate it's within acceptable limits.
+	operatorFee := totalInput - totalOutput
+	if operatorFee > h.MaxOperatorFee {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"operator fee (%d) exceeds "+
+						"max allowed (%d)",
+					operatorFee,
+					h.MaxOperatorFee,
+				),
+				Recoverable: true,
+			},
+		}, nil
+	}
+
+	h.Log.InfoS(ctx, "Amount validation passed",
+		btclog.Fmt("total_input", "%v", totalInput),
+		btclog.Fmt("total_output", "%v", totalOutput),
+		btclog.Fmt("operator_fee", "%v", operatorFee))
+
+	// Build boarding requests from intents.
+	boardingReqs := make(
+		[]types.BoardingRequest, 0, len(req.Boarding),
+	)
+	for _, intent := range req.Boarding {
+		boardingReqs = append(boardingReqs, intent.Request)
+	}
+
+	vtxoReqs := slices.Clone(req.VTXOs)
+
+	// Build sorted forfeit requests from the decoupled pool.
+	forfeitReqs, err := sortedForfeitRequests(req.Forfeits)
+	if err != nil {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error:       err,
+				Recoverable: true,
+			},
+		}, nil
+	}
+
+	leaveReqs := slices.Clone(req.Leaves)
+
+	// Build Intents with all pools for downstream validation.
+	intents := Intents{
+		Boarding: slices.Clone(req.Boarding),
+		VTXOs:    vtxoReqs,
+		Leaves:   leaveReqs,
+		Forfeits: slices.Clone(req.Forfeits),
+	}
+
+	// Derive a fresh identifier key for the join-request
+	// authorization challenge.
+	identifierKeyDesc, err := deriveJoinAuthIdentifierKey(
+		ctx, h.Wallet,
+	)
+	if err != nil {
+		return []ClientEvent{
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"derive join auth identifier: %w",
+					err,
+				),
+				Recoverable: true,
+			},
+		}, nil
+	}
+
+	idPub := identifierKeyDesc.PubKey
+
+	// When auth is enabled, produce a BIP-322 proof that binds
+	// the request contents to the identifier key. The functions
+	// in join_auth.go take *ClientEnvironment, so we construct
+	// a temporary env from handler fields.
+	var joinAuth *types.JoinRoundAuth
+	if !h.DisableJoinRequestAuth {
+		env := &ClientEnvironment{
+			VTXOStore:       h.VTXOStore,
+			Wallet:          h.Wallet,
+			QueryBestHeight: h.QueryBestHeight,
+			Log:             h.Log,
+			OperatorTerms:   h.OperatorTerms,
+			ChainParams:     h.ChainParams,
+		}
+
+		auth, err := buildJoinRoundAuth(
+			ctx, env, identifierKeyDesc, intents,
+			vtxoReqs, forfeitReqs, leaveReqs,
+		)
+		if err != nil {
+			return []ClientEvent{
+				&BuildRegistrationFailed{
+					Error: fmt.Errorf(
+						"join auth: %w", err,
+					),
+					Recoverable: true,
+				},
+			}, nil
+		}
+
+		joinAuth = auth
+	}
+
+	h.Log.InfoS(ctx, "Registration built",
+		slog.Int("boarding_requests", len(boardingReqs)),
+		slog.Int("vtxo_requests", len(vtxoReqs)),
+		slog.Int("forfeit_requests", len(forfeitReqs)),
+		slog.Int("leave_requests", len(leaveReqs)))
+
+	joinReq := &JoinRoundRequest{
+		BoardingRequests: boardingReqs,
+		VTXORequests:     vtxoReqs,
+		ForfeitRequests:  forfeitReqs,
+		LeaveRequests:    leaveReqs,
+		Identifier:       idPub,
+		Auth:             joinAuth,
+	}
+
+	return []ClientEvent{
+		&BuildRegistrationSucceeded{
+			JoinReq: joinReq,
+			Intents: intents,
+		},
 	}, nil
 }
 

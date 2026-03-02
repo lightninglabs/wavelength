@@ -9,7 +9,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -17,12 +16,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
-
-// buildBoardingRequest constructs a types.BoardingRequest from a
-// BoardingIntent.
-func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
-	return intent.Request
-}
 
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
@@ -161,176 +154,35 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			},
 		}, nil
 
-	// It's time to register our confirmed boarding UTXOs for the next
-	// round. We'll send a message to the server using our outbox, then
-	// transition to the next phase.
+	// It's time to register our confirmed boarding UTXOs for the
+	// next round. Emit BuildRegistrationReq for the outbox handler
+	// to perform I/O (forfeit amount lookup, key derivation,
+	// BIP-322 signing) and build the JoinRoundRequest.
 	case *RegistrationRequested:
-		env.Log.InfoS(ctx, "Registration requested, preparing to join round",
+		env.Log.InfoS(ctx, "Registration requested, delegating to handler",
 			slog.Int("boarding_intent_count", len(s.Boarding)),
-			slog.Int("vtxo_intent_count", len(s.VTXOs)))
+			slog.Int("vtxo_intent_count", len(s.VTXOs)),
+			slog.Int("forfeit_count", len(s.Forfeits)),
+			slog.Int("leave_count", len(s.Leaves)))
 
-		// Calculate total input amount from all boarding intents.
-		var totalInput btcutil.Amount
-		for _, boarding := range s.Boarding {
-			totalInput += boarding.ChainInfo.Amount
-		}
-
-		// Calculate total output amount from all VTXO requests.
-		var totalOutput btcutil.Amount
-		for _, vtxo := range s.VTXOs {
-			totalOutput += vtxo.Amount
-		}
-
-		// Include all forfeited VTXO amounts as inputs.
-		forfeitAmt, err := computeTotalForfeitAmount(
-			ctx, env.VTXOStore, s.Forfeits,
-		)
-		if err != nil {
-			return failWithNotification(
-				"failed to compute forfeit amount",
-				err, true, fn.None[RoundID](),
-			), nil
-		}
-		totalInput += forfeitAmt
-
-		// Include leave amounts as requested on-chain outputs.
-		for i, req := range s.Leaves {
-			if req.Output == nil {
-				return failWithNotification(
-					"leave request has nil output",
-					fmt.Errorf("leave request %d "+
-						"has nil output", i),
-					true, fn.None[RoundID](),
-				), nil
-			}
-
-			totalOutput += btcutil.Amount(req.Output.Value)
-		}
-
-		// Validate that we have outputs to create.
-		if totalOutput == 0 {
-			return failWithNotification(
-				"no VTXO output amount",
-				fmt.Errorf("total VTXO output is zero"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Validate that outputs don't exceed inputs.
-		if totalOutput > totalInput {
-			return failWithNotification(
-				"outputs exceed inputs",
-				fmt.Errorf(
-					"total output (%d) exceeds total "+
-						"input (%d)",
-					totalOutput, totalInput,
-				),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Calculate the implicit operator fee (inputs - outputs).
-		operatorFee := totalInput - totalOutput
-
-		// Validate that the operator fee is within acceptable limits.
-		if operatorFee > env.MaxOperatorFee {
-			return failWithNotification(
-				"operator fee exceeds limit",
-				fmt.Errorf(
-					"operator fee (%d) exceeds max "+
-						"allowed (%d)",
-					operatorFee, env.MaxOperatorFee,
-				),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		env.Log.InfoS(ctx, "Amount validation passed",
-			btclog.Fmt("total_input", "%v", totalInput),
-			btclog.Fmt("total_output", "%v", totalOutput),
-			btclog.Fmt("operator_fee", "%v", operatorFee))
-
-		// Extract the set of values from the intent map, as we don't
-		// need to track them by outpoint any longer.
-		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
-		vtxoReqs := slices.Clone(s.VTXOs)
-
-		// Build forfeit requests from the decoupled forfeit pool.
-		forfeitReqs, err := sortedForfeitRequests(s.Forfeits)
-		if err != nil {
-			return failWithNotification(
-				"invalid forfeit requests",
-				err, true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Leave requests are already in append order.
-		leaveReqs := slices.Clone(s.Leaves)
-
-		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
-			slog.Int("boarding_requests", len(boardingReqs)),
-			slog.Int("vtxo_requests", len(vtxoReqs)),
-			slog.Int("forfeit_requests", len(forfeitReqs)),
-			slog.Int("leave_requests", len(leaveReqs)))
-
-		// Build Intents with all pools for downstream validation.
-		intent := Intents{
-			Boarding: slices.Clone(s.Boarding),
-			VTXOs:    vtxoReqs,
-			Leaves:   leaveReqs,
-			Forfeits: slices.Clone(s.Forfeits),
-		}
-
-		// Derive a fresh identifier key for the join-request
-		// authorization challenge.
-		identifierKeyDesc, err := deriveJoinAuthIdentifierKey(
-			ctx, env.Wallet,
-		)
-		if err != nil {
-			return failWithNotification(
-				"failed to derive join auth identifier",
-				err, true, fn.None[RoundID](),
-			), nil
-		}
-
-		idPub := identifierKeyDesc.PubKey
-
-		// When auth is enabled, produce a BIP-322 proof that
-		// binds the request contents to the identifier key.
-		var joinAuth *types.JoinRoundAuth
-		if !env.DisableJoinRequestAuth {
-			auth, err := buildJoinRoundAuth(
-				ctx, env, identifierKeyDesc, intent, vtxoReqs,
-				forfeitReqs, leaveReqs,
-			)
-			if err != nil {
-				return failWithNotification(
-					"failed to build round auth",
-					fmt.Errorf(
-						"join auth: %w", err,
-					),
-					true, fn.None[RoundID](),
-				), nil
-			}
-
-			joinAuth = auth
-		}
-
-		// With all this extracted, we'll now send the
-		// JoinRoundRequest to kick off the signing process.
 		return &ClientStateTransition{
-			NextState: &RegistrationSentState{
-				Intents: intent,
+			NextState: &AwaitingRegistrationBuildState{
+				Boarding: slices.Clone(s.Boarding),
+				VTXOs:    slices.Clone(s.VTXOs),
+				Forfeits: slices.Clone(s.Forfeits),
+				Leaves:   slices.Clone(s.Leaves),
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: []ClientOutMsg{
-					&JoinRoundRequest{
-						BoardingRequests: boardingReqs,
-						VTXORequests:     vtxoReqs,
-						ForfeitRequests:  forfeitReqs,
-						LeaveRequests:    leaveReqs,
-						Identifier:       idPub,
-						Auth:             joinAuth,
+					&BuildRegistrationReq{
+						Boarding: slices.Clone(
+							s.Boarding,
+						),
+						VTXOs: slices.Clone(s.VTXOs),
+						Forfeits: slices.Clone(
+							s.Forfeits,
+						),
+						Leaves: slices.Clone(s.Leaves),
 					},
 				},
 			}),
@@ -347,6 +199,39 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 	default:
 		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
+	}
+}
+
+// ProcessEvent for AwaitingRegistrationBuildState handles the outbox
+// handler response after building the JoinRoundRequest. On success,
+// transitions to RegistrationSentState with the JoinRoundRequest
+// in the outbox; on failure, transitions to ClientFailedState.
+func (s *AwaitingRegistrationBuildState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *BuildRegistrationSucceeded:
+		env.Log.InfoS(ctx, "Registration built, sending to server")
+
+		return &ClientStateTransition{
+			NextState: &RegistrationSentState{
+				Intents: evt.Intents,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{evt.JoinReq},
+			}),
+		}, nil
+
+	case *BuildRegistrationFailed:
+		return failWithNotification(
+			"registration build failed",
+			evt.Error, evt.Recoverable,
+			fn.None[RoundID](),
+		), nil
+
+	default:
 		return selfLoop(s), nil
 	}
 }

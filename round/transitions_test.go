@@ -1,10 +1,10 @@
 package round
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
@@ -123,6 +123,11 @@ func TestStateProperties(t *testing.T) {
 				"AwaitingSaveVTXOs",
 				&AwaitingSaveVTXOsState{},
 				"AwaitingSaveVTXOs",
+			},
+			{
+				"AwaitingRegistrationBuild",
+				&AwaitingRegistrationBuildState{},
+				"AwaitingRegistrationBuild",
 			},
 			{
 				"ClientFailed",
@@ -606,6 +611,11 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Len(t, nextState.Boarding, 2)
 	})
 
+	// Tests below use the two-hop pattern. RegistrationRequested
+	// now delegates I/O to the outbox handler and transitions to
+	// AwaitingRegistrationBuildState. The handler response
+	// (BuildRegistrationSucceeded/Failed) drives the next hop.
+
 	t.Run("registration_requested_transitions", func(t *testing.T) {
 		t.Parallel()
 
@@ -618,9 +628,41 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 			VTXOs:    []types.VTXORequest{vtxoReq},
 		})
 
+		// Hop 1: RegistrationRequested →
+		// AwaitingRegistrationBuildState + BuildRegistrationReq.
 		event := &RegistrationRequested{}
-
 		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		awaitState := assertStateType[*AwaitingRegistrationBuildState](h) //nolint:ll
+		require.Len(t, awaitState.Boarding, 1)
+		require.Len(t, awaitState.VTXOs, 1)
+
+		require.Len(t, h.outboxMessages, 1)
+		_, ok := h.outboxMessages[0].(*BuildRegistrationReq)
+		require.True(t, ok)
+
+		// Hop 2: BuildRegistrationSucceeded →
+		// RegistrationSentState.
+		h.outboxMessages = nil
+		joinReq := &JoinRoundRequest{
+			BoardingRequests: []types.BoardingRequest{
+				intent.Request,
+			},
+			VTXORequests: []types.VTXORequest{vtxoReq},
+		}
+		intents := Intents{
+			Boarding: []BoardingIntent{intent},
+			VTXOs:    []types.VTXORequest{vtxoReq},
+		}
+
+		transition, err = h.sendEvent(
+			&BuildRegistrationSucceeded{
+				JoinReq: joinReq,
+				Intents: intents,
+			},
+		)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
@@ -628,116 +670,34 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 
-	t.Run("no_intents_transitions_to_failed", func(t *testing.T) {
+	t.Run("build_registration_failed_transitions", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
-		h.withState(&PendingRoundAssembly{
+
+		// Start in AwaitingRegistrationBuildState directly
+		// to test the failure path.
+		h.withState(&AwaitingRegistrationBuildState{
 			Boarding: []BoardingIntent{},
 			VTXOs:    []types.VTXORequest{},
 		})
 
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		// With no VTXOs, total output is zero which fails validation.
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(t, failedState.Reason, "no VTXO output amount")
-	})
-
-	t.Run("output_exceeds_input_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 60,000 sats (more than input).
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(60000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(t, failedState.Reason, "outputs exceed inputs")
-	})
-
-	t.Run("fee_exceeds_max_fails", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set a low max operator fee (1,000 sats).
-		h.env.MaxOperatorFee = btcutil.Amount(1000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-		require.Equal(t, btcutil.Amount(50000), intent.ChainInfo.Amount)
-
-		// Create VTXO request for 40,000 sats, implying 10,000 sat fee.
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(40000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
+		transition, err := h.sendEvent(
+			&BuildRegistrationFailed{
+				Error: fmt.Errorf(
+					"total VTXO output is zero",
+				),
+				Recoverable: true,
+			},
+		)
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
 		failedState := assertStateType[*ClientFailedState](h)
 		require.Contains(
-			t, failedState.Reason, "operator fee exceeds limit",
+			t, failedState.Reason,
+			"registration build failed",
 		)
-	})
-
-	t.Run("valid_fee_within_limit_succeeds", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-
-		// Set max operator fee (10,000 sats).
-		h.env.MaxOperatorFee = btcutil.Amount(10000)
-
-		// Create intent with 50,000 sats.
-		intent := h.newTestBoardingIntent()
-
-		// Create VTXO request for 45,000 sats, implying 5,000 sat fee.
-		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxoReq.Amount = btcutil.Amount(45000)
-
-		h.withState(&PendingRoundAssembly{
-			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		})
-
-		event := &RegistrationRequested{}
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		// Should succeed and transition to RegistrationSentState.
-		nextState := assertStateType[*RegistrationSentState](h)
-		require.Len(t, nextState.Intents.Boarding, 1)
 	})
 }
 
@@ -1589,15 +1549,34 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 		VTXOs:    []types.VTXORequest{vtxoReq},
 	})
 
-	// Step 1: Request registration.
+	// Step 1: Request registration → AwaitingRegistrationBuild.
 	regEvent := &RegistrationRequested{}
 	_, err := h.sendEvent(regEvent)
+	require.NoError(t, err)
+
+	assertStateType[*AwaitingRegistrationBuildState](h) //nolint:ll
+	h.outboxMessages = nil
+
+	// Step 2: Handler builds → RegistrationSentState.
+	intents := Intents{
+		Boarding: []BoardingIntent{intent},
+		VTXOs:    []types.VTXORequest{vtxoReq},
+	}
+	_, err = h.sendEvent(&BuildRegistrationSucceeded{
+		JoinReq: &JoinRoundRequest{
+			BoardingRequests: []types.BoardingRequest{
+				intent.Request,
+			},
+			VTXORequests: []types.VTXORequest{vtxoReq},
+		},
+		Intents: intents,
+	})
 	require.NoError(t, err)
 
 	regState := assertStateType[*RegistrationSentState](h)
 	require.Len(t, regState.Intents.Boarding, 1)
 
-	// Step 2: Server accepts.
+	// Step 3: Server accepts.
 	joinEvent := &RoundJoined{RoundID: testRoundIDTr("round-001")}
 	_, err = h.sendEvent(joinEvent)
 	require.NoError(t, err)
@@ -1642,15 +1621,36 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 		VTXOs:    []types.VTXORequest{vtxoReq},
 	})
 
-	// Step 1: PendingRoundAssembly → RegistrationSentState.
+	// Step 1: PendingRoundAssembly →
+	// AwaitingRegistrationBuildState.
 	regEvent := &RegistrationRequested{}
 	_, err := h.sendEvent(regEvent)
+	require.NoError(t, err)
+
+	assertStateType[*AwaitingRegistrationBuildState](h) //nolint:ll
+	h.outboxMessages = nil
+
+	// Step 2: BuildRegistrationSucceeded →
+	// RegistrationSentState.
+	intents := Intents{
+		Boarding: []BoardingIntent{intent},
+		VTXOs:    []types.VTXORequest{vtxoReq},
+	}
+	_, err = h.sendEvent(&BuildRegistrationSucceeded{
+		JoinReq: &JoinRoundRequest{
+			BoardingRequests: []types.BoardingRequest{
+				intent.Request,
+			},
+			VTXORequests: []types.VTXORequest{vtxoReq},
+		},
+		Intents: intents,
+	})
 	require.NoError(t, err)
 
 	regSentState := assertStateType[*RegistrationSentState](h)
 	require.Len(t, regSentState.Intents.Boarding, 1)
 
-	// Step 2: RegistrationSentState → RoundJoinedState.
+	// Step 3: RegistrationSentState → RoundJoinedState.
 	integrationRoundID := testRoundIDTr("round-integration-001")
 	joinEvent := &RoundJoined{RoundID: integrationRoundID}
 	_, err = h.sendEvent(joinEvent)

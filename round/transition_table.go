@@ -56,14 +56,34 @@ var BoardingClientTransitions = ClientTransitionTable{
 				},
 				{
 					Event:       &RegistrationRequested{},
-					ToState:     &RegistrationSentState{},
-					Description: "Intents confirmed, register with server",
-					EmitsOutbox: []ClientOutMsg{&JoinRoundRequest{}},
+					ToState:     &AwaitingRegistrationBuildState{},
+					Description: "Intents confirmed, building registration",
+					EmitsOutbox: []ClientOutMsg{&BuildRegistrationReq{}},
 				},
 				{
 					Event:       &BoardingFailed{},
 					ToState:     &ClientFailedState{},
 					Description: "Boarding failed during assembly",
+					IsTerminal:  true,
+				},
+			},
+		},
+
+		// AwaitingRegistrationBuildState: Waiting for registration
+		// build to complete.
+		{
+			FromState: &AwaitingRegistrationBuildState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &BuildRegistrationSucceeded{},
+					ToState:     &RegistrationSentState{},
+					Description: "Registration built, sending to server",
+					EmitsOutbox: []ClientOutMsg{&JoinRoundRequest{}},
+				},
+				{
+					Event:       &BuildRegistrationFailed{},
+					ToState:     &ClientFailedState{},
+					Description: "Registration build failed",
 					IsTerminal:  true,
 				},
 			},
