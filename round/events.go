@@ -422,3 +422,26 @@ type BuildRegistrationFailed struct {
 }
 
 func (e *BuildRegistrationFailed) clientEventSealed() {}
+
+// CreateSigningSessionsSucceeded is the follow-up event returned by
+// the outbox handler after successfully creating MuSig2 signing
+// sessions for all VTXOs and collecting their nonces.
+type CreateSigningSessionsSucceeded struct {
+	// Sessions maps signer keys to their MuSig2 signing sessions.
+	Sessions map[SignerKey]*tree.SignerSession
+
+	// AllNonces maps signer keys to per-transaction MuSig2 public
+	// nonces from the created sessions.
+	AllNonces map[SignerKey]map[tree.TxID]tree.Musig2PubNonce
+}
+
+func (e *CreateSigningSessionsSucceeded) clientEventSealed() {}
+
+// CreateSigningSessionsFailed is the follow-up event returned by the
+// outbox handler when MuSig2 session creation fails.
+type CreateSigningSessionsFailed struct {
+	// Error is the underlying session creation error.
+	Error error
+}
+
+func (e *CreateSigningSessionsFailed) clientEventSealed() {}

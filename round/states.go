@@ -219,6 +219,51 @@ func (s *CommitmentTxValidatedState) IsTerminal() bool {
 
 func (s *CommitmentTxValidatedState) clientStateSealed() {}
 
+// AwaitingSigningSessionsState is an intermediate state between
+// CommitmentTxValidated and NoncesSent. The FSM has validated the
+// commitment tx and VTXO tree, and emitted a CreateSigningSessionsReq.
+// It is now waiting for the outbox handler to create MuSig2 signing
+// sessions using the Wallet. On success, the FSM transitions to
+// NoncesSentState with the nonce submission in the outbox; on failure,
+// the error is fatal.
+type AwaitingSigningSessionsState struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// CommitmentTx is the unsigned commitment transaction as a
+	// PSBT.
+	CommitmentTx *psbt.Packet
+
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree
+	// paths.
+	VTXOTreePaths map[int]*tree.Tree
+
+	// Intents contains all the client's intents for this round.
+	Intents Intents
+
+	// ClientTrees maps signer keys to the client's extracted
+	// sub-tree for each VTXO.
+	ClientTrees map[SignerKey]*tree.Tree
+
+	// BoardingInputIndices maps each boarding intent's outpoint to
+	// its position in the commitment transaction inputs.
+	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitMappings maps VTXO outpoints to their connector info
+	// for refresh rounds. Carried forward through signing states.
+	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
+}
+
+func (s *AwaitingSigningSessionsState) String() string {
+	return "AwaitingSigningSessions"
+}
+
+func (s *AwaitingSigningSessionsState) IsTerminal() bool {
+	return false
+}
+
+func (s *AwaitingSigningSessionsState) clientStateSealed() {}
+
 // ForfeitSignaturesCollectingState indicates the client is waiting for forfeit
 // signatures from VTXO actors after completing VTXO tree signing. This state
 // is entered when the round includes refresh or leave requests (VTXOs being

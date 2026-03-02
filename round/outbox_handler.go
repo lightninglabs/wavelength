@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
@@ -127,6 +128,23 @@ type BuildRegistrationReq struct {
 
 func (r *BuildRegistrationReq) clientOutMsgSealed()  {}
 func (r *BuildRegistrationReq) outboxRequestSealed() {}
+
+// CreateSigningSessionsReq requests creation of MuSig2 signing
+// sessions for each VTXO in the round. The handler calls
+// tree.NewSignerSession per VTXO using the Wallet, collects nonces,
+// and returns CreateSigningSessionsSucceeded or
+// CreateSigningSessionsFailed.
+type CreateSigningSessionsReq struct {
+	// VTXORequests are the VTXO requests needing signing sessions.
+	VTXORequests []types.VTXORequest
+
+	// ClientTrees maps signer keys to the client's extracted
+	// sub-tree for each VTXO.
+	ClientTrees map[SignerKey]*tree.Tree
+}
+
+func (r *CreateSigningSessionsReq) clientOutMsgSealed()  {}
+func (r *CreateSigningSessionsReq) outboxRequestSealed() {}
 
 // SignBoardingInputsReq requests signing of all boarding inputs in the
 // commitment transaction. The handler calls signBoardingInputs with
