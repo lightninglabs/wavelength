@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -29,6 +30,100 @@ import (
 
 // Compile-time assertion that RoundClientActor implements actor.Stoppable.
 var _ actor.Stoppable = (*RoundClientActor)(nil)
+
+// RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
+// expiry and needs to be refreshed in a new round. The round actor should
+// queue this VTXO for inclusion in the next batch swap.
+//
+// This request contains all information needed to build a forfeit request
+// (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
+// The same client key is typically reused for the new VTXO.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], VTXOs: [1]}.
+type RefreshVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to refresh.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// NewVTXOKey is the client's public key for the new VTXO. This is
+	// typically the same as the old VTXO's key but could be fresh.
+	NewVTXOKey *btcec.PublicKey
+
+	// PkScript is the output script for the new VTXO.
+	PkScript []byte
+
+	// OperatorKey is the operator's public key for the new VTXO.
+	OperatorKey *btcec.PublicKey
+
+	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
+	Expiry uint32
+
+	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	SigningKey keychain.KeyDescriptor
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RefreshVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RefreshVTXORequest) MessageType() string {
+	return "RefreshVTXORequest"
+}
+
+// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
+// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
+// is similar to RefreshVTXORequest except the output is on-chain rather than a
+// new VTXO.
+//
+// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
+// forfeited via a connector output, and the leave output is included directly
+// in the batch transaction.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], Leaves: [1]}.
+type LeaveVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// Output is the on-chain destination output that will be included in
+	// the batch transaction. This contains the value and pkScript for the
+	// leave output.
+	Output *wire.TxOut
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *LeaveVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *LeaveVTXORequest) MessageType() string {
+	return "LeaveVTXORequest"
+}
+
+// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
+// RefreshVTXORequest. The refresh request contains all info needed to create
+// the new VTXO output in the round.
+func buildVTXORequestFromRefresh(
+	req *RefreshVTXORequest) types.VTXORequest {
+
+	return types.VTXORequest{
+		Amount:      btcutil.Amount(req.Amount),
+		PkScript:    req.PkScript,
+		Expiry:      req.Expiry,
+		ClientKey:   req.NewVTXOKey,
+		OperatorKey: req.OperatorKey,
+		SigningKey:  req.SigningKey,
+	}
+}
 
 // RoundFSM wraps a state machine instance for a specific round.
 type RoundFSM struct {
