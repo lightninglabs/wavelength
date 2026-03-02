@@ -210,13 +210,11 @@ var BoardingClientTransitions = ClientTransitionTable{
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &BoardingConfirmed{},
-					ToState:     &ConfirmedState{},
-					Description: "Commitment tx confirmed, complete",
+					ToState:     &AwaitingSaveVTXOsState{},
+					Description: "Commitment tx confirmed, saving VTXOs",
 					EmitsOutbox: []ClientOutMsg{
-						&VTXOCreatedNotification{},
-						&RoundCompletedNotification{},
+						&SaveVTXOsReq{},
 					},
-					IsTerminal: true,
 				},
 				{
 					Event:       &BoardingFailed{},
@@ -228,6 +226,29 @@ var BoardingClientTransitions = ClientTransitionTable{
 					Event:       &RecoveryInitiated{},
 					ToState:     &RecoveryInitiatedState{},
 					Description: "CSV timeout, recovering funds",
+					IsTerminal:  true,
+				},
+			},
+		},
+
+		// AwaitingSaveVTXOsState: Waiting for VTXO persistence.
+		{
+			FromState: &AwaitingSaveVTXOsState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &SaveVTXOsSucceeded{},
+					ToState:     &ConfirmedState{},
+					Description: "VTXOs saved, round complete",
+					EmitsOutbox: []ClientOutMsg{
+						&VTXOCreatedNotification{},
+						&RoundCompletedNotification{},
+					},
+					IsTerminal: true,
+				},
+				{
+					Event:       &SaveVTXOsFailed{},
+					ToState:     &ClientFailedState{},
+					Description: "VTXO persistence failed",
 					IsTerminal:  true,
 				},
 			},

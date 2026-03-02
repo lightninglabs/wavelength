@@ -1580,71 +1580,104 @@ func (s *InputSigSentState) ProcessEvent(
 			}, nil
 		}
 
-		env.Log.InfoS(ctx, "Built client VTXOs from confirmed transaction",
+		env.Log.InfoS(ctx, "Built client VTXOs, requesting persistence",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("vtxo_count", len(vtxos)))
 
-		// Persist VTXOs with their extracted tree paths for future
-		// spending.
-		if err := env.VTXOStore.SaveVTXOs(ctx, vtxos); err != nil {
-			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
-		}
+		// Emit SaveVTXOsReq for the outbox handler to persist
+		// the VTXOs. The FSM transitions to an awaiting state
+		// until the handler responds with success or failure.
+		return &ClientStateTransition{
+			NextState: &AwaitingSaveVTXOsState{
+				RoundID:        s.RoundID,
+				VTXOs:          vtxos,
+				ConfEvent:      evt,
+				ForfeitedVTXOs: s.ForfeitedVTXOs,
+				Intents:        s.Intents.Clone(),
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: []ClientOutMsg{
+					&SaveVTXOsReq{VTXOs: vtxos},
+				},
+			}),
+		}, nil
 
-		env.Log.InfoS(ctx, "Saved VTXOs to store, round complete",
+	default:
+		// Self-loop on unknown events - do not halt the FSM.
+		return selfLoop(s), nil
+	}
+}
+
+// ProcessEvent for AwaitingSaveVTXOsState. Handles the outbox handler
+// response after VTXO persistence is attempted.
+func (s *AwaitingSaveVTXOsState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *SaveVTXOsSucceeded:
+		env.Log.InfoS(ctx, "VTXOs saved, round complete",
 			slog.String("round_id", s.RoundID.String()),
-			slog.Int("vtxo_count", len(vtxos)))
+			slog.Int("vtxo_count", len(s.VTXOs)))
 
+		confEvt := s.ConfEvent
 		confInfo := ConfInfo{
-			Height:    evt.BlockHeight,
-			BlockHash: evt.BlockHash,
+			Height:    confEvt.BlockHeight,
+			BlockHash: confEvt.BlockHash,
 		}
 
 		// Compute batch expiry as absolute block height.
 		sweepDelay := int32(env.OperatorTerms.SweepDelay)
-		batchExpiry := evt.BlockHeight + sweepDelay
+		batchExpiry := confEvt.BlockHeight + sweepDelay
 
-		// Build outbox messages starting with standard notifications.
+		// Build outbox messages starting with standard
+		// notifications.
 		outbox := []ClientOutMsg{
 			&VTXOCreatedNotification{
-				VTXOs:          vtxos,
+				VTXOs:          s.VTXOs,
 				RoundID:        s.RoundID.String(),
-				CommitmentTxID: evt.TxID,
+				CommitmentTxID: confEvt.TxID,
 				BatchExpiry:    batchExpiry,
-				CreatedHeight:  evt.BlockHeight,
+				CreatedHeight:  confEvt.BlockHeight,
 			},
 			&RoundCompletedNotification{
 				RoundID:  s.RoundID,
-				TxID:     evt.TxID,
+				TxID:     confEvt.TxID,
 				ConfInfo: confInfo,
 			},
 		}
 
-		// If this round included refresh requests, notify the old VTXO
-		// actors that their forfeit is now confirmed. This allows them
-		// to transition to the terminal Forfeited state.
+		// If this round included refresh requests, notify old
+		// VTXO actors that their forfeit is confirmed.
 		for _, vtxoOutpoint := range s.ForfeitedVTXOs {
-			outbox = append(outbox, &ForfeitConfirmedToVTXO{
-				VTXOOutpoint:   vtxoOutpoint,
-				CommitmentTxID: evt.TxID,
-				BlockHeight:    evt.BlockHeight,
-			})
+			outbox = append(outbox,
+				&ForfeitConfirmedToVTXO{
+					VTXOOutpoint:   vtxoOutpoint,
+					CommitmentTxID: confEvt.TxID,
+					BlockHeight:    confEvt.BlockHeight,
+				})
 		}
 
 		return &ClientStateTransition{
 			NextState: &ConfirmedState{
-				TxID:          evt.TxID,
-				BlockHeight:   evt.BlockHeight,
-				BlockHash:     evt.BlockHash,
-				Confirmations: evt.Confirmations,
-				VTXOs:         vtxos,
+				TxID:          confEvt.TxID,
+				BlockHeight:   confEvt.BlockHeight,
+				BlockHash:     confEvt.BlockHash,
+				Confirmations: confEvt.Confirmations,
+				VTXOs:         s.VTXOs,
 			},
 			NewEvents: fn.Some(ClientEmittedEvent{
 				Outbox: outbox,
 			}),
 		}, nil
 
+	case *SaveVTXOsFailed:
+		return failWithNotification(
+			"failed to save VTXOs", evt.Error,
+			false, fn.Some(s.RoundID),
+		), nil
+
 	default:
-		// Self-loop on unknown events - do not halt the FSM.
 		return selfLoop(s), nil
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,6 +108,11 @@ func TestStateProperties(t *testing.T) {
 			{
 				"InputSigSent", &InputSigSentState{},
 				"InputSigSent",
+			},
+			{
+				"AwaitingSaveVTXOs",
+				&AwaitingSaveVTXOsState{},
+				"AwaitingSaveVTXOs",
 			},
 			{
 				"ClientFailed",
@@ -1260,7 +1264,6 @@ func TestInputSigSentState(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
-		h.setupMockVTXOStoreForSave()
 
 		intent := h.newTestBoardingIntent()
 		state := h.newInputSigSentState(
@@ -1277,7 +1280,21 @@ func TestInputSigSentState(t *testing.T) {
 			Confirmations: 6,
 		}
 
+		// Hop 1: BoardingConfirmed → AwaitingSaveVTXOsState
+		// with SaveVTXOsReq in outbox.
 		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		awaitState := assertStateType[*AwaitingSaveVTXOsState](h)
+		require.NotEmpty(t, awaitState.VTXOs)
+		h.assertOutboxLen(1)
+		require.IsType(t, &SaveVTXOsReq{},
+			h.outboxMessages[0])
+		h.clearOutbox()
+
+		// Hop 2: SaveVTXOsSucceeded → ConfirmedState.
+		transition, err = h.sendEvent(&SaveVTXOsSucceeded{})
 		require.NoError(t, err)
 		require.NotNil(t, transition)
 
@@ -1286,10 +1303,9 @@ func TestInputSigSentState(t *testing.T) {
 		require.Equal(t, blockHash, confirmedState.BlockHash)
 		require.Equal(t, int32(6), confirmedState.Confirmations)
 
+		// Outbox should have VTXOCreated + RoundCompleted
+		// notifications.
 		h.assertOutboxLen(2)
-		h.vtxoStore.AssertCalled(
-			t, "SaveVTXOs", mock.Anything, mock.Anything,
-		)
 	})
 
 	t.Run("buildClientVTXOs_error", func(t *testing.T) {
@@ -2111,7 +2127,6 @@ func TestInputSigSentStateEmitsForfeitConfirmed(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHarness(t)
-	h.setupMockVTXOStoreForSave()
 
 	intent := h.newTestBoardingIntent()
 	vtxoOutpoint1 := h.newTestOutpoint()
@@ -2128,9 +2143,15 @@ func TestInputSigSentStateEmitsForfeitConfirmed(t *testing.T) {
 		Confirmations: 6,
 	}
 
+	// Hop 1: BoardingConfirmed → AwaitingSaveVTXOsState.
 	_, err := h.sendEvent(event)
 	require.NoError(t, err)
+	_ = assertStateType[*AwaitingSaveVTXOsState](h)
+	h.clearOutbox()
 
+	// Hop 2: SaveVTXOsSucceeded → ConfirmedState.
+	_, err = h.sendEvent(&SaveVTXOsSucceeded{})
+	require.NoError(t, err)
 	_ = assertStateType[*ConfirmedState](h)
 
 	// Should emit ForfeitConfirmedToVTXO for each forfeited VTXO.

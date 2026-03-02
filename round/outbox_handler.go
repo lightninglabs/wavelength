@@ -92,9 +92,26 @@ var _ OutboxHandler = (*InProcessOutboxHandler)(nil)
 func (h *InProcessOutboxHandler) Handle(ctx context.Context,
 	msg OutboxRequest) ([]ClientEvent, error) {
 
-	switch msg.(type) {
+	switch req := msg.(type) {
+	case *SaveVTXOsReq:
+		return h.handleSaveVTXOs(ctx, req)
+
 	default:
 		return nil, fmt.Errorf("unhandled outbox request "+
 			"type: %T", msg)
 	}
+}
+
+// handleSaveVTXOs persists VTXOs via VTXOStore and returns the
+// appropriate follow-up event.
+func (h *InProcessOutboxHandler) handleSaveVTXOs(ctx context.Context,
+	req *SaveVTXOsReq) ([]ClientEvent, error) {
+
+	if err := h.VTXOStore.SaveVTXOs(ctx, req.VTXOs); err != nil {
+		return []ClientEvent{
+			&SaveVTXOsFailed{Error: err},
+		}, nil
+	}
+
+	return []ClientEvent{&SaveVTXOsSucceeded{}}, nil
 }
