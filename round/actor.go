@@ -264,19 +264,13 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		actorLog = log
 	}
 
-	// Create base FSM environment template with direct interface
-	// assignments. The FSM will call lib functions directly when needed
-	// (e.g., lib.NewTreeSignerSession, signing helpers). StartHeight is set
-	// to 0 here and will be set per-round when FSMs are created.
+	// Create base FSM environment template with read-only config.
+	// All I/O (persistence, signing, key derivation) is handled by
+	// the OutboxHandler. StartHeight is set to 0 here and will be
+	// set per-round when FSMs are created.
 	env := &ClientEnvironment{
-		RoundStore:             cfg.RoundStore,
-		VTXOStore:              cfg.VTXOStore,
-		Wallet:                 cfg.Wallet,
-		OperatorTerms:          cfg.OperatorTerms,
-		ChainParams:            cfg.ChainParams,
-		MaxOperatorFee:         cfg.MaxOperatorFee,
-		Log:                    actorLog,
-		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
+		OperatorTerms: cfg.OperatorTerms,
+		Log:           actorLog,
 	}
 
 	if err := ValidateDelayParameters(
@@ -295,21 +289,14 @@ func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
 		env:               env,
 	}
 
-	// The base env is used as a template for per-round FSM environments.
-	// Wire in the actor height query function so join-auth can anchor
-	// intent validity metadata to the current chain height at signing time.
-	actor.env.QueryBestHeight = actor.queryBestHeight
-
-	// Construct the default in-process outbox handler from the same
-	// dependencies the FSM environment uses. This handler performs
-	// I/O on behalf of FSM OutboxRequest messages.
+	// Construct the default in-process outbox handler with all I/O
+	// dependencies. The handler performs persistence, signing, and
+	// key derivation on behalf of FSM OutboxRequest messages.
 	actor.outboxHandler = &InProcessOutboxHandler{
 		RoundStore:             cfg.RoundStore,
 		VTXOStore:              cfg.VTXOStore,
 		Wallet:                 cfg.Wallet,
 		QueryBestHeight:        actor.queryBestHeight,
-		OperatorTerms:          cfg.OperatorTerms,
-		ChainParams:            cfg.ChainParams,
 		MaxOperatorFee:         cfg.MaxOperatorFee,
 		DisableJoinRequestAuth: cfg.DisableJoinRequestAuth,
 		Log:                    actorLog,
@@ -359,18 +346,9 @@ func (a *RoundClientActor) createRoundFSMFromDB(ctx context.Context,
 	fsmPrefix := roundID.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
-	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
-	}
+	env := NewClientEnvironment(
+		a.cfg.OperatorTerms, fsmLogger, startHeight,
+	)
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
 		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),
@@ -416,18 +394,9 @@ func (a *RoundClientActor) createNewRound(ctx context.Context) (*RoundFSM, error
 	fsmPrefix := tempKey.LogPrefix()
 	fsmLogger := a.log.WithPrefix(fsmPrefix)
 
-	env := &ClientEnvironment{
-		RoundStore:             a.cfg.RoundStore,
-		VTXOStore:              a.cfg.VTXOStore,
-		Wallet:                 a.cfg.Wallet,
-		OperatorTerms:          a.cfg.OperatorTerms,
-		ChainParams:            a.cfg.ChainParams,
-		MaxOperatorFee:         a.cfg.MaxOperatorFee,
-		Log:                    fsmLogger,
-		StartHeight:            startHeight,
-		QueryBestHeight:        a.queryBestHeight,
-		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
-	}
+	env := NewClientEnvironment(
+		a.cfg.OperatorTerms, fsmLogger, startHeight,
+	)
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        fsmLogger,
 		ErrorReporter: newContextErrorReporter(ctx, fsmPrefix),

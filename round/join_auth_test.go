@@ -132,9 +132,9 @@ type joinAuthTestFixture struct {
 	operatorPrivKey   *btcec.PrivateKey
 	identifierPrivKey *btcec.PrivateKey
 
-	// Signing wallet and environment.
+	// Signing wallet and join-auth dependencies.
 	wallet        *realSchnorrWallet
-	env           *ClientEnvironment
+	deps          *joinAuthDeps
 	signingHeight uint32
 }
 
@@ -162,11 +162,9 @@ func newJoinAuthTestFixture(t *testing.T) *joinAuthTestFixture {
 		testSigningHeight uint32 = 125
 	)
 
-	env := &ClientEnvironment{
-		Wallet:      signingWallet,
-		ChainParams: &chaincfg.RegressionNetParams,
-		Log:         btclog.Disabled,
-		StartHeight: testStartHeight,
+	deps := &joinAuthDeps{
+		Wallet: signingWallet,
+		Log:    btclog.Disabled,
 		QueryBestHeight: func(_ context.Context) (uint32, error) {
 			return testSigningHeight, nil
 		},
@@ -178,7 +176,7 @@ func newJoinAuthTestFixture(t *testing.T) *joinAuthTestFixture {
 		operatorPrivKey:   operatorPrivKey,
 		identifierPrivKey: identifierPrivKey,
 		wallet:            signingWallet,
-		env:               env,
+		deps:              deps,
 		signingHeight:     testSigningHeight,
 	}
 }
@@ -352,7 +350,7 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, nil, nil,
 	)
 	require.NoError(t, err)
@@ -413,7 +411,7 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 	}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, nil, nil,
 	)
 	require.NoError(t, err)
@@ -477,7 +475,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 
 	// Set up the VTXO store mock for forfeit lookups.
 	vtxoStore := &MockVTXOStore{}
-	f.env.VTXOStore = vtxoStore
+	f.deps.VTXOStore = vtxoStore
 
 	// Create a boarding intent.
 	boardingAmount := btcutil.Amount(50000)
@@ -536,7 +534,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	}}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, forfeitReqs, nil,
 	)
 	require.NoError(t, err)
@@ -571,7 +569,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	f := newJoinAuthTestFixture(t)
 
 	vtxoStore := &MockVTXOStore{}
-	f.env.VTXOStore = vtxoStore
+	f.deps.VTXOStore = vtxoStore
 
 	vtxoExpiry := uint32(288)
 	vtxoOutpoint := wire.OutPoint{
@@ -622,7 +620,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	}}
 
 	auth, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, forfeitReqs, nil,
 	)
 	require.NoError(t, err)
@@ -654,7 +652,7 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 	}
 
 	_, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, nil, nil,
 	)
 	require.Error(t, err)
@@ -668,7 +666,7 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 	t.Parallel()
 
 	f := newJoinAuthTestFixture(t)
-	f.env.QueryBestHeight = nil
+	f.deps.QueryBestHeight = nil
 
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
@@ -682,7 +680,7 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 	}
 
 	_, err := buildJoinRoundAuth(
-		f.ctx, f.env, f.identifierKeyDesc(),
+		f.ctx, f.deps, f.identifierKeyDesc(),
 		intents, vtxoReqs, nil, nil,
 	)
 	require.Error(t, err)

@@ -162,17 +162,35 @@ func computeTotalForfeitAmount(ctx context.Context,
 	return total, nil
 }
 
+// joinAuthDeps carries the dependencies needed by BIP-322 join-round
+// authorization functions. These were previously accessed via
+// *ClientEnvironment but are now passed explicitly from the outbox
+// handler, keeping the FSM environment free of I/O dependencies.
+type joinAuthDeps struct {
+	// Wallet provides signing and key derivation.
+	Wallet ClientWallet
+
+	// VTXOStore provides VTXO lookups for forfeit proof inputs.
+	VTXOStore VTXOStore
+
+	// QueryBestHeight returns the current chain tip height.
+	QueryBestHeight func(context.Context) (uint32, error)
+
+	// Log is the logger for join-auth operations.
+	Log btclog.Logger
+}
+
 // buildJoinRoundAuth creates the BIP-322 authorization payload for a
 // JoinRoundRequest. The identifier key must already be derived; this
 // function builds the canonical message, constructs proof-of-funds
 // inputs, and signs everything.
-func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
+func buildJoinRoundAuth(ctx context.Context, deps *joinAuthDeps,
 	identifierKeyDesc keychain.KeyDescriptor,
 	intents Intents, vtxoReqs []types.VTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
 
-	log := env.Log
+	log := deps.Log
 	log.InfoS(ctx, "Building join round auth",
 		slog.Int("boarding_intent_count", len(intents.Boarding)),
 		slog.Int("vtxo_request_count", len(vtxoReqs)),
@@ -185,7 +203,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	// signing inputs carry the per-UTXO data (prevout, key,
 	// tapscript) needed to produce proof-of-funds witnesses.
 	joinReq, signingInputs, err := buildJoinRoundAuthRequest(
-		ctx, env, intents, vtxoReqs, forfeitReqs, leaveReqs,
+		ctx, deps, intents, vtxoReqs, forfeitReqs, leaveReqs,
 	)
 	if err != nil {
 		return nil, err
@@ -234,7 +252,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 
 	// Query the chain tip at signing time and use that height as the
 	// lower bound for this auth intent.
-	validFrom, err := joinAuthValidFrom(ctx, env)
+	validFrom, err := joinAuthValidFrom(ctx, deps)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +282,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 		intentMessage,
 		messageChallenge,
 		&joinRoundBIP322Signer{
-			wallet:            env.Wallet,
+			wallet:            deps.Wallet,
 			identifierKeyDesc: identifierKeyDesc,
 			signingInputs:     signingInputs,
 			log:               log,
@@ -313,7 +331,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // canonical message encoding and returns the corresponding signing
 // inputs in the same order.
 func buildJoinRoundAuthRequest(ctx context.Context,
-	env *ClientEnvironment, intents Intents,
+	deps *joinAuthDeps, intents Intents,
 	vtxoReqs []types.VTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundRequest,
@@ -361,7 +379,7 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 		forfeitReq := forfeitReqs[i]
 		outpoint := *forfeitReq.VTXOOutpoint
 
-		vtxo, err := env.VTXOStore.GetVTXO(ctx, outpoint)
+		vtxo, err := deps.VTXOStore.GetVTXO(ctx, outpoint)
 		if err != nil {
 			return nil, nil, fmt.Errorf(
 				"forfeit auth input %s: %w",
@@ -633,19 +651,20 @@ func signJoinAuthMessageInput(wallet ClientWallet,
 // joinAuthValidFrom queries the current best height used as the lower
 // bound in join-auth intent validity metadata.
 func joinAuthValidFrom(ctx context.Context,
-	env *ClientEnvironment) (uint32, error) {
+	deps *joinAuthDeps) (uint32, error) {
 
-	if env == nil {
-		return 0, fmt.Errorf("client environment must be provided")
+	if deps == nil {
+		return 0, fmt.Errorf("join auth deps must be provided")
 	}
 
-	if env.QueryBestHeight == nil {
+	if deps.QueryBestHeight == nil {
 		return 0, fmt.Errorf(
-			"join auth valid-from query function must be provided",
+			"join auth valid-from query function " +
+				"must be provided",
 		)
 	}
 
-	height, err := env.QueryBestHeight(ctx)
+	height, err := deps.QueryBestHeight(ctx)
 	if err != nil {
 		return 0, fmt.Errorf(
 			"query join auth valid-from height: %w", err,

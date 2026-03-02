@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -61,12 +60,6 @@ type InProcessOutboxHandler struct {
 
 	// QueryBestHeight returns the current chain tip height.
 	QueryBestHeight func(context.Context) (uint32, error)
-
-	// OperatorTerms contains the operator's parameters.
-	OperatorTerms *types.OperatorTerms
-
-	// ChainParams are the Bitcoin network parameters.
-	ChainParams *chaincfg.Params
 
 	// MaxOperatorFee is the maximum acceptable operator fee.
 	MaxOperatorFee btcutil.Amount
@@ -409,22 +402,18 @@ func (h *InProcessOutboxHandler) handleBuildRegistration(
 	idPub := identifierKeyDesc.PubKey
 
 	// When auth is enabled, produce a BIP-322 proof that binds
-	// the request contents to the identifier key. The functions
-	// in join_auth.go take *ClientEnvironment, so we construct
-	// a temporary env from handler fields.
+	// the request contents to the identifier key.
 	var joinAuth *types.JoinRoundAuth
 	if !h.DisableJoinRequestAuth {
-		env := &ClientEnvironment{
-			VTXOStore:       h.VTXOStore,
+		deps := &joinAuthDeps{
 			Wallet:          h.Wallet,
+			VTXOStore:       h.VTXOStore,
 			QueryBestHeight: h.QueryBestHeight,
 			Log:             h.Log,
-			OperatorTerms:   h.OperatorTerms,
-			ChainParams:     h.ChainParams,
 		}
 
 		auth, err := buildJoinRoundAuth(
-			ctx, env, identifierKeyDesc, intents,
+			ctx, deps, identifierKeyDesc, intents,
 			vtxoReqs, forfeitReqs, leaveReqs,
 		)
 		if err != nil {
