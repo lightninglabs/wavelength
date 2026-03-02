@@ -253,7 +253,7 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), nil).Maybe()
+		Return(int32(-1), testLockedOutpoints, nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
@@ -366,7 +366,7 @@ func (c *commonMockSetup) setupBatchBuildingMocks() {
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(-1), nil).Once()
+		Return(int32(-1), testLockedOutpoints, nil).Once()
 }
 
 // setupBatchBuildingFailure sets up the mocks for batch building to fail with
@@ -379,7 +379,7 @@ func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
-		Return(int32(0), err).Once()
+		Return(int32(0), []wire.OutPoint(nil), err).Once()
 }
 
 // setupCompleteRegistrationFlow sets up all mocks needed for a client to
@@ -1329,8 +1329,15 @@ func (m *mockWalletController) FundPsbt(ctx context.Context,
 		ctx, packet, minConfs, feeRate, account, opts,
 	)
 
-	//nolint:forcetypeassert
-	return args.Get(0).(int32), nil, args.Error(1)
+	changeIdx := args.Get(0).(int32) //nolint:forcetypeassert
+
+	var outpoints []wire.OutPoint
+	if args.Get(1) != nil {
+		//nolint:forcetypeassert
+		outpoints = args.Get(1).([]wire.OutPoint)
+	}
+
+	return changeIdx, outpoints, args.Error(2)
 }
 
 // ReleaseInputs is a mock implementation of

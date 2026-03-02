@@ -568,6 +568,7 @@ func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
 				ConnectorTrees:       msg.ConnectorTrees,
 				ConnectorAssignments: msg.ConnectorAssignments,
 				ConnectorDescriptors: msg.ConnectorDescriptors,
+				LockedOutpoints:      msg.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				// Emit the internal event to prepare
@@ -582,8 +583,10 @@ func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
 		env.Log.WarnS(ctx, "Batch build failed", nil,
 			slog.String("reason", msg.Reason))
 
+		// Pre-batch failure: no wallet inputs locked yet.
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, msg.Reason,
+			[32]byte{}, nil,
 		), nil
 
 	default:
@@ -653,6 +656,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
 						"client %s: %v", clientID, err),
+					[32]byte{}, s.LockedOutpoints,
 				), nil
 			}
 		}
@@ -676,6 +680,8 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 							"connector assignment "+
 							"for client %s",
 							clientID),
+						[32]byte{},
+						s.LockedOutpoints,
 					), nil
 				}
 
@@ -733,6 +739,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
 					"output %d: %v", idx, err),
+				[32]byte{}, s.LockedOutpoints,
 			), nil
 		}
 
@@ -757,6 +764,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 			ClientsWithNonces: make(
 				map[clientconn.ClientID]struct{},
 			),
+			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -812,6 +820,7 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -823,9 +832,14 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 // the necessary outbox events to notify clients, unlock locked inputs, and
 // inform the actor of the failure. Unlocking is emitted as outbox events
 // so the FSM transition itself performs no I/O.
+//
+// When lockedOutpoints is non-empty and lockID is non-zero, a
+// ReleaseWalletInputsReq is emitted so the handler can release UTXO
+// leases acquired during FundPsbt.
 func buildFailureTransition(_ context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
-	reason string) *StateTransition {
+	reason string, lockID [32]byte,
+	lockedOutpoints []wire.OutPoint) *StateTransition {
 
 	env.Log.WarnS(context.Background(), "Round entering failed state", nil,
 		LogReason(reason),
@@ -853,6 +867,17 @@ func buildFailureTransition(_ context.Context, env *Environment,
 		RoundID:             env.RoundID,
 		ClientRegistrations: clientRegs,
 	})
+
+	// Release wallet UTXO leases if any were acquired during
+	// FundPsbt. Pre-batch failures pass nil/zero here.
+	if len(lockedOutpoints) > 0 {
+		outboxMsgs = append(outboxMsgs,
+			&ReleaseWalletInputsReq{
+				LockID:          lockID,
+				LockedOutpoints: lockedOutpoints,
+			},
+		)
+	}
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
@@ -895,6 +920,7 @@ func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, reason,
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1057,6 +1083,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		ClientsSubmitted:     newClientsSubmitted,
 		CollectedSignatures:  newCollectedSigs,
 		CollectedForfeitTxs:  newCollectedForfeitTxs,
+		LockedOutpoints:      s.LockedOutpoints,
 	}
 
 	// Check if all clients have submitted.
@@ -1076,6 +1103,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 				ConnectorDescriptors: s.ConnectorDescriptors,
 				CollectedSignatures:  newCollectedSigs,
 				CollectedForfeitTxs:  newCollectedForfeitTxs,
+				LockedOutpoints:      s.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				InternalEvent: []Event{
@@ -1238,6 +1266,26 @@ func buildCommitmentTx(ctx context.Context,
 			fmt.Errorf("fund psbt: %w", err)
 	}
 
+	// releaseOnErr is a helper that releases the locked outpoints
+	// acquired by FundPsbt above. Any error after FundPsbt succeeds
+	// must call this before returning so that the UTXOs don't stay
+	// locked until lease expiry.
+	releaseOnErr := func(cause error) (*psbt.Packet, int32,
+		map[int]*tree.Tree, map[int]*tree.Tree,
+		map[wire.OutPoint]*ConnectorLeafAssignment,
+		[]wire.OutPoint, error) {
+
+		if opts != nil && len(lockedOutpoints) > 0 {
+			// Best-effort release; nothing useful we can do
+			// with a release error here.
+			_ = walletCtrl.ReleaseInputs(
+				ctx, opts.LockID, lockedOutpoints,
+			)
+		}
+
+		return nil, -1, nil, nil, nil, nil, cause
+	}
+
 	// Now we'll add the boarding inputs to the funded PSBT. Since LND
 	// cannot estimate witness weight for taproot script path spends, we
 	// add boarding inputs after funding.
@@ -1254,8 +1302,9 @@ func buildCommitmentTx(ctx context.Context,
 		collabLeaf := bi.Tapscript.Leaves[0]
 		ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
 		if err != nil {
-			return nil, -1, nil, nil, nil, nil,
-				fmt.Errorf("serialize control block: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"serialize control block: %w", err,
+			))
 		}
 
 		leafHash := txscript.NewTapLeaf(
@@ -1324,8 +1373,9 @@ func buildCommitmentTx(ctx context.Context,
 			batchOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, nil,
-				fmt.Errorf("find batch outputs: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"find batch outputs: %w", err,
+			))
 		}
 
 		// Build VTXO trees using the post-FundPsbt batch output
@@ -1334,8 +1384,9 @@ func buildCommitmentTx(ctx context.Context,
 			packet.UnsignedTx, batchOutputIndices,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, nil,
-				fmt.Errorf("build VTXO trees: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"build VTXO trees: %w", err,
+			))
 		}
 	}
 
@@ -1350,9 +1401,9 @@ func buildCommitmentTx(ctx context.Context,
 			connectorOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
+			return releaseOnErr(fmt.Errorf(
 				"find connector outputs: %w", err,
-			)
+			))
 		}
 
 		connectorTrees, connectorAssignments, err =
@@ -1361,9 +1412,9 @@ func buildCommitmentTx(ctx context.Context,
 				connectorOutputIndices,
 			)
 		if err != nil {
-			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
+			return releaseOnErr(fmt.Errorf(
 				"build connector trees: %w", err,
-			)
+			))
 		}
 	}
 
@@ -1633,6 +1684,7 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO nonce collection timeout",
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1814,6 +1866,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
 					idx, err),
+				[32]byte{}, s.LockedOutpoints,
 			), nil
 		}
 	}
@@ -1851,6 +1904,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("get agg nonces for %s: %v",
 						clientID, err),
+					[32]byte{}, s.LockedOutpoints,
 				), nil
 			}
 
@@ -1886,6 +1940,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			ClientsWithSignatures: make(
 				map[clientconn.ClientID]struct{},
 			),
+			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -1915,6 +1970,7 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO signature collection timeout",
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2050,6 +2106,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		ConnectorAssignments:  s.ConnectorAssignments,
 		TreeSignCoordinators:  s.TreeSignCoordinators,
 		ClientsWithSignatures: newClientsWithSignatures,
+		LockedOutpoints:       s.LockedOutpoints,
 	}
 
 	// Check if all clients have submitted signatures.
@@ -2106,6 +2163,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 				return buildFailureTransition(
 					ctx, env, s.ClientRegistrations, errMsg,
+					[32]byte{}, s.LockedOutpoints,
 				), nil
 			}
 
@@ -2151,6 +2209,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("build connector descriptors: %v", err),
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 	}
 
@@ -2167,6 +2226,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -2221,6 +2281,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			SweepKey:             env.Terms.SweepKey.PubKey,
 			CSVDelay:             env.Terms.SweepDelay,
 			StartHeight:          env.StartHeight,
+			LockedOutpoints:      s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{signReq},
@@ -2472,6 +2533,7 @@ func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
 				VTXOTrees:           s.VTXOTrees,
 				ForfeitInfos:        e.ForfeitInfos,
 				StartHeight:         s.StartHeight,
+				LockedOutpoints:     s.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{persistReq},
@@ -2481,6 +2543,7 @@ func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
 	case *SignAndFinalizeFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2529,6 +2592,7 @@ func (s *AwaitingServerSignPersistState) ProcessEvent(ctx context.Context,
 	case *PersistServerSigningFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
+			[32]byte{}, s.LockedOutpoints,
 		), nil
 
 	default:

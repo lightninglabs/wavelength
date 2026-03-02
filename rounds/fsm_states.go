@@ -196,6 +196,11 @@ type BatchBuiltState struct {
 	// ConnectorDescriptors describe connector outputs for this round.
 	// This is nil if no forfeits exist in the round.
 	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// LockedOutpoints lists the wallet UTXOs that were leased during
+	// coin selection. Propagated forward so the failure path can
+	// release them.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of BatchBuiltState.
@@ -250,6 +255,10 @@ type AwaitingInputSigsState struct {
 	// CollectedForfeitTxs stores the forfeit transactions submitted by each
 	// client. These are validated but not yet signed by the server.
 	CollectedForfeitTxs ForfeitTxsMap
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of
@@ -320,6 +329,10 @@ type AwaitingVTXONoncesState struct {
 
 	// ClientsWithNonces tracks which clients have submitted nonces.
 	ClientsWithNonces map[clientconn.ClientID]struct{}
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of AwaitingVTXONoncesState.
@@ -392,6 +405,10 @@ type AwaitingVTXOSignaturesState struct {
 	// ClientsWithSignatures tracks which clients have submitted their
 	// partial signatures.
 	ClientsWithSignatures map[clientconn.ClientID]struct{}
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of
@@ -464,6 +481,10 @@ type ServerSigningState struct {
 	// CollectedForfeitTxs contains all validated client forfeit
 	// transactions. The server will sign these before finalization.
 	CollectedForfeitTxs ForfeitTxsMap
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of ServerSigningState.
@@ -509,6 +530,10 @@ type AwaitingSignAndFinalizeState struct {
 	// StartHeight is the block height when the round was created.
 	// Carried forward for the BroadcastRoundReq.
 	StartHeight uint32
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of
@@ -548,6 +573,10 @@ type AwaitingServerSignPersistState struct {
 	// StartHeight is the block height when the round was created. Needed
 	// to construct the BroadcastRoundReq on persistence success.
 	StartHeight uint32
+
+	// LockedOutpoints lists the wallet UTXOs leased during coin
+	// selection. Propagated forward for the failure path.
+	LockedOutpoints []wire.OutPoint
 }
 
 // String returns a human-readable representation of

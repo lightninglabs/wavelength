@@ -753,7 +753,9 @@ func TestFSMBatchBuilding(t *testing.T) {
 						emptyOutputs, p.Outputs...,
 					)
 				}).
-				Return(int32(0), nil).Once()
+				Return(
+					int32(0), testLockedOutpoints, nil,
+				).Once()
 
 			leaveScript := []byte{0x00, 0x14, 0x01, 0x02}
 			leaveOutput := &wire.TxOut{
