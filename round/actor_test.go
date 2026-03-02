@@ -1127,11 +1127,8 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		// Verify the forfeit input is tracked.
 		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, vtxoOutpoint, assembly.Forfeits[0].VTXOOutpoint,
-		)
-		require.Equal(
-			t, btcutil.Amount(refreshReq.Amount),
-			assembly.Forfeits[0].Amount,
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
 		)
 
 		// Verify the VTXO output request is tracked.
@@ -1184,7 +1181,7 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
 			t, vtxoOutpoint,
-			assembly.Forfeits[0].VTXOOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
 		)
 	})
 }

@@ -448,7 +448,16 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		}
 
 		// Include all forfeited VTXO amounts as inputs.
-		totalInput += computeTotalForfeitAmount(s.Forfeits)
+		forfeitInput, err := computeTotalForfeitAmount(
+			ctx, env.VTXOStore, s.Forfeits,
+		)
+		if err != nil {
+			return failWithNotification(
+				"failed to compute forfeit amount",
+				err, true, fn.None[RoundID](),
+			), nil
+		}
+		totalInput += forfeitInput
 
 		// Include leave amounts as requested on-chain outputs.
 		for i, req := range s.Leaves {
@@ -513,7 +522,13 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		vtxoReqs := slices.Clone(s.VTXOs)
 
 		// Build forfeit requests from the decoupled forfeit pool.
-		forfeitReqs := sortedForfeitRequests(s.Forfeits)
+		forfeitReqs, err := sortedForfeitRequests(s.Forfeits)
+		if err != nil {
+			return failWithNotification(
+				"invalid forfeit requests",
+				err, true, fn.None[RoundID](),
+			), nil
+		}
 
 		// Leave requests are already in append order.
 		leaveReqs := slices.Clone(s.Leaves)
@@ -714,7 +729,7 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 // commitment transaction with matching values and scripts. This ensures the
 // server has properly included the requested on-chain exit outputs.
 func validateLeaveOutputs(
-	commitmentTx *wire.MsgTx, leaves []*LeaveRequest,
+	commitmentTx *wire.MsgTx, leaves []*types.LeaveRequest,
 ) error {
 
 	if commitmentTx == nil {

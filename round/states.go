@@ -62,11 +62,11 @@ type PendingRoundAssembly struct {
 
 	// Forfeits tracks VTXOs being forfeited as inputs to this round.
 	// Decoupled from outputs to enable many-to-many operations.
-	Forfeits []ForfeitIntent
+	Forfeits []types.ForfeitRequest
 
 	// Leaves tracks on-chain exit outputs for this round. Decoupled from
 	// forfeit inputs to enable many-to-many operations.
-	Leaves []*LeaveRequest
+	Leaves []*types.LeaveRequest
 }
 
 func (s *PendingRoundAssembly) String() string {
