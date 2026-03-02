@@ -121,6 +121,14 @@ var (
 		"output total exceeds boarding input total",
 	)
 
+	// ErrOperatorFeeTooLow is returned when the implicit operator fee
+	// (total input - total output) is below the operator's minimum.
+	// This prevents clients from using the operator as a free UTXO
+	// consolidation service.
+	ErrOperatorFeeTooLow = errors.New(
+		"operator fee is below minimum",
+	)
+
 	// ErrForfeitVTXONotFound is returned when a forfeit request references
 	// a VTXO that doesn't exist in the store.
 	ErrForfeitVTXONotFound = errors.New("forfeit VTXO not found")
@@ -327,6 +335,22 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 		return nil, fmt.Errorf("%w: got %d sats, max %d sats",
 			ErrOutputExceedsInput, totalOutputValue,
 			totalInputValue)
+	}
+
+	// Enforce the minimum operator fee when boarding inputs are
+	// present. The fee is the implicit difference between total input
+	// and total output value. Without this check a client could
+	// submit equal boarding inputs and outputs, effectively using the
+	// operator as a free UTXO consolidator. Refresh and leave
+	// requests (forfeit-only) are exempt because the operator already
+	// collected a fee when the VTXO was originally created.
+	operatorFee := totalInputValue - totalOutputValue
+	if len(boardingInputs) > 0 &&
+		operatorFee < env.Terms.MinOperatorFee {
+
+		return nil, fmt.Errorf("%w: got %d sats, min %d sats",
+			ErrOperatorFeeTooLow, operatorFee,
+			env.Terms.MinOperatorFee)
 	}
 
 	// Validate the join authorization proof once all request components

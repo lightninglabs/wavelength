@@ -1157,6 +1157,122 @@ func TestValidateJoinRequest(t *testing.T) {
 		require.ErrorIs(t, err, ErrOutputExceedsInput)
 	})
 
+	t.Run("operator fee below minimum rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Require at least 5000 sats operator fee.
+		h.env.Terms.MinOperatorFee = btcutil.Amount(5000)
+
+		// Set up validation mocks for outpoint1 (100000 sats).
+		exitDelay := uint32(144)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
+
+		// Boarding input is 100000 sats, leave is 99000 sats.
+		// Implied fee = 1000 sats, below the 5000 minimum.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   exitDelay,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    99000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(
+			t.Context(), h.env, req,
+		)
+
+		require.Nil(t, result)
+		require.ErrorIs(t, err, ErrOperatorFeeTooLow)
+	})
+
+	t.Run("operator fee exactly at minimum accepted", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// Require exactly 5000 sats operator fee.
+		h.env.Terms.MinOperatorFee = btcutil.Amount(5000)
+
+		exitDelay := uint32(144)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
+
+		// Boarding input is 100000 sats, leave is 95000 sats.
+		// Implied fee = 5000 sats, exactly the minimum.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   exitDelay,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    95000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(
+			t.Context(), h.env, req,
+		)
+
+		require.NoError(t, err)
+		require.Len(t, result.BoardingInputs, 1)
+		require.Len(t, result.RequiredOutputs, 1)
+	})
+
+	t.Run("zero min fee allows zero-fee join", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		// No minimum fee enforcement (default zero value).
+		h.env.Terms.MinOperatorFee = 0
+
+		exitDelay := uint32(144)
+		h.setupBoardingInputValidationOnly(
+			&outpoint1, clientPub, exitDelay, 10,
+		)
+
+		// Boarding input is 100000 sats, leave is 100000 sats.
+		// Implied fee = 0 sats. Allowed when min is 0.
+		req := &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{{
+				Outpoint:    &outpoint1,
+				ClientKey:   clientPub,
+				OperatorKey: h.operatorPub,
+				ExitDelay:   exitDelay,
+			}},
+			LeaveReqs: []*types.LeaveRequest{{
+				Output: &wire.TxOut{
+					Value:    100000,
+					PkScript: []byte{0x00, 0x14},
+				},
+			}},
+		}
+
+		result, err := ValidateJoinRequest(
+			t.Context(), h.env, req,
+		)
+
+		require.NoError(t, err)
+		require.Len(t, result.BoardingInputs, 1)
+	})
+
 	t.Run("valid forfeit request with leave output", func(t *testing.T) {
 		t.Parallel()
 
