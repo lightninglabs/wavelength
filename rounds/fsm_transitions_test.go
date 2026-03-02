@@ -732,7 +732,7 @@ func TestFSMBatchBuilding(t *testing.T) {
 			h.walletController.On("FundPsbt",
 				mock.Anything, mock.Anything,
 				mock.Anything, mock.Anything,
-				mock.Anything).
+				mock.Anything, mock.Anything).
 				Run(func(args mock.Arguments) {
 					p, ok := args.Get(1).(*psbt.Packet)
 					require.True(t, ok)

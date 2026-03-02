@@ -8,12 +8,15 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/input"
@@ -45,28 +48,30 @@ func NewLndWalletController(walletKit lndclient.WalletKitClient,
 
 // FundPsbt performs coin selection and adds wallet inputs to fund the outputs
 // in the PSBT. It also adds a change output if needed. Returns the change
-// output index (-1 if no change).
+// output index (-1 if no change) and the list of wallet outpoints that were
+// leased during coin selection.
 //
 // This uses the PsbtCoinSelect template mode which supports external inputs
 // (inputs not belonging to lnd's wallet). This is required for Ark because
 // boarding inputs belong to clients, not the server. External inputs must
 // have their WitnessUtxo field populated for fee calculation.
-func (l *LndWalletController) FundPsbt(ctx context.Context, packet *psbt.Packet,
-	minConfs int32, feeRate chainfee.SatPerKWeight,
-	account string) (int32, error) {
+func (l *LndWalletController) FundPsbt(ctx context.Context,
+	packet *psbt.Packet, minConfs int32,
+	feeRate chainfee.SatPerKWeight, account string,
+	opts *rounds.FundingOpts) (int32, []wire.OutPoint, error) {
 
 	// Serialize the PSBT to send to LND.
 	var buf bytes.Buffer
 	if err := packet.Serialize(&buf); err != nil {
-		return -1, fmt.Errorf("serialize psbt: %w", err)
+		return -1, nil, fmt.Errorf("serialize psbt: %w", err)
 	}
 	psbtBytes := buf.Bytes()
 
 	// Build the FundPsbt request using coin_select template mode.
 	// The coin_select mode is required because:
 	//
-	// 1. External inputs (boarding UTXOs from clients) are not in lnd's
-	//    UTXO set
+	// 1. External inputs (boarding UTXOs from clients) are not in
+	//    lnd's UTXO set
 	//
 	// 2. lnd will add wallet inputs to cover: outputs + fees -
 	//    external_input_value
@@ -89,14 +94,70 @@ func (l *LndWalletController) FundPsbt(ctx context.Context, packet *psbt.Packet,
 		MinConfs: minConfs,
 	}
 
-	fundedPacket, changeIdx, _, err := l.walletKit.FundPsbt(ctx, req)
+	// Apply custom lock ID and duration when provided.
+	if opts != nil {
+		var zeroID [32]byte
+		if opts.LockID != zeroID {
+			req.CustomLockId = opts.LockID[:]
+		}
+
+		if opts.LockDuration > 0 {
+			req.LockExpirationSeconds = uint64(
+				opts.LockDuration / time.Second,
+			)
+		}
+	}
+
+	fundedPacket, changeIdx, leases, err := l.walletKit.FundPsbt(
+		ctx, req,
+	)
 	if err != nil {
-		return -1, fmt.Errorf("fund psbt via lnd: %w", err)
+		return -1, nil, fmt.Errorf("fund psbt via lnd: %w", err)
 	}
 
 	*packet = *fundedPacket
 
-	return changeIdx, nil
+	// Extract the locked outpoints from the lease descriptors.
+	lockedOutpoints := make([]wire.OutPoint, 0, len(leases))
+	for _, lease := range leases {
+		if lease.Outpoint == nil {
+			continue
+		}
+
+		var txHash chainhash.Hash
+		copy(txHash[:], lease.Outpoint.TxidBytes)
+
+		lockedOutpoints = append(lockedOutpoints, wire.OutPoint{
+			Hash:  txHash,
+			Index: lease.Outpoint.OutputIndex,
+		})
+	}
+
+	return changeIdx, lockedOutpoints, nil
+}
+
+// ReleaseInputs releases UTXO leases acquired by a prior FundPsbt call.
+// The lockID must match the one used during funding. All outpoints are
+// attempted even if individual releases fail; errors are joined and
+// returned together so that a single RPC failure does not leave remaining
+// outpoints locked until lease expiry.
+func (l *LndWalletController) ReleaseInputs(ctx context.Context,
+	lockID [32]byte, outpoints []wire.OutPoint) error {
+
+	wtxmgrLockID := wtxmgr.LockID(lockID)
+
+	var errs []error
+	for _, op := range outpoints {
+		err := l.walletKit.ReleaseOutput(ctx, wtxmgrLockID, op)
+		if err != nil {
+			errs = append(
+				errs,
+				fmt.Errorf("release output %v: %w", op, err),
+			)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 // FinalizePsbt signs all wallet-controlled inputs and finalizes the PSBT,

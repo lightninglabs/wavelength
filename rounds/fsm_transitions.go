@@ -1121,9 +1121,11 @@ func buildCommitmentTx(ctx context.Context,
 	walletCtrl WalletController, minConfs int32, walletAccount string,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
-	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
+	vtxoDescriptors []tree.VTXODescriptor,
+	opts *FundingOpts) (*psbt.Packet, int32,
 	map[int]*tree.Tree, map[int]*tree.Tree,
-	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+	map[wire.OutPoint]*ConnectorLeafAssignment,
+	[]wire.OutPoint, error) {
 
 	// Calculate boarding input totals for later adjustment.
 	var totalBoardingValue btcutil.Amount
@@ -1133,7 +1135,7 @@ func buildCommitmentTx(ctx context.Context,
 
 	feeRate, err := feeEstimator.EstimateFeePerKW(confTarget)
 	if err != nil {
-		return nil, -1, nil, nil, nil,
+		return nil, -1, nil, nil, nil, nil,
 			fmt.Errorf("estimate fee: %w", err)
 	}
 
@@ -1174,8 +1176,8 @@ func buildCommitmentTx(ctx context.Context,
 			terms, vtxoDescriptors,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
-				"batch outputs: %w", err)
+			return nil, -1, nil, nil, nil, nil,
+				fmt.Errorf("build batch outputs: %w", err)
 		}
 
 		for _, output := range vtxoTreeCtx.Outputs() {
@@ -1190,7 +1192,7 @@ func buildCommitmentTx(ctx context.Context,
 	if numForfeits > 0 {
 		maxPerTree := int(terms.MaxConnectorsPerTree)
 		if maxPerTree <= 0 {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 				"max connectors per tree must be > 0",
 			)
 		}
@@ -1206,7 +1208,7 @@ func buildCommitmentTx(ctx context.Context,
 				terms.ConnectorAddress,
 			)
 			if err != nil {
-				return nil, -1, nil, nil, nil, fmt.Errorf(
+				return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 					"build connector output: %w", err,
 				)
 			}
@@ -1220,20 +1222,20 @@ func buildCommitmentTx(ctx context.Context,
 
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
-		return nil, -1, nil, nil, nil, fmt.Errorf("create psbt: %w",
-			err)
+		return nil, -1, nil, nil, nil, nil,
+			fmt.Errorf("create psbt: %w", err)
 	}
 
 	// Now we'll call FundPsbt to add wallet inputs and change.
 	//
-	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
-	// before this call will be invalid.
-	changeIdx, err := walletCtrl.FundPsbt(
-		ctx, packet, minConfs, feeRate, walletAccount,
+	// Note: FundPsbt reorders inputs and outputs, so any indices
+	// recorded before this call will be invalid.
+	changeIdx, lockedOutpoints, err := walletCtrl.FundPsbt(
+		ctx, packet, minConfs, feeRate, walletAccount, opts,
 	)
 	if err != nil {
-		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
-			err)
+		return nil, -1, nil, nil, nil, nil,
+			fmt.Errorf("fund psbt: %w", err)
 	}
 
 	// Now we'll add the boarding inputs to the funded PSBT. Since LND
@@ -1252,7 +1254,7 @@ func buildCommitmentTx(ctx context.Context,
 		collabLeaf := bi.Tapscript.Leaves[0]
 		ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
 		if err != nil {
-			return nil, -1, nil, nil, nil,
+			return nil, -1, nil, nil, nil, nil,
 				fmt.Errorf("serialize control block: %w", err)
 		}
 
@@ -1322,8 +1324,8 @@ func buildCommitmentTx(ctx context.Context,
 			batchOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("find "+
-				"batch outputs: %w", err)
+			return nil, -1, nil, nil, nil, nil,
+				fmt.Errorf("find batch outputs: %w", err)
 		}
 
 		// Build VTXO trees using the post-FundPsbt batch output
@@ -1332,12 +1334,13 @@ func buildCommitmentTx(ctx context.Context,
 			packet.UnsignedTx, batchOutputIndices,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
-				"VTXO trees: %w", err)
+			return nil, -1, nil, nil, nil, nil,
+				fmt.Errorf("build VTXO trees: %w", err)
 		}
 	}
 
-	// Step 7: Build connector trees and assignments if forfeits exist.
+	// Step 7: Build connector trees and assignments if forfeits
+	// exist.
 	var (
 		connectorTrees       map[int]*tree.Tree
 		connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
@@ -1347,7 +1350,7 @@ func buildCommitmentTx(ctx context.Context,
 			connectorOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 				"find connector outputs: %w", err,
 			)
 		}
@@ -1358,14 +1361,14 @@ func buildCommitmentTx(ctx context.Context,
 				connectorOutputIndices,
 			)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 				"build connector trees: %w", err,
 			)
 		}
 	}
 
 	return packet, changeIdx, vtxoTrees, connectorTrees,
-		connectorAssignments, nil
+		connectorAssignments, lockedOutpoints, nil
 }
 
 // findOutputIndices finds the indices of the given outputs in the transaction

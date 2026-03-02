@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -114,6 +115,19 @@ type UTXO struct {
 	Confirmations int64
 }
 
+// FundingOpts carries optional UTXO lease parameters for FundPsbt.
+type FundingOpts struct {
+	// LockID is a 32-byte identifier for the UTXO lease. When set,
+	// FundPsbt passes this as CustomLockId to LND. Using a
+	// deterministic ID (e.g. derived from the round ID) allows the
+	// caller to release leases explicitly on failure.
+	LockID [32]byte
+
+	// LockDuration is how long LND should hold the UTXO lease.
+	// When zero, LND uses its default (10 minutes).
+	LockDuration time.Duration
+}
+
 // WalletController provides PSBT funding and signing operations. This
 // interface wraps the subset of lnd's WalletController that we need for
 // commitment transaction construction. It also embeds input.Signer for signing
@@ -121,12 +135,20 @@ type UTXO struct {
 type WalletController interface {
 	input.Signer
 
-	// FundPsbt performs coin selection and adds wallet inputs to fund the
-	// outputs in the PSBT. It also adds a change output if needed.
-	// Returns the change output index (-1 if no change).
+	// FundPsbt performs coin selection and adds wallet inputs to fund
+	// the outputs in the PSBT. It also adds a change output if needed.
+	// Returns the change output index (-1 if no change) and the list
+	// of wallet outpoints that were leased during coin selection.
 	FundPsbt(ctx context.Context, packet *psbt.Packet,
 		minConfs int32, feeRate chainfee.SatPerKWeight,
-		account string) (changeIndex int32, err error)
+		account string,
+		opts *FundingOpts) (int32, []wire.OutPoint, error)
+
+	// ReleaseInputs releases UTXO leases acquired by a prior
+	// FundPsbt call. The lockID must match the one used during
+	// funding.
+	ReleaseInputs(ctx context.Context, lockID [32]byte,
+		outpoints []wire.OutPoint) error
 
 	// FinalizePsbt signs all wallet-controlled inputs and finalizes the
 	// PSBT, making it ready for broadcast. Returns the finalized raw

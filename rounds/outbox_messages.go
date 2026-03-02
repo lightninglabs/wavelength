@@ -389,6 +389,10 @@ type BuildBatchReq struct {
 	// ForfeitScript is the output script for penalty outputs in forfeit
 	// transactions.
 	ForfeitScript []byte
+
+	// FundingOpts carries optional UTXO lease parameters for the
+	// wallet FundPsbt call (custom lock ID and lock duration).
+	FundingOpts *FundingOpts
 }
 
 // outboxEventSealed marks BuildBatchReq as implementing the sealed

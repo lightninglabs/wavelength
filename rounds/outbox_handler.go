@@ -121,12 +121,14 @@ func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
 	msg *BuildBatchReq) ([]Event, error) {
 
 	packet, _, vtxoTrees, connectorTrees,
-		connectorAssignments, err := buildCommitmentTx(
+		connectorAssignments, lockedOutpoints,
+		err := buildCommitmentTx(
 		ctx, msg.Terms,
 		h.feeEstimator, h.confTarget,
 		h.walletController, h.minConfs, h.walletAccount,
 		msg.BoardingInputs, msg.ForfeitInputs,
 		msg.RequiredOutputs, msg.VTXODescriptors,
+		msg.FundingOpts,
 	)
 	if err != nil {
 		return []Event{&BuildBatchFailedEvent{
@@ -153,6 +155,7 @@ func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
 		ConnectorTrees:       connectorTrees,
 		ConnectorAssignments: connectorAssignments,
 		ConnectorDescriptors: connectorDescriptors,
+		LockedOutpoints:      lockedOutpoints,
 	}}, nil
 }
 

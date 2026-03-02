@@ -251,7 +251,8 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 
 	// Set up permissive wallet controller expectation.
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
 		Return(int32(-1), nil).Maybe()
 }
 
@@ -363,7 +364,8 @@ func (c *commonMockSetup) setupBatchBuildingMocks() {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Once()
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
 		Return(int32(-1), nil).Once()
 }
 
@@ -375,7 +377,8 @@ func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Once()
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
 		Return(int32(0), err).Once()
 }
 
@@ -1319,12 +1322,25 @@ func newMockWalletController(signer input.Signer) *mockWalletController {
 // FundPsbt is a mock implementation of WalletController.FundPsbt.
 func (m *mockWalletController) FundPsbt(ctx context.Context,
 	packet *psbt.Packet, minConfs int32,
-	feeRate chainfee.SatPerKWeight,
-	account string) (int32, error) {
+	feeRate chainfee.SatPerKWeight, account string,
+	opts *FundingOpts) (int32, []wire.OutPoint, error) {
 
-	args := m.Called(ctx, packet, minConfs, feeRate, account)
+	args := m.Called(
+		ctx, packet, minConfs, feeRate, account, opts,
+	)
 
-	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
+	//nolint:forcetypeassert
+	return args.Get(0).(int32), nil, args.Error(1)
+}
+
+// ReleaseInputs is a mock implementation of
+// WalletController.ReleaseInputs.
+func (m *mockWalletController) ReleaseInputs(ctx context.Context,
+	lockID [32]byte, outpoints []wire.OutPoint) error {
+
+	args := m.Called(ctx, lockID, outpoints)
+
+	return args.Error(0)
 }
 
 // FinalizePsbt is a mock implementation of WalletController.FinalizePsbt.
