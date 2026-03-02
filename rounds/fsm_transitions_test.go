@@ -525,6 +525,11 @@ func TestFSMRegistrationState(t *testing.T) {
 			t, awaitState.ClientRegistrations, ClientID("client1"),
 		)
 
+		// Verify locked outpoints are propagated.
+		require.Equal(
+			t, testLockedOutpoints, awaitState.LockedOutpoints,
+		)
+
 		// Verify outbox messages from BatchBuiltState's
 		// PrepareClientNotificationsEvent.
 		var (
@@ -1269,11 +1274,13 @@ func TestFSMFailureScenarios(t *testing.T) {
 		// 2. UnlockBoardingInputsReq
 		// 3. UnlockForfeitVTXOsReq
 		// 4. RoundFailedReq for the actor
+		// NO ReleaseWalletInputsReq (pre-batch failure).
 		var (
-			foundClientFailed bool
-			foundRoundFailed  bool
-			foundUnlockBI     bool
-			foundUnlockVTXO   bool
+			foundClientFailed  bool
+			foundRoundFailed   bool
+			foundUnlockBI      bool
+			foundUnlockVTXO    bool
+			foundReleaseWallet bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1292,6 +1299,9 @@ func TestFSMFailureScenarios(t *testing.T) {
 				foundUnlockVTXO = true
 				require.Equal(t, h.env.RoundID, m.RoundID)
 
+			case *ReleaseWalletInputsReq:
+				foundReleaseWallet = true
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -1304,6 +1314,8 @@ func TestFSMFailureScenarios(t *testing.T) {
 			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundUnlockVTXO,
 			"forfeit VTXOs should be unlocked via outbox")
+		require.False(t, foundReleaseWallet,
+			"pre-batch failure should not release wallet inputs")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 
@@ -1506,11 +1518,14 @@ func TestFSMFailureScenarios(t *testing.T) {
 		failedState := assertStateType[*FailedState](h)
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages include unlock events.
+		// Verify outbox messages include unlock events and
+		// wallet input release.
+		expectedLockID := roundLockID(h.env.RoundID)
 		var (
-			foundClientFailed bool
-			foundRoundFailed  bool
-			foundUnlockBI     bool
+			foundClientFailed  bool
+			foundRoundFailed   bool
+			foundUnlockBI      bool
+			foundReleaseWallet bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1522,6 +1537,16 @@ func TestFSMFailureScenarios(t *testing.T) {
 				foundUnlockBI = true
 				require.Equal(t, h.env.RoundID, m.RoundID)
 
+			case *ReleaseWalletInputsReq:
+				foundReleaseWallet = true
+				require.Equal(
+					t, expectedLockID, m.LockID,
+				)
+				require.Equal(
+					t, testLockedOutpoints,
+					m.LockedOutpoints,
+				)
+
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -1530,6 +1555,8 @@ func TestFSMFailureScenarios(t *testing.T) {
 		require.True(t, foundClientFailed, "client notified of failure")
 		require.True(t, foundUnlockBI,
 			"boarding inputs should be unlocked via outbox")
+		require.True(t, foundReleaseWallet,
+			"wallet inputs should be released via outbox")
 		require.True(t, foundRoundFailed, "actor notified of failure")
 	})
 }

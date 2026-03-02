@@ -397,10 +397,23 @@ func (c *commonMockSetup) setupCompleteRegistrationFlow(
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
 }
 
+// testLockedOutpoints is a fixed set of wallet outpoints used by
+// feedBatchBuildSuccess to simulate UTXO leases from FundPsbt.
+var testLockedOutpoints = []wire.OutPoint{
+	{
+		Hash:  chainhash.HashH([]byte("wallet-utxo-1")),
+		Index: 0,
+	},
+	{
+		Hash:  chainhash.HashH([]byte("wallet-utxo-2")),
+		Index: 1,
+	},
+}
+
 // feedBatchBuildSuccess asserts the FSM is in AwaitingBatchBuildState,
 // extracts the BuildBatchReq outbox event, feeds a BuildBatchSucceededEvent
-// with a minimal test PSBT, and returns the resulting test PSBT for further
-// assertions.
+// with a minimal test PSBT and locked outpoints, and returns the resulting
+// test PSBT for further assertions.
 func feedBatchBuildSuccess(h *fsmTestHarness) *psbt.Packet {
 	h.Helper()
 
@@ -411,7 +424,8 @@ func feedBatchBuildSuccess(h *fsmTestHarness) *psbt.Packet {
 
 	h.outboxMessages = nil
 	err := h.sendEvent(&BuildBatchSucceededEvent{
-		PSBT: testPSBT,
+		PSBT:            testPSBT,
+		LockedOutpoints: testLockedOutpoints,
 	})
 	require.NoError(h, err)
 
