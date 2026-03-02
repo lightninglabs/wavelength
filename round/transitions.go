@@ -1694,11 +1694,10 @@ func (s *ConfirmedState) ProcessEvent(_ context.Context, event ClientEvent,
 	}
 }
 
-// ProcessEvent for ClientFailedState. This state is now recoverable and
-// accepts the same events as Idle (BoardingUTXOConfirmed,
-// ResumeBoardingIntents) to allow the FSM to restart the boarding process
-// after a failure. Instead of duplicating the Idle logic, we transition to
-// Idle and forward the event as an internal event for Idle to process.
+// ProcessEvent for ClientFailedState. This state is recoverable and
+// accepts IntentPackage events to restart the boarding process after a
+// failure. Instead of duplicating the Idle logic, we transition to Idle
+// and forward the event as an internal event for Idle to process.
 func (s *ClientFailedState) ProcessEvent(
 	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
