@@ -294,7 +294,8 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		h.actorSystem, serverConnActorID, serverConn,
 	)
 
-	// Build operator terms for client.
+	// Build operator terms for client. This mirrors what a real client
+	// would receive from the server's GetInfo RPC.
 	operatorTerms := &types.OperatorTerms{
 		PubKey:            h.operatorKeyDesc.PubKey,
 		BoardingExitDelay: h.terms.BoardingExitDelay,
@@ -302,6 +303,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		SweepDelay:        h.terms.SweepDelay,
 		SweepKey:          h.terms.SweepKey.PubKey,
 		MinConfirmations:  h.terms.MinBoardingConfirmations,
+		MinOperatorFee:    h.terms.MinOperatorFee,
 		ForfeitScript:     h.ForfeitScript(),
 	}
 
