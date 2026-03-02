@@ -87,26 +87,39 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 	return *keyDesc, nil
 }
 
-// sortedForfeitRequests converts a slice of ForfeitIntent into sorted
-// ForfeitRequest values. Outpoints are sorted by txid bytes then output
-// index so the resulting list is deterministic.
+// sortedForfeitRequests sorts forfeit requests by outpoint (txid bytes
+// then output index) so the resulting list is deterministic. Returns an
+// error if any request has a nil VTXOOutpoint.
 func sortedForfeitRequests(
-	forfeits []ForfeitIntent) []*ForfeitRequest {
+	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
 
+	// Collect and sort the outpoints, validating that none are nil.
 	outpoints := make([]wire.OutPoint, 0, len(forfeits))
 	for i := 0; i < len(forfeits); i++ {
-		outpoints = append(outpoints, forfeits[i].VTXOOutpoint)
+		if forfeits[i].VTXOOutpoint == nil {
+			return nil, fmt.Errorf("forfeit request %d "+
+				"has nil outpoint", i)
+		}
+		outpoints = append(
+			outpoints, *forfeits[i].VTXOOutpoint,
+		)
 	}
 	sortOutPoints(outpoints)
 
-	requests := make([]*ForfeitRequest, 0, len(outpoints))
+	// Build the sorted result with pointer-to-outpoint fields.
+	requests := make(
+		[]*types.ForfeitRequest, 0, len(outpoints),
+	)
 	for i := 0; i < len(outpoints); i++ {
-		requests = append(requests, &ForfeitRequest{
-			VTXOOutpoint: outpoints[i],
-		})
+		op := outpoints[i]
+		requests = append(
+			requests, &types.ForfeitRequest{
+				VTXOOutpoint: &op,
+			},
+		)
 	}
 
-	return requests
+	return requests, nil
 }
 
 // sortOutPoints orders outpoints by txid bytes then output index.
@@ -124,17 +137,29 @@ func sortOutPoints(outpoints []wire.OutPoint) {
 	})
 }
 
-// computeTotalForfeitAmount computes the total value of VTXOs being
-// forfeited. These contribute input value to the batch transaction.
-func computeTotalForfeitAmount(
-	forfeits []ForfeitIntent) btcutil.Amount {
+// computeTotalForfeitAmount looks up each forfeited VTXO's value from
+// the VTXOStore and returns the sum. This replaces the old approach of
+// carrying the amount inside ForfeitIntent — the outpoint is sufficient
+// and the store is the source of truth.
+func computeTotalForfeitAmount(ctx context.Context,
+	store VTXOStore,
+	forfeits []types.ForfeitRequest) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
 	for i := 0; i < len(forfeits); i++ {
-		total += forfeits[i].Amount
+		vtxo, err := store.GetVTXO(
+			ctx, *forfeits[i].VTXOOutpoint,
+		)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"forfeit amount lookup %s: %w",
+				forfeits[i].VTXOOutpoint, err,
+			)
+		}
+		total += vtxo.Amount
 	}
 
-	return total
+	return total, nil
 }
 
 // buildJoinRoundAuth creates the BIP-322 authorization payload for a
@@ -144,8 +169,8 @@ func computeTotalForfeitAmount(
 func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	identifierKeyDesc keychain.KeyDescriptor,
 	intents Intents, vtxoReqs []types.VTXORequest,
-	forfeitReqs []*ForfeitRequest,
-	leaveReqs []*LeaveRequest) (*types.JoinRoundAuth, error) {
+	forfeitReqs []*types.ForfeitRequest,
+	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
 
 	log := env.Log
 	log.InfoS(ctx, "Building join round auth",
@@ -287,11 +312,12 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // buildJoinRoundAuthRequest builds the shared request shape used for
 // canonical message encoding and returns the corresponding signing
 // inputs in the same order.
-func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
-	intents Intents, vtxoReqs []types.VTXORequest,
-	forfeitReqs []*ForfeitRequest,
-	leaveReqs []*LeaveRequest) (*types.JoinRoundRequest, []joinAuthInput,
-	error) {
+func buildJoinRoundAuthRequest(ctx context.Context,
+	env *ClientEnvironment, intents Intents,
+	vtxoReqs []types.VTXORequest,
+	forfeitReqs []*types.ForfeitRequest,
+	leaveReqs []*types.LeaveRequest) (*types.JoinRoundRequest,
+	[]joinAuthInput, error) {
 
 	boardingReqs := make(
 		[]*types.BoardingRequest, 0, len(intents.Boarding),
@@ -331,18 +357,9 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 
 	// Each forfeit request contributes a signing input built from
 	// the persisted VTXO data.
-	sharedForfeitReqs := make(
-		[]*types.ForfeitRequest, 0, len(forfeitReqs),
-	)
 	for i := 0; i < len(forfeitReqs); i++ {
 		forfeitReq := forfeitReqs[i]
-		outpoint := forfeitReq.VTXOOutpoint
-
-		sharedForfeitReqs = append(
-			sharedForfeitReqs, &types.ForfeitRequest{
-				VTXOOutpoint: &outpoint,
-			},
-		)
+		outpoint := *forfeitReq.VTXOOutpoint
 
 		vtxo, err := env.VTXOStore.GetVTXO(ctx, outpoint)
 		if err != nil {
@@ -396,19 +413,7 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 		})
 	}
 
-	// Convert leave and VTXO requests to their shared types.
-	sharedLeaveReqs := make(
-		[]*types.LeaveRequest, 0, len(leaveReqs),
-	)
-	for i := 0; i < len(leaveReqs); i++ {
-		leaveReq := leaveReqs[i]
-		sharedLeaveReqs = append(
-			sharedLeaveReqs, &types.LeaveRequest{
-				Output: leaveReq.Output,
-			},
-		)
-	}
-
+	// Convert VTXO requests to pointer slice for the shared type.
 	sharedVTXOReqs := make(
 		[]*types.VTXORequest, 0, len(vtxoReqs),
 	)
@@ -421,8 +426,8 @@ func buildJoinRoundAuthRequest(ctx context.Context, env *ClientEnvironment,
 		Identifier:   nil,
 		BoardingReqs: boardingReqs,
 		VTXOReqs:     sharedVTXOReqs,
-		ForfeitReqs:  sharedForfeitReqs,
-		LeaveReqs:    sharedLeaveReqs,
+		ForfeitReqs:  forfeitReqs,
+		LeaveReqs:    leaveReqs,
 	}, signingInputs, nil
 }
 

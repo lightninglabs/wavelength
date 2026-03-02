@@ -31,13 +31,13 @@ type JoinRoundRequest struct {
 	VTXORequests []types.VTXORequest
 
 	// ForfeitRequests specifies the VTXOs the client wants to forfeit.
-	ForfeitRequests []*ForfeitRequest
+	ForfeitRequests []*types.ForfeitRequest
 
 	// LeaveRequests contains VTXOs being exited to on-chain outputs. Each
 	// leave request specifies only the on-chain destination output. The
 	// server includes these in the batch transaction; any forfeited VTXOs
 	// are listed separately in ForfeitRequests.
-	LeaveRequests []*LeaveRequest
+	LeaveRequests []*types.LeaveRequest
 
 	// RoundID is optional; when empty it instructs the server to assign
 	// a new round. When non-empty, the request is for the specified round.
@@ -46,21 +46,6 @@ type JoinRoundRequest struct {
 	// Auth contains the BIP-322 authorization payload for this
 	// request. Nil when join request auth is disabled (tests).
 	Auth *types.JoinRoundAuth
-}
-
-// ForfeitRequest describes a VTXO that will be forfeited in the round.
-type ForfeitRequest struct {
-	// VTXOOutpoint identifies the VTXO to forfeit.
-	VTXOOutpoint wire.OutPoint
-}
-
-// LeaveRequest describes a leave output to be included in the batch
-// transaction. This represents a client exiting the Ark by forfeiting an
-// existing VTXO and receiving an on-chain output instead of a new VTXO.
-type LeaveRequest struct {
-	// Output is the on-chain destination output. Contains the value and
-	// pkScript for the leave output that will be included in the batch tx.
-	Output *wire.TxOut
 }
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}

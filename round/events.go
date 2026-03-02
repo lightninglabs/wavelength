@@ -50,10 +50,10 @@ type ResumeBoardingIntents struct {
 	VTXOs []types.VTXORequest
 
 	// Forfeits contains forfeited VTXOs to resume as inputs.
-	Forfeits []ForfeitIntent
+	Forfeits []types.ForfeitRequest
 
 	// Leaves contains leave requests to resume as outputs.
-	Leaves []*LeaveRequest
+	Leaves []*types.LeaveRequest
 }
 
 // isEmpty returns true if there are no intents of any kind to resume.
@@ -356,14 +356,16 @@ func (e *RoundComplete) clientEventSealed() {}
 //   - Consolidate N-to-1: {Forfeits: [N], VTXOs: [1]}
 //   - Split 1-to-N: {Forfeits: [1], VTXOs: [N]}
 type IntentPackage struct {
-	// Forfeits contains VTXOs being forfeited as round inputs.
-	Forfeits []ForfeitIntent
+	// Forfeits contains VTXOs being forfeited as round inputs. Each
+	// entry carries only the outpoint; the VTXO amount is looked up
+	// from VTXOStore at registration time.
+	Forfeits []types.ForfeitRequest
 
 	// VTXOs contains new VTXO output requests.
 	VTXOs []types.VTXORequest
 
 	// Leaves contains on-chain exit output requests.
-	Leaves []*LeaveRequest
+	Leaves []*types.LeaveRequest
 }
 
 // isEmpty returns true if the package contains no intents.

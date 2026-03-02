@@ -1566,9 +1566,8 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 
 	// Bundle the forfeit input and new VTXO output atomically.
 	pkg := &IntentPackage{
-		Forfeits: []ForfeitIntent{{
-			VTXOOutpoint: req.VTXOOutpoint,
-			Amount:       btcutil.Amount(req.Amount),
+		Forfeits: []types.ForfeitRequest{{
+			VTXOOutpoint: &req.VTXOOutpoint,
 		}},
 		VTXOs: []types.VTXORequest{
 			buildVTXORequestFromRefresh(req),
@@ -1624,11 +1623,10 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 
 	// Bundle the forfeit input and leave output atomically.
 	pkg := &IntentPackage{
-		Forfeits: []ForfeitIntent{{
-			VTXOOutpoint: req.VTXOOutpoint,
-			Amount:       btcutil.Amount(req.Amount),
+		Forfeits: []types.ForfeitRequest{{
+			VTXOOutpoint: &req.VTXOOutpoint,
 		}},
-		Leaves: []*LeaveRequest{{Output: req.Output}},
+		Leaves: []*types.LeaveRequest{{Output: req.Output}},
 	}
 	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
