@@ -19,7 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GetInfo_FullMethodName             = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_RequestRoundOutputs_FullMethodName = "/daemonrpc.DaemonService/RequestRoundOutputs"
+	DaemonService_JoinRound_FullMethodName           = "/daemonrpc.DaemonService/JoinRound"
+	DaemonService_CompletedRoundID_FullMethodName    = "/daemonrpc.DaemonService/CompletedRoundID"
+	DaemonService_SendOORPayment_FullMethodName      = "/daemonrpc.DaemonService/SendOORPayment"
+	DaemonService_NewReceiveAddress_FullMethodName   = "/daemonrpc.DaemonService/NewReceiveAddress"
+	DaemonService_SyncIncoming_FullMethodName        = "/daemonrpc.DaemonService/SyncIncoming"
+	DaemonService_ListVTXOs_FullMethodName           = "/daemonrpc.DaemonService/ListVTXOs"
+	DaemonService_GetBalance_FullMethodName          = "/daemonrpc.DaemonService/GetBalance"
+	DaemonService_GetOnChainBalance_FullMethodName   = "/daemonrpc.DaemonService/GetOnChainBalance"
+	DaemonService_GetNewAddress_FullMethodName       = "/daemonrpc.DaemonService/GetNewAddress"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -34,6 +44,32 @@ type DaemonServiceClient interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// RequestRoundOutputs registers desired output amounts for the next
+	// round. The daemon queues these amounts and includes them in the
+	// next round registration.
+	RequestRoundOutputs(ctx context.Context, in *RequestRoundOutputsRequest, opts ...grpc.CallOption) (*RequestRoundOutputsResponse, error)
+	// JoinRound tells the daemon to join the next available round with
+	// all currently registered intents.
+	JoinRound(ctx context.Context, in *JoinRoundRequest, opts ...grpc.CallOption) (*JoinRoundResponse, error)
+	// CompletedRoundID returns the most recently completed round ID.
+	CompletedRoundID(ctx context.Context, in *CompletedRoundIDRequest, opts ...grpc.CallOption) (*CompletedRoundIDResponse, error)
+	// SendOORPayment performs a single-input out-of-round transfer to
+	// a recipient address.
+	SendOORPayment(ctx context.Context, in *SendOORPaymentRequest, opts ...grpc.CallOption) (*SendOORPaymentResponse, error)
+	// NewReceiveAddress derives a fresh recipient address for incoming
+	// OOR transfers.
+	NewReceiveAddress(ctx context.Context, in *NewReceiveAddressRequest, opts ...grpc.CallOption) (*NewReceiveAddressResponse, error)
+	// SyncIncoming fetches and materializes all unprocessed incoming OOR
+	// transfers addressed to locally generated receive addresses.
+	SyncIncoming(ctx context.Context, in *SyncIncomingRequest, opts ...grpc.CallOption) (*SyncIncomingResponse, error)
+	// ListVTXOs returns all VTXOs currently known to the daemon.
+	ListVTXOs(ctx context.Context, in *ListVTXOsRequest, opts ...grpc.CallOption) (*ListVTXOsResponse, error)
+	// GetBalance returns the total live VTXO balance.
+	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error)
+	// GetOnChainBalance returns the on-chain wallet balance.
+	GetOnChainBalance(ctx context.Context, in *GetOnChainBalanceRequest, opts ...grpc.CallOption) (*GetOnChainBalanceResponse, error)
+	// GetNewAddress generates a new on-chain receiving address.
+	GetNewAddress(ctx context.Context, in *GetNewAddressRequest, opts ...grpc.CallOption) (*GetNewAddressResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -54,6 +90,106 @@ func (c *daemonServiceClient) GetInfo(ctx context.Context, in *GetInfoRequest, o
 	return out, nil
 }
 
+func (c *daemonServiceClient) RequestRoundOutputs(ctx context.Context, in *RequestRoundOutputsRequest, opts ...grpc.CallOption) (*RequestRoundOutputsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RequestRoundOutputsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RequestRoundOutputs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) JoinRound(ctx context.Context, in *JoinRoundRequest, opts ...grpc.CallOption) (*JoinRoundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(JoinRoundResponse)
+	err := c.cc.Invoke(ctx, DaemonService_JoinRound_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) CompletedRoundID(ctx context.Context, in *CompletedRoundIDRequest, opts ...grpc.CallOption) (*CompletedRoundIDResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompletedRoundIDResponse)
+	err := c.cc.Invoke(ctx, DaemonService_CompletedRoundID_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SendOORPayment(ctx context.Context, in *SendOORPaymentRequest, opts ...grpc.CallOption) (*SendOORPaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendOORPaymentResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SendOORPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) NewReceiveAddress(ctx context.Context, in *NewReceiveAddressRequest, opts ...grpc.CallOption) (*NewReceiveAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NewReceiveAddressResponse)
+	err := c.cc.Invoke(ctx, DaemonService_NewReceiveAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SyncIncoming(ctx context.Context, in *SyncIncomingRequest, opts ...grpc.CallOption) (*SyncIncomingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SyncIncomingResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SyncIncoming_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListVTXOs(ctx context.Context, in *ListVTXOsRequest, opts ...grpc.CallOption) (*ListVTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBalanceResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetBalance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetOnChainBalance(ctx context.Context, in *GetOnChainBalanceRequest, opts ...grpc.CallOption) (*GetOnChainBalanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOnChainBalanceResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetOnChainBalance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetNewAddress(ctx context.Context, in *GetNewAddressRequest, opts ...grpc.CallOption) (*GetNewAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNewAddressResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetNewAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -66,6 +202,32 @@ type DaemonServiceServer interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// RequestRoundOutputs registers desired output amounts for the next
+	// round. The daemon queues these amounts and includes them in the
+	// next round registration.
+	RequestRoundOutputs(context.Context, *RequestRoundOutputsRequest) (*RequestRoundOutputsResponse, error)
+	// JoinRound tells the daemon to join the next available round with
+	// all currently registered intents.
+	JoinRound(context.Context, *JoinRoundRequest) (*JoinRoundResponse, error)
+	// CompletedRoundID returns the most recently completed round ID.
+	CompletedRoundID(context.Context, *CompletedRoundIDRequest) (*CompletedRoundIDResponse, error)
+	// SendOORPayment performs a single-input out-of-round transfer to
+	// a recipient address.
+	SendOORPayment(context.Context, *SendOORPaymentRequest) (*SendOORPaymentResponse, error)
+	// NewReceiveAddress derives a fresh recipient address for incoming
+	// OOR transfers.
+	NewReceiveAddress(context.Context, *NewReceiveAddressRequest) (*NewReceiveAddressResponse, error)
+	// SyncIncoming fetches and materializes all unprocessed incoming OOR
+	// transfers addressed to locally generated receive addresses.
+	SyncIncoming(context.Context, *SyncIncomingRequest) (*SyncIncomingResponse, error)
+	// ListVTXOs returns all VTXOs currently known to the daemon.
+	ListVTXOs(context.Context, *ListVTXOsRequest) (*ListVTXOsResponse, error)
+	// GetBalance returns the total live VTXO balance.
+	GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error)
+	// GetOnChainBalance returns the on-chain wallet balance.
+	GetOnChainBalance(context.Context, *GetOnChainBalanceRequest) (*GetOnChainBalanceResponse, error)
+	// GetNewAddress generates a new on-chain receiving address.
+	GetNewAddress(context.Context, *GetNewAddressRequest) (*GetNewAddressResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -78,6 +240,36 @@ type UnimplementedDaemonServiceServer struct{}
 
 func (UnimplementedDaemonServiceServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedDaemonServiceServer) RequestRoundOutputs(context.Context, *RequestRoundOutputsRequest) (*RequestRoundOutputsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequestRoundOutputs not implemented")
+}
+func (UnimplementedDaemonServiceServer) JoinRound(context.Context, *JoinRoundRequest) (*JoinRoundResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method JoinRound not implemented")
+}
+func (UnimplementedDaemonServiceServer) CompletedRoundID(context.Context, *CompletedRoundIDRequest) (*CompletedRoundIDResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CompletedRoundID not implemented")
+}
+func (UnimplementedDaemonServiceServer) SendOORPayment(context.Context, *SendOORPaymentRequest) (*SendOORPaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendOORPayment not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewReceiveAddress(context.Context, *NewReceiveAddressRequest) (*NewReceiveAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewReceiveAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) SyncIncoming(context.Context, *SyncIncomingRequest) (*SyncIncomingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SyncIncoming not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListVTXOs(context.Context, *ListVTXOsRequest) (*ListVTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBalance not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetOnChainBalance(context.Context, *GetOnChainBalanceRequest) (*GetOnChainBalanceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOnChainBalance not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetNewAddress(context.Context, *GetNewAddressRequest) (*GetNewAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNewAddress not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -118,6 +310,186 @@ func _DaemonService_GetInfo_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_RequestRoundOutputs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequestRoundOutputsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RequestRoundOutputs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RequestRoundOutputs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RequestRoundOutputs(ctx, req.(*RequestRoundOutputsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_JoinRound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(JoinRoundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).JoinRound(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_JoinRound_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).JoinRound(ctx, req.(*JoinRoundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_CompletedRoundID_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompletedRoundIDRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).CompletedRoundID(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_CompletedRoundID_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).CompletedRoundID(ctx, req.(*CompletedRoundIDRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SendOORPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendOORPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SendOORPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SendOORPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SendOORPayment(ctx, req.(*SendOORPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_NewReceiveAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewReceiveAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewReceiveAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewReceiveAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewReceiveAddress(ctx, req.(*NewReceiveAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SyncIncoming_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SyncIncomingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SyncIncoming(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SyncIncoming_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SyncIncoming(ctx, req.(*SyncIncomingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListVTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListVTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListVTXOs(ctx, req.(*ListVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBalanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetBalance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetBalance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetBalance(ctx, req.(*GetBalanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetOnChainBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOnChainBalanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetOnChainBalance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetOnChainBalance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetOnChainBalance(ctx, req.(*GetOnChainBalanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetNewAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNewAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetNewAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetNewAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetNewAddress(ctx, req.(*GetNewAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -128,6 +500,46 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _DaemonService_GetInfo_Handler,
+		},
+		{
+			MethodName: "RequestRoundOutputs",
+			Handler:    _DaemonService_RequestRoundOutputs_Handler,
+		},
+		{
+			MethodName: "JoinRound",
+			Handler:    _DaemonService_JoinRound_Handler,
+		},
+		{
+			MethodName: "CompletedRoundID",
+			Handler:    _DaemonService_CompletedRoundID_Handler,
+		},
+		{
+			MethodName: "SendOORPayment",
+			Handler:    _DaemonService_SendOORPayment_Handler,
+		},
+		{
+			MethodName: "NewReceiveAddress",
+			Handler:    _DaemonService_NewReceiveAddress_Handler,
+		},
+		{
+			MethodName: "SyncIncoming",
+			Handler:    _DaemonService_SyncIncoming_Handler,
+		},
+		{
+			MethodName: "ListVTXOs",
+			Handler:    _DaemonService_ListVTXOs_Handler,
+		},
+		{
+			MethodName: "GetBalance",
+			Handler:    _DaemonService_GetBalance_Handler,
+		},
+		{
+			MethodName: "GetOnChainBalance",
+			Handler:    _DaemonService_GetOnChainBalance_Handler,
+		},
+		{
+			MethodName: "GetNewAddress",
+			Handler:    _DaemonService_GetNewAddress_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

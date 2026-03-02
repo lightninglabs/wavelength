@@ -12,6 +12,46 @@ service DaemonService {
     // including version, network, lnd connection state, and server
     // connection state.
     rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+
+    // RequestRoundOutputs registers desired output amounts for the next
+    // round. The daemon queues these amounts and includes them in the
+    // next round registration.
+    rpc RequestRoundOutputs (RequestRoundOutputsRequest)
+        returns (RequestRoundOutputsResponse);
+
+    // JoinRound tells the daemon to join the next available round with
+    // all currently registered intents.
+    rpc JoinRound (JoinRoundRequest) returns (JoinRoundResponse);
+
+    // CompletedRoundID returns the most recently completed round ID.
+    rpc CompletedRoundID (CompletedRoundIDRequest)
+        returns (CompletedRoundIDResponse);
+
+    // SendOORPayment performs a single-input out-of-round transfer to
+    // a recipient address.
+    rpc SendOORPayment (SendOORPaymentRequest) returns (SendOORPaymentResponse);
+
+    // NewReceiveAddress derives a fresh recipient address for incoming
+    // OOR transfers.
+    rpc NewReceiveAddress (NewReceiveAddressRequest)
+        returns (NewReceiveAddressResponse);
+
+    // SyncIncoming fetches and materializes all unprocessed incoming OOR
+    // transfers addressed to locally generated receive addresses.
+    rpc SyncIncoming (SyncIncomingRequest) returns (SyncIncomingResponse);
+
+    // ListVTXOs returns all VTXOs currently known to the daemon.
+    rpc ListVTXOs (ListVTXOsRequest) returns (ListVTXOsResponse);
+
+    // GetBalance returns the total live VTXO balance.
+    rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
+
+    // GetOnChainBalance returns the on-chain wallet balance.
+    rpc GetOnChainBalance (GetOnChainBalanceRequest)
+        returns (GetOnChainBalanceResponse);
+
+    // GetNewAddress generates a new on-chain receiving address.
+    rpc GetNewAddress (GetNewAddressRequest) returns (GetNewAddressResponse);
 }
 
 message GetInfoRequest {
@@ -93,4 +133,121 @@ message ServerInfo {
     // min_confirmations is the minimum confirmations required on
     // boarding inputs.
     uint32 min_confirmations = 11;
+}
+
+// ---- Round RPCs ----
+
+message RequestRoundOutputsRequest {
+    // amounts is the list of desired output amounts in satoshis.
+    repeated int64 amounts = 1;
+}
+
+message RequestRoundOutputsResponse {
+}
+
+message JoinRoundRequest {
+}
+
+message JoinRoundResponse {
+}
+
+message CompletedRoundIDRequest {
+}
+
+message CompletedRoundIDResponse {
+    // round_id is the identifier of the most recently completed round.
+    string round_id = 1;
+}
+
+// ---- OOR RPCs ----
+
+message SendOORPaymentRequest {
+    // recipient_address is the bech32m-encoded recipient address.
+    string recipient_address = 1;
+
+    // amount is the transfer amount in satoshis.
+    int64 amount = 2;
+}
+
+message SendOORPaymentResponse {
+}
+
+message NewReceiveAddressRequest {
+}
+
+message NewReceiveAddressResponse {
+    // address is the bech32m-encoded receive address.
+    string address = 1;
+}
+
+message SyncIncomingRequest {
+}
+
+message SyncIncomingResponse {
+    // processed is the number of incoming transfers materialized.
+    int32 processed = 1;
+}
+
+// ---- Accounting RPCs ----
+
+message ListVTXOsRequest {
+}
+
+message ListVTXOsResponse {
+    // vtxos is the list of known VTXOs.
+    repeated VTXOInfo vtxos = 1;
+}
+
+// VTXOInfo describes a single virtual transaction output owned by the
+// client.
+message VTXOInfo {
+    // outpoint_hash is the 32-byte transaction hash of the VTXO's
+    // outpoint.
+    bytes outpoint_hash = 1;
+
+    // outpoint_index is the output index within the transaction.
+    uint32 outpoint_index = 2;
+
+    // amount is the VTXO value in satoshis.
+    int64 amount = 3;
+
+    // status is the current lifecycle status of the VTXO (e.g.,
+    // "live", "spent").
+    string status = 4;
+
+    // round_id is the round that created this VTXO.
+    string round_id = 5;
+
+    // relative_expiry is the CSV delay for the VTXO's unilateral
+    // exit path (blocks).
+    uint32 relative_expiry = 6;
+}
+
+message GetBalanceRequest {
+}
+
+message GetBalanceResponse {
+    // balance is the total live VTXO balance in satoshis.
+    int64 balance = 1;
+}
+
+// ---- Wallet RPCs ----
+
+message GetOnChainBalanceRequest {
+}
+
+message GetOnChainBalanceResponse {
+    // confirmed is the confirmed on-chain balance in satoshis.
+    int64 confirmed = 1;
+
+    // unconfirmed is the unconfirmed on-chain balance in satoshis.
+    int64 unconfirmed = 2;
+}
+
+message GetNewAddressRequest {
+}
+
+message GetNewAddressResponse {
+    // address is the newly generated on-chain address.
+    string address = 1;
 }

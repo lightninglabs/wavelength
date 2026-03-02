@@ -26,6 +26,26 @@ func NewDaemonServiceMailboxClient(c rpc.RPCClient) *DaemonServiceMailboxClient 
 type DaemonServiceMailboxServer interface {
 	// GetInfo handles GetInfo.
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
+	// RequestRoundOutputs handles RequestRoundOutputs.
+	RequestRoundOutputs(ctx context.Context, req *RequestRoundOutputsRequest) (*RequestRoundOutputsResponse, error)
+	// JoinRound handles JoinRound.
+	JoinRound(ctx context.Context, req *JoinRoundRequest) (*JoinRoundResponse, error)
+	// CompletedRoundID handles CompletedRoundID.
+	CompletedRoundID(ctx context.Context, req *CompletedRoundIDRequest) (*CompletedRoundIDResponse, error)
+	// SendOORPayment handles SendOORPayment.
+	SendOORPayment(ctx context.Context, req *SendOORPaymentRequest) (*SendOORPaymentResponse, error)
+	// NewReceiveAddress handles NewReceiveAddress.
+	NewReceiveAddress(ctx context.Context, req *NewReceiveAddressRequest) (*NewReceiveAddressResponse, error)
+	// SyncIncoming handles SyncIncoming.
+	SyncIncoming(ctx context.Context, req *SyncIncomingRequest) (*SyncIncomingResponse, error)
+	// ListVTXOs handles ListVTXOs.
+	ListVTXOs(ctx context.Context, req *ListVTXOsRequest) (*ListVTXOsResponse, error)
+	// GetBalance handles GetBalance.
+	GetBalance(ctx context.Context, req *GetBalanceRequest) (*GetBalanceResponse, error)
+	// GetOnChainBalance handles GetOnChainBalance.
+	GetOnChainBalance(ctx context.Context, req *GetOnChainBalanceRequest) (*GetOnChainBalanceResponse, error)
+	// GetNewAddress handles GetNewAddress.
+	GetNewAddress(ctx context.Context, req *GetNewAddressRequest) (*GetNewAddressResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -39,6 +59,106 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetInfo(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "RequestRoundOutputs", func() proto.Message {
+		return &RequestRoundOutputsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RequestRoundOutputsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RequestRoundOutputs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "JoinRound", func() proto.Message {
+		return &JoinRoundRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*JoinRoundRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.JoinRound(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "CompletedRoundID", func() proto.Message {
+		return &CompletedRoundIDRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*CompletedRoundIDRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.CompletedRoundID(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SendOORPayment", func() proto.Message {
+		return &SendOORPaymentRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SendOORPaymentRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendOORPayment(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "NewReceiveAddress", func() proto.Message {
+		return &NewReceiveAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*NewReceiveAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.NewReceiveAddress(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SyncIncoming", func() proto.Message {
+		return &SyncIncomingRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SyncIncomingRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SyncIncoming(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListVTXOs", func() proto.Message {
+		return &ListVTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListVTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetBalance", func() proto.Message {
+		return &GetBalanceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetBalanceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetBalance(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetOnChainBalance", func() proto.Message {
+		return &GetOnChainBalanceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetOnChainBalanceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetOnChainBalance(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetNewAddress", func() proto.Message {
+		return &GetNewAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetNewAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetNewAddress(ctx, req)
 	})
 }
 
@@ -58,6 +178,236 @@ func (c *DaemonServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoRe
 	}
 
 	resp := new(GetInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RequestRoundOutputs calls the RequestRoundOutputs RPC.
+func (c *DaemonServiceMailboxClient) RequestRoundOutputs(ctx context.Context, req *RequestRoundOutputsRequest, opts ...rpc.RPCOptions) (*RequestRoundOutputsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "RequestRoundOutputs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RequestRoundOutputsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// JoinRound calls the JoinRound RPC.
+func (c *DaemonServiceMailboxClient) JoinRound(ctx context.Context, req *JoinRoundRequest, opts ...rpc.RPCOptions) (*JoinRoundResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "JoinRound",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(JoinRoundResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// CompletedRoundID calls the CompletedRoundID RPC.
+func (c *DaemonServiceMailboxClient) CompletedRoundID(ctx context.Context, req *CompletedRoundIDRequest, opts ...rpc.RPCOptions) (*CompletedRoundIDResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "CompletedRoundID",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(CompletedRoundIDResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendOORPayment calls the SendOORPayment RPC.
+func (c *DaemonServiceMailboxClient) SendOORPayment(ctx context.Context, req *SendOORPaymentRequest, opts ...rpc.RPCOptions) (*SendOORPaymentResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SendOORPayment",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SendOORPaymentResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// NewReceiveAddress calls the NewReceiveAddress RPC.
+func (c *DaemonServiceMailboxClient) NewReceiveAddress(ctx context.Context, req *NewReceiveAddressRequest, opts ...rpc.RPCOptions) (*NewReceiveAddressResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "NewReceiveAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(NewReceiveAddressResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SyncIncoming calls the SyncIncoming RPC.
+func (c *DaemonServiceMailboxClient) SyncIncoming(ctx context.Context, req *SyncIncomingRequest, opts ...rpc.RPCOptions) (*SyncIncomingResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SyncIncoming",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SyncIncomingResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListVTXOs calls the ListVTXOs RPC.
+func (c *DaemonServiceMailboxClient) ListVTXOs(ctx context.Context, req *ListVTXOsRequest, opts ...rpc.RPCOptions) (*ListVTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListVTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetBalance calls the GetBalance RPC.
+func (c *DaemonServiceMailboxClient) GetBalance(ctx context.Context, req *GetBalanceRequest, opts ...rpc.RPCOptions) (*GetBalanceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetBalance",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetBalanceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetOnChainBalance calls the GetOnChainBalance RPC.
+func (c *DaemonServiceMailboxClient) GetOnChainBalance(ctx context.Context, req *GetOnChainBalanceRequest, opts ...rpc.RPCOptions) (*GetOnChainBalanceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetOnChainBalance",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetOnChainBalanceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetNewAddress calls the GetNewAddress RPC.
+func (c *DaemonServiceMailboxClient) GetNewAddress(ctx context.Context, req *GetNewAddressRequest, opts ...rpc.RPCOptions) (*GetNewAddressResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetNewAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetNewAddressResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -12,7 +12,8 @@ service OORMailboxService {
     rpc SubmitPackage (SubmitPackageRequest) returns (SubmitPackageResponse);
 
     // FinalizePackage submits finalized checkpoint PSBTs for a session.
-    rpc FinalizePackage (FinalizePackageRequest) returns (FinalizePackageResponse);
+    rpc FinalizePackage (FinalizePackageRequest)
+        returns (FinalizePackageResponse);
 }
 
 // OOROutPoint is a protobuf representation of wire.OutPoint.
