@@ -780,6 +780,36 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
 		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
 
+	// Validate chain data that the FSM previously checked.
+	confTx := walletIntent.ChainInfo.ConfTx
+	if confTx == nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"boarding confirmation missing tx"))
+	}
+	if int(walletIntent.Outpoint.Index) >= len(confTx.TxOut) {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"invalid outpoint index %d for tx %s",
+			walletIntent.Outpoint.Index,
+			walletIntent.Outpoint.Hash))
+	}
+
+	// Build the boarding request from the wallet intent. Chain-level
+	// information (ConfHeight, ConfHash, ConfTx, TxProof, Amount) is
+	// carried through the embedded wallet.BoardingIntent.ChainInfo
+	// and remains available to downstream consumers (e.g.,
+	// buildJoinRoundAuthRequest uses ChainInfo.Amount for BIP-322
+	// proof construction).
+	boardingReq := types.BoardingRequest{
+		Outpoint:    &walletIntent.Outpoint,
+		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
+		OperatorKey: walletIntent.Address.OperatorKey,
+		ExitDelay:   walletIntent.Address.ExitDelay,
+	}
+	intent := BoardingIntent{
+		BoardingIntent: *walletIntent,
+		Request:        boardingReq,
+	}
+
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows multiple boarding confirmations to
 	// accumulate in the same round.
@@ -793,21 +823,11 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		}
 	}
 
-	// Create the FSM event from the wallet's confirmed intent. Wallet only
-	// notifies after min confs, so we set confirmations to 1. Include the
-	// Address and TxProof for building the Request.
-	confirmEvt := &BoardingUTXOConfirmed{
-		Outpoint:      walletIntent.Outpoint,
-		Address:       walletIntent.Address,
-		BlockHeight:   walletIntent.ChainInfo.ConfHeight,
-		BlockHash:     walletIntent.ChainInfo.ConfHash,
-		Confirmations: int32(a.cfg.OperatorTerms.MinConfirmations),
-		Tx:            walletIntent.ChainInfo.ConfTx,
-		TxProof:       walletIntent.ChainInfo.TxProof,
-	}
-
-	// Drive the FSM with the confirmation event.
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
+	// Send the boarding intent to the FSM as an IntentPackage.
+	pkg := &IntentPackage{Intents: Intents{
+		Boarding: []BoardingIntent{intent},
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing boarding confirmation: %w", err))
@@ -862,11 +882,11 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		}
 	}
 
-	event := &VTXORequestsReceived{
-		Requests: requests,
-	}
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: requests,
+	}}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err,
@@ -879,7 +899,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 }
 
 // handleVTXORequestsReceived forwards pre-built VTXO requests from other
-// actors into the pending round FSM.
+// actors into the pending round FSM via IntentPackage.
 func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	req *VTXORequestsReceived) fn.Result[actormsg.RoundActorResp] {
 
@@ -905,7 +925,10 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 		}
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: req.Requests,
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err))
@@ -1565,14 +1588,14 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	}
 
 	// Bundle the forfeit input and new VTXO output atomically.
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		Forfeits: []types.ForfeitRequest{{
 			VTXOOutpoint: &req.VTXOOutpoint,
 		}},
 		VTXOs: []types.VTXORequest{
 			buildVTXORequestFromRefresh(req),
 		},
-	}
+	}}
 	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -1622,12 +1645,12 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 	}
 
 	// Bundle the forfeit input and leave output atomically.
-	pkg := &IntentPackage{
+	pkg := &IntentPackage{Intents: Intents{
 		Forfeits: []types.ForfeitRequest{{
 			VTXOOutpoint: &req.VTXOOutpoint,
 		}},
 		Leaves: []*types.LeaveRequest{{Output: req.Output}},
-	}
+	}}
 	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
