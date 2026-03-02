@@ -3,6 +3,7 @@ package round
 import (
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -408,6 +409,59 @@ func (s *InputSigSentState) IsTerminal() bool {
 }
 
 func (s *InputSigSentState) clientStateSealed() {}
+
+// AwaitingRoundCheckpointState is an intermediate state between
+// boarding/forfeit signing and InputSigSent. The FSM has prepared all
+// signatures and emitted a CommitRoundStateReq; it is now waiting for
+// the outbox handler to persist the round checkpoint. On success, the
+// FSM transitions to InputSigSentState and emits server submission
+// messages; on failure, the error is fatal.
+type AwaitingRoundCheckpointState struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// CommitmentTx is the unsigned commitment transaction as a PSBT.
+	CommitmentTx *psbt.Packet
+
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree
+	// paths.
+	VTXOTreePaths map[int]*tree.Tree
+
+	// Intents contains all the client's intents for this round.
+	Intents Intents
+
+	// ClientTrees maps signer keys to the client's extracted
+	// sub-tree for that VTXO.
+	ClientTrees map[SignerKey]*tree.Tree
+
+	// BoardingInputIndices maps each boarding intent's outpoint to
+	// its position in the commitment transaction inputs.
+	BoardingInputIndices map[wire.OutPoint]int
+
+	// InputSigs are the Schnorr signatures for the boarding inputs.
+	InputSigs []*types.BoardingInputSignature
+
+	// ForfeitedVTXOs contains outpoints of VTXOs being refreshed.
+	ForfeitedVTXOs []wire.OutPoint
+
+	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
+	// signatures. Nil for boarding-only rounds.
+	ForfeitSigs map[wire.OutPoint]*schnorr.Signature
+
+	// ForfeitTxs maps VTXO outpoints to the built forfeit
+	// transactions. Nil for boarding-only rounds.
+	ForfeitTxs map[wire.OutPoint]*wire.MsgTx
+}
+
+func (s *AwaitingRoundCheckpointState) String() string {
+	return "AwaitingRoundCheckpoint"
+}
+
+func (s *AwaitingRoundCheckpointState) IsTerminal() bool {
+	return false
+}
+
+func (s *AwaitingRoundCheckpointState) clientStateSealed() {}
 
 // AwaitingSaveVTXOsState is an intermediate state between InputSigSent
 // and Confirmed. The FSM has built the client VTXOs and emitted a

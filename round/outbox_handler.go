@@ -80,8 +80,23 @@ type SaveVTXOsReq struct {
 	VTXOs []*ClientVTXO
 }
 
-func (r *SaveVTXOsReq) clientOutMsgSealed()   {}
-func (r *SaveVTXOsReq) outboxRequestSealed()  {}
+func (r *SaveVTXOsReq) clientOutMsgSealed()  {}
+func (r *SaveVTXOsReq) outboxRequestSealed() {}
+
+// CommitRoundStateReq requests atomic persistence of round data and
+// FSM state at the "point of no return". The handler calls
+// RoundStore.CommitState and returns CommitRoundStateSucceeded or
+// CommitRoundStateFailed.
+type CommitRoundStateReq struct {
+	// Round is the round data to persist.
+	Round *Round
+
+	// State is the FSM state to persist alongside the round.
+	State ClientState
+}
+
+func (r *CommitRoundStateReq) clientOutMsgSealed()  {}
+func (r *CommitRoundStateReq) outboxRequestSealed() {}
 
 // Compile-time assertion that InProcessOutboxHandler implements
 // OutboxHandler.

@@ -349,6 +349,21 @@ func (e *ForfeitSignatureResponse) MessageType() string {
 	return "ForfeitSignatureResponse"
 }
 
+// CommitRoundStateSucceeded is the follow-up event returned by the
+// outbox handler after RoundStore.CommitState completes successfully.
+type CommitRoundStateSucceeded struct{}
+
+func (e *CommitRoundStateSucceeded) clientEventSealed() {}
+
+// CommitRoundStateFailed is the follow-up event returned by the outbox
+// handler when RoundStore.CommitState fails.
+type CommitRoundStateFailed struct {
+	// Error is the underlying persistence error.
+	Error error
+}
+
+func (e *CommitRoundStateFailed) clientEventSealed() {}
+
 // SaveVTXOsSucceeded is the follow-up event returned by the outbox
 // handler after VTXOStore.SaveVTXOs completes successfully.
 type SaveVTXOsSucceeded struct{}
