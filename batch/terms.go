@@ -1,10 +1,22 @@
 package batch
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightningnetwork/lnd/keychain"
+)
+
+const (
+	// DefaultFundPsbtLockDuration is the default UTXO lease duration
+	// for FundPsbt calls. This must be long enough to cover the
+	// worst-case round lifetime (registration + multiple signature
+	// collection phases + building + signing). The explicit
+	// ReleaseInputs call on failure makes the actual hold time much
+	// shorter in practice; this value is purely a crash-recovery
+	// safety net.
+	DefaultFundPsbtLockDuration = 30 * time.Minute
 )
 
 // Terms encapsulates the various parameters and conditions that define a batch.
@@ -76,7 +88,42 @@ type Terms struct {
 	SignatureCollectionTimeout time.Duration
 
 	// FundPsbtLockDuration is how long LND should hold the UTXO
-	// lease when FundPsbt is called. When zero, LND uses its
-	// default (10 minutes).
+	// lease when FundPsbt is called. Must be longer than
+	// RegistrationTimeout + 3*SignatureCollectionTimeout to
+	// prevent leases expiring mid-round. Use
+	// DefaultFundPsbtLockDuration when unsure.
 	FundPsbtLockDuration time.Duration
+}
+
+// MinFundPsbtLockDuration returns the minimum safe lock duration
+// based on the configured round timeouts. A round can spend up to
+// RegistrationTimeout in registration, then up to three signature
+// collection phases (VTXO nonces, VTXO signatures, input
+// signatures), each bounded by SignatureCollectionTimeout.
+func (t *Terms) MinFundPsbtLockDuration() time.Duration {
+	return t.RegistrationTimeout + 3*t.SignatureCollectionTimeout
+}
+
+// ValidateFundPsbtLockDuration checks that FundPsbtLockDuration is
+// set and is large enough to cover the worst-case round duration.
+// Returns an error suitable for display at startup if the value is
+// too small.
+func (t *Terms) ValidateFundPsbtLockDuration() error {
+	if t.FundPsbtLockDuration == 0 {
+		return fmt.Errorf("FundPsbtLockDuration must be set "+
+			"(recommended: %v)", DefaultFundPsbtLockDuration)
+	}
+
+	minDuration := t.MinFundPsbtLockDuration()
+	if t.FundPsbtLockDuration <= minDuration {
+		return fmt.Errorf("FundPsbtLockDuration (%v) must be "+
+			"greater than the worst-case round duration "+
+			"(%v = RegistrationTimeout %v + "+
+			"3*SignatureCollectionTimeout %v)",
+			t.FundPsbtLockDuration, minDuration,
+			t.RegistrationTimeout,
+			t.SignatureCollectionTimeout)
+	}
+
+	return nil
 }
