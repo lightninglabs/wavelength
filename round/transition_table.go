@@ -189,10 +189,10 @@ var BoardingClientTransitions = ClientTransitionTable{
 			Transitions: []ClientTransitionEntry{
 				{
 					Event:       &OperatorSigned{},
-					ToState:     &InputSigSentState{},
-					Description: "Received VTXT sigs, sending input sig",
+					ToState:     &AwaitingRoundCheckpointState{},
+					Description: "Received VTXT sigs, checkpointing",
 					EmitsOutbox: []ClientOutMsg{
-						&SubmitForfeitSigRequest{},
+						&CommitRoundStateReq{},
 					},
 				},
 				{
@@ -200,6 +200,28 @@ var BoardingClientTransitions = ClientTransitionTable{
 					ToState:     &ClientFailedState{},
 					Description: "Operator signing failed",
 					IsTerminal:  true,
+				},
+			},
+		},
+
+		// AwaitingRoundCheckpointState: Waiting for round persistence.
+		{
+			FromState: &AwaitingRoundCheckpointState{},
+			Transitions: []ClientTransitionEntry{
+				{
+					Event:       &CommitRoundStateSucceeded{},
+					ToState:     &InputSigSentState{},
+					Description: "Checkpoint saved, sending sigs",
+					EmitsOutbox: []ClientOutMsg{
+						&SubmitForfeitSigRequest{},
+						&RegisterConfirmationRequest{},
+						&RoundCheckpointedNotification{},
+					},
+				},
+				{
+					Event:       &CommitRoundStateFailed{},
+					ToState:     nil,
+					Description: "Checkpoint failed (fatal)",
 				},
 			},
 		},

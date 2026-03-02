@@ -1050,27 +1050,6 @@ func (h *boardingTestHarness) setupMockWalletForBoardingSigning() {
 	)
 }
 
-func (h *boardingTestHarness) setupMockRoundStoreForCheckpoint() {
-	h.t.Helper()
-
-	h.roundStore.On(
-		"CommitState",
-		mock.Anything, // ctx
-		mock.Anything, // round
-		mock.Anything, // state
-	).Return(nil)
-}
-
-func (h *boardingTestHarness) setupMockVTXOStoreForSave() {
-	h.t.Helper()
-
-	h.vtxoStore.On(
-		"SaveVTXOs",
-		mock.Anything, // ctx
-		mock.Anything, // vtxos
-	).Return(nil)
-}
-
 //nolint:unused
 func (h *boardingTestHarness) newNoncesSentState(
 	roundID RoundID, intents []BoardingIntent) *NoncesSentState {
@@ -1591,14 +1570,6 @@ func (h *realSigningTestHarness) setupMockWalletForBoardingSigning() {
 	h.wallet.On("SignOutputRaw", mock.Anything, mock.Anything).Return(
 		sig, nil,
 	)
-}
-
-func (h *realSigningTestHarness) setupMockRoundStoreForCommit() {
-	h.t.Helper()
-
-	h.roundStore.On(
-		"CommitState", mock.Anything, mock.Anything, mock.Anything,
-	).Return(nil)
 }
 
 // newTestBoardingIntentWithTapscript creates a boarding intent with real

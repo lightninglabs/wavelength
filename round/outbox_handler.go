@@ -111,6 +111,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context,
 	case *SaveVTXOsReq:
 		return h.handleSaveVTXOs(ctx, req)
 
+	case *CommitRoundStateReq:
+		return h.handleCommitRoundState(ctx, req)
+
 	default:
 		return nil, fmt.Errorf("unhandled outbox request "+
 			"type: %T", msg)
@@ -129,4 +132,21 @@ func (h *InProcessOutboxHandler) handleSaveVTXOs(ctx context.Context,
 	}
 
 	return []ClientEvent{&SaveVTXOsSucceeded{}}, nil
+}
+
+// handleCommitRoundState persists round data and FSM state atomically
+// via RoundStore.CommitState.
+func (h *InProcessOutboxHandler) handleCommitRoundState(
+	ctx context.Context,
+	req *CommitRoundStateReq) ([]ClientEvent, error) {
+
+	if err := h.RoundStore.CommitState(
+		ctx, req.Round, req.State,
+	); err != nil {
+		return []ClientEvent{
+			&CommitRoundStateFailed{Error: err},
+		}, nil
+	}
+
+	return []ClientEvent{&CommitRoundStateSucceeded{}}, nil
 }

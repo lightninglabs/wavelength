@@ -1027,7 +1027,8 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			}, nil
 		}
 
-		// All forfeit signatures collected! Build the submission.
+		// All forfeit signatures collected! Build the submission
+		// maps from the collected responses.
 		forfeitSigs := make(map[wire.OutPoint]*schnorr.Signature)
 		forfeitTxs := make(map[wire.OutPoint]*wire.MsgTx)
 		forfeitedVTXOs := make([]wire.OutPoint, 0, len(updatedForfeits))
@@ -1051,35 +1052,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			return nil, fmt.Errorf("sign boarding inputs: %w", err)
 		}
 
-		// Build outbox messages.
-		txid := s.CommitmentTx.UnsignedTx.TxHash()
-		callerID := fmt.Sprintf("commitment-%s", txid.String())
-
-		var pkScript []byte
-		if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
-			pkScript = s.CommitmentTx.UnsignedTx.TxOut[0].PkScript
-		}
-
-		outboxMsgs := []ClientOutMsg{
-			&SubmitVTXOForfeitSigsToServer{
-				RoundID:     s.RoundID,
-				ForfeitSigs: forfeitSigs,
-				ForfeitTxs:  forfeitTxs,
-			},
-			&SubmitForfeitSigRequest{
-				RoundID:    s.RoundID,
-				Signatures: boardingInputSigs,
-			},
-			&RegisterConfirmationRequest{
-				CallerID:    callerID,
-				Txid:        &txid,
-				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
-				HeightHint:  env.StartHeight,
-			},
-		}
-
-		// Checkpoint round state.
+		// Build the Round object for checkpointing.
 		intents := s.Intents.Clone()
 		for i := range intents.Boarding {
 			intents.Boarding[i].Status = BoardingStatusAdopted
@@ -1092,7 +1065,7 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			Intents:       intents,
 		}
 
-		nextState := &InputSigSentState{
+		checkpointState := &InputSigSentState{
 			RoundID:        s.RoundID,
 			CommitmentTx:   s.CommitmentTx,
 			VTXOTreePaths:  s.VTXOTreePaths,
@@ -1102,25 +1075,33 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			ForfeitedVTXOs: forfeitedVTXOs,
 		}
 
-		err = env.RoundStore.CommitState(ctx, round, nextState)
-		if err != nil {
-			return nil, fmt.Errorf("failed to commit round "+
-				"state: %w", err)
-		}
-
-		env.Log.InfoS(ctx, "Round state checkpointed with forfeit signatures",
+		env.Log.InfoS(ctx, "Signed boarding inputs, requesting checkpoint",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("boarding_sig_count", len(boardingInputSigs)),
 			slog.Int("forfeit_sig_count", len(forfeitSigs)))
 
-		checkpointNotify := &RoundCheckpointedNotification{
-			RoundID: s.RoundID,
-		}
-
+		// Emit CommitRoundStateReq for the outbox handler to
+		// persist the round checkpoint.
 		return &ClientStateTransition{
-			NextState: nextState,
+			NextState: &AwaitingRoundCheckpointState{
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          s.ClientTrees,
+				BoardingInputIndices: s.BoardingInputIndices,
+				InputSigs:            boardingInputSigs,
+				ForfeitedVTXOs:       forfeitedVTXOs,
+				ForfeitSigs:          forfeitSigs,
+				ForfeitTxs:           forfeitTxs,
+			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(outboxMsgs, checkpointNotify),
+				Outbox: []ClientOutMsg{
+					&CommitRoundStateReq{
+						Round: round,
+						State: checkpointState,
+					},
+				},
 			}),
 		}, nil
 
@@ -1347,49 +1328,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 			return nil, fmt.Errorf("sign boarding inputs: %w", err)
 		}
 
-		// Create a single forfeit signature request with all
-		// signatures.
-		forfeitSigReq := &SubmitForfeitSigRequest{
-			RoundID:    s.RoundID,
-			Signatures: boardingInputSigs,
-		}
-
-		txid := s.CommitmentTx.UnsignedTx.TxHash()
-		callerID := fmt.Sprintf("commitment-%s", txid.String())
-
-		// Get pkScript from the first output for LND confirmation
-		// tracking.
-		commitTx := s.CommitmentTx.UnsignedTx
-		var pkScript []byte
-		if len(commitTx.TxOut) > 0 {
-			pkScript = commitTx.TxOut[0].PkScript
-		}
-
-		env.Log.InfoS(ctx, "Building RegisterConfirmationRequest",
-			slog.String("round_id", s.RoundID.String()),
-			slog.String("txid", txid.String()),
-			slog.Int("num_outputs", len(commitTx.TxOut)),
-			slog.Int("pkscript_len", len(pkScript)),
-			slog.Int("target_confs", int(env.OperatorTerms.MinConfirmations)))
-
-		outboxMsgs := []ClientOutMsg{
-			forfeitSigReq,
-			&RegisterConfirmationRequest{
-				CallerID:    callerID,
-				Txid:        &txid,
-				PkScript:    pkScript,
-				TargetConfs: env.OperatorTerms.MinConfirmations,
-				HeightHint:  env.StartHeight,
-			},
-		}
-
-		// Checkpoint the round state at the "point of no return".
-		// After sending boarding input signatures, the server may
-		// broadcast the commitment transaction. We must persist all
-		// round data to enable recovery if the client restarts.
-		//
-		// Mark all intents as Adopted (frozen in this round) and then
-		// save them alongside the round.
+		// Build the Round object for checkpointing. Mark all
+		// intents as Adopted (frozen in this round).
 		intents := s.Intents.Clone()
 		for i := range intents.Boarding {
 			intents.Boarding[i].Status = BoardingStatusAdopted
@@ -1402,15 +1342,8 @@ func (s *PartialSigsSentState) ProcessEvent(
 			Intents:       intents,
 		}
 
-		env.Log.InfoS(ctx, "Signed boarding inputs, checkpointing round state",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("boarding_sig_count", len(boardingInputSigs)))
-
-		// Checkpoint round data + FSM state atomically at the "point
-		// of no return". The next state is persisted so restart can
-		// recover to InputSigSentState. For boarding-only rounds,
-		// ForfeitedVTXOs is nil.
-		nextState := &InputSigSentState{
+		// Build the next state for the checkpoint.
+		checkpointState := &InputSigSentState{
 			RoundID:       s.RoundID,
 			CommitmentTx:  s.CommitmentTx,
 			VTXOTreePaths: s.VTXOTreePaths,
@@ -1418,24 +1351,31 @@ func (s *PartialSigsSentState) ProcessEvent(
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
 		}
-		err = env.RoundStore.CommitState(ctx, round, nextState)
-		if err != nil {
-			return nil, fmt.Errorf("failed to commit round "+
-				"state: %w", err)
-		}
 
-		env.Log.InfoS(ctx, "Round state checkpointed at point of no return",
+		env.Log.InfoS(ctx, "Signed boarding inputs, requesting checkpoint",
 			slog.String("round_id", s.RoundID.String()),
-			slog.String("commitment_txid", txid.String()))
+			slog.Int("boarding_sig_count", len(boardingInputSigs)))
 
-		checkpointNotify := &RoundCheckpointedNotification{
-			RoundID: s.RoundID,
-		}
-
+		// Emit CommitRoundStateReq for the outbox handler to
+		// persist the round checkpoint. The FSM transitions to
+		// an awaiting state until the handler responds.
 		return &ClientStateTransition{
-			NextState: nextState,
+			NextState: &AwaitingRoundCheckpointState{
+				RoundID:              s.RoundID,
+				CommitmentTx:         s.CommitmentTx,
+				VTXOTreePaths:        s.VTXOTreePaths,
+				Intents:              s.Intents.Clone(),
+				ClientTrees:          s.ClientTrees,
+				BoardingInputIndices: s.BoardingInputIndices,
+				InputSigs:            boardingInputSigs,
+			},
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(outboxMsgs, checkpointNotify),
+				Outbox: []ClientOutMsg{
+					&CommitRoundStateReq{
+						Round: round,
+						State: checkpointState,
+					},
+				},
 			}),
 		}, nil
 
@@ -1538,6 +1478,85 @@ func buildClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 	}
 
 	return vtxos, nil
+}
+
+// ProcessEvent for AwaitingRoundCheckpointState. Handles the outbox
+// handler response after round checkpoint persistence is attempted.
+// On success, transitions to InputSigSentState and emits server
+// submission messages (forfeit sigs, boarding sigs, confirmation
+// registration, checkpoint notification).
+func (s *AwaitingRoundCheckpointState) ProcessEvent(
+	ctx context.Context, event ClientEvent, env *ClientEnvironment,
+) (*ClientStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *CommitRoundStateSucceeded:
+		env.Log.InfoS(ctx, "Round state checkpointed",
+			slog.String("round_id", s.RoundID.String()))
+
+		// Build the server submission outbox messages.
+		txid := s.CommitmentTx.UnsignedTx.TxHash()
+		callerID := fmt.Sprintf("commitment-%s", txid.String())
+
+		var pkScript []byte
+		if len(s.CommitmentTx.UnsignedTx.TxOut) > 0 {
+			pkScript = s.CommitmentTx.UnsignedTx.
+				TxOut[0].PkScript
+		}
+
+		var outbox []ClientOutMsg
+
+		// If forfeit sigs are present (refresh round), submit
+		// them to the server.
+		if len(s.ForfeitSigs) > 0 {
+			outbox = append(outbox,
+				&SubmitVTXOForfeitSigsToServer{
+					RoundID:     s.RoundID,
+					ForfeitSigs: s.ForfeitSigs,
+					ForfeitTxs:  s.ForfeitTxs,
+				})
+		}
+
+		outbox = append(outbox,
+			&SubmitForfeitSigRequest{
+				RoundID:    s.RoundID,
+				Signatures: s.InputSigs,
+			},
+			&RegisterConfirmationRequest{
+				CallerID: callerID,
+				Txid:     &txid,
+				PkScript: pkScript,
+				TargetConfs: env.OperatorTerms.
+					MinConfirmations,
+				HeightHint: env.StartHeight,
+			},
+			&RoundCheckpointedNotification{
+				RoundID: s.RoundID,
+			},
+		)
+
+		return &ClientStateTransition{
+			NextState: &InputSigSentState{
+				RoundID:        s.RoundID,
+				CommitmentTx:   s.CommitmentTx,
+				VTXOTreePaths:  s.VTXOTreePaths,
+				Intents:        s.Intents.Clone(),
+				ClientTrees:    s.ClientTrees,
+				InputSigs:      s.InputSigs,
+				ForfeitedVTXOs: s.ForfeitedVTXOs,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: outbox,
+			}),
+		}, nil
+
+	case *CommitRoundStateFailed:
+		return nil, fmt.Errorf("failed to commit round "+
+			"state: %w", evt.Error)
+
+	default:
+		return selfLoop(s), nil
+	}
 }
 
 // ProcessEvent for InputSigSentState.
