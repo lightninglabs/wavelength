@@ -92,8 +92,12 @@ type GetInfoResponse struct {
 	FeeRate int64 `protobuf:"varint,13,opt,name=fee_rate,json=feeRate,proto3" json:"fee_rate,omitempty"`
 	// The minimum confirmations required on boarding inputs.
 	MinConfirmations uint32 `protobuf:"varint,14,opt,name=min_confirmations,json=minConfirmations,proto3" json:"min_confirmations,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The minimum operator fee (satoshis) required per join request. The
+	// fee is the difference between total input value and total output
+	// value. Requests below this threshold are rejected.
+	MinOperatorFee int64 `protobuf:"varint,15,opt,name=min_operator_fee,json=minOperatorFee,proto3" json:"min_operator_fee,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetInfoResponse) Reset() {
@@ -224,12 +228,19 @@ func (x *GetInfoResponse) GetMinConfirmations() uint32 {
 	return 0
 }
 
+func (x *GetInfoResponse) GetMinOperatorFee() int64 {
+	if x != nil {
+		return x.MinOperatorFee
+	}
+	return 0
+}
+
 var File_ark_proto protoreflect.FileDescriptor
 
 const file_ark_proto_rawDesc = "" +
 	"\n" +
 	"\tark.proto\x12\x06arkrpc\"\x10\n" +
-	"\x0eGetInfoRequest\"\x84\x04\n" +
+	"\x0eGetInfoRequest\"\xae\x04\n" +
 	"\x0fGetInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x01(\fR\x06pubkey\x12\x18\n" +
@@ -247,7 +258,8 @@ const file_ark_proto_rawDesc = "" +
 	"\x13min_boarding_amount\x18\v \x01(\x03R\x11minBoardingAmount\x12.\n" +
 	"\x13max_boarding_amount\x18\f \x01(\x03R\x11maxBoardingAmount\x12\x19\n" +
 	"\bfee_rate\x18\r \x01(\x03R\afeeRate\x12+\n" +
-	"\x11min_confirmations\x18\x0e \x01(\rR\x10minConfirmations2H\n" +
+	"\x11min_confirmations\x18\x0e \x01(\rR\x10minConfirmations\x12(\n" +
+	"\x10min_operator_fee\x18\x0f \x01(\x03R\x0eminOperatorFee2H\n" +
 	"\n" +
 	"ArkService\x12:\n" +
 	"\aGetInfo\x12\x16.arkrpc.GetInfoRequest\x1a\x17.arkrpc.GetInfoResponseB/Z-github.com/lightninglabs/darepo-client/arkrpcb\x06proto3"
