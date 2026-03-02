@@ -40,6 +40,12 @@ const (
 	DefaultShutdownTimeout = 10 * time.Second
 )
 
+// WalletBackendLND selects LND as the wallet backend.
+const WalletBackendLND = "lnd"
+
+// WalletBackendLwWallet selects the lightweight in-process wallet.
+const WalletBackendLwWallet = "lwwallet"
+
 // Config holds all configuration for the darepod daemon.
 type Config struct {
 	// DataDir is the root data directory for all daemon state. Database
@@ -54,8 +60,18 @@ type Config struct {
 	// include trace, debug, info, warn, error, and critical.
 	DebugLevel string `mapstructure:"debuglevel"`
 
-	// Lnd configures the connection to the backing lnd node.
+	// WalletBackend selects the wallet implementation: "lnd" (default)
+	// or "lwwallet". When "lnd", the Lnd config must be populated. When
+	// "lwwallet", the LwWallet config must be populated.
+	WalletBackend string `mapstructure:"walletbackend"`
+
+	// Lnd configures the connection to the backing lnd node. Required
+	// when WalletBackend is "lnd" (or empty, which defaults to "lnd").
 	Lnd *LndConfig `mapstructure:"lnd"`
+
+	// LwWallet configures the lightweight in-process wallet. Required
+	// when WalletBackend is "lwwallet".
+	LwWallet *LwWalletConfig `mapstructure:"lwwallet"`
 
 	// Server configures the connection to the ark operator's mailbox
 	// edge server.
@@ -82,6 +98,25 @@ type LndConfig struct {
 	// RPCTimeout is the maximum duration for individual RPC calls to
 	// lnd. If zero, DefaultRPCTimeout is used.
 	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+}
+
+// LwWalletConfig holds configuration for the lightweight in-process wallet.
+// This wallet uses Esplora for chain data and embeds btcwallet for key
+// management, signing, and UTXO tracking.
+type LwWalletConfig struct {
+	// Seed is the 32-byte master seed for HD key derivation.
+	Seed [32]byte
+
+	// EsploraURL is the base URL of the Esplora REST API used for
+	// chain data (e.g., "http://localhost:3000").
+	EsploraURL string `mapstructure:"esploraurl"`
+
+	// PollInterval controls how frequently the wallet polls Esplora
+	// for new blocks and transaction updates.
+	PollInterval time.Duration `mapstructure:"pollinterval"`
+
+	// DBDir is the directory for the wallet's bbolt database.
+	DBDir string `mapstructure:"dbdir"`
 }
 
 // ServerConfig holds connection parameters for the ark operator's mailbox
@@ -154,15 +189,39 @@ func DefaultConfig() *Config {
 func (c *Config) Validate() error {
 	switch c.Network {
 	case "mainnet", "testnet", "regtest", "simnet", "signet":
+
 	default:
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
 
-	if c.Lnd == nil {
-		return fmt.Errorf("lnd config is required")
-	}
-	if c.Lnd.Host == "" {
-		return fmt.Errorf("lnd host is required")
+	// Validate wallet backend. An empty value defaults to LND.
+	switch c.WalletBackend {
+	case "", WalletBackendLND:
+		if c.Lnd == nil {
+			return fmt.Errorf("lnd config is required " +
+				"for lnd wallet backend")
+		}
+		if c.Lnd.Host == "" {
+			return fmt.Errorf("lnd host is required")
+		}
+
+	case WalletBackendLwWallet:
+		if c.LwWallet == nil {
+			return fmt.Errorf("lwwallet config is " +
+				"required for lwwallet backend")
+		}
+		if c.LwWallet.EsploraURL == "" {
+			return fmt.Errorf("lwwallet esplora URL " +
+				"is required")
+		}
+		if c.LwWallet.DBDir == "" {
+			return fmt.Errorf("lwwallet db dir is " +
+				"required")
+		}
+
+	default:
+		return fmt.Errorf("unknown wallet backend %q",
+			c.WalletBackend)
 	}
 
 	if c.Server == nil {
@@ -183,8 +242,9 @@ func (c *Config) Validate() error {
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
 	}
-	if c.RPC.ListenAddr == "" {
-		return fmt.Errorf("rpc listen address is required")
+	if c.RPC.ListenAddr == "" && c.RPC.Listener == nil {
+		return fmt.Errorf("rpc listen address or " +
+			"listener is required")
 	}
 
 	return nil

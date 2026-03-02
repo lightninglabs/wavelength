@@ -11,17 +11,16 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/lndbackend"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/round"
@@ -50,27 +49,35 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 	return srv.RunUntilShutdown(interceptor)
 }
 
-// Server is the top-level daemon orchestrator. It owns the lnd connection,
-// the mailbox transport runtime, the indexer client, and the daemon's own
-// gRPC server.
+// Server is the top-level daemon orchestrator. It owns the wallet
+// provider, the mailbox transport runtime, the indexer client, and
+// the daemon's own gRPC server.
 type Server struct {
 	cfg *Config
 
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
 
-	lnd     *lndclient.GrpcLndServices
+	// walletProvider abstracts the wallet backend (LND or
+	// lwwallet). It provides chain backend, boarding backend,
+	// client wallet, and on-chain balance/address operations.
+	walletProvider WalletProvider
+
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
 
-	actorSystem  *actor.ActorSystem
-	chainBackend chainsource.ChainBackend
+	actorSystem *actor.ActorSystem
 
 	// operatorTerms holds the operator's terms fetched from
 	// the server during startup. Exposed via the daemon's
 	// GetInfo RPC so CLI/GUI clients can inspect them.
 	operatorTerms *types.OperatorTerms
+
+	// roundStore and vtxoStore are stored for use by RPC
+	// handlers that need to query round and VTXO state.
+	roundStore round.RoundStore
+	vtxoStore  round.VTXOStore
 
 	serverConn *grpc.ClientConn
 
@@ -78,14 +85,27 @@ type Server struct {
 	rpcServer   *RPCServer
 	rpcListener net.Addr
 	mailboxMux  *mailboxrpc.ServeMux
+
+	// readyCh is closed after all subsystems (including the
+	// round actor) have started. The SDK uses this to block
+	// until the daemon is ready to serve RPCs.
+	readyCh chan struct{}
 }
 
 // NewServer allocates a Server from a validated Config. The server is inert
 // until RunUntilShutdown is called.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg: cfg,
+		cfg:     cfg,
+		readyCh: make(chan struct{}),
 	}, nil
+}
+
+// Ready returns a channel that is closed once all daemon subsystems
+// have started and the daemon is ready to serve RPCs. This allows
+// the SDK to block on daemon readiness without polling.
+func (s *Server) Ready() <-chan struct{} {
+	return s.readyCh
 }
 
 // RunUntilShutdown starts all subsystems and blocks until the
@@ -124,21 +144,22 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		"network", s.cfg.Network)
 
 	// -------------------------------------------------------
-	// 1. Connect to lnd.
+	// 1. Initialize the wallet provider.
 	// -------------------------------------------------------
-	log.InfoS(ctx, "Connecting to lnd",
-		"host", s.cfg.Lnd.Host)
-
-	lndServices, err := s.connectLnd(ctx)
+	walletProvider, err := s.initWalletProvider(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to connect to lnd: %w", err)
+		return fmt.Errorf(
+			"unable to init wallet provider: %w", err,
+		)
 	}
-	s.lnd = lndServices
-	defer s.lnd.Close()
+	s.walletProvider = walletProvider
+	defer func() {
+		_ = s.walletProvider.Close()
+	}()
 
-	log.InfoS(ctx, "Connected to lnd",
-		"alias", s.lnd.NodeAlias,
-		"pubkey", s.lnd.NodePubkey)
+	log.InfoS(ctx, "Wallet provider initialized",
+		slog.String("backend", s.walletBackendName()),
+		slog.String("pubkey", s.walletProvider.NodePubkey()))
 
 	// -------------------------------------------------------
 	// 2. Connect to the ark operator's mailbox edge server.
@@ -173,25 +194,22 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	// 4. Create and register the chain source actor.
 	// -------------------------------------------------------
-	// The chain backend adapts lndclient's chain notifier, fee
-	// estimator, and wallet kit into the unified ChainBackend
-	// interface used by the chainsource actor.
-	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
-			LND: &s.lnd.LndServices,
-		},
-	)
+	// The chain backend is provided by the wallet provider,
+	// abstracting whether it comes from LND or Esplora.
+	chainBackend := s.walletProvider.ChainBackend()
 
-	if err := s.chainBackend.Start(); err != nil {
-		return fmt.Errorf("unable to start chain backend: %w", err)
+	if err := chainBackend.Start(); err != nil {
+		return fmt.Errorf(
+			"unable to start chain backend: %w", err,
+		)
 	}
 	defer func() {
-		_ = s.chainBackend.Stop()
+		_ = chainBackend.Stop()
 	}()
 
 	chainActor := chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
-			Backend: s.chainBackend,
+			Backend: chainBackend,
 			System:  s.actorSystem,
 		},
 	)
@@ -318,6 +336,9 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		return err
 	}
 
+	// Signal readiness so the SDK can unblock.
+	close(s.readyCh)
+
 	log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
@@ -343,38 +364,62 @@ func (s *Server) RPCAddr() net.Addr {
 	return s.rpcListener
 }
 
-// connectLnd establishes a connection to the lnd node using the lndclient
-// SDK. The call blocks until lnd is fully synced and the wallet is unlocked.
-func (s *Server) connectLnd(ctx context.Context) (
-	*lndclient.GrpcLndServices, error) {
+// initWalletProvider creates and initializes the appropriate wallet
+// backend based on the config's WalletBackend field. An empty value
+// defaults to LND for backward compatibility.
+func (s *Server) initWalletProvider(
+	ctx context.Context) (WalletProvider, error) {
 
-	network, err := networkToLndclient(s.cfg.Network)
-	if err != nil {
-		return nil, err
+	backend := s.cfg.WalletBackend
+	if backend == "" {
+		backend = WalletBackendLND
 	}
 
-	rpcTimeout := s.cfg.Lnd.RPCTimeout
-	if rpcTimeout == 0 {
-		rpcTimeout = DefaultRPCTimeout
+	switch backend {
+	case WalletBackendLND:
+		log.InfoS(ctx, "Connecting to lnd",
+			"host", s.cfg.Lnd.Host)
+
+		return newLNDWalletProvider(
+			ctx, s.cfg.Lnd, s.cfg.Network,
+		)
+
+	case WalletBackendLwWallet:
+		chainParams, err := networkToChainParams(s.cfg.Network)
+		if err != nil {
+			return nil, err
+		}
+
+		log.InfoS(ctx, "Initializing lightweight wallet",
+			slog.String("esplora", s.cfg.LwWallet.EsploraURL))
+
+		return newLWWalletProvider(
+			ctx, s.cfg.LwWallet, chainParams,
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown wallet backend %q", backend,
+		)
+	}
+}
+
+// walletBackendName returns a human-readable name for the active
+// wallet backend for logging.
+func (s *Server) walletBackendName() string {
+	backend := s.cfg.WalletBackend
+	if backend == "" {
+		return WalletBackendLND
 	}
 
-	return lndclient.NewLndServices(&lndclient.LndServicesConfig{
-		LndAddress:            s.cfg.Lnd.Host,
-		Network:               network,
-		CustomMacaroonPath:    s.cfg.Lnd.MacaroonPath,
-		TLSPath:               s.cfg.Lnd.TLSPath,
-		BlockUntilChainSynced: true,
-		BlockUntilUnlocked:    true,
-		CallerCtx:             ctx,
-		RPCTimeout:            rpcTimeout,
-	})
+	return backend
 }
 
 // dialServer establishes a gRPC connection to the ark operator's mailbox
 // edge server. When TLSCertPath is set, the connection uses a custom cert
 // pool anchored to that certificate. When Insecure is set, TLS is disabled
 // entirely (for regtest/development only).
-func (s *Server) dialServer(ctx context.Context) (
+func (s *Server) dialServer(_ context.Context) (
 	*grpc.ClientConn, error) {
 
 	var dialOpts []grpc.DialOption
@@ -615,12 +660,12 @@ func (s *Server) initDatabase(ctx context.Context) error {
 func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
-	// TODO(roasbeef): wire SchnorrSigner from lnd backend once
-	// indexer proof-of-control is enabled in the daemon.
+	// TODO(roasbeef): wire SchnorrSigner from wallet provider
+	// once indexer proof-of-control is enabled in the daemon.
 	s.indexer = indexer.New(
 		s.runtime.Unary(), nil,
 		s.cfg.Server.RemoteMailboxID,
-		s.lnd.NodePubkey.String(),
+		s.walletProvider.NodePubkey(),
 	)
 
 	log.InfoS(ctx, "RPC clients initialized")
@@ -637,16 +682,14 @@ func (s *Server) initWalletActor(ctx context.Context,
 	]) (actor.ActorRef[wallet.WalletMsg, wallet.WalletResp], error) {
 
 	clk := clock.NewDefaultClock()
-	chainParams := s.lnd.ChainParams
+	chainParams := s.walletProvider.ChainParams()
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
 	boardingStore := dbStore.NewBoardingStore(chainParams, clk)
 
-	boardingBackend := lndbackend.NewBoardingBackend(
-		s.lnd.WalletKit,
-	)
+	boardingBackend := s.walletProvider.BoardingBackend()
 
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, chainSourceRef,
@@ -689,17 +732,20 @@ func (s *Server) initRoundActor(ctx context.Context,
 		wallet.WalletMsg, wallet.WalletResp,
 	]) error {
 
-	clientWallet := lndbackend.NewClientWallet(
-		s.lnd.Signer, s.lnd.WalletKit,
-	)
+	clientWallet := s.walletProvider.ClientWallet()
 
 	clk := clock.NewDefaultClock()
-	chainParams := s.lnd.ChainParams
+	chainParams := s.walletProvider.ChainParams()
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
 	roundStore := dbStore.NewRoundStore(chainParams, clk)
+
+	// Store the round and VTXO stores on the server so RPC
+	// handlers can query round and VTXO state.
+	s.roundStore = roundStore
+	s.vtxoStore = roundStore
 
 	// Fetch the operator's terms from the server. These include
 	// the operator pubkey, sweep delay, exit delay, dust limit,
@@ -814,15 +860,48 @@ func networkToLndclient(network string) (lndclient.Network, error) {
 	switch network {
 	case "mainnet":
 		return lndclient.NetworkMainnet, nil
+
 	case "testnet":
 		return lndclient.NetworkTestnet, nil
+
 	case "regtest":
 		return lndclient.NetworkRegtest, nil
+
 	case "simnet":
 		return lndclient.NetworkSimnet, nil
+
 	case "signet":
 		return lndclient.NetworkSignet, nil
+
 	default:
 		return "", fmt.Errorf("unknown network %q", network)
+	}
+}
+
+// networkToChainParams maps our network string to Bitcoin chain
+// parameters.
+func networkToChainParams(
+	network string) (*chaincfg.Params, error) {
+
+	switch network {
+	case "mainnet":
+		return &chaincfg.MainNetParams, nil
+
+	case "testnet":
+		return &chaincfg.TestNet3Params, nil
+
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+
+	default:
+		return nil, fmt.Errorf(
+			"unknown network %q", network,
+		)
 	}
 }
