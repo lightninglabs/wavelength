@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/types"
 )
@@ -97,6 +99,25 @@ type CommitRoundStateReq struct {
 
 func (r *CommitRoundStateReq) clientOutMsgSealed()  {}
 func (r *CommitRoundStateReq) outboxRequestSealed() {}
+
+// SignBoardingInputsReq requests signing of all boarding inputs in the
+// commitment transaction. The handler calls signBoardingInputs with
+// the Wallet and returns SignBoardingInputsSucceeded or
+// SignBoardingInputsFailed.
+type SignBoardingInputsReq struct {
+	// CommitmentTx is the PSBT containing the boarding inputs.
+	CommitmentTx *psbt.Packet
+
+	// Intents are the round intents containing boarding info.
+	Intents Intents
+
+	// BoardingInputIndices maps each boarding outpoint to its
+	// position in the commitment tx inputs.
+	BoardingInputIndices map[wire.OutPoint]int
+}
+
+func (r *SignBoardingInputsReq) clientOutMsgSealed()  {}
+func (r *SignBoardingInputsReq) outboxRequestSealed() {}
 
 // Compile-time assertion that InProcessOutboxHandler implements
 // OutboxHandler.

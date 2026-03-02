@@ -378,3 +378,22 @@ type SaveVTXOsFailed struct {
 }
 
 func (e *SaveVTXOsFailed) clientEventSealed() {}
+
+// SignBoardingInputsSucceeded is the follow-up event returned by the
+// outbox handler after signing all boarding inputs in the commitment
+// transaction.
+type SignBoardingInputsSucceeded struct {
+	// InputSigs are the signed boarding input signatures.
+	InputSigs []*types.BoardingInputSignature
+}
+
+func (e *SignBoardingInputsSucceeded) clientEventSealed() {}
+
+// SignBoardingInputsFailed is the follow-up event returned by the
+// outbox handler when boarding input signing fails.
+type SignBoardingInputsFailed struct {
+	// Error is the underlying signing error.
+	Error error
+}
+
+func (e *SignBoardingInputsFailed) clientEventSealed() {}

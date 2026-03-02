@@ -410,6 +410,59 @@ func (s *InputSigSentState) IsTerminal() bool {
 
 func (s *InputSigSentState) clientStateSealed() {}
 
+// AwaitingBoardingSignaturesState is an intermediate state between
+// operator signing (or forfeit collection) and round checkpointing.
+// The FSM has validated VTXO tree signatures and emitted a
+// SignBoardingInputsReq; it is now waiting for the outbox handler
+// to produce boarding input signatures. On success, the FSM builds
+// the Round object and transitions to AwaitingRoundCheckpointState
+// with a CommitRoundStateReq; on failure, the error is fatal.
+type AwaitingBoardingSignaturesState struct {
+	// RoundID is the unique identifier for this round.
+	RoundID RoundID
+
+	// CommitmentTx is the unsigned commitment transaction as a
+	// PSBT.
+	CommitmentTx *psbt.Packet
+
+	// VTXOTreePaths maps commitment tx output indices to VTXO tree
+	// paths.
+	VTXOTreePaths map[int]*tree.Tree
+
+	// Intents contains all the client's intents for this round.
+	Intents Intents
+
+	// ClientTrees maps signer keys to the client's extracted
+	// sub-tree for that VTXO.
+	ClientTrees map[SignerKey]*tree.Tree
+
+	// BoardingInputIndices maps each boarding intent's outpoint to
+	// its position in the commitment transaction inputs.
+	BoardingInputIndices map[wire.OutPoint]int
+
+	// ForfeitedVTXOs contains outpoints of VTXOs being refreshed.
+	// Nil for boarding-only rounds.
+	ForfeitedVTXOs []wire.OutPoint
+
+	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
+	// signatures. Nil for boarding-only rounds.
+	ForfeitSigs map[wire.OutPoint]*schnorr.Signature
+
+	// ForfeitTxs maps VTXO outpoints to the built forfeit
+	// transactions. Nil for boarding-only rounds.
+	ForfeitTxs map[wire.OutPoint]*wire.MsgTx
+}
+
+func (s *AwaitingBoardingSignaturesState) String() string {
+	return "AwaitingBoardingSignatures"
+}
+
+func (s *AwaitingBoardingSignaturesState) IsTerminal() bool {
+	return false
+}
+
+func (s *AwaitingBoardingSignaturesState) clientStateSealed() {}
+
 // AwaitingRoundCheckpointState is an intermediate state between
 // boarding/forfeit signing and InputSigSent. The FSM has prepared all
 // signatures and emitted a CommitRoundStateReq; it is now waiting for
