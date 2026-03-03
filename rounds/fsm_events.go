@@ -192,6 +192,10 @@ type BuildBatchSucceededEvent struct {
 
 	// ConnectorDescriptors describe the connector tree outputs.
 	ConnectorDescriptors []*ConnectorTreeDescriptor
+
+	// LockedOutpoints lists the wallet UTXOs that were leased during
+	// coin selection. These must be released if the round fails.
+	LockedOutpoints []wire.OutPoint
 }
 
 // eventSealed marks BuildBatchSucceededEvent as implementing the sealed

@@ -97,6 +97,10 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	case *ConfirmRoundReq:
 		return h.handleConfirmRound(ctx, msg)
 
+	case *ReleaseWalletInputsReq:
+		h.handleReleaseWalletInputs(ctx, msg)
+		return nil, nil
+
 	case *UnlockBoardingInputsReq:
 		h.handleUnlockBoardingInputs(ctx, msg)
 		return nil, nil
@@ -121,12 +125,14 @@ func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
 	msg *BuildBatchReq) ([]Event, error) {
 
 	packet, _, vtxoTrees, connectorTrees,
-		connectorAssignments, err := buildCommitmentTx(
+		connectorAssignments, lockedOutpoints,
+		err := buildCommitmentTx(
 		ctx, msg.Terms,
 		h.feeEstimator, h.confTarget,
 		h.walletController, h.minConfs, h.walletAccount,
 		msg.BoardingInputs, msg.ForfeitInputs,
 		msg.RequiredOutputs, msg.VTXODescriptors,
+		msg.FundingOpts,
 	)
 	if err != nil {
 		return []Event{&BuildBatchFailedEvent{
@@ -140,6 +146,15 @@ func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
 		connectorAssignments, msg.ForfeitScript,
 	)
 	if err != nil {
+		// Release any locked outpoints acquired by FundPsbt
+		// before reporting the failure.
+		if msg.FundingOpts != nil && len(lockedOutpoints) > 0 {
+			_ = h.walletController.ReleaseInputs(
+				ctx, msg.FundingOpts.LockID,
+				lockedOutpoints,
+			)
+		}
+
 		return []Event{&BuildBatchFailedEvent{
 			Reason: fmt.Sprintf(
 				"build connector descriptors: %v", err,
@@ -153,6 +168,7 @@ func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
 		ConnectorTrees:       connectorTrees,
 		ConnectorAssignments: connectorAssignments,
 		ConnectorDescriptors: connectorDescriptors,
+		LockedOutpoints:      lockedOutpoints,
 	}}, nil
 }
 
@@ -352,6 +368,25 @@ func (h *InProcessOutboxHandler) handleConfirmRound(ctx context.Context,
 	}
 
 	return []Event{&ConfirmRoundSucceededEvent{}}, nil
+}
+
+// handleReleaseWalletInputs releases UTXO leases acquired by a prior FundPsbt
+// call. This is fire-and-forget: errors are logged but do not produce follow-up
+// events, since failing to release a lease only means the UTXOs remain locked
+// until the lease expires naturally.
+func (h *InProcessOutboxHandler) handleReleaseWalletInputs(
+	ctx context.Context, msg *ReleaseWalletInputsReq) {
+
+	err := h.walletController.ReleaseInputs(
+		ctx, msg.LockID, msg.LockedOutpoints,
+	)
+	if err != nil {
+		h.log.WarnS(
+			ctx, "Failed to release wallet inputs", err,
+			"lock_id", msg.LockID,
+			"count", len(msg.LockedOutpoints),
+		)
+	}
 }
 
 // handleUnlockBoardingInputs unlocks all boarding inputs for the given client

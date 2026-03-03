@@ -3,6 +3,7 @@ package rounds
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -516,6 +517,7 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 
 		// Emit a BuildBatchReq for the OutboxHandler to perform
 		// fee estimation, wallet funding, and tree construction.
+		lockID := roundLockID(env.RoundID)
 		buildReq := &BuildBatchReq{
 			RoundID:         env.RoundID,
 			BoardingInputs:  allBoardingInputs,
@@ -524,6 +526,10 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			VTXODescriptors: allVTXODescriptors,
 			Terms:           env.Terms,
 			ForfeitScript:   env.ForfeitScript,
+			FundingOpts: &FundingOpts{
+				LockID:       lockID,
+				LockDuration: env.Terms.FundPsbtLockDuration,
+			},
 		}
 
 		return &StateTransition{
@@ -568,6 +574,7 @@ func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
 				ConnectorTrees:       msg.ConnectorTrees,
 				ConnectorAssignments: msg.ConnectorAssignments,
 				ConnectorDescriptors: msg.ConnectorDescriptors,
+				LockedOutpoints:      msg.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				// Emit the internal event to prepare
@@ -582,8 +589,10 @@ func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
 		env.Log.WarnS(ctx, "Batch build failed", nil,
 			slog.String("reason", msg.Reason))
 
+		// Pre-batch failure: no wallet inputs locked yet.
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, msg.Reason,
+			[32]byte{}, nil,
 		), nil
 
 	default:
@@ -653,6 +662,8 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("extract VTXO paths for "+
 						"client %s: %v", clientID, err),
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 		}
@@ -676,6 +687,8 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 							"connector assignment "+
 							"for client %s",
 							clientID),
+						roundLockID(env.RoundID),
+						s.LockedOutpoints,
 					), nil
 				}
 
@@ -733,6 +746,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("create tree coordinator for "+
 					"output %d: %v", idx, err),
+				roundLockID(env.RoundID), s.LockedOutpoints,
 			), nil
 		}
 
@@ -757,6 +771,7 @@ func (s *BatchBuiltState) transitionToVTXONonces(ctx context.Context,
 			ClientsWithNonces: make(
 				map[clientconn.ClientID]struct{},
 			),
+			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -812,6 +827,7 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -823,9 +839,14 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 // the necessary outbox events to notify clients, unlock locked inputs, and
 // inform the actor of the failure. Unlocking is emitted as outbox events
 // so the FSM transition itself performs no I/O.
+//
+// When lockedOutpoints is non-empty and lockID is non-zero, a
+// ReleaseWalletInputsReq is emitted so the handler can release UTXO
+// leases acquired during FundPsbt.
 func buildFailureTransition(_ context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
-	reason string) *StateTransition {
+	reason string, lockID [32]byte,
+	lockedOutpoints []wire.OutPoint) *StateTransition {
 
 	env.Log.WarnS(context.Background(), "Round entering failed state", nil,
 		LogReason(reason),
@@ -853,6 +874,17 @@ func buildFailureTransition(_ context.Context, env *Environment,
 		RoundID:             env.RoundID,
 		ClientRegistrations: clientRegs,
 	})
+
+	// Release wallet UTXO leases if any were acquired during
+	// FundPsbt. Pre-batch failures pass nil/zero here.
+	if len(lockedOutpoints) > 0 {
+		outboxMsgs = append(outboxMsgs,
+			&ReleaseWalletInputsReq{
+				LockID:          lockID,
+				LockedOutpoints: lockedOutpoints,
+			},
+		)
+	}
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{
@@ -895,6 +927,7 @@ func (s *AwaitingInputSigsState) ProcessEvent(ctx context.Context,
 
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, reason,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1057,6 +1090,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 		ClientsSubmitted:     newClientsSubmitted,
 		CollectedSignatures:  newCollectedSigs,
 		CollectedForfeitTxs:  newCollectedForfeitTxs,
+		LockedOutpoints:      s.LockedOutpoints,
 	}
 
 	// Check if all clients have submitted.
@@ -1076,6 +1110,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 				ConnectorDescriptors: s.ConnectorDescriptors,
 				CollectedSignatures:  newCollectedSigs,
 				CollectedForfeitTxs:  newCollectedForfeitTxs,
+				LockedOutpoints:      s.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				InternalEvent: []Event{
@@ -1095,6 +1130,13 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	return &StateTransition{
 		NextState: newState,
 	}, nil
+}
+
+// roundLockID derives a deterministic 32-byte UTXO lease identifier from
+// the round ID. Using a deterministic ID allows the caller to release
+// leases explicitly when a round fails.
+func roundLockID(roundID RoundID) [32]byte {
+	return sha256.Sum256(roundID[:])
 }
 
 // buildCommitmentTx constructs the commitment transaction PSBT with boarding
@@ -1121,9 +1163,11 @@ func buildCommitmentTx(ctx context.Context,
 	walletCtrl WalletController, minConfs int32, walletAccount string,
 	boardingInputs []*BoardingInput, forfeitInputs []*ForfeitInput,
 	requiredOutputs []*wire.TxOut,
-	vtxoDescriptors []tree.VTXODescriptor) (*psbt.Packet, int32,
+	vtxoDescriptors []tree.VTXODescriptor,
+	opts *FundingOpts) (*psbt.Packet, int32,
 	map[int]*tree.Tree, map[int]*tree.Tree,
-	map[wire.OutPoint]*ConnectorLeafAssignment, error) {
+	map[wire.OutPoint]*ConnectorLeafAssignment,
+	[]wire.OutPoint, error) {
 
 	// Calculate boarding input totals for later adjustment.
 	var totalBoardingValue btcutil.Amount
@@ -1133,7 +1177,7 @@ func buildCommitmentTx(ctx context.Context,
 
 	feeRate, err := feeEstimator.EstimateFeePerKW(confTarget)
 	if err != nil {
-		return nil, -1, nil, nil, nil,
+		return nil, -1, nil, nil, nil, nil,
 			fmt.Errorf("estimate fee: %w", err)
 	}
 
@@ -1174,8 +1218,8 @@ func buildCommitmentTx(ctx context.Context,
 			terms, vtxoDescriptors,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
-				"batch outputs: %w", err)
+			return nil, -1, nil, nil, nil, nil,
+				fmt.Errorf("build batch outputs: %w", err)
 		}
 
 		for _, output := range vtxoTreeCtx.Outputs() {
@@ -1190,7 +1234,7 @@ func buildCommitmentTx(ctx context.Context,
 	if numForfeits > 0 {
 		maxPerTree := int(terms.MaxConnectorsPerTree)
 		if maxPerTree <= 0 {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 				"max connectors per tree must be > 0",
 			)
 		}
@@ -1206,7 +1250,7 @@ func buildCommitmentTx(ctx context.Context,
 				terms.ConnectorAddress,
 			)
 			if err != nil {
-				return nil, -1, nil, nil, nil, fmt.Errorf(
+				return nil, -1, nil, nil, nil, nil, fmt.Errorf(
 					"build connector output: %w", err,
 				)
 			}
@@ -1220,20 +1264,40 @@ func buildCommitmentTx(ctx context.Context,
 
 	packet, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
-		return nil, -1, nil, nil, nil, fmt.Errorf("create psbt: %w",
-			err)
+		return nil, -1, nil, nil, nil, nil,
+			fmt.Errorf("create psbt: %w", err)
 	}
 
 	// Now we'll call FundPsbt to add wallet inputs and change.
 	//
-	// Note: FundPsbt reorders inputs and outputs, so any indices recorded
-	// before this call will be invalid.
-	changeIdx, err := walletCtrl.FundPsbt(
-		ctx, packet, minConfs, feeRate, walletAccount,
+	// Note: FundPsbt reorders inputs and outputs, so any indices
+	// recorded before this call will be invalid.
+	changeIdx, lockedOutpoints, err := walletCtrl.FundPsbt(
+		ctx, packet, minConfs, feeRate, walletAccount, opts,
 	)
 	if err != nil {
-		return nil, -1, nil, nil, nil, fmt.Errorf("fund psbt: %w",
-			err)
+		return nil, -1, nil, nil, nil, nil,
+			fmt.Errorf("fund psbt: %w", err)
+	}
+
+	// releaseOnErr is a helper that releases the locked outpoints
+	// acquired by FundPsbt above. Any error after FundPsbt succeeds
+	// must call this before returning so that the UTXOs don't stay
+	// locked until lease expiry.
+	releaseOnErr := func(cause error) (*psbt.Packet, int32,
+		map[int]*tree.Tree, map[int]*tree.Tree,
+		map[wire.OutPoint]*ConnectorLeafAssignment,
+		[]wire.OutPoint, error) {
+
+		if opts != nil && len(lockedOutpoints) > 0 {
+			// Best-effort release; nothing useful we can do
+			// with a release error here.
+			_ = walletCtrl.ReleaseInputs(
+				ctx, opts.LockID, lockedOutpoints,
+			)
+		}
+
+		return nil, -1, nil, nil, nil, nil, cause
 	}
 
 	// Now we'll add the boarding inputs to the funded PSBT. Since LND
@@ -1252,8 +1316,9 @@ func buildCommitmentTx(ctx context.Context,
 		collabLeaf := bi.Tapscript.Leaves[0]
 		ctrlBlockBytes, err := bi.Tapscript.ControlBlock.ToBytes()
 		if err != nil {
-			return nil, -1, nil, nil, nil,
-				fmt.Errorf("serialize control block: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"serialize control block: %w", err,
+			))
 		}
 
 		leafHash := txscript.NewTapLeaf(
@@ -1322,8 +1387,9 @@ func buildCommitmentTx(ctx context.Context,
 			batchOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("find "+
-				"batch outputs: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"find batch outputs: %w", err,
+			))
 		}
 
 		// Build VTXO trees using the post-FundPsbt batch output
@@ -1332,12 +1398,14 @@ func buildCommitmentTx(ctx context.Context,
 			packet.UnsignedTx, batchOutputIndices,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf("build "+
-				"VTXO trees: %w", err)
+			return releaseOnErr(fmt.Errorf(
+				"build VTXO trees: %w", err,
+			))
 		}
 	}
 
-	// Step 7: Build connector trees and assignments if forfeits exist.
+	// Step 7: Build connector trees and assignments if forfeits
+	// exist.
 	var (
 		connectorTrees       map[int]*tree.Tree
 		connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
@@ -1347,9 +1415,9 @@ func buildCommitmentTx(ctx context.Context,
 			connectorOutputs, packet.UnsignedTx,
 		)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return releaseOnErr(fmt.Errorf(
 				"find connector outputs: %w", err,
-			)
+			))
 		}
 
 		connectorTrees, connectorAssignments, err =
@@ -1358,14 +1426,14 @@ func buildCommitmentTx(ctx context.Context,
 				connectorOutputIndices,
 			)
 		if err != nil {
-			return nil, -1, nil, nil, nil, fmt.Errorf(
+			return releaseOnErr(fmt.Errorf(
 				"build connector trees: %w", err,
-			)
+			))
 		}
 	}
 
 	return packet, changeIdx, vtxoTrees, connectorTrees,
-		connectorAssignments, nil
+		connectorAssignments, lockedOutpoints, nil
 }
 
 // findOutputIndices finds the indices of the given outputs in the transaction
@@ -1630,6 +1698,7 @@ func (s *AwaitingVTXONoncesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO nonce collection timeout",
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -1811,6 +1880,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 				ctx, env, s.ClientRegistrations,
 				fmt.Sprintf("operator sign for tree %d: %v",
 					idx, err),
+				roundLockID(env.RoundID), s.LockedOutpoints,
 			), nil
 		}
 	}
@@ -1848,6 +1918,8 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 					ctx, env, s.ClientRegistrations,
 					fmt.Sprintf("get agg nonces for %s: %v",
 						clientID, err),
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 
@@ -1883,6 +1955,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			ClientsWithSignatures: make(
 				map[clientconn.ClientID]struct{},
 			),
+			LockedOutpoints: s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -1912,6 +1985,7 @@ func (s *AwaitingVTXOSignaturesState) ProcessEvent(ctx context.Context,
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			"VTXO signature collection timeout",
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2047,6 +2121,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		ConnectorAssignments:  s.ConnectorAssignments,
 		TreeSignCoordinators:  s.TreeSignCoordinators,
 		ClientsWithSignatures: newClientsWithSignatures,
+		LockedOutpoints:       s.LockedOutpoints,
 	}
 
 	// Check if all clients have submitted signatures.
@@ -2103,6 +2178,8 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 
 				return buildFailureTransition(
 					ctx, env, s.ClientRegistrations, errMsg,
+					roundLockID(env.RoundID),
+					s.LockedOutpoints,
 				), nil
 			}
 
@@ -2148,6 +2225,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations,
 			fmt.Sprintf("build connector descriptors: %v", err),
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 	}
 
@@ -2164,6 +2242,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			),
 			CollectedSignatures: make(InputSigsMap),
 			CollectedForfeitTxs: make(ForfeitTxsMap),
+			LockedOutpoints:     s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: outboxMsgs,
@@ -2218,6 +2297,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 			SweepKey:             env.Terms.SweepKey.PubKey,
 			CSVDelay:             env.Terms.SweepDelay,
 			StartHeight:          env.StartHeight,
+			LockedOutpoints:      s.LockedOutpoints,
 		},
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{signReq},
@@ -2469,6 +2549,7 @@ func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
 				VTXOTrees:           s.VTXOTrees,
 				ForfeitInfos:        e.ForfeitInfos,
 				StartHeight:         s.StartHeight,
+				LockedOutpoints:     s.LockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{persistReq},
@@ -2478,6 +2559,7 @@ func (s *AwaitingSignAndFinalizeState) ProcessEvent(ctx context.Context,
 	case *SignAndFinalizeFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:
@@ -2526,6 +2608,7 @@ func (s *AwaitingServerSignPersistState) ProcessEvent(ctx context.Context,
 	case *PersistServerSigningFailedEvent:
 		return buildFailureTransition(
 			ctx, env, s.ClientRegistrations, e.Reason,
+			roundLockID(env.RoundID), s.LockedOutpoints,
 		), nil
 
 	default:

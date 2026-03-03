@@ -251,8 +251,9 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 
 	// Set up permissive wallet controller expectation.
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
-		Return(int32(-1), nil).Maybe()
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
+		Return(int32(-1), testLockedOutpoints, nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
@@ -363,8 +364,9 @@ func (c *commonMockSetup) setupBatchBuildingMocks() {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Once()
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
-		Return(int32(-1), nil).Once()
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
+		Return(int32(-1), testLockedOutpoints, nil).Once()
 }
 
 // setupBatchBuildingFailure sets up the mocks for batch building to fail with
@@ -375,8 +377,9 @@ func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Once()
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
-		mock.Anything, mock.Anything, mock.Anything).
-		Return(int32(0), err).Once()
+		mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything).
+		Return(int32(0), []wire.OutPoint(nil), err).Once()
 }
 
 // setupCompleteRegistrationFlow sets up all mocks needed for a client to
@@ -394,10 +397,23 @@ func (c *commonMockSetup) setupCompleteRegistrationFlow(
 	c.mockBoardingUTXO(*outpoint, clientKey, exitDelay, confirmations)
 }
 
+// testLockedOutpoints is a fixed set of wallet outpoints used by
+// feedBatchBuildSuccess to simulate UTXO leases from FundPsbt.
+var testLockedOutpoints = []wire.OutPoint{
+	{
+		Hash:  chainhash.HashH([]byte("wallet-utxo-1")),
+		Index: 0,
+	},
+	{
+		Hash:  chainhash.HashH([]byte("wallet-utxo-2")),
+		Index: 1,
+	},
+}
+
 // feedBatchBuildSuccess asserts the FSM is in AwaitingBatchBuildState,
 // extracts the BuildBatchReq outbox event, feeds a BuildBatchSucceededEvent
-// with a minimal test PSBT, and returns the resulting test PSBT for further
-// assertions.
+// with a minimal test PSBT and locked outpoints, and returns the resulting
+// test PSBT for further assertions.
 func feedBatchBuildSuccess(h *fsmTestHarness) *psbt.Packet {
 	h.Helper()
 
@@ -408,7 +424,8 @@ func feedBatchBuildSuccess(h *fsmTestHarness) *psbt.Packet {
 
 	h.outboxMessages = nil
 	err := h.sendEvent(&BuildBatchSucceededEvent{
-		PSBT: testPSBT,
+		PSBT:            testPSBT,
+		LockedOutpoints: testLockedOutpoints,
 	})
 	require.NoError(h, err)
 
@@ -1319,12 +1336,32 @@ func newMockWalletController(signer input.Signer) *mockWalletController {
 // FundPsbt is a mock implementation of WalletController.FundPsbt.
 func (m *mockWalletController) FundPsbt(ctx context.Context,
 	packet *psbt.Packet, minConfs int32,
-	feeRate chainfee.SatPerKWeight,
-	account string) (int32, error) {
+	feeRate chainfee.SatPerKWeight, account string,
+	opts *FundingOpts) (int32, []wire.OutPoint, error) {
 
-	args := m.Called(ctx, packet, minConfs, feeRate, account)
+	args := m.Called(
+		ctx, packet, minConfs, feeRate, account, opts,
+	)
 
-	return args.Get(0).(int32), args.Error(1) //nolint:forcetypeassert
+	changeIdx := args.Get(0).(int32) //nolint:forcetypeassert
+
+	var outpoints []wire.OutPoint
+	if args.Get(1) != nil {
+		//nolint:forcetypeassert
+		outpoints = args.Get(1).([]wire.OutPoint)
+	}
+
+	return changeIdx, outpoints, args.Error(2)
+}
+
+// ReleaseInputs is a mock implementation of
+// WalletController.ReleaseInputs.
+func (m *mockWalletController) ReleaseInputs(ctx context.Context,
+	lockID [32]byte, outpoints []wire.OutPoint) error {
+
+	args := m.Called(ctx, lockID, outpoints)
+
+	return args.Error(0)
 }
 
 // FinalizePsbt is a mock implementation of WalletController.FinalizePsbt.

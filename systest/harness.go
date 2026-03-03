@@ -637,6 +637,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 	)
 	require.NoError(h.t, err, "failed to create connector address")
 
+	//nolint:ll
 	return &batch.Terms{
 		OperatorKey:                   *h.operatorKeyDesc,
 		SweepKey:                      *sweepKeyDesc,
@@ -656,6 +657,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		MinOperatorFee:                btcutil.Amount(1000),
 		RegistrationTimeout:           defaultRegistrationTimeout,
 		SignatureCollectionTimeout:    defaultSigCollectionTimeout,
+		FundPsbtLockDuration:          batch.DefaultFundPsbtLockDuration,
 	}
 }
 

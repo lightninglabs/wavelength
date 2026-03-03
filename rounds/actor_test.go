@@ -303,6 +303,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 			TreeRadix:                  4,
 			RegistrationTimeout:        30 * time.Second,
 			SignatureCollectionTimeout: 30 * time.Second,
+			FundPsbtLockDuration:       batch.DefaultFundPsbtLockDuration,
 		},
 		ForfeitScript: []byte{0x51, 0x20, 0x01, 0x02},
 	}

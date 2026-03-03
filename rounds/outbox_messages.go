@@ -389,6 +389,10 @@ type BuildBatchReq struct {
 	// ForfeitScript is the output script for penalty outputs in forfeit
 	// transactions.
 	ForfeitScript []byte
+
+	// FundingOpts carries optional UTXO lease parameters for the
+	// wallet FundPsbt call (custom lock ID and lock duration).
+	FundingOpts *FundingOpts
 }
 
 // outboxEventSealed marks BuildBatchReq as implementing the sealed
@@ -538,6 +542,23 @@ type UnlockForfeitVTXOsReq struct {
 // outboxEventSealed marks UnlockForfeitVTXOsReq as implementing the sealed
 // OutboxEvent interface.
 func (u *UnlockForfeitVTXOsReq) outboxEventSealed() {}
+
+// ReleaseWalletInputsReq is an outbox event emitted when a round fails
+// after wallet inputs have been locked by FundPsbt. The OutboxHandler
+// should call WalletController.ReleaseInputs to free the leases. This
+// is fire-and-forget: errors are logged but do not produce follow-up
+// events.
+type ReleaseWalletInputsReq struct {
+	// LockID is the 32-byte lease identifier used during FundPsbt.
+	LockID [32]byte
+
+	// LockedOutpoints lists the wallet UTXOs to release.
+	LockedOutpoints []wire.OutPoint
+}
+
+// outboxEventSealed marks ReleaseWalletInputsReq as implementing the
+// sealed OutboxEvent interface.
+func (r *ReleaseWalletInputsReq) outboxEventSealed() {}
 
 // ValidateAndLockJoinReq is an outbox event emitted when a client join request
 // needs validation and input locking. The OutboxHandler validates the request

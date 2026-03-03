@@ -201,6 +201,13 @@ func NewActor(cfg *ActorConfig) *Actor {
 // need to be tracked until confirmation, then creates a new live round FSM to
 // accept registrations.
 func (a *Actor) Start(ctx context.Context) error {
+	// Validate that the UTXO lock duration is long enough to cover
+	// the worst-case round lifetime. This prevents silent lease
+	// expiry mid-round which could lead to double-spend attempts.
+	if err := a.cfg.Terms.ValidateFundPsbtLockDuration(); err != nil {
+		return fmt.Errorf("invalid terms: %w", err)
+	}
+
 	// Load previous rounds from storage that still need to be managed
 	// (e.g., rounds awaiting confirmation).
 	if err := a.loadPendingRounds(ctx); err != nil {
