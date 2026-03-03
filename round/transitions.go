@@ -27,20 +27,6 @@ func buildBoardingRequest(intent BoardingIntent) types.BoardingRequest {
 	return intent.Request
 }
 
-// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
-// RefreshVTXORequest. The refresh request contains all info needed to create
-// the new VTXO output in the round.
-func buildVTXORequestFromRefresh(req *RefreshVTXORequest) types.VTXORequest {
-	return types.VTXORequest{
-		Amount:      btcutil.Amount(req.Amount),
-		PkScript:    req.PkScript,
-		Expiry:      req.Expiry,
-		ClientKey:   req.NewVTXOKey,
-		OperatorKey: req.OperatorKey,
-		SigningKey:  req.SigningKey,
-	}
-}
-
 // failWithNotification creates a state transition to ClientFailedState and
 // emits a RoundFailedNotification. This is the standard pattern for handling
 // internal errors without returning an error to the FSM (which would halt it).
@@ -161,156 +147,28 @@ func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
 	return boardingInputSigs, nil
 }
 
-// ProcessEvent handles the events from the Idle state. In this state, we'll
-// receive boarding UTXO confirmations or resume existing boarding flows.
+// ProcessEvent handles events in the Idle state. The only pool-addition
+// event is IntentPackage — the actor layer converts all raw inputs
+// (boarding confirmations, VTXO requests, refresh/leave) into
+// IntentPackage before sending to the FSM.
 func (s *Idle) ProcessEvent(ctx context.Context, event ClientEvent,
 	env *ClientEnvironment) (*ClientStateTransition, error) {
 
 	switch evt := event.(type) {
-	case *ResumeBoardingIntents:
-		// If for some reason, there aren't any new intents, then we'll
-		// stay in the idle state.
+	case *IntentPackage:
 		if evt.isEmpty() {
-			env.Log.DebugS(ctx, "ResumeBoardingIntents received "+
-				"with no intents")
-
-			return &ClientStateTransition{
-				NextState: s,
-			}, nil
+			return selfLoop(s), nil
 		}
 
-		env.Log.InfoS(ctx, "Resuming boarding intents",
-			evt.logAttributes())
+		env.Log.InfoS(ctx, "Starting round assembly from "+
+			"intent package", evt.logAttributes())
 
-		// Otherwise, we'll start to assemble a round with the resumed
-		// intents.
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
 				Boarding: slices.Clone(evt.Boarding),
+				Forfeits: slices.Clone(evt.Forfeits),
 				VTXOs:    slices.Clone(evt.VTXOs),
-			},
-		}, nil
-
-	case *BoardingUTXOConfirmed:
-		env.Log.InfoS(ctx, "Processing boarding UTXO confirmation in Idle state",
-			btclog.Fmt("outpoint", "%v", evt.Outpoint),
-			slog.Int("block_height", int(evt.BlockHeight)))
-
-		// A boarding UTXO was confirmed. The wallet has already
-		// persisted the intent; we just need to create an internal
-		// BoardingIntent and transition to PendingRoundAssembly.
-		if evt.Tx == nil {
-			return failWithNotification(
-				"confirmation event missing transaction",
-				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Extract the confirmed output value.
-		if int(evt.Outpoint.Index) >= len(evt.Tx.TxOut) {
-			return failWithNotification(
-				fmt.Sprintf(
-					"invalid outpoint index %d for tx %s",
-					evt.Outpoint.Index, evt.Outpoint.Hash,
-				),
-				fmt.Errorf("outpoint index out of range"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
-
-		// Create the chain info from the confirmation event, including
-		// the TxProof for SPV verification.
-		chainInfo := BoardingChainInfo{
-			ConfHeight: evt.BlockHeight,
-			ConfHash:   evt.BlockHash,
-			ConfTx:     evt.Tx,
-			OutPoint:   evt.Outpoint,
-			Amount:     btcutil.Amount(confirmedOutput.Value),
-			TxProof:    evt.TxProof,
-		}
-
-		// Create a wallet intent with the full address from the event.
-		walletIntent := WalletBoardingIntent{
-			Address:   evt.Address,
-			Outpoint:  evt.Outpoint,
-			ChainInfo: chainInfo,
-			Status:    BoardingStatusConfirmed,
-		}
-
-		// Build the boarding request from the address. Include the exit
-		// delay so the operator can verify the boarding output script.
-		boardingRequest := types.BoardingRequest{
-			Outpoint:    &evt.Outpoint,
-			ClientKey:   evt.Address.KeyDesc.PubKey,
-			OperatorKey: evt.Address.OperatorKey,
-			ExitDelay:   evt.Address.ExitDelay,
-		}
-
-		// Create a BoardingIntent for the next round.
-		boardingIntent := BoardingIntent{
-			BoardingIntent: walletIntent,
-			Request:        boardingRequest,
-		}
-
-		env.Log.InfoS(ctx, "Transitioning to PendingRoundAssembly",
-			slog.Int("amount", int(chainInfo.Amount)),
-			btclog.Fmt("outpoint", "%v", evt.Outpoint))
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding: []BoardingIntent{boardingIntent},
-				VTXOs:    []types.VTXORequest{},
-			},
-		}, nil
-
-	case *VTXORequestsReceived:
-		env.Log.InfoS(ctx, "Received VTXO requests in Idle state",
-			slog.Int("request_count", len(evt.Requests)))
-
-		// Transition to PendingRoundAssembly with the received VTXO.
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding: []BoardingIntent{},
-				VTXOs:    slices.Clone(evt.Requests),
-			},
-		}, nil
-
-	case *RefreshVTXORequest:
-		// A VTXO actor requested refresh. Start assembling a round with
-		// this refresh request. Similar to boarding intents, we track
-		// refreshing VTXOs in the PendingRoundAssembly state.
-		//
-		// The refresh request contains all info to build both the
-		// RefreshRequest (forfeit) and VTXORequest (new output).
-		refreshMap := make(map[wire.OutPoint]*RefreshVTXORequest)
-		refreshMap[evt.VTXOOutpoint] = evt
-
-		// Create the VTXORequest for the new VTXO output.
-		vtxoReq := buildVTXORequestFromRefresh(evt)
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:        nil,
-				VTXOs:           []types.VTXORequest{vtxoReq},
-				RefreshingVTXOs: refreshMap,
-			},
-		}, nil
-
-	case *LeaveVTXORequest:
-		// A VTXO actor (or wallet) requested to exit the Ark. Start
-		// assembling a round with this leave request. Similar to
-		// refresh requests, we track leaving VTXOs in the
-		// PendingRoundAssembly state.
-		leaveMap := make(map[wire.OutPoint]*LeaveVTXORequest)
-		leaveMap[evt.VTXOOutpoint] = evt
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:     nil,
-				VTXOs:        nil,
-				LeavingVTXOs: leaveMap,
+				Leaves:   slices.Clone(evt.Leaves),
 			},
 		}, nil
 
@@ -329,155 +187,69 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 	error) {
 
 	switch evt := event.(type) {
-	// A new boarding UTXO was confirmed. The wallet handles persistence;
-	// we just add to our internal map.
-	case *BoardingUTXOConfirmed:
-		env.Log.InfoS(ctx, "Additional boarding UTXO confirmed during assembly",
-			btclog.Fmt("outpoint", "%v", evt.Outpoint),
-			slog.Int("current_boarding_intent_count", len(s.Boarding)),
-			slog.Int("current_vtxo_intent_count", len(s.VTXOs)))
-
-		if evt.Tx == nil {
-			return failWithNotification(
-				"confirmation event missing transaction",
-				fmt.Errorf("BoardingUTXOConfirmed.Tx is nil"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-
-		// Extract the confirmed output value.
-		if int(evt.Outpoint.Index) >= len(evt.Tx.TxOut) {
-			return failWithNotification(
-				fmt.Sprintf(
-					"invalid outpoint index %d for tx %s",
-					evt.Outpoint.Index, evt.Outpoint.Hash,
-				),
-				fmt.Errorf("outpoint index out of range"),
-				true, fn.None[RoundID](),
-			), nil
-		}
-		confirmedOutput := evt.Tx.TxOut[evt.Outpoint.Index]
-
-		for _, intent := range s.Boarding {
-			if intent.Outpoint != evt.Outpoint {
-				continue
-			}
-
-			env.Log.InfoS(ctx, "Boarding UTXO already present in intents map",
-				btclog.Fmt("outpoint", "%v", evt.Outpoint))
-
-			// Self-loop without adding duplicate intent.
+	case *IntentPackage:
+		// An atomic bundle of intents. Unpack into our pools,
+		// deduplicating boarding intents by outpoint.
+		if evt.isEmpty() {
 			return selfLoop(s), nil
 		}
 
-		// Create the chain info from the confirmation event, including
-		// the TxProof for SPV verification.
-		chainInfo := BoardingChainInfo{
-			ConfHeight: evt.BlockHeight,
-			ConfHash:   evt.BlockHash,
-			ConfTx:     evt.Tx,
-			OutPoint:   evt.Outpoint,
-			Amount:     btcutil.Amount(confirmedOutput.Value),
-			TxProof:    evt.TxProof,
+		// Build a set of existing boarding outpoints for O(1)
+		// dedup lookups.
+		boardingSeen := fn.NewSet[wire.OutPoint]()
+		for _, b := range s.Boarding {
+			boardingSeen.Add(b.Outpoint)
 		}
 
-		// Create a wallet intent with the full address from the event.
-		walletIntent := WalletBoardingIntent{
-			Address:   evt.Address,
-			Outpoint:  evt.Outpoint,
-			ChainInfo: chainInfo,
-			Status:    BoardingStatusConfirmed,
-		}
+		updatedBoarding := slices.Clone(s.Boarding)
+		for _, newIntent := range evt.Boarding {
+			if boardingSeen.Contains(newIntent.Outpoint) {
+				continue
+			}
 
-		// Build the boarding request from the address. Include the exit
-		// delay so the operator can verify the boarding output script.
-		boardingRequest := types.BoardingRequest{
-			Outpoint:    &evt.Outpoint,
-			ClientKey:   evt.Address.KeyDesc.PubKey,
-			OperatorKey: evt.Address.OperatorKey,
-			ExitDelay:   evt.Address.ExitDelay,
-		}
-
-		intent := BoardingIntent{
-			BoardingIntent: walletIntent,
-			Request:        boardingRequest,
-		}
-
-		// Add the new intent to our existing set.
-		updatedBoardingIntents := slices.Clone(s.Boarding)
-		updatedBoardingIntents = append(updatedBoardingIntents, intent)
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:        updatedBoardingIntents,
-				VTXOs:           slices.Clone(s.VTXOs),
-				RefreshingVTXOs: s.RefreshingVTXOs,
-			},
-		}, nil
-
-	case *VTXORequestsReceived:
-		env.Log.InfoS(ctx, "Additional VTXO requests received during assembly",
-			slog.Int("current_boarding_intent_count", len(s.Boarding)),
-			slog.Int("current_vtxo_intent_count", len(s.VTXOs)),
-			slog.Int("new_request_count", len(evt.Requests)))
-
-		// Add the new VTXO requests to our existing set.
-		updatedVTXOIntents := slices.Clone(s.VTXOs)
-		updatedVTXOIntents = append(updatedVTXOIntents, evt.Requests...)
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           updatedVTXOIntents,
-				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
-			},
-		}, nil
-
-	case *RefreshVTXORequest:
-		// A VTXO actor requested refresh. Add to our refreshing map.
-		// We stay in this state and accumulate refresh requests.
-		//
-		// Also create a VTXORequest for the new VTXO output.
-		updatedRefreshing := maps.Clone(s.RefreshingVTXOs)
-		if updatedRefreshing == nil {
-			updatedRefreshing = make(
-				map[wire.OutPoint]*RefreshVTXORequest,
+			boardingSeen.Add(newIntent.Outpoint)
+			updatedBoarding = append(
+				updatedBoarding, newIntent,
 			)
 		}
-		updatedRefreshing[evt.VTXOOutpoint] = evt
 
-		// Add the VTXORequest for this refresh to the VTXOs list.
-		vtxoReq := buildVTXORequestFromRefresh(evt)
+		// Deduplicate forfeit requests by VTXO outpoint. A VTXO
+		// can only be forfeited once per round.
+		forfeitSeen := fn.NewSet[wire.OutPoint]()
+		for _, f := range s.Forfeits {
+			if f.VTXOOutpoint != nil {
+				forfeitSeen.Add(*f.VTXOOutpoint)
+			}
+		}
+
+		updatedForfeits := slices.Clone(s.Forfeits)
+		for _, newForfeit := range evt.Forfeits {
+			if newForfeit.VTXOOutpoint == nil {
+				continue
+			}
+
+			if forfeitSeen.Contains(*newForfeit.VTXOOutpoint) {
+				continue
+			}
+
+			forfeitSeen.Add(*newForfeit.VTXOOutpoint)
+			updatedForfeits = append(
+				updatedForfeits, newForfeit,
+			)
+		}
+
 		updatedVTXOs := slices.Clone(s.VTXOs)
-		updatedVTXOs = append(updatedVTXOs, vtxoReq)
+		updatedVTXOs = append(updatedVTXOs, evt.VTXOs...)
+
+		updatedLeaves := slices.Clone(s.Leaves)
+		updatedLeaves = append(updatedLeaves, evt.Leaves...)
 
 		return &ClientStateTransition{
 			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           updatedVTXOs,
-				RefreshingVTXOs: updatedRefreshing,
-				LeavingVTXOs:    maps.Clone(s.LeavingVTXOs),
-			},
-		}, nil
-
-	case *LeaveVTXORequest:
-		// A VTXO actor (or wallet) requested to exit the Ark. Add to
-		// our leaving map. We stay in this state and accumulate leave
-		// requests alongside boarding intents and refresh requests.
-		updatedLeaving := maps.Clone(s.LeavingVTXOs)
-		if updatedLeaving == nil {
-			updatedLeaving = make(
-				map[wire.OutPoint]*LeaveVTXORequest,
-			)
-		}
-		updatedLeaving[evt.VTXOOutpoint] = evt
-
-		return &ClientStateTransition{
-			NextState: &PendingRoundAssembly{
-				Boarding:        slices.Clone(s.Boarding),
-				VTXOs:           slices.Clone(s.VTXOs),
-				RefreshingVTXOs: maps.Clone(s.RefreshingVTXOs),
-				LeavingVTXOs:    updatedLeaving,
+				Boarding: updatedBoarding,
+				VTXOs:    updatedVTXOs,
+				Forfeits: updatedForfeits,
+				Leaves:   updatedLeaves,
 			},
 		}, nil
 
@@ -501,20 +273,25 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			totalOutput += vtxo.Amount
 		}
 
-		// Include all forfeited VTXO amounts as inputs. These values
-		// come from refresh and leave requests.
-		totalInput += computeTotalForfeitAmount(
-			s.RefreshingVTXOs, s.LeavingVTXOs,
+		// Include all forfeited VTXO amounts as inputs.
+		forfeitAmt, err := computeTotalForfeitAmount(
+			ctx, env.VTXOStore, s.Forfeits,
 		)
+		if err != nil {
+			return failWithNotification(
+				"failed to compute forfeit amount",
+				err, true, fn.None[RoundID](),
+			), nil
+		}
+		totalInput += forfeitAmt
 
 		// Include leave amounts as requested on-chain outputs.
-		for _, req := range s.LeavingVTXOs {
+		for i, req := range s.Leaves {
 			if req.Output == nil {
 				return failWithNotification(
 					"leave request has nil output",
-					fmt.Errorf("leave request for %v "+
-						"has nil output",
-						req.VTXOOutpoint),
+					fmt.Errorf("leave request %d "+
+						"has nil output", i),
 					true, fn.None[RoundID](),
 				), nil
 			}
@@ -589,17 +366,17 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
 		vtxoReqs := slices.Clone(s.VTXOs)
 
-		// Build forfeit requests for VTXOs being refreshed or exited
-		// on-chain. Forfeits are listed separately from outputs.
-		// Sorted for deterministic ordering across map iterations.
-		forfeitReqs := sortedForfeitRequests(
-			s.RefreshingVTXOs, s.LeavingVTXOs,
-		)
+		// Build forfeit requests from the decoupled forfeit pool.
+		forfeitReqs, err := sortedForfeitRequests(s.Forfeits)
+		if err != nil {
+			return failWithNotification(
+				"invalid forfeit requests",
+				err, true, fn.None[RoundID](),
+			), nil
+		}
 
-		// Build leave requests for VTXOs being exited to on-chain
-		// outputs. Each leave forfeits a VTXO and creates an on-chain
-		// output in the batch transaction. Sorted for determinism.
-		leaveReqs := sortedLeaveRequests(s.LeavingVTXOs)
+		// Leave requests are already in append order.
+		leaveReqs := slices.Clone(s.Leaves)
 
 		env.Log.InfoS(ctx, "Sending JoinRoundRequest to server",
 			slog.Int("boarding_requests", len(boardingReqs)),
@@ -607,12 +384,12 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			slog.Int("forfeit_requests", len(forfeitReqs)),
 			slog.Int("leave_requests", len(leaveReqs)))
 
-		// Build Intents with all VTXOs and leaves for downstream
-		// validation.
+		// Build Intents with all pools for downstream validation.
 		intent := Intents{
 			Boarding: slices.Clone(s.Boarding),
 			VTXOs:    vtxoReqs,
 			Leaves:   leaveReqs,
+			Forfeits: slices.Clone(s.Forfeits),
 		}
 
 		// Derive a fresh identifier key for the join-request
@@ -797,7 +574,7 @@ func validateBoardingInputs(commitmentTx *wire.MsgTx,
 // commitment transaction with matching values and scripts. This ensures the
 // server has properly included the requested on-chain exit outputs.
 func validateLeaveOutputs(
-	commitmentTx *wire.MsgTx, leaves []*LeaveRequest,
+	commitmentTx *wire.MsgTx, leaves []*types.LeaveRequest,
 ) error {
 
 	if commitmentTx == nil {
@@ -1917,11 +1694,10 @@ func (s *ConfirmedState) ProcessEvent(_ context.Context, event ClientEvent,
 	}
 }
 
-// ProcessEvent for ClientFailedState. This state is now recoverable and
-// accepts the same events as Idle (BoardingUTXOConfirmed,
-// ResumeBoardingIntents) to allow the FSM to restart the boarding process
-// after a failure. Instead of duplicating the Idle logic, we transition to
-// Idle and forward the event as an internal event for Idle to process.
+// ProcessEvent for ClientFailedState. This state is recoverable and
+// accepts IntentPackage events to restart the boarding process after a
+// failure. Instead of duplicating the Idle logic, we transition to Idle
+// and forward the event as an internal event for Idle to process.
 func (s *ClientFailedState) ProcessEvent(
 	ctx context.Context, event ClientEvent, env *ClientEnvironment,
 ) (*ClientStateTransition, error) {
@@ -1944,30 +1720,15 @@ func (s *ClientFailedState) ProcessEvent(
 			},
 		}, nil
 
-	case *ResumeBoardingIntents:
-		// Recovery path: transition to Idle and forward the event.
-		// If no intents are provided, stay in the current state.
+	case *IntentPackage:
 		if evt.isEmpty() {
 			return selfLoop(s), nil
 		}
 
-		env.Log.InfoS(ctx, "Recovering from failed state with resumed intents",
+		env.Log.InfoS(ctx, "Recovering from failed state "+
+			"with intent package",
 			evt.logAttributes())
 
-		return &ClientStateTransition{
-			NextState: &Idle{},
-			NewEvents: fn.Some(ClientEmittedEvent{
-				InternalEvent: []ClientEvent{evt},
-			}),
-		}, nil
-
-	case *BoardingUTXOConfirmed:
-		env.Log.InfoS(ctx, "Recovering from failed state with new boarding confirmation",
-			btclog.Fmt("outpoint", "%v", evt.Outpoint))
-
-		// Recovery path: transition to Idle and forward the event
-		// to be processed there. This avoids duplicating the
-		// BoardingUTXOConfirmed handling logic.
 		return &ClientStateTransition{
 			NextState: &Idle{},
 			NewEvents: fn.Some(ClientEmittedEvent{

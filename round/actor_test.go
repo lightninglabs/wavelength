@@ -3,6 +3,7 @@ package round
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -1124,11 +1125,15 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, ok, "expected PendingRoundAssembly, got %T",
 			tempState.State)
 
-		// Verify the refresh request is tracked.
-		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+		// Verify the forfeit input is tracked.
+		require.Len(t, assembly.Forfeits, 1)
 		require.Equal(
-			t, refreshReq, assembly.RefreshingVTXOs[vtxoOutpoint],
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
 		)
+
+		// Verify the VTXO output request is tracked.
+		require.Len(t, assembly.VTXOs, 1)
 	})
 
 	t.Run("queues_refresh_alongside_boarding_intent", func(t *testing.T) {
@@ -1174,7 +1179,11 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 		require.True(t, ok, "expected PendingRoundAssembly, got %T",
 			tempState.State)
 		require.Len(t, assembly.Boarding, 1)
-		require.Contains(t, assembly.RefreshingVTXOs, vtxoOutpoint)
+		require.Len(t, assembly.Forfeits, 1)
+		require.Equal(
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
+		)
 	})
 }
 
@@ -1256,6 +1265,369 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 		require.Len(t, receivedNotif.VTXOs, 1)
 		require.Equal(
 			t, clientVTXO.Outpoint, receivedNotif.VTXOs[0].Outpoint,
+		)
+	})
+}
+
+// TestActorIntentMapping verifies that the actor correctly maps external
+// messages into IntentPackage events, preserving all fields through the
+// type conversion. These tests exercise the mapping+verification logic
+// that lives in the actor layer.
+func TestActorIntentMapping(t *testing.T) {
+	t.Parallel()
+
+	t.Run("boarding_preserves_chain_info", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+
+		// Verify the FSM received a complete boarding intent
+		// with chain info preserved through the type hierarchy.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists, "expected temp-keyed FSM")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok, "expected PendingRoundAssembly")
+		require.Len(t, assembly.Boarding, 1)
+
+		boardingIntent := assembly.Boarding[0]
+
+		// Chain info must be preserved through the embedding.
+		require.Equal(
+			t, intent.ChainInfo.ConfHeight,
+			boardingIntent.ChainInfo.ConfHeight,
+		)
+		require.Equal(
+			t, intent.ChainInfo.Amount,
+			boardingIntent.ChainInfo.Amount,
+		)
+		require.NotNil(t, boardingIntent.ChainInfo.ConfTx)
+
+		// Request fields must be built correctly from the
+		// wallet intent.
+		require.NotNil(t, boardingIntent.Request.Outpoint)
+		require.Equal(
+			t, intent.Outpoint,
+			*boardingIntent.Request.Outpoint,
+		)
+		require.True(
+			t, intent.Address.KeyDesc.PubKey.IsEqual(
+				boardingIntent.Request.ClientKey,
+			),
+		)
+		require.True(
+			t, intent.Address.OperatorKey.IsEqual(
+				boardingIntent.Request.OperatorKey,
+			),
+		)
+		require.Equal(
+			t, intent.Address.ExitDelay,
+			boardingIntent.Request.ExitDelay,
+		)
+	})
+
+	t.Run("boarding_rejects_nil_tx", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		intent := h.newTestBoardingIntent()
+		intent.ChainInfo.ConfTx = nil
+
+		// Nil tx should be caught by actor validation, not
+		// forwarded to the FSM.
+		h.walletActor.sendBoardingConfirmation(h.ctx, intent)
+
+		msg, ok := h.selfRef.waitForMessage(time.Second)
+		require.True(t, ok, "expected self-notification")
+
+		result := h.receive(msg)
+		require.True(t, result.IsErr())
+		require.Contains(
+			t, result.Err().Error(), "missing tx",
+		)
+	})
+
+	t.Run("boarding_rejects_invalid_outpoint_index", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		intent := h.newTestBoardingIntent()
+		intent.Outpoint.Index = 999
+
+		h.walletActor.sendBoardingConfirmation(h.ctx, intent)
+
+		msg, ok := h.selfRef.waitForMessage(time.Second)
+		require.True(t, ok, "expected self-notification")
+
+		result := h.receive(msg)
+		require.True(t, result.IsErr())
+		require.Contains(
+			t, result.Err().Error(), "invalid outpoint",
+		)
+	})
+
+	t.Run("boarding_deduplicates_same_outpoint", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+		h.sendWalletConfirmation(intent)
+
+		// Second confirmation with same outpoint should be
+		// deduplicated by the FSM.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+		require.Len(
+			t, assembly.Boarding, 1,
+			"duplicate outpoint should be deduplicated",
+		)
+	})
+
+	t.Run("refresh_maps_to_forfeit_and_vtxo", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("refresh-vtxo")),
+			Index: 0,
+		}
+		refreshReq := &RefreshVTXORequest{
+			VTXOOutpoint: vtxoOutpoint,
+			Amount:       75000,
+			NewVTXOKey:   h.clientPubKey,
+			PkScript:     []byte{0x51, 0x20},
+			OperatorKey:  h.operatorPubKey,
+			Expiry:       144,
+		}
+
+		result := h.receive(refreshReq)
+		require.True(t, result.IsOk())
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		// Verify the forfeit input was mapped correctly.
+		require.Len(t, assembly.Forfeits, 1)
+		require.NotNil(t, assembly.Forfeits[0].VTXOOutpoint)
+		require.Equal(
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
+		)
+
+		// Verify the VTXO output preserves all request fields.
+		require.Len(t, assembly.VTXOs, 1)
+		vtxoReq := assembly.VTXOs[0]
+		require.Equal(
+			t, btcutil.Amount(75000), vtxoReq.Amount,
+		)
+		require.Equal(
+			t, []byte{0x51, 0x20}, vtxoReq.PkScript,
+		)
+		require.Equal(t, uint32(144), vtxoReq.Expiry)
+		require.True(
+			t, h.clientPubKey.IsEqual(vtxoReq.ClientKey),
+		)
+		require.True(
+			t, h.operatorPubKey.IsEqual(vtxoReq.OperatorKey),
+		)
+	})
+
+	t.Run("leave_maps_to_forfeit_and_leave_output", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("leave-vtxo")),
+			Index: 0,
+		}
+		leaveOutput := &wire.TxOut{
+			Value:    60000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+		}
+		leaveReq := &LeaveVTXORequest{
+			VTXOOutpoint: vtxoOutpoint,
+			Amount:       60000,
+			Output:       leaveOutput,
+		}
+
+		result := h.receive(leaveReq)
+		require.True(t, result.IsOk())
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		// Verify the forfeit input was mapped correctly.
+		require.Len(t, assembly.Forfeits, 1)
+		require.NotNil(t, assembly.Forfeits[0].VTXOOutpoint)
+		require.Equal(
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
+		)
+
+		// Verify the leave output was mapped correctly.
+		require.Len(t, assembly.Leaves, 1)
+		require.NotNil(t, assembly.Leaves[0].Output)
+		require.Equal(
+			t, leaveOutput.Value,
+			assembly.Leaves[0].Output.Value,
+		)
+		require.Equal(
+			t, leaveOutput.PkScript,
+			assembly.Leaves[0].Output.PkScript,
+		)
+
+		// VTXOs should be empty for a leave.
+		require.Empty(t, assembly.VTXOs)
+	})
+
+	t.Run("mixed_round_accumulates_all_pools", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// 1. Boarding intent.
+		boardingIntent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(boardingIntent)
+
+		// 2. VTXO request.
+		h.sendVTXORequests(50000)
+
+		// 3. Refresh request.
+		refreshReq := &RefreshVTXORequest{
+			VTXOOutpoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("ref")),
+				Index: 0,
+			},
+			Amount:      30000,
+			NewVTXOKey:  h.clientPubKey,
+			PkScript:    []byte{0x51, 0x20},
+			OperatorKey: h.operatorPubKey,
+			Expiry:      144,
+		}
+		result := h.receive(refreshReq)
+		require.True(t, result.IsOk())
+
+		// 4. Leave request.
+		leaveReq := &LeaveVTXORequest{
+			VTXOOutpoint: wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("leave")),
+				Index: 0,
+			},
+			Amount: 20000,
+			Output: &wire.TxOut{
+				Value:    20000,
+				PkScript: []byte{0x00, 0x14},
+			},
+		}
+		result = h.receive(leaveReq)
+		require.True(t, result.IsOk())
+
+		// Verify all four pools are populated.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Boarding, 1)
+		require.Len(t, assembly.VTXOs, 2,
+			"1 explicit VTXO + 1 from refresh")
+		require.Len(t, assembly.Forfeits, 2,
+			"1 from refresh + 1 from leave")
+		require.Len(t, assembly.Leaves, 1)
+	})
+
+	t.Run("duplicate_forfeit_outpoint_deduplicated", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Send two refresh requests for the same VTXO.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("dup-forfeit")),
+			Index: 0,
+		}
+
+		for i := 0; i < 2; i++ {
+			refreshReq := &RefreshVTXORequest{
+				VTXOOutpoint: vtxoOutpoint,
+				Amount:       50000,
+				NewVTXOKey:   h.clientPubKey,
+				PkScript:     []byte{0x51, 0x20},
+				OperatorKey:  h.operatorPubKey,
+				Expiry:       144,
+			}
+
+			result := h.receive(refreshReq)
+			require.True(t, result.IsOk())
+		}
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		// The forfeit should be deduplicated by outpoint.
+		require.Len(
+			t, assembly.Forfeits, 1,
+			"duplicate forfeit outpoint should be deduplicated",
 		)
 	})
 }

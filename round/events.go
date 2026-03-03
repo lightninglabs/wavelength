@@ -12,10 +12,6 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/wallet"
-	"github.com/lightninglabs/taproot-assets/proof"
-	fn "github.com/lightningnetwork/lnd/fn/v2"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ClientEvent is a sealed interface for all events that can be processed by
@@ -38,71 +34,12 @@ type ClientOutMsg interface {
 	clientOutMsgSealed()
 }
 
-// ResumeBoardingIntents is emitted to instruct the FSM to resume attempting to
-// join a round with previously submitted and confirmed-but-not-adopted
-// intents.
-type ResumeBoardingIntents struct {
-	// Boarding contains the collected boarding intents to include in the
-	// next round.
-	Boarding []BoardingIntent
-
-	// VTXOs contains the collected VTXO requests to include in the next
-	// round.
-	VTXOs []types.VTXORequest
-}
-
-// isEmpty returns true if there are no boarding intents or VTXO requests
-// to resume.
-func (e *ResumeBoardingIntents) isEmpty() bool {
-	return len(e.Boarding) == 0 && len(e.VTXOs) == 0
-}
-
-// logAttributes returns a map of attributes for logging purposes.
-func (e *ResumeBoardingIntents) logAttributes() []slog.Attr {
-	return []slog.Attr{
-		slog.Int("boarding_intents", len(e.Boarding)),
-		slog.Int("vtxo_requests", len(e.VTXOs)),
-	}
-}
-
-func (e *ResumeBoardingIntents) clientEventSealed() {}
-
-// BoardingUTXOConfirmed is emitted when the boarding UTXO has received
-// sufficient confirmations and is ready to be used for boarding.
-type BoardingUTXOConfirmed struct {
-	// Outpoint identifies the confirmed boarding UTXO.
-	Outpoint wire.OutPoint
-
-	// Address is the boarding address for this UTXO. Contains the keys,
-	// tapscript, and exit delay needed to build the Request.
-	Address wallet.BoardingAddress
-
-	// BlockHeight is the height at which the UTXO was confirmed.
-	BlockHeight int32
-
-	// BlockHash is the hash of the block containing the transaction.
-	BlockHash chainhash.Hash
-
-	// Confirmations is the number of confirmations the UTXO has.
-	Confirmations int32
-
-	// Tx is the confirmed transaction containing the boarding UTXO. This
-	// allows the FSM to extract output details without additional chain
-	// queries.
-	Tx *wire.MsgTx
-
-	// TxProof is the optional SPV proof for this boarding UTXO. Includes
-	// merkle proof, block header, and output construction details. None if
-	// the proof hasn't been constructed yet.
-	TxProof fn.Option[proof.TxProof]
-}
-
-func (e *BoardingUTXOConfirmed) clientEventSealed() {}
-
-// VTXORequestsReceived is emitted when the client submits VTXO requests that
-// should be included in the next round registration. This event can be sent
-// from both internal sources (e.g., wallet) and external actors (e.g., VTXO
-// actor requesting a new VTXO during refresh).
+// VTXORequestsReceived is an actor message carrying pre-built VTXO requests
+// from other actors (e.g., VTXO actor during refresh). The round actor
+// translates it into an IntentPackage before sending to the FSM.
+//
+// NOTE: This is NOT an FSM event — it does not implement clientEventSealed().
+// The actor converts it to IntentPackage{VTXOs: req.Requests}.
 type VTXORequestsReceived struct {
 	actor.BaseMessage
 
@@ -110,9 +47,6 @@ type VTXORequestsReceived struct {
 	// request.
 	Requests []types.VTXORequest
 }
-
-// clientEventSealed prevents external implementations.
-func (e *VTXORequestsReceived) clientEventSealed() {}
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (e *VTXORequestsReceived) RoundReceivable() {}
@@ -201,7 +135,8 @@ type ConnectorLeafInfo struct {
 
 	// VTXOAmount is the value of the VTXO being forfeited. The forfeit tx's
 	// penalty output must equal this amount. This field enables validation
-	// that prevents value theft by ensuring the correct amount is forfeited.
+	// that prevents value theft by ensuring the correct amount is
+	// forfeited.
 	VTXOAmount btcutil.Amount
 }
 
@@ -338,82 +273,44 @@ type RoundComplete struct{}
 
 func (e *RoundComplete) clientEventSealed() {}
 
-// RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
-// expiry and needs to be refreshed in a new round. The round actor should
-// queue this VTXO for inclusion in the next batch swap.
+// IntentPackage is the single FSM event for all pool additions. The actor
+// layer converts raw inputs (boarding confirmations, VTXO requests, refresh
+// requests, leave requests) into processed intents and sends them to the FSM
+// via this unified event. The FSM unpacks the package and appends each item
+// to its respective pool.
 //
-// This request contains all information needed to build a forfeit request
-// (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
-// The same client key is typically reused for the new VTXO.
-type RefreshVTXORequest struct {
-	actor.BaseMessage
-
-	// VTXOOutpoint identifies the VTXO to refresh.
-	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
-	// NewVTXOKey is the client's public key for the new VTXO. This is
-	// typically the same as the old VTXO's key but could be fresh.
-	NewVTXOKey *btcec.PublicKey
-
-	// PkScript is the output script for the new VTXO.
-	PkScript []byte
-
-	// OperatorKey is the operator's public key for the new VTXO.
-	OperatorKey *btcec.PublicKey
-
-	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
-	Expiry uint32
-
-	// SigningKey is the key descriptor for signing the new VTXO's tree.
-	SigningKey keychain.KeyDescriptor
+// IntentPackage embeds Intents so that the pool fields (Boarding, VTXOs,
+// Forfeits, Leaves) are defined once and shared between event transport
+// and state storage.
+//
+// Examples:
+//   - Boarding:  {Boarding: [1], VTXOs: [1]}
+//   - Refresh:   {Forfeits: [1], VTXOs: [1]}
+//   - Leave:     {Forfeits: [1], Leaves: [1]}
+//   - Consolidate N-to-1: {Forfeits: [N], VTXOs: [1]}
+//   - Resume:    {Boarding: [N], VTXOs: [M], Forfeits: [K], Leaves: [L]}
+type IntentPackage struct {
+	Intents
 }
 
-func (e *RefreshVTXORequest) clientEventSealed() {}
-
-// RoundReceivable implements actormsg.RoundReceivable marker interface.
-func (e *RefreshVTXORequest) RoundReceivable() {}
-
-// MessageType returns the message type for logging.
-func (e *RefreshVTXORequest) MessageType() string {
-	return "RefreshVTXORequest"
+// isEmpty returns true if the package contains no intents.
+func (e *IntentPackage) isEmpty() bool {
+	return len(e.Boarding) == 0 && len(e.Forfeits) == 0 &&
+		len(e.VTXOs) == 0 && len(e.Leaves) == 0
 }
 
-// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
-// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
-// is similar to RefreshVTXORequest except the output is on-chain rather than a
-// new VTXO.
-//
-// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
-// forfeited via a connector output, and the leave output is included directly
-// in the batch transaction.
-type LeaveVTXORequest struct {
-	actor.BaseMessage
-
-	// VTXOOutpoint identifies the VTXO to forfeit.
-	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
-	// Output is the on-chain destination output that will be included in
-	// the batch transaction. This contains the value and pkScript for the
-	// leave output.
-	Output *wire.TxOut
+// logAttributes returns structured logging attributes for the package.
+func (e *IntentPackage) logAttributes() []slog.Attr {
+	return []slog.Attr{
+		slog.Int("boarding_intents", len(e.Boarding)),
+		slog.Int("vtxo_requests", len(e.VTXOs)),
+		slog.Int("forfeits", len(e.Forfeits)),
+		slog.Int("leaves", len(e.Leaves)),
+	}
 }
 
 // clientEventSealed prevents external implementations.
-func (e *LeaveVTXORequest) clientEventSealed() {}
-
-// RoundReceivable implements actormsg.RoundReceivable marker interface.
-func (e *LeaveVTXORequest) RoundReceivable() {}
-
-// MessageType returns the message type for logging.
-func (e *LeaveVTXORequest) MessageType() string {
-	return "LeaveVTXORequest"
-}
+func (e *IntentPackage) clientEventSealed() {}
 
 // ForfeitSignatureResponse is sent from a VTXO actor with its signature for
 // the forfeit transaction. This is the response to a forfeit request during

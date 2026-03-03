@@ -508,14 +508,16 @@ func TestTerminalStateSelfLoop(t *testing.T) {
 func TestIdleState(t *testing.T) {
 	t.Parallel()
 
-	t.Run("BoardingUTXOConfirmed_to_pending", func(t *testing.T) {
+	t.Run("IntentPackage_boarding_to_pending", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
 		h.withState(&Idle{})
 
 		intent := h.newTestBoardingIntent()
-		event := h.newBoardingUTXOConfirmedEvent(intent)
+		event := &IntentPackage{Intents: Intents{
+			Boarding: []BoardingIntent{intent},
+		}}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -525,7 +527,7 @@ func TestIdleState(t *testing.T) {
 		require.Len(t, nextState.Boarding, 1)
 	})
 
-	t.Run("ResumeBoardingIntents_with_intents", func(t *testing.T) {
+	t.Run("IntentPackage_resume_with_intents", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
@@ -533,10 +535,10 @@ func TestIdleState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		event := &ResumeBoardingIntents{
+		event := &IntentPackage{Intents: Intents{
 			Boarding: []BoardingIntent{intent},
 			VTXOs:    []types.VTXORequest{vtxoReq},
-		}
+		}}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -546,16 +548,13 @@ func TestIdleState(t *testing.T) {
 		require.Len(t, nextState.Boarding, 1)
 	})
 
-	t.Run("ResumeBoardingIntents_empty_stays_idle", func(t *testing.T) {
+	t.Run("IntentPackage_empty_stays_idle", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
 		h.withState(&Idle{})
 
-		event := &ResumeBoardingIntents{
-			Boarding: []BoardingIntent{},
-			VTXOs:    []types.VTXORequest{},
-		}
+		event := &IntentPackage{}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -563,48 +562,12 @@ func TestIdleState(t *testing.T) {
 
 		_ = assertStateType[*Idle](h)
 	})
-
-	t.Run("nil_tx_transitions_to_failed", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-		h.withState(&Idle{})
-
-		intent := h.newTestBoardingIntent()
-		event := h.newBoardingUTXOConfirmedEvent(intent)
-		event.Tx = nil
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(t, failedState.Reason, "missing transaction")
-	})
-
-	t.Run("invalid_outpoint_transitions_to_failed", func(t *testing.T) {
-		t.Parallel()
-
-		h := newTestHarness(t)
-		h.withState(&Idle{})
-
-		intent := h.newTestBoardingIntent()
-		event := h.newBoardingUTXOConfirmedEvent(intent)
-		event.Outpoint.Index = 999
-
-		transition, err := h.sendEvent(event)
-		require.NoError(t, err)
-		require.NotNil(t, transition)
-
-		failedState := assertStateType[*ClientFailedState](h)
-		require.Contains(t, failedState.Reason, "invalid outpoint")
-	})
 }
 
 func TestPendingRoundAssemblyState(t *testing.T) {
 	t.Parallel()
 
-	t.Run("additional_confirmation_accumulates", func(t *testing.T) {
+	t.Run("additional_intent_package_accumulates", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHarness(t)
@@ -617,7 +580,9 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		})
 
 		newIntent := h.newTestBoardingIntent()
-		event := h.newBoardingUTXOConfirmedEvent(newIntent)
+		event := &IntentPackage{Intents: Intents{
+			Boarding: []BoardingIntent{newIntent},
+		}}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -1639,12 +1604,15 @@ func TestBoardingFlowMultipleIntentsAccumulation(t *testing.T) {
 	h := newTestHarness(t)
 	h.withState(&Idle{})
 
-	// We confirm multiple UTXOs to verify that PendingRoundAssembly
-	// correctly accumulates boarding intents as they arrive, rather than
-	// replacing or dropping previous ones.
+	// We send multiple intent packages to verify that
+	// PendingRoundAssembly correctly accumulates boarding intents
+	// as they arrive, rather than replacing or dropping previous
+	// ones.
 	for i := 0; i < 3; i++ {
 		intent := h.newTestBoardingIntent()
-		event := h.newBoardingUTXOConfirmedEvent(intent)
+		event := &IntentPackage{Intents: Intents{
+			Boarding: []BoardingIntent{intent},
+		}}
 
 		_, err := h.sendEvent(event)
 		require.NoError(t, err)

@@ -48,9 +48,9 @@ func (s *Idle) clientStateSealed() {}
 // all intents reach the required confirmations, the FSM transitions to round
 // registration.
 //
-// This state also tracks VTXOs pending refresh or leave. When VTXOs are
-// approaching expiry, they send RefreshVTXORequest to be included in the next
-// round. When a user wants to exit the Ark, they send LeaveVTXORequest.
+// This state tracks four independent pools: boarding inputs, forfeit inputs,
+// VTXO outputs, and leave outputs. The pools are validated at registration
+// time by checking sum(inputs) >= sum(outputs) + fees.
 type PendingRoundAssembly struct {
 	// Boarding contains the collected boarding intents to include in the
 	// next round.
@@ -60,15 +60,13 @@ type PendingRoundAssembly struct {
 	// round.
 	VTXOs []types.VTXORequest
 
-	// RefreshingVTXOs tracks VTXOs waiting to be refreshed in this round.
-	// Keyed by VTXO outpoint. These are accumulated alongside boarding
-	// intents and included in the same round registration.
-	RefreshingVTXOs map[wire.OutPoint]*RefreshVTXORequest
+	// Forfeits tracks VTXOs being forfeited as inputs to this round.
+	// Decoupled from outputs to enable many-to-many operations.
+	Forfeits []types.ForfeitRequest
 
-	// LeavingVTXOs tracks VTXOs waiting to exit to on-chain outputs. Keyed
-	// by VTXO outpoint. These are accumulated alongside boarding intents
-	// and refresh requests, and included in the same round registration.
-	LeavingVTXOs map[wire.OutPoint]*LeaveVTXORequest
+	// Leaves tracks on-chain exit outputs for this round. Decoupled from
+	// forfeit inputs to enable many-to-many operations.
+	Leaves []*types.LeaveRequest
 }
 
 func (s *PendingRoundAssembly) String() string {
@@ -459,8 +457,8 @@ func (s *ClientFailedState) String() string {
 }
 
 func (s *ClientFailedState) IsTerminal() bool {
-	// ClientFailedState is NOT terminal - it can recover by accepting the
-	// same events as Idle (BoardingUTXOConfirmed, ResumeBoardingIntents).
+	// ClientFailedState is NOT terminal - it can recover by accepting
+	// IntentPackage events, which transition through Idle.
 	return false
 }
 

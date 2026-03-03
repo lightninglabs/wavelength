@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -29,6 +30,100 @@ import (
 
 // Compile-time assertion that RoundClientActor implements actor.Stoppable.
 var _ actor.Stoppable = (*RoundClientActor)(nil)
+
+// RefreshVTXORequest is sent from a VTXO actor when its VTXO is approaching
+// expiry and needs to be refreshed in a new round. The round actor should
+// queue this VTXO for inclusion in the next batch swap.
+//
+// This request contains all information needed to build a forfeit request
+// (for the connector tree) and a VTXORequest (for the new VTXO in the VTXT).
+// The same client key is typically reused for the new VTXO.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], VTXOs: [1]}.
+type RefreshVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to refresh.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// NewVTXOKey is the client's public key for the new VTXO. This is
+	// typically the same as the old VTXO's key but could be fresh.
+	NewVTXOKey *btcec.PublicKey
+
+	// PkScript is the output script for the new VTXO.
+	PkScript []byte
+
+	// OperatorKey is the operator's public key for the new VTXO.
+	OperatorKey *btcec.PublicKey
+
+	// Expiry is the CSV delay for the new VTXO's unilateral exit path.
+	Expiry uint32
+
+	// SigningKey is the key descriptor for signing the new VTXO's tree.
+	SigningKey keychain.KeyDescriptor
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RefreshVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RefreshVTXORequest) MessageType() string {
+	return "RefreshVTXORequest"
+}
+
+// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
+// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
+// is similar to RefreshVTXORequest except the output is on-chain rather than a
+// new VTXO.
+//
+// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
+// forfeited via a connector output, and the leave output is included directly
+// in the batch transaction.
+//
+// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
+// The actor translates it into an IntentPackage{Forfeits: [1], Leaves: [1]}.
+type LeaveVTXORequest struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO to forfeit.
+	VTXOOutpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount int64
+
+	// Output is the on-chain destination output that will be included in
+	// the batch transaction. This contains the value and pkScript for the
+	// leave output.
+	Output *wire.TxOut
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *LeaveVTXORequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *LeaveVTXORequest) MessageType() string {
+	return "LeaveVTXORequest"
+}
+
+// buildVTXORequestFromRefresh constructs a types.VTXORequest from a
+// RefreshVTXORequest. The refresh request contains all info needed to create
+// the new VTXO output in the round.
+func buildVTXORequestFromRefresh(
+	req *RefreshVTXORequest) types.VTXORequest {
+
+	return types.VTXORequest{
+		Amount:      btcutil.Amount(req.Amount),
+		PkScript:    req.PkScript,
+		Expiry:      req.Expiry,
+		ClientKey:   req.NewVTXOKey,
+		OperatorKey: req.OperatorKey,
+		SigningKey:  req.SigningKey,
+	}
+}
 
 // RoundFSM wraps a state machine instance for a specific round.
 type RoundFSM struct {
@@ -685,6 +780,36 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		slog.Int("amount", int(walletIntent.ChainInfo.Amount)),
 		slog.Int("conf_height", int(walletIntent.ChainInfo.ConfHeight)))
 
+	// Validate chain data that the FSM previously checked.
+	confTx := walletIntent.ChainInfo.ConfTx
+	if confTx == nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"boarding confirmation missing tx"))
+	}
+	if int(walletIntent.Outpoint.Index) >= len(confTx.TxOut) {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"invalid outpoint index %d for tx %s",
+			walletIntent.Outpoint.Index,
+			walletIntent.Outpoint.Hash))
+	}
+
+	// Build the boarding request from the wallet intent. Chain-level
+	// information (ConfHeight, ConfHash, ConfTx, TxProof, Amount) is
+	// carried through the embedded wallet.BoardingIntent.ChainInfo
+	// and remains available to downstream consumers (e.g.,
+	// buildJoinRoundAuthRequest uses ChainInfo.Amount for BIP-322
+	// proof construction).
+	boardingReq := types.BoardingRequest{
+		Outpoint:    &walletIntent.Outpoint,
+		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
+		OperatorKey: walletIntent.Address.OperatorKey,
+		ExitDelay:   walletIntent.Address.ExitDelay,
+	}
+	intent := BoardingIntent{
+		BoardingIntent: *walletIntent,
+		Request:        boardingReq,
+	}
+
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows multiple boarding confirmations to
 	// accumulate in the same round.
@@ -698,21 +823,11 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		}
 	}
 
-	// Create the FSM event from the wallet's confirmed intent. Wallet only
-	// notifies after min confs, so we set confirmations to 1. Include the
-	// Address and TxProof for building the Request.
-	confirmEvt := &BoardingUTXOConfirmed{
-		Outpoint:      walletIntent.Outpoint,
-		Address:       walletIntent.Address,
-		BlockHeight:   walletIntent.ChainInfo.ConfHeight,
-		BlockHash:     walletIntent.ChainInfo.ConfHash,
-		Confirmations: int32(a.cfg.OperatorTerms.MinConfirmations),
-		Tx:            walletIntent.ChainInfo.ConfTx,
-		TxProof:       walletIntent.ChainInfo.TxProof,
-	}
-
-	// Drive the FSM with the confirmation event.
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, confirmEvt)
+	// Send the boarding intent to the FSM as an IntentPackage.
+	pkg := &IntentPackage{Intents: Intents{
+		Boarding: []BoardingIntent{intent},
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing boarding confirmation: %w", err))
@@ -767,11 +882,11 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		}
 	}
 
-	event := &VTXORequestsReceived{
-		Requests: requests,
-	}
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: requests,
+	}}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, event)
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err,
@@ -784,7 +899,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 }
 
 // handleVTXORequestsReceived forwards pre-built VTXO requests from other
-// actors into the pending round FSM.
+// actors into the pending round FSM via IntentPackage.
 func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 	req *VTXORequestsReceived) fn.Result[actormsg.RoundActorResp] {
 
@@ -810,7 +925,10 @@ func (a *RoundClientActor) handleVTXORequestsReceived(ctx context.Context,
 		}
 	}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: req.Requests,
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err))
@@ -1452,8 +1570,8 @@ func (a *RoundClientActor) processConfirmationRequest(
 
 // handleRefreshVTXORequest processes a refresh request from a VTXO actor.
 // The VTXO is approaching expiry and needs to be included in the next batch
-// swap round. The request is forwarded to a pending round FSM which tracks it
-// alongside boarding intents.
+// swap round. The actor translates the request into a single IntentPackage
+// containing one forfeit input and one new VTXO output.
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1469,12 +1587,19 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		}
 	}
 
-	// Forward to the round FSM. The FSM tracks refreshing VTXOs in its
-	// state (similar to how it tracks boarding intents).
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	// Bundle the forfeit input and new VTXO output atomically.
+	pkg := &IntentPackage{Intents: Intents{
+		Forfeits: []types.ForfeitRequest{{
+			VTXOOutpoint: &req.VTXOOutpoint,
+		}},
+		VTXOs: []types.VTXORequest{
+			buildVTXORequestFromRefresh(req),
+		},
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing refresh request: %w", err,
+			"FSM error processing refresh package: %w", err,
 		))
 	}
 
@@ -1502,9 +1627,8 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 }
 
 // handleLeaveVTXORequest processes a leave (offboard) request from a VTXO
-// actor. The VTXO is being exited to an on-chain output. The request is
-// forwarded to a pending round FSM which tracks it alongside boarding intents
-// and refresh requests.
+// actor. The actor translates the request into a single IntentPackage
+// containing one forfeit input and one leave output.
 func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 	req *LeaveVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1520,12 +1644,17 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 		}
 	}
 
-	// Forward to the round FSM. The FSM tracks leaving VTXOs in its
-	// state (similar to how it tracks boarding intents and refreshes).
-	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, req)
+	// Bundle the forfeit input and leave output atomically.
+	pkg := &IntentPackage{Intents: Intents{
+		Forfeits: []types.ForfeitRequest{{
+			VTXOOutpoint: &req.VTXOOutpoint,
+		}},
+		Leaves: []*types.LeaveRequest{{Output: req.Output}},
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM.FSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing leave request: %w", err,
+			"FSM error processing leave package: %w", err,
 		))
 	}
 

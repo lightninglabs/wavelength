@@ -227,7 +227,12 @@ type Intents struct {
 	// Leaves contains the leave requests for VTXOs being exited to on-chain
 	// outputs. Each leave forfeits a VTXO and creates an on-chain output
 	// in the batch transaction instead of a new VTXO.
-	Leaves []*LeaveRequest
+	Leaves []*types.LeaveRequest
+
+	// Forfeits contains the VTXOs being forfeited as inputs. Each entry
+	// carries only the outpoint; the VTXO amount is looked up from
+	// VTXOStore at registration time.
+	Forfeits []types.ForfeitRequest
 }
 
 // Clone creates a copy of the Intents.
@@ -236,6 +241,7 @@ func (i *Intents) Clone() Intents {
 		Boarding: slices.Clone(i.Boarding),
 		VTXOs:    slices.Clone(i.VTXOs),
 		Leaves:   slices.Clone(i.Leaves),
+		Forfeits: slices.Clone(i.Forfeits),
 	}
 }
 

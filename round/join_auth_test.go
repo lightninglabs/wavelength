@@ -531,8 +531,8 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 		VTXOs:    vtxoReqs,
 	}
 
-	forfeitReqs := []*ForfeitRequest{{
-		VTXOOutpoint: vtxoOutpoint,
+	forfeitReqs := []*types.ForfeitRequest{{
+		VTXOOutpoint: &vtxoOutpoint,
 	}}
 
 	auth, err := buildJoinRoundAuth(
@@ -617,8 +617,8 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 		VTXOs: vtxoReqs,
 	}
 
-	forfeitReqs := []*ForfeitRequest{{
-		VTXOOutpoint: vtxoOutpoint,
+	forfeitReqs := []*types.ForfeitRequest{{
+		VTXOOutpoint: &vtxoOutpoint,
 	}}
 
 	auth, err := buildJoinRoundAuth(
