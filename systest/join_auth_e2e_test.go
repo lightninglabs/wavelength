@@ -415,23 +415,19 @@ func toSharedJoinRoundRequest(req *clientround.JoinRoundRequest,
 		shared.VTXOReqs = append(shared.VTXOReqs, &vtxoReq)
 	}
 
-	for i := 0; i < len(req.ForfeitRequests); i++ {
-		forfeitReq := req.ForfeitRequests[i]
-		clone := &clienttypes.ForfeitRequest{
-			VTXOOutpoint: &forfeitReq.VTXOOutpoint,
-		}
-		shared.ForfeitReqs = append(
-			shared.ForfeitReqs, clone,
-		)
-	}
+	// ForfeitRequests and LeaveRequests are already
+	// []*clienttypes.ForfeitRequest and []*clienttypes.LeaveRequest,
+	// so we can append them directly. Clone leave outputs for test
+	// isolation.
+	shared.ForfeitReqs = append(
+		shared.ForfeitReqs, req.ForfeitRequests...,
+	)
 
-	for i := 0; i < len(req.LeaveRequests); i++ {
-		leaveReq := req.LeaveRequests[i]
-		leaveClone := &clienttypes.LeaveRequest{
-			Output: cloneWireTxOut(leaveReq.Output),
-		}
+	for _, leaveReq := range req.LeaveRequests {
 		shared.LeaveReqs = append(
-			shared.LeaveReqs, leaveClone,
+			shared.LeaveReqs, &clienttypes.LeaveRequest{
+				Output: cloneWireTxOut(leaveReq.Output),
+			},
 		)
 	}
 
@@ -460,10 +456,10 @@ func cloneClientJoinRoundRequest(
 			[]clienttypes.VTXORequest, nVTXO,
 		),
 		ForfeitRequests: make(
-			[]*clientround.ForfeitRequest, nForfeit,
+			[]*clienttypes.ForfeitRequest, nForfeit,
 		),
 		LeaveRequests: make(
-			[]*clientround.LeaveRequest, nLeave,
+			[]*clienttypes.LeaveRequest, nLeave,
 		),
 		RoundID:    src.RoundID,
 		Identifier: src.Identifier,
@@ -478,7 +474,7 @@ func cloneClientJoinRoundRequest(
 			continue
 		}
 
-		dst.ForfeitRequests[i] = &clientround.ForfeitRequest{
+		dst.ForfeitRequests[i] = &clienttypes.ForfeitRequest{
 			VTXOOutpoint: src.ForfeitRequests[i].VTXOOutpoint,
 		}
 	}
@@ -488,7 +484,7 @@ func cloneClientJoinRoundRequest(
 			continue
 		}
 
-		dst.LeaveRequests[i] = &clientround.LeaveRequest{
+		dst.LeaveRequests[i] = &clienttypes.LeaveRequest{
 			Output: cloneWireTxOut(src.LeaveRequests[i].Output),
 		}
 	}

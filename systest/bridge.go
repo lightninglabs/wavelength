@@ -222,30 +222,11 @@ func (b *BridgeServerConn) convertToActorMsg(
 			vtxoReqs[i] = &m.VTXORequests[i]
 		}
 
-		// Convert ForfeitRequests to ForfeitReqs. Each forfeit
-		// specifies a VTXO to forfeit.
-		forfeitReqs := make(
-			[]*clienttypes.ForfeitRequest, 0,
-			len(m.ForfeitRequests),
-		)
-		for _, forfeitReq := range m.ForfeitRequests {
-			forfeitReqs = append(
-				forfeitReqs, &clienttypes.ForfeitRequest{
-					VTXOOutpoint: &forfeitReq.VTXOOutpoint,
-				},
-			)
-		}
-
-		// Convert LeaveRequests directly. Each leave specifies an
-		// on-chain destination output.
-		leaveReqs := make(
-			[]*clienttypes.LeaveRequest, len(m.LeaveRequests),
-		)
-		for i, leaveReq := range m.LeaveRequests {
-			leaveReqs[i] = &clienttypes.LeaveRequest{
-				Output: leaveReq.Output,
-			}
-		}
+		// ForfeitRequests and LeaveRequests are already
+		// []*clienttypes.ForfeitRequest and []*clienttypes.LeaveRequest
+		// respectively, so no conversion is needed.
+		forfeitReqs := m.ForfeitRequests
+		leaveReqs := m.LeaveRequests
 
 		return &rounds.JoinRoundRequest{
 			ClientID: b.clientID,

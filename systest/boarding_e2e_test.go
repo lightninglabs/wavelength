@@ -1433,16 +1433,17 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 	t.Logf("Verified sweep tx %s spent %s", sweepTxid, rootOutpoint)
 }
 
-// TestBoardingE2EInsufficientOperatorFee verifies that a client is rejected
-// when requesting VTXO amounts that leave an operator fee below the minimum.
-// The server enforces MinOperatorFee to prevent free UTXO consolidation.
+// TestBoardingE2EInsufficientOperatorFee verifies that the server rejects a
+// client when the requested VTXO amounts leave an operator fee below the
+// minimum. The server enforces MinOperatorFee to prevent free UTXO
+// consolidation.
 //
 // Flow:
 //  1. Client boards with 100,000 sats.
 //  2. Client requests a VTXO for 99,800 sats (implied fee = 200 sats).
 //  3. The operator's MinOperatorFee is 1,000 sats.
-//  4. The client's local min-fee check catches this and transitions to
-//     ClientFailedState without sending a join request.
+//  4. The server rejects the join request and the client transitions to
+//     ClientFailedState.
 func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	ParallelN(t)
 
@@ -1489,9 +1490,9 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	t.Logf("Registered VTXO request for %d sats (fee=%d)",
 		vtxoAmount, amount-vtxoAmount)
 
-	// Trigger registration. The client-side min-fee check should catch
-	// the insufficient fee and transition to ClientFailedState locally,
-	// without sending a join request to the server.
+	// Trigger registration. The client sends the join request to the
+	// server, which rejects it due to insufficient operator fee. The
+	// client then transitions to ClientFailedState.
 	err = client.TriggerRegistration(ctx)
 	require.NoError(t, err)
 
@@ -1500,9 +1501,4 @@ func TestBoardingE2EInsufficientOperatorFee(t *testing.T) {
 	require.NoError(t, err, "FSM should reach ClientFailedState "+
 		"due to insufficient operator fee")
 	t.Log("Client correctly rejected: operator fee below minimum")
-
-	// Verify that no join request was sent to the server. The client
-	// should have caught the error locally.
-	h.Transcript().AssertNotContainsMessage(t, C2S("JoinRoundRequest"))
-	t.Log("Confirmed: no JoinRoundRequest sent to server")
 }
