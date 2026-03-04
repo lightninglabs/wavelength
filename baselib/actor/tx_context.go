@@ -51,6 +51,15 @@ func RequireTx(ctx context.Context) (*sql.Tx, error) {
 	return tx, nil
 }
 
+// WithoutTx returns a new context with the database transaction stripped.
+// This is used at actor boundaries (e.g., DurableMailbox.Send) to prevent
+// the sender's transaction from leaking into the receiver's mailbox store.
+// An untyped nil shadows the parent's txContextKey entry so that
+// TxFromContext returns (nil, false).
+func WithoutTx(ctx context.Context) context.Context {
+	return context.WithValue(ctx, txContextKey{}, nil)
+}
+
 // HasTx returns true if the context contains a database transaction.
 func HasTx(ctx context.Context) bool {
 	_, ok := TxFromContext(ctx)

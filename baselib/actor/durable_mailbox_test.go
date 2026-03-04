@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"sync"
@@ -1070,4 +1071,64 @@ func TestDurableMailboxSendWithoutOutboxIDGeneratesFreshID(t *testing.T) {
 		require.Len(t, id, 36,
 			"generated ID should be a UUID (36 chars)")
 	}
+}
+
+// txCapturingStore wraps mockDeliveryStore to capture the context passed to
+// EnqueueMessage for inspection in tests.
+type txCapturingStore struct {
+	*mockDeliveryStore
+	lastCtx context.Context
+}
+
+// EnqueueMessage captures the context before delegating to the underlying
+// mock store.
+func (s *txCapturingStore) EnqueueMessage(ctx context.Context,
+	params EnqueueParams) error {
+
+	s.lastCtx = ctx
+
+	return s.mockDeliveryStore.EnqueueMessage(ctx, params)
+}
+
+// TestDurableMailboxSendStripsSenderTx verifies that Send strips the sender's
+// database transaction from the context before calling EnqueueMessage. This
+// prevents the receiver's delivery store from inheriting the sender's
+// transaction, which would cause cross-DB visibility issues or Ask deadlocks.
+func TestDurableMailboxSendStripsSenderTx(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newDurableTestCodec()
+	ctx := context.Background()
+
+	// Wrap the store to capture the context passed to EnqueueMessage.
+	capturing := &txCapturingStore{mockDeliveryStore: store}
+
+	cfg := DefaultDurableMailboxConfig("test-mailbox", capturing, codec)
+	mailbox := NewDurableMailbox[*durableTestMsg, int](ctx, cfg)
+
+	msg := &durableTestMsg{
+		Value:   tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		Payload: tlv.NewPrimitiveRecord[tlv.TlvType2]([]byte("test")),
+	}
+
+	env := envelope[*durableTestMsg, int]{
+		message:   msg,
+		callerCtx: ctx,
+	}
+
+	// Create a context with a transaction attached, simulating a
+	// sender inside an ExecTx closure.
+	sendCtx := WithTx(ctx, (*sql.Tx)(nil))
+	require.True(t, HasTx(sendCtx))
+
+	// Send should succeed.
+	ok := mailbox.Send(sendCtx, env)
+	require.True(t, ok)
+
+	// The context received by EnqueueMessage should NOT carry a tx.
+	require.NotNil(t, capturing.lastCtx,
+		"EnqueueMessage should have been called")
+	require.False(t, HasTx(capturing.lastCtx),
+		"EnqueueMessage context should not carry the sender's tx")
 }
