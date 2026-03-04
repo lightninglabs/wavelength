@@ -124,18 +124,16 @@ func newClientDeliveryStore(t *testing.T) actor.DeliveryStore {
 	return &clientDeliveryStoreShim{DeliveryStore: store}
 }
 
-// newServerDeliveryStore creates a server-side actor delivery store backed by
-// its own test database. Isolating the delivery store from the business stores
-// (vtxo, session) avoids SQLite single-writer contention during durable actor
-// processing.
-func newServerDeliveryStore(t *testing.T) actor.DeliveryStore {
+// newServerDeliveryStore creates a server-side actor delivery store that
+// shares the same database as the business stores. Sharing a single
+// database allows the durable actor's outer transaction to flow into
+// the coordinator's store operations via TransactionExecutor.ExecTx,
+// giving atomic commit across mailbox ack and business state updates.
+func newServerDeliveryStore(t *testing.T,
+	dbStore db.BatchedQuerier) actor.DeliveryStore {
+
 	t.Helper()
 
-	sqlStore := db.NewTestDB(t)
-	dbStore := db.NewStore(
-		sqlStore.DB, sqlStore.Queries, sqlStore.Backend(),
-		btclog.Disabled, clock.NewDefaultClock(),
-	)
 	store, err := db.NewActorDeliveryStoreFromDB(
 		dbStore, clock.NewDefaultClock(), btclog.Disabled,
 	)
@@ -772,7 +770,7 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
-		DeliveryStore:    newServerDeliveryStore(t),
+		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 	})
 
 	err = server.Start(ctx)
@@ -1011,7 +1009,7 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
-		DeliveryStore:    newServerDeliveryStore(t),
+		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 	})
 
 	err = server.Start(ctx)
@@ -1359,7 +1357,7 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
-		DeliveryStore:    newServerDeliveryStore(t),
+		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 	})
 
 	err = server.Start(ctx)
@@ -1656,7 +1654,7 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	server1 := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver1,
-		DeliveryStore:    newServerDeliveryStore(t),
+		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 		SessionStore:     sessionStore1,
 	})
 
@@ -1727,7 +1725,7 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	server2 := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver2,
-		DeliveryStore:    newServerDeliveryStore(t),
+		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 		SessionStore:     sessionStore2,
 	})
 	defer server2.Stop()

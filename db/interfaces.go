@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/db/sqlc"
 )
 
@@ -239,6 +240,17 @@ func NewTransactionExecutor[Querier any](db BatchedQuerier,
 // related to a storage object.
 func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	txOptions TxOptions, txBody func(Q) error) error {
+
+	// If the context already carries a database transaction from the
+	// durable actor framework, join it instead of creating a new one.
+	// This ensures that all store operations within a single actor
+	// message are executed atomically in the same transaction.
+	// txOptions is intentionally ignored here; the outer transaction
+	// was already started by the actor framework with its own
+	// isolation and read/write settings.
+	if tx, ok := actor.TxFromContext(ctx); ok {
+		return MapSQLError(txBody(t.createQuery(tx)))
+	}
 
 	waitBeforeRetry := func(attemptNumber int) {
 		retryDelay := t.opts.randRetryDelay(attemptNumber)

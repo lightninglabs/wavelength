@@ -629,12 +629,17 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 		err:          errors.New("apply finalize failed"),
 	}
 
+	// Use the same database for the delivery store so the actor's
+	// outer transaction can see data written by the test setup.
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+
 	driver := NewDriver(DriverCfg{
 		SessionStore: failStore,
 	})
 	actor := startTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
@@ -930,10 +935,15 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	// Use the same database for the delivery store so the actor's
+	// outer transaction can see data written by the test setup.
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+
 	driver := NewDriver(DriverCfg{Locker: locker})
 	actor := startTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
@@ -980,10 +990,15 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Use the same database for the delivery store so the actor's
+	// outer transaction can see data written by the test setup.
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+
 	driver := NewDriver(DriverCfg{Locker: locker})
 	actor := startTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
@@ -1046,6 +1061,10 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Use the same database for the delivery store so the actor's
+	// outer transaction can see data written by the test setup.
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+
 	operatorSigner := input.NewMockSigner(
 		[]*btcec.PrivateKey{operatorKey}, nil,
 	)
@@ -1060,6 +1079,7 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	actor := startTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
 	})
 
 	submitResp := actor.Receive(ctx, &SubmitOORRequest{
