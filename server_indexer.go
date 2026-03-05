@@ -125,7 +125,7 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 		return fmt.Errorf("create indexer operator: %w", err)
 	}
 
-	s.log.InfoS(ctx, "Initialized indexer subsystem",
+	log.InfoS(ctx, "Initialized indexer subsystem",
 		"sender_mailbox_id", defaultIndexerSenderMailboxID)
 
 	return nil
@@ -143,7 +143,7 @@ func (s *Server) stopIndexerSubsystem(ctx context.Context) {
 	}
 
 	if s.indexerOperator != nil {
-		s.log.InfoS(ctx, "Indexer subsystem stopped")
+		log.InfoS(ctx, "Indexer subsystem stopped")
 	}
 }
 
