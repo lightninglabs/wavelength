@@ -44,6 +44,38 @@ const (
 	defaultLogDirname = "logs"
 )
 
+const (
+	// DefaultNetwork is the default bitcoin network the daemon operates
+	// on.
+	DefaultNetwork = "regtest"
+
+	// DefaultLogLevel is the default logging verbosity.
+	DefaultLogLevel = "info"
+
+	// DefaultAdminRPCListen is the default listen address for the admin
+	// gRPC server.
+	DefaultAdminRPCListen = "localhost:8081"
+
+	// DefaultRPCListen is the default listen address for the
+	// client-facing gRPC server.
+	DefaultRPCListen = "localhost:7070"
+
+	// DefaultLndHost is the default address for connecting to the
+	// local lnd instance.
+	DefaultLndHost = "localhost:10009"
+
+	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
+	DefaultRPCTimeout = 30 * time.Second
+
+	// DefaultShutdownTimeout is the maximum duration to wait for
+	// graceful shutdown of the actor system and subsystems.
+	DefaultShutdownTimeout = 10 * time.Second
+
+	// defaultLogDirname is the default directory name for log
+	// files.
+	defaultLogDirname = "logs"
+)
+
 var (
 	// defaultDataDir is the default directory where arkd tries to
 	// find its configuration file and store its data. This is a
