@@ -1104,7 +1104,8 @@ func TestActorServerMessageRouting(t *testing.T) {
 			expectOutbox:  false,
 		},
 		{
-			name: "BoardingFailed_from_any_state",
+			name: "BoardingFailed_from_joined_round",
+			//nolint:ll
 			setupState: func(
 				h *actorTestHarness,
 			) *wallet.BoardingIntent {
@@ -1113,6 +1114,35 @@ func TestActorServerMessageRouting(t *testing.T) {
 				require.NoError(h.t, h.start())
 				intent := h.newTestBoardingIntent()
 				h.sendWalletConfirmation(intent)
+				h.sendVTXORequests(50000)
+				h.sendServerMessage(&RegistrationRequested{})
+
+				// Re-key the temp round by simulating a
+				// successful join, then send BoardingFailed
+				// without RoundID.
+				states := h.queryState()
+				var outpoints []wire.OutPoint
+				for _, info := range states {
+					state, ok := info.State.(*RegistrationSentState)
+					if !ok {
+						continue
+					}
+
+					for _, boarding := range state.Intents.Boarding {
+						outpoints = append(
+							outpoints,
+							boarding.Outpoint,
+						)
+					}
+				}
+				require.NotEmpty(h.t, outpoints,
+					"registration state should contain "+
+						"boarding outpoints")
+
+				h.sendServerMessage(&RoundJoined{
+					RoundID:                   testRoundID("test-round-failed"),
+					AcceptedBoardingOutpoints: outpoints,
+				})
 
 				return intent
 			},

@@ -1129,6 +1129,23 @@ func (a *RoundClientActor) handleServerMessage(ctx context.Context,
 		// RoundID.
 		roundFSM = a.findPendingRound()
 		if roundFSM == nil {
+			// Round failures can arrive after the round is keyed by a
+			// server-assigned RoundID. When there is exactly one tracked
+			// round, route the failure there.
+			if _, isBoardingFailed := msg.Message.(*BoardingFailed); isBoardingFailed &&
+				len(a.rounds) == 1 {
+
+				for _, candidate := range a.rounds {
+					roundFSM = candidate
+				}
+
+				if roundFSM != nil {
+					a.log.DebugS(ctx, "Routing BoardingFailed to sole tracked round",
+						slog.String("key", roundFSM.Key.KeyString()))
+				}
+			}
+		}
+		if roundFSM == nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 				"no pending round for event %T", msg.Message))
 		}
