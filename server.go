@@ -3,17 +3,24 @@ package darepo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
-	"sync"
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainbackends"
+	"github.com/lightninglabs/darepo-client/chainsource"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/fn"
+	"github.com/lightningnetwork/lnd/signal"
 )
 
 // Server is the main operator daemon.
@@ -22,25 +29,25 @@ type Server struct {
 
 	cfg *Config
 
+	lnd *lndclient.GrpcLndServices
+
+	actorSystem  *actor.ActorSystem
+	chainBackend chainsource.ChainBackend
+
 	db *db.Store
 
 	adminRPC *AdminRPCServer
 
-	rpc *RPCServer
+	rpc        *RPCServer
+	mailboxMux *mailboxrpc.ServeMux
 
 	log btclog.Logger
 
-	// cancel is used to cancel the contexts passed from the Server to
-	// any other subsystems.
-	cancel fn.Option[context.CancelFunc]
-
-	// quit is closed when the server is shutting down. And is used to exit
-	// out of any calls made from the outside to this server.
+	// quit is closed by Shutdown() to trigger a graceful exit from
+	// RunWithContext independently of the parent context. This
+	// enables programmatic shutdown from subsystems or external
+	// callers that do not hold the context's cancel function.
 	quit chan struct{}
-
-	// wg is used to manage and monitor all goroutines started by the
-	// server.
-	wg sync.WaitGroup
 
 	// mailboxStore is the in-process mailbox store used by all
 	// subsystems for envelope persistence and delivery.
@@ -74,145 +81,227 @@ func subLogger(loggers SubLoggers, tag string) btclog.Logger {
 	return l
 }
 
-// NewServer creates a new operator server.
-func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
-	s := &Server{
+// Main is the true entry point for the daemon. It is called after CLI
+// flag parsing, config validation, and signal interception are
+// complete.
+func Main(cfg *Config, interceptor signal.Interceptor) error {
+	srv, err := NewServer(cfg)
+	if err != nil {
+		return err
+	}
+
+	return srv.RunUntilShutdown(interceptor)
+}
+
+// NewServer allocates a Server from a validated Config. The server is
+// inert until RunUntilShutdown or RunWithContext is called.
+func NewServer(cfg *Config) (*Server, error) {
+	return &Server{
 		cfg:  cfg,
 		log:  cfg.Log.UnwrapOr(btclog.Disabled),
 		quit: make(chan struct{}),
-	}
-
-	s.log.InfoS(ctx, "Constructing Ark operator server")
-
-	// Initialize database using the dedicated DB subsystem logger.
-	dbLog := subLogger(cfg.Loggers, dbSubsystem)
-
-	var err error
-	s.db, err = db.NewStoreFromConfig(
-		cfg.DB, dbLog, clock.NewDefaultClock(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create database: %w", err)
-	}
-
-	backendName := "sqlite"
-	if cfg.DB.Backend == "postgres" {
-		backendName = "postgres"
-	}
-	s.log.InfoS(ctx, "Database initialized", "backend", backendName)
-
-	// Create admin RPC server with the ARPC subsystem logger.
-	adminLog := subLogger(cfg.Loggers, adminRPCSubsystem)
-	s.adminRPC, err = NewAdminRPCServer(cfg.AdminRPC, s, adminLog)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create admin RPC server: %w",
-			err)
-	}
-
-	// Create client RPC server with the ORPC subsystem logger.
-	rpcLog := subLogger(cfg.Loggers, clientRPCSubsystem)
-	s.rpc, err = NewRPCServer(cfg.RPC, s, rpcLog)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create client RPC server: %w",
-			err)
-	}
-
-	// Initialize the indexer subsystem (service, operator, bridge).
-	if err := s.setupIndexerSubsystem(ctx); err != nil {
-		return nil, fmt.Errorf(
-			"failed to setup indexer subsystem: %w", err,
-		)
-	}
-
-	return s, nil
+	}, nil
 }
 
-// RunUntilShutdown runs the server until the provided context is cancelled.
-// This is a blocking call that will exit once both the context is cancelled and
-// all cleanup tasks have been completed.
-func (s *Server) RunUntilShutdown(ctx context.Context) error {
+// RunUntilShutdown starts all subsystems and blocks until the
+// shutdown interceptor fires or a fatal error occurs. It wraps
+// RunWithContext by translating the interceptor signal into a
+// context cancellation.
+func (s *Server) RunUntilShutdown(
+	interceptor signal.Interceptor) error {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel the context when the interceptor fires so blocking
+	// calls unblock promptly.
+	go func() {
+		select {
+		case <-interceptor.ShutdownChannel():
+			cancel()
+
+		case <-ctx.Done():
+		}
+	}()
+
+	return s.RunWithContext(ctx)
+}
+
+// RunWithContext starts all subsystems and blocks until the given
+// context is cancelled. This is the test-friendly entry point:
+// tests manage daemon lifecycle via context cancellation instead of
+// requiring a signal.Interceptor (which is process-global).
+func (s *Server) RunWithContext(ctx context.Context) error {
 	// Only allow the server to be started once.
 	if !s.started.CompareAndSwap(false, true) {
 		return nil
 	}
 
-	if err := s.start(ctx); err != nil {
-		return err
-	}
+	log.InfoS(ctx, "Starting arkd",
+		slog.String("version", build.Version()),
+		slog.String("commit", build.CommitHash),
+		slog.String("network", s.cfg.Network))
 
-	// Wait for shutdown signal.
+	// -------------------------------------------------------
+	// 1. Connect to lnd.
+	// -------------------------------------------------------
+	log.InfoS(ctx, "Connecting to lnd",
+		slog.String("host", s.cfg.Lnd.Host))
+
+	lndServices, err := s.connectLnd(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to connect to lnd: %w",
+			err)
+	}
+	s.lnd = lndServices
+	defer s.lnd.Close()
+
+	log.InfoS(ctx, "Connected to lnd",
+		slog.String("alias", s.lnd.NodeAlias),
+		slog.String("pubkey",
+			s.lnd.NodePubkey.String()))
+
+	// -------------------------------------------------------
+	// 2. Initialize actor system.
+	// -------------------------------------------------------
+	s.actorSystem = actor.NewActorSystem()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		_ = s.actorSystem.Shutdown(shutdownCtx)
+	}()
+
+	log.InfoS(ctx, "Actor system initialized")
+
+	// -------------------------------------------------------
+	// 3. Create and register chain source actor.
+	// -------------------------------------------------------
+	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+		chainbackends.LNDBackendFromLndClientConfig{
+			LND: &s.lnd.LndServices,
+		},
+	)
+
+	if err := s.chainBackend.Start(); err != nil {
+		return fmt.Errorf("unable to start chain "+
+			"backend: %w", err)
+	}
+	defer func() {
+		_ = s.chainBackend.Stop()
+	}()
+
+	chainActor := chainsource.NewChainSourceActor(
+		chainsource.ChainSourceConfig{
+			Backend: s.chainBackend,
+			System:  s.actorSystem,
+		},
+	)
+	_ = actor.RegisterWithSystem(
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
+	)
+
+	log.InfoS(ctx, "Chain source actor registered")
+
+	// -------------------------------------------------------
+	// 4. Initialize database.
+	// -------------------------------------------------------
+	dbLog := subLogger(s.cfg.Loggers, dbSubsystem)
+
+	s.db, err = db.NewStoreFromConfig(
+		s.cfg.DB, dbLog, clock.NewDefaultClock(),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to open database: %w",
+			err)
+	}
+	defer func() {
+		if s.db != nil {
+			_ = s.db.Close()
+		}
+	}()
+
+	backendName := "sqlite"
+	if s.cfg.DB.Backend == "postgres" {
+		backendName = "postgres"
+	}
+	log.InfoS(ctx, "Database initialized",
+		"backend", backendName)
+
+	// -------------------------------------------------------
+	// 5. Setup indexer subsystem.
+	// -------------------------------------------------------
+	if err := s.setupIndexerSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup indexer "+
+			"subsystem: %w", err)
+	}
+	defer s.stopIndexerSubsystem(ctx)
+
+	// -------------------------------------------------------
+	// 6. Start admin RPC server.
+	// -------------------------------------------------------
+	adminLog := subLogger(s.cfg.Loggers, adminRPCSubsystem)
+
+	s.adminRPC, err = NewAdminRPCServer(
+		s.cfg.AdminRPC, s, adminLog,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to create admin RPC "+
+			"server: %w", err)
+	}
+	if err := s.adminRPC.Start(ctx); err != nil {
+		return fmt.Errorf("unable to start admin "+
+			"server: %w", err)
+	}
+	defer func() {
+		_ = s.adminRPC.Stop(ctx)
+	}()
+
+	// -------------------------------------------------------
+	// 7. Start client RPC server.
+	// -------------------------------------------------------
+	rpcLog := subLogger(s.cfg.Loggers, clientRPCSubsystem)
+
+	s.rpc, err = NewRPCServer(
+		s.cfg.RPC, s, rpcLog,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to create client RPC "+
+			"server: %w", err)
+	}
+	if err := s.rpc.Start(ctx); err != nil {
+		return fmt.Errorf("unable to start client RPC "+
+			"server: %w", err)
+	}
+	defer func() {
+		_ = s.rpc.Stop(ctx)
+	}()
+
+	// Register the ArkService for mailbox RPC access. The
+	// ServeMux handles incoming KIND_REQUEST envelopes routed
+	// by the serverconn ingress loop. The RPCServer implements
+	// both the gRPC and mailbox server interfaces, so the same
+	// handler serves both transports.
+	s.mailboxMux = mailboxrpc.NewServeMux()
+	arkrpc.RegisterArkServiceMailboxServer(
+		s.mailboxMux, s.rpc,
+	)
+
+	log.InfoS(ctx, "Daemon ready")
+
+	// -------------------------------------------------------
+	// 8. Block until shutdown.
+	// -------------------------------------------------------
 	select {
 	case <-ctx.Done():
+
 	case <-s.quit:
 	}
 
-	// Perform shutdown operations.
-	return s.stop(ctx)
-}
-
-// start starts all the main server components. This must be non-blocking.
-// The context passed in is only used for any synchronous calls made before this
-// method returns. Any long-lived goroutines will use a separate context.
-func (s *Server) start(ctx context.Context) error {
-	_, cancel := context.WithCancel(context.Background())
-	s.cancel = fn.Some(cancel)
-
-	// Start the admin RPC server
-	if err := s.adminRPC.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start admin server: %w", err)
-	}
-
-	// Start the client RPC server
-	if err := s.rpc.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start client RPC server: %w", err)
-	}
-
-	s.log.InfoS(ctx, "Server started successfully")
-
-	return nil
-}
-
-// stop stops all the main server components and waits for all goroutines
-// to exit.
-func (s *Server) stop(ctx context.Context) error {
-	s.log.InfoS(ctx, "Shutting down server...")
-
-	// Stop the admin RPC server
-	if s.adminRPC != nil {
-		if err := s.adminRPC.Stop(ctx); err != nil {
-			s.log.ErrorS(ctx, "Could not stop admin RPC server", err)
-		}
-	}
-
-	// Stop the client RPC server
-	if s.rpc != nil {
-		if err := s.rpc.Stop(ctx); err != nil {
-			s.log.ErrorS(ctx, "Could not stop rpc server", err)
-		}
-	}
-
-	// Stop the indexer subsystem and shared bridge.
-	s.stopIndexerSubsystem(ctx)
-
-	// Close database connection
-	if s.db != nil {
-		if err := s.db.Close(); err != nil {
-			s.log.ErrorS(ctx, "Could not close database", err)
-		}
-	}
-
-	// Cancel any outgoing calls.
-	s.cancel.WhenSome(func(fn context.CancelFunc) {
-		fn()
-	})
-
-	// Cancel any incoming calls.
-	close(s.quit)
-
-	// Wait for all goroutines to exit.
-	s.wg.Wait()
-
-	s.log.InfoS(ctx, "Shutdown complete")
+	log.InfoS(ctx, "Shutting down arkd")
 
 	return nil
 }
@@ -227,12 +316,76 @@ func (s *Server) AdminRPCAddr() net.Addr {
 	return s.adminRPC.Addr()
 }
 
-// RPCAddr returns the address the client RPC server is listening on, or nil
-// if the server hasn't been started yet.
+// RPCAddr returns the address the client RPC server is listening on,
+// or nil if the server hasn't been started yet.
 func (s *Server) RPCAddr() net.Addr {
 	if s.rpc == nil {
 		return nil
 	}
 
 	return s.rpc.Addr()
+}
+
+// Shutdown triggers a graceful exit of RunWithContext independently
+// of the parent context. It is safe to call multiple times.
+func (s *Server) Shutdown() {
+	select {
+	case <-s.quit:
+		// Already closed.
+
+	default:
+		close(s.quit)
+	}
+}
+
+// connectLnd establishes a connection to the lnd node using the
+// lndclient SDK. The call blocks until lnd is fully synced and the
+// wallet is unlocked.
+func (s *Server) connectLnd(ctx context.Context) (
+	*lndclient.GrpcLndServices, error) {
+
+	network, err := networkToLndclient(s.cfg.Network)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcTimeout := s.cfg.Lnd.RPCTimeout
+	if rpcTimeout == 0 {
+		rpcTimeout = DefaultRPCTimeout
+	}
+
+	return lndclient.NewLndServices(&lndclient.LndServicesConfig{
+		LndAddress:            s.cfg.Lnd.Host,
+		Network:               network,
+		CustomMacaroonPath:    s.cfg.Lnd.MacaroonPath,
+		TLSPath:               s.cfg.Lnd.TLSPath,
+		BlockUntilChainSynced: true,
+		BlockUntilUnlocked:    true,
+		CallerCtx:             ctx,
+		RPCTimeout:            rpcTimeout,
+	})
+}
+
+// networkToLndclient maps our network string to the lndclient network
+// type.
+func networkToLndclient(network string) (lndclient.Network, error) {
+	switch network {
+	case "mainnet":
+		return lndclient.NetworkMainnet, nil
+
+	case "testnet":
+		return lndclient.NetworkTestnet, nil
+
+	case "regtest":
+		return lndclient.NetworkRegtest, nil
+
+	case "simnet":
+		return lndclient.NetworkSimnet, nil
+
+	case "signet":
+		return lndclient.NetworkSignet, nil
+
+	default:
+		return "", fmt.Errorf("unknown network %q", network)
+	}
 }
