@@ -194,7 +194,15 @@ func (e *FinalizeFailedEvent) EventType() string {
 func (e *FinalizeFailedEvent) eventSealed() {}
 
 // FinalizeSucceededEvent indicates VTXO set finalization succeeded.
-type FinalizeSucceededEvent struct{}
+//
+// The event carries the finalized checkpoint PSBTs so that downstream
+// states (AwaitingRecipientsNotifyState) can thread them into the
+// NotifyRecipientsReq without requiring a SessionStore lookup.
+type FinalizeSucceededEvent struct {
+	// FinalCheckpointPSBTs are the fully signed checkpoint PSBTs from
+	// the finalize phase, needed for recipient notification delivery.
+	FinalCheckpointPSBTs []*psbt.Packet
+}
 
 // EventType returns the type of this event.
 func (e *FinalizeSucceededEvent) EventType() string {

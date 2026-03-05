@@ -175,6 +175,11 @@ type NotifyRecipientsReq struct {
 	// ArkPSBT is the canonical Ark tx PSBT used to derive recipient
 	// outputs.
 	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the fully signed checkpoint PSBTs
+	// included in the clientconn notification so recipients can
+	// drive their incoming transfer FSM without a follow-up query.
+	FinalCheckpointPSBTs []*psbt.Packet
 }
 
 // OutboxType returns the type of this outbox event.

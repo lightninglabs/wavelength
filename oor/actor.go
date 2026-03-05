@@ -627,6 +627,8 @@ func (b *coordinatorBehavior) handleRestart(ctx context.Context,
 		case oorStateAwaitingNotify:
 			state = &AwaitingRecipientsNotifyState{
 				ArkPSBT: session.ArkPSBT,
+				FinalCheckpointPSBTs: session.
+					CheckpointPSBTs,
 			}
 
 		default:

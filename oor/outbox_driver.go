@@ -436,7 +436,9 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 	}
 
 	return []Event{
-		&FinalizeSucceededEvent{},
+		&FinalizeSucceededEvent{
+			FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+		},
 	}, nil
 }
 

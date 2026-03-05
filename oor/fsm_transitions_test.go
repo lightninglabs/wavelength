@@ -204,23 +204,32 @@ func TestFinalizeSucceededTransitionsToRecipientNotifyState(t *testing.T) {
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+	finalCheckpoints := []*psbt.Packet{checkpointPsbt}
+
 	state := &CoSignedState{
 		ArkPSBT: arkPsbt,
 	}
 
-	tr, err := state.ProcessEvent(ctx, &FinalizeSucceededEvent{}, nil)
+	tr, err := state.ProcessEvent(ctx, &FinalizeSucceededEvent{
+		FinalCheckpointPSBTs: finalCheckpoints,
+	}, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 
 	next, ok := tr.NextState.(*AwaitingRecipientsNotifyState)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, next.ArkPSBT)
+	require.Equal(t, finalCheckpoints, next.FinalCheckpointPSBTs)
 
 	outbox := collectOutbox(t, tr)
 	require.Len(t, outbox, 1)
 	notifyReq, ok := outbox[0].(*NotifyRecipientsReq)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, notifyReq.ArkPSBT)
+	require.Equal(t, finalCheckpoints, notifyReq.FinalCheckpointPSBTs)
 }
 
 // TestAwaitingRecipientsNotifyFinalizeRetryReemitsNotify asserts finalize
@@ -234,8 +243,14 @@ func TestAwaitingRecipientsNotifyFinalizeRetryReemitsNotify(t *testing.T) {
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+	finalCheckpoints := []*psbt.Packet{checkpointPsbt}
+
 	state := &AwaitingRecipientsNotifyState{
-		ArkPSBT: arkPsbt,
+		ArkPSBT:              arkPsbt,
+		FinalCheckpointPSBTs: finalCheckpoints,
 	}
 
 	tr, err := state.ProcessEvent(ctx, &FinalizeRequestedEvent{}, nil)
@@ -248,6 +263,7 @@ func TestAwaitingRecipientsNotifyFinalizeRetryReemitsNotify(t *testing.T) {
 	notifyReq, ok := outbox[0].(*NotifyRecipientsReq)
 	require.True(t, ok)
 	require.Same(t, arkPsbt, notifyReq.ArkPSBT)
+	require.Equal(t, finalCheckpoints, notifyReq.FinalCheckpointPSBTs)
 }
 
 // TestAwaitingRecipientsNotifyEvents asserts recipient notification success
@@ -258,7 +274,19 @@ func TestAwaitingRecipientsNotifyEvents(t *testing.T) {
 
 	ctx := t.Context()
 
-	state := &AwaitingRecipientsNotifyState{}
+	arkTx := wire.NewMsgTx(2)
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	checkpointTx := wire.NewMsgTx(2)
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+	finalCheckpoints := []*psbt.Packet{checkpointPsbt}
+
+	state := &AwaitingRecipientsNotifyState{
+		ArkPSBT:              arkPsbt,
+		FinalCheckpointPSBTs: finalCheckpoints,
+	}
 
 	successTr, err := state.ProcessEvent(
 		ctx, &NotifyRecipientsSucceededEvent{}, nil,
@@ -277,6 +305,7 @@ func TestAwaitingRecipientsNotifyEvents(t *testing.T) {
 	next, ok := failTr.NextState.(*AwaitingRecipientsNotifyState)
 	require.True(t, ok)
 	require.Same(t, state.ArkPSBT, next.ArkPSBT)
+	require.Equal(t, finalCheckpoints, next.FinalCheckpointPSBTs)
 	require.Equal(t, "notify failed", next.LastNotifyFailureReason)
 	require.Empty(t, collectOutbox(t, failTr))
 }

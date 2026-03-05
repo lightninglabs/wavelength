@@ -196,6 +196,11 @@ type AwaitingRecipientsNotifyState struct {
 	// outputs.
 	ArkPSBT *psbt.Packet
 
+	// FinalCheckpointPSBTs are the fully signed checkpoint PSBTs,
+	// threaded from the finalize phase for inclusion in the
+	// clientconn notification payload.
+	FinalCheckpointPSBTs []*psbt.Packet
+
 	// LastNotifyFailureReason stores the most recent recipient-notify
 	// persistence failure reason, if any.
 	LastNotifyFailureReason string
