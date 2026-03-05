@@ -64,10 +64,65 @@ type ClientActorCfg struct {
 type OORClientActor struct {
 	cfg ClientActorCfg
 
-	ref     actor.ActorRef[actor.TLVMessage, ActorResp]
-	durable *actor.DurableActor[actor.TLVMessage, ActorResp]
+	ref     actor.ActorRef[OORDurableMsg, ActorResp]
+	durable *actor.DurableActor[OORDurableMsg, ActorResp]
 
 	startupErr error
+}
+
+// newOORActorCodec creates a MessageCodec with all OOR actor message types
+// registered. This allows the durable actor to serialize and deserialize each
+// ActorMsg type directly without an intermediate envelope.
+//
+// IMPORTANT: every type that implements ActorMsg must be registered here;
+// omissions cause runtime dispatch failures with no compile-time warning.
+func newOORActorCodec() *actor.MessageCodec {
+	codec := actor.NewMessageCodec()
+
+	codec.MustRegister(
+		StartTransferRequestTLVType,
+		func() actor.TLVMessage {
+			return &StartTransferRequest{}
+		},
+	)
+	codec.MustRegister(
+		DriveEventRequestTLVType,
+		func() actor.TLVMessage {
+			return &DriveEventRequest{}
+		},
+	)
+	codec.MustRegister(
+		GetStateRequestTLVType,
+		func() actor.TLVMessage {
+			return &GetStateRequest{}
+		},
+	)
+	codec.MustRegister(
+		RestoreSessionRequestTLVType,
+		func() actor.TLVMessage {
+			return &RestoreSessionRequest{}
+		},
+	)
+	codec.MustRegister(
+		ResumeSessionRequestTLVType,
+		func() actor.TLVMessage {
+			return &ResumeSessionRequest{}
+		},
+	)
+	codec.MustRegister(
+		ExportSnapshotRequestTLVType,
+		func() actor.TLVMessage {
+			return &ExportSnapshotRequest{}
+		},
+	)
+	codec.MustRegister(
+		actor.RestartTLVType,
+		func() actor.TLVMessage {
+			return &actor.RestartMessage{}
+		},
+	)
+
+	return codec
 }
 
 // NewOORClientActor creates a durable outgoing-transfer OOR client actor.
@@ -95,24 +150,14 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 		return actorRef
 	}
 
-	codec := actor.NewMessageCodec()
-	codec.MustRegister(oorDurableCommandTLVType,
-		func() actor.TLVMessage {
-			return &durableActorCommandMessage{}
-		},
-	)
-	codec.MustRegister(actor.RestartTLVType,
-		func() actor.TLVMessage {
-			return &actor.RestartMessage{}
-		},
-	)
+	codec := newOORActorCodec()
 
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
 		sessions: make(map[SessionID]*sessionHandle),
 	}
 
-	durableCfg := actor.DefaultDurableActorConfig[actor.TLVMessage,
+	durableCfg := actor.DefaultDurableActorConfig[OORDurableMsg,
 		ActorResp](
 		cfg.ActorID,
 		behavior,
@@ -149,11 +194,9 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	return actorRef
 }
 
-// Receive sends one actor API message through the durable command boundary and
-// returns the resulting response.
-//
-// Callers should treat this as the single public interaction point for
-// outgoing OOR session lifecycle operations.
+// Receive sends an actor message through the durable mailbox and returns
+// the response synchronously. Each ActorMsg type implements TLVMessage
+// directly, so no envelope conversion is needed.
 func (a *OORClientActor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
@@ -167,12 +210,13 @@ func (a *OORClientActor) Receive(ctx context.Context,
 		)
 	}
 
-	cmd, err := durableCommandFromActorMsg(msg)
-	if err != nil {
-		return fn.Err[ActorResp](err)
+	if msg == nil {
+		return fn.Err[ActorResp](
+			fmt.Errorf("message must be provided"),
+		)
 	}
 
-	fut := a.ref.Ask(ctx, cmd)
+	fut := a.ref.Ask(ctx, msg)
 
 	return fut.Await(ctx)
 }
@@ -196,47 +240,33 @@ type oorDurableBehavior struct {
 }
 
 // Receive dispatches decoded TLV messages to the appropriate handler
-// method based on message type.
+// method based on message type. Each ActorMsg type is registered directly
+// in the codec and deserialized by the durable actor, so no envelope
+// unwrapping is needed.
 func (b *oorDurableBehavior) Receive(ctx context.Context,
-	msg actor.TLVMessage) fn.Result[ActorResp] {
+	msg OORDurableMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
 		return b.handleRestart(ctx, m)
 
-	case *durableActorCommandMessage:
-		request, err := actorMsgFromDurableCommand(m)
-		if err != nil {
-			return fn.Err[ActorResp](err)
-		}
+	case *StartTransferRequest:
+		return b.handleStartTransfer(ctx, m)
 
-		switch typedReq := request.(type) {
-		case *StartTransferRequest:
-			return b.handleStartTransfer(ctx, typedReq)
+	case *DriveEventRequest:
+		return b.handleDriveEvent(ctx, m)
 
-		case *DriveEventRequest:
-			return b.handleDriveEvent(ctx, typedReq)
+	case *GetStateRequest:
+		return b.handleGetState(ctx, m)
 
-		case *GetStateRequest:
-			return b.handleGetState(ctx, typedReq)
+	case *RestoreSessionRequest:
+		return b.handleRestoreSession(ctx, m)
 
-		case *RestoreSessionRequest:
-			return b.handleRestoreSession(ctx, typedReq)
+	case *ResumeSessionRequest:
+		return b.handleResumeSession(ctx, m)
 
-		case *ResumeSessionRequest:
-			return b.handleResumeSession(ctx, typedReq)
-
-		case *ExportSnapshotRequest:
-			return b.handleExportSnapshot(ctx, typedReq)
-
-		default:
-			return fn.Err[ActorResp](
-				fmt.Errorf(
-					"unknown message type: %T",
-					typedReq,
-				),
-			)
-		}
+	case *ExportSnapshotRequest:
+		return b.handleExportSnapshot(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
@@ -868,7 +898,7 @@ func (h *sessionHandle) currentState() (State, error) {
 }
 
 type durableBehaviorIface = actor.ActorBehavior[
-	actor.TLVMessage, ActorResp,
+	OORDurableMsg, ActorResp,
 ]
 
 var _ durableBehaviorIface = (*oorDurableBehavior)(nil)
