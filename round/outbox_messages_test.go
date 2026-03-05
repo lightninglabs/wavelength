@@ -23,9 +23,7 @@ func testRoundIDForMsg(seed string) RoundID {
 }
 
 // TestOutboxMessagesToProto ensures that ToProto() methods compile and return
-// the expected nil placeholders. These placeholders will be replaced with
-// actual proto marshaling once the proto definitions are finalized, but this
-// test prevents accidental breakage of the interface contract in the meantime.
+// non-nil proto messages for all client outbox request types.
 func TestOutboxMessagesToProto(t *testing.T) {
 	t.Parallel()
 
@@ -44,7 +42,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitNoncesRequest_ToProto", func(t *testing.T) {
@@ -65,7 +63,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitPartialSigRequest_ToProto", func(t *testing.T) {
@@ -89,7 +87,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 
 	t.Run("SubmitForfeitSigRequest_ToProto", func(t *testing.T) {
@@ -106,7 +104,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 		}
 
 		result := msg.ToProto()
-		require.Nil(t, result)
+		require.NotNil(t, result)
 	})
 }
 

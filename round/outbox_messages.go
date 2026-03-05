@@ -1,6 +1,8 @@
 package round
 
 import (
+	"bytes"
+	"encoding/hex"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -11,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -102,40 +105,304 @@ type SubmitForfeitSigRequest struct {
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
 
-// ToProto converts JoinRoundRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts JoinRoundRequest to a protobuf message for mailbox
+// transport.
 func (m *JoinRoundRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.JoinRoundRequest{...}
-	return nil
+	// Convert boarding requests.
+	boardingReqs := make(
+		[]*roundpb.BoardingRequest, len(m.BoardingRequests),
+	)
+	for i, req := range m.BoardingRequests {
+		br := &roundpb.BoardingRequest{
+			ExitDelay: req.ExitDelay,
+		}
+		if req.Outpoint != nil {
+			br.Outpoint = roundpb.OutpointToProto(
+				*req.Outpoint,
+			)
+		}
+		if req.ClientKey != nil {
+			br.ClientKey = req.ClientKey.
+				SerializeCompressed()
+		}
+		if req.OperatorKey != nil {
+			br.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		boardingReqs[i] = br
+	}
+
+	// Convert VTXO requests.
+	vtxoReqs := make(
+		[]*roundpb.VTXORequest, len(m.VTXORequests),
+	)
+	for i, req := range m.VTXORequests {
+		vr := &roundpb.VTXORequest{
+			Amount:   int64(req.Amount),
+			PkScript: req.PkScript,
+			Expiry:   req.Expiry,
+		}
+		if req.ClientKey != nil {
+			vr.ClientKey = req.ClientKey.
+				SerializeCompressed()
+		}
+		if req.OperatorKey != nil {
+			vr.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		vtxoReqs[i] = vr
+	}
+
+	// Convert forfeit requests.
+	forfeitReqs := make(
+		[]*roundpb.ForfeitRequest, len(m.ForfeitRequests),
+	)
+	for i, req := range m.ForfeitRequests {
+		fr := &roundpb.ForfeitRequest{}
+		if req.VTXOOutpoint != nil {
+			fr.VtxoOutpoint = roundpb.OutpointToProto(
+				*req.VTXOOutpoint,
+			)
+		}
+		forfeitReqs[i] = fr
+	}
+
+	// Convert leave requests.
+	leaveReqs := make(
+		[]*roundpb.LeaveRequest, len(m.LeaveRequests),
+	)
+	for i, req := range m.LeaveRequests {
+		lr := &roundpb.LeaveRequest{}
+		if req.Output != nil {
+			lr.Output = roundpb.TxOutToProto(req.Output)
+		}
+		leaveReqs[i] = lr
+	}
+
+	pb := &roundpb.JoinRoundRequest{
+		BoardingRequests: boardingReqs,
+		VtxoRequests:     vtxoReqs,
+		ForfeitRequests:  forfeitReqs,
+		LeaveRequests:    leaveReqs,
+		RoundId:          m.RoundID,
+	}
+
+	if m.Identifier != nil {
+		pb.Identifier = m.Identifier.SerializeCompressed()
+	}
+
+	if m.Auth != nil {
+		pb.Auth = &roundpb.JoinRoundAuth{
+			Message:    m.Auth.Message,
+			ValidFrom:  m.Auth.ValidFrom,
+			ValidUntil: m.Auth.ValidUntil,
+			Signature:  m.Auth.Signature,
+		}
+	}
+
+	return pb
 }
 
-// ToProto converts SubmitNoncesRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts SubmitNoncesRequest to a protobuf message for mailbox
+// transport. Signing keys are hex-encoded and transaction IDs are
+// hex-encoded for use as proto map keys.
 func (m *SubmitNoncesRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitNoncesRequest{...}
-	return nil
+	nonces := make(
+		map[string]*roundpb.SignerNonces, len(m.Nonces),
+	)
+	for signerKey, txNonces := range m.Nonces {
+		txMap := make(
+			map[string][]byte, len(txNonces),
+		)
+		for txID, nonce := range txNonces {
+			txMap[roundpb.TxIDToHex(txID)] = nonce[:]
+		}
+		nonces[hex.EncodeToString(signerKey[:])] =
+			&roundpb.SignerNonces{
+				TxNonces: txMap,
+			}
+	}
+
+	return &roundpb.SubmitNoncesRequest{
+		RoundId: m.RoundID[:],
+		Nonces:  nonces,
+	}
 }
 
-// ToProto converts SubmitPartialSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts SubmitPartialSigRequest to a protobuf message for
+// mailbox transport.
 func (m *SubmitPartialSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitPartialSigRequest{...}
-	return nil
+	sigs := make(
+		map[string]*roundpb.SignerPartialSigs,
+		len(m.Signatures),
+	)
+	for signerKey, txSigs := range m.Signatures {
+		txMap := make(map[string][]byte, len(txSigs))
+		for txID, sig := range txSigs {
+			var buf bytes.Buffer
+			_ = sig.Encode(&buf)
+			txMap[roundpb.TxIDToHex(txID)] = buf.Bytes()
+		}
+		sigs[hex.EncodeToString(signerKey[:])] =
+			&roundpb.SignerPartialSigs{
+				TxSigs: txMap,
+			}
+	}
+
+	return &roundpb.SubmitPartialSigRequest{
+		RoundId:    m.RoundID[:],
+		Signatures: sigs,
+	}
 }
 
-// ToProto converts SubmitForfeitSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts SubmitForfeitSigRequest to a protobuf message for
+// mailbox transport.
 func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitForfeitSigRequest{...}
-	return nil
+	sigs := make(
+		[]*roundpb.BoardingInputSignature,
+		len(m.Signatures),
+	)
+	for i, sig := range m.Signatures {
+		sigs[i] = &roundpb.BoardingInputSignature{
+			InputIndex: int32(sig.InputIndex),
+			Outpoint: roundpb.OutpointToProto(
+				sig.Outpoint,
+			),
+			ClientSignature: roundpb.SchnorrSigToBytes(
+				sig.ClientSignature,
+			),
+		}
+	}
+
+	return &roundpb.SubmitForfeitSigRequest{
+		RoundId:    m.RoundID[:],
+		Signatures: sigs,
+	}
+}
+
+// ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
+// transaction as part of a batch swap. The round actor routes this message to
+// the VTXO actor via its service key. The VTXO actor should sign the forfeit
+// transaction and respond with ForfeitSignatureResponse.
+//
+// This message contains all information needed to construct and sign the
+// forfeit transaction:
+//   - Connector output from new commitment tx (links forfeit atomically)
+//   - Server's forfeit address (where forfeited value is paid)
+type ForfeitRequestToVTXO struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the VTXO being forfeited.
+	VTXOOutpoint wire.OutPoint
+
+	// RoundID is the new round where the refreshed VTXO will be created.
+	RoundID string
+
+	// ConnectorOutpoint is the connector output from the new commitment tx
+	// that the forfeit tx must spend. This links the forfeit atomically to
+	// the new round - the forfeit is only valid if the new round confirms.
+	ConnectorOutpoint wire.OutPoint
+
+	// ConnectorPkScript is the scriptPubKey of the connector output.
+	ConnectorPkScript []byte
+
+	// ConnectorAmount is the value of the connector output in satoshis.
+	ConnectorAmount int64
+
+	// ServerForfeitPkScript is the operator's taproot script where the
+	// forfeited VTXO value will be paid.
+	ServerForfeitPkScript []byte
+}
+
+func (m *ForfeitRequestToVTXO) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *ForfeitRequestToVTXO) MessageType() string {
+	return "ForfeitRequestToVTXO"
+}
+
+// ForfeitConfirmedToVTXO is emitted by the FSM when the commitment transaction
+// confirms, indicating that the forfeit is final. The round actor routes this
+// to old VTXO actors so they can transition to the terminal Forfeited state.
+type ForfeitConfirmedToVTXO struct {
+	actor.BaseMessage
+
+	// VTXOOutpoint identifies the forfeited VTXO.
+	VTXOOutpoint wire.OutPoint
+
+	// CommitmentTxID is the new commitment transaction that confirmed.
+	CommitmentTxID chainhash.Hash
+
+	// BlockHeight is the height at which confirmation occurred.
+	BlockHeight int32
+}
+
+func (m *ForfeitConfirmedToVTXO) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *ForfeitConfirmedToVTXO) MessageType() string {
+	return "ForfeitConfirmedToVTXO"
+}
+
+// SubmitVTXOForfeitSigsToServer is emitted by the FSM after collecting all
+// forfeit signatures from VTXO actors. This message contains the signatures
+// for all VTXOs being refreshed in the round and is sent to the server so it
+// can complete the forfeit transactions.
+type SubmitVTXOForfeitSigsToServer struct {
+	actor.BaseMessage
+
+	// RoundID identifies the round.
+	RoundID RoundID
+
+	// ForfeitSigs maps VTXO outpoints to their forfeit transaction
+	// signatures. Each signature is the client's schnorr signature for the
+	// collaborative 2-of-2 spend from the VTXO.
+	ForfeitSigs map[wire.OutPoint]*schnorr.Signature
+
+	// ForfeitTxs maps VTXO outpoints to the built forfeit transactions.
+	// The server uses these to broadcast after adding its signature.
+	ForfeitTxs map[wire.OutPoint]*wire.MsgTx
+}
+
+func (m *SubmitVTXOForfeitSigsToServer) clientOutMsgSealed() {}
+
+// MessageType returns the message type for logging.
+func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
+	return "SubmitVTXOForfeitSigsToServer"
+}
+
+// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message for
+// mailbox transport.
+func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
+	forfeitTxs := make(
+		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitSigs),
+	)
+	for outpoint, sig := range m.ForfeitSigs {
+		unsignedTx, ok := m.ForfeitTxs[outpoint]
+		if !ok {
+			continue
+		}
+
+		txBytes, err := roundpb.MsgTxToBytes(unsignedTx)
+		if err != nil {
+			continue
+		}
+
+		forfeitTxs = append(
+			forfeitTxs, &roundpb.ForfeitTxSig{
+				VtxoOutpoint: roundpb.OutpointToProto(
+					outpoint,
+				),
+				UnsignedTx:    txBytes,
+				ClientVtxoSig: roundpb.SchnorrSigToBytes(sig),
+			},
+		)
+	}
+
+	return &roundpb.SubmitVTXOForfeitSigsRequest{
+		RoundId:    m.RoundID[:],
+		ForfeitTxs: forfeitTxs,
+	}
 }
 
 // ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
