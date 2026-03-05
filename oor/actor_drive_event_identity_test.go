@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -9,7 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDriveEventCommandRejectsSubmitAcceptedSessionMismatch(t *testing.T) {
+// TestDriveEventEncodeRejectsSubmitAcceptedSessionMismatch verifies that
+// encoding a DriveEventRequest fails when the SubmitAcceptedEvent's inner
+// session ID differs from the outer request's session ID.
+func TestDriveEventEncodeRejectsSubmitAcceptedSessionMismatch(t *testing.T) {
 	t.Parallel()
 
 	ark, checkpoints := testOutboxPSBTPair(t)
@@ -26,13 +30,17 @@ func TestDriveEventCommandRejectsSubmitAcceptedSessionMismatch(t *testing.T) {
 		},
 	}
 
-	_, err = durableCommandFromActorMsg(msg)
+	var buf bytes.Buffer
+	err = msg.Encode(&buf)
 	require.ErrorContains(
 		t, err, "submit accepted event session id mismatch",
 	)
 }
 
-func TestDriveEventCommandRejectsSubmitAcceptedArkMismatch(t *testing.T) {
+// TestDriveEventEncodeRejectsSubmitAcceptedArkMismatch verifies that
+// encoding a DriveEventRequest fails when the SubmitAcceptedEvent's Ark
+// PSBT txid doesn't match the session ID.
+func TestDriveEventEncodeRejectsSubmitAcceptedArkMismatch(t *testing.T) {
 	t.Parallel()
 
 	ark, checkpoints := testOutboxPSBTPair(t)
@@ -51,7 +59,8 @@ func TestDriveEventCommandRejectsSubmitAcceptedArkMismatch(t *testing.T) {
 		},
 	}
 
-	_, err = durableCommandFromActorMsg(msg)
+	var buf bytes.Buffer
+	err = msg.Encode(&buf)
 	require.ErrorContains(
 		t, err, "submit accepted event ark txid mismatch",
 	)
