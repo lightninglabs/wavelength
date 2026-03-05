@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -129,21 +130,34 @@ func (h *ArkHarness) startArkd() {
 	cfg := darepo.DefaultConfig()
 	cfg.DataDir = h.arkDataDir
 	cfg.Network = "regtest"
-	cfg.LogLevel = "trace"
+	cfg.DebugLevel = "trace"
 	cfg.LogFilePath = arkLogPath
 	cfg.DB.Backend = "sqlite"
 	cfg.DB.Sqlite.DatabaseFileName = filepath.Join(
 		h.arkDataDir, "darepo.db",
 	)
-	cfg.AdminRPC.RPCListen = "127.0.0.1:0"
-	cfg.RPC.RPCListen = "127.0.0.1:0"
+	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
+	cfg.RPC.ListenAddr = "127.0.0.1:0"
+
+	// Point arkd at the LND started by the client harness.
+	// Derive credential paths from the harness artifacts directory
+	// since the client harness fields are unexported.
+	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
+	cfg.Lnd.Host = fmt.Sprintf(
+		"127.0.0.1:%s", h.Harness.LNDGRPCPort,
+	)
+	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
+	cfg.Lnd.MacaroonPath = filepath.Join(
+		lndDataDir, "data", "chain", "bitcoin", "regtest",
+		"admin.macaroon",
+	)
 
 	// Create a cancelable context for arkd.
 	arkdCtx, arkdCancel := context.WithCancel(context.Background())
 	h.arkdCancel = arkdCancel
 
 	// Create arkd server.
-	server, err := darepo.NewServer(arkdCtx, &cfg)
+	server, err := darepo.NewServer(cfg)
 	require.NoError(h.T, err, "failed to create arkd server")
 	h.arkdServer = server
 
@@ -152,7 +166,7 @@ func (h *ArkHarness) startArkd() {
 	go func() {
 		defer h.arkdWg.Done()
 
-		if err := server.RunUntilShutdown(arkdCtx); err != nil {
+		if err := server.RunWithContext(arkdCtx); err != nil {
 			h.T.Logf("arkd exited with error: %v", err)
 		}
 	}()
