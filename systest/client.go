@@ -21,6 +21,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -76,6 +77,10 @@ type TestClient struct {
 		actormsg.RoundReceivable,
 		actormsg.RoundActorResp,
 	]
+
+	// timeoutRef is the actor reference for the timeout actor used by the
+	// client round actor.
+	timeoutRef actor.ActorRef[timeout.Msg, timeout.Resp]
 
 	// sqlDB is the per-client database handle used for restart cleanup.
 	// It may be either a SQLite or Postgres-backed store depending on
@@ -294,6 +299,16 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		h.actorSystem, serverConnActorID, serverConn,
 	)
 
+	// Create and spawn timeout actor for round phase deadlines.
+	timeoutActor := timeout.NewActor()
+	timeoutActorID := fmt.Sprintf("round-timeout%s", opts.actorSuffix)
+	timeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+		timeoutActorID,
+	)
+	timeoutRef := timeoutKey.Spawn(
+		h.actorSystem, timeoutActorID, timeoutActor,
+	)
+
 	// Build operator terms for client. This mirrors what a real client
 	// would receive from the server's GetInfo RPC.
 	operatorTerms := &types.OperatorTerms{
@@ -329,6 +344,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		VTXOManager:    nil, // Set after vtxo.Manager is created.
 		MaxOperatorFee: maxOperatorFee,
 		ActorSystem:    h.actorSystem,
+		TimeoutActor:   timeoutRef,
 	}
 
 	// Create and spawn RoundClientActor. The round actor uses actormsg
@@ -453,6 +469,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		backend:         opts.backend,
 		serverConn:      serverConn,
 		serverConnRef:   serverConnRef,
+		timeoutRef:      timeoutRef,
 		chainSourceRef:  chainSourceRef,
 		walletActor:     walletActor,
 		walletRef:       walletRef,
@@ -1057,6 +1074,12 @@ func (c *TestClient) Stop() {
 	if c.roundRef != nil {
 		actormsg.RoundActorServiceKey().Unregister(sys, c.roundRef)
 	}
+	if c.timeoutRef != nil {
+		timeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+			c.timeoutRef.ID(),
+		)
+		timeoutKey.Unregister(sys, c.timeoutRef)
+	}
 	if c.chainSourceRef != nil {
 		chainsource.ChainSourceKey.Unregister(sys, c.chainSourceRef)
 	}
@@ -1130,6 +1153,9 @@ func (c *TestClient) Stop() {
 	}
 	if c.roundRef != nil {
 		sys.StopAndRemoveActor(c.roundRef.ID())
+	}
+	if c.timeoutRef != nil {
+		sys.StopAndRemoveActor(c.timeoutRef.ID())
 	}
 
 	// Close the DB handle to release file locks.
