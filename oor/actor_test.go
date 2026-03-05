@@ -306,10 +306,11 @@ func (h *retrySubmitOutboxHandler) Handle(
 		)
 		require.NoError(h.t, err)
 
+		cps := msg.CoSignedCheckpointPSBTs
+
 		return []Event{
 			&CheckpointsSignedEvent{
-				FinalCheckpointPSBTs: msg.
-					CoSignedCheckpointPSBTs,
+				FinalCheckpointPSBTs: cps,
 			},
 		}, nil
 
@@ -415,6 +416,10 @@ type mockServerConnRef struct {
 	id       string
 	messages []serverconn.ServerConnMsg
 	mu       sync.Mutex
+
+	// tellErr, when non-nil, is returned by Tell instead of recording
+	// the message.
+	tellErr error
 }
 
 // newMockServerConnRef creates a new mock server connection reference.
@@ -438,26 +443,31 @@ func (m *mockServerConnRef) Tell(
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.tellErr != nil {
+		return m.tellErr
+	}
+
 	m.messages = append(m.messages, msg)
 
 	return nil
 }
 
-// lastSendRequest returns the most recent SendClientEventRequest captured by
-// the mock. It fails the test if no messages have been captured.
-func (m *mockServerConnRef) lastSendRequest(
-	t *testing.T) *serverconn.SendClientEventRequest {
-
-	t.Helper()
+// lastSent returns the most recent SendClientEventRequest captured by the
+// mock. It fails the test if no messages have been captured.
+func (m *mockServerConnRef) lastSent() *serverconn.SendClientEventRequest {
+	m.t.Helper()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	require.NotEmpty(t, m.messages, "no messages captured")
+	require.NotEmpty(m.t, m.messages, "no messages captured")
 
 	last := m.messages[len(m.messages)-1]
 	req, ok := last.(*serverconn.SendClientEventRequest)
-	require.True(t, ok, "last message is not SendClientEventRequest")
+	require.True(
+		m.t, ok, "last message is not SendClientEventRequest",
+	)
 
 	return req
 }
@@ -492,10 +502,11 @@ func (h *localOnlyOutboxHandler) Handle(_ context.Context,
 		)
 		require.NoError(h.t, err)
 
+		cps := msg.CoSignedCheckpointPSBTs
+
 		return []Event{
 			&CheckpointsSignedEvent{
-				FinalCheckpointPSBTs: msg.
-					CoSignedCheckpointPSBTs,
+				FinalCheckpointPSBTs: cps,
 			},
 		}, nil
 
@@ -513,6 +524,8 @@ func (h *localOnlyOutboxHandler) Handle(_ context.Context,
 		return nil, nil
 
 	default:
+		h.t.Fatalf("unhandled local event %T", outbox)
+
 		return nil, nil
 	}
 }
@@ -602,7 +615,7 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 
 	// Verify the submit request was captured by the mock, not the
 	// handler.
-	submitReq := mockConn.lastSendRequest(t)
+	submitReq := mockConn.lastSent()
 	submitMsg, ok := submitReq.Message.(*SendSubmitPackageRequest)
 	require.True(t, ok)
 	require.NotNil(t, submitMsg.ArkPSBT)
@@ -640,7 +653,7 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	require.True(t, driveResp.IsOk())
 
 	// Verify the finalize request was captured by the mock.
-	finalizeReq := mockConn.lastSendRequest(t)
+	finalizeReq := mockConn.lastSent()
 	_, ok = finalizeReq.Message.(*SendFinalizePackageRequest)
 	require.True(t, ok)
 
@@ -676,4 +689,133 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	// Verify package was persisted.
 	require.Equal(t, 1, packageStore.packageCalls)
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
+}
+
+// TestIsTransportEventClassification verifies that isTransportEvent correctly
+// classifies all outbox event types. Transport events (submit, finalize, ack)
+// must be routed to serverconn, while local events (signing, persistence,
+// timers) must remain on the local handler.
+func TestIsTransportEventClassification(t *testing.T) {
+	t.Parallel()
+
+	mockConn := newMockServerConnRef(t)
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			ServerConn: mockConn,
+		},
+	}
+
+	// Transport events should be routed to serverconn.
+	transportEvents := []OutboxEvent{
+		&SendSubmitPackageRequest{},
+		&SendFinalizePackageRequest{},
+		&SendIncomingAckRequest{},
+	}
+	for _, evt := range transportEvents {
+		require.True(
+			t, behavior.isTransportEvent(evt),
+			"expected %T to be classified as transport", evt,
+		)
+	}
+
+	// Local events must stay on the local handler.
+	localEvents := []OutboxEvent{
+		&RequestArkSignatures{},
+		&RequestCheckpointSignatures{},
+		&MarkInputsSpentRequest{},
+		&IncomingTransferNotification{},
+		&MaterializeIncomingVTXOsRequest{},
+		&ScheduleRetryRequest{},
+	}
+	for _, evt := range localEvents {
+		require.False(
+			t, behavior.isTransportEvent(evt),
+			"expected %T to be classified as local", evt,
+		)
+	}
+
+	// When ServerConn is nil, all events are classified as local for
+	// backward compatibility.
+	nilBehavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{},
+	}
+	for _, evt := range transportEvents {
+		require.False(
+			t, nilBehavior.isTransportEvent(evt),
+			"expected %T to be local when ServerConn is nil",
+			evt,
+		)
+	}
+}
+
+// TestOORClientActorTellFailurePropagation verifies that when
+// ServerConn.Tell() returns an error, driveOutbox propagates it and the
+// Receive call returns an error result.
+func TestOORClientActorTellFailurePropagation(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+
+	mockConn := newMockServerConnRef(t)
+	mockConn.tellErr = fmt.Errorf("connection lost")
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x04},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(
+				t, clientKey.PubKey(),
+			),
+			Value: inputValue,
+		},
+	}
+
+	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &localOnlyOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    mockConn,
+		PackageStore:  &testOutgoingPackageStore{},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-tell-fail-test",
+	})
+	defer actor.Stop()
+
+	// Start a transfer. The local signing succeeds, but Tell() to
+	// serverconn fails when dispatching SendSubmitPackageRequest.
+	startResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsErr())
+
+	require.Contains(t, startResp.Err().Error(), "connection lost")
 }

@@ -670,6 +670,14 @@ func (b *oorDurableBehavior) askEvent(ctx context.Context, fsm *StateMachine,
 	return result.UnwrapOr(nil), nil
 }
 
+// Compile-time assertions that local outbox types satisfy
+// serverconn.ServerMessage. These exist to document why isTransportEvent uses
+// an explicit type switch rather than an interface assertion: if these types
+// were ever routed to the server, it would cause fund-loss (inputs not marked
+// spent locally) or liveness failure (retry timers lost).
+var _ serverconn.ServerMessage = (*MarkInputsSpentRequest)(nil)
+var _ serverconn.ServerMessage = (*ScheduleRetryRequest)(nil)
+
 // isTransportEvent reports whether the outbox event should be routed to the
 // server via serverconn rather than handled locally. This uses an explicit type
 // switch instead of a serverconn.ServerMessage assertion because some local
