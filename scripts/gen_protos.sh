@@ -57,6 +57,9 @@ function generate() {
 generate "mailbox/pb"
 generate "arkrpc"
 
+# Generate round protocol protos for mailbox connector transport.
+generate "rpc/roundpb"
+
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 
