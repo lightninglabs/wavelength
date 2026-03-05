@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -35,6 +36,13 @@ type ClientActorCfg struct {
 
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
+
+	// ServerConn is a reference to the ServerConnectionActor for sending
+	// transport events (submit, finalize, ack) to the server. When set,
+	// transport outbox events bypass the OutboxHandler and are Tell'd to
+	// the connection actor for durable delivery. When nil, all outbox
+	// events are routed through OutboxHandler for backward compatibility.
+	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
 
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
@@ -662,6 +670,49 @@ func (b *oorDurableBehavior) askEvent(ctx context.Context, fsm *StateMachine,
 	return result.UnwrapOr(nil), nil
 }
 
+// isTransportEvent reports whether the outbox event should be routed to the
+// server via serverconn rather than handled locally. This uses an explicit type
+// switch instead of a serverconn.ServerMessage assertion because some local
+// outbox types (MarkInputsSpentRequest, ScheduleRetryRequest) also satisfy
+// that interface via their ToProto methods.
+func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
+	if b.cfg.ServerConn == nil {
+		return false
+	}
+
+	switch msg.(type) {
+	case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
+		*SendIncomingAckRequest:
+
+		return true
+
+	default:
+		return false
+	}
+}
+
+// sendTransportEvent wraps the outbox message in a SendClientEventRequest and
+// Tell's it to the serverconn actor for durable delivery to the server.
+func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
+	msg OutboxEvent) error {
+
+	serverMsg, ok := msg.(serverconn.ServerMessage)
+	if !ok {
+		return fmt.Errorf("transport event %T does not implement "+
+			"ServerMessage", msg)
+	}
+
+	sendReq := &serverconn.SendClientEventRequest{
+		Message: serverMsg,
+	}
+
+	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+		return fmt.Errorf("send transport event to server: %w", err)
+	}
+
+	return nil
+}
+
 // driveOutbox executes outbox work using the configured handler and feeds any
 // follow-up events back into the FSM.
 func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
@@ -673,7 +724,20 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	}
 
 	for _, msg := range outbox {
-		// Outbox handler is the I/O boundary.
+		// Transport events (submit, finalize, ack) are Tell'd to
+		// the serverconn actor for durable delivery. The FSM stays
+		// in its AwaitingX state until the server response arrives
+		// asynchronously via DriveEventRequest.
+		if b.isTransportEvent(msg) {
+			if err := b.sendTransportEvent(ctx, msg); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		// Local events (signing, persistence, timers) continue
+		// through the outbox handler.
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			followUps = []Event{
