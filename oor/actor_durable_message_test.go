@@ -8,6 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 )
@@ -23,9 +24,9 @@ func serializePSBTForAssert(t *testing.T, pkt *psbt.Packet) []byte {
 	return buf.Bytes()
 }
 
-// TestSubmitDurableMessageRoundTrip verifies submit envelope TLV
-// encode/decode round-trip behavior.
-func TestSubmitDurableMessageRoundTrip(t *testing.T) {
+// TestSubmitOORRequestRoundTrip verifies submit request TLV encode/decode
+// round-trip behavior.
+func TestSubmitOORRequestRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	ownerPriv, err := btcec.NewPrivateKey()
@@ -34,8 +35,9 @@ func TestSubmitDurableMessageRoundTrip(t *testing.T) {
 	var outHash chainhash.Hash
 	outHash[0] = 0xAA
 
-	original := &submitDurableMessage{
-		ArkPSBT: makeTestPSBT(t, 1),
+	original := &SubmitOORRequest{
+		ClientID: clientconn.ClientID("test-client-submit"),
+		ArkPSBT:  makeTestPSBT(t, 1),
 		CheckpointPSBTs: []*psbt.Packet{
 			makeTestPSBT(t, 2),
 			makeTestPSBT(t, 3),
@@ -56,10 +58,11 @@ func TestSubmitDurableMessageRoundTrip(t *testing.T) {
 	err = original.Encode(&encoded)
 	require.NoError(t, err)
 
-	var decoded submitDurableMessage
+	var decoded SubmitOORRequest
 	err = decoded.Decode(bytes.NewReader(encoded.Bytes()))
 	require.NoError(t, err)
 
+	require.Equal(t, original.ClientID, decoded.ClientID)
 	require.Equal(
 		t, serializePSBTForAssert(t, original.ArkPSBT),
 		serializePSBTForAssert(t, decoded.ArkPSBT),
@@ -91,15 +94,16 @@ func TestSubmitDurableMessageRoundTrip(t *testing.T) {
 	)
 }
 
-// TestFinalizeDurableMessageRoundTrip verifies finalize envelope TLV
-// encode/decode round-trip behavior.
-func TestFinalizeDurableMessageRoundTrip(t *testing.T) {
+// TestFinalizeOORRequestRoundTrip verifies finalize request TLV encode/decode
+// round-trip behavior.
+func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	var sessionHash chainhash.Hash
 	sessionHash[0] = 0xFE
 
-	original := &finalizeDurableMessage{
+	original := &FinalizeOORRequest{
+		ClientID:             clientconn.ClientID("test-client-finalize"),
 		SessionID:            SessionID(sessionHash),
 		FinalCheckpointPSBTs: []*psbt.Packet{makeTestPSBT(t, 9)},
 	}
@@ -108,10 +112,11 @@ func TestFinalizeDurableMessageRoundTrip(t *testing.T) {
 	err := original.Encode(&encoded)
 	require.NoError(t, err)
 
-	var decoded finalizeDurableMessage
+	var decoded FinalizeOORRequest
 	err = decoded.Decode(bytes.NewReader(encoded.Bytes()))
 	require.NoError(t, err)
 
+	require.Equal(t, original.ClientID, decoded.ClientID)
 	require.Equal(t, original.SessionID, decoded.SessionID)
 	require.Len(t, decoded.FinalCheckpointPSBTs, 1)
 	require.Equal(
@@ -121,9 +126,9 @@ func TestFinalizeDurableMessageRoundTrip(t *testing.T) {
 	)
 }
 
-// TestSubmitDurableMessageDecodeRequiresArkPSBT verifies decode rejection when
+// TestSubmitOORRequestDecodeRequiresArkPSBT verifies decode rejection when
 // required submit records are missing.
-func TestSubmitDurableMessageDecodeRequiresArkPSBT(t *testing.T) {
+func TestSubmitOORRequestDecodeRequiresArkPSBT(t *testing.T) {
 	t.Parallel()
 
 	checkpointBlob, err := encodeTLVByteList(nil)
@@ -146,7 +151,7 @@ func TestSubmitDurableMessageDecodeRequiresArkPSBT(t *testing.T) {
 	err = stream.Encode(&encoded)
 	require.NoError(t, err)
 
-	var decoded submitDurableMessage
+	var decoded SubmitOORRequest
 	err = decoded.Decode(bytes.NewReader(encoded.Bytes()))
 	require.ErrorContains(t, err, "ark psbt must be provided")
 }

@@ -267,20 +267,13 @@ func buildFinalCheckpointPSBT(t *testing.T,
 	return finalCheckpoint
 }
 
-// startTestActor creates and starts a test actor instance.
-func startTestActor(t *testing.T, cfg ActorCfg) *Actor {
+// newTestActor creates a test actor without starting the durable runtime.
+// Tests that call Receive directly don't need the durable mailbox; starting
+// it would race with RestartMessage processing that clears the session map.
+func newTestActor(t *testing.T, cfg ActorCfg) *Actor {
 	t.Helper()
 
-	if cfg.DeliveryStore == nil {
-		cfg.DeliveryStore = newActorDeliveryStoreWithNewDB(t)
-	}
-
 	a := NewActor(cfg)
-
-	err := a.Start(t.Context())
-	require.NoError(t, err)
-
-	t.Cleanup(a.Stop)
 
 	return a
 }
@@ -369,7 +362,7 @@ func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			handle, err := actor.behavior.getOrCreateSessionFSM(
+			handle, err := actor.getOrCreateSessionFSM(
 				ctx, sessionID,
 			)
 			if err != nil {
@@ -399,9 +392,9 @@ func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
 		require.Same(t, first, handle)
 	}
 
-	actor.behavior.sessionsMu.RLock()
-	require.Len(t, actor.behavior.sessions, 1)
-	actor.behavior.sessionsMu.RUnlock()
+	actor.sessionsMu.RLock()
+	require.Len(t, actor.sessions, 1)
+	actor.sessionsMu.RUnlock()
 }
 
 // TestActorHappyPath exercises a submit and finalize flow through the actor
@@ -415,12 +408,12 @@ func TestActorHappyPath(t *testing.T) {
 	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -432,7 +425,7 @@ func TestActorHappyPath(t *testing.T) {
 		t.Fatalf("unexpected submit response type: %T", submitRaw)
 	}
 
-	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -457,12 +450,12 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 	arkPsbt.Inputs[0].WitnessUtxo = nil
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -486,12 +479,12 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 	stripTapTreeMetadata(t, arkPsbt, 0)
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -514,12 +507,12 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -536,7 +529,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -564,12 +557,12 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 		err: errors.New("notify failed"),
 	}
 	driver := NewDriver(DriverCfg{RecipientEvents: recipientEvents})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -585,7 +578,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 
 	// First finalize attempt fails because of the recipient event store
 	// error.
-	finalizeResp := actor.Receive(ctx, finalizeReq)
+	finalizeResp := actor.Receive(ctx,finalizeReq)
 	require.True(t, finalizeResp.IsErr())
 	require.ErrorContains(
 		t, finalizeResp.Err(),
@@ -601,7 +594,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 	// Clear the error and retry succeeds.
 	recipientEvents.err = nil
 
-	retryResp := actor.Receive(ctx, finalizeReq)
+	retryResp := actor.Receive(ctx,finalizeReq)
 	require.True(t, retryResp.IsOk())
 
 	// Session is cleaned up from the map after reaching
@@ -636,13 +629,13 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	driver := NewDriver(DriverCfg{
 		SessionStore: failStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -655,7 +648,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	}
 
 	// First finalize fails on session store persistence.
-	finalizeResp := actor.Receive(ctx, finalizeReq)
+	finalizeResp := actor.Receive(ctx,finalizeReq)
 	require.True(t, finalizeResp.IsErr())
 
 	// Session should still be in a retryable state.
@@ -664,7 +657,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	require.IsType(t, &CoSignedState{}, state)
 
 	// Retry succeeds.
-	retryResp := actor.Receive(ctx, finalizeReq)
+	retryResp := actor.Receive(ctx,finalizeReq)
 	require.True(t, retryResp.IsOk())
 
 	// Session is cleaned up from the map after reaching
@@ -691,13 +684,13 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 	driver := NewDriver(DriverCfg{
 		SessionStore: sessionStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -709,12 +702,12 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	}
 
-	firstFinalize := actor.Receive(ctx, finalizeReq)
+	firstFinalize := actor.Receive(ctx,finalizeReq)
 	require.True(t, firstFinalize.IsOk())
 
 	// Session has been removed from memory after terminalization; retry
 	// should succeed via durable store fallback.
-	retryFinalize := actor.Receive(ctx, finalizeReq)
+	retryFinalize := actor.Receive(ctx,finalizeReq)
 	require.True(t, retryFinalize.IsOk())
 
 	_, ok := retryFinalize.UnwrapOr(nil).(*FinalizeOORResponse)
@@ -741,13 +734,13 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	driver := NewDriver(DriverCfg{
 		SessionStore: sessionStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -755,7 +748,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 
 	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
 
-	firstFinalize := actor.Receive(ctx, &FinalizeOORRequest{
+	firstFinalize := actor.Receive(ctx,&FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -764,7 +757,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	mismatch := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 	mismatch.Inputs[0].FinalScriptWitness = []byte{0x02}
 
-	retryFinalize := actor.Receive(ctx, &FinalizeOORRequest{
+	retryFinalize := actor.Receive(ctx,&FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{mismatch},
 	})
@@ -803,12 +796,12 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 	outs[0], outs[1] = outs[1], outs[0]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -849,12 +842,12 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 	outs[0], outs[last] = outs[last], outs[0]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -881,12 +874,12 @@ func TestActorSubmitMissingAnchorAssertsUnlock(t *testing.T) {
 	arkPsbt.UnsignedTx.TxOut = outs[:len(outs)-1]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -940,13 +933,13 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
 
 	driver := NewDriver(DriverCfg{Locker: locker})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -995,13 +988,13 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
 
 	driver := NewDriver(DriverCfg{Locker: locker})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -1076,13 +1069,13 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 			PubKey: policy.OperatorKey,
 		},
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+	submitResp := actor.Receive(ctx,&SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 		VTXOSigningDescriptors: []VTXOSigningDescriptor{
@@ -1118,7 +1111,7 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
 		FinalCheckpointPSBTs: finalized,
 	})

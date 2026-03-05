@@ -23,11 +23,13 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 	sessionStore1 := NewDBSessionStore(
 		db1, clock.NewDefaultClock(), btclog.Disabled,
 	)
-	deliveryStore := newActorDeliveryStoreForTest(t, db1)
 
 	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
 	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 
+	// Use actor1 without the durable runtime. We call Receive directly
+	// to process the submit. The session is persisted to the DB by the
+	// outbox driver's SessionStore, not by actor checkpoints.
 	driver1 := NewDriver(DriverCfg{
 		SessionStore: sessionStore1,
 		OperatorKey:  keychain.KeyDescriptor{},
@@ -35,12 +37,8 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 	actor1 := NewActor(ActorCfg{
 		OutboxHandler:    driver1,
 		CheckpointPolicy: policy,
-		DeliveryStore:    deliveryStore,
 		SessionStore:     sessionStore1,
 	})
-
-	err := actor1.Start(ctx)
-	require.NoError(t, err)
 
 	submitResp := actor1.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
@@ -58,13 +56,11 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 	}
 	require.IsType(t, &CoSignedState{}, state)
 
-	// Stop the first actor before constructing a second durable actor
-	// that rehydrates state from the shared database.
-	actor1.Stop()
-
-	// Simulate restart with a new actor backed by the same DB and
-	// delivery store. The DB-authoritative restart rebuilds active
-	// sessions from persisted rows rather than TLV checkpoint blobs.
+	// Simulate restart with a new actor backed by the same DB. The
+	// durable runtime's RestartMessage rebuilds active sessions from
+	// persisted rows. Use Ask through the ref so finalize is ordered
+	// after restart processing.
+	deliveryStore := newActorDeliveryStoreForTest(t, db1)
 	sessionStore2 := NewDBSessionStore(
 		db1, clock.NewDefaultClock(), btclog.Disabled,
 	)
@@ -84,17 +80,20 @@ func TestCoordinatorFinalizeAfterRestart(t *testing.T) {
 	require.NoError(t, err)
 	defer actor2.Stop()
 
-	finalizeResp := actor2.Receive(ctx, &FinalizeOORRequest{
+	// Use the durable ref so the finalize is ordered after the restart
+	// message that rebuilds session state from the database.
+	finalizeFut := actor2.Ref().Ask(ctx, &FinalizeOORRequest{
 		SessionID: submitMsg.SessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{
 			finalCheckpoint,
 		},
 	})
-	require.True(t, finalizeResp.IsOk())
+	finalizeResult := finalizeFut.Await(ctx)
+	require.True(t, finalizeResult.IsOk())
 
 	// The session is cleaned up from the in-memory map on terminal
 	// states, so verify finalization via the response type.
-	_, ok = finalizeResp.UnwrapOr(nil).(*FinalizeOORResponse)
+	_, ok = finalizeResult.UnwrapOr(nil).(*FinalizeOORResponse)
 	require.True(t, ok)
 
 	// Assert durable state is updated to finalized.
