@@ -1,47 +1,168 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
+	"strings"
 
 	"github.com/btcsuite/btclog/v2"
-	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx driver
+	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx driver.
 	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo/build"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/signal"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 func main() {
-	ctx, shutdown := setupInterceptor()
+	root := newRootCmd()
 
-	// 1) Load the server's config.
-	cfg, err := darepo.LoadConfig()
-	if err != nil {
-		err := fmt.Errorf("error loading config: %w", err)
-		_, _ = fmt.Fprintln(os.Stderr, err)
-
+	if err := root.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	cfg.Shutdown = shutdown
+// newRootCmd creates the top-level cobra command that starts the
+// daemon.
+func newRootCmd() *cobra.Command {
+	cfg := darepo.DefaultConfig()
+	v := viper.New()
 
-	// 2) Set up logging. A single handler is shared across all
-	// subsystem loggers so that output flows to one destination with
-	// consistent formatting.
+	cmd := &cobra.Command{
+		Use:   "arkd",
+		Short: "Ark operator daemon",
+		Long: "arkd is the Ark protocol operator daemon. " +
+			"It manages rounds, VTXOs, and serves " +
+			"client connections via gRPC and mailbox " +
+			"transport.",
+		Version: build.Version(),
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			// Merge flags, environment variables, and
+			// config file into the config struct. Viper
+			// handles the precedence: flags > env >
+			// config file > defaults.
+			return v.Unmarshal(cfg)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return run(cfg)
+		},
+	}
+
+	// Register flags with defaults from the config struct. Viper
+	// binds these automatically so that flag values, environment
+	// variables, and config file entries all feed into Unmarshal.
+	f := cmd.Flags()
+
+	f.String(
+		"datadir", cfg.DataDir,
+		"root data directory for daemon state",
+	)
+	f.String(
+		"network", cfg.Network,
+		"bitcoin network (mainnet, testnet, regtest, "+
+			"simnet, signet)",
+	)
+	f.String(
+		"debuglevel", cfg.DebugLevel,
+		"logging verbosity (trace, debug, info, warn, "+
+			"error, critical)",
+	)
+	f.String(
+		"logfile", cfg.LogFilePath,
+		"path to write the log file",
+	)
+
+	// LND connection flags.
+	f.String("lnd.host", cfg.Lnd.Host, "lnd gRPC address")
+	f.String("lnd.tlspath", cfg.Lnd.TLSPath,
+		"path to lnd TLS certificate",
+	)
+	f.String("lnd.macaroonpath", cfg.Lnd.MacaroonPath,
+		"path to lnd admin macaroon",
+	)
+
+	// Database flags.
+	f.String("db.backend", cfg.DB.Backend,
+		"database backend (sqlite or postgres)",
+	)
+	f.String("db.sqlite.dbfile",
+		cfg.DB.Sqlite.DatabaseFileName,
+		"full path to the SQLite database file",
+	)
+	f.Bool("db.sqlite.skipmigrations",
+		cfg.DB.Sqlite.SkipMigrations,
+		"skip applying migrations on startup (sqlite)",
+	)
+	f.Bool("db.sqlite.skipmigrationdbbackup",
+		cfg.DB.Sqlite.SkipMigrationDBBackup,
+		"skip creating a backup before migrations (sqlite)",
+	)
+	f.String("db.postgres.host", cfg.DB.Postgres.Host,
+		"postgres server hostname",
+	)
+	f.Int("db.postgres.port", cfg.DB.Postgres.Port,
+		"postgres server port",
+	)
+	f.String("db.postgres.user", cfg.DB.Postgres.User,
+		"postgres user",
+	)
+	f.String("db.postgres.password", cfg.DB.Postgres.Password,
+		"postgres password",
+	)
+	f.String("db.postgres.dbname", cfg.DB.Postgres.DBName,
+		"postgres database name",
+	)
+	f.Bool("db.postgres.skipmigrations",
+		cfg.DB.Postgres.SkipMigrations,
+		"skip applying migrations on startup (postgres)",
+	)
+	f.Bool("db.postgres.requiressl",
+		cfg.DB.Postgres.RequireSSL,
+		"require SSL when connecting to postgres",
+	)
+
+	// Admin RPC server flags.
+	f.String("adminrpc.listen", cfg.AdminRPC.ListenAddr,
+		"admin gRPC listen address",
+	)
+
+	// Client RPC server flags.
+	f.String("rpc.listen", cfg.RPC.ListenAddr,
+		"client gRPC listen address",
+	)
+
+	// Bind all flags to viper so Unmarshal populates the config
+	// struct from the combined flag/env/file sources.
+	v.SetEnvPrefix("ARKD")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	if err := v.BindPFlags(f); err != nil {
+		panic(fmt.Sprintf("failed to bind flags: %v", err))
+	}
+
+	return cmd
+}
+
+// run validates the config, sets up logging, starts signal
+// interception, and launches the daemon.
+func run(cfg *darepo.Config) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Set up logging. A single handler is shared across all
+	// subsystem loggers so that output flows to one destination
+	// with consistent formatting.
 	logHandler := btclog.NewDefaultHandler(os.Stdout)
 	loggers := darepo.SetupLoggers(logHandler)
 
 	if err := darepo.ApplyDebugLevel(
-		loggers, cfg.LogLevel,
+		loggers, cfg.DebugLevel,
 	); err != nil {
-		err := fmt.Errorf("error setting log level: %w", err)
-		_, _ = fmt.Fprintln(os.Stderr, err)
-
-		os.Exit(1)
+		return fmt.Errorf("error setting log level: %w",
+			err)
 	}
 
 	// Inject the server's own logger into the config. Subsystem
@@ -51,66 +172,12 @@ func main() {
 	cfg.Log = fn.Some(serverLog)
 	cfg.Loggers = loggers
 
-	// Attach the root server logger to the context for fallback
-	// use by any code that calls build.LoggerFromContext(ctx).
-	ctx = build.ContextWithLogger(ctx, serverLog)
-
-	// 3) Construct the server.
-	ctxt, cancel := context.WithTimeout(ctx, time.Second*10)
-
-	server, err := darepo.NewServer(ctxt, cfg)
+	// Intercept OS signals for graceful shutdown.
+	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
-		err := fmt.Errorf("error creating server: %w", err)
-		_, _ = fmt.Fprintln(os.Stderr, err)
-
-		// Cancel the context to clean up resources.
-		cancel()
-
-		os.Exit(1)
+		return fmt.Errorf("unable to intercept "+
+			"signals: %w", err)
 	}
 
-	// 4) Run the server until shutdown.
-	if err := server.RunUntilShutdown(ctx); err != nil {
-		err := fmt.Errorf("error starting server: %w", err)
-		_, _ = fmt.Fprintln(os.Stderr, err)
-
-		// Cancel the context to clean up resources.
-		cancel()
-
-		os.Exit(1)
-	}
-
-	// Normal exit path: cancel the context.
-	cancel()
-}
-
-// setupInterceptor sets up a context that is canceled when an interrupt signal
-// is received.
-func setupInterceptor() (context.Context, context.CancelFunc) {
-	// Create a channel to receive OS signals.
-	sigChan := make(chan os.Signal, 1)
-
-	signalsToCatch := []os.Signal{
-		os.Interrupt,
-		os.Kill,
-		syscall.SIGTERM,
-		syscall.SIGQUIT,
-	}
-
-	signal.Notify(sigChan, signalsToCatch...)
-
-	// Create a context that we can cancel.
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Start a goroutine that waits for a signal and cancels the context.
-	go func() {
-		select {
-		case <-sigChan:
-			cancel()
-
-		case <-ctx.Done():
-		}
-	}()
-
-	return ctx, cancel
+	return darepo.Main(cfg, shutdownInterceptor)
 }
