@@ -10,6 +10,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/adminrpc"
+	"github.com/lightninglabs/darepo/build"
 	"google.golang.org/grpc"
 )
 
@@ -37,14 +38,16 @@ type AdminRPCServer struct {
 func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 	log btclog.Logger) (*AdminRPCServer, error) {
 
-	// Use existing listener if provided
-	listener := cfg.RPCListener
+	// Use existing listener if provided, otherwise bind a new TCP
+	// listener.
+	listener := cfg.Listener
 	if listener == nil {
 		var err error
-		listener, err = net.Listen("tcp", cfg.RPCListen)
+		listener, err = net.Listen("tcp", cfg.ListenAddr)
 		if err != nil {
-			return nil, fmt.Errorf("admin RPC server unable to "+
-				"listen on %s: %w", cfg.RPCListen, err)
+			return nil, fmt.Errorf("admin RPC server unable "+
+				"to listen on %s: %w",
+				cfg.ListenAddr, err)
 		}
 	}
 
@@ -116,9 +119,14 @@ func (a *AdminRPCServer) Addr() net.Addr {
 func (a *AdminRPCServer) Info(ctx context.Context,
 	req *adminrpc.InfoRequest) (*adminrpc.InfoResponse, error) {
 
+	var pubkey string
+	if a.server.lnd != nil {
+		pubkey = a.server.lnd.NodePubkey.String()
+	}
+
 	return &adminrpc.InfoResponse{
-		Version: "0.0.1-skeleton",
-		Pubkey:  "",
+		Version: build.Version(),
+		Pubkey:  pubkey,
 		Network: a.server.cfg.Network,
 	}, nil
 }
