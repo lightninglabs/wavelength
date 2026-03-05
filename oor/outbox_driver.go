@@ -3,13 +3,17 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -30,6 +34,8 @@ import (
 type InProcessOutboxDriver struct {
 	mu sync.Mutex
 
+	log btclog.Logger
+
 	seen []string
 
 	locker vtxo.Locker
@@ -39,6 +45,9 @@ type InProcessOutboxDriver struct {
 	sessionStore SessionStore
 
 	recipientEvents RecipientEventStore
+
+	clientsConn       actor.TellOnlyRef[clientconn.ClientConnMsg]
+	recipientResolver RecipientResolver
 
 	coSigner CheckpointCoSigner
 
@@ -62,6 +71,18 @@ type DriverCfg struct {
 
 	// RecipientEvents persists recipient-notification cursors and payloads.
 	RecipientEvents RecipientEventStore
+
+	// ClientsConn is an optional reference to the clientconn bridge for
+	// pushing incoming transfer notifications to recipient clients.
+	ClientsConn actor.TellOnlyRef[clientconn.ClientConnMsg]
+
+	// RecipientResolver maps recipient pkScripts to clientconn
+	// ClientIDs. Required when ClientsConn is set.
+	RecipientResolver RecipientResolver
+
+	// Logger is used for best-effort notification warning logs. When
+	// nil, btclog.Disabled is used.
+	Logger btclog.Logger
 
 	// CoSigner customizes checkpoint co-signing strategy for tests.
 	CoSigner CheckpointCoSigner
@@ -140,16 +161,24 @@ func NewDriver(cfg DriverCfg) *InProcessOutboxDriver {
 		coSigner = NoopCoSigner{}
 	}
 
+	log := cfg.Logger
+	if log == nil {
+		log = btclog.Disabled
+	}
+
 	return &InProcessOutboxDriver{
-		seen:            make([]string, 0),
-		locker:          cfg.Locker,
-		store:           cfg.Store,
-		sessionStore:    cfg.SessionStore,
-		recipientEvents: cfg.RecipientEvents,
-		coSigner:        coSigner,
-		operatorKey:     cfg.OperatorKey,
-		sessionExpiry:   sessionExpiry,
-		operatorPolicy:  cfg.OperatorPolicy,
+		log:               log,
+		seen:              make([]string, 0),
+		locker:            cfg.Locker,
+		store:             cfg.Store,
+		sessionStore:      cfg.SessionStore,
+		recipientEvents:   cfg.RecipientEvents,
+		clientsConn:       cfg.ClientsConn,
+		recipientResolver: cfg.RecipientResolver,
+		coSigner:          coSigner,
+		operatorKey:       cfg.OperatorKey,
+		sessionExpiry:     sessionExpiry,
+		operatorPolicy:    cfg.OperatorPolicy,
 	}
 }
 
@@ -500,58 +529,50 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 }
 
 // handleNotifyRecipients appends durable recipient events for the finalized
-// Ark transaction and returns an FSM event indicating success or failure.
+// Ark transaction, pushes transfer notifications via clientconn, and returns
+// an FSM event indicating success or failure.
 func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 	sessionID SessionID,
 	msg *NotifyRecipientsReq) ([]Event, error) {
 
-	if d.recipientEvents == nil {
-		// Mark the session as fully notified even when there is no
-		// recipient event store, completing the awaiting_notify →
-		// finalized DB transition.
-		if d.sessionStore != nil {
-			err := d.sessionStore.MarkNotified(ctx, sessionID)
-			if err != nil {
-				return []Event{
-					&NotifyRecipientsFailedEvent{
-						Reason: err.Error(),
-					},
-				}, nil
-			}
+	ark := msg.ArkPSBT
+
+	// Extract recipients from the Ark PSBT when available. The
+	// recipient list is used for both RecipientEventStore persistence
+	// and the clientconn push path.
+	var recipients []clientoor.ArkRecipientOutput
+	if ark != nil {
+		var err error
+		recipients, err = clientoor.ExtractArkRecipients(ark)
+		if err != nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
+	}
+
+	// Persist recipient events to the polling store when configured.
+	if d.recipientEvents != nil {
+		if ark == nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: "ark psbt must be provided",
+				},
+			}, nil
 		}
 
-		return []Event{
-			&NotifyRecipientsSucceededEvent{},
-		}, nil
-	}
-
-	ark := msg.ArkPSBT
-	if ark == nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: "ark psbt must be provided",
-			},
-		}, nil
-	}
-
-	recipients, err := clientoor.ExtractArkRecipients(ark)
-	if err != nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: err.Error(),
-			},
-		}, nil
-	}
-
-	err = d.recipientEvents.AppendRecipientEvents(
-		ctx, sessionID, ark, recipients,
-	)
-	if err != nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: err.Error(),
-			},
-		}, nil
+		err := d.recipientEvents.AppendRecipientEvents(
+			ctx, sessionID, ark, recipients,
+		)
+		if err != nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
 	}
 
 	// Mark the session as fully notified, completing the
@@ -567,9 +588,72 @@ func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 		}
 	}
 
+	// Best-effort push: resolve recipients to client IDs and
+	// deliver a rich notification via clientconn. Errors are logged
+	// but do not fail the FSM — the RecipientEventStore/indexer
+	// polling path provides a durable fallback.
+	d.pushRecipientNotifications(
+		ctx, sessionID, msg, recipients,
+	)
+
 	return []Event{
 		&NotifyRecipientsSucceededEvent{},
 	}, nil
+}
+
+// pushRecipientNotifications resolves recipient pkScripts to clientconn
+// ClientIDs and Tell()s a per-recipient OORRecipientNotification through
+// the clientconn bridge. This is best-effort: errors are logged but never
+// propagated to the FSM.
+//
+// NOTE: All recipient notifications share the same ArkPSBT and
+// FinalCheckpointPSBTs pointers from the outbox request. ToProto()
+// implementations MUST NOT mutate the packets.
+func (d *InProcessOutboxDriver) pushRecipientNotifications(
+	ctx context.Context, sessionID SessionID,
+	msg *NotifyRecipientsReq,
+	recipients []clientoor.ArkRecipientOutput) {
+
+	if d.clientsConn == nil || d.recipientResolver == nil {
+		return
+	}
+
+	if len(recipients) == 0 {
+		return
+	}
+
+	resolved, err := d.recipientResolver.ResolveRecipients(
+		ctx, recipients,
+	)
+	if err != nil {
+		d.log.WarnS(ctx, "Failed to resolve OOR recipients for "+
+			"clientconn push", err,
+			slog.String("session_id", sessionID.String()),
+		)
+
+		return
+	}
+
+	for clientID := range resolved {
+		notification := NewOORRecipientNotification(
+			clientID, sessionID, msg.ArkPSBT,
+			msg.FinalCheckpointPSBTs,
+		)
+		tellErr := d.clientsConn.Tell(
+			ctx, &clientconn.SendServerEventRequest{
+				Message: notification,
+			},
+		)
+		if tellErr != nil {
+			d.log.WarnS(ctx, "Failed to push OOR "+
+				"notification via clientconn", tellErr,
+				slog.String("client_id",
+					string(clientID)),
+				slog.String("session_id",
+					sessionID.String()),
+			)
+		}
+	}
 }
 
 // handleUnlockInputs unlocks inputs if a locker is configured. This is only
