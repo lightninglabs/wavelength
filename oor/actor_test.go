@@ -691,6 +691,118 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 	require.Equal(t, len(inputs), packageStore.bindingCalls)
 }
 
+// TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment verifies that a
+// SubmitAcceptedEvent with nil ArkPSBT is enriched from the session's
+// AwaitingSubmitAccepted state. This is the production path for server-push
+// events dispatched via the EventRouter, where the oorwire proto response
+// does not echo the Ark PSBT back.
+func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+	mockConn := newMockServerConnRef(t)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x05},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(
+				t, clientKey.PubKey(),
+			),
+			Value: inputValue,
+		},
+	}
+
+	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &localOnlyOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    mockConn,
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-nil-ark-enrich",
+	})
+	defer actor.Stop()
+
+	// Start the transfer to reach AwaitingSubmitAccepted.
+	startResp := actor.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+	sessionID := startMsg.SessionID
+
+	// Capture the submit request so we can co-sign checkpoints.
+	submitReq := mockConn.lastSent()
+	submitMsg, ok := submitReq.Message.(*SendSubmitPackageRequest)
+	require.True(t, ok)
+
+	err = coSignCheckpointPSBTsForTest(
+		operatorSigner,
+		submitMsg.TransferInputs,
+		submitMsg.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
+
+	// Drive with a SubmitAcceptedEvent that has nil ArkPSBT, simulating
+	// a server-push event dispatched via the EventRouter. The actor
+	// should enrich ArkPSBT from the AwaitingSubmitAccepted state.
+	driveResp := actor.Receive(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event: &SubmitAcceptedEvent{
+			SessionID:               sessionID,
+			ArkPSBT:                 nil,
+			CoSignedCheckpointPSBTs: submitMsg.CheckpointPSBTs,
+		},
+	})
+	require.True(t, driveResp.IsOk(),
+		"expected enrichment to succeed, got: %v",
+		driveResp.Err())
+
+	// The FSM should have advanced past AwaitingSubmitAccepted.
+	stateResp := actor.Receive(ctx, &GetStateRequest{
+		SessionID: sessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
+}
+
 // TestIsTransportEventClassification verifies that isTransportEvent correctly
 // classifies all outbox event types. Transport events (submit, finalize, ack)
 // must be routed to serverconn, while local events (signing, persistence,

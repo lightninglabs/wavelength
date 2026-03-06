@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
@@ -531,13 +532,12 @@ func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
 		return nil, fmt.Errorf("event must be provided")
 	}
 
-	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
-		if err := validateSubmitAcceptedIdentity(
-			sessionID, submitAccepted,
-		); err != nil {
-			return nil, err
-		}
-	}
+	// Validation of SubmitAcceptedEvent identity (ArkPSBT, session ID
+	// match) is deferred to the processing layer (handleDriveEvent)
+	// rather than the serialization layer. This allows server-push
+	// events dispatched via the EventRouter to be persisted to the
+	// durable mailbox with nil ArkPSBT, which the actor enriches from
+	// session state before validation.
 
 	sessionBytes := sessionIDBytes(sessionID)
 	eventPayload, err := encodeEventPayload(event)
@@ -602,13 +602,9 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 		return SessionID{}, nil, err
 	}
 
-	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
-		if err := validateSubmitAcceptedIdentity(
-			sessionID, submitAccepted,
-		); err != nil {
-			return SessionID{}, nil, err
-		}
-	}
+	// Validation of SubmitAcceptedEvent identity is deferred to the
+	// processing layer (handleDriveEvent), not the deserialization
+	// layer. See encodeDriveEventRequestPayload for rationale.
 
 	return sessionID, event, nil
 }
@@ -627,9 +623,16 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	case *SubmitAcceptedEvent:
 		eventKind = eventKindSubmitAccepted
 		submitSession = sessionIDBytes(evt.SessionID)
-		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
-		if err != nil {
-			return nil, err
+
+		// ArkPSBT may be nil for server-push events dispatched
+		// via the EventRouter. The actor layer enriches it from
+		// session state before processing. Encode empty bytes
+		// when nil so the TLV stream is well-formed.
+		if evt.ArkPSBT != nil {
+			arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		checkpoints, err := serializePSBTSlice(
@@ -738,9 +741,15 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			return nil, err
 		}
 
-		ark, err := psbtutil.Parse(arkPSBT)
-		if err != nil {
-			return nil, err
+		// ArkPSBT may be empty for server-push events where the
+		// proto response does not echo it back. The actor layer
+		// enriches it from session state before processing.
+		var ark *psbt.Packet
+		if len(arkPSBT) > 0 {
+			ark, err = psbtutil.Parse(arkPSBT)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		checkpointRaw, err := decodeLengthPrefixedBlobList(

@@ -387,19 +387,32 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("event must be provided"))
 	}
 
+	handle, ok := b.sessions[req.SessionID]
+	if !ok {
+		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
+			req.SessionID))
+	}
+
+	// If the inbound SubmitAcceptedEvent is missing the ArkPSBT (e.g.,
+	// the server response proto does not echo it back), enrich from the
+	// current session state. The AwaitingSubmitAccepted state carries
+	// the canonical ArkPSBT that was sent in the submit request.
 	if submitAccepted, ok := req.Event.(*SubmitAcceptedEvent); ok {
+		if submitAccepted.ArkPSBT == nil {
+			err := b.enrichSubmitAcceptedArkPSBT(
+				handle, submitAccepted,
+			)
+			if err != nil {
+				return fn.Err[ActorResp](err)
+			}
+		}
+
 		err := validateSubmitAcceptedIdentity(
 			req.SessionID, submitAccepted,
 		)
 		if err != nil {
 			return fn.Err[ActorResp](err)
 		}
-	}
-
-	handle, ok := b.sessions[req.SessionID]
-	if !ok {
-		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
-			req.SessionID))
 	}
 
 	finalizeState, err := b.captureFinalizeStateForEvent(
@@ -434,6 +447,34 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// enrichSubmitAcceptedArkPSBT populates a SubmitAcceptedEvent's ArkPSBT field
+// from the current session state when the server response does not echo it
+// back. The canonical ArkPSBT lives in the AwaitingSubmitAccepted state, which
+// was set when the client built and sent the submit package. This allows the
+// dispatch adapter to construct a SubmitAcceptedEvent from the oorwire proto
+// (which only carries sessionID + co-signed checkpoints) and have the actor
+// enrich it before validation and transition processing.
+func (b *oorDurableBehavior) enrichSubmitAcceptedArkPSBT(
+	handle *sessionHandle,
+	event *SubmitAcceptedEvent) error {
+
+	state, err := handle.currentState()
+	if err != nil {
+		return fmt.Errorf("get current state for ArkPSBT "+
+			"enrichment: %w", err)
+	}
+
+	awaitingSubmit, ok := state.(*AwaitingSubmitAccepted)
+	if !ok {
+		return fmt.Errorf("expected AwaitingSubmitAccepted "+
+			"state for ArkPSBT enrichment, got %T", state)
+	}
+
+	event.ArkPSBT = awaitingSubmit.ArkPSBT
+
+	return nil
 }
 
 // persistOutgoingPackage stores finalized outgoing package artifacts and input
