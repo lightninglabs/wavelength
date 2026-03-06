@@ -41,9 +41,6 @@ func (i *TransferInput) Validate() error {
 	case len(i.VTXO.PkScript) == 0:
 		return fmt.Errorf("vtxo pkScript must be provided")
 
-	case i.VTXO.TapScript == nil:
-		return fmt.Errorf("vtxo tapscript must be provided")
-
 	case i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
 

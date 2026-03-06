@@ -84,6 +84,12 @@ const (
 	transferInputOperatorPubKeyRecordType  tlv.Type = 6
 	transferInputExitDelayRecordType       tlv.Type = 7
 	transferInputOwnerLeafScriptRecordType tlv.Type = 8
+
+	// transferInputPkScriptRecordType carries the raw VTXO output script
+	// verbatim. When present it overrides the standard pkscript derivation
+	// in TransferInputFromSnapshot, which allows custom scripts (e.g.
+	// vHTLC) to survive TLV round-trips without silent recomputation.
+	transferInputPkScriptRecordType tlv.Type = 9
 )
 
 const (
@@ -622,6 +628,7 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	operatorPubKey := input.OperatorPubKey
 	exitDelay := input.ExitDelay
 	ownerLeafScript := input.OwnerLeafScript
+	pkScript := input.PkScript
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -651,6 +658,15 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		),
 	}
 
+	// PkScript is an optional field; only encode it when non-empty so
+	// that nil and absent are indistinguishable on the wire and decode
+	// consistently back to nil for standard VTXO snapshots.
+	if len(pkScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -674,6 +690,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		operatorPubKey  []byte
 		exitDelay       uint32
 		ownerLeafScript []byte
+		pkScript        []byte
 	)
 
 	records := []tlv.Record{
@@ -701,6 +718,9 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputOwnerLeafScriptRecordType,
 			&ownerLeafScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
 		),
 	}
 
@@ -740,6 +760,7 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		OperatorPubKey:  operatorPubKey,
 		ExitDelay:       exitDelay,
 		OwnerLeafScript: ownerLeafScript,
+		PkScript:        pkScript,
 	}, nil
 }
 

@@ -1,12 +1,14 @@
 package oor
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -45,6 +47,13 @@ type TransferInputSnapshot struct {
 	// This is currently a draft implementation, and may change as the
 	// checkpoint policy is refined.
 	OwnerLeafScript []byte
+
+	// PkScript is the raw output script of the input VTXO. When set, it
+	// is used directly during snapshot restoration, bypassing the standard
+	// VTXO pkscript derivation from client/operator keys. This preserves
+	// custom spend scripts (e.g. vHTLC) through the TLV round-trip without
+	// loss of fidelity.
+	PkScript []byte
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -73,6 +82,7 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		OperatorPubKey:  operatorKey.SerializeCompressed(),
 		ExitDelay:       exitDelay,
 		OwnerLeafScript: i.OwnerLeafScript,
+		PkScript:        i.VTXO.PkScript,
 	}, nil
 }
 
@@ -114,24 +124,56 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			err)
 	}
 
-	tapScript, err := scripts.VTXOTapScript(clientPub, operatorPub,
-		snap.ExitDelay)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
-			err)
+	// Always derive the standard VTXO pkscript and tapscript from the
+	// key material first. If the snapshot contains an explicit PkScript
+	// that differs from the derived one, the input uses a custom spend
+	// script (e.g. vHTLC); in that case the stored bytes are used
+	// verbatim and TapScript is left nil because the input relies on a
+	// custom signing path. Standard VTXOs — including old snapshots
+	// that pre-date the PkScript field — always produce a non-nil
+	// TapScript via the normal derivation path.
+	derivedTapScript, buildErr := scripts.VTXOTapScript(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
+	if buildErr != nil {
+		return TransferInput{}, fmt.Errorf(
+			"rebuild vtxo tapscript: %w", buildErr,
+		)
 	}
 
-	tapKey, err := scripts.VTXOTapKey(clientPub, operatorPub,
-		snap.ExitDelay)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",
-			err)
+	tapKey, buildErr := scripts.VTXOTapKey(
+		clientPub, operatorPub, snap.ExitDelay,
+	)
+	if buildErr != nil {
+		return TransferInput{}, fmt.Errorf(
+			"rebuild vtxo tapkey: %w", buildErr,
+		)
 	}
 
-	pkScript, err := txscript.PayToTaprootScript(tapKey)
-	if err != nil {
-		return TransferInput{}, fmt.Errorf("build vtxo pkscript: %w",
-			err)
+	derivedPkScript, buildErr := txscript.PayToTaprootScript(tapKey)
+	if buildErr != nil {
+		return TransferInput{}, fmt.Errorf(
+			"build vtxo pkscript: %w", buildErr,
+		)
+	}
+
+	// Determine the effective pkscript and tapscript. When the stored
+	// PkScript is absent or matches the standard derivation, treat the
+	// input as a standard VTXO and use the derived tapscript. Otherwise
+	// the stored pkscript is a custom script and TapScript stays nil.
+	var (
+		pkScript  []byte
+		tapScript *waddrmgr.Tapscript
+	)
+
+	if len(snap.PkScript) == 0 ||
+		bytes.Equal(snap.PkScript, derivedPkScript) {
+
+		pkScript = derivedPkScript
+		tapScript = derivedTapScript
+
+	} else {
+		pkScript = snap.PkScript
 	}
 
 	desc := &vtxo.Descriptor{

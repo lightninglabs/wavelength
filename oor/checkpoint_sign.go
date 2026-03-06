@@ -362,6 +362,14 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		checkpoint.UnsignedTx, prevFetcher,
 	)
 
+	// TapScript is required for the standard collaborative VTXO leaf path.
+	// vHTLC inputs and other custom spend paths bypass this function
+	// entirely, so a nil TapScript here is always a caller error.
+	if in.VTXO.TapScript == nil {
+		return fmt.Errorf("vtxo tapscript required for standard " +
+			"collab path signing")
+	}
+
 	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
 		&tx.VTXOSpendContext{
 			Outpoint:  in.VTXO.Outpoint,
