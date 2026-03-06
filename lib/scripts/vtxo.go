@@ -297,57 +297,57 @@ func VTXOCollabSpendWitness(ownerSig, cosignerSig input.Signature,
 // UnilateralCSVTimeoutTapLeaf constructs the tap leaf used as the timeout path
 // for boarding or VTXO outputs.
 //
-// The final script used is:
+// The canonical script encoding matches the arkscript CSV node and is:
 //
-//	<timeout_key> OP_CHECKSIG
-//	<exit_delay>  OP_CHECKSEQUENCEVERIFY OP_DROP
+//	<timeout_key_xonly> OP_CHECKSIG
+//	<exit_delay>        OP_CHECKSEQUENCEVERIFY OP_DROP
 func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 	csvDelay uint32) (txscript.TapLeaf, error) {
 
-	// Use ScriptTemplate to construct the timeout script. This script
-	// ensures the proper party can sign for this output, and that the CSV
-	// delay has been upheld.
-	secondLevelLeafScript, err := txscript.ScriptTemplate(`
-		{{ hex .ExitKey }} OP_CHECKSIG
-		{{.CSVDelay}} OP_CHECKSEQUENCEVERIFY OP_DROP`,
-		txscript.WithScriptTemplateParams(map[string]interface{}{
-			"ExitKey":  schnorr.SerializePubKey(timeoutKey),
-			"CSVDelay": int64(csvDelay),
-		}),
-	)
+	// Build the timeout script using the script builder. The encoding
+	// matches the canonical arkscript CSV(lock, Checksig(key)) node:
+	// xonly key, CHECKSIG, delay int, CSV, DROP.
+	builder := txscript.NewScriptBuilder()
+	builder.AddData(schnorr.SerializePubKey(timeoutKey))
+	builder.AddOp(txscript.OP_CHECKSIG)
+	builder.AddInt64(int64(csvDelay))
+	builder.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+	builder.AddOp(txscript.OP_DROP)
+
+	script, err := builder.Script()
 	if err != nil {
 		return txscript.TapLeaf{}, err
 	}
 
-	return txscript.NewBaseTapLeaf(secondLevelLeafScript), nil
+	return txscript.NewBaseTapLeaf(script), nil
 }
 
 // MultiSigCollabTapLeaf returns the full tapscript leaf for the collaborative
 // multisig script spend path between owner and cosigner. This is used for both
 // boarding and VTXO outputs.
 //
-// The final script used is:
+// The canonical script encoding matches the arkscript Multisig node and is:
 //
-//	<owner_key>    OP_CHECKSIGVERIFY
-//	<cosigner_key> OP_CHECKSIG
+//	<owner_key_xonly>    OP_CHECKSIGVERIFY
+//	<cosigner_key_xonly> OP_CHECKSIG
 func MultiSigCollabTapLeaf(ownerKey,
 	cosignerKey *btcec.PublicKey) (txscript.TapLeaf, error) {
 
-	// Use ScriptTemplate to construct the collaborative multisig script.
-	// This script requires both owner and cosigner signatures to spend.
-	timeoutLeafScript, err := txscript.ScriptTemplate(`
-		{{ hex .OwnerKey }} OP_CHECKSIGVERIFY
-		{{ hex .CosignerKey }} OP_CHECKSIG`,
-		txscript.WithScriptTemplateParams(map[string]interface{}{
-			"OwnerKey":    schnorr.SerializePubKey(ownerKey),
-			"CosignerKey": schnorr.SerializePubKey(cosignerKey),
-		}),
-	)
+	// Build the collaborative multisig script using the script builder.
+	// The encoding matches the canonical arkscript Multisig(CHECKSIGVERIFY)
+	// node: owner key CHECKSIGVERIFY, cosigner key CHECKSIG.
+	builder := txscript.NewScriptBuilder()
+	builder.AddData(schnorr.SerializePubKey(ownerKey))
+	builder.AddOp(txscript.OP_CHECKSIGVERIFY)
+	builder.AddData(schnorr.SerializePubKey(cosignerKey))
+	builder.AddOp(txscript.OP_CHECKSIG)
+
+	script, err := builder.Script()
 	if err != nil {
 		return txscript.TapLeaf{}, err
 	}
 
-	return txscript.NewBaseTapLeaf(timeoutLeafScript), nil
+	return txscript.NewBaseTapLeaf(script), nil
 }
 
 // maybeAppendSighashType appends a sighash type to the end of a signature if
