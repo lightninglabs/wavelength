@@ -24,6 +24,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -63,6 +64,7 @@ type Server struct {
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
+	oorActor     *oor.OORClientActor
 
 	serverConn *grpc.ClientConn
 
@@ -290,10 +292,18 @@ func (s *Server) RunUntilShutdown(
 		return err
 	}
 
+	// -------------------------------------------------------
+	// 11. Register the OOR client actor.
+	// -------------------------------------------------------
+	if err := s.initOORActor(ctx); err != nil {
+		return err
+	}
+	defer s.oorActor.Stop()
+
 	log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
-	// 11. Block until shutdown.
+	// 12. Block until shutdown.
 	// -------------------------------------------------------
 	<-interceptor.ShutdownChannel()
 
@@ -659,6 +669,56 @@ func (s *Server) initRoundActor(ctx context.Context,
 	}
 
 	log.InfoS(ctx, "Round actor registered and started")
+
+	return nil
+}
+
+// initOORActor creates and starts the OOR (out-of-round) client actor.
+//
+// The OOR actor manages outgoing off-chain transfers: it drives the
+// client-side FSM that builds Ark packages, signs checkpoints, and
+// coordinates with the server via the serverconn transport. Transport
+// outbox events (submit, finalize, ack) are routed through the
+// ServerConn reference, while local events (signing, persistence) are
+// handled by a layered OutboxHandler stack:
+//
+//   - LocalPersistenceOutboxHandler: marks inputs spent, materializes
+//     incoming VTXOs, handles incoming ack.
+//   - SigningOutboxHandler (Next delegate): signs Ark and checkpoint
+//     PSBTs, schedules retries.
+func (s *Server) initOORActor(ctx context.Context) error {
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+
+	clientWallet := lndbackend.NewClientWallet(
+		s.lnd.Signer, s.lnd.WalletKit,
+	)
+
+	vtxoStore := dbStore.NewVTXOStore(clk)
+	packageStore := dbStore.NewOORArtifactStore(clk)
+
+	signingHandler := &oor.SigningOutboxHandler{
+		Signer: clientWallet,
+	}
+
+	outboxHandler := &oor.LocalPersistenceOutboxHandler{
+		Next:         signingHandler,
+		Store:        vtxoStore,
+		PackageStore: packageStore,
+	}
+
+	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
+		Logger:        log,
+		OutboxHandler: outboxHandler,
+		ServerConn:    s.runtime.TellRef(),
+		PackageStore:  packageStore,
+		DeliveryStore: s.deliveryStore,
+		ActorID:       "oor-client",
+	})
+
+	log.InfoS(ctx, "OOR client actor started")
 
 	return nil
 }
