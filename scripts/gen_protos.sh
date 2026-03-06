@@ -60,6 +60,9 @@ generate "arkrpc"
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 
+# Generate OOR mailbox wire payload stubs.
+generate "oorwire"
+
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then
 	generate "adminrpc"

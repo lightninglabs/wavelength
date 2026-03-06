@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package oorwire;
+
+option go_package = "github.com/lightninglabs/darepo-client/oorwire";
+
+// OORMailboxService defines unary OOR mailbox methods used in the toy E2E
+// connector path.
+service OORMailboxService {
+    // SubmitPackage submits an Ark package and returns server co-signed
+    // checkpoint PSBTs.
+    rpc SubmitPackage (SubmitPackageRequest) returns (SubmitPackageResponse);
+
+    // FinalizePackage submits finalized checkpoint PSBTs for a session.
+    rpc FinalizePackage (FinalizePackageRequest) returns (FinalizePackageResponse);
+}
+
+// OOROutPoint is a protobuf representation of wire.OutPoint.
+message OOROutPoint {
+    // txid is the 32-byte transaction hash.
+    bytes txid = 1;
+
+    // vout is the transaction output index.
+    uint32 vout = 2;
+}
+
+// OORSigningDescriptor carries the minimal signing metadata required by the
+// server OOR actor.
+message OORSigningDescriptor {
+    // outpoint identifies the input VTXO.
+    OOROutPoint outpoint = 1;
+
+    // owner_key is the compressed 33-byte owner public key.
+    bytes owner_key = 2;
+
+    // exit_delay is the CSV delay for the input script path.
+    uint32 exit_delay = 3;
+}
+
+// SubmitPackageRequest carries submit-phase OOR data.
+message SubmitPackageRequest {
+    // ark_psbt is the serialized Ark PSBT.
+    bytes ark_psbt = 1;
+
+    // checkpoint_psbts are serialized checkpoint PSBTs.
+    repeated bytes checkpoint_psbts = 2;
+
+    // signing_descriptors carry per-input signing metadata.
+    repeated OORSigningDescriptor signing_descriptors = 3;
+}
+
+// SubmitPackageResponse carries server submit-phase results.
+message SubmitPackageResponse {
+    // session_id is the 32-byte session hash.
+    bytes session_id = 1;
+
+    // co_signed_checkpoint_psbts are serialized server-co-signed checkpoint
+    // PSBTs.
+    repeated bytes co_signed_checkpoint_psbts = 2;
+}
+
+// FinalizePackageRequest carries finalize-phase OOR data.
+message FinalizePackageRequest {
+    // session_id is the 32-byte session hash.
+    bytes session_id = 1;
+
+    // final_checkpoint_psbts are serialized finalized checkpoint PSBTs.
+    repeated bytes final_checkpoint_psbts = 2;
+}
+
+// FinalizePackageResponse carries finalize-phase OOR results.
+message FinalizePackageResponse {
+    // session_id is the 32-byte session hash.
+    bytes session_id = 1;
+}
