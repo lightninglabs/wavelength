@@ -197,10 +197,10 @@ func SortLeaves(leaves []PolicyLeaf) {
 
 // BuildTree constructs a canonical balanced binary taproot tree from the
 // ordered leaf list. This implements the algorithm from the RFC:
-// - If n == 1: the root is the single leaf hash.
-// - If n > 1: split left = leaves[0:n/2], right = leaves[n/2:n],
-//   compute L = BuildTree(left), R = BuildTree(right),
-//   root = TapBranchHash(min(L,R), max(L,R)).
+//   - If n == 1: the root is the single leaf hash.
+//   - If n > 1: split left = leaves[0:n/2], right = leaves[n/2:n],
+//     compute L = BuildTree(left), R = BuildTree(right),
+//     root = TapBranchHash(min(L,R), max(L,R)).
 //
 // The function also computes merkle proofs for each leaf.
 func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (

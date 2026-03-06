@@ -1,12 +1,37 @@
 package arkscript
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
+
+// arkNUMSHex is the hex-encoded ARK NUMS (nothing-up-my-sleeves) internal
+// key. It is the same constant as lib/scripts.ARKNUMSHex; redeclared here
+// to avoid an import cycle between lib/arkscript and lib/scripts.
+const arkNUMSHex = "02372f225b3caee8213096de3229ee4335306b07c3c169438461b5d4749884ec65"
+
+// arkNUMSKey is the parsed ARK NUMS key used as the unspendable internal key
+// for all standard VTXO taproot outputs.
+var arkNUMSKey = mustParseNUMSKey()
+
+// mustParseNUMSKey parses arkNUMSHex at package init time and panics if it is
+// invalid. The constant is a well-known value so this should never fail.
+func mustParseNUMSKey() btcec.PublicKey {
+	b, err := hex.DecodeString(arkNUMSHex)
+	if err != nil {
+		panic(fmt.Sprintf("arkscript: invalid NUMS hex: %v", err))
+	}
+
+	key, err := btcec.ParsePubKey(b)
+	if err != nil {
+		panic(fmt.Sprintf("arkscript: failed to parse NUMS key: %v", err))
+	}
+
+	return *key
+}
 
 // VTXOPolicy represents a compiled VTXO taproot policy with canonical
 // structure and validated invariants.
@@ -118,8 +143,9 @@ func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
 		},
 	}
 
-	// Build the tree using the NUMS key as internal key.
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	// Build the tree using the ARK NUMS key as the unspendable internal
+	// key so the output has no key-path spend.
+	policy, err := BuildTree(leaves, &arkNUMSKey)
 	if err != nil {
 		return nil, fmt.Errorf("vtxo: failed to build tree: %w", err)
 	}
