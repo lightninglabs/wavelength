@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -36,12 +37,25 @@ type ClientActorCfg struct {
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
 
+	// ServerConn is a reference to the ServerConnectionActor for sending
+	// transport events (submit, finalize, ack) to the server. When set,
+	// transport outbox events bypass the OutboxHandler and are Tell'd to
+	// the connection actor for durable delivery. When nil, all outbox
+	// events are routed through OutboxHandler for backward compatibility.
+	ServerConn actor.TellOnlyRef[serverconn.ServerConnMsg]
+
 	// PackageStore persists finalized outgoing packages and local input
 	// bindings used by unroll/recovery tooling.
 	PackageStore PackagePersistence
 
 	// DeliveryStore backs the durable actor mailbox/checkpoint operations.
 	DeliveryStore actor.DeliveryStore
+
+	// ActorSystem is the system in which the OOR actor registers itself
+	// under the OOR service key. This enables serverconn ingress
+	// dispatching and timeout callback wiring via service key lookup.
+	// When nil, the actor is not registered (useful for unit tests).
+	ActorSystem actor.SystemContext
 
 	// ActorID is the durable mailbox id used for this actor instance.
 	// Re-using the same ActorID across restarts enables checkpoint restore.
@@ -56,10 +70,65 @@ type ClientActorCfg struct {
 type OORClientActor struct {
 	cfg ClientActorCfg
 
-	ref     actor.ActorRef[actor.TLVMessage, ActorResp]
-	durable *actor.DurableActor[actor.TLVMessage, ActorResp]
+	ref     actor.ActorRef[OORDurableMsg, ActorResp]
+	durable *actor.DurableActor[OORDurableMsg, ActorResp]
 
 	startupErr error
+}
+
+// newOORActorCodec creates a MessageCodec with all OOR actor message types
+// registered. This allows the durable actor to serialize and deserialize each
+// ActorMsg type directly without an intermediate envelope.
+//
+// IMPORTANT: every type that implements ActorMsg must be registered here;
+// omissions cause runtime dispatch failures with no compile-time warning.
+func newOORActorCodec() *actor.MessageCodec {
+	codec := actor.NewMessageCodec()
+
+	codec.MustRegister(
+		StartTransferRequestTLVType,
+		func() actor.TLVMessage {
+			return &StartTransferRequest{}
+		},
+	)
+	codec.MustRegister(
+		DriveEventRequestTLVType,
+		func() actor.TLVMessage {
+			return &DriveEventRequest{}
+		},
+	)
+	codec.MustRegister(
+		GetStateRequestTLVType,
+		func() actor.TLVMessage {
+			return &GetStateRequest{}
+		},
+	)
+	codec.MustRegister(
+		RestoreSessionRequestTLVType,
+		func() actor.TLVMessage {
+			return &RestoreSessionRequest{}
+		},
+	)
+	codec.MustRegister(
+		ResumeSessionRequestTLVType,
+		func() actor.TLVMessage {
+			return &ResumeSessionRequest{}
+		},
+	)
+	codec.MustRegister(
+		ExportSnapshotRequestTLVType,
+		func() actor.TLVMessage {
+			return &ExportSnapshotRequest{}
+		},
+	)
+	codec.MustRegister(
+		actor.RestartTLVType,
+		func() actor.TLVMessage {
+			return &actor.RestartMessage{}
+		},
+	)
+
+	return codec
 }
 
 // NewOORClientActor creates a durable outgoing-transfer OOR client actor.
@@ -87,24 +156,14 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 		return actorRef
 	}
 
-	codec := actor.NewMessageCodec()
-	codec.MustRegister(oorDurableCommandTLVType,
-		func() actor.TLVMessage {
-			return &durableActorCommandMessage{}
-		},
-	)
-	codec.MustRegister(actor.RestartTLVType,
-		func() actor.TLVMessage {
-			return &actor.RestartMessage{}
-		},
-	)
+	codec := newOORActorCodec()
 
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
 		sessions: make(map[SessionID]*sessionHandle),
 	}
 
-	durableCfg := actor.DefaultDurableActorConfig[actor.TLVMessage,
+	durableCfg := actor.DefaultDurableActorConfig[OORDurableMsg,
 		ActorResp](
 		cfg.ActorID,
 		behavior,
@@ -138,14 +197,29 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	durable.Start()
 
+	// Register the durable actor's ref with the actor system so the
+	// serverconn event router can discover it via the OOR service key.
+	if cfg.ActorSystem != nil {
+		oorKey := NewServiceKey()
+		err = actor.RegisterWithReceptionist(
+			cfg.ActorSystem.Receptionist(), oorKey,
+			durable.Ref(),
+		)
+		if err != nil {
+			actorRef.startupErr = fmt.Errorf(
+				"register OOR actor: %w", err,
+			)
+
+			return actorRef
+		}
+	}
+
 	return actorRef
 }
 
-// Receive sends one actor API message through the durable command boundary and
-// returns the resulting response.
-//
-// Callers should treat this as the single public interaction point for
-// outgoing OOR session lifecycle operations.
+// Receive sends an actor message through the durable mailbox and returns
+// the response synchronously. Each ActorMsg type implements TLVMessage
+// directly, so no envelope conversion is needed.
 func (a *OORClientActor) Receive(ctx context.Context,
 	msg ActorMsg) fn.Result[ActorResp] {
 
@@ -159,12 +233,13 @@ func (a *OORClientActor) Receive(ctx context.Context,
 		)
 	}
 
-	cmd, err := durableCommandFromActorMsg(msg)
-	if err != nil {
-		return fn.Err[ActorResp](err)
+	if msg == nil {
+		return fn.Err[ActorResp](
+			fmt.Errorf("message must be provided"),
+		)
 	}
 
-	fut := a.ref.Ask(ctx, cmd)
+	fut := a.ref.Ask(ctx, msg)
 
 	return fut.Await(ctx)
 }
@@ -188,47 +263,33 @@ type oorDurableBehavior struct {
 }
 
 // Receive dispatches decoded TLV messages to the appropriate handler
-// method based on message type.
+// method based on message type. Each ActorMsg type is registered directly
+// in the codec and deserialized by the durable actor, so no envelope
+// unwrapping is needed.
 func (b *oorDurableBehavior) Receive(ctx context.Context,
-	msg actor.TLVMessage) fn.Result[ActorResp] {
+	msg OORDurableMsg) fn.Result[ActorResp] {
 
 	switch m := msg.(type) {
 	case *actor.RestartMessage:
 		return b.handleRestart(ctx, m)
 
-	case *durableActorCommandMessage:
-		request, err := actorMsgFromDurableCommand(m)
-		if err != nil {
-			return fn.Err[ActorResp](err)
-		}
+	case *StartTransferRequest:
+		return b.handleStartTransfer(ctx, m)
 
-		switch typedReq := request.(type) {
-		case *StartTransferRequest:
-			return b.handleStartTransfer(ctx, typedReq)
+	case *DriveEventRequest:
+		return b.handleDriveEvent(ctx, m)
 
-		case *DriveEventRequest:
-			return b.handleDriveEvent(ctx, typedReq)
+	case *GetStateRequest:
+		return b.handleGetState(ctx, m)
 
-		case *GetStateRequest:
-			return b.handleGetState(ctx, typedReq)
+	case *RestoreSessionRequest:
+		return b.handleRestoreSession(ctx, m)
 
-		case *RestoreSessionRequest:
-			return b.handleRestoreSession(ctx, typedReq)
+	case *ResumeSessionRequest:
+		return b.handleResumeSession(ctx, m)
 
-		case *ResumeSessionRequest:
-			return b.handleResumeSession(ctx, typedReq)
-
-		case *ExportSnapshotRequest:
-			return b.handleExportSnapshot(ctx, typedReq)
-
-		default:
-			return fn.Err[ActorResp](
-				fmt.Errorf(
-					"unknown message type: %T",
-					typedReq,
-				),
-			)
-		}
+	case *ExportSnapshotRequest:
+		return b.handleExportSnapshot(ctx, m)
 
 	default:
 		return fn.Err[ActorResp](fmt.Errorf("unknown message type: %T",
@@ -326,19 +387,32 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("event must be provided"))
 	}
 
+	handle, ok := b.sessions[req.SessionID]
+	if !ok {
+		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
+			req.SessionID))
+	}
+
+	// If the inbound SubmitAcceptedEvent is missing the ArkPSBT (e.g.,
+	// the server response proto does not echo it back), enrich from the
+	// current session state. The AwaitingSubmitAccepted state carries
+	// the canonical ArkPSBT that was sent in the submit request.
 	if submitAccepted, ok := req.Event.(*SubmitAcceptedEvent); ok {
+		if submitAccepted.ArkPSBT == nil {
+			err := b.enrichSubmitAcceptedArkPSBT(
+				handle, submitAccepted,
+			)
+			if err != nil {
+				return fn.Err[ActorResp](err)
+			}
+		}
+
 		err := validateSubmitAcceptedIdentity(
 			req.SessionID, submitAccepted,
 		)
 		if err != nil {
 			return fn.Err[ActorResp](err)
 		}
-	}
-
-	handle, ok := b.sessions[req.SessionID]
-	if !ok {
-		return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
-			req.SessionID))
 	}
 
 	finalizeState, err := b.captureFinalizeStateForEvent(
@@ -373,6 +447,34 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
+}
+
+// enrichSubmitAcceptedArkPSBT populates a SubmitAcceptedEvent's ArkPSBT field
+// from the current session state when the server response does not echo it
+// back. The canonical ArkPSBT lives in the AwaitingSubmitAccepted state, which
+// was set when the client built and sent the submit package. This allows the
+// dispatch adapter to construct a SubmitAcceptedEvent from the oorwire proto
+// (which only carries sessionID + co-signed checkpoints) and have the actor
+// enrich it before validation and transition processing.
+func (b *oorDurableBehavior) enrichSubmitAcceptedArkPSBT(
+	handle *sessionHandle,
+	event *SubmitAcceptedEvent) error {
+
+	state, err := handle.currentState()
+	if err != nil {
+		return fmt.Errorf("get current state for ArkPSBT "+
+			"enrichment: %w", err)
+	}
+
+	awaitingSubmit, ok := state.(*AwaitingSubmitAccepted)
+	if !ok {
+		return fmt.Errorf("expected AwaitingSubmitAccepted "+
+			"state for ArkPSBT enrichment, got %T", state)
+	}
+
+	event.ArkPSBT = awaitingSubmit.ArkPSBT
+
+	return nil
 }
 
 // persistOutgoingPackage stores finalized outgoing package artifacts and input
@@ -662,6 +764,57 @@ func (b *oorDurableBehavior) askEvent(ctx context.Context, fsm *StateMachine,
 	return result.UnwrapOr(nil), nil
 }
 
+// Compile-time assertions that local outbox types satisfy
+// serverconn.ServerMessage. These exist to document why isTransportEvent uses
+// an explicit type switch rather than an interface assertion: if these types
+// were ever routed to the server, it would cause fund-loss (inputs not marked
+// spent locally) or liveness failure (retry timers lost).
+var _ serverconn.ServerMessage = (*MarkInputsSpentRequest)(nil)
+var _ serverconn.ServerMessage = (*ScheduleRetryRequest)(nil)
+
+// isTransportEvent reports whether the outbox event should be routed to the
+// server via serverconn rather than handled locally. This uses an explicit type
+// switch instead of a serverconn.ServerMessage assertion because some local
+// outbox types (MarkInputsSpentRequest, ScheduleRetryRequest) also satisfy
+// that interface via their ToProto methods.
+func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
+	if b.cfg.ServerConn == nil {
+		return false
+	}
+
+	switch msg.(type) {
+	case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
+		*SendIncomingAckRequest:
+
+		return true
+
+	default:
+		return false
+	}
+}
+
+// sendTransportEvent wraps the outbox message in a SendClientEventRequest and
+// Tell's it to the serverconn actor for durable delivery to the server.
+func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
+	msg OutboxEvent) error {
+
+	serverMsg, ok := msg.(serverconn.ServerMessage)
+	if !ok {
+		return fmt.Errorf("transport event %T does not implement "+
+			"ServerMessage", msg)
+	}
+
+	sendReq := &serverconn.SendClientEventRequest{
+		Message: serverMsg,
+	}
+
+	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+		return fmt.Errorf("send transport event to server: %w", err)
+	}
+
+	return nil
+}
+
 // driveOutbox executes outbox work using the configured handler and feeds any
 // follow-up events back into the FSM.
 func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
@@ -673,7 +826,20 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	}
 
 	for _, msg := range outbox {
-		// Outbox handler is the I/O boundary.
+		// Transport events (submit, finalize, ack) are Tell'd to
+		// the serverconn actor for durable delivery. The FSM stays
+		// in its AwaitingX state until the server response arrives
+		// asynchronously via DriveEventRequest.
+		if b.isTransportEvent(msg) {
+			if err := b.sendTransportEvent(ctx, msg); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		// Local events (signing, persistence, timers) continue
+		// through the outbox handler.
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			followUps = []Event{
@@ -796,7 +962,7 @@ func (h *sessionHandle) currentState() (State, error) {
 }
 
 type durableBehaviorIface = actor.ActorBehavior[
-	actor.TLVMessage, ActorResp,
+	OORDurableMsg, ActorResp,
 ]
 
 var _ durableBehaviorIface = (*oorDurableBehavior)(nil)

@@ -24,8 +24,11 @@ import (
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/oorwire"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
@@ -33,6 +36,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -63,6 +67,7 @@ type Server struct {
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
+	oorActor     *oor.OORClientActor
 
 	serverConn *grpc.ClientConn
 
@@ -290,10 +295,18 @@ func (s *Server) RunUntilShutdown(
 		return err
 	}
 
+	// -------------------------------------------------------
+	// 11. Register the OOR client actor.
+	// -------------------------------------------------------
+	if err := s.initOORActor(ctx); err != nil {
+		return err
+	}
+	defer s.oorActor.Stop()
+
 	log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
-	// 11. Block until shutdown.
+	// 12. Block until shutdown.
 	// -------------------------------------------------------
 	<-interceptor.ShutdownChannel()
 
@@ -392,10 +405,10 @@ func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
 	return mailboxpb.NewMailboxServiceClient(s.serverConn)
 }
 
-// buildRPCDispatchers creates the dispatcher map for inbound KIND_REQUEST
-// envelopes. Each entry bridges the mailbox transport to the local ServeMux:
-// the dispatcher deserializes the request, invokes the handler, serializes
-// the response, and sends a KIND_RESPONSE envelope back via the edge client.
+// buildRPCDispatchers creates the dispatcher map for inbound envelopes.
+// KIND_REQUEST envelopes are bridged to the local ServeMux (e.g.,
+// DaemonService.GetInfo). KIND_EVENT envelopes for server-push OOR responses
+// are routed to the OOR actor via the EventRouter and service key lookup.
 func (s *Server) buildRPCDispatchers(
 	edge mailboxpb.MailboxServiceClient,
 ) map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher {
@@ -411,19 +424,125 @@ func (s *Server) buildRPCDispatchers(
 		return s.handleInboundRPC(ctx, edge, env)
 	}
 
+	// Build event-based dispatch routes for server-push events
+	// that target durable actors via service key lookup.
+	eventRouter := s.buildEventRoutes()
+
+	// Start with the event router's dispatch map, then layer
+	// on the RPC dispatch entries.
+	dispatchers := eventRouter.AsDispatcherMap()
+
+	// DaemonService.GetInfo — server queries client status.
+	dispatchers[mailboxrpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetInfo",
+	}] = dispatch
+
 	// TODO(roasbeef): Add indexer and wallet service methods
 	// here once their clients are initialized (e.g.,
 	// WalletService.SignVTXO, RoundService.SubmitNonces).
-	// Missing entries will cause the ingress loop to silently
-	// drop inbound KIND_REQUEST envelopes for unregistered
-	// methods.
-	return map[mailboxrpc.ServiceMethod]serverconn.EnvelopeDispatcher{
-		// DaemonService.GetInfo — server queries client status.
-		{
-			Service: "daemonrpc.DaemonService",
-			Method:  "GetInfo",
-		}: dispatch,
-	}
+
+	return dispatchers
+}
+
+// buildEventRoutes registers typed event routes for server-push envelopes.
+// Each route maps a (service, method) pair to a durable actor via the
+// EventRouter, which handles proto deserialization, domain adaptation, and
+// durable Tell delivery.
+func (s *Server) buildEventRoutes() *serverconn.EventRouter {
+	router := serverconn.NewEventRouter(s.actorSystem)
+
+	s.registerOOREventRoutes(router)
+
+	return router
+}
+
+// registerOOREventRoutes registers OOR mailbox service event routes with the
+// EventRouter. When the server pushes SubmitPackage or FinalizePackage
+// response events, the router decodes the oorwire proto, adapts it into a
+// DriveEventRequest, and Tell's it to the OOR actor via service key.
+func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
+	oorKey := oor.NewServiceKey()
+
+	// SubmitPackage: server accepted the submit and returned co-signed
+	// checkpoint PSBTs. Adapt into a DriveEventRequest carrying a
+	// SubmitAcceptedEvent so the OOR FSM can advance.
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: oorwire.ServiceName,
+		Method:  oorwire.MethodSubmitPackage,
+		NewEvent: func() proto.Message {
+			return &oorwire.SubmitPackageResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
+			resp, ok := p.(*oorwire.SubmitPackageResponse)
+			if !ok {
+				return nil, fmt.Errorf(
+					"expected SubmitPackageResponse, "+
+						"got %T", p,
+				)
+			}
+
+			sessionID, checkpoints, err :=
+				oorwire.ParseSubmitPackageResponse(resp)
+			if err != nil {
+				return nil, fmt.Errorf("parse submit "+
+					"response: %w", err)
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: oor.SessionID(sessionID),
+				Event: &oor.SubmitAcceptedEvent{
+					SessionID: oor.SessionID(
+						sessionID,
+					),
+					CoSignedCheckpointPSBTs: checkpoints,
+				},
+			}, nil
+		},
+	})
+
+	// FinalizePackage: server accepted the finalize. Adapt into a
+	// DriveEventRequest carrying a FinalizeAcceptedEvent so the OOR
+	// FSM can advance to the terminal Completed state.
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: oorwire.ServiceName,
+		Method:  oorwire.MethodFinalizePackage,
+		NewEvent: func() proto.Message {
+			return &oorwire.FinalizePackageResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
+			resp, ok := p.(*oorwire.FinalizePackageResponse)
+			if !ok {
+				return nil, fmt.Errorf(
+					"expected FinalizePackageResponse"+
+						", got %T", p,
+				)
+			}
+
+			sessionID, err :=
+				oorwire.ParseFinalizePackageResponse(resp)
+			if err != nil {
+				return nil, fmt.Errorf("parse finalize "+
+					"response: %w", err)
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: oor.SessionID(sessionID),
+				Event:     &oor.FinalizeAcceptedEvent{},
+			}, nil
+		},
+	})
+
+	// TODO(roasbeef): Register an IncomingAck route once the
+	// oorwire proto defines an ack RPC. SendIncomingAckRequest is
+	// classified as a transport event but currently has no
+	// server-push response route.
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through
@@ -659,6 +778,73 @@ func (s *Server) initRoundActor(ctx context.Context,
 	}
 
 	log.InfoS(ctx, "Round actor registered and started")
+
+	return nil
+}
+
+// initOORActor creates and starts the OOR (out-of-round) client actor.
+//
+// The OOR actor manages outgoing off-chain transfers: it drives the
+// client-side FSM that builds Ark packages, signs checkpoints, and
+// coordinates with the server via the serverconn transport. Transport
+// outbox events (submit, finalize, ack) are routed through the
+// ServerConn reference, while local events (signing, persistence) are
+// handled by a layered OutboxHandler stack:
+//
+//   - LocalPersistenceOutboxHandler: marks inputs spent, materializes
+//     incoming VTXOs, handles incoming ack.
+//   - SigningOutboxHandler (Next delegate): signs Ark and checkpoint
+//     PSBTs, schedules retries.
+func (s *Server) initOORActor(ctx context.Context) error {
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+
+	clientWallet := lndbackend.NewClientWallet(
+		s.lnd.Signer, s.lnd.WalletKit,
+	)
+
+	vtxoStore := dbStore.NewVTXOStore(clk)
+	packageStore := dbStore.NewOORArtifactStore(clk)
+
+	// Create the timeout actor for scheduling retry timers. When a
+	// retry timer fires, the callback ref transforms the expiry into
+	// a DriveEventRequest and Tell's it back to the OOR actor.
+	timeoutActor := timeout.NewActor()
+
+	signingHandler := &oor.SigningOutboxHandler{
+		Signer:       clientWallet,
+		TimeoutActor: timeoutActor,
+	}
+
+	outboxHandler := &oor.LocalPersistenceOutboxHandler{
+		Next:         signingHandler,
+		Store:        vtxoStore,
+		PackageStore: packageStore,
+	}
+
+	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
+		Logger:        log,
+		OutboxHandler: outboxHandler,
+		ServerConn:    s.runtime.TellRef(),
+		PackageStore:  packageStore,
+		DeliveryStore: s.deliveryStore,
+		ActorSystem:   s.actorSystem,
+		ActorID:       oor.OORActorServiceKeyName,
+	})
+
+	// Wire the timeout callback ref using the registered service
+	// key. The service key resolves the OOR actor via the
+	// receptionist, and the MapInputRef transforms
+	// *timeout.ExpiredMsg into a DriveEventRequest with
+	// RetryDueEvent targeting the correct session.
+	oorKey := oor.NewServiceKey()
+	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
+		oorKey.Ref(s.actorSystem),
+	)
+
+	log.InfoS(ctx, "OOR client actor started")
 
 	return nil
 }

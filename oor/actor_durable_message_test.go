@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -81,9 +82,9 @@ func TestDecodeLengthPrefixedBlobListRejectsTrailingBytes(t *testing.T) {
 	require.ErrorContains(t, err, "trailing payload bytes")
 }
 
-// TestDriveEventCommandRoundTripFailEvent asserts durable encoding/decoding
-// round-trips FailEvent drive-event commands.
-func TestDriveEventCommandRoundTripFailEvent(t *testing.T) {
+// TestDriveEventRequestRoundTripFailEvent asserts DriveEventRequest TLV
+// Encode/Decode round-trips FailEvent correctly.
+func TestDriveEventRequestRoundTripFailEvent(t *testing.T) {
 	t.Parallel()
 
 	sessionID := SessionID(chainhash.Hash{7, 7, 7})
@@ -94,25 +95,22 @@ func TestDriveEventCommandRoundTripFailEvent(t *testing.T) {
 		},
 	}
 
-	cmd, err := durableCommandFromActorMsg(msg)
-	require.NoError(t, err)
-	require.Equal(t, oorCommandDriveEvent, cmd.Command)
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
 
-	decoded, err := actorMsgFromDurableCommand(cmd)
-	require.NoError(t, err)
+	decoded := &DriveEventRequest{}
+	require.NoError(t, decoded.Decode(&buf))
 
-	decodedReq, ok := decoded.(*DriveEventRequest)
-	require.True(t, ok)
-	require.Equal(t, sessionID, decodedReq.SessionID)
+	require.Equal(t, sessionID, decoded.SessionID)
 
-	failEvt, ok := decodedReq.Event.(*FailEvent)
+	failEvt, ok := decoded.Event.(*FailEvent)
 	require.True(t, ok)
 	require.Equal(t, "transport timeout", failEvt.Reason)
 }
 
-// TestDriveEventCommandRoundTripSubmitAcceptedEvent asserts durable
-// encoding/decoding round-trips SubmitAcceptedEvent drive-event commands.
-func TestDriveEventCommandRoundTripSubmitAcceptedEvent(t *testing.T) {
+// TestDriveEventRequestRoundTripSubmitAcceptedEvent asserts DriveEventRequest
+// TLV Encode/Decode round-trips SubmitAcceptedEvent correctly.
+func TestDriveEventRequestRoundTripSubmitAcceptedEvent(t *testing.T) {
 	t.Parallel()
 
 	ark, checkpoints := testOutboxPSBTPair(t)
@@ -128,18 +126,15 @@ func TestDriveEventCommandRoundTripSubmitAcceptedEvent(t *testing.T) {
 		},
 	}
 
-	cmd, err := durableCommandFromActorMsg(msg)
-	require.NoError(t, err)
-	require.Equal(t, oorCommandDriveEvent, cmd.Command)
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
 
-	decoded, err := actorMsgFromDurableCommand(cmd)
-	require.NoError(t, err)
+	decoded := &DriveEventRequest{}
+	require.NoError(t, decoded.Decode(&buf))
 
-	decodedReq, ok := decoded.(*DriveEventRequest)
-	require.True(t, ok)
-	require.Equal(t, sessionID, decodedReq.SessionID)
+	require.Equal(t, sessionID, decoded.SessionID)
 
-	submitEvt, ok := decodedReq.Event.(*SubmitAcceptedEvent)
+	submitEvt, ok := decoded.Event.(*SubmitAcceptedEvent)
 	require.True(t, ok)
 	require.Equal(t, sessionID, submitEvt.SessionID)
 	require.NotNil(t, submitEvt.ArkPSBT)
@@ -149,9 +144,9 @@ func TestDriveEventCommandRoundTripSubmitAcceptedEvent(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), decodedTxID)
 }
 
-// TestDriveEventCommandRoundTripRetryDueEvent asserts durable
-// encoding/decoding round-trips RetryDueEvent drive-event commands.
-func TestDriveEventCommandRoundTripRetryDueEvent(t *testing.T) {
+// TestDriveEventRequestRoundTripRetryDueEvent asserts DriveEventRequest TLV
+// Encode/Decode round-trips RetryDueEvent correctly.
+func TestDriveEventRequestRoundTripRetryDueEvent(t *testing.T) {
 	t.Parallel()
 
 	sessionID := SessionID(chainhash.Hash{3, 3, 3})
@@ -160,17 +155,14 @@ func TestDriveEventCommandRoundTripRetryDueEvent(t *testing.T) {
 		Event:     &RetryDueEvent{},
 	}
 
-	cmd, err := durableCommandFromActorMsg(msg)
-	require.NoError(t, err)
-	require.Equal(t, oorCommandDriveEvent, cmd.Command)
+	var buf bytes.Buffer
+	require.NoError(t, msg.Encode(&buf))
 
-	decoded, err := actorMsgFromDurableCommand(cmd)
-	require.NoError(t, err)
+	decoded := &DriveEventRequest{}
+	require.NoError(t, decoded.Decode(&buf))
 
-	decodedReq, ok := decoded.(*DriveEventRequest)
-	require.True(t, ok)
-	require.Equal(t, sessionID, decodedReq.SessionID)
-	require.IsType(t, &RetryDueEvent{}, decodedReq.Event)
+	require.Equal(t, sessionID, decoded.SessionID)
+	require.IsType(t, &RetryDueEvent{}, decoded.Event)
 }
 
 // TestDriveEventPayloadRequiresEvent asserts drive-event payload encoding

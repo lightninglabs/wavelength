@@ -7,35 +7,11 @@ import (
 	"io"
 	"math"
 
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
-)
-
-const (
-	// oorDurableCommandTLVType is the top-level TLV type for OOR
-	// durable actor command messages. The high range (0x7xxx) avoids
-	// collisions with the actor framework's reserved types
-	// (e.g. actor.RestartTLVType).
-	oorDurableCommandTLVType tlv.Type = 0x7003
-
-	oorDurableCommandRecordType tlv.Type = 1
-	oorDurablePayloadRecordType tlv.Type = 2
-)
-
-const (
-	oorCommandStartTransfer uint64 = 1
-	oorCommandGetState      uint64 = 2
-	oorCommandResumeSession uint64 = 3
-	oorCommandExportSession uint64 = 4
-	oorCommandRestore       uint64 = 5
-	oorCommandDriveEvent    uint64 = 6
 )
 
 const (
@@ -91,65 +67,6 @@ const (
 	recipientValueSatRecordType tlv.Type = 2
 )
 
-type durableActorCommandMessage struct {
-	actor.BaseMessage
-
-	Command uint64
-	Payload []byte
-}
-
-func (m *durableActorCommandMessage) MessageType() string {
-	return "oor.DurableCommand"
-}
-
-func (m *durableActorCommandMessage) TLVType() tlv.Type {
-	return oorDurableCommandTLVType
-}
-
-func (m *durableActorCommandMessage) Encode(w io.Writer) error {
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
-			oorDurableCommandRecordType, &m.Command,
-		),
-		tlv.MakePrimitiveRecord(
-			oorDurablePayloadRecordType, &m.Payload,
-		),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	return stream.Encode(w)
-}
-
-func (m *durableActorCommandMessage) Decode(r io.Reader) error {
-	var (
-		command uint64
-		payload []byte
-	)
-
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(oorDurableCommandRecordType, &command),
-		tlv.MakePrimitiveRecord(oorDurablePayloadRecordType, &payload),
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return err
-	}
-
-	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
-		return err
-	}
-
-	m.Command = command
-	m.Payload = payload
-
-	return nil
-}
-
 type startTransferPayload struct {
 	OperatorPubKey []byte
 	CSVDelay       uint32
@@ -160,229 +77,6 @@ type startTransferPayload struct {
 type recipientPayload struct {
 	PkScript []byte
 	ValueSat int64
-}
-
-func durableCommandFromActorMsg(msg ActorMsg) (*durableActorCommandMessage,
-	error) {
-
-	if msg == nil {
-		return nil, fmt.Errorf("message must be provided")
-	}
-
-	switch req := msg.(type) {
-	case *StartTransferRequest:
-		payload := startTransferPayload{
-			CSVDelay: req.Policy.CSVDelay,
-			Recipients: make(
-				[]recipientPayload, 0, len(req.Recipients),
-			),
-			Inputs: make(
-				[]*TransferInputSnapshot, 0, len(req.Inputs),
-			),
-		}
-
-		if req.Policy.OperatorKey == nil {
-			return nil, fmt.Errorf("operator key must be provided")
-		}
-
-		payload.OperatorPubKey = req.Policy.OperatorKey.
-			SerializeCompressed()
-
-		for i := range req.Inputs {
-			snap, err := req.Inputs[i].ToSnapshot()
-			if err != nil {
-				return nil, err
-			}
-
-			payload.Inputs = append(payload.Inputs, snap)
-		}
-
-		for i := range req.Recipients {
-			payload.Recipients = append(
-				payload.Recipients, recipientPayload{
-					PkScript: req.Recipients[i].PkScript,
-					ValueSat: int64(
-						req.Recipients[i].Value,
-					),
-				},
-			)
-		}
-
-		raw, err := encodeStartTransferPayload(payload)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandStartTransfer,
-			Payload: raw,
-		}, nil
-
-	case *GetStateRequest:
-		raw, err := encodeSessionPayload(req.SessionID)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandGetState,
-			Payload: raw,
-		}, nil
-
-	case *ResumeSessionRequest:
-		raw, err := encodeSessionPayload(req.SessionID)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandResumeSession,
-			Payload: raw,
-		}, nil
-
-	case *ExportSnapshotRequest:
-		raw, err := encodeSessionPayload(req.SessionID)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandExportSession,
-			Payload: raw,
-		}, nil
-
-	case *RestoreSessionRequest:
-		raw, err := encodeRestoreSnapshotPayload(req.Snapshot)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandRestore,
-			Payload: raw,
-		}, nil
-
-	case *DriveEventRequest:
-		if req == nil {
-			return nil, fmt.Errorf(
-				"drive event request must be provided",
-			)
-		}
-
-		raw, err := encodeDriveEventRequestPayload(
-			req.SessionID, req.Event,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &durableActorCommandMessage{
-			Command: oorCommandDriveEvent,
-			Payload: raw,
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown actor message type: %T", req)
-	}
-}
-
-func actorMsgFromDurableCommand(cmd *durableActorCommandMessage) (ActorMsg,
-	error) {
-
-	if cmd == nil {
-		return nil, fmt.Errorf("command must be provided")
-	}
-
-	switch cmd.Command {
-	case oorCommandStartTransfer:
-		payload, err := decodeStartTransferPayload(cmd.Payload)
-		if err != nil {
-			return nil, err
-		}
-
-		operatorKey, err := btcec.ParsePubKey(payload.OperatorPubKey)
-		if err != nil {
-			return nil, err
-		}
-
-		inputs := make([]TransferInput, 0, len(payload.Inputs))
-		for i := range payload.Inputs {
-			in, err := TransferInputFromSnapshot(payload.Inputs[i])
-			if err != nil {
-				return nil, err
-			}
-
-			inputs = append(inputs, in)
-		}
-
-		recipients := make(
-			[]oortx.RecipientOutput, 0, len(payload.Recipients),
-		)
-		for i := range payload.Recipients {
-			recipient := payload.Recipients[i]
-			recipients = append(recipients, oortx.RecipientOutput{
-				PkScript: recipient.PkScript,
-				Value:    btcutil.Amount(recipient.ValueSat),
-			})
-		}
-
-		return &StartTransferRequest{
-			Policy: scripts.CheckpointPolicy{
-				OperatorKey: operatorKey,
-				CSVDelay:    payload.CSVDelay,
-			},
-			Inputs:     inputs,
-			Recipients: recipients,
-		}, nil
-
-	case oorCommandGetState:
-		sessionID, err := decodeSessionPayload(cmd.Payload)
-		if err != nil {
-			return nil, err
-		}
-
-		return &GetStateRequest{SessionID: sessionID}, nil
-
-	case oorCommandResumeSession:
-		sessionID, err := decodeSessionPayload(cmd.Payload)
-		if err != nil {
-			return nil, err
-		}
-
-		return &ResumeSessionRequest{SessionID: sessionID}, nil
-
-	case oorCommandExportSession:
-		sessionID, err := decodeSessionPayload(cmd.Payload)
-		if err != nil {
-			return nil, err
-		}
-
-		return &ExportSnapshotRequest{SessionID: sessionID}, nil
-
-	case oorCommandRestore:
-		snapshot, err := decodeRestoreSnapshotPayload(cmd.Payload)
-		if err != nil {
-			return nil, err
-		}
-
-		return &RestoreSessionRequest{Snapshot: snapshot}, nil
-
-	case oorCommandDriveEvent:
-		sessionID, event, err := decodeDriveEventRequestPayload(
-			cmd.Payload,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		return &DriveEventRequest{
-			SessionID: sessionID,
-			Event:     event,
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown command kind: %d", cmd.Command)
-	}
 }
 
 func encodeStartTransferPayload(payload startTransferPayload) ([]byte, error) {
@@ -838,13 +532,12 @@ func encodeDriveEventRequestPayload(sessionID SessionID, event Event) ([]byte,
 		return nil, fmt.Errorf("event must be provided")
 	}
 
-	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
-		if err := validateSubmitAcceptedIdentity(
-			sessionID, submitAccepted,
-		); err != nil {
-			return nil, err
-		}
-	}
+	// Validation of SubmitAcceptedEvent identity (ArkPSBT, session ID
+	// match) is deferred to the processing layer (handleDriveEvent)
+	// rather than the serialization layer. This allows server-push
+	// events dispatched via the EventRouter to be persisted to the
+	// durable mailbox with nil ArkPSBT, which the actor enriches from
+	// session state before validation.
 
 	sessionBytes := sessionIDBytes(sessionID)
 	eventPayload, err := encodeEventPayload(event)
@@ -909,13 +602,9 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 		return SessionID{}, nil, err
 	}
 
-	if submitAccepted, ok := event.(*SubmitAcceptedEvent); ok {
-		if err := validateSubmitAcceptedIdentity(
-			sessionID, submitAccepted,
-		); err != nil {
-			return SessionID{}, nil, err
-		}
-	}
+	// Validation of SubmitAcceptedEvent identity is deferred to the
+	// processing layer (handleDriveEvent), not the deserialization
+	// layer. See encodeDriveEventRequestPayload for rationale.
 
 	return sessionID, event, nil
 }
@@ -934,9 +623,16 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	case *SubmitAcceptedEvent:
 		eventKind = eventKindSubmitAccepted
 		submitSession = sessionIDBytes(evt.SessionID)
-		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
-		if err != nil {
-			return nil, err
+
+		// ArkPSBT may be nil for server-push events dispatched
+		// via the EventRouter. The actor layer enriches it from
+		// session state before processing. Encode empty bytes
+		// when nil so the TLV stream is well-formed.
+		if evt.ArkPSBT != nil {
+			arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		checkpoints, err := serializePSBTSlice(
@@ -1045,9 +741,15 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			return nil, err
 		}
 
-		ark, err := psbtutil.Parse(arkPSBT)
-		if err != nil {
-			return nil, err
+		// ArkPSBT may be empty for server-push events where the
+		// proto response does not echo it back. The actor layer
+		// enriches it from session state before processing.
+		var ark *psbt.Packet
+		if len(arkPSBT) > 0 {
+			ark, err = psbtutil.Parse(arkPSBT)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		checkpointRaw, err := decodeLengthPrefixedBlobList(
@@ -1245,5 +947,3 @@ func uint32ToInt32(value uint32, field string) (int32, error) {
 
 	return int32(value), nil
 }
-
-var _ actor.TLVMessage = (*durableActorCommandMessage)(nil)

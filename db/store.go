@@ -211,6 +211,27 @@ func (s *Store) NewBoardingStore(chainParams *chaincfg.Params,
 	return NewBoardingWalletStore(boardingDB, chainParams, clk)
 }
 
+// NewVTXOStore builds a VTXO persistence store with transactional query
+// execution.
+//
+// The returned store wraps sqlc VTXO queries in the generic transaction
+// executor so multi-query VTXO updates can run atomically.
+func (s *Store) NewVTXOStore(
+	clk clock.Clock) *VTXOPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	roundDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) RoundStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewVTXOPersistenceStore(roundDB, clk)
+}
+
 // NewOORArtifactStore builds the OOR artifact persistence store with
 // transactional query execution.
 //
