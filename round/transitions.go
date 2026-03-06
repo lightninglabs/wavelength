@@ -866,6 +866,12 @@ func (s *CommitmentTxValidatedState) ProcessEvent(
 				outbox = append(outbox, msg)
 			}
 
+			outbox = append(outbox, &StartTimeoutReq{
+				RoundID:  s.RoundID,
+				Phase:    TimeoutPhaseForfeitCollection,
+				Duration: env.ForfeitCollectionTimeout,
+			})
+
 			// Transition directly to forfeit collection.
 			collectedForfeits := make(
 				map[wire.OutPoint]*ForfeitSignatureResponse,
@@ -1083,6 +1089,10 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		}
 
 		outboxMsgs := []ClientOutMsg{
+			&CancelTimeoutReq{
+				RoundID: s.RoundID,
+				Phase:   TimeoutPhaseForfeitCollection,
+			},
 			&SubmitVTXOForfeitSigsToServer{
 				RoundID:     s.RoundID,
 				ForfeitSigs: forfeitSigs,
@@ -1153,6 +1163,41 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 				Error:       evt.Error,
 				Recoverable: evt.Recoverable,
 			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: cancelForfeitTimeout(
+					s.RoundID,
+				),
+			}),
+		}, nil
+
+	case *ForfeitCollectionTimedOut:
+		// Ignore stale timeout events for other rounds. Timeouts are
+		// routed by RoundID, but this guard preserves FSM safety.
+		if evt.RoundID != s.RoundID {
+			return selfLoop(s), nil
+		}
+
+		collectedCount := len(s.CollectedForfeits)
+		expectedCount := len(s.ExpectedForfeits)
+		reason := fmt.Sprintf("forfeit signature collection timeout: "+
+			"collected %d/%d", collectedCount, expectedCount)
+
+		env.Log.WarnS(ctx, "Forfeit signature collection timed out", nil,
+			slog.String("round_id", s.RoundID.String()),
+			slog.Int("collected_forfeits", collectedCount),
+			slog.Int("expected_forfeits", expectedCount))
+
+		return &ClientStateTransition{
+			NextState: &ClientFailedState{
+				Reason:      reason,
+				Error:       fmt.Errorf("%s", reason),
+				Recoverable: true,
+			},
+			NewEvents: fn.Some(ClientEmittedEvent{
+				Outbox: cancelForfeitTimeout(
+					s.RoundID,
+				),
+			}),
 		}, nil
 
 	default:
@@ -1497,9 +1542,16 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 		outbox = append(outbox, msg)
 	}
 
+	outbox = append(outbox, &StartTimeoutReq{
+		RoundID:  s.RoundID,
+		Phase:    TimeoutPhaseForfeitCollection,
+		Duration: env.ForfeitCollectionTimeout,
+	})
+
 	env.Log.InfoS(ctx, "Transitioning to forfeit collection",
 		slog.String("round_id", s.RoundID.String()),
-		slog.Int("forfeit_count", len(s.ForfeitMappings)))
+		slog.Int("forfeit_count", len(s.ForfeitMappings)),
+		slog.Duration("forfeit_timeout", env.ForfeitCollectionTimeout))
 
 	// Transition to forfeit collection state. After collecting all forfeit
 	// signatures, that state will sign boarding inputs and transition to

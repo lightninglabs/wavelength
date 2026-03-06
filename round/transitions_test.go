@@ -979,6 +979,58 @@ func TestCommitmentTxValidatedState(t *testing.T) {
 		h.assertOutboxLen(1)
 		h.assertOutboxContainsType("*round.SubmitNoncesRequest")
 	})
+
+	t.Run("leave_only_round_starts_forfeit_timeout", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		commitmentTx := h.newTestCommitmentTx(
+			[]BoardingIntent{intent},
+		)
+		roundID := testRoundIDTr("round-leave-timeout")
+
+		state := &CommitmentTxValidatedState{
+			RoundID:       roundID,
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{},
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+				Leaves: []*types.LeaveRequest{{
+					Output: &wire.TxOut{
+						Value:    40000,
+						PkScript: []byte{0x51, 0x20},
+					},
+				}},
+			},
+			ClientTrees:          make(map[SignerKey]*tree.Tree),
+			BoardingInputIndices: map[wire.OutPoint]int{},
+			ForfeitMappings: map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+		}
+		h.withState(state)
+
+		transition, err := h.sendEvent(&GenerateNonces{})
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		cs := assertStateType[*ForfeitSignaturesCollectingState](h)
+		require.Equal(t, roundID, cs.RoundID)
+		require.Len(t, cs.ExpectedForfeits, 1)
+
+		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
+		h.assertOutboxContainsType("*round.StartTimeoutReq")
+	})
 }
 
 func TestNoncesSentState(t *testing.T) {
@@ -1132,6 +1184,57 @@ func TestPartialSigsSentState(t *testing.T) {
 
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
 		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
+	})
+
+	t.Run("OperatorSigned_starts_forfeit_timeout", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+		commitmentTx := h.newTestCommitmentTx([]BoardingIntent{intent})
+		roundID := testRoundIDTr("round-forfeit-timeout-start")
+
+		state := &PartialSigsSentState{
+			RoundID:       roundID,
+			CommitmentTx:  commitmentTx,
+			VTXOTreePaths: map[int]*tree.Tree{},
+			Intents: Intents{
+				Boarding: []BoardingIntent{intent},
+			},
+			ClientTrees: make(map[SignerKey]*tree.Tree),
+			BoardingInputIndices: map[wire.OutPoint]int{
+				intent.Outpoint: 0,
+			},
+			ForfeitMappings: map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+		}
+		h.withState(state)
+
+		event := &OperatorSigned{
+			RoundID: roundID,
+			AggSigs: map[tree.TxID]*schnorr.Signature{},
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		cs := assertStateType[*ForfeitSignaturesCollectingState](h)
+		require.Equal(t, roundID, cs.RoundID)
+		require.Len(t, cs.ExpectedForfeits, 1)
+
+		h.assertOutboxContainsType("*round.ForfeitRequestToVTXO")
+		h.assertOutboxContainsType("*round.StartTimeoutReq")
 	})
 
 	t.Run("empty_signatures_error", func(t *testing.T) {
@@ -1828,6 +1931,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		forfeitType := "*round.SubmitVTXOForfeitSigsToServer"
 		h.assertOutboxContainsType(forfeitType)
 		h.assertOutboxContainsType("*round.SubmitForfeitSigRequest")
+		h.assertOutboxContainsType("*round.CancelTimeoutReq")
 	})
 
 	t.Run("multiple_forfeits_wait_for_all", func(t *testing.T) {
@@ -2054,6 +2158,48 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		failedState := assertStateType[*ClientFailedState](h)
 		require.Equal(t, "server disconnected", failedState.Reason)
 		require.True(t, failedState.Recoverable)
+		h.assertOutboxContainsType("*round.CancelTimeoutReq")
+	})
+
+	t.Run("timeout_transitions_to_failed", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+
+		intent := h.newTestBoardingIntent()
+		vtxoOutpoint := h.newTestOutpoint()
+		connectorOutpoint := h.newTestOutpoint()
+
+		roundID := testRoundIDTr("round-forfeit-timeout")
+		state := h.newForfeitCollectingState(
+			roundID,
+			Intents{Boarding: []BoardingIntent{intent}},
+			map[wire.OutPoint]*ConnectorLeafInfo{
+				vtxoOutpoint: {
+					LeafIndex:         0,
+					ConnectorOutpoint: connectorOutpoint,
+					ConnectorPkScript: []byte{0x51, 0x20},
+					ConnectorAmount:   546,
+					VTXOAmount:        50000,
+				},
+			},
+			[]byte{0x51, 0x20},
+		)
+		h.withState(state)
+
+		event := &ForfeitCollectionTimedOut{
+			RoundID: roundID,
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		failedState := assertStateType[*ClientFailedState](h)
+		require.Contains(t, failedState.Reason, "forfeit signature")
+		require.Contains(t, failedState.Reason, "timeout")
+		require.True(t, failedState.Recoverable)
+		h.assertOutboxContainsType("*round.CancelTimeoutReq")
 	})
 
 	t.Run("forfeit_amount_mismatch_fails", func(t *testing.T) {

@@ -1,6 +1,8 @@
 package round
 
 import (
+	"time"
+
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
@@ -332,6 +334,35 @@ type RoundCheckpointedNotification struct {
 }
 
 func (m *RoundCheckpointedNotification) clientOutMsgSealed() {}
+
+// StartTimeoutReq asks the actor to schedule a timeout for a round phase.
+type StartTimeoutReq struct {
+	actor.BaseMessage
+
+	// RoundID identifies which round owns this timeout.
+	RoundID RoundID
+
+	// Phase identifies the round FSM phase that scheduled the timeout.
+	Phase TimeoutPhase
+
+	// Duration is how long to wait before firing the timeout.
+	Duration time.Duration
+}
+
+func (m *StartTimeoutReq) clientOutMsgSealed() {}
+
+// CancelTimeoutReq asks the actor to cancel a previously scheduled timeout.
+type CancelTimeoutReq struct {
+	actor.BaseMessage
+
+	// RoundID identifies which round owns this timeout.
+	RoundID RoundID
+
+	// Phase identifies the round FSM phase timeout to cancel.
+	Phase TimeoutPhase
+}
+
+func (m *CancelTimeoutReq) clientOutMsgSealed() {}
 
 // RoundFailedNotification is emitted when a round FSM transitions to
 // ClientFailedState. This notifies higher layers (actor, wallet) of the

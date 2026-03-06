@@ -340,3 +340,13 @@ func (e *ForfeitSignatureResponse) RoundReceivable() {}
 func (e *ForfeitSignatureResponse) MessageType() string {
 	return "ForfeitSignatureResponse"
 }
+
+// ForfeitCollectionTimedOut is emitted by the round actor when the forfeit
+// signature collection window expires before all expected responses arrive.
+// This transitions the round into a failed state to avoid indefinite stalls.
+type ForfeitCollectionTimedOut struct {
+	// RoundID identifies the round whose forfeit collection timed out.
+	RoundID RoundID
+}
+
+func (e *ForfeitCollectionTimedOut) clientEventSealed() {}

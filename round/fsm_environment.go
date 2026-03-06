@@ -2,6 +2,7 @@ package round
 
 import (
 	"context"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -57,6 +58,10 @@ type ClientEnvironment struct {
 	// generation. This should only be set in focused unit tests
 	// that exercise FSM mechanics without real signing.
 	DisableJoinRequestAuth bool
+
+	// ForfeitCollectionTimeout is the timeout used while waiting for
+	// forfeit signatures from VTXO actors.
+	ForfeitCollectionTimeout time.Duration
 }
 
 // Name returns the unique identifier for this FSM instance.
@@ -73,17 +78,19 @@ func NewClientEnvironment(roundStore RoundStore, vtxoStore VTXOStore,
 	wallet ClientWallet, terms *types.OperatorTerms,
 	chainParams *chaincfg.Params, maxOperatorFee btcutil.Amount,
 	logger btclog.Logger, startHeight uint32,
-	queryBestHeight func(context.Context) (uint32, error)) *ClientEnvironment {
+	queryBestHeight func(context.Context) (uint32, error),
+	forfeitCollectionTimeout time.Duration) *ClientEnvironment {
 
 	return &ClientEnvironment{
-		RoundStore:      roundStore,
-		VTXOStore:       vtxoStore,
-		Wallet:          wallet,
-		OperatorTerms:   terms,
-		ChainParams:     chainParams,
-		MaxOperatorFee:  maxOperatorFee,
-		Log:             logger,
-		StartHeight:     startHeight,
-		QueryBestHeight: queryBestHeight,
+		RoundStore:               roundStore,
+		VTXOStore:                vtxoStore,
+		Wallet:                   wallet,
+		OperatorTerms:            terms,
+		ChainParams:              chainParams,
+		MaxOperatorFee:           maxOperatorFee,
+		Log:                      logger,
+		StartHeight:              startHeight,
+		QueryBestHeight:          queryBestHeight,
+		ForfeitCollectionTimeout: forfeitCollectionTimeout,
 	}
 }
