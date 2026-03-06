@@ -37,6 +37,11 @@ const (
 	// DefaultShutdownTimeout is the maximum duration to wait for
 	// graceful shutdown of the actor system and subsystems.
 	DefaultShutdownTimeout = 10 * time.Second
+
+	// DefaultForfeitCollectionTimeout is the default wall-clock
+	// deadline for collecting forfeit signatures from VTXO actors
+	// during a round.
+	DefaultForfeitCollectionTimeout = 2 * time.Minute
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -63,6 +68,12 @@ type Config struct {
 	// RPC configures the daemon's own gRPC server that external tools
 	// (CLI, GUI) connect to.
 	RPC *RPCConfig `mapstructure:"rpc"`
+
+	// ForfeitCollectionTimeout is the maximum wall-clock
+	// duration to wait for forfeit signatures during a round.
+	// If zero, the default of 2 minutes is used.
+	//nolint:ll
+	ForfeitCollectionTimeout time.Duration `mapstructure:"forfeitcollectiontimeout"`
 }
 
 // LndConfig holds connection parameters for the backing lnd node.

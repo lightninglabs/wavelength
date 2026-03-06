@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -362,7 +363,7 @@ func newTestHarness(t *testing.T) *boardingTestHarness {
 	env := NewClientEnvironment(
 		roundStore, vtxoStore, wallet, terms,
 		&chaincfg.RegressionNetParams, defaultMaxOperatorFee,
-		btclog.Disabled, testStartHeight, nil,
+		btclog.Disabled, testStartHeight, nil, 2*time.Minute,
 	)
 	env.DisableJoinRequestAuth = true
 

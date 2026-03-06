@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -300,6 +301,84 @@ func (m *mockSelfRef) waitForMessage(
 	}
 }
 
+// mockTimeoutActor captures timeout schedule/cancel requests and can fire
+// expiry callbacks on demand.
+type mockTimeoutActor struct {
+	t *testing.T
+
+	mu sync.Mutex
+
+	scheduledIDs map[timeout.ID]time.Duration
+	cancelledIDs []timeout.ID
+	callbacks    map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg]
+}
+
+// newMockTimeoutActor creates a timeout actor test double.
+func newMockTimeoutActor(t *testing.T) *mockTimeoutActor {
+	return &mockTimeoutActor{
+		t:            t,
+		scheduledIDs: make(map[timeout.ID]time.Duration),
+		cancelledIDs: make([]timeout.ID, 0),
+		callbacks: make(
+			map[timeout.ID]actor.TellOnlyRef[*timeout.ExpiredMsg],
+		),
+	}
+}
+
+// ID returns the mock actor identifier.
+func (m *mockTimeoutActor) ID() string {
+	return "mock-timeout-actor"
+}
+
+// Tell records timeout actor messages.
+func (m *mockTimeoutActor) Tell(_ context.Context, msg timeout.Msg) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	switch req := msg.(type) {
+	case *timeout.ScheduleTimeoutRequest:
+		m.scheduledIDs[req.ID] = req.Duration
+		m.callbacks[req.ID] = req.Callback
+
+	case *timeout.CancelTimeoutRequest:
+		m.cancelledIDs = append(m.cancelledIDs, req.ID)
+		delete(m.scheduledIDs, req.ID)
+		delete(m.callbacks, req.ID)
+	}
+
+	return nil
+}
+
+// assertTimeoutScheduled verifies a timeout was scheduled.
+func (m *mockTimeoutActor) assertTimeoutScheduled(t *testing.T, id timeout.ID,
+	expected time.Duration) {
+
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	duration, ok := m.scheduledIDs[id]
+	require.True(t, ok, "expected timeout scheduled for ID %s", id)
+	require.Equal(t, expected, duration)
+}
+
+// assertTimeoutCancelled verifies a timeout was cancelled.
+func (m *mockTimeoutActor) assertTimeoutCancelled(t *testing.T, id timeout.ID) {
+	t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, cancelled := range m.cancelledIDs {
+		if cancelled == id {
+			return
+		}
+	}
+
+	t.Fatalf("expected timeout cancelled for ID %s", id)
+}
+
 // mockVTXOManagerRef captures messages sent to the VTXO manager for test
 // verification, implementing actor.TellOnlyRef[actor.Message].
 type mockVTXOManagerRef struct {
@@ -396,11 +475,12 @@ type actorTestHarness struct {
 
 	actor *RoundClientActor
 
-	serverConn  *mockServerConnRef
-	chainSource *mockChainSourceRef
-	walletActor *mockWalletActorRef
-	selfRef     *mockSelfRef
-	vtxoManager *mockVTXOManagerRef
+	serverConn   *mockServerConnRef
+	chainSource  *mockChainSourceRef
+	walletActor  *mockWalletActorRef
+	selfRef      *mockSelfRef
+	timeoutActor *mockTimeoutActor
+	vtxoManager  *mockVTXOManagerRef
 
 	roundStore *MockRoundStore
 	vtxoStore  *MockVTXOStore
@@ -429,6 +509,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 	chainSource := newMockChainSourceRef(t)
 	walletActor := newMockWalletActorRef(t)
 	selfRef := newMockSelfRef(t)
+	timeoutActor := newMockTimeoutActor(t)
 	vtxoManager := newMockVTXOManagerRef(t)
 
 	roundStore := &MockRoundStore{}
@@ -471,6 +552,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		ChainSource:            chainSource,
 		WalletActor:            walletActor,
 		SelfRef:                selfRef,
+		TimeoutActor:           timeoutActor,
 		VTXOManager:            vtxoManager,
 		ChainParams:            &chaincfg.MainNetParams,
 		MaxOperatorFee:         defaultMaxOperatorFee,
@@ -493,6 +575,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		chainSource:     chainSource,
 		walletActor:     walletActor,
 		selfRef:         selfRef,
+		timeoutActor:    timeoutActor,
 		vtxoManager:     vtxoManager,
 		roundStore:      roundStore,
 		vtxoStore:       vtxoStore,
@@ -503,6 +586,35 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		operatorPubKey:  operatorPubKey,
 		operatorTerms:   operatorTerms,
 	}
+}
+
+// newActorTestHarnessWithRealTimeout creates an actor test harness that uses
+// a real timeout.Actor registered in a real ActorSystem instead of a mock.
+// This exercises the full timer callback flow through the actor system.
+func newActorTestHarnessWithRealTimeout(t *testing.T) *actorTestHarness {
+	t.Helper()
+
+	h := newActorTestHarness(t)
+
+	// Replace the mock timeout actor with a real one wired through
+	// an actor system.
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		//nolint:usetesting
+		_ = system.Shutdown(context.Background())
+	})
+
+	realTimeoutActor := timeout.NewActor()
+	timeoutKey := actor.NewServiceKey[timeout.Msg, timeout.Resp](
+		"test-timeout",
+	)
+	realTimeoutRef := actor.RegisterWithSystem(
+		system, "test-timeout", timeoutKey, realTimeoutActor,
+	)
+
+	h.actor.cfg.TimeoutActor = realTimeoutRef
+
+	return h
 }
 
 // setupMockRoundStoreForStart configures the RoundStore mock to return no
@@ -800,9 +912,12 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	}
 
 	// Create a new FSM starting in InputSigSentState.
+	errReporter := newContextErrorReporter(
+		h.ctx, roundID.LogPrefix(),
+	)
 	fsmCfg := ClientStateMachineCfg{
 		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(h.ctx, roundID.LogPrefix()),
+		ErrorReporter: errReporter,
 		InitialState:  initialState,
 		Env:           h.actor.env,
 	}
@@ -818,6 +933,72 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	}
 
 	return packet
+}
+
+// setupRoundInForfeitCollectingState creates a round FSM in
+// ForfeitSignaturesCollectingState and adds it to the actor's rounds map.
+func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
+	h.t.Helper()
+
+	tx := wire.NewMsgTx(2)
+	uniqueScript := append([]byte{0x00, 0x14}, []byte(roundID.String())...)
+	tx.AddTxOut(&wire.TxOut{
+		Value:    100000,
+		PkScript: uniqueScript,
+	})
+	packet, err := psbt.NewFromUnsignedTx(tx)
+	require.NoError(h.t, err)
+
+	vtxoHash := chainhash.HashH(
+		[]byte("forfeit-vtxo-" + roundID.String()),
+	)
+	vtxoOutpoint := wire.OutPoint{
+		Hash:  vtxoHash,
+		Index: 0,
+	}
+
+	connHash := chainhash.HashH(
+		[]byte("connector-" + roundID.String()),
+	)
+	connectorOutpoint := wire.OutPoint{
+		Hash:  connHash,
+		Index: 1,
+	}
+	initialState := &ForfeitSignaturesCollectingState{
+		RoundID:      roundID,
+		CommitmentTx: packet,
+		ExpectedForfeits: map[wire.OutPoint]*ConnectorLeafInfo{
+			vtxoOutpoint: {
+				LeafIndex:         0,
+				ConnectorOutpoint: connectorOutpoint,
+				ConnectorPkScript: []byte{0x51, 0x20},
+				ConnectorAmount:   546,
+				VTXOAmount:        50000,
+			},
+		},
+		CollectedForfeits: make(
+			map[wire.OutPoint]*ForfeitSignatureResponse,
+		),
+	}
+
+	errReporter := newContextErrorReporter(
+		h.ctx, roundID.LogPrefix(),
+	)
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        h.actor.log.WithPrefix(roundID.LogPrefix()),
+		ErrorReporter: errReporter,
+		InitialState:  initialState,
+		Env:           h.actor.env,
+	}
+	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM.Start(h.ctx)
+
+	keyStr := RoundKeyStr(roundID.KeyString())
+	h.actor.rounds[keyStr] = &RoundFSM{
+		FSM:     &newFSM,
+		Key:     roundID,
+		RoundID: roundID,
+	}
 }
 
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return
