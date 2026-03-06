@@ -304,6 +304,10 @@ func VTXOCollabSpendWitness(ownerSig, cosignerSig input.Signature,
 func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 	csvDelay uint32) (txscript.TapLeaf, error) {
 
+	if timeoutKey == nil {
+		return txscript.TapLeaf{}, fmt.Errorf("timeout key is nil")
+	}
+
 	// Build the timeout script using the script builder. The encoding
 	// matches the canonical arkscript CSV(lock, Checksig(key)) node:
 	// xonly key, CHECKSIG, delay int, CSV, DROP.
@@ -332,6 +336,14 @@ func UnilateralCSVTimeoutTapLeaf(timeoutKey *btcec.PublicKey,
 //	<cosigner_key_xonly> OP_CHECKSIG
 func MultiSigCollabTapLeaf(ownerKey,
 	cosignerKey *btcec.PublicKey) (txscript.TapLeaf, error) {
+
+	switch {
+	case ownerKey == nil:
+		return txscript.TapLeaf{}, fmt.Errorf("owner key is nil")
+
+	case cosignerKey == nil:
+		return txscript.TapLeaf{}, fmt.Errorf("cosigner key is nil")
+	}
 
 	// Build the collaborative multisig script using the script builder.
 	// The encoding matches the canonical arkscript Multisig(CHECKSIGVERIFY)

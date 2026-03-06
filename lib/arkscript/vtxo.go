@@ -264,17 +264,12 @@ var (
 		Message: "VTXO policy must contain an exit leaf",
 	}
 
-	// ErrExitNotCSVGated indicates the exit leaf is not CSV-gated.
-	ErrExitNotCSVGated = &VTXOValidationError{
-		Code:    "EXIT_NOT_CSV_GATED",
-		Message: "exit leaf must be CSV-gated",
-	}
 )
 
 // ValidateVTXOLeaves validates that the given leaves satisfy VTXO policy
 // invariants:
 // - At least one collab leaf
-// - At least one exit leaf that is CSV-gated
+// - At least one exit leaf
 func ValidateVTXOLeaves(leaves []PolicyLeaf) error {
 	hasCollab := false
 	hasExit := false

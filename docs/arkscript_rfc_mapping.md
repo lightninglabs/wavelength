@@ -50,10 +50,11 @@ client/lib/arkscript/
 └── vhtlc_test.go   # vHTLC example (complex composition)
 ```
 
-The NUMS key is imported from `lib/scripts/nums.go`:
+The NUMS key is defined locally in `lib/arkscript/vtxo.go` to avoid an import
+cycle with `lib/scripts`. It is byte-for-byte identical to `scripts.ARKNUMSKey`:
 ```go
-// vtxo.go:122
-policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+// vtxo.go — local redeclaration to break the arkscript↔scripts cycle
+policy, err := BuildTree(leaves, &arkNUMSKey)
 ```
 
 ---

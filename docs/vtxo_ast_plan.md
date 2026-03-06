@@ -54,10 +54,12 @@ PR #58 MUST:
   function signatures stable where feasible.
 - Reuse the existing NUMS/unspendable key machinery in `client/lib/scripts/nums.go`
   as the default internal key provider.
-- Consolidate the NUMS key definition to a single authoritative location
-  (`client/lib/scripts/nums.go`). The duplicate `arkNUMSHex` constant in
-  `lib/closure/script.go` MUST be removed and all usages updated to import from
-  the canonical location.
+- The NUMS key definition in `client/lib/scripts/nums.go` is the canonical
+  source for the scripts package. Packages that would create an import cycle
+  by importing `lib/scripts` (such as `lib/arkscript`) MAY locally redeclare
+  the same NUMS hex constant to break the cycle. Any such redeclaration MUST
+  remain byte-for-byte identical to the value in `lib/scripts/nums.go` and
+  SHOULD reference that file in a comment.
 
 PR #58 SHOULD document and/or update these call sites to use the new package
 internally:

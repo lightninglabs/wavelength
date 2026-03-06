@@ -1,16 +1,15 @@
 package arkscript
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/ripemd160"
 )
 
 // VHTLCOpts contains the parameters for constructing a vHTLC policy.
@@ -208,13 +207,9 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	}, nil
 }
 
-// hash160 computes RIPEMD160(SHA256(data)).
+// hash160 computes RIPEMD160(SHA256(data)) via btcutil.Hash160.
 func hash160(data []byte) []byte {
-	sha := sha256.Sum256(data)
-	ripemd := ripemd160.New()
-	ripemd.Write(sha[:])
-
-	return ripemd.Sum(nil)
+	return btcutil.Hash160(data)
 }
 
 // TestVHTLCPolicyConstruction tests that we can construct a vHTLC policy

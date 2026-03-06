@@ -307,7 +307,9 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
     }
 
     SortLeaves(leaves)
-    return BuildTree(leaves, &scripts.ARKNUMSKey)
+    // Use the local NUMS key (identical to scripts.ARKNUMSKey) to avoid
+    // an import cycle between lib/arkscript and lib/scripts.
+    return BuildTree(leaves, &arkNUMSKey)
 }
 ```
 

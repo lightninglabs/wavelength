@@ -117,6 +117,13 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 		return nil, fmt.Errorf("psbt: zero leaves in tap tree")
 	}
 
+	// Guard against malformed data allocating huge slices.
+	const maxLeaves = 1000
+	if leafCount > maxLeaves {
+		return nil, fmt.Errorf("psbt: leaf count %d exceeds "+
+			"maximum %d", leafCount, maxLeaves)
+	}
+
 	leaves := make([]EncodedLeaf, leafCount)
 
 	for i := uint64(0); i < leafCount; i++ {
@@ -144,6 +151,17 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 			return nil, fmt.Errorf(
 				"psbt: failed to read script length for leaf %d: %w",
 				i, err,
+			)
+		}
+
+		// Guard against malformed data requesting huge script buffers.
+		// The consensus limit for tapscript leaf scripts is 10,000 bytes.
+		const maxScriptLen = 10_000
+		if scriptLen > maxScriptLen {
+			return nil, fmt.Errorf(
+				"psbt: script length %d for leaf %d "+
+					"exceeds maximum %d",
+				scriptLen, i, maxScriptLen,
 			)
 		}
 
@@ -229,48 +247,40 @@ func writeCompactSize(w *bytes.Buffer, val uint64) error {
 	}
 }
 
-// readCompactSize reads a compact size integer from the reader.
-func readCompactSize(r io.ByteReader) (uint64, error) {
-	discriminant, err := r.ReadByte()
-	if err != nil {
+// readCompactSize reads a compact size integer from the reader using
+// io.ReadFull for multi-byte reads, avoiding byte-by-byte overhead.
+func readCompactSize(r io.Reader) (uint64, error) {
+	var disc [1]byte
+	if _, err := io.ReadFull(r, disc[:]); err != nil {
 		return 0, err
 	}
 
-	switch discriminant {
+	switch disc[0] {
 	case 0xff:
 		var buf [8]byte
-		for i := 0; i < 8; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
+		if _, err := io.ReadFull(r, buf[:]); err != nil {
+			return 0, err
 		}
 
 		return binary.LittleEndian.Uint64(buf[:]), nil
 
 	case 0xfe:
 		var buf [4]byte
-		for i := 0; i < 4; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
+		if _, err := io.ReadFull(r, buf[:]); err != nil {
+			return 0, err
 		}
 
 		return uint64(binary.LittleEndian.Uint32(buf[:])), nil
 
 	case 0xfd:
 		var buf [2]byte
-		for i := 0; i < 2; i++ {
-			buf[i], err = r.ReadByte()
-			if err != nil {
-				return 0, err
-			}
+		if _, err := io.ReadFull(r, buf[:]); err != nil {
+			return 0, err
 		}
 
 		return uint64(binary.LittleEndian.Uint16(buf[:])), nil
 
 	default:
-		return uint64(discriminant), nil
+		return uint64(disc[0]), nil
 	}
 }
