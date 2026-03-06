@@ -8,9 +8,11 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -483,6 +485,73 @@ func TestActorProcessOutbox(t *testing.T) {
 		reg := h.chainSource.registrations[0]
 		require.Nil(t, reg.Txid)
 		require.Equal(t, pkScript, reg.PkScript)
+	})
+
+	t.Run("start_timeout_request", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("timeout-round-start")
+		duration := 30 * time.Second
+		outbox := []ClientOutMsg{
+			&StartTimeoutReq{
+				RoundID:  roundID,
+				Phase:    TimeoutPhaseForfeitCollection,
+				Duration: duration,
+			},
+		}
+
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.NoError(t, err)
+
+		timeoutID := makeTimeoutID(
+			roundID, TimeoutPhaseForfeitCollection,
+		)
+		h.timeoutActor.assertTimeoutScheduled(
+			t, timeoutID, duration,
+		)
+	})
+
+	t.Run("cancel_timeout_request", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("timeout-round-cancel")
+		timeoutID := makeTimeoutID(
+			roundID, TimeoutPhaseForfeitCollection,
+		)
+
+		schedReq := &timeout.ScheduleTimeoutRequest{
+			ID:       timeoutID,
+			Duration: 10 * time.Second,
+			Callback: actor.NewChannelTellOnlyRef[*timeout.ExpiredMsg]( //nolint:ll
+				"timeout-callback", 1,
+			),
+		}
+		err = h.timeoutActor.Tell(h.ctx, schedReq)
+		require.NoError(t, err)
+
+		outbox := []ClientOutMsg{
+			&CancelTimeoutReq{
+				RoundID: roundID,
+				Phase:   TimeoutPhaseForfeitCollection,
+			},
+		}
+
+		err = h.actor.processOutbox(h.ctx, outbox)
+		require.NoError(t, err)
+
+		h.timeoutActor.assertTimeoutCancelled(t, timeoutID)
 	})
 
 	t.Run("round_completed", func(t *testing.T) {
@@ -1218,6 +1287,216 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 		require.True(t, result.IsErr())
 		require.Contains(t, result.Err().Error(), "unknown round")
 	})
+}
+
+// TestHandleForfeitCollectionTimeout verifies timeout-message handling for
+// rounds waiting on forfeit signatures.
+func TestHandleForfeitCollectionTimeout(t *testing.T) {
+	t.Parallel()
+
+	t.Run("transitions_round_to_failed", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("forfeit-timeout-round")
+		h.setupRoundInForfeitCollectingState(roundID)
+
+		keyStr := RoundKeyStr(roundID.KeyString())
+		msg := &TimeoutMsg{
+			TimeoutID: makeTimeoutID(
+				roundID, TimeoutPhaseForfeitCollection,
+			),
+		}
+		result := h.receive(msg)
+		require.True(t, result.IsOk(), "actor receive failed: %v",
+			result.Err())
+
+		states := h.queryState()
+		stateInfo, exists := states[string(keyStr)]
+		require.True(t, exists, "expected round state")
+		failedState, ok := stateInfo.State.(*ClientFailedState)
+		require.True(t, ok, "expected ClientFailedState, got %T",
+			stateInfo.State)
+		require.Contains(t, failedState.Reason, "forfeit signature")
+		require.Contains(t, failedState.Reason, "timeout")
+		require.True(t, failedState.Recoverable)
+	})
+
+	t.Run("ignores_unknown_timeout_phase", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		roundID := testRoundID("forfeit-timeout-stale")
+		h.setupRoundInForfeitCollectingState(roundID)
+
+		keyStr := RoundKeyStr(roundID.KeyString())
+		tid := makeTimeoutID(
+			roundID, TimeoutPhase("unknown"),
+		)
+		msg := &TimeoutMsg{TimeoutID: tid}
+		result := h.receive(msg)
+		require.True(t, result.IsOk(), "actor receive failed: %v",
+			result.Err())
+
+		states := h.queryState()
+		stateInfo, exists := states[string(keyStr)]
+		require.True(t, exists, "expected round state")
+		_, ok := stateInfo.State.(*ForfeitSignaturesCollectingState)
+		require.True(t, ok,
+			"expected ForfeitSignaturesCollectingState, "+
+				"got %T", stateInfo.State)
+	})
+
+	t.Run("ignores_timeout_for_unknown_round", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Fire a timeout for a round that doesn't exist. This can
+		// happen if the round completed or was cleaned up before
+		// the timer fires.
+		unknownID := testRoundID("nonexistent-round")
+		msg := &TimeoutMsg{
+			TimeoutID: makeTimeoutID(
+				unknownID, TimeoutPhaseForfeitCollection,
+			),
+		}
+		result := h.receive(msg)
+		require.True(t, result.IsOk(),
+			"stale timeout should be silently ignored")
+	})
+
+	t.Run("timeout_then_new_round_succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Phase 1: Set up a round in forfeit collecting and time
+		// it out.
+		roundID1 := testRoundID("round-timeout-recover")
+		h.setupRoundInForfeitCollectingState(roundID1)
+
+		timeoutMsg := &TimeoutMsg{
+			TimeoutID: makeTimeoutID(
+				roundID1, TimeoutPhaseForfeitCollection,
+			),
+		}
+		result := h.receive(timeoutMsg)
+		require.True(t, result.IsOk(), "timeout receive failed: %v",
+			result.Err())
+
+		// Confirm the first round is now failed.
+		keyStr1 := RoundKeyStr(roundID1.KeyString())
+		states := h.queryState()
+		stateInfo, exists := states[string(keyStr1)]
+		require.True(t, exists)
+		failedState, ok := stateInfo.State.(*ClientFailedState)
+		require.True(t, ok, "expected ClientFailedState, got %T",
+			stateInfo.State)
+		require.True(t, failedState.Recoverable)
+
+		// Phase 2: Start a new round from a boarding confirmation,
+		// proving the actor is still healthy.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+		h.assertFSMState("PendingRoundAssembly")
+
+		h.sendVTXORequests(50000)
+		h.clearServerMessages()
+		h.sendServerMessage(&RegistrationRequested{})
+		h.assertFSMState("RegistrationSentState")
+		h.assertServerMessageSent("SendClientEventRequest")
+	})
+}
+
+// TestRealTimeoutActorForfeitExpiry exercises the full timeout flow with a
+// real timeout.Actor running in a real ActorSystem. The round actor schedules
+// a short forfeit collection timeout via the real timer infrastructure; when
+// the timer fires, the callback routes through SelfRef back into the round
+// actor, which transitions the round to ClientFailedState. A new round then
+// starts successfully, proving recovery.
+func TestRealTimeoutActorForfeitExpiry(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarnessWithRealTimeout(t)
+	h.setupMockRoundStoreForStart()
+
+	// Use a short timeout so the real timer fires quickly.
+	h.actor.env.ForfeitCollectionTimeout = 100 * time.Millisecond
+
+	err := h.start()
+	require.NoError(t, err)
+
+	// Put a round into forfeit collecting state. The FSM env has the
+	// short timeout, so when processOutbox handles StartTimeoutReq it
+	// schedules a real 100ms timer.
+	roundID := testRoundID("real-timeout-round")
+	h.setupRoundInForfeitCollectingState(roundID)
+
+	// Manually trigger the outbox processing that would normally happen
+	// when entering forfeit collection. This schedules the real timeout.
+	outbox := []ClientOutMsg{
+		&StartTimeoutReq{
+			RoundID:  roundID,
+			Phase:    TimeoutPhaseForfeitCollection,
+			Duration: 100 * time.Millisecond,
+		},
+	}
+	err = h.actor.processOutbox(h.ctx, outbox)
+	require.NoError(t, err)
+
+	// Wait for the real timer to fire. The timeout actor sends an
+	// ExpiredMsg callback that gets mapped to a TimeoutMsg on our
+	// SelfRef.
+	rawMsg, ok := h.selfRef.waitForMessage(5 * time.Second)
+	require.True(t, ok, "expected TimeoutMsg from real timeout actor")
+
+	timeoutMsg, ok := rawMsg.(*TimeoutMsg)
+	require.True(t, ok, "expected *TimeoutMsg, got %T", rawMsg)
+	require.Equal(t,
+		makeTimeoutID(roundID, TimeoutPhaseForfeitCollection),
+		timeoutMsg.TimeoutID)
+
+	// Feed the callback message back into the round actor, simulating
+	// the actor system's mailbox delivery.
+	result := h.receive(timeoutMsg)
+	require.True(t, result.IsOk(), "actor receive failed: %v",
+		result.Err())
+
+	// Verify the round transitioned to failed.
+	keyStr := RoundKeyStr(roundID.KeyString())
+	states := h.queryState()
+	stateInfo, exists := states[string(keyStr)]
+	require.True(t, exists, "expected round state")
+	failedState, ok := stateInfo.State.(*ClientFailedState)
+	require.True(t, ok, "expected ClientFailedState, got %T",
+		stateInfo.State)
+	require.Contains(t, failedState.Reason, "forfeit signature")
+	require.Contains(t, failedState.Reason, "timeout")
+	require.True(t, failedState.Recoverable)
+
+	// Phase 2: Start a new round to prove actor recovery.
+	intent := h.newTestBoardingIntent()
+	h.sendWalletConfirmation(intent)
+	h.assertFSMState("PendingRoundAssembly")
 }
 
 // TestVTXOCreatedNotificationForwarding verifies that VTXOCreatedNotification

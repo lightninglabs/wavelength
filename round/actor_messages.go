@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -263,6 +264,22 @@ func (m *ConfirmationEvent) MessageType() string {
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
 func (m *ConfirmationEvent) RoundReceivable() {}
+
+// TimeoutMsg is sent to the round actor when a timeout expires.
+type TimeoutMsg struct {
+	actor.BaseMessage
+
+	// TimeoutID identifies the expired timeout.
+	TimeoutID timeout.ID
+}
+
+// MessageType returns the message type name.
+func (m *TimeoutMsg) MessageType() string {
+	return "TimeoutMsg"
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (m *TimeoutMsg) RoundReceivable() {}
 
 // ServerMsg is the sealed interface for all messages that can be sent to a
 // RoundServerActor.
