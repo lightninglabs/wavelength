@@ -86,9 +86,9 @@ func NewServer(cfg *Config) (*Server, error) {
 
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
 // interceptor fires or a fatal error occurs.
-func (s *Server) RunUntilShutdown(
-	interceptor signal.Interceptor) error {
-
+//
+//nolint:funlen
+func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -154,6 +154,14 @@ func (s *Server) RunUntilShutdown(
 	}()
 
 	log.InfoS(ctx, "Actor system initialized")
+
+	// Register the shared timeout actor. This provides wall-clock
+	// timer scheduling for any subsystem that needs deadlines.
+	timeoutRef := actor.RegisterWithSystem(
+		s.actorSystem, "timeout",
+		actor.NewServiceKey[timeout.Msg, timeout.Resp]("timeout"),
+		timeout.NewActor(),
+	)
 
 	// -------------------------------------------------------
 	// 4. Create and register the chain source actor.
@@ -290,7 +298,7 @@ func (s *Server) RunUntilShutdown(
 	// 10. Register the round client actor.
 	// -------------------------------------------------------
 	if err := s.initRoundActor(
-		ctx, chainSourceRef, walletRef,
+		ctx, chainSourceRef, walletRef, timeoutRef,
 	); err != nil {
 		return err
 	}
@@ -716,7 +724,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 	],
 	walletRef actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
-	]) error {
+	],
+	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
 	clientWallet := lndbackend.NewClientWallet(
 		s.lnd.Signer, s.lnd.WalletKit,
@@ -751,6 +760,9 @@ func (s *Server) initRoundActor(ctx context.Context,
 		WalletActor:   walletRef,
 		ChainParams:   chainParams,
 		ActorSystem:   s.actorSystem,
+		TimeoutActor:  timeoutRef,
+		ForfeitCollectionTimeout: s.cfg.
+			ForfeitCollectionTimeout,
 	}
 
 	roundActor, err := round.NewRoundClientActor(
