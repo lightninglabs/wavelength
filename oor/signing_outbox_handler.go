@@ -3,17 +3,11 @@ package oor
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightningnetwork/lnd/input"
 )
-
-// RetryScheduler arranges for a RetryDueEvent to be delivered to the OOR
-// actor after the requested delay. Implementations typically use
-// time.AfterFunc to schedule a DriveEventRequest containing the
-// RetryDueEvent back into the actor mailbox.
-type RetryScheduler func(sessionID SessionID, after time.Duration,
-	reason string)
 
 // SigningOutboxHandler implements the signing and scheduling outbox requests
 // emitted by the OOR FSM.
@@ -25,16 +19,23 @@ type RetryScheduler func(sessionID SessionID, after time.Duration,
 //     needed beyond deterministic package construction).
 //   - RequestCheckpointSignatures: attaches client-side collaborative VTXO
 //     spend signatures to each checkpoint PSBT via SignCheckpointPSBTs.
-//   - ScheduleRetryRequest: delegates to the configured RetryScheduler.
+//   - ScheduleRetryRequest: schedules a timer via the timeout actor. When
+//     the timer fires, a DriveEventRequest{Event: &RetryDueEvent{}} is
+//     delivered back to the OOR actor via the CallbackRef.
 //   - IncomingTransferNotification: informational no-op (logging only).
 type SigningOutboxHandler struct {
 	// Signer signs checkpoint inputs at RequestCheckpointSignatures.
 	Signer input.Signer
 
-	// ScheduleRetry arranges for a RetryDueEvent to be delivered after
-	// the requested delay. When nil, retry requests return
-	// RetryDueEvent immediately.
-	ScheduleRetry RetryScheduler
+	// TimeoutActor schedules retry timers. When nil, retry requests
+	// return a RetryDueEvent immediately (useful for test harnesses).
+	TimeoutActor *timeout.Actor
+
+	// CallbackRef receives timeout expiry notifications transformed into
+	// OOR actor messages. This is typically created via
+	// actor.NewMapInputRef to convert *timeout.ExpiredMsg into a
+	// DriveEventRequest targeting the OOR actor.
+	CallbackRef actor.TellOnlyRef[*timeout.ExpiredMsg]
 }
 
 // Handle executes one outbox request and returns follow-up FSM events.
@@ -56,7 +57,7 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 		return h.handleCheckpointSignatures(msg)
 
 	case *ScheduleRetryRequest:
-		return h.handleScheduleRetry(sessionID, msg)
+		return h.handleScheduleRetry(ctx, sessionID, msg)
 
 	case *IncomingTransferNotification:
 		// Informational notification for UI/logging. No FSM
@@ -91,22 +92,42 @@ func (h *SigningOutboxHandler) handleCheckpointSignatures(
 	}, nil
 }
 
-// handleScheduleRetry delegates retry scheduling to the configured
-// RetryScheduler. When no scheduler is configured, a RetryDueEvent is
-// returned immediately for backward compatibility with test harnesses.
-func (h *SigningOutboxHandler) handleScheduleRetry(sessionID SessionID,
-	msg *ScheduleRetryRequest) ([]Event, error) {
+// handleScheduleRetry schedules a retry timer via the timeout actor. The
+// session ID is encoded as the timeout ID so the expiry callback can
+// reconstruct a DriveEventRequest targeting the correct session. When no
+// timeout actor is configured, a RetryDueEvent is returned immediately for
+// backward compatibility with test harnesses.
+func (h *SigningOutboxHandler) handleScheduleRetry(ctx context.Context,
+	sessionID SessionID, msg *ScheduleRetryRequest) ([]Event, error) {
 
-	if h.ScheduleRetry != nil {
-		h.ScheduleRetry(sessionID, msg.After, msg.Reason)
-
-		// The scheduler will deliver RetryDueEvent
-		// asynchronously via the actor mailbox.
-		return nil, nil
+	if h.TimeoutActor == nil {
+		// No timeout actor configured: emit RetryDueEvent
+		// immediately so tests don't need timer infrastructure.
+		return []Event{&RetryDueEvent{}}, nil
 	}
 
-	// No scheduler configured: emit RetryDueEvent immediately.
-	return []Event{&RetryDueEvent{}}, nil
+	if h.CallbackRef == nil {
+		return nil, fmt.Errorf("timeout callback ref not wired")
+	}
+
+	// Use the session ID hex string as the timeout ID. When the timer
+	// fires, the callback ref's map function parses this back into a
+	// SessionID for the DriveEventRequest.
+	timeoutID := timeout.ID(sessionID.String())
+
+	result := h.TimeoutActor.Receive(ctx, &timeout.ScheduleTimeoutRequest{
+		ID:       timeoutID,
+		Duration: msg.After,
+		Callback: h.CallbackRef,
+	})
+	if result.IsErr() {
+		return nil, fmt.Errorf("schedule retry timeout: %w",
+			result.Err())
+	}
+
+	// The timeout actor will deliver RetryDueEvent asynchronously
+	// via the callback ref when the timer fires.
+	return nil, nil
 }
 
 var _ OutboxHandler = (*SigningOutboxHandler)(nil)

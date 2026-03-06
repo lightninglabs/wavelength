@@ -27,6 +27,7 @@ import (
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
@@ -699,8 +700,14 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	vtxoStore := dbStore.NewVTXOStore(clk)
 	packageStore := dbStore.NewOORArtifactStore(clk)
 
+	// Create the timeout actor for scheduling retry timers. When a
+	// retry timer fires, the callback ref transforms the expiry into
+	// a DriveEventRequest and Tell's it back to the OOR actor.
+	timeoutActor := timeout.NewActor()
+
 	signingHandler := &oor.SigningOutboxHandler{
-		Signer: clientWallet,
+		Signer:       clientWallet,
+		TimeoutActor: timeoutActor,
 	}
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
@@ -715,8 +722,19 @@ func (s *Server) initOORActor(ctx context.Context) error {
 		ServerConn:    s.runtime.TellRef(),
 		PackageStore:  packageStore,
 		DeliveryStore: s.deliveryStore,
-		ActorID:       "oor-client",
+		ActorSystem:   s.actorSystem,
+		ActorID:       oor.OORActorServiceKeyName,
 	})
+
+	// Wire the timeout callback ref using the registered service
+	// key. The service key resolves the OOR actor via the
+	// receptionist, and the MapInputRef transforms
+	// *timeout.ExpiredMsg into a DriveEventRequest with
+	// RetryDueEvent targeting the correct session.
+	oorKey := oor.NewServiceKey()
+	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
+		oorKey.Ref(s.actorSystem),
+	)
 
 	log.InfoS(ctx, "OOR client actor started")
 

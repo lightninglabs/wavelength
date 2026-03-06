@@ -12,6 +12,21 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
+// OORActorServiceKeyName is the receptionist key used to discover the OOR
+// client actor. The serverconn ingress event router uses this key to dispatch
+// incoming server messages (SubmitAccepted, FinalizeAccepted, etc.) to the
+// OOR actor.
+const OORActorServiceKeyName = "oor-client"
+
+// NewServiceKey returns the service key for looking up the OOR client actor
+// in the actor system's receptionist. This key is used by the serverconn
+// event router to dispatch incoming server events to the OOR actor.
+func NewServiceKey() actor.ServiceKey[OORDurableMsg, ActorResp] {
+	return actor.NewServiceKey[OORDurableMsg, ActorResp](
+		OORActorServiceKeyName,
+	)
+}
+
 // TLV type constants for OOR actor messages. Each ActorMsg type has a stable
 // identifier used for durable mailbox serialization. The 0x7xxx range avoids
 // collisions with the actor framework's reserved types.

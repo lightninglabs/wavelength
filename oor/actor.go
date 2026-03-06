@@ -51,6 +51,12 @@ type ClientActorCfg struct {
 	// DeliveryStore backs the durable actor mailbox/checkpoint operations.
 	DeliveryStore actor.DeliveryStore
 
+	// ActorSystem is the system in which the OOR actor registers itself
+	// under the OOR service key. This enables serverconn ingress
+	// dispatching and timeout callback wiring via service key lookup.
+	// When nil, the actor is not registered (useful for unit tests).
+	ActorSystem actor.SystemContext
+
 	// ActorID is the durable mailbox id used for this actor instance.
 	// Re-using the same ActorID across restarts enables checkpoint restore.
 	ActorID string
@@ -190,6 +196,23 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	}
 
 	durable.Start()
+
+	// Register the durable actor's ref with the actor system so the
+	// serverconn event router can discover it via the OOR service key.
+	if cfg.ActorSystem != nil {
+		oorKey := NewServiceKey()
+		err = actor.RegisterWithReceptionist(
+			cfg.ActorSystem.Receptionist(), oorKey,
+			durable.Ref(),
+		)
+		if err != nil {
+			actorRef.startupErr = fmt.Errorf(
+				"register OOR actor: %w", err,
+			)
+
+			return actorRef
+		}
+	}
 
 	return actorRef
 }
