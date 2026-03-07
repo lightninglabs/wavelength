@@ -170,7 +170,8 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 		}
 	}
 
-	// Fetch VTXO balance by summing all live VTXOs.
+	// Fetch VTXO balance by summing all live VTXOs using the
+	// package-level SumBalance helper.
 	if r.server.vtxoStore != nil {
 		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
 			ctx,
@@ -179,11 +180,9 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			log.WarnS(ctx,
 				"Unable to fetch VTXO balance", err)
 		} else {
-			var vtxoTotal int64
-			for _, v := range liveVTXOs {
-				vtxoTotal += int64(v.Amount)
-			}
-			resp.VtxoBalanceSat = vtxoTotal
+			resp.VtxoBalanceSat = int64(
+				vtxo.SumBalance(liveVTXOs),
+			)
 		}
 	}
 
@@ -208,33 +207,54 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 			"vtxo store not initialized")
 	}
 
-	// Fetch all live VTXOs from the store.
-	liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+	// Fetch VTXOs from the store. When a specific status filter
+	// is provided, query the DB directly for that status so
+	// terminal states (spent, forfeited) are reachable. When
+	// unspecified, return all non-terminal (live) VTXOs.
+	var (
+		dbVTXOs []*vtxo.Descriptor
+		err     error
+	)
+
+	if req.StatusFilter !=
+		daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+
+		domainStatus, sErr := protoStatusToDomain(
+			req.StatusFilter,
+		)
+		if sErr != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"invalid status filter: %v", sErr,
+			)
+		}
+
+		dbVTXOs, err = r.server.vtxoStore.ListVTXOsByStatus(
+			ctx, domainStatus,
+		)
+	} else {
+		dbVTXOs, err = r.server.vtxoStore.ListLiveVTXOs(ctx)
+	}
+
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to list VTXOs: %v", err)
 	}
 
-	// Apply filters and convert to proto.
-	var protoVTXOs []*daemonrpc.VTXO
-	for _, v := range liveVTXOs {
-		// Filter by status if specified.
-		if req.StatusFilter !=
-			daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+	// Apply any remaining in-memory filters (min amount) via
+	// the package-level FilterDescriptors function so this
+	// logic is reusable by a future SDK.
+	filterOpts := vtxo.FilterOptions{
+		MinAmount: btcutil.Amount(req.MinAmountSat),
+	}
 
-			protoStatus := vtxoStatusToProto(v.Status)
-			if protoStatus != req.StatusFilter {
-				continue
-			}
-		}
+	filtered := vtxo.FilterDescriptors(dbVTXOs, filterOpts)
 
-		// Filter by minimum amount if specified.
-		if req.MinAmountSat > 0 &&
-			int64(v.Amount) < req.MinAmountSat {
-
-			continue
-		}
-
+	// Convert to proto.
+	protoVTXOs := make(
+		[]*daemonrpc.VTXO, 0, len(filtered),
+	)
+	for _, v := range filtered {
 		protoVTXOs = append(protoVTXOs,
 			descriptorToProto(v))
 	}
@@ -242,6 +262,40 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 	return &daemonrpc.ListVTXOsResponse{
 		Vtxos: protoVTXOs,
 	}, nil
+}
+
+// protoStatusToDomain converts a proto VTXOStatus enum to the domain
+// vtxo.VTXOStatus type for use with vtxo.FilterDescriptors. An error
+// is returned for unknown status values to surface proto/domain drift
+// early rather than silently defaulting.
+func protoStatusToDomain(
+	s daemonrpc.VTXOStatus) (vtxo.VTXOStatus, error) {
+
+	switch s {
+	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
+		return vtxo.VTXOStatusLive, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED:
+		return vtxo.VTXOStatusRefreshRequested, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
+		return vtxo.VTXOStatusForfeiting, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED:
+		return vtxo.VTXOStatusForfeited, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_SPENT:
+		return vtxo.VTXOStatusSpent, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING:
+		return vtxo.VTXOStatusExpiring, nil
+
+	case daemonrpc.VTXOStatus_VTXO_STATUS_FAILED:
+		return vtxo.VTXOStatusFailed, nil
+
+	default:
+		return 0, fmt.Errorf("unknown VTXO status: %v", s)
+	}
 }
 
 // vtxoStatusToProto converts a domain VTXOStatus to the proto enum.
@@ -623,29 +677,24 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"unexpected response type: %T", selectResp)
 	}
 
-	// Look up full VTXO descriptors from the store so we can
-	// build the OOR transfer inputs with all required fields
-	// (TapScript, ClientKey, etc.).
-	var selectedInputs []oor.TransferInput
+	// Look up full VTXO descriptors from the store and build
+	// OOR transfer inputs. This is delegated to a package-level
+	// function so a future SDK can call it directly.
+	outpoints := make(
+		[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
+	)
 	for _, sv := range locked.SelectedVTXOs {
-		desc, err := r.server.vtxoStore.GetVTXO(
-			ctx, sv.Outpoint,
-		)
-		if err != nil {
-			// Unlock VTXOs on failure to prevent
-			// leaking locks.
-			r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+		outpoints = append(outpoints, sv.Outpoint)
+	}
 
-			return nil, status.Errorf(codes.Internal,
-				"unable to look up VTXO %s: %v",
-				sv.Outpoint, err)
-		}
+	selectedInputs, err := BuildTransferInputs(
+		ctx, r.server.vtxoStore, outpoints,
+	)
+	if err != nil {
+		r.unlockVTXOs(ctx, locked.SelectedVTXOs)
 
-		selectedInputs = append(selectedInputs,
-			oor.TransferInput{
-				VTXO:            desc,
-				OwnerLeafScript: desc.PkScript,
-			})
+		return nil, status.Errorf(codes.Internal,
+			"unable to build transfer inputs: %v", err)
 	}
 
 	// Build the recipient output for the OOR transfer.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightningnetwork/lnd/aezeed"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -83,46 +82,6 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 		r.server.walletState.Store(int32(WalletStateNone))
 	}
 
-	// Validate the mnemonic length.
-	if len(req.Mnemonic) != aezeed.NumMnemonicWords {
-		rollbackState()
-
-		return nil, status.Errorf(codes.InvalidArgument,
-			"mnemonic must be %d words, got %d",
-			aezeed.NumMnemonicWords, len(req.Mnemonic))
-	}
-
-	// Validate password length.
-	if len(req.WalletPassword) < minPasswordLen {
-		rollbackState()
-
-		return nil, status.Errorf(codes.InvalidArgument,
-			"wallet password must be at least %d bytes",
-			minPasswordLen)
-	}
-
-	// Convert the string slice to an aezeed.Mnemonic array.
-	var mnemonic aezeed.Mnemonic
-	copy(mnemonic[:], req.Mnemonic)
-
-	// Derive the raw seed from the mnemonic.
-	seed, err := MnemonicToSeed(mnemonic, req.SeedPassphrase)
-	if err != nil {
-		rollbackState()
-
-		return nil, status.Errorf(codes.InvalidArgument,
-			"invalid mnemonic: %v", err)
-	}
-
-	// Encrypt the seed at rest.
-	ciphertext, err := EncryptSeed(seed, req.WalletPassword)
-	if err != nil {
-		rollbackState()
-
-		return nil, status.Errorf(codes.Internal,
-			"unable to encrypt seed: %v", err)
-	}
-
 	// Resolve the network directory for seed storage.
 	networkDir, err := r.server.cfg.NetworkDir()
 	if err != nil {
@@ -132,18 +91,23 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"unable to resolve network directory: %v", err)
 	}
 
-	// Save the encrypted seed to disk.
-	seedPath := SeedFilePath(networkDir)
-
-	if err := SaveEncryptedSeed(seedPath, ciphertext); err != nil {
+	// Delegate to the package-level function that validates the
+	// mnemonic, derives the seed, encrypts it, and saves it to
+	// disk. This logic is extracted so a future SDK can call it
+	// directly without going through gRPC.
+	seed, err := InitWalletFromMnemonic(
+		req.Mnemonic, req.SeedPassphrase,
+		req.WalletPassword, networkDir,
+	)
+	if err != nil {
 		rollbackState()
 
 		return nil, status.Errorf(codes.Internal,
-			"unable to save encrypted seed: %v", err)
+			"unable to initialize wallet: %v", err)
 	}
 
 	log.InfoS(ctx, "Wallet seed encrypted and saved",
-		"path", seedPath)
+		"path", SeedFilePath(networkDir))
 
 	// Start the lwwallet with the derived seed.
 	if err := r.server.startLwwallet(ctx, seed); err != nil {
@@ -191,33 +155,22 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 			currentState)
 	}
 
-	// Validate password length.
-	if len(req.WalletPassword) < minPasswordLen {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"wallet password must be at least %d bytes",
-			minPasswordLen)
-	}
-
-	// Load the encrypted seed from disk.
+	// Resolve the network directory for seed lookup.
 	networkDir, err := r.server.cfg.NetworkDir()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to resolve network directory: %v", err)
 	}
 
-	seedPath := SeedFilePath(networkDir)
-
-	ciphertext, err := LoadEncryptedSeed(seedPath)
+	// Delegate to the package-level function that loads the
+	// encrypted seed from disk and decrypts it. This logic is
+	// extracted so a future SDK can call it directly.
+	seed, err := UnlockWalletFromDisk(
+		networkDir, req.WalletPassword,
+	)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
-			"unable to load encrypted seed: %v", err)
-	}
-
-	// Decrypt the seed.
-	seed, err := DecryptSeed(ciphertext, req.WalletPassword)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"unable to decrypt seed: %v", err)
+			"unable to unlock wallet: %v", err)
 	}
 
 	log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
