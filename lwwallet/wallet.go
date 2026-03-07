@@ -84,11 +84,11 @@ type Wallet struct {
 // is responsible for managing the directory's lifecycle (creation
 // before calling New, cleanup after Stop if desired).
 func New(cfg Config) (*Wallet, error) {
-	// Use the configured logger, falling back to disabled logging
-	// if none was provided.
+	// Use the configured logger, falling back to the package-level
+	// logger if none was provided.
 	walletLog := cfg.Logger
 	if walletLog == nil {
-		walletLog = btclog.Disabled
+		walletLog = log
 	}
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)

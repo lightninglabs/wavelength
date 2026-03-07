@@ -7,9 +7,6 @@ import (
 	"github.com/btcsuite/btclog/v2"
 )
 
-// Subsystem defines the logging sub-system code for this package.
-const Subsystem = "LWWL"
-
 // coinTypeForNet returns the BIP44 coin type for the given network.
 // Mainnet uses coin type 0, while all test networks use coin type 1.
 func coinTypeForNet(params *chaincfg.Params) uint32 {
@@ -59,7 +56,7 @@ type Config struct {
 
 	// Logger is the structured logger for the wallet and all its
 	// sub-components (chain service, chain backend, boarding backend,
-	// Esplora client). If nil, logging is disabled
-	// (btclog.Disabled).
+	// Esplora client). If nil, the package-level logger is used
+	// (set via UseLogger, defaults to btclog.Disabled).
 	Logger btclog.Logger
 }
