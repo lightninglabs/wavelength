@@ -213,6 +213,20 @@ func (w *Wallet) DeriveNextKey(_ context.Context,
 	return &desc, nil
 }
 
+// DeriveKey derives a specific key identified by the given KeyLocator.
+// Unlike DeriveNextKey, this always returns the same key for the same
+// locator, making it suitable for stable identity keys.
+func (w *Wallet) DeriveKey(_ context.Context,
+	loc keychain.KeyLocator) (*keychain.KeyDescriptor, error) {
+
+	desc, err := w.keyRing.DeriveKey(loc)
+	if err != nil {
+		return nil, fmt.Errorf("derive key: %w", err)
+	}
+
+	return &desc, nil
+}
+
 // NewAddress generates a new BIP86 taproot receiving address (P2TR
 // key-path only) via btcwallet.
 func (w *Wallet) NewAddress(
