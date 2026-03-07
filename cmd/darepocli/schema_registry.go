@@ -91,6 +91,20 @@ func methodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
+			Method:      "wallet.genseed",
+			Description: "Generate a new aezeed mnemonic",
+			Params: []schemaParam{
+				{
+					Name:        "seed_passphrase",
+					Type:        "string",
+					Description: "optional aezeed passphrase",
+				},
+			},
+			RequestType:  "GenSeedRequest",
+			ResponseType: "GenSeedResponse",
+			JSONInput:    true,
+		},
+		{
 			Method:       "wallet.balance",
 			Description:  "Display wallet balance",
 			Params:       nil,
@@ -133,6 +147,11 @@ func methodRegistry() []schemaMethod {
 					Name:        "fields",
 					Type:        "string",
 					Description: "comma-separated field names to include",
+				},
+				{
+					Name:        "ndjson",
+					Type:        "bool",
+					Description: "emit one JSON object per VTXO (newline-delimited)",
 				},
 			},
 			RequestType:  "ListVTXOsRequest",
