@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -98,8 +99,11 @@ type Ark struct {
 	// cancel cancels the internal context on shutdown.
 	cancel context.CancelFunc
 
-	// log is the logger for this actor.
-	log btclog.Logger
+	// actorLog is an optional logger for this actor instance. When set, it
+	// takes precedence over the context-based logger from
+	// build.LoggerFromContext. When None, the actor falls back to the
+	// context logger (or btclog.Disabled if none is found).
+	actorLog fn.Option[btclog.Logger]
 }
 
 // NewArk creates a new Ark wallet actor. The logger is optional and falls back
@@ -113,8 +117,12 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 	actorSystem actor.SystemContext,
 	actorLog btclog.Logger) *Ark {
 
-	if actorLog == nil {
-		actorLog = log
+	// Wrap the provided logger in an Option. A nil logger becomes None,
+	// causing the actor to fall back to build.LoggerFromContext at call
+	// sites via the logger() helper.
+	optLog := fn.None[btclog.Logger]()
+	if actorLog != nil {
+		optLog = fn.Some(actorLog)
 	}
 
 	return &Ark{
@@ -124,8 +132,14 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 		actorSystem: actorSystem,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
-		log:         actorLog,
+		actorLog:    optLog,
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *Ark) logger(ctx context.Context) btclog.Logger {
+	return a.actorLog.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Start initializes the actor and subscribes to block epochs. The selfRef
@@ -145,7 +159,7 @@ func (a *Ark) Start(ctx context.Context,
 		return fmt.Errorf("load existing addresses: %w", err)
 	}
 
-	a.log.InfoS(ctx, "Loaded boarding addresses from database",
+	a.logger(ctx).InfoS(ctx, "Loaded boarding addresses from database",
 		slog.Int("count", len(addresses)))
 
 	// Re-import each persisted boarding address into the boarding
@@ -164,7 +178,7 @@ func (a *Ark) Start(ctx context.Context,
 			// imports internally and returns "already
 			// exists"). This is expected during restart
 			// recovery so we log and continue.
-			a.log.DebugS(ctx,
+			a.logger(ctx).DebugS(ctx,
 				"Boarding address re-import skipped",
 				slog.String("address",
 					addr.Address.String()),
@@ -188,7 +202,7 @@ func (a *Ark) Start(ctx context.Context,
 		a.seenUtxos.Add(key)
 	}
 
-	a.log.InfoS(ctx, "Loaded existing boarding intents",
+	a.logger(ctx).InfoS(ctx, "Loaded existing boarding intents",
 		slog.Int("count", len(outpoints)))
 
 	// Subscribe to block epochs from chainsource using notify pattern. Map
@@ -210,7 +224,7 @@ func (a *Ark) Start(ctx context.Context,
 			result.Err())
 	}
 
-	a.log.InfoS(ctx, "Boarding wallet actor started")
+	a.logger(ctx).InfoS(ctx, "Boarding wallet actor started")
 
 	return nil
 }
@@ -218,7 +232,7 @@ func (a *Ark) Start(ctx context.Context,
 // Stop gracefully shuts down the wallet actor by unsubscribing from block
 // notifications and waiting for any in-flight backlog deliveries to complete.
 func (a *Ark) Stop(ctx context.Context) {
-	a.log.InfoS(ctx, "Stopping boarding wallet actor")
+	a.logger(ctx).InfoS(ctx, "Stopping boarding wallet actor")
 
 	// Cancel the internal context to signal background goroutines to stop.
 	if a.cancel != nil {
@@ -229,12 +243,12 @@ func (a *Ark) Stop(ctx context.Context) {
 		CallerID: "boarding-wallet",
 	})
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to unsubscribe blocks", err)
+		a.logger(ctx).WarnS(ctx, "Failed to unsubscribe blocks", err)
 	}
 
 	a.wg.Wait()
 
-	a.log.InfoS(ctx, "Boarding wallet actor stopped")
+	a.logger(ctx).InfoS(ctx, "Boarding wallet actor stopped")
 }
 
 // Receive processes incoming messages using the actor pattern.
@@ -316,7 +330,7 @@ func (a *Ark) handleCreateBoardingAddress(ctx context.Context,
 		)
 	}
 
-	a.log.InfoS(ctx, "Created new boarding address",
+	a.logger(ctx).InfoS(ctx, "Created new boarding address",
 		slog.String("address", address.String()),
 		slog.Int("exit_delay", int(req.ExitDelay)))
 
@@ -393,7 +407,7 @@ func (a *Ark) handleRegisterNotifier(ctx context.Context,
 		minConf: minConf,
 	}
 
-	a.log.InfoS(ctx, "Registered confirmation notifier",
+	a.logger(ctx).InfoS(ctx, "Registered confirmation notifier",
 		slog.String("notifier_id", req.NotifierID),
 		slog.Int("min_conf", int(minConf)),
 	)
@@ -422,7 +436,7 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 	_, existed := a.notifiers[req.NotifierID]
 	delete(a.notifiers, req.NotifierID)
 
-	a.log.InfoS(ctx, "Unregistered confirmation notifier",
+	a.logger(ctx).InfoS(ctx, "Unregistered confirmation notifier",
 		slog.String("notifier_id", req.NotifierID),
 		slog.Bool("existed", existed))
 
@@ -438,7 +452,7 @@ func (a *Ark) handleUnregisterNotifier(ctx context.Context,
 func (a *Ark) handleBlockEpoch(ctx context.Context,
 	epoch chainsource.BlockEpoch) fn.Result[WalletResp] {
 
-	a.log.InfoS(ctx, "Processing new block epoch",
+	a.logger(ctx).InfoS(ctx, "Processing new block epoch",
 		slog.Int("height", int(epoch.Height)))
 
 	// A new block just arrived, so poll ListUnspent for new UTXOs.
@@ -454,8 +468,10 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 			ctx, MinBoardingConfs, MaxConfsForListUnspent,
 		)
 		if err != nil {
-			a.log.WarnS(ctx, "Failed to list unspent UTXOs", err,
-				slog.Int("height", int(epoch.Height)))
+			a.logger(ctx).WarnS(
+				ctx, "Failed listing UTXOs", err,
+				slog.Int("height", int(epoch.Height)),
+			)
 
 			// Return success to avoid disrupting the actor.
 			// We'll try again on the next block.
@@ -485,7 +501,7 @@ func (a *Ark) handleBlockEpoch(ctx context.Context,
 		}
 	}
 
-	a.log.InfoS(ctx, "ListUnspent returned UTXOs",
+	a.logger(ctx).InfoS(ctx, "ListUnspent returned UTXOs",
 		slog.Int("height", int(epoch.Height)),
 		slog.Int("utxo_count", len(lastUtxos)))
 
@@ -511,7 +527,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 	}
 
 	// New boarding UTXO detected!
-	a.log.InfoS(ctx, "Detected new boarding UTXO",
+	a.logger(ctx).InfoS(ctx, "Detected new boarding UTXO",
 		btclog.Fmt("outpoint", "%v", utxo.Outpoint),
 		slog.Int("amount", int(utxo.Amount)),
 		slog.Int("height", int(epoch.Height)),
@@ -521,8 +537,10 @@ func (a *Ark) processUtxo(ctx context.Context,
 	// needed by the round FSM to extract the output value.
 	confTx, err := a.backend.GetTransaction(ctx, utxo.Outpoint.Hash)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to fetch boarding transaction", err,
-			btclog.Fmt("txid", "%v", utxo.Outpoint.Hash))
+		a.logger(ctx).WarnS(
+			ctx, "Failed fetching boarding tx", err,
+			btclog.Fmt("txid", "%v", utxo.Outpoint.Hash),
+		)
 
 		return false
 	}
@@ -545,8 +563,10 @@ func (a *Ark) processUtxo(ctx context.Context,
 	// again.
 	err = a.store.InsertBoardingIntents(ctx, intent)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to persist boarding intent", err,
-			btclog.Fmt("outpoint", "%v", utxo.Outpoint))
+		a.logger(ctx).WarnS(
+			ctx, "Failed persisting boarding intent", err,
+			btclog.Fmt("outpoint", "%v", utxo.Outpoint),
+		)
 
 		return false
 	}
@@ -560,8 +580,10 @@ func (a *Ark) processUtxo(ctx context.Context,
 	for _, notifier := range a.notifiers {
 		if uint32(utxo.Confirmations) >= notifier.minConf {
 			if err := notifier.actor.Tell(ctx, event); err != nil {
-				a.log.WarnS(ctx, "Failed to notify confirmation",
-					err)
+				a.logger(ctx).WarnS(
+					ctx, "Notify confirmation failed",
+					err,
+				)
 			}
 		}
 	}
@@ -583,8 +605,11 @@ func (a *Ark) sendBacklog(ctx context.Context,
 		ctx, BoardingStatusConfirmed, fromHeight,
 	)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to fetch confirmed intents for "+
-			"backlog", err)
+		a.logger(ctx).WarnS(
+			ctx, "Failed fetching confirmed intents",
+			err,
+		)
+
 		return
 	}
 
@@ -596,11 +621,13 @@ func (a *Ark) sendBacklog(ctx context.Context,
 		}
 
 		if err := notifier.Tell(ctx, event); err != nil {
-			a.log.WarnS(ctx, "Failed to deliver backlog event", err)
+			a.logger(ctx).WarnS(
+				ctx, "Backlog delivery failed", err,
+			)
 		}
 	}
 
-	a.log.InfoS(ctx, "Backlog delivery completed",
+	a.logger(ctx).InfoS(ctx, "Backlog delivery completed",
 		slog.Int("from_height", int(fromHeight)),
 		slog.Int("events_sent", len(intents)))
 }
@@ -611,7 +638,7 @@ func (a *Ark) sendBacklog(ctx context.Context,
 func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	req *RefreshVTXOsRequest) fn.Result[WalletResp] {
 
-	a.log.InfoS(ctx, "Received VTXO refresh request",
+	a.logger(ctx).InfoS(ctx, "Received VTXO refresh request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
 		slog.Bool("force_refresh", req.ForceRefresh))
 
@@ -626,16 +653,19 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			ForceRefresh:    req.ForceRefresh,
 		})
 		if err != nil {
-			a.log.WarnS(ctx,
+			a.logger(ctx).WarnS(ctx,
 				"Failed to forward refresh to "+
 					"round actor",
 				err)
 		}
 
-		a.log.DebugS(ctx, "Forwarded refresh request to round actor")
+		a.logger(ctx).DebugS(
+			ctx, "Forwarded refresh to round actor",
+		)
 	} else {
-		a.log.WarnS(ctx, "Cannot forward refresh: no actor system "+
-			"configured", nil)
+		a.logger(ctx).WarnS(
+			ctx, "No actor system for refresh", nil,
+		)
 	}
 
 	resp := &RefreshVTXOsResponse{
@@ -652,7 +682,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
 
-	a.log.InfoS(ctx, "Received VTXO leave request",
+	a.logger(ctx).InfoS(ctx, "Received VTXO leave request",
 		slog.Int("target_count", len(req.TargetOutpoints)),
 	)
 
@@ -666,12 +696,13 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			TargetOutpoints: req.TargetOutpoints,
 			DestOutput:      req.DestOutput,
 		}); err != nil {
-			a.log.WarnS(ctx, "Failed to forward leave to "+
+			a.logger(ctx).WarnS(ctx, "Failed to forward leave to "+
 				"round actor", err)
 		}
 	} else {
-		a.log.WarnS(ctx, "Cannot forward leave: no actor system "+
-			"configured", nil)
+		a.logger(ctx).WarnS(
+			ctx, "No actor system for leave", nil,
+		)
 	}
 
 	resp := &LeaveVTXOsResponse{

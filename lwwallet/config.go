@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // coinTypeForNet returns the BIP44 coin type for the given network.
@@ -54,9 +55,17 @@ type Config struct {
 	// while production callers may use a persistent path.
 	DBDir string
 
-	// Logger is the structured logger for the wallet and all its
-	// sub-components (chain service, chain backend, boarding backend,
-	// Esplora client). If nil, the package-level logger is used
-	// (set via UseLogger, defaults to btclog.Disabled).
-	Logger btclog.Logger
+	// Log is an optional logger for the wallet and all its sub-components
+	// (chain service, chain backend, boarding backend, Esplora client). If
+	// None, the wallet falls back to extracting a logger from context via
+	// build.LoggerFromContext, or uses btclog.Disabled if no logger is
+	// found.
+	Log fn.Option[btclog.Logger]
+}
+
+// WithLogger returns a new config with the given logger set.
+func (c Config) WithLogger(log btclog.Logger) Config {
+	c.Log = fn.Some(log)
+
+	return c
 }

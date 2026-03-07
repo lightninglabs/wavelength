@@ -9,7 +9,9 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightningnetwork/lnd/blockcache"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -75,8 +77,11 @@ type Wallet struct {
 	// chainParams identifies the Bitcoin network.
 	chainParams *chaincfg.Params
 
-	// log is the structured logger for this wallet instance.
-	log btclog.Logger
+	// walletLog is an optional logger for this wallet instance. When set,
+	// it takes precedence over the context-based logger from
+	// build.LoggerFromContext. When None, the wallet falls back to the
+	// context logger (or btclog.Disabled if none is found).
+	walletLog fn.Option[btclog.Logger]
 }
 
 // New creates a new lightweight wallet from the given configuration.
@@ -84,12 +89,9 @@ type Wallet struct {
 // is responsible for managing the directory's lifecycle (creation
 // before calling New, cleanup after Stop if desired).
 func New(cfg Config) (*Wallet, error) {
-	// Use the configured logger, falling back to the package-level
-	// logger if none was provided.
-	walletLog := cfg.Logger
-	if walletLog == nil {
-		walletLog = log
-	}
+	// Unwrap the optional logger, falling back to the package-level
+	// logger which is set via the central logging registry.
+	walletLog := cfg.Log.UnwrapOr(log)
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
 
@@ -150,14 +152,22 @@ func New(cfg Config) (*Wallet, error) {
 		boardingBackend: boardingBackend,
 		keyRing:         keyRing,
 		chainParams:     cfg.ChainParams,
-		log:             walletLog,
+		walletLog:       cfg.Log,
 	}, nil
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (w *Wallet) logger(ctx context.Context) btclog.Logger {
+	return w.walletLog.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Start initializes the wallet by starting btcwallet (which
 // internally starts the EsploraChainService and syncs the wallet)
 // and the chainsource ChainBackend.
 func (w *Wallet) Start() error {
+	ctx := context.Background()
+
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
 	// starts the chain service, and begins wallet synchronization.
 	if err := w.btcWallet.Start(); err != nil {
@@ -170,7 +180,7 @@ func (w *Wallet) Start() error {
 		return fmt.Errorf("start chain backend: %w", err)
 	}
 
-	w.log.InfoS(context.Background(), "Lightweight wallet started")
+	w.logger(ctx).InfoS(ctx, "Lightweight wallet started")
 
 	return nil
 }
@@ -179,13 +189,15 @@ func (w *Wallet) Start() error {
 // wait for the chain service goroutine to fully exit before
 // returning to avoid racing with btcwallet's internal writes.
 func (w *Wallet) Stop() {
-	w.log.InfoS(context.Background(), "Stopping lightweight wallet")
+	ctx := context.Background()
+
+	w.logger(ctx).InfoS(ctx, "Stopping lightweight wallet")
 
 	_ = w.btcWallet.Stop()
 	w.chainSvc.WaitForShutdown()
 	_ = w.chainBackend.Stop()
 
-	w.log.InfoS(context.Background(), "Lightweight wallet stopped")
+	w.logger(ctx).InfoS(ctx, "Lightweight wallet stopped")
 }
 
 // BoardingBackend returns the wallet.BoardingBackend adapter that
@@ -226,7 +238,7 @@ func (w *Wallet) NewAddress(
 		return nil, err
 	}
 
-	w.log.DebugS(ctx, "Generated new P2TR address",
+	w.logger(ctx).DebugS(ctx, "Generated new P2TR address",
 		slog.String("address", addr.String()))
 
 	return addr, nil
@@ -242,7 +254,7 @@ func (w *Wallet) Balance(
 	// whether confirmed transactions are counted.
 	syncedTo := w.btcWallet.InternalWallet().SyncedTo()
 	chainSynced := w.btcWallet.InternalWallet().ChainSynced()
-	w.log.DebugS(ctx, "Checking wallet balance",
+	w.logger(ctx).DebugS(ctx, "Checking wallet balance",
 		slog.Int("sync_height", int(syncedTo.Height)),
 		slog.String("sync_hash", syncedTo.Hash.String()),
 		slog.Bool("chain_synced", chainSynced))
@@ -262,7 +274,7 @@ func (w *Wallet) Balance(
 
 	unconfirmed := total - confirmed
 
-	w.log.DebugS(ctx, "Wallet balance result",
+	w.logger(ctx).DebugS(ctx, "Wallet balance result",
 		slog.Int64("confirmed_sats", int64(confirmed)),
 		slog.Int64("unconfirmed_sats", int64(unconfirmed)),
 		slog.Int64("total_sats", int64(total)))

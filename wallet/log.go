@@ -8,8 +8,11 @@ import (
 const Subsystem = "ARKW"
 
 // log is a logger that is initialized with no output filters. This means the
-// package will not perform any logging by default until the caller requests
-// it.
+// package will not perform any logging by default until the caller requests it.
+// The wallet package uses fn.Option[btclog.Logger] in configs; this variable
+// is maintained for the central subsystem registry via UseLogger.
+//
+//nolint:unused
 var log = btclog.Disabled
 
 // DisableLog disables all library log output. Logging output is disabled by
