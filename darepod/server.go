@@ -25,8 +25,8 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/oor"
-	"github.com/lightninglabs/darepo-client/oorwire"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -467,7 +467,7 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 
 // registerOOREventRoutes registers OOR mailbox service event routes with the
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
-// response events, the router decodes the oorwire proto, adapts it into a
+// response events, the router decodes the oorpb proto, adapts it into a
 // DriveEventRequest, and Tell's it to the OOR actor via service key.
 func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	oorKey := oor.NewServiceKey()
@@ -478,14 +478,14 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
 		oor.OORDurableMsg, oor.ActorResp,
 	]{
-		Service: oorwire.ServiceName,
-		Method:  oorwire.MethodSubmitPackage,
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodSubmitPackage,
 		NewEvent: func() proto.Message {
-			return &oorwire.SubmitPackageResponse{}
+			return &oorpb.SubmitPackageResponse{}
 		},
 		Key: oorKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorwire.SubmitPackageResponse)
+			resp, ok := p.(*oorpb.SubmitPackageResponse)
 			if !ok {
 				return nil, fmt.Errorf(
 					"expected SubmitPackageResponse, "+
@@ -494,7 +494,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			}
 
 			sessionID, checkpoints, err :=
-				oorwire.ParseSubmitPackageResponse(resp)
+				oorpb.ParseSubmitPackageResponse(resp)
 			if err != nil {
 				return nil, fmt.Errorf("parse submit "+
 					"response: %w", err)
@@ -518,14 +518,14 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
 		oor.OORDurableMsg, oor.ActorResp,
 	]{
-		Service: oorwire.ServiceName,
-		Method:  oorwire.MethodFinalizePackage,
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodFinalizePackage,
 		NewEvent: func() proto.Message {
-			return &oorwire.FinalizePackageResponse{}
+			return &oorpb.FinalizePackageResponse{}
 		},
 		Key: oorKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorwire.FinalizePackageResponse)
+			resp, ok := p.(*oorpb.FinalizePackageResponse)
 			if !ok {
 				return nil, fmt.Errorf(
 					"expected FinalizePackageResponse"+
@@ -534,7 +534,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			}
 
 			sessionID, err :=
-				oorwire.ParseFinalizePackageResponse(resp)
+				oorpb.ParseFinalizePackageResponse(resp)
 			if err != nil {
 				return nil, fmt.Errorf("parse finalize "+
 					"response: %w", err)
@@ -548,7 +548,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	})
 
 	// TODO(roasbeef): Register an IncomingAck route once the
-	// oorwire proto defines an ack RPC. SendIncomingAckRequest is
+	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
 }

@@ -64,7 +64,7 @@ generate "rpc/roundpb"
 generate "daemonrpc"
 
 # Generate OOR mailbox wire payload stubs.
-generate "oorwire"
+generate "rpc/oorpb"
 
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then

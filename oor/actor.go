@@ -453,7 +453,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 // from the current session state when the server response does not echo it
 // back. The canonical ArkPSBT lives in the AwaitingSubmitAccepted state, which
 // was set when the client built and sent the submit package. This allows the
-// dispatch adapter to construct a SubmitAcceptedEvent from the oorwire proto
+// dispatch adapter to construct a SubmitAcceptedEvent from the oorpb proto
 // (which only carries sessionID + co-signed checkpoints) and have the actor
 // enrich it before validation and transition processing.
 func (b *oorDurableBehavior) enrichSubmitAcceptedArkPSBT(

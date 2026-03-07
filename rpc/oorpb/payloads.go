@@ -1,4 +1,4 @@
-package oorwire
+package oorpb
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 const (
 	// ServiceName is the mailbox RPC service name for client/server OOR
 	// submit/finalize request-response flows.
-	ServiceName = "oorwire.OORMailboxService"
+	ServiceName = "oorpb.OORMailboxService"
 
 	// MethodSubmitPackage maps a client submit-package request.
 	MethodSubmitPackage = "SubmitPackage"
