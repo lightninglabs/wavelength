@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -33,7 +34,11 @@ type ManagerConfig struct {
 	ActorSystem  *actor.ActorSystem
 	ChainParams  *chaincfg.Params
 	ExpiryConfig *ExpiryConfig
-	Logger       btclog.Logger
+
+	// Log is an optional logger for this manager instance. If None, the
+	// manager falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
 
 	// RoundActor receives refresh requests and forfeit signatures from VTXOs.
 	// Passed through to spawned VTXO actors. Uses actormsg.RoundReceivable to
@@ -66,17 +71,16 @@ func NewManager(cfg *ManagerConfig) *Manager {
 		cfg.ExpiryConfig = DefaultExpiryConfig()
 	}
 
-	// Fall back to the package-level logger if no logger was injected via
-	// the config. This ensures structured logging works even when the
-	// caller doesn't explicitly wire a logger.
-	if cfg.Logger == nil {
-		cfg.Logger = log
-	}
-
 	return &Manager{
 		cfg:    cfg,
 		actors: make(map[wire.OutPoint]VTXOActorRef),
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (m *Manager) logger(ctx context.Context) btclog.Logger {
+	return m.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Start initializes the manager by recovering persisted VTXOs. The selfRef
@@ -95,7 +99,7 @@ func (m *Manager) Start(ctx context.Context,
 	for _, vtxo := range vtxos {
 		ref, err := m.spawnVTXOActor(ctx, vtxo)
 		if err != nil {
-			m.cfg.Logger.ErrorS(
+			m.logger(ctx).ErrorS(
 				ctx, "Failed to recover VTXO actor", err,
 				slog.String("outpoint", vtxo.Outpoint.String()),
 			)
@@ -105,12 +109,12 @@ func (m *Manager) Start(ctx context.Context,
 
 		m.actors[vtxo.Outpoint] = ref
 
-		m.cfg.Logger.InfoS(ctx, "Recovered VTXO actor",
+		m.logger(ctx).InfoS(ctx, "Recovered VTXO actor",
 			slog.String("outpoint", vtxo.Outpoint.String()),
 			slog.String("status", vtxo.Status.String()))
 	}
 
-	m.cfg.Logger.InfoS(ctx, "VTXO manager started",
+	m.logger(ctx).InfoS(ctx, "VTXO manager started",
 		slog.Int("recovered", len(m.actors)))
 
 	return nil
@@ -118,7 +122,7 @@ func (m *Manager) Start(ctx context.Context,
 
 // Stop gracefully shuts down the manager.
 func (m *Manager) Stop(ctx context.Context) {
-	m.cfg.Logger.InfoS(ctx, "VTXO manager stopped")
+	m.logger(ctx).InfoS(ctx, "VTXO manager stopped")
 }
 
 // Receive processes incoming messages.
@@ -152,7 +156,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		outpoint := clientVTXO.Outpoint
 
 		if _, exists := m.actors[outpoint]; exists {
-			m.cfg.Logger.WarnS(ctx,
+			m.logger(ctx).WarnS(ctx,
 				"VTXO actor already exists", nil,
 				slog.String("outpoint", outpoint.String()),
 			)
@@ -163,7 +167,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		result := clientVTXOToDescriptor(clientVTXO, msg)
 		descriptor, err := result.Unpack()
 		if err != nil {
-			m.cfg.Logger.ErrorS(ctx,
+			m.logger(ctx).ErrorS(ctx,
 				"Failed to build descriptor", err,
 				slog.String("outpoint", outpoint.String()),
 			)
@@ -172,7 +176,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 		}
 
 		if err := m.cfg.Store.SaveVTXO(ctx, descriptor); err != nil {
-			m.cfg.Logger.ErrorS(ctx, "Failed to save VTXO", err,
+			m.logger(ctx).ErrorS(ctx, "Failed to save VTXO", err,
 				slog.String("outpoint", outpoint.String()),
 			)
 
@@ -181,7 +185,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 
 		ref, err := m.spawnVTXOActor(ctx, descriptor)
 		if err != nil {
-			m.cfg.Logger.ErrorS(ctx,
+			m.logger(ctx).ErrorS(ctx,
 				"Failed to spawn VTXO actor", err,
 				slog.String("outpoint", outpoint.String()),
 			)
@@ -191,7 +195,7 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 
 		m.actors[outpoint] = ref
 
-		m.cfg.Logger.InfoS(ctx, "Spawned VTXO actor",
+		m.logger(ctx).InfoS(ctx, "Spawned VTXO actor",
 			slog.String("outpoint", outpoint.String()),
 			slog.Int64("amount", int64(clientVTXO.Amount)),
 			slog.Int("batch_expiry", int(msg.BatchExpiry)))
@@ -207,7 +211,7 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 
 	delete(m.actors, msg.Outpoint)
 
-	m.cfg.Logger.InfoS(ctx, "VTXO actor terminated",
+	m.logger(ctx).InfoS(ctx, "VTXO actor terminated",
 		slog.String("outpoint", msg.Outpoint.String()),
 		slog.String("final_state", msg.FinalState),
 		slog.String("reason", msg.Reason))
@@ -229,7 +233,7 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 		ChainSource:   m.cfg.ChainSource,
 		ChainParams:   m.cfg.ChainParams,
 		ExpiryConfig:  m.cfg.ExpiryConfig,
-		Logger:        m.cfg.Logger,
+		Log:           m.cfg.Log,
 		RoundActor:    m.cfg.RoundActor,
 		ChainResolver: m.cfg.ChainResolver,
 		Manager:       m.managerRef,

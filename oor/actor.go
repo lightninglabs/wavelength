@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -32,8 +33,10 @@ type OutboxHandler interface {
 
 // ClientActorCfg configures the OORClientActor.
 type ClientActorCfg struct {
-	// Logger is used for actor and FSM logging.
-	Logger btclog.Logger
+	// Log is an optional logger for this actor instance. If None, the
+	// actor falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
 
 	// OutboxHandler executes side effects emitted by the FSM.
 	OutboxHandler OutboxHandler
@@ -139,15 +142,12 @@ func newOORActorCodec() *actor.MessageCodec {
 // messages. If startup prerequisites fail, the returned actor stores the error
 // and surfaces it on Receive.
 func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
-	if cfg.Logger == nil {
-		cfg.Logger = btclog.Disabled
-	}
-
 	if cfg.ActorID == "" {
 		cfg.ActorID = fmt.Sprintf("oor-client-%s", uuid.NewString())
 	}
 
-	cfg.Logger.InfoS(context.Background(), "Creating OOR client actor",
+	logger := cfg.Log.UnwrapOr(log)
+	logger.InfoS(context.Background(), "Creating OOR client actor",
 		slog.String("actor_id", cfg.ActorID))
 
 	actorRef := &OORClientActor{cfg: cfg}
@@ -164,7 +164,6 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	behavior := &oorDurableBehavior{
 		cfg:      cfg,
-		log:      cfg.Logger,
 		sessions: make(map[SessionID]*sessionHandle),
 	}
 
@@ -202,7 +201,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	durable.Start()
 
-	cfg.Logger.InfoS(context.Background(), "OOR durable actor started",
+	logger.InfoS(context.Background(), "OOR durable actor started",
 		slog.String("actor_id", cfg.ActorID))
 
 	// Register the durable actor's ref with the actor system so the
@@ -221,7 +220,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 			return actorRef
 		}
 
-		cfg.Logger.InfoS(
+		logger.InfoS(
 			context.Background(),
 			"OOR actor registered with receptionist",
 			slog.String("actor_id", cfg.ActorID),
@@ -262,7 +261,7 @@ func (a *OORClientActor) Receive(ctx context.Context,
 //
 // Stop is safe to call multiple times.
 func (a *OORClientActor) Stop() {
-	a.cfg.Logger.InfoS(
+	a.cfg.Log.UnwrapOr(log).InfoS(
 		context.Background(), "Stopping OOR client actor",
 		slog.String("actor_id", a.cfg.ActorID),
 	)
@@ -271,7 +270,7 @@ func (a *OORClientActor) Stop() {
 		a.durable.Stop()
 	}
 
-	a.cfg.Logger.InfoS(
+	a.cfg.Log.UnwrapOr(log).InfoS(
 		context.Background(), "OOR client actor stopped",
 		slog.String("actor_id", a.cfg.ActorID),
 	)
@@ -283,22 +282,13 @@ func (a *OORClientActor) Stop() {
 type oorDurableBehavior struct {
 	cfg ClientActorCfg
 
-	// log is a convenience reference to the configured logger, used for
-	// structured logging throughout the behavior's message handlers.
-	log btclog.Logger
-
 	sessions map[SessionID]*sessionHandle
 }
 
-// logger returns the behavior's configured logger, falling back to the
-// package-level logger if none was set. This guards against nil dereferences
-// when tests construct the behavior directly without a Logger.
-func (b *oorDurableBehavior) logger() btclog.Logger {
-	if b.log != nil {
-		return b.log
-	}
-
-	return log
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (b *oorDurableBehavior) logger(ctx context.Context) btclog.Logger {
+	return b.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Receive dispatches decoded TLV messages to the appropriate handler
@@ -350,7 +340,7 @@ func (b *oorDurableBehavior) handleRestart(ctx context.Context,
 
 	hasCheckpoint := msg.HasCheckpoint()
 
-	b.logger().InfoS(ctx, "Handling restart message",
+	b.logger(ctx).InfoS(ctx, "Handling restart message",
 		slog.Bool("has_checkpoint", hasCheckpoint))
 
 	if hasCheckpoint {
@@ -372,7 +362,7 @@ func (b *oorDurableBehavior) handleRestart(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	b.logger().InfoS(ctx, "Restart complete",
+	b.logger(ctx).InfoS(ctx, "Restart complete",
 		slog.Int("num_sessions", len(b.sessions)))
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
@@ -386,7 +376,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
 	}
 
-	b.logger().InfoS(ctx, "Starting new OOR transfer",
+	b.logger(ctx).InfoS(ctx, "Starting new OOR transfer",
 		slog.Int("num_inputs", len(req.Inputs)),
 		slog.Int("num_recipients", len(req.Recipients)))
 
@@ -404,7 +394,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	// durable replay), we keep the existing session and return its ID.
 	if _, exists := b.sessions[session.ID]; exists {
 		//nolint:ll
-		b.logger().DebugS(ctx, "Duplicate start transfer, returning existing session",
+		b.logger(ctx).DebugS(ctx, "Duplicate start transfer, returning existing session",
 			slog.String("session_id", session.ID.String()))
 
 		return fn.Ok[ActorResp](&StartTransferResponse{
@@ -415,7 +405,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 	handle := &sessionHandle{FSM: session.FSM}
 	b.sessions[session.ID] = handle
 
-	b.logger().InfoS(ctx, "OOR session created",
+	b.logger(ctx).InfoS(ctx, "OOR session created",
 		slog.String("session_id", session.ID.String()),
 		slog.Int("num_outbox", len(outbox)))
 
@@ -446,7 +436,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("event must be provided"))
 	}
 
-	b.logger().DebugS(ctx, "Driving event into session",
+	b.logger(ctx).DebugS(ctx, "Driving event into session",
 		slog.String("session_id", req.SessionID.String()),
 		slog.String("event_type", fmt.Sprintf("%T", req.Event)))
 
@@ -551,7 +541,7 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 
 	sessionHash := chainhash.Hash(sessionID)
 
-	b.logger().DebugS(ctx, "Persisting outgoing package",
+	b.logger(ctx).DebugS(ctx, "Persisting outgoing package",
 		slog.String("session_id", sessionID.String()),
 		slog.Int("num_inputs", len(state.InputOutpoints)),
 		slog.Int("num_checkpoints", len(state.FinalCheckpointPSBTs)))
@@ -622,7 +612,7 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 		)
 	}
 
-	b.logger().InfoS(ctx, "Restoring session from snapshot",
+	b.logger(ctx).InfoS(ctx, "Restoring session from snapshot",
 		slog.String("session_id", req.Snapshot.SessionID.String()))
 
 	if _, exists := b.sessions[req.Snapshot.SessionID]; exists {
@@ -644,7 +634,7 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	b.logger().InfoS(ctx, "Session restored successfully",
+	b.logger(ctx).InfoS(ctx, "Session restored successfully",
 		slog.String("session_id", session.ID.String()))
 
 	return fn.Ok[ActorResp](&RestoreSessionResponse{
@@ -661,7 +651,7 @@ func (b *oorDurableBehavior) handleResumeSession(ctx context.Context,
 		return fn.Err[ActorResp](fmt.Errorf("request must be provided"))
 	}
 
-	b.logger().InfoS(ctx, "Resuming session",
+	b.logger(ctx).InfoS(ctx, "Resuming session",
 		slog.String("session_id", req.SessionID.String()))
 
 	handle, ok := b.sessions[req.SessionID]
@@ -675,7 +665,7 @@ func (b *oorDurableBehavior) handleResumeSession(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	b.logger().DebugS(ctx, "Session current state for resume",
+	b.logger(ctx).DebugS(ctx, "Session current state for resume",
 		slog.String("session_id", req.SessionID.String()),
 		slog.String("state", fmt.Sprintf("%T", state)))
 
@@ -754,8 +744,6 @@ func (b *oorDurableBehavior) handleGetState(ctx context.Context,
 func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 	raw []byte) error {
 
-	_ = ctx
-
 	if len(raw) == 0 {
 		return nil
 	}
@@ -771,7 +759,7 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 			checkpoint.Version)
 	}
 
-	b.logger().InfoS(ctx, "Restoring sessions from checkpoint",
+	b.logger(ctx).InfoS(ctx, "Restoring sessions from checkpoint",
 		slog.Int("checkpoint_version", checkpoint.Version),
 		slog.Int("num_snapshots", len(checkpoint.Snapshots)))
 
@@ -792,7 +780,7 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 
 		b.sessions[session.ID] = &sessionHandle{FSM: session.FSM}
 
-		b.logger().DebugS(ctx, "Restored session from checkpoint",
+		b.logger(ctx).DebugS(ctx, "Restored session from checkpoint",
 			slog.String("session_id", session.ID.String()))
 	}
 
@@ -812,7 +800,7 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 		return sessionIDs[i].String() < sessionIDs[j].String()
 	})
 
-	b.logger().InfoS(ctx, "Resuming restored sessions",
+	b.logger(ctx).InfoS(ctx, "Resuming restored sessions",
 		slog.Int("num_sessions", len(sessionIDs)))
 
 	for i := range sessionIDs {
@@ -829,7 +817,7 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 			return err
 		}
 
-		b.logger().DebugS(ctx, "Resuming restored session",
+		b.logger(ctx).DebugS(ctx, "Resuming restored session",
 			slog.String("session_id", sessionID.String()),
 			slog.String("state", fmt.Sprintf("%T", state)),
 			slog.Int("num_outbox", len(outbox)))
@@ -928,7 +916,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		// asynchronously via DriveEventRequest.
 		if b.isTransportEvent(msg) {
 			//nolint:ll
-			b.logger().DebugS(ctx, "Sending transport event to server",
+			b.logger(ctx).DebugS(ctx, "Sending transport event to server",
 				slog.String("session_id", sessionID.String()),
 				slog.String("event_type", fmt.Sprintf("%T", msg)))
 
@@ -939,7 +927,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			continue
 		}
 
-		b.logger().DebugS(ctx, "Handling local outbox event",
+		b.logger(ctx).DebugS(ctx, "Handling local outbox event",
 			slog.String("session_id", sessionID.String()),
 			slog.String("event_type", fmt.Sprintf("%T", msg)))
 
@@ -948,7 +936,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			//nolint:ll
-			b.logger().WarnS(ctx, "Outbox handler error, wrapping as retryable event", err,
+			b.logger(ctx).WarnS(ctx, "Outbox handler error, wrapping as retryable event", err,
 				slog.String("session_id", sessionID.String()),
 				slog.String("event_type", fmt.Sprintf("%T", msg)))
 

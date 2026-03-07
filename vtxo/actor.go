@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
@@ -35,7 +36,11 @@ type VTXOActorConfig struct {
 	]
 	ChainParams  *chaincfg.Params
 	ExpiryConfig *ExpiryConfig
-	Logger       btclog.Logger
+
+	// Log is an optional logger for this actor instance. If None, the
+	// actor falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
 
 	// RoundActor receives refresh requests and forfeit signatures from this
 	// VTXO actor. Uses actormsg.RoundReceivable to avoid import cycles.
@@ -63,24 +68,25 @@ type VTXOActor struct {
 // actors being recovered from storage (e.g., in forfeiting state), this
 // fetches persisted data like the forfeit tx.
 func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
-	// Fall back to the package-level logger if no logger was injected via
-	// the config. This ensures structured logging works even when the
-	// caller doesn't explicitly wire a logger.
-	if cfg.Logger == nil {
-		cfg.Logger = log
-	}
-
 	actorID := fmt.Sprintf("vtxo.%s", cfg.VTXO.Outpoint.String())
 	env := NewVTXOEnvironment(
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
 		cfg.ChainParams,
 	)
 
+	logger := cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+
 	return &VTXOActor{
 		cfg:   cfg,
-		state: statusToState(ctx, cfg.VTXO, cfg.Store, cfg.Logger),
+		state: statusToState(ctx, cfg.VTXO, cfg.Store, logger),
 		env:   env,
 	}
+}
+
+// logger returns the configured logger or falls back to extracting from
+// context. If no logger is found in either location, returns btclog.Disabled.
+func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
+	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Start initializes the actor and subscribes to block epochs.
@@ -108,7 +114,7 @@ func (a *VTXOActor) Stop(ctx context.Context) {
 func (a *VTXOActor) Receive(ctx context.Context,
 	event actormsg.VTXOActorMsg) fn.Result[actormsg.VTXOActorResp] {
 
-	a.cfg.Logger.DebugS(ctx, "VTXO actor received event",
+	a.logger(ctx).DebugS(ctx, "VTXO actor received event",
 		slog.String("event_type", fmt.Sprintf("%T", event)),
 		slog.String("outpoint", a.cfg.VTXO.Outpoint.String()),
 		slog.String("current_state", fmt.Sprintf("%T", a.state)))
@@ -122,7 +128,7 @@ func (a *VTXOActor) Receive(ctx context.Context,
 
 	transition, err := a.state.ProcessEvent(ctx, vtxoEvent, a.env)
 	if err != nil {
-		a.cfg.Logger.ErrorS(ctx, "VTXO FSM ProcessEvent failed", err,
+		a.logger(ctx).ErrorS(ctx, "VTXO FSM ProcessEvent failed", err,
 			slog.String("event_type", fmt.Sprintf("%T", vtxoEvent)),
 			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
 
@@ -136,7 +142,7 @@ func (a *VTXOActor) Receive(ctx context.Context,
 	transition.NewEvents.WhenSome(func(emitted VTXOEmittedEvent) {
 		outboxLen = len(emitted.Outbox)
 	})
-	a.cfg.Logger.DebugS(ctx, "VTXO FSM transition completed",
+	a.logger(ctx).DebugS(ctx, "VTXO FSM transition completed",
 		slog.String("next_state", fmt.Sprintf("%T", transition.NextState)),
 		slog.Int("outbox_len", outboxLen))
 
@@ -187,7 +193,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				m.NewStatus == VTXOStatusForfeiting &&
 					m.ForfeitTx != nil
 
-			a.cfg.Logger.DebugS(ctx, "Processing VTXOStatusUpdate",
+			a.logger(ctx).DebugS(ctx, "Processing VTXOStatusUpdate",
 				slog.String("outpoint", m.Outpoint.String()),
 				slog.String("new_status", m.NewStatus.String()),
 				slog.Bool("has_forfeit_tx", m.ForfeitTx != nil),
@@ -197,7 +203,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				err = a.cfg.Store.MarkForfeiting(
 					ctx, m.Outpoint, m.RoundID, m.ForfeitTx,
 				)
-				a.cfg.Logger.DebugS(
+				a.logger(ctx).DebugS(
 					ctx, "Called MarkForfeiting",
 					slog.String("outpoint", m.Outpoint.String()),
 					slog.String("round_id", m.RoundID),
@@ -209,7 +215,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				)
 			}
 			if err != nil {
-				a.cfg.Logger.ErrorS(ctx,
+				a.logger(ctx).ErrorS(ctx,
 					"Failed to update VTXO status", err,
 					slog.String("outpoint", m.Outpoint.String()),
 					slog.String("status", m.NewStatus.String()),
@@ -241,12 +247,12 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				if err := a.cfg.RoundActor.Tell(
 					ctx, refreshReq,
 				); err != nil {
-					a.cfg.Logger.WarnS(
+					a.logger(ctx).WarnS(
 						ctx, "Failed to tell refresh",
 						err)
 				}
 
-				a.cfg.Logger.InfoS(
+				a.logger(ctx).InfoS(
 					ctx, "Sent refresh request to round",
 					slog.String("outpoint", m.VTXOOutpoint.String()),
 				)
@@ -265,7 +271,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				}
 				err := a.cfg.RoundActor.Tell(ctx, leaveReq)
 				if err != nil {
-					a.cfg.Logger.WarnS(
+					a.logger(ctx).WarnS(
 						ctx, "Failed to send leave "+
 							"request to round",
 						err,
@@ -276,7 +282,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 					)
 				}
 
-				a.cfg.Logger.InfoS(
+				a.logger(ctx).InfoS(
 					ctx, "Sent leave request to round",
 					slog.String(
 						"outpoint", vtxo.Outpoint.String(),
@@ -296,7 +302,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				}
 				err := a.cfg.RoundActor.Tell(ctx, resp)
 				if err != nil {
-					a.cfg.Logger.WarnS(
+					a.logger(ctx).WarnS(
 						ctx,
 						"Failed to send forfeit sig",
 						err,
@@ -305,7 +311,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 							m.VTXOOutpoint.String(),
 						))
 				}
-				a.cfg.Logger.InfoS(
+				a.logger(ctx).InfoS(
 					ctx, "Sent forfeit signature",
 					slog.String(
 						"outpoint",
@@ -320,7 +326,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			if a.cfg.ChainResolver != nil {
 				err := a.cfg.ChainResolver.Tell(ctx, *m)
 				if err != nil {
-					a.cfg.Logger.WarnS(
+					a.logger(ctx).WarnS(
 						ctx,
 						"Failed to tell chain resolver",
 						err,
@@ -329,7 +335,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 							m.VTXO.Outpoint.String(),
 						))
 				}
-				a.cfg.Logger.InfoS(
+				a.logger(ctx).InfoS(
 					ctx,
 					"VTXO sent to chain resolver",
 					slog.String(
@@ -353,7 +359,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 						Reason:     m.Reason,
 					})
 				if err != nil {
-					a.cfg.Logger.WarnS(
+					a.logger(ctx).WarnS(
 						ctx,
 						"Failed to notify manager",
 						err,
@@ -392,7 +398,7 @@ func (a *VTXOActor) subscribeBlockEpochs(ctx context.Context) error {
 		return fmt.Errorf("subscribe blocks: %w", result.Err())
 	}
 
-	a.cfg.Logger.DebugS(ctx, "Subscribed to block epochs",
+	a.logger(ctx).DebugS(ctx, "Subscribed to block epochs",
 		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()))
 
 	return nil
@@ -408,7 +414,7 @@ func (a *VTXOActor) unsubscribeBlockEpochs(ctx context.Context) {
 		},
 	)
 	if err != nil {
-		a.cfg.Logger.WarnS(ctx,
+		a.logger(ctx).WarnS(ctx,
 			"Failed to unsubscribe from blocks",
 			err,
 			slog.String(
@@ -417,7 +423,7 @@ func (a *VTXOActor) unsubscribeBlockEpochs(ctx context.Context) {
 			))
 	}
 
-	a.cfg.Logger.DebugS(ctx, "Unsubscribed from block epochs",
+	a.logger(ctx).DebugS(ctx, "Unsubscribed from block epochs",
 		slog.String("vtxo", a.cfg.VTXO.Outpoint.String()))
 }
 
