@@ -8,8 +8,11 @@ import (
 const Subsystem = "DABS"
 
 // log is a logger that is initialized with no output filters. This means the
-// package will not perform any logging by default until the caller requests
-// it.
+// package will not perform any logging by default until the caller requests it.
+// Currently the db constructors receive an explicit logger parameter, but the
+// package-level variable is maintained for the central subsystem registry.
+//
+//nolint:unused
 var log = btclog.Disabled
 
 // DisableLog disables all library log output. Logging output is disabled by

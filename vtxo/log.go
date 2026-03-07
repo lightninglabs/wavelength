@@ -43,7 +43,10 @@ type contextErrorReporter struct {
 }
 
 // newContextErrorReporter creates an error reporter that logs using the logger
-// from the given context with the specified prefix.
+// from the given context with the specified prefix. This will be used once the
+// vtxo FSM state machine is wired up with protofsm.
+//
+//nolint:unused
 func newContextErrorReporter(ctx context.Context,
 	prefix string) *contextErrorReporter {
 
