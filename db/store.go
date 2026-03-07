@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -129,6 +130,12 @@ func DefaultPostgresConfig() *PostgresConfig {
 // The method dispatches to backend-specific constructors and returns a unified
 // Store wrapper over the resulting SQL handle and query adapter.
 func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
+	ctx := context.Background()
+
+	log.InfoS(ctx, "Initializing database store",
+		"backend", cfg.Backend,
+	)
+
 	switch cfg.Backend {
 	case "sqlite":
 		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log)
@@ -136,6 +143,8 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 			return nil, fmt.Errorf("failed to create sqlite "+
 				"store: %w", err)
 		}
+
+		log.InfoS(ctx, "SQLite store created successfully")
 
 		return NewStore(
 			sqliteStore.DB, sqliteStore.Queries,
@@ -148,6 +157,8 @@ func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
 			return nil, fmt.Errorf("failed to create postgres "+
 				"store: %w", err)
 		}
+
+		log.InfoS(ctx, "Postgres store created successfully")
 
 		return NewStore(
 			pgStore.DB, pgStore.Queries, pgStore.Backend(), log,

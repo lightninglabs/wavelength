@@ -88,7 +88,9 @@ type PostgresStore struct {
 // NewPostgresStore creates a new store that is backed by a Postgres database
 // backend.
 func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, error) {
-	log.InfoS(context.Background(), "Using SQL database",
+	ctx := context.Background()
+
+	log.InfoS(ctx, "Opening Postgres database",
 		"dsn", cfg.DSN(true),
 	)
 
@@ -122,6 +124,13 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	rawDB.SetConnMaxLifetime(connMaxLifetime)
 	rawDB.SetConnMaxIdleTime(connMaxIdleTime)
 
+	log.DebugS(ctx, "Postgres connection pool configured",
+		"max_open_conns", maxConns,
+		"max_idle_conns", maxIdleConns,
+		"conn_max_lifetime", connMaxLifetime,
+		"conn_max_idle_time", connMaxIdleTime,
+	)
+
 	queries := sqlc.NewPostgres(rawDB)
 	s := &PostgresStore{
 		cfg: cfg,
@@ -135,11 +144,15 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	// Now that the database is open, populate the database with our set of
 	// schemas based on our embedded in-memory file system.
 	if !cfg.SkipMigrations {
+		log.InfoS(ctx, "Starting Postgres schema migrations")
+
 		err := s.ExecuteMigrations(TargetLatest)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		log.InfoS(ctx, "Starting actor-delivery migrations")
 
 		err = admigration.RunMigrations(
 			s.DB, s.Backend(), admigration.Config{
@@ -152,6 +165,12 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 				err,
 			)
 		}
+
+		log.InfoS(
+			ctx, "All Postgres migrations completed successfully",
+		)
+	} else {
+		log.InfoS(ctx, "Skipping Postgres migrations as configured")
 	}
 
 	return s, nil

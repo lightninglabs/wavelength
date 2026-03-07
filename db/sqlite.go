@@ -121,6 +121,14 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 		"%v?%v&%v", cfg.DatabaseFileName, sqliteOptions.Encode(),
 		sqliteTxLockImmediate,
 	)
+	ctx := context.Background()
+
+	log.InfoS(ctx, "Opening SQLite database",
+		"db_file", cfg.DatabaseFileName,
+		"max_conns", defaultMaxConns,
+		"conn_max_lifetime", defaultConnMaxLifetime,
+	)
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -129,6 +137,8 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	db.SetMaxOpenConns(defaultMaxConns)
 	db.SetMaxIdleConns(defaultMaxConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
+
+	log.DebugS(ctx, "SQLite connection pool configured")
 
 	queries := sqlc.NewSqlite(db)
 	s := &SqliteStore{
@@ -143,11 +153,15 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	// Now that the database is open, populate the database with our set of
 	// schemas based on our embedded in-memory file system.
 	if !cfg.SkipMigrations {
+		log.InfoS(ctx, "Starting SQLite schema migrations")
+
 		err := s.ExecuteMigrations(s.backupAndMigrate)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		log.InfoS(ctx, "Starting actor-delivery migrations")
 
 		err = admigration.RunMigrations(
 			s.DB, s.Backend(), admigration.Config{
@@ -160,6 +174,10 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 				err,
 			)
 		}
+
+		log.InfoS(ctx, "All SQLite migrations completed successfully")
+	} else {
+		log.InfoS(ctx, "Skipping SQLite migrations as configured")
 	}
 
 	return s, nil
