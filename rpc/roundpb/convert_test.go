@@ -337,7 +337,7 @@ func TestMsgTxBytesRoundTrip(t *testing.T) {
 		for range numInputs {
 			tx.AddTxIn(&wire.TxIn{
 				PreviousOutPoint: genOutpoint(rt),
-				Sequence:         rapid.Uint32().Draw(
+				Sequence: rapid.Uint32().Draw(
 					rt, "sequence",
 				),
 			})
@@ -427,7 +427,8 @@ func TestOutpointFromMapKeyInvalid(t *testing.T) {
 		"abc:def",
 		"abc:",
 		// Too long (65 hex chars = 32.5 bytes).
-		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
 	}
 
 	for _, tc := range cases {
@@ -444,7 +445,8 @@ func TestTxIDFromHexInvalid(t *testing.T) {
 		"",
 		"not-hex",
 		// Valid hex but wrong length (31 bytes).
-		"abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+		"abcdef0123456789abcdef01234567890" +
+			"abcdef0123456789abcdef1234567",
 	}
 
 	for _, tc := range cases {
