@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -25,6 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
+	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -38,12 +40,36 @@ import (
 	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+)
+
+// WalletState represents the lifecycle state of the wallet subsystem.
+// In lwwallet mode, the wallet transitions through these states during
+// daemon startup: None → Locked → Ready (or None → Ready if the seed
+// is provided via environment variable).
+type WalletState int
+
+const (
+	// WalletStateNone indicates no wallet has been created yet.
+	// The daemon accepts GenSeed and InitWallet RPCs in this state.
+	WalletStateNone WalletState = iota
+
+	// WalletStateLocked indicates an encrypted seed file exists but
+	// the wallet has not been unlocked. The daemon accepts
+	// UnlockWallet RPCs in this state.
+	WalletStateLocked
+
+	// WalletStateReady indicates the wallet is initialized and
+	// operational. All wallet RPCs (GetBalance, NewAddress, etc.)
+	// are available.
+	WalletStateReady
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -57,9 +83,9 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 	return srv.RunUntilShutdown(interceptor)
 }
 
-// Server is the top-level daemon orchestrator. It owns the lnd connection,
-// the mailbox transport runtime, the indexer client, and the daemon's own
-// gRPC server.
+// Server is the top-level daemon orchestrator. It owns the wallet
+// backend (lnd or lwwallet), the mailbox transport runtime, the
+// indexer client, and the daemon's own gRPC server.
 type Server struct {
 	cfg *Config
 
@@ -67,15 +93,42 @@ type Server struct {
 
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
+	vtxoStore     *db.VTXOPersistenceStore
 
-	lnd     *lndclient.GrpcLndServices
+	// lnd holds the lndclient connection when wallet.type is "lnd".
+	// It is None in lwwallet mode.
+	lnd fn.Option[*lndclient.GrpcLndServices]
+
+	// lwWallet holds the lightweight wallet instance when
+	// wallet.type is "lwwallet". It is None in lnd mode.
+	lwWallet fn.Option[*lwwallet.Wallet]
+
+	// walletState tracks the lifecycle state of the wallet
+	// subsystem. In lnd mode this is always WalletStateReady
+	// after successful lnd connection. In lwwallet mode it
+	// transitions through None → Locked → Ready.
+	walletState WalletState
+
+	// walletReady is closed when the wallet subsystem has been
+	// fully initialized and is ready to service requests. RPC
+	// handlers that require wallet access select on this channel.
+	walletReady chan struct{}
+
+	// chainParams identifies the active Bitcoin network. In lnd
+	// mode this is populated from the lnd connection; in lwwallet
+	// mode it is derived from the config's network string.
+	chainParams *chaincfg.Params
+
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
-	oorActor     *oor.OORClientActor
+	walletRef    fn.Option[actor.ActorRef[
+		wallet.WalletMsg, wallet.WalletResp,
+	]]
+	oorActor *oor.OORClientActor
 
 	serverConn *grpc.ClientConn
 
@@ -84,16 +137,40 @@ type Server struct {
 	mailboxMux *mailboxrpc.ServeMux
 }
 
-// NewServer allocates a Server from a validated Config. The server is inert
-// until RunUntilShutdown is called.
+// NewServer allocates a Server from a validated Config. The server is
+// inert until RunUntilShutdown is called. The walletReady channel is
+// initialized here so RPC handlers can select on it immediately.
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
-		cfg: cfg,
+		cfg:         cfg,
+		walletReady: make(chan struct{}),
 	}, nil
 }
 
+// isWalletReady returns true if the wallet subsystem has been fully
+// initialized. This is a non-blocking check.
+func (s *Server) isWalletReady() bool {
+	select {
+	case <-s.walletReady:
+		return true
+	default:
+		return false
+	}
+}
+
+// markWalletReady closes the walletReady channel, signaling to all
+// waiting RPC handlers that the wallet is operational.
+func (s *Server) markWalletReady() {
+	s.walletState = WalletStateReady
+	close(s.walletReady)
+}
+
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
-// interceptor fires or a fatal error occurs.
+// interceptor fires or a fatal error occurs. The startup sequence
+// branches on the configured wallet type: in lnd mode, the daemon
+// connects to an external lnd node and derives all backends from it;
+// in lwwallet mode, the daemon starts an in-process wallet and may
+// need to wait for wallet creation or unlock via RPC.
 //
 //nolint:funlen
 func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
@@ -135,24 +212,41 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	log.InfoS(ctx, "Starting darepod",
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
-		slog.String("network", s.cfg.Network))
+		slog.String("network", s.cfg.Network),
+		slog.String("wallet_type", s.cfg.Wallet.Type))
 
-	// -------------------------------------------------------
-	// 1. Connect to lnd.
-	// -------------------------------------------------------
-	log.InfoS(ctx, "Connecting to lnd",
-		slog.String("host", s.cfg.Lnd.Host))
-
-	lndServices, err := s.connectLnd(ctx)
+	// Derive chain params from the config network string. In lnd
+	// mode this is overwritten by the lnd connection's chain
+	// params, but we need it early for lwwallet mode.
+	chainParams, err := networkToChainParams(s.cfg.Network)
 	if err != nil {
-		return fmt.Errorf("unable to connect to lnd: %w", err)
+		return fmt.Errorf("invalid network: %w", err)
 	}
-	s.lnd = lndServices
-	defer s.lnd.Close()
+	s.chainParams = chainParams
 
-	log.InfoS(ctx, "Connected to lnd",
-		"alias", s.lnd.NodeAlias,
-		"pubkey", s.lnd.NodePubkey)
+	// -------------------------------------------------------
+	// 1. Initialize wallet backend (lnd or lwwallet).
+	// -------------------------------------------------------
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		if err := s.initLndBackend(ctx); err != nil {
+			return err
+		}
+		defer s.lnd.UnsafeFromSome().Close()
+
+	case WalletTypeLwwallet:
+		// In lwwallet mode, we attempt auto-unlock here.
+		// If no seed is available yet (no env var, no seed
+		// file, or no password for unlock), the daemon
+		// continues startup with the wallet in a non-ready
+		// state and waits for InitWallet or UnlockWallet
+		// RPCs.
+		s.tryAutoUnlockLwwallet(ctx)
+
+	default:
+		return fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
+	}
 
 	// -------------------------------------------------------
 	// 2. Connect to the ark operator's mailbox edge server.
@@ -195,17 +289,8 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	// -------------------------------------------------------
 	// 4. Create and register the chain source actor.
 	// -------------------------------------------------------
-	// The chain backend adapts lndclient's chain notifier, fee
-	// estimator, and wallet kit into the unified ChainBackend
-	// interface used by the chainsource actor.
-	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
-			LND: &s.lnd.LndServices,
-		},
-	)
-
-	if err := s.chainBackend.Start(); err != nil {
-		return fmt.Errorf("unable to start chain backend: %w", err)
+	if err := s.initChainBackend(ctx); err != nil {
+		return err
 	}
 	defer func() {
 		_ = s.chainBackend.Stop()
@@ -233,6 +318,13 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	defer func() {
 		_ = s.db.Close()
 	}()
+
+	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	s.vtxoStore = dbStore.NewVTXOStore(clk)
 
 	// -------------------------------------------------------
 	// 6. Start the daemon's own gRPC server and mailbox mux.
@@ -316,12 +408,298 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	s.initRPCClients(ctx)
 
 	// -------------------------------------------------------
+	// 9-11. Register wallet, round, and OOR actors.
+	// -------------------------------------------------------
+	// These steps require the wallet to be ready. In lnd mode
+	// the wallet is always ready at this point. In lwwallet
+	// mode, if the wallet was auto-unlocked (via env var or
+	// password file), it is also ready. Otherwise, these steps
+	// are deferred until the wallet is unlocked via RPC (see
+	// startWalletDependentActors).
+	if s.isWalletReady() {
+		if err := s.startWalletDependentActors(
+			ctx, chainSourceRef, timeoutRef,
+		); err != nil {
+			return err
+		}
+	} else {
+		// Launch a goroutine that waits for the wallet to
+		// become ready (via InitWallet or UnlockWallet RPC)
+		// and then starts the wallet-dependent actors.
+		go func() {
+			select {
+			case <-s.walletReady:
+			case <-ctx.Done():
+				return
+			}
+
+			if err := s.startWalletDependentActors(
+				ctx, chainSourceRef, timeoutRef,
+			); err != nil {
+				log.ErrorS(ctx,
+					"Failed to start wallet actors",
+					err)
+			}
+		}()
+
+		log.InfoS(ctx, "Wallet not ready, waiting for "+
+			"InitWallet or UnlockWallet RPC",
+			"state", s.walletState)
+	}
+
+	log.InfoS(ctx, "Daemon ready")
+
+	// -------------------------------------------------------
+	// 12. Block until shutdown.
+	// -------------------------------------------------------
+	<-interceptor.ShutdownChannel()
+
+	log.InfoS(ctx, "Shutting down darepod")
+
+	return nil
+}
+
+// initLndBackend connects to the lnd node and populates the server's
+// lnd connection, chain params, and marks the wallet as ready.
+func (s *Server) initLndBackend(ctx context.Context) error {
+	log.InfoS(ctx, "Connecting to lnd",
+		"host", s.cfg.Lnd.Host)
+
+	lndServices, err := s.connectLnd(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to connect to lnd: %w", err)
+	}
+	s.lnd = fn.Some(lndServices)
+
+	// Use lnd's chain params as the authoritative source.
+	s.chainParams = lndServices.ChainParams
+
+	log.InfoS(ctx, "Connected to lnd",
+		"alias", lndServices.NodeAlias,
+		"pubkey", lndServices.NodePubkey)
+
+	// In lnd mode the wallet is immediately ready.
+	s.markWalletReady()
+
+	return nil
+}
+
+// tryAutoUnlockLwwallet attempts to initialize the lwwallet backend
+// at startup without user interaction. It checks for a seed in the
+// environment variable first, then checks for an encrypted seed file
+// on disk with a password from the environment or a password file.
+// If neither source provides a complete seed+password pair, the daemon
+// starts with the wallet in a non-ready state.
+func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
+	// Check for a raw seed in the environment (dev/CI path).
+	seed, err := LoadSeedFromEnv()
+	if err != nil {
+		log.WarnS(ctx, "Invalid seed in environment variable",
+			err)
+
+		return
+	}
+
+	if seed != nil {
+		log.InfoS(ctx, "Loaded seed from environment variable")
+
+		if err := s.startLwwallet(ctx, *seed); err != nil {
+			log.ErrorS(ctx,
+				"Failed to start lwwallet from env seed",
+				err)
+
+			return
+		}
+
+		return
+	}
+
+	networkDir := s.cfg.NetworkDir()
+
+	// Check for an encrypted seed file on disk.
+	if !SeedFileExists(networkDir) {
+		log.InfoS(ctx, "No wallet seed found, awaiting "+
+			"InitWallet RPC")
+
+		s.walletState = WalletStateNone
+
+		return
+	}
+
+	// Encrypted seed exists. Try to find a password for
+	// auto-unlock: check env var first, then password file.
+	s.walletState = WalletStateLocked
+
+	password, ok := LoadPasswordFromEnv()
+	if !ok && s.cfg.Wallet.PasswordFile != "" {
+		var err error
+		password, err = LoadPasswordFromFile(
+			s.cfg.Wallet.PasswordFile,
+		)
+		if err != nil {
+			log.WarnS(ctx,
+				"Failed to read wallet password file",
+				err)
+
+			return
+		}
+
+		ok = true
+	}
+
+	if !ok {
+		log.InfoS(ctx, "Encrypted seed found but no password "+
+			"available, awaiting UnlockWallet RPC")
+
+		return
+	}
+
+	// We have both seed file and password: auto-unlock.
+	seedPath := SeedFilePath(networkDir)
+	ciphertext, err := LoadEncryptedSeed(seedPath)
+	if err != nil {
+		log.ErrorS(ctx, "Failed to load encrypted seed", err)
+
+		return
+	}
+
+	decryptedSeed, err := DecryptSeed(ciphertext, password)
+	if err != nil {
+		log.ErrorS(ctx, "Failed to decrypt seed at startup",
+			err)
+
+		return
+	}
+
+	log.InfoS(ctx, "Auto-unlocking lwwallet from encrypted seed")
+
+	if err := s.startLwwallet(ctx, decryptedSeed); err != nil {
+		log.ErrorS(ctx, "Failed to start lwwallet", err)
+
+		return
+	}
+}
+
+// startLwwallet creates and starts the lightweight wallet from the
+// given raw seed. On success it populates s.lwWallet and marks the
+// wallet as ready.
+func (s *Server) startLwwallet(ctx context.Context,
+	seed [rawSeedLen]byte) error {
+
+	networkDir := s.cfg.NetworkDir()
+
+	pollInterval := s.cfg.Wallet.PollInterval
+	if pollInterval == 0 {
+		pollInterval = DefaultEsploraPollInterval
+	}
+
+	recoveryWindow := s.cfg.Wallet.RecoveryWindow
+	if recoveryWindow == 0 {
+		recoveryWindow = DefaultRecoveryWindow
+	}
+
+	w, err := lwwallet.New(lwwallet.Config{
+		Seed:           seed,
+		EsploraURL:     s.cfg.Wallet.EsploraURL,
+		ChainParams:    s.chainParams,
+		PollInterval:   pollInterval,
+		RecoveryWindow: recoveryWindow,
+		DBDir:          networkDir,
+		Log:            fn.Some(log),
+	})
+	if err != nil {
+		return fmt.Errorf("create lwwallet: %w", err)
+	}
+
+	if err := w.Start(); err != nil {
+		return fmt.Errorf("start lwwallet: %w", err)
+	}
+
+	s.lwWallet = fn.Some(w)
+
+	log.InfoS(ctx, "Lightweight wallet started")
+
+	s.markWalletReady()
+
+	return nil
+}
+
+// initChainBackend creates and starts the chain backend appropriate
+// for the configured wallet type. In lnd mode it uses the lndclient
+// chain notifier and fee estimator. In lwwallet mode it uses the
+// lwwallet's Esplora-backed chain backend.
+func (s *Server) initChainBackend(ctx context.Context) error {
+	// alreadyStarted tracks whether the chain backend was
+	// obtained from an already-running lwwallet, in which case
+	// we must not call Start() again (it is not idempotent and
+	// would create duplicate polling loops).
+	var alreadyStarted bool
+
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+			chainbackends.LNDBackendFromLndClientConfig{
+				LND: &lndSvc.LndServices,
+			},
+		)
+
+	case WalletTypeLwwallet:
+		// If the lwwallet is already started (auto-unlock
+		// succeeded), use its chain backend. Otherwise, we
+		// need a standalone Esplora chain backend that can
+		// serve the chain source actor before the wallet is
+		// ready.
+		if s.lwWallet.IsSome() {
+			w := s.lwWallet.UnsafeFromSome()
+			s.chainBackend = w.ChainBackend()
+			alreadyStarted = true
+		} else {
+			s.chainBackend = lwwallet.NewChainBackend(
+				lwwallet.NewEsploraClient(
+					s.cfg.Wallet.EsploraURL, log,
+				),
+				s.cfg.Wallet.PollInterval, log,
+			)
+		}
+
+	default:
+		return fmt.Errorf("unknown wallet type %q",
+			s.cfg.Wallet.Type)
+	}
+
+	if !alreadyStarted {
+		if err := s.chainBackend.Start(); err != nil {
+			return fmt.Errorf(
+				"unable to start chain backend: %w", err,
+			)
+		}
+	}
+
+	log.InfoS(ctx, "Chain backend started",
+		"type", s.cfg.Wallet.Type)
+
+	return nil
+}
+
+// startWalletDependentActors initializes and registers the wallet,
+// round, and OOR actors. This is called either synchronously during
+// startup (when the wallet is immediately ready) or asynchronously
+// after an InitWallet/UnlockWallet RPC in lwwallet mode.
+func (s *Server) startWalletDependentActors(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	],
+	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
+
+	// -------------------------------------------------------
 	// 9. Register the wallet (boarding) actor.
 	// -------------------------------------------------------
 	walletRef, err := s.initWalletActor(ctx, chainSourceRef)
 	if err != nil {
 		return err
 	}
+	s.walletRef = fn.Some(walletRef)
 
 	// -------------------------------------------------------
 	// 10. Register the round client actor.
@@ -338,16 +716,8 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	if err := s.initOORActor(ctx); err != nil {
 		return err
 	}
-	defer s.oorActor.Stop()
 
-	log.InfoS(ctx, "Daemon ready")
-
-	// -------------------------------------------------------
-	// 12. Block until shutdown.
-	// -------------------------------------------------------
-	<-interceptor.ShutdownChannel()
-
-	log.InfoS(ctx, "Shutting down darepod")
+	log.InfoS(ctx, "Wallet-dependent actors started")
 
 	return nil
 }
@@ -931,12 +1301,40 @@ func (s *Server) initDatabase(ctx context.Context) error {
 func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
+	// Determine the node identity pubkey for indexer registration.
+	// In lnd mode this comes from the lnd connection. In lwwallet
+	// mode, the identity is derived from the wallet keyring once
+	// the wallet is ready.
+	var identityPubkey string
+	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		identityPubkey = lndSvc.NodePubkey.String()
+	})
+	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		// Derive the node identity key from the wallet
+		// keyring. This is safe even if the wallet isn't
+		// fully synced, as it only depends on the seed.
+		desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+			Family: identityKeyFamily,
+			Index:  0,
+		})
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to derive identity key for "+
+					"indexer", err)
+		} else {
+			identityPubkey = fmt.Sprintf(
+				"%x",
+				desc.PubKey.SerializeCompressed(),
+			)
+		}
+	})
+
 	// TODO(roasbeef): wire SchnorrSigner from lnd backend once
 	// indexer proof-of-control is enabled in the daemon.
 	s.indexer = indexer.New(
 		s.runtime.Unary(), nil,
 		s.cfg.Server.RemoteMailboxID,
-		s.lnd.NodePubkey.String(),
+		identityPubkey,
 	)
 
 	log.InfoS(ctx, "RPC clients initialized")
@@ -947,22 +1345,35 @@ func (s *Server) initRPCClients(ctx context.Context) {
 // boarding UTXO tracking. It receives block epoch notifications from
 // the chain source actor and can forward confirmation events to
 // registered notifiers (e.g., the round actor).
+//
+// The boarding backend is selected based on the wallet type: in lnd
+// mode it uses lndbackend.BoardingBackend, in lwwallet mode it uses
+// the lwwallet's BoardingBackendAdapter.
 func (s *Server) initWalletActor(ctx context.Context,
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]) (actor.ActorRef[wallet.WalletMsg, wallet.WalletResp], error) {
 
 	clk := clock.NewDefaultClock()
-	chainParams := s.lnd.ChainParams
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
-	boardingStore := dbStore.NewBoardingStore(chainParams, clk)
+	boardingStore := dbStore.NewBoardingStore(s.chainParams, clk)
 
-	boardingBackend := lndbackend.NewBoardingBackend(
-		s.lnd.WalletKit,
-	)
+	// Select the boarding backend based on wallet type.
+	var boardingBackend wallet.BoardingBackend
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		boardingBackend = lndbackend.NewBoardingBackend(
+			lndSvc.WalletKit,
+		)
+
+	case WalletTypeLwwallet:
+		w := s.lwWallet.UnsafeFromSome()
+		boardingBackend = w.BoardingBackend()
+	}
 
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, chainSourceRef,
@@ -1006,17 +1417,28 @@ func (s *Server) initRoundActor(ctx context.Context,
 	],
 	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
 
-	clientWallet := lndbackend.NewClientWallet(
-		s.lnd.Signer, s.lnd.WalletKit,
-	)
+	// Select the client wallet (signing) backend based on
+	// wallet type. In lnd mode, signing goes through lnd's
+	// remote signer. In lwwallet mode, signing is in-process
+	// via btcwallet.
+	var clientWallet round.ClientWallet
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		clientWallet = lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+
+	case WalletTypeLwwallet:
+		clientWallet = s.lwWallet.UnsafeFromSome()
+	}
 
 	clk := clock.NewDefaultClock()
-	chainParams := s.lnd.ChainParams
 
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
-	roundStore := dbStore.NewRoundStore(chainParams, clk)
+	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
 
 	// Fetch the operator's terms from the server. These include
 	// the operator pubkey, sweep delay, exit delay, dust limit,
@@ -1037,7 +1459,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ServerConn:    s.runtime.TellRef(),
 		ChainSource:   chainSourceRef,
 		WalletActor:   walletRef,
-		ChainParams:   chainParams,
+		ChainParams:   s.chainParams,
 		ActorSystem:   s.actorSystem,
 		TimeoutActor:  timeoutRef,
 		ForfeitCollectionTimeout: s.cfg.
@@ -1092,9 +1514,20 @@ func (s *Server) initOORActor(ctx context.Context) error {
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
 
-	clientWallet := lndbackend.NewClientWallet(
-		s.lnd.Signer, s.lnd.WalletKit,
-	)
+	// Select the OOR signer based on wallet type. The
+	// SigningOutboxHandler only needs input.Signer for signing
+	// checkpoint PSBTs.
+	var oorSigner input.Signer
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		oorSigner = lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+
+	case WalletTypeLwwallet:
+		oorSigner = s.lwWallet.UnsafeFromSome()
+	}
 
 	vtxoStore := dbStore.NewVTXOStore(clk)
 	packageStore := dbStore.NewOORArtifactStore(clk)
@@ -1105,7 +1538,7 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	timeoutActor := timeout.NewActor()
 
 	signingHandler := &oor.SigningOutboxHandler{
-		Signer:       clientWallet,
+		Signer:       oorSigner,
 		TimeoutActor: timeoutActor,
 	}
 
