@@ -37,6 +37,7 @@ import (
 	"github.com/lightninglabs/lndclient"
 	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -1115,7 +1116,7 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Logger:        log,
+		Log:           fn.Some(log),
 		OutboxHandler: outboxHandler,
 		ServerConn:    s.runtime.TellRef(),
 		PackageStore:  packageStore,
