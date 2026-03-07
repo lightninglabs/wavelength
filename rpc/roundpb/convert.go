@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
 // OutpointToProto converts a wire.OutPoint to a proto Outpoint.
@@ -329,9 +331,9 @@ func defaultTreeFromProtoConfig() treeFromProtoConfig {
 
 // WithMaxTreeNodes sets the maximum number of nodes allowed in a
 // deserialized VTXOTree. A value of 0 disables the limit.
-func WithMaxTreeNodes(max int) TreeFromProtoOption {
+func WithMaxTreeNodes(maxNodes int) TreeFromProtoOption {
 	return func(cfg *treeFromProtoConfig) {
-		cfg.maxNodes = max
+		cfg.maxNodes = maxNodes
 	}
 }
 
@@ -343,6 +345,7 @@ func WithMaxTreeNodes(max int) TreeFromProtoOption {
 // recompute FinalKey from CoSigners and the sweep tapscript root.
 func TreeFromProto(pt *VTXOTree,
 	opts ...TreeFromProtoOption) (*tree.Tree, error) {
+
 	if pt == nil {
 		return nil, nil
 	}
@@ -485,6 +488,29 @@ func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
 		Children:  make(map[uint32]*tree.Node),
 		Amount:    btcutil.Amount(pn.Amount),
 		Signature: sig,
+	}, nil
+}
+
+// BoardingInputSigToProto converts a domain BoardingInputSignature to its
+// proto representation. It rejects input indices outside the int32 range
+// to prevent silent truncation in the proto field.
+func BoardingInputSigToProto(
+	sig *types.BoardingInputSignature) (*BoardingInputSignature,
+	error) {
+
+	if sig.InputIndex < 0 || sig.InputIndex > math.MaxInt32 {
+		return nil, fmt.Errorf(
+			"input index %d out of int32 range",
+			sig.InputIndex,
+		)
+	}
+
+	return &BoardingInputSignature{
+		InputIndex: int32(sig.InputIndex),
+		Outpoint:   OutpointToProto(sig.Outpoint),
+		ClientSignature: SchnorrSigToBytes(
+			sig.ClientSignature,
+		),
 	}, nil
 }
 
