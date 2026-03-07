@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -124,10 +125,9 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	ctx := context.Background()
 
 	log.InfoS(ctx, "Opening SQLite database",
-		"db_file", cfg.DatabaseFileName,
-		"max_conns", defaultMaxConns,
-		"conn_max_lifetime", defaultConnMaxLifetime,
-	)
+		slog.String("db_file", cfg.DatabaseFileName),
+		slog.Int("max_conns", defaultMaxConns),
+		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime))
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

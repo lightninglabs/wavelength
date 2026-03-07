@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -91,8 +92,7 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	ctx := context.Background()
 
 	log.InfoS(ctx, "Opening Postgres database",
-		"dsn", cfg.DSN(true),
-	)
+		slog.String("dsn", cfg.DSN(true)))
 
 	rawDB, err := sql.Open("pgx", cfg.DSN(false))
 	if err != nil {
@@ -125,11 +125,10 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	rawDB.SetConnMaxIdleTime(connMaxIdleTime)
 
 	log.DebugS(ctx, "Postgres connection pool configured",
-		"max_open_conns", maxConns,
-		"max_idle_conns", maxIdleConns,
-		"conn_max_lifetime", connMaxLifetime,
-		"conn_max_idle_time", connMaxIdleTime,
-	)
+		slog.Int("max_open_conns", maxConns),
+		slog.Int("max_idle_conns", maxIdleConns),
+		slog.Duration("conn_max_lifetime", connMaxLifetime),
+		slog.Duration("conn_max_idle_time", connMaxIdleTime))
 
 	queries := sqlc.NewPostgres(rawDB)
 	s := &PostgresStore{
