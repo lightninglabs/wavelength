@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 )
 
 const (
@@ -110,6 +112,12 @@ type ServerConfig struct {
 	// be used in regtest or development environments.
 	Insecure bool `mapstructure:"insecure"`
 
+	// MaxTreeNodes caps the number of nodes accepted in a VTXO tree
+	// received from the server. This prevents memory exhaustion from
+	// oversized tree payloads. If zero, the default of
+	// roundpb.DefaultMaxTreeNodes (50,000) is used.
+	MaxTreeNodes int `mapstructure:"maxtreenodes"`
+
 	// LocalMailboxID is this client's mailbox identifier within the
 	// mailbox edge transport. Inbound envelopes are pulled from this
 	// mailbox and outbound envelopes carry it as the sender.
@@ -145,7 +153,8 @@ func DefaultConfig() *Config {
 			RPCTimeout: DefaultRPCTimeout,
 		},
 		Server: &ServerConfig{
-			Host: DefaultServerHost,
+			Host:         DefaultServerHost,
+			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
 		},
 		RPC: &RPCConfig{
 			ListenAddr: DefaultRPCHost,

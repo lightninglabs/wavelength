@@ -566,6 +566,19 @@ func (s *Server) registerRoundEventRoutes(
 
 	roundKey := round.NewServiceKey()
 
+	// Build tree deserialization options from the daemon config.
+	// This caps the maximum node count in VTXO trees received
+	// from the server, preventing memory exhaustion.
+	var treeOpts []roundpb.TreeFromProtoOption
+	if s.cfg.Server.MaxTreeNodes > 0 {
+		treeOpts = append(
+			treeOpts,
+			roundpb.WithMaxTreeNodes(
+				s.cfg.Server.MaxTreeNodes,
+			),
+		)
+	}
+
 	// addRoundRoute is a helper that registers a push event route.
 	// It creates a fresh domain event via newEvent, deserializes
 	// the proto into it via FromProto, then wraps it in a
@@ -596,7 +609,9 @@ func (s *Server) registerRoundEventRoutes(
 			return &roundpb.ClientBatchInfo{}
 		},
 		func() round.ClientEvent {
-			return &round.CommitmentTxBuilt{}
+			return &round.CommitmentTxBuilt{
+				TreeOpts: treeOpts,
+			}
 		},
 	)
 
