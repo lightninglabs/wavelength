@@ -611,7 +611,10 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 func (s *Server) startLwwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
-	networkDir := s.cfg.NetworkDir()
+	networkDir, err := s.cfg.NetworkDir()
+	if err != nil {
+		return fmt.Errorf("resolve network directory: %w", err)
+	}
 
 	pollInterval := s.cfg.Wallet.PollInterval
 	if pollInterval == 0 {
@@ -1292,14 +1295,17 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 // delivery store used by the serverconn runtime for at-least-once
 // envelope delivery.
 func (s *Server) initDatabase(ctx context.Context) error {
-	networkDir := s.cfg.NetworkDir()
+	networkDir, err := s.cfg.NetworkDir()
+	if err != nil {
+		return fmt.Errorf("resolve network directory: %w", err)
+	}
+
 	if err := os.MkdirAll(networkDir, 0700); err != nil {
 		return fmt.Errorf("unable to create data dir: %w", err)
 	}
 
 	sqliteCfg := db.DefaultSqliteConfig(networkDir)
 
-	var err error
 	s.db, err = db.NewSqliteStore(sqliteCfg, log)
 	if err != nil {
 		return fmt.Errorf("unable to open database: %w", err)
@@ -1584,10 +1590,12 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	})
 
 	// Wire the timeout callback ref using the registered service
-	// key. The service key resolves the OOR actor via the
-	// receptionist, and the MapInputRef transforms
-	// *timeout.ExpiredMsg into a DriveEventRequest with
-	// RetryDueEvent targeting the correct session.
+	// key. The OOR actor self-registers with the actor system
+	// during NewOORClientActor (via durable.Start and
+	// RegisterWithReceptionist). The service key resolves the
+	// OOR actor via the receptionist, and the MapInputRef
+	// transforms *timeout.ExpiredMsg into a DriveEventRequest
+	// with RetryDueEvent targeting the correct session.
 	oorKey := oor.NewServiceKey()
 	signingHandler.CallbackRef = oor.NewRetryCallbackRef(
 		oorKey.Ref(s.actorSystem),
