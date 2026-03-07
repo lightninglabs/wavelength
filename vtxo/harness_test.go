@@ -59,6 +59,19 @@ func (m *MockVTXOStore) ListLiveVTXOs(ctx context.Context) (
 	return vtxos, args.Error(1)
 }
 
+//nolint:forcetypeassert
+func (m *MockVTXOStore) ListVTXOsByStatus(ctx context.Context,
+	status VTXOStatus) ([]*Descriptor, error) {
+
+	args := m.Called(ctx, status)
+	var vtxos []*Descriptor
+	if args.Get(0) != nil {
+		vtxos = args.Get(0).([]*Descriptor)
+	}
+
+	return vtxos, args.Error(1)
+}
+
 func (m *MockVTXOStore) UpdateVTXOStatus(ctx context.Context,
 	outpoint wire.OutPoint, status VTXOStatus) error {
 

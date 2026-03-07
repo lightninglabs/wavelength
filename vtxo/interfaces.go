@@ -334,6 +334,13 @@ type VTXOStore interface {
 	// startup to recover active VTXO actors after restart.
 	ListLiveVTXOs(ctx context.Context) ([]*Descriptor, error)
 
+	// ListVTXOsByStatus returns all VTXOs matching the given status.
+	// This enables querying terminal states (spent, forfeited) that
+	// ListLiveVTXOs excludes.
+	ListVTXOsByStatus(ctx context.Context, status VTXOStatus) (
+		[]*Descriptor, error,
+	)
+
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the
 	// primary method for state transitions.
 	UpdateVTXOStatus(

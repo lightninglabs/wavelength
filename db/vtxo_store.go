@@ -127,6 +127,41 @@ func (s *VTXOPersistenceStore) ListLiveVTXOs(
 	return result, err
 }
 
+// ListVTXOsByStatus returns all VTXOs matching the given status. This
+// enables the ListVTXOs RPC to query terminal states (spent, forfeited)
+// directly from the database instead of filtering in memory.
+func (s *VTXOPersistenceStore) ListVTXOsByStatus(
+	ctx context.Context, status vtxo.VTXOStatus,
+) ([]*vtxo.Descriptor, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []*vtxo.Descriptor
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		rows, err := q.ListVTXOsByStatus(ctx, int32(status))
+		if err != nil {
+			return fmt.Errorf("list VTXOs by status: %w", err)
+		}
+
+		descs := make([]*vtxo.Descriptor, 0, len(rows))
+		for _, row := range rows {
+			desc, err := s.rowToDescriptor(row)
+			if err != nil {
+				return fmt.Errorf("convert VTXO: %w", err)
+			}
+
+			descs = append(descs, desc)
+		}
+
+		result = descs
+
+		return nil
+	})
+
+	return result, err
+}
+
 // UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 // method for state transitions that don't require additional data.
 func (s *VTXOPersistenceStore) UpdateVTXOStatus(
