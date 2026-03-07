@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenSeedProduces24Words verifies that GenSeed returns a valid
-// 24-word mnemonic.
-func TestGenSeedProduces24Words(t *testing.T) {
-	mnemonic, err := GenSeed(nil)
+// TestGenerateSeedProduces24Words verifies that GenerateSeed returns a
+// valid 24-word mnemonic.
+func TestGenerateSeedProduces24Words(t *testing.T) {
+	mnemonic, err := GenerateSeed(nil)
 	require.NoError(t, err)
 
 	for i, word := range mnemonic {
@@ -25,7 +25,7 @@ func TestGenSeedProduces24Words(t *testing.T) {
 func TestMnemonicToSeedRoundtrip(t *testing.T) {
 	passphrase := []byte("test-passphrase")
 
-	mnemonic, err := GenSeed(passphrase)
+	mnemonic, err := GenerateSeed(passphrase)
 	require.NoError(t, err)
 
 	seed, err := MnemonicToSeed(mnemonic, passphrase)
@@ -41,7 +41,7 @@ func TestMnemonicToSeedRoundtrip(t *testing.T) {
 // TestMnemonicToSeedWrongPassphrase verifies that decoding with the
 // wrong passphrase fails.
 func TestMnemonicToSeedWrongPassphrase(t *testing.T) {
-	mnemonic, err := GenSeed([]byte("correct"))
+	mnemonic, err := GenerateSeed([]byte("correct"))
 	require.NoError(t, err)
 
 	_, err = MnemonicToSeed(mnemonic, []byte("wrong"))
@@ -54,7 +54,7 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 	password := []byte("a-secure-password")
 
 	// Generate a seed.
-	mnemonic, err := GenSeed(nil)
+	mnemonic, err := GenerateSeed(nil)
 	require.NoError(t, err)
 
 	seed, err := MnemonicToSeed(mnemonic, nil)
@@ -182,7 +182,7 @@ func TestFullWorkflow(t *testing.T) {
 	passphrase := []byte("optional-passphrase")
 
 	// Step 1: Generate seed.
-	mnemonic, err := GenSeed(passphrase)
+	mnemonic, err := GenerateSeed(passphrase)
 	require.NoError(t, err)
 
 	// Step 2: Derive raw seed from mnemonic.
