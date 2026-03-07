@@ -19,7 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GetInfo_FullMethodName      = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GenSeed_FullMethodName      = "/daemonrpc.DaemonService/GenSeed"
+	DaemonService_InitWallet_FullMethodName   = "/daemonrpc.DaemonService/InitWallet"
+	DaemonService_UnlockWallet_FullMethodName = "/daemonrpc.DaemonService/UnlockWallet"
+	DaemonService_GetBalance_FullMethodName   = "/daemonrpc.DaemonService/GetBalance"
+	DaemonService_ListVTXOs_FullMethodName    = "/daemonrpc.DaemonService/ListVTXOs"
+	DaemonService_NewAddress_FullMethodName   = "/daemonrpc.DaemonService/NewAddress"
+	DaemonService_SendVTXO_FullMethodName     = "/daemonrpc.DaemonService/SendVTXO"
+	DaemonService_SendOOR_FullMethodName      = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_RefreshVTXOs_FullMethodName = "/daemonrpc.DaemonService/RefreshVTXOs"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -34,6 +43,38 @@ type DaemonServiceClient interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// GenSeed generates a new aezeed cipher seed mnemonic. This is the
+	// first step when creating a new lwwallet-backed wallet. The returned
+	// mnemonic must be passed to InitWallet to finalize wallet creation.
+	// Only available in lwwallet mode.
+	GenSeed(ctx context.Context, in *GenSeedRequest, opts ...grpc.CallOption) (*GenSeedResponse, error)
+	// InitWallet creates a new wallet from a previously generated aezeed
+	// mnemonic. The wallet is encrypted at rest with the provided
+	// password. Only available in lwwallet mode when no wallet exists.
+	InitWallet(ctx context.Context, in *InitWalletRequest, opts ...grpc.CallOption) (*InitWalletResponse, error)
+	// UnlockWallet decrypts an existing wallet seed using the provided
+	// password and starts the wallet subsystem. Only available in
+	// lwwallet mode when the wallet is locked.
+	UnlockWallet(ctx context.Context, in *UnlockWalletRequest, opts ...grpc.CallOption) (*UnlockWalletResponse, error)
+	// GetBalance returns the current balance of the wallet, broken down
+	// by boarding (on-chain) and VTXO (off-chain) balances.
+	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error)
+	// ListVTXOs returns the set of VTXOs known to the wallet, optionally
+	// filtered by status and minimum amount.
+	ListVTXOs(ctx context.Context, in *ListVTXOsRequest, opts ...grpc.CallOption) (*ListVTXOsResponse, error)
+	// NewAddress generates a new boarding address that can receive
+	// on-chain funds for use in the Ark protocol.
+	NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error)
+	// SendVTXO initiates an in-round transfer by submitting a refresh
+	// request to the round coordinator. The transfer completes when the
+	// next round commits.
+	SendVTXO(ctx context.Context, in *SendVTXORequest, opts ...grpc.CallOption) (*SendVTXOResponse, error)
+	// SendOOR initiates an out-of-round transfer directly between the
+	// client and operator, without waiting for a round.
+	SendOOR(ctx context.Context, in *SendOORRequest, opts ...grpc.CallOption) (*SendOORResponse, error)
+	// RefreshVTXOs queues one or more VTXOs for refresh in the next
+	// round. This extends their expiry without changing ownership.
+	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -54,6 +95,96 @@ func (c *daemonServiceClient) GetInfo(ctx context.Context, in *GetInfoRequest, o
 	return out, nil
 }
 
+func (c *daemonServiceClient) GenSeed(ctx context.Context, in *GenSeedRequest, opts ...grpc.CallOption) (*GenSeedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenSeedResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GenSeed_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) InitWallet(ctx context.Context, in *InitWalletRequest, opts ...grpc.CallOption) (*InitWalletResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InitWalletResponse)
+	err := c.cc.Invoke(ctx, DaemonService_InitWallet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) UnlockWallet(ctx context.Context, in *UnlockWalletRequest, opts ...grpc.CallOption) (*UnlockWalletResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnlockWalletResponse)
+	err := c.cc.Invoke(ctx, DaemonService_UnlockWallet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBalanceResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetBalance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ListVTXOs(ctx context.Context, in *ListVTXOsRequest, opts ...grpc.CallOption) (*ListVTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NewAddressResponse)
+	err := c.cc.Invoke(ctx, DaemonService_NewAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SendVTXO(ctx context.Context, in *SendVTXORequest, opts ...grpc.CallOption) (*SendVTXOResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendVTXOResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SendVTXO_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SendOOR(ctx context.Context, in *SendOORRequest, opts ...grpc.CallOption) (*SendOORResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SendOORResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SendOOR_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefreshVTXOsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_RefreshVTXOs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -66,6 +197,38 @@ type DaemonServiceServer interface {
 	// including version, network, lnd connection state, and server
 	// connection state.
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// GenSeed generates a new aezeed cipher seed mnemonic. This is the
+	// first step when creating a new lwwallet-backed wallet. The returned
+	// mnemonic must be passed to InitWallet to finalize wallet creation.
+	// Only available in lwwallet mode.
+	GenSeed(context.Context, *GenSeedRequest) (*GenSeedResponse, error)
+	// InitWallet creates a new wallet from a previously generated aezeed
+	// mnemonic. The wallet is encrypted at rest with the provided
+	// password. Only available in lwwallet mode when no wallet exists.
+	InitWallet(context.Context, *InitWalletRequest) (*InitWalletResponse, error)
+	// UnlockWallet decrypts an existing wallet seed using the provided
+	// password and starts the wallet subsystem. Only available in
+	// lwwallet mode when the wallet is locked.
+	UnlockWallet(context.Context, *UnlockWalletRequest) (*UnlockWalletResponse, error)
+	// GetBalance returns the current balance of the wallet, broken down
+	// by boarding (on-chain) and VTXO (off-chain) balances.
+	GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error)
+	// ListVTXOs returns the set of VTXOs known to the wallet, optionally
+	// filtered by status and minimum amount.
+	ListVTXOs(context.Context, *ListVTXOsRequest) (*ListVTXOsResponse, error)
+	// NewAddress generates a new boarding address that can receive
+	// on-chain funds for use in the Ark protocol.
+	NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error)
+	// SendVTXO initiates an in-round transfer by submitting a refresh
+	// request to the round coordinator. The transfer completes when the
+	// next round commits.
+	SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error)
+	// SendOOR initiates an out-of-round transfer directly between the
+	// client and operator, without waiting for a round.
+	SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error)
+	// RefreshVTXOs queues one or more VTXOs for refresh in the next
+	// round. This extends their expiry without changing ownership.
+	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -78,6 +241,33 @@ type UnimplementedDaemonServiceServer struct{}
 
 func (UnimplementedDaemonServiceServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedDaemonServiceServer) GenSeed(context.Context, *GenSeedRequest) (*GenSeedResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GenSeed not implemented")
+}
+func (UnimplementedDaemonServiceServer) InitWallet(context.Context, *InitWalletRequest) (*InitWalletResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InitWallet not implemented")
+}
+func (UnimplementedDaemonServiceServer) UnlockWallet(context.Context, *UnlockWalletRequest) (*UnlockWalletResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnlockWallet not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBalance not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListVTXOs(context.Context, *ListVTXOsRequest) (*ListVTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendVTXO not implemented")
+}
+func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest) (*SendOORResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendOOR not implemented")
+}
+func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -118,6 +308,168 @@ func _DaemonService_GetInfo_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_GenSeed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenSeedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GenSeed(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GenSeed_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GenSeed(ctx, req.(*GenSeedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_InitWallet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InitWalletRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).InitWallet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_InitWallet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).InitWallet(ctx, req.(*InitWalletRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_UnlockWallet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnlockWalletRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).UnlockWallet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_UnlockWallet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).UnlockWallet(ctx, req.(*UnlockWalletRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBalanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetBalance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetBalance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetBalance(ctx, req.(*GetBalanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ListVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListVTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListVTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListVTXOs(ctx, req.(*ListVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_NewAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewAddress(ctx, req.(*NewAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SendVTXO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendVTXORequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SendVTXO(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SendVTXO_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SendVTXO(ctx, req.(*SendVTXORequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SendOOR_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendOORRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SendOOR(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SendOOR_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SendOOR(ctx, req.(*SendOORRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefreshVTXOsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).RefreshVTXOs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_RefreshVTXOs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).RefreshVTXOs(ctx, req.(*RefreshVTXOsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -128,6 +480,42 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _DaemonService_GetInfo_Handler,
+		},
+		{
+			MethodName: "GenSeed",
+			Handler:    _DaemonService_GenSeed_Handler,
+		},
+		{
+			MethodName: "InitWallet",
+			Handler:    _DaemonService_InitWallet_Handler,
+		},
+		{
+			MethodName: "UnlockWallet",
+			Handler:    _DaemonService_UnlockWallet_Handler,
+		},
+		{
+			MethodName: "GetBalance",
+			Handler:    _DaemonService_GetBalance_Handler,
+		},
+		{
+			MethodName: "ListVTXOs",
+			Handler:    _DaemonService_ListVTXOs_Handler,
+		},
+		{
+			MethodName: "NewAddress",
+			Handler:    _DaemonService_NewAddress_Handler,
+		},
+		{
+			MethodName: "SendVTXO",
+			Handler:    _DaemonService_SendVTXO_Handler,
+		},
+		{
+			MethodName: "SendOOR",
+			Handler:    _DaemonService_SendOOR_Handler,
+		},
+		{
+			MethodName: "RefreshVTXOs",
+			Handler:    _DaemonService_RefreshVTXOs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
