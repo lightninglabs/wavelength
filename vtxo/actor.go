@@ -329,10 +329,9 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 							m.VTXO.Outpoint.String(),
 						))
 				}
-				a.cfg.Logger.WarnS(
+				a.cfg.Logger.InfoS(
 					ctx,
 					"VTXO sent to chain resolver",
-					nil,
 					slog.String(
 						"outpoint",
 						m.VTXO.Outpoint.String(),
