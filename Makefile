@@ -351,11 +351,13 @@ build: #? Build debug binaries and place in project directory
 	@$(call print, "Building debug binaries.")
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/merge-sql-schemas
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepod ./cmd/darepod
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepocli ./cmd/darepocli
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepod
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepocli
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
