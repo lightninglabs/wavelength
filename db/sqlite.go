@@ -15,6 +15,7 @@ import (
 	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite" // Register relevant drivers.
 )
@@ -57,6 +58,10 @@ type SqliteConfig struct {
 	// DatabaseFileName is the full file path where the database file can be
 	// found.
 	DatabaseFileName string `long:"dbfile" description:"The full path to the database."`
+
+	// Log is an optional logger for the SQLite store. When None, the store
+	// falls back to the package-level logger set via UseLogger.
+	Log fn.Option[btclog.Logger]
 }
 
 // SqliteStore is a sqlite3 based database for the daemon.
@@ -69,8 +74,15 @@ type SqliteStore struct {
 }
 
 // NewSqliteStore attempts to open a new sqlite database based on the passed
-// config.
-func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) {
+// config. The explicit logger parameter is kept for backward compatibility
+// with existing callers; when cfg.Log is set it takes precedence.
+func NewSqliteStore(cfg *SqliteConfig,
+	explicitLog btclog.Logger) (*SqliteStore, error) {
+
+	// Resolve the effective logger: prefer the config option, then fall
+	// back to the explicitly provided logger parameter.
+	storeLog := cfg.Log.UnwrapOr(explicitLog)
+
 	// The set of pragma options are accepted using query options. For now
 	// we only want to ensure that foreign key constraints are properly
 	// enforced.
@@ -124,7 +136,7 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	)
 	ctx := context.Background()
 
-	log.InfoS(ctx, "Opening SQLite database",
+	storeLog.InfoS(ctx, "Opening SQLite database",
 		slog.String("db_file", cfg.DatabaseFileName),
 		slog.Int("max_conns", defaultMaxConns),
 		slog.Duration("conn_max_lifetime", defaultConnMaxLifetime))
@@ -138,12 +150,17 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	db.SetMaxIdleConns(defaultMaxConns)
 	db.SetConnMaxLifetime(defaultConnMaxLifetime)
 
-	log.DebugS(ctx, "SQLite connection pool configured")
+	storeLog.DebugS(ctx, "SQLite connection pool configured")
+
+	// Persist the resolved logger into the config option so the
+	// logger(ctx) helper can retrieve it without keeping a separate
+	// field.
+	cfg.Log = fn.Some(storeLog)
 
 	queries := sqlc.NewSqlite(db)
 	s := &SqliteStore{
 		cfg: cfg,
-		log: log,
+		log: storeLog,
 		BaseDB: &BaseDB{
 			DB:      db,
 			Queries: queries,
@@ -153,7 +170,7 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 	// Now that the database is open, populate the database with our set of
 	// schemas based on our embedded in-memory file system.
 	if !cfg.SkipMigrations {
-		log.InfoS(ctx, "Starting SQLite schema migrations")
+		storeLog.InfoS(ctx, "Starting SQLite schema migrations")
 
 		err := s.ExecuteMigrations(s.backupAndMigrate)
 		if err != nil {
@@ -161,7 +178,7 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 				"%w", err)
 		}
 
-		log.InfoS(ctx, "Starting actor-delivery migrations")
+		storeLog.InfoS(ctx, "Starting actor-delivery migrations")
 
 		err = admigration.RunMigrations(
 			s.DB, s.Backend(), admigration.Config{
@@ -175,17 +192,22 @@ func NewSqliteStore(cfg *SqliteConfig, log btclog.Logger) (*SqliteStore, error) 
 			)
 		}
 
-		log.InfoS(ctx, "All SQLite migrations completed successfully")
+		storeLog.InfoS(
+			ctx, "All SQLite migrations completed successfully",
+		)
 	} else {
-		log.InfoS(ctx, "Skipping SQLite migrations as configured")
+		storeLog.InfoS(
+			ctx, "Skipping SQLite migrations as configured",
+		)
 	}
 
 	return s, nil
 }
 
-// backupSqliteDatabase creates a backup of the given SQLite database.
+// backupSqliteDatabase creates a backup of the given SQLite database. The
+// function uses the store's resolved logger for progress messages.
 func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
-	log btclog.Logger) error {
+	backupLog btclog.Logger) error {
 
 	if srcDB == nil {
 		return fmt.Errorf("backup source database is nil")
@@ -203,7 +225,8 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 		"%s.%d.backup", dbFullFilePath, timestamp,
 	)
 
-	log.InfoS(context.Background(), "Creating backup of database file",
+	backupLog.InfoS(
+		context.Background(), "Creating backup of database file",
 		"source", dbFullFilePath,
 		"backup", backupFullFilePath,
 	)

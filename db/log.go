@@ -9,8 +9,9 @@ const Subsystem = "DABS"
 
 // log is a logger that is initialized with no output filters. This means the
 // package will not perform any logging by default until the caller requests it.
-// Currently the db constructors receive an explicit logger parameter, but the
-// package-level variable is maintained for the central subsystem registry.
+// Store constructors use fn.Option[btclog.Logger] in their configs; when the
+// option is None the package-level logger set via UseLogger serves as the
+// fallback.
 //
 //nolint:unused
 var log = btclog.Disabled

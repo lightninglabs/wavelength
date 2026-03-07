@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // Store is the unified SQL-based storage implementation that wraps all
@@ -26,14 +27,16 @@ type Store struct {
 // primitives.
 //
 // Callers are expected to provide backend-specific connections and sqlc query
-// adapters that already completed migration and connectivity setup.
+// adapters that already completed migration and connectivity setup. The
+// explicit logger parameter is kept for backward compatibility; callers that
+// prefer the fn.Option pattern should set Config.Log instead.
 func NewStore(db *sql.DB, queries *sqlc.Queries, backend sqlc.BackendType,
-	log btclog.Logger) *Store {
+	explicitLog btclog.Logger) *Store {
 
 	return &Store{
 		queries: queries,
 		db:      db,
-		log:     log,
+		log:     explicitLog,
 		backend: backend,
 	}
 }
@@ -77,11 +80,15 @@ type Config struct {
 	// "postgres".
 	Backend string `long:"backend" choice:"sqlite" choice:"postgres"`
 
-	// Sqlite contains SQLite-specific configuration
+	// Sqlite contains SQLite-specific configuration.
 	Sqlite *SqliteConfig `group:"sqlite" namespace:"sqlite"`
 
-	// Postgres contains Postgres-specific configuration
+	// Postgres contains Postgres-specific configuration.
 	Postgres *PostgresConfig `group:"postgres" namespace:"postgres"`
+
+	// Log is an optional logger for the database store. When None, the
+	// store falls back to the package-level logger set via UseLogger.
+	Log fn.Option[btclog.Logger]
 }
 
 // DefaultConfig returns a complete default database configuration.
@@ -128,40 +135,57 @@ func DefaultPostgresConfig() *PostgresConfig {
 // NewStoreFromConfig builds and initializes a store from backend config.
 //
 // The method dispatches to backend-specific constructors and returns a unified
-// Store wrapper over the resulting SQL handle and query adapter.
-func NewStoreFromConfig(cfg *Config, log btclog.Logger) (*Store, error) {
+// Store wrapper over the resulting SQL handle and query adapter. The explicit
+// logger parameter is kept for backward compatibility; when cfg.Log is set it
+// takes precedence.
+func NewStoreFromConfig(cfg *Config,
+	explicitLog btclog.Logger) (*Store, error) {
+
+	// Resolve the effective logger: prefer the config option, then fall
+	// back to the explicitly provided logger parameter.
+	storeLog := cfg.Log.UnwrapOr(explicitLog)
+
 	ctx := context.Background()
 
-	log.InfoS(ctx, "Initializing database store",
+	storeLog.InfoS(ctx, "Initializing database store",
 		"backend", cfg.Backend,
 	)
 
+	// Propagate the resolved logger into backend-specific configs so the
+	// sub-store constructors can pick it up through their own Log option.
+	logOpt := fn.Some(storeLog)
+
 	switch cfg.Backend {
 	case "sqlite":
-		sqliteStore, err := NewSqliteStore(cfg.Sqlite, log)
+		cfg.Sqlite.Log = logOpt
+
+		sqliteStore, err := NewSqliteStore(cfg.Sqlite, storeLog)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create sqlite "+
 				"store: %w", err)
 		}
 
-		log.InfoS(ctx, "SQLite store created successfully")
+		storeLog.InfoS(ctx, "SQLite store created successfully")
 
 		return NewStore(
 			sqliteStore.DB, sqliteStore.Queries,
-			sqliteStore.Backend(), log,
+			sqliteStore.Backend(), storeLog,
 		), nil
 
 	case "postgres":
-		pgStore, err := NewPostgresStore(cfg.Postgres, log)
+		cfg.Postgres.Log = logOpt
+
+		pgStore, err := NewPostgresStore(cfg.Postgres, storeLog)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create postgres "+
 				"store: %w", err)
 		}
 
-		log.InfoS(ctx, "Postgres store created successfully")
+		storeLog.InfoS(ctx, "Postgres store created successfully")
 
 		return NewStore(
-			pgStore.DB, pgStore.Queries, pgStore.Backend(), log,
+			pgStore.DB, pgStore.Queries, pgStore.Backend(),
+			storeLog,
 		), nil
 
 	default:
