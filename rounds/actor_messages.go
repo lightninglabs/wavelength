@@ -4,8 +4,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/clientconn"
-	"github.com/lightninglabs/darepo/timeout"
 )
 
 // ActorMsg is the sealed interface for all messages that can be sent to the

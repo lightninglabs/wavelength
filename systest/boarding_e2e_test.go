@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batchwatcher"
+	"github.com/lightninglabs/darepo/rounds"
 	"github.com/stretchr/testify/require"
 )
 
@@ -742,6 +743,110 @@ func TestHarnessTimeoutTrigger(t *testing.T) {
 	require.Equal(t, 0, newCount, "all timeouts should be fired")
 
 	t.Log("TestHarnessTimeoutTrigger passed")
+}
+
+// TestBoardingE2ETimeoutThenRejoin verifies that when client-to-server round
+// signing messages are held, the server times out the round, creates a new
+// one, and the client can rejoin and complete successfully.
+func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
+	ParallelN(t)
+
+	h := NewE2EHarness(t)
+	h.Start()
+
+	ctx := t.Context()
+
+	h.FundServerWallet(btcutil.SatoshiPerBitcoin)
+
+	client := NewTestClient(h)
+	require.NotNil(t, client)
+
+	prepareClientWithBoardingIntent(t, h, client, 150_000)
+
+	// Join the first round normally.
+	err := client.TriggerRegistration(ctx)
+	require.NoError(t, err, "client should trigger registration")
+
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
+	require.NoError(t, err, "server should accept first join")
+
+	// Hold outbound client signing messages so the server hits the
+	// VTXO-nonce timeout for this round.
+	client.serverConn.SetBuffered(true)
+
+	h.TriggerRoundSeal()
+
+	require.Eventually(t, func() bool {
+		return client.serverConn.PendingCount() > 0
+	}, 10*time.Second, pollInterval,
+		"expected buffered client->server signing messages")
+
+	h.TriggerTimeout(rounds.TimeoutPhaseVTXONonces)
+
+	failed := waitForBoardingFailedEvent(
+		t, h, client.ClientID(), 20*time.Second,
+	)
+	require.Contains(t, failed.Reason, "timeout")
+	require.True(t, failed.Recoverable, "timeout failure should recover")
+
+	// The failed round should be removed from the client tracking map.
+	roundsFuture := h.roundsActor.Ask(ctx, &rounds.GetClientRoundsRequest{
+		ClientID: client.ClientID(),
+	})
+	roundsRespRaw, roundsErr := roundsFuture.Await(ctx).Unpack()
+	require.NoError(t, roundsErr, "should query tracked client rounds")
+
+	roundsResp, ok := roundsRespRaw.(*rounds.GetClientRoundsResponse)
+	require.True(t, ok, "response should be GetClientRoundsResponse")
+	require.Empty(t, roundsResp.RoundIDs,
+		"failed round should no longer be tracked")
+
+	// Resume normal delivery for the rejoin path.
+	client.serverConn.SetBuffered(false)
+
+	err = client.WaitForFSMState("ClientFailedState", 10*time.Second)
+	require.NoError(t, err, "client should enter recoverable failed state")
+
+	// Recovery requires fresh intents. Create a new boarding intent and
+	// VTXO request to start assembling a fresh round.
+	prepareClientWithBoardingIntent(t, h, client, 150_000)
+
+	// Start the fresh round and complete it end-to-end.
+	h.Transcript().Clear()
+
+	err = client.TriggerRegistration(ctx)
+	require.NoError(t, err, "client should rejoin after timeout")
+
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientJoin, 10*time.Second,
+	)
+	require.NoError(t, err, "server should accept rejoin")
+
+	h.TriggerRoundSeal()
+
+	err = h.Transcript().WaitForEntryCount(
+		msgsPerClientRound, 30*time.Second,
+	)
+	require.NoError(t, err, "rejoin round should complete signing")
+
+	rpcClient, err := h.BitcoinRPCClient()
+	require.NoError(t, err, "should get bitcoin RPC client")
+
+	require.Eventually(t, func() bool {
+		mempoolTxs, mempoolErr := rpcClient.GetRawMempool()
+		if mempoolErr != nil {
+			return false
+		}
+
+		return len(mempoolTxs) > 0
+	}, 10*time.Second, pollInterval, "commitment tx should be in mempool")
+
+	h.MineBlocksAndConfirm(1)
+
+	client.AssertConfirmedRoundCountFromDB(1)
+	client.AssertVTXOCountFromDB(1)
 }
 
 // TestBoardingRestartAfterRoundBroadcast tests client restart after the

@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo/timeout"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 

@@ -15,9 +15,9 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/internal/testutils"
-	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
