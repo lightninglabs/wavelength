@@ -41,7 +41,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			VTXORequests: []types.VTXORequest{},
 		}
 
-		result := msg.ToProto()
+		result := msg.ToProto().UnwrapOrFail(t)
 		require.NotNil(t, result)
 	})
 
@@ -62,7 +62,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			},
 		}
 
-		result := msg.ToProto()
+		result := msg.ToProto().UnwrapOrFail(t)
 		require.NotNil(t, result)
 	})
 
@@ -86,7 +86,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			},
 		}
 
-		result := msg.ToProto()
+		result := msg.ToProto().UnwrapOrFail(t)
 		require.NotNil(t, result)
 	})
 
@@ -103,7 +103,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			},
 		}
 
-		result := msg.ToProto()
+		result := msg.ToProto().UnwrapOrFail(t)
 		require.NotNil(t, result)
 	})
 }

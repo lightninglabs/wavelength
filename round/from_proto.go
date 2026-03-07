@@ -135,6 +135,12 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 			leafOut := roundpb.TxOutFromProto(
 				info.LeafOutput,
 			)
+			if leafOut == nil {
+				return fmt.Errorf(
+					"connector_leaf_map[%s] "+
+						"nil leaf_output", key,
+				)
+			}
 
 			e.ForfeitMappings[op] = &ConnectorLeafInfo{
 				ConnectorOutpoint: connOP,

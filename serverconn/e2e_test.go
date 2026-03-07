@@ -54,10 +54,10 @@ type joinGreetingServerMsg struct {
 }
 
 // ToProto converts to a proto message for mailbox envelope transport.
-func (m *joinGreetingServerMsg) ToProto() proto.Message {
-	return &hellotestpb.JoinGreetingRequest{
+func (m *joinGreetingServerMsg) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](&hellotestpb.JoinGreetingRequest{
 		SessionId: m.SessionID,
-	}
+	})
 }
 
 // Compile-time interface checks.

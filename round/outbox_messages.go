@@ -3,6 +3,7 @@ package round
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -107,7 +108,7 @@ func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
 
 // ToProto converts JoinRoundRequest to a protobuf message for mailbox
 // transport.
-func (m *JoinRoundRequest) ToProto() proto.Message {
+func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 	// Convert boarding requests.
 	boardingReqs := make(
 		[]*roundpb.BoardingRequest, len(m.BoardingRequests),
@@ -200,13 +201,13 @@ func (m *JoinRoundRequest) ToProto() proto.Message {
 		}
 	}
 
-	return pb
+	return fn.Ok[proto.Message](pb)
 }
 
 // ToProto converts SubmitNoncesRequest to a protobuf message for mailbox
 // transport. Signing keys are hex-encoded and transaction IDs are
 // hex-encoded for use as proto map keys.
-func (m *SubmitNoncesRequest) ToProto() proto.Message {
+func (m *SubmitNoncesRequest) ToProto() fn.Result[proto.Message] {
 	nonces := make(
 		map[string]*roundpb.SignerNonces, len(m.Nonces),
 	)
@@ -223,15 +224,15 @@ func (m *SubmitNoncesRequest) ToProto() proto.Message {
 			}
 	}
 
-	return &roundpb.SubmitNoncesRequest{
+	return fn.Ok[proto.Message](&roundpb.SubmitNoncesRequest{
 		RoundId: m.RoundID[:],
 		Nonces:  nonces,
-	}
+	})
 }
 
 // ToProto converts SubmitPartialSigRequest to a protobuf message for
 // mailbox transport.
-func (m *SubmitPartialSigRequest) ToProto() proto.Message {
+func (m *SubmitPartialSigRequest) ToProto() fn.Result[proto.Message] {
 	sigs := make(
 		map[string]*roundpb.SignerPartialSigs,
 		len(m.Signatures),
@@ -240,7 +241,15 @@ func (m *SubmitPartialSigRequest) ToProto() proto.Message {
 		txMap := make(map[string][]byte, len(txSigs))
 		for txID, sig := range txSigs {
 			var buf bytes.Buffer
-			_ = sig.Encode(&buf)
+			if err := sig.Encode(&buf); err != nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf(
+						"encode partial sig "+
+							"for tx %x: %w",
+						txID[:], err,
+					),
+				)
+			}
 			txMap[roundpb.TxIDToHex(txID)] = buf.Bytes()
 		}
 		sigs[hex.EncodeToString(signerKey[:])] =
@@ -249,15 +258,15 @@ func (m *SubmitPartialSigRequest) ToProto() proto.Message {
 			}
 	}
 
-	return &roundpb.SubmitPartialSigRequest{
+	return fn.Ok[proto.Message](&roundpb.SubmitPartialSigRequest{
 		RoundId:    m.RoundID[:],
 		Signatures: sigs,
-	}
+	})
 }
 
 // ToProto converts SubmitForfeitSigRequest to a protobuf message for
 // mailbox transport.
-func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
+func (m *SubmitForfeitSigRequest) ToProto() fn.Result[proto.Message] {
 	sigs := make(
 		[]*roundpb.BoardingInputSignature,
 		len(m.Signatures),
@@ -274,10 +283,10 @@ func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
 		}
 	}
 
-	return &roundpb.SubmitForfeitSigRequest{
+	return fn.Ok[proto.Message](&roundpb.SubmitForfeitSigRequest{
 		RoundId:    m.RoundID[:],
 		Signatures: sigs,
-	}
+	})
 }
 
 // ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
@@ -373,19 +382,25 @@ func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
 
 // ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message for
 // mailbox transport.
-func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
+func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 	forfeitTxs := make(
 		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitSigs),
 	)
 	for outpoint, sig := range m.ForfeitSigs {
 		unsignedTx, ok := m.ForfeitTxs[outpoint]
 		if !ok {
-			continue
+			return fn.Err[proto.Message](fmt.Errorf(
+				"missing forfeit tx for outpoint %v",
+				outpoint,
+			))
 		}
 
 		txBytes, err := roundpb.MsgTxToBytes(unsignedTx)
 		if err != nil {
-			continue
+			return fn.Err[proto.Message](fmt.Errorf(
+				"serialize forfeit tx for %v: %w",
+				outpoint, err,
+			))
 		}
 
 		forfeitTxs = append(
@@ -399,10 +414,12 @@ func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
 		)
 	}
 
-	return &roundpb.SubmitVTXOForfeitSigsRequest{
-		RoundId:    m.RoundID[:],
-		ForfeitTxs: forfeitTxs,
-	}
+	return fn.Ok[proto.Message](
+		&roundpb.SubmitVTXOForfeitSigsRequest{
+			RoundId:    m.RoundID[:],
+			ForfeitTxs: forfeitTxs,
+		},
+	)
 }
 
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring

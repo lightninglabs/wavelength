@@ -24,10 +24,9 @@ func TestOutboxToProtoSubmitRequest(t *testing.T) {
 		CheckpointPSBTs: checkpoints,
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
+	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := protoMsg.(*anypb.Any)
+	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
 		t,
@@ -37,24 +36,15 @@ func TestOutboxToProtoSubmitRequest(t *testing.T) {
 	require.NotEmpty(t, anyMsg.Value)
 }
 
-// TestOutboxToProtoSubmitRequestErrorEnvelope verifies that a submit
-// request with missing PSBTs produces an error-typed proto envelope.
-func TestOutboxToProtoSubmitRequestErrorEnvelope(t *testing.T) {
+// TestOutboxToProtoSubmitRequestError verifies that a submit request
+// with missing PSBTs returns an error via the Result type.
+func TestOutboxToProtoSubmitRequestError(t *testing.T) {
 	t.Parallel()
 
 	msg := &SendSubmitPackageRequest{}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
-
-	anyMsg, ok := protoMsg.(*anypb.Any)
-	require.True(t, ok)
-	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"SendSubmitPackageRequest.error",
-		anyMsg.TypeUrl,
-	)
-	require.NotEmpty(t, anyMsg.Value)
+	_, err := msg.ToProto().Unpack()
+	require.Error(t, err)
 }
 
 // TestOutboxToProtoFinalizeRequest verifies that a valid finalize
@@ -70,10 +60,9 @@ func TestOutboxToProtoFinalizeRequest(t *testing.T) {
 		FinalCheckpointPSBTs: checkpoints,
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
+	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := protoMsg.(*anypb.Any)
+	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
 		t,
@@ -95,10 +84,9 @@ func TestOutboxToProtoMarkInputsSpentRequest(t *testing.T) {
 		}},
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
+	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := protoMsg.(*anypb.Any)
+	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
 		t,
@@ -117,10 +105,9 @@ func TestOutboxToProtoSendIncomingAckRequest(t *testing.T) {
 		SessionID: SessionID(chainhash.Hash{9, 8, 7}),
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
+	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := protoMsg.(*anypb.Any)
+	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
 		t,
@@ -140,10 +127,9 @@ func TestOutboxToProtoScheduleRetryRequest(t *testing.T) {
 		Reason: "transport timeout",
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
+	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := protoMsg.(*anypb.Any)
+	anyMsg, ok := result.(*anypb.Any)
 	require.True(t, ok)
 	require.Equal(
 		t,
@@ -154,8 +140,8 @@ func TestOutboxToProtoScheduleRetryRequest(t *testing.T) {
 }
 
 // TestOutboxToProtoScheduleRetryRequestNegativeDelay verifies that a
-// schedule-retry request with a negative delay produces an error-typed
-// proto envelope.
+// schedule-retry request with a negative delay returns an error via
+// the Result type.
 func TestOutboxToProtoScheduleRetryRequestNegativeDelay(t *testing.T) {
 	t.Parallel()
 
@@ -164,17 +150,8 @@ func TestOutboxToProtoScheduleRetryRequestNegativeDelay(t *testing.T) {
 		Reason: "transport timeout",
 	}
 
-	protoMsg := msg.ToProto()
-	require.IsType(t, &anypb.Any{}, protoMsg)
-
-	anyMsg, ok := protoMsg.(*anypb.Any)
-	require.True(t, ok)
-	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"ScheduleRetryRequest.error",
-		anyMsg.TypeUrl,
-	)
-	require.NotEmpty(t, anyMsg.Value)
+	_, err := msg.ToProto().Unpack()
+	require.Error(t, err)
 }
 
 // testOutboxPSBTPair builds a minimal Ark + checkpoint PSBT pair for
