@@ -66,6 +66,13 @@ func NewManager(cfg *ManagerConfig) *Manager {
 		cfg.ExpiryConfig = DefaultExpiryConfig()
 	}
 
+	// Fall back to the package-level logger if no logger was injected via
+	// the config. This ensures structured logging works even when the
+	// caller doesn't explicitly wire a logger.
+	if cfg.Logger == nil {
+		cfg.Logger = log
+	}
+
 	return &Manager{
 		cfg:    cfg,
 		actors: make(map[wire.OutPoint]VTXOActorRef),

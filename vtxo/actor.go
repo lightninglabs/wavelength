@@ -63,6 +63,13 @@ type VTXOActor struct {
 // actors being recovered from storage (e.g., in forfeiting state), this
 // fetches persisted data like the forfeit tx.
 func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
+	// Fall back to the package-level logger if no logger was injected via
+	// the config. This ensures structured logging works even when the
+	// caller doesn't explicitly wire a logger.
+	if cfg.Logger == nil {
+		cfg.Logger = log
+	}
+
 	actorID := fmt.Sprintf("vtxo.%s", cfg.VTXO.Outpoint.String())
 	env := NewVTXOEnvironment(
 		actorID, cfg.Store, cfg.Wallet, cfg.ExpiryConfig,
