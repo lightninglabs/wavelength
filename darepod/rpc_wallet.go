@@ -31,13 +31,14 @@ func (r *RPCServer) GenSeed(ctx context.Context,
 	}
 
 	// GenSeed is only available when no wallet exists yet.
-	if r.server.walletState != WalletStateNone {
+	currentState := WalletState(r.server.walletState.Load())
+	if currentState != WalletStateNone {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"wallet already exists (state=%d)",
-			r.server.walletState)
+			currentState)
 	}
 
-	mnemonic, err := GenSeed(req.SeedPassphrase)
+	mnemonic, err := GenerateSeed(req.SeedPassphrase)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to generate seed: %v", err)
@@ -61,15 +62,31 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"InitWallet is only available in lwwallet mode")
 	}
 
-	// InitWallet is only available when no wallet exists yet.
-	if r.server.walletState != WalletStateNone {
+	// Atomically check that no wallet exists and claim the
+	// transition so a concurrent InitWallet call cannot race
+	// past this point. CompareAndSwap ensures only one caller
+	// wins the None → Locked transition.
+	if !r.server.walletState.CompareAndSwap(
+		int32(WalletStateNone), int32(WalletStateLocked),
+	) {
+
+		state := WalletState(r.server.walletState.Load())
+
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"wallet already exists (state=%d)",
-			r.server.walletState)
+			"wallet already exists (state=%d)", state)
+	}
+
+	// rollbackState resets the wallet state to None so that a
+	// subsequent InitWallet call can retry after a transient
+	// failure (bad mnemonic, disk error, etc.).
+	rollbackState := func() {
+		r.server.walletState.Store(int32(WalletStateNone))
 	}
 
 	// Validate the mnemonic length.
 	if len(req.Mnemonic) != aezeed.NumMnemonicWords {
+		rollbackState()
+
 		return nil, status.Errorf(codes.InvalidArgument,
 			"mnemonic must be %d words, got %d",
 			aezeed.NumMnemonicWords, len(req.Mnemonic))
@@ -77,6 +94,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 
 	// Validate password length.
 	if len(req.WalletPassword) < minPasswordLen {
+		rollbackState()
+
 		return nil, status.Errorf(codes.InvalidArgument,
 			"wallet password must be at least %d bytes",
 			minPasswordLen)
@@ -89,6 +108,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// Derive the raw seed from the mnemonic.
 	seed, err := MnemonicToSeed(mnemonic, req.SeedPassphrase)
 	if err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.InvalidArgument,
 			"invalid mnemonic: %v", err)
 	}
@@ -96,15 +117,27 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	// Encrypt the seed at rest.
 	ciphertext, err := EncryptSeed(seed, req.WalletPassword)
 	if err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal,
 			"unable to encrypt seed: %v", err)
 	}
 
+	// Resolve the network directory for seed storage.
+	networkDir, err := r.server.cfg.NetworkDir()
+	if err != nil {
+		rollbackState()
+
+		return nil, status.Errorf(codes.Internal,
+			"unable to resolve network directory: %v", err)
+	}
+
 	// Save the encrypted seed to disk.
-	networkDir := r.server.cfg.NetworkDir()
 	seedPath := SeedFilePath(networkDir)
 
 	if err := SaveEncryptedSeed(seedPath, ciphertext); err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal,
 			"unable to save encrypted seed: %v", err)
 	}
@@ -114,6 +147,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 
 	// Start the lwwallet with the derived seed.
 	if err := r.server.startLwwallet(ctx, seed); err != nil {
+		rollbackState()
+
 		return nil, status.Errorf(codes.Internal,
 			"unable to start wallet: %v", err)
 	}
@@ -144,11 +179,16 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 				"lwwallet mode")
 	}
 
-	// UnlockWallet is only available when the wallet is locked.
-	if r.server.walletState != WalletStateLocked {
+	// Atomically verify the wallet is locked. We do not need a CAS
+	// here because startLwwallet (called below) will perform the
+	// Locked → Ready transition via markWalletReady. A concurrent
+	// UnlockWallet that passes this check will fail inside
+	// startLwwallet when it tries to start a second wallet.
+	currentState := WalletState(r.server.walletState.Load())
+	if currentState != WalletStateLocked {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"wallet is not locked (state=%d)",
-			r.server.walletState)
+			currentState)
 	}
 
 	// Validate password length.
@@ -159,7 +199,12 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	}
 
 	// Load the encrypted seed from disk.
-	networkDir := r.server.cfg.NetworkDir()
+	networkDir, err := r.server.cfg.NetworkDir()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to resolve network directory: %v", err)
+	}
+
 	seedPath := SeedFilePath(networkDir)
 
 	ciphertext, err := LoadEncryptedSeed(seedPath)
@@ -197,13 +242,17 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 
 // deriveIdentityPubkey derives the node identity public key from the
 // active lwwallet using KeyFamilyNodeKey (family 6, index 0). This
-// matches lnd's identity key derivation path.
+// matches lnd's identity key derivation path. DeriveKey (not
+// DeriveNextKey) is used so the identity key is stable across calls.
 func (r *RPCServer) deriveIdentityPubkey(
 	ctx context.Context) (string, error) {
 
 	w := r.server.lwWallet.UnsafeFromSome()
 
-	desc, err := w.DeriveNextKey(ctx, identityKeyFamily)
+	desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+		Family: identityKeyFamily,
+		Index:  0,
+	})
 	if err != nil {
 		return "", fmt.Errorf("derive identity key: %w", err)
 	}

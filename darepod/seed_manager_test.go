@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenSeedProduces24Words verifies that GenSeed returns a valid
-// 24-word mnemonic.
-func TestGenSeedProduces24Words(t *testing.T) {
+// TestGenerateSeedProduces24Words verifies that GenerateSeed returns a
+// valid 24-word mnemonic.
+func TestGenerateSeedProduces24Words(t *testing.T) {
 	mnemonic, err := GenerateSeed(nil)
 	require.NoError(t, err)
 
