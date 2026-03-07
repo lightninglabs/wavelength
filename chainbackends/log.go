@@ -31,3 +31,13 @@ func DisableLog() {
 func UseLogger(logger btclog.Logger) {
 	log = logger
 }
+
+// lndClientLog is the logger for the lndclient adapter components. It is
+// separate from the main package logger so that operators can control
+// lndclient adapter verbosity independently via the LNDC subsystem tag.
+var lndClientLog = btclog.Disabled
+
+// UseLndClientLogger sets the logger for the lndclient adapter subsystem.
+func UseLndClientLogger(logger btclog.Logger) {
+	lndClientLog = logger
+}

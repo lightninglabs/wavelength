@@ -75,6 +75,10 @@ func SetupLoggers(root *lndbuild.SubLoggerManager,
 		chainbackends.UseLogger,
 	)
 	AddSubLogger(
+		root, chainbackends.LndClientSubsystem, interceptor,
+		chainbackends.UseLndClientLogger,
+	)
+	AddSubLogger(
 		root, lndbackend.Subsystem, interceptor,
 		lndbackend.UseLogger,
 	)

@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -136,10 +135,11 @@ func NewLndClientChainNotifier(
 	}
 }
 
-// logger returns the configured logger or falls back to extracting from
-// context. If no logger is found in either location, returns btclog.Disabled.
+// logger returns the configured logger, falling back to the context logger
+// and then to the package-level lndClientLog registered under the LNDC
+// subsystem.
 func (n *LndClientChainNotifier) logger(ctx context.Context) btclog.Logger {
-	return n.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+	return n.cfg.Log.UnwrapOr(lndClientLog)
 }
 
 // Start is a no-op for lndclient-backed notifiers since the connection is
