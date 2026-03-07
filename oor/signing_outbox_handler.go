@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -47,6 +48,9 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 		// v0 does not require extra local Ark signing beyond
 		// deterministic package construction. Forward the Ark
 		// PSBT as-is.
+		log.DebugS(ctx, "Ark signatures requested (v0 pass-through)",
+			slog.String("session_id", sessionID.String()))
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -54,14 +58,27 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 		}, nil
 
 	case *RequestCheckpointSignatures:
+		log.DebugS(ctx, "Checkpoint signatures requested",
+			slog.String("session_id", sessionID.String()),
+			slog.Int("num_checkpoints", len(msg.CoSignedCheckpointPSBTs)))
+
 		return h.handleCheckpointSignatures(msg)
 
 	case *ScheduleRetryRequest:
+		log.InfoS(ctx, "Scheduling retry",
+			slog.String("session_id", sessionID.String()),
+			slog.String("reason", msg.Reason),
+			slog.Duration("after", msg.After))
+
 		return h.handleScheduleRetry(ctx, sessionID, msg)
 
 	case *IncomingTransferNotification:
 		// Informational notification for UI/logging. No FSM
 		// follow-up events are required.
+		log.InfoS(ctx, "Incoming transfer notification received",
+			slog.String("session_id", msg.SessionID.String()),
+			slog.Int("num_recipients", len(msg.Recipients)))
+
 		return nil, nil
 
 	default:
