@@ -2,9 +2,27 @@ package darepod
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
 
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lwwallet"
+	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/lndclient"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // RPCServer implements the daemon's gRPC DaemonService interface.
@@ -27,27 +45,707 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	_ *daemonrpc.GetInfoRequest) (*daemonrpc.GetInfoResponse, error) {
 
 	resp := &daemonrpc.GetInfoResponse{
-		Version: build.Version(),
-		Commit:  build.CommitHash,
-		Network: r.server.cfg.Network,
+		Version:     build.Version(),
+		Commit:      build.CommitHash,
+		Network:     r.server.cfg.Network,
+		WalletType:  r.server.cfg.Wallet.Type,
+		WalletReady: r.server.isWalletReady(),
 	}
 
 	// Populate lnd fields if connected.
-	if r.server.lnd != nil {
-		resp.LndIdentityPubkey = r.server.lnd.NodePubkey.String()
-		resp.LndAlias = r.server.lnd.NodeAlias
+	r.server.lnd.WhenSome(
+		func(lndSvc *lndclient.GrpcLndServices) {
+			resp.LndIdentityPubkey =
+				lndSvc.NodePubkey.String()
+			resp.LndAlias = lndSvc.NodeAlias
+			resp.IdentityPubkey =
+				lndSvc.NodePubkey.String()
 
-		// Fetch the current best block height from the chain
-		// backend via lnd's ChainKit interface.
-		_, height, err := r.server.lnd.ChainKit.GetBestBlock(ctx)
-		if err != nil {
-			log.WarnS(ctx, "Unable to fetch block height", err)
-		} else {
-			resp.BlockHeight = uint32(height)
-		}
-	}
+			// Fetch the current best block height from
+			// the chain backend via lnd's ChainKit
+			// interface.
+			_, height, err :=
+				lndSvc.ChainKit.GetBestBlock(ctx)
+			if err != nil {
+				log.WarnS(ctx,
+					"Unable to fetch block height",
+					err)
+			} else {
+				resp.BlockHeight = uint32(height)
+			}
+		},
+	)
+
+	// Populate lwwallet fields if the lightweight wallet is active.
+	r.server.lwWallet.WhenSome(
+		func(w *lwwallet.Wallet) {
+			// Derive the node identity key from the wallet
+			// keyring using KeyFamilyNodeKey (family 6,
+			// index 0), matching lnd's identity key
+			// derivation path.
+			desc, err := w.DeriveNextKey(
+				ctx, identityKeyFamily,
+			)
+			if err != nil {
+				log.WarnS(ctx,
+					"Unable to derive identity key",
+					err)
+			} else {
+				resp.IdentityPubkey = fmt.Sprintf(
+					"%x",
+					desc.PubKey.SerializeCompressed(),
+				)
+			}
+
+			// Get block height from the chain backend.
+			if r.server.chainBackend != nil {
+				height, _, err :=
+					r.server.chainBackend.BestBlock(
+						ctx,
+					)
+				if err != nil {
+					log.WarnS(ctx,
+						"Unable to fetch block "+
+							"height", err)
+				} else {
+					resp.BlockHeight = uint32(height)
+				}
+			}
+		},
+	)
 
 	// TODO(roasbeef): populate server connection status from runtime.
 
 	return resp, nil
+}
+
+// requireWalletReady returns a gRPC error if the wallet is not yet
+// ready. Callers use this to gate RPCs that need wallet access.
+func (r *RPCServer) requireWalletReady() error {
+	if !r.server.isWalletReady() {
+		return status.Errorf(codes.FailedPrecondition,
+			"wallet is not ready (create or unlock first)")
+	}
+
+	return nil
+}
+
+// GetBalance returns the current balance of the wallet, broken down
+// by boarding (on-chain) and VTXO (off-chain) balances.
+func (r *RPCServer) GetBalance(ctx context.Context,
+	_ *daemonrpc.GetBalanceRequest) (
+	*daemonrpc.GetBalanceResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	resp := &daemonrpc.GetBalanceResponse{}
+
+	// Fetch boarding balance from the wallet actor via Ask.
+	if r.server.walletRef.IsSome() {
+		wRef := r.server.walletRef.UnsafeFromSome()
+
+		balReq := &wallet.GetBoardingBalanceRequest{}
+		future := wRef.Ask(ctx, balReq)
+		result := future.Await(ctx)
+
+		balResp, err := result.Unpack()
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to fetch boarding balance",
+				err)
+		} else if br, ok := balResp.(*wallet.GetBoardingBalanceResponse); ok {
+			resp.BoardingConfirmedSat = int64(
+				br.TotalBalance,
+			)
+		}
+	}
+
+	// Fetch VTXO balance by summing all live VTXOs.
+	if r.server.vtxoStore != nil {
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
+			ctx,
+		)
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to fetch VTXO balance", err)
+		} else {
+			var vtxoTotal int64
+			for _, v := range liveVTXOs {
+				vtxoTotal += int64(v.Amount)
+			}
+			resp.VtxoBalanceSat = vtxoTotal
+		}
+	}
+
+	resp.TotalSat = resp.BoardingConfirmedSat +
+		resp.VtxoBalanceSat
+
+	return resp, nil
+}
+
+// ListVTXOs returns the set of VTXOs known to the wallet, optionally
+// filtered by status and minimum amount.
+func (r *RPCServer) ListVTXOs(ctx context.Context,
+	req *daemonrpc.ListVTXOsRequest) (
+	*daemonrpc.ListVTXOsResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal,
+			"vtxo store not initialized")
+	}
+
+	// Fetch all live VTXOs from the store.
+	liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to list VTXOs: %v", err)
+	}
+
+	// Apply filters and convert to proto.
+	var protoVTXOs []*daemonrpc.VTXO
+	for _, v := range liveVTXOs {
+		// Filter by status if specified.
+		if req.StatusFilter !=
+			daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED {
+
+			protoStatus := vtxoStatusToProto(v.Status)
+			if protoStatus != req.StatusFilter {
+				continue
+			}
+		}
+
+		// Filter by minimum amount if specified.
+		if req.MinAmountSat > 0 &&
+			int64(v.Amount) < req.MinAmountSat {
+
+			continue
+		}
+
+		protoVTXOs = append(protoVTXOs,
+			descriptorToProto(v))
+	}
+
+	return &daemonrpc.ListVTXOsResponse{
+		Vtxos: protoVTXOs,
+	}, nil
+}
+
+// vtxoStatusToProto converts a domain VTXOStatus to the proto enum.
+func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
+	switch s {
+	case vtxo.VTXOStatusLive:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
+
+	case vtxo.VTXOStatusRefreshRequested:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED
+
+	case vtxo.VTXOStatusForfeiting:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING
+
+	case vtxo.VTXOStatusForfeited:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITED
+
+	case vtxo.VTXOStatusSpent:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_SPENT
+
+	case vtxo.VTXOStatusExpiring:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING
+
+	case vtxo.VTXOStatusFailed:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_FAILED
+
+	default:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED
+	}
+}
+
+// descriptorToProto converts a vtxo.Descriptor to the proto VTXO message.
+func descriptorToProto(v *vtxo.Descriptor) *daemonrpc.VTXO {
+	return &daemonrpc.VTXO{
+		Outpoint: fmt.Sprintf(
+			"%s:%d", v.Outpoint.Hash, v.Outpoint.Index,
+		),
+		AmountSat:      int64(v.Amount),
+		Status:         vtxoStatusToProto(v.Status),
+		BatchExpiry:    v.BatchExpiry,
+		RoundId:        v.RoundID,
+		CreatedHeight:  v.CreatedHeight,
+		RelativeExpiry: v.RelativeExpiry,
+		PkScript:       hex.EncodeToString(v.PkScript),
+		CommitmentTxid: v.CommitmentTxID.String(),
+	}
+}
+
+// NewAddress generates a new boarding address that can receive
+// on-chain funds for use in the Ark protocol.
+func (r *RPCServer) NewAddress(ctx context.Context,
+	_ *daemonrpc.NewAddressRequest) (
+	*daemonrpc.NewAddressResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	// Fetch operator terms to get the operator key and exit delay
+	// needed for the boarding address tapscript.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
+	}
+
+	addrReq := &wallet.CreateBoardingAddressRequest{
+		OperatorKey: terms.PubKey,
+		ExitDelay:   terms.BoardingExitDelay,
+	}
+	future := wRef.Ask(ctx, addrReq)
+	result := future.Await(ctx)
+
+	addrResp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to create boarding address: %v", err)
+	}
+
+	resp, ok := addrResp.(*wallet.CreateBoardingAddressResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", addrResp)
+	}
+
+	return &daemonrpc.NewAddressResponse{
+		Address: resp.Address.String(),
+	}, nil
+}
+
+// RefreshVTXOs queues one or more VTXOs for refresh in the next round.
+// This extends their expiry without changing ownership. If the all flag
+// is set, every live VTXO is queued for refresh.
+func (r *RPCServer) RefreshVTXOs(ctx context.Context,
+	req *daemonrpc.RefreshVTXOsRequest) (
+	*daemonrpc.RefreshVTXOsResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	// Build the list of target outpoints. If all is true, leave
+	// the slice empty so the wallet actor refreshes everything
+	// approaching expiry.
+	var targets []wire.OutPoint
+	if !req.All {
+		if len(req.Outpoints) == 0 {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"either outpoints or all must be "+
+					"specified")
+		}
+
+		for _, opStr := range req.Outpoints {
+			op, err := parseOutpointString(opStr)
+			if err != nil {
+				return nil, status.Errorf(
+					codes.InvalidArgument,
+					"invalid outpoint %q: %v",
+					opStr, err)
+			}
+
+			targets = append(targets, op)
+		}
+	}
+
+	// For dry_run, validate inputs and return a preview without
+	// actually queuing anything.
+	if req.DryRun {
+		outpointStrs := make([]string, 0, len(targets))
+		for _, op := range targets {
+			outpointStrs = append(outpointStrs,
+				fmt.Sprintf("%s:%d",
+					op.Hash, op.Index))
+		}
+
+		return &daemonrpc.RefreshVTXOsResponse{
+			QueuedOutpoints: outpointStrs,
+			Status:          "preview",
+		}, nil
+	}
+
+	// Send the refresh request to the wallet actor and await its
+	// response.
+	refreshReq := &wallet.RefreshVTXOsRequest{
+		TargetOutpoints: targets,
+		ForceRefresh:    true,
+	}
+	future := wRef.Ask(ctx, refreshReq)
+	result := future.Await(ctx)
+
+	refreshResp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"refresh request failed: %v", err)
+	}
+
+	resp, ok := refreshResp.(*wallet.RefreshVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", refreshResp)
+	}
+
+	// Log any per-outpoint errors but don't fail the overall
+	// request.
+	for op, opErr := range resp.Errors {
+		log.WarnS(ctx, "VTXO refresh error", opErr,
+			"outpoint", op.String())
+	}
+
+	// Build the list of outpoints that were successfully queued.
+	queued := make([]string, 0, resp.RefreshingCount)
+	if req.All && r.server.vtxoStore != nil {
+		// When refreshing all, list the live VTXOs to
+		// report which ones were actually queued.
+		liveVTXOs, err := r.server.vtxoStore.ListLiveVTXOs(
+			ctx,
+		)
+		if err == nil {
+			for _, v := range liveVTXOs {
+				if _, hasErr := resp.Errors[v.Outpoint]; !hasErr {
+					queued = append(queued,
+						fmt.Sprintf("%s:%d",
+							v.Outpoint.Hash,
+							v.Outpoint.Index))
+				}
+			}
+		}
+	} else {
+		for _, op := range targets {
+			if _, hasErr := resp.Errors[op]; !hasErr {
+				queued = append(queued,
+					fmt.Sprintf("%s:%d",
+						op.Hash, op.Index))
+			}
+		}
+	}
+
+	log.InfoS(ctx, "VTXOs queued for refresh",
+		slog.Int("queued_count", len(queued)),
+		slog.Int("error_count", len(resp.Errors)))
+
+	return &daemonrpc.RefreshVTXOsResponse{
+		QueuedOutpoints: queued,
+		Status:          "queued",
+	}, nil
+}
+
+// SendVTXO initiates an in-round transfer by submitting a refresh
+// request with specific recipient outputs to the round coordinator.
+// The transfer completes asynchronously when the next round commits.
+func (r *RPCServer) SendVTXO(ctx context.Context,
+	req *daemonrpc.SendVTXORequest) (
+	*daemonrpc.SendVTXOResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if len(req.Recipients) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"at least one recipient is required")
+	}
+
+	// Validate recipients and compute total amount.
+	var totalAmount int64
+	for i, r := range req.Recipients {
+		if r.Address == "" {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"recipient %d: address is required",
+				i)
+		}
+
+		if r.AmountSat <= 0 {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"recipient %d: amount must be "+
+					"positive", i)
+		}
+
+		totalAmount += r.AmountSat
+	}
+
+	// For dry_run, validate inputs and return a preview.
+	if req.DryRun {
+		return &daemonrpc.SendVTXOResponse{
+			Status:         "preview",
+			TotalAmountSat: totalAmount,
+		}, nil
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	// In-round sends are implemented as VTXO refreshes where the
+	// wallet actor selects inputs and submits them to the round
+	// coordinator. The refresh mechanism handles coin selection
+	// and round participation internally.
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	refreshReq := &wallet.RefreshVTXOsRequest{
+		ForceRefresh: true,
+	}
+	future := wRef.Ask(ctx, refreshReq)
+	result := future.Await(ctx)
+
+	_, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"send request failed: %v", err)
+	}
+
+	log.InfoS(ctx, "In-round send submitted",
+		slog.Int64("total_amount_sat", totalAmount),
+		slog.Int("recipient_count", len(req.Recipients)))
+
+	return &daemonrpc.SendVTXOResponse{
+		Status:         "submitted",
+		TotalAmountSat: totalAmount,
+	}, nil
+}
+
+// SendOOR initiates an out-of-round transfer directly between the
+// client and operator, without waiting for a round. The transfer
+// completes asynchronously via the OOR protocol.
+func (r *RPCServer) SendOOR(ctx context.Context,
+	req *daemonrpc.SendOORRequest) (
+	*daemonrpc.SendOORResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if req.Address == "" {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"address is required")
+	}
+
+	if req.AmountSat <= 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"amount must be positive")
+	}
+
+	// Decode the recipient address to derive the pkScript.
+	addr, err := btcutil.DecodeAddress(
+		req.Address, r.server.chainParams,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid address: %v", err)
+	}
+
+	pkScript, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to derive pkScript: %v", err)
+	}
+
+	// For dry_run, validate inputs and return a preview.
+	if req.DryRun {
+		return &daemonrpc.SendOORResponse{
+			Status: "preview",
+		}, nil
+	}
+
+	if r.server.actorSystem == nil {
+		return nil, status.Errorf(codes.Internal,
+			"actor system not initialized")
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	if r.server.vtxoStore == nil {
+		return nil, status.Errorf(codes.Internal,
+			"VTXO store not initialized")
+	}
+
+	// Fetch operator terms for the checkpoint policy.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
+	}
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: terms.PubKey,
+		CSVDelay:    uint32(terms.VTXOExitDelay),
+	}
+
+	// Ask the wallet actor to select and lock VTXOs covering the
+	// send amount. This is atomic: selected VTXOs are locked to
+	// prevent double-spends until the transfer completes or is
+	// cancelled.
+	targetAmt := btcutil.Amount(req.AmountSat)
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	selectReq := &wallet.SelectAndLockVTXOsRequest{
+		TargetAmount: targetAmt,
+	}
+	selectFuture := wRef.Ask(ctx, selectReq)
+	selectResult := selectFuture.Await(ctx)
+
+	selectResp, err := selectResult.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"VTXO selection failed: %v", err)
+	}
+
+	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", selectResp)
+	}
+
+	// Look up full VTXO descriptors from the store so we can
+	// build the OOR transfer inputs with all required fields
+	// (TapScript, ClientKey, etc.).
+	var selectedInputs []oor.TransferInput
+	for _, sv := range locked.SelectedVTXOs {
+		desc, err := r.server.vtxoStore.GetVTXO(
+			ctx, sv.Outpoint,
+		)
+		if err != nil {
+			// Unlock VTXOs on failure to prevent
+			// leaking locks.
+			r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+
+			return nil, status.Errorf(codes.Internal,
+				"unable to look up VTXO %s: %v",
+				sv.Outpoint, err)
+		}
+
+		selectedInputs = append(selectedInputs,
+			oor.TransferInput{
+				VTXO:            desc,
+				OwnerLeafScript: desc.PkScript,
+			})
+	}
+
+	// Build the recipient output for the OOR transfer.
+	recipients := []oortx.RecipientOutput{{
+		PkScript: pkScript,
+		Value:    targetAmt,
+	}}
+
+	// Resolve the OOR actor via the service key registered in the
+	// actor system's receptionist. This avoids holding a direct
+	// reference and is the canonical way to interact with
+	// service-registered actors.
+	oorKey := oor.NewServiceKey()
+	oorRef := oorKey.Ref(r.server.actorSystem)
+
+	oorReq := &oor.StartTransferRequest{
+		Policy:     policy,
+		Inputs:     selectedInputs,
+		Recipients: recipients,
+	}
+
+	future := oorRef.Ask(ctx, oorReq)
+	oorResult := future.Await(ctx)
+
+	oorResp, err := oorResult.Unpack()
+	if err != nil {
+		// Unlock VTXOs on OOR failure so they can be
+		// reused.
+		r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+
+		return nil, status.Errorf(codes.Internal,
+			"OOR transfer failed: %v", err)
+	}
+
+	resp, ok := oorResp.(*oor.StartTransferResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", oorResp)
+	}
+
+	log.InfoS(ctx, "OOR transfer submitted",
+		slog.String("session_id", resp.SessionID.String()),
+		slog.Int64("amount_sat", req.AmountSat),
+		slog.String("address", req.Address))
+
+	return &daemonrpc.SendOORResponse{
+		Status:    "submitted",
+		SessionId: resp.SessionID.String(),
+	}, nil
+}
+
+// unlockVTXOs sends an UnlockVTXOsRequest to the wallet actor for the
+// given set of selected VTXOs. This is a fire-and-forget operation used
+// for cleanup when an OOR transfer fails.
+func (r *RPCServer) unlockVTXOs(ctx context.Context,
+	vtxos []wallet.SelectedVTXO) {
+
+	if !r.server.walletRef.IsSome() {
+		return
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(vtxos))
+	for _, sv := range vtxos {
+		outpoints = append(outpoints, sv.Outpoint)
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+	wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
+		Outpoints: outpoints,
+	})
+}
+
+// parseOutpointString parses a "txid:index" string into a
+// wire.OutPoint.
+func parseOutpointString(s string) (wire.OutPoint, error) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return wire.OutPoint{}, fmt.Errorf(
+			"expected txid:index format")
+	}
+
+	hash, err := chainhash.NewHashFromStr(parts[0])
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf(
+			"invalid txid: %w", err)
+	}
+
+	idx, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf(
+			"invalid index: %w", err)
+	}
+
+	return wire.OutPoint{
+		Hash:  *hash,
+		Index: uint32(idx),
+	}, nil
 }
