@@ -32,9 +32,6 @@ const (
 	// ListUnspent queries.
 	MaxConfsForListUnspent = 9999999
 
-	// Subsystem is the log subsystem code for the boarding wallet actor.
-	Subsystem = "ARKW"
-
 	// listUnspentMaxRetries is the maximum number of times we'll retry a
 	// ListUnspent query within a single block epoch if we didn't detect any
 	// new boarding UTXOs. This mitigates a race where we receive a block
@@ -105,8 +102,8 @@ type Ark struct {
 	log btclog.Logger
 }
 
-// NewArk creates a new Ark wallet actor. The logger should already have the
-// subsystem set (e.g., created via handler.SubSystem(wallet.Subsystem)).
+// NewArk creates a new Ark wallet actor. The logger is optional and falls back
+// to the global package logger when nil is passed.
 //
 // The actorSystem parameter enables refresh request forwarding to the round
 // actor via service key lookup. This avoids circular dependencies since we
@@ -114,7 +111,11 @@ type Ark struct {
 func NewArk(backend BoardingBackend, store BoardingStore,
 	chainSource actor.ActorRef[chainsource.ChainSourceMsg, chainsource.ChainSourceResp],
 	actorSystem actor.SystemContext,
-	log btclog.Logger) *Ark {
+	actorLog btclog.Logger) *Ark {
+
+	if actorLog == nil {
+		actorLog = log
+	}
 
 	return &Ark{
 		backend:     backend,
@@ -123,7 +124,7 @@ func NewArk(backend BoardingBackend, store BoardingStore,
 		actorSystem: actorSystem,
 		notifiers:   make(map[string]notifierInfo),
 		seenUtxos:   fn.NewSet[UtxoKey](),
-		log:         log,
+		log:         actorLog,
 	}
 }
 
