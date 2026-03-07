@@ -83,9 +83,13 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			// Derive the node identity key from the wallet
 			// keyring using KeyFamilyNodeKey (family 6,
 			// index 0), matching lnd's identity key
-			// derivation path.
-			desc, err := w.DeriveNextKey(
-				ctx, identityKeyFamily,
+			// derivation path. DeriveKey (not
+			// DeriveNextKey) ensures a stable identity.
+			desc, err := w.DeriveKey(
+				ctx, keychain.KeyLocator{
+					Family: identityKeyFamily,
+					Index:  0,
+				},
 			)
 			if err != nil {
 				log.WarnS(ctx,
@@ -519,37 +523,15 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 		}, nil
 	}
 
-	if !r.server.walletRef.IsSome() {
-		return nil, status.Errorf(codes.Internal,
-			"wallet actor not initialized")
-	}
-
-	// In-round sends are implemented as VTXO refreshes where the
-	// wallet actor selects inputs and submits them to the round
-	// coordinator. The refresh mechanism handles coin selection
-	// and round participation internally.
-	wRef := r.server.walletRef.UnsafeFromSome()
-
-	refreshReq := &wallet.RefreshVTXOsRequest{
-		ForceRefresh: true,
-	}
-	future := wRef.Ask(ctx, refreshReq)
-	result := future.Await(ctx)
-
-	_, err := result.Unpack()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"send request failed: %v", err)
-	}
-
-	log.InfoS(ctx, "In-round send submitted",
-		slog.Int64("total_amount_sat", totalAmount),
-		slog.Int("recipient_count", len(req.Recipients)))
-
-	return &daemonrpc.SendVTXOResponse{
-		Status:         "submitted",
-		TotalAmountSat: totalAmount,
-	}, nil
+	// TODO(roasbeef): In-round directed sends are not yet
+	// implemented. The wallet actor's RefreshVTXOsRequest only
+	// supports self-refresh (sending back to self), not directed
+	// transfers to external recipients. Once the round protocol
+	// supports recipient outputs, this handler should build a
+	// proper send request with the validated recipients.
+	return nil, status.Errorf(codes.Unimplemented,
+		"in-round directed sends are not yet implemented; "+
+			"use SendOOR for out-of-round transfers")
 }
 
 // SendOOR initiates an out-of-round transfer directly between the
