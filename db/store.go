@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -148,8 +149,7 @@ func NewStoreFromConfig(cfg *Config,
 	ctx := context.Background()
 
 	storeLog.InfoS(ctx, "Initializing database store",
-		"backend", cfg.Backend,
-	)
+		slog.String("backend", cfg.Backend))
 
 	// Propagate the resolved logger into backend-specific configs so the
 	// sub-store constructors can pick it up through their own Log option.

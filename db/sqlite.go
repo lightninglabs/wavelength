@@ -227,9 +227,8 @@ func backupSqliteDatabase(srcDB *sql.DB, dbFullFilePath string,
 
 	backupLog.InfoS(
 		context.Background(), "Creating backup of database file",
-		"source", dbFullFilePath,
-		"backup", backupFullFilePath,
-	)
+		slog.String("source", dbFullFilePath),
+		slog.String("backup", backupFullFilePath))
 
 	// Create the database backup.
 	vacuumIntoQuery := "VACUUM INTO ?;"
