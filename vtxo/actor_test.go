@@ -130,7 +130,8 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 	}
 
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusRefreshRequested,
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusRefreshRequested,
 	).Return(nil)
 
 	outbox := []VTXOOutMsg{
