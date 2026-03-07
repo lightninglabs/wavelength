@@ -226,7 +226,8 @@ func TestTxOutProtoRoundTrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		out := genTxOut(rt)
 		pb := TxOutToProto(out)
-		got := TxOutFromProto(pb)
+		got, err := TxOutFromProto(pb)
+		require.NoError(t, err)
 
 		require.Equal(t, out.Value, got.Value)
 		require.Equal(t, out.PkScript, got.PkScript)
@@ -238,7 +239,9 @@ func TestTxOutProtoNil(t *testing.T) {
 	t.Parallel()
 
 	require.Nil(t, TxOutToProto(nil))
-	require.Nil(t, TxOutFromProto(nil))
+	nilOut, nilErr := TxOutFromProto(nil)
+	require.NoError(t, nilErr)
+	require.Nil(t, nilOut)
 }
 
 // TestSchnorrSigRoundTrip verifies that any schnorr signature survives

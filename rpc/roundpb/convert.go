@@ -93,16 +93,23 @@ func TxOutToProto(out *wire.TxOut) *TxOut {
 	}
 }
 
-// TxOutFromProto converts a proto TxOut to a wire.TxOut.
-func TxOutFromProto(out *TxOut) *wire.TxOut {
+// TxOutFromProto converts a proto TxOut to a wire.TxOut. It rejects
+// negative output values which would corrupt fee calculations.
+func TxOutFromProto(out *TxOut) (*wire.TxOut, error) {
 	if out == nil {
-		return nil
+		return nil, nil
+	}
+
+	if out.Value < 0 {
+		return nil, fmt.Errorf(
+			"negative output value: %d", out.Value,
+		)
 	}
 
 	return &wire.TxOut{
 		Value:    out.Value,
 		PkScript: out.PkScript,
-	}
+	}, nil
 }
 
 // PSBTToBytes serializes a PSBT packet to bytes.
@@ -298,19 +305,62 @@ func flattenNode(n *tree.Node, nodes *[]*TreeNode,
 	return nil
 }
 
+// DefaultMaxTreeNodes is the upper bound on the number of nodes
+// allowed in a VTXOTree received from the server. A round with 1000
+// participants at depth 10 produces ~2000 nodes; 50,000 is generous.
+const DefaultMaxTreeNodes = 50_000
+
+// TreeFromProtoOption is a functional option for TreeFromProto that
+// allows callers to override default validation parameters.
+type TreeFromProtoOption func(*treeFromProtoConfig)
+
+// treeFromProtoConfig holds configurable validation parameters for
+// tree deserialization.
+type treeFromProtoConfig struct {
+	maxNodes int
+}
+
+// defaultTreeFromProtoConfig returns the default configuration.
+func defaultTreeFromProtoConfig() treeFromProtoConfig {
+	return treeFromProtoConfig{
+		maxNodes: DefaultMaxTreeNodes,
+	}
+}
+
+// WithMaxTreeNodes sets the maximum number of nodes allowed in a
+// deserialized VTXOTree. A value of 0 disables the limit.
+func WithMaxTreeNodes(max int) TreeFromProtoOption {
+	return func(cfg *treeFromProtoConfig) {
+		cfg.maxNodes = max
+	}
+}
+
 // TreeFromProto converts a proto VTXOTree back to a tree.Tree by
 // reconstructing the recursive node structure.
 //
 // NOTE: The returned tree nodes will have a nil FinalKey. Callers that
 // need the aggregated taproot key must run Materialize on the tree to
 // recompute FinalKey from CoSigners and the sweep tapscript root.
-func TreeFromProto(pt *VTXOTree) (*tree.Tree, error) {
+func TreeFromProto(pt *VTXOTree,
+	opts ...TreeFromProtoOption) (*tree.Tree, error) {
 	if pt == nil {
 		return nil, nil
 	}
 
+	cfg := defaultTreeFromProtoConfig()
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	if len(pt.Nodes) == 0 {
 		return nil, fmt.Errorf("empty tree nodes")
+	}
+
+	if cfg.maxNodes > 0 && len(pt.Nodes) > cfg.maxNodes {
+		return nil, fmt.Errorf(
+			"tree has %d nodes, exceeds maximum %d",
+			len(pt.Nodes), cfg.maxNodes,
+		)
 	}
 
 	// Convert all proto nodes to Go nodes.
@@ -325,15 +375,46 @@ func TreeFromProto(pt *VTXOTree) (*tree.Tree, error) {
 		goNodes[i] = node
 	}
 
-	// Wire up children references.
+	// Wire up children references. We enforce two structural
+	// invariants:
+	//
+	// 1. Pre-order invariant: childIdx > i. Since flattenNode
+	//    serializes in pre-order, children always have higher
+	//    indices than parents. This prevents cycles (self-refs,
+	//    mutual refs, back-edges) and diamond DAGs (shared
+	//    children) in a single check.
+	//
+	// 2. Output index bounds: outIdx must be within the parent
+	//    node's output count. Without this, downstream code that
+	//    accesses Outputs[outIdx] would panic.
 	for i, pn := range pt.Nodes {
 		for outIdx, childIdx := range pn.Children {
+			if childIdx <= uint32(i) {
+				return nil, fmt.Errorf(
+					"node[%d] child index %d must "+
+						"be > parent index "+
+						"(cycle or back-reference)",
+					i, childIdx,
+				)
+			}
+
 			if int(childIdx) >= len(goNodes) {
 				return nil, fmt.Errorf(
 					"node[%d] child index %d out of "+
 						"range", i, childIdx,
 				)
 			}
+
+			if int(outIdx) >= len(goNodes[i].Outputs) {
+				return nil, fmt.Errorf(
+					"node[%d] child output index "+
+						"%d out of range (node "+
+						"has %d outputs)",
+					i, outIdx,
+					len(goNodes[i].Outputs),
+				)
+			}
+
 			goNodes[i].Children[outIdx] = goNodes[childIdx]
 		}
 	}
@@ -343,10 +424,15 @@ func TreeFromProto(pt *VTXOTree) (*tree.Tree, error) {
 		return nil, fmt.Errorf("batch outpoint: %w", err)
 	}
 
+	batchOut, batchOutErr := TxOutFromProto(pt.BatchOutput)
+	if batchOutErr != nil {
+		return nil, fmt.Errorf("batch output: %w", batchOutErr)
+	}
+
 	return &tree.Tree{
 		Root:               goNodes[0],
 		BatchOutpoint:      batchOP,
-		BatchOutput:        TxOutFromProto(pt.BatchOutput),
+		BatchOutput:        batchOut,
 		SweepTapscriptRoot: pt.SweepTapscriptRoot,
 	}, nil
 }
@@ -361,7 +447,13 @@ func treeNodeFromProto(pn *TreeNode) (*tree.Node, error) {
 	// Convert outputs.
 	outputs := make([]*wire.TxOut, len(pn.Outputs))
 	for i, out := range pn.Outputs {
-		outputs[i] = TxOutFromProto(out)
+		txOut, txOutErr := TxOutFromProto(out)
+		if txOutErr != nil {
+			return nil, fmt.Errorf(
+				"output[%d]: %w", i, txOutErr,
+			)
+		}
+		outputs[i] = txOut
 	}
 
 	// Convert co-signers.

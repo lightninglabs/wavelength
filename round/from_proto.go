@@ -79,19 +79,32 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 	}
 	copy(e.RoundID[:], pb.RoundId)
 
-	// Deserialize PSBT.
+	// Deserialize PSBT. The batch PSBT is semantically required: it
+	// carries the unsigned commitment transaction with WitnessUtxo
+	// data needed for Taproot sighash computation.
 	tx, err := roundpb.PSBTFromBytes(pb.BatchPsbt)
 	if err != nil {
 		return fmt.Errorf("batch_psbt: %w", err)
 	}
+	if tx == nil {
+		return fmt.Errorf("batch_psbt: required field is empty")
+	}
 	e.Tx = tx
 
-	// Convert VTXO tree paths.
+	// Convert VTXO tree paths. Reject negative indices since they
+	// are semantically invalid as commitment tx output indices.
 	if pb.VtxoTreePaths != nil {
 		e.VTXOTreePaths = make(
 			map[int]*tree.Tree, len(pb.VtxoTreePaths),
 		)
 		for idx, pt := range pb.VtxoTreePaths {
+			if idx < 0 {
+				return fmt.Errorf(
+					"vtxo_tree_paths: negative "+
+						"index %d", idx,
+				)
+			}
+
 			t, treeErr := roundpb.TreeFromProto(pt)
 			if treeErr != nil {
 				return fmt.Errorf(
@@ -132,9 +145,16 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 				)
 			}
 
-			leafOut := roundpb.TxOutFromProto(
+			leafOut, leafErr := roundpb.TxOutFromProto(
 				info.LeafOutput,
 			)
+			if leafErr != nil {
+				return fmt.Errorf(
+					"connector_leaf_map[%s] "+
+						"leaf_output: %w",
+					key, leafErr,
+				)
+			}
 			if leafOut == nil {
 				return fmt.Errorf(
 					"connector_leaf_map[%s] "+
@@ -439,7 +459,16 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		req := &types.LeaveRequest{}
 
 		if lr.Output != nil {
-			req.Output = roundpb.TxOutFromProto(lr.Output)
+			out, outErr := roundpb.TxOutFromProto(
+				lr.Output,
+			)
+			if outErr != nil {
+				return fmt.Errorf(
+					"leave_requests[%d].output: %w",
+					i, outErr,
+				)
+			}
+			req.Output = out
 		}
 
 		m.LeaveRequests[i] = req
