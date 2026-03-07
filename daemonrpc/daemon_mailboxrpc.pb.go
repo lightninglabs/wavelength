@@ -26,6 +26,24 @@ func NewDaemonServiceMailboxClient(c rpc.RPCClient) *DaemonServiceMailboxClient 
 type DaemonServiceMailboxServer interface {
 	// GetInfo handles GetInfo.
 	GetInfo(ctx context.Context, req *GetInfoRequest) (*GetInfoResponse, error)
+	// GenSeed handles GenSeed.
+	GenSeed(ctx context.Context, req *GenSeedRequest) (*GenSeedResponse, error)
+	// InitWallet handles InitWallet.
+	InitWallet(ctx context.Context, req *InitWalletRequest) (*InitWalletResponse, error)
+	// UnlockWallet handles UnlockWallet.
+	UnlockWallet(ctx context.Context, req *UnlockWalletRequest) (*UnlockWalletResponse, error)
+	// GetBalance handles GetBalance.
+	GetBalance(ctx context.Context, req *GetBalanceRequest) (*GetBalanceResponse, error)
+	// ListVTXOs handles ListVTXOs.
+	ListVTXOs(ctx context.Context, req *ListVTXOsRequest) (*ListVTXOsResponse, error)
+	// NewAddress handles NewAddress.
+	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
+	// SendVTXO handles SendVTXO.
+	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
+	// SendOOR handles SendOOR.
+	SendOOR(ctx context.Context, req *SendOORRequest) (*SendOORResponse, error)
+	// RefreshVTXOs handles RefreshVTXOs.
+	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -39,6 +57,96 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.GetInfo(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GenSeed", func() proto.Message {
+		return &GenSeedRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GenSeedRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GenSeed(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "InitWallet", func() proto.Message {
+		return &InitWalletRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*InitWalletRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.InitWallet(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "UnlockWallet", func() proto.Message {
+		return &UnlockWalletRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*UnlockWalletRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.UnlockWallet(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "GetBalance", func() proto.Message {
+		return &GetBalanceRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetBalanceRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetBalance(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListVTXOs", func() proto.Message {
+		return &ListVTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListVTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListVTXOs(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "NewAddress", func() proto.Message {
+		return &NewAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*NewAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.NewAddress(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SendVTXO", func() proto.Message {
+		return &SendVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SendVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendVTXO(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "SendOOR", func() proto.Message {
+		return &SendOORRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*SendOORRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.SendOOR(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "RefreshVTXOs", func() proto.Message {
+		return &RefreshVTXOsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*RefreshVTXOsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.RefreshVTXOs(ctx, req)
 	})
 }
 
@@ -58,6 +166,213 @@ func (c *DaemonServiceMailboxClient) GetInfo(ctx context.Context, req *GetInfoRe
 	}
 
 	resp := new(GetInfoResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GenSeed calls the GenSeed RPC.
+func (c *DaemonServiceMailboxClient) GenSeed(ctx context.Context, req *GenSeedRequest, opts ...rpc.RPCOptions) (*GenSeedResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GenSeed",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GenSeedResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// InitWallet calls the InitWallet RPC.
+func (c *DaemonServiceMailboxClient) InitWallet(ctx context.Context, req *InitWalletRequest, opts ...rpc.RPCOptions) (*InitWalletResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "InitWallet",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(InitWalletResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// UnlockWallet calls the UnlockWallet RPC.
+func (c *DaemonServiceMailboxClient) UnlockWallet(ctx context.Context, req *UnlockWalletRequest, opts ...rpc.RPCOptions) (*UnlockWalletResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "UnlockWallet",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(UnlockWalletResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetBalance calls the GetBalance RPC.
+func (c *DaemonServiceMailboxClient) GetBalance(ctx context.Context, req *GetBalanceRequest, opts ...rpc.RPCOptions) (*GetBalanceResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "GetBalance",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetBalanceResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListVTXOs calls the ListVTXOs RPC.
+func (c *DaemonServiceMailboxClient) ListVTXOs(ctx context.Context, req *ListVTXOsRequest, opts ...rpc.RPCOptions) (*ListVTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListVTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListVTXOsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// NewAddress calls the NewAddress RPC.
+func (c *DaemonServiceMailboxClient) NewAddress(ctx context.Context, req *NewAddressRequest, opts ...rpc.RPCOptions) (*NewAddressResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "NewAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(NewAddressResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendVTXO calls the SendVTXO RPC.
+func (c *DaemonServiceMailboxClient) SendVTXO(ctx context.Context, req *SendVTXORequest, opts ...rpc.RPCOptions) (*SendVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SendVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SendVTXOResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// SendOOR calls the SendOOR RPC.
+func (c *DaemonServiceMailboxClient) SendOOR(ctx context.Context, req *SendOORRequest, opts ...rpc.RPCOptions) (*SendOORResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "SendOOR",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(SendOORResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// RefreshVTXOs calls the RefreshVTXOs RPC.
+func (c *DaemonServiceMailboxClient) RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest, opts ...rpc.RPCOptions) (*RefreshVTXOsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "RefreshVTXOs",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(RefreshVTXOsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
