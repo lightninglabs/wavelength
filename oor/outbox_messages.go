@@ -339,13 +339,6 @@ func protoEnvelope(typeName string, payload []byte) proto.Message {
 	}
 }
 
-func protoErrorEnvelope(typeName string, err error) proto.Message {
-	return &anypb.Any{
-		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName + ".error",
-		Value:   []byte(err.Error()),
-	}
-}
-
 func encodeFinalizePayload(ark *psbt.Packet,
 	checkpoints []*psbt.Packet) ([]byte, error) {
 
