@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -43,10 +44,13 @@ func getDaemonClient(
 		))
 
 	default:
-		// Default to insecure for dev convenience. Production
-		// deployments should use --tlscertpath.
+		// Default to TLS using the system certificate pool.
+		// Use --no-tls for local development without TLS.
+		creds := credentials.NewTLS(&tls.Config{
+			MinVersion: tls.VersionTLS12,
+		})
 		opts = append(opts, grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
+			creds,
 		))
 	}
 

@@ -158,8 +158,8 @@ func registerMCPTools(s *mcp.Server,
 	// wallet_create — InitWalletRequest as JSON input.
 	type walletCreateArgs struct {
 		Mnemonic       []string `json:"mnemonic" jsonschema:"the aezeed mnemonic words"`
-		WalletPassword string   `json:"wallet_password" jsonschema:"wallet password (base64-encoded bytes)"`
-		SeedPassphrase string   `json:"seed_passphrase,omitempty" jsonschema:"optional aezeed passphrase"`
+		WalletPassword string   `json:"wallet_password" jsonschema:"wallet password (plaintext, min 8 chars)"`
+		SeedPassphrase string   `json:"seed_passphrase,omitempty" jsonschema:"optional aezeed passphrase (plaintext)"`
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "wallet_create",
