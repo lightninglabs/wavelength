@@ -58,11 +58,19 @@ const (
 	minPasswordLen = 8
 )
 
-// GenSeed generates a new aezeed cipher seed and returns its 24-word
-// mnemonic representation. The optional passphrase protects the
-// mnemonic itself (distinct from the wallet password that encrypts the
-// seed at rest).
-func GenSeed(passphrase []byte) (aezeed.Mnemonic, error) {
+// zeroBytes overwrites a byte slice with zeros. This is used to clear
+// sensitive key material from memory after use.
+func zeroBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// GenerateSeed generates a new aezeed cipher seed and returns its
+// 24-word mnemonic representation. The optional passphrase protects
+// the mnemonic itself (distinct from the wallet password that encrypts
+// the seed at rest).
+func GenerateSeed(passphrase []byte) (aezeed.Mnemonic, error) {
 	var entropy [aezeed.EntropySize]byte
 
 	if _, err := rand.Read(entropy[:]); err != nil {
@@ -137,9 +145,11 @@ func EncryptSeed(seed [rawSeedLen]byte,
 	if err != nil {
 		return nil, fmt.Errorf("deriving key: %w", err)
 	}
+	defer zeroBytes(key)
 
 	var secretKey [scryptKeyLen]byte
 	copy(secretKey[:], key)
+	defer zeroBytes(secretKey[:])
 
 	// Generate random nonce for secretbox.
 	var nonce [secretboxNonceLen]byte
@@ -197,9 +207,11 @@ func DecryptSeed(ciphertext,
 			"deriving key: %w", err,
 		)
 	}
+	defer zeroBytes(key)
 
 	var secretKey [scryptKeyLen]byte
 	copy(secretKey[:], key)
+	defer zeroBytes(secretKey[:])
 
 	// Decrypt and authenticate.
 	plaintext, ok := secretbox.Open(nil, box, &nonce, &secretKey)
@@ -209,6 +221,7 @@ func DecryptSeed(ciphertext,
 				"corrupted seed file",
 		)
 	}
+	defer zeroBytes(plaintext)
 
 	if len(plaintext) != rawSeedLen {
 		return [rawSeedLen]byte{}, fmt.Errorf(
