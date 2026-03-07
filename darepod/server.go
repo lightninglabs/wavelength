@@ -132,15 +132,15 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	}()
 
 	log.InfoS(ctx, "Starting darepod",
-		"version", build.Version(),
-		"commit", build.CommitHash,
-		"network", s.cfg.Network)
+		slog.String("version", build.Version()),
+		slog.String("commit", build.CommitHash),
+		slog.String("network", s.cfg.Network))
 
 	// -------------------------------------------------------
 	// 1. Connect to lnd.
 	// -------------------------------------------------------
 	log.InfoS(ctx, "Connecting to lnd",
-		"host", s.cfg.Lnd.Host)
+		slog.String("host", s.cfg.Lnd.Host))
 
 	lndServices, err := s.connectLnd(ctx)
 	if err != nil {
@@ -265,7 +265,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			"addr", s.cfg.RPC.ListenAddr)
+			slog.String("addr", s.cfg.RPC.ListenAddr))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
@@ -354,8 +354,11 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 // applyDebugLevel parses the DebugLevel config string and applies it to
 // the log manager. A bare level like "info" sets all subsystems globally.
 // A comma-separated list like "ROND=debug,OORC=trace,info" applies
-// per-subsystem overrides; the last bare value (without '=') becomes the
-// global default for unlisted subsystems.
+// per-subsystem overrides on top of the global default. Parsing uses a
+// two-pass approach: first the last bare value (without '=') is applied
+// as the global default for all subsystems, then per-subsystem overrides
+// are applied. This ensures ordering does not matter — "ROND=debug,info"
+// and "info,ROND=debug" produce the same result.
 func (s *Server) applyDebugLevel() error {
 	debugLevel := s.cfg.DebugLevel
 	if debugLevel == "" {
@@ -377,9 +380,23 @@ func (s *Server) applyDebugLevel() error {
 		return nil
 	}
 
-	// Parse comma-separated subsystem=level pairs. A bare value
-	// (without '=') sets the global default.
+	// Two-pass parse of comma-separated subsystem=level pairs.
+	// Pass 1 finds the last bare level (global default) and
+	// validates all entries. Pass 2 applies per-subsystem
+	// overrides on top of the global default, ensuring that
+	// "ROND=debug,info" and "info,ROND=debug" behave identically.
 	parts := strings.Split(debugLevel, ",")
+
+	type subsystemLevel struct {
+		subsystem string
+		level     string
+	}
+
+	var (
+		globalLevel string
+		overrides   []subsystemLevel
+	)
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -387,14 +404,14 @@ func (s *Server) applyDebugLevel() error {
 		}
 
 		if !strings.Contains(part, "=") {
-			// Bare level — set as global default.
+			// Bare level — candidate for global default.
 			_, ok := btclog.LevelFromString(part)
 			if !ok {
 				return fmt.Errorf("unknown log level %q",
 					part)
 			}
 
-			s.logManager.SetLogLevels(part)
+			globalLevel = part
 
 			continue
 		}
@@ -415,7 +432,20 @@ func (s *Server) applyDebugLevel() error {
 				"subsystem %q", level, subsystem)
 		}
 
-		s.logManager.SetLogLevel(subsystem, level)
+		overrides = append(overrides, subsystemLevel{
+			subsystem: subsystem,
+			level:     level,
+		})
+	}
+
+	// Apply global default first so it doesn't clobber
+	// per-subsystem overrides.
+	if globalLevel != "" {
+		s.logManager.SetLogLevels(globalLevel)
+	}
+
+	for _, o := range overrides {
+		s.logManager.SetLogLevel(o.subsystem, o.level)
 	}
 
 	return nil
