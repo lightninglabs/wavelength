@@ -1,18 +1,11 @@
-package chainbackends
+package lndbackend
 
 import (
 	"github.com/btcsuite/btclog/v2"
 )
 
-const (
-	// Subsystem defines the logging subsystem code for the chainbackends
-	// package.
-	Subsystem = "CBKD"
-
-	// LndClientSubsystem defines the logging subsystem code for the
-	// lndclient adapter components.
-	LndClientSubsystem = "LNDC"
-)
+// Subsystem defines the logging code for this subsystem.
+const Subsystem = "LNDB"
 
 // log is a logger that is initialized with no output filters. This means the
 // package will not perform any logging by default until the caller requests

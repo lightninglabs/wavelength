@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -60,7 +61,19 @@ var _ input.Signer = (*ClientWallet)(nil)
 func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
 
-	return c.walletKit.DeriveNextKey(ctx, int32(family))
+	log.DebugS(ctx, "Deriving next key via client wallet",
+		slog.Int("key_family", int(family)))
+
+	keyDesc, err := c.walletKit.DeriveNextKey(ctx, int32(family))
+	if err != nil {
+		return nil, fmt.Errorf("derive next key: %w", err)
+	}
+
+	log.DebugS(ctx, "Derived next key via client wallet",
+		slog.Int("key_family", int(family)),
+		slog.Int("key_index", int(keyDesc.Index)))
+
+	return keyDesc, nil
 }
 
 // SignOutputRaw generates a schnorr/ECDSA signature for a single input
@@ -68,6 +81,10 @@ func (c *ClientWallet) DeriveNextKey(ctx context.Context,
 // call is forwarded to lnd's remote signer via gRPC.
 func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	signDesc *input.SignDescriptor) (input.Signature, error) {
+
+	log.DebugS(context.TODO(), "Signing output raw via LND remote signer",
+		slog.Int("input_index", signDesc.InputIndex),
+		slog.String("sign_method", signDesc.SignMethod.String()))
 
 	lndDesc := inputDescToLndclient(signDesc)
 
@@ -89,6 +106,10 @@ func (c *ClientWallet) SignOutputRaw(tx *wire.MsgTx,
 	if len(sigs) == 0 {
 		return nil, fmt.Errorf("no signatures returned")
 	}
+
+	log.DebugS(context.TODO(), "Signed output raw successfully",
+		slog.Int("input_index", signDesc.InputIndex),
+		slog.Int("sig_len", len(sigs[0])))
 
 	return parseSigBytes(sigs[0], signDesc.SignMethod)
 }
@@ -129,6 +150,11 @@ func (c *ClientWallet) MuSig2CreateSession(
 	otherNonces [][musig2.PubNonceSize]byte,
 	localNonces *musig2.Nonces,
 ) (*input.MuSig2SessionInfo, error) {
+
+	log.DebugS(context.TODO(), "Creating MuSig2 session via LND",
+		slog.Int("num_signers", len(allSignerPubkeys)),
+		slog.Int("num_other_nonces", len(otherNonces)),
+		slog.Bool("has_local_nonces", localNonces != nil))
 
 	// Convert pubkeys to serialized form for lndclient. The
 	// remote signer expects either 33-byte compressed keys
@@ -174,10 +200,18 @@ func (c *ClientWallet) MuSig2CreateSession(
 		))
 	}
 
-	return c.signer.MuSig2CreateSession(
+	sessionInfo, err := c.signer.MuSig2CreateSession(
 		context.Background(), version, &locator,
 		signerBytes, opts...,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("musig2 create session: %w", err)
+	}
+
+	log.DebugS(context.TODO(), "Created MuSig2 session successfully",
+		slog.Int("num_signers", len(allSignerPubkeys)))
+
+	return sessionInfo, nil
 }
 
 // MuSig2RegisterNonces registers additional public nonces for a
@@ -223,6 +257,9 @@ func (c *ClientWallet) MuSig2Sign(
 	cleanup bool,
 ) (*musig2.PartialSignature, error) {
 
+	log.DebugS(context.TODO(), "Creating MuSig2 partial signature",
+		slog.Bool("cleanup", cleanup))
+
 	sigBytes, err := c.signer.MuSig2Sign(
 		context.Background(), sessionID, message, cleanup,
 	)
@@ -245,6 +282,9 @@ func (c *ClientWallet) MuSig2CombineSig(
 	sessionID input.MuSig2SessionID,
 	otherPartialSigs []*musig2.PartialSignature,
 ) (*schnorr.Signature, bool, error) {
+
+	log.DebugS(context.TODO(), "Combining MuSig2 partial signatures",
+		slog.Int("num_other_sigs", len(otherPartialSigs)))
 
 	sigBytes := make([][]byte, len(otherPartialSigs))
 	for i, ps := range otherPartialSigs {

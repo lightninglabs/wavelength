@@ -361,6 +361,9 @@ func (c LNDBackendFromLndClientConfig) WithLogger(
 // remote lnd connection. The config must include LND; use WithLogger() to
 // inject a specific logger.
 func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
+	log.InfoS(context.TODO(),
+		"Creating LND backend from lndclient services")
+
 	// Use explicit struct initialization instead of type cast for safety -
 	// this ensures we don't silently miss fields if the types diverge.
 	//nolint:gosimple
