@@ -1,0 +1,399 @@
+syntax = "proto3";
+
+package round.v1;
+
+option go_package = "github.com/lightninglabs/darepo-client/rpc/roundpb;roundpb";
+
+// --------------------------------------------------------------------------
+// Primitive sub-messages
+// --------------------------------------------------------------------------
+
+// Outpoint identifies a transaction output by its transaction hash and output
+// index. This mirrors btcd's wire.OutPoint.
+message Outpoint {
+    // tx_hash is the 32-byte transaction hash in internal byte order.
+    bytes tx_hash = 1;
+
+    // output_index is the zero-based index of the output in the transaction.
+    uint32 output_index = 2;
+}
+
+// TxOut represents a transaction output with a value and script.
+message TxOut {
+    // value is the output amount in satoshis.
+    int64 value = 1;
+
+    // pk_script is the output script (scriptPubKey).
+    bytes pk_script = 2;
+}
+
+// --------------------------------------------------------------------------
+// Tree sub-messages
+// --------------------------------------------------------------------------
+
+// TreeNode represents a single node in a VTXO or connector tree. Nodes are
+// serialized in pre-order so children can reference parent indices.
+message TreeNode {
+    // input is the outpoint this transaction spends.
+    Outpoint input = 1;
+
+    // outputs are all the outputs created by this transaction.
+    repeated TxOut outputs = 2;
+
+    // co_signers are the compressed public keys (33 bytes each) that must
+    // participate in MuSig2 signing for this node's input.
+    repeated bytes co_signers = 3;
+
+    // children maps output index to the index of the child TreeNode in the
+    // parent VTXOTree's flattened nodes array.
+    map<uint32, uint32> children = 4;
+
+    // amount is the total BTC value (satoshis) for this node.
+    int64 amount = 5;
+
+    // signature is the final aggregated MuSig2 schnorr signature (64 bytes)
+    // for the input. Empty if unsigned.
+    bytes signature = 6;
+}
+
+// VTXOTree is a flattened representation of a VTXO or connector tree.
+// The root node is always at index 0.
+message VTXOTree {
+    // nodes is the pre-order flattened list of tree nodes. Index 0 is the
+    // root.
+    repeated TreeNode nodes = 1;
+
+    // batch_outpoint is the outpoint in the commitment transaction that the
+    // root transaction spends.
+    Outpoint batch_outpoint = 2;
+
+    // batch_output is the actual output at batch_outpoint.
+    TxOut batch_output = 3;
+
+    // sweep_tapscript_root is the tapscript root hash for tweaking branch
+    // outputs. Empty for connector trees.
+    bytes sweep_tapscript_root = 4;
+}
+
+// --------------------------------------------------------------------------
+// Connector leaf info
+// --------------------------------------------------------------------------
+
+// ConnectorLeafInfo contains information about a connector leaf assigned to a
+// forfeit request. Used in server-to-client batch info messages.
+message ConnectorLeafInfo {
+    // leaf_outpoint is the outpoint of the connector leaf.
+    Outpoint leaf_outpoint = 1;
+
+    // leaf_output is the connector leaf's transaction output.
+    TxOut leaf_output = 2;
+}
+
+// ClientConnectorLeafInfo extends ConnectorLeafInfo with client-side fields
+// needed to construct forfeit transactions. Currently unused in wire
+// protocol messages; reserved for future client-to-server forfeit flows.
+message ClientConnectorLeafInfo {
+    // leaf_index is the position of this connector in the connector tree.
+    int32 leaf_index = 1;
+
+    // connector_outpoint is the outpoint of the connector output.
+    Outpoint connector_outpoint = 2;
+
+    // connector_pk_script is the scriptPubKey of the connector output.
+    bytes connector_pk_script = 3;
+
+    // connector_amount is the value of the connector output in satoshis.
+    int64 connector_amount = 4;
+
+    // vtxo_amount is the value of the VTXO being forfeited in satoshis.
+    int64 vtxo_amount = 5;
+}
+
+// --------------------------------------------------------------------------
+// Server-to-Client (S2C) event messages
+// --------------------------------------------------------------------------
+
+// ClientSuccessResp is sent by the server to a client when they successfully
+// join a round.
+message ClientSuccessResp {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // accepted_boarding_outpoints lists boarding outpoints accepted into the
+    // round. Used by clients to correlate the response to the correct
+    // pending round.
+    repeated Outpoint accepted_boarding_outpoints = 2;
+
+    // accepted_vtxo_outpoints lists VTXO outpoints involved in the round.
+    repeated Outpoint accepted_vtxo_outpoints = 3;
+}
+
+// ClientBatchInfo contains the commitment transaction data sent to a client
+// after the server builds the batch.
+message ClientBatchInfo {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // batch_psbt is the serialized PSBT of the commitment transaction.
+    bytes batch_psbt = 2;
+
+    // vtxo_tree_paths maps commitment tx output indices to the client's
+    // extracted VTXO sub-tree.
+    map<int32, VTXOTree> vtxo_tree_paths = 3;
+
+    // connector_leaf_map maps outpoints to connector leaf info. The key
+    // is the standard "hash:index" string format produced by
+    // wire.OutPoint.String() (byte-reversed hex hash, colon, decimal
+    // index).
+    map<string, ConnectorLeafInfo> connector_leaf_map = 4;
+}
+
+// ClientAwaitingInputSigsResp notifies a client that the server is ready
+// to receive their boarding input signatures.
+message ClientAwaitingInputSigsResp {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+}
+
+// ClientVTXOAggNonces contains the aggregated MuSig2 public nonces for
+// transactions where the client is a cosigner.
+message ClientVTXOAggNonces {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // agg_nonces maps transaction IDs (32 bytes) to aggregated public
+    // nonces (66 bytes).
+    map<string, bytes> agg_nonces = 2;
+}
+
+// ClientVTXOAggSigs contains the final aggregated schnorr signatures for
+// transactions where the client is a cosigner.
+message ClientVTXOAggSigs {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // agg_sigs maps transaction IDs (32 bytes) to aggregated schnorr
+    // signatures (64 bytes).
+    map<string, bytes> agg_sigs = 2;
+}
+
+// ClientRoundFailedResp notifies a client that the round they joined has
+// failed.
+message ClientRoundFailedResp {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // reason describes why the round failed.
+    string reason = 2;
+}
+
+// ClientErrorResp sends an error message to a client.
+message ClientErrorResp {
+    // error_msg is the error message.
+    string error_msg = 1;
+}
+
+// --------------------------------------------------------------------------
+// Client-to-Server (C2S) request messages
+// --------------------------------------------------------------------------
+
+// BoardingRequest represents a request to board the Ark via a UTXO.
+message BoardingRequest {
+    // outpoint is the UTXO that will be used as input.
+    Outpoint outpoint = 1;
+
+    // client_key is the compressed public key (33 bytes) for the client in
+    // the boarding tapscripts.
+    bytes client_key = 2;
+
+    // operator_key is the compressed public key (33 bytes) for the operator
+    // in the boarding collaborative spend path.
+    bytes operator_key = 3;
+
+    // exit_delay is the CSV delay for the unilateral timeout script path.
+    uint32 exit_delay = 4;
+
+    // tx_proof is the optional serialized SPV proof that the boarding UTXO
+    // exists. Empty if the server verifies via its own chain source.
+    bytes tx_proof = 5;
+}
+
+// VTXORequest specifies a VTXO the client wants to receive.
+message VTXORequest {
+    // amount is the amount in satoshis to lock in the VTXO.
+    int64 amount = 1;
+
+    // pk_script is the output script of the VTXO.
+    bytes pk_script = 2;
+
+    // expiry is the CSV delay for the unilateral timeout path.
+    uint32 expiry = 3;
+
+    // client_key is the compressed public key (33 bytes) of the client.
+    bytes client_key = 4;
+
+    // operator_key is the compressed public key (33 bytes) of the operator.
+    bytes operator_key = 5;
+}
+
+// ForfeitRequest specifies a VTXO the client wants to forfeit.
+message ForfeitRequest {
+    // vtxo_outpoint is the outpoint of the VTXO to forfeit.
+    Outpoint vtxo_outpoint = 1;
+}
+
+// LeaveRequest specifies an on-chain output for leaving the Ark.
+message LeaveRequest {
+    // output is the transaction output to create.
+    TxOut output = 1;
+}
+
+// JoinRoundAuth contains the BIP-322 authorization payload.
+message JoinRoundAuth {
+    // message is the canonical join message signed by the client.
+    bytes message = 1;
+
+    // valid_from is the first block height where this auth is accepted.
+    uint32 valid_from = 2;
+
+    // valid_until is the last block height where this auth is accepted.
+    // Zero means no upper bound.
+    uint32 valid_until = 3;
+
+    // signature is the serialized BIP-322 signature payload.
+    bytes signature = 4;
+}
+
+// JoinRoundRequest is sent from client to server to request joining a round.
+message JoinRoundRequest {
+    // identifier is the compressed public key (33 bytes) of the
+    // participant.
+    bytes identifier = 1;
+
+    // boarding_requests contains all boarding UTXO details.
+    repeated BoardingRequest boarding_requests = 2;
+
+    // vtxo_requests specifies the VTXOs the client wants to receive.
+    repeated VTXORequest vtxo_requests = 3;
+
+    // forfeit_requests specifies VTXOs to forfeit.
+    repeated ForfeitRequest forfeit_requests = 4;
+
+    // leave_requests specifies VTXOs being exited to on-chain outputs.
+    repeated LeaveRequest leave_requests = 5;
+
+    // round_id is optional; empty means the server assigns a round.
+    string round_id = 6;
+
+    // auth contains the BIP-322 authorization payload. Nil when join
+    // request auth is disabled.
+    JoinRoundAuth auth = 7;
+}
+
+// SubmitNoncesRequest submits MuSig2 nonces from client to server.
+message SubmitNoncesRequest {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // nonces maps signing keys (33 bytes hex) to their per-transaction
+    // nonces. Each entry maps a transaction ID (32 bytes hex) to a MuSig2
+    // public nonce (66 bytes).
+    map<string, SignerNonces> nonces = 2;
+}
+
+// SignerNonces groups per-transaction nonces for a single signing key.
+message SignerNonces {
+    // tx_nonces maps transaction IDs (hex-encoded 32 bytes) to MuSig2
+    // public nonces (66 bytes).
+    map<string, bytes> tx_nonces = 1;
+}
+
+// SubmitPartialSigRequest submits MuSig2 partial signatures from client to
+// server.
+message SubmitPartialSigRequest {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // signatures maps signing keys (33 bytes hex) to their per-transaction
+    // partial signatures.
+    map<string, SignerPartialSigs> signatures = 2;
+}
+
+// SignerPartialSigs groups per-transaction partial signatures for a single
+// signing key.
+message SignerPartialSigs {
+    // tx_sigs maps transaction IDs (hex-encoded 32 bytes) to partial
+    // MuSig2 signatures (32 bytes).
+    map<string, bytes> tx_sigs = 1;
+}
+
+// BoardingInputSignature contains a client's signature for a boarding input.
+message BoardingInputSignature {
+    // input_index is the index of the input in the transaction.
+    int32 input_index = 1;
+
+    // outpoint identifies which boarding input this signature is for.
+    Outpoint outpoint = 2;
+
+    // client_signature is the schnorr signature (64 bytes).
+    bytes client_signature = 3;
+}
+
+// SubmitForfeitSigRequest submits boarding input signatures from client to
+// server.
+message SubmitForfeitSigRequest {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // signatures contains the boarding input signatures.
+    repeated BoardingInputSignature signatures = 2;
+}
+
+// ForfeitTxSig pairs an unsigned forfeit transaction with the client's VTXO
+// signature.
+message ForfeitTxSig {
+    // vtxo_outpoint is the VTXO outpoint being forfeited.
+    Outpoint vtxo_outpoint = 1;
+
+    // unsigned_tx is the serialized unsigned forfeit transaction.
+    bytes unsigned_tx = 2;
+
+    // client_vtxo_sig is the client's schnorr signature (64 bytes) for
+    // the collaborative 2-of-2 spend from the VTXO.
+    bytes client_vtxo_sig = 3;
+}
+
+// SubmitVTXOForfeitSigsRequest submits VTXO forfeit signatures from client
+// to server.
+message SubmitVTXOForfeitSigsRequest {
+    // round_id is the UUID of the round (16 bytes).
+    bytes round_id = 1;
+
+    // forfeit_txs contains the forfeit transaction signatures.
+    repeated ForfeitTxSig forfeit_txs = 2;
+}
+
+// --------------------------------------------------------------------------
+// Service definition for mailbox routing
+// --------------------------------------------------------------------------
+
+// RoundService defines the RPCs and events used for the round protocol between
+// server and client over the mailbox transport.
+service RoundService {
+    // JoinRound registers a client for a round.
+    rpc JoinRound (JoinRoundRequest) returns (ClientSuccessResp);
+
+    // SubmitNonces submits MuSig2 nonces.
+    rpc SubmitNonces (SubmitNoncesRequest) returns (ClientVTXOAggNonces);
+
+    // SubmitPartialSigs submits MuSig2 partial signatures.
+    rpc SubmitPartialSigs (SubmitPartialSigRequest) returns (ClientVTXOAggSigs);
+
+    // SubmitForfeitSigs submits boarding input signatures.
+    rpc SubmitForfeitSigs (SubmitForfeitSigRequest)
+        returns (ClientAwaitingInputSigsResp);
+
+    // SubmitVTXOForfeitSigs submits VTXO forfeit signatures.
+    rpc SubmitVTXOForfeitSigs (SubmitVTXOForfeitSigsRequest)
+        returns (ClientSuccessResp);
+}

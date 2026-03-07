@@ -58,7 +58,7 @@ func TestValidateSubmitAcceptedRejectsArkMismatch(t *testing.T) {
 // TestDriveEventEncodeDecodesNilArkPSBT verifies that a DriveEventRequest
 // carrying a SubmitAcceptedEvent with nil ArkPSBT can be encoded and decoded
 // without error. This supports the server-push EventRouter path where the
-// oorwire proto does not echo the Ark PSBT back.
+// oorpb proto does not echo the Ark PSBT back.
 func TestDriveEventEncodeDecodesNilArkPSBT(t *testing.T) {
 	t.Parallel()
 

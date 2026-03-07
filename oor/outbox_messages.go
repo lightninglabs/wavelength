@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -100,16 +101,18 @@ func (m *SendSubmitPackageRequest) outboxType() string {
 func (m *SendSubmitPackageRequest) outboxSealed() {}
 
 // ToProto converts SendSubmitPackageRequest to a protobuf message.
-func (m *SendSubmitPackageRequest) ToProto() proto.Message {
+func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := oortx.MarshalSubmitPackage(&oortx.SubmitPackage{
 		ArkPSBT:         m.ArkPSBT,
 		CheckpointPSBTs: m.CheckpointPSBTs,
 	})
 	if err != nil {
-		return protoErrorEnvelope("SendSubmitPackageRequest", err)
+		return fn.Err[proto.Message](err)
 	}
 
-	return protoEnvelope("SendSubmitPackageRequest", payload)
+	return fn.Ok[proto.Message](
+		protoEnvelope("SendSubmitPackageRequest", payload),
+	)
 }
 
 // RequestCheckpointSignatures asks the signing layer to add client signature
@@ -161,15 +164,17 @@ func (m *SendFinalizePackageRequest) outboxType() string {
 func (m *SendFinalizePackageRequest) outboxSealed() {}
 
 // ToProto converts SendFinalizePackageRequest to a protobuf message.
-func (m *SendFinalizePackageRequest) ToProto() proto.Message {
+func (m *SendFinalizePackageRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := encodeFinalizePayload(
 		m.ArkPSBT, m.FinalCheckpointPSBTs,
 	)
 	if err != nil {
-		return protoErrorEnvelope("SendFinalizePackageRequest", err)
+		return fn.Err[proto.Message](err)
 	}
 
-	return protoEnvelope("SendFinalizePackageRequest", payload)
+	return fn.Ok[proto.Message](
+		protoEnvelope("SendFinalizePackageRequest", payload),
+	)
 }
 
 // MarkInputsSpentRequest asks the persistence layer to mark the OOR inputs as
@@ -195,13 +200,15 @@ func (m *MarkInputsSpentRequest) outboxType() string {
 func (m *MarkInputsSpentRequest) outboxSealed() {}
 
 // ToProto converts MarkInputsSpentRequest to a protobuf message.
-func (m *MarkInputsSpentRequest) ToProto() proto.Message {
+func (m *MarkInputsSpentRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := encodeOutpoints(m.Outpoints)
 	if err != nil {
-		return protoErrorEnvelope("MarkInputsSpentRequest", err)
+		return fn.Err[proto.Message](err)
 	}
 
-	return protoEnvelope("MarkInputsSpentRequest", payload)
+	return fn.Ok[proto.Message](
+		protoEnvelope("MarkInputsSpentRequest", payload),
+	)
 }
 
 // IncomingTransferNotification is emitted when an incoming transfer has been
@@ -285,13 +292,15 @@ func (m *SendIncomingAckRequest) outboxType() string {
 func (m *SendIncomingAckRequest) outboxSealed() {}
 
 // ToProto converts SendIncomingAckRequest to a protobuf message.
-func (m *SendIncomingAckRequest) ToProto() proto.Message {
+func (m *SendIncomingAckRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := encodeSessionPayload(m.SessionID)
 	if err != nil {
-		return protoErrorEnvelope("SendIncomingAckRequest", err)
+		return fn.Err[proto.Message](err)
 	}
 
-	return protoEnvelope("SendIncomingAckRequest", payload)
+	return fn.Ok[proto.Message](
+		protoEnvelope("SendIncomingAckRequest", payload),
+	)
 }
 
 // ScheduleRetryRequest asks the runtime to deliver a RetryDueEvent after the
@@ -312,26 +321,21 @@ func (m *ScheduleRetryRequest) outboxType() string {
 func (m *ScheduleRetryRequest) outboxSealed() {}
 
 // ToProto converts ScheduleRetryRequest to a protobuf message.
-func (m *ScheduleRetryRequest) ToProto() proto.Message {
+func (m *ScheduleRetryRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := encodeRetryPayload(m.After, m.Reason)
 	if err != nil {
-		return protoErrorEnvelope("ScheduleRetryRequest", err)
+		return fn.Err[proto.Message](err)
 	}
 
-	return protoEnvelope("ScheduleRetryRequest", payload)
+	return fn.Ok[proto.Message](
+		protoEnvelope("ScheduleRetryRequest", payload),
+	)
 }
 
 func protoEnvelope(typeName string, payload []byte) proto.Message {
 	return &anypb.Any{
 		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName,
 		Value:   payload,
-	}
-}
-
-func protoErrorEnvelope(typeName string, err error) proto.Message {
-	return &anypb.Any{
-		TypeUrl: oorOutboxProtoTypeURLPrefix + typeName + ".error",
-		Value:   []byte(err.Error()),
 	}
 }
 

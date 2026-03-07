@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 )
 
 // ClientEvent is a sealed interface for all events that can be processed by
@@ -111,6 +112,12 @@ type CommitmentTxBuilt struct {
 	// This allows VTXO actors to find their connector output and construct
 	// the forfeit transaction. Only set when refresh requests are present.
 	ForfeitMappings map[wire.OutPoint]*ConnectorLeafInfo
+
+	// TreeOpts holds functional options for VTXO tree deserialization.
+	// These are injected by the event router from daemon configuration
+	// (e.g., MaxTreeNodes limit) and passed through to
+	// roundpb.TreeFromProto during FromProto.
+	TreeOpts []roundpb.TreeFromProtoOption
 }
 
 func (e *CommitmentTxBuilt) clientEventSealed() {}
@@ -120,6 +127,9 @@ func (e *CommitmentTxBuilt) clientEventSealed() {}
 // connector output, paying the VTXO value to the operator's forfeit address.
 type ConnectorLeafInfo struct {
 	// LeafIndex is the position of this connector in the connector tree.
+	// Note that this field is NOT populated by FromProto since the
+	// server's ConnectorLeafInfo proto does not carry it. It is only
+	// set by local tree-building code. Zero is a valid index.
 	LeafIndex int
 
 	// ConnectorOutpoint is the outpoint of the connector output in the

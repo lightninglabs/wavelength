@@ -20,13 +20,15 @@ import (
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/oor"
-	"github.com/lightninglabs/darepo-client/oorwire"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -461,13 +463,14 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 	router := serverconn.NewEventRouter(s.actorSystem)
 
 	s.registerOOREventRoutes(router)
+	s.registerRoundEventRoutes(router)
 
 	return router
 }
 
 // registerOOREventRoutes registers OOR mailbox service event routes with the
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
-// response events, the router decodes the oorwire proto, adapts it into a
+// response events, the router decodes the oorpb proto, adapts it into a
 // DriveEventRequest, and Tell's it to the OOR actor via service key.
 func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	oorKey := oor.NewServiceKey()
@@ -478,14 +481,14 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
 		oor.OORDurableMsg, oor.ActorResp,
 	]{
-		Service: oorwire.ServiceName,
-		Method:  oorwire.MethodSubmitPackage,
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodSubmitPackage,
 		NewEvent: func() proto.Message {
-			return &oorwire.SubmitPackageResponse{}
+			return &oorpb.SubmitPackageResponse{}
 		},
 		Key: oorKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorwire.SubmitPackageResponse)
+			resp, ok := p.(*oorpb.SubmitPackageResponse)
 			if !ok {
 				return nil, fmt.Errorf(
 					"expected SubmitPackageResponse, "+
@@ -494,7 +497,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			}
 
 			sessionID, checkpoints, err :=
-				oorwire.ParseSubmitPackageResponse(resp)
+				oorpb.ParseSubmitPackageResponse(resp)
 			if err != nil {
 				return nil, fmt.Errorf("parse submit "+
 					"response: %w", err)
@@ -518,14 +521,14 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
 		oor.OORDurableMsg, oor.ActorResp,
 	]{
-		Service: oorwire.ServiceName,
-		Method:  oorwire.MethodFinalizePackage,
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodFinalizePackage,
 		NewEvent: func() proto.Message {
-			return &oorwire.FinalizePackageResponse{}
+			return &oorpb.FinalizePackageResponse{}
 		},
 		Key: oorKey,
 		Adapt: func(p proto.Message) (oor.OORDurableMsg, error) {
-			resp, ok := p.(*oorwire.FinalizePackageResponse)
+			resp, ok := p.(*oorpb.FinalizePackageResponse)
 			if !ok {
 				return nil, fmt.Errorf(
 					"expected FinalizePackageResponse"+
@@ -534,7 +537,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			}
 
 			sessionID, err :=
-				oorwire.ParseFinalizePackageResponse(resp)
+				oorpb.ParseFinalizePackageResponse(resp)
 			if err != nil {
 				return nil, fmt.Errorf("parse finalize "+
 					"response: %w", err)
@@ -548,9 +551,158 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	})
 
 	// TODO(roasbeef): Register an IncomingAck route once the
-	// oorwire proto defines an ack RPC. SendIncomingAckRequest is
+	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
+}
+
+// registerRoundEventRoutes registers round protocol server-push event
+// routes with the EventRouter. When the server pushes round lifecycle
+// events (batch built, nonces aggregated, etc.), the router decodes
+// the roundpb proto, calls FromProto on the domain event type, wraps
+// it in a ServerMessageNotification, and Tell's it to the round actor.
+func (s *Server) registerRoundEventRoutes(
+	router *serverconn.EventRouter) {
+
+	roundKey := round.NewServiceKey()
+
+	// Build tree deserialization options from the daemon config.
+	// This caps the maximum node count in VTXO trees received
+	// from the server, preventing memory exhaustion.
+	var treeOpts []roundpb.TreeFromProtoOption
+	if s.cfg.Server.MaxTreeNodes > 0 {
+		treeOpts = append(
+			treeOpts,
+			roundpb.WithMaxTreeNodes(
+				s.cfg.Server.MaxTreeNodes,
+			),
+		)
+	}
+
+	// addRoundRoute is a helper that registers a push event route.
+	// It creates a fresh domain event via newEvent, deserializes
+	// the proto into it via FromProto, then wraps it in a
+	// ServerMessageNotification for delivery to the round actor.
+	addRoundRoute := func(method string,
+		newProto func() proto.Message,
+		newEvent func() round.ClientEvent) {
+
+		serverconn.AddRoute(
+			router,
+			serverconn.EventRouteConfig[
+				actormsg.RoundReceivable,
+				actormsg.RoundActorResp,
+			]{
+				Service:  roundpb.ServiceName,
+				Method:   method,
+				NewEvent: newProto,
+				Key:      roundKey,
+				Adapt:    roundEventAdapt(method, newEvent),
+			},
+		)
+	}
+
+	// BatchInfo: server built the commitment transaction.
+	addRoundRoute(
+		roundpb.MethodBatchInfo,
+		func() proto.Message {
+			return &roundpb.ClientBatchInfo{}
+		},
+		func() round.ClientEvent {
+			return &round.CommitmentTxBuilt{
+				TreeOpts: treeOpts,
+			}
+		},
+	)
+
+	// AwaitingInputSigs: server needs boarding input signatures.
+	addRoundRoute(
+		roundpb.MethodAwaitingInputSigs,
+		func() proto.Message {
+			return &roundpb.ClientAwaitingInputSigsResp{}
+		},
+		func() round.ClientEvent {
+			return &round.AwaitingBoardingSigs{}
+		},
+	)
+
+	// AggNonces: server sends aggregated MuSig2 nonces.
+	addRoundRoute(
+		roundpb.MethodAggNonces,
+		func() proto.Message {
+			return &roundpb.ClientVTXOAggNonces{}
+		},
+		func() round.ClientEvent {
+			return &round.NoncesAggregated{}
+		},
+	)
+
+	// AggSigs: server sends final aggregated signatures.
+	addRoundRoute(
+		roundpb.MethodAggSigs,
+		func() proto.Message {
+			return &roundpb.ClientVTXOAggSigs{}
+		},
+		func() round.ClientEvent {
+			return &round.OperatorSigned{}
+		},
+	)
+
+	// RoundFailed: server reports the round has failed.
+	addRoundRoute(
+		roundpb.MethodRoundFailed,
+		func() proto.Message {
+			return &roundpb.ClientRoundFailedResp{}
+		},
+		func() round.ClientEvent {
+			return &round.BoardingFailed{}
+		},
+	)
+
+	// Error: server reports a general error condition.
+	addRoundRoute(
+		roundpb.MethodError,
+		func() proto.Message {
+			return &roundpb.ClientErrorResp{}
+		},
+		func() round.ClientEvent {
+			return &round.BoardingFailed{}
+		},
+	)
+}
+
+// roundEventAdapt returns an Adapt closure for a round push event.
+// The closure creates a fresh domain event, populates it via FromProto,
+// and wraps it in a ServerMessageNotification.
+func roundEventAdapt(method string,
+	newEvent func() round.ClientEvent) func(
+	proto.Message) (actormsg.RoundReceivable, error) {
+
+	return func(
+		p proto.Message,
+	) (actormsg.RoundReceivable, error) {
+
+		ev := newEvent()
+
+		inbound, ok := ev.(serverconn.InboundServerMessage)
+		if !ok {
+			return nil, fmt.Errorf(
+				"event %T does not implement "+
+					"InboundServerMessage", ev,
+			)
+		}
+
+		if err := inbound.FromProto(p); err != nil {
+			return nil, fmt.Errorf(
+				"FromProto %s/%s: %w",
+				roundpb.ServiceName, method, err,
+			)
+		}
+
+		return &round.ServerMessageNotification{
+			Message: ev,
+		}, nil
+	}
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through

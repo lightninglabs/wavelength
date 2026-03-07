@@ -8,6 +8,7 @@ import (
 
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -21,8 +22,8 @@ type testServerMessage struct {
 }
 
 // ToProto converts the test message to a protobuf payload.
-func (m *testServerMessage) ToProto() proto.Message {
-	return wrapperspb.String(m.value)
+func (m *testServerMessage) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](wrapperspb.String(m.value))
 }
 
 // newTestConnector builds a ServerConnectionActor with in-memory test

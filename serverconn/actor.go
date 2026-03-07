@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -42,9 +41,10 @@ type (
 // to be sent to the server. This allows conversion to proto messages without
 // creating import cycles.
 type ServerMessage interface {
-	// ToProto converts the message to a protobuf message that can be sent
-	// over gRPC.
-	ToProto() proto.Message
+	// ToProto converts the message to a protobuf message that can be
+	// sent over gRPC. An error is returned if serialization of any
+	// embedded field (e.g. signatures, transactions) fails.
+	ToProto() fn.Result[proto.Message]
 }
 
 // InboundServerMessage is implemented by actor messages that arrive from the
@@ -70,21 +70,17 @@ type rawServerMessage struct {
 }
 
 // ToProto reconstructs the original proto message from the stored Any
-// wrapper. Returns nil if the type cannot be resolved from the global
-// protobuf registry.
-func (m *rawServerMessage) ToProto() proto.Message {
+// wrapper.
+func (m *rawServerMessage) ToProto() fn.Result[proto.Message] {
 	msg, err := m.anyMsg.UnmarshalNew()
 	if err != nil {
-		log.ErrorS(context.Background(),
-			"Failed to unmarshal Any type from registry",
-			err,
-			slog.String("type_url",
-				m.anyMsg.GetTypeUrl()))
-
-		return nil
+		return fn.Err[proto.Message](fmt.Errorf(
+			"unmarshal Any type %q: %w",
+			m.anyMsg.GetTypeUrl(), err,
+		))
 	}
 
-	return msg
+	return fn.Ok[proto.Message](msg)
 }
 
 // ServerConnMsg is the sealed interface for messages that can be sent to the
@@ -144,7 +140,12 @@ func (m *SendClientEventRequest) TLVType() tlv.Type {
 // proto↔bytes conversion inside the TLV record, keeping the codec contract
 // simple and uniform across message types.
 func (m *SendClientEventRequest) Encode(w io.Writer) error {
-	anyMsg, err := anypb.New(m.Message.ToProto())
+	protoMsg, err := m.Message.ToProto().Unpack()
+	if err != nil {
+		return fmt.Errorf("convert to proto: %w", err)
+	}
+
+	anyMsg, err := anypb.New(protoMsg)
 	if err != nil {
 		return fmt.Errorf("wrap proto in Any: %w", err)
 	}
@@ -403,7 +404,12 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	req *SendClientEventRequest) fn.Result[ServerConnResp] {
 
-	protoMsg := req.Message.ToProto()
+	protoMsg, err := req.Message.ToProto().Unpack()
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"convert to proto: %w", err,
+		))
+	}
 
 	body, err := anypb.New(protoMsg)
 	if err != nil {

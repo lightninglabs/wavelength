@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -21,8 +22,8 @@ type bytesServerMessage struct {
 }
 
 // ToProto converts the payload to a protobuf wrapper.
-func (m *bytesServerMessage) ToProto() proto.Message {
-	return wrapperspb.Bytes(m.payload)
+func (m *bytesServerMessage) ToProto() fn.Result[proto.Message] {
+	return fn.Ok[proto.Message](wrapperspb.Bytes(m.payload))
 }
 
 // encodeTLVMessage serializes a TLV message to bytes for round-trip tests.
@@ -64,7 +65,8 @@ func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
 		t, decodedA.IdempotencyKey, decodedB.IdempotencyKey,
 	)
 
-	msg, ok := decodedA.Message.ToProto().(*wrapperspb.BytesValue)
+	protoMsg := decodedA.Message.ToProto().UnwrapOrFail(t)
+	msg, ok := protoMsg.(*wrapperspb.BytesValue)
 	require.True(t, ok)
 	require.Equal(t, []byte("same-event"), msg.Value)
 }
@@ -142,8 +144,8 @@ func TestServerConnMessageMetadata(t *testing.T) {
 	rpcReq.serverConnMsgSealed()
 }
 
-// TestRawServerMessage_ToProtoDecodeFailure verifies ToProto returns nil when
-// the Any payload cannot be resolved through the protobuf type registry.
+// TestRawServerMessage_ToProtoDecodeFailure verifies ToProto returns an error
+// when the Any payload cannot be resolved through the protobuf type registry.
 func TestRawServerMessage_ToProtoDecodeFailure(t *testing.T) {
 	t.Parallel()
 
@@ -154,7 +156,8 @@ func TestRawServerMessage_ToProtoDecodeFailure(t *testing.T) {
 		},
 	}
 
-	require.Nil(t, raw.ToProto())
+	_, toProtoErr := raw.ToProto().Unpack()
+	require.Error(t, toProtoErr)
 }
 
 // TestServerConnCodec_RoundTrip verifies both serverconn message types can be

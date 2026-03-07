@@ -1,6 +1,9 @@
 package round
 
 import (
+	"bytes"
+	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -11,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -102,40 +106,196 @@ type SubmitForfeitSigRequest struct {
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
 
-// ToProto converts JoinRoundRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
-func (m *JoinRoundRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.JoinRoundRequest{...}
-	return nil
+// ToProto converts JoinRoundRequest to a protobuf message for mailbox
+// transport.
+func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
+	// Convert boarding requests.
+	boardingReqs := make(
+		[]*roundpb.BoardingRequest, len(m.BoardingRequests),
+	)
+	for i, req := range m.BoardingRequests {
+		br := &roundpb.BoardingRequest{
+			ExitDelay: req.ExitDelay,
+		}
+		if req.Outpoint != nil {
+			br.Outpoint = roundpb.OutpointToProto(
+				*req.Outpoint,
+			)
+		}
+		if req.ClientKey != nil {
+			br.ClientKey = req.ClientKey.
+				SerializeCompressed()
+		}
+		if req.OperatorKey != nil {
+			br.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		boardingReqs[i] = br
+	}
+
+	// Convert VTXO requests.
+	vtxoReqs := make(
+		[]*roundpb.VTXORequest, len(m.VTXORequests),
+	)
+	for i, req := range m.VTXORequests {
+		vr := &roundpb.VTXORequest{
+			Amount:   int64(req.Amount),
+			PkScript: req.PkScript,
+			Expiry:   req.Expiry,
+		}
+		if req.ClientKey != nil {
+			vr.ClientKey = req.ClientKey.
+				SerializeCompressed()
+		}
+		if req.OperatorKey != nil {
+			vr.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		vtxoReqs[i] = vr
+	}
+
+	// Convert forfeit requests.
+	forfeitReqs := make(
+		[]*roundpb.ForfeitRequest, len(m.ForfeitRequests),
+	)
+	for i, req := range m.ForfeitRequests {
+		fr := &roundpb.ForfeitRequest{}
+		if req.VTXOOutpoint != nil {
+			fr.VtxoOutpoint = roundpb.OutpointToProto(
+				*req.VTXOOutpoint,
+			)
+		}
+		forfeitReqs[i] = fr
+	}
+
+	// Convert leave requests.
+	leaveReqs := make(
+		[]*roundpb.LeaveRequest, len(m.LeaveRequests),
+	)
+	for i, req := range m.LeaveRequests {
+		lr := &roundpb.LeaveRequest{}
+		if req.Output != nil {
+			lr.Output = roundpb.TxOutToProto(req.Output)
+		}
+		leaveReqs[i] = lr
+	}
+
+	pb := &roundpb.JoinRoundRequest{
+		BoardingRequests: boardingReqs,
+		VtxoRequests:     vtxoReqs,
+		ForfeitRequests:  forfeitReqs,
+		LeaveRequests:    leaveReqs,
+		RoundId:          m.RoundID,
+	}
+
+	if m.Identifier != nil {
+		pb.Identifier = m.Identifier.SerializeCompressed()
+	}
+
+	if m.Auth != nil {
+		pb.Auth = &roundpb.JoinRoundAuth{
+			Message:    m.Auth.Message,
+			ValidFrom:  m.Auth.ValidFrom,
+			ValidUntil: m.Auth.ValidUntil,
+			Signature:  m.Auth.Signature,
+		}
+	}
+
+	return fn.Ok[proto.Message](pb)
 }
 
-// ToProto converts SubmitNoncesRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
-func (m *SubmitNoncesRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitNoncesRequest{...}
-	return nil
+// ToProto converts SubmitNoncesRequest to a protobuf message for mailbox
+// transport. Signing keys are hex-encoded and transaction IDs are
+// hex-encoded for use as proto map keys.
+//
+// NOTE: Map iteration order is non-deterministic, so serialized bytes
+// may differ across calls for identical input. This is acceptable
+// because proto map fields have no ordering semantics and downstream
+// code does not derive idempotency keys from raw proto bytes.
+func (m *SubmitNoncesRequest) ToProto() fn.Result[proto.Message] {
+	nonces := make(
+		map[string]*roundpb.SignerNonces, len(m.Nonces),
+	)
+	for signerKey, txNonces := range m.Nonces {
+		txMap := make(
+			map[string][]byte, len(txNonces),
+		)
+		for txID, nonce := range txNonces {
+			txMap[roundpb.TxIDToHex(txID)] = nonce[:]
+		}
+		nonces[hex.EncodeToString(signerKey[:])] =
+			&roundpb.SignerNonces{
+				TxNonces: txMap,
+			}
+	}
+
+	return fn.Ok[proto.Message](&roundpb.SubmitNoncesRequest{
+		RoundId: m.RoundID[:],
+		Nonces:  nonces,
+	})
 }
 
-// ToProto converts SubmitPartialSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
-func (m *SubmitPartialSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitPartialSigRequest{...}
-	return nil
+// ToProto converts SubmitPartialSigRequest to a protobuf message for
+// mailbox transport.
+//
+// NOTE: Map iteration order is non-deterministic, so serialized bytes
+// may differ across calls for identical input. This is acceptable
+// because proto map fields have no ordering semantics and downstream
+// code does not derive idempotency keys from raw proto bytes.
+func (m *SubmitPartialSigRequest) ToProto() fn.Result[proto.Message] {
+	sigs := make(
+		map[string]*roundpb.SignerPartialSigs,
+		len(m.Signatures),
+	)
+	for signerKey, txSigs := range m.Signatures {
+		txMap := make(map[string][]byte, len(txSigs))
+		for txID, sig := range txSigs {
+			var buf bytes.Buffer
+			if err := sig.Encode(&buf); err != nil {
+				return fn.Err[proto.Message](
+					fmt.Errorf(
+						"encode partial sig "+
+							"for tx %x: %w",
+						txID[:], err,
+					),
+				)
+			}
+			txMap[roundpb.TxIDToHex(txID)] = buf.Bytes()
+		}
+		sigs[hex.EncodeToString(signerKey[:])] =
+			&roundpb.SignerPartialSigs{
+				TxSigs: txMap,
+			}
+	}
+
+	return fn.Ok[proto.Message](&roundpb.SubmitPartialSigRequest{
+		RoundId:    m.RoundID[:],
+		Signatures: sigs,
+	})
 }
 
-// ToProto converts SubmitForfeitSigRequest to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
-func (m *SubmitForfeitSigRequest) ToProto() proto.Message {
-	// Placeholder: return nil for now. This will be replaced with actual
-	// proto message construction:
-	// return &pb.SubmitForfeitSigRequest{...}
-	return nil
+// ToProto converts SubmitForfeitSigRequest to a protobuf message for
+// mailbox transport.
+func (m *SubmitForfeitSigRequest) ToProto() fn.Result[proto.Message] {
+	sigs := make(
+		[]*roundpb.BoardingInputSignature,
+		len(m.Signatures),
+	)
+	for i, sig := range m.Signatures {
+		pbSig, err := roundpb.BoardingInputSigToProto(sig)
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"signatures[%d]: %w", i, err,
+			))
+		}
+
+		sigs[i] = pbSig
+	}
+
+	return fn.Ok[proto.Message](&roundpb.SubmitForfeitSigRequest{
+		RoundId:    m.RoundID[:],
+		Signatures: sigs,
+	})
 }
 
 // ForfeitRequestToVTXO is emitted by the FSM when a VTXO must sign a forfeit
@@ -229,10 +389,52 @@ func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
 	return "SubmitVTXOForfeitSigsToServer"
 }
 
-// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
-func (m *SubmitVTXOForfeitSigsToServer) ToProto() proto.Message {
-	return nil
+// ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message for
+// mailbox transport.
+//
+// NOTE: Map iteration order is non-deterministic, so the proto
+// repeated field ordering may vary across calls. This is acceptable
+// because the server identifies each entry by its VtxoOutpoint field,
+// not by position. Downstream code does not derive idempotency keys
+// from raw proto bytes.
+func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
+	forfeitTxs := make(
+		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitSigs),
+	)
+	for outpoint, sig := range m.ForfeitSigs {
+		unsignedTx, ok := m.ForfeitTxs[outpoint]
+		if !ok {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"missing forfeit tx for outpoint %v",
+				outpoint,
+			))
+		}
+
+		txBytes, err := roundpb.MsgTxToBytes(unsignedTx)
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"serialize forfeit tx for %v: %w",
+				outpoint, err,
+			))
+		}
+
+		forfeitTxs = append(
+			forfeitTxs, &roundpb.ForfeitTxSig{
+				VtxoOutpoint: roundpb.OutpointToProto(
+					outpoint,
+				),
+				UnsignedTx:    txBytes,
+				ClientVtxoSig: roundpb.SchnorrSigToBytes(sig),
+			},
+		)
+	}
+
+	return fn.Ok[proto.Message](
+		&roundpb.SubmitVTXOForfeitSigsRequest{
+			RoundId:    m.RoundID[:],
+			ForfeitTxs: forfeitTxs,
+		},
+	)
 }
 
 // RegisterConfirmationRequest is emitted by the FSM to request chain monitoring

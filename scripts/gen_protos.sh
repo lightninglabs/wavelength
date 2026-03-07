@@ -57,11 +57,14 @@ function generate() {
 generate "mailbox/pb"
 generate "arkrpc"
 
+# Generate round protocol protos for mailbox connector transport.
+generate "rpc/roundpb"
+
 # Generate daemonrpc protos for the client daemon's own gRPC API.
 generate "daemonrpc"
 
 # Generate OOR mailbox wire payload stubs.
-generate "oorwire"
+generate "rpc/oorpb"
 
 # Generate adminrpc protos if present.
 if [ -d "adminrpc" ]; then

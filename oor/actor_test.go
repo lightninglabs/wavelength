@@ -694,7 +694,7 @@ func TestOORClientActorTransportViaServerConn(t *testing.T) {
 // TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment verifies that a
 // SubmitAcceptedEvent with nil ArkPSBT is enriched from the session's
 // AwaitingSubmitAccepted state. This is the production path for server-push
-// events dispatched via the EventRouter, where the oorwire proto response
+// events dispatched via the EventRouter, where the oorpb proto response
 // does not echo the Ark PSBT back.
 func TestOORClientActorSubmitAcceptedNilArkPSBTEnrichment(t *testing.T) {
 	t.Parallel()
