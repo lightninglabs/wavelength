@@ -44,10 +44,10 @@ func newContextErrorReporter(ctx context.Context,
 	return &contextErrorReporter{ctx: ctx, prefix: prefix}
 }
 
-// ReportError logs the error using the context logger.
+// ReportError logs the error using the context logger with structured logging.
 func (r *contextErrorReporter) ReportError(err error) {
 	logger := build.LoggerFromContext(r.ctx).WithPrefix(r.prefix)
-	logger.Errorf("FSM error: %v", err)
+	logger.ErrorS(r.ctx, "FSM error", err)
 }
 
 // Compile-time check that contextErrorReporter implements ErrorReporter.
