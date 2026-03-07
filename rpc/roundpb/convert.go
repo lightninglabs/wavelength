@@ -1,10 +1,11 @@
 package roundpb
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -191,17 +192,38 @@ func OutpointToMapKey(op wire.OutPoint) string {
 	return op.String()
 }
 
-// OutpointFromMapKey deserializes a string key back to a wire.OutPoint.
+// OutpointFromMapKey deserializes a string key back to a
+// wire.OutPoint. The key is expected in the standard "hash:index"
+// format produced by wire.OutPoint.String(), where the hash is
+// byte-reversed hex.
 func OutpointFromMapKey(key string) (wire.OutPoint, error) {
-	var op wire.OutPoint
-	n, err := fmt.Sscanf(key, "%64x:%d", &op.Hash, &op.Index)
-	if err != nil || n != 2 {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
 		return wire.OutPoint{}, fmt.Errorf(
 			"invalid outpoint key: %q", key,
 		)
 	}
 
-	return op, nil
+	hash, err := chainhash.NewHashFromStr(parts[0])
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf(
+			"invalid hash in outpoint key %q: %w",
+			key, err,
+		)
+	}
+
+	idx, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return wire.OutPoint{}, fmt.Errorf(
+			"invalid index in outpoint key %q: %w",
+			key, err,
+		)
+	}
+
+	return wire.OutPoint{
+		Hash:  *hash,
+		Index: uint32(idx),
+	}, nil
 }
 
 // TreeToProto converts a tree.Tree to a proto VTXOTree by flattening the
@@ -399,16 +421,6 @@ func MsgTxFromBytes(b []byte) (*wire.MsgTx, error) {
 	}
 
 	return tx, nil
-}
-
-// OutpointKeyBytes serializes an outpoint to bytes for use as a map key.
-// Format: 32-byte tx hash + 4-byte big-endian index.
-func OutpointKeyBytes(op wire.OutPoint) []byte {
-	var buf [36]byte
-	copy(buf[:32], op.Hash[:])
-	binary.BigEndian.PutUint32(buf[32:], op.Index)
-
-	return buf[:]
 }
 
 // bytesWriter implements io.Writer for PSBT serialization.

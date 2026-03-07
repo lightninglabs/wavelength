@@ -140,10 +140,10 @@ message ClientBatchInfo {
     // extracted VTXO sub-tree.
     map<int32, VTXOTree> vtxo_tree_paths = 3;
 
-    // connector_leaf_map maps serialized outpoints to connector leaf info.
-    // The key is the outpoint serialized as tx_hash || big-endian index
-    // (36 bytes). This encoding is deterministic and maps directly to
-    // wire.OutPoint.
+    // connector_leaf_map maps outpoints to connector leaf info. The key
+    // is the standard "hash:index" string format produced by
+    // wire.OutPoint.String() (byte-reversed hex hash, colon, decimal
+    // index).
     map<string, ConnectorLeafInfo> connector_leaf_map = 4;
 }
 
