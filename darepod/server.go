@@ -14,13 +14,13 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
-	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -584,34 +584,7 @@ func (s *Server) registerRoundEventRoutes(
 				Method:   method,
 				NewEvent: newProto,
 				Key:      roundKey,
-				Adapt: func(
-					p proto.Message,
-				) (actormsg.RoundReceivable, error) {
-
-					ev := newEvent()
-
-					inbound, ok := ev.(serverconn.InboundServerMessage)
-					if !ok {
-						return nil, fmt.Errorf(
-							"event %T does not "+
-								"implement "+
-								"InboundServerMessage",
-							ev,
-						)
-					}
-
-					if err := inbound.FromProto(p); err != nil {
-						return nil, fmt.Errorf(
-							"FromProto %s/%s: %w",
-							roundpb.ServiceName,
-							method, err,
-						)
-					}
-
-					return &round.ServerMessageNotification{
-						Message: ev,
-					}, nil
-				},
+				Adapt:    roundEventAdapt(method, newEvent),
 			},
 		)
 	}
@@ -681,6 +654,40 @@ func (s *Server) registerRoundEventRoutes(
 			return &round.BoardingFailed{}
 		},
 	)
+}
+
+// roundEventAdapt returns an Adapt closure for a round push event.
+// The closure creates a fresh domain event, populates it via FromProto,
+// and wraps it in a ServerMessageNotification.
+func roundEventAdapt(method string,
+	newEvent func() round.ClientEvent) func(
+	proto.Message) (actormsg.RoundReceivable, error) {
+
+	return func(
+		p proto.Message,
+	) (actormsg.RoundReceivable, error) {
+
+		ev := newEvent()
+
+		inbound, ok := ev.(serverconn.InboundServerMessage)
+		if !ok {
+			return nil, fmt.Errorf(
+				"event %T does not implement "+
+					"InboundServerMessage", ev,
+			)
+		}
+
+		if err := inbound.FromProto(p); err != nil {
+			return nil, fmt.Errorf(
+				"FromProto %s/%s: %w",
+				roundpb.ServiceName, method, err,
+			)
+		}
+
+		return &round.ServerMessageNotification{
+			Message: ev,
+		}, nil
+	}
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through
