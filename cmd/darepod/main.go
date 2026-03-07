@@ -90,6 +90,24 @@ func newRootCmd() *cobra.Command {
 		"remote server's mailbox identifier",
 	)
 
+	// Wallet backend flags.
+	f.String("wallet.type", cfg.Wallet.Type,
+		"wallet backend type (lnd, lwwallet)",
+	)
+	f.String("wallet.esploraurl", cfg.Wallet.EsploraURL,
+		"esplora REST API URL (required for lwwallet)",
+	)
+	f.Duration("wallet.pollinterval", cfg.Wallet.PollInterval,
+		"chain poll interval for lwwallet backend",
+	)
+	f.Uint32("wallet.recoverywindow", cfg.Wallet.RecoveryWindow,
+		"address recovery look-ahead window for lwwallet",
+	)
+	f.String("wallet.password_file", cfg.Wallet.PasswordFile,
+		"path to file containing wallet password for "+
+			"auto-unlock at startup (lwwallet mode)",
+	)
+
 	// Daemon RPC server flags.
 	f.String("rpc.listenaddr", cfg.RPC.ListenAddr,
 		"daemon gRPC listen address",
