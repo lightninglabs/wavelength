@@ -148,7 +148,7 @@ type TreeNode struct {
 	Children map[uint32]uint32 `protobuf:"bytes,4,rep,name=children,proto3" json:"children,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	// amount is the total BTC value (satoshis) for this node.
 	Amount int64 `protobuf:"varint,5,opt,name=amount,proto3" json:"amount,omitempty"`
-	// signature is the final aggregated MuSig2 schnorr signature (32 bytes)
+	// signature is the final aggregated MuSig2 schnorr signature (64 bytes)
 	// for the input. Empty if unsigned.
 	Signature     []byte `protobuf:"bytes,6,opt,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -521,10 +521,10 @@ type ClientBatchInfo struct {
 	// vtxo_tree_paths maps commitment tx output indices to the client's
 	// extracted VTXO sub-tree.
 	VtxoTreePaths map[int32]*VTXOTree `protobuf:"bytes,3,rep,name=vtxo_tree_paths,json=vtxoTreePaths,proto3" json:"vtxo_tree_paths,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// connector_leaf_map maps serialized outpoints to connector leaf info.
-	// The key is the outpoint serialized as tx_hash || big-endian index
-	// (36 bytes). This encoding is deterministic and maps directly to
-	// wire.OutPoint.
+	// connector_leaf_map maps outpoints to connector leaf info. The key
+	// is the standard "hash:index" string format produced by
+	// wire.OutPoint.String() (byte-reversed hex hash, colon, decimal
+	// index).
 	ConnectorLeafMap map[string]*ConnectorLeafInfo `protobuf:"bytes,4,rep,name=connector_leaf_map,json=connectorLeafMap,proto3" json:"connector_leaf_map,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -699,7 +699,7 @@ type ClientVTXOAggSigs struct {
 	// round_id is the UUID of the round (16 bytes).
 	RoundId []byte `protobuf:"bytes,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	// agg_sigs maps transaction IDs (32 bytes) to aggregated schnorr
-	// signatures (32 bytes).
+	// signatures (64 bytes).
 	AggSigs       map[string][]byte `protobuf:"bytes,2,rep,name=agg_sigs,json=aggSigs,proto3" json:"agg_sigs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1502,7 +1502,7 @@ type BoardingInputSignature struct {
 	InputIndex int32 `protobuf:"varint,1,opt,name=input_index,json=inputIndex,proto3" json:"input_index,omitempty"`
 	// outpoint identifies which boarding input this signature is for.
 	Outpoint *Outpoint `protobuf:"bytes,2,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
-	// client_signature is the schnorr signature (32 bytes).
+	// client_signature is the schnorr signature (64 bytes).
 	ClientSignature []byte `protobuf:"bytes,3,opt,name=client_signature,json=clientSignature,proto3" json:"client_signature,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -1623,7 +1623,7 @@ type ForfeitTxSig struct {
 	VtxoOutpoint *Outpoint `protobuf:"bytes,1,opt,name=vtxo_outpoint,json=vtxoOutpoint,proto3" json:"vtxo_outpoint,omitempty"`
 	// unsigned_tx is the serialized unsigned forfeit transaction.
 	UnsignedTx []byte `protobuf:"bytes,2,opt,name=unsigned_tx,json=unsignedTx,proto3" json:"unsigned_tx,omitempty"`
-	// client_vtxo_sig is the client's schnorr signature (32 bytes) for
+	// client_vtxo_sig is the client's schnorr signature (64 bytes) for
 	// the collaborative 2-of-2 spend from the VTXO.
 	ClientVtxoSig []byte `protobuf:"bytes,3,opt,name=client_vtxo_sig,json=clientVtxoSig,proto3" json:"client_vtxo_sig,omitempty"`
 	unknownFields protoimpl.UnknownFields

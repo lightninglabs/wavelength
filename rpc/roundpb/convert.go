@@ -136,7 +136,7 @@ func PSBTFromBytes(b []byte) (*psbt.Packet, error) {
 	return p, nil
 }
 
-// SchnorrSigToBytes converts a schnorr.Signature to 32 bytes.
+// SchnorrSigToBytes converts a schnorr.Signature to 64 bytes.
 func SchnorrSigToBytes(sig *schnorr.Signature) []byte {
 	if sig == nil {
 		return nil
@@ -145,7 +145,7 @@ func SchnorrSigToBytes(sig *schnorr.Signature) []byte {
 	return sig.Serialize()
 }
 
-// SchnorrSigFromBytes converts 32 bytes to a schnorr.Signature.
+// SchnorrSigFromBytes converts 64 bytes to a schnorr.Signature.
 func SchnorrSigFromBytes(b []byte) (*schnorr.Signature, error) {
 	if b == nil {
 		return nil, nil

@@ -51,7 +51,7 @@ message TreeNode {
     // amount is the total BTC value (satoshis) for this node.
     int64 amount = 5;
 
-    // signature is the final aggregated MuSig2 schnorr signature (32 bytes)
+    // signature is the final aggregated MuSig2 schnorr signature (64 bytes)
     // for the input. Empty if unsigned.
     bytes signature = 6;
 }
@@ -172,7 +172,7 @@ message ClientVTXOAggSigs {
     bytes round_id = 1;
 
     // agg_sigs maps transaction IDs (32 bytes) to aggregated schnorr
-    // signatures (32 bytes).
+    // signatures (64 bytes).
     map<string, bytes> agg_sigs = 2;
 }
 
@@ -334,7 +334,7 @@ message BoardingInputSignature {
     // outpoint identifies which boarding input this signature is for.
     Outpoint outpoint = 2;
 
-    // client_signature is the schnorr signature (32 bytes).
+    // client_signature is the schnorr signature (64 bytes).
     bytes client_signature = 3;
 }
 
@@ -357,7 +357,7 @@ message ForfeitTxSig {
     // unsigned_tx is the serialized unsigned forfeit transaction.
     bytes unsigned_tx = 2;
 
-    // client_vtxo_sig is the client's schnorr signature (32 bytes) for
+    // client_vtxo_sig is the client's schnorr signature (64 bytes) for
     // the collaborative 2-of-2 spend from the VTXO.
     bytes client_vtxo_sig = 3;
 }
