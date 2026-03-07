@@ -374,5 +374,8 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 	feeEstimator := NewLndClientFeeEstimator(cfg.LND.WalletKit)
 	broadcaster := NewLndClientTxBroadcaster(cfg.LND.WalletKit)
 
-	return NewLNDBackend(notifier, feeEstimator, broadcaster)
+	backend := NewLNDBackend(notifier, feeEstimator, broadcaster)
+	backend.Log = cfg.Log
+
+	return backend
 }

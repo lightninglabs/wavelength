@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -40,13 +41,19 @@ type Client struct {
 
 	serverID  string
 	principal string
+
+	// Log is an optional logger for this client. If None, the client
+	// falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is
+	// found.
+	Log fn.Option[btclog.Logger]
 }
 
-// logger returns the logger for this client, extracting it from the
-// context. If no logger is present in the context, returns
-// btclog.Disabled which safely no-ops all log calls.
+// logger returns the configured logger, falling back to extracting a logger
+// from context. If neither is available, returns btclog.Disabled which safely
+// no-ops all log calls.
 func (c *Client) logger(ctx context.Context) btclog.Logger {
-	return build.LoggerFromContext(ctx)
+	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 const (

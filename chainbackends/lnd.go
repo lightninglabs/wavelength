@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -41,6 +42,11 @@ type LNDBackend struct {
 
 	// broadcaster provides transaction broadcasting capabilities.
 	broadcaster TxBroadcaster
+
+	// Log is an optional logger for this backend. If None, the backend
+	// falls back to the package-level log registered under the CBKD
+	// subsystem.
+	Log fn.Option[btclog.Logger]
 }
 
 // NewLNDBackend creates a new LNDBackend instance with the given lnd
@@ -56,13 +62,19 @@ func NewLNDBackend(notifier chainntnfs.ChainNotifier,
 	}
 }
 
+// logger returns the configured logger, falling back to the package-level log
+// registered under the CBKD subsystem.
+func (b *LNDBackend) logger(ctx context.Context) btclog.Logger {
+	return b.Log.UnwrapOr(log)
+}
+
 // EstimateFee returns the estimated fee rate in satoshis per vbyte for the
 // given confirmation target. The fee estimator will provide the rate needed to
 // confirm within the target number of blocks.
 func (b *LNDBackend) EstimateFee(ctx context.Context,
 	targetConf uint32) (btcutil.Amount, error) {
 
-	log.DebugS(ctx, "Estimating fee rate",
+	b.logger(ctx).DebugS(ctx, "Estimating fee rate",
 		slog.Int("target_confs", int(targetConf)))
 
 	// Get the fee rate in sat/kw (satoshis per 1000 weight units) from
@@ -84,7 +96,7 @@ func (b *LNDBackend) EstimateFee(ctx context.Context,
 	// The FeePerVByte() method handles this conversion correctly.
 	satPerVByte := feePerKw.FeePerVByte()
 
-	log.DebugS(ctx, "Fee rate estimated",
+	b.logger(ctx).DebugS(ctx, "Fee rate estimated",
 		slog.Int("target_confs", int(targetConf)),
 		slog.Int64("sat_per_vbyte", int64(satPerVByte)))
 
@@ -97,7 +109,7 @@ func (b *LNDBackend) EstimateFee(ctx context.Context,
 func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 	error) {
 
-	log.DebugS(ctx, "Querying best block from LND")
+	b.logger(ctx).DebugS(ctx, "Querying best block from LND")
 
 	// Register for a single block notification to get the current tip.
 	event, err := b.notifier.RegisterBlockEpochNtfn(nil)
@@ -120,7 +132,7 @@ func (b *LNDBackend) BestBlock(ctx context.Context) (int32, chainhash.Hash,
 				"has nil hash")
 		}
 
-		log.InfoS(ctx, "Best block retrieved",
+		b.logger(ctx).InfoS(ctx, "Best block retrieved",
 			slog.Int("height", int(epoch.Height)),
 			btclog.Hex("hash", epoch.Hash[:]))
 
@@ -150,7 +162,7 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	label string) error {
 
 	txHash := tx.TxHash()
-	log.InfoS(ctx, "Broadcasting transaction via LND",
+	b.logger(ctx).InfoS(ctx, "Broadcasting transaction via LND",
 		btclog.Hex("txid", txHash[:]),
 		slog.String("label", label))
 
@@ -159,7 +171,7 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	log.InfoS(ctx, "Transaction broadcast successfully",
+	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
 		btclog.Hex("txid", txHash[:]))
 
 	return nil
@@ -173,7 +185,7 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 	heightHint uint32,
 	includeBlock bool) (*chainsource.ConfRegistration, error) {
 
-	log.DebugS(ctx, "Registering for confirmation notifications",
+	b.logger(ctx).DebugS(ctx, "Registering for confirmation notifications",
 		slog.Int("num_confs", int(numConfs)),
 		slog.Int("height_hint", int(heightHint)),
 		slog.Bool("include_block", includeBlock))
@@ -234,7 +246,7 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 	outpoint *wire.OutPoint, pkScript []byte,
 	heightHint uint32) (*chainsource.SpendRegistration, error) {
 
-	log.DebugS(ctx, "Registering for spend notifications",
+	b.logger(ctx).DebugS(ctx, "Registering for spend notifications",
 		slog.String("outpoint", outpoint.String()),
 		slog.Int("height_hint", int(heightHint)))
 
@@ -288,7 +300,7 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 func (b *LNDBackend) RegisterBlocks(
 	ctx context.Context) (*chainsource.BlockRegistration, error) {
 
-	log.InfoS(ctx, "Registering for block epoch notifications")
+	b.logger(ctx).InfoS(ctx, "Registering for block epoch notifications")
 
 	// Register with lnd's notifier. Pass nil for the best known block to
 	// get the current tip immediately.
@@ -355,7 +367,8 @@ func (b *LNDBackend) RegisterBlocks(
 // Start initializes the LND backend by starting the notifier and fee
 // estimator.
 func (b *LNDBackend) Start() error {
-	log.InfoS(context.TODO(), "Starting LND chain backend")
+	b.logger(context.TODO()).InfoS(context.TODO(),
+		"Starting LND chain backend")
 
 	// Start the notifier.
 	if err := b.notifier.Start(); err != nil {
@@ -369,14 +382,16 @@ func (b *LNDBackend) Start() error {
 		return fmt.Errorf("failed to start fee estimator: %w", err)
 	}
 
-	log.InfoS(context.TODO(), "LND chain backend started successfully")
+	b.logger(context.TODO()).InfoS(context.TODO(),
+		"LND chain backend started successfully")
 
 	return nil
 }
 
 // Stop shuts down the LND backend by stopping the notifier and fee estimator.
 func (b *LNDBackend) Stop() error {
-	log.InfoS(context.TODO(), "Stopping LND chain backend")
+	b.logger(context.TODO()).InfoS(context.TODO(),
+		"Stopping LND chain backend")
 
 	var errs []error
 
@@ -392,7 +407,8 @@ func (b *LNDBackend) Stop() error {
 			"estimator: %w", err))
 	}
 
-	log.InfoS(context.TODO(), "LND chain backend stopped")
+	b.logger(context.TODO()).InfoS(context.TODO(),
+		"LND chain backend stopped")
 
 	return errors.Join(errs...)
 }

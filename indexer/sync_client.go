@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 const (
@@ -70,6 +71,11 @@ type SyncCursorStore interface {
 type SyncClient struct {
 	backend SyncBackend
 	cursors SyncCursorStore
+
+	// Log is an optional logger for this sync client. If None, the client
+	// falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
 }
 
 // NewSyncClient creates a SyncClient. Both backend and store are
@@ -92,11 +98,11 @@ func NewSyncClient(backend SyncBackend,
 	}, nil
 }
 
-// logger returns the logger for this sync client, extracting it from
-// the context. If no logger is present in the context, returns
-// btclog.Disabled which safely no-ops all log calls.
+// logger returns the configured logger, falling back to extracting a logger
+// from context. If neither is available, returns btclog.Disabled which safely
+// no-ops all log calls.
 func (c *SyncClient) logger(ctx context.Context) btclog.Logger {
-	return build.LoggerFromContext(ctx)
+	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // VTXOSyncResult wraps a VTXO event response and defers cursor

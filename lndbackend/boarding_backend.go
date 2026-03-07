@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
@@ -24,6 +25,11 @@ type BoardingBackend struct {
 	// walletKit is the LND wallet kit client used for key derivation,
 	// script import, and UTXO enumeration.
 	walletKit lndclient.WalletKitClient
+
+	// Log is an optional logger for this backend. If None, the backend
+	// falls back to the package-level log registered under the LNDB
+	// subsystem.
+	Log fn.Option[btclog.Logger]
 }
 
 // NewBoardingBackend creates a new LND boarding backend.
@@ -35,12 +41,18 @@ func NewBoardingBackend(
 	}
 }
 
+// logger returns the configured logger, falling back to the package-level log
+// registered under the LNDB subsystem.
+func (l *BoardingBackend) logger(ctx context.Context) btclog.Logger {
+	return l.Log.UnwrapOr(log)
+}
+
 // DeriveNextKey derives the next key in the specified key family using LND's
 // key derivation infrastructure.
 func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
 
-	log.DebugS(ctx, "Deriving next key from LND wallet",
+	l.logger(ctx).DebugS(ctx, "Deriving next key from LND wallet",
 		slog.Int("key_family", int(family)))
 
 	keyDesc, err := l.walletKit.DeriveNextKey(ctx, int32(family))
@@ -48,7 +60,7 @@ func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 		return nil, fmt.Errorf("derive next key: %w", err)
 	}
 
-	log.DebugS(ctx, "Derived next key successfully",
+	l.logger(ctx).DebugS(ctx, "Derived next key successfully",
 		slog.Int("key_family", int(family)),
 		slog.Int("key_index", int(keyDesc.Index)))
 
@@ -60,14 +72,14 @@ func (l *BoardingBackend) DeriveNextKey(ctx context.Context,
 func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 	script *waddrmgr.Tapscript) (btcutil.Address, error) {
 
-	log.DebugS(ctx, "Importing taproot script into LND wallet")
+	l.logger(ctx).DebugS(ctx, "Importing taproot script into LND wallet")
 
 	addr, err := l.walletKit.ImportTaprootScript(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("import taproot script: %w", err)
 	}
 
-	log.InfoS(ctx, "Imported taproot script successfully",
+	l.logger(ctx).InfoS(ctx, "Imported taproot script successfully",
 		slog.String("address", addr.String()))
 
 	return addr, nil
@@ -79,7 +91,7 @@ func (l *BoardingBackend) ImportTaprootScript(ctx context.Context,
 func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	maxConfs int32) ([]*wallet.Utxo, error) {
 
-	log.DebugS(ctx, "Listing unspent UTXOs from LND wallet",
+	l.logger(ctx).DebugS(ctx, "Listing unspent UTXOs from LND wallet",
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)))
 
@@ -103,7 +115,7 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 		utxos = append(utxos, utxo)
 	}
 
-	log.DebugS(ctx, "Listed unspent UTXOs from LND wallet",
+	l.logger(ctx).DebugS(ctx, "Listed unspent UTXOs from LND wallet",
 		slog.Int("num_utxos", len(utxos)))
 
 	return utxos, nil
@@ -115,7 +127,7 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 func (l *BoardingBackend) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wire.MsgTx, error) {
 
-	log.DebugS(ctx, "Fetching transaction from LND",
+	l.logger(ctx).DebugS(ctx, "Fetching transaction from LND",
 		btclog.Hex("txid", txid[:]))
 
 	txn, err := l.walletKit.GetTransaction(ctx, txid)
@@ -123,7 +135,7 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 		return nil, fmt.Errorf("get transaction: %w", err)
 	}
 
-	log.DebugS(ctx, "Fetched transaction successfully",
+	l.logger(ctx).DebugS(ctx, "Fetched transaction successfully",
 		btclog.Hex("txid", txid[:]),
 		slog.Int("num_inputs", len(txn.Tx.TxIn)),
 		slog.Int("num_outputs", len(txn.Tx.TxOut)))
