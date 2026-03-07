@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -53,8 +55,10 @@ import (
 // WalletState represents the lifecycle state of the wallet subsystem.
 // In lwwallet mode, the wallet transitions through these states during
 // daemon startup: None → Locked → Ready (or None → Ready if the seed
-// is provided via environment variable).
-type WalletState int
+// is provided via environment variable). The underlying type is int32
+// so it can be stored in an atomic.Int32 for lock-free concurrent
+// access.
+type WalletState int32
 
 const (
 	// WalletStateNone indicates no wallet has been created yet.
@@ -106,8 +110,16 @@ type Server struct {
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
-	// transitions through None → Locked → Ready.
-	walletState WalletState
+	// transitions through None → Locked → Ready. Stored as
+	// atomic.Int32 for lock-free concurrent access from gRPC
+	// handler goroutines and the startup goroutine. State
+	// transitions use CompareAndSwap to prevent TOCTOU races.
+	walletState atomic.Int32
+
+	// walletReadyOnce ensures the walletReady channel is closed
+	// exactly once, preventing a double-close panic if
+	// markWalletReady is called concurrently.
+	walletReadyOnce sync.Once
 
 	// walletReady is closed when the wallet subsystem has been
 	// fully initialized and is ready to service requests. RPC
@@ -158,11 +170,16 @@ func (s *Server) isWalletReady() bool {
 	}
 }
 
-// markWalletReady closes the walletReady channel, signaling to all
-// waiting RPC handlers that the wallet is operational.
+// markWalletReady atomically stores WalletStateReady and closes the
+// walletReady channel, signaling to all waiting RPC handlers that the
+// wallet is operational. The channel close is guarded by sync.Once to
+// prevent a double-close panic if this method is called concurrently.
 func (s *Server) markWalletReady() {
-	s.walletState = WalletStateReady
-	close(s.walletReady)
+	s.walletState.Store(int32(WalletStateReady))
+
+	s.walletReadyOnce.Do(func() {
+		close(s.walletReady)
+	})
 }
 
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
@@ -444,7 +461,9 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 
 		log.InfoS(ctx, "Wallet not ready, waiting for "+
 			"InitWallet or UnlockWallet RPC",
-			"state", s.walletState)
+			slog.Int("state", int(
+				s.walletState.Load(),
+			)))
 	}
 
 	log.InfoS(ctx, "Daemon ready")
@@ -514,21 +533,27 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 		return
 	}
 
-	networkDir := s.cfg.NetworkDir()
+	networkDir, err := s.cfg.NetworkDir()
+	if err != nil {
+		log.ErrorS(ctx, "Unable to resolve network directory",
+			err)
+
+		return
+	}
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
 		log.InfoS(ctx, "No wallet seed found, awaiting "+
 			"InitWallet RPC")
 
-		s.walletState = WalletStateNone
+		s.walletState.Store(int32(WalletStateNone))
 
 		return
 	}
 
 	// Encrypted seed exists. Try to find a password for
 	// auto-unlock: check env var first, then password file.
-	s.walletState = WalletStateLocked
+	s.walletState.Store(int32(WalletStateLocked))
 
 	password, ok := LoadPasswordFromEnv()
 	if !ok && s.cfg.Wallet.PasswordFile != "" {
