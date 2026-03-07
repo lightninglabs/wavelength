@@ -207,6 +207,11 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 // ToProto converts SubmitNoncesRequest to a protobuf message for mailbox
 // transport. Signing keys are hex-encoded and transaction IDs are
 // hex-encoded for use as proto map keys.
+//
+// NOTE: Map iteration order is non-deterministic, so serialized bytes
+// may differ across calls for identical input. This is acceptable
+// because proto map fields have no ordering semantics and downstream
+// code does not derive idempotency keys from raw proto bytes.
 func (m *SubmitNoncesRequest) ToProto() fn.Result[proto.Message] {
 	nonces := make(
 		map[string]*roundpb.SignerNonces, len(m.Nonces),
@@ -232,6 +237,11 @@ func (m *SubmitNoncesRequest) ToProto() fn.Result[proto.Message] {
 
 // ToProto converts SubmitPartialSigRequest to a protobuf message for
 // mailbox transport.
+//
+// NOTE: Map iteration order is non-deterministic, so serialized bytes
+// may differ across calls for identical input. This is acceptable
+// because proto map fields have no ordering semantics and downstream
+// code does not derive idempotency keys from raw proto bytes.
 func (m *SubmitPartialSigRequest) ToProto() fn.Result[proto.Message] {
 	sigs := make(
 		map[string]*roundpb.SignerPartialSigs,
@@ -272,15 +282,14 @@ func (m *SubmitForfeitSigRequest) ToProto() fn.Result[proto.Message] {
 		len(m.Signatures),
 	)
 	for i, sig := range m.Signatures {
-		sigs[i] = &roundpb.BoardingInputSignature{
-			InputIndex: int32(sig.InputIndex),
-			Outpoint: roundpb.OutpointToProto(
-				sig.Outpoint,
-			),
-			ClientSignature: roundpb.SchnorrSigToBytes(
-				sig.ClientSignature,
-			),
+		pbSig, err := roundpb.BoardingInputSigToProto(sig)
+		if err != nil {
+			return fn.Err[proto.Message](fmt.Errorf(
+				"signatures[%d]: %w", i, err,
+			))
 		}
+
+		sigs[i] = pbSig
 	}
 
 	return fn.Ok[proto.Message](&roundpb.SubmitForfeitSigRequest{
@@ -382,6 +391,12 @@ func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
 
 // ToProto converts SubmitVTXOForfeitSigsToServer to a protobuf message for
 // mailbox transport.
+//
+// NOTE: Map iteration order is non-deterministic, so the proto
+// repeated field ordering may vary across calls. This is acceptable
+// because the server identifies each entry by its VtxoOutpoint field,
+// not by position. Downstream code does not derive idempotency keys
+// from raw proto bytes.
 func (m *SubmitVTXOForfeitSigsToServer) ToProto() fn.Result[proto.Message] {
 	forfeitTxs := make(
 		[]*roundpb.ForfeitTxSig, 0, len(m.ForfeitSigs),

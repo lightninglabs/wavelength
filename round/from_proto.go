@@ -105,7 +105,9 @@ func (e *CommitmentTxBuilt) FromProto(p proto.Message) error {
 				)
 			}
 
-			t, treeErr := roundpb.TreeFromProto(pt)
+			t, treeErr := roundpb.TreeFromProto(
+				pt, e.TreeOpts...,
+			)
 			if treeErr != nil {
 				return fmt.Errorf(
 					"vtxo_tree_paths[%d]: %w",

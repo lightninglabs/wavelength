@@ -57,7 +57,9 @@ func validPSBTBytes(t *testing.T) []byte {
 func TestCommitmentTxBuiltFromProtoEmptyPSBT(t *testing.T) {
 	t.Parallel()
 
-	roundID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
 
 	pb := &roundpb.ClientBatchInfo{
 		RoundId:   roundID[:],
@@ -87,7 +89,9 @@ func TestCommitmentTxBuiltFromProtoEmptyPSBT(t *testing.T) {
 func TestCommitmentTxBuiltNegativeTreeIndex(t *testing.T) {
 	t.Parallel()
 
-	roundID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
 	hash := chainhash.Hash{0x01}
 
 	// Minimal valid tree for the proto.
@@ -144,7 +148,9 @@ func TestCommitmentTxBuiltNegativeTreeIndex(t *testing.T) {
 func TestNoncesAggregatedEmptyMap(t *testing.T) {
 	t.Parallel()
 
-	roundID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
 
 	pb := &roundpb.ClientVTXOAggNonces{
 		RoundId:   roundID[:],
@@ -173,7 +179,9 @@ func TestNoncesAggregatedEmptyMap(t *testing.T) {
 func TestOperatorSignedEmptySigMap(t *testing.T) {
 	t.Parallel()
 
-	roundID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
 
 	pb := &roundpb.ClientVTXOAggSigs{
 		RoundId: roundID[:],
@@ -230,7 +238,9 @@ func TestBoardingFailedAlwaysRecoverable(t *testing.T) {
 func TestCommitmentTxBuiltNilConnectorLeafOutput(t *testing.T) {
 	t.Parallel()
 
-	roundID := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	roundID := [16]byte{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+	}
 	hash := chainhash.Hash{0xaa}
 
 	op := wire.OutPoint{Hash: hash, Index: 0}
