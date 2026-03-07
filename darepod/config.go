@@ -56,8 +56,12 @@ type Config struct {
 	// simnet.
 	Network string `mapstructure:"network"`
 
-	// DebugLevel controls the verbosity of daemon logging. Valid values
-	// include trace, debug, info, warn, error, and critical.
+	// DebugLevel controls the verbosity of daemon logging. A single value
+	// sets the global level for all subsystems (e.g. "info"). A
+	// comma-separated list of subsystem=level pairs sets per-subsystem
+	// levels (e.g. "ROND=debug,OORC=trace,info"). The last bare level in
+	// the list (without a '=') sets the default for unlisted subsystems.
+	// Valid levels: trace, debug, info, warn, error, critical, off.
 	DebugLevel string `mapstructure:"debuglevel"`
 
 	// Lnd configures the connection to the backing lnd node.

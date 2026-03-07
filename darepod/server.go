@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
@@ -33,6 +35,7 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
+	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
@@ -58,6 +61,8 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 // gRPC server.
 type Server struct {
 	cfg *Config
+
+	logManager *lndbuild.SubLoggerManager
 
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
@@ -91,6 +96,27 @@ func NewServer(cfg *Config) (*Server, error) {
 //
 //nolint:funlen
 func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
+	// -------------------------------------------------------
+	// 0. Initialize the logging backend and subsystem loggers.
+	// -------------------------------------------------------
+	// Create a log handler writing to stdout. The SubLoggerManager
+	// manages per-subsystem loggers and supports runtime level changes.
+	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
+
+	// Register all package-level loggers with the manager. This
+	// replaces the default btclog.Disabled loggers so log output
+	// is captured from this point forward.
+	SetupLoggers(s.logManager, interceptor)
+
+	// Apply the configured debug level. A bare level like "info"
+	// sets all subsystems. A comma-separated list like
+	// "ROND=debug,OORC=trace,info" applies per-subsystem overrides
+	// with the bare value as the default.
+	if err := s.applyDebugLevel(); err != nil {
+		return fmt.Errorf("invalid debug level: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -321,6 +347,76 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	<-interceptor.ShutdownChannel()
 
 	log.InfoS(ctx, "Shutting down darepod")
+
+	return nil
+}
+
+// applyDebugLevel parses the DebugLevel config string and applies it to
+// the log manager. A bare level like "info" sets all subsystems globally.
+// A comma-separated list like "ROND=debug,OORC=trace,info" applies
+// per-subsystem overrides; the last bare value (without '=') becomes the
+// global default for unlisted subsystems.
+func (s *Server) applyDebugLevel() error {
+	debugLevel := s.cfg.DebugLevel
+	if debugLevel == "" {
+		debugLevel = DefaultDebugLevel
+	}
+
+	// Check if this is a simple global level (no commas, no '=').
+	if !strings.Contains(debugLevel, ",") &&
+		!strings.Contains(debugLevel, "=") {
+
+		_, ok := btclog.LevelFromString(debugLevel)
+		if !ok {
+			return fmt.Errorf("unknown log level %q",
+				debugLevel)
+		}
+
+		s.logManager.SetLogLevels(debugLevel)
+
+		return nil
+	}
+
+	// Parse comma-separated subsystem=level pairs. A bare value
+	// (without '=') sets the global default.
+	parts := strings.Split(debugLevel, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		if !strings.Contains(part, "=") {
+			// Bare level — set as global default.
+			_, ok := btclog.LevelFromString(part)
+			if !ok {
+				return fmt.Errorf("unknown log level %q",
+					part)
+			}
+
+			s.logManager.SetLogLevels(part)
+
+			continue
+		}
+
+		// Subsystem=level pair.
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("malformed debug level %q",
+				part)
+		}
+
+		subsystem := strings.TrimSpace(kv[0])
+		level := strings.TrimSpace(kv[1])
+
+		_, ok := btclog.LevelFromString(level)
+		if !ok {
+			return fmt.Errorf("unknown log level %q for "+
+				"subsystem %q", level, subsystem)
+		}
+
+		s.logManager.SetLogLevel(subsystem, level)
+	}
 
 	return nil
 }
