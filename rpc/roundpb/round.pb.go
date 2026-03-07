@@ -361,7 +361,8 @@ func (x *ConnectorLeafInfo) GetLeafOutput() *TxOut {
 }
 
 // ClientConnectorLeafInfo extends ConnectorLeafInfo with client-side fields
-// needed to construct forfeit transactions.
+// needed to construct forfeit transactions. Currently unused in wire
+// protocol messages; reserved for future client-to-server forfeit flows.
 type ClientConnectorLeafInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// leaf_index is the position of this connector in the connector tree.

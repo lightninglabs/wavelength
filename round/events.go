@@ -120,6 +120,9 @@ func (e *CommitmentTxBuilt) clientEventSealed() {}
 // connector output, paying the VTXO value to the operator's forfeit address.
 type ConnectorLeafInfo struct {
 	// LeafIndex is the position of this connector in the connector tree.
+	// Note that this field is NOT populated by FromProto since the
+	// server's ConnectorLeafInfo proto does not carry it. It is only
+	// set by local tree-building code. Zero is a valid index.
 	LeafIndex int
 
 	// ConnectorOutpoint is the outpoint of the connector output in the

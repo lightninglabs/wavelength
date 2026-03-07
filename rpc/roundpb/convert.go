@@ -300,6 +300,10 @@ func flattenNode(n *tree.Node, nodes *[]*TreeNode,
 
 // TreeFromProto converts a proto VTXOTree back to a tree.Tree by
 // reconstructing the recursive node structure.
+//
+// NOTE: The returned tree nodes will have a nil FinalKey. Callers that
+// need the aggregated taproot key must run Materialize on the tree to
+// recompute FinalKey from CoSigners and the sweep tapscript root.
 func TreeFromProto(pt *VTXOTree) (*tree.Tree, error) {
 	if pt == nil {
 		return nil, nil

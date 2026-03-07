@@ -90,7 +90,8 @@ message ConnectorLeafInfo {
 }
 
 // ClientConnectorLeafInfo extends ConnectorLeafInfo with client-side fields
-// needed to construct forfeit transactions.
+// needed to construct forfeit transactions. Currently unused in wire
+// protocol messages; reserved for future client-to-server forfeit flows.
 message ClientConnectorLeafInfo {
     // leaf_index is the position of this connector in the connector tree.
     int32 leaf_index = 1;
