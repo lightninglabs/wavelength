@@ -133,9 +133,16 @@ func methodRegistry() []schemaMethod {
 					Description: "minimum amount in sats",
 				},
 				{
-					Name:        "fields",
-					Type:        "string",
-					Description: "comma-separated field names to include",
+					Name: "fields",
+					Type: "string",
+					Description: "comma-separated field " +
+						"names to include",
+				},
+				{
+					Name: "ndjson",
+					Type: "bool",
+					Description: "emit one JSON object " +
+						"per VTXO (newline-delimited)",
 				},
 			},
 			RequestType:  "ListVTXOsRequest",
@@ -147,9 +154,10 @@ func methodRegistry() []schemaMethod {
 			Description: "Queue VTXOs for refresh in next round",
 			Params: []schemaParam{
 				{
-					Name:        "outpoint",
-					Type:        "string[]",
-					Description: "VTXO outpoint(s) to refresh (txid:index)",
+					Name: "outpoint",
+					Type: "string[]",
+					Description: "VTXO outpoint(s) to " +
+						"refresh (txid:index)",
 				},
 				{
 					Name:        "all",
@@ -173,10 +181,11 @@ func methodRegistry() []schemaMethod {
 					Description: "recipient address(es)",
 				},
 				{
-					Name:        "amount",
-					Type:        "int64[]",
-					Required:    true,
-					Description: "amount(s) in sats (one per --to)",
+					Name:     "amount",
+					Type:     "int64[]",
+					Required: true,
+					Description: "amount(s) in sats " +
+						"(one per --to)",
 				},
 			},
 			RequestType:  "SendVTXORequest",

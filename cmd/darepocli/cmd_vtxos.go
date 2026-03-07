@@ -7,6 +7,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/proto"
 )
 
 // newVTXOsCmd creates the vtxos parent command with subcommands for
@@ -54,6 +55,9 @@ func newVTXOsListCmd() *cobra.Command {
 
 	cmd.Flags().String("fields", "",
 		"comma-separated field names to include")
+
+	cmd.Flags().Bool("ndjson", false,
+		"emit one JSON object per VTXO (newline-delimited)")
 
 	return cmd
 }
@@ -106,6 +110,35 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("ListVTXOs RPC failed: %w", err)
+	}
+
+	// Parse optional output modifiers.
+	ndjson, _ := cmd.Flags().GetBool("ndjson")
+	fieldsStr, _ := cmd.Flags().GetString("fields")
+
+	// Emit newline-delimited JSON if --ndjson was specified. When
+	// combined with --fields, each line is filtered to the
+	// requested fields.
+	if ndjson {
+		items := make(
+			[]proto.Message, len(resp.Vtxos),
+		)
+		for i, v := range resp.Vtxos {
+			items[i] = v
+		}
+
+		if fieldsStr != "" {
+			fields := strings.Split(fieldsStr, ",")
+			return printNDJSONFields(items, fields)
+		}
+
+		return printNDJSON(items)
+	}
+
+	// Apply field mask if --fields was specified.
+	if fieldsStr != "" {
+		fields := strings.Split(fieldsStr, ",")
+		return printJSONFields(resp, fields)
 	}
 
 	return printJSON(resp)
