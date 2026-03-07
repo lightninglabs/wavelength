@@ -34,6 +34,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.47.0
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6
+	golang.org/x/term v0.39.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250324211829-b45e905df463
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
@@ -191,7 +192,6 @@ require (
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
