@@ -51,41 +51,30 @@ func SetupLoggers(root *lndbuild.SubLoggerManager,
 	// child logger from the root backend, registers it with the manager
 	// for level control, and calls the package's UseLogger to activate
 	// the package-level logger.
-	AddSubLogger(root, Subsystem, interceptor, UseLogger)
-	AddSubLogger(root, actor.Subsystem, interceptor, actor.UseLogger)
-	AddSubLogger(
-		root, round.Subsystem, interceptor, round.UseLogger,
-	)
-	AddSubLogger(root, oor.Subsystem, interceptor, oor.UseLogger)
-	AddSubLogger(
-		root, vtxo.Subsystem, interceptor, vtxo.UseLogger,
-	)
-	AddSubLogger(
-		root, wallet.Subsystem, interceptor, wallet.UseLogger,
-	)
-	AddSubLogger(
-		root, lwwallet.Subsystem, interceptor, lwwallet.UseLogger,
-	)
-	AddSubLogger(
-		root, serverconn.Subsystem, interceptor,
-		serverconn.UseLogger,
-	)
-	AddSubLogger(
-		root, chainbackends.Subsystem, interceptor,
-		chainbackends.UseLogger,
-	)
-	AddSubLogger(
-		root, chainbackends.LndClientSubsystem, interceptor,
-		chainbackends.UseLndClientLogger,
-	)
-	AddSubLogger(
-		root, lndbackend.Subsystem, interceptor,
-		lndbackend.UseLogger,
-	)
-	AddSubLogger(
-		root, indexer.Subsystem, interceptor, indexer.UseLogger,
-	)
-	AddSubLogger(root, db.Subsystem, interceptor, db.UseLogger)
+	subsystems := []struct {
+		name      string
+		useLogger func(btclog.Logger)
+	}{
+		{Subsystem, UseLogger},
+		{actor.Subsystem, actor.UseLogger},
+		{round.Subsystem, round.UseLogger},
+		{oor.Subsystem, oor.UseLogger},
+		{vtxo.Subsystem, vtxo.UseLogger},
+		{wallet.Subsystem, wallet.UseLogger},
+		{lwwallet.Subsystem, lwwallet.UseLogger},
+		{serverconn.Subsystem, serverconn.UseLogger},
+		{chainbackends.Subsystem, chainbackends.UseLogger},
+		{
+			chainbackends.LndClientSubsystem,
+			chainbackends.UseLndClientLogger,
+		},
+		{lndbackend.Subsystem, lndbackend.UseLogger},
+		{indexer.Subsystem, indexer.UseLogger},
+		{db.Subsystem, db.UseLogger},
+	}
+	for _, sub := range subsystems {
+		AddSubLogger(root, sub.name, interceptor, sub.useLogger)
+	}
 }
 
 // AddSubLogger creates a new subsystem logger from the root manager,
