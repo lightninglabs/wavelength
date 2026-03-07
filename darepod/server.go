@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
@@ -27,6 +28,7 @@ import (
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -461,6 +463,7 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 	router := serverconn.NewEventRouter(s.actorSystem)
 
 	s.registerOOREventRoutes(router)
+	s.registerRoundEventRoutes(router)
 
 	return router
 }
@@ -551,6 +554,133 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
 	// server-push response route.
+}
+
+// registerRoundEventRoutes registers round protocol server-push event
+// routes with the EventRouter. When the server pushes round lifecycle
+// events (batch built, nonces aggregated, etc.), the router decodes
+// the roundpb proto, calls FromProto on the domain event type, wraps
+// it in a ServerMessageNotification, and Tell's it to the round actor.
+func (s *Server) registerRoundEventRoutes(
+	router *serverconn.EventRouter) {
+
+	roundKey := round.NewServiceKey()
+
+	// addRoundRoute is a helper that registers a push event route.
+	// It creates a fresh domain event via newEvent, deserializes
+	// the proto into it via FromProto, then wraps it in a
+	// ServerMessageNotification for delivery to the round actor.
+	addRoundRoute := func(method string,
+		newProto func() proto.Message,
+		newEvent func() round.ClientEvent) {
+
+		serverconn.AddRoute(
+			router,
+			serverconn.EventRouteConfig[
+				actormsg.RoundReceivable,
+				actormsg.RoundActorResp,
+			]{
+				Service:  roundpb.ServiceName,
+				Method:   method,
+				NewEvent: newProto,
+				Key:      roundKey,
+				Adapt: func(
+					p proto.Message,
+				) (actormsg.RoundReceivable, error) {
+
+					ev := newEvent()
+
+					inbound, ok := ev.(serverconn.InboundServerMessage)
+					if !ok {
+						return nil, fmt.Errorf(
+							"event %T does not "+
+								"implement "+
+								"InboundServerMessage",
+							ev,
+						)
+					}
+
+					if err := inbound.FromProto(p); err != nil {
+						return nil, fmt.Errorf(
+							"FromProto %s/%s: %w",
+							roundpb.ServiceName,
+							method, err,
+						)
+					}
+
+					return &round.ServerMessageNotification{
+						Message: ev,
+					}, nil
+				},
+			},
+		)
+	}
+
+	// BatchInfo: server built the commitment transaction.
+	addRoundRoute(
+		roundpb.MethodBatchInfo,
+		func() proto.Message {
+			return &roundpb.ClientBatchInfo{}
+		},
+		func() round.ClientEvent {
+			return &round.CommitmentTxBuilt{}
+		},
+	)
+
+	// AwaitingInputSigs: server needs boarding input signatures.
+	addRoundRoute(
+		roundpb.MethodAwaitingInputSigs,
+		func() proto.Message {
+			return &roundpb.ClientAwaitingInputSigsResp{}
+		},
+		func() round.ClientEvent {
+			return &round.AwaitingBoardingSigs{}
+		},
+	)
+
+	// AggNonces: server sends aggregated MuSig2 nonces.
+	addRoundRoute(
+		roundpb.MethodAggNonces,
+		func() proto.Message {
+			return &roundpb.ClientVTXOAggNonces{}
+		},
+		func() round.ClientEvent {
+			return &round.NoncesAggregated{}
+		},
+	)
+
+	// AggSigs: server sends final aggregated signatures.
+	addRoundRoute(
+		roundpb.MethodAggSigs,
+		func() proto.Message {
+			return &roundpb.ClientVTXOAggSigs{}
+		},
+		func() round.ClientEvent {
+			return &round.OperatorSigned{}
+		},
+	)
+
+	// RoundFailed: server reports the round has failed.
+	addRoundRoute(
+		roundpb.MethodRoundFailed,
+		func() proto.Message {
+			return &roundpb.ClientRoundFailedResp{}
+		},
+		func() round.ClientEvent {
+			return &round.BoardingFailed{}
+		},
+	)
+
+	// Error: server reports a general error condition.
+	addRoundRoute(
+		roundpb.MethodError,
+		func() proto.Message {
+			return &roundpb.ClientErrorResp{}
+		},
+		func() round.ClientEvent {
+			return &round.BoardingFailed{}
+		},
+	)
 }
 
 // handleInboundRPC dispatches a single inbound KIND_REQUEST envelope through
