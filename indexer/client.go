@@ -3,8 +3,8 @@ package indexer
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -149,6 +149,10 @@ const (
 // pkScript so it can select the appropriate key.
 func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
 	serverID string, principal string) *Client {
+
+	log.InfoS(context.TODO(), "Initializing indexer client",
+		slog.String("server_id", serverID),
+		slog.String("principal", principal))
 
 	return &Client{
 		rpc:       arkrpc.NewIndexerServiceMailboxClient(rpc),
@@ -398,6 +402,12 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOsByScriptsResponse, error) {
 
+	c.logger(ctx).TraceS(ctx, "Listing VTXOs by scripts",
+		slog.Int("scope_count", len(scopes)),
+		slog.Uint64("after_cursor", afterCursor),
+		slog.Int("limit", int(limit)),
+		slog.Int("status_filter_count", len(statusFilter)))
+
 	scriptScopes, err := c.buildTaprootScopes(
 		scopes, purposeListVTXOsByScripts,
 	)
@@ -422,6 +432,10 @@ func (c *Client) GetSubtreeByScriptsTaproot(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.GetSubtreeByScriptsResponse, error) {
 
+	c.logger(ctx).TraceS(ctx, "Getting subtree by scripts",
+		slog.Int("scope_count", len(scopes)),
+		slog.Bool("include_internal_nodes", includeInternalNodes))
+
 	scriptScopes, err := c.buildTaprootScopes(
 		scopes, purposeGetSubtreeByScripts,
 	)
@@ -443,6 +457,11 @@ func (c *Client) ListVTXOEventsByScriptsTaproot(ctx context.Context,
 	scopes []TaprootScriptScope, afterEventID uint64, limit uint32,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListVTXOEventsByScriptsResponse, error) {
+
+	c.logger(ctx).TraceS(ctx, "Listing VTXO events by scripts",
+		slog.Int("scope_count", len(scopes)),
+		slog.Uint64("after_event_id", afterEventID),
+		slog.Int("limit", int(limit)))
 
 	scriptScopes, err := c.buildTaprootScopes(
 		scopes, purposeListVTXOEventsByScripts,
@@ -520,9 +539,9 @@ func (c *Client) RegisterReceiveScriptTaproot(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Registering receive script",
-		"pk_script", hex.EncodeToString(pkScript),
-		"label", label,
-		"expires_at", expiresAt)
+		btclog.Hex("pk_script", pkScript),
+		slog.String("label", label),
+		slog.Time("expires_at", expiresAt))
 
 	req := &arkrpc.RegisterReceiveScriptRequest{
 		PkScript:       pkScript,
@@ -577,7 +596,7 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Unregistering receive script",
-		"pk_script", hex.EncodeToString(pkScript))
+		btclog.Hex("pk_script", pkScript))
 
 	req := &arkrpc.UnregisterReceiveScriptRequest{
 		PkScript: pkScript,
@@ -598,6 +617,8 @@ func (c *Client) UnregisterReceiveScript(ctx context.Context,
 func (c *Client) ListMyReceiveScripts(ctx context.Context,
 	opts ...mailboxrpc.RPCOptions) (
 	*arkrpc.ListMyReceiveScriptsResponse, error) {
+
+	c.logger(ctx).TraceS(ctx, "Listing registered receive scripts")
 
 	req := &arkrpc.ListMyReceiveScriptsRequest{}
 
@@ -655,9 +676,9 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		}
 
 	c.logger(ctx).TraceS(ctx, "Listing OOR recipient events",
-		"pk_script", hex.EncodeToString(pkScript),
-		"after_event_id", afterEventID,
-		"limit", limit)
+		btclog.Hex("pk_script", pkScript),
+		slog.Uint64("after_event_id", afterEventID),
+		slog.Int("limit", int(limit)))
 
 	req := &arkrpc.ListOORRecipientEventsByScriptRequest{
 		PkScript:     pkScript,

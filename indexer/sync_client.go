@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	btclog "github.com/btcsuite/btclog/v2"
@@ -82,6 +83,8 @@ func NewSyncClient(backend SyncBackend,
 	if store == nil {
 		return nil, fmt.Errorf("sync cursor store must not be nil")
 	}
+
+	log.InfoS(context.TODO(), "Initializing sync client")
 
 	return &SyncClient{
 		backend: backend,
@@ -165,9 +168,9 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Polling VTXO events",
-		"cursor_key", cursorKey,
-		"cursor", cursor,
-		"limit", limit)
+		slog.String("cursor_key", cursorKey),
+		slog.Uint64("cursor", cursor),
+		slog.Int("limit", int(limit)))
 
 	resp, err := c.backend.ListVTXOEventsByScriptsTaproot(
 		ctx, scopes, cursor, limit, opts...,
@@ -175,6 +178,11 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	c.logger(ctx).TraceS(ctx, "VTXO events poll complete",
+		slog.String("cursor_key", cursorKey),
+		slog.Int("event_count", len(resp.Events)),
+		slog.Uint64("next_cursor", resp.NextCursor))
 
 	// Capture the cursor for the ack closure. The cursor is
 	// only persisted when the caller calls Ack, preventing
@@ -217,9 +225,9 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Polling OOR recipient events",
-		"pk_script", scriptKey,
-		"cursor", cursor,
-		"limit", limit)
+		slog.String("pk_script", scriptKey),
+		slog.Uint64("cursor", cursor),
+		slog.Int("limit", int(limit)))
 
 	resp, err := c.backend.ListOORRecipientEventsByScriptTaproot(
 		ctx, pkScript, cursor, limit, opts...,
@@ -227,6 +235,11 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	c.logger(ctx).TraceS(ctx, "OOR recipient events poll complete",
+		slog.String("pk_script", scriptKey),
+		slog.Int("event_count", len(resp.Events)),
+		slog.Uint64("next_cursor", resp.NextCursor))
 
 	// Capture the cursor for the ack closure.
 	nextCursor := resp.NextCursor
