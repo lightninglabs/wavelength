@@ -302,6 +302,99 @@ func (m *RefreshVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *RefreshVTXOsResponse) walletRespSealed() {}
 
+// SelectAndLockVTXOsRequest asks the wallet actor to select VTXOs covering a
+// target amount and atomically lock them to prevent double-spends. The locked
+// VTXOs are returned as descriptors that the caller can use to build OOR
+// transfer inputs. If the transfer fails, the caller should send an
+// UnlockVTXOsRequest to release the locks.
+type SelectAndLockVTXOsRequest struct {
+	actor.BaseMessage
+
+	// TargetAmount is the minimum total value the selected VTXOs must
+	// cover.
+	TargetAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SelectAndLockVTXOsRequest) MessageType() string {
+	return "SelectAndLockVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *SelectAndLockVTXOsRequest) walletMsgSealed() {}
+
+// SelectedVTXO describes a VTXO that was selected and locked for use as
+// a transfer input. This avoids a direct dependency on the vtxo package
+// in the wallet message surface (which would create an import cycle via
+// vtxo → round → wallet).
+type SelectedVTXO struct {
+	// Outpoint is the selected VTXO's outpoint.
+	Outpoint wire.OutPoint
+
+	// Amount is the value of this VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the output script for this VTXO. This also serves
+	// as the owner leaf script for OOR checkpoint construction.
+	PkScript []byte
+}
+
+// SelectAndLockVTXOsResponse returns the VTXOs that were selected and locked.
+type SelectAndLockVTXOsResponse struct {
+	actor.BaseMessage
+
+	// SelectedVTXOs is the set of VTXOs that were locked for this
+	// operation. The caller should use these outpoints to look up
+	// full descriptors from the VTXO store if needed.
+	SelectedVTXOs []SelectedVTXO
+
+	// TotalSelected is the sum of all selected VTXO amounts.
+	TotalSelected btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SelectAndLockVTXOsResponse) MessageType() string {
+	return "SelectAndLockVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *SelectAndLockVTXOsResponse) walletRespSealed() {}
+
+// UnlockVTXOsRequest releases locks on VTXOs that were previously selected
+// via SelectAndLockVTXOsRequest. This is used when an OOR transfer fails
+// or is cancelled, allowing the VTXOs to be used in future operations.
+type UnlockVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to unlock.
+	Outpoints []wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *UnlockVTXOsRequest) MessageType() string {
+	return "UnlockVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *UnlockVTXOsRequest) walletMsgSealed() {}
+
+// UnlockVTXOsResponse confirms that the specified VTXOs were unlocked.
+type UnlockVTXOsResponse struct {
+	actor.BaseMessage
+
+	// UnlockedCount is the number of VTXOs that were successfully
+	// unlocked.
+	UnlockedCount int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *UnlockVTXOsResponse) MessageType() string {
+	return "UnlockVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *UnlockVTXOsResponse) walletRespSealed() {}
+
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
 // will be forfeited and their value sent to the specified destination output.
 type LeaveVTXOsRequest struct {
