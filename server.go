@@ -13,11 +13,15 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/darepo/oor"
+	"github.com/lightninglabs/darepo/rounds"
+	"github.com/lightninglabs/darepo/timeout"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/signal"
@@ -64,6 +68,36 @@ type Server struct {
 	// indexerOperator provides RPC dispatchers and event publication
 	// for the indexer service through the shared bridge.
 	indexerOperator *indexer.Operator
+
+	// chainSourceRef is the actor reference for the chain source
+	// actor, used by the rounds and batch watcher subsystems.
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+
+	// timeoutRef is the actor reference for the shared timeout
+	// scheduling actor used by round phase deadlines.
+	timeoutRef actor.ActorRef[timeout.Msg, timeout.Resp]
+
+	// batchWatcherRef is the actor reference for the batch watcher
+	// that monitors confirmed batch transactions on-chain.
+	batchWatcherRef actor.ActorRef[
+		batchwatcher.BatchWatcherMsg,
+		batchwatcher.BatchWatcherResp,
+	]
+
+	// roundsActor is the server rounds actor that drives the round
+	// FSM lifecycle: registration, signing, broadcast, and
+	// confirmation.
+	roundsActor *rounds.Actor
+
+	// roundsRef is the actor reference for the rounds actor, used
+	// for sending messages (e.g. TriggerBatch from admin RPC).
+	roundsRef actor.ActorRef[rounds.ActorMsg, rounds.ActorResp]
+
+	// oorActor is the OOR transfer coordinator that manages
+	// out-of-round transfers between clients.
+	oorActor *oor.Actor
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -199,7 +233,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			System:  s.actorSystem,
 		},
 	)
-	_ = actor.RegisterWithSystem(
+	s.chainSourceRef = actor.RegisterWithSystem(
 		s.actorSystem, "chain-source",
 		chainsource.ChainSourceKey, chainActor,
 	)
@@ -239,6 +273,24 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			"subsystem: %w", err)
 	}
 	defer s.stopIndexerSubsystem(ctx)
+
+	// -------------------------------------------------------
+	// 5a. Setup rounds subsystem.
+	// -------------------------------------------------------
+	if err := s.setupRoundsSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup rounds "+
+			"subsystem: %w", err)
+	}
+	defer s.stopRoundsSubsystem(ctx)
+
+	// -------------------------------------------------------
+	// 5b. Setup OOR subsystem.
+	// -------------------------------------------------------
+	if err := s.setupOORSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup OOR "+
+			"subsystem: %w", err)
+	}
+	defer s.stopOORSubsystem(ctx)
 
 	// -------------------------------------------------------
 	// 6. Start admin RPC server.
