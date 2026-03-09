@@ -403,6 +403,18 @@ func (h *Harness) BaseDir() string {
 	return h.artifactsDir
 }
 
+// LndTLSCertPath returns the path to the LND TLS certificate file on the
+// host filesystem.
+func (h *Harness) LndTLSCertPath() string {
+	return h.lndTLSCert
+}
+
+// LndMacaroonPath returns the path to the LND admin macaroon file on the
+// host filesystem.
+func (h *Harness) LndMacaroonPath() string {
+	return h.lndMacaroon
+}
+
 // Start launches bitcoind and lnd containers, initializes lnd, and boots arkd
 // in-process.
 func (h *Harness) Start() {
