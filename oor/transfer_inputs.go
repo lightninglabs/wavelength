@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -11,9 +12,12 @@ import (
 // TransferInput describes a spendable VTXO being used as an input to an
 // outgoing OOR transfer.
 //
-// The VTXO descriptor provides everything needed for client-side signing (key
-// descriptor + tapscript). The OwnerLeafScript is the draft checkpoint output
-// leaf script committed to in the checkpoint output tap tree.
+// The VTXO descriptor provides key material and the output script. SpendInfo
+// carries the compiled leaf script and control block for the specific spend
+// path; callers derive it via the arkscript scripting system (e.g.
+// VTXOPolicy.CollabSpendInfo() for standard VTXOs or
+// vhtlc.Policy.ClaimSpendInfo() for vHTLC inputs). OwnerLeafScript is the
+// checkpoint output owner leaf committed to the tap tree.
 type TransferInput struct {
 	// VTXO is the descriptor for the input VTXO being transferred.
 	VTXO *vtxo.Descriptor
@@ -24,6 +28,18 @@ type TransferInput struct {
 	// This is currently a draft implementation, and may change as the
 	// checkpoint policy is refined.
 	OwnerLeafScript []byte
+
+	// SpendInfo is the spend path the client (and server) use when signing
+	// checkpoint PSBTs. Callers derive this via the arkscript system
+	// (e.g. VTXOPolicy.CollabSpendInfo() or
+	// vhtlc.Policy.ClaimSpendInfo()).
+	SpendInfo *arkscript.SpendInfo
+
+	// ConditionWitness contains extra witness items that must appear
+	// between the signature stack and the leaf script. For example, a
+	// HashLock-gated leaf requires the preimage here. Empty for standard
+	// 2-of-2 collab paths.
+	ConditionWitness [][]byte
 }
 
 // Validate performs basic structural validation.

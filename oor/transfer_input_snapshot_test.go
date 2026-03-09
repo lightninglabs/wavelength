@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -14,7 +15,8 @@ import (
 )
 
 // TestTransferInputSnapshotRoundTrip asserts that transfer input snapshots
-// contain enough information to rebuild the VTXO signing descriptor.
+// contain enough information to rebuild the VTXO signing descriptor including
+// the spend path (SpendInfo) and condition witness.
 func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -26,17 +28,21 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 
 	exitDelay := uint32(10)
 
-	tapScript, err := scripts.VTXOTapScript(
-		clientKey.PubKey(), operatorKey.PubKey(), exitDelay,
-	)
-	require.NoError(t, err)
-
 	tapKey, err := scripts.VTXOTapKey(
 		clientKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
 
 	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	require.NoError(t, err)
+
+	// Derive the standard VTXO collab spend info via the arkscript system.
+	vtxoPolicy, err := arkscript.NewVTXOPolicy(
+		clientKey.PubKey(), operatorKey.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+
+	collabSpendInfo, err := vtxoPolicy.CollabSpendInfo()
 	require.NoError(t, err)
 
 	in := &TransferInput{
@@ -55,11 +61,11 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 				PubKey: clientKey.PubKey(),
 			},
 			OperatorKey:    operatorKey.PubKey(),
-			TapScript:      tapScript,
 			RelativeExpiry: exitDelay,
 			Status:         vtxo.VTXOStatusLive,
 		},
 		OwnerLeafScript: []byte{txscript.OP_1},
+		SpendInfo:       collabSpendInfo,
 	}
 
 	snap, err := in.ToSnapshot()
@@ -77,6 +83,8 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 		snap.OperatorPubKey)
 	require.Equal(t, in.VTXO.RelativeExpiry, snap.ExitDelay)
 	require.Equal(t, in.OwnerLeafScript, snap.OwnerLeafScript)
+	require.Equal(t, collabSpendInfo.WitnessScript, snap.SpendWitnessScript)
+	require.Equal(t, collabSpendInfo.ControlBlock, snap.SpendControlBlock)
 
 	rebuilt, err := TransferInputFromSnapshot(snap)
 	require.NoError(t, err)
@@ -93,6 +101,11 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.VTXO.RelativeExpiry, rebuilt.VTXO.RelativeExpiry)
 	require.NotNil(t, rebuilt.VTXO.TapScript)
 	require.Equal(t, in.OwnerLeafScript, rebuilt.OwnerLeafScript)
+	require.NotNil(t, rebuilt.SpendInfo)
+	require.Equal(t, collabSpendInfo.WitnessScript,
+		rebuilt.SpendInfo.WitnessScript)
+	require.Equal(t, collabSpendInfo.ControlBlock,
+		rebuilt.SpendInfo.ControlBlock)
 }
 
 // TestTransferInputValidateRejectsNil asserts nil receivers are rejected.

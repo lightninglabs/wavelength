@@ -6,15 +6,14 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
-// coSignCheckpointPSBTsForTest attaches operator collaborative signatures to
-// checkpoint PSBTs. Tests use this to model submit-accepted artifacts returned
-// by the server.
+// coSignCheckpointPSBTsForTest attaches operator signatures to checkpoint
+// PSBTs using the spend path described by in.SpendInfo. Tests use this to
+// model submit-accepted artifacts returned by the server.
 func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 	checkpoints []*psbt.Packet) error {
 
@@ -33,13 +32,17 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 	inputByOutpoint := make(map[wire.OutPoint]*TransferInput, len(inputs))
 	for i := range inputs {
 		in := &inputs[i]
-		if in == nil || in.VTXO == nil {
+		if in.VTXO == nil {
 			return fmt.Errorf("transfer input must include vtxo")
 		}
 
 		err := in.Validate()
 		if err != nil {
 			return err
+		}
+
+		if in.SpendInfo == nil {
+			return fmt.Errorf("spend info must be provided")
 		}
 
 		inputByOutpoint[in.VTXO.Outpoint] = in
@@ -89,19 +92,20 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 			checkpoint.UnsignedTx, prevFetcher,
 		)
 
-		signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-			&tx.VTXOSpendContext{
-				Outpoint:  vtxo.Outpoint,
-				Output:    prevOut,
-				TapScript: vtxo.TapScript,
+		// Use the caller-supplied spend path bytes directly so the
+		// co-signer does not need to reconstruct the tapscript tree.
+		leafScript := in.SpendInfo.WitnessScript
+		signDesc := &input.SignDescriptor{
+			KeyDesc: keychain.KeyDescriptor{
+				PubKey: vtxo.OperatorKey,
 			},
-			keychain.KeyDescriptor{PubKey: vtxo.OperatorKey},
-			0,
-			sigHashes,
-			prevFetcher,
-		)
-		if err != nil {
-			return err
+			SignMethod:        input.TaprootScriptSpendSignMethod,
+			Output:            prevOut,
+			HashType:          txscript.SigHashDefault,
+			SigHashes:         sigHashes,
+			PrevOutputFetcher: prevFetcher,
+			InputIndex:        0,
+			WitnessScript:     leafScript,
 		}
 
 		sig, err := signer.SignOutputRaw(
@@ -116,17 +120,21 @@ func coSignCheckpointPSBTsForTest(signer input.Signer, inputs []TransferInput,
 			return fmt.Errorf("signer returned empty signature")
 		}
 
-		input := &checkpoint.Inputs[0]
+		pInput := &checkpoint.Inputs[0]
 
-		err = psbtutil.AddTapLeafScript(input, spendInfo)
+		err = addTapLeafScriptRaw(
+			pInput,
+			in.SpendInfo.WitnessScript,
+			in.SpendInfo.ControlBlock,
+		)
 		if err != nil {
 			return err
 		}
 
 		err = psbtutil.AddTaprootScriptSpendSig(
-			input,
+			pInput,
 			vtxo.OperatorKey,
-			spendInfo.WitnessScript,
+			leafScript,
 			sigBytes,
 			signDesc.HashType,
 		)

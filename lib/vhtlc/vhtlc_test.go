@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
-	arkscript "github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	arkscript "github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 

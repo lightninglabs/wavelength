@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -54,6 +55,20 @@ type TransferInputSnapshot struct {
 	// custom spend scripts (e.g. vHTLC) through the TLV round-trip without
 	// loss of fidelity.
 	PkScript []byte
+
+	// SpendWitnessScript is the tapscript leaf script for the spend path
+	// used when signing checkpoint PSBTs. Corresponds to
+	// SpendInfo.WitnessScript on TransferInput.
+	SpendWitnessScript []byte
+
+	// SpendControlBlock is the BIP-341 control block for the spend leaf.
+	// Corresponds to SpendInfo.ControlBlock on TransferInput.
+	SpendControlBlock []byte
+
+	// ConditionWitness contains extra witness items (e.g. preimage)
+	// required between the signatures and the leaf script. Corresponds to
+	// TransferInput.ConditionWitness.
+	ConditionWitness [][]byte
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -73,16 +88,26 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		return nil, fmt.Errorf("vtxo exit delay must be provided")
 	}
 
+	// SpendInfo is required so the restored snapshot can sign checkpoints
+	// without re-deriving the spend path from key material.
+	if i.SpendInfo == nil {
+		return nil, fmt.Errorf("spend info must be provided for " +
+			"snapshot")
+	}
+
 	return &TransferInputSnapshot{
-		Outpoint:        i.VTXO.Outpoint,
-		AmountSat:       int64(i.VTXO.Amount),
-		ClientKeyFamily: int32(i.VTXO.ClientKey.KeyLocator.Family),
-		ClientKeyIndex:  i.VTXO.ClientKey.KeyLocator.Index,
-		ClientPubKey:    i.VTXO.ClientKey.PubKey.SerializeCompressed(),
-		OperatorPubKey:  operatorKey.SerializeCompressed(),
-		ExitDelay:       exitDelay,
-		OwnerLeafScript: i.OwnerLeafScript,
-		PkScript:        i.VTXO.PkScript,
+		Outpoint:           i.VTXO.Outpoint,
+		AmountSat:          int64(i.VTXO.Amount),
+		ClientKeyFamily:    int32(i.VTXO.ClientKey.KeyLocator.Family),
+		ClientKeyIndex:     i.VTXO.ClientKey.KeyLocator.Index,
+		ClientPubKey:       i.VTXO.ClientKey.PubKey.SerializeCompressed(),
+		OperatorPubKey:     operatorKey.SerializeCompressed(),
+		ExitDelay:          exitDelay,
+		OwnerLeafScript:    i.OwnerLeafScript,
+		PkScript:           i.VTXO.PkScript,
+		SpendWitnessScript: i.SpendInfo.WitnessScript,
+		SpendControlBlock:  i.SpendInfo.ControlBlock,
+		ConditionWitness:   i.ConditionWitness,
 	}, nil
 }
 
@@ -110,6 +135,11 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	if len(snap.OwnerLeafScript) == 0 {
 		return TransferInput{}, fmt.Errorf("owner leaf script must " +
 			"be provided")
+	}
+
+	if len(snap.SpendWitnessScript) == 0 {
+		return TransferInput{}, fmt.Errorf("spend witness script " +
+			"must be provided")
 	}
 
 	clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
@@ -195,8 +225,18 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		Status:         vtxo.VTXOStatusLive,
 	}
 
+	// Reconstruct the spend path descriptor from the stored bytes. We
+	// do not restore RequiredSequence/RequiredLockTime since those are
+	// only used during transaction construction, not checkpoint signing.
+	spendInfo := &arkscript.SpendInfo{
+		WitnessScript: snap.SpendWitnessScript,
+		ControlBlock:  snap.SpendControlBlock,
+	}
+
 	return TransferInput{
-		VTXO:            desc,
-		OwnerLeafScript: snap.OwnerLeafScript,
+		VTXO:             desc,
+		OwnerLeafScript:  snap.OwnerLeafScript,
+		SpendInfo:        spendInfo,
+		ConditionWitness: snap.ConditionWitness,
 	}, nil
 }

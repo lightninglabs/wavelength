@@ -9,10 +9,8 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // SignCheckpointPSBTs attaches the client-side collaborative VTXO spend
@@ -121,13 +119,21 @@ func validateOperatorCheckpointSignatures(inputs []TransferInput,
 }
 
 // validateSingleOperatorCheckpointSignature verifies one checkpoint contains a
-// valid operator collaborative-path script-spend signature.
+// valid operator script-spend signature for the spend path described by
+// in.SpendInfo.
 func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	checkpoint *psbt.Packet) error {
 
 	vtxo := in.VTXO
 	if vtxo == nil || vtxo.OperatorKey == nil {
 		return fmt.Errorf("operator key must be provided")
+	}
+
+	// SpendInfo is required; the caller must supply it via the arkscript
+	// system so we know which leaf script and control block to verify
+	// against.
+	if in.SpendInfo == nil {
+		return fmt.Errorf("spend info must be provided")
 	}
 
 	prevOut := checkpoint.Inputs[0].WitnessUtxo
@@ -146,45 +152,28 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
 		prevOut.PkScript, prevOut.Value,
 	)
-	sigHashes := txscript.NewTxSigHashes(
-		checkpoint.UnsignedTx, prevFetcher,
-	)
 
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  vtxo.Outpoint,
-			Output:    prevOut,
-			TapScript: vtxo.TapScript,
-		},
-		keychain.KeyDescriptor{PubKey: vtxo.OperatorKey},
-		0,
-		sigHashes,
-		prevFetcher,
-	)
-	if err != nil {
-		return err
-	}
+	// Use the caller-supplied spend path bytes directly; no tapscript
+	// reconstruction needed.
+	leafScript := in.SpendInfo.WitnessScript
+	ctrlBlock := in.SpendInfo.ControlBlock
 
-	err = requireTapLeafScript(
-		&checkpoint.Inputs[0],
-		spendInfo.WitnessScript,
-		spendInfo.ControlBlock,
+	err := requireTapLeafScript(
+		&checkpoint.Inputs[0], leafScript, ctrlBlock,
 	)
 	if err != nil {
 		return err
 	}
 
 	sigRec, err := findTaprootScriptSpendSig(
-		&checkpoint.Inputs[0], vtxo.OperatorKey,
-		spendInfo.WitnessScript,
+		&checkpoint.Inputs[0], vtxo.OperatorKey, leafScript,
 	)
 	if err != nil {
 		return err
 	}
 
 	return verifyTaprootScriptSpendSig(
-		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
-		spendInfo.WitnessScript, sigRec,
+		checkpoint.UnsignedTx, 0, prevFetcher, leafScript, sigRec,
 	)
 }
 
@@ -317,7 +306,13 @@ func verifyTaprootScriptSpendSig(tx *wire.MsgTx, inputIndex int,
 }
 
 // signCheckpointPSBT signs checkpoint input 0 with the client key for the
-// collaborative VTXO leaf path.
+// spend path described by in.SpendInfo. The spend path is generic: it may be
+// the standard VTXO collab leaf, the vHTLC Claim leaf, or any other
+// arkscript-compiled leaf; no script reconstruction is performed here.
+//
+// When in.ConditionWitness is non-empty (e.g. a preimage for a HashLock-
+// gated leaf), the function assembles FinalScriptWitness explicitly after
+// both the operator and client signatures are present.
 func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 	checkpoint *psbt.Packet) error {
 
@@ -349,6 +344,13 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 			len(checkpoint.Inputs))
 	}
 
+	// SpendInfo is required at signing time; callers must derive it via
+	// the arkscript system before calling this function.
+	if in.SpendInfo == nil {
+		return fmt.Errorf("spend info required for checkpoint " +
+			"signing")
+	}
+
 	prevOut := &wire.TxOut{
 		Value:    int64(in.VTXO.Amount),
 		PkScript: in.VTXO.PkScript,
@@ -362,27 +364,18 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		checkpoint.UnsignedTx, prevFetcher,
 	)
 
-	// TapScript is required for the standard collaborative VTXO leaf path.
-	// vHTLC inputs and other custom spend paths bypass this function
-	// entirely, so a nil TapScript here is always a caller error.
-	if in.VTXO.TapScript == nil {
-		return fmt.Errorf("vtxo tapscript required for standard " +
-			"collab path signing")
-	}
-
-	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		&tx.VTXOSpendContext{
-			Outpoint:  in.VTXO.Outpoint,
-			Output:    prevOut,
-			TapScript: in.VTXO.TapScript,
-		},
-		in.VTXO.ClientKey,
-		0,
-		sigHashes,
-		prevFetcher,
-	)
-	if err != nil {
-		return err
+	// Build the sign descriptor directly from the caller-supplied spend
+	// path bytes; no tapscript reconstruction is performed.
+	leafScript := in.SpendInfo.WitnessScript
+	signDesc := &input.SignDescriptor{
+		KeyDesc:           in.VTXO.ClientKey,
+		SignMethod:        input.TaprootScriptSpendSignMethod,
+		Output:            prevOut,
+		HashType:          txscript.SigHashDefault,
+		SigHashes:         sigHashes,
+		PrevOutputFetcher: prevFetcher,
+		InputIndex:        0,
+		WitnessScript:     leafScript,
 	}
 
 	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
@@ -395,13 +388,162 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return fmt.Errorf("signer returned empty signature")
 	}
 
-	err = psbtutil.AddTapLeafScript(&checkpoint.Inputs[0], spendInfo)
+	err = addTapLeafScriptRaw(
+		&checkpoint.Inputs[0],
+		in.SpendInfo.WitnessScript,
+		in.SpendInfo.ControlBlock,
+	)
 	if err != nil {
 		return err
 	}
 
-	return psbtutil.AddTaprootScriptSpendSig(
+	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		spendInfo.WitnessScript, sigBytes, signDesc.HashType,
+		in.SpendInfo.WitnessScript, sigBytes, signDesc.HashType,
 	)
+	if err != nil {
+		return err
+	}
+
+	// For script paths with condition witness items (e.g. a HashLock
+	// preimage), assemble the final segwit witness explicitly so the PSBT
+	// finalizer can broadcast without further signing.
+	if len(in.ConditionWitness) > 0 {
+		return assembleFinalScriptWitness(checkpoint, in)
+	}
+
+	return nil
+}
+
+// addTapLeafScriptRaw adds the given leaf script and control block to the
+// PSBT input's TaprootLeafScript list. If the leaf is already present the
+// function is a no-op.
+func addTapLeafScriptRaw(in *psbt.PInput, leafScript,
+	controlBlock []byte) error {
+
+	if in == nil {
+		return fmt.Errorf("psbt input must be provided")
+	}
+
+	if len(leafScript) == 0 {
+		return fmt.Errorf("leaf script must be provided")
+	}
+
+	if len(controlBlock) == 0 {
+		return fmt.Errorf("control block must be provided")
+	}
+
+	needle := &psbt.TaprootTapLeafScript{
+		ControlBlock: controlBlock,
+		Script:       leafScript,
+		LeafVersion:  txscript.BaseLeafVersion,
+	}
+
+	for i := range in.TaprootLeafScript {
+		existing := in.TaprootLeafScript[i]
+		if existing == nil {
+			continue
+		}
+
+		if bytes.Equal(existing.ControlBlock, needle.ControlBlock) &&
+			bytes.Equal(existing.Script, needle.Script) &&
+			existing.LeafVersion == needle.LeafVersion {
+
+			return nil
+		}
+	}
+
+	in.TaprootLeafScript = append(in.TaprootLeafScript, needle)
+
+	return nil
+}
+
+// assembleFinalScriptWitness constructs the full segwit witness for a script-
+// path spend that requires condition witness items (e.g. a preimage for a
+// HashLock leaf) between the signatures and the leaf script.
+//
+// It locates the operator and client signatures in TaprootScriptSpendSig by
+// x-only public key, then assembles the witness as:
+//
+//	[op_sig, client_sig, cond_item_0, ..., cond_item_N, leaf_script, ctrl]
+//
+// The result is stored as FinalScriptWitness on the checkpoint input so the
+// PSBT finalizer can broadcast without further signing.
+func assembleFinalScriptWitness(checkpoint *psbt.Packet,
+	in *TransferInput) error {
+
+	if checkpoint == nil || len(checkpoint.Inputs) == 0 {
+		return fmt.Errorf("checkpoint psbt must have inputs")
+	}
+
+	vtxo := in.VTXO
+	if vtxo == nil || vtxo.OperatorKey == nil ||
+		vtxo.ClientKey.PubKey == nil {
+
+		return fmt.Errorf("vtxo operator and client keys must " +
+			"be provided")
+	}
+
+	// Locate each party's signature by their x-only public key.
+	opXOnly := schnorr.SerializePubKey(vtxo.OperatorKey)
+	clientXOnly := schnorr.SerializePubKey(vtxo.ClientKey.PubKey)
+
+	var (
+		opSig     []byte
+		clientSig []byte
+	)
+
+	pInput := &checkpoint.Inputs[0]
+	for _, sigRec := range pInput.TaprootScriptSpendSig {
+		if sigRec == nil {
+			continue
+		}
+
+		switch {
+		case bytes.Equal(sigRec.XOnlyPubKey, opXOnly):
+			opSig = sigRec.Signature
+
+		case bytes.Equal(sigRec.XOnlyPubKey, clientXOnly):
+			clientSig = sigRec.Signature
+		}
+	}
+
+	if len(opSig) == 0 {
+		return fmt.Errorf("operator signature not found in " +
+			"checkpoint psbt")
+	}
+
+	if len(clientSig) == 0 {
+		return fmt.Errorf("client signature not found in " +
+			"checkpoint psbt")
+	}
+
+	// Build the witness stack: signatures first (deepest on stack),
+	// then condition items (e.g. preimage), then the spend script
+	// and its control block.
+	witness := make(wire.TxWitness, 0,
+		2+len(in.ConditionWitness)+2)
+	witness = append(witness, opSig, clientSig)
+	witness = append(witness, in.ConditionWitness...)
+	witness = append(
+		witness,
+		in.SpendInfo.WitnessScript,
+		in.SpendInfo.ControlBlock,
+	)
+
+	pInput.FinalScriptWitness = serializeWitness(witness)
+
+	return nil
+}
+
+// serializeWitness encodes a wire.TxWitness into the PSBT FinalScriptWitness
+// format: <varint count> (<varint len><bytes>)...
+func serializeWitness(w wire.TxWitness) []byte {
+	var buf bytes.Buffer
+	_ = wire.WriteVarInt(&buf, 0, uint64(len(w)))
+	for _, item := range w {
+		_ = wire.WriteVarBytes(&buf, 0, item)
+	}
+
+	return buf.Bytes()
 }

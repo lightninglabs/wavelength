@@ -263,7 +263,6 @@ var (
 		Code:    "MISSING_EXIT",
 		Message: "VTXO policy must contain an exit leaf",
 	}
-
 )
 
 // ValidateVTXOLeaves validates that the given leaves satisfy VTXO policy

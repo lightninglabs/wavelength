@@ -90,6 +90,19 @@ const (
 	// in TransferInputFromSnapshot, which allows custom scripts (e.g.
 	// vHTLC) to survive TLV round-trips without silent recomputation.
 	transferInputPkScriptRecordType tlv.Type = 9
+
+	// transferInputSpendWitnessScriptRecordType carries the tapscript leaf
+	// script for the checkpoint spend path derived via the arkscript system.
+	transferInputSpendWitnessScriptRecordType tlv.Type = 10
+
+	// transferInputSpendControlBlockRecordType carries the BIP-341 control
+	// block for the checkpoint spend leaf.
+	transferInputSpendControlBlockRecordType tlv.Type = 11
+
+	// transferInputConditionWitnessRecordType carries the length-prefixed
+	// blob list of condition witness items (e.g. preimage) required between
+	// the signature stack and the leaf script.
+	transferInputConditionWitnessRecordType tlv.Type = 12
 )
 
 const (
@@ -629,6 +642,8 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 	exitDelay := input.ExitDelay
 	ownerLeafScript := input.OwnerLeafScript
 	pkScript := input.PkScript
+	spendWitnessScript := input.SpendWitnessScript
+	spendControlBlock := input.SpendControlBlock
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
@@ -667,6 +682,39 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		))
 	}
 
+	// SpendWitnessScript and SpendControlBlock are optional for backward
+	// compatibility with old snapshots, but are required by
+	// TransferInputFromSnapshot when present.
+	if len(spendWitnessScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&spendWitnessScript,
+		))
+	}
+
+	if len(spendControlBlock) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&spendControlBlock,
+		))
+	}
+
+	// ConditionWitness is encoded as a length-prefixed blob list. Omit
+	// when empty to keep standard VTXO snapshots compact.
+	if len(input.ConditionWitness) > 0 {
+		condWitnessRaw, err := encodeLengthPrefixedBlobList(
+			input.ConditionWitness,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("encode condition witness: %w",
+				err)
+		}
+
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType, &condWitnessRaw,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -682,15 +730,18 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 
 func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 	var (
-		outpointRaw     []byte
-		amountSat       uint64
-		clientFamily    uint32
-		clientIndex     uint32
-		clientPubKey    []byte
-		operatorPubKey  []byte
-		exitDelay       uint32
-		ownerLeafScript []byte
-		pkScript        []byte
+		outpointRaw        []byte
+		amountSat          uint64
+		clientFamily       uint32
+		clientIndex        uint32
+		clientPubKey       []byte
+		operatorPubKey     []byte
+		exitDelay          uint32
+		ownerLeafScript    []byte
+		pkScript           []byte
+		spendWitnessScript []byte
+		spendControlBlock  []byte
+		condWitnessRaw     []byte
 	)
 
 	records := []tlv.Record{
@@ -722,6 +773,17 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputPkScriptRecordType, &pkScript,
 		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&spendWitnessScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&spendControlBlock,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType, &condWitnessRaw,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -751,16 +813,31 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		return nil, err
 	}
 
+	// Decode the condition witness blob list when present.
+	var conditionWitness [][]byte
+	if len(condWitnessRaw) > 0 {
+		conditionWitness, err = decodeLengthPrefixedBlobList(
+			condWitnessRaw,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("decode condition witness: %w",
+				err)
+		}
+	}
+
 	return &TransferInputSnapshot{
-		Outpoint:        outpoint,
-		AmountSat:       decodedAmountSat,
-		ClientKeyFamily: decodedClientFamily,
-		ClientKeyIndex:  clientIndex,
-		ClientPubKey:    clientPubKey,
-		OperatorPubKey:  operatorPubKey,
-		ExitDelay:       exitDelay,
-		OwnerLeafScript: ownerLeafScript,
-		PkScript:        pkScript,
+		Outpoint:           outpoint,
+		AmountSat:          decodedAmountSat,
+		ClientKeyFamily:    decodedClientFamily,
+		ClientKeyIndex:     clientIndex,
+		ClientPubKey:       clientPubKey,
+		OperatorPubKey:     operatorPubKey,
+		ExitDelay:          exitDelay,
+		OwnerLeafScript:    ownerLeafScript,
+		PkScript:           pkScript,
+		SpendWitnessScript: spendWitnessScript,
+		SpendControlBlock:  spendControlBlock,
+		ConditionWitness:   conditionWitness,
 	}, nil
 }
 

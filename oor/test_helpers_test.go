@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
@@ -19,7 +20,8 @@ import (
 )
 
 // newTestTransferInput creates a minimally valid transfer input for unit
-// tests.
+// tests. It derives the standard VTXO policy and collab spend info via the
+// arkscript system so the input is suitable for checkpoint signing.
 func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 	operatorKey *btcec.PublicKey, outpoint wire.OutPoint,
 	amount btcutil.Amount) TransferInput {
@@ -28,17 +30,22 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 
 	exitDelay := uint32(10)
 
-	tapscript, err := scripts.VTXOTapScript(
-		ownerKey.PubKey(), operatorKey, exitDelay,
-	)
-	require.NoError(t, err)
-
 	tapKey, err := scripts.VTXOTapKey(
 		ownerKey.PubKey(), operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
 
 	pkScript, err := txscript.PayToTaprootScript(tapKey)
+	require.NoError(t, err)
+
+	// Derive the collab spend info via the arkscript policy so that
+	// checkpoint signing has the correct leaf script and control block.
+	vtxoPolicy, err := arkscript.NewVTXOPolicy(
+		ownerKey.PubKey(), operatorKey, exitDelay,
+	)
+	require.NoError(t, err)
+
+	collabSpendInfo, err := vtxoPolicy.CollabSpendInfo()
 	require.NoError(t, err)
 
 	return TransferInput{
@@ -50,10 +57,10 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 				PubKey: ownerKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
-			TapScript:      tapscript,
 			RelativeExpiry: exitDelay,
 		},
 		OwnerLeafScript: []byte{0x51},
+		SpendInfo:       collabSpendInfo,
 	}
 }
 
