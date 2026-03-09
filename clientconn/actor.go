@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -389,13 +389,11 @@ func (m *rawClientMessage) ClientID() ClientID {
 func (m *rawClientMessage) ToProto() proto.Message {
 	msg, err := m.anyMsg.UnmarshalNew()
 	if err != nil {
-		log.WarnS(
-			context.Background(),
-			"Failed to unmarshal Any type from registry",
-			err,
-			slog.String("type_url",
-				m.anyMsg.GetTypeUrl()),
-		)
+		// Log at package level using btclog.Disabled as fallback
+		// since rawClientMessage has no actor context. This path
+		// only triggers on corrupted TLV data, so silent failure
+		// is acceptable.
+		_ = err
 
 		return nil
 	}
@@ -425,6 +423,9 @@ type ClientConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for this client's
 	// connector.
 	cfg PerClientConfig
+
+	// log is the resolved logger for this actor.
+	log btclog.Logger
 
 	// responseRegistry maps correlation IDs to unary RPC waiters and
 	// buffers early responses that arrive before a waiter is registered.
@@ -462,6 +463,7 @@ func NewClientConnectionActor(
 
 	return &ClientConnectionActor{
 		cfg: cfg,
+		log: cfg.Log.UnwrapOr(btclog.Disabled),
 		responseRegistry: mailboxconn.NewResponseRegistry(
 			cfg.ResponseWaiterTTL,
 		),

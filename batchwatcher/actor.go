@@ -16,8 +16,8 @@ import (
 
 // ActorConfig contains the configuration for creating a new BatchWatcherActor.
 type ActorConfig struct {
-	// Logger is used for structured logging.
-	Logger btclog.Logger
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
 
 	// ChainSource is a reference to the ChainSource actor for registering
 	// spend and block watches.
@@ -59,7 +59,7 @@ type Actor struct {
 func NewActor(cfg *ActorConfig) *Actor {
 	return &Actor{
 		cfg:   cfg,
-		log:   cfg.Logger,
+		log:   cfg.Log.UnwrapOr(btclog.Disabled),
 		state: NewStateStore(),
 	}
 }

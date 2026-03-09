@@ -33,7 +33,7 @@ func (a *ClientConnectionActor) ingressLoop(
 
 	defer a.wg.Done()
 
-	log.InfoS(ctx, "Ingress loop starting",
+	a.log.InfoS(ctx, "Ingress loop starting",
 		slog.String("mailbox_id", a.cfg.LocalMailboxID))
 
 	var failCount int
@@ -41,7 +41,7 @@ func (a *ClientConnectionActor) ingressLoop(
 	for {
 		select {
 		case <-ctx.Done():
-			log.InfoS(ctx, "Ingress loop exiting",
+			a.log.InfoS(ctx, "Ingress loop exiting",
 				slog.String("mailbox_id",
 					a.cfg.LocalMailboxID))
 
@@ -57,7 +57,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			if err := a.ackRemote(
 				ctx, state.AckTarget,
 			); err != nil {
-				log.WarnS(ctx, "AckUpTo failed, retrying",
+				a.log.WarnS(ctx, "AckUpTo failed, retrying",
 					err,
 					slog.Uint64("ack_target",
 						state.AckTarget))
@@ -70,7 +70,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			state.AdvanceAck()
 
 			if err := a.saveCheckpoint(ctx, state); err != nil {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Failed to save checkpoint "+
 						"after ack",
 					err)
@@ -93,7 +93,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			ctx, state.PullCursor,
 		)
 		if err != nil {
-			log.WarnS(ctx, "Pull failed, retrying", err,
+			a.log.WarnS(ctx, "Pull failed, retrying", err,
 				slog.Uint64("cursor", state.PullCursor))
 
 			a.sleepBackoff(ctx, &failCount)
@@ -110,7 +110,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			continue
 		}
 
-		log.DebugS(ctx, "Pulled envelopes",
+		a.log.DebugS(ctx, "Pulled envelopes",
 			slog.Int("count", len(envelopes)),
 			slog.Uint64("cursor", state.PullCursor),
 			slog.Uint64("next_cursor", nextCursor))
@@ -124,7 +124,7 @@ func (a *ClientConnectionActor) ingressLoop(
 			a.dispatchBatch(ctx, envelopes, nextCursor)
 
 		if dispatchErr != nil {
-			log.WarnS(ctx, "Dispatch failed", dispatchErr,
+			a.log.WarnS(ctx, "Dispatch failed", dispatchErr,
 				slog.Uint64("committed_to",
 					committedCursor))
 
@@ -141,7 +141,7 @@ func (a *ClientConnectionActor) ingressLoop(
 				if cpErr := a.saveCheckpoint(
 					ctx, state,
 				); cpErr != nil {
-					log.WarnS(ctx,
+					a.log.WarnS(ctx,
 						"Failed to save checkpoint "+
 							"after partial dispatch",
 						cpErr)
@@ -159,7 +159,7 @@ func (a *ClientConnectionActor) ingressLoop(
 		state.PullCursor = committedCursor
 
 		if err := a.saveCheckpoint(ctx, state); err != nil {
-			log.WarnS(ctx,
+			a.log.WarnS(ctx,
 				"Failed to save checkpoint after dispatch",
 				err)
 
@@ -230,7 +230,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 
 	for _, env := range envelopes {
 		if env.Rpc == nil {
-			log.WarnS(ctx,
+			a.log.WarnS(ctx,
 				"Skipping envelope without RPC metadata",
 				nil,
 				slog.Uint64("event_seq", env.EventSeq))
@@ -252,7 +252,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 			// consumed immediately by the waiting goroutine.
 			corrID := CorrelationID(env.Rpc.CorrelationId)
 			if corrID == "" {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Response envelope missing "+
 						"correlation ID",
 					nil,
@@ -270,7 +270,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 
 			delivered := a.deliverResponse(corrID, env)
 			if !delivered {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Failed to deliver response "+
 						"envelope",
 					nil,
@@ -295,7 +295,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 
 			dispatcher, ok := a.cfg.Dispatchers[key]
 			if !ok {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"No dispatcher for service "+
 						"method",
 					nil,
@@ -325,7 +325,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 			}
 
 		default:
-			log.WarnS(ctx,
+			a.log.WarnS(ctx,
 				"Skipping envelope with unknown RPC kind",
 				nil,
 				slog.Int("kind", int(env.Rpc.Kind)),
@@ -402,7 +402,7 @@ func (a *ClientConnectionActor) loadCheckpoint(
 		return AckState{}, err
 	}
 
-	log.InfoS(ctx, "Loaded ack checkpoint",
+	a.log.InfoS(ctx, "Loaded ack checkpoint",
 		slog.String("actor_id", actorID),
 		slog.Uint64("pull_cursor", state.PullCursor),
 		slog.Uint64("dispatch_committed_to",

@@ -267,7 +267,7 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 
 	cfg := &ActorConfig{
 		ChainParams:            &chaincfg.RegressionNetParams,
-		Logger:                 btclog.Disabled,
+		Log:                    fn.Some(btclog.Disabled),
 		ClientsConn:            clients,
 		BoardingInputLocker:    common.boardingLocker,
 		ChainSource:            common.chainSource,

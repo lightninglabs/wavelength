@@ -71,7 +71,7 @@ type RPCServer struct {
 }
 
 // NewRPCServer creates a new client-facing RPC server.
-func NewRPCServer(cfg *RPCConfig, operator *Server, logger btclog.Logger,
+func NewRPCServer(cfg *RPCConfig, operator *Server,
 	serverOpts ...grpc.ServerOption) (*RPCServer, error) {
 
 	// Use existing listener if provided
@@ -88,7 +88,7 @@ func NewRPCServer(cfg *RPCConfig, operator *Server, logger btclog.Logger,
 	s := &RPCServer{
 		cfg:        cfg,
 		server:     operator,
-		log:        logger,
+		log:        operator.log,
 		grpcServer: grpc.NewServer(serverOpts...),
 		listener:   listener,
 		quit:       make(chan struct{}),

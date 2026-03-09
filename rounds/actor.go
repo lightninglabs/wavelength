@@ -28,8 +28,8 @@ type ActorConfig struct {
 	// ChainParams are the Bitcoin network parameters.
 	ChainParams *chaincfg.Params
 
-	// Logger is used for logging.
-	Logger btclog.Logger
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
 
 	// Terms are the operator terms for the round.
 	Terms *batch.Terms
@@ -181,7 +181,7 @@ func NewActor(cfg *ActorConfig) *Actor {
 			cfg.WalletController, cfg.FeeEstimator,
 			cfg.BoardingInputLocker, cfg.VTXOLocker,
 			cfg.ChainSource, cfg.ChainParams,
-			cfg.Terms, cfg.Logger,
+			cfg.Terms, cfg.Log.UnwrapOr(btclog.Disabled),
 			cfg.ConfTarget, cfg.MinConfs,
 			cfg.WalletAccount,
 		)
@@ -191,7 +191,7 @@ func NewActor(cfg *ActorConfig) *Actor {
 
 	return &Actor{
 		cfg:          cfg,
-		log:          cfg.Logger,
+		log:          cfg.Log.UnwrapOr(btclog.Disabled),
 		rounds:       make(map[RoundID]*RoundFSM),
 		clientRounds: clientRounds,
 	}
@@ -348,7 +348,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 	state State, startHeight uint32) *RoundFSM {
 
 	fsmPrefix := roundID.LogPrefix()
-	fsmLogger := a.cfg.Logger.WithPrefix(fsmPrefix)
+	fsmLogger := a.cfg.Log.UnwrapOr(btclog.Disabled).WithPrefix(fsmPrefix)
 
 	env := &Environment{
 		RoundID:                roundID,

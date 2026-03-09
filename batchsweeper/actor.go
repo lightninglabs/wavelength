@@ -55,8 +55,8 @@ const (
 
 // ActorConfig contains the configuration for creating a new BatchSweeperActor.
 type ActorConfig struct {
-	// Logger is used for structured logging.
-	Logger btclog.Logger
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
 
 	// BatchWatcher is a reference to the BatchWatcher actor for querying
 	// tree state and unregistering batches after sweeping.
@@ -217,7 +217,7 @@ func NewActor(cfg *ActorConfig) *Actor {
 
 	return &Actor{
 		cfg: cfg,
-		log: cfg.Logger,
+		log: cfg.Log.UnwrapOr(btclog.Disabled),
 		expired: make(
 			map[batchwatcher.BatchID]*expiredBatch,
 		),

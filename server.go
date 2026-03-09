@@ -28,8 +28,6 @@ type Server struct {
 
 	rpc *RPCServer
 
-	loggerFactory func(subsystem string) btclog.Logger
-
 	log btclog.Logger
 
 	// cancel is used to cancel the contexts passed from the Server to
@@ -65,11 +63,8 @@ type Server struct {
 func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	s := &Server{
 		cfg:  cfg,
+		log:  cfg.Log.UnwrapOr(btclog.Disabled),
 		quit: make(chan struct{}),
-	}
-
-	if err := s.setupLogging(); err != nil {
-		return nil, fmt.Errorf("failed to setup logging: %w", err)
 	}
 
 	s.log.InfoS(ctx, "Constructing Ark operator server")
@@ -77,7 +72,7 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	// Initialize database
 	var err error
 	s.db, err = db.NewStoreFromConfig(
-		cfg.DB, s.loggerFactory("STORE"), clock.NewDefaultClock(),
+		cfg.DB, s.log, clock.NewDefaultClock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database: %w", err)
@@ -90,16 +85,14 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	s.log.InfoS(ctx, "Database initialized", "backend", backendName)
 
 	// Create admin RPC server
-	s.adminRPC, err = NewAdminRPCServer(
-		cfg.AdminRPC, s, s.loggerFactory("ARPC"),
-	)
+	s.adminRPC, err = NewAdminRPCServer(cfg.AdminRPC, s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create admin RPC server: %w",
 			err)
 	}
 
 	// Create client RPC server
-	s.rpc, err = NewRPCServer(cfg.RPC, s, s.loggerFactory("ORPC"))
+	s.rpc, err = NewRPCServer(cfg.RPC, s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client RPC server: %w",
 			err)

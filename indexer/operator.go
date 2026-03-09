@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo/clientconn"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -18,6 +20,9 @@ import (
 // pulling and dispatching. The operator only provides the dispatcher map
 // and event publishing methods.
 type OperatorConfig struct {
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
+
 	// Edge is the gRPC client for the local mailbox edge service.
 	// All dispatchers share this client for sending response envelopes.
 	Edge mailboxpb.MailboxServiceClient
@@ -47,6 +52,7 @@ type OperatorConfig struct {
 // client's remote mailbox.
 type Operator struct {
 	cfg OperatorConfig
+	log btclog.Logger
 	svc *Service
 	mux *mailboxrpc.ServeMux
 }
@@ -77,6 +83,7 @@ func NewOperator(cfg OperatorConfig, svc *Service) (*Operator, error) {
 
 	return &Operator{
 		cfg: cfg,
+		log: cfg.Log.UnwrapOr(btclog.Disabled),
 		svc: svc,
 		mux: mux,
 	}, nil
@@ -233,7 +240,7 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 			},
 		)
 		if tellErr != nil {
-			log.Warnf("Indexer OOR event tell failed for "+
+			o.log.Warnf("Indexer OOR event tell failed for "+
 				"client %q: %v", mailboxID, tellErr)
 		}
 	}
@@ -274,7 +281,7 @@ func (o *Operator) PublishVTXOEvent(ctx context.Context, pkScript []byte,
 			},
 		)
 		if tellErr != nil {
-			log.Warnf("Indexer VTXO event tell failed for "+
+			o.log.Warnf("Indexer VTXO event tell failed for "+
 				"client %q: %v", mailboxID, tellErr)
 		}
 	}
