@@ -150,6 +150,25 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		return fmt.Errorf("start rounds actor: %w", err)
 	}
 
+	// Create the round operator that provides mailbox RPC
+	// dispatchers for the per-client ingress loops. The local
+	// mailbox edge client is shared with the indexer subsystem.
+	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
+	if err != nil {
+		return fmt.Errorf("build rounds edge client: %w", err)
+	}
+
+	s.roundsOperator, err = rounds.NewRoundOperator(
+		rounds.RoundOperatorConfig{
+			Edge:            edgeClient,
+			SenderMailboxID: "svc:rounds",
+			RoundsRef:       s.roundsRef,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create rounds operator: %w", err)
+	}
+
 	log.InfoS(ctx, "Rounds subsystem initialized",
 		slog.Uint64("conf_target",
 			uint64(defaultConfTarget)))
@@ -170,13 +189,13 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 // merging into per-client PerClientConfig.Dispatchers during client
 // registration.
 //
-// Returns nil if the rounds subsystem has not been initialized. The
-// dispatcher wiring is done in Phase 8 (server_rounds_dispatchers.go).
+// Returns nil if the rounds subsystem has not been initialized.
 func (s *Server) RoundsDispatchers() clientconn.DispatcherMap {
-	// TODO(roasbeef): Wire round dispatchers that translate
-	// inbound mailbox envelopes into rounds.ActorMsg and route
-	// outbox events back to clients via the bridge.
-	return nil
+	if s.roundsOperator == nil {
+		return nil
+	}
+
+	return s.roundsOperator.Dispatchers()
 }
 
 // networkToChainParams maps a network name to btcd chain parameters.
