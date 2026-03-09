@@ -86,6 +86,22 @@ var (
 	defaultDataDir = btcutil.AppDataDir("arkd", false)
 )
 
+// TLSConfig holds TLS certificate paths for the client-facing gRPC
+// server. When nil, the server runs without TLS (suitable for
+// development and regtest).
+type TLSConfig struct {
+	// CertPath is the path to the TLS certificate file.
+	CertPath string `mapstructure:"certpath"`
+
+	// KeyPath is the path to the TLS private key file.
+	KeyPath string `mapstructure:"keypath"`
+
+	// AutoCert enables automatic TLS certificate generation using a
+	// self-signed CA. When true, CertPath and KeyPath are used as
+	// output paths for the generated material.
+	AutoCert bool `mapstructure:"autocert"`
+}
+
 // Config is the main configuration struct for the operator server.
 type Config struct {
 	// DataDir is the root data directory for all daemon state.
@@ -201,6 +217,24 @@ func (c *Config) Validate() error {
 	}
 	if c.RPC.ListenAddr == "" {
 		return fmt.Errorf("rpc listen address is required")
+	}
+
+	// Validate TLS config: if a cert path is set, a key path is
+	// required, and vice versa.
+	if c.RPC.TLS != nil {
+		tls := c.RPC.TLS
+		if tls.CertPath != "" && tls.KeyPath == "" {
+			return fmt.Errorf(
+				"rpc.tls.keypath is required when " +
+					"rpc.tls.certpath is set",
+			)
+		}
+		if tls.KeyPath != "" && tls.CertPath == "" {
+			return fmt.Errorf(
+				"rpc.tls.certpath is required when " +
+					"rpc.tls.keypath is set",
+			)
+		}
 	}
 
 	return nil
