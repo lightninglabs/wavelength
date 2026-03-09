@@ -159,6 +159,36 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 	return s.indexerOperator.Dispatchers()
 }
 
+// RegisterClientWithAllDispatchers creates a new per-client runtime
+// with dispatchers merged from all active operator subsystems (indexer,
+// rounds, OOR). This is the single entry point for client registration
+// so callers do not need to know which subsystems are active.
+func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
+	clientID clientconn.ClientID,
+	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
+
+	// Merge dispatchers from all active operators into the base
+	// config. Each method returns nil if its subsystem has not
+	// been initialized, so the merge is safe.
+	merged := make(clientconn.DispatcherMap)
+
+	for k, v := range s.IndexerDispatchers() {
+		merged[k] = v
+	}
+
+	for k, v := range s.RoundsDispatchers() {
+		merged[k] = v
+	}
+
+	for k, v := range s.OORDispatchers() {
+		merged[k] = v
+	}
+
+	baseCfg.Dispatchers = merged
+
+	return s.clientBridge.RegisterClient(ctx, clientID, baseCfg)
+}
+
 // indexerRecipientNotifier bridges finalized OOR recipients into indexer
 // EVENT emission without coupling OOR FSM state transitions to mailbox
 // transport.
