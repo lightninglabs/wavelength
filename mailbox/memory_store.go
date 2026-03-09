@@ -3,9 +3,11 @@ package mailbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 
+	"github.com/btcsuite/btclog/v2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -18,6 +20,7 @@ type MemoryStore struct {
 	mailboxes map[string]*mailboxState
 
 	cfg storeConfig
+	log btclog.Logger
 }
 
 // mailboxState holds the per-recipient mailbox state.
@@ -39,16 +42,16 @@ type storedEnvelope struct {
 
 // NewMemoryStore creates an empty in-memory mailbox store.
 func NewMemoryStore(opts ...StoreOption) *MemoryStore {
-	s := &MemoryStore{
-		mailboxes: make(map[string]*mailboxState),
-		cfg:       defaultStoreConfig(),
-	}
-
+	cfg := defaultStoreConfig()
 	for _, opt := range opts {
-		opt(&s.cfg)
+		opt(&cfg)
 	}
 
-	return s
+	return &MemoryStore{
+		mailboxes: make(map[string]*mailboxState),
+		cfg:       cfg,
+		log:       cfg.log,
+	}
 }
 
 // Append stores env in memory and returns the assigned sequence number.
@@ -110,6 +113,10 @@ func (s *MemoryStore) Append(
 
 	state.notify()
 
+	s.log.DebugS(ctx, "Appended envelope",
+		slog.String("recipient", env.Recipient),
+		slog.Uint64("seq", seq))
+
 	return seq, nil
 }
 
@@ -170,6 +177,10 @@ func (s *MemoryStore) AckUpTo(ctx context.Context, recipient string,
 
 	state.ackCursor = cursor
 	state.gcLocked()
+
+	s.log.DebugS(ctx, "Acked envelopes",
+		slog.String("recipient", recipient),
+		slog.Uint64("cursor", cursor))
 
 	return nil
 }
