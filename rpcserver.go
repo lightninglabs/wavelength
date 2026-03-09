@@ -19,6 +19,11 @@ type RPCConfig struct {
 	// ListenAddr is the network address the gRPC server binds to.
 	ListenAddr string `mapstructure:"listen"`
 
+	// TLS contains optional TLS certificate paths for the
+	// client-facing gRPC server. When nil, the server runs
+	// without TLS.
+	TLS *TLSConfig `mapstructure:"tls"`
+
 	// Listener is an optional pre-created listener. When non-nil,
 	// the daemon serves on this listener instead of binding to
 	// ListenAddr. This enables SDK-style embedding and in-memory
