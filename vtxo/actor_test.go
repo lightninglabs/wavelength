@@ -28,7 +28,6 @@ func TestProcessOutboxForfeitSignature(t *testing.T) {
 			Wallet:      h.wallet,
 			ChainParams: &chaincfg.RegressionNetParams,
 			RoundActor:  roundActor,
-			Logger:      btclog.Disabled,
 		},
 		state: &LiveState{VTXO: vtxo},
 		env:   h.env,
@@ -86,7 +85,6 @@ func TestProcessOutboxMarkForfeiting(t *testing.T) {
 			VTXO:        vtxo,
 			Store:       h.store,
 			ChainParams: &chaincfg.RegressionNetParams,
-			Logger:      btclog.Disabled,
 		},
 		state: &LiveState{VTXO: vtxo},
 		env:   h.env,
@@ -126,14 +124,14 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 			VTXO:        vtxo,
 			Store:       h.store,
 			ChainParams: &chaincfg.RegressionNetParams,
-			Logger:      btclog.Disabled,
 		},
 		state: &LiveState{VTXO: vtxo},
 		env:   h.env,
 	}
 
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusRefreshRequested,
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusRefreshRequested,
 	).Return(nil)
 
 	outbox := []VTXOOutMsg{
@@ -170,7 +168,6 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 			Wallet:      h.wallet,
 			ChainParams: &chaincfg.RegressionNetParams,
 			RoundActor:  roundActor,
-			Logger:      btclog.Disabled,
 		},
 		state: &LiveState{VTXO: vtxo},
 		env:   h.env,
@@ -215,7 +212,6 @@ func TestProcessOutboxTerminatedNotification(t *testing.T) {
 			Store:       h.store,
 			ChainParams: &chaincfg.RegressionNetParams,
 			Manager:     manager,
-			Logger:      btclog.Disabled,
 		},
 		state: &ForfeitedState{VTXO: vtxo},
 		env:   h.env,
@@ -256,7 +252,6 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 			Store:         h.store,
 			ChainParams:   &chaincfg.RegressionNetParams,
 			ChainResolver: chainResolver,
-			Logger:        btclog.Disabled,
 		},
 		state: &ExpiringState{VTXO: vtxo},
 		env:   h.env,

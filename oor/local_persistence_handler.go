@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
@@ -135,6 +136,9 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		return nil, fmt.Errorf("outpoints must be provided")
 	}
 
+	log.InfoS(ctx, "Marking VTXO inputs as spent",
+		slog.Int("num_outpoints", len(msg.Outpoints)))
+
 	for i := range msg.Outpoints {
 		err := h.Store.UpdateVTXOStatus(
 			ctx, msg.Outpoints[i], vtxo.VTXOStatusSpent,
@@ -142,6 +146,9 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		if err != nil {
 			return nil, err
 		}
+
+		log.DebugS(ctx, "Marked VTXO input spent",
+			slog.String("outpoint", msg.Outpoints[i].String()))
 	}
 
 	return []Event{&InputsMarkedSpentEvent{}}, nil
@@ -182,6 +189,10 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	if len(msg.Recipients) == 0 {
 		return nil, fmt.Errorf("incoming recipients must be provided")
 	}
+
+	log.InfoS(ctx, "Materializing incoming VTXOs",
+		slog.String("session_id", msg.SessionID.String()),
+		slog.Int("num_recipients", len(msg.Recipients)))
 
 	ownedRecipients := 0
 	materializedVTXOs := make([]*vtxo.Descriptor, 0, len(msg.Recipients))
@@ -272,6 +283,11 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		return nil, fmt.Errorf("incoming transfer contains no " +
 			"wallet-owned recipients")
 	}
+
+	log.InfoS(ctx, "Incoming VTXOs materialized",
+		slog.String("session_id", msg.SessionID.String()),
+		slog.Int("owned_recipients", ownedRecipients),
+		slog.Int("materialized_vtxos", len(materializedVTXOs)))
 
 	err := h.NotifyIncomingVTXOs(ctx, materializedVTXOs)
 	if err != nil {

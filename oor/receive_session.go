@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
@@ -35,6 +36,9 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	if sessionID == (SessionID{}) {
 		return nil, fmt.Errorf("session id must be provided")
 	}
+
+	log.InfoS(ctx, "Creating receive session",
+		slog.String("session_id", sessionID.String()))
 
 	env := &Environment{SessionID: sessionID}
 

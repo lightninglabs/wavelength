@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
@@ -33,7 +35,9 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
+	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -58,6 +62,8 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 // gRPC server.
 type Server struct {
 	cfg *Config
+
+	logManager *lndbuild.SubLoggerManager
 
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
@@ -91,6 +97,27 @@ func NewServer(cfg *Config) (*Server, error) {
 //
 //nolint:funlen
 func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
+	// -------------------------------------------------------
+	// 0. Initialize the logging backend and subsystem loggers.
+	// -------------------------------------------------------
+	// Create a log handler writing to stdout. The SubLoggerManager
+	// manages per-subsystem loggers and supports runtime level changes.
+	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
+
+	// Register all package-level loggers with the manager. This
+	// replaces the default btclog.Disabled loggers so log output
+	// is captured from this point forward.
+	SetupLoggers(s.logManager, interceptor)
+
+	// Apply the configured debug level. A bare level like "info"
+	// sets all subsystems. A comma-separated list like
+	// "ROND=debug,OORC=trace,info" applies per-subsystem overrides
+	// with the bare value as the default.
+	if err := s.applyDebugLevel(); err != nil {
+		return fmt.Errorf("invalid debug level: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -106,15 +133,15 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	}()
 
 	log.InfoS(ctx, "Starting darepod",
-		"version", build.Version(),
-		"commit", build.CommitHash,
-		"network", s.cfg.Network)
+		slog.String("version", build.Version()),
+		slog.String("commit", build.CommitHash),
+		slog.String("network", s.cfg.Network))
 
 	// -------------------------------------------------------
 	// 1. Connect to lnd.
 	// -------------------------------------------------------
 	log.InfoS(ctx, "Connecting to lnd",
-		"host", s.cfg.Lnd.Host)
+		slog.String("host", s.cfg.Lnd.Host))
 
 	lndServices, err := s.connectLnd(ctx)
 	if err != nil {
@@ -239,7 +266,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			"addr", s.cfg.RPC.ListenAddr)
+			slog.String("addr", s.cfg.RPC.ListenAddr))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
@@ -321,6 +348,106 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	<-interceptor.ShutdownChannel()
 
 	log.InfoS(ctx, "Shutting down darepod")
+
+	return nil
+}
+
+// applyDebugLevel parses the DebugLevel config string and applies it to
+// the log manager. A bare level like "info" sets all subsystems globally.
+// A comma-separated list like "ROND=debug,OORC=trace,info" applies
+// per-subsystem overrides on top of the global default. Parsing uses a
+// two-pass approach: first the last bare value (without '=') is applied
+// as the global default for all subsystems, then per-subsystem overrides
+// are applied. This ensures ordering does not matter — "ROND=debug,info"
+// and "info,ROND=debug" produce the same result.
+func (s *Server) applyDebugLevel() error {
+	debugLevel := s.cfg.DebugLevel
+	if debugLevel == "" {
+		debugLevel = DefaultDebugLevel
+	}
+
+	// Check if this is a simple global level (no commas, no '=').
+	if !strings.Contains(debugLevel, ",") &&
+		!strings.Contains(debugLevel, "=") {
+
+		_, ok := btclog.LevelFromString(debugLevel)
+		if !ok {
+			return fmt.Errorf("unknown log level %q",
+				debugLevel)
+		}
+
+		s.logManager.SetLogLevels(debugLevel)
+
+		return nil
+	}
+
+	// Two-pass parse of comma-separated subsystem=level pairs.
+	// Pass 1 finds the last bare level (global default) and
+	// validates all entries. Pass 2 applies per-subsystem
+	// overrides on top of the global default, ensuring that
+	// "ROND=debug,info" and "info,ROND=debug" behave identically.
+	parts := strings.Split(debugLevel, ",")
+
+	type subsystemLevel struct {
+		subsystem string
+		level     string
+	}
+
+	var (
+		globalLevel string
+		overrides   []subsystemLevel
+	)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		if !strings.Contains(part, "=") {
+			// Bare level — candidate for global default.
+			_, ok := btclog.LevelFromString(part)
+			if !ok {
+				return fmt.Errorf("unknown log level %q",
+					part)
+			}
+
+			globalLevel = part
+
+			continue
+		}
+
+		// Subsystem=level pair.
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			return fmt.Errorf("malformed debug level %q",
+				part)
+		}
+
+		subsystem := strings.TrimSpace(kv[0])
+		level := strings.TrimSpace(kv[1])
+
+		_, ok := btclog.LevelFromString(level)
+		if !ok {
+			return fmt.Errorf("unknown log level %q for "+
+				"subsystem %q", level, subsystem)
+		}
+
+		overrides = append(overrides, subsystemLevel{
+			subsystem: subsystem,
+			level:     level,
+		})
+	}
+
+	// Apply global default first so it doesn't clobber
+	// per-subsystem overrides.
+	if globalLevel != "" {
+		s.logManager.SetLogLevels(globalLevel)
+	}
+
+	for _, o := range overrides {
+		s.logManager.SetLogLevel(o.subsystem, o.level)
+	}
 
 	return nil
 }
@@ -989,7 +1116,7 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Logger:        log,
+		Log:           fn.Some(log),
 		OutboxHandler: outboxHandler,
 		ServerConn:    s.runtime.TellRef(),
 		PackageStore:  packageStore,

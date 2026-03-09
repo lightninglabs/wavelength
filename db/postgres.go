@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	admigration "github.com/lightninglabs/darepo-client/db/actordelivery/migrations"
 	dbmigrate "github.com/lightninglabs/darepo-client/db/migrate"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,6 +58,10 @@ type PostgresConfig struct {
 	ConnMaxLifetime    time.Duration `long:"connmaxlifetime" description:"Max amount of time a connection can be reused for before it is closed. Valid time units are {s, m, h}."`
 	ConnMaxIdleTime    time.Duration `long:"connmaxidletime" description:"Max amount of time a connection can be idle for before it is closed. Valid time units are {s, m, h}."`
 	RequireSSL         bool          `long:"requiressl" description:"Whether to require using SSL (mode: require) when connecting to the server."`
+
+	// Log is an optional logger for the Postgres store. When None, the
+	// store falls back to the package-level logger set via UseLogger.
+	Log fn.Option[btclog.Logger]
 }
 
 // DSN returns the dns to connect to the database.
@@ -86,11 +92,19 @@ type PostgresStore struct {
 }
 
 // NewPostgresStore creates a new store that is backed by a Postgres database
-// backend.
-func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, error) {
-	log.InfoS(context.Background(), "Using SQL database",
-		"dsn", cfg.DSN(true),
-	)
+// backend. The explicit logger parameter is kept for backward compatibility
+// with existing callers; when cfg.Log is set it takes precedence.
+func NewPostgresStore(cfg *PostgresConfig,
+	explicitLog btclog.Logger) (*PostgresStore, error) {
+
+	// Resolve the effective logger: prefer the config option, then fall
+	// back to the explicitly provided logger parameter.
+	storeLog := cfg.Log.UnwrapOr(explicitLog)
+
+	ctx := context.Background()
+
+	storeLog.InfoS(ctx, "Opening Postgres database",
+		slog.String("dsn", cfg.DSN(true)))
 
 	rawDB, err := sql.Open("pgx", cfg.DSN(false))
 	if err != nil {
@@ -122,10 +136,21 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	rawDB.SetConnMaxLifetime(connMaxLifetime)
 	rawDB.SetConnMaxIdleTime(connMaxIdleTime)
 
+	storeLog.DebugS(ctx, "Postgres connection pool configured",
+		slog.Int("max_open_conns", maxConns),
+		slog.Int("max_idle_conns", maxIdleConns),
+		slog.Duration("conn_max_lifetime", connMaxLifetime),
+		slog.Duration("conn_max_idle_time", connMaxIdleTime))
+
+	// Persist the resolved logger into the config option so the
+	// logger(ctx) helper can retrieve it without keeping a separate
+	// field.
+	cfg.Log = fn.Some(storeLog)
+
 	queries := sqlc.NewPostgres(rawDB)
 	s := &PostgresStore{
 		cfg: cfg,
-		log: log,
+		log: storeLog,
 		BaseDB: &BaseDB{
 			DB:      rawDB,
 			Queries: queries,
@@ -135,11 +160,15 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 	// Now that the database is open, populate the database with our set of
 	// schemas based on our embedded in-memory file system.
 	if !cfg.SkipMigrations {
+		storeLog.InfoS(ctx, "Starting Postgres schema migrations")
+
 		err := s.ExecuteMigrations(TargetLatest)
 		if err != nil {
 			return nil, fmt.Errorf("error executing migrations: "+
 				"%w", err)
 		}
+
+		storeLog.InfoS(ctx, "Starting actor-delivery migrations")
 
 		err = admigration.RunMigrations(
 			s.DB, s.Backend(), admigration.Config{
@@ -152,6 +181,15 @@ func NewPostgresStore(cfg *PostgresConfig, log btclog.Logger) (*PostgresStore, e
 				err,
 			)
 		}
+
+		storeLog.InfoS(
+			ctx,
+			"All Postgres migrations completed successfully",
+		)
+	} else {
+		storeLog.InfoS(
+			ctx, "Skipping Postgres migrations as configured",
+		)
 	}
 
 	return s, nil

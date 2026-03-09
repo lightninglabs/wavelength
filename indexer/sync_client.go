@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/build"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 const (
@@ -69,6 +71,11 @@ type SyncCursorStore interface {
 type SyncClient struct {
 	backend SyncBackend
 	cursors SyncCursorStore
+
+	// Log is an optional logger for this sync client. If None, the client
+	// falls back to extracting a logger from context via
+	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
+	Log fn.Option[btclog.Logger]
 }
 
 // NewSyncClient creates a SyncClient. Both backend and store are
@@ -83,17 +90,19 @@ func NewSyncClient(backend SyncBackend,
 		return nil, fmt.Errorf("sync cursor store must not be nil")
 	}
 
+	log.InfoS(context.TODO(), "Initializing sync client")
+
 	return &SyncClient{
 		backend: backend,
 		cursors: store,
 	}, nil
 }
 
-// logger returns the logger for this sync client, extracting it from
-// the context. If no logger is present in the context, returns
-// btclog.Disabled which safely no-ops all log calls.
+// logger returns the configured logger, falling back to extracting a logger
+// from context. If neither is available, returns btclog.Disabled which safely
+// no-ops all log calls.
 func (c *SyncClient) logger(ctx context.Context) btclog.Logger {
-	return build.LoggerFromContext(ctx)
+	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // VTXOSyncResult wraps a VTXO event response and defers cursor
@@ -165,9 +174,9 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Polling VTXO events",
-		"cursor_key", cursorKey,
-		"cursor", cursor,
-		"limit", limit)
+		slog.String("cursor_key", cursorKey),
+		slog.Uint64("cursor", cursor),
+		slog.Int("limit", int(limit)))
 
 	resp, err := c.backend.ListVTXOEventsByScriptsTaproot(
 		ctx, scopes, cursor, limit, opts...,
@@ -175,6 +184,11 @@ func (c *SyncClient) SyncVTXOEventsTaproot(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	c.logger(ctx).TraceS(ctx, "VTXO events poll complete",
+		slog.String("cursor_key", cursorKey),
+		slog.Int("event_count", len(resp.Events)),
+		slog.Uint64("next_cursor", resp.NextCursor))
 
 	// Capture the cursor for the ack closure. The cursor is
 	// only persisted when the caller calls Ack, preventing
@@ -217,9 +231,9 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	}
 
 	c.logger(ctx).TraceS(ctx, "Polling OOR recipient events",
-		"pk_script", scriptKey,
-		"cursor", cursor,
-		"limit", limit)
+		slog.String("pk_script", scriptKey),
+		slog.Uint64("cursor", cursor),
+		slog.Int("limit", int(limit)))
 
 	resp, err := c.backend.ListOORRecipientEventsByScriptTaproot(
 		ctx, pkScript, cursor, limit, opts...,
@@ -227,6 +241,11 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	c.logger(ctx).TraceS(ctx, "OOR recipient events poll complete",
+		slog.String("pk_script", scriptKey),
+		slog.Int("event_count", len(resp.Events)),
+		slog.Uint64("next_cursor", resp.NextCursor))
 
 	// Capture the cursor for the ack closure.
 	nextCursor := resp.NextCursor

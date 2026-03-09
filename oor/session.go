@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
@@ -34,6 +35,10 @@ type Session struct {
 func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
+
+	log.DebugS(ctx, "Creating new OOR session",
+		slog.Int("num_inputs", len(inputs)),
+		slog.Int("num_outputs", len(outputs)))
 
 	env := &Environment{}
 	startupID := SessionID{}
@@ -84,6 +89,9 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	// Bind the FSM environment to the stable session identifier only after
 	// StartTransfer has deterministically built the package.
 	env.SessionID = sessionID
+
+	log.InfoS(ctx, "OOR session created with stable ID",
+		slog.String("session_id", sessionID.String()))
 
 	return &Session{
 		ID:  sessionID,
