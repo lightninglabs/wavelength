@@ -132,6 +132,15 @@ func newRootCmd() *cobra.Command {
 	f.String("rpc.listen", cfg.RPC.ListenAddr,
 		"client gRPC listen address",
 	)
+	f.String("rpc.tls.certpath", "",
+		"path to TLS certificate for client gRPC",
+	)
+	f.String("rpc.tls.keypath", "",
+		"path to TLS private key for client gRPC",
+	)
+	f.Bool("rpc.tls.autocert", false,
+		"enable automatic TLS certificate generation",
+	)
 
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
