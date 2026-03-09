@@ -35,7 +35,7 @@ type AdminRPCServer struct {
 
 // NewAdminRPCServer creates a new admin RPC server.
 func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
-	serverOpts ...grpc.ServerOption) (*AdminRPCServer, error) {
+	log btclog.Logger) (*AdminRPCServer, error) {
 
 	// Use existing listener if provided
 	listener := cfg.RPCListener
@@ -51,8 +51,8 @@ func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 	s := &AdminRPCServer{
 		cfg:        cfg,
 		server:     operator,
-		log:        operator.log,
-		grpcServer: grpc.NewServer(serverOpts...),
+		log:        log,
+		grpcServer: grpc.NewServer(),
 		listener:   listener,
 		quit:       make(chan struct{}),
 	}

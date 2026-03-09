@@ -59,6 +59,21 @@ type Server struct {
 	indexerOperator *indexer.Operator
 }
 
+// subLogger extracts a subsystem logger from the config's Loggers map.
+// When the map is nil or the key is absent, btclog.Disabled is returned.
+func subLogger(loggers SubLoggers, tag string) btclog.Logger {
+	if loggers == nil {
+		return btclog.Disabled
+	}
+
+	l, ok := loggers[tag]
+	if !ok {
+		return btclog.Disabled
+	}
+
+	return l
+}
+
 // NewServer creates a new operator server.
 func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	s := &Server{
@@ -69,10 +84,12 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 
 	s.log.InfoS(ctx, "Constructing Ark operator server")
 
-	// Initialize database
+	// Initialize database using the dedicated DB subsystem logger.
+	dbLog := subLogger(cfg.Loggers, dbSubsystem)
+
 	var err error
 	s.db, err = db.NewStoreFromConfig(
-		cfg.DB, s.log, clock.NewDefaultClock(),
+		cfg.DB, dbLog, clock.NewDefaultClock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create database: %w", err)
@@ -84,15 +101,17 @@ func NewServer(ctx context.Context, cfg *Config) (*Server, error) {
 	}
 	s.log.InfoS(ctx, "Database initialized", "backend", backendName)
 
-	// Create admin RPC server
-	s.adminRPC, err = NewAdminRPCServer(cfg.AdminRPC, s)
+	// Create admin RPC server with the ARPC subsystem logger.
+	adminLog := subLogger(cfg.Loggers, adminRPCSubsystem)
+	s.adminRPC, err = NewAdminRPCServer(cfg.AdminRPC, s, adminLog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create admin RPC server: %w",
 			err)
 	}
 
-	// Create client RPC server
-	s.rpc, err = NewRPCServer(cfg.RPC, s)
+	// Create client RPC server with the ORPC subsystem logger.
+	rpcLog := subLogger(cfg.Loggers, clientRPCSubsystem)
+	s.rpc, err = NewRPCServer(cfg.RPC, s, rpcLog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client RPC server: %w",
 			err)
