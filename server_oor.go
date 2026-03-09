@@ -95,6 +95,24 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		return fmt.Errorf("start OOR actor: %w", err)
 	}
 
+	// Create the OOR operator that provides mailbox RPC dispatchers
+	// for the per-client ingress loops. The local mailbox edge
+	// client is shared with other subsystems.
+	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
+	if err != nil {
+		return fmt.Errorf("build OOR edge client: %w", err)
+	}
+
+	s.oorOperator, err = oor.NewOOROperator(
+		oor.OOROperatorConfig{
+			Edge:     edgeClient,
+			OORActor: s.oorActor,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("create OOR operator: %w", err)
+	}
+
 	log.InfoS(ctx, "OOR subsystem initialized")
 
 	return nil
@@ -114,11 +132,11 @@ func (s *Server) stopOORSubsystem(ctx context.Context) {
 // into per-client PerClientConfig.Dispatchers during client
 // registration.
 //
-// Returns nil if the OOR subsystem has not been initialized. The
-// dispatcher wiring is done in Phase 8.
+// Returns nil if the OOR subsystem has not been initialized.
 func (s *Server) OORDispatchers() clientconn.DispatcherMap {
-	// TODO(roasbeef): Wire OOR dispatchers that translate inbound
-	// mailbox envelopes into oor.Actor messages and route outbox
-	// events back to clients via the bridge.
-	return nil
+	if s.oorOperator == nil {
+		return nil
+	}
+
+	return s.oorOperator.Dispatchers()
 }

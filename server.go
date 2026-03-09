@@ -95,9 +95,18 @@ type Server struct {
 	// for sending messages (e.g. TriggerBatch from admin RPC).
 	roundsRef actor.ActorRef[rounds.ActorMsg, rounds.ActorResp]
 
+	// roundsOperator provides RPC dispatchers for the round
+	// service, translating inbound mailbox envelopes into actor
+	// messages.
+	roundsOperator *rounds.RoundOperator
+
 	// oorActor is the OOR transfer coordinator that manages
 	// out-of-round transfers between clients.
 	oorActor *oor.Actor
+
+	// oorOperator provides RPC dispatchers for the OOR service,
+	// translating inbound mailbox envelopes into actor messages.
+	oorOperator *oor.OOROperator
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
