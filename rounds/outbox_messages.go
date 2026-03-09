@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -54,10 +55,11 @@ func (c *ClientErrorResp) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientErrorResp to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientErrorResp to the roundpb wire format.
 func (c *ClientErrorResp) ToProto() proto.Message {
-	return nil
+	return &roundpb.ClientErrorResp{
+		ErrorMsg: c.ErrorMsg,
+	}
 }
 
 // outboxEventSealed marks ClientErrorResp as implementing the sealed
@@ -88,10 +90,17 @@ func (c *ClientSuccessResp) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientSuccessResp to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientSuccessResp to the roundpb wire format.
 func (c *ClientSuccessResp) ToProto() proto.Message {
-	return nil
+	return &roundpb.ClientSuccessResp{
+		RoundId: c.RoundID[:],
+		AcceptedBoardingOutpoints: roundpb.OutpointsToProto(
+			c.AcceptedBoardingOutpoints,
+		),
+		AcceptedVtxoOutpoints: roundpb.OutpointsToProto(
+			c.AcceptedVTXOOutpoints,
+		),
+	}
 }
 
 // outboxEventSealed marks ClientSuccessResp as implementing the sealed
@@ -116,11 +125,12 @@ func (c *ClientAwaitingInputSigsResp) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientAwaitingInputSigsResp to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are
-// available.
+// ToProto converts ClientAwaitingInputSigsResp to the roundpb wire
+// format.
 func (c *ClientAwaitingInputSigsResp) ToProto() proto.Message {
-	return nil
+	return &roundpb.ClientAwaitingInputSigsResp{
+		RoundId: c.RoundID[:],
+	}
 }
 
 // outboxEventSealed marks ClientAwaitingInputSigsResp as implementing the
@@ -148,10 +158,19 @@ func (c *ClientVTXOAggNonces) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientVTXOAggNonces to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientVTXOAggNonces to the roundpb wire format.
+// Nonce keys are hex-encoded TxIDs, values are raw 66-byte public
+// nonces.
 func (c *ClientVTXOAggNonces) ToProto() proto.Message {
-	return nil
+	nonces := make(map[string][]byte, len(c.AggNonces))
+	for txID, nonce := range c.AggNonces {
+		nonces[roundpb.TxIDToHex(txID)] = nonce[:]
+	}
+
+	return &roundpb.ClientVTXOAggNonces{
+		RoundId:   c.RoundID[:],
+		AggNonces: nonces,
+	}
 }
 
 // outboxEventSealed marks ClientVTXOAggNonces as implementing the sealed
@@ -179,10 +198,21 @@ func (c *ClientVTXOAggSigs) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientVTXOAggSigs to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientVTXOAggSigs to the roundpb wire format.
+// Signature keys are hex-encoded TxIDs, values are raw 64-byte
+// schnorr signatures.
 func (c *ClientVTXOAggSigs) ToProto() proto.Message {
-	return nil
+	sigs := make(map[string][]byte, len(c.AggSigs))
+	for txID, sig := range c.AggSigs {
+		sigs[roundpb.TxIDToHex(txID)] = roundpb.SchnorrSigToBytes(
+			sig,
+		)
+	}
+
+	return &roundpb.ClientVTXOAggSigs{
+		RoundId: c.RoundID[:],
+		AggSigs: sigs,
+	}
 }
 
 // outboxEventSealed marks ClientVTXOAggSigs as implementing the sealed
@@ -287,10 +317,64 @@ func (c *ClientBatchInfo) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientBatchInfo to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientBatchInfo to the roundpb wire format. The
+// PSBT is serialized to bytes, VTXO trees are flattened to pre-order
+// node slices, and connector leaves are keyed by outpoint string.
 func (c *ClientBatchInfo) ToProto() proto.Message {
-	return nil
+	psbtBytes, err := roundpb.PSBTToBytes(c.BatchPSBT)
+	if err != nil {
+		// Best effort: return what we can without the PSBT.
+		psbtBytes = nil
+	}
+
+	// Convert VTXO tree paths keyed by output index.
+	var treePaths map[int32]*roundpb.VTXOTree
+	if len(c.VTXOTreePaths) > 0 {
+		treePaths = make(
+			map[int32]*roundpb.VTXOTree, len(c.VTXOTreePaths),
+		)
+		for idx, t := range c.VTXOTreePaths {
+			pt, treeErr := roundpb.TreeToProto(t)
+			if treeErr != nil {
+				continue
+			}
+			treePaths[int32(idx)] = pt
+		}
+	}
+
+	// Convert connector leaf map keyed by outpoint string.
+	var connLeaves map[string]*roundpb.ConnectorLeafInfo
+	if len(c.ConnectorLeafMap) > 0 {
+		connLeaves = make(
+			map[string]*roundpb.ConnectorLeafInfo,
+			len(c.ConnectorLeafMap),
+		)
+		for op, leaf := range c.ConnectorLeafMap {
+			connLeaves[roundpb.OutpointToMapKey(op)] = connectorLeafInfoToProto(leaf)
+		}
+	}
+
+	return &roundpb.ClientBatchInfo{
+		RoundId:          c.RoundID[:],
+		BatchPsbt:        psbtBytes,
+		VtxoTreePaths:    treePaths,
+		ConnectorLeafMap: connLeaves,
+	}
+}
+
+// connectorLeafInfoToProto converts a types.ConnectorLeafInfo to the
+// roundpb wire format.
+func connectorLeafInfoToProto(
+	leaf *types.ConnectorLeafInfo) *roundpb.ConnectorLeafInfo {
+
+	if leaf == nil {
+		return nil
+	}
+
+	return &roundpb.ConnectorLeafInfo{
+		LeafOutpoint: roundpb.OutpointToProto(leaf.LeafOutpoint),
+		LeafOutput:   roundpb.TxOutToProto(leaf.LeafOutput),
+	}
 }
 
 // outboxEventSealed marks ClientBatchInfo as implementing the sealed
@@ -316,10 +400,12 @@ func (c *ClientRoundFailedResp) ClientID() clientconn.ClientID {
 	return c.Client
 }
 
-// ToProto converts ClientRoundFailedResp to a protobuf message.
-// TODO: Implement actual proto conversion once proto definitions are available.
+// ToProto converts ClientRoundFailedResp to the roundpb wire format.
 func (c *ClientRoundFailedResp) ToProto() proto.Message {
-	return nil
+	return &roundpb.ClientRoundFailedResp{
+		RoundId: c.RoundID[:],
+		Reason:  c.Reason,
+	}
 }
 
 // outboxEventSealed marks ClientRoundFailedResp as implementing the sealed
