@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/lndclient"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
@@ -78,6 +79,7 @@ func newLNDBackendFromInstance(h *E2EHarness,
 	// input.Signer + DeriveNextKey).
 	clientWallet := lndbackend.NewLndWalletController(
 		lndServices.WalletKit, lndServices.Signer,
+		fn.Some(h.SubLogger("LNDB")),
 	)
 
 	return &lndBackend{

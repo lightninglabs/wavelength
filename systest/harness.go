@@ -428,6 +428,7 @@ func (h *E2EHarness) initActorSystem() {
 	// client wallets for proper UTXO management.
 	h.walletController = lndbackend.NewLndWalletController(
 		h.serverLNDServices.WalletKit, h.serverLNDServices.Signer,
+		fn.Some(h.SubLogger("LNDB")),
 	)
 
 	// Create REAL chain source wrapping harness bitcoind.
