@@ -1,92 +1,81 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/lightninglabs/darepo/adminrpc"
-	"github.com/urfave/cli/v2"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/lightninglabs/darepo/build"
+	"github.com/spf13/cobra"
 )
 
 const (
-	defaultRPCAddr = "localhost:8081"
-	defaultTimeout = 10 * time.Second
+	// defaultRPCServer is the default admin gRPC endpoint.
+	defaultRPCServer = "localhost:8081"
 )
 
 func main() {
-	app := &cli.App{
-		Name:  "arkcli",
-		Usage: "Command line client for the Ark operator",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "rpcserver",
-				Aliases: []string{"s"},
-				Value:   defaultRPCAddr,
-				Usage: "The host:port of the Ark admin RPC " +
-					"server",
-			},
-		},
-		Commands: []*cli.Command{
-			infoCommand,
-		},
-	}
+	root := newRootCmd()
 
-	if err := app.Run(os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if err := root.Execute(); err != nil {
+		printError("EXECUTION_FAILED", err.Error())
 		os.Exit(1)
 	}
 }
 
-var infoCommand = &cli.Command{
-	Name:   "info",
-	Usage:  "Get general information about the operator server",
-	Action: info,
+// newRootCmd creates the top-level cobra command for arkcli. Global
+// flags (--rpcserver, --tlscertpath, --no-tls, --json) are registered
+// here and made available to all subcommands via PersistentFlags.
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "arkcli",
+		Short: "Ark operator admin CLI",
+		Long: "arkcli is the command-line interface for " +
+			"the Ark protocol operator daemon (arkd). " +
+			"It issues gRPC calls to a running daemon " +
+			"and prints structured JSON output suitable " +
+			"for both human and agent consumption.",
+		Version: build.Version(),
+		// Silence usage on errors so we control the error
+		// output format.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	// Register global persistent flags.
+	pf := cmd.PersistentFlags()
+
+	pf.String("rpcserver", defaultRPCServer,
+		"admin gRPC server address (host:port)")
+
+	pf.String("tlscertpath", "",
+		"path to admin server TLS certificate")
+
+	pf.Bool("no-tls", false,
+		"disable TLS for admin connection (dev/regtest)")
+
+	pf.String("json", "",
+		"raw JSON request payload (maps directly to the "+
+			"RPC request proto); when set, bespoke flags "+
+			"are ignored")
+
+	// Register subcommands.
+	cmd.AddCommand(
+		newInfoCmd(),
+		newTriggerBatchCmd(),
+		newListRoundsCmd(),
+		newListVTXOsCmd(),
+		newVTXOStatsCmd(),
+		newListClientsCmd(),
+		newSchemaCmd(),
+		newMCPCmd(),
+	)
+
+	return cmd
 }
 
-func info(ctx *cli.Context) error {
-	// Get RPC server address from flag.
-	rpcAddr := ctx.String("rpcserver")
-
-	// Create connection context with timeout.
-	connCtx, connCancel := context.WithTimeout(
-		context.Background(), defaultTimeout,
-	)
-	defer connCancel()
-
-	// Connect to the RPC server.
-	conn, err := grpc.DialContext(
-		connCtx, rpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		return fmt.Errorf("unable to connect to RPC server: %w", err)
-	}
-	defer conn.Close()
-
-	// Create the admin RPC client.
-	client := adminrpc.NewOperatorAdminClient(conn)
-
-	// Make the Info request.
-	reqCtx, cancel := context.WithTimeout(
-		context.Background(), defaultTimeout,
-	)
-	defer cancel()
-
-	resp, err := client.Info(reqCtx, &adminrpc.InfoRequest{})
-	if err != nil {
-		return fmt.Errorf("info request failed: %w", err)
-	}
-
-	// Print the information.
-	fmt.Printf("Ark Operator Server Info:\n")
-	fmt.Printf("  Version: %s\n", resp.Version)
-	fmt.Printf("  Network: %s\n", resp.Network)
-	fmt.Printf("  Pubkey: %s\n", resp.Pubkey)
-
-	return nil
+// printError writes a structured error to stderr in JSON format.
+func printError(code string, msg string) {
+	fmt.Fprintf(os.Stderr,
+		`{"error":{"code":%q,"message":%q}}`+"\n",
+		code, msg)
 }
