@@ -691,7 +691,14 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		ctx, r.server.vtxoStore, outpoints,
 	)
 	if err != nil {
-		r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+		if unlockErr := r.unlockVTXOs(
+			ctx, locked.SelectedVTXOs,
+		); unlockErr != nil {
+			log.ErrorS(
+				ctx, "Unable to unlock VTXOs",
+				unlockErr,
+			)
+		}
 
 		return nil, status.Errorf(codes.Internal,
 			"unable to build transfer inputs: %v", err)
@@ -723,7 +730,14 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if err != nil {
 		// Unlock VTXOs on OOR failure so they can be
 		// reused.
-		r.unlockVTXOs(ctx, locked.SelectedVTXOs)
+		if unlockErr := r.unlockVTXOs(
+			ctx, locked.SelectedVTXOs,
+		); unlockErr != nil {
+			log.ErrorS(
+				ctx, "Unable to unlock VTXOs",
+				unlockErr,
+			)
+		}
 
 		return nil, status.Errorf(codes.Internal,
 			"OOR transfer failed: %v", err)
@@ -746,13 +760,13 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 }
 
 // unlockVTXOs sends an UnlockVTXOsRequest to the wallet actor for the
-// given set of selected VTXOs. This is a fire-and-forget operation used
-// for cleanup when an OOR transfer fails.
+// given set of selected VTXOs. This is used for cleanup when an OOR
+// transfer fails.
 func (r *RPCServer) unlockVTXOs(ctx context.Context,
-	vtxos []wallet.SelectedVTXO) {
+	vtxos []wallet.SelectedVTXO) error {
 
 	if !r.server.walletRef.IsSome() {
-		return
+		return nil
 	}
 
 	outpoints := make([]wire.OutPoint, 0, len(vtxos))
@@ -761,7 +775,8 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	}
 
 	wRef := r.server.walletRef.UnsafeFromSome()
-	wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
+
+	return wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
 		Outpoints: outpoints,
 	})
 }

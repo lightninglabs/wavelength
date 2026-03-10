@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check schema-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
@@ -262,6 +262,10 @@ check-migration-version: #? Check that LatestMigrationVersion matches migration 
 	@$(call print, "Checking migration version consistency.")
 	@./scripts/check-migration-latest-version.sh
 
+schema-check: #? Verify schema registry, MCP tools, and cobra commands are in sync
+	@$(call print, "Verifying schema registry consistency.")
+	$(GOCC) run scripts/verify-schema-registry/main.go
+
 commitmsg-lint: #? Lint commit message(s). Use range=<rev-range>, commit=<rev>, or file=<path>
 	@$(call print, "Linting commit message(s).")
 	@if [ -n "$(range)" ]; then \
@@ -351,11 +355,13 @@ build: #? Build debug binaries and place in project directory
 	@$(call print, "Building debug binaries.")
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/merge-sql-schemas
 	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepod ./cmd/darepod
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/darepocli ./cmd/darepocli
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
 	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepod
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/darepocli
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")

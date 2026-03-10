@@ -27,7 +27,7 @@ const (
 	// walletPasswordEnvVar is the environment variable name for
 	// providing the wallet password for auto-unlock at daemon
 	// startup.
-	walletPasswordEnvVar = "DAREPOD_WALLET_PASSWORD"
+	walletPasswordEnvVar = "DAREPOD_WALLET_PASSWORD" //nolint:gosec
 
 	// scryptN is the CPU/memory cost parameter for scrypt key
 	// derivation. This value balances security against startup
