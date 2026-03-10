@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/build"
+	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc"
 )
 
@@ -151,30 +153,45 @@ func (a *AdminRPCServer) Info(ctx context.Context,
 	}, nil
 }
 
-// TriggerBatch manually triggers a new batch round.
+// TriggerBatch manually triggers a new batch round by sending a
+// TriggerBatchMsg to the rounds actor. The actor seals the current
+// live round, preventing further registrations and advancing the
+// FSM to batch building.
 func (a *AdminRPCServer) TriggerBatch(ctx context.Context,
 	_ *adminrpc.TriggerBatchRequest) (
 	*adminrpc.TriggerBatchResponse, error) {
 
-	if a.server.roundsActor == nil {
+	roundsRef := a.server.roundsRef
+	if roundsRef == nil {
 		return nil, fmt.Errorf(
 			"rounds subsystem not initialized",
 		)
 	}
 
-	// The rounds actor exposes a TriggerBatch actor message. For
-	// now, return a placeholder — the full trigger-batch actor
-	// message integration requires the rounds actor to expose a
-	// public trigger method.
-	//
-	// TODO(roasbeef): Send TriggerBatchRequest to rounds actor
-	// via the service key ref once the message type is exported.
+	future := roundsRef.Ask(
+		ctx, &rounds.TriggerBatchMsg{},
+	)
+
+	resp, err := future.Await(ctx).Unpack()
+	if err != nil {
+		return nil, fmt.Errorf("trigger batch: %w", err)
+	}
+
+	triggerResp, ok := resp.(*rounds.TriggerBatchResp)
+	if !ok || triggerResp == nil {
+		return &adminrpc.TriggerBatchResponse{
+			Status: "sealed",
+		}, nil
+	}
+
 	return &adminrpc.TriggerBatchResponse{
-		Status: "not_yet_wired",
+		Status:  "sealed",
+		RoundId: triggerResp.RoundID.String(),
 	}, nil
 }
 
 // ListRounds returns a paginated list of past and active rounds.
+// Pagination is performed server-side in the database via LIMIT/OFFSET.
 func (a *AdminRPCServer) ListRounds(ctx context.Context,
 	req *adminrpc.ListRoundsRequest) (
 	*adminrpc.ListRoundsResponse, error) {
@@ -183,56 +200,79 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	// Use the low-level sqlc queries for round listing since the
-	// higher-level RoundStoreDB only exposes LoadPendingRounds.
 	q := a.server.db.Queries
 
-	// Currently only ListPendingRounds exists at the store
-	// level. We use the raw sqlc queries to list all rounds.
-	// A future iteration should add proper paginated listing
-	// SQL queries.
-	dbRounds, err := q.ListPendingRounds(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list rounds: %w", err)
-	}
-
-	limit := int(req.Limit)
+	limit := int32(req.Limit)
 	if limit == 0 {
 		limit = 50
 	}
-	offset := int(req.Offset)
+	offset := int32(req.Offset)
 
-	// Apply offset and limit in-memory.
-	if offset >= len(dbRounds) {
-		return &adminrpc.ListRoundsResponse{
-			Total: uint32(len(dbRounds)),
-		}, nil
+	unspecified := adminrpc.RoundStatus_ROUND_STATUS_UNSPECIFIED
+
+	// When a status filter is active, use the status-specific
+	// query and count. Otherwise list all rounds.
+	var (
+		dbRounds []sqlc.Round
+		total    int64
+		err      error
+	)
+
+	if req.StatusFilter != unspecified {
+		statusStr := mapRoundStatusToDBStr(req.StatusFilter)
+
+		dbRounds, err = q.ListRoundsByStatus(
+			ctx, sqlc.ListRoundsByStatusParams{
+				Status: statusStr,
+				Limit:  limit,
+				Offset: offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list rounds by status: %w", err,
+			)
+		}
+
+		total, err = q.CountRoundsByStatus(ctx, statusStr)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"count rounds by status: %w", err,
+			)
+		}
+	} else {
+		dbRounds, err = q.ListAllRounds(
+			ctx, sqlc.ListAllRoundsParams{
+				Limit:  limit,
+				Offset: offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list all rounds: %w", err,
+			)
+		}
+
+		total, err = q.CountAllRounds(ctx)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"count all rounds: %w", err,
+			)
+		}
 	}
-	end := offset + limit
-	if end > len(dbRounds) {
-		end = len(dbRounds)
-	}
 
-	page := dbRounds[offset:end]
-	summaries := make([]*adminrpc.RoundSummary, 0, len(page))
-
-	for _, r := range page {
+	summaries := make(
+		[]*adminrpc.RoundSummary, 0, len(dbRounds),
+	)
+	for _, r := range dbRounds {
 		roundID, err := uuid.FromBytes(r.RoundID)
 		if err != nil {
 			continue
 		}
 
-		status := mapDBRoundStatus(r.Status)
-		unspecified := adminrpc.RoundStatus_ROUND_STATUS_UNSPECIFIED
-		if req.StatusFilter != unspecified &&
-			status != req.StatusFilter {
-
-			continue
-		}
-
 		summaries = append(summaries, &adminrpc.RoundSummary{
 			Id:             roundID.String(),
-			Status:         status,
+			Status:         mapDBRoundStatus(r.Status),
 			TxId:           r.CommitmentTxid,
 			CreatedAtUnixS: r.CreatedAt,
 		})
@@ -240,7 +280,7 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 
 	return &adminrpc.ListRoundsResponse{
 		Rounds: summaries,
-		Total:  uint32(len(dbRounds)),
+		Total:  uint32(total),
 	}, nil
 }
 
@@ -428,6 +468,35 @@ func mapDBRoundStatus(status string) adminrpc.RoundStatus {
 
 	default:
 		return adminrpc.RoundStatus_ROUND_STATUS_UNSPECIFIED
+	}
+}
+
+// mapRoundStatusToDBStr converts a proto round status enum to the DB
+// status string for filtered queries.
+func mapRoundStatusToDBStr(
+	status adminrpc.RoundStatus) string {
+
+	switch status {
+	case adminrpc.RoundStatus_ROUND_STATUS_OPEN:
+		return "pending"
+
+	case adminrpc.RoundStatus_ROUND_STATUS_SEALED:
+		return "sealed"
+
+	case adminrpc.RoundStatus_ROUND_STATUS_SIGNING:
+		return "signing"
+
+	case adminrpc.RoundStatus_ROUND_STATUS_BROADCAST:
+		return "broadcast"
+
+	case adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED:
+		return "confirmed"
+
+	case adminrpc.RoundStatus_ROUND_STATUS_FAILED:
+		return "failed"
+
+	default:
+		return "pending"
 	}
 }
 
