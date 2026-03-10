@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 )
 
@@ -44,6 +45,26 @@ const (
 	// deadline for collecting forfeit signatures from VTXO actors
 	// during a round.
 	DefaultForfeitCollectionTimeout = 2 * time.Minute
+
+	// DefaultWalletType is the default wallet backend. The "lwwallet"
+	// backend uses an in-process lightweight wallet backed by
+	// btcwallet and Esplora, requiring no external lnd node.
+	DefaultWalletType = "lwwallet"
+
+	// WalletTypeLnd selects lnd as the wallet backend.
+	WalletTypeLnd = "lnd"
+
+	// WalletTypeLwwallet selects the lightweight in-process wallet
+	// backed by btcwallet and Esplora.
+	WalletTypeLwwallet = "lwwallet"
+
+	// DefaultEsploraPollInterval is the default interval at which the
+	// lwwallet polls the Esplora API for new blocks and transactions.
+	DefaultEsploraPollInterval = 5 * time.Second
+
+	// DefaultRecoveryWindow is the default address look-ahead window
+	// used during lwwallet recovery.
+	DefaultRecoveryWindow = 100
 )
 
 // Config holds all configuration for the darepod daemon.
@@ -74,6 +95,10 @@ type Config struct {
 	// RPC configures the daemon's own gRPC server that external tools
 	// (CLI, GUI) connect to.
 	RPC *RPCConfig `mapstructure:"rpc"`
+
+	// Wallet configures the wallet backend used for signing, key
+	// derivation, and chain access.
+	Wallet *WalletConfig `mapstructure:"wallet"`
 
 	// ForfeitCollectionTimeout is the maximum wall-clock
 	// duration to wait for forfeit signatures during a round.
@@ -146,6 +171,35 @@ type RPCConfig struct {
 	TLSKeyPath string `mapstructure:"tlskeypath"`
 }
 
+// WalletConfig selects and configures the wallet backend.
+type WalletConfig struct {
+	// Type selects the wallet backend: "lnd" uses a connected lnd
+	// node, "lwwallet" uses an in-process lightweight wallet backed
+	// by btcwallet and Esplora.
+	Type string `mapstructure:"type"`
+
+	// EsploraURL is the base URL of the Esplora REST API used by the
+	// lwwallet backend for chain data. Required when Type is
+	// "lwwallet".
+	EsploraURL string `mapstructure:"esploraurl"`
+
+	// PollInterval controls how often the lwwallet backend polls the
+	// Esplora API for new blocks. If zero,
+	// DefaultEsploraPollInterval is used.
+	PollInterval time.Duration `mapstructure:"pollinterval"`
+
+	// RecoveryWindow is the address look-ahead window used during
+	// lwwallet key recovery. If zero, DefaultRecoveryWindow is used.
+	RecoveryWindow uint32 `mapstructure:"recoverywindow"`
+
+	// PasswordFile is the path to a file containing the wallet
+	// password for auto-unlock at daemon startup. The file contents
+	// are read and trailing newlines are stripped. When set alongside
+	// an existing encrypted seed file, the daemon unlocks the wallet
+	// automatically without requiring an UnlockWallet RPC call.
+	PasswordFile string `mapstructure:"password_file"`
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -163,6 +217,11 @@ func DefaultConfig() *Config {
 		RPC: &RPCConfig{
 			ListenAddr: DefaultRPCHost,
 		},
+		Wallet: &WalletConfig{
+			Type:           DefaultWalletType,
+			PollInterval:   DefaultEsploraPollInterval,
+			RecoveryWindow: DefaultRecoveryWindow,
+		},
 	}
 }
 
@@ -175,11 +234,38 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
 
-	if c.Lnd == nil {
-		return fmt.Errorf("lnd config is required")
+	// Validate wallet config.
+	if c.Wallet == nil {
+		return fmt.Errorf("wallet config is required")
 	}
-	if c.Lnd.Host == "" {
-		return fmt.Errorf("lnd host is required")
+
+	switch c.Wallet.Type {
+	case WalletTypeLnd:
+		// LND backend requires a valid lnd connection config.
+		if c.Lnd == nil {
+			return fmt.Errorf("lnd config is required " +
+				"when wallet.type is lnd")
+		}
+		if c.Lnd.Host == "" {
+			return fmt.Errorf("lnd host is required " +
+				"when wallet.type is lnd")
+		}
+
+	case WalletTypeLwwallet:
+		// Lightweight wallet requires an Esplora URL for
+		// chain data.
+		if c.Wallet.EsploraURL == "" {
+			return fmt.Errorf("wallet.esploraurl is " +
+				"required when wallet.type is " +
+				"lwwallet")
+		}
+
+	default:
+		return fmt.Errorf(
+			"unknown wallet type %q, valid values: "+
+				"lnd, lwwallet",
+			c.Wallet.Type,
+		)
 	}
 
 	if c.Server == nil {
@@ -205,6 +291,25 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// networkToChainParams maps a network name string to the corresponding
+// btcd chain configuration parameters.
+func networkToChainParams(network string) (*chaincfg.Params, error) {
+	switch network {
+	case "mainnet":
+		return &chaincfg.MainNetParams, nil
+	case "testnet":
+		return &chaincfg.TestNet3Params, nil
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+	default:
+		return nil, fmt.Errorf("unknown network %q", network)
+	}
 }
 
 // NetworkDir returns the network-scoped data directory (e.g.,
