@@ -280,6 +280,12 @@ func (a *Ark) Receive(ctx context.Context,
 	case *LeaveVTXOsRequest:
 		return a.handleLeaveVTXOs(ctx, m)
 
+	case *SelectAndLockVTXOsRequest:
+		return a.handleSelectAndLockVTXOs(ctx, m)
+
+	case *UnlockVTXOsRequest:
+		return a.handleUnlockVTXOs(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -711,6 +717,115 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// handleSelectAndLockVTXOs forwards a single atomic select+lock request to the
+// VTXO manager, then adapts the manager response to the wallet message
+// surface.
+func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
+	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
+
+	if a.actorSystem == nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no actor system for VTXO selection"),
+		)
+	}
+
+	// Ask the VTXO manager to select and lock in a single actor message.
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	mgrRef := mgrKey.Ref(a.actorSystem)
+
+	future := mgrRef.Ask(ctx, &actormsg.SelectAndLockVTXOsRequest{
+		TargetAmount: int64(req.TargetAmount),
+	})
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("select and lock vtxos: %w", err),
+		)
+	}
+
+	selectResp, ok := resp.(*actormsg.SelectAndLockVTXOsResponse)
+	if !ok {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"unexpected select response type: %T", resp,
+		))
+	}
+
+	selected := make([]SelectedVTXO, 0, len(selectResp.Selected))
+	for _, v := range selectResp.Selected {
+		selected = append(selected, SelectedVTXO{
+			Outpoint: v.Outpoint,
+			Amount:   btcutil.Amount(v.Amount),
+			PkScript: v.PkScript,
+		})
+	}
+
+	total := btcutil.Amount(selectResp.TotalSelected)
+	if total < req.TargetAmount {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"manager returned insufficient "+
+				"selection: have %d, need %d",
+			total, req.TargetAmount,
+		))
+	}
+
+	a.logger(ctx).InfoS(ctx, "Selected and locked VTXOs",
+		slog.Int("selected", len(selected)),
+		slog.Int64("target", int64(req.TargetAmount)),
+		slog.Int64("total", int64(total)))
+
+	respMsg := &SelectAndLockVTXOsResponse{
+		SelectedVTXOs: selected,
+		TotalSelected: total,
+	}
+
+	return fn.Ok[WalletResp](respMsg)
+}
+
+// handleUnlockVTXOs forwards an unlock request to the VTXO manager to
+// release previously locked outpoints.
+func (a *Ark) handleUnlockVTXOs(ctx context.Context,
+	req *UnlockVTXOsRequest) fn.Result[WalletResp] {
+
+	if a.actorSystem == nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no actor system for VTXO unlock"),
+		)
+	}
+
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	mgrRef := mgrKey.Ref(a.actorSystem)
+
+	future := mgrRef.Ask(
+		ctx, &actormsg.UnlockVTXOsRequest{
+			Outpoints: req.Outpoints,
+		},
+	)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("unlock vtxos: %w", err),
+		)
+	}
+
+	unlockResp, ok := resp.(*actormsg.UnlockVTXOsResponse)
+	if !ok {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"unexpected unlock response type: %T", resp,
+		))
+	}
+
+	a.logger(ctx).InfoS(ctx, "Unlocked VTXOs",
+		slog.Int("unlocked", unlockResp.UnlockedCount))
+
+	return fn.Ok[WalletResp](&UnlockVTXOsResponse{
+		UnlockedCount: unlockResp.UnlockedCount,
+	})
 }
 
 // buildBoardingTapscript constructs a 2-of-2 tapscript with CSV timeout for
