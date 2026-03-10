@@ -760,8 +760,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 }
 
 // unlockVTXOs sends an UnlockVTXOsRequest to the wallet actor for the
-// given set of selected VTXOs. This is used for cleanup when an OOR
-// transfer fails.
+// given set of selected VTXOs. This is used for cleanup when a transfer
+// (OOR or in-round) fails.
 func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	vtxos []wallet.SelectedVTXO) error {
 

@@ -304,9 +304,10 @@ func (m *RefreshVTXOsResponse) walletRespSealed() {}
 
 // SelectAndLockVTXOsRequest asks the wallet actor to select VTXOs covering a
 // target amount and atomically lock them to prevent double-spends. The locked
-// VTXOs are returned as descriptors that the caller can use to build OOR
-// transfer inputs. If the transfer fails, the caller should send an
-// UnlockVTXOsRequest to release the locks.
+// VTXOs are returned as lightweight descriptors that the caller can use to
+// build transfer inputs for OOR sends or in-round directed transfers. If the
+// operation fails, the caller should send an UnlockVTXOsRequest to release
+// the locks.
 type SelectAndLockVTXOsRequest struct {
 	actor.BaseMessage
 
@@ -323,10 +324,10 @@ func (m *SelectAndLockVTXOsRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *SelectAndLockVTXOsRequest) walletMsgSealed() {}
 
-// SelectedVTXO describes a VTXO that was selected and locked for use as
-// a transfer input. This avoids a direct dependency on the vtxo package
-// in the wallet message surface (which would create an import cycle via
-// vtxo → round → wallet).
+// SelectedVTXO describes a VTXO that was selected and locked for use as a
+// transfer input (OOR or in-round). This avoids a direct dependency on the
+// vtxo package in the wallet message surface (which would create an import
+// cycle via vtxo → round → wallet).
 type SelectedVTXO struct {
 	// Outpoint is the selected VTXO's outpoint.
 	Outpoint wire.OutPoint
@@ -334,8 +335,7 @@ type SelectedVTXO struct {
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
-	// PkScript is the output script for this VTXO. This also serves
-	// as the owner leaf script for OOR checkpoint construction.
+	// PkScript is the output script for this VTXO.
 	PkScript []byte
 }
 
@@ -361,8 +361,8 @@ func (m *SelectAndLockVTXOsResponse) MessageType() string {
 func (m *SelectAndLockVTXOsResponse) walletRespSealed() {}
 
 // UnlockVTXOsRequest releases locks on VTXOs that were previously selected
-// via SelectAndLockVTXOsRequest. This is used when an OOR transfer fails
-// or is cancelled, allowing the VTXOs to be used in future operations.
+// via SelectAndLockVTXOsRequest. This is used when a transfer or round
+// participation fails or is cancelled, allowing the VTXOs to be reused.
 type UnlockVTXOsRequest struct {
 	actor.BaseMessage
 
