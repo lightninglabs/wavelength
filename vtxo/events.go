@@ -48,4 +48,9 @@ type (
 	// request. The VTXO will be forfeited and the value sent to the
 	// specified destination output.
 	TriggerLeaveEvent = round.TriggerLeaveEvent
+
+	// TriggerSendForfeitEvent is sent to prepare a VTXO for forfeit
+	// signing as part of an in-round directed send. Transitions to
+	// RefreshRequestedState without emitting a ForfeitRequest outbox.
+	TriggerSendForfeitEvent = round.TriggerSendForfeitEvent
 )

@@ -219,6 +219,24 @@ func (e *TriggerLeaveEvent) VTXOActorMsg() {}
 // MessageType returns the message type for logging.
 func (e *TriggerLeaveEvent) MessageType() string { return "TriggerLeaveEvent" }
 
+// TriggerSendForfeitEvent is sent to a VTXO actor to prepare it for forfeit
+// signing as part of an in-round directed send. Unlike TriggerRefreshEvent,
+// this does NOT emit a ForfeitRequest outbox message because the round actor
+// already has the complete IntentPackage from TriggerVTXOSendMsg. The VTXO
+// actor only needs to transition to RefreshRequestedState so it is ready to
+// sign the forfeit transaction when the round provides connector details.
+type TriggerSendForfeitEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *TriggerSendForfeitEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *TriggerSendForfeitEvent) MessageType() string {
+	return "TriggerSendForfeitEvent"
+}
+
 // =============================================================================
 // Messages TO VTXO Manager
 // =============================================================================

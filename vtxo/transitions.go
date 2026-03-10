@@ -30,6 +30,9 @@ func (s *LiveState) ProcessEvent(
 	case *TriggerLeaveEvent:
 		return s.handleTriggerLeave(ctx, evt, env)
 
+	case *TriggerSendForfeitEvent:
+		return s.handleTriggerSendForfeit(ctx, evt, env)
+
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
 		// block.
@@ -209,6 +212,31 @@ func (s *LiveState) handleTriggerRefresh(
 		NextState: &RefreshRequestedState{
 			VTXO: s.VTXO,
 			// Manual trigger, no height context.
+			RequestedAtHeight: 0,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
+	}, nil
+}
+
+// handleTriggerSendForfeit handles a send forfeit trigger from the round actor.
+// This transitions the VTXO to RefreshRequestedState with only a status update
+// outbox (no ForfeitRequest), because the round actor already has the complete
+// IntentPackage from the wallet's TriggerVTXOSendMsg.
+func (s *LiveState) handleTriggerSendForfeit(
+	_ context.Context, _ *TriggerSendForfeitEvent, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	outbox := []VTXOOutMsg{
+		&VTXOStatusUpdate{
+			Outpoint:  s.VTXO.Outpoint,
+			NewStatus: VTXOStatusRefreshRequested,
+		},
+	}
+
+	return &VTXOStateTransition{
+		NextState: &RefreshRequestedState{
+			VTXO: s.VTXO,
+			// Send-triggered, no height context.
 			RequestedAtHeight: 0,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),

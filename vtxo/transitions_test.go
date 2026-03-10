@@ -737,6 +737,109 @@ func TestForfeitConfirmedEventIncludesForfeitTx(t *testing.T) {
 }
 
 // TestForfeitSignatureValidity verifies that forfeit signatures produced by
+// TestLiveStateTriggerSendForfeit verifies that a TriggerSendForfeitEvent
+// transitions a LiveState VTXO to RefreshRequestedState with only a
+// VTXOStatusUpdate outbox (no ForfeitRequest, since the round actor already
+// has the IntentPackage from the wallet's TriggerVTXOSendMsg).
+func TestLiveStateTriggerSendForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	evt := &round.TriggerSendForfeitEvent{}
+
+	// Mock the status update that the outbox handler will invoke.
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusRefreshRequested,
+	).Return(nil)
+
+	_, err := h.sendEvent(evt)
+	require.NoError(t, err)
+
+	// Verify state transition to RefreshRequestedState.
+	state := assertState[*RefreshRequestedState](h)
+	require.Equal(t, vtxo, state.VTXO)
+	require.Equal(t, int32(0), state.RequestedAtHeight,
+		"send-triggered should have no height context")
+
+	// Verify outbox contains VTXOStatusUpdate but NOT ForfeitRequest.
+	// This is the key difference from TriggerRefreshEvent.
+	assertOutboxContains[*VTXOStatusUpdate](h)
+
+	for _, msg := range h.outboxMessages {
+		_, isForfeit := msg.(*ForfeitRequest)
+		require.False(t, isForfeit,
+			"send forfeit should not emit ForfeitRequest")
+	}
+}
+
+// TestLiveStateTriggerSendForfeitThenForfeitRequest verifies the full flow:
+// TriggerSendForfeitEvent transitions to RefreshRequestedState, and a
+// subsequent ForfeitRequestEvent transitions to ForfeitingState with proper
+// forfeit signing.
+func TestLiveStateTriggerSendForfeitThenForfeitRequest(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	// Set up the wallet mock for signing.
+	h.setupMockWalletForSigning()
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusRefreshRequested,
+	).Return(nil)
+
+	// Step 1: Send TriggerSendForfeitEvent.
+	_, err := h.sendEvent(&round.TriggerSendForfeitEvent{})
+	require.NoError(t, err)
+
+	assertState[*RefreshRequestedState](h)
+
+	// Clear outbox to isolate step 2 messages.
+	h.outboxMessages = h.outboxMessages[:0]
+
+	// Step 2: Send ForfeitRequestEvent from the round actor.
+	connectorOutpoint := h.newTestOutpoint()
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusForfeiting,
+	).Return(nil)
+
+	forfeitEvt := &round.ForfeitRequestEvent{
+		RoundID:               "round-send-001",
+		ConnectorOutpoint:     connectorOutpoint,
+		ConnectorPkScript:     []byte{0x51, 0x20},
+		ConnectorAmount:       1000,
+		ServerForfeitPkScript: []byte{0x51, 0x20},
+	}
+
+	_, err = h.sendEvent(forfeitEvt)
+	require.NoError(t, err)
+
+	// Verify transition to ForfeitingState with proper fields.
+	fState := assertState[*ForfeitingState](h)
+	require.Equal(t, "round-send-001", fState.NewRoundID)
+	require.Equal(t, connectorOutpoint, fState.ConnectorOutpoint)
+
+	// Verify forfeit signature was submitted.
+	assertOutboxContains[*ForfeitSignatureSubmission](h)
+}
+
 // the VTXO FSM can actually spend the VTXO output when combined with the
 // operator's signature.
 func TestForfeitSignatureValidity(t *testing.T) {
