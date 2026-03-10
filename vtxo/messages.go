@@ -13,9 +13,12 @@ type ManagerMsg interface {
 	actormsg.VTXOManagerMsg
 }
 
-// ManagerResp is the response type returned by the VTXO Manager actor.
+// ManagerResp embeds actormsg.VTXOManagerResp for responses returned by the
+// VTXO Manager actor. Response types defined in actormsg (for cross-package
+// use) and in this package both satisfy this interface via the exported
+// VTXOManagerResp() marker method.
 type ManagerResp interface {
-	managerRespSealed()
+	actormsg.VTXOManagerResp
 }
 
 // Type alias for VTXOTerminatedMsg - canonical definition is in round package.
@@ -24,12 +27,14 @@ type VTXOTerminatedMsg = round.VTXOTerminatedMsg
 // VTXOCreatedResp is the response to VTXOCreatedNotification.
 type VTXOCreatedResp struct{}
 
-func (r *VTXOCreatedResp) managerRespSealed() {}
+// VTXOManagerResp implements the actormsg.VTXOManagerResp marker interface.
+func (r *VTXOCreatedResp) VTXOManagerResp() {}
 
 // VTXOTerminatedResp is the response to VTXOTerminatedMsg.
 type VTXOTerminatedResp struct{}
 
-func (r *VTXOTerminatedResp) managerRespSealed() {}
+// VTXOManagerResp implements the actormsg.VTXOManagerResp marker interface.
+func (r *VTXOTerminatedResp) VTXOManagerResp() {}
 
 // GetActiveVTXOCountRequest requests the number of active VTXO actors managed
 // by the VTXO Manager. This goes through the actor message path to avoid
@@ -52,4 +57,5 @@ type GetActiveVTXOCountResponse struct {
 	Count int
 }
 
-func (r *GetActiveVTXOCountResponse) managerRespSealed() {}
+// VTXOManagerResp implements the actormsg.VTXOManagerResp marker interface.
+func (r *GetActiveVTXOCountResponse) VTXOManagerResp() {}

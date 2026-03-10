@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
@@ -54,6 +55,11 @@ type ManagerConfig struct {
 // are created and recovering persisted actors on startup. Each VTXO actor
 // manages its own block epoch subscription and communicates directly with the
 // round actor via service keys.
+//
+// The manager also maintains an in-memory set of locked outpoints for coin
+// selection. Locked VTXOs are excluded from availability queries to prevent
+// double-spends across concurrent transfers or round participations. Locks
+// are transient and cleared on daemon restart.
 type Manager struct {
 	cfg *ManagerConfig
 
@@ -63,6 +69,12 @@ type Manager struct {
 
 	// actors tracks active VTXO actors by outpoint.
 	actors map[wire.OutPoint]VTXOActorRef
+
+	// lockedOutpoints tracks VTXOs that are currently reserved for
+	// in-flight operations (transfers, round participation). These
+	// are excluded from ListAvailableVTXOs results until explicitly
+	// unlocked.
+	lockedOutpoints fn.Set[wire.OutPoint]
 }
 
 // NewManager creates a new VTXO Manager.
@@ -72,8 +84,9 @@ func NewManager(cfg *ManagerConfig) *Manager {
 	}
 
 	return &Manager{
-		cfg:    cfg,
-		actors: make(map[wire.OutPoint]VTXOActorRef),
+		cfg:             cfg,
+		actors:          make(map[wire.OutPoint]VTXOActorRef),
+		lockedOutpoints: fn.NewSet[wire.OutPoint](),
 	}
 }
 
@@ -140,6 +153,18 @@ func (m *Manager) Receive(ctx context.Context,
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
 		})
+
+	case *actormsg.ListAvailableVTXOsRequest:
+		return m.handleListAvailable(ctx)
+
+	case *actormsg.SelectAndLockVTXOsRequest:
+		return m.handleSelectAndLockVTXOs(ctx, req)
+
+	case *actormsg.LockVTXOsRequest:
+		return m.handleLockVTXOs(ctx, req)
+
+	case *actormsg.UnlockVTXOsRequest:
+		return m.handleUnlockVTXOs(ctx, req)
 
 	default:
 		return fn.Err[ManagerResp](
@@ -210,6 +235,7 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	msg *round.VTXOTerminatedMsg) fn.Result[ManagerResp] {
 
 	delete(m.actors, msg.Outpoint)
+	m.lockedOutpoints.Remove(msg.Outpoint)
 
 	m.logger(ctx).InfoS(ctx, "VTXO actor terminated",
 		slog.String("outpoint", msg.Outpoint.String()),
@@ -217,6 +243,174 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 		slog.String("reason", msg.Reason))
 
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
+}
+
+// handleListAvailable returns all live VTXOs that are not currently locked.
+// This queries the store for live VTXOs and filters out any that appear in
+// the locked outpoints set.
+func (m *Manager) handleListAvailable(
+	ctx context.Context) fn.Result[ManagerResp] {
+
+	available, err := m.listAvailableVTXOs(ctx)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			err,
+		)
+	}
+
+	m.logger(ctx).DebugS(ctx, "Listed available VTXOs",
+		slog.Int("available", len(available)),
+		slog.Int("locked", int(m.lockedOutpoints.Size())),
+	)
+
+	return fn.Ok[ManagerResp](&actormsg.ListAvailableVTXOsResponse{
+		Available: available,
+	})
+}
+
+// handleSelectAndLockVTXOs atomically selects and locks a set of VTXOs that
+// cover the target amount. Because selection and mutation happen within one
+// manager message, callers do not race with separate list+lock steps.
+func (m *Manager) handleSelectAndLockVTXOs(ctx context.Context,
+	req *actormsg.SelectAndLockVTXOsRequest) fn.Result[ManagerResp] {
+
+	if req.TargetAmount <= 0 {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"target amount must be positive, got %d",
+			req.TargetAmount,
+		))
+	}
+
+	available, err := m.listAvailableVTXOs(ctx)
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+
+	selected, total, err := selectCoinsLargestFirst(
+		available, req.TargetAmount,
+	)
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+
+	for _, v := range selected {
+		m.lockedOutpoints.Add(v.Outpoint)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Selected and locked VTXOs",
+		slog.Int("selected", len(selected)),
+		slog.Int64("target", req.TargetAmount),
+		slog.Int64("total", total),
+		slog.Int("total_locked", int(m.lockedOutpoints.Size())),
+	)
+
+	return fn.Ok[ManagerResp](&actormsg.SelectAndLockVTXOsResponse{
+		Selected:      selected,
+		TotalSelected: total,
+	})
+}
+
+// handleLockVTXOs adds the given outpoints to the locked set.
+func (m *Manager) handleLockVTXOs(ctx context.Context,
+	req *actormsg.LockVTXOsRequest) fn.Result[ManagerResp] {
+
+	var locked int
+	for _, op := range req.Outpoints {
+		if !m.lockedOutpoints.Contains(op) {
+			m.lockedOutpoints.Add(op)
+			locked++
+		}
+	}
+
+	m.logger(ctx).InfoS(ctx, "Locked VTXOs",
+		slog.Int("requested", len(req.Outpoints)),
+		slog.Int("newly_locked", locked),
+		slog.Int("total_locked", int(m.lockedOutpoints.Size())))
+
+	return fn.Ok[ManagerResp](&actormsg.LockVTXOsResponse{
+		LockedCount: locked,
+	})
+}
+
+// handleUnlockVTXOs removes the given outpoints from the locked set.
+func (m *Manager) handleUnlockVTXOs(ctx context.Context,
+	req *actormsg.UnlockVTXOsRequest) fn.Result[ManagerResp] {
+
+	var unlocked int
+	for _, op := range req.Outpoints {
+		if m.lockedOutpoints.Contains(op) {
+			m.lockedOutpoints.Remove(op)
+			unlocked++
+		}
+	}
+
+	m.logger(ctx).InfoS(ctx, "Unlocked VTXOs",
+		slog.Int("requested", len(req.Outpoints)),
+		slog.Int("unlocked", unlocked),
+		slog.Int("total_locked", int(m.lockedOutpoints.Size())))
+
+	return fn.Ok[ManagerResp](&actormsg.UnlockVTXOsResponse{
+		UnlockedCount: unlocked,
+	})
+}
+
+// listAvailableVTXOs returns the live VTXOs that are not currently locked.
+func (m *Manager) listAvailableVTXOs(
+	ctx context.Context) ([]actormsg.AvailableVTXO, error) {
+
+	liveVTXOs, err := m.cfg.Store.ListLiveVTXOs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list live vtxos: %w", err)
+	}
+
+	available := make(
+		[]actormsg.AvailableVTXO, 0, len(liveVTXOs),
+	)
+	for _, v := range liveVTXOs {
+		if m.lockedOutpoints.Contains(v.Outpoint) {
+			continue
+		}
+
+		available = append(available, actormsg.AvailableVTXO{
+			Outpoint: v.Outpoint,
+			Amount:   int64(v.Amount),
+			PkScript: v.PkScript,
+		})
+	}
+
+	return available, nil
+}
+
+// selectCoinsLargestFirst selects VTXOs using a largest-first strategy.
+// It sorts available VTXOs by descending amount and greedily picks until
+// the target amount is covered. This minimizes the number of inputs.
+func selectCoinsLargestFirst(available []actormsg.AvailableVTXO,
+	target int64) ([]actormsg.AvailableVTXO, int64, error) {
+
+	sorted := make([]actormsg.AvailableVTXO, len(available))
+	copy(sorted, available)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Amount > sorted[j].Amount
+	})
+
+	var (
+		selected []actormsg.AvailableVTXO
+		total    int64
+	)
+	for _, v := range sorted {
+		selected = append(selected, v)
+		total += v.Amount
+
+		if total >= target {
+			return selected, total, nil
+		}
+	}
+
+	return nil, 0, fmt.Errorf(
+		"insufficient VTXO balance: have %d, need %d",
+		total, target,
+	)
 }
 
 // spawnVTXOActor creates a new VTXO FSM actor.
