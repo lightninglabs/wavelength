@@ -9,6 +9,7 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // setupOORSubsystem initializes the OOR transfer coordinator actor.
@@ -22,24 +23,25 @@ import (
 // DB store and bridge are available.
 func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	clk := clock.NewDefaultClock()
+	oorLog := subLogger(s.cfg.Loggers, oor.Subsystem)
 
 	// Build a full-featured db.Store for the OOR stores, using
 	// the same underlying DB handle.
 	dbStore := db.NewStore(
 		s.db.DB(), s.db.Queries, s.db.Backend(),
-		s.loggerFactory("OSTR"), nil,
+		oorLog, nil,
 	)
 
 	// Create the DB-backed session store for crash-safe session
 	// persistence.
 	sessionStore := oor.NewDBSessionStore(
-		dbStore, clk, s.loggerFactory("OOSS"),
+		dbStore, clk, oorLog,
 	)
 
 	// Create the DB-backed delivery store for durable actor
 	// mailbox checkpoints.
 	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
-		dbStore, clk, s.loggerFactory("OODS"),
+		dbStore, clk, oorLog,
 	)
 	if err != nil {
 		return fmt.Errorf("create OOR delivery store: %w", err)
@@ -52,7 +54,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// Create the VTXO locker for mutual exclusion across rounds
 	// and OOR transfers.
 	vtxoLocker := db.NewVTXOLockerDB(
-		dbStore, s.loggerFactory("OVTL"),
+		dbStore, oorLog,
 	)
 
 	// Create the DB-backed recipient event store adapter that
@@ -60,7 +62,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// DBRecipientEventStore wraps the raw db store with session
 	// ID resolution).
 	recipientEvents := oor.NewDBRecipientEventStore(
-		dbStore, clk, s.loggerFactory("ORES"),
+		dbStore, clk, oorLog,
 	)
 
 	// Build the in-process outbox driver with all DB-backed
@@ -83,7 +85,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// TODO(roasbeef): Wire CheckpointPolicy from operator key +
 	// CSV delay config.
 	oorCfg := oor.ActorCfg{
-		Logger:           s.loggerFactory("OOR"),
+		Log:              fn.Some(oorLog),
 		CheckpointPolicy: scripts.CheckpointPolicy{},
 		OutboxHandler:    driver,
 		DeliveryStore:    deliveryStore,
@@ -113,7 +115,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		return fmt.Errorf("create OOR operator: %w", err)
 	}
 
-	log.InfoS(ctx, "OOR subsystem initialized")
+	s.log.InfoS(ctx, "OOR subsystem initialized")
 
 	return nil
 }
@@ -124,7 +126,7 @@ func (s *Server) stopOORSubsystem(ctx context.Context) {
 	if s.oorActor != nil {
 		s.oorActor.Stop()
 
-		log.InfoS(ctx, "OOR subsystem stopped")
+		s.log.InfoS(ctx, "OOR subsystem stopped")
 	}
 }
 

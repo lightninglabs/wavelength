@@ -134,9 +134,9 @@ func registerMCPTools(s *mcp.Server,
 
 	// list_rounds — with optional filters.
 	type listRoundsArgs struct {
-		StatusFilter string `json:"status_filter,omitempty" jsonschema:"round status filter (open, sealed, signing, broadcast, confirmed, failed)"`
-		Limit        uint32 `json:"limit,omitempty" jsonschema:"max results to return"`
-		Offset       uint32 `json:"offset,omitempty" jsonschema:"number of results to skip"`
+		StatusFilter string `json:"status_filter,omitempty"`
+		Limit        uint32 `json:"limit,omitempty"`
+		Offset       uint32 `json:"offset,omitempty"`
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_rounds",
@@ -174,8 +174,8 @@ func registerMCPTools(s *mcp.Server,
 
 	// list_vtxos — with optional filters.
 	type listVTXOsArgs struct {
-		StatusFilter string `json:"status_filter,omitempty" jsonschema:"VTXO status filter (pending, live, forfeited)"`
-		Limit        uint32 `json:"limit,omitempty" jsonschema:"max results to return"`
+		StatusFilter string `json:"status_filter,omitempty"`
+		Limit        uint32 `json:"limit,omitempty"`
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_vtxos",

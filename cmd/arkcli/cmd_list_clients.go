@@ -60,6 +60,7 @@ func listClientsRun(cmd *cobra.Command, _ []string) error {
 		for i, c := range resp.Clients {
 			items[i] = c
 		}
+
 		return printNDJSON(items)
 	}
 

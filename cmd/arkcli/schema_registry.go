@@ -88,7 +88,7 @@ func methodRegistry() []schemaMethod {
 				{
 					Name:        "offset",
 					Type:        "int64",
-					Description: "number of results to skip",
+					Description: "results to skip",
 				},
 				{
 					Name: "fields",

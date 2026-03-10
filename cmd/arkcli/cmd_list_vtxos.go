@@ -85,6 +85,7 @@ func listVTXOsRun(cmd *cobra.Command, _ []string) error {
 		for i, v := range resp.Vtxos {
 			items[i] = v
 		}
+
 		return printNDJSON(items)
 	}
 

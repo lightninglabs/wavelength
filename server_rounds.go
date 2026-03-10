@@ -7,30 +7,15 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
-	"github.com/lightninglabs/darepo/timeout"
-	"github.com/lightningnetwork/lnd/fn/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-)
-
-const (
-	// defaultConfTarget is the default confirmation target used for
-	// fee estimation when not overridden by config.
-	defaultConfTarget = 6
-
-	// defaultMinConfs is the default minimum confirmation count
-	// required for wallet UTXOs used in batch funding.
-	defaultMinConfs = 1
-
-	// defaultConfirmationTarget is the number of on-chain
-	// confirmations required before transitioning a round to the
-	// confirmed state.
-	defaultConfirmationTarget = 1
 )
 
 // setupRoundsSubsystem initializes the timeout actor, batch watcher,
@@ -60,9 +45,11 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	)
 
 	// Build DB-backed stores for rounds and VTXOs.
+	roundsLog := subLogger(s.cfg.Loggers, rounds.Subsystem)
+
 	dbStore := db.NewStore(
 		s.db.DB(), s.db.Queries, s.db.Backend(),
-		s.loggerFactory("RSTR"), nil,
+		roundsLog, nil,
 	)
 	roundStore := dbStore.NewRoundStore()
 	vtxoStore := dbStore.NewVTXOStore()
@@ -71,6 +58,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// signing.
 	walletCtrl := lndbackend.NewLndWalletController(
 		s.lnd.WalletKit, s.lnd.Signer,
+		fn.Some(roundsLog),
 	)
 
 	// Use a static floor fee estimator. A future config phase can
@@ -82,13 +70,14 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// Create the DB-backed VTXO locker for mutual exclusion across
 	// rounds and OOR transfers.
 	vtxoLocker := db.NewVTXOLockerDB(
-		dbStore, s.loggerFactory("VTXOL"),
+		dbStore, roundsLog,
 	)
 
 	// Create and spawn the batch watcher actor for monitoring
 	// confirmed batches on-chain.
+	bwLog := subLogger(s.cfg.Loggers, batchwatcher.Subsystem)
 	batchWatcherCfg := &batchwatcher.ActorConfig{
-		Logger:      s.loggerFactory("BWTC"),
+		Log:         fn.Some(bwLog),
 		ChainSource: s.chainSourceRef,
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
@@ -104,17 +93,20 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// Set SelfRef after spawning (needed for callback mapping).
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
-	// Build the rounds actor configuration. The terms are
-	// placeholder defaults for now; a future config phase will
-	// expose them via arkd flags and config file.
+	// Build the rounds actor configuration. Policy terms come
+	// from the server config; key-dependent fields (OperatorKey,
+	// SweepKey, ConnectorAddress, ForfeitScript) are left at
+	// their zero values until the key management subsystem is
+	// wired.
 	//
 	// TODO(roasbeef): Wire operator key, sweep key, forfeit
-	// script, and full terms from server config once the key
-	// management subsystem is in place.
+	// script, and connector address from key management.
+	rc := s.cfg.Rounds
+	terms := roundsTermsFromConfig(rc)
 	roundsCfg := &rounds.ActorConfig{
 		ChainParams:        chainParams,
-		Logger:             s.loggerFactory(rounds.Subsystem),
-		Terms:              &batch.Terms{},
+		Log:                fn.Some(roundsLog),
+		Terms:              terms,
 		ClientsConn:        s.clientBridge,
 		ChainSourceActor:   s.chainSourceRef,
 		TimeoutActor:       s.timeoutRef,
@@ -124,9 +116,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		WalletController:   walletCtrl,
 		FeeEstimator:       feeEstimator,
 		WalletAccount:      "",
-		ConfTarget:         defaultConfTarget,
-		MinConfs:           defaultMinConfs,
-		ConfirmationTarget: defaultConfirmationTarget,
+		ConfTarget:         rc.ConfTarget,
+		MinConfs:           rc.MinConfs,
+		ConfirmationTarget: rc.ConfirmationTarget,
 		BatchWatcher:       fn.Some(s.batchWatcherRef),
 	}
 
@@ -169,9 +161,9 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		return fmt.Errorf("create rounds operator: %w", err)
 	}
 
-	log.InfoS(ctx, "Rounds subsystem initialized",
+	s.log.InfoS(ctx, "Rounds subsystem initialized",
 		slog.Uint64("conf_target",
-			uint64(defaultConfTarget)))
+			uint64(rc.ConfTarget)))
 
 	return nil
 }
@@ -181,7 +173,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 // additional cleanup.
 func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	if s.roundsActor != nil {
-		log.InfoS(ctx, "Rounds subsystem stopped")
+		s.log.InfoS(ctx, "Rounds subsystem stopped")
 	}
 }
 
@@ -196,6 +188,25 @@ func (s *Server) RoundsDispatchers() clientconn.DispatcherMap {
 	}
 
 	return s.roundsOperator.Dispatchers()
+}
+
+// roundsTermsFromConfig maps a RoundsConfig into a batch.Terms
+// struct. Key-dependent fields (OperatorKey, SweepKey,
+// ConnectorAddress) are left at their zero values.
+func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
+	return &batch.Terms{
+		SweepDelay:                    rc.SweepDelay,
+		MaxVTXOsPerTree:               rc.MaxVTXOsPerTree,
+		TreeRadix:                     rc.TreeRadix,
+		MaxConnectorsPerTree:          rc.MaxConnectorsPerTree,
+		BoardingExitDelay:             rc.BoardingExitDelay,
+		VTXOExitDelay:                 rc.VTXOExitDelay,
+		RegistrationTimeout:           rc.RegistrationTimeout,
+		FundPsbtLockDuration:          rc.FundPsbtLockDuration,
+		BoardingExitDelaySafetyMargin: rc.BoardingExitDelaySafetyMargin,
+		MinBoardingConfirmations:      rc.MinBoardingConfirmations,
+		SignatureCollectionTimeout:    rc.SignatureCollectionTimeout,
+	}
 }
 
 // networkToChainParams maps a network name to btcd chain parameters.

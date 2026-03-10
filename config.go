@@ -44,38 +44,6 @@ const (
 	defaultLogDirname = "logs"
 )
 
-const (
-	// DefaultNetwork is the default bitcoin network the daemon operates
-	// on.
-	DefaultNetwork = "regtest"
-
-	// DefaultLogLevel is the default logging verbosity.
-	DefaultLogLevel = "info"
-
-	// DefaultAdminRPCListen is the default listen address for the admin
-	// gRPC server.
-	DefaultAdminRPCListen = "localhost:8081"
-
-	// DefaultRPCListen is the default listen address for the
-	// client-facing gRPC server.
-	DefaultRPCListen = "localhost:7070"
-
-	// DefaultLndHost is the default address for connecting to the
-	// local lnd instance.
-	DefaultLndHost = "localhost:10009"
-
-	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
-	DefaultRPCTimeout = 30 * time.Second
-
-	// DefaultShutdownTimeout is the maximum duration to wait for
-	// graceful shutdown of the actor system and subsystems.
-	DefaultShutdownTimeout = 10 * time.Second
-
-	// defaultLogDirname is the default directory name for log
-	// files.
-	defaultLogDirname = "logs"
-)
-
 var (
 	// defaultDataDir is the default directory where arkd tries to
 	// find its configuration file and store its data. This is a
@@ -100,6 +68,90 @@ type TLSConfig struct {
 	// self-signed CA. When true, CertPath and KeyPath are used as
 	// output paths for the generated material.
 	AutoCert bool `mapstructure:"autocert"`
+}
+
+// RoundsConfig holds operator policy for the round subsystem. These
+// fields map directly to batch.Terms entries that do not require key
+// material. Key-dependent fields (OperatorKey, SweepKey,
+// ConnectorAddress) are resolved separately once key management is
+// wired.
+type RoundsConfig struct {
+	// SweepDelay is the CSV delay for the sweep path in VTXO
+	// trees (blocks).
+	SweepDelay uint32 `mapstructure:"sweepdelay"`
+
+	// MaxVTXOsPerTree is the maximum number of VTXOs in a single
+	// batch tree.
+	MaxVTXOsPerTree uint32 `mapstructure:"maxvtxospertree"`
+
+	// TreeRadix is the branching factor for VTXO trees.
+	TreeRadix uint32 `mapstructure:"treeradix"`
+
+	// MaxConnectorsPerTree is the maximum number of connector
+	// leaves per connector tree.
+	MaxConnectorsPerTree uint32 `mapstructure:"maxconnectorspertree"`
+
+	// BoardingExitDelay is the minimum exit delay for boarding
+	// inputs (blocks).
+	BoardingExitDelay uint32 `mapstructure:"boardingexitdelay"`
+
+	// BoardingExitDelaySafetyMargin is how many blocks before the
+	// exit delay we stop accepting boarding inputs.
+	// BoardingExitDelaySafetyMargin is how many blocks before the
+	// exit delay we stop accepting boarding inputs.
+	BoardingExitDelaySafetyMargin uint32 `mapstructure:"boardingexitdelaymargin"` //nolint:ll
+
+	// MinBoardingConfirmations is the minimum confirmation count
+	// for boarding inputs.
+	MinBoardingConfirmations uint32 `mapstructure:"minboardingconfirmations"` //nolint:ll
+
+	// VTXOExitDelay is the minimum exit delay for VTXOs (blocks).
+	VTXOExitDelay uint32 `mapstructure:"vtxoexitdelay"`
+
+	// RegistrationTimeout is how long to wait for client
+	// registrations before sealing a round.
+	RegistrationTimeout time.Duration `mapstructure:"registrationtimeout"`
+
+	// SignatureCollectionTimeout is how long to wait for nonces
+	// and signatures during each collection phase.
+	SignatureCollectionTimeout time.Duration `mapstructure:"sigcollecttimeout"` //nolint:ll
+
+	// FundPsbtLockDuration is how long LND holds the UTXO lease
+	// when FundPsbt is called. Must be longer than
+	// RegistrationTimeout + 3*SignatureCollectionTimeout.
+	FundPsbtLockDuration time.Duration `mapstructure:"fundpsbtlockduration"`
+
+	// ConfTarget is the confirmation target for fee estimation.
+	ConfTarget uint32 `mapstructure:"conftarget"`
+
+	// MinConfs is the minimum confirmation count for wallet
+	// UTXOs used in batch funding.
+	MinConfs int32 `mapstructure:"minconfs"`
+
+	// ConfirmationTarget is the number of on-chain confirmations
+	// required before transitioning a round to confirmed.
+	ConfirmationTarget uint32 `mapstructure:"confirmationtarget"`
+}
+
+// DefaultRoundsConfig returns a RoundsConfig with sensible defaults
+// suitable for development and regtest.
+func DefaultRoundsConfig() *RoundsConfig {
+	return &RoundsConfig{
+		SweepDelay:                    144,
+		MaxVTXOsPerTree:               128,
+		TreeRadix:                     2,
+		MaxConnectorsPerTree:          32,
+		BoardingExitDelay:             512,
+		BoardingExitDelaySafetyMargin: 48,
+		MinBoardingConfirmations:      1,
+		VTXOExitDelay:                 144,
+		RegistrationTimeout:           10 * time.Second,
+		SignatureCollectionTimeout:    10 * time.Second,
+		FundPsbtLockDuration:          30 * time.Minute,
+		ConfTarget:                    6,
+		MinConfs:                      1,
+		ConfirmationTarget:            1,
+	}
 }
 
 // Config is the main configuration struct for the operator server.
@@ -131,6 +183,10 @@ type Config struct {
 
 	// RPC contains the client-facing RPC server configuration.
 	RPC *RPCConfig `mapstructure:"rpc"`
+
+	// Rounds configures the round subsystem policy (tree shape,
+	// timeouts, confirmation targets).
+	Rounds *RoundsConfig `mapstructure:"rounds"`
 
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
@@ -181,6 +237,7 @@ func DefaultConfig() *Config {
 		},
 		AdminRPC: DefaultAdminRPCConfig(),
 		RPC:      DefaultRPCConfig(),
+		Rounds:   DefaultRoundsConfig(),
 	}
 }
 

@@ -24,10 +24,6 @@ const (
 	// response and event envelopes sent by the round operator.
 	operatorSenderMailboxID = "svc:rounds"
 
-	// operatorProtocolVersion is the protocol version stamped on
-	// outbound envelopes.
-	operatorProtocolVersion uint32 = 1
-
 	// responseMsgPrefix prefixes mailbox response envelope IDs.
 	responseMsgPrefix = "resp-"
 )

@@ -88,6 +88,7 @@ func listRoundsRun(cmd *cobra.Command, _ []string) error {
 		for i, r := range resp.Rounds {
 			items[i] = r
 		}
+
 		return printNDJSON(items)
 	}
 

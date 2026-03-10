@@ -350,7 +350,8 @@ func (c *ClientBatchInfo) ToProto() proto.Message {
 			len(c.ConnectorLeafMap),
 		)
 		for op, leaf := range c.ConnectorLeafMap {
-			connLeaves[roundpb.OutpointToMapKey(op)] = connectorLeafInfoToProto(leaf)
+			key := roundpb.OutpointToMapKey(op)
+			connLeaves[key] = connectorLeafInfoToProto(leaf)
 		}
 	}
 

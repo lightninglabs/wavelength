@@ -88,7 +88,8 @@ func newLWBackendFromSeed(h *E2EHarness,
 		PollInterval:   time.Second,
 		RecoveryWindow: recoveryWindow,
 		DBDir:          dbDir,
-	}.WithLogger(h.SubLogger(lwwallet.Subsystem)))
+		Logger:         h.SubLogger(lwwallet.Subsystem),
+	})
 	require.NoError(h.t, err, "failed to create lightweight wallet")
 
 	// Start the wallet: this initializes btcwallet (which starts

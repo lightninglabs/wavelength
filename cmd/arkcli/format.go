@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -32,7 +33,7 @@ func printJSON(v proto.Message) error {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 
-	fmt.Println(string(data))
+	_, _ = os.Stdout.Write(append(data, '\n'))
 
 	return nil
 }
@@ -68,7 +69,7 @@ func printJSONFields(v proto.Message, fields []string) error {
 		return fmt.Errorf("marshal filtered JSON: %w", err)
 	}
 
-	fmt.Println(string(out))
+	_, _ = os.Stdout.Write(append(out, '\n'))
 
 	return nil
 }
@@ -145,7 +146,7 @@ func printNDJSON(items []proto.Message) error {
 			return fmt.Errorf("marshal NDJSON: %w", err)
 		}
 
-		fmt.Println(string(data))
+		_, _ = os.Stdout.Write(append(data, '\n'))
 	}
 
 	return nil
@@ -159,7 +160,7 @@ func printRawJSON(v any) error {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 
-	fmt.Println(string(data))
+	_, _ = os.Stdout.Write(append(data, '\n'))
 
 	return nil
 }

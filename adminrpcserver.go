@@ -223,7 +223,8 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 		}
 
 		status := mapDBRoundStatus(r.Status)
-		if req.StatusFilter != adminrpc.RoundStatus_ROUND_STATUS_UNSPECIFIED &&
+		unspecified := adminrpc.RoundStatus_ROUND_STATUS_UNSPECIFIED
+		if req.StatusFilter != unspecified &&
 			status != req.StatusFilter {
 
 			continue

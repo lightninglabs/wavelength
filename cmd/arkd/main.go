@@ -123,6 +123,57 @@ func newRootCmd() *cobra.Command {
 		"require SSL when connecting to postgres",
 	)
 
+	// Rounds policy flags.
+	rc := cfg.Rounds
+	f.Uint32("rounds.sweepdelay", rc.SweepDelay,
+		"CSV delay for sweep path (blocks)",
+	)
+	f.Uint32("rounds.maxvtxospertree",
+		rc.MaxVTXOsPerTree,
+		"max VTXOs per batch tree",
+	)
+	f.Uint32("rounds.treeradix", rc.TreeRadix,
+		"VTXO tree branching factor",
+	)
+	f.Uint32("rounds.maxconnectorspertree",
+		rc.MaxConnectorsPerTree,
+		"max connector leaves per tree",
+	)
+	f.Uint32("rounds.boardingexitdelay",
+		rc.BoardingExitDelay,
+		"min exit delay for boarding inputs (blocks)",
+	)
+	f.Uint32("rounds.minboardingconfirmations",
+		rc.MinBoardingConfirmations,
+		"min confirmations for boarding inputs",
+	)
+	f.Uint32("rounds.vtxoexitdelay",
+		rc.VTXOExitDelay,
+		"min exit delay for VTXOs (blocks)",
+	)
+	f.Duration("rounds.registrationtimeout",
+		rc.RegistrationTimeout,
+		"registration phase timeout",
+	)
+	f.Duration("rounds.signaturecollectiontimeout",
+		rc.SignatureCollectionTimeout,
+		"signature collection phase timeout",
+	)
+	f.Duration("rounds.fundpsbtlockduration",
+		rc.FundPsbtLockDuration,
+		"LND UTXO lease duration for FundPsbt",
+	)
+	f.Uint32("rounds.conftarget", rc.ConfTarget,
+		"confirmation target for fee estimation",
+	)
+	f.Int32("rounds.minconfs", rc.MinConfs,
+		"min confirmations for wallet UTXOs",
+	)
+	f.Uint32("rounds.confirmationtarget",
+		rc.ConfirmationTarget,
+		"confirmations before round is confirmed",
+	)
+
 	// Admin RPC server flags.
 	f.String("adminrpc.listen", cfg.AdminRPC.ListenAddr,
 		"admin gRPC listen address",
