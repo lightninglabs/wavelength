@@ -115,6 +115,16 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	return s, nil
 }
 
+// RegisterGRPCService allows co-hosting additional gRPC services on the
+// client-facing server. The callback receives the underlying registrar
+// so the caller can register arbitrary service implementations. Must be
+// called before Start.
+func (r *RPCServer) RegisterGRPCService(
+	register func(grpc.ServiceRegistrar)) {
+
+	register(r.grpcServer)
+}
+
 // Start starts the RPC server.
 func (r *RPCServer) Start(ctx context.Context) error {
 	if !atomic.CompareAndSwapUint32(&r.started, 0, 1) {

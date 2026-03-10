@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
 	"github.com/lightninglabs/darepo/oor"
+	"github.com/lightningnetwork/lnd/clock"
 	"google.golang.org/grpc"
 )
 
@@ -94,6 +95,22 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
 	if err != nil {
 		return fmt.Errorf("build local mailbox client: %w", err)
+	}
+
+	// Create the shared actor delivery store for per-client
+	// runtimes created by auto-registration. This backs the
+	// durable actor inbox and checkpoint persistence.
+	clientDBStore := db.NewStore(
+		s.db.DB(), s.db.Queries, s.db.Backend(),
+		subLogger(s.cfg.Loggers, "CDBS"), nil,
+	)
+	s.deliveryStore, err = db.NewActorDeliveryStoreFromDB(
+		clientDBStore, clock.NewDefaultClock(),
+		subLogger(s.cfg.Loggers, "CDEL"),
+	)
+	if err != nil {
+		return fmt.Errorf("create client delivery store: %w",
+			err)
 	}
 
 	// Create the shared per-client connection bridge. All subsystems

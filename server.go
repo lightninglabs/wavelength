@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batchwatcher"
@@ -21,11 +22,13 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/darepo/mailboxrpcserver"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/signal"
+	"google.golang.org/grpc"
 )
 
 // Server is the main operator daemon.
@@ -114,6 +117,15 @@ type Server struct {
 	// oorRef is the actor reference for the OOR actor, used
 	// for sending messages through the actor system.
 	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
+
+	// oorOperator provides RPC dispatchers for the OOR service,
+	// translating inbound mailbox envelopes into actor messages.
+	oorOperator *oor.OOROperator
+
+	// deliveryStore is the shared actor delivery store used by
+	// auto-registered client runtimes for inbox persistence and
+	// checkpoint state.
+	deliveryStore actor.DeliveryStore
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -351,6 +363,28 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		return fmt.Errorf("unable to create client RPC "+
 			"server: %w", err)
 	}
+
+	// Register the mailbox edge service on the client-facing
+	// gRPC server so external client daemons (darepod) can
+	// reach the in-process mailbox store over the network.
+	mailboxEdge, err := mailboxrpcserver.New(s.mailboxStore)
+	if err != nil {
+		return fmt.Errorf("unable to create mailbox "+
+			"edge server: %w", err)
+	}
+
+	// Wire auto-registration so external clients connecting
+	// through the mailbox edge are transparently registered on
+	// the bridge with merged dispatchers from all subsystems.
+	registrar := &autoRegistrar{server: s}
+	mailboxEdge.SetOnSend(registrar.onSend)
+
+	rpcSrv.RegisterGRPCService(func(r grpc.ServiceRegistrar) {
+		mailboxpb.RegisterMailboxServiceServer(
+			r, mailboxEdge,
+		)
+	})
+
 	if err := rpcSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start client RPC "+
 			"server: %w", err)
