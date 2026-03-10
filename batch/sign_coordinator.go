@@ -1,14 +1,18 @@
 package batch
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btclog/v2"
 	treepkg "github.com/lightninglabs/darepo-client/lib/tree"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -263,6 +267,21 @@ type TreeSignCoordinator struct {
 	// constructor for fast lookup in GetAggNoncesForSigners and
 	// GetFinalSigsForSigners.
 	signerTxIndex map[string][]TxID
+
+	// log is the logger for this coordinator.
+	log btclog.Logger
+}
+
+// TreeSignCoordinatorOpt is a functional option for TreeSignCoordinator.
+type TreeSignCoordinatorOpt func(*TreeSignCoordinator)
+
+// WithTreeSignLog injects a logger into the tree sign coordinator.
+func WithTreeSignLog(
+	l fn.Option[btclog.Logger]) TreeSignCoordinatorOpt {
+
+	return func(c *TreeSignCoordinator) {
+		c.log = l.UnwrapOr(btclog.Disabled)
+	}
 }
 
 // NewTreeSignCoordinator creates a new coordinator for signing an entire
@@ -270,7 +289,8 @@ type TreeSignCoordinator struct {
 // transactions in the tree automatically.
 func NewTreeSignCoordinator(signer input.MuSig2Signer,
 	operatorKey *keychain.KeyDescriptor,
-	tree *treepkg.Tree) (*TreeSignCoordinator, error) {
+	tree *treepkg.Tree,
+	opts ...TreeSignCoordinatorOpt) (*TreeSignCoordinator, error) {
 
 	// Validate inputs.
 	if signer == nil {
@@ -331,11 +351,23 @@ func NewTreeSignCoordinator(signer input.MuSig2Signer,
 		return nil, err
 	}
 
-	return &TreeSignCoordinator{
+	c := &TreeSignCoordinator{
 		signer:        signer,
 		txSigners:     signers,
 		signerTxIndex: signerTxIndex,
-	}, nil
+		log:           btclog.Disabled,
+	}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	ctx := context.Background()
+	c.log.InfoS(ctx, "Created tree sign coordinator",
+		slog.Int("tx_count", len(signers)),
+		slog.Int("cosigner_count", len(signerTxIndex)))
+
+	return c, nil
 }
 
 // AddNonces adds nonces from a signer for their transactions. Returns the
@@ -369,6 +401,12 @@ func (c *TreeSignCoordinator) AddNonces(signer *btcec.PublicKey,
 
 		acceptedCount++
 	}
+
+	ctx := context.Background()
+	c.log.DebugS(ctx, "Nonces registered",
+		slog.Int("accepted", acceptedCount),
+		slog.Int("submitted", len(nonces)),
+		slog.Int("expected_txs", len(expectedTxIDs)))
 
 	return acceptedCount, nil
 }
@@ -513,6 +551,11 @@ func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
 		accepted++
 	}
 
+	ctx := context.Background()
+	c.log.DebugS(ctx, "Partial signatures registered",
+		slog.Int("accepted", accepted),
+		slog.Int("submitted", len(sigs)))
+
 	return accepted, nil
 }
 
@@ -534,6 +577,10 @@ func (c *TreeSignCoordinator) FullySigned() bool {
 // This should be called after all non-operator nonces have been received and
 // nonces have been aggregated.
 func (c *TreeSignCoordinator) Sign() error {
+	ctx := context.Background()
+	c.log.InfoS(ctx, "Signing all transactions",
+		slog.Int("tx_count", len(c.txSigners)))
+
 	// Generate operator's partial signatures for all transactions.
 	// MuSig2Sign automatically adds the signature to the session.
 	for txid, coordinator := range c.txSigners {
@@ -546,6 +593,8 @@ func (c *TreeSignCoordinator) Sign() error {
 		}
 	}
 
+	c.log.InfoS(ctx, "All transactions signed")
+
 	return nil
 }
 
@@ -553,6 +602,10 @@ func (c *TreeSignCoordinator) Sign() error {
 // signatures for all transactions.
 func (c *TreeSignCoordinator) AggregateSigs() (map[TxID]*schnorr.Signature,
 	error) {
+
+	ctx := context.Background()
+	c.log.InfoS(ctx, "Aggregating signatures",
+		slog.Int("tx_count", len(c.txSigners)))
 
 	sigs := make(map[TxID]*schnorr.Signature, len(c.txSigners))
 	for txid, txCoordinator := range c.txSigners {
@@ -564,6 +617,9 @@ func (c *TreeSignCoordinator) AggregateSigs() (map[TxID]*schnorr.Signature,
 
 		sigs[txid] = sig
 	}
+
+	c.log.InfoS(ctx, "Signatures aggregated",
+		slog.Int("sig_count", len(sigs)))
 
 	return sigs, nil
 }

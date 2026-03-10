@@ -4,8 +4,10 @@ import (
 	"path/filepath"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/jessevdk/go-flags"
 	"github.com/lightninglabs/darepo/db"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 var (
@@ -31,8 +33,6 @@ const (
 )
 
 // Config is the main configuration struct for the operator server.
-//
-//nolint:ll
 type Config struct {
 	// DB contains the database configuration (sqlite or postgres).
 	DB *db.Config `group:"db" namespace:"db"`
@@ -42,6 +42,16 @@ type Config struct {
 
 	// RPC contains the client-facing RPC server configuration.
 	RPC *RPCConfig `group:"rpc" namespace:"rpc"`
+
+	// Log is an optional logger for the server itself. When None,
+	// logging is disabled.
+	Log fn.Option[btclog.Logger]
+
+	// Loggers holds per-subsystem loggers created at startup. Child
+	// components extract their own logger from this map during
+	// construction. When nil, each component falls back to
+	// btclog.Disabled.
+	Loggers SubLoggers
 
 	DataDir string `long:"datadir" description:"The base directory that contains arkd's data, logs, configuration file, etc. This option overwrites all other directory options."`
 

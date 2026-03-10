@@ -3,11 +3,14 @@ package vtxo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // LockOwner identifies the subsystem and session that owns a VTXO lock.
@@ -103,25 +106,38 @@ type InMemoryLocker struct {
 	mu sync.Mutex
 
 	clk clock.Clock
+	log btclog.Logger
 
 	locks  map[wire.OutPoint]LockOwner
 	leases map[wire.OutPoint]time.Time
 }
 
 // NewInMemoryLocker creates a new empty in-memory locker.
-func NewInMemoryLocker() *InMemoryLocker {
-	return NewInMemoryLockerWithClock(clock.NewDefaultClock())
+func NewInMemoryLocker(
+	log ...fn.Option[btclog.Logger]) *InMemoryLocker {
+
+	return NewInMemoryLockerWithClock(
+		clock.NewDefaultClock(), log...,
+	)
 }
 
 // NewInMemoryLockerWithClock creates a new empty in-memory locker using the
 // provided clock.
-func NewInMemoryLockerWithClock(clk clock.Clock) *InMemoryLocker {
+func NewInMemoryLockerWithClock(clk clock.Clock,
+	log ...fn.Option[btclog.Logger]) *InMemoryLocker {
+
 	if clk == nil {
 		clk = clock.NewDefaultClock()
 	}
 
+	logger := btclog.Disabled
+	if len(log) > 0 {
+		logger = log[0].UnwrapOr(btclog.Disabled)
+	}
+
 	return &InMemoryLocker{
 		clk:    clk,
+		log:    logger,
 		locks:  make(map[wire.OutPoint]LockOwner),
 		leases: make(map[wire.OutPoint]time.Time),
 	}
@@ -201,6 +217,11 @@ func (l *InMemoryLocker) lockMany(outpoints []wire.OutPoint, owner LockOwner,
 		l.leases[op] = expiresAt
 	}
 
+	ctx := context.Background()
+	l.log.DebugS(ctx, "Acquired VTXO locks",
+		slog.Int("count", len(outpoints)),
+		slog.String("owner", string(owner)))
+
 	return nil
 }
 
@@ -247,6 +268,11 @@ func (l *InMemoryLocker) UnlockMany(_ context.Context,
 			delete(l.leases, op)
 		}
 	}
+
+	ctx := context.Background()
+	l.log.DebugS(ctx, "Released VTXO locks",
+		slog.Int("count", len(outpoints)),
+		slog.String("owner", string(owner)))
 
 	return nil
 }

@@ -31,8 +31,8 @@ type OutboxHandler interface {
 
 // ActorCfg configures the OORTransferCoordinator actor.
 type ActorCfg struct {
-	// Logger is used for coordinator and FSM logging.
-	Logger btclog.Logger
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
 
 	// CheckpointPolicy is the expected operator policy for submitted
 	// checkpoint transactions.
@@ -73,10 +73,6 @@ type Actor struct {
 // This is a pure constructor that performs no I/O. Call Start to initialize the
 // durable runtime and begin processing.
 func NewActor(cfg ActorCfg) *Actor {
-	if cfg.Logger == nil {
-		cfg.Logger = btclog.Disabled
-	}
-
 	actorID := cfg.ActorID
 	if actorID == "" {
 		actorID = defaultDurableActorID
@@ -517,7 +513,9 @@ func (b *coordinatorBehavior) createSessionFSM(ctx context.Context,
 		CheckpointPolicy: b.cfg.CheckpointPolicy,
 	}
 
-	fsmLogger := b.cfg.Logger.WithPrefix(sessionID.LogPrefix())
+	fsmLogger := b.cfg.Log.UnwrapOr(btclog.Disabled).WithPrefix(
+		sessionID.LogPrefix(),
+	)
 	fsmCfg := StateMachineCfg{
 		InitialState: initial,
 		Env:          env,

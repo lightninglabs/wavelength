@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/mailbox"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 const (
@@ -35,16 +38,25 @@ type Server struct {
 	mailboxpb.UnimplementedMailboxServiceServer
 
 	store mailbox.Store
+	log   btclog.Logger
 }
 
 // New creates a new mailbox gRPC server backed by store.
-func New(store mailbox.Store) (*Server, error) {
+func New(store mailbox.Store,
+	log ...fn.Option[btclog.Logger]) (*Server, error) {
+
 	if store == nil {
 		return nil, fmt.Errorf("missing store")
 	}
 
+	logger := btclog.Disabled
+	if len(log) > 0 {
+		logger = log[0].UnwrapOr(btclog.Disabled)
+	}
+
 	return &Server{
 		store: store,
+		log:   logger,
 	}, nil
 }
 
@@ -72,6 +84,10 @@ func (s *Server) Send(ctx context.Context,
 			Status: invalidArgumentStatus("missing msg_id"),
 		}, nil
 	}
+
+	s.log.DebugS(ctx, "Send RPC",
+		slog.String("recipient", req.Envelope.Recipient),
+		slog.String("msg_id", req.Envelope.MsgId))
 
 	_, err := s.store.Append(ctx, req.Envelope)
 	if err != nil {
@@ -147,6 +163,11 @@ func (s *Server) Pull(ctx context.Context,
 		}, nil
 	}
 
+	s.log.DebugS(ctx, "Pull RPC",
+		slog.String("mailbox_id", req.MailboxId),
+		slog.Int("count", len(envs)),
+		slog.Uint64("next_cursor", nextCursor))
+
 	return &mailboxpb.PullResponse{
 		Status:     okStatus(),
 		Envelopes:  envs,
@@ -168,6 +189,10 @@ func (s *Server) AckUpTo(ctx context.Context,
 			Status: invalidArgumentStatus("missing mailbox_id"),
 		}, nil
 	}
+
+	s.log.DebugS(ctx, "AckUpTo RPC",
+		slog.String("mailbox_id", req.MailboxId),
+		slog.Uint64("cursor", req.Cursor))
 
 	err := s.store.AckUpTo(ctx, req.MailboxId, req.Cursor)
 	if err != nil {

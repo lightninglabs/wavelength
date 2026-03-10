@@ -56,7 +56,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	operatorKey, _ := testutils.CreateKey(1)
 
 	cfg := &ActorConfig{
-		Logger:        btclog.Disabled,
+		Log:           fn.Some(btclog.Disabled),
 		ChainSource:   mockCS.ref,
 		FraudDetector: fn.Some(mockFD.ref),
 		BatchSweeper:  fn.Some(mockBS.ref),

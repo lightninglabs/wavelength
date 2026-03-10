@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // Status describes the lifecycle state of a VTXO.
@@ -91,6 +94,7 @@ type InMemoryStore struct {
 	mu sync.Mutex
 
 	records map[wire.OutPoint]*Record
+	log     btclog.Logger
 }
 
 // ValidateUniqueOutpoints verifies the provided outpoint list has no
@@ -110,9 +114,17 @@ func ValidateUniqueOutpoints(outpoints []wire.OutPoint) error {
 }
 
 // NewInMemoryStore creates a new empty in-memory VTXO store.
-func NewInMemoryStore() *InMemoryStore {
+func NewInMemoryStore(
+	log ...fn.Option[btclog.Logger]) *InMemoryStore {
+
+	logger := btclog.Disabled
+	if len(log) > 0 {
+		logger = log[0].UnwrapOr(btclog.Disabled)
+	}
+
 	return &InMemoryStore{
 		records: make(map[wire.OutPoint]*Record),
+		log:     logger,
 	}
 }
 
@@ -138,7 +150,7 @@ func (s *InMemoryStore) Get(_ context.Context,
 //
 // This is idempotent for identical records, and returns an error when a row
 // already exists with conflicting fields.
-func (s *InMemoryStore) Create(_ context.Context, record *Record) error {
+func (s *InMemoryStore) Create(ctx context.Context, record *Record) error {
 	if record == nil {
 		return fmt.Errorf("record must be provided")
 	}
@@ -185,11 +197,16 @@ func (s *InMemoryStore) Create(_ context.Context, record *Record) error {
 	cpy.PkScript = bytes.Clone(record.PkScript)
 	s.records[record.Outpoint] = &cpy
 
+	s.log.DebugS(ctx, "VTXO created",
+		btclog.Fmt("outpoint", "%v", record.Outpoint),
+		slog.Int64("value_sat", record.Value),
+		slog.String("status", string(record.Status)))
+
 	return nil
 }
 
 // MarkInFlight marks the outpoints in-flight for owner.
-func (s *InMemoryStore) MarkInFlight(_ context.Context,
+func (s *InMemoryStore) MarkInFlight(ctx context.Context,
 	outpoints []wire.OutPoint, owner LockOwner) error {
 
 	if len(outpoints) == 0 {
@@ -240,11 +257,15 @@ func (s *InMemoryStore) MarkInFlight(_ context.Context,
 		rec.InFlightOwner = owner
 	}
 
+	s.log.DebugS(ctx, "VTXOs marked in-flight",
+		slog.Int("count", len(outpoints)),
+		slog.String("owner", string(owner)))
+
 	return nil
 }
 
 // MarkSpent marks the outpoints spent.
-func (s *InMemoryStore) MarkSpent(_ context.Context,
+func (s *InMemoryStore) MarkSpent(ctx context.Context,
 	outpoints []wire.OutPoint) error {
 
 	if len(outpoints) == 0 {
@@ -282,6 +303,9 @@ func (s *InMemoryStore) MarkSpent(_ context.Context,
 		rec.Status = StatusSpent
 		rec.InFlightOwner = ""
 	}
+
+	s.log.DebugS(ctx, "VTXOs marked spent",
+		slog.Int("count", len(outpoints)))
 
 	return nil
 }

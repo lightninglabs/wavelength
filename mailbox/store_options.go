@@ -1,6 +1,10 @@
 package mailbox
 
-import "time"
+import (
+	"time"
+
+	"github.com/btcsuite/btclog/v2"
+)
 
 const (
 	// defaultPullPollInterval is the SQLStore poll interval used to emulate
@@ -15,6 +19,8 @@ type storeConfig struct {
 
 	maxEnvelopeBytes       int
 	maxEnvelopesPerMailbox int
+
+	log btclog.Logger
 }
 
 // StoreOption is an option that modifies store behavior.
@@ -24,6 +30,7 @@ type StoreOption func(*storeConfig)
 func defaultStoreConfig() storeConfig {
 	return storeConfig{
 		pullPollInterval: defaultPullPollInterval,
+		log:              btclog.Disabled,
 	}
 }
 
@@ -54,5 +61,14 @@ func WithMaxEnvelopeBytes(maxBytes int) StoreOption {
 func WithMaxEnvelopesPerMailbox(maxEnvelopes int) StoreOption {
 	return func(cfg *storeConfig) {
 		cfg.maxEnvelopesPerMailbox = maxEnvelopes
+	}
+}
+
+// WithLogger sets the logger used by the store.
+func WithLogger(log btclog.Logger) StoreOption {
+	return func(cfg *storeConfig) {
+		if log != nil {
+			cfg.log = log
+		}
 	}
 }

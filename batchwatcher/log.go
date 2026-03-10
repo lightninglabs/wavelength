@@ -1,4 +1,4 @@
-package clientconn
+package batchwatcher
 
 // Subsystem defines the logging code for this subsystem.
-const Subsystem = "CLNC"
+const Subsystem = "BWCH"

@@ -208,7 +208,7 @@ func (s *Server) newOORRecipientNotifier() oor.RecipientNotifier {
 
 	return &indexerRecipientNotifier{
 		operator: s.indexerOperator,
-		log:      s.loggerFactory("INDXN"),
+		log:      s.log,
 	}
 }
 
@@ -285,7 +285,7 @@ func (s *Server) newIndexerVTXONotifier() db.VTXOEventSink {
 
 	return &indexerVTXONotifier{
 		operator: s.indexerOperator,
-		log:      s.loggerFactory("INDXN"),
+		log:      s.log,
 	}
 }
 

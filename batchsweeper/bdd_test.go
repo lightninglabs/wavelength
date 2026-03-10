@@ -240,7 +240,7 @@ func (bc *bddContext) aBatchSweeperWithWatcherFound(found bool) error {
 	}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: bc.watcher,
 		ChainSource:  bc.chain,
 		SweepDelay:   10,
@@ -301,7 +301,7 @@ func (bc *bddContext) aBatchSweeperWithMatureOutput() error {
 	}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: bc.watcher,
 		ChainSource:  bc.chain,
 		SweepDelay:   10,

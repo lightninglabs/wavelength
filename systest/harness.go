@@ -428,6 +428,7 @@ func (h *E2EHarness) initActorSystem() {
 	// client wallets for proper UTXO management.
 	h.walletController = lndbackend.NewLndWalletController(
 		h.serverLNDServices.WalletKit, h.serverLNDServices.Signer,
+		fn.Some(h.SubLogger("LNDB")),
 	)
 
 	// Create REAL chain source wrapping harness bitcoind.
@@ -489,7 +490,7 @@ func (h *E2EHarness) initActorSystem() {
 	batchSweeper := fn.Some[batchSweeperRef](h.batchSweeperRouter)
 
 	batchWatcherCfg := &batchwatcher.ActorConfig{
-		Logger:        h.SubLogger("BWCH"),
+		Log:           fn.Some(h.SubLogger("BWCH")),
 		ChainSource:   h.chainSourceActorRef,
 		FraudDetector: fraudDetector,
 		BatchSweeper:  batchSweeper,
@@ -516,7 +517,7 @@ func (h *E2EHarness) initActorSystem() {
 	// we can assign ActorRef directly to TellOnlyRef fields.
 	roundsCfg := &rounds.ActorConfig{
 		ChainParams:         &chaincfg.RegressionNetParams,
-		Logger:              h.SubLogger(rounds.Subsystem),
+		Log:                 fn.Some(h.SubLogger(rounds.Subsystem)),
 		Terms:               h.terms,
 		ForfeitScript:       h.forfeitScript,
 		ClientsConn:         bridgeRef,
@@ -567,7 +568,7 @@ func (h *E2EHarness) initBatchSweeper() {
 	require.NoError(h.t, err, "failed to create sweep pkScript")
 
 	cfg := &batchsweeper.ActorConfig{
-		Logger:        h.SubLogger("BSWP"),
+		Log:           fn.Some(h.SubLogger("BSWP")),
 		BatchWatcher:  h.batchWatcherRef,
 		ChainSource:   h.chainSourceActorRef,
 		SweepKey:      h.terms.SweepKey,

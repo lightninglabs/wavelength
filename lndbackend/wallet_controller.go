@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -16,9 +17,11 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
@@ -34,15 +37,19 @@ var ErrNotImplemented = errors.New("not implemented in lndclient")
 type LndWalletController struct {
 	walletKit lndclient.WalletKitClient
 	signer    lndclient.SignerClient
+
+	log btclog.Logger
 }
 
 // NewLndWalletController creates a new wallet controller connected to LND.
 func NewLndWalletController(walletKit lndclient.WalletKitClient,
-	signer lndclient.SignerClient) *LndWalletController {
+	signer lndclient.SignerClient,
+	log fn.Option[btclog.Logger]) *LndWalletController {
 
 	return &LndWalletController{
 		walletKit: walletKit,
 		signer:    signer,
+		log:       log.UnwrapOr(btclog.Disabled),
 	}
 }
 
@@ -117,6 +124,11 @@ func (l *LndWalletController) FundPsbt(ctx context.Context,
 
 	*packet = *fundedPacket
 
+	l.log.DebugS(ctx, "PSBT funded",
+		slog.Int("input_count", len(fundedPacket.UnsignedTx.TxIn)),
+		slog.Int("output_count", len(fundedPacket.UnsignedTx.TxOut)),
+		slog.Int("change_index", int(changeIdx)))
+
 	// Extract the locked outpoints from the lease descriptors.
 	lockedOutpoints := make([]wire.OutPoint, 0, len(leases))
 	for _, lease := range leases {
@@ -144,6 +156,9 @@ func (l *LndWalletController) FundPsbt(ctx context.Context,
 func (l *LndWalletController) ReleaseInputs(ctx context.Context,
 	lockID [32]byte, outpoints []wire.OutPoint) error {
 
+	l.log.DebugS(ctx, "Releasing locked inputs",
+		slog.Int("count", len(outpoints)))
+
 	wtxmgrLockID := wtxmgr.LockID(lockID)
 
 	var errs []error
@@ -169,6 +184,10 @@ func (l *LndWalletController) FinalizePsbt(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("finalize psbt via lnd: %w", err)
 	}
+
+	l.log.InfoS(ctx, "PSBT finalized",
+		slog.Int("input_count", len(finalTx.TxIn)),
+		slog.Int("output_count", len(finalTx.TxOut)))
 
 	return finalTx, nil
 }

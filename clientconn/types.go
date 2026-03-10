@@ -4,10 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
 // CorrelationID links a mailbox request to its response.
@@ -37,6 +39,9 @@ type EnvelopeDispatcher func(
 // serverconn.ConnectorConfig but is instantiated per-client rather than
 // once globally.
 type PerClientConfig struct {
+	// Log is an optional logger. When None, logging is disabled.
+	Log fn.Option[btclog.Logger]
+
 	// Edge is the gRPC client for the remote mailbox edge service,
 	// providing Send, Pull, and AckUpTo operations.
 	Edge mailboxpb.MailboxServiceClient

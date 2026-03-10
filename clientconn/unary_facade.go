@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
@@ -34,6 +35,9 @@ type UnaryFacade struct {
 	// connector is the per-client connection actor that owns the
 	// response registry and configuration.
 	connector *ClientConnectionActor
+
+	// log is the resolved logger for this facade.
+	log btclog.Logger
 }
 
 // NewUnaryFacade creates a new unary RPC facade backed by the given
@@ -44,6 +48,7 @@ func NewUnaryFacade(
 
 	return &UnaryFacade{
 		connector: connector,
+		log:       connector.log,
 	}
 }
 
@@ -126,7 +131,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	if err != nil {
 		f.connector.removeWaiter(corrID)
 
-		log.WarnS(ctx, "Unary send failed", err,
+		f.log.WarnS(ctx, "Unary send failed", err,
 			slog.String("service", method.Service),
 			slog.String("method", method.Method))
 
@@ -143,7 +148,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			Status: resp.Status,
 		}
 
-		log.WarnS(ctx, "Unary send returned non-OK status",
+		f.log.WarnS(ctx, "Unary send returned non-OK status",
 			sendErr,
 			slog.String("service", method.Service),
 			slog.String("method", method.Method))
@@ -151,7 +156,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 		return mailboxrpc.SendResult{}, sendErr
 	}
 
-	log.DebugS(ctx, "Sent unary RPC request",
+	f.log.DebugS(ctx, "Sent unary RPC request",
 		slog.String("service", method.Service),
 		slog.String("method", method.Method),
 		slog.String("correlation_id", correlationID))

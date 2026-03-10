@@ -1,4 +1,4 @@
-package clientconn
+package batchsweeper
 
 // Subsystem defines the logging code for this subsystem.
-const Subsystem = "CLNC"
+const Subsystem = "BSWP"

@@ -217,7 +217,7 @@ func TestBatchExpiredQueriesWatcher(t *testing.T) {
 	mockChainSource := &mockChainSourceRef{}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SelfRef:      &nopSelfRef{},
@@ -287,7 +287,7 @@ func TestBatchExpiredSchedulesRetryForImmatureOutputs(t *testing.T) {
 	mockTimeout := &mockTimeoutRef{}
 
 	cfg := &ActorConfig{
-		Logger:            btclog.Disabled,
+		Log:               fn.Some(btclog.Disabled),
 		BatchWatcher:      mockWatcher,
 		ChainSource:       mockChainSource,
 		SweepDelay:        10,
@@ -334,7 +334,7 @@ func TestRepeatedBatchExpiredPreservesAttempts(t *testing.T) {
 	mockChainSource := &mockChainSourceRef{}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SelfRef:      &nopSelfRef{},
@@ -378,7 +378,7 @@ func TestSweepConfirmedCleansUp(t *testing.T) {
 	mockChainSource := &mockChainSourceRef{}
 
 	cfg := &ActorConfig{
-		Logger:      btclog.Disabled,
+		Log:         fn.Some(btclog.Disabled),
 		ChainSource: mockChainSource,
 		SelfRef:     &nopSelfRef{},
 	}
@@ -428,7 +428,7 @@ func TestRepeatedBatchExpiredSkipsWhenFeeNotHigher(t *testing.T) {
 	}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SelfRef:      &nopSelfRef{},
@@ -505,7 +505,7 @@ func TestRepeatedBatchExpiredBumpsFeeWhenHigher(t *testing.T) {
 	}
 
 	cfg := &ActorConfig{
-		Logger:       btclog.Disabled,
+		Log:          fn.Some(btclog.Disabled),
 		BatchWatcher: mockWatcher,
 		ChainSource:  mockChainSource,
 		SweepDelay:   10,
@@ -565,7 +565,7 @@ func TestAlertOnPersistentFailure(t *testing.T) {
 	mockChainSource := &mockChainSourceRef{}
 
 	cfg := &ActorConfig{
-		Logger:         btclog.Disabled,
+		Log:            fn.Some(btclog.Disabled),
 		BatchWatcher:   mockWatcher,
 		ChainSource:    mockChainSource,
 		SelfRef:        &nopSelfRef{},
