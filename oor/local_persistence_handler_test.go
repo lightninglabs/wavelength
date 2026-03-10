@@ -104,6 +104,21 @@ func (s *testVTXOStore) ListLiveVTXOs(_ context.Context) (
 	return out, nil
 }
 
+// ListVTXOsByStatus returns descriptors matching the given status.
+func (s *testVTXOStore) ListVTXOsByStatus(_ context.Context,
+	status vtxo.VTXOStatus) ([]*vtxo.Descriptor, error) {
+
+	var out []*vtxo.Descriptor
+	for _, desc := range s.records {
+		if desc.Status == status {
+			cpy := *desc
+			out = append(out, &cpy)
+		}
+	}
+
+	return out, nil
+}
+
 // UpdateVTXOStatus updates status for the given outpoint.
 func (s *testVTXOStore) UpdateVTXOStatus(_ context.Context,
 	outpoint wire.OutPoint, status vtxo.VTXOStatus) error {

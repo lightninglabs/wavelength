@@ -105,6 +105,11 @@ type Config struct {
 	// If zero, the default of 2 minutes is used.
 	//nolint:ll
 	ForfeitCollectionTimeout time.Duration `mapstructure:"forfeitcollectiontimeout"`
+
+	// AllowMainnet must be set to true explicitly to run the daemon
+	// on mainnet. This guard prevents accidentally operating on
+	// mainnet during development, since DefaultNetwork is "mainnet".
+	AllowMainnet bool `mapstructure:"allow-mainnet"`
 }
 
 // LndConfig holds connection parameters for the backing lnd node.
@@ -234,6 +239,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unknown network %q", c.Network)
 	}
 
+	// Require explicit opt-in for mainnet to prevent accidental
+	// use during development.
+	if c.Network == "mainnet" && !c.AllowMainnet {
+		return fmt.Errorf(
+			"running on mainnet requires " +
+				"--allow-mainnet flag or " +
+				"allow-mainnet=true in config",
+		)
+	}
+
 	// Validate wallet config.
 	if c.Wallet == nil {
 		return fmt.Errorf("wallet config is required")
@@ -314,25 +329,36 @@ func networkToChainParams(network string) (*chaincfg.Params, error) {
 
 // NetworkDir returns the network-scoped data directory (e.g.,
 // ~/.darepod/data/regtest).
-func (c *Config) NetworkDir() string {
-	return filepath.Join(expandTilde(c.DataDir), "data", c.Network)
+func (c *Config) NetworkDir() (string, error) {
+	dataDir, err := expandTilde(c.DataDir)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dataDir, "data", c.Network), nil
 }
 
 // LogDir returns the network-scoped log directory.
-func (c *Config) LogDir() string {
-	return filepath.Join(expandTilde(c.DataDir), "logs", c.Network)
+func (c *Config) LogDir() (string, error) {
+	dataDir, err := expandTilde(c.DataDir)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dataDir, "logs", c.Network), nil
 }
 
 // expandTilde replaces a leading ~ or ~/ with the user's home
 // directory. For example, "~/.darepod" becomes "/home/user/.darepod".
-func expandTilde(path string) string {
+// It returns an error if the home directory cannot be determined.
+func expandTilde(path string) (string, error) {
 	if len(path) == 0 || path[0] != '~' {
-		return path
+		return path, nil
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return path
+		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
 
 	// Strip the leading "~" and any path separator that follows
@@ -344,5 +370,5 @@ func expandTilde(path string) string {
 		suffix = suffix[1:]
 	}
 
-	return filepath.Join(home, suffix)
+	return filepath.Join(home, suffix), nil
 }

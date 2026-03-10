@@ -113,6 +113,12 @@ func newRootCmd() *cobra.Command {
 		"daemon gRPC listen address",
 	)
 
+	// Safety flag for mainnet operation.
+	f.Bool("allow-mainnet", cfg.AllowMainnet,
+		"allow the daemon to run on mainnet "+
+			"(required when network=mainnet)",
+	)
+
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("DAREPOD")

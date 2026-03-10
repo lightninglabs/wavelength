@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenSeedProduces24Words verifies that GenSeed returns a valid
-// 24-word mnemonic.
-func TestGenSeedProduces24Words(t *testing.T) {
+// TestGenerateSeedProduces24Words verifies that GenerateSeed returns a
+// valid 24-word mnemonic.
+func TestGenerateSeedProduces24Words(t *testing.T) {
 	mnemonic, err := GenerateSeed(nil)
 	require.NoError(t, err)
 
@@ -137,7 +137,8 @@ func TestLoadSeedFromEnv(t *testing.T) {
 	require.Nil(t, seed)
 
 	// Set a valid 32-byte hex seed.
-	hexSeed := "0102030405060708091011121314151617181920212223242526272829303132"
+	hexSeed := "01020304050607080910111213141516" +
+		"17181920212223242526272829303132"
 	t.Setenv(seedEnvVar, hexSeed)
 	seed, err = LoadSeedFromEnv()
 	require.NoError(t, err)
