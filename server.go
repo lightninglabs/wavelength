@@ -364,6 +364,17 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			"server: %w", err)
 	}
 
+	// Register the ArkService on a ServeMux so the per-client
+	// ingress loop can dispatch GetInfo (and future ArkService
+	// methods) to the RPCServer. This must happen before the
+	// auto-registrar is wired, because RegisterClientWith-
+	// AllDispatchers reads s.mailboxMux to build the ArkService
+	// dispatcher entries.
+	s.mailboxMux = mailboxrpc.NewServeMux()
+	arkrpc.RegisterArkServiceMailboxServer(
+		s.mailboxMux, rpcSrv,
+	)
+
 	// Register the mailbox edge service on the client-facing
 	// gRPC server so external client daemons (darepod) can
 	// reach the in-process mailbox store over the network.
@@ -393,16 +404,6 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	defer func() {
 		_ = rpcSrv.Stop(ctx)
 	}()
-
-	// Register the ArkService for mailbox RPC access. The
-	// ServeMux handles incoming KIND_REQUEST envelopes routed
-	// by the serverconn ingress loop. The RPCServer implements
-	// both the gRPC and mailbox server interfaces, so the same
-	// handler serves both transports.
-	s.mailboxMux = mailboxrpc.NewServeMux()
-	arkrpc.RegisterArkServiceMailboxServer(
-		s.mailboxMux, rpcSrv,
-	)
 
 	s.log.InfoS(ctx, "Daemon ready")
 
