@@ -195,6 +195,46 @@ func (m *TriggerVTXORefreshMsg) MessageType() string {
 	return "TriggerVTXORefreshMsg"
 }
 
+// SendRecipient describes a single recipient in an in-round directed send.
+// The PkScript is a fully constructed VTXO taproot output script.
+type SendRecipient struct {
+	// PkScript is the recipient's VTXO output script. This must be a
+	// valid P2TR script constructed via tree.NewVTXODescriptor or
+	// equivalent.
+	PkScript []byte
+
+	// Amount is the value to send to this recipient in satoshis.
+	Amount int64
+}
+
+// TriggerVTXOSendMsg is sent from the wallet actor to the round actor to
+// request an in-round directed send. The wallet has already performed coin
+// selection and locking; this message carries a complete intent package with
+// forfeited VTXOs, recipient outputs, and optional change.
+type TriggerVTXOSendMsg struct {
+	actor.BaseMessage
+
+	// ForfeitOutpoints identifies the VTXOs to forfeit as inputs
+	// (from coin selection).
+	ForfeitOutpoints []wire.OutPoint
+
+	// Recipients describes the recipient outputs to create in the new
+	// round.
+	Recipients []SendRecipient
+
+	// ChangeAmount is the change value in satoshis to return to the
+	// sender as a new self-VTXO. Zero means no change output.
+	ChangeAmount int64
+}
+
+// RoundReceivable implements the RoundReceivable marker interface.
+func (m *TriggerVTXOSendMsg) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (m *TriggerVTXOSendMsg) MessageType() string {
+	return "TriggerVTXOSendMsg"
+}
+
 // TriggerVTXOLeaveMsg is sent from the wallet actor to the round actor to
 // request leave (offboard) of specific VTXOs. The VTXOs will be forfeited and
 // their value sent to the specified destination output.

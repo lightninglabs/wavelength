@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -394,6 +395,52 @@ func (m *UnlockVTXOsResponse) MessageType() string {
 
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *UnlockVTXOsResponse) walletRespSealed() {}
+
+// SendVTXOsRequest asks the wallet actor to perform an in-round directed send.
+// The wallet selects and locks VTXOs covering TotalAmount, then builds and
+// forwards a TriggerVTXOSendMsg to the round actor with the selected forfeit
+// inputs, recipient outputs, and change.
+type SendVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Recipients describes the destination outputs. Each entry contains
+	// a fully constructed VTXO pkScript and amount.
+	Recipients []actormsg.SendRecipient
+
+	// TotalAmount is the sum of all recipient amounts. The wallet uses
+	// this as the coin selection target.
+	TotalAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SendVTXOsRequest) MessageType() string {
+	return "SendVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *SendVTXOsRequest) walletMsgSealed() {}
+
+// SendVTXOsResponse indicates the result of the send request.
+type SendVTXOsResponse struct {
+	actor.BaseMessage
+
+	// SelectedCount is the number of VTXOs selected as forfeit inputs.
+	SelectedCount int
+
+	// TotalSelected is the sum of all selected VTXO amounts.
+	TotalSelected btcutil.Amount
+
+	// ChangeAmount is the change returned to the sender (0 = no change).
+	ChangeAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *SendVTXOsResponse) MessageType() string {
+	return "SendVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *SendVTXOsResponse) walletRespSealed() {}
 
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
 // will be forfeited and their value sent to the specified destination output.
