@@ -137,7 +137,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		return nil
 	}
 
-	log.InfoS(ctx, "Starting arkd",
+	s.log.InfoS(ctx, "Starting arkd",
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
 		slog.String("network", s.cfg.Network))
@@ -145,7 +145,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	// 1. Connect to lnd.
 	// -------------------------------------------------------
-	log.InfoS(ctx, "Connecting to lnd",
+	s.log.InfoS(ctx, "Connecting to lnd",
 		slog.String("host", s.cfg.Lnd.Host))
 
 	lndServices, err := s.connectLnd(ctx)
@@ -156,7 +156,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	s.lnd = lndServices
 	defer s.lnd.Close()
 
-	log.InfoS(ctx, "Connected to lnd",
+	s.log.InfoS(ctx, "Connected to lnd",
 		slog.String("alias", s.lnd.NodeAlias),
 		slog.String("pubkey",
 			s.lnd.NodePubkey.String()))
@@ -174,7 +174,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		_ = s.actorSystem.Shutdown(shutdownCtx)
 	}()
 
-	log.InfoS(ctx, "Actor system initialized")
+	s.log.InfoS(ctx, "Actor system initialized")
 
 	// -------------------------------------------------------
 	// 3. Create and register chain source actor.
@@ -204,7 +204,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		chainsource.ChainSourceKey, chainActor,
 	)
 
-	log.InfoS(ctx, "Chain source actor registered")
+	s.log.InfoS(ctx, "Chain source actor registered")
 
 	// -------------------------------------------------------
 	// 4. Initialize database.
@@ -228,7 +228,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	if s.cfg.DB.Backend == "postgres" {
 		backendName = "postgres"
 	}
-	log.InfoS(ctx, "Database initialized",
+	s.log.InfoS(ctx, "Database initialized",
 		"backend", backendName)
 
 	// -------------------------------------------------------
@@ -290,7 +290,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		s.mailboxMux, s.rpc,
 	)
 
-	log.InfoS(ctx, "Daemon ready")
+	s.log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
 	// 8. Block until shutdown.
@@ -301,7 +301,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	case <-s.quit:
 	}
 
-	log.InfoS(ctx, "Shutting down arkd")
+	s.log.InfoS(ctx, "Shutting down arkd")
 
 	return nil
 }
