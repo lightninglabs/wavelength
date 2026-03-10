@@ -77,6 +77,24 @@ SELECT * FROM rounds
 WHERE status = 'pending'
 ORDER BY created_at ASC;
 
+-- name: ListAllRounds :many
+SELECT * FROM rounds
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountAllRounds :one
+SELECT count(*) FROM rounds;
+
+-- name: ListRoundsByStatus :many
+SELECT * FROM rounds
+WHERE status = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountRoundsByStatus :one
+SELECT count(*) FROM rounds
+WHERE status = $1;
+
 -- name: UpdateRoundConfirmed :exec
 UPDATE rounds
 SET status = 'confirmed',

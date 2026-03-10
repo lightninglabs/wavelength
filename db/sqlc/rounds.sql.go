@@ -13,6 +13,29 @@ import (
 	"github.com/lib/pq"
 )
 
+const CountAllRounds = `-- name: CountAllRounds :one
+SELECT count(*) FROM rounds
+`
+
+func (q *Queries) CountAllRounds(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountAllRounds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountRoundsByStatus = `-- name: CountRoundsByStatus :one
+SELECT count(*) FROM rounds
+WHERE status = $1
+`
+
+func (q *Queries) CountRoundsByStatus(ctx context.Context, status string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountRoundsByStatus, status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE lock_owner_kind = $1
@@ -435,6 +458,51 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 	return err
 }
 
+const ListAllRounds = `-- name: ListAllRounds :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAllRoundsParams struct {
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListAllRounds, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListPendingRounds = `-- name: ListPendingRounds :many
 SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
 WHERE status = 'pending'
@@ -531,6 +599,53 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 		query = strings.Replace(query, "/*SLICE:round_ids*/?", "NULL", 1)
 	}
 	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+WHERE status = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListRoundsByStatusParams struct {
+	Status string
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatusParams) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListRoundsByStatus, arg.Status, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
