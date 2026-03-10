@@ -104,13 +104,15 @@ type Config struct {
 	// Backend specifies which database backend to use: "sqlite" or
 	// "postgres".
 	//nolint:ll
-	Backend string `long:"backend" description:"Database backend to use (sqlite or postgres)" choice:"sqlite" choice:"postgres"`
+	Backend string `long:"backend" mapstructure:"backend" description:"Database backend to use (sqlite or postgres)" choice:"sqlite" choice:"postgres"`
 
-	// Sqlite contains SQLite-specific configuration
-	Sqlite *SqliteConfig `group:"sqlite" namespace:"sqlite"`
+	// Sqlite contains SQLite-specific configuration.
+	//nolint:ll
+	Sqlite *SqliteConfig `group:"sqlite" namespace:"sqlite" mapstructure:"sqlite"`
 
-	// Postgres contains Postgres-specific configuration
-	Postgres *PostgresConfig `group:"postgres" namespace:"postgres"`
+	// Postgres contains Postgres-specific configuration.
+	//nolint:ll
+	Postgres *PostgresConfig `group:"postgres" namespace:"postgres" mapstructure:"postgres"`
 }
 
 // DefaultConfig returns the default database configuration (SQLite).

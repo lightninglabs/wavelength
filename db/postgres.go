@@ -49,17 +49,43 @@ var (
 //
 //nolint:ll
 type PostgresConfig struct {
-	SkipMigrations     bool          `long:"skipmigrations" description:"Skip applying migrations on startup."`
-	Host               string        `long:"host" description:"Database server hostname."`
-	Port               int           `long:"port" description:"Database server port."`
-	User               string        `long:"user" description:"Database user."`
-	Password           string        `long:"password" description:"Database user's password."`
-	DBName             string        `long:"dbname" description:"Database name to use."`
-	MaxOpenConnections int           `long:"maxconnections" description:"Max open connections to keep alive to the database server."`
-	MaxIdleConnections int           `long:"maxidleconnections" description:"Max number of idle connections to keep in the connection pool."`
-	ConnMaxLifetime    time.Duration `long:"connmaxlifetime" description:"Max amount of time a connection can be reused for before it is closed. Valid time units are {s, m, h}."`
-	ConnMaxIdleTime    time.Duration `long:"connmaxidletime" description:"Max amount of time a connection can be idle for before it is closed. Valid time units are {s, m, h}."`
-	RequireSSL         bool          `long:"requiressl" description:"Whether to require using SSL (mode: require) when connecting to the server."`
+	// SkipMigrations skips applying migrations on startup.
+	SkipMigrations bool `long:"skipmigrations" mapstructure:"skipmigrations" description:"Skip applying migrations on startup."`
+
+	// Host is the database server hostname.
+	Host string `long:"host" mapstructure:"host" description:"Database server hostname."`
+
+	// Port is the database server port.
+	Port int `long:"port" mapstructure:"port" description:"Database server port."`
+
+	// User is the database user.
+	User string `long:"user" mapstructure:"user" description:"Database user."`
+
+	// Password is the database user's password.
+	Password string `long:"password" mapstructure:"password" description:"Database user's password."`
+
+	// DBName is the database name to use.
+	DBName string `long:"dbname" mapstructure:"dbname" description:"Database name to use."`
+
+	// MaxOpenConnections is the max open connections to keep alive
+	// to the database server.
+	MaxOpenConnections int `long:"maxconnections" mapstructure:"maxconnections" description:"Max open connections to keep alive to the database server."`
+
+	// MaxIdleConnections is the max number of idle connections to
+	// keep in the connection pool.
+	MaxIdleConnections int `long:"maxidleconnections" mapstructure:"maxidleconnections" description:"Max number of idle connections to keep in the connection pool."`
+
+	// ConnMaxLifetime is the max amount of time a connection can be
+	// reused for before it is closed.
+	ConnMaxLifetime time.Duration `long:"connmaxlifetime" mapstructure:"connmaxlifetime" description:"Max amount of time a connection can be reused for before it is closed. Valid time units are {s, m, h}."`
+
+	// ConnMaxIdleTime is the max amount of time a connection can be
+	// idle for before it is closed.
+	ConnMaxIdleTime time.Duration `long:"connmaxidletime" mapstructure:"connmaxidletime" description:"Max amount of time a connection can be idle for before it is closed. Valid time units are {s, m, h}."`
+
+	// RequireSSL controls whether to require using SSL when
+	// connecting to the server.
+	RequireSSL bool `long:"requiressl" mapstructure:"requiressl" description:"Whether to require using SSL (mode: require) when connecting to the server."`
 }
 
 // DSN returns the dns to connect to the database.

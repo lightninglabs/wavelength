@@ -10,42 +10,46 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo/build"
 	"google.golang.org/grpc"
 )
 
 // RPCConfig contains configuration for the client-facing RPC server.
 type RPCConfig struct {
-	// RPCListen is the listen address for the client RPC server.
-	//nolint:ll
-	RPCListen string `long:"listen" description:"Listen address for the client RPC server"`
+	// ListenAddr is the network address the gRPC server binds to.
+	ListenAddr string `mapstructure:"listen"`
 
-	// RPCListener is the listener for the client RPC server. If nil,
-	// a new listener will be created.
-	RPCListener net.Listener
+	// Listener is an optional pre-created listener. When non-nil,
+	// the daemon serves on this listener instead of binding to
+	// ListenAddr. This enables SDK-style embedding and in-memory
+	// transports such as bufconn for tests.
+	Listener net.Listener
 }
 
 // DefaultRPCConfig returns the default client RPC configuration.
 func DefaultRPCConfig() *RPCConfig {
 	return &RPCConfig{
-		RPCListen: "localhost:7070",
+		ListenAddr: DefaultRPCListen,
 	}
 }
 
 // AdminRPCConfig contains configuration for the admin RPC server.
 type AdminRPCConfig struct {
-	// RPCListen is the listen address for the admin RPC server.
-	//nolint:ll
-	RPCListen string `long:"listen" description:"Listen address for the admin RPC server"`
+	// ListenAddr is the network address the admin gRPC server binds
+	// to.
+	ListenAddr string `mapstructure:"listen"`
 
-	// RPCListener is the listener for the admin RPC server. If nil,
-	// a new listener will be created.
-	RPCListener net.Listener
+	// Listener is an optional pre-created listener. When non-nil,
+	// the daemon serves on this listener instead of binding to
+	// ListenAddr. This enables SDK-style embedding and in-memory
+	// transports such as bufconn for tests.
+	Listener net.Listener
 }
 
 // DefaultAdminRPCConfig returns the default admin RPC configuration.
 func DefaultAdminRPCConfig() *AdminRPCConfig {
 	return &AdminRPCConfig{
-		RPCListen: "localhost:8081",
+		ListenAddr: DefaultAdminRPCListen,
 	}
 }
 
@@ -74,14 +78,16 @@ type RPCServer struct {
 func NewRPCServer(cfg *RPCConfig, operator *Server,
 	log btclog.Logger) (*RPCServer, error) {
 
-	// Use existing listener if provided
-	listener := cfg.RPCListener
+	// Use existing listener if provided, otherwise bind a new TCP
+	// listener.
+	listener := cfg.Listener
 	if listener == nil {
 		var err error
-		listener, err = net.Listen("tcp", cfg.RPCListen)
+		listener, err = net.Listen("tcp", cfg.ListenAddr)
 		if err != nil {
-			return nil, fmt.Errorf("client RPC server unable to "+
-				"listen on %s: %w", cfg.RPCListen, err)
+			return nil, fmt.Errorf("client RPC server unable "+
+				"to listen on %s: %w",
+				cfg.ListenAddr, err)
 		}
 	}
 
@@ -153,10 +159,24 @@ func (r *RPCServer) Addr() net.Addr {
 func (r *RPCServer) GetInfo(ctx context.Context,
 	req *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
 
-	return &arkrpc.GetInfoResponse{
-		Version:     "0.0.1-skeleton",
-		Pubkey:      []byte{},
-		Network:     r.server.cfg.Network,
-		BlockHeight: 0,
-	}, nil
+	resp := &arkrpc.GetInfoResponse{
+		Version: build.Version(),
+		Network: r.server.cfg.Network,
+	}
+
+	if r.server.lnd != nil {
+		resp.Pubkey = r.server.lnd.NodePubkey[:]
+
+		_, height, err := r.server.lnd.ChainKit.GetBestBlock(
+			ctx,
+		)
+		if err != nil {
+			r.log.WarnS(ctx, "Unable to get best "+
+				"block", err)
+		} else {
+			resp.BlockHeight = uint32(height)
+		}
+	}
+
+	return resp, nil
 }

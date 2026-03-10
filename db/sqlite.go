@@ -51,17 +51,17 @@ var (
 //
 //nolint:ll
 type SqliteConfig struct {
-	// SkipMigrations if true, then all the tables will be created on start
-	// up if they don't already exist.
-	SkipMigrations bool `long:"skipmigrations" description:"Skip applying migrations on startup."`
+	// SkipMigrations if true, then all the tables will be created on
+	// start up if they don't already exist.
+	SkipMigrations bool `long:"skipmigrations" mapstructure:"skipmigrations" description:"Skip applying migrations on startup."`
 
-	// SkipMigrationDBBackup if true, then a backup of the database will not
-	// be created before applying migrations.
-	SkipMigrationDBBackup bool `long:"skipmigrationdbbackup" description:"Skip creating a backup of the database before applying migrations."`
+	// SkipMigrationDBBackup if true, then a backup of the database
+	// will not be created before applying migrations.
+	SkipMigrationDBBackup bool `long:"skipmigrationdbbackup" mapstructure:"skipmigrationdbbackup" description:"Skip creating a backup of the database before applying migrations."`
 
-	// DatabaseFileName is the full file path where the database file can be
-	// found.
-	DatabaseFileName string `long:"dbfile" description:"The full path to the database."`
+	// DatabaseFileName is the full file path where the database file
+	// can be found.
+	DatabaseFileName string `long:"dbfile" mapstructure:"dbfile" description:"The full path to the database."`
 }
 
 // SqliteStore is a sqlite3 based database for the daemon.

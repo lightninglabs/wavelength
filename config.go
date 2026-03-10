@@ -1,47 +1,88 @@
 package darepo
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/jessevdk/go-flags"
 	"github.com/lightninglabs/darepo/db"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
+const (
+	// DefaultNetwork is the default bitcoin network the daemon operates
+	// on.
+	DefaultNetwork = "regtest"
+
+	// DefaultLogLevel is the default logging verbosity.
+	DefaultLogLevel = "info"
+
+	// DefaultAdminRPCListen is the default listen address for the admin
+	// gRPC server.
+	DefaultAdminRPCListen = "localhost:8081"
+
+	// DefaultRPCListen is the default listen address for the
+	// client-facing gRPC server.
+	DefaultRPCListen = "localhost:7070"
+
+	// DefaultLndHost is the default address for connecting to the
+	// local lnd instance.
+	DefaultLndHost = "localhost:10009"
+
+	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
+	DefaultRPCTimeout = 30 * time.Second
+
+	// DefaultShutdownTimeout is the maximum duration to wait for
+	// graceful shutdown of the actor system and subsystems.
+	DefaultShutdownTimeout = 10 * time.Second
+
+	// defaultLogDirname is the default directory name for log
+	// files.
+	defaultLogDirname = "logs"
+)
+
 var (
-	// defaultDataDir is the default directory where arkd tries to find its
-	// configuration file and store its data. This is a directory in the
-	// user's application data, for example:
+	// defaultDataDir is the default directory where arkd tries to
+	// find its configuration file and store its data. This is a
+	// directory in the user's application data, for example:
 	//   C:\Users\<username>\AppData\Local\Arkd on Windows
 	//   ~/.arkd on Linux
 	//   ~/Library/Application Support/Arkd on MacOS
 	defaultDataDir = btcutil.AppDataDir("arkd", false)
-
-	// defaultLogDir is the default directory where arkd will store its log
-	// file.
-	defaultLogDir = filepath.Join(defaultDataDir, defaultLogDirname)
-
-	defaultNetwork = "regtest"
-)
-
-const (
-	defaultLogLevel    = "info"
-	defaultLogDirname  = "logs"
-	defaultLogFilename = "arkd.log"
 )
 
 // Config is the main configuration struct for the operator server.
 type Config struct {
+	// DataDir is the root data directory for all daemon state.
+	// Database files, logs, and TLS material are stored under this
+	// directory.
+	DataDir string `mapstructure:"datadir"`
+
+	// Network selects the bitcoin network: mainnet, testnet, regtest,
+	// or signet.
+	Network string `mapstructure:"network"`
+
+	// DebugLevel controls the verbosity of daemon logging. Valid
+	// values include trace, debug, info, warn, error, and critical.
+	DebugLevel string `mapstructure:"debuglevel"`
+
+	// LogFilePath is the path to write the log file.
+	LogFilePath string `mapstructure:"logfile"`
+
 	// DB contains the database configuration (sqlite or postgres).
-	DB *db.Config `group:"db" namespace:"db"`
+	DB *db.Config `mapstructure:"db"`
+
+	// Lnd configures the connection to the backing lnd node.
+	Lnd *LndConfig `mapstructure:"lnd"`
 
 	// AdminRPC contains the admin RPC server configuration.
-	AdminRPC *AdminRPCConfig `group:"admin-rpc" namespace:"admin-rpc"`
+	AdminRPC *AdminRPCConfig `mapstructure:"adminrpc"`
 
 	// RPC contains the client-facing RPC server configuration.
-	RPC *RPCConfig `group:"rpc" namespace:"rpc"`
+	RPC *RPCConfig `mapstructure:"rpc"`
 
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
@@ -53,54 +94,121 @@ type Config struct {
 	// btclog.Disabled.
 	Loggers SubLoggers
 
-	DataDir string `long:"datadir" description:"The base directory that contains arkd's data, logs, configuration file, etc. This option overwrites all other directory options."`
-
-	Network string `long:"network" description:"Network to run on" choice:"mainnet" choice:"regtest" choice:"testnet" choice:"signet"`
-
-	// Logging contains the logging configuration.
-	LogLevel string `long:"loglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical}"`
-
-	LogFilePath string `long:"logfile" description:"Path to write the log file"`
-
+	// Shutdown is a callback that triggers graceful server shutdown.
 	Shutdown func()
 }
 
-func DefaultConfig() Config {
-	dataDir := defaultDataDir
+// LndConfig holds connection parameters for the backing lnd node.
+type LndConfig struct {
+	// Host is the network address of the lnd gRPC interface.
+	Host string `mapstructure:"host"`
 
-	return Config{
-		DB:          db.DefaultConfig(dataDir),
-		AdminRPC:    DefaultAdminRPCConfig(),
-		RPC:         DefaultRPCConfig(),
-		DataDir:     dataDir,
-		Network:     defaultNetwork,
-		LogLevel:    defaultLogLevel,
-		LogFilePath: defaultLogDir,
-		Shutdown:    func() {},
+	// TLSPath is the path to lnd's TLS certificate file. If empty,
+	// the default lnd TLS cert location is used.
+	TLSPath string `mapstructure:"tlspath"`
+
+	// MacaroonPath is the full path to the lnd admin macaroon. If
+	// empty, the default lnd macaroon location for the active
+	// network is used.
+	MacaroonPath string `mapstructure:"macaroonpath"`
+
+	// RPCTimeout is the maximum duration for individual RPC calls to
+	// lnd. If zero, DefaultRPCTimeout is used.
+	RPCTimeout time.Duration `mapstructure:"rpctimeout"`
+}
+
+// DefaultConfig returns a Config populated with sensible defaults.
+func DefaultConfig() *Config {
+	return &Config{
+		DataDir:    defaultDataDir,
+		Network:    DefaultNetwork,
+		DebugLevel: DefaultLogLevel,
+		LogFilePath: filepath.Join(
+			defaultDataDir, defaultLogDirname,
+		),
+		DB: db.DefaultConfig(defaultDataDir),
+		Lnd: &LndConfig{
+			Host:       DefaultLndHost,
+			RPCTimeout: DefaultRPCTimeout,
+		},
+		AdminRPC: DefaultAdminRPCConfig(),
+		RPC:      DefaultRPCConfig(),
 	}
 }
 
-func LoadConfig() (*Config, error) {
-	// Pre-parse the command line options to pick up an alternative config
-	// file.
-	cfg := DefaultConfig()
-	if _, err := flags.Parse(&cfg); err != nil {
-		return nil, err
+// Validate checks the config for internal consistency and returns an
+// error if any required fields are missing or invalid.
+func (c *Config) Validate() error {
+	switch c.Network {
+	case "mainnet", "testnet", "regtest", "simnet", "signet":
+
+	default:
+		return fmt.Errorf("unknown network %q", c.Network)
 	}
 
-	// Finally, parse the remaining command line options again to ensure
-	// they take precedence.
-	flagParser := flags.NewParser(&cfg, flags.Default)
-	if _, err := flagParser.Parse(); err != nil {
-		return nil, err
+	if c.Lnd == nil {
+		return fmt.Errorf("lnd config is required")
+	}
+	if c.Lnd.Host == "" {
+		return fmt.Errorf("lnd host is required")
 	}
 
-	// Make sure everything we just loaded makes sense.
-	return ValidateConfig(cfg)
+	if c.DB == nil {
+		return fmt.Errorf("db config is required")
+	}
+
+	if c.AdminRPC == nil {
+		return fmt.Errorf("admin rpc config is required")
+	}
+	if c.AdminRPC.ListenAddr == "" {
+		return fmt.Errorf("admin rpc listen address is required")
+	}
+
+	if c.RPC == nil {
+		return fmt.Errorf("rpc config is required")
+	}
+	if c.RPC.ListenAddr == "" {
+		return fmt.Errorf("rpc listen address is required")
+	}
+
+	return nil
 }
 
-func ValidateConfig(cfg Config) (*Config, error) {
-	// TODO: Add validation logic here
+// NetworkDir returns the network-scoped data directory (e.g.,
+// ~/.arkd/data/regtest).
+func (c *Config) NetworkDir() string {
+	return filepath.Join(
+		expandTilde(c.DataDir), "data", c.Network,
+	)
+}
 
-	return &cfg, nil
+// LogDir returns the network-scoped log directory.
+func (c *Config) LogDir() string {
+	return filepath.Join(
+		expandTilde(c.DataDir), "logs", c.Network,
+	)
+}
+
+// expandTilde replaces a leading ~ or ~/ with the user's home
+// directory. For example, "~/.arkd" becomes "/home/user/.arkd".
+func expandTilde(path string) string {
+	if len(path) == 0 || path[0] != '~' {
+		return path
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+
+	// Strip the leading "~" and any path separator that follows
+	// it, so filepath.Join receives a relative suffix. Without
+	// this, "~/.arkd" would produce path[1:] == "/.arkd" which
+	// is absolute and causes Join to discard home.
+	suffix := path[1:]
+	if len(suffix) > 0 && os.IsPathSeparator(suffix[0]) {
+		suffix = suffix[1:]
+	}
+
+	return filepath.Join(home, suffix)
 }
