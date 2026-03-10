@@ -18,17 +18,11 @@ func getDaemonClient(
 	*grpc.ClientConn, error) {
 
 	rpcServer, _ := cmd.Flags().GetString("rpcserver")
-	noTLS, _ := cmd.Flags().GetBool("no-tls")
 	tlsCertPath, _ := cmd.Flags().GetString("tlscertpath")
 
 	var opts []grpc.DialOption
 
 	switch {
-	case noTLS:
-		opts = append(opts, grpc.WithTransportCredentials(
-			insecure.NewCredentials(),
-		))
-
 	case tlsCertPath != "":
 		creds, err := credentials.NewClientTLSFromFile(
 			tlsCertPath, "",
@@ -43,8 +37,9 @@ func getDaemonClient(
 		))
 
 	default:
-		// Default to insecure for dev convenience. Production
-		// deployments should use --tlscertpath.
+		// Default to plaintext since the daemon serves its
+		// local RPC endpoint without TLS. Use --tlscertpath
+		// to enable TLS for remote connections.
 		opts = append(opts, grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		))
