@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
@@ -24,6 +25,10 @@ const (
 	// oorResponseMsgPrefix prefixes mailbox response envelope IDs.
 	oorResponseMsgPrefix = "resp-"
 )
+
+// oorClientIDContextKey is the context key used to inject the
+// client's mailbox ID into the handler context.
+type oorClientIDContextKey struct{}
 
 // OOROperatorConfig holds dependencies for the OOR operator
 // dispatcher factory.
@@ -92,7 +97,8 @@ func (o *OOROperator) Dispatchers() clientconn.DispatcherMap {
 }
 
 // makeDispatcher creates an EnvelopeDispatcher closure for a single
-// OOR RPC method.
+// OOR RPC method. It injects the envelope sender as the client ID
+// into the context for handler methods to retrieve.
 func (o *OOROperator) makeDispatcher(
 	method string) clientconn.EnvelopeDispatcher {
 
@@ -105,6 +111,12 @@ func (o *OOROperator) makeDispatcher(
 		if env.Body == nil {
 			return fmt.Errorf("missing request body")
 		}
+
+		// Inject the envelope sender as the client ID.
+		ctx = context.WithValue(
+			ctx, oorClientIDContextKey{},
+			clientconn.ClientID(env.Sender),
+		)
 
 		resp, handlerErr := o.mux.ServeRPC(
 			ctx, env.Rpc.Service, method,
@@ -165,29 +177,102 @@ func (o *OOROperator) makeDispatcher(
 }
 
 // SubmitPackage implements oorpb.OORMailboxServiceMailboxServer.
-// The request is forwarded to the OOR actor for session creation
-// and PSBT signing.
-func (o *OOROperator) SubmitPackage(_ context.Context,
-	_ *oorpb.SubmitPackageRequest) (
+// It parses the submit package request, converts the signing
+// descriptors to the domain type, and forwards the request to the
+// OOR actor for session creation and co-signing.
+func (o *OOROperator) SubmitPackage(ctx context.Context,
+	req *oorpb.SubmitPackageRequest) (
 	*oorpb.SubmitPackageResponse, error) {
 
-	// TODO(roasbeef): Convert proto request to domain type and
-	// submit to OOR actor as SubmitOORRequest.
+	// ParseSubmitPackageRequest deserializes the PSBT bytes and
+	// converts the proto signing descriptors to domain types.
+	arkPSBT, checkpointPSBTs, descs, err :=
+		oorpb.ParseSubmitPackageRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse submit package: %w", err,
+		)
+	}
+
+	// Convert oorpb.SigningDescriptor to oor.VTXOSigningDescriptor.
+	// The field names and types are identical.
+	vtxoDescs := make(
+		[]VTXOSigningDescriptor, len(descs),
+	)
+	for i, d := range descs {
+		vtxoDescs[i] = VTXOSigningDescriptor{
+			Outpoint:  d.Outpoint,
+			OwnerKey:  d.OwnerKey,
+			ExitDelay: d.ExitDelay,
+		}
+	}
+
+	// Submit the request to the OOR actor. The actor processes
+	// it through the session FSM and delivers the response
+	// asynchronously via the outbox event path.
+	actorMsg := &SubmitOORRequest{
+		ArkPSBT:                arkPSBT,
+		CheckpointPSBTs:        checkpointPSBTs,
+		VTXOSigningDescriptors: vtxoDescs,
+	}
+
+	result := o.cfg.OORActor.Receive(ctx, actorMsg)
+	if err := result.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"OOR actor submit: %w", err,
+		)
+	}
+
 	return &oorpb.SubmitPackageResponse{}, nil
 }
 
 // FinalizePackage implements oorpb.OORMailboxServiceMailboxServer.
-// The request is forwarded to the OOR actor for session
-// finalization.
-func (o *OOROperator) FinalizePackage(_ context.Context,
-	_ *oorpb.FinalizePackageRequest) (
+// It parses the finalize request and forwards it to the OOR actor
+// for session finalization.
+func (o *OOROperator) FinalizePackage(ctx context.Context,
+	req *oorpb.FinalizePackageRequest) (
 	*oorpb.FinalizePackageResponse, error) {
 
-	// TODO(roasbeef): Convert proto request to domain type and
-	// submit to OOR actor as FinalizeOORRequest.
+	// ParseFinalizePackageRequest deserializes the session ID
+	// and checkpoint PSBTs.
+	sessionHash, finalCheckpoints, err :=
+		oorpb.ParseFinalizePackageRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse finalize package: %w", err,
+		)
+	}
+
+	actorMsg := &FinalizeOORRequest{
+		SessionID:            SessionID(sessionHash),
+		FinalCheckpointPSBTs: finalCheckpoints,
+	}
+
+	result := o.cfg.OORActor.Receive(ctx, actorMsg)
+	if err := result.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"OOR actor finalize: %w", err,
+		)
+	}
+
 	return &oorpb.FinalizePackageResponse{}, nil
+}
+
+// oorClientIDFromContext extracts the client ID from the context
+// injected by the dispatcher.
+func oorClientIDFromContext(
+	ctx context.Context) clientconn.ClientID { //nolint:unused
+
+	id, _ := ctx.Value(
+		oorClientIDContextKey{},
+	).(clientconn.ClientID)
+
+	return id
 }
 
 // Compile-time check that OOROperator implements the mailbox server
 // interface.
 var _ oorpb.OORMailboxServiceMailboxServer = (*OOROperator)(nil)
+
+// Ensure chainhash is used (SessionID conversion).
+var _ = chainhash.Hash{}
