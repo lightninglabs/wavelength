@@ -8,14 +8,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -569,23 +573,195 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 		totalAmount += out.AmountSat
 	}
 
-	// For dry_run, validate inputs and return a preview.
+	// Fetch operator terms for VTXO descriptor construction.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
+	}
+
+	// Convert each recipient Output to a SendRecipient with a
+	// fully-constructed VTXO pkScript.
+	recipients := make(
+		[]actormsg.SendRecipient, 0, len(req.Recipients),
+	)
+	for i, out := range req.Recipients {
+		pkScript, err := r.resolveVTXORecipient(
+			out, terms,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"recipient %d: %v", i, err,
+			)
+		}
+
+		recipients = append(recipients, actormsg.SendRecipient{
+			PkScript: pkScript,
+			Amount:   out.AmountSat,
+		})
+	}
+
+	// For dry_run, validate inputs and coin selection, then
+	// immediately unlock and return a preview.
 	if req.DryRun {
+		return r.sendVTXODryRun(
+			ctx, totalAmount, recipients,
+		)
+	}
+
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	// Ask the wallet to select, lock, and forward the send to the
+	// round actor.
+	sendReq := &wallet.SendVTXOsRequest{
+		Recipients:  recipients,
+		TotalAmount: btcutil.Amount(totalAmount),
+	}
+	future := wRef.Ask(ctx, sendReq)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"send failed: %v", err)
+	}
+
+	sendResp, ok := resp.(*wallet.SendVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", resp)
+	}
+
+	log.InfoS(ctx, "In-round send submitted",
+		slog.Int("selected_vtxos", sendResp.SelectedCount),
+		slog.Int64("total_selected",
+			int64(sendResp.TotalSelected)),
+		slog.Int64("change", int64(sendResp.ChangeAmount)),
+		slog.Int64("total_amount", totalAmount))
+
+	return &daemonrpc.SendVTXOResponse{
+		Status:         "submitted",
+		TotalAmountSat: totalAmount,
+	}, nil
+}
+
+// resolveVTXORecipient derives a VTXO pkScript from a recipient Output. For
+// pubkey destinations, a full VTXO descriptor is constructed using the
+// operator's key and exit delay. For pk_script destinations, the raw script
+// is used directly (caller pre-computed the VTXO tapscript). Address
+// destinations are not supported in v1 because we cannot extract a raw key
+// from a tweaked taproot address.
+func (r *RPCServer) resolveVTXORecipient(out *daemonrpc.Output,
+	terms *types.OperatorTerms) ([]byte, error) {
+
+	switch d := out.Destination.(type) {
+	case *daemonrpc.Output_Pubkey:
+		if len(d.Pubkey) != schnorr.PubKeyBytesLen {
+			return nil, fmt.Errorf(
+				"pubkey must be %d bytes (x-only), "+
+					"got %d",
+				schnorr.PubKeyBytesLen, len(d.Pubkey),
+			)
+		}
+
+		recipientKey, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"invalid recipient pubkey: %w", err,
+			)
+		}
+
+		desc, err := tree.NewVTXODescriptor(
+			btcutil.Amount(out.AmountSat),
+			recipientKey,
+			terms.PubKey,
+			terms.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"build VTXO descriptor: %w", err,
+			)
+		}
+
+		return desc.PkScript, nil
+
+	case *daemonrpc.Output_PkScript:
+		if len(d.PkScript) == 0 {
+			return nil, fmt.Errorf("pk_script is empty")
+		}
+
+		return d.PkScript, nil
+
+	case *daemonrpc.Output_Address:
+		return nil, fmt.Errorf(
+			"address destinations are not supported " +
+				"for in-round sends; use pubkey or " +
+				"pk_script instead",
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unsupported destination type: %T", d,
+		)
+	}
+}
+
+// sendVTXODryRun validates coin selection for a send without actually
+// submitting to the round. It selects and locks VTXOs, computes the preview,
+// then immediately unlocks them.
+func (r *RPCServer) sendVTXODryRun(ctx context.Context,
+	totalAmount int64,
+	_ []actormsg.SendRecipient) (
+	*daemonrpc.SendVTXOResponse, error) {
+
+	if !r.server.walletRef.IsSome() {
+		// Without a wallet, return a basic preview.
 		return &daemonrpc.SendVTXOResponse{
 			Status:         "preview",
 			TotalAmountSat: totalAmount,
 		}, nil
 	}
 
-	// TODO(roasbeef): In-round directed sends are not yet
-	// implemented. The wallet actor's RefreshVTXOsRequest only
-	// supports self-refresh (sending back to self), not directed
-	// transfers to external recipients. Once the round protocol
-	// supports recipient outputs, this handler should build a
-	// proper send request with the validated recipients.
-	return nil, status.Errorf(codes.Unimplemented,
-		"in-round directed sends are not yet implemented; "+
-			"use SendOOR for out-of-round transfers")
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	// Select and lock to validate coin availability.
+	selectReq := &wallet.SelectAndLockVTXOsRequest{
+		TargetAmount: btcutil.Amount(totalAmount),
+	}
+	selectFuture := wRef.Ask(ctx, selectReq)
+	selectResult := selectFuture.Await(ctx)
+
+	selectResp, err := selectResult.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"dry-run VTXO selection failed: %v", err)
+	}
+
+	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", selectResp)
+	}
+
+	// Immediately unlock the selected VTXOs.
+	if unlockErr := r.unlockVTXOs(
+		ctx, locked.SelectedVTXOs,
+	); unlockErr != nil {
+		log.WarnS(ctx,
+			"Unable to unlock VTXOs after dry-run",
+			unlockErr)
+	}
+
+	return &daemonrpc.SendVTXOResponse{
+		Status:         "preview",
+		TotalAmountSat: totalAmount,
+	}, nil
 }
 
 // SendOOR initiates an out-of-round transfer directly between the
