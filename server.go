@@ -40,9 +40,9 @@ type Server struct {
 
 	db *db.Store
 
-	adminRPC *AdminRPCServer
+	adminRPC atomic.Pointer[AdminRPCServer]
 
-	rpc        *RPCServer
+	rpc        atomic.Pointer[RPCServer]
 	mailboxMux *mailboxrpc.ServeMux
 
 	log btclog.Logger
@@ -306,19 +306,20 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	adminLog := subLogger(s.cfg.Loggers, adminRPCSubsystem)
 
-	s.adminRPC, err = NewAdminRPCServer(
+	adminSrv, err := NewAdminRPCServer(
 		s.cfg.AdminRPC, s, adminLog,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to create admin RPC "+
 			"server: %w", err)
 	}
-	if err := s.adminRPC.Start(ctx); err != nil {
+	if err := adminSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start admin "+
 			"server: %w", err)
 	}
+	s.adminRPC.Store(adminSrv)
 	defer func() {
-		_ = s.adminRPC.Stop(ctx)
+		_ = adminSrv.Stop(ctx)
 	}()
 
 	// -------------------------------------------------------
@@ -326,19 +327,20 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	rpcLog := subLogger(s.cfg.Loggers, clientRPCSubsystem)
 
-	s.rpc, err = NewRPCServer(
+	rpcSrv, err := NewRPCServer(
 		s.cfg.RPC, s, rpcLog,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to create client RPC "+
 			"server: %w", err)
 	}
-	if err := s.rpc.Start(ctx); err != nil {
+	if err := rpcSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start client RPC "+
 			"server: %w", err)
 	}
+	s.rpc.Store(rpcSrv)
 	defer func() {
-		_ = s.rpc.Stop(ctx)
+		_ = rpcSrv.Stop(ctx)
 	}()
 
 	// Register the ArkService for mailbox RPC access. The
@@ -348,7 +350,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// handler serves both transports.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	arkrpc.RegisterArkServiceMailboxServer(
-		s.mailboxMux, s.rpc,
+		s.mailboxMux, rpcSrv,
 	)
 
 	s.log.InfoS(ctx, "Daemon ready")
@@ -367,24 +369,28 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	return nil
 }
 
-// AdminRPCAddr returns the address the admin RPC server is listening on, or
-// nil if the server hasn't been started yet.
+// AdminRPCAddr returns the address the admin RPC server is listening
+// on, or nil if the server hasn't been started yet. Safe for
+// concurrent use.
 func (s *Server) AdminRPCAddr() net.Addr {
-	if s.adminRPC == nil {
+	srv := s.adminRPC.Load()
+	if srv == nil {
 		return nil
 	}
 
-	return s.adminRPC.Addr()
+	return srv.Addr()
 }
 
 // RPCAddr returns the address the client RPC server is listening on,
-// or nil if the server hasn't been started yet.
+// or nil if the server hasn't been started yet. Safe for concurrent
+// use.
 func (s *Server) RPCAddr() net.Addr {
-	if s.rpc == nil {
+	srv := s.rpc.Load()
+	if srv == nil {
 		return nil
 	}
 
-	return s.rpc.Addr()
+	return srv.Addr()
 }
 
 // Shutdown triggers a graceful exit of RunWithContext independently
