@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -16,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/protobuf/proto"
 )
@@ -87,16 +91,43 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// needed for callback mapping in the batch watcher.
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
-	// Build the rounds actor configuration. Policy terms come
-	// from the server config; key-dependent fields (OperatorKey,
-	// SweepKey, ConnectorAddress, ForfeitScript) are left at
-	// their zero values until the key management subsystem is
-	// wired.
-	//
-	// TODO(roasbeef): Wire operator key, sweep key, forfeit
-	// script, and connector address from key management.
+	// Derive operator and sweep keys from LND for the batch
+	// terms. Both use the multi-sig key family so they are
+	// backed by real on-chain keys.
+	operatorKeyDesc, err := s.lnd.WalletKit.DeriveNextKey(
+		ctx, int32(keychain.KeyFamilyMultiSig),
+	)
+	if err != nil {
+		return fmt.Errorf("derive operator key: %w", err)
+	}
+
+	sweepKeyDesc, err := s.lnd.WalletKit.DeriveNextKey(
+		ctx, int32(keychain.KeyFamilyMultiSig),
+	)
+	if err != nil {
+		return fmt.Errorf("derive sweep key: %w", err)
+	}
+
+	// Build a taproot connector address from the operator key.
+	outputKey := txscript.ComputeTaprootOutputKey(
+		operatorKeyDesc.PubKey, nil,
+	)
+	connectorAddr, err := btcutil.NewAddressTaproot(
+		schnorr.SerializePubKey(outputKey), chainParams,
+	)
+	if err != nil {
+		return fmt.Errorf("create connector address: %w",
+			err)
+	}
+
+	// Start with config-derived terms and overlay the LND-derived
+	// key fields.
 	rc := s.cfg.Rounds
 	terms := roundsTermsFromConfig(rc)
+	terms.OperatorKey = *operatorKeyDesc
+	terms.SweepKey = *sweepKeyDesc
+	terms.ConnectorAddress = connectorAddr
+
 	roundsCfg := &rounds.ActorConfig{
 		ChainParams:        chainParams,
 		Log:                fn.Some(roundsLog),
