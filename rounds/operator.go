@@ -1,3 +1,46 @@
+// Server-Side Operator Dispatch Pipeline
+//
+// The RoundOperator bridges the mailbox transport layer (clientconn) and the
+// rounds actor FSM. It participates in a multi-layer dispatch pipeline:
+//
+//	Mailbox Envelope (from client)
+//	   │
+//	   ▼
+//	clientconn Ingress Loop
+//	   │  Routes by {Service, Method} key from the envelope's RpcMeta
+//	   ▼
+//	EnvelopeDispatcher (from makeDispatcher)
+//	   │  1. Validates envelope structure
+//	   │  2. Injects env.Sender as ClientID into context
+//	   │  3. Calls ServeMux.ServeRPC(service, method, body)
+//	   ▼
+//	ServeMux (mailboxrpc.ServeMux)
+//	   │  Deserializes raw bytes into typed proto request via
+//	   │  the handler registered by RegisterRoundServiceMailboxServer
+//	   ▼
+//	Typed Handler Method (e.g. JoinRound, SubmitNonces)
+//	   │  1. Extracts client ID from context
+//	   │  2. Converts proto request → domain types
+//	   │  3. Forwards to rounds actor via Tell/Ask
+//	   ▼
+//	Rounds Actor FSM
+//
+// Wiring: During server startup, setupRoundsSubsystem creates the
+// RoundOperator and registers it on a ServeMux via the generated
+// RegisterRoundServiceMailboxServer(mux, op). The operator's Dispatchers()
+// method returns a DispatcherMap keyed by {Service, Method}. These
+// dispatchers are merged with other operators' dispatchers (indexer, OOR)
+// in RegisterClientWithAllDispatchers and installed on each per-client
+// ingress loop via PerClientConfig.Dispatchers.
+//
+// Response path: After the handler completes, makeDispatcher builds a
+// KIND_RESPONSE envelope with the handler's result (or error headers),
+// and sends it back to the client via Edge.Send. The response carries
+// the original CorrelationId so the client can match it to its request.
+//
+// See docs/dispatch_pipeline.md for the full pipeline reference and
+// docs/clientconn_architecture.md for the underlying transport layer.
+
 package rounds
 
 import (

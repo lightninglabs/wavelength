@@ -1,3 +1,29 @@
+// Server-Side OOR Operator Dispatch Pipeline
+//
+// The OOROperator bridges the mailbox transport layer (clientconn) and the
+// OOR actor for out-of-round transfers. It follows the same multi-layer
+// dispatch pattern as the rounds operator:
+//
+//	Mailbox Envelope (from client)
+//	   │
+//	   ▼
+//	clientconn Ingress Loop
+//	   │  Routes by {Service, Method} from envelope RpcMeta
+//	   ▼
+//	EnvelopeDispatcher (from makeDispatcher)
+//	   │  Validates envelope, injects client ID, calls ServeMux
+//	   ▼
+//	ServeMux → Typed Handler (SubmitPackage, FinalizePackage)
+//	   │  Proto→domain conversion, forwards to OOR actor
+//	   ▼
+//	OOR Actor (session FSM)
+//
+// The OOR operator is registered via RegisterOORMailboxServiceMailboxServer
+// and its dispatchers are merged into each client's ingress loop alongside
+// the rounds and indexer dispatchers in RegisterClientWithAllDispatchers.
+//
+// See docs/dispatch_pipeline.md for the full pipeline reference.
+
 package oor
 
 import (

@@ -163,6 +163,25 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 // with dispatchers merged from all active operator subsystems (indexer,
 // rounds, OOR). This is the single entry point for client registration
 // so callers do not need to know which subsystems are active.
+//
+// Each operator exposes a Dispatchers() method returning a DispatcherMap
+// keyed by mailboxrpc.ServiceMethod{Service, Method}. The map values are
+// EnvelopeDispatcher closures created by makeDispatcher. This method
+// merges all operator maps into a single DispatcherMap and installs it
+// on the PerClientConfig.Dispatchers field. When the per-client ingress
+// loop receives an envelope, it looks up the dispatcher by the
+// envelope's RpcMeta (service + method) and invokes it.
+//
+// The full end-to-end flow for a client request is:
+//
+//	Client → Mailbox → Ingress Loop → DispatcherMap lookup →
+//	EnvelopeDispatcher → ServeMux.ServeRPC (proto deserialize) →
+//	Typed Handler (e.g. JoinRound) → Actor Tell/Ask
+//
+// And the response path:
+//
+//	Handler result → makeDispatcher builds KIND_RESPONSE envelope →
+//	Edge.Send → Client's mailbox → Client ingress delivers response
 func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
 	clientID clientconn.ClientID,
 	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
