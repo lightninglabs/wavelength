@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -329,4 +330,291 @@ func TestSelectWithNoActorSystem(t *testing.T) {
 	require.True(t, result.IsErr())
 	require.Contains(t, result.Err().Error(),
 		"no actor system")
+}
+
+// stubRoundActor captures TriggerVTXOSendMsg messages forwarded by the wallet
+// during in-round send flows. It satisfies the round actor's service key
+// interface (RoundReceivable → RoundActorResp). A channel is used for
+// synchronization since the wallet uses Tell (fire-and-forget) which is
+// processed asynchronously by the actor system.
+type stubRoundActor struct {
+	ch chan *actormsg.TriggerVTXOSendMsg
+}
+
+// newStubRoundActor creates a stub with a buffered channel.
+func newStubRoundActor() *stubRoundActor {
+	return &stubRoundActor{
+		ch: make(chan *actormsg.TriggerVTXOSendMsg, 10),
+	}
+}
+
+// Receive captures TriggerVTXOSendMsg and returns Ok for all messages.
+func (s *stubRoundActor) Receive(_ context.Context,
+	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
+
+	if sendMsg, ok := msg.(*actormsg.TriggerVTXOSendMsg); ok {
+		s.ch <- sendMsg
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// waitForSend blocks until a TriggerVTXOSendMsg is received or the
+// context is cancelled.
+func (s *stubRoundActor) waitForSend(
+	t *testing.T) *actormsg.TriggerVTXOSendMsg {
+
+	t.Helper()
+
+	select {
+	case msg := <-s.ch:
+		return msg
+
+	case <-t.Context().Done():
+		t.Fatal("timed out waiting for TriggerVTXOSendMsg")
+		return nil
+	}
+}
+
+// setupSendVTXOTest creates a minimal actor system with a real VTXO manager,
+// a stub round actor, and a wallet actor wired together via service keys.
+// Returns the wallet actor and the stub round actor for assertions.
+func setupSendVTXOTest(t *testing.T,
+	vtxos []*vtxo.Descriptor) (
+	*wallet.Ark, *stubRoundActor) {
+
+	t.Helper()
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		//nolint:usetesting
+		_ = system.Shutdown(context.Background())
+	})
+
+	// Register VTXO manager under the well-known service key.
+	store := &stubVTXOStore{vtxos: vtxos}
+	mgrCfg := &vtxo.ManagerConfig{Store: store}
+	mgrActor := vtxo.NewManager(mgrCfg)
+
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	mgrRef := mgrKey.Spawn(
+		system, actormsg.VTXOManagerServiceKeyName,
+		mgrActor,
+	)
+
+	mgrTellRef := actor.NewMapInputRef[
+		vtxo.ManagerMsg, vtxo.ManagerMsg,
+	](mgrRef, func(m vtxo.ManagerMsg) vtxo.ManagerMsg {
+		return m
+	})
+
+	err := mgrActor.Start(t.Context(), mgrTellRef)
+	require.NoError(t, err)
+
+	store.setReady()
+
+	// Register a stub round actor under the well-known service key
+	// so the wallet can forward TriggerVTXOSendMsg to it.
+	roundStub := newStubRoundActor()
+	roundKey := actormsg.RoundActorServiceKey()
+	roundKey.Spawn(
+		system, actormsg.RoundActorServiceKeyName,
+		roundStub,
+	)
+
+	walletActor := wallet.NewArk(
+		nil, nil, nil, system, btclog.Disabled,
+	)
+
+	return walletActor, roundStub
+}
+
+// TestSendVTXOsIntegration exercises the full wallet→manager→round flow:
+// the wallet selects and locks VTXOs, computes change, and forwards a
+// TriggerVTXOSendMsg to the round actor with the correct forfeit
+// outpoints, recipients, and change amount.
+func TestSendVTXOsIntegration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sends_with_change", func(t *testing.T) {
+		t.Parallel()
+
+		vtxo1 := makeDescriptor(1, 100_000)
+		vtxo2 := makeDescriptor(2, 50_000)
+
+		w, roundStub := setupSendVTXOTest(
+			t, []*vtxo.Descriptor{vtxo1, vtxo2},
+		)
+		ctx := t.Context()
+
+		// Send 80k to one recipient. Largest-first selects
+		// vtxo1 (100k), leaving 20k change.
+		recipients := []actormsg.SendRecipient{{
+			PkScript: []byte{0x51, 0x20, 0xAA},
+			Amount:   80_000,
+		}}
+
+		result := w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 80_000,
+		})
+		require.True(t, result.IsOk(),
+			"send: %v", result.Err())
+
+		resp, err := result.Unpack()
+		require.NoError(t, err)
+
+		//nolint:forcetypeassert
+		sr := resp.(*wallet.SendVTXOsResponse)
+		require.Equal(t, 1, sr.SelectedCount)
+		require.Equal(t,
+			btcutil.Amount(100_000), sr.TotalSelected)
+		require.Equal(t,
+			btcutil.Amount(20_000), sr.ChangeAmount)
+
+		// Verify the round actor received the send message.
+		sendMsg := roundStub.waitForSend(t)
+		require.Len(t, sendMsg.ForfeitOutpoints, 1)
+		require.Equal(t, vtxo1.Outpoint,
+			sendMsg.ForfeitOutpoints[0])
+		require.Len(t, sendMsg.Recipients, 1)
+		require.Equal(t, int64(80_000),
+			sendMsg.Recipients[0].Amount)
+		require.Equal(t, int64(20_000),
+			sendMsg.ChangeAmount)
+	})
+
+	t.Run("sends_exact_amount_no_change", func(t *testing.T) {
+		t.Parallel()
+
+		vtxo1 := makeDescriptor(10, 50_000)
+
+		w, roundStub := setupSendVTXOTest(
+			t, []*vtxo.Descriptor{vtxo1},
+		)
+		ctx := t.Context()
+
+		recipients := []actormsg.SendRecipient{{
+			PkScript: []byte{0x51, 0x20, 0xBB},
+			Amount:   50_000,
+		}}
+
+		result := w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 50_000,
+		})
+		require.True(t, result.IsOk(),
+			"send: %v", result.Err())
+
+		resp, err := result.Unpack()
+		require.NoError(t, err)
+
+		//nolint:forcetypeassert
+		sr := resp.(*wallet.SendVTXOsResponse)
+		require.Equal(t, btcutil.Amount(0), sr.ChangeAmount)
+
+		sendMsg := roundStub.waitForSend(t)
+		require.Equal(t, int64(0),
+			sendMsg.ChangeAmount)
+	})
+
+	t.Run("sends_to_multiple_recipients", func(t *testing.T) {
+		t.Parallel()
+
+		vtxo1 := makeDescriptor(20, 200_000)
+
+		w, roundStub := setupSendVTXOTest(
+			t, []*vtxo.Descriptor{vtxo1},
+		)
+		ctx := t.Context()
+
+		recipients := []actormsg.SendRecipient{
+			{
+				PkScript: []byte{0x51, 0x20, 0x01},
+				Amount:   60_000,
+			},
+			{
+				PkScript: []byte{0x51, 0x20, 0x02},
+				Amount:   40_000,
+			},
+		}
+
+		result := w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 100_000,
+		})
+		require.True(t, result.IsOk(),
+			"send: %v", result.Err())
+
+		resp, err := result.Unpack()
+		require.NoError(t, err)
+
+		//nolint:forcetypeassert
+		sr := resp.(*wallet.SendVTXOsResponse)
+		require.Equal(t,
+			btcutil.Amount(100_000), sr.ChangeAmount)
+
+		sendMsg := roundStub.waitForSend(t)
+		require.Len(t, sendMsg.Recipients, 2)
+		require.Equal(t, int64(60_000),
+			sendMsg.Recipients[0].Amount)
+		require.Equal(t, int64(40_000),
+			sendMsg.Recipients[1].Amount)
+	})
+
+	t.Run("insufficient_balance", func(t *testing.T) {
+		t.Parallel()
+
+		vtxo1 := makeDescriptor(30, 10_000)
+
+		w, _ := setupSendVTXOTest(
+			t, []*vtxo.Descriptor{vtxo1},
+		)
+		ctx := t.Context()
+
+		recipients := []actormsg.SendRecipient{{
+			PkScript: []byte{0x51, 0x20, 0xCC},
+			Amount:   50_000,
+		}}
+
+		result := w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 50_000,
+		})
+		require.True(t, result.IsErr())
+		require.Contains(t, result.Err().Error(),
+			"insufficient")
+	})
+
+	t.Run("locks_vtxos_during_send", func(t *testing.T) {
+		t.Parallel()
+
+		vtxo1 := makeDescriptor(40, 100_000)
+
+		w, _ := setupSendVTXOTest(
+			t, []*vtxo.Descriptor{vtxo1},
+		)
+		ctx := t.Context()
+
+		// First send locks vtxo1.
+		recipients := []actormsg.SendRecipient{{
+			PkScript: []byte{0x51, 0x20, 0xDD},
+			Amount:   50_000,
+		}}
+
+		result := w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 50_000,
+		})
+		require.True(t, result.IsOk())
+
+		// Second send should fail since vtxo1 is locked.
+		result = w.Receive(ctx, &wallet.SendVTXOsRequest{
+			Recipients:  recipients,
+			TotalAmount: 50_000,
+		})
+		require.True(t, result.IsErr())
+		require.Contains(t, result.Err().Error(),
+			"insufficient")
+	})
 }
