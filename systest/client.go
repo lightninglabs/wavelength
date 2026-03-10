@@ -26,6 +26,7 @@ import (
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/subscribe"
@@ -377,7 +378,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		ActorSystem:   h.actorSystem,
 		ChainParams:   &chaincfg.RegressionNetParams,
 		ExpiryConfig:  nil, // Use defaults.
-		Logger:        h.SubLogger("VTXO"),
+		Log:           fn.Some(h.SubLogger("VTXO")),
 		RoundActor:    roundRef,
 		ChainResolver: nil, // No unilateral exit in e2e tests.
 	}
