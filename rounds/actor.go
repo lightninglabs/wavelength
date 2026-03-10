@@ -406,6 +406,9 @@ func (a *Actor) Receive(ctx context.Context,
 	case *ConfirmationMsg:
 		return a.handleConfirmation(ctx, m)
 
+	case *TriggerBatchMsg:
+		return a.handleTriggerBatch(ctx, m)
+
 	case *GetClientRoundsRequest:
 		return a.handleGetClientRounds(ctx, m)
 
@@ -438,6 +441,36 @@ func (a *Actor) handleRoundEvent(ctx context.Context,
 	}
 
 	return fn.Ok[ActorResp](nil)
+}
+
+// handleTriggerBatch processes a TriggerBatchMsg by sending a SealEvent to
+// the current live round's FSM. This allows the admin to manually trigger
+// a batch without waiting for the registration timeout.
+func (a *Actor) handleTriggerBatch(ctx context.Context,
+	_ *TriggerBatchMsg) fn.Result[ActorResp] {
+
+	currentRound := a.getCurrentRound()
+	if currentRound == nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"no active round to seal"))
+	}
+
+	roundID := currentRound.RoundID
+
+	a.log.InfoS(ctx, "Manual batch trigger received",
+		slog.String("round_id", roundID.String()))
+
+	err := a.askEventAndProcessOutbox(
+		ctx, roundID, currentRound.FSM, &SealEvent{},
+	)
+	if err != nil {
+		return fn.Err[ActorResp](fmt.Errorf(
+			"FSM error processing seal: %w", err))
+	}
+
+	return fn.Ok[ActorResp](&TriggerBatchResp{
+		RoundID: roundID,
+	})
 }
 
 // getRound returns the round FSM for the given round ID, or nil if not found.
