@@ -32,13 +32,18 @@ const (
 	defaultNoWaitPullTimeout = 50 * time.Millisecond
 )
 
+// SendHook is called before an envelope is appended to the store.
+// Implementations must be safe for concurrent use.
+type SendHook func(ctx context.Context, env *mailboxpb.Envelope) error
+
 // Server implements mailboxpb.MailboxServiceServer using a mailbox.Store.
 type Server struct {
 	// Required for forward compatibility.
 	mailboxpb.UnimplementedMailboxServiceServer
 
-	store mailbox.Store
-	log   btclog.Logger
+	store  mailbox.Store
+	log    btclog.Logger
+	onSend SendHook
 }
 
 // New creates a new mailbox gRPC server backed by store.
@@ -58,6 +63,14 @@ func New(store mailbox.Store,
 		store: store,
 		log:   logger,
 	}, nil
+}
+
+// SetOnSend registers a hook invoked before each envelope is appended
+// to the store. The hook receives the validated envelope and may return
+// an error to abort the send. Must be called before the server starts
+// serving requests.
+func (s *Server) SetOnSend(hook SendHook) {
+	s.onSend = hook
 }
 
 // Send enqueues a single envelope into the recipient mailbox.
@@ -88,6 +101,19 @@ func (s *Server) Send(ctx context.Context,
 	s.log.DebugS(ctx, "Send RPC",
 		slog.String("recipient", req.Envelope.Recipient),
 		slog.String("msg_id", req.Envelope.MsgId))
+
+	// Invoke the optional send hook before persisting. This
+	// allows the server to perform side effects such as
+	// auto-registering unknown clients on the bridge.
+	if s.onSend != nil {
+		if err := s.onSend(ctx, req.Envelope); err != nil {
+			return &mailboxpb.SendResponse{
+				Status: internalStatus(
+					fmt.Sprintf("send hook: %v", err),
+				),
+			}, nil
+		}
+	}
 
 	_, err := s.store.Append(ctx, req.Envelope)
 	if err != nil {
