@@ -1,17 +1,25 @@
 package rounds
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/taproot-assets/proof"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo/clientconn"
-	"google.golang.org/protobuf/proto"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
@@ -27,6 +35,12 @@ const (
 	// responseMsgPrefix prefixes mailbox response envelope IDs.
 	responseMsgPrefix = "resp-"
 )
+
+// clientIDContextKey is the context key used to inject the client's
+// mailbox ID into the handler context. The dispatcher extracts the
+// sender from the envelope and stores it so handler methods can
+// retrieve it via clientIDFromContext.
+type clientIDContextKey struct{}
 
 // RoundOperatorConfig holds dependencies for the rounds operator
 // dispatcher factory.
@@ -114,7 +128,8 @@ func (o *RoundOperator) Dispatchers() clientconn.DispatcherMap {
 
 // makeDispatcher creates an EnvelopeDispatcher closure for a single
 // RPC method. The closure captures the operator's mux and edge for
-// processing and responding.
+// processing and responding. It injects the envelope sender as the
+// client ID into the context so handler methods can retrieve it.
 func (o *RoundOperator) makeDispatcher(
 	method string) clientconn.EnvelopeDispatcher {
 
@@ -127,6 +142,14 @@ func (o *RoundOperator) makeDispatcher(
 		if env.Body == nil {
 			return fmt.Errorf("missing request body")
 		}
+
+		// Inject the envelope sender as the client ID into
+		// the context. Handler methods retrieve this via
+		// clientIDFromContext.
+		ctx = context.WithValue(
+			ctx, clientIDContextKey{},
+			clientconn.ClientID(env.Sender),
+		)
 
 		// Process the request through the ServeMux. The mux
 		// deserializes the proto and calls our handler impl
@@ -203,8 +226,6 @@ func (o *RoundOperator) JoinRound(ctx context.Context,
 		return nil, fmt.Errorf("parse join request: %w", err)
 	}
 
-	// Extract client ID from the context. The dispatcher injects
-	// this via the envelope sender.
 	clientID := clientIDFromContext(ctx)
 
 	actorMsg := &JoinRoundRequest{
@@ -225,81 +246,539 @@ func (o *RoundOperator) JoinRound(ctx context.Context,
 	return &roundpb.ClientSuccessResp{}, nil
 }
 
-// SubmitNonces implements roundpb.RoundServiceMailboxServer. Nonce
-// submission is forwarded to the rounds actor as a RoundMsg.
+// SubmitNonces implements roundpb.RoundServiceMailboxServer. It
+// converts the proto nonce submission into a ClientVTXONoncesEvent
+// and forwards it to the rounds actor for the specified round.
 func (o *RoundOperator) SubmitNonces(ctx context.Context,
 	req *roundpb.SubmitNoncesRequest) (
 	*roundpb.ClientVTXOAggNonces, error) {
 
-	// TODO(roasbeef): Convert proto nonces to domain type and
-	// forward to rounds actor as a nonce submission event.
-	_ = req
+	roundID, err := parseRoundID(req.GetRoundId())
+	if err != nil {
+		return nil, fmt.Errorf("parse round_id: %w", err)
+	}
 
+	// Convert the proto nonce map into the domain type:
+	// map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce.
+	nonces, err := noncesFromProto(req.GetNonces())
+	if err != nil {
+		return nil, fmt.Errorf("parse nonces: %w", err)
+	}
+
+	clientID := clientIDFromContext(ctx)
+
+	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
+		RoundID: roundID,
+		Event: &ClientVTXONoncesEvent{
+			ClientID: clientID,
+			Nonces:   nonces,
+		},
+	})
+	if tellErr != nil {
+		return nil, fmt.Errorf(
+			"tell rounds actor: %w", tellErr,
+		)
+	}
+
+	// Return an empty ack. The aggregated nonces arrive via the
+	// outbox event path.
 	return &roundpb.ClientVTXOAggNonces{}, nil
 }
 
-// SubmitPartialSigs implements roundpb.RoundServiceMailboxServer.
+// SubmitPartialSigs implements roundpb.RoundServiceMailboxServer. It
+// converts the proto partial signature submission into a
+// ClientVTXOPartialSigsEvent and forwards it to the rounds actor.
 func (o *RoundOperator) SubmitPartialSigs(ctx context.Context,
 	req *roundpb.SubmitPartialSigRequest) (
 	*roundpb.ClientVTXOAggSigs, error) {
 
-	// TODO(roasbeef): Convert proto partial sigs to domain type
-	// and forward to rounds actor.
-	_ = req
+	roundID, err := parseRoundID(req.GetRoundId())
+	if err != nil {
+		return nil, fmt.Errorf("parse round_id: %w", err)
+	}
 
+	// Convert the proto signature map into the domain type:
+	// map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature.
+	sigs, err := partialSigsFromProto(req.GetSignatures())
+	if err != nil {
+		return nil, fmt.Errorf("parse signatures: %w", err)
+	}
+
+	clientID := clientIDFromContext(ctx)
+
+	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
+		RoundID: roundID,
+		Event: &ClientVTXOPartialSigsEvent{
+			ClientID:   clientID,
+			Signatures: sigs,
+		},
+	})
+	if tellErr != nil {
+		return nil, fmt.Errorf(
+			"tell rounds actor: %w", tellErr,
+		)
+	}
+
+	// Return an empty ack. The aggregated signatures arrive via
+	// the outbox event path.
 	return &roundpb.ClientVTXOAggSigs{}, nil
 }
 
-// SubmitForfeitSigs implements roundpb.RoundServiceMailboxServer.
+// SubmitForfeitSigs implements roundpb.RoundServiceMailboxServer. It
+// converts the proto boarding input signatures into a
+// ClientInputSignaturesEvent and forwards it to the rounds actor.
 func (o *RoundOperator) SubmitForfeitSigs(ctx context.Context,
 	req *roundpb.SubmitForfeitSigRequest) (
 	*roundpb.ClientAwaitingInputSigsResp, error) {
 
-	// TODO(roasbeef): Convert proto forfeit sigs to domain type
-	// and forward to rounds actor.
-	_ = req
+	roundID, err := parseRoundID(req.GetRoundId())
+	if err != nil {
+		return nil, fmt.Errorf("parse round_id: %w", err)
+	}
+
+	// Convert proto boarding input signatures to domain type.
+	boardingSigs, err := boardingInputSigsFromProto(
+		req.GetSignatures(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse boarding signatures: %w", err,
+		)
+	}
+
+	clientID := clientIDFromContext(ctx)
+
+	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
+		RoundID: roundID,
+		Event: &ClientInputSignaturesEvent{
+			ClientID:   clientID,
+			Signatures: boardingSigs,
+		},
+	})
+	if tellErr != nil {
+		return nil, fmt.Errorf(
+			"tell rounds actor: %w", tellErr,
+		)
+	}
 
 	return &roundpb.ClientAwaitingInputSigsResp{}, nil
 }
 
-// SubmitVTXOForfeitSigs implements roundpb.RoundServiceMailboxServer.
+// SubmitVTXOForfeitSigs implements
+// roundpb.RoundServiceMailboxServer. It converts the proto VTXO
+// forfeit signatures into a ClientInputSignaturesEvent (with the
+// ForfeitTxs field populated) and forwards it to the rounds actor.
 func (o *RoundOperator) SubmitVTXOForfeitSigs(ctx context.Context,
 	req *roundpb.SubmitVTXOForfeitSigsRequest) (
 	*roundpb.ClientSuccessResp, error) {
 
-	// TODO(roasbeef): Convert proto VTXO forfeit sigs to domain
-	// type and forward to rounds actor.
-	_ = req
+	roundID, err := parseRoundID(req.GetRoundId())
+	if err != nil {
+		return nil, fmt.Errorf("parse round_id: %w", err)
+	}
+
+	// Convert proto forfeit tx signatures to domain type.
+	forfeitTxs, err := forfeitTxSigsFromProto(
+		req.GetForfeitTxs(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse forfeit signatures: %w", err,
+		)
+	}
+
+	clientID := clientIDFromContext(ctx)
+
+	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
+		RoundID: roundID,
+		Event: &ClientInputSignaturesEvent{
+			ClientID:   clientID,
+			ForfeitTxs: forfeitTxs,
+		},
+	})
+	if tellErr != nil {
+		return nil, fmt.Errorf(
+			"tell rounds actor: %w", tellErr,
+		)
+	}
 
 	return &roundpb.ClientSuccessResp{}, nil
 }
 
 // joinRoundRequestFromProto converts a roundpb.JoinRoundRequest to
-// the domain types.JoinRoundRequest. The full proto→domain conversion
-// for sub-request types (boarding, VTXO, forfeit, leave) happens in
-// the roundpb convert package.
-//
-// TODO(roasbeef): Wire full proto→domain conversion for boarding,
-// VTXO, forfeit, and leave sub-requests once the roundpb convert
-// helpers are exported.
+// the domain types.JoinRoundRequest. Each sub-request type (boarding,
+// VTXO, forfeit, leave) is converted using the roundpb helper
+// functions for outpoints, public keys, and transaction outputs.
 func joinRoundRequestFromProto(
-	_ *roundpb.JoinRoundRequest) (*types.JoinRoundRequest, error) {
+	req *roundpb.JoinRoundRequest) (*types.JoinRoundRequest, error) {
 
-	// Placeholder: return an empty domain request. The full
-	// conversion requires roundpb helpers for each sub-request
-	// type (BoardingRequest, VTXORequest, ForfeitRequest,
-	// LeaveRequest, JoinRoundAuth).
-	return &types.JoinRoundRequest{}, nil
+	// Parse the participant identifier (33-byte compressed
+	// public key).
+	identifier, err := btcec.ParsePubKey(req.GetIdentifier())
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse identifier pubkey: %w", err,
+		)
+	}
+
+	// Convert boarding requests.
+	boardingReqs := make(
+		[]*types.BoardingRequest,
+		0, len(req.GetBoardingRequests()),
+	)
+	for i, br := range req.GetBoardingRequests() {
+		domainBR, err := boardingRequestFromProto(br)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"boarding_request[%d]: %w", i, err,
+			)
+		}
+
+		boardingReqs = append(boardingReqs, domainBR)
+	}
+
+	// Convert VTXO requests.
+	vtxoReqs := make(
+		[]*types.VTXORequest,
+		0, len(req.GetVtxoRequests()),
+	)
+	for i, vr := range req.GetVtxoRequests() {
+		domainVR, err := vtxoRequestFromProto(vr)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"vtxo_request[%d]: %w", i, err,
+			)
+		}
+
+		vtxoReqs = append(vtxoReqs, domainVR)
+	}
+
+	// Convert forfeit requests.
+	forfeitReqs := make(
+		[]*types.ForfeitRequest,
+		0, len(req.GetForfeitRequests()),
+	)
+	for i, fr := range req.GetForfeitRequests() {
+		op, err := roundpb.OutpointFromProto(
+			fr.GetVtxoOutpoint(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"forfeit_request[%d]: %w", i, err,
+			)
+		}
+
+		forfeitReqs = append(forfeitReqs, &types.ForfeitRequest{
+			VTXOOutpoint: &op,
+		})
+	}
+
+	// Convert leave requests.
+	leaveReqs := make(
+		[]*types.LeaveRequest,
+		0, len(req.GetLeaveRequests()),
+	)
+	for i, lr := range req.GetLeaveRequests() {
+		txOut, err := roundpb.TxOutFromProto(lr.GetOutput())
+		if err != nil {
+			return nil, fmt.Errorf(
+				"leave_request[%d]: %w", i, err,
+			)
+		}
+
+		leaveReqs = append(leaveReqs, &types.LeaveRequest{
+			Output: txOut,
+		})
+	}
+
+	// Convert auth payload if present.
+	var auth *types.JoinRoundAuth
+	if req.GetAuth() != nil {
+		auth = &types.JoinRoundAuth{
+			Message:    req.Auth.GetMessage(),
+			ValidFrom:  req.Auth.GetValidFrom(),
+			ValidUntil: req.Auth.GetValidUntil(),
+			Signature:  req.Auth.GetSignature(),
+		}
+	}
+
+	return &types.JoinRoundRequest{
+		Identifier:   identifier,
+		VTXOReqs:     vtxoReqs,
+		BoardingReqs: boardingReqs,
+		LeaveReqs:    leaveReqs,
+		ForfeitReqs:  forfeitReqs,
+		Auth:         auth,
+	}, nil
 }
 
-// clientIDFromContext extracts the client ID from the context. In the
-// dispatcher flow, the client ID is derived from the mailbox envelope
-// sender.
-//
-// TODO(roasbeef): Wire proper context injection in the dispatcher
-// closure once principal extraction is unified across operators.
-func clientIDFromContext(_ context.Context) clientconn.ClientID {
-	return ""
+// boardingRequestFromProto converts a single proto BoardingRequest
+// to the domain types.BoardingRequest. The TxProof field is left
+// as None since the server verifies boarding UTXOs via its own
+// chain source.
+func boardingRequestFromProto(
+	br *roundpb.BoardingRequest) (*types.BoardingRequest, error) {
+
+	op, err := roundpb.OutpointFromProto(br.GetOutpoint())
+	if err != nil {
+		return nil, fmt.Errorf("outpoint: %w", err)
+	}
+
+	clientKey, err := btcec.ParsePubKey(br.GetClientKey())
+	if err != nil {
+		return nil, fmt.Errorf("client_key: %w", err)
+	}
+
+	operatorKey, err := btcec.ParsePubKey(br.GetOperatorKey())
+	if err != nil {
+		return nil, fmt.Errorf("operator_key: %w", err)
+	}
+
+	return &types.BoardingRequest{
+		Outpoint:    &op,
+		ClientKey:   clientKey,
+		OperatorKey: operatorKey,
+		ExitDelay:   br.GetExitDelay(),
+		TxProof:     fn.None[proof.TxProof](),
+	}, nil
+}
+
+// vtxoRequestFromProto converts a single proto VTXORequest to the
+// domain types.VTXORequest. The SigningKey field is left zero since
+// it is a client-side concern used for MuSig2 key locators.
+func vtxoRequestFromProto(
+	vr *roundpb.VTXORequest) (*types.VTXORequest, error) {
+
+	clientKey, err := btcec.ParsePubKey(vr.GetClientKey())
+	if err != nil {
+		return nil, fmt.Errorf("client_key: %w", err)
+	}
+
+	operatorKey, err := btcec.ParsePubKey(vr.GetOperatorKey())
+	if err != nil {
+		return nil, fmt.Errorf("operator_key: %w", err)
+	}
+
+	return &types.VTXORequest{
+		Amount:      btcutil.Amount(vr.GetAmount()),
+		PkScript:    vr.GetPkScript(),
+		Expiry:      vr.GetExpiry(),
+		ClientKey:   clientKey,
+		OperatorKey: operatorKey,
+	}, nil
+}
+
+// parseRoundID parses a 16-byte UUID from the proto round_id field
+// into a RoundID.
+func parseRoundID(raw []byte) (RoundID, error) {
+	if len(raw) != 16 {
+		return RoundID{}, fmt.Errorf(
+			"invalid round_id length: %d, want 16",
+			len(raw),
+		)
+	}
+
+	var id RoundID
+	copy(id[:], raw)
+
+	return id, nil
+}
+
+// noncesFromProto converts the proto nonce map into the domain
+// representation used by ClientVTXONoncesEvent. The outer map key
+// is a signing key hex string (33-byte compressed pubkey), and the
+// inner map key is a transaction ID.
+func noncesFromProto(
+	protoNonces map[string]*roundpb.SignerNonces) (
+	map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce, error) {
+
+	result := make(
+		map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce,
+		len(protoNonces),
+	)
+
+	for keyHex, sn := range protoNonces {
+		signingKey, err := route.NewVertexFromStr(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"signing key %q: %w", keyHex, err,
+			)
+		}
+
+		txNonces := make(
+			map[tree.TxID]tree.Musig2PubNonce,
+			len(sn.GetTxNonces()),
+		)
+		for txIDHex, nonceBytes := range sn.GetTxNonces() {
+			txID, err := roundpb.TxIDFromHex(txIDHex)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"tx_id %q: %w",
+					txIDHex, err,
+				)
+			}
+
+			if len(nonceBytes) != musig2.PubNonceSize {
+				return nil, fmt.Errorf(
+					"nonce for tx %s: want %d "+
+						"bytes, got %d",
+					txIDHex,
+					musig2.PubNonceSize,
+					len(nonceBytes),
+				)
+			}
+
+			var nonce tree.Musig2PubNonce
+			copy(nonce[:], nonceBytes)
+
+			txNonces[txID] = nonce
+		}
+
+		result[signingKey] = txNonces
+	}
+
+	return result, nil
+}
+
+// partialSigsFromProto converts the proto partial signature map into
+// the domain representation used by ClientVTXOPartialSigsEvent.
+func partialSigsFromProto(
+	protoSigs map[string]*roundpb.SignerPartialSigs) (
+	map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature,
+	error) {
+
+	result := make(
+		map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature,
+		len(protoSigs),
+	)
+
+	for keyHex, sp := range protoSigs {
+		signingKey, err := route.NewVertexFromStr(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"signing key %q: %w", keyHex, err,
+			)
+		}
+
+		txSigs := make(
+			map[tree.TxID]*musig2.PartialSignature,
+			len(sp.GetTxSigs()),
+		)
+		for txIDHex, sigBytes := range sp.GetTxSigs() {
+			txID, err := roundpb.TxIDFromHex(txIDHex)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"tx_id %q: %w",
+					txIDHex, err,
+				)
+			}
+
+			var pSig musig2.PartialSignature
+			err = pSig.Decode(
+				bytes.NewReader(sigBytes),
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"partial sig for tx %s: %w",
+					txIDHex, err,
+				)
+			}
+
+			txSigs[txID] = &pSig
+		}
+
+		result[signingKey] = txSigs
+	}
+
+	return result, nil
+}
+
+// boardingInputSigsFromProto converts proto BoardingInputSignature
+// entries to the domain types.BoardingInputSignature slice.
+func boardingInputSigsFromProto(
+	pbSigs []*roundpb.BoardingInputSignature) (
+	[]*types.BoardingInputSignature, error) {
+
+	sigs := make(
+		[]*types.BoardingInputSignature, 0, len(pbSigs),
+	)
+
+	for i, pb := range pbSigs {
+		op, err := roundpb.OutpointFromProto(
+			pb.GetOutpoint(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"signature[%d] outpoint: %w", i, err,
+			)
+		}
+
+		clientSig, err := roundpb.SchnorrSigFromBytes(
+			pb.GetClientSignature(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"signature[%d] client_sig: %w", i, err,
+			)
+		}
+
+		sigs = append(sigs, &types.BoardingInputSignature{
+			InputIndex:      int(pb.GetInputIndex()),
+			Outpoint:        op,
+			ClientSignature: clientSig,
+		})
+	}
+
+	return sigs, nil
+}
+
+// forfeitTxSigsFromProto converts proto ForfeitTxSig entries to
+// the domain types.ForfeitTxSig slice.
+func forfeitTxSigsFromProto(
+	pbSigs []*roundpb.ForfeitTxSig) (
+	[]*types.ForfeitTxSig, error) {
+
+	sigs := make([]*types.ForfeitTxSig, 0, len(pbSigs))
+
+	for i, pb := range pbSigs {
+		unsignedTx, err := roundpb.MsgTxFromBytes(
+			pb.GetUnsignedTx(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"forfeit_tx[%d] unsigned_tx: %w",
+				i, err,
+			)
+		}
+
+		vtxoSig, err := roundpb.SchnorrSigFromBytes(
+			pb.GetClientVtxoSig(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"forfeit_tx[%d] client_vtxo_sig: %w",
+				i, err,
+			)
+		}
+
+		sigs = append(sigs, &types.ForfeitTxSig{
+			UnsignedTx:    unsignedTx,
+			ClientVTXOSig: vtxoSig,
+		})
+	}
+
+	return sigs, nil
+}
+
+// clientIDFromContext extracts the client ID from the context. The
+// dispatcher injects the envelope sender as a context value before
+// calling the handler method.
+func clientIDFromContext(ctx context.Context) clientconn.ClientID {
+	id, _ := ctx.Value(
+		clientIDContextKey{},
+	).(clientconn.ClientID)
+
+	return id
 }
 
 // Compile-time check that RoundOperator implements the mailbox server
@@ -316,6 +795,7 @@ var _ clientconn.ClientMessage = (*ClientVTXOAggSigs)(nil)
 var _ clientconn.ClientMessage = (*ClientBatchInfo)(nil)
 var _ clientconn.ClientMessage = (*ClientRoundFailedResp)(nil)
 
-// Ensure unused imports compile. These will be used when the handler
-// stubs above are filled in.
-var _ = proto.Marshal
+// Ensure unused imports compile. The wire package is used in
+// forfeitTxSigsFromProto via roundpb.MsgTxFromBytes which returns
+// *wire.MsgTx.
+var _ = (*wire.MsgTx)(nil)
