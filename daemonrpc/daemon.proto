@@ -12,6 +12,47 @@ service DaemonService {
     // including version, network, lnd connection state, and server
     // connection state.
     rpc GetInfo (GetInfoRequest) returns (GetInfoResponse);
+
+    // GenSeed generates a new aezeed cipher seed mnemonic. This is the
+    // first step when creating a new lwwallet-backed wallet. The returned
+    // mnemonic must be passed to InitWallet to finalize wallet creation.
+    // Only available in lwwallet mode.
+    rpc GenSeed (GenSeedRequest) returns (GenSeedResponse);
+
+    // InitWallet creates a new wallet from a previously generated aezeed
+    // mnemonic. The wallet is encrypted at rest with the provided
+    // password. Only available in lwwallet mode when no wallet exists.
+    rpc InitWallet (InitWalletRequest) returns (InitWalletResponse);
+
+    // UnlockWallet decrypts an existing wallet seed using the provided
+    // password and starts the wallet subsystem. Only available in
+    // lwwallet mode when the wallet is locked.
+    rpc UnlockWallet (UnlockWalletRequest) returns (UnlockWalletResponse);
+
+    // GetBalance returns the current balance of the wallet, broken down
+    // by boarding (on-chain) and VTXO (off-chain) balances.
+    rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
+
+    // ListVTXOs returns the set of VTXOs known to the wallet, optionally
+    // filtered by status and minimum amount.
+    rpc ListVTXOs (ListVTXOsRequest) returns (ListVTXOsResponse);
+
+    // NewAddress generates a new boarding address that can receive
+    // on-chain funds for use in the Ark protocol.
+    rpc NewAddress (NewAddressRequest) returns (NewAddressResponse);
+
+    // SendVTXO initiates an in-round transfer by submitting a refresh
+    // request to the round coordinator. The transfer completes when the
+    // next round commits.
+    rpc SendVTXO (SendVTXORequest) returns (SendVTXOResponse);
+
+    // SendOOR initiates an out-of-round transfer directly between the
+    // client and operator, without waiting for a round.
+    rpc SendOOR (SendOORRequest) returns (SendOORResponse);
+
+    // RefreshVTXOs queues one or more VTXOs for refresh in the next
+    // round. This extends their expiry without changing ownership.
+    rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
 }
 
 message GetInfoRequest {
@@ -29,17 +70,277 @@ message GetInfoResponse {
     string network = 3;
 
     // lnd_identity_pubkey is the hex-encoded identity public key of the
-    // connected lnd node.
+    // connected lnd node. Empty in lwwallet mode.
     string lnd_identity_pubkey = 4;
 
-    // block_height is the current best block height known to the
-    // connected lnd node.
+    // block_height is the current best block height known to the daemon.
     uint32 block_height = 5;
 
     // server_connected indicates whether the mailbox transport to the ark
     // operator is active and pulling envelopes.
     bool server_connected = 6;
 
-    // lnd_alias is the alias of the connected lnd node.
+    // lnd_alias is the alias of the connected lnd node. Empty in lwwallet
+    // mode.
     string lnd_alias = 7;
+
+    // wallet_type is the active wallet backend: "lnd" or "lwwallet".
+    string wallet_type = 8;
+
+    // wallet_ready indicates whether the wallet subsystem is initialized
+    // and ready to process requests.
+    bool wallet_ready = 9;
+
+    // identity_pubkey is the hex-encoded identity public key derived from
+    // the active wallet backend. In lnd mode this matches
+    // lnd_identity_pubkey.
+    string identity_pubkey = 10;
+}
+
+message GenSeedRequest {
+    // seed_passphrase is an optional passphrase that protects the aezeed
+    // mnemonic itself. This is distinct from the wallet password that
+    // encrypts the seed at rest on disk.
+    bytes seed_passphrase = 1;
+}
+
+message GenSeedResponse {
+    // mnemonic is the 24-word aezeed mnemonic encoding the generated
+    // seed.
+    repeated string mnemonic = 1;
+
+    // enciphered_seed is the raw enciphered seed bytes for advanced use
+    // cases. Most callers should use the mnemonic field.
+    bytes enciphered_seed = 2;
+}
+
+message InitWalletRequest {
+    // mnemonic is the 24-word aezeed mnemonic returned by GenSeed (or
+    // provided for wallet recovery).
+    repeated string mnemonic = 1;
+
+    // wallet_password is the password used to encrypt the seed at rest on
+    // disk. Must be at least 8 bytes.
+    bytes wallet_password = 2;
+
+    // seed_passphrase is the optional passphrase that was used when
+    // generating the aezeed mnemonic. Must match the value passed to
+    // GenSeed.
+    bytes seed_passphrase = 3;
+}
+
+message InitWalletResponse {
+    // identity_pubkey is the hex-encoded identity public key derived from
+    // the newly created wallet.
+    string identity_pubkey = 1;
+}
+
+message UnlockWalletRequest {
+    // wallet_password is the password used to decrypt the seed stored on
+    // disk.
+    bytes wallet_password = 1;
+}
+
+message UnlockWalletResponse {
+    // identity_pubkey is the hex-encoded identity public key of the
+    // unlocked wallet.
+    string identity_pubkey = 1;
+}
+
+message GetBalanceRequest {
+}
+
+message GetBalanceResponse {
+    // boarding_confirmed_sat is the total confirmed balance in boarding
+    // addresses (on-chain, waiting to be swept into VTXOs).
+    int64 boarding_confirmed_sat = 1;
+
+    // boarding_unconfirmed_sat is the total unconfirmed balance in
+    // boarding addresses.
+    int64 boarding_unconfirmed_sat = 2;
+
+    // vtxo_balance_sat is the total balance held in live (spendable)
+    // VTXOs.
+    int64 vtxo_balance_sat = 3;
+
+    // total_confirmed_sat is the sum of all confirmed balances
+    // (boarding_confirmed_sat + vtxo_balance_sat).
+    int64 total_confirmed_sat = 4;
+}
+
+// VTXOStatus represents the lifecycle state of a virtual transaction
+// output.
+enum VTXOStatus {
+    // VTXO_STATUS_UNSPECIFIED is the default zero value.
+    VTXO_STATUS_UNSPECIFIED = 0;
+
+    // VTXO_STATUS_LIVE indicates the VTXO is active and spendable.
+    VTXO_STATUS_LIVE = 1;
+
+    // VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been queued
+    // but the forfeit transaction has not yet been signed.
+    VTXO_STATUS_REFRESH_REQUESTED = 2;
+
+    // VTXO_STATUS_FORFEITING indicates the forfeit transaction has been
+    // signed and the VTXO is awaiting confirmation of the new round.
+    VTXO_STATUS_FORFEITING = 3;
+
+    // VTXO_STATUS_FORFEITED is terminal: the new round confirmed and
+    // this VTXO has been replaced.
+    VTXO_STATUS_FORFEITED = 4;
+
+    // VTXO_STATUS_SPENT is terminal: the VTXO was spent via an
+    // out-of-round transfer.
+    VTXO_STATUS_SPENT = 5;
+
+    // VTXO_STATUS_EXPIRING is terminal: the VTXO is being resolved
+    // on-chain via the unilateral exit path.
+    VTXO_STATUS_EXPIRING = 6;
+
+    // VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
+    VTXO_STATUS_FAILED = 7;
+}
+
+message VTXO {
+    // outpoint is the VTXO's outpoint in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the value of this VTXO in satoshis.
+    int64 amount_sat = 2;
+
+    // status is the current lifecycle state of this VTXO.
+    VTXOStatus status = 3;
+
+    // batch_expiry is the absolute block height at which the batch-level
+    // timelock expires.
+    int32 batch_expiry = 4;
+
+    // round_id is the identifier of the round that created this VTXO.
+    string round_id = 5;
+
+    // created_height is the block height at which this VTXO was created.
+    int32 created_height = 6;
+
+    // relative_expiry is the CSV delay (in blocks) for the unilateral
+    // exit path.
+    uint32 relative_expiry = 7;
+
+    // pk_script is the hex-encoded taproot output script.
+    string pk_script = 8;
+
+    // commitment_txid is the hex-encoded txid of the on-chain commitment
+    // transaction anchoring this VTXO's tree.
+    string commitment_txid = 9;
+}
+
+message ListVTXOsRequest {
+    // status_filter restricts the response to VTXOs matching this status.
+    // If VTXO_STATUS_UNSPECIFIED (default), all statuses are returned.
+    VTXOStatus status_filter = 1;
+
+    // min_amount_sat excludes VTXOs below this value.
+    int64 min_amount_sat = 2;
+}
+
+message ListVTXOsResponse {
+    // vtxos is the list of VTXOs matching the request filters.
+    repeated VTXO vtxos = 1;
+}
+
+message NewAddressRequest {
+}
+
+message NewAddressResponse {
+    // address is the bech32m-encoded taproot boarding address.
+    string address = 1;
+}
+
+// Output describes a single recipient in a send operation.
+message Output {
+    oneof destination {
+        // address is the recipient's bech32m-encoded taproot address.
+        string address = 1;
+
+        // pubkey is the 32-byte x-only public key used to derive a
+        // BIP-86 taproot output.
+        bytes pubkey = 3;
+
+        // pk_script is the raw output script for the recipient.
+        bytes pk_script = 4;
+    }
+
+    // amount_sat is the value to send in satoshis.
+    int64 amount_sat = 2;
+}
+
+message SendVTXORequest {
+    // recipients is the list of outputs to create in the next round.
+    repeated Output recipients = 1;
+
+    // dry_run validates the request without submitting it to the round
+    // coordinator. When true, the response contains a preview of the
+    // operation.
+    bool dry_run = 2;
+}
+
+message SendVTXOResponse {
+    // status is the result: "submitted" on success, "preview" on
+    // dry_run.
+    string status = 1;
+
+    // round_id is the identifier of the round this send was submitted
+    // to. Empty on dry_run.
+    string round_id = 2;
+
+    // total_amount_sat is the total amount being sent (sum of
+    // recipients).
+    int64 total_amount_sat = 3;
+}
+
+message SendOORRequest {
+    // recipient is the output to create via the out-of-round transfer.
+    Output recipient = 1;
+
+    // dry_run validates the request without initiating the transfer.
+    bool dry_run = 2;
+}
+
+message SendOORResponse {
+    // status is the result: "submitted" on success, "preview" on
+    // dry_run.
+    string status = 1;
+
+    // session_id is the OOR session identifier. Empty on dry_run.
+    string session_id = 2;
+}
+
+// OutpointSelection wraps a list of outpoint strings for use inside a
+// oneof field, since proto3 does not allow repeated fields directly in
+// a oneof.
+message OutpointSelection {
+    // outpoints lists specific VTXOs in "txid:index" format.
+    repeated string outpoints = 1;
+}
+
+message RefreshVTXOsRequest {
+    oneof selection {
+        // outpoints lists specific VTXOs to refresh, in "txid:index"
+        // format.
+        OutpointSelection outpoints = 1;
+
+        // all refreshes every live VTXO when true.
+        bool all = 2;
+    }
+
+    // dry_run validates the request without queuing the refresh.
+    bool dry_run = 3;
+}
+
+message RefreshVTXOsResponse {
+    // queued_outpoints lists the outpoints that were successfully queued
+    // for refresh.
+    repeated string queued_outpoints = 1;
+
+    // status is the result: "queued" on success, "preview" on dry_run.
+    string status = 2;
 }

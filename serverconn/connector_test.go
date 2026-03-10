@@ -421,9 +421,13 @@ func TestIngress_PartialDispatch_NoDuplicateRedelivery(t *testing.T) {
 	require.NoError(t, actor.StartIngress(ctx))
 	defer actor.StopIngress()
 
-	// Wait until both envelopes have been fully dispatched.
+	// Wait until the second envelope has been retried (dispatched
+	// twice: once failed, once succeeded).
 	require.Eventually(t, func() bool {
-		return mb.getAckedUpTo("client-1") > 0
+		dispatchCountsMu.Lock()
+		defer dispatchCountsMu.Unlock()
+
+		return dispatchCounts[2] >= 2
 	}, 5*time.Second, 10*time.Millisecond)
 
 	dispatchCountsMu.Lock()
