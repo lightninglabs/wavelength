@@ -286,6 +286,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *UnlockVTXOsRequest:
 		return a.handleUnlockVTXOs(ctx, m)
 
+	case *SendVTXOsRequest:
+		return a.handleSendVTXOs(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -825,6 +828,105 @@ func (a *Ark) handleUnlockVTXOs(ctx context.Context,
 
 	return fn.Ok[WalletResp](&UnlockVTXOsResponse{
 		UnlockedCount: unlockResp.UnlockedCount,
+	})
+}
+
+// handleSendVTXOs orchestrates an in-round directed send. It asks the VTXO
+// manager to select and lock VTXOs covering the send amount, computes change,
+// then forwards a TriggerVTXOSendMsg to the round actor. On failure the
+// selected VTXOs are unlocked to avoid leaving stale locks.
+func (a *Ark) handleSendVTXOs(ctx context.Context,
+	req *SendVTXOsRequest) fn.Result[WalletResp] {
+
+	if a.actorSystem == nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no actor system for VTXO send"),
+		)
+	}
+
+	// Ask the VTXO manager to select and lock VTXOs covering the total
+	// send amount.
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	mgrRef := mgrKey.Ref(a.actorSystem)
+
+	future := mgrRef.Ask(ctx, &actormsg.SelectAndLockVTXOsRequest{
+		TargetAmount: int64(req.TotalAmount),
+	})
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("select and lock for send: %w", err),
+		)
+	}
+
+	selectResp, ok := resp.(*actormsg.SelectAndLockVTXOsResponse)
+	if !ok {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"unexpected select response type: %T", resp,
+		))
+	}
+
+	totalSelected := btcutil.Amount(selectResp.TotalSelected)
+	if totalSelected < req.TotalAmount {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"insufficient selection: have %d, need %d",
+			totalSelected, req.TotalAmount,
+		))
+	}
+
+	// Compute change and build the forfeit outpoints list.
+	changeAmount := totalSelected - req.TotalAmount
+	forfeitOutpoints := make(
+		[]wire.OutPoint, 0, len(selectResp.Selected),
+	)
+	for _, v := range selectResp.Selected {
+		forfeitOutpoints = append(forfeitOutpoints, v.Outpoint)
+	}
+
+	// Forward the complete intent to the round actor.
+	serviceKey := actormsg.RoundActorServiceKey()
+	roundRef := serviceKey.Ref(a.actorSystem)
+
+	err = roundRef.Tell(ctx, &actormsg.TriggerVTXOSendMsg{
+		ForfeitOutpoints: forfeitOutpoints,
+		Recipients:       req.Recipients,
+		ChangeAmount:     int64(changeAmount),
+	})
+	if err != nil {
+		// On Tell failure, unlock the VTXOs to avoid stale locks.
+		a.logger(ctx).WarnS(ctx,
+			"Failed to forward send to round actor, "+
+				"unlocking VTXOs", err)
+
+		unlockFuture := mgrRef.Ask(
+			ctx, &actormsg.UnlockVTXOsRequest{
+				Outpoints: forfeitOutpoints,
+			},
+		)
+		unlockResult := unlockFuture.Await(ctx)
+		if unlockResult.IsErr() {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to unlock VTXOs after send "+
+					"failure", unlockResult.Err())
+		}
+
+		return fn.Err[WalletResp](
+			fmt.Errorf("forward send to round actor: %w", err),
+		)
+	}
+
+	a.logger(ctx).InfoS(ctx, "Forwarded VTXO send to round actor",
+		slog.Int("selected", len(selectResp.Selected)),
+		slog.Int64("total_selected", int64(totalSelected)),
+		slog.Int64("change", int64(changeAmount)),
+		slog.Int("recipients", len(req.Recipients)))
+
+	return fn.Ok[WalletResp](&SendVTXOsResponse{
+		SelectedCount: len(selectResp.Selected),
+		TotalSelected: totalSelected,
+		ChangeAmount:  changeAmount,
 	})
 }
 

@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -1938,5 +1940,198 @@ func TestActorIntentMapping(t *testing.T) {
 			t, assembly.Forfeits, 1,
 			"duplicate forfeit outpoint should be deduplicated",
 		)
+	})
+}
+
+// TestHandleTriggerVTXOSend verifies that TriggerVTXOSendMsg from the wallet
+// is processed into a correct IntentPackage with forfeits, recipient VTXOs,
+// and optional change.
+func TestHandleTriggerVTXOSend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("errors_without_actor_system", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// The default harness has no ActorSystem, so the handler
+		// should return an error.
+		sendMsg := &actormsg.TriggerVTXOSendMsg{
+			ForfeitOutpoints: []wire.OutPoint{{
+				Hash:  chainhash.HashH([]byte("vtxo-1")),
+				Index: 0,
+			}},
+			Recipients: []actormsg.SendRecipient{{
+				PkScript: []byte{0x51, 0x20},
+				Amount:   50000,
+			}},
+			ChangeAmount: 0,
+		}
+
+		result := h.receive(sendMsg)
+		require.True(t, result.IsErr(),
+			"expected error without ActorSystem")
+	})
+
+	t.Run("queues_send_with_recipients_and_change",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+
+			// Wire up an actor system so the handler can
+			// derive keys and trigger VTXO actors.
+			system := actor.NewActorSystem()
+			t.Cleanup(func() {
+				_ = system.Shutdown(t.Context())
+			})
+			h.actor.cfg.ActorSystem = system
+
+			// Mock DeriveNextKey for recipient and change
+			// VTXO requests (KeyFamilyMultiSig).
+			signingKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			h.wallet.On(
+				"DeriveNextKey", mock.Anything,
+				keychain.KeyFamilyMultiSig,
+			).Return(&keychain.KeyDescriptor{
+				PubKey: signingKey.PubKey(),
+			}, nil)
+
+			err = h.start()
+			require.NoError(t, err)
+
+			vtxo1 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("send-1")),
+				Index: 0,
+			}
+			vtxo2 := wire.OutPoint{
+				Hash:  chainhash.HashH([]byte("send-2")),
+				Index: 1,
+			}
+
+			sendMsg := &actormsg.TriggerVTXOSendMsg{
+				ForfeitOutpoints: []wire.OutPoint{
+					vtxo1, vtxo2,
+				},
+				Recipients: []actormsg.SendRecipient{{
+					PkScript: []byte{
+						0x51, 0x20, 0x01,
+					},
+					Amount: 40000,
+				}, {
+					PkScript: []byte{
+						0x51, 0x20, 0x02,
+					},
+					Amount: 30000,
+				}},
+				ChangeAmount: 5000,
+			}
+
+			result := h.receive(sendMsg)
+			require.True(t, result.IsOk(),
+				"expected Ok, got: %v", result.Err())
+
+			// Verify the FSM has the intent package.
+			states := h.queryState()
+			tempState, exists := h.findTempState(states)
+			require.True(t, exists,
+				"expected temp-keyed FSM state")
+
+			assembly, ok := tempState.State.(*PendingRoundAssembly)
+			require.True(t, ok,
+				"expected PendingRoundAssembly, got %T",
+				tempState.State)
+
+			// Two forfeit inputs.
+			require.Len(t, assembly.Forfeits, 2)
+			require.Equal(t, vtxo1,
+				*assembly.Forfeits[0].VTXOOutpoint)
+			require.Equal(t, vtxo2,
+				*assembly.Forfeits[1].VTXOOutpoint)
+
+			// Two recipient VTXOs + one change VTXO = 3.
+			require.Len(t, assembly.VTXOs, 3,
+				"expected 2 recipients + 1 change")
+
+			// First two are recipients with their pkScripts.
+			require.Equal(t,
+				btcutil.Amount(40000),
+				assembly.VTXOs[0].Amount)
+			require.Equal(t,
+				btcutil.Amount(30000),
+				assembly.VTXOs[1].Amount)
+
+			// Third is change.
+			require.Equal(t,
+				btcutil.Amount(5000),
+				assembly.VTXOs[2].Amount)
+		},
+	)
+
+	t.Run("queues_send_without_change", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		system := actor.NewActorSystem()
+		t.Cleanup(func() {
+			_ = system.Shutdown(t.Context())
+		})
+		h.actor.cfg.ActorSystem = system
+
+		signingKey, err := btcec.NewPrivateKey()
+		require.NoError(t, err)
+
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(&keychain.KeyDescriptor{
+			PubKey: signingKey.PubKey(),
+		}, nil)
+
+		err = h.start()
+		require.NoError(t, err)
+
+		sendMsg := &actormsg.TriggerVTXOSendMsg{
+			ForfeitOutpoints: []wire.OutPoint{{
+				Hash: chainhash.HashH(
+					[]byte("exact-send"),
+				),
+				Index: 0,
+			}},
+			Recipients: []actormsg.SendRecipient{{
+				PkScript: []byte{0x51, 0x20},
+				Amount:   50000,
+			}},
+			ChangeAmount: 0,
+		}
+
+		result := h.receive(sendMsg)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Forfeits, 1)
+
+		// Only 1 recipient, no change.
+		require.Len(t, assembly.VTXOs, 1,
+			"expected 1 recipient, no change")
+		require.Equal(t,
+			btcutil.Amount(50000),
+			assembly.VTXOs[0].Amount)
 	})
 }

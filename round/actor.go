@@ -811,6 +811,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *actormsg.TriggerVTXOLeaveMsg:
 		return a.handleTriggerVTXOLeave(ctx, m)
 
+	case *actormsg.TriggerVTXOSendMsg:
+		return a.handleTriggerVTXOSend(ctx, m)
+
 	default:
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"unknown message type: %T", msg))
@@ -1937,4 +1940,146 @@ func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
 		slog.Int("count", triggeredCount))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleTriggerVTXOSend processes a directed in-round send from the wallet
+// actor. The wallet has already selected and locked VTXOs; this handler builds
+// the IntentPackage (forfeits + recipient VTXOs + optional change) and feeds
+// it to the round FSM. It then triggers each forfeited VTXO actor with
+// TriggerSendForfeitEvent so they transition to RefreshRequestedState, ready
+// for forfeit signing when the round provides connector details.
+func (a *RoundClientActor) handleTriggerVTXOSend(ctx context.Context,
+	cmd *actormsg.TriggerVTXOSendMsg) fn.Result[actormsg.RoundActorResp] {
+
+	if a.cfg.ActorSystem == nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"ActorSystem not configured, cannot handle send",
+		))
+	}
+
+	// Find a pending round or create one.
+	roundFSM := a.findPendingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"failed to create round for send: %w", err,
+			))
+		}
+	}
+
+	// Build forfeit requests from the wallet's selected outpoints.
+	forfeits := make(
+		[]types.ForfeitRequest, 0, len(cmd.ForfeitOutpoints),
+	)
+	for i := range cmd.ForfeitOutpoints {
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &cmd.ForfeitOutpoints[i],
+		})
+	}
+
+	// Build recipient VTXORequests. Each recipient has a pre-computed
+	// pkScript; we derive a local signing key for MuSig2 tree
+	// co-signing.
+	vtxoReqs := make(
+		[]types.VTXORequest, 0,
+		len(cmd.Recipients)+1,
+	)
+	for _, recip := range cmd.Recipients {
+		vReq, err := a.buildSendVTXORequest(
+			ctx, recip.PkScript,
+			btcutil.Amount(recip.Amount),
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"build recipient VTXO request: %w", err,
+			))
+		}
+
+		vtxoReqs = append(vtxoReqs, *vReq)
+	}
+
+	// If there is change, add a self-VTXO via the standard
+	// buildVTXORequest which derives a fresh key for the sender.
+	if cmd.ChangeAmount > 0 {
+		changeReq, err := a.buildVTXORequest(
+			ctx, btcutil.Amount(cmd.ChangeAmount),
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"build change VTXO request: %w", err,
+			))
+		}
+
+		vtxoReqs = append(vtxoReqs, *changeReq)
+	}
+
+	// Feed the complete intent package to the round FSM.
+	pkg := &IntentPackage{Intents: Intents{
+		Forfeits: forfeits,
+		VTXOs:    vtxoReqs,
+	}}
+	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"FSM error processing send package: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Queued in-round send",
+		slog.Int("forfeits", len(forfeits)),
+		slog.Int("recipients", len(cmd.Recipients)),
+		slog.Int64("change", cmd.ChangeAmount))
+
+	// Trigger each forfeited VTXO actor so it transitions to
+	// RefreshRequestedState for forfeit signing. We use
+	// TriggerSendForfeitEvent which emits only a status update
+	// (no ForfeitRequest outbox) since we already have the intent.
+	for _, outpoint := range cmd.ForfeitOutpoints {
+		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+			ctx, &TriggerSendForfeitEvent{},
+		)
+		if err != nil {
+			a.log.WarnS(ctx,
+				"Failed to send forfeit trigger "+
+					"to VTXO actor",
+				err,
+				slog.String(
+					"outpoint",
+					outpoint.String(),
+				))
+		}
+	}
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// buildSendVTXORequest constructs a VTXORequest for a send recipient. Unlike
+// buildVTXORequest (which derives the full VTXO descriptor from scratch), this
+// uses a pre-computed pkScript from the recipient. A local signing key is still
+// derived for MuSig2 tree co-signing during round participation.
+func (a *RoundClientActor) buildSendVTXORequest(ctx context.Context,
+	pkScript []byte,
+	amount btcutil.Amount) (*types.VTXORequest, error) {
+
+	keyDesc, err := a.cfg.Wallet.DeriveNextKey(
+		ctx, keychain.KeyFamilyMultiSig,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("derive signing key: %w", err)
+	}
+
+	operatorKey := a.cfg.OperatorTerms.PubKey
+	expiry := a.cfg.OperatorTerms.VTXOExitDelay
+
+	return &types.VTXORequest{
+		Amount:      amount,
+		PkScript:    pkScript,
+		Expiry:      expiry,
+		ClientKey:   keyDesc.PubKey,
+		OperatorKey: operatorKey,
+		SigningKey:  *keyDesc,
+	}, nil
 }
