@@ -6,20 +6,16 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 )
 
-// ManagerMsg embeds actormsg.VTXOManagerMsg for messages accepted by the VTXO
-// Manager actor. Message types are defined in round/vtxo_messages.go and
-// implement the actormsg.VTXOManagerMsg marker interface.
-type ManagerMsg interface {
-	actormsg.VTXOManagerMsg
-}
+// ManagerMsg is the message type for the VTXO Manager actor. This is a type
+// alias for actormsg.VTXOManagerMsg so the manager can be registered with
+// the well-known VTXOManagerServiceKey and looked up by the wallet actor
+// without import cycles.
+type ManagerMsg = actormsg.VTXOManagerMsg
 
-// ManagerResp embeds actormsg.VTXOManagerResp for responses returned by the
-// VTXO Manager actor. Response types defined in actormsg (for cross-package
-// use) and in this package both satisfy this interface via the exported
-// VTXOManagerResp() marker method.
-type ManagerResp interface {
-	actormsg.VTXOManagerResp
-}
+// ManagerResp is the response type for the VTXO Manager actor. This is a
+// type alias for actormsg.VTXOManagerResp so responses from the manager
+// can be received by the wallet actor via the service key lookup.
+type ManagerResp = actormsg.VTXOManagerResp
 
 // Type alias for VTXOTerminatedMsg - canonical definition is in round package.
 type VTXOTerminatedMsg = round.VTXOTerminatedMsg

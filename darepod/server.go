@@ -37,6 +37,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	lndbuild "github.com/lightningnetwork/lnd/build"
@@ -1523,7 +1524,108 @@ func (s *Server) initRoundActor(ctx context.Context,
 
 	log.InfoS(ctx, "Round actor registered and started")
 
+	// Create and register the VTXO manager. The manager needs the
+	// round actor ref so spawned VTXO actors can send refresh and
+	// forfeit messages back to the round. We create it after the
+	// round actor so the ref is available.
+	vtxoMgrRef, err := s.initVTXOManager(
+		ctx, clientWallet, chainSourceRef, roundRef,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to init vtxo "+
+			"manager: %w", err)
+	}
+
+	// Wire the VTXO manager into the round actor so
+	// VTXOCreatedNotification messages are forwarded to spawn
+	// VTXO actors after rounds complete.
+	roundCfg.VTXOManager = vtxoMgrRef
+
 	return nil
+}
+
+// initVTXOManager creates, registers, and starts the VTXO manager actor.
+// The manager spawns individual VTXO actors for each live VTXO and
+// maintains an in-memory lock set for coin selection. It is registered
+// under the well-known VTXOManagerServiceKey so the wallet actor can
+// find it via service key lookup for lock/unlock operations.
+func (s *Server) initVTXOManager(ctx context.Context,
+	clientWallet vtxo.VTXOWallet,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	],
+	roundRef actor.ActorRef[
+		actormsg.RoundReceivable, actormsg.RoundActorResp,
+	]) (actor.TellOnlyRef[actor.Message], error) {
+
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	vtxoStore := dbStore.NewVTXOStore(clk)
+
+	mgrCfg := &vtxo.ManagerConfig{
+		Store:       vtxoStore,
+		Wallet:      clientWallet,
+		ChainSource: chainSourceRef,
+		ActorSystem: s.actorSystem,
+		ChainParams: s.chainParams,
+		Log:         fn.Some[btclog.Logger](log),
+		RoundActor:  roundRef,
+
+		// ChainResolver is nil until unilateral exit is
+		// implemented.
+		ChainResolver: nil,
+	}
+
+	mgrActor := vtxo.NewManager(mgrCfg)
+
+	// Register under the well-known service key so the wallet
+	// actor can discover it for lock/unlock via Ask.
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	mgrRef := mgrKey.Spawn(
+		s.actorSystem, actormsg.VTXOManagerServiceKeyName,
+		mgrActor,
+	)
+
+	// Create a TellOnlyRef for the manager itself so VTXO actors
+	// can send termination notifications back.
+	mgrTellRef := actor.NewMapInputRef[
+		vtxo.ManagerMsg, vtxo.ManagerMsg,
+	](mgrRef, func(m vtxo.ManagerMsg) vtxo.ManagerMsg {
+		return m
+	})
+
+	// Start the manager, which recovers persisted live VTXOs.
+	if err := mgrActor.Start(ctx, mgrTellRef); err != nil {
+		return nil, fmt.Errorf("unable to start vtxo "+
+			"manager: %w", err)
+	}
+
+	log.InfoS(ctx, "VTXO manager registered and started")
+
+	// Create a MapInputRef adapter so the round actor can send
+	// actor.Message to the manager (VTXOCreatedNotification).
+	// The round config expects TellOnlyRef[actor.Message] to
+	// avoid import cycles with the vtxo package.
+	vtxoMgrMappedRef := actor.NewMapInputRef[
+		actor.Message, vtxo.ManagerMsg,
+	](mgrRef, func(m actor.Message) vtxo.ManagerMsg {
+		msg, ok := m.(vtxo.ManagerMsg)
+		if !ok {
+			log.WarnS(ctx,
+				"Dropping unexpected vtxo "+
+					"manager message",
+				fmt.Errorf("type: %T", m),
+			)
+
+			return nil
+		}
+
+		return msg
+	})
+
+	return vtxoMgrMappedRef, nil
 }
 
 // initOORActor creates and starts the OOR (out-of-round) client actor.
