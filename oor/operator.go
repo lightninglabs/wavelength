@@ -284,18 +284,6 @@ func (o *OOROperator) FinalizePackage(ctx context.Context,
 	return &oorpb.FinalizePackageResponse{}, nil
 }
 
-// oorClientIDFromContext extracts the client ID from the context
-// injected by the dispatcher.
-func oorClientIDFromContext(
-	ctx context.Context) clientconn.ClientID { //nolint:unused
-
-	id, _ := ctx.Value(
-		oorClientIDContextKey{},
-	).(clientconn.ClientID)
-
-	return id
-}
-
 // Compile-time check that OOROperator implements the mailbox server
 // interface.
 var _ oorpb.OORMailboxServiceMailboxServer = (*OOROperator)(nil)

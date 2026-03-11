@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +89,7 @@ func newLWBackendFromSeed(h *E2EHarness,
 		PollInterval:   time.Second,
 		RecoveryWindow: recoveryWindow,
 		DBDir:          dbDir,
-		Logger:         h.SubLogger(lwwallet.Subsystem),
+		Log:            fn.Some(h.SubLogger(lwwallet.Subsystem)),
 	})
 	require.NoError(h.t, err, "failed to create lightweight wallet")
 
