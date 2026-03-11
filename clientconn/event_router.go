@@ -97,96 +97,28 @@ func NewEventRouter(system actor.SystemContext) *EventRouter {
 // AddRoute registers a typed event route with the router. The generic
 // parameters [M, R] must match the ServiceKey's type parameters.
 //
-// AddRoute is a package-level generic function rather than a method
-// because Go does not allow methods with type parameters on non-generic
-// types.
+// AddRoute is a thin wrapper around AddEnvelopeRoute that discards
+// the envelope in the Adapt closure. Use AddRoute when the handler
+// does not need transport metadata from the envelope.
 //
-// Registration is idempotent — re-registering the same (service, method)
-// pair replaces the previous route.
+// Registration is idempotent — re-registering the same (service,
+// method) pair replaces the previous route.
 func AddRoute[M actor.Message, R any](r *EventRouter,
 	cfg EventRouteConfig[M, R]) {
 
-	if cfg.Service == "" {
-		panic("clientconn: empty service name in " +
-			"EventRouteConfig")
-	}
-	if cfg.Method == "" {
-		panic("clientconn: empty method name in " +
-			"EventRouteConfig")
-	}
-	if cfg.NewEvent == nil {
-		panic("clientconn: nil NewEvent in " +
-			"EventRouteConfig")
-	}
-	if cfg.Adapt == nil {
-		panic("clientconn: nil Adapt in EventRouteConfig")
-	}
+	adapt := cfg.Adapt
 
-	// Capture config fields and system in a closure to produce the
-	// type-erased EnvelopeDispatcher. The closure owns the full
-	// dispatch chain: deserialize → adapt → Tell (persist to durable
-	// mailbox).
-	system := r.system
-	actorKey := cfg.Key
+	AddEnvelopeRoute(r, EnvelopeRouteConfig[M, R]{
+		Service:  cfg.Service,
+		Method:   cfg.Method,
+		NewEvent: cfg.NewEvent,
+		Key:      cfg.Key,
+		Adapt: func(_ *mailboxpb.Envelope,
+			p proto.Message) (M, error) {
 
-	dispatcher := func(ctx context.Context,
-		env *mailboxpb.Envelope) error {
-
-		if env == nil || env.Body == nil {
-			return fmt.Errorf(
-				"nil envelope or body for %s/%s",
-				cfg.Service, cfg.Method,
-			)
-		}
-
-		// Deserialize the envelope body. The body is an
-		// anypb.Any; its Value field carries the raw proto bytes
-		// of the inner event message. We unmarshal those bytes
-		// directly into the registered event type for
-		// forward-compatible decoding.
-		event := cfg.NewEvent()
-		if event == nil {
-			return fmt.Errorf(
-				"nil event prototype for %s/%s",
-				cfg.Service, cfg.Method,
-			)
-		}
-
-		if err := (proto.UnmarshalOptions{
-			DiscardUnknown: true,
-		}).Unmarshal(env.Body.Value, event); err != nil {
-			return fmt.Errorf(
-				"unmarshal %s/%s event: %w",
-				cfg.Service, cfg.Method, err,
-			)
-		}
-
-		// Convert the proto event to the actor's message type.
-		actorMsg, err := cfg.Adapt(event)
-		if err != nil {
-			return fmt.Errorf(
-				"adapt %s/%s event: %w",
-				cfg.Service, cfg.Method, err,
-			)
-		}
-
-		// Dispatch to the target actor via the service key. Ref
-		// returns a virtual router that load-balances across all
-		// registered actors for this key. Tell persists the
-		// message to the actor's durable mailbox before
-		// returning, satisfying the EnvelopeDispatcher contract
-		// of committed delivery.
-		return actorKey.Ref(system).Tell(ctx, actorMsg)
-	}
-
-	serviceMethod := mailboxrpc.ServiceMethod{
-		Service: cfg.Service,
-		Method:  cfg.Method,
-	}
-
-	r.mu.Lock()
-	r.routes[serviceMethod] = dispatcher
-	r.mu.Unlock()
+			return adapt(p)
+		},
+	})
 }
 
 // InboundEventRouteConfig holds parameters for registering an event route
@@ -239,6 +171,126 @@ func NewEventRoute[M InboundActorMessage, R any](r *EventRouter,
 			return m, m.FromProto(p)
 		},
 	})
+}
+
+// EnvelopeRouteConfig holds parameters for registering a typed event
+// route that has access to the full inbound envelope. This extends
+// EventRouteConfig by passing the envelope to the Adapt closure, which
+// allows extracting transport-level metadata (e.g., the envelope sender
+// for ClientID injection) that is not part of the proto body.
+//
+// Use this for server-side inbound client request dispatch where the
+// handler needs to know which client sent the message.
+//
+// NOTE: env.Sender is client-controlled at the mailbox transport
+// layer. Callers must NOT trust env.Sender as an authenticated
+// identity without server-side stamping. See
+// RegisterClientWithAllDispatchers in server_indexer.go, which
+// overwrites env.Sender with the server-authenticated clientID
+// before dispatch.
+type EnvelopeRouteConfig[M actor.Message, R any] struct {
+	// Service is the fully-qualified protobuf service name.
+	Service string
+
+	// Method is the protobuf method name.
+	Method string
+
+	// NewEvent must return a fresh zero-value proto.Message for the
+	// expected request type.
+	NewEvent func() proto.Message
+
+	// Key is the ServiceKey for the target actor.
+	Key actor.ServiceKey[M, R]
+
+	// Adapt converts the deserialized proto and envelope metadata
+	// into the actor message type M. The envelope is provided so
+	// the closure can extract the sender (client ID) or other
+	// transport-level fields.
+	Adapt func(*mailboxpb.Envelope, proto.Message) (M, error)
+}
+
+// AddEnvelopeRoute registers a typed event route that receives the full
+// inbound envelope in its Adapt closure. This is the server-side
+// counterpart of AddRoute: while AddRoute only passes the deserialized
+// proto to Adapt, AddEnvelopeRoute also passes the envelope so the
+// handler can extract transport metadata like the client's mailbox ID.
+//
+// Like AddRoute, this is a package-level generic function because Go
+// does not allow methods with type parameters on non-generic types.
+func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
+	cfg EnvelopeRouteConfig[M, R]) {
+
+	if cfg.Service == "" {
+		panic("clientconn: empty service name in " +
+			"EnvelopeRouteConfig")
+	}
+	if cfg.Method == "" {
+		panic("clientconn: empty method name in " +
+			"EnvelopeRouteConfig")
+	}
+	if cfg.NewEvent == nil {
+		panic("clientconn: nil NewEvent in " +
+			"EnvelopeRouteConfig")
+	}
+	if cfg.Adapt == nil {
+		panic("clientconn: nil Adapt in " +
+			"EnvelopeRouteConfig")
+	}
+
+	system := r.system
+	actorKey := cfg.Key
+
+	dispatcher := func(ctx context.Context,
+		env *mailboxpb.Envelope) error {
+
+		if env == nil || env.Body == nil {
+			return fmt.Errorf(
+				"nil envelope or body for %s/%s",
+				cfg.Service, cfg.Method,
+			)
+		}
+
+		// Deserialize the envelope body into the registered
+		// proto type.
+		event := cfg.NewEvent()
+		if event == nil {
+			return fmt.Errorf(
+				"nil event prototype for %s/%s",
+				cfg.Service, cfg.Method,
+			)
+		}
+
+		if err := (proto.UnmarshalOptions{
+			DiscardUnknown: true,
+		}).Unmarshal(env.Body.Value, event); err != nil {
+			return fmt.Errorf(
+				"unmarshal %s/%s event: %w",
+				cfg.Service, cfg.Method, err,
+			)
+		}
+
+		// Convert the proto event and envelope metadata to
+		// the actor message type. The envelope is passed so
+		// the closure can extract the sender for ClientID.
+		actorMsg, err := cfg.Adapt(env, event)
+		if err != nil {
+			return fmt.Errorf(
+				"adapt %s/%s event: %w",
+				cfg.Service, cfg.Method, err,
+			)
+		}
+
+		return actorKey.Ref(system).Tell(ctx, actorMsg)
+	}
+
+	serviceMethod := mailboxrpc.ServiceMethod{
+		Service: cfg.Service,
+		Method:  cfg.Method,
+	}
+
+	r.mu.Lock()
+	r.routes[serviceMethod] = dispatcher
+	r.mu.Unlock()
 }
 
 // DispatcherMap maps envelope routing keys to their dispatch closures. It
