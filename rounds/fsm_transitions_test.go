@@ -1321,11 +1321,13 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err = h.sendEvent(sigEvent)
 		require.NoError(t, err)
 
-		// Should transition through ServerSigningState to
-		// AwaitingSignAndFinalizeState with a signing outbox
-		// request.
-		assertStateType[*AwaitingSignAndFinalizeState](h)
-		assertOutboxContains[*SignAndFinalizeRoundReq](h)
+		// Server signing, PSBT finalization, and persistence
+		// all happen inline. The FSM should transition directly
+		// to FinalizedState with a broadcast request.
+		finalState := assertStateType[*FinalizedState](h)
+		require.NotNil(t, finalState.FinalTx)
+		require.Len(t, finalState.ClientRegistrations, 1)
+		assertOutboxContains[*BroadcastRoundReq](h)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -1342,28 +1344,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.True(
 			t, foundCancelTimeout, "timeout should be cancelled",
 		)
-
-		// Feed signing success to move to persistence.
-		finalTx := wire.NewMsgTx(2)
-		h.outboxMessages = nil
-		err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-			FinalTx:      finalTx,
-			ForfeitInfos: make(map[wire.OutPoint]*ForfeitInfo),
-		})
-		require.NoError(t, err)
-
-		assertStateType[*AwaitingServerSignPersistState](h)
-		assertOutboxContains[*PersistServerSigningReq](h)
-
-		// Feed persistence success to complete the transition.
-		h.outboxMessages = nil
-		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
-		require.NoError(t, err)
-
-		finalState := assertStateType[*FinalizedState](h)
-		require.NotNil(t, finalState.FinalTx)
-		require.Len(t, finalState.ClientRegistrations, 1)
-		assertOutboxContains[*BroadcastRoundReq](h)
 	})
 
 	t.Run("multi-client signature collection", func(t *testing.T) {
@@ -1419,14 +1399,16 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		// No outbox messages yet (no transition).
 		h.assertOutboxLen(0)
 
-		// Client2 submits - should transition through
-		// ServerSigningState to AwaitingSignAndFinalizeState.
+		// Client2 submits - server signing, finalization, and
+		// persistence all happen inline. Should transition
+		// directly to FinalizedState.
 		sig2Event := client2.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sig2Event)
 		require.NoError(t, err)
 
-		assertStateType[*AwaitingSignAndFinalizeState](h)
-		assertOutboxContains[*SignAndFinalizeRoundReq](h)
+		finalState := assertStateType[*FinalizedState](h)
+		require.Len(t, finalState.ClientRegistrations, 2)
+		assertOutboxContains[*BroadcastRoundReq](h)
 
 		// Verify timeout was cancelled.
 		var foundCancelTimeout bool
@@ -1442,26 +1424,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.True(
 			t, foundCancelTimeout, "timeout should be cancelled",
 		)
-
-		// Feed signing success.
-		h.outboxMessages = nil
-		err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-			FinalTx:      wire.NewMsgTx(2),
-			ForfeitInfos: make(map[wire.OutPoint]*ForfeitInfo),
-		})
-		require.NoError(t, err)
-
-		assertStateType[*AwaitingServerSignPersistState](h)
-		assertOutboxContains[*PersistServerSigningReq](h)
-
-		// Feed persistence success.
-		h.outboxMessages = nil
-		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
-		require.NoError(t, err)
-
-		finalState := assertStateType[*FinalizedState](h)
-		require.Len(t, finalState.ClientRegistrations, 2)
-		assertOutboxContains[*BroadcastRoundReq](h)
 	})
 
 	t.Run("server signing state carries forfeit txs map",
@@ -1545,30 +1507,12 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		require.Equal(t, ClientID("unknown_client"), errResp.Client)
 		require.Contains(t, errResp.ErrorMsg, "registered")
 
-		// Original client should still be able to submit its valid sig.
+		// Original client should still be able to submit its
+		// valid sig. Server signing and persistence happen
+		// inline, transitioning directly to FinalizedState.
 		h.outboxMessages = nil
 		sigEvent := client.createInputSignaturesEvent(awaitState)
 		err = h.sendEvent(sigEvent)
-		require.NoError(t, err)
-
-		// Should be in AwaitingSignAndFinalizeState.
-		assertStateType[*AwaitingSignAndFinalizeState](h)
-		assertOutboxContains[*SignAndFinalizeRoundReq](h)
-
-		// Feed signing success.
-		h.outboxMessages = nil
-		err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-			FinalTx:      wire.NewMsgTx(2),
-			ForfeitInfos: make(map[wire.OutPoint]*ForfeitInfo),
-		})
-		require.NoError(t, err)
-
-		assertStateType[*AwaitingServerSignPersistState](h)
-		assertOutboxContains[*PersistServerSigningReq](h)
-
-		// Feed persistence success.
-		h.outboxMessages = nil
-		err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 		require.NoError(t, err)
 
 		finalState := assertStateType[*FinalizedState](h)
@@ -2230,7 +2174,9 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 		require.NoError(t, vtxoTree.VerifySigned())
 	}
 
-	// Client submits boarding signatures to finalize.
+	// Client submits boarding signatures to finalize. Server
+	// signing and persistence happen inline, transitioning
+	// directly to FinalizedState.
 	h.outboxMessages = nil
 	boardingSigEvent := client.createInputSignaturesEvent(
 		awaitBoarding,
@@ -2238,41 +2184,10 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	err = h.sendEvent(boardingSigEvent)
 	require.NoError(t, err)
 
-	// Should be in AwaitingSignAndFinalizeState with a signing
-	// request in the outbox.
-	assertStateType[*AwaitingSignAndFinalizeState](h)
-	assertOutboxContains[*SignAndFinalizeRoundReq](h)
-
-	// Feed signing success.
-	finalTx := wire.NewMsgTx(2)
-	h.outboxMessages = nil
-	err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-		FinalTx:      finalTx,
-		ForfeitInfos: make(map[wire.OutPoint]*ForfeitInfo),
-	})
-	require.NoError(t, err)
-
-	assertStateType[*AwaitingServerSignPersistState](h)
-	assertOutboxContains[*PersistServerSigningReq](h)
-
-	// Feed persistence success to transition to FinalizedState.
-	h.outboxMessages = nil
-	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
-	require.NoError(t, err)
-
 	finalState := assertStateType[*FinalizedState](h)
 	require.NotNil(t, finalState.FinalTx)
 	require.Len(t, finalState.ClientRegistrations, 1)
-
-	var foundBroadcast bool
-	for _, msg := range h.outboxMessages {
-		if m, ok := msg.(*BroadcastRoundReq); ok {
-			foundBroadcast = true
-			require.Equal(t, finalTx, m.SignedTx)
-		}
-	}
-
-	require.True(t, foundBroadcast, "broadcast should be requested")
+	assertOutboxContains[*BroadcastRoundReq](h)
 
 	// Simulate confirmation — the FSM emits a ConfirmRoundReq outbox
 	// event and transitions to AwaitingConfirmPersistState.
@@ -2368,45 +2283,10 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 		ClientVTXOSig: clientSig,
 	}}
 
+	// Server signing, finalization, and persistence all happen
+	// inline. The FSM transitions directly to FinalizedState.
 	h.outboxMessages = nil
 	err = h.sendEvent(sigEvent)
-	require.NoError(t, err)
-
-	// Should be in AwaitingSignAndFinalizeState with signing request.
-	assertStateType[*AwaitingSignAndFinalizeState](h)
-	signReq := assertOutboxContains[*SignAndFinalizeRoundReq](h)
-
-	// Verify the signing request carries the forfeit data.
-	require.NotNil(t, signReq.CollectedForfeitTxs)
-	require.Contains(t,
-		signReq.CollectedForfeitTxs, client.clientID,
-	)
-
-	// Feed signing success with pre-built forfeit info. Actual
-	// signing verification is covered by forfeits_test.go and
-	// handler tests.
-	finalTx := wire.NewMsgTx(2)
-	forfeitInfos := map[wire.OutPoint]*ForfeitInfo{
-		forfeitOutpoint: {
-			RoundID:              h.env.RoundID,
-			ConnectorOutputIndex: assignment.ConnectorOutputIndex,
-			LeafIndex:            assignment.LeafIndex,
-			ForfeitTx:            forfeitTx,
-		},
-	}
-	h.outboxMessages = nil
-	err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-		FinalTx:      finalTx,
-		ForfeitInfos: forfeitInfos,
-	})
-	require.NoError(t, err)
-
-	assertStateType[*AwaitingServerSignPersistState](h)
-	assertOutboxContains[*PersistServerSigningReq](h)
-
-	// Feed persistence success to transition to FinalizedState.
-	h.outboxMessages = nil
-	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 	require.NoError(t, err)
 
 	finalState := assertStateType[*FinalizedState](h)
@@ -2427,7 +2307,7 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	confirmReq := assertOutboxContains[*ConfirmRoundReq](h)
 	require.Contains(t, confirmReq.ForfeitInfos, forfeitOutpoint)
 	require.Equal(t,
-		forfeitInfos[forfeitOutpoint],
+		finalState.ForfeitInfos[forfeitOutpoint],
 		confirmReq.ForfeitInfos[forfeitOutpoint],
 	)
 
@@ -2555,26 +2435,8 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	))
 	require.NoError(t, err)
 
-	// Should be in AwaitingSignAndFinalizeState.
-	assertStateType[*AwaitingSignAndFinalizeState](h)
-	assertOutboxContains[*SignAndFinalizeRoundReq](h)
-
-	// Feed signing success.
-	h.outboxMessages = nil
-	err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-		FinalTx:      wire.NewMsgTx(2),
-		ForfeitInfos: make(map[wire.OutPoint]*ForfeitInfo),
-	})
-	require.NoError(t, err)
-
-	assertStateType[*AwaitingServerSignPersistState](h)
-	assertOutboxContains[*PersistServerSigningReq](h)
-
-	// Feed persistence success.
-	h.outboxMessages = nil
-	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
-	require.NoError(t, err)
-
+	// Server signing and persistence happen inline. Should
+	// transition directly to FinalizedState.
 	finalState := assertStateType[*FinalizedState](h)
 	require.NotNil(t, finalState.FinalTx)
 	require.Len(t, finalState.ClientRegistrations, 2)
@@ -2640,30 +2502,10 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 		require.NoError(t, vtxoTree.VerifySigned())
 	}
 
-	// Finish boarding signatures.
+	// Finish boarding signatures. Server signing and persistence
+	// happen inline, transitioning directly to FinalizedState.
 	h.outboxMessages = nil
 	err = h.sendEvent(client.createInputSignaturesEvent(awaitBoarding))
-	require.NoError(t, err)
-
-	// Should be in AwaitingSignAndFinalizeState with signing request.
-	assertStateType[*AwaitingSignAndFinalizeState](h)
-	assertOutboxContains[*SignAndFinalizeRoundReq](h)
-
-	// Feed signing success.
-	finalTx := wire.NewMsgTx(2)
-	h.outboxMessages = nil
-	err = h.sendEvent(&SignAndFinalizeSucceededEvent{
-		FinalTx: finalTx,
-	})
-	require.NoError(t, err)
-
-	// Should be in AwaitingServerSignPersistState.
-	assertStateType[*AwaitingServerSignPersistState](h)
-	assertOutboxContains[*PersistServerSigningReq](h)
-
-	// Feed persistence success.
-	h.outboxMessages = nil
-	err = h.sendEvent(&PersistServerSigningSucceededEvent{})
 	require.NoError(t, err)
 
 	finalState := assertStateType[*FinalizedState](h)

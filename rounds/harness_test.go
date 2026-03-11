@@ -258,6 +258,19 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 		mock.Anything, mock.Anything).
 		Return(nil).Maybe()
 
+	// Set up permissive server-signing expectations. After
+	// inlining, the FSM calls FinalizePsbt, PersistRound, and
+	// PersistVTXOs directly during ServerSigningState.
+	c.walletController.On(
+		"FinalizePsbt", mock.Anything, mock.Anything,
+	).Return(wire.NewMsgTx(2), nil).Maybe()
+	c.roundStore.On(
+		"PersistRound", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
+	c.vtxoStore.On(
+		"PersistVTXOs", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
+
 	// Set up permissive VTXO locker expectation for unlocking
 	// forfeits during failure transitions.
 	c.vtxoLocker.On("UnlockMany", mock.Anything, mock.Anything,
@@ -615,8 +628,8 @@ func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
 }
 
 // expectPSBTFinalized sets up the wallet controller mock to expect a
-// FinalizePsbt call that succeeds. Used by FSM tests where persistence
-// is handled by the OutboxHandler (not the FSM directly).
+// FinalizePsbt call that succeeds. Used by tests that need precise
+// mock control (Once) rather than permissive mocks (Maybe).
 func (c *commonMockSetup) expectPSBTFinalized(tx *wire.MsgTx) {
 	c.t.Helper()
 
@@ -626,7 +639,7 @@ func (c *commonMockSetup) expectPSBTFinalized(tx *wire.MsgTx) {
 
 // expectRoundFinalized sets up the round store mock to expect a PersistRound
 // call that succeeds and for the wallet to finalise the PSBT. Used by actor
-// tests where the OutboxHandler executes persistence.
+// tests that need precise mock control (Once).
 func (c *commonMockSetup) expectRoundFinalized(tx *wire.MsgTx) {
 	c.t.Helper()
 
