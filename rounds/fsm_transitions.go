@@ -2518,7 +2518,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 // signBoardingInputs signs all boarding inputs with both the client's
 // signature (from CollectedSignatures) and the operator's signature.
 // This is a free function so it can be called from both FSM transitions
-// and the OutboxHandler.
+// and tests.
 func signBoardingInputs(psbtPacket *psbt.Packet,
 	collectedSigs InputSigsMap,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,

@@ -114,13 +114,6 @@ type ActorConfig struct {
 	// concurrent subsystems (rounds and OOR transfers).
 	VTXOLocker vtxo.Locker
 
-	// OutboxHandler executes FSM outbox requests that require I/O and
-	// returns follow-up inbox events. When non-nil, askAndDrive routes
-	// outbox events through this handler before passing them to
-	// processOutbox for legacy dispatch. A nil handler is safe — the
-	// event pump simply skips the handler call.
-	OutboxHandler OutboxHandler
-
 	// DisableJoinRequestAuth skips join-request BIP-322 validation.
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
@@ -180,20 +173,6 @@ func parseTimeoutID(id timeout.ID) (RoundID, TimeoutPhase, error) {
 // and resume them. It will create a new "live" round that will accept new
 // registrations.
 func NewActor(cfg *ActorConfig) *Actor {
-	// Default-initialise the OutboxHandler from the config stores when
-	// the caller has not provided one explicitly.
-	if cfg.OutboxHandler == nil {
-		cfg.OutboxHandler = NewInProcessOutboxHandler(
-			cfg.RoundStore, cfg.VTXOStore,
-			cfg.WalletController, cfg.FeeEstimator,
-			cfg.BoardingInputLocker, cfg.VTXOLocker,
-			cfg.ChainSource, cfg.ChainParams,
-			cfg.Terms, cfg.Log.UnwrapOr(btclog.Disabled),
-			cfg.ConfTarget, cfg.MinConfs,
-			cfg.WalletAccount,
-		)
-	}
-
 	clientRounds := make(map[clientconn.ClientID]map[RoundID]struct{})
 
 	return &Actor{
@@ -351,6 +330,9 @@ func (a *Actor) loadRoundFSM(ctx context.Context, round *Round) (*RoundFSM,
 	return fsm, nil
 }
 
+// buildAndStartRoundFSM creates a new round FSM with the given initial
+// state and starts it. The FSM environment is populated from the actor
+// config and the provided round-specific parameters.
 func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 	state State, startHeight uint32) *RoundFSM {
 
@@ -517,67 +499,19 @@ func (a *Actor) askEventAndProcessOutbox(ctx context.Context,
 	return nil
 }
 
-// askAndDrive runs one inbox event through the FSM and then exhausts all
-// follow-up outbox/inbox hops via the OutboxHandler until the queue is empty.
-// This mirrors the OOR package's askAndDrive event pump: each outbox event is
-// offered to the handler, which may return follow-up inbox events that get
-// appended to the breadth-first queue. The accumulated outbox is returned for
-// legacy processOutbox routing.
-//
-// When the OutboxHandler is nil the method degrades to a single AskEvent call
-// with no follow-up processing, preserving existing behavior.
-func (a *Actor) askAndDrive(ctx context.Context, roundID RoundID,
+// askAndDrive sends a single event to the FSM and returns the resulting
+// outbox messages for processOutbox routing.
+func (a *Actor) askAndDrive(ctx context.Context, _ RoundID,
 	fsm *StateMachine, event Event) ([]OutboxEvent, error) {
 
 	if fsm == nil {
 		return nil, fmt.Errorf("fsm must be provided")
 	}
 
-	handler := a.cfg.OutboxHandler
-	var allOutbox []OutboxEvent
+	fut := fsm.AskEvent(ctx, event)
+	result := fut.Await(ctx)
 
-	// Breadth-first queue of inbox events so one durable inbox
-	// message executes as one deterministic mini-workflow.
-	queue := []Event{event}
-
-	for len(queue) > 0 {
-		next := queue[0]
-		queue = queue[1:]
-
-		fut := fsm.AskEvent(ctx, next)
-		result := fut.Await(ctx)
-
-		outbox, err := result.Unpack()
-		if err != nil {
-			return nil, err
-		}
-
-		if len(outbox) > 0 {
-			allOutbox = append(allOutbox, outbox...)
-		}
-
-		// When no handler is configured, skip follow-up
-		// processing. The outbox will be routed entirely through
-		// the legacy processOutbox path.
-		if handler == nil {
-			continue
-		}
-
-		for _, out := range outbox {
-			followUps, err := handler.Handle(
-				ctx, roundID, out,
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			if len(followUps) > 0 {
-				queue = append(queue, followUps...)
-			}
-		}
-	}
-
-	return allOutbox, nil
+	return result.Unpack()
 }
 
 // processOutbox processes messages emitted by the FSM via Outbox and routes
