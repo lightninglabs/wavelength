@@ -47,6 +47,9 @@ const (
 	VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT VTXOStatus = 6
 	// VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
 	VTXOStatus_VTXO_STATUS_FAILED VTXOStatus = 7
+	// VTXO_STATUS_SPENDING indicates the VTXO has been claimed for an
+	// out-of-round spend but the spend has not yet completed.
+	VTXOStatus_VTXO_STATUS_SPENDING VTXOStatus = 8
 )
 
 // Enum value maps for VTXOStatus.
@@ -60,6 +63,7 @@ var (
 		5: "VTXO_STATUS_SPENT",
 		6: "VTXO_STATUS_UNILATERAL_EXIT",
 		7: "VTXO_STATUS_FAILED",
+		8: "VTXO_STATUS_SPENDING",
 	}
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":     0,
@@ -70,6 +74,7 @@ var (
 		"VTXO_STATUS_SPENT":           5,
 		"VTXO_STATUS_UNILATERAL_EXIT": 6,
 		"VTXO_STATUS_FAILED":          7,
+		"VTXO_STATUS_SPENDING":        8,
 	}
 )
 
@@ -2193,7 +2198,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x14\n" +
 	"\x12WatchRoundsRequest\"A\n" +
 	"\x13WatchRoundsResponse\x12*\n" +
-	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round*\xe7\x01\n" +
+	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round*\x81\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -2203,7 +2208,8 @@ const file_daemon_proto_rawDesc = "" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x04\x12\x15\n" +
 	"\x11VTXO_STATUS_SPENT\x10\x05\x12\x1f\n" +
 	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
-	"\x12VTXO_STATUS_FAILED\x10\a*\xd7\x03\n" +
+	"\x12VTXO_STATUS_FAILED\x10\a\x12\x18\n" +
+	"\x14VTXO_STATUS_SPENDING\x10\b*\xd7\x03\n" +
 	"\n" +
 	"RoundState\x12\x17\n" +
 	"\x13ROUND_STATE_UNKNOWN\x10\x00\x12\x14\n" +
