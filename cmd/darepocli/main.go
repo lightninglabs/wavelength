@@ -64,6 +64,7 @@ func newRootCmd() *cobra.Command {
 		newWalletCmd(),
 		newVTXOsCmd(),
 		newSendCmd(),
+		newBoardCmd(),
 		newSchemaCmd(),
 		newMCPCmd(),
 	)

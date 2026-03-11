@@ -18,6 +18,7 @@ import (
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -530,6 +531,54 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	return &daemonrpc.RefreshVTXOsResponse{
 		QueuedOutpoints: queued,
 		Status:          "queued",
+	}, nil
+}
+
+// Board triggers the client to join the next round with any confirmed
+// boarding UTXOs. It sends a RegistrationRequested event to the round
+// actor's FSM, which transitions the pending round from
+// PendingRoundAssembly to RegistrationSent and emits a
+// JoinRoundRequest to the server.
+func (r *RPCServer) Board(ctx context.Context,
+	_ *daemonrpc.BoardRequest) (
+	*daemonrpc.BoardResponse, error) {
+
+	if err := r.requireWalletReady(); err != nil {
+		return nil, err
+	}
+
+	if r.server.actorSystem == nil {
+		return nil, status.Errorf(codes.Internal,
+			"actor system not initialized")
+	}
+
+	// Resolve the round actor via its service key registered in
+	// the actor system's receptionist. This is the canonical way
+	// to interact with service-registered actors without holding
+	// a direct reference.
+	roundKey := round.NewServiceKey()
+	roundRef := roundKey.Ref(r.server.actorSystem)
+
+	// Send RegistrationRequested wrapped in a
+	// ServerMessageNotification, matching the pattern used by
+	// the systest client (systest/client.go:TriggerRegistration).
+	msg := &round.ServerMessageNotification{
+		Message: &round.RegistrationRequested{},
+	}
+
+	future := roundRef.Ask(ctx, msg)
+	result := future.Await(ctx)
+
+	if result.IsErr() {
+		return nil, status.Errorf(codes.Internal,
+			"board registration failed: %v",
+			result.Err())
+	}
+
+	log.InfoS(ctx, "Board registration triggered")
+
+	return &daemonrpc.BoardResponse{
+		Status: "registered",
 	}, nil
 }
 
