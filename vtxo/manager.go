@@ -133,6 +133,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *round.VTXOCreatedNotification:
 		return m.handleVTXOCreated(ctx, req)
 
+	case *VTXOsMaterializedNotification:
+		return m.handleVTXOsMaterialized(ctx, req)
+
 	case *round.VTXOTerminatedMsg:
 		return m.handleVTXOTerminated(ctx, req)
 
@@ -205,6 +208,47 @@ func (m *Manager) handleVTXOCreated(ctx context.Context,
 	}
 
 	return fn.Ok[ManagerResp](&VTXOCreatedResp{})
+}
+
+// handleVTXOsMaterialized spawns VTXO actors for descriptors that were already
+// persisted by another actor, such as the OOR receive flow.
+func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
+	msg *VTXOsMaterializedNotification) fn.Result[ManagerResp] {
+
+	for _, descriptor := range msg.VTXOs {
+		if descriptor == nil {
+			continue
+		}
+
+		outpoint := descriptor.Outpoint
+		if _, exists := m.actors[outpoint]; exists {
+			m.logger(ctx).WarnS(ctx,
+				"VTXO actor already exists", nil,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			continue
+		}
+
+		ref, err := m.spawnVTXOActor(ctx, descriptor)
+		if err != nil {
+			m.logger(ctx).ErrorS(ctx,
+				"Failed to spawn VTXO actor", err,
+				slog.String("outpoint", outpoint.String()),
+			)
+
+			continue
+		}
+
+		m.actors[outpoint] = ref
+
+		m.logger(ctx).InfoS(ctx, "Spawned VTXO actor",
+			slog.String("outpoint", outpoint.String()),
+			slog.Int64("amount", int64(descriptor.Amount)),
+			slog.Int("batch_expiry", int(descriptor.BatchExpiry)))
+	}
+
+	return fn.Ok[ManagerResp](&VTXOsMaterializedResp{})
 }
 
 // handleVTXOTerminated removes a VTXO actor from tracking when it reaches

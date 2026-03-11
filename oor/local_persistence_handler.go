@@ -43,12 +43,6 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
 
-// IncomingVTXONotifier is called after incoming VTXOs are durably
-// materialized, allowing callers to spawn/manage VTXO actors for expiry and
-// spend monitoring.
-type IncomingVTXONotifier func(ctx context.Context,
-	vtxos []*vtxo.Descriptor) error
-
 // LocalPersistenceOutboxHandler implements the persistence-related outbox
 // requests emitted by the OOR FSM.
 //
@@ -85,11 +79,6 @@ type LocalPersistenceOutboxHandler struct {
 	// ResolveIncomingMetadata resolves authoritative lineage/expiry
 	// metadata for each incoming recipient output.
 	ResolveIncomingMetadata IncomingMetadataResolver
-
-	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
-	// Production wiring should use this to notify the VTXO manager so newly
-	// received OOR VTXOs are actively monitored.
-	NotifyIncomingVTXOs IncomingVTXONotifier
 }
 
 // Handle executes one outbox request and emits follow-up FSM events.
@@ -177,12 +166,6 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	if h.ResolveIncomingMetadata == nil {
 		return nil, fmt.Errorf(
 			"incoming metadata resolver must be provided",
-		)
-	}
-
-	if h.NotifyIncomingVTXOs == nil {
-		return nil, fmt.Errorf(
-			"incoming VTXO notifier must be provided",
 		)
 	}
 
@@ -289,12 +272,9 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		slog.Int("owned_recipients", ownedRecipients),
 		slog.Int("materialized_vtxos", len(materializedVTXOs)))
 
-	err := h.NotifyIncomingVTXOs(ctx, materializedVTXOs)
-	if err != nil {
-		return nil, err
-	}
-
-	return []Event{&IncomingHandledEvent{}}, nil
+	return []Event{&IncomingHandledEvent{
+		MaterializedVTXOs: materializedVTXOs,
+	}}, nil
 }
 
 // handleIncomingAck forwards the ack request to the transport boundary (if

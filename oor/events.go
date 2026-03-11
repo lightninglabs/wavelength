@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/vtxo"
 )
 
 // Event is a sealed interface for all events that can drive the OOR transfer
@@ -163,8 +164,15 @@ type IncomingTransferEvent struct {
 func (e *IncomingTransferEvent) eventSealed() {}
 
 // IncomingHandledEvent indicates the application/wallet has processed the
-// incoming transfer notification.
-type IncomingHandledEvent struct{}
+// incoming transfer notification. When VTXOs are materialized, the
+// descriptors are attached so the actor can forward them to the VTXO
+// manager for actor activation.
+type IncomingHandledEvent struct {
+	// MaterializedVTXOs contains descriptors that were durably
+	// persisted during materialization. The OOR actor forwards these
+	// to the VTXO manager so it can spawn monitoring actors.
+	MaterializedVTXOs []*vtxo.Descriptor
+}
 
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *IncomingHandledEvent) eventSealed() {}
