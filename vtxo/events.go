@@ -22,10 +22,6 @@ type (
 	// is being forfeited as part of a batch swap.
 	ForfeitRequestEvent = round.ForfeitRequestEvent
 
-	// RefreshAcknowledgedEvent is received when the round actor
-	// acknowledges a refresh request.
-	RefreshAcknowledgedEvent = round.RefreshAcknowledgedEvent
-
 	// ForfeitConfirmedEvent indicates the new commitment transaction has
 	// been confirmed on-chain.
 	ForfeitConfirmedEvent = round.ForfeitConfirmedEvent

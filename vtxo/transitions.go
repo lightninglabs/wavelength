@@ -383,13 +383,6 @@ func (s *PendingForfeitState) ProcessEvent(
 			}),
 		}, nil
 
-	case *RefreshAcknowledgedEvent:
-		// Round actor acknowledged but no forfeit details yet.
-		// Stay in PendingForfeitState.
-		return &VTXOStateTransition{
-			NextState: s,
-		}, nil
-
 	case *ResumeVTXOEvent:
 		// On resume, stay in this state. The round actor should
 		// re-send forfeit details when it resumes.

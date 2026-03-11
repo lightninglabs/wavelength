@@ -87,24 +87,6 @@ func (e *ForfeitRequestEvent) MessageType() string {
 	return "ForfeitRequestEvent"
 }
 
-// RefreshAcknowledgedEvent is received when the round actor acknowledges a
-// refresh request. This indicates the VTXO has been queued for inclusion in
-// the next round but the forfeit request hasn't been sent yet.
-type RefreshAcknowledgedEvent struct {
-	actor.BaseMessage
-
-	// RoundID is the round where the refresh will be processed.
-	RoundID string
-}
-
-// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
-func (e *RefreshAcknowledgedEvent) VTXOActorMsg() {}
-
-// MessageType returns the message type for logging.
-func (e *RefreshAcknowledgedEvent) MessageType() string {
-	return "RefreshAcknowledgedEvent"
-}
-
 // ForfeitConfirmedEvent indicates the new commitment transaction has been
 // confirmed on-chain, meaning the forfeit is final. The old VTXO is now
 // permanently forfeited and the new VTXO is live.

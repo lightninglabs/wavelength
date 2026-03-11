@@ -268,8 +268,8 @@ type RoundClientConfig struct {
 	VTXOManager actor.TellOnlyRef[actor.Message]
 
 	// ActorSystem enables direct communication with VTXO actors via service
-	// keys. Used to send ForfeitRequestEvent, RefreshAcknowledgedEvent, and
-	// ForfeitConfirmedEvent to specific VTXO actors.
+	// keys. Used to send ForfeitRequestEvent and ForfeitConfirmedEvent to
+	// specific VTXO actors.
 	ActorSystem *actor.ActorSystem
 
 	// DisableJoinRequestAuth skips BIP-322 join authorization
@@ -1766,22 +1766,6 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	a.log.InfoS(ctx, "Queued VTXO for refresh",
 		slog.String("outpoint", req.VTXOOutpoint.String()),
 		slog.Int64("amount", req.Amount))
-
-	// Send acknowledgment back to the VTXO actor using Router pattern.
-	// The RoundID is empty since we haven't assigned it to a round yet.
-	if a.cfg.ActorSystem != nil {
-		serviceKey := actormsg.VTXOActorServiceKey(req.VTXOOutpoint)
-		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-			ctx, &RefreshAcknowledgedEvent{
-				RoundID: "",
-			},
-		)
-		if err != nil {
-			a.log.WarnS(ctx, "Failed to send refresh ack to VTXO actor",
-				err,
-				slog.String("outpoint", req.VTXOOutpoint.String()))
-		}
-	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
