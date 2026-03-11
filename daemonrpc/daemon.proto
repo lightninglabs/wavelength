@@ -53,6 +53,11 @@ service DaemonService {
     // RefreshVTXOs queues one or more VTXOs for refresh in the next
     // round. This extends their expiry without changing ownership.
     rpc RefreshVTXOs (RefreshVTXOsRequest) returns (RefreshVTXOsResponse);
+
+    // Board triggers the client to join the next round with any
+    // confirmed boarding UTXOs. This sends RegistrationRequested to
+    // the round FSM, which emits a JoinRoundRequest to the server.
+    rpc Board (BoardRequest) returns (BoardResponse);
 }
 
 message GetInfoRequest {
@@ -343,4 +348,13 @@ message RefreshVTXOsResponse {
 
     // status is the result: "queued" on success, "preview" on dry_run.
     string status = 2;
+}
+
+message BoardRequest {
+}
+
+message BoardResponse {
+    // status is "registered" on success, "no_boarding_utxos" if
+    // nothing to board.
+    string status = 1;
 }

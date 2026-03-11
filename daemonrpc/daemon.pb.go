@@ -1530,6 +1530,88 @@ func (x *RefreshVTXOsResponse) GetStatus() string {
 	return ""
 }
 
+type BoardRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BoardRequest) Reset() {
+	*x = BoardRequest{}
+	mi := &file_daemon_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoardRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoardRequest) ProtoMessage() {}
+
+func (x *BoardRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoardRequest.ProtoReflect.Descriptor instead.
+func (*BoardRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{23}
+}
+
+type BoardResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is "registered" on success, "no_boarding_utxos" if
+	// nothing to board.
+	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BoardResponse) Reset() {
+	*x = BoardResponse{}
+	mi := &file_daemon_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoardResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoardResponse) ProtoMessage() {}
+
+func (x *BoardResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoardResponse.ProtoReflect.Descriptor instead.
+func (*BoardResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *BoardResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
@@ -1621,7 +1703,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\tselection\"Y\n" +
 	"\x14RefreshVTXOsResponse\x12)\n" +
 	"\x10queued_outpoints\x18\x01 \x03(\tR\x0fqueuedOutpoints\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status*\xe2\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x0e\n" +
+	"\fBoardRequest\"'\n" +
+	"\rBoardResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status*\xe2\x01\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -1631,7 +1716,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x04\x12\x15\n" +
 	"\x11VTXO_STATUS_SPENT\x10\x05\x12\x18\n" +
 	"\x14VTXO_STATUS_EXPIRING\x10\x06\x12\x16\n" +
-	"\x12VTXO_STATUS_FAILED\x10\a2\xe5\x05\n" +
+	"\x12VTXO_STATUS_FAILED\x10\a2\xa1\x06\n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
 	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
@@ -1645,7 +1730,8 @@ const file_daemon_proto_rawDesc = "" +
 	"NewAddress\x12\x1c.daemonrpc.NewAddressRequest\x1a\x1d.daemonrpc.NewAddressResponse\x12C\n" +
 	"\bSendVTXO\x12\x1a.daemonrpc.SendVTXORequest\x1a\x1b.daemonrpc.SendVTXOResponse\x12@\n" +
 	"\aSendOOR\x12\x19.daemonrpc.SendOORRequest\x1a\x1a.daemonrpc.SendOORResponse\x12O\n" +
-	"\fRefreshVTXOs\x12\x1e.daemonrpc.RefreshVTXOsRequest\x1a\x1f.daemonrpc.RefreshVTXOsResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
+	"\fRefreshVTXOs\x12\x1e.daemonrpc.RefreshVTXOsRequest\x1a\x1f.daemonrpc.RefreshVTXOsResponse\x12:\n" +
+	"\x05Board\x12\x17.daemonrpc.BoardRequest\x1a\x18.daemonrpc.BoardResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -1660,7 +1746,7 @@ func file_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_daemon_proto_goTypes = []any{
 	(VTXOStatus)(0),              // 0: daemonrpc.VTXOStatus
 	(*GetInfoRequest)(nil),       // 1: daemonrpc.GetInfoRequest
@@ -1686,6 +1772,8 @@ var file_daemon_proto_goTypes = []any{
 	(*OutpointSelection)(nil),    // 21: daemonrpc.OutpointSelection
 	(*RefreshVTXOsRequest)(nil),  // 22: daemonrpc.RefreshVTXOsRequest
 	(*RefreshVTXOsResponse)(nil), // 23: daemonrpc.RefreshVTXOsResponse
+	(*BoardRequest)(nil),         // 24: daemonrpc.BoardRequest
+	(*BoardResponse)(nil),        // 25: daemonrpc.BoardResponse
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,  // 0: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
@@ -1704,18 +1792,20 @@ var file_daemon_proto_depIdxs = []int32{
 	17, // 13: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
 	19, // 14: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
 	22, // 15: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
-	2,  // 16: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	4,  // 17: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	6,  // 18: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	8,  // 19: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	10, // 20: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	13, // 21: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	15, // 22: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	18, // 23: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	20, // 24: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	23, // 25: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	16, // [16:26] is the sub-list for method output_type
-	6,  // [6:16] is the sub-list for method input_type
+	24, // 16: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
+	2,  // 17: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	4,  // 18: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
+	6,  // 19: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
+	8,  // 20: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
+	10, // 21: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
+	13, // 22: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
+	15, // 23: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
+	18, // 24: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
+	20, // 25: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
+	23, // 26: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
+	25, // 27: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
+	17, // [17:28] is the sub-list for method output_type
+	6,  // [6:17] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -1741,7 +1831,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   23,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

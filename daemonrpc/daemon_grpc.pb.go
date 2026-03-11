@@ -29,6 +29,7 @@ const (
 	DaemonService_SendVTXO_FullMethodName     = "/daemonrpc.DaemonService/SendVTXO"
 	DaemonService_SendOOR_FullMethodName      = "/daemonrpc.DaemonService/SendOOR"
 	DaemonService_RefreshVTXOs_FullMethodName = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_Board_FullMethodName        = "/daemonrpc.DaemonService/Board"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -75,6 +76,10 @@ type DaemonServiceClient interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(ctx context.Context, in *RefreshVTXOsRequest, opts ...grpc.CallOption) (*RefreshVTXOsResponse, error)
+	// Board triggers the client to join the next round with any
+	// confirmed boarding UTXOs. This sends RegistrationRequested to
+	// the round FSM, which emits a JoinRoundRequest to the server.
+	Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -185,6 +190,16 @@ func (c *daemonServiceClient) RefreshVTXOs(ctx context.Context, in *RefreshVTXOs
 	return out, nil
 }
 
+func (c *daemonServiceClient) Board(ctx context.Context, in *BoardRequest, opts ...grpc.CallOption) (*BoardResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoardResponse)
+	err := c.cc.Invoke(ctx, DaemonService_Board_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -229,6 +244,10 @@ type DaemonServiceServer interface {
 	// RefreshVTXOs queues one or more VTXOs for refresh in the next
 	// round. This extends their expiry without changing ownership.
 	RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
+	// Board triggers the client to join the next round with any
+	// confirmed boarding UTXOs. This sends RegistrationRequested to
+	// the round FSM, which emits a JoinRoundRequest to the server.
+	Board(context.Context, *BoardRequest) (*BoardResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -268,6 +287,9 @@ func (UnimplementedDaemonServiceServer) SendOOR(context.Context, *SendOORRequest
 }
 func (UnimplementedDaemonServiceServer) RefreshVTXOs(context.Context, *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RefreshVTXOs not implemented")
+}
+func (UnimplementedDaemonServiceServer) Board(context.Context, *BoardRequest) (*BoardResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Board not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -470,6 +492,24 @@ func _DaemonService_RefreshVTXOs_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_Board_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BoardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).Board(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_Board_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).Board(ctx, req.(*BoardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -516,6 +556,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RefreshVTXOs",
 			Handler:    _DaemonService_RefreshVTXOs_Handler,
+		},
+		{
+			MethodName: "Board",
+			Handler:    _DaemonService_Board_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
