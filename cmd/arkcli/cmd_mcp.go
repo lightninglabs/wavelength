@@ -60,9 +60,10 @@ func mcpServe(cmd *cobra.Command, _ []string) error {
 	// Register all admin RPC tools.
 	registerMCPTools(server, client)
 
-	// Run on stdio transport until the client disconnects.
+	// Run on stdio transport until the client disconnects
+	// or the cobra command context is cancelled (e.g. Ctrl-C).
 	return server.Run(
-		context.Background(), &mcp.StdioTransport{},
+		cmd.Context(), &mcp.StdioTransport{},
 	)
 }
 
