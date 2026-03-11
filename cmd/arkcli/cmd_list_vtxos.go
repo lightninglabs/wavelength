@@ -73,13 +73,21 @@ func listVTXOsRun(cmd *cobra.Command, _ []string) error {
 
 	// Apply --fields filtering.
 	fieldsStr, _ := cmd.Flags().GetString("fields")
+	ndjson, _ := cmd.Flags().GetBool("ndjson")
+
+	if fieldsStr != "" && ndjson {
+		return fmt.Errorf(
+			"--fields and --ndjson are " +
+				"mutually exclusive",
+		)
+	}
+
 	if fieldsStr != "" {
 		fields := strings.Split(fieldsStr, ",")
 		return printJSONFields(resp, fields)
 	}
 
 	// Emit newline-delimited JSON if --ndjson was specified.
-	ndjson, _ := cmd.Flags().GetBool("ndjson")
 	if ndjson {
 		items := make([]proto.Message, len(resp.Vtxos))
 		for i, v := range resp.Vtxos {
