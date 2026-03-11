@@ -54,9 +54,7 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	printError("METHOD_NOT_FOUND", fmt.Sprintf(
-		"unknown method %q; run 'arkcli schema' "+
-			"to list available methods", methodName))
-
-	return fmt.Errorf("unknown method: %s", methodName)
+	return fmt.Errorf("unknown method %q; run "+
+		"'arkcli schema' to list available methods",
+		methodName)
 }

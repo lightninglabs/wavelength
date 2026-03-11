@@ -63,7 +63,6 @@ func methodRegistry() []schemaMethod {
 			Params:       nil,
 			RequestType:  "TriggerBatchRequest",
 			ResponseType: "TriggerBatchResponse",
-			DryRun:       true,
 			JSONInput:    true,
 		},
 		{

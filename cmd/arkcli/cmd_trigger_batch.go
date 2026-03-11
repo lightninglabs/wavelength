@@ -16,9 +16,6 @@ func newTriggerBatchCmd() *cobra.Command {
 		RunE: triggerBatchRun,
 	}
 
-	cmd.Flags().Bool("dry-run", false,
-		"validate without triggering")
-
 	return cmd
 }
 
