@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -534,11 +536,23 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	}, nil
 }
 
+// boardJoinTimeout is how long the Board RPC waits for the operator
+// to acknowledge the JoinRoundRequest via the mailbox before giving
+// up. This must be long enough for the durable egress path and one
+// mailbox round-trip.
+const boardJoinTimeout = 30 * time.Second
+
+// boardPollInterval is how often the Board RPC polls the FSM state
+// while waiting for operator acknowledgment.
+const boardPollInterval = 500 * time.Millisecond
+
 // Board triggers the client to join the next round with any confirmed
-// boarding UTXOs. It sends a RegistrationRequested event to the round
-// actor's FSM, which transitions the pending round from
-// PendingRoundAssembly to RegistrationSent and emits a
-// JoinRoundRequest to the server.
+// boarding UTXOs. It registers VTXO output requests, triggers the
+// round FSM registration, and then polls until the operator
+// acknowledges the join (RoundJoined) or an error occurs. This
+// ensures the JoinRoundRequest has been delivered via the mailbox
+// before returning, so a subsequent trigger-batch will include this
+// client's registration.
 func (r *RPCServer) Board(ctx context.Context,
 	_ *daemonrpc.BoardRequest) (
 	*daemonrpc.BoardResponse, error) {
@@ -552,34 +566,241 @@ func (r *RPCServer) Board(ctx context.Context,
 			"actor system not initialized")
 	}
 
+	// Fetch the confirmed boarding balance from the wallet so
+	// we can automatically create VTXO output requests. Without
+	// outputs, the round FSM rejects registration with "no VTXO
+	// output amount".
+	var boardingBalance btcutil.Amount
+	if r.server.walletRef.IsSome() {
+		wRef := r.server.walletRef.UnsafeFromSome()
+
+		balReq := &wallet.GetBoardingBalanceRequest{}
+		balFuture := wRef.Ask(ctx, balReq)
+		balResult := balFuture.Await(ctx)
+
+		balResp, err := balResult.Unpack()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"failed to fetch boarding balance: %v",
+				err)
+		}
+
+		br, ok := balResp.(*wallet.GetBoardingBalanceResponse)
+		if !ok {
+			return nil, status.Errorf(codes.Internal,
+				"unexpected balance response type")
+		}
+
+		boardingBalance = br.TotalBalance
+	}
+
+	if boardingBalance == 0 {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"no confirmed boarding balance to board",
+		)
+	}
+
+	// Fetch operator terms to determine the minimum fee so
+	// that the VTXO output amount is valid.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"failed to fetch operator terms: %v", err)
+	}
+
+	// Compute VTXO output: boarding amount minus the operator's
+	// minimum fee. When MinOperatorFee is 0 the client keeps
+	// the full boarding balance as VTXOs (the operator covers
+	// miner fees from its own funding inputs).
+	vtxoAmount := boardingBalance - terms.MinOperatorFee
+	if vtxoAmount <= terms.DustLimit {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"boarding balance (%d) too small after "+
+				"operator fee (%d)",
+			boardingBalance, terms.MinOperatorFee,
+		)
+	}
+
 	// Resolve the round actor via its service key registered in
-	// the actor system's receptionist. This is the canonical way
-	// to interact with service-registered actors without holding
-	// a direct reference.
+	// the actor system's receptionist.
 	roundKey := round.NewServiceKey()
 	roundRef := roundKey.Ref(r.server.actorSystem)
 
-	// Send RegistrationRequested wrapped in a
-	// ServerMessageNotification, matching the pattern used by
-	// the systest client (systest/client.go:TriggerRegistration).
-	msg := &round.ServerMessageNotification{
+	// Wait for the FSM to reach PendingRoundAssembly before
+	// sending registration. The wallet detects confirmed boarding
+	// UTXOs and fires an IntentPackage event to the round actor,
+	// transitioning it from Idle → PendingRoundAssembly. Without
+	// this wait, RegistrationRequested arrives in Idle state and
+	// is silently dropped as an invalid transition. This mirrors
+	// the systest's WaitForBoardingConfirmation step.
+	assemblyCtx, assemblyCancel := context.WithTimeout(
+		ctx, boardJoinTimeout,
+	)
+	defer assemblyCancel()
+
+	assemblyTicker := time.NewTicker(boardPollInterval)
+	defer assemblyTicker.Stop()
+
+	var reachedAssembly bool
+	for !reachedAssembly {
+		select {
+		case <-assemblyCtx.Done():
+			return nil, status.Errorf(
+				codes.DeadlineExceeded,
+				"timed out waiting for round FSM to "+
+					"reach PendingRoundAssembly "+
+					"(wallet may not have detected "+
+					"confirmed boarding UTXOs yet)",
+			)
+
+		case <-assemblyTicker.C:
+		}
+
+		stateMsg := &round.GetClientStateRequest{}
+		stateFuture := roundRef.Ask(assemblyCtx, stateMsg)
+		stateResult := stateFuture.Await(assemblyCtx)
+		if stateResult.IsErr() {
+			continue
+		}
+
+		stateResp, _ := stateResult.Unpack()
+		resp, ok := stateResp.(*round.GetClientStateResponse)
+		if !ok {
+			continue
+		}
+
+		for _, info := range resp.States {
+			if _, ok := info.State.(*round.PendingRoundAssembly); ok {
+				reachedAssembly = true
+
+				break
+			}
+		}
+	}
+
+	log.InfoS(ctx, "Round FSM reached PendingRoundAssembly, "+
+		"proceeding with registration")
+
+	// Register VTXO output requests before triggering
+	// registration. This matches the flow used by the systest
+	// client: RegisterVTXORequests → TriggerRegistration.
+	vtxoMsg := &round.RegisterVTXORequestsRequest{
+		Amounts: []btcutil.Amount{vtxoAmount},
+	}
+
+	vtxoFuture := roundRef.Ask(ctx, vtxoMsg)
+	vtxoResult := vtxoFuture.Await(ctx)
+	if vtxoResult.IsErr() {
+		return nil, status.Errorf(codes.Internal,
+			"VTXO request registration failed: %v",
+			vtxoResult.Err())
+	}
+
+	vtxoResp, _ := vtxoResult.Unpack()
+	if resp, ok := vtxoResp.(*round.RegisterVTXORequestsResponse); ok {
+		if !resp.Success {
+			return nil, status.Errorf(codes.Internal,
+				"VTXO request rejected: %s",
+				resp.Error)
+		}
+	}
+
+	// Send RegistrationRequested to trigger the round join,
+	// matching the pattern used by the systest client
+	// (systest/client.go:TriggerRegistration).
+	regMsg := &round.ServerMessageNotification{
 		Message: &round.RegistrationRequested{},
 	}
 
-	future := roundRef.Ask(ctx, msg)
-	result := future.Await(ctx)
+	regFuture := roundRef.Ask(ctx, regMsg)
+	regResult := regFuture.Await(ctx)
 
-	if result.IsErr() {
+	if regResult.IsErr() {
 		return nil, status.Errorf(codes.Internal,
 			"board registration failed: %v",
-			result.Err())
+			regResult.Err())
 	}
 
-	log.InfoS(ctx, "Board registration triggered")
+	log.InfoS(ctx, "Board registration triggered, waiting for ack",
+		btclog.Fmt("boarding_amount", "%v",
+			boardingBalance),
+		btclog.Fmt("vtxo_amount", "%v", vtxoAmount),
+		btclog.Fmt("operator_fee", "%v",
+			terms.MinOperatorFee))
 
-	return &daemonrpc.BoardResponse{
-		Status: "registered",
-	}, nil
+	// Poll the FSM state until the operator acknowledges the
+	// join request. The FSM transitions from RegistrationSent →
+	// RoundJoined when the operator accepts, or to
+	// ClientFailed if rejected. Waiting here ensures the
+	// JoinRoundRequest has traversed the durable mailbox egress
+	// path before the RPC returns, so a subsequent
+	// trigger-batch will include this client.
+	joinCtx, cancel := context.WithTimeout(ctx, boardJoinTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(boardPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-joinCtx.Done():
+			// Timeout — the operator didn't respond in
+			// time. Return success anyway since the FSM
+			// is in RegistrationSent and may still
+			// complete asynchronously.
+			log.WarnS(ctx,
+				"Board timed out waiting for operator ack",
+				nil)
+
+			return &daemonrpc.BoardResponse{
+				Status: "registered",
+			}, nil
+
+		case <-ticker.C:
+		}
+
+		// Query the round actor for current FSM state.
+		stateMsg := &round.GetClientStateRequest{}
+		stateFuture := roundRef.Ask(joinCtx, stateMsg)
+		stateResult := stateFuture.Await(joinCtx)
+		if stateResult.IsErr() {
+			continue
+		}
+
+		stateResp, _ := stateResult.Unpack()
+		resp, ok := stateResp.(*round.GetClientStateResponse)
+		if !ok {
+			continue
+		}
+
+		// Look for any FSM that has moved past
+		// RegistrationSent.
+		for _, info := range resp.States {
+			switch info.State.(type) {
+			case *round.RoundJoinedState:
+				log.InfoS(ctx,
+					"Board operator acknowledged join",
+					slog.String("round_id",
+						info.RoundID.String()))
+
+				return &daemonrpc.BoardResponse{
+					Status: "joined",
+				}, nil
+
+			case *round.ClientFailedState:
+				failState := info.State.(*round.ClientFailedState)
+
+				return nil, status.Errorf(
+					codes.Internal,
+					"board failed: %s: %v",
+					failState.Reason,
+					failState.Error,
+				)
+			}
+		}
+	}
 }
 
 // SendVTXO initiates an in-round transfer by submitting a refresh

@@ -1156,6 +1156,17 @@ func (s *Server) registerRoundEventRoutes(
 		)
 	}
 
+	// JoinAck: server accepted the client's join request.
+	addRoundRoute(
+		roundpb.MethodJoinAck,
+		func() proto.Message {
+			return &roundpb.ClientSuccessResp{}
+		},
+		func() round.ClientEvent {
+			return &round.RoundJoined{}
+		},
+	)
+
 	// BatchInfo: server built the commitment transaction.
 	addRoundRoute(
 		roundpb.MethodBatchInfo,
@@ -1509,19 +1520,26 @@ func (s *Server) initRoundActor(ctx context.Context,
 			"terms: %w", err)
 	}
 
+	// Default maximum operator fee the client is willing to pay
+	// per round. This is a safety limit to prevent the client
+	// from overpaying. Set to 0.01 BTC (1,000,000 sats) which
+	// is generous for regtest/testnet usage.
+	const defaultMaxOperatorFee = btcutil.Amount(1_000_000)
+
 	roundCfg := &round.RoundClientConfig{
-		Name:          "round-client",
-		Logger:        log,
-		Wallet:        clientWallet,
-		RoundStore:    roundStore,
-		VTXOStore:     roundStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    s.runtime.TellRef(),
-		ChainSource:   chainSourceRef,
-		WalletActor:   walletRef,
-		ChainParams:   s.chainParams,
-		ActorSystem:   s.actorSystem,
-		TimeoutActor:  timeoutRef,
+		Name:           "round-client",
+		Logger:         log,
+		Wallet:         clientWallet,
+		RoundStore:     roundStore,
+		VTXOStore:      roundStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     s.runtime.TellRef(),
+		ChainSource:    chainSourceRef,
+		WalletActor:    walletRef,
+		ChainParams:    s.chainParams,
+		ActorSystem:    s.actorSystem,
+		TimeoutActor:   timeoutRef,
+		MaxOperatorFee: defaultMaxOperatorFee,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}

@@ -234,6 +234,10 @@ message VTXORequest {
 
     // operator_key is the compressed public key (33 bytes) of the operator.
     bytes operator_key = 5;
+
+    // signing_key is the compressed public key (33 bytes) used for MuSig2
+    // cosigning. Required for join-auth message verification.
+    bytes signing_key = 6;
 }
 
 // ForfeitRequest specifies a VTXO the client wants to forfeit.

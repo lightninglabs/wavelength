@@ -56,6 +56,16 @@ type JoinRoundRequest struct {
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}
 
+// RpcService returns the round service name for mailbox routing.
+func (m *JoinRoundRequest) RpcService() string {
+	return roundpb.ServiceName
+}
+
+// RpcMethod returns the JoinRound method name for mailbox routing.
+func (m *JoinRoundRequest) RpcMethod() string {
+	return "JoinRound"
+}
+
 // SubmitNoncesRequest is sent from client to server with MuSig2 nonces.
 // This implements ClientOutMsg and is emitted via Outbox.
 type SubmitNoncesRequest struct {
@@ -72,6 +82,16 @@ type SubmitNoncesRequest struct {
 }
 
 func (m *SubmitNoncesRequest) clientOutMsgSealed() {}
+
+// RpcService returns the round service name for mailbox routing.
+func (m *SubmitNoncesRequest) RpcService() string {
+	return roundpb.ServiceName
+}
+
+// RpcMethod returns the SubmitNonces method name for mailbox routing.
+func (m *SubmitNoncesRequest) RpcMethod() string {
+	return "SubmitNonces"
+}
 
 // SubmitPartialSigRequest is sent from client to server with partial
 // signatures. This implements ClientEvent and is emitted via Outbox.
@@ -90,6 +110,16 @@ type SubmitPartialSigRequest struct {
 
 func (m *SubmitPartialSigRequest) clientOutMsgSealed() {}
 
+// RpcService returns the round service name for mailbox routing.
+func (m *SubmitPartialSigRequest) RpcService() string {
+	return roundpb.ServiceName
+}
+
+// RpcMethod returns the SubmitPartialSigs method name for mailbox routing.
+func (m *SubmitPartialSigRequest) RpcMethod() string {
+	return "SubmitPartialSigs"
+}
+
 // SubmitForfeitSigRequest is sent from client to server with the boarding input
 // signature. This implements ClientEvent and is emitted via Outbox.
 type SubmitForfeitSigRequest struct {
@@ -105,6 +135,16 @@ type SubmitForfeitSigRequest struct {
 }
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
+
+// RpcService returns the round service name for mailbox routing.
+func (m *SubmitForfeitSigRequest) RpcService() string {
+	return roundpb.ServiceName
+}
+
+// RpcMethod returns the SubmitForfeitSigs method name for mailbox routing.
+func (m *SubmitForfeitSigRequest) RpcMethod() string {
+	return "SubmitForfeitSigs"
+}
 
 // ToProto converts JoinRoundRequest to a protobuf message for mailbox
 // transport.
@@ -149,6 +189,10 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 		if req.OperatorKey != nil {
 			vr.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		if req.SigningKey.PubKey != nil {
+			vr.SigningKey = req.SigningKey.PubKey.
 				SerializeCompressed()
 		}
 		vtxoReqs[i] = vr
@@ -383,6 +427,17 @@ type SubmitVTXOForfeitSigsToServer struct {
 }
 
 func (m *SubmitVTXOForfeitSigsToServer) clientOutMsgSealed() {}
+
+// RpcService returns the round service name for mailbox routing.
+func (m *SubmitVTXOForfeitSigsToServer) RpcService() string {
+	return roundpb.ServiceName
+}
+
+// RpcMethod returns the SubmitVTXOForfeitSigs method name for mailbox
+// routing.
+func (m *SubmitVTXOForfeitSigsToServer) RpcMethod() string {
+	return "SubmitVTXOForfeitSigs"
+}
 
 // MessageType returns the message type for logging.
 func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {

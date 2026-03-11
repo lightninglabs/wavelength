@@ -5,6 +5,11 @@ const (
 	// round protocol mailbox event routing.
 	ServiceName = "round.v1.RoundService"
 
+	// MethodJoinAck is the push event method name for
+	// ClientSuccessResp. The server sends this to acknowledge a
+	// client's JoinRoundRequest was accepted.
+	MethodJoinAck = "JoinAck"
+
 	// MethodBatchInfo is the push event method name for
 	// ClientBatchInfo. The server sends this after building the
 	// commitment transaction batch.
