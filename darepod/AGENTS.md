@@ -1,0 +1,29 @@
+# darepod
+
+## Purpose
+
+Top-level daemon orchestrator that wires wallet backend, mailbox transport,
+chain backend, database, and all domain actors into a running system with a
+gRPC API.
+
+## Key Types
+
+- `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem.
+- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.).
+- `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
+
+## Relationships
+
+- **Depends on**: `baselib/actor` (ActorSystem), `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `round`, `vtxo`, `wallet`, `oor`, `serverconn`.
+- **Depended on by**: `cmd/darepod` (main entry point).
+
+## Invariants
+
+- Server owns ActorSystem lifetime; shutdown stops all subsystems.
+- Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
+- Two wallet modes: LND-backed or lightweight (`lwwallet`).
+
+## Deep Docs
+
+- [docs/daemon_cli_guide.md](../docs/daemon_cli_guide.md) — Installation, configuration, CLI reference.
+- [ARCHITECTURE.md](../ARCHITECTURE.md) — System-wide package map.
