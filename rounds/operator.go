@@ -269,7 +269,10 @@ func (o *RoundOperator) JoinRound(ctx context.Context,
 		return nil, fmt.Errorf("parse join request: %w", err)
 	}
 
-	clientID := clientIDFromContext(ctx)
+	clientID, err := clientIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	actorMsg := &JoinRoundRequest{
 		ClientID: clientID,
@@ -308,7 +311,10 @@ func (o *RoundOperator) SubmitNonces(ctx context.Context,
 		return nil, fmt.Errorf("parse nonces: %w", err)
 	}
 
-	clientID := clientIDFromContext(ctx)
+	clientID, err := clientIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
 		RoundID: roundID,
@@ -347,7 +353,10 @@ func (o *RoundOperator) SubmitPartialSigs(ctx context.Context,
 		return nil, fmt.Errorf("parse signatures: %w", err)
 	}
 
-	clientID := clientIDFromContext(ctx)
+	clientID, err := clientIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
 		RoundID: roundID,
@@ -389,7 +398,10 @@ func (o *RoundOperator) SubmitForfeitSigs(ctx context.Context,
 		)
 	}
 
-	clientID := clientIDFromContext(ctx)
+	clientID, err := clientIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
 		RoundID: roundID,
@@ -430,7 +442,10 @@ func (o *RoundOperator) SubmitVTXOForfeitSigs(ctx context.Context,
 		)
 	}
 
-	clientID := clientIDFromContext(ctx)
+	clientID, err := clientIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	tellErr := o.cfg.RoundsRef.Tell(ctx, &RoundMsg{
 		RoundID: roundID,
@@ -815,13 +830,20 @@ func forfeitTxSigsFromProto(
 
 // clientIDFromContext extracts the client ID from the context. The
 // dispatcher injects the envelope sender as a context value before
-// calling the handler method.
-func clientIDFromContext(ctx context.Context) clientconn.ClientID {
-	id, _ := ctx.Value(
+// calling the handler method. Returns an error if the context key
+// is missing or the client ID is empty, which indicates a wiring
+// bug in the dispatch pipeline.
+func clientIDFromContext(
+	ctx context.Context) (clientconn.ClientID, error) {
+
+	id, ok := ctx.Value(
 		clientIDContextKey{},
 	).(clientconn.ClientID)
+	if !ok || id == "" {
+		return "", fmt.Errorf("missing client ID in context")
+	}
 
-	return id
+	return id, nil
 }
 
 // Compile-time check that RoundOperator implements the mailbox server
