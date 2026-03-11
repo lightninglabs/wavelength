@@ -91,9 +91,13 @@ func filterFields(obj map[string]any,
 
 		// If this is an array of objects (like "rounds"),
 		// apply the field mask to each element and always
-		// include the wrapper key.
+		// include the wrapper key. Non-array top-level
+		// fields (e.g. "total", "next_cursor") are
+		// preserved unconditionally so metadata is not
+		// silently dropped.
 		arr, ok := val.([]any)
 		if !ok {
+			result[key] = val
 			continue
 		}
 
