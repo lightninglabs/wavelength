@@ -11,7 +11,6 @@ import (
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
-	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -44,15 +43,12 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		timeoutActor,
 	)
 
-	// Build DB-backed stores for rounds and VTXOs.
+	// Build DB-backed stores for rounds and VTXOs using the
+	// shared db.Store to avoid redundant wrappers.
 	roundsLog := subLogger(s.cfg.Loggers, rounds.Subsystem)
 
-	dbStore := db.NewStore(
-		s.db.DB(), s.db.Queries, s.db.Backend(),
-		roundsLog, nil,
-	)
-	roundStore := dbStore.NewRoundStore()
-	vtxoStore := dbStore.NewVTXOStore()
+	roundStore := s.db.NewRoundStore()
+	vtxoStore := s.db.NewVTXOStore()
 
 	// Create the LND-backed wallet controller for PSBT funding and
 	// signing.
@@ -65,12 +61,6 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// wire the real LND fee estimator.
 	feeEstimator := chainfee.NewStaticEstimator(
 		chainfee.FeePerKwFloor, 0,
-	)
-
-	// Create the DB-backed VTXO locker for mutual exclusion across
-	// rounds and OOR transfers.
-	vtxoLocker := db.NewVTXOLockerDB(
-		dbStore, roundsLog,
 	)
 
 	// Create and spawn the batch watcher actor for monitoring
@@ -112,7 +102,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		TimeoutActor:       s.timeoutRef,
 		RoundStore:         roundStore,
 		VTXOStore:          vtxoStore,
-		VTXOLocker:         vtxoLocker,
+		VTXOLocker:         s.vtxoLocker,
 		WalletController:   walletCtrl,
 		FeeEstimator:       feeEstimator,
 		WalletAccount:      "",

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
@@ -40,6 +41,11 @@ type Server struct {
 
 	db *db.Store
 
+	// vtxoLocker provides mutual exclusion for VTXO operations
+	// across both the rounds and OOR subsystems. Shared to
+	// ensure consistent locking semantics.
+	vtxoLocker *db.VTXOLockerDB
+
 	adminRPC atomic.Pointer[AdminRPCServer]
 
 	rpc        atomic.Pointer[RPCServer]
@@ -51,7 +57,8 @@ type Server struct {
 	// RunWithContext independently of the parent context. This
 	// enables programmatic shutdown from subsystems or external
 	// callers that do not hold the context's cancel function.
-	quit chan struct{}
+	quit         chan struct{}
+	shutdownOnce sync.Once
 
 	// mailboxStore is the in-process mailbox store used by all
 	// subsystems for envelope persistence and delivery.
@@ -274,6 +281,10 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	s.log.InfoS(ctx, "Database initialized",
 		"backend", backendName)
 
+	// Create the shared VTXO locker used by both rounds and OOR
+	// subsystems for mutual exclusion during VTXO operations.
+	s.vtxoLocker = db.NewVTXOLockerDB(s.db, dbLog)
+
 	// -------------------------------------------------------
 	// 5. Setup indexer subsystem.
 	// -------------------------------------------------------
@@ -394,15 +405,10 @@ func (s *Server) RPCAddr() net.Addr {
 }
 
 // Shutdown triggers a graceful exit of RunWithContext independently
-// of the parent context. It is safe to call multiple times.
+// of the parent context. It is safe to call concurrently and
+// multiple times thanks to sync.Once.
 func (s *Server) Shutdown() {
-	select {
-	case <-s.quit:
-		// Already closed.
-
-	default:
-		close(s.quit)
-	}
+	s.shutdownOnce.Do(func() { close(s.quit) })
 }
 
 // connectLnd establishes a connection to the lnd node using the

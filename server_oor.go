@@ -25,23 +25,20 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	clk := clock.NewDefaultClock()
 	oorLog := subLogger(s.cfg.Loggers, oor.Subsystem)
 
-	// Build a full-featured db.Store for the OOR stores, using
-	// the same underlying DB handle.
-	dbStore := db.NewStore(
-		s.db.DB(), s.db.Queries, s.db.Backend(),
-		oorLog, nil,
-	)
+	// Use the shared db.Store and vtxoLocker rather than creating
+	// redundant wrappers. This ensures a single locker instance
+	// governs VTXO exclusion across rounds and OOR.
 
 	// Create the DB-backed session store for crash-safe session
 	// persistence.
 	sessionStore := oor.NewDBSessionStore(
-		dbStore, clk, oorLog,
+		s.db, clk, oorLog,
 	)
 
 	// Create the DB-backed delivery store for durable actor
 	// mailbox checkpoints.
 	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
-		dbStore, clk, oorLog,
+		s.db, clk, oorLog,
 	)
 	if err != nil {
 		return fmt.Errorf("create OOR delivery store: %w", err)
@@ -49,20 +46,14 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 
 	// Create the VTXO record store for input lock/status
 	// tracking during OOR sessions.
-	vtxoRecordStore := dbStore.NewVTXORecordStore()
-
-	// Create the VTXO locker for mutual exclusion across rounds
-	// and OOR transfers.
-	vtxoLocker := db.NewVTXOLockerDB(
-		dbStore, oorLog,
-	)
+	vtxoRecordStore := s.db.NewVTXORecordStore()
 
 	// Create the DB-backed recipient event store adapter that
 	// satisfies oor.RecipientEventStore (the oor package's
 	// DBRecipientEventStore wraps the raw db store with session
 	// ID resolution).
 	recipientEvents := oor.NewDBRecipientEventStore(
-		dbStore, clk, oorLog,
+		s.db, clk, oorLog,
 	)
 
 	// Build the in-process outbox driver with all DB-backed
@@ -72,7 +63,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// TODO(roasbeef): Wire the operator key and signer from
 	// LND once key management is in place.
 	driver := oor.NewDriver(oor.DriverCfg{
-		Locker:          vtxoLocker,
+		Locker:          s.vtxoLocker,
 		Store:           vtxoRecordStore,
 		SessionStore:    sessionStore,
 		RecipientEvents: recipientEvents,
