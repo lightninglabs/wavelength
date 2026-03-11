@@ -25,10 +25,16 @@ func (s *LiveState) ProcessEvent(
 		return s.handleForfeitRequest(ctx, evt, env)
 
 	case *TriggerRefreshEvent:
-		return s.handleTriggerRefresh(ctx, evt, env)
+		// External forfeit trigger (refresh or leave). Both product
+		// intents map to the same lifecycle action: commit to
+		// cooperative consumption.
+		return s.handleExternalForfeitTrigger(ctx, env)
 
 	case *TriggerLeaveEvent:
-		return s.handleTriggerLeave(ctx, evt, env)
+		// Leave is a product-level concept. From the VTXO FSM's
+		// perspective, a leave is identical to a refresh: both
+		// result in forfeiting this VTXO cooperatively.
+		return s.handleExternalForfeitTrigger(ctx, env)
 
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
@@ -188,11 +194,13 @@ func (s *LiveState) handleForfeitRequest(
 	}, nil
 }
 
-// handleTriggerRefresh handles a manual refresh request from the wallet. This
-// bypasses the automatic expiry-based refresh and immediately transitions the
-// VTXO to RefreshRequested state, emitting a ForfeitRequest to the round actor.
-func (s *LiveState) handleTriggerRefresh(
-	_ context.Context, _ *TriggerRefreshEvent, _ *VTXOEnvironment,
+// handleExternalForfeitTrigger handles an external trigger to forfeit this
+// VTXO (from wallet or round actor). The VTXO doesn't distinguish between
+// refresh and leave — both are cooperative consumption from the FSM's
+// perspective. The caller (round/wallet) handles the product-level
+// distinction.
+func (s *LiveState) handleExternalForfeitTrigger(
+	_ context.Context, _ *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 
 	outbox := []VTXOOutMsg{
@@ -207,38 +215,7 @@ func (s *LiveState) handleTriggerRefresh(
 
 	return &VTXOStateTransition{
 		NextState: &PendingForfeitState{
-			VTXO: s.VTXO,
-			// Manual trigger, no height context.
-			RequestedAtHeight: 0,
-		},
-		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
-	}, nil
-}
-
-// handleTriggerLeave handles a leave (offboard) request from the wallet. This
-// transitions the VTXO to PendingForfeitState and emits a LeaveRequest to
-// the round actor. The leave flow reuses the forfeit mechanism: the VTXO is
-// forfeited and the value goes to an on-chain output instead of a new VTXO.
-func (s *LiveState) handleTriggerLeave(
-	_ context.Context, evt *TriggerLeaveEvent, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
-
-	outbox := []VTXOOutMsg{
-		&LeaveRequest{
-			DestOutput: evt.DestOutput,
-		},
-		&VTXOStatusUpdate{
-			Outpoint:  s.VTXO.Outpoint,
-			NewStatus: VTXOStatusPendingForfeit,
-		},
-	}
-
-	// Reuse PendingForfeitState since the behavior is identical: wait for
-	// ForfeitRequestEvent from the round actor, then sign the forfeit tx.
-	return &VTXOStateTransition{
-		NextState: &PendingForfeitState{
-			VTXO: s.VTXO,
-			// Manual trigger, no height context.
+			VTXO:              s.VTXO,
 			RequestedAtHeight: 0,
 		},
 		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),

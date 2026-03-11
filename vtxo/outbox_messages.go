@@ -136,14 +136,3 @@ type VTXOTerminatedNotification struct {
 
 func (m *VTXOTerminatedNotification) vtxoOutMsgSealed() {}
 
-// LeaveRequest is sent to the round actor when a VTXO is being offboarded. The
-// round actor should queue this VTXO for forfeiture and include the destination
-// output in the batch transaction.
-type LeaveRequest struct {
-	actor.BaseMessage
-
-	// DestOutput is the on-chain output where the funds will be sent.
-	DestOutput *wire.TxOut
-}
-
-func (m *LeaveRequest) vtxoOutMsgSealed() {}

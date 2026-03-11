@@ -41,11 +41,11 @@ type (
 	// state.
 	ResumeVTXOEvent = round.ResumeVTXOEvent
 
-	// TriggerRefreshEvent is sent to manually trigger a refresh request.
+	// TriggerRefreshEvent is sent to manually trigger cooperative
+	// forfeiture.
 	TriggerRefreshEvent = round.TriggerRefreshEvent
 
-	// TriggerLeaveEvent is sent to manually trigger a leave (offboard)
-	// request. The VTXO will be forfeited and the value sent to the
-	// specified destination output.
+	// TriggerLeaveEvent is sent to manually trigger a leave
+	// (offboard).
 	TriggerLeaveEvent = round.TriggerLeaveEvent
 )
