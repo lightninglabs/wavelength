@@ -473,14 +473,12 @@ func TestFSMRegistrationState(t *testing.T) {
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		// Verify RoundSealedReq emitted before batch build clears
-		// the outbox.
-		assertOutboxContains[*RoundSealedReq](h)
-
-		// Feed batch build success to advance through batch building.
-		feedBatchBuildSuccess(h)
-
+		// Batch building runs inline during SealEvent processing.
+		// The FSM transitions directly to AwaitingInputSigsState.
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
+
+		// Verify RoundSealedReq was emitted.
+		assertOutboxContains[*RoundSealedReq](h)
 
 		// Verify the batch was built correctly.
 		require.NotNil(t, awaitState.PSBT)
@@ -569,13 +567,12 @@ func TestFSMBatchBuilding(t *testing.T) {
 		}
 
 		h := newTestHarness(t, regState)
+		h.setupPermissiveMocks()
 
-		// Seal via manual SealEvent.
+		// Seal via manual SealEvent. Batch building runs inline,
+		// transitioning directly to AwaitingInputSigsState.
 		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
-
-		// Feed batch build success to advance.
-		feedBatchBuildSuccess(h)
 
 		// Should transition to AwaitingInputSigsState.
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
@@ -634,11 +631,10 @@ func TestFSMBatchBuilding(t *testing.T) {
 			feedJoinSuccess(h, joinEvt)
 			assertStateType[*RegistrationState](h)
 
+			// Seal and build batch inline.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
-
-			feedBatchBuildViaHandler(h)
 
 			assertStateType[*AwaitingInputSigsState](h)
 		})
@@ -732,13 +728,11 @@ func TestFSMBatchBuilding(t *testing.T) {
 			}
 			feedJoinSuccess(h, joinEvt)
 
+			// Seal and build batch inline. The real
+			// buildCommitmentTx produces connector assignments.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
-
-			// Run the BuildBatchReq through the handler to
-			// produce real connector assignments.
-			feedBatchBuildViaHandler(h)
 
 			awaitState :=
 				assertStateType[*AwaitingInputSigsState](h)
@@ -810,18 +804,11 @@ func TestFSMBatchBuilding(t *testing.T) {
 			}
 			feedJoinSuccess(h, joinEvt)
 
+			// Seal and build batch inline.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			// Verify the FSM emits a BuildBatchReq with
-			// the forfeit inputs.
-			assertStateType[*AwaitingBatchBuildState](h)
-			buildReq :=
-				assertOutboxContains[*BuildBatchReq](h)
-			require.Len(t, buildReq.ForfeitInputs, 3)
-
-			feedBatchBuildViaHandler(h)
 			assertStateType[*AwaitingInputSigsState](h)
 		})
 
@@ -850,21 +837,12 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt)
 
+			// Seal and build batch inline. With VTXOs, the
+			// FSM transitions to nonce collection.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			// Verify outbox carries the build request.
-			assertStateType[*AwaitingBatchBuildState](h)
-			buildReq :=
-				assertOutboxContains[*BuildBatchReq](h)
-			require.NotEmpty(t, buildReq.VTXODescriptors)
-			require.NotEmpty(t, buildReq.ForfeitInputs)
-
-			feedBatchBuildViaHandler(h)
-
-			// With VTXOs, the batch goes to nonce collection
-			// first.
 			assertStateType[*AwaitingVTXONoncesState](h)
 		})
 
@@ -906,18 +884,11 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt2)
 
+			// Seal and build batch inline.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			// Verify the FSM emits a BuildBatchReq with
-			// both clients' forfeit inputs.
-			assertStateType[*AwaitingBatchBuildState](h)
-			buildReq :=
-				assertOutboxContains[*BuildBatchReq](h)
-			require.Len(t, buildReq.ForfeitInputs, 2)
-
-			feedBatchBuildViaHandler(h)
 			assertStateType[*AwaitingInputSigsState](h)
 		})
 
@@ -947,16 +918,11 @@ func TestFSMBatchBuilding(t *testing.T) {
 			)
 			feedJoinSuccess(h, joinEvt)
 
+			// Seal and build batch inline.
 			h.outboxMessages = nil
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			assertStateType[*AwaitingBatchBuildState](h)
-			buildReq :=
-				assertOutboxContains[*BuildBatchReq](h)
-			require.Len(t, buildReq.ForfeitInputs, 2)
-
-			feedBatchBuildViaHandler(h)
 			assertStateType[*AwaitingInputSigsState](h)
 		})
 
@@ -965,60 +931,57 @@ func TestFSMBatchBuilding(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHarness(t)
+			h.setupPermissiveMocks()
 
+			boardingOutpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte("boarding"),
+				),
+				Index: 0,
+			}
 			forfeitOutpoint1 := wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("forfeit1")),
+				Hash: chainhash.HashH(
+					[]byte("forfeit1"),
+				),
 				Index: 0,
 			}
 			forfeitOutpoint2 := wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("forfeit2")),
+				Hash: chainhash.HashH(
+					[]byte("forfeit2"),
+				),
 				Index: 0,
 			}
-			forfeitInputs := []*ForfeitInput{
-				{Outpoint: &forfeitOutpoint1},
-				{Outpoint: &forfeitOutpoint2},
-			}
 
-			clientRegs := map[ClientID]*ClientRegistration{
-				"client1": {
-					ClientID:      "client1",
-					ForfeitInputs: forfeitInputs,
-				},
-			}
+			// Join with boarding + two forfeits.
+			_, joinEvt := quickClientWithForfeit(
+				h, "client1", 10, &boardingOutpoint,
+				&forfeitOutpoint1, &forfeitOutpoint2,
+			)
+			feedJoinSuccess(h, joinEvt)
 
-			regState := &BatchBuildingState{
-				ClientRegistrations: clientRegs,
-			}
-
-			transition, err := regState.ProcessEvent(
-				t.Context(), &BuildBatchTxEvent{}, h.env,
+			// Seal and build batch inline.
+			h.outboxMessages = nil
+			err := h.sendEvent(
+				&RegistrationTimeoutEvent{},
 			)
 			require.NoError(t, err)
-			require.NotNil(t, transition)
 
-			// After extraction, BatchBuildingState emits a
-			// BuildBatchReq and transitions to
-			// AwaitingBatchBuildState.
-			nextState, ok :=
-				transition.NextState.(*AwaitingBatchBuildState)
-			require.True(t, ok)
-			require.Len(
-				t, nextState.ClientRegistrations, 1,
-			)
+			awaitState :=
+				assertStateType[*AwaitingInputSigsState](h)
 
-			// Verify the outbox carries the build request
-			// with both forfeit inputs.
-			outbox := transition.NewEvents.UnwrapOr(
-				EmittedEvent{},
-			)
-			require.Len(t, outbox.Outbox, 1)
-			buildReq, ok :=
-				outbox.Outbox[0].(*BuildBatchReq)
-			require.True(t, ok)
+			// Verify both forfeit outpoints have
+			// connector assignments.
 			require.Len(
-				t, buildReq.ForfeitInputs,
-				len(forfeitInputs),
+				t, awaitState.ConnectorAssignments, 2,
 			)
+			_, has1 := awaitState.
+				ConnectorAssignments[forfeitOutpoint1]
+			_, has2 := awaitState.
+				ConnectorAssignments[forfeitOutpoint2]
+			require.True(t, has1,
+				"forfeit1 should have connector")
+			require.True(t, has2,
+				"forfeit2 should have connector")
 		},
 	)
 
@@ -1070,9 +1033,21 @@ func TestFSMFailureScenarios(t *testing.T) {
 	t.Run("batch building failure goes to FailedState", func(t *testing.T) {
 		t.Parallel()
 
-		// Set up the test harness.
+		// Set up the test harness with FundPsbt configured to fail.
 		h := newTestHarness(t)
-		h.setupPermissiveMocks()
+		h.boardingLocker.On("Lock", mock.Anything,
+			mock.Anything, mock.Anything,
+		).Return(nil).Maybe()
+		h.boardingLocker.On("Unlock", mock.Anything,
+			mock.Anything, mock.Anything,
+		).Return(nil).Maybe()
+		h.boardingLocker.On("IsLocked", mock.Anything,
+			mock.Anything,
+		).Return(false, RoundID{}, nil).Maybe()
+
+		h.setupBatchBuildingFailure(
+			fmt.Errorf("insufficient funds"),
+		)
 
 		outpoint := wire.OutPoint{
 			Hash:  chainhash.HashH([]byte("input1")),
@@ -1089,18 +1064,9 @@ func TestFSMFailureScenarios(t *testing.T) {
 		// Clear outbox.
 		h.outboxMessages = nil
 
-		// Seal the round to trigger batch building.
+		// Seal the round. Batch building runs inline and fails,
+		// transitioning directly to FailedState.
 		err := h.sendEvent(&SealEvent{})
-		require.NoError(t, err)
-
-		// Should be in AwaitingBatchBuildState.
-		assertStateType[*AwaitingBatchBuildState](h)
-
-		// Feed batch build failure.
-		h.outboxMessages = nil
-		err = h.sendEvent(&BuildBatchFailedEvent{
-			Reason: "build commitment tx: insufficient funds",
-		})
 		require.NoError(t, err)
 
 		// Should transition to FailedState.
@@ -1109,16 +1075,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 
 		// Verify outbox messages:
 		// 1. ClientRoundFailedResp for client1
-		// 2. UnlockBoardingInputsReq
-		// 3. UnlockForfeitVTXOsReq
-		// 4. RoundFailedReq for the actor
-		// NO ReleaseWalletInputsReq (pre-batch failure).
+		// 2. RoundFailedReq for the actor
+		// Unlock/release happens inline (no outbox events).
 		var (
-			foundClientFailed  bool
-			foundRoundFailed   bool
-			foundUnlockBI      bool
-			foundUnlockVTXO    bool
-			foundReleaseWallet bool
+			foundClientFailed bool
+			foundRoundFailed  bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1129,17 +1090,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 				require.Contains(t, m.Reason, "insufficient "+
 					"funds")
 
-			case *UnlockBoardingInputsReq:
-				foundUnlockBI = true
-				require.Equal(t, h.env.RoundID, m.RoundID)
-
-			case *UnlockForfeitVTXOsReq:
-				foundUnlockVTXO = true
-				require.Equal(t, h.env.RoundID, m.RoundID)
-
-			case *ReleaseWalletInputsReq:
-				foundReleaseWallet = true
-
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -1148,12 +1098,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
-		require.True(t, foundUnlockBI,
-			"boarding inputs should be unlocked via outbox")
-		require.True(t, foundUnlockVTXO,
-			"forfeit VTXOs should be unlocked via outbox")
-		require.False(t, foundReleaseWallet,
-			"pre-batch failure should not release wallet inputs")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 
@@ -1161,9 +1105,28 @@ func TestFSMFailureScenarios(t *testing.T) {
 		func(t *testing.T) {
 			t.Parallel()
 
-			// Set up the test harness.
+			// Set up the test harness with FundPsbt
+			// configured to fail.
 			h := newTestHarness(t)
-			h.setupPermissiveMocks()
+			h.boardingLocker.On("Lock", mock.Anything,
+				mock.Anything, mock.Anything,
+			).Return(nil).Maybe()
+			h.boardingLocker.On("Unlock", mock.Anything,
+				mock.Anything, mock.Anything,
+			).Return(nil).Maybe()
+			h.boardingLocker.On("IsLocked", mock.Anything,
+				mock.Anything,
+			).Return(false, RoundID{}, nil).Maybe()
+
+			h.setupBatchBuildingFailure(
+				fmt.Errorf("insufficient funds"),
+			)
+
+			// Allow inline unlock of forfeit VTXOs on
+			// failure.
+			h.vtxoLocker.On("UnlockMany", mock.Anything,
+				mock.Anything, mock.Anything,
+			).Return(nil).Maybe()
 
 			boardingOutpoint := wire.OutPoint{
 				Hash:  chainhash.HashH([]byte("boarding")),
@@ -1188,19 +1151,9 @@ func TestFSMFailureScenarios(t *testing.T) {
 			// Clear outbox.
 			h.outboxMessages = nil
 
-			// Seal the round to trigger batch building.
+			// Seal the round. Batch building runs inline
+			// and fails, going directly to FailedState.
 			err := h.sendEvent(&SealEvent{})
-			require.NoError(t, err)
-
-			// Should be in AwaitingBatchBuildState.
-			assertStateType[*AwaitingBatchBuildState](h)
-
-			// Feed batch build failure.
-			h.outboxMessages = nil
-			err = h.sendEvent(&BuildBatchFailedEvent{
-				Reason: "build commitment tx: " +
-					"insufficient funds",
-			})
 			require.NoError(t, err)
 
 			// Should transition to FailedState.
@@ -1209,12 +1162,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 				t, failedState.Reason, "insufficient funds",
 			)
 
-			// Verify outbox messages include unlock events.
+			// Verify outbox messages. Unlock/release
+			// happens inline (no outbox events for those).
 			var (
 				foundClientFailed bool
 				foundRoundFailed  bool
-				foundUnlockBI     bool
-				foundUnlockVTXO   bool
 			)
 			for _, msg := range h.outboxMessages {
 				switch m := msg.(type) {
@@ -1223,18 +1175,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 					require.Equal(
 						t, ClientID("client1"),
 						m.Client,
-					)
-
-				case *UnlockBoardingInputsReq:
-					foundUnlockBI = true
-					require.Equal(
-						t, h.env.RoundID, m.RoundID,
-					)
-
-				case *UnlockForfeitVTXOsReq:
-					foundUnlockVTXO = true
-					require.Equal(
-						t, h.env.RoundID, m.RoundID,
 					)
 
 				case *RoundFailedReq:
@@ -1248,14 +1188,6 @@ func TestFSMFailureScenarios(t *testing.T) {
 			require.True(
 				t, foundClientFailed,
 				"client should be notified",
-			)
-			require.True(
-				t, foundUnlockBI,
-				"boarding inputs should be unlocked",
-			)
-			require.True(
-				t, foundUnlockVTXO,
-				"forfeit VTXOs should be unlocked",
 			)
 			require.True(
 				t, foundRoundFailed,
@@ -1309,13 +1241,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 		_, joinEvt := quickClient(h, "client1", 10, &outpoint)
 		feedJoinSuccess(h, joinEvt)
 
-		// Seal via RegistrationTimeoutEvent.
+		// Seal via RegistrationTimeoutEvent. Batch building runs
+		// inline, advancing directly to AwaitingInputSigsState.
 		h.outboxMessages = nil
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
-
-		// Feed batch build success to advance past batch building.
-		feedBatchBuildSuccess(h)
 
 		// Should be in AwaitingInputSigsState.
 		assertStateType[*AwaitingInputSigsState](h)
@@ -1331,14 +1261,11 @@ func TestFSMFailureScenarios(t *testing.T) {
 		failedState := assertStateType[*FailedState](h)
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages include unlock events and
-		// wallet input release.
-		expectedLockID := roundLockID(h.env.RoundID)
+		// Verify outbox messages. Unlock/release happens inline
+		// (not via outbox events).
 		var (
-			foundClientFailed  bool
-			foundRoundFailed   bool
-			foundUnlockBI      bool
-			foundReleaseWallet bool
+			foundClientFailed bool
+			foundRoundFailed  bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -1346,30 +1273,12 @@ func TestFSMFailureScenarios(t *testing.T) {
 				foundClientFailed = true
 				require.Equal(t, ClientID("client1"), m.Client)
 
-			case *UnlockBoardingInputsReq:
-				foundUnlockBI = true
-				require.Equal(t, h.env.RoundID, m.RoundID)
-
-			case *ReleaseWalletInputsReq:
-				foundReleaseWallet = true
-				require.Equal(
-					t, expectedLockID, m.LockID,
-				)
-				require.Equal(
-					t, testLockedOutpoints,
-					m.LockedOutpoints,
-				)
-
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
 			}
 		}
 		require.True(t, foundClientFailed, "client notified of failure")
-		require.True(t, foundUnlockBI,
-			"boarding inputs should be unlocked via outbox")
-		require.True(t, foundReleaseWallet,
-			"wallet inputs should be released via outbox")
 		require.True(t, foundRoundFailed, "actor notified of failure")
 	})
 }
@@ -1401,8 +1310,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.outboxMessages = nil
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
-
-		feedBatchBuildViaHandler(h)
 
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.NotNil(t, awaitState.PSBT)
@@ -1492,8 +1399,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
 
-		feedBatchBuildViaHandler(h)
-
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		require.Empty(t, awaitState.ClientsSubmitted)
 		require.NotNil(t, awaitState.CollectedForfeitTxs)
@@ -1580,8 +1485,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 			err := h.sendEvent(&RegistrationTimeoutEvent{})
 			require.NoError(t, err)
 
-			feedBatchBuildViaHandler(h)
-
 			awaitState :=
 				assertStateType[*AwaitingInputSigsState](h)
 			sigEvent :=
@@ -1621,8 +1524,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.outboxMessages = nil
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
-
-		feedBatchBuildViaHandler(h)
 
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
@@ -1699,8 +1600,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
 
-		feedBatchBuildViaHandler(h)
-
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 		sigEvent := client.createInputSignaturesEvent(awaitState)
 		sigEvent.ForfeitTxs = nil
@@ -1746,8 +1645,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.outboxMessages = nil
 		err := h.sendEvent(&SealEvent{})
 		require.NoError(t, err)
-
-		feedBatchBuildViaHandler(h)
 
 		awaitState := assertStateType[*AwaitingInputSigsState](h)
 
@@ -1798,8 +1695,6 @@ func TestFSMBoardingSignatures(t *testing.T) {
 		h.outboxMessages = nil
 		err := h.sendEvent(&RegistrationTimeoutEvent{})
 		require.NoError(t, err)
-
-		feedBatchBuildSuccess(h)
 
 		assertStateType[*AwaitingInputSigsState](h)
 
@@ -1976,6 +1871,7 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		)
 
 		h := newTestHarness(t, awaitState)
+		h.setupPermissiveMocks()
 
 		// Send VTXONoncesTimeoutEvent.
 		err := h.sendEvent(&VTXONoncesTimeoutEvent{})
@@ -1986,11 +1882,10 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "VTXO nonce collection")
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages include unlock events.
+		// Verify outbox messages. Unlock/release happens inline.
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
-			foundUnlockBI     bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -2000,10 +1895,6 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				require.Equal(t, h.env.RoundID, m.RoundID)
 				require.Contains(t, m.Reason, "VTXO nonce")
 
-			case *UnlockBoardingInputsReq:
-				foundUnlockBI = true
-				require.Equal(t, h.env.RoundID, m.RoundID)
-
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
@@ -2011,8 +1902,6 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
-		require.True(t, foundUnlockBI,
-			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 
@@ -2293,8 +2182,6 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	err := h.sendEvent(&RegistrationTimeoutEvent{})
 	require.NoError(t, err)
 
-	feedBatchBuildViaHandler(h)
-
 	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
 	require.NotNil(t, awaitNonces.PSBT)
 	require.NotEmpty(t, awaitNonces.VTXOTrees)
@@ -2449,8 +2336,6 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	err = h.sendEvent(&RegistrationTimeoutEvent{})
 	require.NoError(t, err)
 
-	feedBatchBuildViaHandler(h)
-
 	awaitState := assertStateType[*AwaitingInputSigsState](h)
 	assignment :=
 		awaitState.ConnectorAssignments[forfeitOutpoint]
@@ -2587,8 +2472,6 @@ func TestFSMVTXOMultiClientRealSigs(t *testing.T) {
 	err := h.sendEvent(&SealEvent{})
 	require.NoError(t, err)
 
-	feedBatchBuildViaHandler(h)
-
 	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
 	require.NotEmpty(t, awaitNonces.VTXOTrees)
 
@@ -2720,8 +2603,6 @@ func TestFSMVTXOMultiKeyPerClientRealSigs(t *testing.T) {
 	h.outboxMessages = nil
 	err := h.sendEvent(&RegistrationTimeoutEvent{})
 	require.NoError(t, err)
-
-	feedBatchBuildViaHandler(h)
 
 	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
 	require.NotEmpty(t, awaitNonces.VTXOTrees)
@@ -2939,6 +2820,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 			},
 		)
 		h := newTestHarness(t, awaitState)
+		h.setupPermissiveMocks()
 
 		// Send VTXOSignaturesTimeoutEvent.
 		err := h.sendEvent(&VTXOSignaturesTimeoutEvent{})
@@ -2949,11 +2831,10 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		require.Contains(t, failedState.Reason, "VTXO signature")
 		require.Contains(t, failedState.Reason, "timeout")
 
-		// Verify outbox messages include unlock events.
+		// Verify outbox messages. Unlock/release happens inline.
 		var (
 			foundClientFailed bool
 			foundRoundFailed  bool
-			foundUnlockBI     bool
 		)
 		for _, msg := range h.outboxMessages {
 			switch m := msg.(type) {
@@ -2962,18 +2843,12 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				require.Equal(t, ClientID("client1"), m.Client)
 				require.Equal(t, h.env.RoundID, m.RoundID)
 
-			case *UnlockBoardingInputsReq:
-				foundUnlockBI = true
-				require.Equal(t, h.env.RoundID, m.RoundID)
-
 			case *RoundFailedReq:
 				foundRoundFailed = true
 				require.Equal(t, h.env.RoundID, m.FailedRoundID)
 			}
 		}
 		require.True(t, foundClientFailed, "client should be notified")
-		require.True(t, foundUnlockBI,
-			"boarding inputs should be unlocked via outbox")
 		require.True(t, foundRoundFailed, "actor should be notified")
 	})
 

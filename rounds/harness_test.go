@@ -249,11 +249,19 @@ func (c *commonMockSetup) setupPermissiveMocks() {
 	c.feeEstimator.On("EstimateFeePerKW", uint32(6)).
 		Return(chainfee.SatPerKWeight(1000), nil).Maybe()
 
-	// Set up permissive wallet controller expectation.
+	// Set up permissive wallet controller expectations.
 	c.walletController.On("FundPsbt", mock.Anything, mock.Anything,
 		mock.Anything, mock.Anything, mock.Anything,
 		mock.Anything).
 		Return(int32(-1), testLockedOutpoints, nil).Maybe()
+	c.walletController.On("ReleaseInputs", mock.Anything,
+		mock.Anything, mock.Anything).
+		Return(nil).Maybe()
+
+	// Set up permissive VTXO locker expectation for unlocking
+	// forfeits during failure transitions.
+	c.vtxoLocker.On("UnlockMany", mock.Anything, mock.Anything,
+		mock.Anything).Return(nil).Maybe()
 }
 
 // allowBoardingInput sets up the boarding locker mock to allow the given
@@ -384,9 +392,8 @@ func (c *commonMockSetup) setupBatchBuildingFailure(err error) {
 
 // setupCompleteRegistrationFlow sets up all mocks needed for a client to
 // successfully join. This includes boarding input locking and UTXO validation.
-// Batch building is now handled via the OutboxHandler; call
-// feedBatchBuildSuccess after RegistrationTimeoutEvent to advance past
-// AwaitingBatchBuildState.
+// Batch building runs inline during SealEvent processing; ensure
+// setupPermissiveMocks or setupBatchBuildingMocks is called before sealing.
 func (c *commonMockSetup) setupCompleteRegistrationFlow(
 	outpoint *wire.OutPoint, clientKey *btcec.PublicKey, exitDelay uint32,
 	confirmations int64, roundID RoundID) {
@@ -398,7 +405,7 @@ func (c *commonMockSetup) setupCompleteRegistrationFlow(
 }
 
 // testLockedOutpoints is a fixed set of wallet outpoints used by
-// feedBatchBuildSuccess to simulate UTXO leases from FundPsbt.
+// setupPermissiveMocks to simulate UTXO leases from FundPsbt.
 var testLockedOutpoints = []wire.OutPoint{
 	{
 		Hash:  chainhash.HashH([]byte("wallet-utxo-1")),
@@ -408,60 +415,6 @@ var testLockedOutpoints = []wire.OutPoint{
 		Hash:  chainhash.HashH([]byte("wallet-utxo-2")),
 		Index: 1,
 	},
-}
-
-// feedBatchBuildSuccess asserts the FSM is in AwaitingBatchBuildState,
-// extracts the BuildBatchReq outbox event, feeds a BuildBatchSucceededEvent
-// with a minimal test PSBT and locked outpoints, and returns the resulting
-// test PSBT for further assertions.
-func feedBatchBuildSuccess(h *fsmTestHarness) *psbt.Packet {
-	h.Helper()
-
-	assertStateType[*AwaitingBatchBuildState](h)
-	assertOutboxContains[*BuildBatchReq](h)
-
-	testPSBT := &psbt.Packet{UnsignedTx: wire.NewMsgTx(2)}
-
-	h.outboxMessages = nil
-	err := h.sendEvent(&BuildBatchSucceededEvent{
-		PSBT:            testPSBT,
-		LockedOutpoints: testLockedOutpoints,
-	})
-	require.NoError(h, err)
-
-	return testPSBT
-}
-
-// feedBatchBuildViaHandler asserts the FSM is in AwaitingBatchBuildState,
-// extracts the BuildBatchReq outbox event, runs it through a real
-// InProcessOutboxHandler backed by the harness's mocks, and feeds the
-// resulting BuildBatchSucceededEvent (or BuildBatchFailedEvent) back into
-// the FSM. This is necessary for tests that need real tree data (VTXOTrees,
-// ConnectorAssignments) produced by buildCommitmentTx.
-func feedBatchBuildViaHandler(h *fsmTestHarness) {
-	h.Helper()
-
-	assertStateType[*AwaitingBatchBuildState](h)
-	buildReq := assertOutboxContains[*BuildBatchReq](h)
-
-	handler := NewInProcessOutboxHandler(
-		h.roundStore, h.vtxoStore, h.walletController,
-		h.feeEstimator, h.boardingLocker, h.vtxoLocker,
-		h.chainSource, h.env.ChainParams,
-		h.env.Terms, h.env.Log,
-		h.env.ConfTarget, h.env.MinConfs,
-		h.env.WalletAccount,
-	)
-
-	events, err := handler.Handle(
-		h.Context(), h.roundID, buildReq,
-	)
-	require.NoError(h, err)
-	require.Len(h, events, 1)
-
-	h.outboxMessages = nil
-	err = h.sendEvent(events[0])
-	require.NoError(h, err)
 }
 
 // feedJoinSuccess sends a ClientJoinRequestEvent and asserts the FSM

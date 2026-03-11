@@ -2,7 +2,6 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
-	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
@@ -178,47 +177,6 @@ type TransactionConfirmedEvent struct {
 // eventSealed marks TransactionConfirmedEvent as implementing the sealed Event
 // interface.
 func (e *TransactionConfirmedEvent) eventSealed() {}
-
-// BuildBatchSucceededEvent is sent by the OutboxHandler after it has
-// successfully built the commitment transaction (fee estimation, wallet
-// funding, tree construction).
-type BuildBatchSucceededEvent struct {
-	// PSBT is the funded commitment transaction PSBT.
-	PSBT *psbt.Packet
-
-	// VTXOTrees maps commitment tx output indices to VTXO trees.
-	VTXOTrees map[int]*tree.Tree
-
-	// ConnectorTrees maps commitment tx output indices to connector trees.
-	ConnectorTrees map[int]*tree.Tree
-
-	// ConnectorAssignments maps forfeited VTXO outpoints to their assigned
-	// connector leaves.
-	ConnectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment
-
-	// ConnectorDescriptors describe the connector tree outputs.
-	ConnectorDescriptors []*ConnectorTreeDescriptor
-
-	// LockedOutpoints lists the wallet UTXOs that were leased during
-	// coin selection. These must be released if the round fails.
-	LockedOutpoints []wire.OutPoint
-}
-
-// eventSealed marks BuildBatchSucceededEvent as implementing the sealed
-// Event interface.
-func (e *BuildBatchSucceededEvent) eventSealed() {}
-
-// BuildBatchFailedEvent is sent by the OutboxHandler when building the
-// commitment transaction fails (fee estimation error, wallet funding error,
-// etc.).
-type BuildBatchFailedEvent struct {
-	// Reason describes why the batch build failed.
-	Reason string
-}
-
-// eventSealed marks BuildBatchFailedEvent as implementing the sealed Event
-// interface.
-func (e *BuildBatchFailedEvent) eventSealed() {}
 
 // SignAndFinalizeSucceededEvent is sent by the OutboxHandler after it has
 // successfully signed all boarding inputs, completed forfeit transactions,

@@ -156,6 +156,88 @@ func lockForfeitVTXOs(ctx context.Context, env *Environment,
 	return nil
 }
 
+// unlockBoardingInputs unlocks all boarding inputs for the given client
+// registrations. This is called when a round fails to release all locked
+// inputs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all inputs even if some fail.
+func unlockBoardingInputs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		for _, bi := range reg.BoardingInputs {
+			err := env.BoardingInputLocker.Unlock(
+				ctx, bi.Outpoint, env.RoundID,
+			)
+			if err != nil {
+				env.Log.ErrorS(ctx, "Failed to unlock boarding "+
+					"input", err,
+					"outpoint", bi.Outpoint.String())
+			}
+		}
+	}
+}
+
+// unlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
+// registrations. This is called when a round fails to release all locked
+// VTXOs. Errors are logged but don't stop the unlocking process, ensuring
+// we attempt to unlock all VTXOs even if some fail.
+func unlockForfeitVTXOs(ctx context.Context, env *Environment,
+	clientRegs map[clientconn.ClientID]*ClientRegistration) {
+
+	for _, reg := range clientRegs {
+		if len(reg.ForfeitInputs) == 0 {
+			continue
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
+		)
+		for _, fi := range reg.ForfeitInputs {
+			outpoints = append(outpoints, *fi.Outpoint)
+		}
+
+		if env.VTXOLocker == nil {
+			err := env.VTXOStore.UnlockVTXO(
+				ctx, env.RoundID, outpoints...,
+			)
+			if err != nil {
+				env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
+					"VTXOs", err,
+					"count", len(outpoints))
+			}
+
+			continue
+		}
+
+		owner := vtxo.RoundLockOwner(env.RoundID.String())
+		err := env.VTXOLocker.UnlockMany(ctx, outpoints, owner)
+		if err != nil {
+			env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
+				"VTXOs", err,
+				"count", len(outpoints))
+		}
+	}
+}
+
+// releaseWalletInputs releases UTXO leases acquired by a prior FundPsbt call.
+// Errors are logged but do not halt execution, since failing to release a
+// lease only means the UTXOs remain locked until the lease expires naturally.
+func releaseWalletInputs(ctx context.Context, env *Environment,
+	lockID [32]byte, lockedOutpoints []wire.OutPoint) {
+
+	if len(lockedOutpoints) == 0 {
+		return
+	}
+
+	err := env.WalletController.ReleaseInputs(
+		ctx, lockID, lockedOutpoints,
+	)
+	if err != nil {
+		env.Log.WarnS(ctx, "Failed to release wallet inputs", err,
+			slog.Int("count", len(lockedOutpoints)))
+	}
+}
+
 // newClientRegistration creates a ClientRegistration from a validated join
 // request result.
 func newClientRegistration(clientID ClientID,
@@ -513,90 +595,85 @@ func (s *BatchBuildingState) ProcessEvent(ctx context.Context, event Event,
 			LogLeaveCount(len(allLeaveOutputs)),
 			LogVTXOCount(len(allVTXODescriptors)))
 
-		// Emit a BuildBatchReq for the OutboxHandler to perform
-		// fee estimation, wallet funding, and tree construction.
+		// Build the commitment transaction PSBT with fee
+		// estimation and wallet funding.
 		lockID := roundLockID(env.RoundID)
-		buildReq := &BuildBatchReq{
-			RoundID:         env.RoundID,
-			BoardingInputs:  allBoardingInputs,
-			ForfeitInputs:   allForfeitInputs,
-			RequiredOutputs: allLeaveOutputs,
-			VTXODescriptors: allVTXODescriptors,
-			Terms:           env.Terms,
-			ForfeitScript:   env.ForfeitScript,
-			FundingOpts: &FundingOpts{
-				LockID:       lockID,
-				LockDuration: env.Terms.FundPsbtLockDuration,
-			},
+		fundingOpts := &FundingOpts{
+			LockID:       lockID,
+			LockDuration: env.Terms.FundPsbtLockDuration,
+		}
+		psbtPacket, _, vtxoTrees, connectorTrees,
+			connectorAssignments, lockedOutpoints,
+			err := buildCommitmentTx(
+			ctx, env.Terms,
+			env.FeeEstimator, env.ConfTarget,
+			env.WalletController, env.MinConfs,
+			env.WalletAccount,
+			allBoardingInputs, allForfeitInputs,
+			allLeaveOutputs, allVTXODescriptors,
+			fundingOpts,
+		)
+		if err != nil {
+			env.Log.WarnS(ctx, "Commitment tx build failed", err)
+
+			reason := fmt.Sprintf(
+				"build commitment tx: %v", err,
+			)
+
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations,
+				reason, [32]byte{}, nil,
+			), nil
 		}
 
-		return &StateTransition{
-			NextState: &AwaitingBatchBuildState{
-				ClientRegistrations: s.ClientRegistrations,
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{buildReq},
-			}),
-		}, nil
+		connectorDescriptors, err := buildConnectorDescriptors(
+			connectorAssignments, env.ForfeitScript,
+		)
+		if err != nil {
+			// Release wallet UTXO leases since batch
+			// building partially succeeded.
+			releaseWalletInputs(
+				ctx, env, lockID, lockedOutpoints,
+			)
 
-	default:
-		return unexpectedEvent(s, "batch-building", event, env), nil
-	}
-}
+			reason := fmt.Sprintf(
+				"build connector descriptors: %v", err,
+			)
 
-// ProcessEvent handles the events from the AwaitingBatchBuildState state.
-// It waits for the OutboxHandler to finish building the commitment transaction.
-func (s *AwaitingBatchBuildState) ProcessEvent(ctx context.Context,
-	event Event, env *Environment) (*StateTransition, error) {
+			return buildFailureTransition(
+				ctx, env, s.ClientRegistrations,
+				reason, [32]byte{}, nil,
+			), nil
+		}
 
-	env.Log.DebugS(ctx, "Processing event",
-		LogState("AwaitingBatchBuild"),
-		LogEvent(event))
-
-	switch msg := event.(type) {
-	case *BuildBatchSucceededEvent:
 		env.Log.InfoS(ctx,
 			"Commitment transaction built successfully",
-			slog.Int("tree_count", len(msg.VTXOTrees)),
+			slog.Int("tree_count", len(vtxoTrees)),
 			slog.Int("input_count",
-				len(msg.PSBT.Inputs)),
+				len(psbtPacket.Inputs)),
 			slog.Int("output_count",
-				len(msg.PSBT.Outputs)))
+				len(psbtPacket.Outputs)))
 
 		// Transition to BatchBuiltState with the funded PSBT.
 		return &StateTransition{
 			NextState: &BatchBuiltState{
 				ClientRegistrations:  s.ClientRegistrations,
-				PSBT:                 msg.PSBT,
-				VTXOTrees:            msg.VTXOTrees,
-				ConnectorTrees:       msg.ConnectorTrees,
-				ConnectorAssignments: msg.ConnectorAssignments,
-				ConnectorDescriptors: msg.ConnectorDescriptors,
-				LockedOutpoints:      msg.LockedOutpoints,
+				PSBT:                 psbtPacket,
+				VTXOTrees:            vtxoTrees,
+				ConnectorTrees:       connectorTrees,
+				ConnectorAssignments: connectorAssignments,
+				ConnectorDescriptors: connectorDescriptors,
+				LockedOutpoints:      lockedOutpoints,
 			},
 			NewEvents: fn.Some(EmittedEvent{
-				// Emit the internal event to prepare
-				// client notifications.
 				InternalEvent: []Event{
 					&PrepareClientNotificationsEvent{},
 				},
 			}),
 		}, nil
 
-	case *BuildBatchFailedEvent:
-		env.Log.WarnS(ctx, "Batch build failed", nil,
-			slog.String("reason", msg.Reason))
-
-		// Pre-batch failure: no wallet inputs locked yet.
-		return buildFailureTransition(
-			ctx, env, s.ClientRegistrations, msg.Reason,
-			[32]byte{}, nil,
-		), nil
-
 	default:
-		return unexpectedEvent(
-			s, "awaiting-batch-build", event, env,
-		), nil
+		return unexpectedEvent(s, "batch-building", event, env), nil
 	}
 }
 
@@ -841,7 +918,7 @@ func (s *BatchBuiltState) transitionToInputSigs(ctx context.Context,
 // When lockedOutpoints is non-empty and lockID is non-zero, a
 // ReleaseWalletInputsReq is emitted so the handler can release UTXO
 // leases acquired during FundPsbt.
-func buildFailureTransition(_ context.Context, env *Environment,
+func buildFailureTransition(ctx context.Context, env *Environment,
 	clientRegs map[clientconn.ClientID]*ClientRegistration,
 	reason string, lockID [32]byte,
 	lockedOutpoints []wire.OutPoint) *StateTransition {
@@ -861,28 +938,12 @@ func buildFailureTransition(_ context.Context, env *Environment,
 		})
 	}
 
-	// Emit unlock outbox events. The handler will execute the actual
-	// unlock I/O — this keeps buildFailureTransition pure with respect
-	// to locking side effects.
-	outboxMsgs = append(outboxMsgs, &UnlockBoardingInputsReq{
-		RoundID:             env.RoundID,
-		ClientRegistrations: clientRegs,
-	})
-	outboxMsgs = append(outboxMsgs, &UnlockForfeitVTXOsReq{
-		RoundID:             env.RoundID,
-		ClientRegistrations: clientRegs,
-	})
+	// Unlock all boarding inputs and forfeit VTXOs inline.
+	unlockBoardingInputs(ctx, env, clientRegs)
+	unlockForfeitVTXOs(ctx, env, clientRegs)
 
-	// Release wallet UTXO leases if any were acquired during
-	// FundPsbt. Pre-batch failures pass nil/zero here.
-	if len(lockedOutpoints) > 0 {
-		outboxMsgs = append(outboxMsgs,
-			&ReleaseWalletInputsReq{
-				LockID:          lockID,
-				LockedOutpoints: lockedOutpoints,
-			},
-		)
-	}
+	// Release wallet UTXO leases if any were acquired during FundPsbt.
+	releaseWalletInputs(ctx, env, lockID, lockedOutpoints)
 
 	// Notify the actor that the round has failed.
 	outboxMsgs = append(outboxMsgs, &RoundFailedReq{

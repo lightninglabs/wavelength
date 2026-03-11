@@ -85,9 +85,6 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	outbox OutboxEvent) ([]Event, error) {
 
 	switch msg := outbox.(type) {
-	case *BuildBatchReq:
-		return h.handleBuildBatch(ctx, msg)
-
 	case *SignAndFinalizeRoundReq:
 		return h.handleSignAndFinalize(ctx, msg)
 
@@ -97,76 +94,9 @@ func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
 	case *ConfirmRoundReq:
 		return h.handleConfirmRound(ctx, msg)
 
-	case *ReleaseWalletInputsReq:
-		h.handleReleaseWalletInputs(ctx, msg)
-		return nil, nil
-
-	case *UnlockBoardingInputsReq:
-		h.handleUnlockBoardingInputs(ctx, msg)
-		return nil, nil
-
-	case *UnlockForfeitVTXOsReq:
-		h.handleUnlockForfeitVTXOs(ctx, msg)
-		return nil, nil
-
 	default:
 		return nil, nil
 	}
-}
-
-// handleBuildBatch builds the commitment transaction by performing fee
-// estimation, wallet funding, and tree construction. Returns a
-// BuildBatchSucceededEvent on success or a BuildBatchFailedEvent on any
-// error.
-func (h *InProcessOutboxHandler) handleBuildBatch(ctx context.Context,
-	msg *BuildBatchReq) ([]Event, error) {
-
-	packet, _, vtxoTrees, connectorTrees,
-		connectorAssignments, lockedOutpoints,
-		err := buildCommitmentTx(
-		ctx, msg.Terms,
-		h.feeEstimator, h.confTarget,
-		h.walletController, h.minConfs, h.walletAccount,
-		msg.BoardingInputs, msg.ForfeitInputs,
-		msg.RequiredOutputs, msg.VTXODescriptors,
-		msg.FundingOpts,
-	)
-	if err != nil {
-		return []Event{&BuildBatchFailedEvent{
-			Reason: fmt.Sprintf(
-				"build commitment tx: %v", err,
-			),
-		}}, nil
-	}
-
-	connectorDescriptors, err := buildConnectorDescriptors(
-		connectorAssignments, msg.ForfeitScript,
-	)
-	if err != nil {
-		// Release any locked outpoints acquired by FundPsbt
-		// before reporting the failure.
-		if msg.FundingOpts != nil && len(lockedOutpoints) > 0 {
-			_ = h.walletController.ReleaseInputs(
-				ctx, msg.FundingOpts.LockID,
-				lockedOutpoints,
-			)
-		}
-
-		return []Event{&BuildBatchFailedEvent{
-			Reason: fmt.Sprintf(
-				"build connector descriptors: %v", err,
-			),
-		}}, nil
-	}
-
-	return []Event{&BuildBatchSucceededEvent{
-		PSBT:                 packet,
-		VTXOTrees:            vtxoTrees,
-		ConnectorTrees:       connectorTrees,
-		ConnectorAssignments: connectorAssignments,
-		ConnectorDescriptors: connectorDescriptors,
-		LockedOutpoints:      lockedOutpoints,
-	}}, nil
 }
 
 // handleSignAndFinalize signs all boarding inputs, completes forfeit
@@ -365,95 +295,6 @@ func (h *InProcessOutboxHandler) handleConfirmRound(ctx context.Context,
 	}
 
 	return []Event{&ConfirmRoundSucceededEvent{}}, nil
-}
-
-// handleReleaseWalletInputs releases UTXO leases acquired by a prior FundPsbt
-// call. This is fire-and-forget: errors are logged but do not produce follow-up
-// events, since failing to release a lease only means the UTXOs remain locked
-// until the lease expires naturally.
-func (h *InProcessOutboxHandler) handleReleaseWalletInputs(
-	ctx context.Context, msg *ReleaseWalletInputsReq) {
-
-	err := h.walletController.ReleaseInputs(
-		ctx, msg.LockID, msg.LockedOutpoints,
-	)
-	if err != nil {
-		h.log.WarnS(
-			ctx, "Failed to release wallet inputs", err,
-			"lock_id", msg.LockID,
-			"count", len(msg.LockedOutpoints),
-		)
-	}
-}
-
-// handleUnlockBoardingInputs unlocks all boarding inputs for the given client
-// registrations. This is fire-and-forget: errors are logged but do not produce
-// follow-up events, ensuring we attempt to unlock all inputs even if some fail.
-func (h *InProcessOutboxHandler) handleUnlockBoardingInputs(
-	ctx context.Context, msg *UnlockBoardingInputsReq) {
-
-	for _, reg := range msg.ClientRegistrations {
-		for _, bi := range reg.BoardingInputs {
-			err := h.boardingInputLocker.Unlock(
-				ctx, bi.Outpoint, msg.RoundID,
-			)
-			if err != nil {
-				h.log.ErrorS(
-					ctx, "Failed to unlock "+
-						"boarding input", err,
-					"outpoint",
-					bi.Outpoint.String(),
-				)
-			}
-		}
-	}
-}
-
-// handleUnlockForfeitVTXOs unlocks all forfeit VTXOs for the given client
-// registrations. This is fire-and-forget: errors are logged but do not produce
-// follow-up events, ensuring we attempt to unlock all VTXOs even if some fail.
-func (h *InProcessOutboxHandler) handleUnlockForfeitVTXOs(
-	ctx context.Context, msg *UnlockForfeitVTXOsReq) {
-
-	for _, reg := range msg.ClientRegistrations {
-		if len(reg.ForfeitInputs) == 0 {
-			continue
-		}
-
-		outpoints := make(
-			[]wire.OutPoint, 0, len(reg.ForfeitInputs),
-		)
-		for _, fi := range reg.ForfeitInputs {
-			outpoints = append(outpoints, *fi.Outpoint)
-		}
-
-		if h.vtxoLocker == nil {
-			err := h.vtxoStore.UnlockVTXO(
-				ctx, msg.RoundID, outpoints...,
-			)
-			if err != nil {
-				h.log.ErrorS(
-					ctx, "Failed to unlock "+
-						"forfeit VTXOs", err,
-					"count", len(outpoints),
-				)
-			}
-
-			continue
-		}
-
-		owner := vtxo.RoundLockOwner(msg.RoundID.String())
-		err := h.vtxoLocker.UnlockMany(
-			ctx, outpoints, owner,
-		)
-		if err != nil {
-			h.log.ErrorS(
-				ctx, "Failed to unlock "+
-					"forfeit VTXOs", err,
-				"count", len(outpoints),
-			)
-		}
-	}
 }
 
 // Compile-time check that InProcessOutboxHandler implements OutboxHandler.

@@ -11,7 +11,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
-	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
@@ -446,46 +445,6 @@ type BroadcastRoundReq struct {
 // OutboxEvent interface.
 func (b *BroadcastRoundReq) outboxEventSealed() {}
 
-// BuildBatchReq is an outbox event emitted when the FSM is ready to build
-// the commitment transaction. The OutboxHandler should call buildCommitmentTx
-// to perform fee estimation and wallet funding, then return a
-// BuildBatchSucceededEvent or BuildBatchFailedEvent.
-type BuildBatchReq struct {
-	// RoundID is the identifier of the round being built.
-	RoundID RoundID
-
-	// BoardingInputs are the client boarding inputs to include in the
-	// commitment transaction.
-	BoardingInputs []*BoardingInput
-
-	// ForfeitInputs are the client forfeit inputs whose connector trees
-	// must be constructed.
-	ForfeitInputs []*ForfeitInput
-
-	// RequiredOutputs are the leave outputs to include in the commitment
-	// transaction.
-	RequiredOutputs []*wire.TxOut
-
-	// VTXODescriptors describe the VTXO tree outputs to construct.
-	VTXODescriptors []tree.VTXODescriptor
-
-	// Terms contains the operator's terms for batch building (tree radix,
-	// dust amounts, connector configuration, etc.).
-	Terms *batch.Terms
-
-	// ForfeitScript is the output script for penalty outputs in forfeit
-	// transactions.
-	ForfeitScript []byte
-
-	// FundingOpts carries optional UTXO lease parameters for the
-	// wallet FundPsbt call (custom lock ID and lock duration).
-	FundingOpts *FundingOpts
-}
-
-// outboxEventSealed marks BuildBatchReq as implementing the sealed
-// OutboxEvent interface.
-func (b *BuildBatchReq) outboxEventSealed() {}
-
 // SignAndFinalizeRoundReq is an outbox event emitted when the FSM has
 // collected all client signatures and is ready for the server to sign
 // boarding inputs, complete forfeit transactions, and finalize the PSBT.
@@ -595,54 +554,3 @@ type ConfirmRoundReq struct {
 // outboxEventSealed marks ConfirmRoundReq as implementing the sealed
 // OutboxEvent interface.
 func (c *ConfirmRoundReq) outboxEventSealed() {}
-
-// UnlockBoardingInputsReq is an outbox event emitted when a round fails and
-// all locked boarding inputs must be released. The OutboxHandler should unlock
-// each boarding input for each registered client. This is fire-and-forget:
-// errors are logged but do not produce follow-up events.
-type UnlockBoardingInputsReq struct {
-	// RoundID is the identifier of the round whose inputs are unlocked.
-	RoundID RoundID
-
-	// ClientRegistrations contains the client registrations whose boarding
-	// inputs should be unlocked.
-	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
-}
-
-// outboxEventSealed marks UnlockBoardingInputsReq as implementing the sealed
-// OutboxEvent interface.
-func (u *UnlockBoardingInputsReq) outboxEventSealed() {}
-
-// UnlockForfeitVTXOsReq is an outbox event emitted when a round fails and
-// all locked forfeit VTXOs must be released. The OutboxHandler should unlock
-// each forfeit VTXO for each registered client. This is fire-and-forget:
-// errors are logged but do not produce follow-up events.
-type UnlockForfeitVTXOsReq struct {
-	// RoundID is the identifier of the round whose VTXOs are unlocked.
-	RoundID RoundID
-
-	// ClientRegistrations contains the client registrations whose forfeit
-	// VTXOs should be unlocked.
-	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
-}
-
-// outboxEventSealed marks UnlockForfeitVTXOsReq as implementing the sealed
-// OutboxEvent interface.
-func (u *UnlockForfeitVTXOsReq) outboxEventSealed() {}
-
-// ReleaseWalletInputsReq is an outbox event emitted when a round fails
-// after wallet inputs have been locked by FundPsbt. The OutboxHandler
-// should call WalletController.ReleaseInputs to free the leases. This
-// is fire-and-forget: errors are logged but do not produce follow-up
-// events.
-type ReleaseWalletInputsReq struct {
-	// LockID is the 32-byte lease identifier used during FundPsbt.
-	LockID [32]byte
-
-	// LockedOutpoints lists the wallet UTXOs to release.
-	LockedOutpoints []wire.OutPoint
-}
-
-// outboxEventSealed marks ReleaseWalletInputsReq as implementing the
-// sealed OutboxEvent interface.
-func (r *ReleaseWalletInputsReq) outboxEventSealed() {}
