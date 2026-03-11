@@ -80,40 +80,6 @@ func (e *RefreshVTXORequest) MessageType() string {
 	return "RefreshVTXORequest"
 }
 
-// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
-// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
-// is similar to RefreshVTXORequest except the output is on-chain rather than a
-// new VTXO.
-//
-// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
-// forfeited via a connector output, and the leave output is included directly
-// in the batch transaction.
-//
-// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
-// The actor translates it into an IntentPackage{Forfeits: [1], Leaves: [1]}.
-type LeaveVTXORequest struct {
-	actor.BaseMessage
-
-	// VTXOOutpoint identifies the VTXO to forfeit.
-	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
-	// Output is the on-chain destination output that will be included in
-	// the batch transaction. This contains the value and pkScript for the
-	// leave output.
-	Output *wire.TxOut
-}
-
-// RoundReceivable implements actormsg.RoundReceivable marker interface.
-func (e *LeaveVTXORequest) RoundReceivable() {}
-
-// MessageType returns the message type for logging.
-func (e *LeaveVTXORequest) MessageType() string {
-	return "LeaveVTXORequest"
-}
-
 // RegisterIntentRequest is the primary entry point for registering a
 // pre-composed intent package with the round actor. The caller (typically
 // the wallet) builds the full IntentPackage containing forfeits, VTXO
@@ -833,9 +799,6 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
-
-	case *LeaveVTXORequest:
-		return a.handleLeaveVTXORequest(ctx, m)
 
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
@@ -1576,7 +1539,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			m.RoundID.WhenSome(func(id RoundID) {
 				roundIDStr = id.String()
 			})
-			a.log.WarnS(ctx, "Round failed", nil,
+			a.log.WarnS(ctx, "Round failed", m.OriginalError,
 				slog.String("round_id", roundIDStr),
 				slog.String("reason", m.Reason),
 				slog.Bool("recoverable", m.Recoverable))
@@ -1785,6 +1748,7 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	pkg := &IntentPackage{Intents: Intents{
 		Forfeits: []types.ForfeitRequest{{
 			VTXOOutpoint: &req.VTXOOutpoint,
+			Amount:       btcutil.Amount(req.Amount),
 		}},
 		VTXOs: []types.VTXORequest{
 			buildVTXORequestFromRefresh(req),
@@ -1798,45 +1762,6 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	}
 
 	a.log.InfoS(ctx, "Queued VTXO for refresh",
-		slog.String("outpoint", req.VTXOOutpoint.String()),
-		slog.Int64("amount", req.Amount))
-
-	return fn.Ok[actormsg.RoundActorResp](nil)
-}
-
-// handleLeaveVTXORequest processes a leave (offboard) request from a VTXO
-// actor. The actor translates the request into a single IntentPackage
-// containing one forfeit input and one leave output.
-func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
-	req *LeaveVTXORequest) fn.Result[actormsg.RoundActorResp] {
-
-	// Find a pending round or create one if none exists.
-	roundFSM := a.findPendingRound()
-	if roundFSM == nil {
-		var err error
-		roundFSM, err = a.createNewRound(ctx)
-		if err != nil {
-			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"failed to create round for leave: %w", err,
-			))
-		}
-	}
-
-	// Bundle the forfeit input and leave output atomically.
-	pkg := &IntentPackage{Intents: Intents{
-		Forfeits: []types.ForfeitRequest{{
-			VTXOOutpoint: &req.VTXOOutpoint,
-		}},
-		Leaves: []*types.LeaveRequest{{Output: req.Output}},
-	}}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
-	if err != nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing leave package: %w", err,
-		))
-	}
-
-	a.log.InfoS(ctx, "Queued VTXO for leave",
 		slog.String("outpoint", req.VTXOOutpoint.String()),
 		slog.Int64("amount", req.Amount))
 

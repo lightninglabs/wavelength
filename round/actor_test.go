@@ -1795,10 +1795,15 @@ func TestActorIntentMapping(t *testing.T) {
 			Value:    60000,
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
 		}
-		leaveReq := &LeaveVTXORequest{
-			VTXOOutpoint: vtxoOutpoint,
-			Amount:       60000,
-			Output:       leaveOutput,
+		leaveReq := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: leaveOutput,
+				}},
+			}},
 		}
 
 		result := h.receive(leaveReq)
@@ -1866,17 +1871,23 @@ func TestActorIntentMapping(t *testing.T) {
 		result := h.receive(refreshReq)
 		require.True(t, result.IsOk())
 
-		// 4. Leave request.
-		leaveReq := &LeaveVTXORequest{
-			VTXOOutpoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("leave")),
-				Index: 0,
-			},
-			Amount: 20000,
-			Output: &wire.TxOut{
-				Value:    20000,
-				PkScript: []byte{0x00, 0x14},
-			},
+		// 4. Leave request via RegisterIntentRequest.
+		leaveOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("leave")),
+			Index: 0,
+		}
+		leaveReq := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &leaveOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: &wire.TxOut{
+						Value:    20000,
+						PkScript: []byte{0x00, 0x14},
+					},
+				}},
+			}},
 		}
 		result = h.receive(leaveReq)
 		require.True(t, result.IsOk())
