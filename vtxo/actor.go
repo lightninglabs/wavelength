@@ -481,8 +481,8 @@ func statusToState(
 	case VTXOStatusForfeited:
 		return &ForfeitedState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
 
-	case VTXOStatusExpiring:
-		return &ExpiringState{
+	case VTXOStatusUnilateralExit:
+		return &UnilateralExitState{
 			VTXO:   vtxo,
 			Reason: "recovered from storage",
 		}

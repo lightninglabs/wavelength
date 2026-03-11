@@ -104,17 +104,17 @@ func (s *LiveState) handleBlockEpoch(
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusExpiring,
+				NewStatus: VTXOStatusUnilateralExit,
 			},
 			&VTXOTerminatedNotification{
 				VTXOOutpoint: s.VTXO.Outpoint,
-				FinalState:   "Expiring",
+				FinalState:   "UnilateralExit",
 				Reason:       "sent to chain resolver",
 			},
 		}
 
 		return &VTXOStateTransition{
-			NextState: &ExpiringState{VTXO: s.VTXO, Reason: reason},
+			NextState: &UnilateralExitState{VTXO: s.VTXO, Reason: reason},
 			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
 
@@ -335,17 +335,17 @@ func (s *RefreshRequestedState) ProcessEvent(
 				},
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
-					NewStatus: VTXOStatusExpiring,
+					NewStatus: VTXOStatusUnilateralExit,
 				},
 				&VTXOTerminatedNotification{
 					VTXOOutpoint: s.VTXO.Outpoint,
-					FinalState:   "Expiring",
+					FinalState:   "UnilateralExit",
 					Reason:       "refresh timeout",
 				},
 			}
 
 			return &VTXOStateTransition{
-				NextState: &ExpiringState{
+				NextState: &UnilateralExitState{
 					VTXO:   s.VTXO,
 					Reason: "critical expiry in refresh",
 				},
@@ -503,17 +503,17 @@ func (s *ForfeitingState) ProcessEvent(
 				},
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
-					NewStatus: VTXOStatusExpiring,
+					NewStatus: VTXOStatusUnilateralExit,
 				},
 				&VTXOTerminatedNotification{
 					VTXOOutpoint: s.VTXO.Outpoint,
-					FinalState:   "Expiring",
+					FinalState:   "UnilateralExit",
 					Reason:       "forfeit timeout",
 				},
 			}
 
 			return &VTXOStateTransition{
-				NextState: &ExpiringState{
+				NextState: &UnilateralExitState{
 					VTXO:   s.VTXO,
 					Reason: "critical expiry in forfeit",
 				},
@@ -562,9 +562,9 @@ func (s *ForfeitedState) ProcessEvent(
 	}, nil
 }
 
-// ProcessEvent for ExpiringState. This is a terminal state, so all events
+// ProcessEvent for UnilateralExitState. This is a terminal state, so all events
 // result in staying in the same state.
-func (s *ExpiringState) ProcessEvent(
+func (s *UnilateralExitState) ProcessEvent(
 	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 

@@ -208,9 +208,9 @@ enum VTXOStatus {
     // out-of-round transfer.
     VTXO_STATUS_SPENT = 5;
 
-    // VTXO_STATUS_EXPIRING is terminal: the VTXO is being resolved
-    // on-chain via the unilateral exit path.
-    VTXO_STATUS_EXPIRING = 6;
+    // VTXO_STATUS_UNILATERAL_EXIT is terminal: the VTXO has reached critical
+    // expiry and is being resolved on-chain.
+    VTXO_STATUS_UNILATERAL_EXIT = 6;
 
     // VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
     VTXO_STATUS_FAILED = 7;

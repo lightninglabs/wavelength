@@ -128,27 +128,28 @@ func (s *ForfeitedState) IsTerminal() bool {
 
 func (s *ForfeitedState) vtxoStateSealed() {}
 
-// ExpiringState is a terminal state indicating the VTXO is critically close to
-// expiry and has been sent to the chain resolver for unilateral exit handling.
-type ExpiringState struct {
+// UnilateralExitState is a terminal state indicating the VTXO has reached
+// critical expiry and has been sent to the chain resolver for unilateral
+// on-chain exit handling. The chain resolver takes over from this point.
+type UnilateralExitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// Reason explains why the VTXO is expiring.
+	// Reason explains why the VTXO is being unilaterally exited.
 	Reason string
 }
 
 // String returns a human-readable state name.
-func (s *ExpiringState) String() string {
-	return "Expiring"
+func (s *UnilateralExitState) String() string {
+	return "UnilateralExit"
 }
 
-// IsTerminal returns true since ExpiringState is a terminal state.
-func (s *ExpiringState) IsTerminal() bool {
+// IsTerminal returns true since UnilateralExitState is a terminal state.
+func (s *UnilateralExitState) IsTerminal() bool {
 	return true
 }
 
-func (s *ExpiringState) vtxoStateSealed() {}
+func (s *UnilateralExitState) vtxoStateSealed() {}
 
 // FailedState is a terminal state indicating an unrecoverable error occurred.
 type FailedState struct {

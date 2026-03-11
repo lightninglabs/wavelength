@@ -253,7 +253,7 @@ func TestProcessOutboxExpiringNotification(t *testing.T) {
 			ChainParams:   &chaincfg.RegressionNetParams,
 			ChainResolver: chainResolver,
 		},
-		state: &ExpiringState{VTXO: vtxo},
+		state: &UnilateralExitState{VTXO: vtxo},
 		env:   h.env,
 	}
 

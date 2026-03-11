@@ -42,9 +42,9 @@ const (
 	// VTXO_STATUS_SPENT indicates the VTXO was spent via an out-of-round
 	// transaction (terminal).
 	VTXOStatus_VTXO_STATUS_SPENT VTXOStatus = 6
-	// VTXO_STATUS_EXPIRING indicates the VTXO is close to expiry and has been
-	// escalated to chain resolution (terminal for the VTXO actor).
-	VTXOStatus_VTXO_STATUS_EXPIRING VTXOStatus = 7
+	// VTXO_STATUS_UNILATERAL_EXIT indicates the VTXO has reached critical expiry
+	// and is being resolved on-chain (terminal for the VTXO actor).
+	VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT VTXOStatus = 7
 	// VTXO_STATUS_FAILED indicates an unrecoverable error (terminal).
 	VTXOStatus_VTXO_STATUS_FAILED VTXOStatus = 8
 )
@@ -59,7 +59,7 @@ var (
 		4: "VTXO_STATUS_FORFEITING",
 		5: "VTXO_STATUS_FORFEITED",
 		6: "VTXO_STATUS_SPENT",
-		7: "VTXO_STATUS_EXPIRING",
+		7: "VTXO_STATUS_UNILATERAL_EXIT",
 		8: "VTXO_STATUS_FAILED",
 	}
 	VTXOStatus_value = map[string]int32{
@@ -70,7 +70,7 @@ var (
 		"VTXO_STATUS_FORFEITING":        4,
 		"VTXO_STATUS_FORFEITED":         5,
 		"VTXO_STATUS_SPENT":             6,
-		"VTXO_STATUS_EXPIRING":          7,
+		"VTXO_STATUS_UNILATERAL_EXIT":          7,
 		"VTXO_STATUS_FAILED":            8,
 	}
 )
@@ -2109,7 +2109,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x16VTXO_STATUS_FORFEITING\x10\x04\x12\x19\n" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x05\x12\x15\n" +
 	"\x11VTXO_STATUS_SPENT\x10\x06\x12\x18\n" +
-	"\x14VTXO_STATUS_EXPIRING\x10\a\x12\x16\n" +
+	"\x14VTXO_STATUS_UNILATERAL_EXIT\x10\a\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\b*\x91\x01\n" +
 	"\rVTXOEventType\x12\x1f\n" +
 	"\x1bVTXO_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +

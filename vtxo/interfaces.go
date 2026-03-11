@@ -229,9 +229,10 @@ const (
 	// (OOR) transaction (terminal).
 	VTXOStatusSpent
 
-	// VTXOStatusExpiring indicates the VTXO is critically close to expiry
-	// and has been sent to the chain resolver (terminal for this actor).
-	VTXOStatusExpiring
+	// VTXOStatusUnilateralExit indicates the VTXO has reached critical
+	// expiry and been sent to the chain resolver for on-chain exit
+	// (terminal for this actor).
+	VTXOStatusUnilateralExit
 
 	// VTXOStatusFailed indicates an unrecoverable error (terminal).
 	VTXOStatusFailed
@@ -250,8 +251,8 @@ func (s VTXOStatus) String() string {
 		return "forfeited"
 	case VTXOStatusSpent:
 		return "spent"
-	case VTXOStatusExpiring:
-		return "expiring"
+	case VTXOStatusUnilateralExit:
+		return "unilateral_exit"
 	case VTXOStatusFailed:
 		return "failed"
 	default:

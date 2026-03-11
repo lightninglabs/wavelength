@@ -217,9 +217,9 @@ enum VTXOStatus {
     // transaction (terminal).
     VTXO_STATUS_SPENT = 6;
 
-    // VTXO_STATUS_EXPIRING indicates the VTXO is close to expiry and has been
-    // escalated to chain resolution (terminal for the VTXO actor).
-    VTXO_STATUS_EXPIRING = 7;
+    // VTXO_STATUS_UNILATERAL_EXIT indicates the VTXO has reached critical expiry
+    // and is being resolved on-chain (terminal for the VTXO actor).
+    VTXO_STATUS_UNILATERAL_EXIT = 7;
 
     // VTXO_STATUS_FAILED indicates an unrecoverable error (terminal).
     VTXO_STATUS_FAILED = 8;

@@ -290,8 +290,8 @@ func protoStatusToDomain(
 	case daemonrpc.VTXOStatus_VTXO_STATUS_SPENT:
 		return vtxo.VTXOStatusSpent, nil
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING:
-		return vtxo.VTXOStatusExpiring, nil
+	case daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT:
+		return vtxo.VTXOStatusUnilateralExit, nil
 
 	case daemonrpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
@@ -319,8 +319,8 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 	case vtxo.VTXOStatusSpent:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_SPENT
 
-	case vtxo.VTXOStatusExpiring:
-		return daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING
+	case vtxo.VTXOStatusUnilateralExit:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT
 
 	case vtxo.VTXOStatusFailed:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_FAILED

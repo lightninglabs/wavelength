@@ -42,9 +42,9 @@ const (
 	// VTXO_STATUS_SPENT is terminal: the VTXO was spent via an
 	// out-of-round transfer.
 	VTXOStatus_VTXO_STATUS_SPENT VTXOStatus = 5
-	// VTXO_STATUS_EXPIRING is terminal: the VTXO is being resolved
-	// on-chain via the unilateral exit path.
-	VTXOStatus_VTXO_STATUS_EXPIRING VTXOStatus = 6
+	// VTXO_STATUS_UNILATERAL_EXIT is terminal: the VTXO has reached critical
+	// expiry and is being resolved on-chain.
+	VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT VTXOStatus = 6
 	// VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
 	VTXOStatus_VTXO_STATUS_FAILED VTXOStatus = 7
 )
@@ -58,7 +58,7 @@ var (
 		3: "VTXO_STATUS_FORFEITING",
 		4: "VTXO_STATUS_FORFEITED",
 		5: "VTXO_STATUS_SPENT",
-		6: "VTXO_STATUS_EXPIRING",
+		6: "VTXO_STATUS_UNILATERAL_EXIT",
 		7: "VTXO_STATUS_FAILED",
 	}
 	VTXOStatus_value = map[string]int32{
@@ -68,7 +68,7 @@ var (
 		"VTXO_STATUS_FORFEITING":        3,
 		"VTXO_STATUS_FORFEITED":         4,
 		"VTXO_STATUS_SPENT":             5,
-		"VTXO_STATUS_EXPIRING":          6,
+		"VTXO_STATUS_UNILATERAL_EXIT":          6,
 		"VTXO_STATUS_FAILED":            7,
 	}
 )
@@ -2188,7 +2188,7 @@ const file_daemonrpc_daemon_proto_rawDesc = "" +
 	"\x16VTXO_STATUS_FORFEITING\x10\x03\x12\x19\n" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x04\x12\x15\n" +
 	"\x11VTXO_STATUS_SPENT\x10\x05\x12\x18\n" +
-	"\x14VTXO_STATUS_EXPIRING\x10\x06\x12\x16\n" +
+	"\x14VTXO_STATUS_UNILATERAL_EXIT\x10\x06\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\a*\xd7\x03\n" +
 	"\n" +
 	"RoundState\x12\x17\n" +

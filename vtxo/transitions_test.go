@@ -46,8 +46,8 @@ func TestStateProperties(t *testing.T) {
 			isTerminal: true,
 		},
 		{
-			name:       "ExpiringState",
-			state:      &ExpiringState{VTXO: vtxo},
+			name:       "UnilateralExitState",
+			state:      &UnilateralExitState{VTXO: vtxo},
 			isTerminal: true,
 		},
 		{
@@ -131,7 +131,7 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 }
 
 // TestLiveStateBlockEpochCritical verifies that LiveState transitions to
-// ExpiringState when critically close to expiry.
+// UnilateralExitState when critically close to expiry.
 func TestLiveStateBlockEpochCritical(t *testing.T) {
 	t.Parallel()
 
@@ -159,13 +159,13 @@ func TestLiveStateBlockEpochCritical(t *testing.T) {
 	// Setup mock for status update.
 	h.store.On(
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
-		VTXOStatusExpiring,
+		VTXOStatusUnilateralExit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
-	assertState[*ExpiringState](h)
+	assertState[*UnilateralExitState](h)
 
 	// Should emit ExpiringNotification (pointer type).
 	assertOutboxContains[*ExpiringNotification](h)
@@ -243,7 +243,7 @@ func TestForfeitRequestFromRefreshRequested(t *testing.T) {
 }
 
 // TestRefreshRequestedCriticalExpiry verifies that RefreshRequestedState
-// transitions to ExpiringState if expiry becomes critical while waiting.
+// transitions to UnilateralExitState if expiry becomes critical while waiting.
 func TestRefreshRequestedCriticalExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -267,13 +267,13 @@ func TestRefreshRequestedCriticalExpiry(t *testing.T) {
 
 	// Setup mock for status update.
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusExpiring,
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusUnilateralExit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
-	assertState[*ExpiringState](h)
+	assertState[*UnilateralExitState](h)
 }
 
 // TestForfeitingStateConfirmed verifies that ForfeitingState transitions to
@@ -323,7 +323,7 @@ func TestTerminalStatesSelfLoop(t *testing.T) {
 
 	terminalStates := []VTXOState{
 		&ForfeitedState{VTXO: vtxo},
-		&ExpiringState{VTXO: vtxo},
+		&UnilateralExitState{VTXO: vtxo},
 		&FailedState{VTXO: vtxo, Reason: "test"},
 	}
 
@@ -499,7 +499,7 @@ func TestForfeitRequestRealSigning(t *testing.T) {
 }
 
 // TestForfeitingStateCriticalExpiry verifies that ForfeitingState transitions
-// to ExpiringState if critical expiry is reached while waiting for forfeit
+// to UnilateralExitState if critical expiry is reached while waiting for forfeit
 // confirmation.
 func TestForfeitingStateCriticalExpiry(t *testing.T) {
 	t.Parallel()
@@ -529,13 +529,13 @@ func TestForfeitingStateCriticalExpiry(t *testing.T) {
 
 	// Setup mock for status update.
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusExpiring,
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusUnilateralExit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
-	assertState[*ExpiringState](h)
+	assertState[*UnilateralExitState](h)
 
 	// Should emit ExpiringNotification and VTXOTerminatedNotification.
 	assertOutboxContains[*ExpiringNotification](h)
