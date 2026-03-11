@@ -264,7 +264,7 @@ func (o *RoundOperator) JoinRound(ctx context.Context,
 	req *roundpb.JoinRoundRequest) (
 	*roundpb.ClientSuccessResp, error) {
 
-	domainReq, err := joinRoundRequestFromProto(req)
+	domainReq, err := JoinRoundRequestFromProto(req)
 	if err != nil {
 		return nil, fmt.Errorf("parse join request: %w", err)
 	}
@@ -299,14 +299,14 @@ func (o *RoundOperator) SubmitNonces(ctx context.Context,
 	req *roundpb.SubmitNoncesRequest) (
 	*roundpb.ClientVTXOAggNonces, error) {
 
-	roundID, err := parseRoundID(req.GetRoundId())
+	roundID, err := ParseRoundID(req.GetRoundId())
 	if err != nil {
 		return nil, fmt.Errorf("parse round_id: %w", err)
 	}
 
 	// Convert the proto nonce map into the domain type:
 	// map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce.
-	nonces, err := noncesFromProto(req.GetNonces())
+	nonces, err := NoncesFromProto(req.GetNonces())
 	if err != nil {
 		return nil, fmt.Errorf("parse nonces: %w", err)
 	}
@@ -341,14 +341,14 @@ func (o *RoundOperator) SubmitPartialSigs(ctx context.Context,
 	req *roundpb.SubmitPartialSigRequest) (
 	*roundpb.ClientVTXOAggSigs, error) {
 
-	roundID, err := parseRoundID(req.GetRoundId())
+	roundID, err := ParseRoundID(req.GetRoundId())
 	if err != nil {
 		return nil, fmt.Errorf("parse round_id: %w", err)
 	}
 
 	// Convert the proto signature map into the domain type:
 	// map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature.
-	sigs, err := partialSigsFromProto(req.GetSignatures())
+	sigs, err := PartialSigsFromProto(req.GetSignatures())
 	if err != nil {
 		return nil, fmt.Errorf("parse signatures: %w", err)
 	}
@@ -383,13 +383,13 @@ func (o *RoundOperator) SubmitForfeitSigs(ctx context.Context,
 	req *roundpb.SubmitForfeitSigRequest) (
 	*roundpb.ClientAwaitingInputSigsResp, error) {
 
-	roundID, err := parseRoundID(req.GetRoundId())
+	roundID, err := ParseRoundID(req.GetRoundId())
 	if err != nil {
 		return nil, fmt.Errorf("parse round_id: %w", err)
 	}
 
 	// Convert proto boarding input signatures to domain type.
-	boardingSigs, err := boardingInputSigsFromProto(
+	boardingSigs, err := BoardingInputSigsFromProto(
 		req.GetSignatures(),
 	)
 	if err != nil {
@@ -427,13 +427,13 @@ func (o *RoundOperator) SubmitVTXOForfeitSigs(ctx context.Context,
 	req *roundpb.SubmitVTXOForfeitSigsRequest) (
 	*roundpb.ClientSuccessResp, error) {
 
-	roundID, err := parseRoundID(req.GetRoundId())
+	roundID, err := ParseRoundID(req.GetRoundId())
 	if err != nil {
 		return nil, fmt.Errorf("parse round_id: %w", err)
 	}
 
 	// Convert proto forfeit tx signatures to domain type.
-	forfeitTxs, err := forfeitTxSigsFromProto(
+	forfeitTxs, err := ForfeitTxSigsFromProto(
 		req.GetForfeitTxs(),
 	)
 	if err != nil {
@@ -463,11 +463,11 @@ func (o *RoundOperator) SubmitVTXOForfeitSigs(ctx context.Context,
 	return &roundpb.ClientSuccessResp{}, nil
 }
 
-// joinRoundRequestFromProto converts a roundpb.JoinRoundRequest to
+// JoinRoundRequestFromProto converts a roundpb.JoinRoundRequest to
 // the domain types.JoinRoundRequest. Each sub-request type (boarding,
 // VTXO, forfeit, leave) is converted using the roundpb helper
 // functions for outpoints, public keys, and transaction outputs.
-func joinRoundRequestFromProto(
+func JoinRoundRequestFromProto(
 	req *roundpb.JoinRoundRequest) (*types.JoinRoundRequest, error) {
 
 	// Parse the participant identifier (33-byte compressed
@@ -626,9 +626,9 @@ func vtxoRequestFromProto(
 	}, nil
 }
 
-// parseRoundID parses a 16-byte UUID from the proto round_id field
+// ParseRoundID parses a 16-byte UUID from the proto round_id field
 // into a RoundID.
-func parseRoundID(raw []byte) (RoundID, error) {
+func ParseRoundID(raw []byte) (RoundID, error) {
 	if len(raw) != 16 {
 		return RoundID{}, fmt.Errorf(
 			"invalid round_id length: %d, want 16",
@@ -642,11 +642,11 @@ func parseRoundID(raw []byte) (RoundID, error) {
 	return id, nil
 }
 
-// noncesFromProto converts the proto nonce map into the domain
+// NoncesFromProto converts the proto nonce map into the domain
 // representation used by ClientVTXONoncesEvent. The outer map key
 // is a signing key hex string (33-byte compressed pubkey), and the
 // inner map key is a transaction ID.
-func noncesFromProto(
+func NoncesFromProto(
 	protoNonces map[string]*roundpb.SignerNonces) (
 	map[SigningKeyHex]map[tree.TxID]tree.Musig2PubNonce, error) {
 
@@ -698,9 +698,9 @@ func noncesFromProto(
 	return result, nil
 }
 
-// partialSigsFromProto converts the proto partial signature map into
+// PartialSigsFromProto converts the proto partial signature map into
 // the domain representation used by ClientVTXOPartialSigsEvent.
-func partialSigsFromProto(
+func PartialSigsFromProto(
 	protoSigs map[string]*roundpb.SignerPartialSigs) (
 	map[SigningKeyHex]map[tree.TxID]*musig2.PartialSignature,
 	error) {
@@ -751,9 +751,9 @@ func partialSigsFromProto(
 	return result, nil
 }
 
-// boardingInputSigsFromProto converts proto BoardingInputSignature
+// BoardingInputSigsFromProto converts proto BoardingInputSignature
 // entries to the domain types.BoardingInputSignature slice.
-func boardingInputSigsFromProto(
+func BoardingInputSigsFromProto(
 	pbSigs []*roundpb.BoardingInputSignature) (
 	[]*types.BoardingInputSignature, error) {
 
@@ -790,9 +790,9 @@ func boardingInputSigsFromProto(
 	return sigs, nil
 }
 
-// forfeitTxSigsFromProto converts proto ForfeitTxSig entries to
+// ForfeitTxSigsFromProto converts proto ForfeitTxSig entries to
 // the domain types.ForfeitTxSig slice.
-func forfeitTxSigsFromProto(
+func ForfeitTxSigsFromProto(
 	pbSigs []*roundpb.ForfeitTxSig) (
 	[]*types.ForfeitTxSig, error) {
 
