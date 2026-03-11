@@ -114,6 +114,30 @@ func (e *LeaveVTXORequest) MessageType() string {
 	return "LeaveVTXORequest"
 }
 
+// RegisterIntentRequest is the primary entry point for registering a
+// pre-composed intent package with the round actor. The caller (typically
+// the wallet) builds the full IntentPackage containing forfeits, VTXO
+// requests, and/or leave requests. The round actor validates and registers
+// it with the FSM, then notifies affected VTXO actors.
+//
+// This replaces the older pattern where the round actor loaded VTXO
+// descriptors and composed intents itself (via TriggerVTXORefreshMsg /
+// TriggerVTXOLeaveMsg).
+type RegisterIntentRequest struct {
+	actor.BaseMessage
+
+	// Package is the fully composed round intent bundle.
+	Package *IntentPackage
+}
+
+// RoundReceivable implements actormsg.RoundReceivable marker interface.
+func (e *RegisterIntentRequest) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (e *RegisterIntentRequest) MessageType() string {
+	return "RegisterIntentRequest"
+}
+
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
 // RefreshVTXORequest. The refresh request contains all info needed to create
 // the new VTXO output in the round.
@@ -810,6 +834,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
+
+	case *RegisterIntentRequest:
+		return a.handleRegisterIntent(ctx, m)
 
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
@@ -1747,6 +1774,11 @@ func (a *RoundClientActor) processConfirmationRequest(
 // The VTXO is approaching expiry and needs to be included in the next batch
 // swap round. The actor translates the request into a single IntentPackage
 // containing one forfeit input and one new VTXO output.
+//
+// NOTE: Unlike handleRegisterIntent, no PendingForfeitEvent is sent back to
+// the VTXO actor here. The VTXO actor has already self-transitioned to
+// PendingForfeitState before sending this relay message, so the notification
+// would be a no-op.
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1820,6 +1852,80 @@ func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
 	a.log.InfoS(ctx, "Queued VTXO for leave",
 		slog.String("outpoint", req.VTXOOutpoint.String()),
 		slog.Int64("amount", req.Amount))
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleRegisterIntent processes a pre-composed intent package from the
+// wallet. The wallet has already loaded VTXO descriptors and built the full
+// IntentPackage. The round actor registers it with the FSM and notifies
+// affected VTXO actors.
+//
+// If FSM registration succeeds but a PendingForfeitEvent notification fails
+// for one VTXO, the handler logs the failure and continues notifying the
+// remaining VTXOs. The round FSM already has the intent, so the forfeit
+// will proceed when the round advances. The missed VTXO will receive the
+// concrete ForfeitRequestEvent later and transition directly from Live to
+// Forfeiting via the existing fast path.
+func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
+	req *RegisterIntentRequest) fn.Result[actormsg.RoundActorResp] {
+
+	if req.Package == nil || req.Package.isEmpty() {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("empty intent package"),
+		)
+	}
+
+	// Find a pending round or create one if none exists.
+	roundFSM := a.findPendingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"failed to create round for intent: %w", err,
+			))
+		}
+	}
+
+	// Feed the pre-composed package to the FSM.
+	err := a.askEventAndProcessOutbox(ctx, roundFSM, req.Package)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"FSM error processing intent package: %w", err,
+		))
+	}
+
+	// Notify each forfeited VTXO that it is now pending cooperative
+	// consumption. This is done after FSM registration succeeds so we
+	// never mark a VTXO pending for a round that rejected the intent.
+	if a.cfg.ActorSystem != nil {
+		for _, forfeit := range req.Package.Forfeits {
+			if forfeit.VTXOOutpoint == nil {
+				continue
+			}
+
+			outpoint := *forfeit.VTXOOutpoint
+			serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+			err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+				ctx, &PendingForfeitEvent{},
+			)
+			if err != nil {
+				a.log.WarnS(ctx,
+					"Failed to notify VTXO of pending "+
+						"forfeit", err,
+					slog.String(
+						"outpoint",
+						outpoint.String(),
+					))
+			}
+		}
+	}
+
+	a.log.InfoS(ctx, "Registered intent package",
+		slog.Int("forfeits", len(req.Package.Forfeits)),
+		slog.Int("vtxos", len(req.Package.VTXOs)),
+		slog.Int("leaves", len(req.Package.Leaves)))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }

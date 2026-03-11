@@ -1940,3 +1940,187 @@ func TestActorIntentMapping(t *testing.T) {
 		)
 	})
 }
+
+// TestHandleRegisterIntent verifies that RegisterIntentRequest registers a
+// pre-composed intent package with the round FSM without the round actor
+// performing any intent composition.
+func TestHandleRegisterIntent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("registers_refresh_intent_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Build a refresh-style intent package: one forfeit + one
+		// new VTXO. This is what the wallet would compose.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("register-refresh")),
+			Index: 0,
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				VTXOs: []types.VTXORequest{{
+					Amount:      50000,
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
+					OperatorKey: h.operatorPubKey,
+					Expiry:      144,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		// Verify FSM has the intent registered.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists,
+			"expected temp-keyed FSM state")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok,
+			"expected PendingRoundAssembly, got %T",
+			tempState.State)
+
+		require.Len(t, assembly.Forfeits, 1)
+		require.Equal(
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
+		)
+		require.Len(t, assembly.VTXOs, 1)
+	})
+
+	t.Run("registers_leave_intent_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Build a leave-style intent package: one forfeit + one
+		// leave output.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("register-leave")),
+			Index: 0,
+		}
+		leaveOutput := &wire.TxOut{
+			Value:    60000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: leaveOutput,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Forfeits, 1)
+		require.Len(t, assembly.Leaves, 1)
+		require.Equal(
+			t, leaveOutput.Value,
+			assembly.Leaves[0].Output.Value,
+		)
+		require.Empty(t, assembly.VTXOs)
+	})
+
+	t.Run("rejects_empty_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Nil package.
+		result := h.receive(&RegisterIntentRequest{
+			Package: nil,
+		})
+		require.True(t, result.IsErr())
+
+		// Empty package.
+		result = h.receive(&RegisterIntentRequest{
+			Package: &IntentPackage{},
+		})
+		require.True(t, result.IsErr())
+	})
+
+	t.Run("accumulates_with_existing_intents", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// First: add a boarding intent via the existing path.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+		h.assertFSMState("PendingRoundAssembly")
+
+		// Second: register a refresh intent package.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("accum-refresh")),
+			Index: 0,
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				VTXOs: []types.VTXORequest{{
+					Amount:      40000,
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
+					OperatorKey: h.operatorPubKey,
+					Expiry:      144,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		// Verify both boarding and refresh intents are present.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Boarding, 1)
+		require.Len(t, assembly.Forfeits, 1)
+		require.Len(t, assembly.VTXOs, 1,
+			"1 from register intent")
+	})
+}
