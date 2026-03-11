@@ -288,7 +288,7 @@ func TestCreateBoardingAddress(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -327,7 +327,7 @@ func TestRegisterNotifier(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -473,7 +473,7 @@ func TestProcessNewUtxo(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -630,7 +630,7 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -766,7 +766,7 @@ func TestGetActiveBoardingAddresses(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -808,7 +808,7 @@ func TestGetBoardingBalance(t *testing.T) {
 	chainSource := newMockChainSourceActor(epochChan)
 
 	walletActor := NewArk(
-		backend, store, chainSource, nil,
+		backend, store, nil, chainSource, nil,
 		btclog.Disabled,
 	)
 
@@ -917,7 +917,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, nil,
+			backend, store, nil, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -960,7 +960,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, nil,
+			backend, store, nil, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -1009,7 +1009,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, nil,
+			backend, store, nil, chainSource, nil,
 			btclog.Disabled,
 		)
 
@@ -1078,7 +1078,7 @@ func TestSendBacklog(t *testing.T) {
 		chainSource := newMockChainSourceActor(epochChan)
 
 		walletActor := NewArk(
-			backend, store, chainSource, nil,
+			backend, store, nil, chainSource, nil,
 			btclog.Disabled,
 		)
 

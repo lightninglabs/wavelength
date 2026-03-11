@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
 // VTXOActorMsg is the message type for VTXO actors. Messages sent TO VTXO
@@ -42,6 +43,34 @@ type RoundActorResp interface {
 type VTXOManagerMsg interface {
 	actor.Message
 	VTXOManagerMsg()
+}
+
+// RegisterIntentMsg is sent from the wallet actor to the round actor to
+// register a pre-composed intent package. The wallet builds the full set of
+// forfeits, VTXO requests, and leave requests; the round actor validates
+// and registers it with the FSM.
+//
+// Defined in actormsg to avoid the wallet→round import cycle.
+type RegisterIntentMsg struct {
+	actor.BaseMessage
+
+	// Forfeits contains the VTXOs being forfeited as inputs.
+	Forfeits []types.ForfeitRequest
+
+	// VTXOs is the templates for the VTXO(s) requested in the round.
+	VTXOs []types.VTXORequest
+
+	// Leaves contains the leave requests for VTXOs being exited to
+	// on-chain outputs.
+	Leaves []*types.LeaveRequest
+}
+
+// RoundReceivable implements the RoundReceivable marker interface.
+func (m *RegisterIntentMsg) RoundReceivable() {}
+
+// MessageType returns the message type for logging.
+func (m *RegisterIntentMsg) MessageType() string {
+	return "RegisterIntentMsg"
 }
 
 // TriggerVTXORefreshMsg is sent from the wallet actor to the round actor to

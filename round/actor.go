@@ -838,6 +838,18 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *RegisterIntentRequest:
 		return a.handleRegisterIntent(ctx, m)
 
+	// NOTE: RegisterIntentMsg mirrors the fields of IntentPackage.
+	// If either type gains new fields, this adapter must be updated
+	// to carry them through.
+	case *actormsg.RegisterIntentMsg:
+		return a.handleRegisterIntent(ctx, &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: m.Forfeits,
+				VTXOs:    m.VTXOs,
+				Leaves:   m.Leaves,
+			}},
+		})
+
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
 
