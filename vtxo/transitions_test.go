@@ -31,8 +31,8 @@ func TestStateProperties(t *testing.T) {
 			isTerminal: false,
 		},
 		{
-			name:       "RefreshRequestedState",
-			state:      &RefreshRequestedState{VTXO: vtxo},
+			name:       "PendingForfeitState",
+			state:      &PendingForfeitState{VTXO: vtxo},
 			isTerminal: false,
 		},
 		{
@@ -90,7 +90,7 @@ func TestLiveStateBlockEpochSafe(t *testing.T) {
 }
 
 // TestLiveStateBlockEpochNeedsRefresh verifies that LiveState transitions to
-// RefreshRequestedState when approaching expiry threshold.
+// PendingForfeitState when approaching expiry threshold.
 func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 	t.Parallel()
 
@@ -118,13 +118,13 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 	// Setup mock for status update.
 	h.store.On(
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
-		VTXOStatusRefreshRequested,
+		VTXOStatusPendingForfeit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
 	require.NoError(t, err)
 
-	assertState[*RefreshRequestedState](h)
+	assertState[*PendingForfeitState](h)
 
 	// Should emit ForfeitRequest.
 	assertOutboxContains[*ForfeitRequest](h)
@@ -207,16 +207,16 @@ func TestForfeitRequestFromLiveState(t *testing.T) {
 	require.Equal(t, connectorOutpoint, state.ConnectorOutpoint)
 }
 
-// TestForfeitRequestFromRefreshRequested verifies that RefreshRequestedState
+// TestForfeitRequestFromPendingForfeit verifies that PendingForfeitState
 // transitions to ForfeitingState on ForfeitRequest.
-func TestForfeitRequestFromRefreshRequested(t *testing.T) {
+func TestForfeitRequestFromPendingForfeit(t *testing.T) {
 	t.Parallel()
 
 	h := newVTXOTestHarness(t)
 	vtxo := h.newTestDescriptor()
 
 	h.setupMockWalletForSigning()
-	h.withState(&RefreshRequestedState{
+	h.withState(&PendingForfeitState{
 		VTXO:              vtxo,
 		RequestedAtHeight: 800,
 	})
@@ -242,9 +242,9 @@ func TestForfeitRequestFromRefreshRequested(t *testing.T) {
 	require.Equal(t, "round-456", state.NewRoundID)
 }
 
-// TestRefreshRequestedCriticalExpiry verifies that RefreshRequestedState
+// TestPendingForfeitCriticalExpiry verifies that PendingForfeitState
 // transitions to UnilateralExitState if expiry becomes critical while waiting.
-func TestRefreshRequestedCriticalExpiry(t *testing.T) {
+func TestPendingForfeitCriticalExpiry(t *testing.T) {
 	t.Parallel()
 
 	h := newVTXOTestHarness(t)
@@ -257,7 +257,7 @@ func TestRefreshRequestedCriticalExpiry(t *testing.T) {
 		TreeDepthMultiplier:     1,
 	})
 
-	h.withState(&RefreshRequestedState{
+	h.withState(&PendingForfeitState{
 		VTXO:              vtxo,
 		RequestedAtHeight: 800,
 	})

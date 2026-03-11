@@ -192,9 +192,9 @@ enum VTXOStatus {
     // VTXO_STATUS_LIVE indicates the VTXO is active and spendable.
     VTXO_STATUS_LIVE = 1;
 
-    // VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been queued
-    // but the forfeit transaction has not yet been signed.
-    VTXO_STATUS_REFRESH_REQUESTED = 2;
+    // VTXO_STATUS_PENDING_FORFEIT indicates the VTXO has been committed
+    // to cooperative consumption and is awaiting forfeit details.
+    VTXO_STATUS_PENDING_FORFEIT = 2;
 
     // VTXO_STATUS_FORFEITING indicates the forfeit transaction has been
     // signed and the VTXO is awaiting confirmation of the new round.

@@ -30,9 +30,9 @@ const (
 	VTXOStatus_VTXO_STATUS_UNSPECIFIED VTXOStatus = 0
 	// VTXO_STATUS_LIVE indicates the VTXO is active and spendable.
 	VTXOStatus_VTXO_STATUS_LIVE VTXOStatus = 1
-	// VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been queued
-	// but the forfeit transaction has not yet been signed.
-	VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED VTXOStatus = 2
+	// VTXO_STATUS_PENDING_FORFEIT indicates the VTXO has been committed
+	// to cooperative consumption and is awaiting forfeit details.
+	VTXOStatus_VTXO_STATUS_PENDING_FORFEIT VTXOStatus = 2
 	// VTXO_STATUS_FORFEITING indicates the forfeit transaction has been
 	// signed and the VTXO is awaiting confirmation of the new round.
 	VTXOStatus_VTXO_STATUS_FORFEITING VTXOStatus = 3
@@ -54,7 +54,7 @@ var (
 	VTXOStatus_name = map[int32]string{
 		0: "VTXO_STATUS_UNSPECIFIED",
 		1: "VTXO_STATUS_LIVE",
-		2: "VTXO_STATUS_REFRESH_REQUESTED",
+		2: "VTXO_STATUS_PENDING_FORFEIT",
 		3: "VTXO_STATUS_FORFEITING",
 		4: "VTXO_STATUS_FORFEITED",
 		5: "VTXO_STATUS_SPENT",
@@ -64,7 +64,7 @@ var (
 	VTXOStatus_value = map[string]int32{
 		"VTXO_STATUS_UNSPECIFIED":       0,
 		"VTXO_STATUS_LIVE":              1,
-		"VTXO_STATUS_REFRESH_REQUESTED": 2,
+		"VTXO_STATUS_PENDING_FORFEIT": 2,
 		"VTXO_STATUS_FORFEITING":        3,
 		"VTXO_STATUS_FORFEITED":         4,
 		"VTXO_STATUS_SPENT":             5,
@@ -2184,7 +2184,7 @@ const file_daemonrpc_daemon_proto_rawDesc = "" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10VTXO_STATUS_LIVE\x10\x01\x12!\n" +
-	"\x1dVTXO_STATUS_REFRESH_REQUESTED\x10\x02\x12\x1a\n" +
+	"\x1dVTXO_STATUS_PENDING_FORFEIT\x10\x02\x12\x1a\n" +
 	"\x16VTXO_STATUS_FORFEITING\x10\x03\x12\x19\n" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x04\x12\x15\n" +
 	"\x11VTXO_STATUS_SPENT\x10\x05\x12\x18\n" +

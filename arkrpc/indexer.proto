@@ -202,9 +202,9 @@ enum VTXOStatus {
     // VTXO_STATUS_LIVE indicates the VTXO is active and can be spent.
     VTXO_STATUS_LIVE = 2;
 
-    // VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been requested
-    // but not yet completed via a new round.
-    VTXO_STATUS_REFRESH_REQUESTED = 3;
+    // VTXO_STATUS_PENDING_FORFEIT indicates the VTXO has been committed
+    // to cooperative consumption and is awaiting forfeit details.
+    VTXO_STATUS_PENDING_FORFEIT = 3;
 
     // VTXO_STATUS_FORFEITING indicates the VTXO is being forfeited in a
     // round.

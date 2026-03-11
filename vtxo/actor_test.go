@@ -131,13 +131,13 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 
 	h.store.On(
 		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
-		VTXOStatusRefreshRequested,
+		VTXOStatusPendingForfeit,
 	).Return(nil)
 
 	outbox := []VTXOOutMsg{
 		&VTXOStatusUpdate{
 			Outpoint:  vtxo.Outpoint,
-			NewStatus: VTXOStatusRefreshRequested,
+			NewStatus: VTXOStatusPendingForfeit,
 		},
 	}
 
@@ -145,7 +145,7 @@ func TestProcessOutboxStatusUpdate(t *testing.T) {
 
 	h.store.AssertCalled(
 		t, "UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
-		VTXOStatusRefreshRequested,
+		VTXOStatusPendingForfeit,
 	)
 }
 

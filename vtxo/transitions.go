@@ -77,12 +77,12 @@ func (s *LiveState) handleBlockEpoch(
 			},
 			&VTXOStatusUpdate{
 				Outpoint:  s.VTXO.Outpoint,
-				NewStatus: VTXOStatusRefreshRequested,
+				NewStatus: VTXOStatusPendingForfeit,
 			},
 		}
 
 		return &VTXOStateTransition{
-			NextState: &RefreshRequestedState{
+			NextState: &PendingForfeitState{
 				VTXO:              s.VTXO,
 				RequestedAtHeight: evt.Height,
 			},
@@ -201,12 +201,12 @@ func (s *LiveState) handleTriggerRefresh(
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
-			NewStatus: VTXOStatusRefreshRequested,
+			NewStatus: VTXOStatusPendingForfeit,
 		},
 	}
 
 	return &VTXOStateTransition{
-		NextState: &RefreshRequestedState{
+		NextState: &PendingForfeitState{
 			VTXO: s.VTXO,
 			// Manual trigger, no height context.
 			RequestedAtHeight: 0,
@@ -216,7 +216,7 @@ func (s *LiveState) handleTriggerRefresh(
 }
 
 // handleTriggerLeave handles a leave (offboard) request from the wallet. This
-// transitions the VTXO to RefreshRequestedState and emits a LeaveRequest to
+// transitions the VTXO to PendingForfeitState and emits a LeaveRequest to
 // the round actor. The leave flow reuses the forfeit mechanism: the VTXO is
 // forfeited and the value goes to an on-chain output instead of a new VTXO.
 func (s *LiveState) handleTriggerLeave(
@@ -229,14 +229,14 @@ func (s *LiveState) handleTriggerLeave(
 		},
 		&VTXOStatusUpdate{
 			Outpoint:  s.VTXO.Outpoint,
-			NewStatus: VTXOStatusRefreshRequested,
+			NewStatus: VTXOStatusPendingForfeit,
 		},
 	}
 
-	// Reuse RefreshRequestedState since the behavior is identical: wait for
+	// Reuse PendingForfeitState since the behavior is identical: wait for
 	// ForfeitRequestEvent from the round actor, then sign the forfeit tx.
 	return &VTXOStateTransition{
-		NextState: &RefreshRequestedState{
+		NextState: &PendingForfeitState{
 			VTXO: s.VTXO,
 			// Manual trigger, no height context.
 			RequestedAtHeight: 0,
@@ -311,15 +311,17 @@ func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
 	return schnorrSig, nil
 }
 
-// ProcessEvent handles events in RefreshRequestedState. The VTXO is waiting
-// for acknowledgment or a forfeit request from the round actor.
-func (s *RefreshRequestedState) ProcessEvent(
+// ProcessEvent handles events in PendingForfeitState. The VTXO has been
+// committed to cooperative consumption and is waiting for the round actor
+// to supply forfeit details (connector outpoint, pkscript, etc.).
+func (s *PendingForfeitState) ProcessEvent(
 	ctx context.Context, event VTXOEvent, env *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 
 	switch evt := event.(type) {
 	case *BlockEpochEvent:
-		// Check if we've hit critical expiry while waiting for refresh.
+		// Check if we've hit critical expiry while waiting for
+		// forfeit details.
 		expiryStatus := env.ExpiryConfig.CheckExpiry(s.VTXO, evt.Height)
 
 		if expiryStatus == ExpiryStatusCritical ||
@@ -331,7 +333,7 @@ func (s *RefreshRequestedState) ProcessEvent(
 				&ExpiringNotification{
 					VTXO:            s.VTXO,
 					BlocksRemaining: blocksRemaining,
-					Reason:          "refresh timeout",
+					Reason:          "forfeit timeout",
 				},
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
@@ -340,14 +342,14 @@ func (s *RefreshRequestedState) ProcessEvent(
 				&VTXOTerminatedNotification{
 					VTXOOutpoint: s.VTXO.Outpoint,
 					FinalState:   "UnilateralExit",
-					Reason:       "refresh timeout",
+					Reason:       "forfeit timeout",
 				},
 			}
 
 			return &VTXOStateTransition{
 				NextState: &UnilateralExitState{
 					VTXO:   s.VTXO,
-					Reason: "critical expiry in refresh",
+					Reason: "critical expiry pending forfeit",
 				},
 				NewEvents: fn.Some(VTXOEmittedEvent{
 					Outbox: outbox,
@@ -405,15 +407,15 @@ func (s *RefreshRequestedState) ProcessEvent(
 		}, nil
 
 	case *RefreshAcknowledgedEvent:
-		// Round actor acknowledged but no forfeit request yet.
-		// Stay in RefreshRequestedState.
+		// Round actor acknowledged but no forfeit details yet.
+		// Stay in PendingForfeitState.
 		return &VTXOStateTransition{
 			NextState: s,
 		}, nil
 
 	case *ResumeVTXOEvent:
-		// On resume, stay in this state. The round actor should have
-		// persisted the refresh request.
+		// On resume, stay in this state. The round actor should
+		// re-send forfeit details when it resumes.
 		return &VTXOStateTransition{
 			NextState: s,
 		}, nil
@@ -430,7 +432,7 @@ func (s *RefreshRequestedState) ProcessEvent(
 
 	default:
 		return nil, fmt.Errorf(
-			"refresh_requested: unexpected event: %T", event,
+			"pending_forfeit: unexpected event: %T", event,
 		)
 	}
 }

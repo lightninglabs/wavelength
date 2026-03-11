@@ -92,7 +92,7 @@ var MessageSpec = struct {
 	// crossed.
 	//
 	// Source: Chain source → VTXO Manager → VTXO Actor
-	// Handled in: LiveState, RefreshRequestedState, ForfeitingState
+	// Handled in: LiveState, PendingForfeitState, ForfeitingState
 	BlockEpochEvent InboundEvent[*BlockEpochEvent]
 
 	// ForfeitRequestEvent is received from the round actor when this VTXO
@@ -100,7 +100,7 @@ var MessageSpec = struct {
 	// the forfeit transaction and submit it back to the round actor.
 	//
 	// Source: Round Actor → VTXO Actor
-	// Handled in: LiveState, RefreshRequestedState
+	// Handled in: LiveState, PendingForfeitState
 	ForfeitRequestEvent InboundEvent[*round.ForfeitRequestEvent]
 
 	// ForfeitConfirmedEvent is received from the round actor when the new
@@ -142,7 +142,7 @@ var MessageSpec = struct {
 	// combines this with the operator signature and broadcasts.
 	//
 	// Destination: VTXO Actor → Round Actor
-	// Emitted from: LiveState, RefreshRequestedState (on ForfeitRequest)
+	// Emitted from: LiveState, PendingForfeitState (on ForfeitRequest)
 	ForfeitSignatureSubmission OutboundMsg[*ForfeitSignatureSubmission]
 
 	// ExpiringNotification is sent to the chain resolver when the VTXO
@@ -150,7 +150,7 @@ var MessageSpec = struct {
 	// terminal transition for this actor.
 	//
 	// Destination: VTXO Actor → Chain Resolver
-	// Emitted from: LiveState, RefreshRequestedState, ForfeitingState
+	// Emitted from: LiveState, PendingForfeitState, ForfeitingState
 	//               (on ExpiryStatusCritical)
 	ExpiringNotification OutboundMsg[*ExpiringNotification]
 
@@ -213,9 +213,10 @@ const (
 	// VTXOStatusLive indicates the VTXO is active and can be spent.
 	VTXOStatusLive VTXOStatus = iota
 
-	// VTXOStatusRefreshRequested indicates a refresh has been requested but
-	// not yet completed via a new round.
-	VTXOStatusRefreshRequested
+	// VTXOStatusPendingForfeit indicates the VTXO has been committed to
+	// cooperative consumption and is awaiting forfeit details from the
+	// round actor.
+	VTXOStatusPendingForfeit
 
 	// VTXOStatusForfeiting indicates the VTXO is being forfeited in a
 	// round.
@@ -243,8 +244,8 @@ func (s VTXOStatus) String() string {
 	switch s {
 	case VTXOStatusLive:
 		return "live"
-	case VTXOStatusRefreshRequested:
-		return "refresh_requested"
+	case VTXOStatusPendingForfeit:
+		return "pending_forfeit"
 	case VTXOStatusForfeiting:
 		return "forfeiting"
 	case VTXOStatusForfeited:

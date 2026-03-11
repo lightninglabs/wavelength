@@ -43,28 +43,33 @@ func (s *LiveState) IsTerminal() bool {
 
 func (s *LiveState) vtxoStateSealed() {}
 
-// RefreshRequestedState indicates a forfeit request has been sent to the round
-// actor to refresh this VTXO. The VTXO is waiting for acknowledgment or a
-// forfeit request to begin the batch swap process.
-type RefreshRequestedState struct {
+// PendingForfeitState indicates the VTXO has been committed to cooperative
+// consumption (forfeit) and is awaiting concrete forfeit details from the
+// round actor. This state is reached when the VTXO needs to be forfeited —
+// whether due to approaching expiry, a leave request, or an in-round send —
+// but the round actor has not yet supplied the connector outpoint and
+// forfeit parameters needed to build the forfeit transaction.
+type PendingForfeitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// RequestedAtHeight is the block height when the refresh was requested.
+	// RequestedAtHeight is the block height when the forfeit was
+	// requested. Zero if triggered manually rather than by expiry.
 	RequestedAtHeight int32
 }
 
 // String returns a human-readable state name.
-func (s *RefreshRequestedState) String() string {
-	return "RefreshRequested"
+func (s *PendingForfeitState) String() string {
+	return "PendingForfeit"
 }
 
-// IsTerminal returns false since RefreshRequestedState is not terminal.
-func (s *RefreshRequestedState) IsTerminal() bool {
+// IsTerminal returns false since PendingForfeitState is not terminal.
+func (s *PendingForfeitState) IsTerminal() bool {
 	return false
 }
 
-func (s *RefreshRequestedState) vtxoStateSealed() {}
+// vtxoStateSealed marks this as implementing the sealed VTXOState interface.
+func (s *PendingForfeitState) vtxoStateSealed() {}
 
 // ForfeitingState indicates the VTXO is being forfeited in a round. The VTXO
 // actor is waiting for the new commitment transaction to confirm.

@@ -278,8 +278,8 @@ func protoStatusToDomain(
 	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
 		return vtxo.VTXOStatusLive, nil
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED:
-		return vtxo.VTXOStatusRefreshRequested, nil
+	case daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT:
+		return vtxo.VTXOStatusPendingForfeit, nil
 
 	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
 		return vtxo.VTXOStatusForfeiting, nil
@@ -307,8 +307,8 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 	case vtxo.VTXOStatusLive:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
 
-	case vtxo.VTXOStatusRefreshRequested:
-		return daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED
+	case vtxo.VTXOStatusPendingForfeit:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
 
 	case vtxo.VTXOStatusForfeiting:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING

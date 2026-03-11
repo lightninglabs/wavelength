@@ -455,8 +455,8 @@ func statusToState(
 			LastCheckedHeight: vtxo.CreatedHeight,
 		}
 
-	case VTXOStatusRefreshRequested:
-		return &RefreshRequestedState{VTXO: vtxo, RequestedAtHeight: 0}
+	case VTXOStatusPendingForfeit:
+		return &PendingForfeitState{VTXO: vtxo, RequestedAtHeight: 0}
 
 	case VTXOStatusForfeiting:
 		// Fetch the persisted forfeit tx for crash recovery.
