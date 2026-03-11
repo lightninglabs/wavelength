@@ -273,6 +273,11 @@ message VTXO {
     // oor_final_checkpoint_psbts are serialized finalized checkpoint PSBTs for
     // virtual/OOR VTXOs.
     repeated bytes oor_final_checkpoint_psbts = 14;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO
+    // and the most recent on-chain commitment. Round-created VTXOs have
+    // chain_depth 0.
+    uint32 chain_depth = 15;
 }
 
 message ListVTXOsByScriptsRequest {

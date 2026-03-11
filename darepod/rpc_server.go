@@ -344,6 +344,7 @@ func descriptorToProto(v *vtxo.Descriptor) *daemonrpc.VTXO {
 		RelativeExpiry: v.RelativeExpiry,
 		PkScript:       hex.EncodeToString(v.PkScript),
 		CommitmentTxid: v.CommitmentTxID.String(),
+		ChainDepth:     uint32(v.ChainDepth),
 	}
 }
 
