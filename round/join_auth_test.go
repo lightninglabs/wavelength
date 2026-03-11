@@ -638,6 +638,69 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	f.verifyAuth(t, auth, proofPrevOuts)
 }
 
+// TestComputeTotalForfeitAmountUsesEmbeddedAmount verifies that the round can
+// sum forfeits without consulting the VTXO store when the caller already
+// supplied local amount metadata.
+func TestComputeTotalForfeitAmountUsesEmbeddedAmount(t *testing.T) {
+	t.Parallel()
+
+	total, err := computeTotalForfeitAmount(
+		t.Context(),
+		nil,
+		[]types.ForfeitRequest{{
+			VTXOOutpoint: &wire.OutPoint{},
+			Amount:       123,
+		}, {
+			VTXOOutpoint: &wire.OutPoint{
+				Index: 1,
+			},
+			Amount: 456,
+		}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(579), total)
+}
+
+// TestSortedForfeitRequestsPreservesAmount verifies that the Amount
+// field survives the sort so the embedded-amount fast-path in
+// computeTotalForfeitAmount works on sorted output.
+func TestSortedForfeitRequestsPreservesAmount(t *testing.T) {
+	t.Parallel()
+
+	// Two forfeits with amounts, in reverse outpoint order.
+	forfeits := []types.ForfeitRequest{
+		{
+			VTXOOutpoint: &wire.OutPoint{
+				Hash:  chainhash.Hash{0xff},
+				Index: 1,
+			},
+			Amount: 300,
+		},
+		{
+			VTXOOutpoint: &wire.OutPoint{
+				Hash:  chainhash.Hash{0x01},
+				Index: 0,
+			},
+			Amount: 700,
+		},
+	}
+
+	sorted, err := sortedForfeitRequests(forfeits)
+	require.NoError(t, err)
+	require.Len(t, sorted, 2)
+
+	// After sorting, the 0x01 outpoint should come first.
+	require.Equal(t,
+		chainhash.Hash{0x01}, sorted[0].VTXOOutpoint.Hash,
+	)
+	require.Equal(t, btcutil.Amount(700), sorted[0].Amount)
+
+	require.Equal(t,
+		chainhash.Hash{0xff}, sorted[1].VTXOOutpoint.Hash,
+	)
+	require.Equal(t, btcutil.Amount(300), sorted[1].Amount)
+}
+
 // TestBuildJoinRoundAuthRejectsNoInputs verifies that
 // buildJoinRoundAuth returns an error when no proof-of-funds inputs
 // are provided.

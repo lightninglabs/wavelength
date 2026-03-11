@@ -716,6 +716,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
+			Amount:       vtxo.Amount,
 		})
 		vtxos = append(vtxos, types.VTXORequest{
 			Amount:      vtxo.Amount,
@@ -810,7 +811,7 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	)
 
 	for _, outpoint := range req.TargetOutpoints {
-		_, err := a.vtxoReader.GetVTXO(ctx, outpoint)
+		vtxo, err := a.vtxoReader.GetVTXO(ctx, outpoint)
 		if err != nil {
 			a.logger(ctx).WarnS(ctx,
 				"Failed to load VTXO for leave",
@@ -828,6 +829,7 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		op := outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
+			Amount:       vtxo.Amount,
 		})
 		leaves = append(leaves, &types.LeaveRequest{
 			Output: req.DestOutput,

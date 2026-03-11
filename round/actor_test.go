@@ -1230,6 +1230,10 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 			t, vtxoOutpoint,
 			*assembly.Forfeits[0].VTXOOutpoint,
 		)
+		require.Equal(
+			t, btcutil.Amount(refreshReq.Amount),
+			assembly.Forfeits[0].Amount,
+		)
 
 		// Verify the VTXO output request is tracked.
 		require.Len(t, assembly.VTXOs, 1)
@@ -1977,6 +1981,7 @@ func TestHandleRegisterIntent(t *testing.T) {
 			Package: &IntentPackage{Intents: Intents{
 				Forfeits: []types.ForfeitRequest{{
 					VTXOOutpoint: &vtxoOutpoint,
+					Amount:       50000,
 				}},
 				VTXOs: []types.VTXORequest{{
 					Amount:      50000,
@@ -2007,6 +2012,10 @@ func TestHandleRegisterIntent(t *testing.T) {
 		require.Equal(
 			t, vtxoOutpoint,
 			*assembly.Forfeits[0].VTXOOutpoint,
+		)
+		require.Equal(
+			t, btcutil.Amount(50000),
+			assembly.Forfeits[0].Amount,
 		)
 		require.Len(t, assembly.VTXOs, 1)
 	})

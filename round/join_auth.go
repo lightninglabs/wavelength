@@ -89,9 +89,17 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 
 // sortedForfeitRequests sorts forfeit requests by outpoint (txid bytes
 // then output index) so the resulting list is deterministic. Returns an
-// error if any request has a nil VTXOOutpoint.
+// error if any request has a nil VTXOOutpoint. The embedded Amount field
+// is preserved so callers can use the fast-path in
+// computeTotalForfeitAmount without a store lookup.
 func sortedForfeitRequests(
 	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
+
+	// Index amounts by outpoint so we can carry them through
+	// the sort.
+	amountByOP := make(
+		map[wire.OutPoint]btcutil.Amount, len(forfeits),
+	)
 
 	// Collect and sort the outpoints, validating that none are nil.
 	outpoints := make([]wire.OutPoint, 0, len(forfeits))
@@ -100,13 +108,15 @@ func sortedForfeitRequests(
 			return nil, fmt.Errorf("forfeit request %d "+
 				"has nil outpoint", i)
 		}
-		outpoints = append(
-			outpoints, *forfeits[i].VTXOOutpoint,
-		)
+
+		op := *forfeits[i].VTXOOutpoint
+		outpoints = append(outpoints, op)
+		amountByOP[op] = forfeits[i].Amount
 	}
 	sortOutPoints(outpoints)
 
-	// Build the sorted result with pointer-to-outpoint fields.
+	// Build the sorted result, preserving both the outpoint
+	// pointer and the embedded Amount.
 	requests := make(
 		[]*types.ForfeitRequest, 0, len(outpoints),
 	)
@@ -115,6 +125,7 @@ func sortedForfeitRequests(
 		requests = append(
 			requests, &types.ForfeitRequest{
 				VTXOOutpoint: &op,
+				Amount:       amountByOP[op],
 			},
 		)
 	}
@@ -138,15 +149,20 @@ func sortOutPoints(outpoints []wire.OutPoint) {
 }
 
 // computeTotalForfeitAmount looks up each forfeited VTXO's value from
-// the VTXOStore and returns the sum. This replaces the old approach of
-// carrying the amount inside ForfeitIntent — the outpoint is sufficient
-// and the store is the source of truth.
+// the VTXOStore and returns the sum. If the caller already populated the
+// local Amount field, we use that directly and avoid the store lookup.
 func computeTotalForfeitAmount(ctx context.Context,
 	store VTXOStore,
 	forfeits []types.ForfeitRequest) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
 	for i := 0; i < len(forfeits); i++ {
+		if forfeits[i].Amount != 0 {
+			total += forfeits[i].Amount
+
+			continue
+		}
+
 		vtxo, err := store.GetVTXO(
 			ctx, *forfeits[i].VTXOOutpoint,
 		)

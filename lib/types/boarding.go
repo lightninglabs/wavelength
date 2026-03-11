@@ -95,6 +95,12 @@ type LeaveRequest struct {
 type ForfeitRequest struct {
 	// VTXOOutpoint is the outpoint of the VTXO to forfeit.
 	VTXOOutpoint *wire.OutPoint
+
+	// Amount is the local value of the forfeited VTXO in satoshis. This
+	// is used by the client when validating a round before registration.
+	// It is not part of the join-round wire encoding, where the outpoint
+	// remains the source of truth.
+	Amount btcutil.Amount
 }
 
 type VTXORequest struct {
