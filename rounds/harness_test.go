@@ -464,104 +464,201 @@ func feedBatchBuildViaHandler(h *fsmTestHarness) {
 	require.NoError(h, err)
 }
 
-// feedJoinSuccess performs the two-hop join pattern: sends a
-// ClientJoinRequestEvent, asserts the intermediate AwaitingJoinValidationState
-// and ValidateAndLockJoinReq outbox, then feeds a ValidateAndLockSucceededEvent
-// with the given result. Outbox is cleared between hops. After this call the
-// FSM should be in RegistrationState with the new client.
-func feedJoinSuccess(h *fsmTestHarness, clientID ClientID,
-	joinEvent *ClientJoinRequestEvent,
-	result *JoinRequestResult) {
+// feedJoinSuccess sends a ClientJoinRequestEvent and asserts the FSM
+// transitions to RegistrationState with a ClientSuccessResp outbox. The
+// harness must have its mock environment set up so that inline validation
+// and locking succeed.
+func feedJoinSuccess(h *fsmTestHarness,
+	joinEvent *ClientJoinRequestEvent) {
 
 	h.Helper()
 
 	h.outboxMessages = nil
 	err := h.sendEvent(joinEvent)
 	require.NoError(h, err)
-
-	// Assert intermediate state and outbox.
-	assertStateType[*AwaitingJoinValidationState](h)
-	assertOutboxContains[*ValidateAndLockJoinReq](h)
-
-	// Feed validation success back.
-	h.outboxMessages = nil
-	err = h.sendEvent(&ValidateAndLockSucceededEvent{
-		ClientID: clientID,
-		Result:   result,
-	})
-	require.NoError(h, err)
 }
 
-// feedJoinFailure performs the two-hop join pattern for a failure case: sends
-// a ClientJoinRequestEvent, asserts the intermediate state, then feeds a
-// ValidateAndLockFailedEvent with the given reason. The FSM should return to
-// its previous state with a ClientErrorResp outbox.
-func feedJoinFailure(h *fsmTestHarness,
-	joinEvent *ClientJoinRequestEvent, reason string) {
+// quickClient creates a clientHarness with deterministic keys derived from
+// keyIndex, sets up valid boarding input mock expectations for the given
+// outpoint, and returns the client and a properly formed join event. The
+// caller should send the event via feedJoinSuccess.
+func quickClient(h *fsmTestHarness, clientID ClientID,
+	keyIndex int32,
+	outpoint *wire.OutPoint) (*clientHarness, *ClientJoinRequestEvent) {
 
 	h.Helper()
 
-	h.outboxMessages = nil
-	err := h.sendEvent(joinEvent)
-	require.NoError(h, err)
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		h.T, clientID, keyIndex, h.operatorPub,
+		exitDelay, expiry,
+	)
 
-	// Assert intermediate state.
-	assertStateType[*AwaitingJoinValidationState](h)
+	h.setupValidBoardingInput(
+		outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	)
 
-	// Feed validation failure back.
-	h.outboxMessages = nil
-	err = h.sendEvent(&ValidateAndLockFailedEvent{
-		ClientID: joinEvent.ClientID,
-		Reason:   reason,
-	})
-	require.NoError(h, err)
+	boardingReq := client.createBoardingRequest(outpoint)
+	joinEvt := client.createJoinRequest(
+		[]*types.BoardingRequest{boardingReq},
+	)
+
+	return client, joinEvt
 }
 
-// buildJoinResult creates a JoinRequestResult from boarding inputs. This is
-// used by FSM tests that need to provide a pre-built result to the
-// ValidateAndLockSucceededEvent without going through actual validation.
-func buildJoinResult(
-	boardingInputs ...*BoardingInput) *JoinRequestResult {
+// quickClientWithForfeit creates a clientHarness with valid boarding and
+// forfeit mock expectations. Returns the client and join event.
+func quickClientWithForfeit(h *fsmTestHarness, clientID ClientID,
+	keyIndex int32, boardingOutpoint *wire.OutPoint,
+	forfeitOutpoints ...*wire.OutPoint) (*clientHarness,
+	*ClientJoinRequestEvent) {
 
-	return &JoinRequestResult{
-		BoardingInputs: boardingInputs,
+	h.Helper()
+
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		h.T, clientID, keyIndex, h.operatorPub,
+		exitDelay, expiry,
+	)
+
+	h.setupValidBoardingInput(
+		boardingOutpoint, client.boardingKey, exitDelay, 10,
+		h.roundID,
+	)
+
+	boardingReq := client.createBoardingRequest(boardingOutpoint)
+
+	// Set up forfeit VTXO mocks and build forfeit requests.
+	forfeitReqs := make(
+		[]*types.ForfeitRequest, 0, len(forfeitOutpoints),
+	)
+	forfeitOPs := make(
+		[]wire.OutPoint, 0, len(forfeitOutpoints),
+	)
+	for _, fp := range forfeitOutpoints {
+		h.setupValidForfeitVTXO(
+			fp, client.boardingKey, h.roundID,
+		)
+		forfeitReqs = append(forfeitReqs, &types.ForfeitRequest{
+			VTXOOutpoint: fp,
+		})
+		forfeitOPs = append(forfeitOPs, *fp)
 	}
+
+	// Expect the VTXOs to be locked.
+	if len(forfeitOPs) > 0 {
+		h.expectVTXOLocked(h.roundID, forfeitOPs...)
+	}
+
+	joinEvt := client.createJoinRequestWithForfeits(
+		[]*types.BoardingRequest{boardingReq}, forfeitReqs,
+	)
+
+	return client, joinEvt
 }
 
-// buildJoinResultWithForfeits creates a JoinRequestResult from boarding and
-// forfeit inputs. Used by FSM tests with forfeit VTXOs.
-func buildJoinResultWithForfeits(boardingInputs []*BoardingInput,
-	forfeitInputs []*ForfeitInput) *JoinRequestResult {
+// quickClientWithVTXOs creates a clientHarness with valid boarding input
+// and VTXO request mock expectations. Returns the client and join event.
+func quickClientWithVTXOs(h *fsmTestHarness, clientID ClientID,
+	keyIndex int32, outpoint *wire.OutPoint,
+	vtxoAmounts ...btcutil.Amount) (*clientHarness,
+	*ClientJoinRequestEvent) {
 
-	return &JoinRequestResult{
-		BoardingInputs: boardingInputs,
-		ForfeitInputs:  forfeitInputs,
+	h.Helper()
+
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		h.T, clientID, keyIndex, h.operatorPub,
+		exitDelay, expiry,
+	)
+
+	h.setupValidBoardingInput(
+		outpoint, client.boardingKey, exitDelay, 10, h.roundID,
+	)
+
+	boardingReq := client.createBoardingRequest(outpoint)
+
+	vtxoReqs := make([]*types.VTXORequest, 0, len(vtxoAmounts))
+	for _, amount := range vtxoAmounts {
+		vtxoReqs = append(vtxoReqs, client.createVTXORequest(amount))
 	}
+
+	joinEvt := client.createJoinRequestWithVTXOs(
+		[]*types.BoardingRequest{boardingReq}, vtxoReqs,
+	)
+
+	return client, joinEvt
 }
 
-// buildJoinResultWithVTXOs creates a JoinRequestResult from boarding inputs
-// and VTXO descriptors/signing keys extracted from the client harness. Used
-// by E2E tests that need real VTXO tree construction.
-func buildJoinResultWithVTXOs(boardingInputs []*BoardingInput,
-	clients ...*clientHarness) *JoinRequestResult {
+// quickClientWithForfeitAndVTXOs creates a clientHarness with valid boarding,
+// forfeit, and VTXO request mock expectations. Returns the client and join
+// event.
+func quickClientWithForfeitAndVTXOs(h *fsmTestHarness, clientID ClientID,
+	keyIndex int32, boardingOutpoint *wire.OutPoint,
+	forfeitOutpoints []*wire.OutPoint,
+	vtxoAmounts []btcutil.Amount) (*clientHarness,
+	*ClientJoinRequestEvent) {
 
-	vtxoDescs := make(map[SigningKeyHex]*tree.VTXODescriptor)
-	signingKeys := make(map[SigningKeyHex]*btcec.PublicKey)
+	h.Helper()
 
-	for _, c := range clients {
-		for keyHex, desc := range c.vtxoDescriptors {
-			vtxoDescs[keyHex] = desc
-		}
-		for keyHex, keyDesc := range c.vtxoKeys {
-			signingKeys[keyHex] = keyDesc.PubKey
-		}
+	const exitDelay = 144
+	const expiry = 144
+	client := newClientHarness(
+		h.T, clientID, keyIndex, h.operatorPub,
+		exitDelay, expiry,
+	)
+
+	h.setupValidBoardingInput(
+		boardingOutpoint, client.boardingKey, exitDelay, 10,
+		h.roundID,
+	)
+
+	boardingReq := client.createBoardingRequest(boardingOutpoint)
+
+	// Set up forfeit VTXO mocks.
+	forfeitReqs := make(
+		[]*types.ForfeitRequest, 0, len(forfeitOutpoints),
+	)
+	forfeitOPs := make(
+		[]wire.OutPoint, 0, len(forfeitOutpoints),
+	)
+	for _, fp := range forfeitOutpoints {
+		h.setupValidForfeitVTXO(
+			fp, client.boardingKey, h.roundID,
+		)
+		forfeitReqs = append(forfeitReqs, &types.ForfeitRequest{
+			VTXOOutpoint: fp,
+		})
+		forfeitOPs = append(forfeitOPs, *fp)
+	}
+	if len(forfeitOPs) > 0 {
+		h.expectVTXOLocked(h.roundID, forfeitOPs...)
 	}
 
-	return &JoinRequestResult{
-		BoardingInputs:  boardingInputs,
-		VTXODescriptors: vtxoDescs,
-		SigningKeys:     signingKeys,
+	// Set up VTXO requests.
+	vtxoReqs := make([]*types.VTXORequest, 0, len(vtxoAmounts))
+	for _, amount := range vtxoAmounts {
+		vtxoReqs = append(vtxoReqs, client.createVTXORequest(amount))
 	}
+
+	joinEvt := &ClientJoinRequestEvent{
+		ClientID: client.clientID,
+		Request: &types.JoinRoundRequest{
+			BoardingReqs: []*types.BoardingRequest{boardingReq},
+			ForfeitReqs:  forfeitReqs,
+			VTXOReqs:     vtxoReqs,
+		},
+	}
+
+	// Store boarding reqs for later signature creation.
+	client.submittedBoardingReqs = append(
+		client.submittedBoardingReqs, boardingReq,
+	)
+
+	return client, joinEvt
 }
 
 // expectPSBTFinalized sets up the wallet controller mock to expect a
@@ -812,42 +909,6 @@ func buildTestBoardingInput(t *testing.T, outpoint *wire.OutPoint,
 
 // buildTestBoardingInputForClient creates a fully-populated
 // BoardingInput using the given client key and exit delay. This is
-// the same as buildTestBoardingInput but uses a specific client key
-// so that signatures created by the corresponding client harness
-// will be valid.
-func buildTestBoardingInputForClient(t *testing.T,
-	outpoint *wire.OutPoint, value btcutil.Amount,
-	clientKey, operatorKey *btcec.PublicKey,
-	exitDelay uint32) *BoardingInput {
-
-	t.Helper()
-
-	tapscript, err := scripts.VTXOTapScript(
-		clientKey, operatorKey, exitDelay,
-	)
-	require.NoError(t, err)
-
-	outputKey, err := tapscript.TaprootKey()
-	require.NoError(t, err)
-	pkScript, err := input.PayToTaprootScript(outputKey)
-	require.NoError(t, err)
-
-	return &BoardingInput{
-		Outpoint:  outpoint,
-		Tapscript: tapscript,
-		Value:     value,
-		PkScript:  pkScript,
-		ClientKey: clientKey,
-		OperatorKeyDesc: &keychain.KeyDescriptor{
-			PubKey: operatorKey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(42),
-				Index:  0,
-			},
-		},
-	}
-}
-
 // vtxoNoncesStateOpts configures buildAwaitingVTXONoncesState.
 type vtxoNoncesStateOpts struct {
 	// withVTXOs marks this client as having VTXODescriptors.

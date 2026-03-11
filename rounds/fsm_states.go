@@ -72,6 +72,21 @@ func newRegistrationState(
 	}
 }
 
+// withNewClient returns a new RegistrationState with the given client added.
+// The original state is not modified (immutable pattern).
+func (s *RegistrationState) withNewClient(clientID clientconn.ClientID,
+	result *JoinRequestResult) *RegistrationState {
+
+	newRegs := make(map[clientconn.ClientID]*ClientRegistration)
+	for id, reg := range s.ClientRegistrations {
+		newRegs[id] = reg
+	}
+
+	newRegs[clientID] = newClientRegistration(clientID, result)
+
+	return newRegistrationState(newRegs)
+}
+
 // isClientRegistered checks if a client is already registered in this round.
 func (s *RegistrationState) isClientRegistered(
 	clientID clientconn.ClientID) bool {
@@ -89,41 +104,6 @@ func (s *RegistrationState) getAllBoardingInputs() []*BoardingInput {
 
 	return all
 }
-
-// AwaitingJoinValidationState waits for the OutboxHandler to validate a
-// client join request and lock the required inputs. On success it transitions
-// to RegistrationState with the client added; on failure it returns to the
-// previous state (CreatedState or RegistrationState) with a client error.
-type AwaitingJoinValidationState struct {
-	// ExistingRegistrations are the client registrations accumulated
-	// before this join request. Empty map when transitioning from
-	// CreatedState.
-	ExistingRegistrations map[clientconn.ClientID]*ClientRegistration
-
-	// PendingClientID is the client whose join is being validated.
-	PendingClientID clientconn.ClientID
-
-	// IsFirstClient is true when transitioning from CreatedState (no
-	// prior registrations). A successful validation from CreatedState
-	// starts the registration timeout.
-	IsFirstClient bool
-}
-
-// String returns a human-readable representation of
-// AwaitingJoinValidationState.
-func (s *AwaitingJoinValidationState) String() string {
-	return "AwaitingJoinValidationState"
-}
-
-// IsTerminal returns false as AwaitingJoinValidationState is not a terminal
-// state.
-func (s *AwaitingJoinValidationState) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks AwaitingJoinValidationState as implementing the sealed
-// State interface.
-func (s *AwaitingJoinValidationState) stateSealed() {}
 
 // BatchBuildingState is a transitional state where the commitment transaction
 // PSBT is being constructed. This state processes BuildBatchTxEvent to build

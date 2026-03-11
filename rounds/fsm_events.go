@@ -286,32 +286,3 @@ type ConfirmRoundFailedEvent struct {
 // eventSealed marks ConfirmRoundFailedEvent as implementing the sealed Event
 // interface.
 func (e *ConfirmRoundFailedEvent) eventSealed() {}
-
-// ValidateAndLockSucceededEvent is sent by the OutboxHandler after it has
-// successfully validated a client join request and locked all inputs.
-type ValidateAndLockSucceededEvent struct {
-	// ClientID identifies which client's join succeeded.
-	ClientID clientconn.ClientID
-
-	// Result contains the validated boarding inputs, forfeit inputs,
-	// required outputs, and VTXO descriptors.
-	Result *JoinRequestResult
-}
-
-// eventSealed marks ValidateAndLockSucceededEvent as implementing the sealed
-// Event interface.
-func (e *ValidateAndLockSucceededEvent) eventSealed() {}
-
-// ValidateAndLockFailedEvent is sent by the OutboxHandler when validation
-// or input locking fails for a client join request.
-type ValidateAndLockFailedEvent struct {
-	// ClientID identifies which client's join failed.
-	ClientID clientconn.ClientID
-
-	// Reason describes why validation or locking failed.
-	Reason string
-}
-
-// eventSealed marks ValidateAndLockFailedEvent as implementing the sealed
-// Event interface.
-func (e *ValidateAndLockFailedEvent) eventSealed() {}

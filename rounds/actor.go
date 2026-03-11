@@ -785,8 +785,6 @@ func outboxRoundID(msg OutboxEvent) string {
 		return m.RoundID.String()
 	case *UnlockForfeitVTXOsReq:
 		return m.RoundID.String()
-	case *ValidateAndLockJoinReq:
-		return m.RoundID.String()
 	default:
 		return ""
 	}

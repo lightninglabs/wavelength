@@ -646,34 +646,3 @@ type ReleaseWalletInputsReq struct {
 // outboxEventSealed marks ReleaseWalletInputsReq as implementing the
 // sealed OutboxEvent interface.
 func (r *ReleaseWalletInputsReq) outboxEventSealed() {}
-
-// ValidateAndLockJoinReq is an outbox event emitted when a client join request
-// needs validation and input locking. The OutboxHandler validates the request
-// (UTXO lookups, lock checks, forfeit VTXO lookups), then locks the boarding
-// inputs and forfeit VTXOs. Returns a ValidateAndLockSucceededEvent with the
-// validated result or a ValidateAndLockFailedEvent with the reason.
-type ValidateAndLockJoinReq struct {
-	// RoundID identifies the round being joined.
-	RoundID RoundID
-
-	// ClientID identifies the client making the join request.
-	ClientID clientconn.ClientID
-
-	// Request is the client's raw join round request.
-	Request *types.JoinRoundRequest
-
-	// CurrentBlockHeight is the best-known chain height at the time of
-	// the request. Used for join-auth freshness checks.
-	CurrentBlockHeight uint32
-
-	// StartHeight is the round's creation height, used as a fallback
-	// when CurrentBlockHeight is zero.
-	StartHeight uint32
-
-	// DisableJoinRequestAuth skips BIP-322 auth validation when true.
-	DisableJoinRequestAuth bool
-}
-
-// outboxEventSealed marks ValidateAndLockJoinReq as implementing the sealed
-// OutboxEvent interface.
-func (v *ValidateAndLockJoinReq) outboxEventSealed() {}
