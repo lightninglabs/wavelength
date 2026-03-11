@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -96,6 +97,9 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 		}
 	}
 
+	// TODO(security): Add TLS and authentication before
+	// non-regtest deployment. The client RPC server currently
+	// runs without TLS or auth interceptors.
 	s := &RPCServer{
 		cfg:        cfg,
 		server:     operator,
@@ -145,7 +149,23 @@ func (r *RPCServer) Stop(ctx context.Context) error {
 	r.log.InfoS(ctx, "Stopping client RPC server")
 
 	close(r.quit)
-	r.grpcServer.Stop()
+
+	// Attempt a graceful shutdown so in-flight RPCs can
+	// complete. Fall back to a hard stop after 5 seconds to
+	// avoid blocking shutdown indefinitely.
+	done := make(chan struct{})
+	go func() {
+		r.grpcServer.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+
+	case <-time.After(5 * time.Second):
+		r.grpcServer.Stop()
+	}
+
 	r.wg.Wait()
 
 	return nil
