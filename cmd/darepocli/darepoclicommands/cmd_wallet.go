@@ -245,24 +245,17 @@ func walletNewAddress(cmd *cobra.Command, _ []string) error {
 }
 
 // readPassword reads the wallet password from one of these sources,
-// in priority order: stdin pipe > DAREPOD_WALLET_PASSWORD env >
-// --wallet_password_file flag > interactive prompt.
+// in priority order: DAREPOD_WALLET_PASSWORD env >
+// --wallet_password_file flag > stdin pipe > interactive prompt.
+// The env var is checked first so that automated environments
+// (such as the darepotest REPL) can set it without stdin races.
 func readPassword(cmd *cobra.Command) ([]byte, error) {
-	// Check if stdin has data (piped input).
-	stat, _ := os.Stdin.Stat()
-	if (stat.Mode() & os.ModeCharDevice) == 0 {
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() {
-			return []byte(scanner.Text()), nil
-		}
-
-		return nil, fmt.Errorf(
-			"unable to read password from stdin")
-	}
-
-	// Check environment variable.
+	// Check environment variable first — takes priority so
+	// that callers with piped stdin (e.g. REPL, CI) can
+	// override without fighting over stdin.
 	if envPass := os.Getenv(
 		"DAREPOD_WALLET_PASSWORD"); envPass != "" {
+
 		return []byte(envPass), nil
 	}
 
@@ -280,6 +273,18 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 		return []byte(strings.TrimRight(
 			string(data), "\n\r",
 		)), nil
+	}
+
+	// Check if stdin has data (piped input).
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) == 0 {
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			return []byte(scanner.Text()), nil
+		}
+
+		return nil, fmt.Errorf(
+			"unable to read password from stdin")
 	}
 
 	// Interactive prompt (TTY).
