@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/btcsuite/btclog/v2"
@@ -123,6 +125,57 @@ func newRootCmd() *cobra.Command {
 		"require SSL when connecting to postgres",
 	)
 
+	// Rounds policy flags.
+	rc := cfg.Rounds
+	f.Uint32("rounds.sweepdelay", rc.SweepDelay,
+		"CSV delay for sweep path (blocks)",
+	)
+	f.Uint32("rounds.maxvtxospertree",
+		rc.MaxVTXOsPerTree,
+		"max VTXOs per batch tree",
+	)
+	f.Uint32("rounds.treeradix", rc.TreeRadix,
+		"VTXO tree branching factor",
+	)
+	f.Uint32("rounds.maxconnectorspertree",
+		rc.MaxConnectorsPerTree,
+		"max connector leaves per tree",
+	)
+	f.Uint32("rounds.boardingexitdelay",
+		rc.BoardingExitDelay,
+		"min exit delay for boarding inputs (blocks)",
+	)
+	f.Uint32("rounds.minboardingconfirmations",
+		rc.MinBoardingConfirmations,
+		"min confirmations for boarding inputs",
+	)
+	f.Uint32("rounds.vtxoexitdelay",
+		rc.VTXOExitDelay,
+		"min exit delay for VTXOs (blocks)",
+	)
+	f.Duration("rounds.registrationtimeout",
+		rc.RegistrationTimeout,
+		"registration phase timeout",
+	)
+	f.Duration("rounds.signaturecollectiontimeout",
+		rc.SignatureCollectionTimeout,
+		"signature collection phase timeout",
+	)
+	f.Duration("rounds.fundpsbtlockduration",
+		rc.FundPsbtLockDuration,
+		"LND UTXO lease duration for FundPsbt",
+	)
+	f.Uint32("rounds.conftarget", rc.ConfTarget,
+		"confirmation target for fee estimation",
+	)
+	f.Int32("rounds.minconfs", rc.MinConfs,
+		"min confirmations for wallet UTXOs",
+	)
+	f.Uint32("rounds.confirmationtarget",
+		rc.ConfirmationTarget,
+		"confirmations before round is confirmed",
+	)
+
 	// Admin RPC server flags.
 	f.String("adminrpc.listen", cfg.AdminRPC.ListenAddr,
 		"admin gRPC listen address",
@@ -131,6 +184,15 @@ func newRootCmd() *cobra.Command {
 	// Client RPC server flags.
 	f.String("rpc.listen", cfg.RPC.ListenAddr,
 		"client gRPC listen address",
+	)
+	f.String("rpc.tls.certpath", "",
+		"path to TLS certificate for client gRPC",
+	)
+	f.String("rpc.tls.keypath", "",
+		"path to TLS private key for client gRPC",
+	)
+	f.Bool("rpc.tls.autocert", false,
+		"enable automatic TLS certificate generation",
 	)
 
 	// Bind all flags to viper so Unmarshal populates the config
@@ -154,8 +216,32 @@ func run(cfg *darepo.Config) error {
 
 	// Set up logging. A single handler is shared across all
 	// subsystem loggers so that output flows to one destination
-	// with consistent formatting.
-	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	// with consistent formatting. When a log file path is
+	// configured, logs are written to both stdout and the file.
+	var logWriter io.Writer = os.Stdout
+
+	if cfg.LogFilePath != "" {
+		logDir := filepath.Dir(cfg.LogFilePath)
+		if err := os.MkdirAll(logDir, 0700); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+
+		logFile, err := os.OpenFile(
+			cfg.LogFilePath,
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+			0600,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"open log file: %w", err,
+			)
+		}
+		defer logFile.Close()
+
+		logWriter = io.MultiWriter(os.Stdout, logFile)
+	}
+
+	logHandler := btclog.NewDefaultHandler(logWriter)
 	loggers := darepo.SetupLoggers(logHandler)
 
 	if err := darepo.ApplyDebugLevel(

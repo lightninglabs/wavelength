@@ -13,6 +13,51 @@ import (
 	"github.com/lib/pq"
 )
 
+const CountAllRounds = `-- name: CountAllRounds :one
+SELECT count(*) FROM rounds
+`
+
+func (q *Queries) CountAllRounds(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountAllRounds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountAllVTXOs = `-- name: CountAllVTXOs :one
+SELECT count(*) FROM vtxos
+`
+
+func (q *Queries) CountAllVTXOs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountAllVTXOs)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountRoundsByStatus = `-- name: CountRoundsByStatus :one
+SELECT count(*) FROM rounds
+WHERE status = $1
+`
+
+func (q *Queries) CountRoundsByStatus(ctx context.Context, status string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountRoundsByStatus, status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CountVTXOsByStatus = `-- name: CountVTXOsByStatus :one
+SELECT count(*) FROM vtxos WHERE status = $1
+`
+
+func (q *Queries) CountVTXOsByStatus(ctx context.Context, status string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, CountVTXOsByStatus, status)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE lock_owner_kind = $1
@@ -274,6 +319,40 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 	return i, err
 }
 
+const GetVTXOStatsByStatus = `-- name: GetVTXOStatsByStatus :many
+SELECT status, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total_value
+FROM vtxos GROUP BY status
+`
+
+type GetVTXOStatsByStatusRow struct {
+	Status     string
+	Count      int64
+	TotalValue interface{}
+}
+
+func (q *Queries) GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, GetVTXOStatsByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetVTXOStatsByStatusRow
+	for rows.Next() {
+		var i GetVTXOStatsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count, &i.TotalValue); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const InsertRound = `-- name: InsertRound :exec
 
 
@@ -435,6 +514,95 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 	return err
 }
 
+const ListAllRounds = `-- name: ListAllRounds :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAllRoundsParams struct {
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListAllRounds, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListAllVTXOsPaged = `-- name: ListAllVTXOsPaged :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+ORDER BY outpoint_hash, outpoint_index LIMIT $1 OFFSET $2
+`
+
+type ListAllVTXOsPagedParams struct {
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedParams) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, ListAllVTXOsPaged, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListPendingRounds = `-- name: ListPendingRounds :many
 SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
 WHERE status = 'pending'
@@ -531,6 +699,53 @@ func (q *Queries) ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) 
 		query = strings.Replace(query, "/*SLICE:round_ids*/?", "NULL", 1)
 	}
 	rows, err := q.db.QueryContext(ctx, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.FinalTx,
+			&i.CommitmentTxid,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.Status,
+			&i.SweepKey,
+			&i.CsvDelay,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListRoundsByStatus = `-- name: ListRoundsByStatus :many
+SELECT round_id, final_tx, commitment_txid, confirmation_height, confirmation_block_hash, status, sweep_key, csv_delay, created_at, updated_at FROM rounds
+WHERE status = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListRoundsByStatusParams struct {
+	Status string
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatusParams) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListRoundsByStatus, arg.Status, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -701,6 +916,51 @@ ORDER BY outpoint_hash, outpoint_index
 
 func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error) {
 	rows, err := q.db.QueryContext(ctx, ListVTXOsByStatus, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Vtxo
+	for rows.Next() {
+		var i Vtxo
+		if err := rows.Scan(
+			&i.OutpointHash,
+			&i.OutpointIndex,
+			&i.RoundID,
+			&i.BatchOutputIndex,
+			&i.Amount,
+			&i.PkScript,
+			&i.CosignerKey,
+			&i.Status,
+			&i.LockOwnerKind,
+			&i.LockOwnerID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListVTXOsByStatusPaged = `-- name: ListVTXOsByStatusPaged :many
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos WHERE status = $1
+ORDER BY outpoint_hash, outpoint_index LIMIT $2 OFFSET $3
+`
+
+type ListVTXOsByStatusPagedParams struct {
+	Status string
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsByStatusPagedParams) ([]Vtxo, error) {
+	rows, err := q.db.QueryContext(ctx, ListVTXOsByStatusPaged, arg.Status, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

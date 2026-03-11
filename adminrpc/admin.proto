@@ -4,15 +4,220 @@ package adminrpc;
 
 option go_package = "github.com/lightninglabs/darepo/adminrpc";
 
+// OperatorAdmin is the admin/operator management service. It provides
+// read-only insight into the server state and control over batching.
+// This service is served over a local gRPC socket and is NOT exposed
+// through the mailbox transport.
 service OperatorAdmin {
+    // Info returns basic information about the operator server
+    // including version, pubkey, network, and block height.
     rpc Info (InfoRequest) returns (InfoResponse);
+
+    // TriggerBatch manually triggers a new batch round. If a round is
+    // already in progress, the request is rejected.
+    rpc TriggerBatch (TriggerBatchRequest) returns (TriggerBatchResponse);
+
+    // ListRounds returns a paginated list of past and active rounds.
+    rpc ListRounds (ListRoundsRequest) returns (ListRoundsResponse);
+
+    // ListVTXOs returns VTXOs with optional status filtering and cursor
+    // pagination.
+    rpc ListVTXOs (ListVTXOsRequest) returns (ListVTXOsResponse);
+
+    // GetVTXOStats returns aggregate VTXO statistics: total count,
+    // per-status counts, and total locked value.
+    rpc GetVTXOStats (GetVTXOStatsRequest) returns (GetVTXOStatsResponse);
+
+    // ListClients returns the set of currently registered mailbox
+    // clients.
+    rpc ListClients (ListClientsRequest) returns (ListClientsResponse);
 }
 
+// InfoRequest is the request for the Info RPC.
 message InfoRequest {
 }
 
+// InfoResponse contains basic server state.
 message InfoResponse {
+    // version is the daemon's semantic version string.
     string version = 1;
+
+    // pubkey is the hex-encoded identity public key of the operator's
+    // lnd node.
     string pubkey = 2;
+
+    // network is the active bitcoin network (mainnet, testnet, regtest,
+    // etc.).
     string network = 3;
+
+    // block_height is the current best block height known to the
+    // backing lnd node.
+    uint32 block_height = 4;
+
+    // lnd_alias is the alias of the connected lnd node.
+    string lnd_alias = 5;
+}
+
+// TriggerBatchRequest is the request for the TriggerBatch RPC.
+message TriggerBatchRequest {
+}
+
+// TriggerBatchResponse is the response for the TriggerBatch RPC.
+message TriggerBatchResponse {
+    // round_id is the identifier of the triggered round.
+    string round_id = 1;
+
+    // status describes the immediate outcome (e.g. "triggered",
+    // "already_in_progress").
+    string status = 2;
+}
+
+// RoundStatus describes the lifecycle state of a round.
+enum RoundStatus {
+    ROUND_STATUS_UNSPECIFIED = 0;
+    ROUND_STATUS_OPEN = 1;
+    ROUND_STATUS_SEALED = 2;
+    ROUND_STATUS_SIGNING = 3;
+    ROUND_STATUS_BROADCAST = 4;
+    ROUND_STATUS_CONFIRMED = 5;
+    ROUND_STATUS_FAILED = 6;
+}
+
+// ListRoundsRequest is the request for the ListRounds RPC.
+message ListRoundsRequest {
+    // limit bounds the number of results. Zero uses server default.
+    uint32 limit = 1;
+
+    // offset is the number of rounds to skip (for pagination).
+    uint32 offset = 2;
+
+    // status_filter optionally restricts results to rounds in the
+    // given status. If ROUND_STATUS_UNSPECIFIED, all rounds are
+    // returned.
+    RoundStatus status_filter = 3;
+}
+
+// RoundSummary describes a single round in the list.
+message RoundSummary {
+    // id is the round identifier.
+    string id = 1;
+
+    // status is the current lifecycle state of the round.
+    RoundStatus status = 2;
+
+    // tx_id is the commitment transaction ID, if known.
+    string tx_id = 3;
+
+    // num_participants is the number of clients that joined this
+    // round.
+    uint32 num_participants = 4;
+
+    // created_at_unix_s is the unix timestamp when the round was
+    // created.
+    int64 created_at_unix_s = 5;
+
+    // total_value_sat is the total value locked in this round.
+    int64 total_value_sat = 6;
+}
+
+// ListRoundsResponse is the response for the ListRounds RPC.
+message ListRoundsResponse {
+    repeated RoundSummary rounds = 1;
+
+    // total is the total number of rounds matching the filter (for
+    // pagination).
+    uint32 total = 2;
+}
+
+// VTXOStatus describes the lifecycle state of a VTXO from the
+// operator's perspective.
+enum VTXOStatus {
+    VTXO_STATUS_UNSPECIFIED = 0;
+    VTXO_STATUS_PENDING = 1;
+    VTXO_STATUS_LIVE = 2;
+    VTXO_STATUS_FORFEITED = 3;
+}
+
+// ListVTXOsRequest is the request for the ListVTXOs RPC.
+message ListVTXOsRequest {
+    // status_filter optionally restricts results to VTXOs in the
+    // given status.
+    repeated VTXOStatus status_filter = 1;
+
+    // limit bounds the number of results. Zero uses server default.
+    uint32 limit = 2;
+
+    // cursor is an opaque pagination cursor from a prior response.
+    uint64 cursor = 3;
+}
+
+// VTXOSummary describes a single VTXO.
+message VTXOSummary {
+    // outpoint is the VTXO outpoint in txid:vout format.
+    string outpoint = 1;
+
+    // value_sat is the output value in satoshis.
+    int64 value_sat = 2;
+
+    // status is the current lifecycle state.
+    VTXOStatus status = 3;
+
+    // round_id is the round that created this VTXO.
+    string round_id = 4;
+
+    // pk_script_hex is the hex-encoded output script.
+    string pk_script_hex = 5;
+}
+
+// ListVTXOsResponse is the response for the ListVTXOs RPC.
+message ListVTXOsResponse {
+    repeated VTXOSummary vtxos = 1;
+
+    // next_cursor is the pagination cursor for the next page. Zero
+    // means no more results.
+    uint64 next_cursor = 2;
+}
+
+// GetVTXOStatsRequest is the request for the GetVTXOStats RPC.
+message GetVTXOStatsRequest {
+}
+
+// GetVTXOStatsResponse contains aggregate VTXO statistics.
+message GetVTXOStatsResponse {
+    // total is the total number of VTXOs across all statuses.
+    uint32 total = 1;
+
+    // pending is the number of VTXOs awaiting confirmation.
+    uint32 pending = 2;
+
+    // live is the number of confirmed, spendable VTXOs.
+    uint32 live = 3;
+
+    // forfeited is the number of forfeited VTXOs.
+    uint32 forfeited = 4;
+
+    // total_value_locked_sat is the sum of all live VTXO values.
+    int64 total_value_locked_sat = 5;
+}
+
+// ListClientsRequest is the request for the ListClients RPC.
+message ListClientsRequest {
+}
+
+// ClientInfo describes a registered mailbox client.
+message ClientInfo {
+    // client_id is the internal client identifier.
+    string client_id = 1;
+
+    // mailbox_id is the mailbox address of this client.
+    string mailbox_id = 2;
+
+    // status describes the connection state (e.g. "active",
+    // "disconnected").
+    string status = 3;
+}
+
+// ListClientsResponse is the response for the ListClients RPC.
+message ListClientsResponse {
+    repeated ClientInfo clients = 1;
 }

@@ -15,6 +15,20 @@ func (b BatchID) String() string {
 	return uuid.UUID(b).String()
 }
 
+// BatchWatcherServiceKeyName is the receptionist key used to
+// discover the batch watcher actor in the actor system.
+const BatchWatcherServiceKeyName = "batch-watcher"
+
+// NewServiceKey returns the service key for looking up the batch
+// watcher actor via the receptionist.
+func NewServiceKey() actor.ServiceKey[
+	BatchWatcherMsg, BatchWatcherResp] {
+
+	return actor.NewServiceKey[
+		BatchWatcherMsg, BatchWatcherResp,
+	](BatchWatcherServiceKeyName)
+}
+
 // BatchWatcherMsg is the sealed interface for all messages that can be sent to
 // the BatchWatcherActor. The sealed interface pattern ensures type safety by
 // preventing external packages from implementing the interface.

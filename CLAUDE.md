@@ -330,6 +330,7 @@ See `docs/development_guidelines.md` for full dependency management details.
 
 - **[`docs/development_guidelines.md`](docs/development_guidelines.md)** - Complete style guide with extensive WRONG/RIGHT examples
 - **[`docs/clientconn_architecture.md`](docs/clientconn_architecture.md)** - Server-side 1:N mailbox connector architecture
+- **[`docs/dispatch_pipeline.md`](docs/dispatch_pipeline.md)** - Mailbox RPC dispatch pipeline (envelope → operator → actor)
 - **[`docs/layered_testing_guide.md`](docs/layered_testing_guide.md)** - Test layering strategy and patterns
 - **`PLANS.md`** - ExecPlan specification for complex features
 - **`.editorconfig`** - Automatic editor configuration (8-space tabs, 80-char lines)

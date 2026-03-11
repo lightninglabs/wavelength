@@ -10,6 +10,10 @@ import (
 
 type Querier interface {
 	ApplyFinalizeOORSession(ctx context.Context, arg ApplyFinalizeOORSessionParams) (int64, error)
+	CountAllRounds(ctx context.Context) (int64, error)
+	CountAllVTXOs(ctx context.Context) (int64, error)
+	CountRoundsByStatus(ctx context.Context, status string) (int64, error)
+	CountVTXOsByStatus(ctx context.Context, status string) (int64, error)
 	DeleteIndexerReceiveScript(ctx context.Context, arg DeleteIndexerReceiveScriptParams) (int64, error)
 	DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) error
 	// NOTE: This recursive query can be implemented in application code.
@@ -40,6 +44,7 @@ type Querier interface {
 	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
 	GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]RoundVtxoTree, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
+	GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsByStatusRow, error)
 	GetVTXOTreeCosigners(ctx context.Context, arg GetVTXOTreeCosignersParams) ([]GetVTXOTreeCosignersRow, error)
 	// NOTE: Complex recursive queries with slices are commented out for now.
 	// They can be implemented in Go code using multiple queries.
@@ -82,6 +87,8 @@ type Querier interface {
 	ListActiveIndexerReceivePrincipalsByScript(ctx context.Context, arg ListActiveIndexerReceivePrincipalsByScriptParams) ([]IndexerReceiveScript, error)
 	ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context, arg ListActiveIndexerReceiveScriptsByPrincipalParams) ([]IndexerReceiveScript, error)
 	ListActiveOORSessions(ctx context.Context) ([]OorSession, error)
+	ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([]Round, error)
+	ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedParams) ([]Vtxo, error)
 	ListChainInfo(ctx context.Context) ([]ChainInfo, error)
 	ListIndexerVTXOEventsAfterByScriptsPostgres(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsPostgresParams) ([]IndexerVtxoEvent, error)
 	ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsSqliteParams) ([]IndexerVtxoEvent, error)
@@ -91,10 +98,12 @@ type Querier interface {
 	ListPendingRounds(ctx context.Context) ([]Round, error)
 	ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte) ([]Round, error)
 	ListRoundsByIDsSqlite(ctx context.Context, roundIds [][]byte) ([]Round, error)
+	ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatusParams) ([]Round, error)
 	ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]byte) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo, error)
 	ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo, error)
+	ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsByStatusPagedParams) ([]Vtxo, error)
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)

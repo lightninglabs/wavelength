@@ -2,3 +2,4 @@
 /arkd
 merge-sql-schemas
 **/test-artifacts
+.claude/.substrate-plan-context

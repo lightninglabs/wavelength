@@ -246,6 +246,34 @@ func (b *ClientsConnBridge) ID() string {
 	return "clientconn-bridge"
 }
 
+// ClientSnapshot is a point-in-time view of a registered client's
+// state, suitable for admin RPC responses.
+type ClientSnapshot struct {
+	// ID is the unique client identifier.
+	ID ClientID
+
+	// Status is the current liveness status.
+	Status ClientStatus
+}
+
+// ListClients returns a snapshot of all currently registered clients
+// and their statuses. The returned slice is safe to use after the lock
+// is released.
+func (b *ClientsConnBridge) ListClients() []ClientSnapshot {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	result := make([]ClientSnapshot, 0, len(b.clients))
+	for id := range b.clients {
+		result = append(result, ClientSnapshot{
+			ID:     id,
+			Status: b.statusTracker.Status(id),
+		})
+	}
+
+	return result
+}
+
 // Stop shuts down all registered client runtimes and clears the client
 // map.
 func (b *ClientsConnBridge) Stop() {

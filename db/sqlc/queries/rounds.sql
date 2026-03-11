@@ -77,6 +77,24 @@ SELECT * FROM rounds
 WHERE status = 'pending'
 ORDER BY created_at ASC;
 
+-- name: ListAllRounds :many
+SELECT * FROM rounds
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountAllRounds :one
+SELECT count(*) FROM rounds;
+
+-- name: ListRoundsByStatus :many
+SELECT * FROM rounds
+WHERE status = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountRoundsByStatus :one
+SELECT count(*) FROM rounds
+WHERE status = $1;
+
 -- name: UpdateRoundConfirmed :exec
 UPDATE rounds
 SET status = 'confirmed',
@@ -165,6 +183,24 @@ ORDER BY outpoint_hash, outpoint_index;
 SELECT * FROM vtxos
 WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index;
+
+-- name: GetVTXOStatsByStatus :many
+SELECT status, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total_value
+FROM vtxos GROUP BY status;
+
+-- name: ListVTXOsByStatusPaged :many
+SELECT * FROM vtxos WHERE status = $1
+ORDER BY outpoint_hash, outpoint_index LIMIT $2 OFFSET $3;
+
+-- name: CountVTXOsByStatus :one
+SELECT count(*) FROM vtxos WHERE status = $1;
+
+-- name: ListAllVTXOsPaged :many
+SELECT * FROM vtxos
+ORDER BY outpoint_hash, outpoint_index LIMIT $1 OFFSET $2;
+
+-- name: CountAllVTXOs :one
+SELECT count(*) FROM vtxos;
 
 -- name: ListVTXOsByPkScriptsSqlite :many
 SELECT * FROM vtxos

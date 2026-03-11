@@ -33,7 +33,7 @@ GOBUILD := $(GOCC) build -v
 GOINSTALL := $(GOCC) install -v
 GOTEST := $(GOCC) test
 
-GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -name "*pb.go" -not -name "*pb.gw.go" -not -name "*.pb.json.go" -not -path "./db/sqlc/*")
+GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./client/*" -not -name "*pb.go" -not -name "*pb.gw.go" -not -name "*.pb.json.go" -not -path "./db/sqlc/*")
 
 RM := rm -f
 MAKE := make

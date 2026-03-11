@@ -114,6 +114,38 @@ func (m *ConfirmationMsg) MessageType() string {
 // actorMsgSealed marks this message as part of the ActorMsg sealed interface.
 func (m *ConfirmationMsg) actorMsgSealed() {}
 
+// TriggerBatchMsg is sent by the admin RPC to manually seal the current
+// registration round. The actor identifies the live round internally and
+// sends a SealEvent to its FSM.
+type TriggerBatchMsg struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the type name of this message.
+func (m *TriggerBatchMsg) MessageType() string {
+	return "TriggerBatchMsg"
+}
+
+// actorMsgSealed marks this message as part of the ActorMsg sealed interface.
+func (m *TriggerBatchMsg) actorMsgSealed() {}
+
+// TriggerBatchResp is the response to a TriggerBatchMsg. It returns the
+// round ID that was sealed.
+type TriggerBatchResp struct {
+	actor.BaseMessage
+
+	// RoundID is the ID of the round that was sealed.
+	RoundID RoundID
+}
+
+// MessageType returns the type name of this message.
+func (m *TriggerBatchResp) MessageType() string {
+	return "TriggerBatchResp"
+}
+
+// actorRespSealed marks this as part of the ActorResp sealed interface.
+func (m *TriggerBatchResp) actorRespSealed() {}
+
 // GetClientRoundsRequest requests the list of rounds a client is participating
 // in. This goes through the actor for concurrency safety.
 type GetClientRoundsRequest struct {

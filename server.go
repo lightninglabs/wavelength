@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/btcsuite/btclog/v2"
@@ -13,11 +14,15 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/darepo/oor"
+	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/signal"
@@ -36,9 +41,14 @@ type Server struct {
 
 	db *db.Store
 
-	adminRPC *AdminRPCServer
+	// vtxoLocker provides mutual exclusion for VTXO operations
+	// across both the rounds and OOR subsystems. Shared to
+	// ensure consistent locking semantics.
+	vtxoLocker *db.VTXOLockerDB
 
-	rpc        *RPCServer
+	adminRPC atomic.Pointer[AdminRPCServer]
+
+	rpc        atomic.Pointer[RPCServer]
 	mailboxMux *mailboxrpc.ServeMux
 
 	log btclog.Logger
@@ -47,7 +57,8 @@ type Server struct {
 	// RunWithContext independently of the parent context. This
 	// enables programmatic shutdown from subsystems or external
 	// callers that do not hold the context's cancel function.
-	quit chan struct{}
+	quit         chan struct{}
+	shutdownOnce sync.Once
 
 	// mailboxStore is the in-process mailbox store used by all
 	// subsystems for envelope persistence and delivery.
@@ -64,6 +75,49 @@ type Server struct {
 	// indexerOperator provides RPC dispatchers and event publication
 	// for the indexer service through the shared bridge.
 	indexerOperator *indexer.Operator
+
+	// chainSourceRef is the actor reference for the chain source
+	// actor, used by the rounds and batch watcher subsystems.
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+
+	// timeoutRef is the actor reference for the shared timeout
+	// scheduling actor used by round phase deadlines.
+	timeoutRef actor.ActorRef[timeout.Msg, timeout.Resp]
+
+	// batchWatcherRef is the actor reference for the batch watcher
+	// that monitors confirmed batch transactions on-chain.
+	batchWatcherRef actor.ActorRef[
+		batchwatcher.BatchWatcherMsg,
+		batchwatcher.BatchWatcherResp,
+	]
+
+	// roundsActor is the server rounds actor that drives the round
+	// FSM lifecycle: registration, signing, broadcast, and
+	// confirmation.
+	roundsActor *rounds.Actor
+
+	// roundsRef is the actor reference for the rounds actor, used
+	// for sending messages (e.g. TriggerBatch from admin RPC).
+	roundsRef actor.ActorRef[rounds.ActorMsg, rounds.ActorResp]
+
+	// roundsOperator provides RPC dispatchers for the round
+	// service, translating inbound mailbox envelopes into actor
+	// messages.
+	roundsOperator *rounds.RoundOperator
+
+	// oorActor is the OOR transfer coordinator that manages
+	// out-of-round transfers between clients.
+	oorActor *oor.Actor
+
+	// oorRef is the actor reference for the OOR actor, used
+	// for sending messages through the actor system.
+	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
+
+	// oorOperator provides RPC dispatchers for the OOR service,
+	// translating inbound mailbox envelopes into actor messages.
+	oorOperator *oor.OOROperator
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -199,7 +253,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			System:  s.actorSystem,
 		},
 	)
-	_ = actor.RegisterWithSystem(
+	s.chainSourceRef = actor.RegisterWithSystem(
 		s.actorSystem, "chain-source",
 		chainsource.ChainSourceKey, chainActor,
 	)
@@ -231,6 +285,10 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	s.log.InfoS(ctx, "Database initialized",
 		"backend", backendName)
 
+	// Create the shared VTXO locker used by both rounds and OOR
+	// subsystems for mutual exclusion during VTXO operations.
+	s.vtxoLocker = db.NewVTXOLockerDB(s.db, dbLog)
+
 	// -------------------------------------------------------
 	// 5. Setup indexer subsystem.
 	// -------------------------------------------------------
@@ -241,23 +299,42 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	defer s.stopIndexerSubsystem(ctx)
 
 	// -------------------------------------------------------
+	// 5a. Setup rounds subsystem.
+	// -------------------------------------------------------
+	if err := s.setupRoundsSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup rounds "+
+			"subsystem: %w", err)
+	}
+	defer s.stopRoundsSubsystem(ctx)
+
+	// -------------------------------------------------------
+	// 5b. Setup OOR subsystem.
+	// -------------------------------------------------------
+	if err := s.setupOORSubsystem(ctx); err != nil {
+		return fmt.Errorf("unable to setup OOR "+
+			"subsystem: %w", err)
+	}
+	defer s.stopOORSubsystem(ctx)
+
+	// -------------------------------------------------------
 	// 6. Start admin RPC server.
 	// -------------------------------------------------------
 	adminLog := subLogger(s.cfg.Loggers, adminRPCSubsystem)
 
-	s.adminRPC, err = NewAdminRPCServer(
+	adminSrv, err := NewAdminRPCServer(
 		s.cfg.AdminRPC, s, adminLog,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to create admin RPC "+
 			"server: %w", err)
 	}
-	if err := s.adminRPC.Start(ctx); err != nil {
+	if err := adminSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start admin "+
 			"server: %w", err)
 	}
+	s.adminRPC.Store(adminSrv)
 	defer func() {
-		_ = s.adminRPC.Stop(ctx)
+		_ = adminSrv.Stop(ctx)
 	}()
 
 	// -------------------------------------------------------
@@ -265,19 +342,20 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	rpcLog := subLogger(s.cfg.Loggers, clientRPCSubsystem)
 
-	s.rpc, err = NewRPCServer(
+	rpcSrv, err := NewRPCServer(
 		s.cfg.RPC, s, rpcLog,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to create client RPC "+
 			"server: %w", err)
 	}
-	if err := s.rpc.Start(ctx); err != nil {
+	if err := rpcSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start client RPC "+
 			"server: %w", err)
 	}
+	s.rpc.Store(rpcSrv)
 	defer func() {
-		_ = s.rpc.Stop(ctx)
+		_ = rpcSrv.Stop(ctx)
 	}()
 
 	// Register the ArkService for mailbox RPC access. The
@@ -287,7 +365,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// handler serves both transports.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	arkrpc.RegisterArkServiceMailboxServer(
-		s.mailboxMux, s.rpc,
+		s.mailboxMux, rpcSrv,
 	)
 
 	s.log.InfoS(ctx, "Daemon ready")
@@ -306,36 +384,35 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	return nil
 }
 
-// AdminRPCAddr returns the address the admin RPC server is listening on, or
-// nil if the server hasn't been started yet.
+// AdminRPCAddr returns the address the admin RPC server is listening
+// on, or nil if the server hasn't been started yet. Safe for
+// concurrent use.
 func (s *Server) AdminRPCAddr() net.Addr {
-	if s.adminRPC == nil {
+	srv := s.adminRPC.Load()
+	if srv == nil {
 		return nil
 	}
 
-	return s.adminRPC.Addr()
+	return srv.Addr()
 }
 
 // RPCAddr returns the address the client RPC server is listening on,
-// or nil if the server hasn't been started yet.
+// or nil if the server hasn't been started yet. Safe for concurrent
+// use.
 func (s *Server) RPCAddr() net.Addr {
-	if s.rpc == nil {
+	srv := s.rpc.Load()
+	if srv == nil {
 		return nil
 	}
 
-	return s.rpc.Addr()
+	return srv.Addr()
 }
 
 // Shutdown triggers a graceful exit of RunWithContext independently
-// of the parent context. It is safe to call multiple times.
+// of the parent context. It is safe to call concurrently and
+// multiple times thanks to sync.Once.
 func (s *Server) Shutdown() {
-	select {
-	case <-s.quit:
-		// Already closed.
-
-	default:
-		close(s.quit)
-	}
+	s.shutdownOnce.Do(func() { close(s.quit) })
 }
 
 // connectLnd establishes a connection to the lnd node using the
