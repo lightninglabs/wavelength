@@ -1,4 +1,4 @@
-package main
+package darepoclicommands
 
 import (
 	"context"
@@ -80,7 +80,7 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 				statusStr,
 			)
 			if !ok {
-				printError("INVALID_STATUS",
+				PrintError("INVALID_STATUS",
 					fmt.Sprintf(
 						"invalid status %q, "+
 							"valid: %s",

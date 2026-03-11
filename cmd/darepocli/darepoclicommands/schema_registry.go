@@ -1,4 +1,4 @@
-package main
+package darepoclicommands
 
 // schemaParam describes a single parameter for a CLI command / RPC
 // method.
