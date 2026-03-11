@@ -1,7 +1,6 @@
 /arkcli
 /arkd
 /darepocli
-/darepod
 **/test-artifacts
 merge-sql-schemas
 
