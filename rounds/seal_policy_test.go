@@ -5,7 +5,9 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/stretchr/testify/require"
 )
 
@@ -72,6 +74,87 @@ func TestAnySealPredicateComposition(t *testing.T) {
 
 	// Empty predicates → false.
 	require.False(t, AnySealPredicate()(regs))
+}
+
+// TestMaxOutputAmount verifies the MaxOutputAmount predicate sums VTXO
+// amounts and leave output values and fires at exactly the threshold.
+func TestMaxOutputAmount(t *testing.T) {
+	t.Parallel()
+
+	pred := MaxOutputAmount(50_000)
+
+	// Empty registrations — should not seal.
+	regs := make(map[clientconn.ClientID]*ClientRegistration)
+	require.False(t, pred(regs))
+
+	// One client with a 30k VTXO — below threshold.
+	regs["c1"] = &ClientRegistration{
+		ClientID: "c1",
+		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
+			route.Vertex{0x01}: {Amount: 30_000},
+		},
+	}
+	require.False(t, pred(regs))
+
+	// Add a second client with a 10k leave — still below (40k).
+	regs["c2"] = &ClientRegistration{
+		ClientID: "c2",
+		LeaveOutputs: []*wire.TxOut{
+			{Value: 10_000},
+		},
+	}
+	require.False(t, pred(regs))
+
+	// Add a third client pushing past threshold (40k + 15k = 55k).
+	regs["c3"] = &ClientRegistration{
+		ClientID: "c3",
+		VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
+			route.Vertex{0x03}: {Amount: 15_000},
+		},
+	}
+	require.True(t, pred(regs))
+}
+
+// TestMaxOutputAmountZeroDisabled verifies that MaxOutputAmount(0)
+// never triggers.
+func TestMaxOutputAmountZeroDisabled(t *testing.T) {
+	t.Parallel()
+
+	pred := MaxOutputAmount(0)
+
+	regs := map[clientconn.ClientID]*ClientRegistration{
+		"c1": {
+			ClientID: "c1",
+			VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
+				route.Vertex{0x01}: {Amount: 999_999_999},
+			},
+		},
+	}
+	require.False(t, pred(regs))
+}
+
+// TestMaxOutputAmountMixedOutputs verifies that both VTXOs and leaves
+// are summed together.
+func TestMaxOutputAmountMixedOutputs(t *testing.T) {
+	t.Parallel()
+
+	pred := MaxOutputAmount(100_000)
+
+	regs := map[clientconn.ClientID]*ClientRegistration{
+		"c1": {
+			ClientID: "c1",
+			VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{
+				route.Vertex{0x11}: {Amount: 40_000},
+				route.Vertex{0x12}: {Amount: 30_000},
+			},
+			LeaveOutputs: []*wire.TxOut{
+				{Value: 30_000},
+			},
+		},
+	}
+
+	// 40k + 30k + 30k = 100k — exactly at threshold.
+	require.True(t, pred(regs))
 }
 
 // TestSealPredicateTriggersEarlySeal exercises the full FSM path: two clients

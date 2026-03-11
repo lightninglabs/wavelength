@@ -1,6 +1,8 @@
 package rounds
 
 import (
+	"github.com/btcsuite/btcd/btcutil"
+
 	"github.com/lightninglabs/darepo/clientconn"
 )
 
@@ -22,6 +24,33 @@ func MaxClients(limit int) SealPredicate {
 		}
 
 		return len(regs) >= limit
+	}
+}
+
+// MaxOutputAmount returns a predicate that seals when the total output
+// value across all registrations reaches the given threshold. Output
+// value is the sum of all VTXO amounts and leave output values. A
+// threshold of zero disables the check.
+func MaxOutputAmount(threshold btcutil.Amount) SealPredicate {
+	return func(
+		regs map[clientconn.ClientID]*ClientRegistration) bool {
+
+		if threshold <= 0 {
+			return false
+		}
+
+		var total btcutil.Amount
+		for _, reg := range regs {
+			for _, vtxo := range reg.VTXODescriptors {
+				total += vtxo.Amount
+			}
+
+			for _, leave := range reg.LeaveOutputs {
+				total += btcutil.Amount(leave.Value)
+			}
+		}
+
+		return total >= threshold
 	}
 }
 
