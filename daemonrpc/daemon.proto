@@ -214,6 +214,10 @@ enum VTXOStatus {
 
     // VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
     VTXO_STATUS_FAILED = 7;
+
+    // VTXO_STATUS_SPENDING indicates the VTXO has been claimed for an
+    // out-of-round spend but the spend has not yet completed.
+    VTXO_STATUS_SPENDING = 8;
 }
 
 message VTXO {
