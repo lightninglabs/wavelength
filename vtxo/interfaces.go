@@ -62,6 +62,8 @@ type InternalEvent[E VTXOEvent] struct{}
 //
 //   - BlockEpochEvent: From chain source (via VTXO manager), triggers expiry
 //     checks on each new block.
+//   - PendingForfeitEvent: From round actor, commits the VTXO to cooperative
+//     consumption before concrete forfeit details are available.
 //   - ForfeitRequestEvent: From round actor, initiates forfeit signing flow.
 //   - ForfeitConfirmedEvent: From round actor, confirms forfeit completion.
 //   - ResumeVTXOEvent: From VTXO manager, restores state after crash recovery.
@@ -94,6 +96,14 @@ var MessageSpec = struct {
 	// Source: Chain source → VTXO Manager → VTXO Actor
 	// Handled in: LiveState, PendingForfeitState, ForfeitingState
 	BlockEpochEvent InboundEvent[*BlockEpochEvent]
+
+	// PendingForfeitEvent is received from the round actor after it has
+	// accepted this VTXO into a pending cooperative-consumption round, but
+	// before it has concrete connector details to sign.
+	//
+	// Source: Round Actor → VTXO Actor
+	// Handled in: LiveState, PendingForfeitState
+	PendingForfeitEvent InboundEvent[*round.PendingForfeitEvent]
 
 	// ForfeitRequestEvent is received from the round actor when this VTXO
 	// has been selected for inclusion in a batch swap. The FSM should sign
@@ -135,8 +145,7 @@ var MessageSpec = struct {
 	// in the next batch swap.
 	//
 	// Destination: VTXO Actor → Round Actor
-	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh or external
-	//               forfeit trigger)
+	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh)
 	ForfeitRequest OutboundMsg[*ForfeitRequest]
 
 	// ForfeitSignatureSubmission is sent to the round actor with the

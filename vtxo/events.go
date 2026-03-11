@@ -37,11 +37,8 @@ type (
 	// state.
 	ResumeVTXOEvent = round.ResumeVTXOEvent
 
-	// TriggerRefreshEvent is sent to manually trigger cooperative
-	// forfeiture.
-	TriggerRefreshEvent = round.TriggerRefreshEvent
-
-	// TriggerLeaveEvent is sent to manually trigger a leave
-	// (offboard).
-	TriggerLeaveEvent = round.TriggerLeaveEvent
+	// PendingForfeitEvent is sent when the round actor has committed this
+	// VTXO to cooperative consumption and the VTXO should become
+	// unavailable for other uses while awaiting concrete forfeit details.
+	PendingForfeitEvent = round.PendingForfeitEvent
 )

@@ -130,6 +130,38 @@ func TestLiveStateBlockEpochNeedsRefresh(t *testing.T) {
 	assertOutboxContains[*ForfeitRequest](h)
 }
 
+// TestPendingForfeitEventFromLiveState verifies that a round-driven pending
+// forfeit commit moves the VTXO into PendingForfeitState without emitting a
+// round request back out. The round actor already owns the intent package in
+// this path, so the VTXO only needs to update its availability state.
+func TestPendingForfeitEventFromLiveState(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusPendingForfeit,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.NoError(t, err)
+
+	assertState[*PendingForfeitState](h)
+	require.Len(t, h.outboxMessages, 1)
+	_, ok := h.outboxMessages[0].(*VTXOStatusUpdate)
+	require.True(
+		t, ok, "expected VTXOStatusUpdate, got %T",
+		h.outboxMessages[0],
+	)
+}
+
 // TestLiveStateBlockEpochCritical verifies that LiveState transitions to
 // UnilateralExitState when critically close to expiry.
 func TestLiveStateBlockEpochCritical(t *testing.T) {
@@ -267,7 +299,10 @@ func TestPendingForfeitCriticalExpiry(t *testing.T) {
 
 	// Setup mock for status update.
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusUnilateralExit,
+		"UpdateVTXOStatus",
+		h.ctx,
+		vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)
@@ -499,8 +534,8 @@ func TestForfeitRequestRealSigning(t *testing.T) {
 }
 
 // TestForfeitingStateCriticalExpiry verifies that ForfeitingState transitions
-// to UnilateralExitState if critical expiry is reached while waiting for forfeit
-// confirmation.
+// to UnilateralExitState if critical expiry is reached while waiting for
+// forfeit confirmation.
 func TestForfeitingStateCriticalExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -529,7 +564,10 @@ func TestForfeitingStateCriticalExpiry(t *testing.T) {
 
 	// Setup mock for status update.
 	h.store.On(
-		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusUnilateralExit,
+		"UpdateVTXOStatus",
+		h.ctx,
+		vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
 	).Return(nil)
 
 	_, err := h.sendEvent(evt)

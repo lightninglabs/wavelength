@@ -135,4 +135,3 @@ type VTXOTerminatedNotification struct {
 }
 
 func (m *VTXOTerminatedNotification) vtxoOutMsgSealed() {}
-

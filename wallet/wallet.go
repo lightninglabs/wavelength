@@ -645,8 +645,9 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		slog.Int("target_count", len(req.TargetOutpoints)),
 		slog.Bool("force_refresh", req.ForceRefresh))
 
-	// Forward to round actor via service key lookup. The round actor looks
-	// up VTXO actors by service key and sends TriggerRefreshEvent to each.
+	// Forward to the round actor. The round actor now owns refresh
+	// intent composition and will mark the target VTXOs pending
+	// cooperative consumption itself.
 	if a.actorSystem != nil {
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
@@ -689,9 +690,9 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		slog.Int("target_count", len(req.TargetOutpoints)),
 	)
 
-	// Forward to round actor via service key lookup. The round actor
-	// looks up VTXO actors by service key and sends TriggerLeaveEvent
-	// to each.
+	// Forward to the round actor. The round actor now owns leave
+	// intent composition and will mark the target VTXOs pending
+	// cooperative consumption itself.
 	if a.actorSystem != nil {
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)

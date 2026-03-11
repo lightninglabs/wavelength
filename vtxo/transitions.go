@@ -21,20 +21,11 @@ func (s *LiveState) ProcessEvent(
 	case *BlockEpochEvent:
 		return s.handleBlockEpoch(ctx, evt, env)
 
+	case *PendingForfeitEvent:
+		return s.handlePendingForfeit(ctx, env)
+
 	case *ForfeitRequestEvent:
 		return s.handleForfeitRequest(ctx, evt, env)
-
-	case *TriggerRefreshEvent:
-		// External forfeit trigger (refresh or leave). Both product
-		// intents map to the same lifecycle action: commit to
-		// cooperative consumption.
-		return s.handleExternalForfeitTrigger(ctx, env)
-
-	case *TriggerLeaveEvent:
-		// Leave is a product-level concept. From the VTXO FSM's
-		// perspective, a leave is identical to a refresh: both
-		// result in forfeiting this VTXO cooperatively.
-		return s.handleExternalForfeitTrigger(ctx, env)
 
 	case *ResumeVTXOEvent:
 		// On resume, stay in LiveState and re-check expiry on next
@@ -56,6 +47,29 @@ func (s *LiveState) ProcessEvent(
 	default:
 		return nil, fmt.Errorf("live: unexpected event: %T", event)
 	}
+}
+
+// handlePendingForfeit commits this VTXO to cooperative consumption before the
+// round has concrete connector details. The VTXO becomes unavailable for other
+// operations while awaiting the later ForfeitRequestEvent.
+func (s *LiveState) handlePendingForfeit(
+	_ context.Context, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	return &VTXOStateTransition{
+		NextState: &PendingForfeitState{
+			VTXO:              s.VTXO,
+			RequestedAtHeight: 0,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{
+			Outbox: []VTXOOutMsg{
+				&VTXOStatusUpdate{
+					Outpoint:  s.VTXO.Outpoint,
+					NewStatus: VTXOStatusPendingForfeit,
+				},
+			},
+		}),
+	}, nil
 }
 
 // handleBlockEpoch processes a new block notification and checks if the VTXO
@@ -120,7 +134,10 @@ func (s *LiveState) handleBlockEpoch(
 		}
 
 		return &VTXOStateTransition{
-			NextState: &UnilateralExitState{VTXO: s.VTXO, Reason: reason},
+			NextState: &UnilateralExitState{
+				VTXO:   s.VTXO,
+				Reason: reason,
+			},
 			NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 		}, nil
 
@@ -129,8 +146,9 @@ func (s *LiveState) handleBlockEpoch(
 		// works correctly.
 		return &VTXOStateTransition{
 			NextState: &FailedState{
-				VTXO:        s.VTXO,
-				Reason:      "batch expired before cooperative forfeit",
+				VTXO: s.VTXO,
+				Reason: "batch expired before " +
+					"cooperative forfeit",
 				Recoverable: false,
 			},
 		}, nil
@@ -191,34 +209,6 @@ func (s *LiveState) handleForfeitRequest(
 				},
 			},
 		}),
-	}, nil
-}
-
-// handleExternalForfeitTrigger handles an external trigger to forfeit this
-// VTXO (from wallet or round actor). The VTXO doesn't distinguish between
-// refresh and leave — both are cooperative consumption from the FSM's
-// perspective. The caller (round/wallet) handles the product-level
-// distinction.
-func (s *LiveState) handleExternalForfeitTrigger(
-	_ context.Context, _ *VTXOEnvironment,
-) (*VTXOStateTransition, error) {
-
-	outbox := []VTXOOutMsg{
-		&ForfeitRequest{
-			VTXOOutpoint: s.VTXO.Outpoint,
-		},
-		&VTXOStatusUpdate{
-			Outpoint:  s.VTXO.Outpoint,
-			NewStatus: VTXOStatusPendingForfeit,
-		},
-	}
-
-	return &VTXOStateTransition{
-		NextState: &PendingForfeitState{
-			VTXO:              s.VTXO,
-			RequestedAtHeight: 0,
-		},
-		NewEvents: fn.Some(VTXOEmittedEvent{Outbox: outbox}),
 	}, nil
 }
 
@@ -325,8 +315,9 @@ func (s *PendingForfeitState) ProcessEvent(
 
 			return &VTXOStateTransition{
 				NextState: &UnilateralExitState{
-					VTXO:   s.VTXO,
-					Reason: "critical expiry pending forfeit",
+					VTXO: s.VTXO,
+					Reason: "critical expiry pending " +
+						"forfeit",
 				},
 				NewEvents: fn.Some(VTXOEmittedEvent{
 					Outbox: outbox,
@@ -381,6 +372,13 @@ func (s *PendingForfeitState) ProcessEvent(
 					},
 				},
 			}),
+		}, nil
+
+	case *PendingForfeitEvent:
+		// Duplicate commit while already pending is harmless. The
+		// round may re-issue this after restart or replay.
+		return &VTXOStateTransition{
+			NextState: s,
 		}, nil
 
 	case *ResumeVTXOEvent:

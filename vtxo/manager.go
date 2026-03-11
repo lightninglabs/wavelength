@@ -223,9 +223,10 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 }
 
 // handleRelayToRound forwards a VTXO actor's message to the round actor.
-// The VTXO actor pre-builds the round-specific message (RefreshVTXORequest
-// or ForfeitSignatureResponse) and wraps it in RelayToRoundMsg. The manager
-// just unwraps and forwards.
+// The VTXO actor pre-builds the round-specific message
+// (RefreshVTXORequest for the auto-expiry path, or
+// ForfeitSignatureResponse during forfeit signing) and wraps it in
+// RelayToRoundMsg. The manager just unwraps and forwards.
 //
 // Liveness guarantee: when a VTXO approaches expiry, the VTXO actor
 // autonomously emits a ForfeitRequest (wrapped in RelayToRoundMsg) without
