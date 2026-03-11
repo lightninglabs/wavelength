@@ -71,6 +71,53 @@ func (s *PendingForfeitState) IsTerminal() bool {
 // vtxoStateSealed marks this as implementing the sealed VTXOState interface.
 func (s *PendingForfeitState) vtxoStateSealed() {}
 
+// SpendingState indicates the VTXO has been claimed for an out-of-round (OOR)
+// spend operation. The VTXO is unavailable for cooperative forfeit or any
+// other operation until the spend completes or is released. This state is
+// persisted as VTXOStatusSpending so it survives restarts.
+type SpendingState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+
+	// LastCheckedHeight tracks expiry monitoring. Even while spending,
+	// the VTXO must still escalate to unilateral exit if critical expiry
+	// is reached.
+	LastCheckedHeight int32
+}
+
+// String returns a human-readable state name.
+func (s *SpendingState) String() string {
+	return "Spending"
+}
+
+// IsTerminal returns false since SpendingState is not a terminal state.
+func (s *SpendingState) IsTerminal() bool {
+	return false
+}
+
+// vtxoStateSealed marks this as implementing the sealed VTXOState interface.
+func (s *SpendingState) vtxoStateSealed() {}
+
+// SpentState is a terminal state indicating the VTXO was consumed by an
+// out-of-round (OOR) transaction. The VTXO actor should be cleaned up.
+type SpentState struct {
+	// VTXO is the descriptor for this VTXO.
+	VTXO *Descriptor
+}
+
+// String returns a human-readable state name.
+func (s *SpentState) String() string {
+	return "Spent"
+}
+
+// IsTerminal returns true since SpentState is a terminal state.
+func (s *SpentState) IsTerminal() bool {
+	return true
+}
+
+// vtxoStateSealed marks this as implementing the sealed VTXOState interface.
+func (s *SpentState) vtxoStateSealed() {}
+
 // ForfeitingState indicates the VTXO is being forfeited in a round. The VTXO
 // actor is waiting for the new commitment transaction to confirm.
 type ForfeitingState struct {

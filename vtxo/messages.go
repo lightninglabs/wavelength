@@ -29,7 +29,8 @@ func (r *VTXOCreatedResp) managerRespSealed() {}
 // VTXOsMaterializedResp is the response to VTXOsMaterializedNotification.
 type VTXOsMaterializedResp struct{}
 
-func (r *VTXOsMaterializedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOsMaterializedResp) VTXOManagerResp() {}
 
 // VTXOTerminatedResp is the response to VTXOTerminatedMsg.
 type VTXOTerminatedResp struct{}

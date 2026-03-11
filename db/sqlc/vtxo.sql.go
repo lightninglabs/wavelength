@@ -89,12 +89,15 @@ func (q *Queries) GetVTXOReplacement(ctx context.Context, arg GetVTXOReplacement
 
 const ListLiveVTXOs = `-- name: ListLiveVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
-WHERE status < 3 AND spent = FALSE
+WHERE (status < 3 OR status = 7) AND spent = FALSE
 ORDER BY creation_time DESC
 `
 
 // ListLiveVTXOs returns all VTXOs that are not in a terminal state.
-// Terminal states are: Forfeited (3), Spent (4), Expiring (5), Failed (6).
+// Terminal states are: Forfeited (3), Spent (4), UnilateralExit (5),
+// Failed (6).
+// Non-terminal states: Live (0), PendingForfeit (1), Forfeiting (2),
+// Spending (7).
 // This is used during startup to recover active VTXO actors.
 // Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 // flag before the status field was introduced.

@@ -41,4 +41,19 @@ type (
 	// VTXO to cooperative consumption and the VTXO should become
 	// unavailable for other uses while awaiting concrete forfeit details.
 	PendingForfeitEvent = round.PendingForfeitEvent
+
+	// SpendReserveEvent claims a VTXO for an out-of-round (OOR) spend.
+	SpendReserveEvent = round.SpendReserveEvent
+
+	// SpendReleasedEvent releases a VTXO from spend reservation back to
+	// LiveState.
+	SpendReleasedEvent = round.SpendReleasedEvent
+
+	// SpendCompletedEvent marks a VTXO as fully spent via an OOR
+	// transaction.
+	SpendCompletedEvent = round.SpendCompletedEvent
+
+	// ForfeitReleasedEvent releases a VTXO from pending forfeit back to
+	// LiveState.
+	ForfeitReleasedEvent = round.ForfeitReleasedEvent
 )
