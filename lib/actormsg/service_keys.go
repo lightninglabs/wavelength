@@ -23,6 +23,23 @@ func VTXOActorServiceKey(outpoint wire.OutPoint) actor.ServiceKey[
 	)
 }
 
+// VTXOManagerServiceKeyName is the well-known service key name for the VTXO
+// manager actor. Both the vtxo package (for registration) and wallet package
+// (for lookup) use this constant to ensure they reference the same actor.
+const VTXOManagerServiceKeyName = "vtxo-manager"
+
+// VTXOManagerServiceKey returns the service key for looking up the VTXO
+// manager actor. This uses VTXOManagerMsg for the message type so the
+// wallet can send admission requests without importing the vtxo package.
+func VTXOManagerServiceKey() actor.ServiceKey[
+	VTXOManagerMsg, VTXOManagerResp,
+] {
+
+	return actor.NewServiceKey[VTXOManagerMsg, VTXOManagerResp](
+		VTXOManagerServiceKeyName,
+	)
+}
+
 // RoundActorServiceKeyName is the well-known service key name for the round
 // actor. Both the round package (for registration) and wallet package (for
 // lookup) use this constant to ensure they reference the same actor.

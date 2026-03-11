@@ -1,8 +1,6 @@
 package vtxo
 
 import (
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
@@ -15,10 +13,12 @@ type ManagerMsg interface {
 	actormsg.VTXOManagerMsg
 }
 
-// ManagerResp is the response type returned by the VTXO Manager actor.
-type ManagerResp interface {
-	managerRespSealed()
-}
+// ManagerResp is the response type returned by the VTXO Manager actor. This
+// is an alias for actormsg.VTXOManagerResp so admission responses defined in
+// actormsg can be returned directly from the manager without wrapping. The
+// actormsg marker interface enables cross-package service key lookup from
+// the wallet.
+type ManagerResp = actormsg.VTXOManagerResp
 
 // Type alias for VTXOTerminatedMsg - canonical definition is in round package.
 type VTXOTerminatedMsg = round.VTXOTerminatedMsg
@@ -26,7 +26,8 @@ type VTXOTerminatedMsg = round.VTXOTerminatedMsg
 // VTXOCreatedResp is the response to VTXOCreatedNotification.
 type VTXOCreatedResp struct{}
 
-func (r *VTXOCreatedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOCreatedResp) VTXOManagerResp() {}
 
 // VTXOsMaterializedResp is the response to VTXOsMaterializedNotification.
 type VTXOsMaterializedResp struct{}
@@ -37,7 +38,8 @@ func (r *VTXOsMaterializedResp) VTXOManagerResp() {}
 // VTXOTerminatedResp is the response to VTXOTerminatedMsg.
 type VTXOTerminatedResp struct{}
 
-func (r *VTXOTerminatedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOTerminatedResp) VTXOManagerResp() {}
 
 // VTXOsMaterializedNotification notifies the VTXO manager that VTXOs were
 // already durably persisted by another actor and only actor activation remains.
@@ -81,7 +83,8 @@ type GetActiveVTXOCountResponse struct {
 	Count int
 }
 
-func (r *GetActiveVTXOCountResponse) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *GetActiveVTXOCountResponse) VTXOManagerResp() {}
 
 // =============================================================================
 // Relay messages: VTXO actor → Manager → external actor
@@ -110,163 +113,48 @@ func (m *RelayToRoundMsg) MessageType() string { return "RelayToRoundMsg" }
 // RelayToRoundResp is the response for RelayToRoundMsg.
 type RelayToRoundResp struct{}
 
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *RelayToRoundResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *RelayToRoundResp) VTXOManagerResp() {}
 
 // =============================================================================
-// Spend admission messages: wallet → Manager → VTXO actors
+// Admission message aliases
 // =============================================================================
+//
+// The canonical admission request and response types are defined in actormsg
+// so both the wallet and vtxo packages can reference them without creating
+// an import cycle (wallet → vtxo → round → wallet). These type aliases
+// allow existing vtxo code to reference them without qualification.
 
-// SelectAndReserveSpendRequest asks the manager to select VTXOs covering a
-// target amount and atomically reserve them for an OOR spend. The manager
-// runs largest-first coin selection, then Asks each selected VTXO actor to
-// process SpendReserveEvent. If any reservation fails, already-reserved
-// VTXOs are rolled back.
-type SelectAndReserveSpendRequest struct {
-	actor.BaseMessage
+// SelectAndReserveSpendRequest is an alias for the canonical type in actormsg.
+type SelectAndReserveSpendRequest = actormsg.SelectAndReserveSpendRequest
 
-	// TargetAmount is the minimum total value the selected VTXOs must
-	// cover.
-	TargetAmount btcutil.Amount
-}
+// SelectedVTXO is an alias for the canonical type in actormsg.
+type SelectedVTXO = actormsg.SelectedVTXO
 
-// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
-func (m *SelectAndReserveSpendRequest) VTXOManagerMsg() {}
+// SelectAndReserveSpendResponse is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveSpendResponse = actormsg.SelectAndReserveSpendResponse
 
-// MessageType returns the message type for logging.
-func (m *SelectAndReserveSpendRequest) MessageType() string {
-	return "SelectAndReserveSpendRequest"
-}
+// ReleaseSpendRequest is an alias for the canonical type in actormsg.
+type ReleaseSpendRequest = actormsg.ReleaseSpendRequest
 
-// SelectedVTXO describes a VTXO that was selected and reserved for an OOR
-// spend. This is returned in the SelectAndReserveSpendResponse.
-type SelectedVTXO struct {
-	// Outpoint is the selected VTXO's outpoint.
-	Outpoint wire.OutPoint
+// ReleaseSpendResponse is an alias for the canonical type in actormsg.
+type ReleaseSpendResponse = actormsg.ReleaseSpendResponse
 
-	// Amount is the value of this VTXO in satoshis.
-	Amount btcutil.Amount
+// CompleteSpendRequest is an alias for the canonical type in actormsg.
+type CompleteSpendRequest = actormsg.CompleteSpendRequest
 
-	// PkScript is the output script for this VTXO.
-	PkScript []byte
-}
+// CompleteSpendResponse is an alias for the canonical type in actormsg.
+type CompleteSpendResponse = actormsg.CompleteSpendResponse
 
-// SelectAndReserveSpendResponse returns the VTXOs that were selected and
-// reserved for an OOR spend.
-type SelectAndReserveSpendResponse struct {
-	// SelectedVTXOs is the set of VTXOs reserved for this spend.
-	SelectedVTXOs []SelectedVTXO
+// ReserveForfeitRequest is an alias for the canonical type in actormsg.
+type ReserveForfeitRequest = actormsg.ReserveForfeitRequest
 
-	// TotalSelected is the sum of all selected VTXO amounts.
-	TotalSelected btcutil.Amount
-}
+// ReserveForfeitResponse is an alias for the canonical type in actormsg.
+type ReserveForfeitResponse = actormsg.ReserveForfeitResponse
 
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *SelectAndReserveSpendResponse) managerRespSealed() {}
+// ReleaseForfeitRequest is an alias for the canonical type in actormsg.
+type ReleaseForfeitRequest = actormsg.ReleaseForfeitRequest
 
-// ReleaseSpendRequest releases VTXOs previously reserved for an OOR spend
-// back to LiveState. Used when the OOR operation fails or is cancelled.
-type ReleaseSpendRequest struct {
-	actor.BaseMessage
-
-	// Outpoints identifies the VTXOs to release from spend reservation.
-	Outpoints []wire.OutPoint
-}
-
-// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
-func (m *ReleaseSpendRequest) VTXOManagerMsg() {}
-
-// MessageType returns the message type for logging.
-func (m *ReleaseSpendRequest) MessageType() string {
-	return "ReleaseSpendRequest"
-}
-
-// ReleaseSpendResponse confirms the spend release.
-type ReleaseSpendResponse struct {
-	// ReleasedCount is the number of VTXOs successfully released.
-	ReleasedCount int
-}
-
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *ReleaseSpendResponse) managerRespSealed() {}
-
-// CompleteSpendRequest marks VTXOs as fully spent via an OOR transaction.
-// This transitions each VTXO from SpendingState to terminal SpentState.
-type CompleteSpendRequest struct {
-	actor.BaseMessage
-
-	// Outpoints identifies the VTXOs to mark as spent.
-	Outpoints []wire.OutPoint
-}
-
-// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
-func (m *CompleteSpendRequest) VTXOManagerMsg() {}
-
-// MessageType returns the message type for logging.
-func (m *CompleteSpendRequest) MessageType() string {
-	return "CompleteSpendRequest"
-}
-
-// CompleteSpendResponse confirms the spend completion.
-type CompleteSpendResponse struct {
-	// CompletedCount is the number of VTXOs marked as spent.
-	CompletedCount int
-}
-
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *CompleteSpendResponse) managerRespSealed() {}
-
-// =============================================================================
-// Forfeit admission messages: wallet → Manager → VTXO actors
-// =============================================================================
-
-// ReserveForfeitRequest asks the manager to reserve specific VTXOs for
-// cooperative consumption. The manager Asks each actor to process
-// PendingForfeitEvent. If any reservation fails, already-claimed VTXOs
-// are rolled back via ForfeitReleasedEvent.
-type ReserveForfeitRequest struct {
-	actor.BaseMessage
-
-	// Outpoints identifies the VTXOs to reserve for forfeit.
-	Outpoints []wire.OutPoint
-}
-
-// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
-func (m *ReserveForfeitRequest) VTXOManagerMsg() {}
-
-// MessageType returns the message type for logging.
-func (m *ReserveForfeitRequest) MessageType() string {
-	return "ReserveForfeitRequest"
-}
-
-// ReserveForfeitResponse confirms the forfeit reservation.
-type ReserveForfeitResponse struct{}
-
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *ReserveForfeitResponse) managerRespSealed() {}
-
-// ReleaseForfeitRequest releases VTXOs from pending forfeit back to
-// LiveState. Used when round registration fails after admission.
-type ReleaseForfeitRequest struct {
-	actor.BaseMessage
-
-	// Outpoints identifies the VTXOs to release from forfeit.
-	Outpoints []wire.OutPoint
-}
-
-// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
-func (m *ReleaseForfeitRequest) VTXOManagerMsg() {}
-
-// MessageType returns the message type for logging.
-func (m *ReleaseForfeitRequest) MessageType() string {
-	return "ReleaseForfeitRequest"
-}
-
-// ReleaseForfeitResponse confirms the forfeit release.
-type ReleaseForfeitResponse struct {
-	// ReleasedCount is the number of VTXOs released.
-	ReleasedCount int
-}
-
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *ReleaseForfeitResponse) managerRespSealed() {}
+// ReleaseForfeitResponse is an alias for the canonical type in actormsg.
+type ReleaseForfeitResponse = actormsg.ReleaseForfeitResponse

@@ -305,6 +305,15 @@ func (a *Ark) Receive(ctx context.Context,
 	case *BoardRequest:
 		return a.handleBoard(ctx, m)
 
+	case *SelectAndLockVTXOsRequest:
+		return a.handleSelectAndLockVTXOs(ctx, m)
+
+	case *UnlockVTXOsRequest:
+		return a.handleUnlockVTXOs(ctx, m)
+
+	case *CompleteSpendVTXOsRequest:
+		return a.handleCompleteSpendVTXOs(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -1052,6 +1061,136 @@ func (a *Ark) buildBoardingTxProof(ctx context.Context,
 		ClaimedOutPoint: outpoint,
 		InternalKey:     *internalKey,
 		MerkleRoot:      merkleRoot,
+	})
+}
+
+// =============================================================================
+// VTXO admission forwarding handlers
+// =============================================================================
+//
+// These handlers forward admission requests to the VTXO manager actor via
+// service key lookup. The manager owns the actual coin selection, reservation,
+// and rollback logic; the wallet is a thin forwarding layer that translates
+// between wallet messages and actormsg admission types.
+
+// askManager sends a VTXOManagerMsg to the VTXO manager via service key and
+// returns the response. This is a convenience wrapper around the Ask/Await
+// pattern that reduces boilerplate at each call site.
+func (a *Ark) askManager(ctx context.Context,
+	msg actormsg.VTXOManagerMsg) (actormsg.VTXOManagerResp, error) {
+
+	if a.actorSystem == nil {
+		return nil, fmt.Errorf("actor system not configured")
+	}
+
+	serviceKey := actormsg.VTXOManagerServiceKey()
+	managerRef := serviceKey.Ref(a.actorSystem)
+
+	future := managerRef.Ask(ctx, msg)
+	result := future.Await(ctx)
+
+	return result.Unpack()
+}
+
+// handleSelectAndLockVTXOs forwards a spend selection request to the VTXO
+// manager. The manager runs largest-first coin selection and atomically
+// reserves VTXOs for OOR spending by transitioning them to SpendingState.
+func (a *Ark) handleSelectAndLockVTXOs(ctx context.Context,
+	req *SelectAndLockVTXOsRequest) fn.Result[WalletResp] {
+
+	a.logger(ctx).InfoS(ctx, "Selecting and locking VTXOs for spend",
+		slog.Int64("target", int64(req.TargetAmount)))
+
+	resp, err := a.askManager(
+		ctx, &actormsg.SelectAndReserveSpendRequest{
+			TargetAmount: req.TargetAmount,
+		},
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("select and reserve: %w", err),
+		)
+	}
+
+	//nolint:forcetypeassert
+	mgrResp := resp.(*actormsg.SelectAndReserveSpendResponse)
+
+	// Translate manager response to wallet response.
+	selected := make([]SelectedVTXO, len(mgrResp.SelectedVTXOs))
+	for i, v := range mgrResp.SelectedVTXOs {
+		selected[i] = SelectedVTXO{
+			Outpoint: v.Outpoint,
+			Amount:   v.Amount,
+			PkScript: v.PkScript,
+		}
+	}
+
+	a.logger(ctx).InfoS(ctx, "VTXOs selected and locked",
+		slog.Int("count", len(selected)),
+		slog.Int64("total", int64(mgrResp.TotalSelected)))
+
+	return fn.Ok[WalletResp](&SelectAndLockVTXOsResponse{
+		SelectedVTXOs: selected,
+		TotalSelected: mgrResp.TotalSelected,
+	})
+}
+
+// handleUnlockVTXOs forwards a spend release request to the VTXO manager.
+// This transitions VTXOs from SpendingState back to LiveState when an OOR
+// transfer fails or is cancelled.
+func (a *Ark) handleUnlockVTXOs(ctx context.Context,
+	req *UnlockVTXOsRequest) fn.Result[WalletResp] {
+
+	a.logger(ctx).InfoS(ctx, "Unlocking VTXOs from spend reservation",
+		slog.Int("count", len(req.Outpoints)))
+
+	resp, err := a.askManager(
+		ctx, &actormsg.ReleaseSpendRequest{
+			Outpoints: req.Outpoints,
+		},
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("release spend: %w", err),
+		)
+	}
+
+	//nolint:forcetypeassert
+	mgrResp := resp.(*actormsg.ReleaseSpendResponse)
+
+	return fn.Ok[WalletResp](&UnlockVTXOsResponse{
+		UnlockedCount: mgrResp.ReleasedCount,
+	})
+}
+
+// handleCompleteSpendVTXOs forwards a spend completion request to the VTXO
+// manager. This transitions VTXOs from SpendingState to terminal SpentState
+// after an OOR transfer succeeds.
+func (a *Ark) handleCompleteSpendVTXOs(ctx context.Context,
+	req *CompleteSpendVTXOsRequest) fn.Result[WalletResp] {
+
+	a.logger(ctx).InfoS(ctx, "Completing spend for VTXOs",
+		slog.Int("count", len(req.Outpoints)))
+
+	resp, err := a.askManager(
+		ctx, &actormsg.CompleteSpendRequest{
+			Outpoints: req.Outpoints,
+		},
+	)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("complete spend: %w", err),
+		)
+	}
+
+	//nolint:forcetypeassert
+	mgrResp := resp.(*actormsg.CompleteSpendResponse)
+
+	a.logger(ctx).InfoS(ctx, "Spend completion confirmed",
+		slog.Int("completed", mgrResp.CompletedCount))
+
+	return fn.Ok[WalletResp](&CompleteSpendVTXOsResponse{
+		CompletedCount: mgrResp.CompletedCount,
 	})
 }
 

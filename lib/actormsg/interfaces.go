@@ -44,6 +44,14 @@ type VTXOManagerMsg interface {
 	VTXOManagerMsg()
 }
 
+// VTXOManagerResp is the response type marker for the VTXO manager. The
+// concrete vtxo.ManagerResp interface embeds this marker, enabling service
+// key lookup from the wallet package without importing the vtxo package
+// (avoiding import cycles).
+type VTXOManagerResp interface {
+	VTXOManagerResp()
+}
+
 // RegisterIntentMsg is sent from the wallet actor to the round actor to
 // register a pre-composed intent package. The wallet builds the full set of
 // forfeits, VTXO requests, and leave requests; the round actor validates
