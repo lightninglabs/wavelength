@@ -366,6 +366,95 @@ func TestStatusToStateForfeited(t *testing.T) {
 	require.Equal(t, "round-final", forfeitedState.NewRoundID)
 }
 
+// TestStatusToStateSpending verifies statusToState returns SpendingState for
+// VTXOs persisted as VTXOStatusSpending. This validates that spend claims
+// survive restarts without being silently downgraded to LiveState.
+func TestStatusToStateSpending(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.Status = VTXOStatusSpending
+	vtxo.CreatedHeight = 750
+
+	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
+
+	spendingState, ok := state.(*SpendingState)
+	require.True(t, ok, "expected SpendingState, got %T", state)
+	require.Equal(t, vtxo, spendingState.VTXO)
+	require.Equal(t, int32(750), spendingState.LastCheckedHeight)
+}
+
+// TestStatusToStateSpent verifies statusToState returns SpentState for VTXOs
+// persisted as VTXOStatusSpent. SpentState is terminal so the actor should
+// be cleaned up after recovery.
+func TestStatusToStateSpent(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.Status = VTXOStatusSpent
+
+	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
+
+	spentState, ok := state.(*SpentState)
+	require.True(t, ok, "expected SpentState, got %T", state)
+	require.Equal(t, vtxo, spentState.VTXO)
+	require.True(t, spentState.IsTerminal())
+}
+
+// TestStatusToStatePendingForfeit verifies statusToState returns
+// PendingForfeitState for VTXOs persisted as VTXOStatusPendingForfeit.
+// This validates that cooperative-claim reservations survive restarts.
+func TestStatusToStatePendingForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.Status = VTXOStatusPendingForfeit
+
+	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
+
+	pendingState, ok := state.(*PendingForfeitState)
+	require.True(t, ok, "expected PendingForfeitState, got %T", state)
+	require.Equal(t, vtxo, pendingState.VTXO)
+}
+
+// TestStatusToStateUnilateralExit verifies statusToState returns
+// UnilateralExitState for VTXOs persisted as VTXOStatusUnilateralExit.
+func TestStatusToStateUnilateralExit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.Status = VTXOStatusUnilateralExit
+
+	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
+
+	exitState, ok := state.(*UnilateralExitState)
+	require.True(t, ok,
+		"expected UnilateralExitState, got %T", state)
+	require.Equal(t, vtxo, exitState.VTXO)
+	require.Equal(t, "recovered from storage", exitState.Reason)
+}
+
+// TestStatusToStateFailed verifies statusToState returns FailedState for
+// VTXOs persisted as VTXOStatusFailed.
+func TestStatusToStateFailed(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.Status = VTXOStatusFailed
+
+	state := statusToState(h.ctx, vtxo, h.store, btclog.Disabled)
+
+	failedState, ok := state.(*FailedState)
+	require.True(t, ok, "expected FailedState, got %T", state)
+	require.Equal(t, vtxo, failedState.VTXO)
+	require.Equal(t, "recovered from storage", failedState.Reason)
+}
+
 // TestManagerGetActiveVTXOCount verifies the Manager returns the correct count
 // of active VTXO actors when queried via GetActiveVTXOCountRequest.
 func TestManagerGetActiveVTXOCount(t *testing.T) {

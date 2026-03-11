@@ -2,9 +2,12 @@ package vtxo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -142,6 +145,21 @@ func (m *Manager) Receive(ctx context.Context,
 	case *RelayToRoundMsg:
 		return m.handleRelayToRound(ctx, req)
 
+	case *SelectAndReserveSpendRequest:
+		return m.handleSelectAndReserveSpend(ctx, req)
+
+	case *ReleaseSpendRequest:
+		return m.handleReleaseSpend(ctx, req)
+
+	case *CompleteSpendRequest:
+		return m.handleCompleteSpend(ctx, req)
+
+	case *ReserveForfeitRequest:
+		return m.handleReserveForfeit(ctx, req)
+
+	case *ReleaseForfeitRequest:
+		return m.handleReleaseForfeit(ctx, req)
+
 	case *GetActiveVTXOCountRequest:
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
@@ -277,8 +295,9 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 // requiring wallet input. The manager relays this immediately, ensuring
 // cooperative action is always attempted before critical expiry. This
 // default policy means safety does not depend on wallet reaction time.
-// PR 2 may add reservation checks here, but the default must always be
-// to relay forfeit requests promptly.
+// Auto-expiry forfeits intentionally bypass admission gating because
+// the VTXO actor has already determined that cooperative action is
+// urgent. Delaying relay would risk missing the expiry window.
 func (m *Manager) handleRelayToRound(ctx context.Context,
 	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
 
@@ -327,6 +346,390 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 	}
 
 	return ref, nil
+}
+
+// =============================================================================
+// Spend admission handlers
+// =============================================================================
+
+// handleSelectAndReserveSpend selects VTXOs covering the target amount using
+// largest-first coin selection, then atomically reserves them for an OOR
+// spend by Asking each VTXO actor to process SpendReserveEvent. If any
+// reservation fails, already-reserved VTXOs are rolled back.
+func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
+	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
+
+	if req.TargetAmount <= 0 {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("target amount must be positive"),
+		)
+	}
+
+	// List live candidates from the store.
+	candidates, err := m.cfg.Store.ListVTXOsByStatus(
+		ctx, VTXOStatusLive,
+	)
+	if err != nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("list live vtxos: %w", err),
+		)
+	}
+
+	// Run largest-first selection.
+	selected := selectLargestFirst(candidates, req.TargetAmount)
+	if selected == nil {
+		return fn.Err[ManagerResp](
+			fmt.Errorf("insufficient funds: need %d",
+				req.TargetAmount),
+		)
+	}
+
+	// Reserve each selected VTXO via its actor. Track successfully
+	// reserved outpoints so we can roll back on partial failure.
+	var reserved []wire.OutPoint
+	for _, vtxo := range selected {
+		ref, ok := m.actors[vtxo.Outpoint]
+		if !ok {
+			m.rollbackSpend(ctx, reserved)
+
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"no actor for outpoint %s",
+				vtxo.Outpoint,
+			))
+		}
+
+		result := ref.Ask(ctx, &SpendReserveEvent{}).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Spend reserve failed", err,
+				slog.String(
+					"outpoint",
+					vtxo.Outpoint.String(),
+				),
+			)
+			m.rollbackSpend(ctx, reserved)
+
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"reserve %s: %w", vtxo.Outpoint, err,
+			))
+		}
+
+		reserved = append(reserved, vtxo.Outpoint)
+	}
+
+	// Build the response with selected VTXO details.
+	var (
+		selectedVTXOs []SelectedVTXO
+		totalSelected btcutil.Amount
+	)
+	for _, vtxo := range selected {
+		selectedVTXOs = append(selectedVTXOs, SelectedVTXO{
+			Outpoint: vtxo.Outpoint,
+			Amount:   vtxo.Amount,
+			PkScript: vtxo.PkScript,
+		})
+		totalSelected += vtxo.Amount
+	}
+
+	m.logger(ctx).InfoS(ctx, "Reserved VTXOs for spend",
+		slog.Int("count", len(selected)),
+		slog.Int64("total", int64(totalSelected)),
+		slog.Int64("target", int64(req.TargetAmount)))
+
+	return fn.Ok[ManagerResp](&SelectAndReserveSpendResponse{
+		SelectedVTXOs: selectedVTXOs,
+		TotalSelected: totalSelected,
+	})
+}
+
+// rollbackSpend sends SpendReleasedEvent to all previously reserved VTXOs.
+// This is best-effort: errors are logged but do not propagate.
+func (m *Manager) rollbackSpend(ctx context.Context,
+	outpoints []wire.OutPoint) {
+
+	for _, op := range outpoints {
+		ref, ok := m.actors[op]
+		if !ok {
+			continue
+		}
+
+		result := ref.Ask(
+			ctx, &SpendReleasedEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Spend rollback failed", err,
+				slog.String("outpoint", op.String()),
+			)
+		}
+	}
+}
+
+// handleReleaseSpend releases VTXOs from spend reservation back to
+// LiveState. Release is best-effort: all outpoints are attempted even
+// if some fail, and errors are aggregated. This prevents a single
+// failure from leaving the remaining VTXOs permanently locked.
+func (m *Manager) handleReleaseSpend(ctx context.Context,
+	req *ReleaseSpendRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	var (
+		released int
+		errs     []error
+	)
+	for _, op := range outpoints {
+		ref, ok := m.actors[op]
+		if !ok {
+			errs = append(errs, fmt.Errorf(
+				"no actor for outpoint %s", op,
+			))
+
+			continue
+		}
+
+		result := ref.Ask(
+			ctx, &SpendReleasedEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Spend release failed", err,
+				slog.String("outpoint", op.String()),
+			)
+			errs = append(errs, fmt.Errorf(
+				"release %s: %w", op, err,
+			))
+
+			continue
+		}
+
+		released++
+	}
+
+	if len(errs) > 0 {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"release spend: %d/%d failed: %w",
+			len(errs), len(outpoints), errors.Join(errs...),
+		))
+	}
+
+	return fn.Ok[ManagerResp](&ReleaseSpendResponse{
+		ReleasedCount: released,
+	})
+}
+
+// handleCompleteSpend marks VTXOs as fully spent via SpendCompletedEvent.
+func (m *Manager) handleCompleteSpend(ctx context.Context,
+	req *CompleteSpendRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	var completed int
+	for _, op := range outpoints {
+		ref, ok := m.actors[op]
+		if !ok {
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"no actor for outpoint %s", op,
+			))
+		}
+
+		result := ref.Ask(
+			ctx, &SpendCompletedEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"complete %s: %w", op, err,
+			))
+		}
+
+		completed++
+	}
+
+	m.logger(ctx).InfoS(ctx, "Completed OOR spend",
+		slog.Int("count", completed))
+
+	return fn.Ok[ManagerResp](&CompleteSpendResponse{
+		CompletedCount: completed,
+	})
+}
+
+// =============================================================================
+// Forfeit admission handlers
+// =============================================================================
+
+// handleReserveForfeit reserves specific VTXOs for cooperative consumption
+// by Asking each actor to process PendingForfeitEvent. If any reservation
+// fails, already-claimed VTXOs are rolled back via ForfeitReleasedEvent.
+func (m *Manager) handleReserveForfeit(ctx context.Context,
+	req *ReserveForfeitRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	// Validate all outpoints are known before attempting reservation.
+	for _, op := range outpoints {
+		if _, ok := m.actors[op]; !ok {
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"no actor for outpoint %s", op,
+			))
+		}
+	}
+
+	// Reserve each VTXO. Track successes for rollback on failure.
+	var reserved []wire.OutPoint
+	for _, op := range outpoints {
+		ref := m.actors[op]
+		result := ref.Ask(
+			ctx, &PendingForfeitEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Forfeit reserve failed", err,
+				slog.String("outpoint", op.String()),
+			)
+			m.rollbackForfeit(ctx, reserved)
+
+			return fn.Err[ManagerResp](fmt.Errorf(
+				"reserve forfeit %s: %w", op, err,
+			))
+		}
+
+		reserved = append(reserved, op)
+	}
+
+	m.logger(ctx).InfoS(ctx, "Reserved VTXOs for forfeit",
+		slog.Int("count", len(reserved)))
+
+	return fn.Ok[ManagerResp](&ReserveForfeitResponse{})
+}
+
+// rollbackForfeit sends ForfeitReleasedEvent to previously reserved VTXOs.
+// Best-effort: errors are logged but do not propagate.
+func (m *Manager) rollbackForfeit(ctx context.Context,
+	outpoints []wire.OutPoint) {
+
+	for _, op := range outpoints {
+		ref, ok := m.actors[op]
+		if !ok {
+			continue
+		}
+
+		result := ref.Ask(
+			ctx, &ForfeitReleasedEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Forfeit rollback failed", err,
+				slog.String("outpoint", op.String()),
+			)
+		}
+	}
+}
+
+// handleReleaseForfeit releases VTXOs from pending forfeit back to
+// LiveState. Release is best-effort: all outpoints are attempted even
+// if some fail, and errors are aggregated. This prevents a single
+// failure from leaving the remaining VTXOs permanently locked.
+func (m *Manager) handleReleaseForfeit(ctx context.Context,
+	req *ReleaseForfeitRequest) fn.Result[ManagerResp] {
+
+	outpoints := dedupOutpoints(req.Outpoints)
+
+	var (
+		released int
+		errs     []error
+	)
+	for _, op := range outpoints {
+		ref, ok := m.actors[op]
+		if !ok {
+			errs = append(errs, fmt.Errorf(
+				"no actor for outpoint %s", op,
+			))
+
+			continue
+		}
+
+		result := ref.Ask(
+			ctx, &ForfeitReleasedEvent{},
+		).Await(ctx)
+		if _, err := result.Unpack(); err != nil {
+			m.logger(ctx).WarnS(
+				ctx, "Forfeit release failed", err,
+				slog.String("outpoint", op.String()),
+			)
+			errs = append(errs, fmt.Errorf(
+				"release forfeit %s: %w", op, err,
+			))
+
+			continue
+		}
+
+		released++
+	}
+
+	if len(errs) > 0 {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"release forfeit: %d/%d failed: %w",
+			len(errs), len(outpoints), errors.Join(errs...),
+		))
+	}
+
+	return fn.Ok[ManagerResp](&ReleaseForfeitResponse{
+		ReleasedCount: released,
+	})
+}
+
+// =============================================================================
+// Coin selection
+// =============================================================================
+
+// selectLargestFirst implements largest-first coin selection. It sorts
+// candidates by amount descending and picks VTXOs until the target is met.
+// Returns nil if the candidates cannot cover the target.
+func selectLargestFirst(candidates []*Descriptor,
+	target btcutil.Amount) []*Descriptor {
+
+	// Sort by amount descending.
+	sorted := make([]*Descriptor, len(candidates))
+	copy(sorted, candidates)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Amount > sorted[j].Amount
+	})
+
+	var (
+		selected []*Descriptor
+		total    btcutil.Amount
+	)
+	for _, vtxo := range sorted {
+		selected = append(selected, vtxo)
+		total += vtxo.Amount
+
+		if total >= target {
+			return selected
+		}
+	}
+
+	// Not enough funds.
+	return nil
+}
+
+// dedupOutpoints returns a copy of the slice with duplicate outpoints
+// removed, preserving the order of first occurrence. This prevents the same
+// VTXO actor from receiving the same event twice in a single request, which
+// would cause an invalid state-transition error on the second pass.
+func dedupOutpoints(ops []wire.OutPoint) []wire.OutPoint {
+	seen := make(map[wire.OutPoint]struct{}, len(ops))
+	out := make([]wire.OutPoint, 0, len(ops))
+
+	for _, op := range ops {
+		if _, dup := seen[op]; dup {
+			continue
+		}
+
+		seen[op] = struct{}{}
+		out = append(out, op)
+	}
+
+	return out
 }
 
 // clientVTXOToDescriptor converts a round.ClientVTXO to a Descriptor using
