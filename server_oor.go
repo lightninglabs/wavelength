@@ -83,7 +83,18 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		SessionStore:     sessionStore,
 	}
 
+	// Register the OOR actor with the actor system via its
+	// service key, matching the pattern used by the rounds and
+	// batch watcher actors. This ensures the actor is managed
+	// by the system lifecycle and is discoverable via the
+	// receptionist.
 	s.oorActor = oor.NewActor(oorCfg)
+	oorKey := oor.NewServiceKey()
+	s.oorRef = oorKey.Spawn(
+		s.actorSystem, oor.OORActorServiceKeyName,
+		s.oorActor,
+	)
+
 	if err := s.oorActor.Start(ctx); err != nil {
 		return fmt.Errorf("start OOR actor: %w", err)
 	}
@@ -98,8 +109,8 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 
 	s.oorOperator, err = oor.NewOOROperator(
 		oor.OOROperatorConfig{
-			Edge:     edgeClient,
-			OORActor: s.oorActor,
+			Edge:   edgeClient,
+			OORRef: s.oorRef,
 		},
 	)
 	if err != nil {

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
@@ -67,9 +68,10 @@ type OOROperatorConfig struct {
 	// envelopes. Defaults to oorSenderMailboxID.
 	SenderMailboxID string
 
-	// OORActor is the OOR transfer coordinator. Inbound requests
-	// are forwarded to the actor for processing.
-	OORActor *Actor
+	// OORRef is the actor reference for the OOR transfer
+	// coordinator. Inbound requests are forwarded via the
+	// actor system rather than calling Receive directly.
+	OORRef actor.ActorRef[ActorMsg, ActorResp]
 }
 
 // OOROperator provides OORMailboxService RPC dispatchers for the
@@ -242,8 +244,10 @@ func (o *OOROperator) SubmitPackage(ctx context.Context,
 		VTXOSigningDescriptors: vtxoDescs,
 	}
 
-	result := o.cfg.OORActor.Receive(ctx, actorMsg)
-	if err := result.Err(); err != nil {
+	future := o.cfg.OORRef.Ask(ctx, actorMsg)
+
+	_, err = future.Await(ctx).Unpack()
+	if err != nil {
 		return nil, fmt.Errorf(
 			"OOR actor submit: %w", err,
 		)
@@ -274,8 +278,10 @@ func (o *OOROperator) FinalizePackage(ctx context.Context,
 		FinalCheckpointPSBTs: finalCheckpoints,
 	}
 
-	result := o.cfg.OORActor.Receive(ctx, actorMsg)
-	if err := result.Err(); err != nil {
+	future := o.cfg.OORRef.Ask(ctx, actorMsg)
+
+	_, err = future.Await(ctx).Unpack()
+	if err != nil {
 		return nil, fmt.Errorf(
 			"OOR actor finalize: %w", err,
 		)

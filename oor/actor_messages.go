@@ -5,6 +5,18 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 )
 
+// OORActorServiceKeyName is the receptionist key used to discover
+// the OOR server-side actor in the actor system.
+const OORActorServiceKeyName = "oor-server"
+
+// NewServiceKey returns the service key for looking up the OOR
+// server actor via the receptionist.
+func NewServiceKey() actor.ServiceKey[ActorMsg, ActorResp] {
+	return actor.NewServiceKey[ActorMsg, ActorResp](
+		OORActorServiceKeyName,
+	)
+}
+
 // ActorMsg is the sealed interface for all messages that can be sent to the
 // OORTransferCoordinator actor.
 type ActorMsg interface {

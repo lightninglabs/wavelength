@@ -64,23 +64,24 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	)
 
 	// Create and spawn the batch watcher actor for monitoring
-	// confirmed batches on-chain.
+	// confirmed batches on-chain. Use ServiceKey.Spawn so we
+	// can set SelfRef on the config before the actor processes
+	// any messages.
 	bwLog := subLogger(s.cfg.Loggers, batchwatcher.Subsystem)
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Log:         fn.Some(bwLog),
 		ChainSource: s.chainSourceRef,
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
-	s.batchWatcherRef = actor.RegisterWithSystem(
-		s.actorSystem, "batch-watcher",
-		actor.NewServiceKey[
-			batchwatcher.BatchWatcherMsg,
-			batchwatcher.BatchWatcherResp,
-		]("batch-watcher"),
+	bwKey := batchwatcher.NewServiceKey()
+	s.batchWatcherRef = bwKey.Spawn(
+		s.actorSystem,
+		batchwatcher.BatchWatcherServiceKeyName,
 		batchWatcher,
 	)
 
-	// Set SelfRef after spawning (needed for callback mapping).
+	// Set SelfRef before the actor processes any messages,
+	// needed for callback mapping in the batch watcher.
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
 	// Build the rounds actor configuration. Policy terms come

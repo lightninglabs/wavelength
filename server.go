@@ -111,6 +111,10 @@ type Server struct {
 	// out-of-round transfers between clients.
 	oorActor *oor.Actor
 
+	// oorRef is the actor reference for the OOR actor, used
+	// for sending messages through the actor system.
+	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
+
 	// oorOperator provides RPC dispatchers for the OOR service,
 	// translating inbound mailbox envelopes into actor messages.
 	oorOperator *oor.OOROperator
