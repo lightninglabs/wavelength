@@ -1,0 +1,169 @@
+package actormsg
+
+import (
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+)
+
+// =============================================================================
+// Spend admission messages: wallet → Manager → VTXO actors
+// =============================================================================
+//
+// These messages are defined in actormsg (rather than vtxo) so both the wallet
+// and vtxo packages can use them without creating an import cycle
+// (wallet → vtxo → round → wallet).
+
+// SelectAndReserveSpendRequest asks the VTXO manager to select VTXOs covering
+// a target amount and atomically reserve them for an OOR spend. The manager
+// runs largest-first coin selection, then Asks each selected VTXO actor to
+// process SpendReserveEvent. If any reservation fails, already-reserved
+// VTXOs are rolled back.
+type SelectAndReserveSpendRequest struct {
+	actor.BaseMessage
+
+	// TargetAmount is the minimum total value the selected VTXOs must
+	// cover.
+	TargetAmount btcutil.Amount
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *SelectAndReserveSpendRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *SelectAndReserveSpendRequest) MessageType() string {
+	return "SelectAndReserveSpendRequest"
+}
+
+// SelectedVTXO describes a VTXO that was selected and reserved for an OOR
+// spend. This is returned in the SelectAndReserveSpendResponse.
+type SelectedVTXO struct {
+	// Outpoint is the selected VTXO's outpoint.
+	Outpoint wire.OutPoint
+
+	// Amount is the value of this VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the output script for this VTXO.
+	PkScript []byte
+}
+
+// SelectAndReserveSpendResponse returns the VTXOs that were selected and
+// reserved for an OOR spend.
+type SelectAndReserveSpendResponse struct {
+	// SelectedVTXOs is the set of VTXOs reserved for this spend.
+	SelectedVTXOs []SelectedVTXO
+
+	// TotalSelected is the sum of all selected VTXO amounts.
+	TotalSelected btcutil.Amount
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *SelectAndReserveSpendResponse) VTXOManagerResp() {}
+
+// ReleaseSpendRequest releases VTXOs previously reserved for an OOR spend
+// back to LiveState. Used when the OOR operation fails or is cancelled.
+type ReleaseSpendRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to release from spend reservation.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ReleaseSpendRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ReleaseSpendRequest) MessageType() string {
+	return "ReleaseSpendRequest"
+}
+
+// ReleaseSpendResponse confirms the spend release.
+type ReleaseSpendResponse struct {
+	// ReleasedCount is the number of VTXOs successfully released.
+	ReleasedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ReleaseSpendResponse) VTXOManagerResp() {}
+
+// CompleteSpendRequest marks VTXOs as fully spent via an OOR transaction.
+// This transitions each VTXO from SpendingState to terminal SpentState.
+type CompleteSpendRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to mark as spent.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *CompleteSpendRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *CompleteSpendRequest) MessageType() string {
+	return "CompleteSpendRequest"
+}
+
+// CompleteSpendResponse confirms the spend completion.
+type CompleteSpendResponse struct {
+	// CompletedCount is the number of VTXOs marked as spent.
+	CompletedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *CompleteSpendResponse) VTXOManagerResp() {}
+
+// =============================================================================
+// Forfeit admission messages: wallet → Manager → VTXO actors
+// =============================================================================
+
+// ReserveForfeitRequest asks the manager to reserve specific VTXOs for
+// cooperative consumption. The manager Asks each actor to process
+// PendingForfeitEvent. If any reservation fails, already-claimed VTXOs
+// are rolled back via ForfeitReleasedEvent.
+type ReserveForfeitRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to reserve for forfeit.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ReserveForfeitRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ReserveForfeitRequest) MessageType() string {
+	return "ReserveForfeitRequest"
+}
+
+// ReserveForfeitResponse confirms the forfeit reservation.
+type ReserveForfeitResponse struct{}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ReserveForfeitResponse) VTXOManagerResp() {}
+
+// ReleaseForfeitRequest releases VTXOs from pending forfeit back to
+// LiveState. Used when round registration fails after admission.
+type ReleaseForfeitRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to release from forfeit.
+	Outpoints []wire.OutPoint
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *ReleaseForfeitRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *ReleaseForfeitRequest) MessageType() string {
+	return "ReleaseForfeitRequest"
+}
+
+// ReleaseForfeitResponse confirms the forfeit release.
+type ReleaseForfeitResponse struct {
+	// ReleasedCount is the number of VTXOs released.
+	ReleasedCount int
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *ReleaseForfeitResponse) VTXOManagerResp() {}
