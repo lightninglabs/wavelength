@@ -94,3 +94,43 @@ func AddSubLogger(root *lndbuild.SubLoggerManager, subsystem string,
 		useLogger(logger)
 	}
 }
+
+// SetupLoggersWithShutdownFn initializes all package-level subsystem
+// loggers using a plain shutdown callback instead of a
+// signal.Interceptor. This is the context-friendly variant used by
+// RunWithContext where the daemon lifecycle is managed via context
+// cancellation rather than OS signals.
+func SetupLoggersWithShutdownFn(root *lndbuild.SubLoggerManager,
+	shutdownFn func()) {
+
+	genLogger := func(tag string) btclog.Logger {
+		return root.GenSubLogger(tag, shutdownFn)
+	}
+
+	subsystems := []struct {
+		name      string
+		useLogger func(btclog.Logger)
+	}{
+		{Subsystem, UseLogger},
+		{actor.Subsystem, actor.UseLogger},
+		{round.Subsystem, round.UseLogger},
+		{oor.Subsystem, oor.UseLogger},
+		{vtxo.Subsystem, vtxo.UseLogger},
+		{wallet.Subsystem, wallet.UseLogger},
+		{lwwallet.Subsystem, lwwallet.UseLogger},
+		{serverconn.Subsystem, serverconn.UseLogger},
+		{chainbackends.Subsystem, chainbackends.UseLogger},
+		{
+			chainbackends.LndClientSubsystem,
+			chainbackends.UseLndClientLogger,
+		},
+		{lndbackend.Subsystem, lndbackend.UseLogger},
+		{indexer.Subsystem, indexer.UseLogger},
+		{db.Subsystem, db.UseLogger},
+	}
+	for _, sub := range subsystems {
+		logger := lndbuild.NewSubLogger(sub.name, genLogger)
+		root.RegisterSubLogger(sub.name, logger)
+		sub.useLogger(logger)
+	}
+}

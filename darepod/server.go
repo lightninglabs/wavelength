@@ -191,6 +191,49 @@ func (s *Server) markWalletReady() {
 //
 //nolint:funlen
 func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel the context when the interceptor fires so blocking
+	// calls (like lndclient chain sync) unblock promptly.
+	go func() {
+		select {
+		case <-interceptor.ShutdownChannel():
+			cancel()
+
+		case <-ctx.Done():
+		}
+	}()
+
+	// Build a shutdown callback from the interceptor for the
+	// logging subsystem.
+	shutdownFn := func() {
+		if !interceptor.Listening() {
+			return
+		}
+
+		interceptor.RequestShutdown()
+	}
+
+	return s.run(ctx, shutdownFn)
+}
+
+// RunWithContext starts all subsystems and blocks until the given
+// context is cancelled. This is the harness-friendly entry point:
+// callers manage daemon lifecycle via context cancellation instead
+// of requiring a signal.Interceptor (which is process-global).
+func (s *Server) RunWithContext(ctx context.Context) error {
+	return s.run(ctx, func() {})
+}
+
+// run is the shared core startup logic for both RunUntilShutdown
+// and RunWithContext. The shutdownFn is wired into the logging
+// subsystem so critical log events can trigger daemon shutdown.
+//
+//nolint:funlen
+func (s *Server) run(ctx context.Context,
+	shutdownFn func()) error {
+
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
 	// -------------------------------------------------------
@@ -202,7 +245,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	// Register all package-level loggers with the manager. This
 	// replaces the default btclog.Disabled loggers so log output
 	// is captured from this point forward.
-	SetupLoggers(s.logManager, interceptor)
+	SetupLoggersWithShutdownFn(s.logManager, shutdownFn)
 
 	// Apply the configured debug level. A bare level like "info"
 	// sets all subsystems. A comma-separated list like
@@ -211,20 +254,6 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	if err := s.applyDebugLevel(); err != nil {
 		return fmt.Errorf("invalid debug level: %w", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Cancel the context when the interceptor fires so blocking calls
-	// (like lndclient chain sync) unblock promptly.
-	go func() {
-		select {
-		case <-interceptor.ShutdownChannel():
-			cancel()
-
-		case <-ctx.Done():
-		}
-	}()
 
 	log.InfoS(ctx, "Starting darepod",
 		slog.String("version", build.Version()),
@@ -471,7 +500,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	// -------------------------------------------------------
 	// 12. Block until shutdown.
 	// -------------------------------------------------------
-	<-interceptor.ShutdownChannel()
+	<-ctx.Done()
 
 	log.InfoS(ctx, "Shutting down darepod")
 
