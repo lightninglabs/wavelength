@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/btcsuite/btclog/v2"
@@ -214,8 +216,32 @@ func run(cfg *darepo.Config) error {
 
 	// Set up logging. A single handler is shared across all
 	// subsystem loggers so that output flows to one destination
-	// with consistent formatting.
-	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	// with consistent formatting. When a log file path is
+	// configured, logs are written to both stdout and the file.
+	var logWriter io.Writer = os.Stdout
+
+	if cfg.LogFilePath != "" {
+		logDir := filepath.Dir(cfg.LogFilePath)
+		if err := os.MkdirAll(logDir, 0700); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+
+		logFile, err := os.OpenFile(
+			cfg.LogFilePath,
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+			0600,
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"open log file: %w", err,
+			)
+		}
+		defer logFile.Close()
+
+		logWriter = io.MultiWriter(os.Stdout, logFile)
+	}
+
+	logHandler := btclog.NewDefaultHandler(logWriter)
 	loggers := darepo.SetupLoggers(logHandler)
 
 	if err := darepo.ApplyDebugLevel(
