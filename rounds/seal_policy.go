@@ -2,7 +2,6 @@ package rounds
 
 import (
 	"github.com/btcsuite/btcd/btcutil"
-
 	"github.com/lightninglabs/darepo/clientconn"
 )
 

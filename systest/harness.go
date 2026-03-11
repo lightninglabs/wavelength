@@ -74,13 +74,16 @@ type HarnessOption func(*harnessConfig)
 
 // harnessConfig holds optional configuration for the harness.
 type harnessConfig struct {
-	sweepDelay uint32
+	sweepDelay          uint32
+	shouldSeal          rounds.SealPredicate
+	registrationTimeout time.Duration
 }
 
 // defaultHarnessConfig returns the default harness configuration.
 func defaultHarnessConfig() *harnessConfig {
 	return &harnessConfig{
-		sweepDelay: defaultSweepDelay,
+		sweepDelay:          defaultSweepDelay,
+		registrationTimeout: defaultRegistrationTimeout,
 	}
 }
 
@@ -90,6 +93,24 @@ func defaultHarnessConfig() *harnessConfig {
 func WithSweepDelay(delay uint32) HarnessOption {
 	return func(cfg *harnessConfig) {
 		cfg.sweepDelay = delay
+	}
+}
+
+// WithShouldSeal sets a custom seal predicate for the rounds actor. When
+// the predicate fires after a client join, the round is sealed immediately
+// without waiting for the registration timeout.
+func WithShouldSeal(pred rounds.SealPredicate) HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.shouldSeal = pred
+	}
+}
+
+// WithRegistrationTimeout overrides the default registration timeout for
+// round sealing. Useful for testing seal predicates by setting a very long
+// timeout to prove the predicate fired rather than the timer.
+func WithRegistrationTimeout(d time.Duration) HarnessOption {
+	return func(cfg *harnessConfig) {
+		cfg.registrationTimeout = d
 	}
 }
 
@@ -537,6 +558,7 @@ func (h *E2EHarness) initActorSystem() {
 		MinConfs:           1,
 		ConfirmationTarget: uint32(defaultConfirmationTarget),
 		BatchWatcher:       fn.Some(h.batchWatcherRef),
+		ShouldSeal:         h.cfg.shouldSeal,
 	}
 
 	// Create rounds actor.
@@ -656,7 +678,7 @@ func (h *E2EHarness) createDefaultTerms() *batch.Terms {
 		VTXOExitDelay:                 defaultVTXOExitDelay,
 		MinLeaveAmount:                btcutil.Amount(1000),
 		MinOperatorFee:                btcutil.Amount(1000),
-		RegistrationTimeout:           defaultRegistrationTimeout,
+		RegistrationTimeout:           h.cfg.registrationTimeout,
 		SignatureCollectionTimeout:    defaultSigCollectionTimeout,
 		FundPsbtLockDuration:          batch.DefaultFundPsbtLockDuration,
 	}

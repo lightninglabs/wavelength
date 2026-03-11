@@ -173,6 +173,8 @@ func DefaultRoundsConfig() *RoundsConfig {
 		ConfTarget:                    6,
 		MinConfs:                      1,
 		ConfirmationTarget:            1,
+		MaxRoundClients:               128,
+		MaxRoundOutputAmount:          0,
 	}
 }
 
