@@ -53,3 +53,34 @@ type GetActiveVTXOCountResponse struct {
 }
 
 func (r *GetActiveVTXOCountResponse) managerRespSealed() {}
+
+// =============================================================================
+// Relay messages: VTXO actor → Manager → external actor
+// =============================================================================
+//
+// The VTXO actor routes all outbound signals through the manager rather than
+// holding direct references to the round actor or chain resolver. These relay
+// messages carry pre-built payloads that the manager unwraps and forwards.
+
+// RelayToRoundMsg wraps a message that the manager should relay to the round
+// actor. The payload is already in the round-receivable format so the manager
+// just forwards it without transformation.
+type RelayToRoundMsg struct {
+	actor.BaseMessage
+
+	// Payload is the round-receivable message to relay.
+	Payload actormsg.RoundReceivable
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (m *RelayToRoundMsg) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *RelayToRoundMsg) MessageType() string { return "RelayToRoundMsg" }
+
+// RelayToRoundResp is the response for RelayToRoundMsg.
+type RelayToRoundResp struct{}
+
+// managerRespSealed implements the ManagerResp sealed interface.
+func (r *RelayToRoundResp) managerRespSealed() {}
+

@@ -136,6 +136,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *round.VTXOTerminatedMsg:
 		return m.handleVTXOTerminated(ctx, req)
 
+	case *RelayToRoundMsg:
+		return m.handleRelayToRound(ctx, req)
+
 	case *GetActiveVTXOCountRequest:
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
@@ -219,6 +222,25 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
 }
 
+// handleRelayToRound forwards a VTXO actor's message to the round actor.
+// The VTXO actor pre-builds the round-specific message (RefreshVTXORequest
+// or ForfeitSignatureResponse) and wraps it in RelayToRoundMsg. The manager
+// just unwraps and forwards.
+func (m *Manager) handleRelayToRound(ctx context.Context,
+	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
+
+	if err := m.cfg.RoundActor.Tell(ctx, msg.Payload); err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to relay to round", err,
+			slog.String("payload_type", fmt.Sprintf("%T", msg.Payload)))
+
+		return fn.Err[ManagerResp](
+			fmt.Errorf("relay to round: %w", err),
+		)
+	}
+
+	return fn.Ok[ManagerResp](&RelayToRoundResp{})
+}
+
 // spawnVTXOActor creates a new VTXO FSM actor.
 func (m *Manager) spawnVTXOActor(ctx context.Context,
 	vtxo *Descriptor) (VTXOActorRef, error) {
@@ -234,7 +256,6 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 		ChainParams:   m.cfg.ChainParams,
 		ExpiryConfig:  m.cfg.ExpiryConfig,
 		Log:           m.cfg.Log,
-		RoundActor:    m.cfg.RoundActor,
 		ChainResolver: m.cfg.ChainResolver,
 		Manager:       m.managerRef,
 	}
