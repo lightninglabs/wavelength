@@ -149,6 +149,19 @@ func (a *Ark) logger(ctx context.Context) btclog.Logger {
 	return a.actorLog.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
+// allTargetErrors builds a per-outpoint error map for operations that fail
+// before the wallet can inspect individual VTXOs.
+func allTargetErrors(targets []wire.OutPoint,
+	err error) map[wire.OutPoint]error {
+
+	errors := make(map[wire.OutPoint]error, len(targets))
+	for _, outpoint := range targets {
+		errors[outpoint] = err
+	}
+
+	return errors
+}
+
 // Start initializes the actor and subscribes to block epochs. The selfRef
 // parameter is the actor's own reference, used to receive block epoch
 // notifications from the chainsource actor.
@@ -667,6 +680,15 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 	}
 
+	if a.vtxoReader == nil {
+		err := fmt.Errorf("VTXO reader not configured")
+		a.logger(ctx).WarnS(ctx, "No VTXO reader for refresh", err)
+
+		return fn.Ok[WalletResp](&RefreshVTXOsResponse{
+			Errors: allTargetErrors(req.TargetOutpoints, err),
+		})
+	}
+
 	// Build intent package by loading each VTXO descriptor and
 	// constructing the corresponding forfeit + VTXO request pair.
 	var (
@@ -701,7 +723,7 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			Expiry:      vtxo.Expiry,
 			ClientKey:   vtxo.ClientKey.PubKey,
 			OperatorKey: vtxo.OperatorKey,
-			SigningKey:   vtxo.ClientKey,
+			SigningKey:  vtxo.ClientKey,
 		})
 	}
 
@@ -742,38 +764,108 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 	return fn.Ok[WalletResp](resp)
 }
 
-// handleLeaveVTXOs processes a leave (offboard) request by forwarding it to the
-// round actor. The round actor coordinates with VTXO actors to initiate the
-// forfeit flow, resulting in an on-chain output in the batch transaction.
+// handleLeaveVTXOs processes a leave (offboard) request. The wallet loads each
+// VTXO descriptor, builds a forfeit + leave request pair, and sends the
+// composed intent package to the round actor via RegisterIntentMsg. The round
+// actor validates, registers with the FSM, and notifies VTXO actors.
+//
+// If some VTXOs fail to load but at least one succeeds, the successful
+// forfeits are still submitted (partial participation). The caller should
+// check Errors in the response to detect partial failures.
+//
+// All VTXOs in a single request produce individual LeaveRequest objects
+// pointing to the same DestOutput. The server is expected to create a
+// separate on-chain output for each leave, not aggregate them.
 func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	req *LeaveVTXOsRequest) fn.Result[WalletResp] {
 
 	a.logger(ctx).InfoS(ctx, "Received VTXO leave request",
-		slog.Int("target_count", len(req.TargetOutpoints)),
-	)
+		slog.Int("target_count", len(req.TargetOutpoints)))
 
-	// Forward to the round actor. The round actor now owns leave
-	// intent composition and will mark the target VTXOs pending
-	// cooperative consumption itself.
-	if a.actorSystem != nil {
-		serviceKey := actormsg.RoundActorServiceKey()
-		roundRef := serviceKey.Ref(a.actorSystem)
-		if err := roundRef.Tell(ctx, &actormsg.TriggerVTXOLeaveMsg{
-			TargetOutpoints: req.TargetOutpoints,
-			DestOutput:      req.DestOutput,
-		}); err != nil {
-			a.logger(ctx).WarnS(ctx, "Failed to forward leave to "+
-				"round actor", err)
-		}
-	} else {
+	if a.actorSystem == nil {
 		a.logger(ctx).WarnS(
 			ctx, "No actor system for leave", nil,
 		)
+
+		return fn.Ok[WalletResp](&LeaveVTXOsResponse{
+			Errors: make(map[wire.OutPoint]error),
+		})
 	}
 
+	if a.vtxoReader == nil {
+		err := fmt.Errorf("VTXO reader not configured")
+		a.logger(ctx).WarnS(ctx, "No VTXO reader for leave", err)
+
+		return fn.Ok[WalletResp](&LeaveVTXOsResponse{
+			Errors: allTargetErrors(req.TargetOutpoints, err),
+		})
+	}
+
+	// Build intent package by loading each VTXO descriptor and
+	// constructing the corresponding forfeit + leave request pair.
+	var (
+		forfeits []types.ForfeitRequest
+		leaves   []*types.LeaveRequest
+		errors   = make(map[wire.OutPoint]error)
+	)
+
+	for _, outpoint := range req.TargetOutpoints {
+		_, err := a.vtxoReader.GetVTXO(ctx, outpoint)
+		if err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to load VTXO for leave",
+				err,
+				slog.String("outpoint",
+					outpoint.String()))
+
+			errors[outpoint] = err
+
+			continue
+		}
+
+		// Each leave produces a forfeit of the old VTXO and a
+		// leave request with the destination output.
+		op := outpoint
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+		})
+		leaves = append(leaves, &types.LeaveRequest{
+			Output: req.DestOutput,
+		})
+	}
+
+	// Send the composed intent package to the round actor and await
+	// the result. Using Ask (not Tell) so we surface FSM rejection
+	// or validation failures back to the caller.
+	if len(forfeits) > 0 {
+		serviceKey := actormsg.RoundActorServiceKey()
+		roundRef := serviceKey.Ref(a.actorSystem)
+
+		future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
+			Forfeits: forfeits,
+			Leaves:   leaves,
+		})
+		result := future.Await(ctx)
+		if result.IsErr() {
+			a.logger(ctx).WarnS(ctx,
+				"Round rejected leave intent",
+				result.Err())
+
+			return fn.Err[WalletResp](fmt.Errorf(
+				"round rejected leave intent: %w",
+				result.Err(),
+			))
+		}
+	}
+
+	a.logger(ctx).InfoS(ctx, "Registered leave intent package",
+		slog.Int("forfeits", len(forfeits)),
+		slog.Int("leaves", len(leaves)),
+		slog.Int("errors", len(errors)))
+
 	resp := &LeaveVTXOsResponse{
-		LeavingCount: len(req.TargetOutpoints),
-		Errors:       make(map[wire.OutPoint]error),
+		LeavingCount: len(forfeits),
+		Errors:       errors,
 	}
 
 	return fn.Ok[WalletResp](resp)

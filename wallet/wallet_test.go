@@ -1121,3 +1121,66 @@ func TestSendBacklog(t *testing.T) {
 		store.AssertExpectations(t)
 	})
 }
+
+// TestIntentCompositionRequiresVTXOReader verifies that refresh and leave
+// return per-outpoint errors instead of panicking when the wallet is created
+// without a VTXOReader.
+func TestIntentCompositionRequiresVTXOReader(t *testing.T) {
+	t.Parallel()
+
+	system := actor.NewActorSystem()
+	defer func() {
+		err := system.Shutdown(t.Context())
+		require.NoError(t, err)
+	}()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+
+	var chainSource actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+	walletActor := NewArk(
+		backend, store, nil, chainSource, system, btclog.Disabled,
+	)
+
+	refreshOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("refresh-without-reader")),
+		Index: 0,
+	}
+	refreshResult := walletActor.handleRefreshVTXOs(t.Context(),
+		&RefreshVTXOsRequest{
+			TargetOutpoints: []wire.OutPoint{refreshOutpoint},
+		},
+	)
+	refreshRespVal, err := refreshResult.Unpack()
+	require.NoError(t, err)
+
+	refreshResp, ok := refreshRespVal.(*RefreshVTXOsResponse)
+	require.True(t, ok, "unexpected response type: %T", refreshRespVal)
+	require.Zero(t, refreshResp.RefreshingCount)
+	require.ErrorContains(t, refreshResp.Errors[refreshOutpoint],
+		"VTXO reader not configured")
+
+	leaveOutpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("leave-without-reader")),
+		Index: 1,
+	}
+	leaveResult := walletActor.handleLeaveVTXOs(t.Context(),
+		&LeaveVTXOsRequest{
+			TargetOutpoints: []wire.OutPoint{leaveOutpoint},
+			DestOutput: &wire.TxOut{
+				Value:    1234,
+				PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+			},
+		},
+	)
+	leaveRespVal, err := leaveResult.Unpack()
+	require.NoError(t, err)
+
+	leaveResp, ok := leaveRespVal.(*LeaveVTXOsResponse)
+	require.True(t, ok, "unexpected response type: %T", leaveRespVal)
+	require.Zero(t, leaveResp.LeavingCount)
+	require.ErrorContains(t, leaveResp.Errors[leaveOutpoint],
+		"VTXO reader not configured")
+}
