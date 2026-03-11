@@ -314,7 +314,8 @@ func validateJoinRequestForAdmission(ctx context.Context, env *Environment,
 //     remains in CreatedState and sends ClientErrorResp. On success,
 //     transitions to RegistrationState with the first client registered,
 //     sends ClientSuccessResp, requests boarding input locks, and starts
-//     the registration timeout.
+//     the registration timeout. If the seal predicate fires after adding
+//     the client, emits SealEvent to seal the round early.
 func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
@@ -388,15 +389,51 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 			),
 		}
 
+		outbox := []OutboxEvent{
+			successResp,
+			newStartTimeoutReq(
+				env, TimeoutPhaseRegistration,
+			),
+		}
+
+		// Evaluate the seal predicate. If it fires on the very
+		// first client (e.g. MaxClients(1)), seal immediately
+		// instead of waiting for the registration timeout.
+		if env.ShouldSeal != nil &&
+			env.ShouldSeal(clientRegs) {
+
+			env.Log.InfoS(ctx,
+				"Seal predicate triggered on first client",
+				LogClientID(evt.ClientID))
+
+			// Cancel the registration timeout we just
+			// started — the predicate already sealed the
+			// round.
+			outbox = append(outbox,
+				&CancelTimeoutReq{
+					RoundID: env.RoundID,
+					Phase:   TimeoutPhaseRegistration,
+				},
+				&RoundSealedReq{
+					SealedRoundID: env.RoundID,
+				},
+			)
+
+			return &StateTransition{
+				NextState: newRegistrationState(clientRegs),
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: outbox,
+					InternalEvent: []Event{
+						&SealEvent{},
+					},
+				}),
+			}, nil
+		}
+
 		return &StateTransition{
 			NextState: newRegistrationState(clientRegs),
 			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					successResp,
-					newStartTimeoutReq(
-						env, TimeoutPhaseRegistration,
-					),
-				},
+				Outbox: outbox,
 			}),
 		}, nil
 
@@ -513,9 +550,17 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 				"Seal predicate triggered, sealing round",
 				LogClientCount(newClientCount))
 
-			outbox = append(outbox, &RoundSealedReq{
-				SealedRoundID: env.RoundID,
-			})
+			// Cancel the registration timeout — the
+			// predicate sealed the round early.
+			outbox = append(outbox,
+				&CancelTimeoutReq{
+					RoundID: env.RoundID,
+					Phase:   TimeoutPhaseRegistration,
+				},
+				&RoundSealedReq{
+					SealedRoundID: env.RoundID,
+				},
+			)
 
 			return &StateTransition{
 				NextState: newState,

@@ -11,6 +11,20 @@ import (
 type SealPredicate func(
 	regs map[clientconn.ClientID]*ClientRegistration) bool
 
+// MaxClients returns a predicate that seals when the number of registered
+// clients reaches the given limit. A limit of zero disables the check.
+func MaxClients(limit int) SealPredicate {
+	return func(
+		regs map[clientconn.ClientID]*ClientRegistration) bool {
+
+		if limit <= 0 {
+			return false
+		}
+
+		return len(regs) >= limit
+	}
+}
+
 // AnySealPredicate returns a composite predicate that seals when ANY of the
 // given sub-predicates returns true (logical OR). When preds is empty, the
 // returned predicate always returns false (no early seal).
