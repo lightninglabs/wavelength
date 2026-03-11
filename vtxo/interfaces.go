@@ -317,9 +317,17 @@ type Descriptor struct {
 	// (blocks from when VTXO is realized on-chain).
 	RelativeExpiry uint32
 
-	// TreeDepth is the depth of this VTXO in the VTXT (used for expiry
-	// calculation).
+	// TreeDepth is the depth of this VTXO in the VTXT (virtual
+	// transaction tree). This is the VTXO's position within the
+	// commitment tree and is used for expiry calculation.
 	TreeDepth int
+
+	// ChainDepth is the number of OOR checkpoint transactions between
+	// this VTXO and the most recent on-chain commitment. A VTXO
+	// created directly from a round has ChainDepth 0. Each OOR hop
+	// adds one to the chain depth. This is distinct from TreeDepth,
+	// which tracks position within the VTXT.
+	ChainDepth int
 
 	// CreatedHeight is the block height when this VTXO was created.
 	CreatedHeight int32

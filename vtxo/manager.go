@@ -366,6 +366,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		BatchExpiry:    msg.BatchExpiry,
 		RelativeExpiry: cv.Expiry,
 		TreeDepth:      treeDepth,
+		ChainDepth:     0,
 		CreatedHeight:  msg.CreatedHeight,
 		Status:         VTXOStatusLive,
 	})
