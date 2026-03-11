@@ -164,6 +164,7 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 	require.Equal(t, metadata.CommitmentTxID, desc.CommitmentTxID)
 	require.Equal(t, metadata.BatchExpiry, desc.BatchExpiry)
 	require.Equal(t, metadata.CreatedHeight, desc.CreatedHeight)
+	require.Equal(t, metadata.ChainDepth, desc.ChainDepth)
 
 	state, err := session.FSM.CurrentState()
 	require.NoError(t, err)
@@ -361,6 +362,7 @@ func buildSystemTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		CommitmentTxID: inputs[0].SpentVTXO.Outpoint.Hash,
 		BatchExpiry:    1000,
 		TreeDepth:      1,
+		ChainDepth:     2,
 		CreatedHeight:  700,
 		TreePath: &tree.Tree{
 			BatchOutpoint: wire.OutPoint{
