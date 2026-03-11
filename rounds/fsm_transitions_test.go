@@ -1681,7 +1681,8 @@ func TestFSMFinalizedState(t *testing.T) {
 
 		h := newTestHarness(t, finalState)
 
-		// Send TransactionConfirmedEvent.
+		// Send TransactionConfirmedEvent. The harness sets up
+		// MarkRoundConfirmed with Maybe() by default.
 		blockHash := chainhash.HashH([]byte("test-block"))
 		confirmEvent := &TransactionConfirmedEvent{
 			BlockHeight: 100,
@@ -1692,18 +1693,7 @@ func TestFSMFinalizedState(t *testing.T) {
 		err := h.sendEvent(confirmEvent)
 		require.NoError(t, err)
 
-		// Should transition to AwaitingConfirmPersistState with
-		// a ConfirmRoundReq outbox event.
-		assertStateType[*AwaitingConfirmPersistState](h)
-		h.assertOutboxLen(1)
-		assertOutboxContains[*ConfirmRoundReq](h)
-
-		// Feed the handler success event to complete the
-		// confirmation.
-		h.outboxMessages = nil
-		err = h.sendEvent(&ConfirmRoundSucceededEvent{})
-		require.NoError(t, err)
-
+		// Should transition directly to ConfirmedState.
 		confirmedState := assertStateType[*ConfirmedState](h)
 		require.Equal(t, int32(100), confirmedState.BlockHeight)
 		require.Equal(t, blockHash, confirmedState.BlockHash)
@@ -2189,22 +2179,13 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	require.Len(t, finalState.ClientRegistrations, 1)
 	assertOutboxContains[*BroadcastRoundReq](h)
 
-	// Simulate confirmation — the FSM emits a ConfirmRoundReq outbox
-	// event and transitions to AwaitingConfirmPersistState.
+	// Simulate confirmation — now inlined in FinalizedState.
+	// The harness sets up MarkRoundConfirmed with Maybe() by default.
 	h.outboxMessages = nil
 	err = h.sendEvent(&TransactionConfirmedEvent{
 		BlockHeight: 100,
 		BlockHash:   chainhash.Hash{},
 	})
-	require.NoError(t, err)
-	assertStateType[*AwaitingConfirmPersistState](h)
-	h.assertOutboxLen(1)
-	confirmReq := assertOutboxContains[*ConfirmRoundReq](h)
-	require.Equal(t, h.roundID, confirmReq.RoundID)
-
-	// Feed success to complete the confirmation cycle.
-	h.outboxMessages = nil
-	err = h.sendEvent(&ConfirmRoundSucceededEvent{})
 	require.NoError(t, err)
 	assertStateType[*ConfirmedState](h)
 	h.assertOutboxLen(0)
@@ -2293,27 +2274,15 @@ func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
 	require.NotNil(t, finalState.FinalTx)
 	require.Contains(t, finalState.ForfeitInfos, forfeitOutpoint)
 
-	// Simulate confirmation — the FSM emits a ConfirmRoundReq and
-	// transitions to the intermediate AwaitingConfirmPersistState.
+	// Simulate confirmation — now inlined in FinalizedState.
+	// The harness sets up MarkRoundConfirmed, MarkVTXOsLive,
+	// and MarkVTXOForfeit with Maybe() by default.
 	h.outboxMessages = nil
 	err = h.sendEvent(&TransactionConfirmedEvent{
 		BlockHeight: 100,
 		BlockHash:   chainhash.Hash{},
 		NumConfs:    6,
 	})
-	require.NoError(t, err)
-	assertStateType[*AwaitingConfirmPersistState](h)
-	h.assertOutboxLen(1)
-	confirmReq := assertOutboxContains[*ConfirmRoundReq](h)
-	require.Contains(t, confirmReq.ForfeitInfos, forfeitOutpoint)
-	require.Equal(t,
-		finalState.ForfeitInfos[forfeitOutpoint],
-		confirmReq.ForfeitInfos[forfeitOutpoint],
-	)
-
-	// Feed success to complete the confirmation cycle.
-	h.outboxMessages = nil
-	err = h.sendEvent(&ConfirmRoundSucceededEvent{})
 	require.NoError(t, err)
 	assertStateType[*ConfirmedState](h)
 }

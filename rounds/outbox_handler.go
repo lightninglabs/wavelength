@@ -2,7 +2,6 @@ package rounds
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
@@ -77,67 +76,13 @@ func NewInProcessOutboxHandler(roundStore RoundStore,
 	}
 }
 
-// Handle executes the outbox request and returns follow-up events. Outbox
-// event types that are not yet migrated return nil, allowing the legacy
-// processOutbox path to handle them.
-func (h *InProcessOutboxHandler) Handle(ctx context.Context, _ RoundID,
-	outbox OutboxEvent) ([]Event, error) {
+// Handle executes the outbox request and returns follow-up events. All
+// outbox event types have been inlined into FSM transitions, so this
+// always returns nil.
+func (h *InProcessOutboxHandler) Handle(_ context.Context, _ RoundID,
+	_ OutboxEvent) ([]Event, error) {
 
-	switch msg := outbox.(type) {
-	case *ConfirmRoundReq:
-		return h.handleConfirmRound(ctx, msg)
-
-	default:
-		return nil, nil
-	}
-}
-
-// handleConfirmRound persists round confirmation data: marks VTXOs live,
-// records forfeits, and marks the round as confirmed. Returns a
-// ConfirmRoundSucceededEvent on success or a ConfirmRoundFailedEvent on
-// any persistence error.
-func (h *InProcessOutboxHandler) handleConfirmRound(ctx context.Context,
-	msg *ConfirmRoundReq) ([]Event, error) {
-
-	// Mark VTXOs live upon confirmation.
-	if len(msg.VTXOTrees) > 0 {
-		err := h.vtxoStore.MarkVTXOsLive(ctx, msg.RoundID)
-		if err != nil {
-			return []Event{&ConfirmRoundFailedEvent{
-				Reason: fmt.Sprintf(
-					"mark VTXOs live: %v", err,
-				),
-			}}, nil
-		}
-	}
-
-	// Mark forfeited VTXOs after confirmation.
-	for outpoint, info := range msg.ForfeitInfos {
-		err := h.vtxoStore.MarkVTXOForfeit(
-			ctx, outpoint, info,
-		)
-		if err != nil {
-			return []Event{&ConfirmRoundFailedEvent{
-				Reason: fmt.Sprintf(
-					"mark VTXO forfeit: %v", err,
-				),
-			}}, nil
-		}
-	}
-
-	// Persist the round as confirmed.
-	err := h.roundStore.MarkRoundConfirmed(
-		ctx, msg.RoundID, msg.BlockHeight, msg.BlockHash,
-	)
-	if err != nil {
-		return []Event{&ConfirmRoundFailedEvent{
-			Reason: fmt.Sprintf(
-				"mark round confirmed: %v", err,
-			),
-		}}, nil
-	}
-
-	return []Event{&ConfirmRoundSucceededEvent{}}, nil
+	return nil, nil
 }
 
 // Compile-time check that InProcessOutboxHandler implements OutboxHandler.

@@ -488,44 +488,6 @@ func (s *FinalizedState) IsTerminal() bool {
 // stateSealed marks FinalizedState as implementing the sealed State interface.
 func (s *FinalizedState) stateSealed() {}
 
-// AwaitingConfirmPersistState waits for the OutboxHandler to persist round
-// confirmation data (mark VTXOs live, record forfeits, mark round confirmed).
-// This intermediate state exists so that the FinalizedState transition remains
-// pure — it emits a ConfirmRoundReq outbox event and transitions here, then
-// the handler feeds back a success or failure event.
-type AwaitingConfirmPersistState struct {
-	// ClientRegistrations maps client IDs to their registration data.
-	ClientRegistrations map[clientconn.ClientID]*ClientRegistration
-
-	// FinalTx is the fully signed commitment transaction.
-	FinalTx *wire.MsgTx
-
-	// VTXOTrees maps commitment tx output indices to their VTXO trees.
-	VTXOTrees map[int]*tree.Tree
-
-	// BlockHeight is the height of the confirming block.
-	BlockHeight int32
-
-	// BlockHash is the hash of the confirming block.
-	BlockHash chainhash.Hash
-}
-
-// String returns a human-readable representation of
-// AwaitingConfirmPersistState.
-func (s *AwaitingConfirmPersistState) String() string {
-	return "AwaitingConfirmPersistState"
-}
-
-// IsTerminal returns false as AwaitingConfirmPersistState is not a terminal
-// state.
-func (s *AwaitingConfirmPersistState) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks AwaitingConfirmPersistState as implementing the sealed
-// State interface.
-func (s *AwaitingConfirmPersistState) stateSealed() {}
-
 // FailedState is a terminal state indicating the round has failed. When
 // entering this state, the FSM emits events to notify clients, unlock
 // boarding inputs, and inform the actor of the failure.
