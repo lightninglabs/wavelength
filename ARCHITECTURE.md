@@ -84,31 +84,32 @@ Server (darepo, root orchestrator)
 
 ## Dispatch Pipeline
 
-All client requests follow this path through the server:
+Client requests follow one of two dispatch models:
 
+**Fire-and-Forget (EventRouter)** — Used by rounds and OOR RPCs:
 ```
 1. Client sends KIND_REQUEST envelope to server mailbox
    ↓
-2. clientconn Ingress Loop
-   - Pulls envelopes from per-client mailbox
-   - Extracts {Service, Method} from envelope.Rpc
-   - Looks up dispatcher in DispatcherMap
+2. clientconn Ingress Loop (extract {Service, Method}, lookup DispatcherMap)
    ↓
-3. EnvelopeDispatcher (closure created by operator)
-   - Validates envelope, injects ClientID into context
-   - Calls ServeMux.ServeRPC(service, method, body)
+3. EnvelopeDispatcher (from AddEnvelopeRoute)
+   - Unmarshal body → typed proto
+   - Adapt(env, proto) → actor message (extracts ClientID from env.Sender)
    ↓
-4. ServeMux (mailboxrpc)
-   - Deserializes proto.Message
-   - Calls typed handler (e.g., RoundOperator.JoinRound)
+4. actorKey.Ref(system).Tell(ctx, actorMsg) — durable commit
    ↓
-5. Typed Handler → Actor FSM
-   - Converts proto → domain types
-   - Sends message to actor via Tell() or Ask()
+5. Actor processes event → state transition → outbox messages
    ↓
-6. Actor processes event → state transition → outbox messages
+6. OutboxHandler executes side effects (DB, wallet, client notify via bridge)
+```
+
+**Synchronous Request-Response (Operator)** — Used by indexer:
+```
+1–2. Same ingress path as above
    ↓
-7. OutboxHandler executes side effects (DB, wallet, client notify)
+3. EnvelopeDispatcher (operator makeDispatcher closure)
+   - Injects ClientID, calls ServeMux.ServeRPC
+   - Builds KIND_RESPONSE envelope, sends via Edge.Send
 ```
 
 See [`docs/dispatch_pipeline.md`](docs/dispatch_pipeline.md) for full details.
@@ -156,6 +157,7 @@ corresponding state transition being durable.
 | `ClientRuntime` | clientconn | Per-client state container (egress, ingress) |
 | `EnvelopeDispatcher` | clientconn | Request routing closure per service/method |
 | `DispatcherMap` | clientconn | Map of service/method → dispatcher |
+| `EventRouter` | clientconn | Collects typed dispatch routes, returns `DispatcherMap` |
 | `Locker` | vtxo | Thread-safe VTXO mutual exclusion |
 | `LeaseLocker` | vtxo | Time-bounded VTXO locks |
 | `Store` | vtxo | VTXO record persistence |

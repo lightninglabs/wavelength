@@ -14,16 +14,18 @@ confirmation monitoring.
 - `Event` — Inbound events triggering state transitions (ClientJoinRequest, BuildBatchTx, etc.).
 - `OutboxEvent` — Outbound side effects (ClientSuccessResp, BuildBatchReq, etc.).
 - `ActorMsg` — Messages sent to the round actor (JoinRoundRequest, nonces, sigs).
+- `JoinRoundRequestFromProto`, `NoncesFromProto`, `PartialSigsFromProto`, etc. — Exported proto→domain conversion helpers in `proto_convert.go`, called from `server_rounds.go` `AddEnvelopeRoute` Adapt closures.
 
 ## Relationships
 
 - **Depends on**: `batch` (tx building, MuSig2 coordination), `batchwatcher` (confirmation monitoring), `clientconn` (outbound events to clients), `vtxo` (VTXO locking during rounds).
 - **Depended on by**: `indexer` (round event subscription), `lndbackend` (chain queries), root `darepo` (wiring).
 - **Messages to/from**:
-  - Receives JoinRoundRequest, nonces, partial sigs <- `clientconn` (from clients).
-  - Sends round events, commitment tx, aggregated nonces -> `clientconn` (to clients).
+  - Receives JoinRoundRequest, nonces, partial sigs <- `clientconn` via `AddEnvelopeRoute` (fire-and-forget Tell from clients).
+  - Sends round events, commitment tx, aggregated nonces -> `clientconn` (to clients via bridge egress).
   - Sends batch build requests -> `batch`.
   - Receives confirmation events <- `batchwatcher`.
+  - Proto→domain conversion helpers exported in `proto_convert.go` for use by server wiring layer (`server_rounds.go`).
 
 ## Invariants
 

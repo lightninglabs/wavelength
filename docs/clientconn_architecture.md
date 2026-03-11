@@ -500,11 +500,21 @@ The code structure is intentionally parallel:
 > a standalone guide to the dispatch pipeline with tracing instructions and
 > step-by-step wiring details.
 
-The clientconn ingress loop delivers envelopes to handler code via the
-**operator dispatch layer**. Each server-side subsystem (rounds, OOR, indexer)
-provides an **operator** that translates mailbox envelopes into actor messages.
+The clientconn ingress loop delivers envelopes to handler code via two
+dispatch models:
 
-### How Operators Plug In
+1. **EventRouter (fire-and-forget)** — Used by rounds and OOR RPCs.
+   `AddEnvelopeRoute` registers typed dispatch closures that unmarshal the
+   proto, extract transport metadata from the envelope (e.g. client ID from
+   `env.Sender`), convert to a domain actor message, and `Tell` the actor.
+   No response envelope is built; responses arrive asynchronously via the
+   outbox event path.
+
+2. **Operator (request-response)** — Used by the indexer subsystem. An
+   operator dispatches through a `ServeMux`, builds a `KIND_RESPONSE`
+   envelope, and sends it back via `Edge.Send`.
+
+### How Dispatch Sources Plug In
 
 ```mermaid
 flowchart TB
@@ -512,9 +522,8 @@ flowchart TB
         REG["RegisterClientWithAllDispatchers"]
     end
 
-    subgraph "Operators"
-        RO["RoundOperator.Dispatchers()"]
-        OO["OOROperator.Dispatchers()"]
+    subgraph "Dispatch Sources"
+        ER["EventRouter.AsDispatcherMap()<br/>(rounds + OOR routes)"]
         IO["IndexerOperator.Dispatchers()"]
     end
 
@@ -523,29 +532,26 @@ flowchart TB
         DM["DispatcherMap<br/>{Service,Method} → closure"]
     end
 
-    RO -->|merge| REG
-    OO -->|merge| REG
+    ER -->|merge| REG
     IO -->|merge| REG
     REG -->|"PerClientConfig.Dispatchers"| DM
     IL -->|"lookup {Service,Method}"| DM
 ```
 
-When a new client connects, `RegisterClientWithAllDispatchers` calls
-`Dispatchers()` on each active operator and merges the returned
-`DispatcherMap` entries into a single map. This map is installed as
-`PerClientConfig.Dispatchers` on the per-client runtime, where the ingress
-loop uses it to route inbound envelopes.
+When a new client connects, `RegisterClientWithAllDispatchers` merges
+dispatchers from the indexer operator and the shared `EventRouter` into a
+single `DispatcherMap`. This map is installed as `PerClientConfig.Dispatchers`
+on the per-client runtime, where the ingress loop uses it to route inbound
+envelopes.
 
-### End-to-End Request Dispatch
+### End-to-End Request Dispatch (Fire-and-Forget)
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant MB as Mailbox
     participant IL as Ingress Loop
-    participant D as EnvelopeDispatcher
-    participant MX as ServeMux
-    participant H as Typed Handler<br/>(e.g. JoinRound)
+    participant D as EnvelopeDispatcher<br/>(AddEnvelopeRoute)
     participant A as Actor FSM
 
     C->>MB: Send(KIND_REQUEST, service, method, body)
@@ -555,75 +561,48 @@ sequenceDiagram
     IL->>IL: Lookup DispatcherMap[{service, method}]
     IL->>D: dispatcher(ctx, envelope)
 
-    Note over D: 1. Validate envelope structure
-    Note over D: 2. Inject env.Sender as ClientID into ctx
-    D->>MX: ServeRPC(service, method, body_bytes)
+    Note over D: 1. Unmarshal body → typed proto
+    Note over D: 2. Adapt(env, proto) → actor msg
+    Note over D: (extracts ClientID from env.Sender)
 
-    Note over MX: Deserialize body_bytes into<br/>typed proto request via<br/>registered handler
+    D->>A: Tell(actorMsg) — durable commit
+    A-->>D: nil (committed)
 
-    MX->>H: JoinRound(ctx, *JoinRoundRequest)
-
-    Note over H: 1. Extract ClientID from ctx
-    Note over H: 2. Convert proto → domain types
-    Note over H: 3. Build actor message
-
-    H->>A: Tell/Ask(actorMsg)
-    A-->>H: (ack or response)
-    H-->>MX: (*JoinRoundResponse, error)
-    MX-->>D: (proto.Message, error)
-
-    Note over D: Build KIND_RESPONSE envelope<br/>with CorrelationId + error headers
-    D->>MB: Edge.Send(response envelope)
-    MB-->>C: Client receives response
+    Note over A: Actor processes event,<br/>emits outbox response<br/>via bridge → client
 ```
 
-### Operator Anatomy
+### EventRouter Route Registration
 
-Each operator follows the same structure:
+Fire-and-forget routes are registered using `clientconn.AddEnvelopeRoute`
+during subsystem setup. Each route specifies:
 
-1. **Config struct** — Holds dependencies (Edge client, actor ref, sender
-   mailbox ID).
+- **Service/Method** — The protobuf service and method name for routing.
+- **NewEvent** — Factory for the expected proto type (unmarshal target).
+- **Key** — The `ServiceKey` for resolving the target actor.
+- **Adapt** — Closure that receives the full envelope and deserialized proto,
+  extracts transport metadata (e.g. `ClientID` from `env.Sender`), converts
+  proto to domain types, and returns the actor message.
 
-2. **Constructor** — Creates a `ServeMux`, registers the operator as a
-   mailbox server via the generated `Register*MailboxServer(mux, op)` call,
-   and returns the operator.
+### Operator Pattern (Indexer)
 
-3. **`Dispatchers()` method** — Returns a `DispatcherMap` with one entry per
-   RPC method. Each entry is an `EnvelopeDispatcher` closure from
-   `makeDispatcher`.
+The indexer subsystem uses the operator pattern for synchronous
+request-response RPCs:
 
-4. **`makeDispatcher` closure** — The adapter between raw envelopes and the
-   ServeMux. It validates the envelope, injects the client ID into context,
-   calls `ServeMux.ServeRPC`, builds the response envelope, and sends it
-   via `Edge.Send`.
+1. **Config struct** — Holds dependencies (Edge client, sender mailbox ID).
+2. **Constructor** — Creates a `ServeMux` and registers via
+   `Register*MailboxServer(mux, op)`.
+3. **`Dispatchers()`** — Returns a `DispatcherMap` from `makeDispatcher`.
+4. **`makeDispatcher`** — Validates envelope, injects client ID, calls
+   `ServeMux.ServeRPC`, builds response envelope, sends via `Edge.Send`.
+5. **Typed handlers** — Convert proto to domain types and call the service.
 
-5. **Typed handler methods** — Implement the generated mailbox server
-   interface (e.g. `RoundServiceMailboxServer`). Each method receives a
-   typed proto request, converts it to domain types, and forwards to the
-   actor.
+### Currently Registered Routes
 
-### Registration (Generated Code)
-
-The `protoc-gen-mailboxrpc` plugin generates two artifacts per `.proto`
-service:
-
-- **`*MailboxClient`** — Client-side typed RPC caller (used by
-  `darepo-client`).
-- **`*MailboxServer` interface + `Register*MailboxServer`** — Server-side
-  handler interface and registration function (used here).
-
-`Register*MailboxServer(mux, handler)` registers typed deserialization
-closures on the `ServeMux`. When `ServeRPC` is called with a
-`(service, method, []byte)` triple, the mux deserializes the bytes into
-the correct proto type and invokes the handler method.
-
-### Currently Registered Operators
-
-| Operator | Service Name | Methods | Actor |
-|----------|-------------|---------|-------|
-| `RoundOperator` | `roundpb.RoundService` | `JoinRound`, `SubmitNonces`, `SubmitPartialSigs`, `SubmitForfeitSigs`, `SubmitVTXOForfeitSigs` | Rounds Actor |
-| `OOROperator` | `oorpb.OORMailboxService` | `SubmitPackage`, `FinalizePackage` | OOR Actor |
-| `IndexerOperator` | `arkrpc.IndexerService` | (event publication + queries) | Indexer Service |
+| Dispatch Model | Service Name | Methods | Actor |
+|----------------|-------------|---------|-------|
+| `AddEnvelopeRoute` | `round.v1.RoundService` | `JoinRound`, `SubmitNonces`, `SubmitPartialSigs`, `SubmitForfeitSigs`, `SubmitVTXOForfeitSigs` | Rounds Actor via `Tell` |
+| `AddEnvelopeRoute` | `oorpb.OORMailboxService` | `SubmitPackage`, `FinalizePackage` | OOR Actor via `Tell` |
+| Operator (ServeMux) | `arkrpc.IndexerService` | (event publication + queries) | Indexer Service (direct) |
 
 ## Extension Points
 
