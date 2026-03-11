@@ -97,8 +97,6 @@ type RoundsConfig struct {
 
 	// BoardingExitDelaySafetyMargin is how many blocks before the
 	// exit delay we stop accepting boarding inputs.
-	// BoardingExitDelaySafetyMargin is how many blocks before the
-	// exit delay we stop accepting boarding inputs.
 	BoardingExitDelaySafetyMargin uint32 `mapstructure:"boardingexitdelaymargin"` //nolint:ll
 
 	// MinBoardingConfirmations is the minimum confirmation count
