@@ -117,6 +117,12 @@ type ActorConfig struct {
 	// DisableJoinRequestAuth skips join-request BIP-322 validation.
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
+
+	// ShouldSeal is an optional predicate evaluated after each
+	// successful client join. When it returns true the round is
+	// sealed immediately without waiting for the registration
+	// timeout. A nil predicate is equivalent to "never seal early".
+	ShouldSeal SealPredicate
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -358,6 +364,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		VTXOLocker:             a.cfg.VTXOLocker,
 		StartHeight:            startHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
+		ShouldSeal:             a.cfg.ShouldSeal,
 	}
 
 	fsmCfg := StateMachineCfg{

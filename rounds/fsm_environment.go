@@ -83,6 +83,12 @@ type Environment struct {
 	// DisableJoinRequestAuth skips join-request BIP-322 validation.
 	// This should only be enabled in focused unit tests.
 	DisableJoinRequestAuth bool
+
+	// ShouldSeal is an optional predicate evaluated after each
+	// successful client join. When it returns true the round is
+	// sealed immediately without waiting for the registration
+	// timeout. A nil predicate is equivalent to "never seal early".
+	ShouldSeal SealPredicate
 }
 
 // Name returns the unique identifier for this FSM instance.

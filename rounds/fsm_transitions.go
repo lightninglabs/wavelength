@@ -503,6 +503,31 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 
 		outbox := []OutboxEvent{successResp}
 
+		// Evaluate the seal predicate. If it fires, seal the
+		// round immediately instead of waiting for the
+		// registration timeout.
+		if env.ShouldSeal != nil &&
+			env.ShouldSeal(newState.ClientRegistrations) {
+
+			env.Log.InfoS(ctx,
+				"Seal predicate triggered, sealing round",
+				LogClientCount(newClientCount))
+
+			outbox = append(outbox, &RoundSealedReq{
+				SealedRoundID: env.RoundID,
+			})
+
+			return &StateTransition{
+				NextState: newState,
+				NewEvents: fn.Some(EmittedEvent{
+					Outbox: outbox,
+					InternalEvent: []Event{
+						&SealEvent{},
+					},
+				}),
+			}, nil
+		}
+
 		return &StateTransition{
 			NextState: newState,
 			NewEvents: fn.Some(EmittedEvent{
