@@ -729,12 +729,13 @@ CREATE TABLE vtxos (
 
     -- status tracks VTXO lifecycle (vtxo.VTXOStatus enum):
     --   0 = Live (default)
-    --   1 = RefreshRequested
+    --   1 = PendingForfeit
     --   2 = Forfeiting
     --   3 = Forfeited
     --   4 = Spent
-    --   5 = Expiring
+    --   5 = UnilateralExit
     --   6 = Failed
+    --   7 = Spending
     status INTEGER NOT NULL DEFAULT 0,
 
     -- forfeit_round_id is the round in which this VTXO is being forfeited.

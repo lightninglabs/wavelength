@@ -41,6 +41,16 @@ func TestStateProperties(t *testing.T) {
 			isTerminal: false,
 		},
 		{
+			name:       "SpendingState",
+			state:      &SpendingState{VTXO: vtxo},
+			isTerminal: false,
+		},
+		{
+			name:       "SpentState",
+			state:      &SpentState{VTXO: vtxo},
+			isTerminal: true,
+		},
+		{
 			name:       "ForfeitedState",
 			state:      &ForfeitedState{VTXO: vtxo},
 			isTerminal: true,
@@ -357,6 +367,7 @@ func TestTerminalStatesSelfLoop(t *testing.T) {
 	vtxo := h.newTestDescriptor()
 
 	terminalStates := []VTXOState{
+		&SpentState{VTXO: vtxo},
 		&ForfeitedState{VTXO: vtxo},
 		&UnilateralExitState{VTXO: vtxo},
 		&FailedState{VTXO: vtxo, Reason: "test"},
@@ -772,6 +783,290 @@ func TestForfeitConfirmedEventIncludesForfeitTx(t *testing.T) {
 	require.NotNil(t, statusUpdate.ForfeitTx,
 		"VTXOStatusUpdate should include ForfeitTx for persistence")
 	require.Equal(t, forfeitTx, statusUpdate.ForfeitTx)
+}
+
+// =============================================================================
+// Spend reservation and release tests
+// =============================================================================
+
+// TestSpendReserveFromLiveState verifies that LiveState transitions to
+// SpendingState on SpendReserveEvent.
+func TestSpendReserveFromLiveState(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusSpending,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.SpendReserveEvent{})
+	require.NoError(t, err)
+
+	state := assertState[*SpendingState](h)
+	require.Equal(t, vtxo, state.VTXO)
+	require.Equal(t, int32(100), state.LastCheckedHeight)
+
+	// Should emit VTXOStatusUpdate with Spending status.
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusSpending, su.NewStatus)
+}
+
+// TestSpendReserveRejectedFromPendingForfeit verifies that PendingForfeitState
+// rejects SpendReserveEvent — a VTXO committed to cooperative consumption
+// cannot be claimed for OOR spending.
+func TestSpendReserveRejectedFromPendingForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&PendingForfeitState{
+		VTXO:              vtxo,
+		RequestedAtHeight: 800,
+	})
+
+	_, err := h.sendEvent(&round.SpendReserveEvent{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot reserve for spend")
+}
+
+// TestSpendReserveRejectedFromSpending verifies that SpendingState rejects
+// duplicate SpendReserveEvent.
+func TestSpendReserveRejectedFromSpending(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	_, err := h.sendEvent(&round.SpendReserveEvent{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already reserved for spend")
+}
+
+// TestSpendReleasedFromSpendingState verifies that SpendingState transitions
+// back to LiveState on SpendReleasedEvent.
+func TestSpendReleasedFromSpendingState(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 200,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.SpendReleasedEvent{})
+	require.NoError(t, err)
+
+	state := assertState[*LiveState](h)
+	require.Equal(t, vtxo, state.VTXO)
+
+	// LastCheckedHeight should be preserved through the release.
+	require.Equal(t, int32(200), state.LastCheckedHeight)
+
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusLive, su.NewStatus)
+}
+
+// TestSpendCompletedFromSpendingState verifies that SpendingState transitions
+// to terminal SpentState on SpendCompletedEvent.
+func TestSpendCompletedFromSpendingState(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 200,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusSpent,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.SpendCompletedEvent{})
+	require.NoError(t, err)
+
+	state := assertState[*SpentState](h)
+	require.Equal(t, vtxo, state.VTXO)
+	require.True(t, state.IsTerminal())
+
+	// Should emit status update and termination notification.
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusSpent, su.NewStatus)
+
+	tn := assertOutboxContains[*VTXOTerminatedNotification](h)
+	require.Equal(t, "Spent", tn.FinalState)
+}
+
+// TestSpendingStateCriticalExpiry verifies that SpendingState transitions to
+// UnilateralExitState if critical expiry is reached while the VTXO is reserved
+// for an OOR spend. Safety must win over the pending spend.
+func TestSpendingStateCriticalExpiry(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.BatchExpiry = 1000
+
+	h.withExpiryConfig(&ExpiryConfig{
+		RefreshThresholdBlocks:  200,
+		CriticalThresholdBlocks: 50,
+		TreeDepthMultiplier:     1,
+	})
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	// Block height within critical threshold.
+	evt := h.newBlockEpochEvent(970)
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil)
+
+	_, err := h.sendEvent(evt)
+	require.NoError(t, err)
+
+	assertState[*UnilateralExitState](h)
+	assertOutboxContains[*ExpiringNotification](h)
+	assertOutboxContains[*VTXOTerminatedNotification](h)
+}
+
+// TestSpendingStateSafeBlockEpoch verifies that SpendingState stays in
+// SpendingState when expiry is safe and updates LastCheckedHeight.
+func TestSpendingStateSafeBlockEpoch(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.BatchExpiry = 1000
+	vtxo.CreatedHeight = 100
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	evt := h.newBlockEpochEvent(200)
+	_, err := h.sendEvent(evt)
+	require.NoError(t, err)
+
+	state := assertState[*SpendingState](h)
+	require.Equal(t, int32(200), state.LastCheckedHeight)
+	require.Empty(t, h.outboxMessages)
+}
+
+// TestPendingForfeitRejectedFromSpending verifies that SpendingState rejects
+// PendingForfeitEvent — a VTXO reserved for OOR spend cannot be claimed for
+// cooperative forfeit.
+func TestPendingForfeitRejectedFromSpending(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	_, err := h.sendEvent(&round.PendingForfeitEvent{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot accept pending forfeit")
+}
+
+// TestForfeitReleasedFromPendingForfeit verifies that PendingForfeitState
+// transitions back to LiveState on ForfeitReleasedEvent.
+func TestForfeitReleasedFromPendingForfeit(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&PendingForfeitState{
+		VTXO:              vtxo,
+		RequestedAtHeight: 800,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint, VTXOStatusLive,
+	).Return(nil)
+
+	_, err := h.sendEvent(&round.ForfeitReleasedEvent{})
+	require.NoError(t, err)
+
+	state := assertState[*LiveState](h)
+	require.Equal(t, vtxo, state.VTXO)
+
+	su := assertOutboxContains[*VTXOStatusUpdate](h)
+	require.Equal(t, VTXOStatusLive, su.NewStatus)
+}
+
+// TestSpendingStateResumeStaysInSpending verifies that SpendingState stays in
+// SpendingState on ResumeVTXOEvent. The OOR session will resume and later
+// release or complete the claim.
+func TestSpendingStateResumeStaysInSpending(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 200,
+	})
+
+	_, err := h.sendEvent(&round.ResumeVTXOEvent{})
+	require.NoError(t, err)
+
+	assertState[*SpendingState](h)
+	require.Empty(t, h.outboxMessages)
+}
+
+// TestSpendingStateFailedEvent verifies that SpendingState transitions to
+// FailedState on VTXOFailedEvent.
+func TestSpendingStateFailedEvent(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 200,
+	})
+
+	_, err := h.sendEvent(&round.VTXOFailedEvent{
+		Reason:      "test failure",
+		Recoverable: false,
+	})
+	require.NoError(t, err)
+
+	state := assertState[*FailedState](h)
+	require.Equal(t, "test failure", state.Reason)
 }
 
 // TestForfeitSignatureValidity verifies that forfeit signatures produced by

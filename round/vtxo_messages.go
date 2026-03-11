@@ -109,6 +109,68 @@ func (e *ForfeitConfirmedEvent) MessageType() string {
 }
 
 // =============================================================================
+// Spend reservation events (sent by VTXO manager on behalf of wallet)
+// =============================================================================
+
+// SpendReserveEvent claims a VTXO for an out-of-round (OOR) spend. Only valid
+// from LiveState. The VTXO becomes unavailable for cooperative forfeit until
+// the spend completes (SpendCompletedEvent) or is released
+// (SpendReleasedEvent).
+type SpendReserveEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *SpendReserveEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *SpendReserveEvent) MessageType() string { return "SpendReserveEvent" }
+
+// SpendReleasedEvent releases a VTXO from spend reservation back to LiveState.
+// This is used when the OOR operation fails or is cancelled after the VTXO was
+// reserved.
+type SpendReleasedEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *SpendReleasedEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *SpendReleasedEvent) MessageType() string {
+	return "SpendReleasedEvent"
+}
+
+// SpendCompletedEvent marks a VTXO as fully spent via an OOR transaction. This
+// transitions the VTXO from SpendingState to terminal SpentState.
+type SpendCompletedEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *SpendCompletedEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *SpendCompletedEvent) MessageType() string {
+	return "SpendCompletedEvent"
+}
+
+// ForfeitReleasedEvent releases a VTXO from pending forfeit back to LiveState.
+// This is used when cooperative round registration fails after the VTXO was
+// admitted for forfeiture.
+type ForfeitReleasedEvent struct {
+	actor.BaseMessage
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *ForfeitReleasedEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *ForfeitReleasedEvent) MessageType() string {
+	return "ForfeitReleasedEvent"
+}
+
+// =============================================================================
 // Internal VTXO actor events (not sent by round actor)
 // =============================================================================
 

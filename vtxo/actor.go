@@ -375,6 +375,12 @@ func statusToState(
 			LastCheckedHeight: vtxo.CreatedHeight,
 		}
 
+	case VTXOStatusSpending:
+		return &SpendingState{
+			VTXO:              vtxo,
+			LastCheckedHeight: vtxo.CreatedHeight,
+		}
+
 	case VTXOStatusPendingForfeit:
 		return &PendingForfeitState{VTXO: vtxo, RequestedAtHeight: 0}
 
@@ -400,6 +406,9 @@ func statusToState(
 
 	case VTXOStatusForfeited:
 		return &ForfeitedState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
+
+	case VTXOStatusSpent:
+		return &SpentState{VTXO: vtxo}
 
 	case VTXOStatusUnilateralExit:
 		return &UnilateralExitState{
