@@ -380,7 +380,7 @@ func (m *mockTimeoutActor) assertTimeoutCancelled(t *testing.T, id timeout.ID) {
 }
 
 // mockVTXOManagerRef captures messages sent to the VTXO manager for test
-// verification, implementing actor.TellOnlyRef[actor.Message].
+// verification, implementing actor.TellOnlyRef[VTXOManagerMsg].
 type mockVTXOManagerRef struct {
 	t        *testing.T
 	id       string
@@ -400,7 +400,9 @@ func (m *mockVTXOManagerRef) ID() string {
 	return m.id
 }
 
-func (m *mockVTXOManagerRef) Tell(_ context.Context, msg actor.Message) error {
+func (m *mockVTXOManagerRef) Tell(_ context.Context,
+	msg VTXOManagerMsg) error {
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)

@@ -38,6 +38,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	lndbuild "github.com/lightningnetwork/lnd/build"
@@ -766,18 +767,34 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	s.walletRef = fn.Some(walletRef)
 
 	// -------------------------------------------------------
-	// 10. Register the round client actor.
+	// 10. Start the VTXO manager before the round actor so
+	//     the manager ref can be passed directly in the round
+	//     config, avoiding a post-Start mutation.
 	// -------------------------------------------------------
-	if err := s.initRoundActor(
+	vtxoManagerRef, err := s.initVTXOManager(ctx, chainSourceRef)
+	if err != nil {
+		return err
+	}
+
+	roundVTXOManager := actor.NewMapInputRef(
+		vtxoManagerRef, mapRoundVTXOManagerMsg,
+	)
+
+	// -------------------------------------------------------
+	// 11. Register the round client actor.
+	// -------------------------------------------------------
+	_, err = s.initRoundActor(
 		ctx, chainSourceRef, walletRef, timeoutRef,
-	); err != nil {
+		roundVTXOManager,
+	)
+	if err != nil {
 		return err
 	}
 
 	// -------------------------------------------------------
-	// 11. Register the OOR client actor.
+	// 12. Register the OOR client actor.
 	// -------------------------------------------------------
-	if err := s.initOORActor(ctx); err != nil {
+	if err := s.initOORActor(ctx, vtxoManagerRef); err != nil {
 		return err
 	}
 
@@ -1514,7 +1531,9 @@ func (s *Server) initRoundActor(ctx context.Context,
 	walletRef actor.ActorRef[
 		wallet.WalletMsg, wallet.WalletResp,
 	],
-	timeoutRef actor.TellOnlyRef[timeout.Msg]) error {
+	timeoutRef actor.TellOnlyRef[timeout.Msg],
+	vtxoManager actor.TellOnlyRef[round.VTXOManagerMsg],
+) (*round.RoundClientActor, error) {
 
 	// Select the client wallet (signing) backend based on
 	// wallet type. In lnd mode, signing goes through lnd's
@@ -1545,7 +1564,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 	// and other round parameters.
 	operatorTerms, err := s.fetchOperatorTerms(ctx)
 	if err != nil {
-		return fmt.Errorf("unable to fetch operator "+
+		return nil, fmt.Errorf("unable to fetch operator "+
 			"terms: %w", err)
 	}
 
@@ -1569,6 +1588,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ActorSystem:    s.actorSystem,
 		TimeoutActor:   timeoutRef,
 		MaxOperatorFee: defaultMaxOperatorFee,
+		VTXOManager:    vtxoManager,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}
@@ -1577,7 +1597,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		roundCfg,
 	).Unpack()
 	if err != nil {
-		return fmt.Errorf("unable to create round "+
+		return nil, fmt.Errorf("unable to create round "+
 			"actor: %w", err)
 	}
 
@@ -1593,13 +1613,71 @@ func (s *Server) initRoundActor(ctx context.Context,
 	roundCfg.SelfRef = roundRef
 
 	if err := roundActor.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start round "+
+		return nil, fmt.Errorf("unable to start round "+
 			"actor: %w", err)
 	}
 
 	log.InfoS(ctx, "Round actor registered and started")
 
-	return nil
+	return roundActor, nil
+}
+
+// initVTXOManager creates, registers, and starts the VTXO manager actor.
+// The manager recovers persisted VTXOs on startup and spawns one VTXO actor
+// per live descriptor.
+func (s *Server) initVTXOManager(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	],
+) (actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp], error) {
+
+	var vtxoWallet vtxo.VTXOWallet
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		vtxoWallet = lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+
+	case WalletTypeLwwallet:
+		vtxoWallet = s.lwWallet.UnsafeFromSome()
+	}
+
+	clk := clock.NewDefaultClock()
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	vtxoStore := dbStore.NewVTXOStore(clk)
+
+	manager := vtxo.NewManager(&vtxo.ManagerConfig{
+		Store:       vtxoStore,
+		Wallet:      vtxoWallet,
+		ChainSource: chainSourceRef,
+		ActorSystem: s.actorSystem,
+		ChainParams: s.chainParams,
+		Log:         fn.Some(log),
+		RoundActor:  round.NewServiceKey().Ref(s.actorSystem),
+	})
+
+	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
+		"vtxo-manager",
+	)
+	managerRef := actor.RegisterWithSystem(
+		s.actorSystem, "vtxo-manager", managerKey, manager,
+	)
+
+	err := manager.Start(ctx, managerRef)
+	if err != nil {
+		s.actorSystem.StopAndRemoveActor("vtxo-manager")
+
+		var zero actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+
+		return zero, fmt.Errorf("unable to start vtxo manager: %w", err)
+	}
+
+	log.InfoS(ctx, "VTXO manager registered and started")
+
+	return managerRef, nil
 }
 
 // initOORActor creates and starts the OOR (out-of-round) client actor.
@@ -1615,7 +1693,9 @@ func (s *Server) initRoundActor(ctx context.Context,
 //     incoming VTXOs, handles incoming ack.
 //   - SigningOutboxHandler (Next delegate): signs Ark and checkpoint
 //     PSBTs, schedules retries.
-func (s *Server) initOORActor(ctx context.Context) error {
+func (s *Server) initOORActor(ctx context.Context,
+	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
+
 	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
@@ -1663,6 +1743,7 @@ func (s *Server) initOORActor(ctx context.Context) error {
 		DeliveryStore: s.deliveryStore,
 		ActorSystem:   s.actorSystem,
 		ActorID:       oor.OORActorServiceKeyName,
+		VTXOManager:   vtxoManagerRef,
 	})
 
 	// Wire the timeout callback ref using the registered service
@@ -1680,6 +1761,17 @@ func (s *Server) initOORActor(ctx context.Context) error {
 	log.InfoS(ctx, "OOR client actor started")
 
 	return nil
+}
+
+// mapRoundVTXOManagerMsg adapts round-owned manager notifications into the
+// concrete message type accepted by the VTXO manager actor.
+func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
+	mapped, ok := msg.(vtxo.ManagerMsg)
+	if !ok {
+		panic(fmt.Sprintf("unexpected VTXO manager msg type: %T", msg))
+	}
+
+	return mapped
 }
 
 // fetchOperatorTerms retrieves the operator's terms from the Ark
