@@ -35,6 +35,8 @@ type (
 	envelopeRecordTLV     = tlv.TlvType2
 	msgIDRecordTLV        = tlv.TlvType3
 	idempotencyRecordTLV  = tlv.TlvType4
+	rpcServiceRecordTLV   = tlv.TlvType5
+	rpcMethodRecordTLV    = tlv.TlvType6
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -45,6 +47,21 @@ type ServerMessage interface {
 	// sent over gRPC. An error is returned if serialization of any
 	// embedded field (e.g. signatures, transactions) fails.
 	ToProto() fn.Result[proto.Message]
+}
+
+// RpcRouted is an optional interface that ServerMessage implementations can
+// satisfy to provide mailbox routing metadata (service + method). When the
+// serverconn actor builds the outbound envelope, it checks for this interface
+// and populates the RpcMeta.Service and RpcMeta.Method fields. Without
+// routing metadata the operator's clientconn ingress loop cannot dispatch
+// the envelope to the correct handler.
+type RpcRouted interface {
+	// RpcService returns the fully-qualified protobuf service name
+	// (e.g. "round.v1.RoundService").
+	RpcService() string
+
+	// RpcMethod returns the RPC method name (e.g. "JoinRound").
+	RpcMethod() string
 }
 
 // InboundServerMessage is implemented by actor messages that arrive from the
@@ -117,6 +134,16 @@ type SendClientEventRequest struct {
 	// IdempotencyKey identifies the semantic operation for remote dedupe.
 	// Retries of the same persisted request must reuse this key.
 	IdempotencyKey string
+
+	// Service is the fully-qualified protobuf service name for mailbox
+	// routing (e.g. "round.v1.RoundService"). Set from the RpcRouted
+	// interface when available, persisted in TLV for crash-safe replay.
+	Service string
+
+	// Method is the RPC method name for mailbox routing (e.g.
+	// "JoinRound"). Set from the RpcRouted interface when available,
+	// persisted in TLV for crash-safe replay.
+	Method string
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -181,9 +208,17 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
 		idempotencyBytes,
 	)
+	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
+		[]byte(m.Service),
+	)
+	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
+		[]byte(m.Method),
+	)
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		payload.Record(), msgIDRec.Record(),
+		idemRec.Record(), svcRec.Record(),
+		methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -204,9 +239,13 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 
 	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
 	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
+	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
+	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
-		payload.Record(), msgIDRec.Record(), idemRec.Record(),
+		payload.Record(), msgIDRec.Record(),
+		idemRec.Record(), svcRec.Record(),
+		methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -219,6 +258,8 @@ func (m *SendClientEventRequest) Decode(r io.Reader) error {
 	m.Message = &rawServerMessage{anyMsg: payload.Val.Val}
 	m.MsgID = string(msgIDRec.Val)
 	m.IdempotencyKey = string(idemRec.Val)
+	m.Service = string(svcRec.Val)
+	m.Method = string(methodRec.Val)
 
 	return nil
 }
@@ -454,6 +495,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+			Service: req.Service,
+			Method:  req.Method,
 			ReplyTo: a.cfg.LocalMailboxID,
 		},
 	}

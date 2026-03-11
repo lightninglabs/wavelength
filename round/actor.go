@@ -1415,6 +1415,16 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			sendReq := &serverconn.SendClientEventRequest{
 				Message: serverMsg,
 			}
+
+			// Extract mailbox routing metadata if the message
+			// declares its target service and method. Without
+			// this the operator's clientconn ingress cannot
+			// dispatch the envelope to the correct handler.
+			if routed, ok := msg.(serverconn.RpcRouted); ok {
+				sendReq.Service = routed.RpcService()
+				sendReq.Method = routed.RpcMethod()
+			}
+
 			if err := a.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
 				return fmt.Errorf("send to server: %w", err)
 			}
