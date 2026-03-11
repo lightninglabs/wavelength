@@ -8,7 +8,9 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo/adminrpc"
@@ -55,6 +57,10 @@ func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 		}
 	}
 
+	// TODO(security): Add macaroon-based auth or mTLS before
+	// any non-regtest deployment. The admin server currently
+	// binds to localhost with no authentication — any local
+	// process can call TriggerBatch, enumerate VTXOs, etc.
 	s := &AdminRPCServer{
 		cfg:        cfg,
 		server:     operator,
@@ -104,7 +110,23 @@ func (a *AdminRPCServer) Stop(ctx context.Context) error {
 	a.log.InfoS(ctx, "Stopping admin RPC server")
 
 	close(a.quit)
-	a.grpcServer.Stop()
+
+	// Attempt a graceful shutdown so in-flight RPCs can
+	// complete. Fall back to a hard stop after 5 seconds to
+	// avoid blocking shutdown indefinitely.
+	done := make(chan struct{})
+	go func() {
+		a.grpcServer.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+
+	case <-time.After(5 * time.Second):
+		a.grpcServer.Stop()
+	}
+
 	a.wg.Wait()
 
 	return nil
@@ -219,7 +241,12 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 	)
 
 	if req.StatusFilter != unspecified {
-		statusStr := mapRoundStatusToDBStr(req.StatusFilter)
+		statusStr, err := mapRoundStatusToDBStr(
+			req.StatusFilter,
+		)
+		if err != nil {
+			return nil, err
+		}
 
 		dbRounds, err = q.ListRoundsByStatus(
 			ctx, sqlc.ListRoundsByStatusParams{
@@ -284,7 +311,9 @@ func (a *AdminRPCServer) ListRounds(ctx context.Context,
 	}, nil
 }
 
-// ListVTXOs returns VTXOs with optional status filtering.
+// ListVTXOs returns VTXOs with optional status filtering. Pagination
+// is performed server-side in the database via LIMIT/OFFSET,
+// matching the ListRounds pattern.
 func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 	req *adminrpc.ListVTXOsRequest) (
 	*adminrpc.ListVTXOsResponse, error) {
@@ -295,64 +324,95 @@ func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 
 	q := a.server.db.Queries
 
-	// If a status filter is specified, use ListVTXOsByStatus.
-	// Otherwise we'd need a ListAllVTXOs query which doesn't
-	// exist yet. For now, default to "live" status.
-	statusStr := "live"
-	if len(req.StatusFilter) > 0 {
-		statusStr = mapVTXOStatusToDBStr(req.StatusFilter[0])
-	}
-
-	dbVTXOs, err := q.ListVTXOsByStatus(ctx, statusStr)
-	if err != nil {
-		return nil, fmt.Errorf("list vtxos: %w", err)
-	}
-
-	limit := int(req.Limit)
+	limit := int32(req.Limit)
 	if limit == 0 {
 		limit = 100
 	}
+	offset := int32(req.Cursor)
 
-	// Apply cursor-based pagination (cursor = index offset).
-	start := int(req.Cursor)
-	if start >= len(dbVTXOs) {
-		return &adminrpc.ListVTXOsResponse{}, nil
-	}
-	end := start + limit
-	if end > len(dbVTXOs) {
-		end = len(dbVTXOs)
-	}
-
-	page := dbVTXOs[start:end]
-	summaries := make([]*adminrpc.VTXOSummary, 0, len(page))
-
-	for _, v := range page {
-		outpointHash := hex.EncodeToString(v.OutpointHash)
-		outpoint := fmt.Sprintf(
-			"%s:%d", outpointHash, v.OutpointIndex,
-		)
-
-		roundID := ""
-		if len(v.RoundID) > 0 {
-			if rid, err := uuid.FromBytes(
-				v.RoundID,
-			); err == nil {
-				roundID = rid.String()
-			}
+	// Convert all requested status filters to DB strings. When
+	// multiple statuses are provided, we query each and merge.
+	var statusFilters []string
+	for _, sf := range req.StatusFilter {
+		s, err := mapVTXOStatusToDBStr(sf)
+		if err != nil {
+			return nil, err
 		}
 
-		summaries = append(summaries, &adminrpc.VTXOSummary{
-			Outpoint:    outpoint,
-			ValueSat:    v.Amount,
-			Status:      mapDBVTXOStatus(v.Status),
-			RoundId:     roundID,
-			PkScriptHex: hex.EncodeToString(v.PkScript),
-		})
+		statusFilters = append(statusFilters, s)
+	}
+
+	var (
+		dbVTXOs []sqlc.Vtxo
+		err     error
+	)
+
+	switch {
+	case len(statusFilters) == 1:
+		// Single status filter: use the paginated query
+		// directly.
+		dbVTXOs, err = q.ListVTXOsByStatusPaged(
+			ctx, sqlc.ListVTXOsByStatusPagedParams{
+				Status: statusFilters[0],
+				Limit:  limit,
+				Offset: offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list vtxos: %w", err,
+			)
+		}
+
+	case len(statusFilters) > 1:
+		// Multiple status filters: query each status and
+		// merge. Pagination is approximate across statuses.
+		for _, sf := range statusFilters {
+			rows, qErr := q.ListVTXOsByStatusPaged(
+				ctx,
+				sqlc.ListVTXOsByStatusPagedParams{
+					Status: sf,
+					Limit:  limit,
+					Offset: offset,
+				},
+			)
+			if qErr != nil {
+				return nil, fmt.Errorf(
+					"list vtxos (%s): %w",
+					sf, qErr,
+				)
+			}
+
+			dbVTXOs = append(dbVTXOs, rows...)
+		}
+
+	default:
+		// No filter: list all VTXOs.
+		dbVTXOs, err = q.ListAllVTXOsPaged(
+			ctx, sqlc.ListAllVTXOsPagedParams{
+				Limit:  limit,
+				Offset: offset,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"list all vtxos: %w", err,
+			)
+		}
+	}
+
+	summaries := make(
+		[]*adminrpc.VTXOSummary, 0, len(dbVTXOs),
+	)
+	for _, v := range dbVTXOs {
+		summaries = append(
+			summaries, vtxoToSummary(v),
+		)
 	}
 
 	var nextCursor uint64
-	if end < len(dbVTXOs) {
-		nextCursor = uint64(end)
+	if int32(len(dbVTXOs)) >= limit {
+		nextCursor = uint64(offset + limit)
 	}
 
 	return &adminrpc.ListVTXOsResponse{
@@ -361,7 +421,37 @@ func (a *AdminRPCServer) ListVTXOs(ctx context.Context,
 	}, nil
 }
 
-// GetVTXOStats returns aggregate VTXO statistics.
+// vtxoToSummary converts a database VTXO row to a proto summary.
+func vtxoToSummary(v sqlc.Vtxo) *adminrpc.VTXOSummary {
+	// Use chainhash.Hash to reverse the byte order for
+	// display, matching Bitcoin's standard txid format shown
+	// in block explorers.
+	var txHash chainhash.Hash
+	copy(txHash[:], v.OutpointHash)
+	outpoint := fmt.Sprintf(
+		"%s:%d", txHash.String(), v.OutpointIndex,
+	)
+
+	roundID := ""
+	if len(v.RoundID) > 0 {
+		if rid, err := uuid.FromBytes(
+			v.RoundID,
+		); err == nil {
+			roundID = rid.String()
+		}
+	}
+
+	return &adminrpc.VTXOSummary{
+		Outpoint:    outpoint,
+		ValueSat:    v.Amount,
+		Status:      mapDBVTXOStatus(v.Status),
+		RoundId:     roundID,
+		PkScriptHex: hex.EncodeToString(v.PkScript),
+	}
+}
+
+// GetVTXOStats returns aggregate VTXO statistics using a single SQL
+// GROUP BY query instead of loading all rows into memory.
 func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
 	_ *adminrpc.GetVTXOStatsRequest) (
 	*adminrpc.GetVTXOStatsResponse, error) {
@@ -372,8 +462,13 @@ func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
 
 	q := a.server.db.Queries
 
-	// Compute stats by querying each status. A future iteration
-	// should use a single aggregate SQL query.
+	rows, err := q.GetVTXOStatsByStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get vtxo stats: %w", err,
+		)
+	}
+
 	var (
 		total    uint32
 		pending  uint32
@@ -382,28 +477,22 @@ func (a *AdminRPCServer) GetVTXOStats(ctx context.Context,
 		valueSat int64
 	)
 
-	for _, status := range []string{
-		"pending", "live", "forfeited",
-	} {
-		vtxos, err := q.ListVTXOsByStatus(ctx, status)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"list vtxos (%s): %w", status, err,
-			)
-		}
-
-		count := uint32(len(vtxos))
+	for _, row := range rows {
+		count := uint32(row.Count)
 		total += count
 
-		switch status {
+		// The TotalValue column uses COALESCE so it is
+		// never nil, but sqlc maps it to interface{} due
+		// to the aggregate function. Assert to int64.
+		val, _ := row.TotalValue.(int64)
+
+		switch row.Status {
 		case "pending":
 			pending = count
 
 		case "live":
 			live = count
-			for _, v := range vtxos {
-				valueSat += v.Amount
-			}
+			valueSat = val
 
 		case "forfeited":
 			forfeit = count
@@ -472,31 +561,34 @@ func mapDBRoundStatus(status string) adminrpc.RoundStatus {
 }
 
 // mapRoundStatusToDBStr converts a proto round status enum to the DB
-// status string for filtered queries.
+// status string for filtered queries. Returns an error for
+// unrecognized enum values instead of silently defaulting.
 func mapRoundStatusToDBStr(
-	status adminrpc.RoundStatus) string {
+	status adminrpc.RoundStatus) (string, error) {
 
 	switch status {
 	case adminrpc.RoundStatus_ROUND_STATUS_OPEN:
-		return "pending"
+		return "pending", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_SEALED:
-		return "sealed"
+		return "sealed", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_SIGNING:
-		return "signing"
+		return "signing", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_BROADCAST:
-		return "broadcast"
+		return "broadcast", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED:
-		return "confirmed"
+		return "confirmed", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_FAILED:
-		return "failed"
+		return "failed", nil
 
 	default:
-		return "pending"
+		return "", fmt.Errorf(
+			"unknown round status: %v", status,
+		)
 	}
 }
 
@@ -518,21 +610,24 @@ func mapDBVTXOStatus(status string) adminrpc.VTXOStatus {
 }
 
 // mapVTXOStatusToDBStr converts a proto VTXO status enum to the DB
-// status string.
+// status string. Returns an error for unrecognized enum values
+// instead of silently defaulting.
 func mapVTXOStatusToDBStr(
-	status adminrpc.VTXOStatus) string {
+	status adminrpc.VTXOStatus) (string, error) {
 
 	switch status {
 	case adminrpc.VTXOStatus_VTXO_STATUS_PENDING:
-		return "pending"
+		return "pending", nil
 
 	case adminrpc.VTXOStatus_VTXO_STATUS_LIVE:
-		return "live"
+		return "live", nil
 
 	case adminrpc.VTXOStatus_VTXO_STATUS_FORFEITED:
-		return "forfeited"
+		return "forfeited", nil
 
 	default:
-		return "live"
+		return "", fmt.Errorf(
+			"unknown VTXO status: %v", status,
+		)
 	}
 }
