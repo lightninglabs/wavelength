@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"google.golang.org/protobuf/proto"
 )
 
 // setupOORSubsystem initializes the OOR transfer coordinator actor.
@@ -99,23 +102,11 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		return fmt.Errorf("start OOR actor: %w", err)
 	}
 
-	// Create the OOR operator that provides mailbox RPC dispatchers
-	// for the per-client ingress loops. The local mailbox edge
-	// client is shared with other subsystems.
-	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
-	if err != nil {
-		return fmt.Errorf("build OOR edge client: %w", err)
-	}
-
-	s.oorOperator, err = oor.NewOOROperator(
-		oor.OOROperatorConfig{
-			Edge:   edgeClient,
-			OORRef: s.oorRef,
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("create OOR operator: %w", err)
-	}
+	// Register fire-and-forget dispatch routes for OOR RPCs on
+	// the shared event router. Each route deserializes the
+	// envelope body, converts the proto to a domain actor
+	// message, and Tell's the OOR actor.
+	s.registerOORRoutes(oorKey)
 
 	s.log.InfoS(ctx, "OOR subsystem initialized")
 
@@ -132,15 +123,122 @@ func (s *Server) stopOORSubsystem(ctx context.Context) {
 	}
 }
 
-// OORDispatchers returns the OOR operator's DispatcherMap for merging
-// into per-client PerClientConfig.Dispatchers during client
-// registration.
+// registerOORRoutes adds fire-and-forget dispatch routes for OOR
+// RPCs (SubmitPackage, FinalizePackage) to the server's shared
+// EventRouter. Each route deserializes the envelope body, converts
+// the proto to a domain actor message, and Tell's the OOR actor.
 //
-// Returns nil if the OOR subsystem has not been initialized.
-func (s *Server) OORDispatchers() clientconn.DispatcherMap {
-	if s.oorOperator == nil {
-		return nil
-	}
+// OOR RPCs are async: the client submits a request, may go offline,
+// and receives the response later via the outbox event path.
+func (s *Server) registerOORRoutes(
+	oorKey actor.ServiceKey[oor.ActorMsg, oor.ActorResp]) {
 
-	return s.oorOperator.Dispatchers()
+	svc := oorpb.ServiceName
+
+	// SubmitPackage: client submits an OOR transfer package
+	// containing the Ark PSBT, checkpoint PSBTs, and signing
+	// descriptors. OOR messages don't carry a ClientID, so
+	// AddRoute (no envelope access) is used.
+	clientconn.AddRoute(
+		s.eventRouter,
+		clientconn.EventRouteConfig[
+			oor.ActorMsg, oor.ActorResp,
+		]{
+			Service: svc,
+			Method:  "SubmitPackage",
+			NewEvent: func() proto.Message {
+				return &oorpb.SubmitPackageRequest{}
+			},
+			Key: oorKey,
+			Adapt: func(
+				p proto.Message) (
+				oor.ActorMsg, error) {
+
+				req, ok := p.(*oorpb.SubmitPackageRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				arkPSBT, checkpointPSBTs,
+					descs, err :=
+					oorpb.ParseSubmitPackageRequest(
+						req,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse submit package: %w",
+						err,
+					)
+				}
+
+				vtxoDescs := make(
+					[]oor.VTXOSigningDescriptor,
+					len(descs),
+				)
+				for i, d := range descs {
+					vtxoDescs[i] =
+						oor.VTXOSigningDescriptor{
+							Outpoint:  d.Outpoint,
+							OwnerKey:  d.OwnerKey,
+							ExitDelay: d.ExitDelay,
+						}
+				}
+
+				return &oor.SubmitOORRequest{
+					ArkPSBT:                arkPSBT,
+					CheckpointPSBTs:        checkpointPSBTs,
+					VTXOSigningDescriptors: vtxoDescs,
+				}, nil
+			},
+		},
+	)
+
+	// FinalizePackage: client submits final checkpoint
+	// signatures for an existing OOR session.
+	clientconn.AddRoute(
+		s.eventRouter,
+		clientconn.EventRouteConfig[
+			oor.ActorMsg, oor.ActorResp,
+		]{
+			Service: svc,
+			Method:  "FinalizePackage",
+			NewEvent: func() proto.Message {
+				return &oorpb.FinalizePackageRequest{}
+			},
+			Key: oorKey,
+			Adapt: func(
+				p proto.Message) (
+				oor.ActorMsg, error) {
+
+				req, ok := p.(*oorpb.FinalizePackageRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				sessionHash, finalCheckpoints, err :=
+					oorpb.ParseFinalizePackageRequest(
+						req,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse finalize pkg: %w",
+						err,
+					)
+				}
+
+				return &oor.FinalizeOORRequest{
+					SessionID: oor.SessionID(
+						sessionHash,
+					),
+					FinalCheckpointPSBTs: finalCheckpoints,
+				}, nil
+			},
+		},
+	)
 }
