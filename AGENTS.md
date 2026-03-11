@@ -1,240 +1,93 @@
-# Darepo Agent Assistant Guide
+# Darepo Agent Guide
 
-> **IMPORTANT**: For complete style guidelines with detailed examples, see [`docs/development_guidelines.md`](docs/development_guidelines.md). This file provides a quick reference for AI agents.
+This file is a **map**, not a manual. Follow links for details.
 
-## Essential Commands
+## Quick Commands
 
-### Building and Testing
-- `make build` - Compile the project
-- `make tidy-module-check` - Verify module files are tidy
-- `make lint` - Run the linter (must pass before committing)
-- `make fmt` - Format all Go source files
-- `make clean` - Remove build artifacts
+| Command | Purpose |
+|---------|---------|
+| `make build` | Compile the project |
+| `make lint` | Run linter (must pass before committing) |
+| `make fmt` | Format all Go source files |
+| `make unit pkg=<pkg> case=<test>` | Run unit tests |
+| `make unit log="stdlog trace" pkg=<pkg> case=<test>` | Unit tests with debug logs |
+| `make itest icase=<test>` | Integration test |
+| `make tidy-module-check` | Verify module files are tidy |
+| `make rpc` | Regenerate protobuf stubs |
+| `make sqlc` | Regenerate type-safe DB queries |
+| `make ast-lint` | Check ast-grep style rules |
 
-### Code Generation
-- `make rpc` - Install protoc plugins and regenerate Go/Python stubs
-- `make sqlc` - Regenerate type-safe database queries (after schema/query changes)
+## Code Style (Summary)
 
-### Testing Commands
-- Single package: `make unit pkg=<package> case=<test> timeout=5m`
-- Debug with logs: `make unit log="stdlog trace" pkg=<package> case=<test>`
-- Integration test: `make itest icase=$icase`
+- **8-space tabs** (see `.editorconfig`), 80-char line limit (best effort).
+- Every function/method gets a comment starting with its name.
+- Exported identifiers need GoDoc comments wrapped to 80 columns.
+- Organize code into logical stanzas with explanatory comments between them.
+- Function **calls**: closing `)` on its own line when wrapping.
+- Function **definitions**: first param on same line, closing `)` with last param.
+- Structured logging: use `InfoS`/`DebugS`/etc. with static messages and
+  `slog.Int()`/`btclog.Fmt()` key-value pairs. See [`docs/structured-logging.md`](docs/structured-logging.md).
+- `error` log level is **only** for internal bugs, never external triggers.
 
-## Code Style Quick Reference
+Full style guide with examples: [`docs/development_guidelines.md`](docs/development_guidelines.md)
 
-**IMPORTANT**: Editors must be configured with **tab = 8 spaces** for correct formatting.
+## Git Commits
 
-### Function and Method Comments
-- **Every function and method** (including unexported ones) must have a comment
-  starting with the function/method name
-- Comments should explain **how/why**, not just what
-- Use literate programming style—comments should be additive and insightful
-- All exported functions need detailed documentation
+```
+pkg: Short summary in present tense (<=69 chars)
 
-### GoDoc for Exported Identifiers
-- Any exported identifier (type, const, var, func, method) must have a GoDoc
-  comment that starts with the identifier name.
-- Exported struct fields must have a GoDoc comment (GoDoc style, starting with
-  the field name) and wrapped to 80 columns.
-- All GoDoc-style comments must be wrapped to 80 columns.
-
-### Comments for Non-trivial Code
-- Any non-trivial code blocks (multi-step algorithms, subtle invariants,
-  concurrency/locking, retries/idempotency, tricky encodings) must include
-  explanatory comments that describe the “why” and any invariants.
-- These explanatory comments should also be wrapped to 80 columns.
-
-### Code Organization and Spacing
-- 80-character line limit (best effort)
-- Organize code into logical stanzas separated by blank lines
-- Add explanatory comments between stanzas
-- Spacing between switch/select cases
-- When wrapping function calls, put closing paren on its own line with all args on new lines
-- When wrapping function **definitions**, keep the first parameter on the same line as the function name, and the closing `)` on the same line as the last parameter (no trailing comma). This differs from function calls.
-
-```go
-// WRONG: expanded style with dangling close paren
-func foo(
-	arg1 Type1,
-	arg2 Type2,
-) RetType {
-
-// RIGHT: first param on same line, close paren with last param
-func foo(arg1 Type1,
-	arg2 Type2) RetType {
-
-// RIGHT: same rule applies to methods
-func (r *Receiver) bar(ctx context.Context,
-	param Type) error {
+Body wrapped at 72 characters. Explain WHY, not just WHAT.
 ```
 
-### ast-grep for Code Search and Linting
+- Prefix with package name (`db:`, `rpc:`, `multi:` for multiple).
+- Small, atomic commits. Separate bug fixes, refactors, and features.
+- Sign with GPG: `git commit -S -F /path/to/message.txt`
+- Tooling: [`docs/commit-tooling.md`](docs/commit-tooling.md)
 
-This project uses ast-grep (`sg`) for AST-level code search and style enforcement.
+## Critical Rules
 
-**Code Search (prefer over grep for Go patterns):**
-- Use `sg run -p 'pattern' -l go` for structural code search
-- ast-grep understands Go syntax, so `sg run -p 'func $NAME($$$ARGS)' -l go` finds all functions
-- For simple text search, grep is fine; for code patterns, use ast-grep
+1. **Never edit generated code** — regenerate via `make rpc` or `make sqlc`.
+2. **Never write raw SQL in Go** — add queries to `db/queries/`, use sqlc.
+3. **Run `make lint` before every commit.**
+4. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
+5. **No underscores in Go test names** — `TestFoo` not `Test_Foo`.
+6. Use early returns; do not nest error handling.
+7. Do not batch actor messages without backpressure.
+8. Comments explain WHY and HOW, not WHAT.
 
-**Pattern examples:**
-- Find all function calls: `sg run -p '$FUNC($$$ARGS)' -l go`
-- Find method calls: `sg run -p '$OBJ.$METHOD($$$ARGS)' -l go`
-- Find error returns: `sg run -p 'return $ERR' -l go`
-- Find struct literals: `sg run -p '&$TYPE{$$$FIELDS}' -l go`
+## Knowledge Base Map
 
-**Linting commands:**
-- `make ast-lint` - Check for style issues (use `pkg=<dir>` to focus on a directory)
-- `make ast-grep-fix` - Auto-fix safe issues (use `pkg=<dir>` to focus on a directory)
-- `sg scan --interactive` - Review fixes one by one
+### Architecture
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — Package layers, dependency graph, key types, patterns
+- [`PLANS.md`](PLANS.md) — ExecPlan specification for complex features
 
-**Rules enforced:**
+### Deep Docs ([`docs/index.md`](docs/index.md) for full catalog)
+- [`docs/development_guidelines.md`](docs/development_guidelines.md) — Complete style guide with WRONG/RIGHT examples
+- [`docs/durable_actor_architecture.md`](docs/durable_actor_architecture.md) — CDC pattern, durable mailbox lifecycle
+- [`docs/durable_actor_quickstart.md`](docs/durable_actor_quickstart.md) — TLVMessage, ActorBehavior, migration checklist
+- [`docs/mailbox_architecture.md`](docs/mailbox_architecture.md) — Three-layer mailbox system (pb, rpc, conn, serverconn)
+- [`docs/RPC_MAILBOX_CONTRACT.md`](docs/RPC_MAILBOX_CONTRACT.md) — Envelope semantics, ack watermarks
+- [`docs/ast-grep-guide.md`](docs/ast-grep-guide.md) — AST-level code search and lint rules
+- [`docs/structured-logging.md`](docs/structured-logging.md) — Log format, key-value helpers, error levels
+- [`docs/testing-guide.md`](docs/testing-guide.md) — Coverage targets, test approaches, pre-commit checklist
+- [`docs/commit-tooling.md`](docs/commit-tooling.md) — commit_message.py workflows
+- [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md) — darepod/darepocli setup and CLI reference
+- [`docs/go_workspace.md`](docs/go_workspace.md) — Multi-module Go workspace setup
 
-*Formatting (go-formatting.yml):*
-- `struct-literal-asymmetric-close`: Multi-line struct literals need closing `}` on its own line
-- `func-call-asymmetric-wrap`: Multi-line function calls need symmetric wrapping (excludes log/error calls)
-- `log-error-expanded-form`: Log/error calls should use compact form, not expanded
-- `switch-case-needs-spacing`: Switch cases should be separated by blank lines
-- `select-case-needs-spacing`: Select cases should be separated by blank lines
+### Per-Package Context
+Each major package contains a `CLAUDE.md`/`AGENTS.md` with purpose, key types,
+relationships, and invariants. Start from [`ARCHITECTURE.md`](ARCHITECTURE.md)
+and navigate into the package relevant to your task.
 
-*Function definitions (go-func-def.yml):*
-- `func-def-dangling-param-comma`: Function params should not end with dangling comma
-- `func-def-dangling-return-paren`: Return types should not start on a new line with `(`
+## Code Generation Workflow
 
-**Note:** Structured logging calls (`InfoS`, `DebugS`, etc.) are correctly formatted with closing `)` on the same line as the last attribute per the development guidelines.
+1. **Protobuf**: edit `.proto` → `make rpc` → commit generated code separately.
+2. **Database**: edit `db/schema/` or `db/queries/` → `make sqlc` → commit separately.
+3. **Never edit generated code manually.**
 
-See `rules/` directory for full rule definitions.
+## Dependencies
 
-### Structured Logging
-**YOU MUST** use structured log methods (ending in `S`) with static messages:
-- First parameter: `context.Context`
-- Second parameter: static string (no `fmt.Sprintf`)
-- Remaining parameters: key-value pairs using `slog.Int()`, `btclog.Fmt()`, `btclog.Hex()`, etc.
-- One key-value pair per line for readability
-- Lines can exceed 80 chars for structured logging
-
-Example:
-```go
-log.InfoS(ctx, "Channel open performed",
-	slog.Int("user_id", userID),
-	btclog.Fmt("amount", "%.8f", 0.00154))
-```
-
-### Error Log Levels
-**CRITICAL**: Only use `error` level for **internal errors never expected during normal operation**.
-- External triggers (RPC failures, chain backend issues, peer disconnects) should use lower levels (`warn`, `info`, `debug`)
-- If a user could cause it, it's not an error-level log
-
-## Git Commit Guidelines
-
-### Commit Message Format
-```
-pkg: Short summary in present tense (≤69 chars)
-
-Longer explanation if needed, wrapped at 72 characters. Explain WHY
-this change is being made and any relevant context, not just WHAT
-changed.
-```
-
-**Commit message rules**:
-- First line: present tense ("Fix bug" not "Fixed bug")
-- Prefix with package name: `db:`, `rpc:`, `multi:` (for multiple packages)
-- Subject ≤69 characters
-- Body wrapped at 72 characters
-- Blank line between subject and body
-
-### Commit Granularity
-**IMPORTANT**: Prefer small, atomic commits that build independently.
-
-Separate commits for:
-- Bug fixes (one fix per commit)
-- Code restructuring/refactoring
-- File moves or renames
-- New subsystems or features
-- Integration of new functionality
-
-### Commit Signing
-Sign commits with GPG when possible: `git commit -S -F /path/to/message.txt`
-
-### Commit Message Tooling
-
-Use `scripts/commit_message.py` to lint, format, and safely reword commit
-messages. The script enforces subject/body wrapping (`69`/`72`), keeps real
-newlines, and preserves markdown-like body structure (lists, quotes, fenced
-blocks, trailers).
-
-Common workflows:
-
-- Lint the current commit message: `make commitmsg-lint commit=HEAD`
-- Lint a commit range: `make commitmsg-lint range=origin/main..HEAD`
-- Format a message file in place: `make commitmsg-fmt file=/tmp/msg inplace=1`
-- Reword a commit from formatted output: `make commitmsg-reword commit=<sha>`
-- Preview a reword without rewriting history:
-  `make commitmsg-reword commit=<sha> dryrun=1`
-
-If a message was created with literal `\n` sequences, use `decode=1` with
-`commitmsg-fmt` or `commitmsg-reword` to convert them to real line breaks.
-
-## Testing Philosophy
-
-### Coverage Requirements
-Strive for **near 90% test coverage** where practical.
-
-### Testing Approaches
-- **Unit tests**: Core logic, pricing functions, parsing, validation
-- **Property-based tests**: Use `pgregory.net/rapid` for invariants across wide input domains
-- **Golden tests**: View rendering, serialization format snapshots
-- **Integration tests**: End-to-end workflows with fake providers
-
-### Before Committing
-**YOU MUST** run tests before every commit:
-
-0. Run module tidy check: `make tidy-module-check`
-1. Run unit tests: `make unit pkg=$pkg case=$case timeout=5m`
-2. Run with debug logs: `make unit log="stdlog trace" pkg=$pkg case=$case`
-3. **Check logs carefully**:
-   - Verify structured logging format is correct
-   - Ensure no log spam
-   - **No `[ERR]` lines should appear** unless testing error paths
-4. Run affected integration tests: `make itest icase=$icase`
-
-## Development Workflow
-
-### ExecPlans for Complex Features
-When implementing significant features or refactors, create an **ExecPlan** following `PLANS.md`:
-- Fully self-contained (novice can implement without prior knowledge)
-- Living document updated as progress is made
-- Must include: Progress checklist, Surprises & Discoveries, Decision Log, Outcomes & Retrospective
-
-### Code Generation Workflow
-1. **Protobuf changes**: Edit `.proto` files → run `make rpc` → commit generated code separately
-2. **Database changes**: Edit `db/schema/` or `db/queries/` → run `make sqlc` → commit generated code separately
-3. **Never edit generated code manually** - Always regenerate via make targets
-
-## Important Conventions
-
-### Dependencies
 For local forks, use replace directives:
 ```shell
 go mod edit -replace=IMPORT-PATH@VERSION=FORK-PATH@FORK-VERSION
 ```
-
-See `docs/development_guidelines.md` for full dependency management details.
-
-## Common Pitfalls to Avoid
-
-1. **Do not edit generated code** - Regenerate via `make rpc` or `make sqlc`
-2. **Do not write raw SQL in Go** - Add queries to `db/queries/` and use sqlc
-3. **Do not use `error` log level for expected failures** - External events use lower levels
-4. **Do not skip tests** - All new code requires test coverage
-5. **Do not use 4-space tabs** - Configure editor for 8-space tabs
-6. **Do not nest error handling** - Use early returns and check errors immediately
-7. **Do not batch actor messages without backpressure** - Follow quote coalescing patterns
-8. **Do not commit without running `make lint`** - Linter must pass
-9. **Do not write comments that restate code** - Comments explain WHY and HOW, not WHAT
-
-## Additional Resources
-
-- **[`docs/development_guidelines.md`](docs/development_guidelines.md)** - Complete style guide with extensive WRONG/RIGHT examples
-- **`PLANS.md`** - ExecPlan specification for complex features
-- **`.editorconfig`** - Automatic editor configuration (8-space tabs, 80-char lines)
