@@ -167,6 +167,42 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestVTXOPersistenceStoreChainDepthRoundTrip verifies that a non-zero
+// ChainDepth survives a save/load cycle through the database.
+func TestVTXOPersistenceStoreChainDepthRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, _ := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-chain-depth")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	// Create a descriptor with a non-zero chain depth (simulating an
+	// OOR VTXO that is 3 hops from the on-chain commitment).
+	desc := createTestVTXODescriptor(t, roundID, 99)
+	desc.ChainDepth = 3
+
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, 3, fetched.ChainDepth)
+
+	// Also verify via ListLiveVTXOs.
+	live, err := vtxoStore.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, live, 1)
+	require.Equal(t, 3, live[0].ChainDepth)
+}
+
 // TestVTXOPersistenceStoreListLiveVTXOs tests that ListLiveVTXOs returns only
 // VTXOs in non-terminal states.
 func TestVTXOPersistenceStoreListLiveVTXOs(t *testing.T) {

@@ -760,7 +760,7 @@ CREATE TABLE vtxos (
 
     -- last_update_time is the unix epoch timestamp when this VTXO was last
     -- modified, such as when it was marked as spent.
-    last_update_time BIGINT NOT NULL,
+    last_update_time BIGINT NOT NULL, chain_depth INTEGER NOT NULL DEFAULT 0,
 
     PRIMARY KEY (outpoint_hash, outpoint_index),
     FOREIGN KEY (round_id) REFERENCES rounds(round_id)

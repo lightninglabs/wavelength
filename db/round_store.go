@@ -1204,6 +1204,7 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		// metadata will update these fields.
 		BatchExpiry:    0,
 		TreeDepth:      0,
+		ChainDepth:     0,
 		CreatedHeight:  0,
 		CommitmentTxid: []byte{},
 		Spent:          false,
