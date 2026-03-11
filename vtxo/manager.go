@@ -226,6 +226,14 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 // The VTXO actor pre-builds the round-specific message (RefreshVTXORequest
 // or ForfeitSignatureResponse) and wraps it in RelayToRoundMsg. The manager
 // just unwraps and forwards.
+//
+// Liveness guarantee: when a VTXO approaches expiry, the VTXO actor
+// autonomously emits a ForfeitRequest (wrapped in RelayToRoundMsg) without
+// requiring wallet input. The manager relays this immediately, ensuring
+// cooperative action is always attempted before critical expiry. This
+// default policy means safety does not depend on wallet reaction time.
+// PR 2 may add reservation checks here, but the default must always be
+// to relay forfeit requests promptly.
 func (m *Manager) handleRelayToRound(ctx context.Context,
 	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
 

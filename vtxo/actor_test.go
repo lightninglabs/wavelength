@@ -402,3 +402,77 @@ func TestManagerGetActiveVTXOCount(t *testing.T) {
 	require.True(t, ok, "expected GetActiveVTXOCountResponse, got %T", resp)
 	require.Equal(t, 3, countResp.Count)
 }
+
+// TestManagerRelayToRound verifies the manager forwards RelayToRoundMsg
+// payloads to the round actor. This is the liveness path: when a VTXO
+// actor detects approaching expiry and emits a ForfeitRequest, the
+// manager must relay it promptly without requiring wallet intervention.
+func TestManagerRelayToRound(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	roundActor := newMockRoundActorRef(t)
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			RoundActor: roundActor,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	// Simulate the payload a VTXO actor would build when
+	// ExpiryStatusNeedsRefresh is detected.
+	refreshReq := &round.RefreshVTXORequest{
+		VTXOOutpoint: wire.OutPoint{Index: 42},
+		Amount:       50000,
+	}
+
+	result := mgr.Receive(ctx, &RelayToRoundMsg{Payload: refreshReq})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	msgs := roundActor.getMessages()
+	require.Len(t, msgs, 1)
+
+	relayed, ok := msgs[0].(*round.RefreshVTXORequest)
+	require.True(
+		t, ok, "expected RefreshVTXORequest, got %T", msgs[0],
+	)
+	require.Equal(t, wire.OutPoint{Index: 42}, relayed.VTXOOutpoint)
+	require.Equal(t, int64(50000), relayed.Amount)
+}
+
+// TestManagerRelayForfeitSig verifies the manager forwards forfeit
+// signature submissions to the round actor.
+func TestManagerRelayForfeitSig(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	roundActor := newMockRoundActorRef(t)
+	mgr := &Manager{
+		cfg: &ManagerConfig{
+			RoundActor: roundActor,
+		},
+		actors: make(map[wire.OutPoint]VTXOActorRef),
+	}
+
+	forfeitResp := &round.ForfeitSignatureResponse{
+		VTXOOutpoint: wire.OutPoint{Index: 7},
+		RoundID:      "round-abc",
+	}
+
+	result := mgr.Receive(ctx, &RelayToRoundMsg{Payload: forfeitResp})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	msgs := roundActor.getMessages()
+	require.Len(t, msgs, 1)
+
+	relayed, ok := msgs[0].(*round.ForfeitSignatureResponse)
+	require.True(
+		t, ok, "expected ForfeitSignatureResponse, got %T", msgs[0],
+	)
+	require.Equal(t, wire.OutPoint{Index: 7}, relayed.VTXOOutpoint)
+	require.Equal(t, "round-abc", relayed.RoundID)
+}
