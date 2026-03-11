@@ -163,10 +163,10 @@ func (e *ResumeVTXOEvent) VTXOActorMsg() {}
 // MessageType returns the message type for logging.
 func (e *ResumeVTXOEvent) MessageType() string { return "ResumeVTXOEvent" }
 
-// TriggerRefreshEvent is sent to a VTXO actor to manually trigger a refresh
-// request. This bypasses the automatic expiry-based refresh and immediately
-// transitions the VTXO to RefreshRequested state. Used by the wallet actor
-// when the user explicitly requests a refresh.
+// TriggerRefreshEvent is sent to a VTXO actor to manually trigger cooperative
+// forfeiture. The VTXO transitions to PendingForfeitState and emits a
+// ForfeitRequest. Used by the wallet actor when the user explicitly requests
+// a refresh.
 type TriggerRefreshEvent struct {
 	actor.BaseMessage
 

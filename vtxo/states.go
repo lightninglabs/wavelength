@@ -105,16 +105,14 @@ func (s *ForfeitingState) IsTerminal() bool {
 
 func (s *ForfeitingState) vtxoStateSealed() {}
 
-// ForfeitedState is a terminal state indicating the VTXO has been forfeited.
-// The forfeit may have occurred as part of a batch swap (refresh into a new
-// round) or a leave request (withdrawal to an on-chain address).
+// ForfeitedState is a terminal state indicating the VTXO has been forfeited
+// cooperatively. The round actor determines the disposition of the forfeited
+// value (new VTXO in a fresh round, or an on-chain withdrawal output).
 type ForfeitedState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// NewRoundID is the round where the forfeit was processed. For batch
-	// swaps this contains the replacement VTXO; for leave requests it's
-	// the round that processed the withdrawal.
+	// NewRoundID is the round where the forfeit was processed.
 	NewRoundID string
 
 	// CommitmentTxID is the new commitment transaction that was confirmed.

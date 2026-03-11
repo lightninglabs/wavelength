@@ -40,9 +40,9 @@ type ManagerConfig struct {
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
 
-	// RoundActor receives refresh requests and forfeit signatures from VTXOs.
-	// Passed through to spawned VTXO actors. Uses actormsg.RoundReceivable to
-	// avoid import cycles.
+	// RoundActor receives forfeit requests and signatures relayed from VTXO
+	// actors through the manager. Uses actormsg.RoundReceivable to avoid
+	// import cycles.
 	RoundActor actor.TellOnlyRef[actormsg.RoundReceivable]
 
 	// ChainResolver receives expiring notifications for unilateral exit.

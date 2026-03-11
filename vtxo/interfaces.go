@@ -87,9 +87,9 @@ var MessageSpec = struct {
 	// -----------------------------------------------------------------
 
 	// BlockEpochEvent is received from the chain source (routed via VTXO
-	// manager) when a new block is connected. Triggers expiry status checks
-	// and may cause state transitions if refresh or critical thresholds are
-	// crossed.
+	// manager) when a new block is connected. Triggers expiry checks and
+	// may cause transitions to PendingForfeit or UnilateralExit if expiry
+	// thresholds are crossed.
 	//
 	// Source: Chain source → VTXO Manager → VTXO Actor
 	// Handled in: LiveState, PendingForfeitState, ForfeitingState
@@ -100,7 +100,8 @@ var MessageSpec = struct {
 	// the forfeit transaction and submit it back to the round actor.
 	//
 	// Source: Round Actor → VTXO Actor
-	// Handled in: LiveState, PendingForfeitState
+	// Handled in: LiveState, PendingForfeitState (signs and transitions
+	// to Forfeiting)
 	ForfeitRequestEvent InboundEvent[*round.ForfeitRequestEvent]
 
 	// ForfeitConfirmedEvent is received from the round actor when the new
@@ -129,12 +130,13 @@ var MessageSpec = struct {
 	// OUTBOUND MESSAGES (FSM → external actors)
 	// -----------------------------------------------------------------
 
-	// ForfeitRequest is sent to the round actor when the VTXO's expiry
-	// status crosses the refresh threshold. Requests inclusion in the next
-	// batch swap to extend the VTXO's lifetime.
+	// ForfeitRequest is sent when the VTXO's expiry status crosses
+	// the pending-forfeit threshold, requesting cooperative forfeiture
+	// in the next batch swap.
 	//
 	// Destination: VTXO Actor → Round Actor
-	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh)
+	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh or external
+	//               forfeit trigger)
 	ForfeitRequest OutboundMsg[*ForfeitRequest]
 
 	// ForfeitSignatureSubmission is sent to the round actor with the

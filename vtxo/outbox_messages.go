@@ -42,8 +42,8 @@ func (u RefreshUrgency) String() string {
 	}
 }
 
-// ForfeitRequest is sent to the round actor when a VTXO needs to be forfeited
-// as part of a refresh or leave operation.
+// ForfeitRequest is sent when a VTXO needs to be cooperatively forfeited.
+// Routed through the manager to the round actor.
 type ForfeitRequest struct {
 	actor.BaseMessage
 

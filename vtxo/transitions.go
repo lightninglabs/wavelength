@@ -59,7 +59,7 @@ func (s *LiveState) ProcessEvent(
 }
 
 // handleBlockEpoch processes a new block notification and checks if the VTXO
-// needs to be refreshed or escalated.
+// needs to be forfeited cooperatively or escalated to unilateral exit.
 func (s *LiveState) handleBlockEpoch(
 	_ context.Context, evt *BlockEpochEvent, env *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
@@ -76,7 +76,7 @@ func (s *LiveState) handleBlockEpoch(
 		}, nil
 
 	case ExpiryStatusNeedsRefresh:
-		// Request refresh before expiry becomes critical.
+		// Request cooperative forfeit before expiry becomes critical.
 		outbox := []VTXOOutMsg{
 			&ForfeitRequest{
 				VTXOOutpoint: s.VTXO.Outpoint,
@@ -130,7 +130,7 @@ func (s *LiveState) handleBlockEpoch(
 		return &VTXOStateTransition{
 			NextState: &FailedState{
 				VTXO:        s.VTXO,
-				Reason:      "batch expired before refresh",
+				Reason:      "batch expired before cooperative forfeit",
 				Recoverable: false,
 			},
 		}, nil
