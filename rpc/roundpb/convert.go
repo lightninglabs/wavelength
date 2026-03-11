@@ -422,6 +422,38 @@ func TreeFromProto(pt *VTXOTree,
 		}
 	}
 
+	// Compute FinalKey for each node now that we have the
+	// sweep tapscript root. The constructors (NewLeafNode,
+	// NewBranchNode) normally do this, but proto deserialization
+	// bypasses them. Without FinalKey, signature verification
+	// in VerifySigned will fail. Nodes without cosigners (e.g.
+	// certain connector nodes) are skipped.
+	for _, node := range goNodes {
+		if len(node.CoSigners) == 0 {
+			continue
+		}
+
+		// Copy cosigners before computing the final key
+		// because MuSig2 key aggregation sorts the slice
+		// in-place, which would reorder the node's
+		// CoSigners field.
+		csCopy := make(
+			[]*btcec.PublicKey, len(node.CoSigners),
+		)
+		copy(csCopy, node.CoSigners)
+
+		fk, fkErr := tree.ComputeFinalKey(
+			csCopy, pt.SweepTapscriptRoot,
+		)
+		if fkErr != nil {
+			return nil, fmt.Errorf(
+				"compute final key: %w", fkErr,
+			)
+		}
+
+		node.FinalKey = fk
+	}
+
 	batchOP, err := OutpointFromProto(pt.BatchOutpoint)
 	if err != nil {
 		return nil, fmt.Errorf("batch outpoint: %w", err)
