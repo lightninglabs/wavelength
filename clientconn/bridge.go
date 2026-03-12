@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"golang.org/x/sync/singleflight"
 )
 
 // ClientsConnBridge is the top-level router that implements
@@ -31,6 +33,16 @@ type ClientsConnBridge struct {
 	// maxClients bounds the number of concurrently registered
 	// clients. Zero means unlimited.
 	maxClients int
+
+	// onUnknownClient is called when HandleInbound receives an
+	// envelope from an unregistered sender. If nil, unknown
+	// clients are silently ignored.
+	onUnknownClient UnknownClientHandler
+
+	// registerGroup deduplicates concurrent HandleInbound calls
+	// for the same clientID so only one registration attempt
+	// runs per client.
+	registerGroup singleflight.Group
 }
 
 // NewClientsConnBridge creates a new bridge with the given options.
@@ -47,9 +59,10 @@ func NewClientsConnBridge(
 	}
 
 	return &ClientsConnBridge{
-		clients:       make(map[ClientID]*ClientRuntime),
-		statusTracker: o.statusTracker,
-		maxClients:    o.maxClients,
+		clients:         make(map[ClientID]*ClientRuntime),
+		statusTracker:   o.statusTracker,
+		maxClients:      o.maxClients,
+		onUnknownClient: o.onUnknownClient,
 	}
 }
 
@@ -227,6 +240,64 @@ func (b *ClientsConnBridge) GetUnary(
 	}
 
 	return runtime.Unary(), true
+}
+
+// HandleInbound checks whether an inbound envelope's sender is a
+// registered client. If not, and an UnknownClientHandler is configured,
+// the handler is invoked to register the client on the bridge.
+//
+// Concurrent calls for the same clientID are deduplicated via
+// singleflight so only one registration attempt runs per client.
+// Different clients can register concurrently without blocking
+// each other.
+//
+// This method is intended to be called at the transport boundary
+// (e.g., a MailboxServiceServer decorator) before the envelope is
+// persisted. The handler typically calls
+// RegisterClientWithAllDispatchers, which starts the per-client
+// ingress loop that will then pull and dispatch the envelope.
+func (b *ClientsConnBridge) HandleInbound(ctx context.Context,
+	env *mailboxpb.Envelope) error {
+
+	if env == nil {
+		return nil
+	}
+
+	senderID := env.Sender
+	if senderID == "" {
+		return nil
+	}
+
+	clientID := ClientID(senderID)
+
+	// Fast path: already registered.
+	if _, ok := b.GetClient(clientID); ok {
+		return nil
+	}
+
+	// No handler configured — silently ignore unknown clients.
+	if b.onUnknownClient == nil {
+		return nil
+	}
+
+	// Deduplicate concurrent registrations for the same client.
+	// singleflight ensures only one goroutine runs the handler
+	// while others block and receive the same result.
+	_, err, _ := b.registerGroup.Do(string(clientID),
+		func() (any, error) {
+			// Double-check after winning the singleflight
+			// race in case a prior call already completed.
+			if _, ok := b.GetClient(clientID); ok {
+				return nil, nil
+			}
+
+			return nil, b.onUnknownClient.HandleUnknownClient(
+				ctx, clientID, env,
+			)
+		},
+	)
+
+	return err
 }
 
 // ClientStatus returns the current liveness status of the given client

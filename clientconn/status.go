@@ -1,5 +1,11 @@
 package clientconn
 
+import (
+	"context"
+
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+)
+
 // ClientStatus represents the liveness state of a connected client as
 // observed by the server. This is informational only — messages are
 // always delivered to the mailbox regardless of status (async-first
@@ -66,6 +72,22 @@ func (n *noopStatusTracker) OnStatusChange(
 // BridgeOption is a functional option for configuring a ClientsConnBridge.
 type BridgeOption func(*bridgeOptions)
 
+// UnknownClientHandler is called by HandleInbound when an envelope
+// arrives from a sender that is not registered on the bridge. The
+// handler is responsible for building a PerClientConfig and calling
+// RegisterClient (typically via RegisterClientWithAllDispatchers).
+//
+// Implementations must be safe for concurrent use. The bridge
+// deduplicates concurrent calls for the same clientID via
+// singleflight, so the handler itself does not need its own locking.
+type UnknownClientHandler interface {
+	// HandleUnknownClient registers a previously unseen client on
+	// the bridge. The envelope that triggered detection is passed
+	// so the handler can extract mailbox IDs and protocol version.
+	HandleUnknownClient(ctx context.Context,
+		clientID ClientID, env *mailboxpb.Envelope) error
+}
+
 // bridgeOptions holds optional configuration for the bridge.
 type bridgeOptions struct {
 	statusTracker StatusTracker
@@ -73,6 +95,11 @@ type bridgeOptions struct {
 	// maxClients bounds the number of concurrently registered
 	// clients. Zero means unlimited.
 	maxClients int
+
+	// onUnknownClient is called when HandleInbound receives an
+	// envelope from an unregistered sender. If nil, unknown
+	// clients are silently ignored.
+	onUnknownClient UnknownClientHandler
 }
 
 // WithStatusTracker configures the bridge to use the given StatusTracker
@@ -92,5 +119,16 @@ func WithStatusTracker(tracker StatusTracker) BridgeOption {
 func WithMaxClients(n int) BridgeOption {
 	return func(o *bridgeOptions) {
 		o.maxClients = n
+	}
+}
+
+// WithOnUnknownClient configures the bridge to call the given handler
+// when HandleInbound receives an envelope from an unregistered sender.
+// A nil handler is silently ignored, preserving the default no-op.
+func WithOnUnknownClient(h UnknownClientHandler) BridgeOption {
+	return func(o *bridgeOptions) {
+		if h != nil {
+			o.onUnknownClient = h
+		}
 	}
 }
