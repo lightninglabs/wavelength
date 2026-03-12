@@ -68,6 +68,9 @@ jobs:
       - name: Check go modules tidiness
         run: make tidy-module-check
 
+      - name: Check documentation cross-links
+        run: make doc-check
+
       ########################
       # SQLC code gen check
       ########################
