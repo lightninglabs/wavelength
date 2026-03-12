@@ -18,10 +18,15 @@ unilateral spending paths.
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (tree paths).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `db` (persistence), `darepod` (wiring).
-- **Messages to/from**:
-  - Receives `ForfeitRequest` ← `round` (during round participation).
-  - Sends `ForfeitRequest` → `round` (initiating refresh).
-  - Receives `BlockEpochEvent` ← `chainsource` (via Manager, for expiry monitoring).
+- **Sends**:
+  - → `round`: `ForfeitRequest`, `ForfeitSignatureSubmission`
+  - → `db` (via outbox): `VTXOStatusUpdate`
+  - → `vtxo` manager: `VTXOTerminatedMsg`
+- **Receives**:
+  - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `RefreshAcknowledgedEvent`, `BlockEpochEvent`
+  - ← `wallet`: `TriggerRefreshEvent`, `TriggerLeaveEvent`
+  - ← `chainsource` (via Manager): `BlockEpochEvent`
+  - ← API: `ResumeVTXOEvent`
 
 ## Invariants
 

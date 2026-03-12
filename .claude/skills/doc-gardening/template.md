@@ -19,8 +19,12 @@ unfamiliar with the codebase.}
 
 - **Depends on**: pkg1 (reason), pkg2 (reason)
 - **Depended on by**: pkg3 (reason), pkg4 (reason)
-- **Messages to/from**: {actor message flows, if this package participates in
-  the actor system. Format: "Sends X -> pkg, Receives Y <- pkg"}
+- **Sends**:
+  - → `target_pkg`: `ConcreteMessageType1`, `ConcreteMessageType2`
+  - → `other_pkg`: `AnotherMessageType`
+- **Receives**:
+  - ← `source_pkg`: `InboundEventType1`, `InboundEventType2`
+  - ← API: `UserFacingRequestType` (if applicable)
 
 ## Invariants
 
@@ -42,8 +46,13 @@ unfamiliar with the codebase.}
   types unless they are critical to understanding the package.
 - **Relationships**: Use actual package names from this repo, not generic
   descriptions. Include the reason for the dependency.
-- **Messages to/from**: Only include if the package participates in the actor
-  system (sends/receives messages via Tell/Ask).
+- **Sends/Receives**: List concrete Go message type names, not descriptions.
+  Use `→ pkg: TypeName` for sends and `← pkg: TypeName` for receives. Search
+  for Tell/Ask calls, outbox message types, FSM event types, and
+  `lib/actormsg` marker interfaces that cross package boundaries. Include
+  API-facing requests (from RPC layer) under `← API:`. This section is
+  critical — agents need to know what messages flow between subsystems to
+  understand the actor wiring.
 - **Invariants**: Focus on things that would cause bugs if violated. "Forfeit
   tx not broadcast until round confirms" is good. "Uses standard Go error
   handling" is not.

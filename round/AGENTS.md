@@ -18,11 +18,18 @@ protocols with MuSig2 signing ceremonies.
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (Merkle trees), `lib/types` (shared domain types), `lib/scripts` (taproot scripts).
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring).
-- **Messages to/from**:
-  - Sends `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest` → `serverconn` (to operator).
-  - Sends `ForfeitRequestToVTXO` → `vtxo` actors.
-  - Receives `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned` ← `serverconn` (from operator).
-  - Receives `BoardingIntent` ← `wallet`.
+- **Sends**:
+  - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`
+  - → `vtxo`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `RefreshAcknowledgedEvent`, `BlockEpochEvent`
+  - → `vtxo` manager: `VTXOCreatedNotification`
+  - → `wallet`: `RegisterConfirmationNotifierRequest`
+  - → `timeout`: `ScheduleTimeoutRequest`, `CancelTimeoutRequest`
+- **Receives**:
+  - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
+  - ← `vtxo`: `RefreshVTXORequest`, `LeaveVTXORequest`, `ForfeitSignatureSubmission`
+  - ← `wallet`: `BoardingUtxoConfirmedEvent`
+  - ← `timeout`: `TimeoutMsg`
+  - ← `chainsource`: `ConfirmationEvent`
 
 ## Invariants
 

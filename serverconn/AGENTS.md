@@ -18,9 +18,15 @@ background ingress polling with event routing.
 
 - **Depends on**: `baselib/actor` (DurableActor infrastructure), `mailbox/*` (Envelope, RpcMeta, MailboxServiceClient).
 - **Depended on by**: `round` (outbound RPCs), `oor` (durable transport), `darepod` (wiring).
-- **Messages to/from**:
-  - Egress: durable events and unary RPCs → operator mailbox.
-  - Ingress: operator events → `EventRouter` → domain actors (round, vtxo, wallet).
+- **Sends (egress → remote mailbox)**:
+  - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`
+  - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
+- **Routes (ingress → local actors via EventRouter)**:
+  - → `round`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
+  - → `oor`: `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
+- **Receives (from local actors for outbound delivery)**:
+  - ← `round`: `SendClientEventRequest` (outbox messages for persistence)
+  - ← `oor`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`
 
 ## Invariants
 

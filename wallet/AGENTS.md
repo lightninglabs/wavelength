@@ -19,9 +19,13 @@ when new boarding opportunities are available.
 
 - **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications).
 - **Depended on by**: `round` (boarding intents), `db` (persistence), `darepod` (wiring).
-- **Messages to/from**:
-  - Receives `BlockEpochNotification` ← `chainsource`.
-  - Sends `BoardingUtxoConfirmedEvent` → registered notifiers (round actor).
+- **Sends**:
+  - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
+  - → `vtxo`: `TriggerRefreshEvent`, `TriggerLeaveEvent`
+- **Receives**:
+  - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
+  - ← `round`: `RegisterConfirmationNotifierRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`
 
 ## Invariants
 

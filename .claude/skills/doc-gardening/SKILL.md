@@ -51,9 +51,19 @@ For each affected package, gather:
 2. Key exported types and interfaces (read primary `.go` files, use `go doc`).
 3. Import statements — which repo packages it imports.
 4. `README.md` (if exists) — existing deep docs to link.
+5. **Actor message flows** — search for Tell/Ask calls, outbox message types,
+   FSM event types, and `lib/actormsg` marker interfaces that cross package
+   boundaries. List concrete Go type names for each send/receive direction.
 
 Use the Explore agent for packages with many files, or direct Read/Grep for
 small packages. Be thorough — per-package docs must be accurate, not guessed.
+
+**Message tracing tips:**
+- Search for `Tell(` and `Ask(` calls to find outbound messages.
+- Search for types implementing `VTXOActorMsg`, `RoundReceivable`, or other
+  `lib/actormsg` marker interfaces to find cross-boundary message types.
+- Check FSM transition functions for outbox event types (emitted as side effects).
+- Check `EventRouter` dispatch registrations in `serverconn` for ingress routing.
 
 ## Phase 3: Generate or Update CLAUDE.md
 

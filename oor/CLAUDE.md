@@ -18,9 +18,13 @@ resume semantics.
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `baselib/actor` (durable actors), `serverconn` (durable transport).
 - **Depended on by**: `darepod` (wiring).
-- **Messages to/from**:
-  - Sends durable transport messages → `serverconn` (to operator).
-  - Receives checkpoint responses ← `serverconn` (from operator).
+- **Sends**:
+  - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`
+  - → `db` (via outbox): `MarkInputsSpentRequest`
+  - → `wallet`: `MaterializeIncomingVTXOsRequest`
+- **Receives**:
+  - ← `serverconn` (via EventRouter): `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
+  - ← API: `StartTransferRequest`, `DriveEventRequest`, `RestoreSessionRequest`, `ResumeSessionRequest`
 
 ## Invariants
 
