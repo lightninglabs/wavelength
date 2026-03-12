@@ -737,10 +737,42 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		})
 	}
 
-	// Send the composed intent package to the round actor and await
-	// the result. Using Ask (not Tell) so we surface FSM rejection
-	// or validation failures back to the caller.
+	// Reserve the forfeit inputs through the VTXO manager before
+	// sending the intent to the round actor. This ensures the VTXO
+	// actors are in PendingForfeitState before round registration,
+	// preventing split-brain where the round has an intent for a
+	// VTXO that is still Live or claimed for OOR spend.
 	if len(forfeits) > 0 {
+		reserveOutpoints := make(
+			[]wire.OutPoint, 0, len(forfeits),
+		)
+		for _, f := range forfeits {
+			if f.VTXOOutpoint != nil {
+				reserveOutpoints = append(
+					reserveOutpoints,
+					*f.VTXOOutpoint,
+				)
+			}
+		}
+
+		_, err := a.askManager(
+			ctx, &actormsg.ReserveForfeitRequest{
+				Outpoints: reserveOutpoints,
+			},
+		)
+		if err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Manager rejected refresh reservation",
+				err)
+
+			return fn.Err[WalletResp](fmt.Errorf(
+				"reserve refresh inputs: %w", err,
+			))
+		}
+
+		// Send the intent to the round actor. If registration
+		// fails, release the forfeit reservation so VTXOs
+		// return to LiveState.
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
 
@@ -753,6 +785,10 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			a.logger(ctx).WarnS(ctx,
 				"Round rejected refresh intent",
 				result.Err())
+
+			a.releaseManagerForfeit(
+				ctx, reserveOutpoints,
+			)
 
 			return fn.Err[WalletResp](fmt.Errorf(
 				"round rejected refresh intent: %w",
@@ -845,10 +881,40 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 		})
 	}
 
-	// Send the composed intent package to the round actor and await
-	// the result. Using Ask (not Tell) so we surface FSM rejection
-	// or validation failures back to the caller.
+	// Reserve the forfeit inputs through the VTXO manager before
+	// sending the intent to the round actor. This ensures the VTXO
+	// actors are in PendingForfeitState before round registration.
 	if len(forfeits) > 0 {
+		reserveOutpoints := make(
+			[]wire.OutPoint, 0, len(forfeits),
+		)
+		for _, f := range forfeits {
+			if f.VTXOOutpoint != nil {
+				reserveOutpoints = append(
+					reserveOutpoints,
+					*f.VTXOOutpoint,
+				)
+			}
+		}
+
+		_, err := a.askManager(
+			ctx, &actormsg.ReserveForfeitRequest{
+				Outpoints: reserveOutpoints,
+			},
+		)
+		if err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Manager rejected leave reservation",
+				err)
+
+			return fn.Err[WalletResp](fmt.Errorf(
+				"reserve leave inputs: %w", err,
+			))
+		}
+
+		// Send the intent to the round actor. If registration
+		// fails, release the forfeit reservation so VTXOs
+		// return to LiveState.
 		serviceKey := actormsg.RoundActorServiceKey()
 		roundRef := serviceKey.Ref(a.actorSystem)
 
@@ -861,6 +927,10 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 			a.logger(ctx).WarnS(ctx,
 				"Round rejected leave intent",
 				result.Err())
+
+			a.releaseManagerForfeit(
+				ctx, reserveOutpoints,
+			)
 
 			return fn.Err[WalletResp](fmt.Errorf(
 				"round rejected leave intent: %w",
@@ -983,6 +1053,24 @@ func (a *Ark) askManager(ctx context.Context,
 	result := future.Await(ctx)
 
 	return result.Unpack()
+}
+
+// releaseManagerForfeit is a best-effort helper that releases forfeit
+// reservations when round registration fails after successful admission.
+// Errors are logged but not propagated because the primary error (round
+// rejection) has already been captured.
+func (a *Ark) releaseManagerForfeit(ctx context.Context,
+	outpoints []wire.OutPoint) {
+
+	_, err := a.askManager(
+		ctx, &actormsg.ReleaseForfeitRequest{
+			Outpoints: outpoints,
+		},
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(ctx,
+			"Failed to release forfeit reservation", err)
+	}
 }
 
 // handleSelectAndLockVTXOs forwards a spend selection request to the VTXO

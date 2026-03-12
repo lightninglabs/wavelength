@@ -254,8 +254,8 @@ type RoundClientConfig struct {
 	VTXOManager actor.TellOnlyRef[actor.Message]
 
 	// ActorSystem enables direct communication with VTXO actors via service
-	// keys. Used to send PendingForfeitEvent, ForfeitRequestEvent, and
-	// ForfeitConfirmedEvent to specific VTXO actors.
+	// keys. Used to send ForfeitRequestEvent and ForfeitConfirmedEvent to
+	// specific VTXO actors.
 	ActorSystem *actor.ActorSystem
 
 	// DisableJoinRequestAuth skips BIP-322 join authorization
@@ -1774,15 +1774,12 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 
 // handleRegisterIntent processes a pre-composed intent package from the
 // wallet. The wallet has already loaded VTXO descriptors and built the full
-// IntentPackage. The round actor registers it with the FSM and notifies
-// affected VTXO actors.
+// IntentPackage. The round actor registers it with the FSM.
 //
-// If FSM registration succeeds but a PendingForfeitEvent notification fails
-// for one VTXO, the handler logs the failure and continues notifying the
-// remaining VTXOs. The round FSM already has the intent, so the forfeit
-// will proceed when the round advances. The missed VTXO will receive the
-// concrete ForfeitRequestEvent later and transition directly from Live to
-// Forfeiting via the existing fast path.
+// The wallet is responsible for reserving forfeit inputs through the VTXO
+// manager before sending this message. By the time the round receives the
+// intent, the affected VTXOs are already in PendingForfeitState. If round
+// registration fails, the wallet releases the reservations.
 func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	req *RegisterIntentRequest) fn.Result[actormsg.RoundActorResp] {
 
@@ -1816,34 +1813,11 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		))
 	}
 
-	// Notify each forfeited VTXO that it is now pending cooperative
-	// consumption. This is done after FSM registration succeeds so we
-	// never mark a VTXO pending for a round that rejected the intent.
-	// We use a detached context so that notifications are not abandoned
-	// if the caller's request context expires after FSM registration.
-	if a.cfg.ActorSystem != nil {
-		tellCtx := context.WithoutCancel(ctx)
-		for _, forfeit := range req.Package.Forfeits {
-			if forfeit.VTXOOutpoint == nil {
-				continue
-			}
-
-			outpoint := *forfeit.VTXOOutpoint
-			serviceKey := actormsg.VTXOActorServiceKey(outpoint)
-			err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-				tellCtx, &PendingForfeitEvent{},
-			)
-			if err != nil {
-				a.log.WarnS(ctx,
-					"Failed to notify VTXO of pending "+
-						"forfeit", err,
-					slog.String(
-						"outpoint",
-						outpoint.String(),
-					))
-			}
-		}
-	}
+	// NOTE: PendingForfeitEvent is no longer sent here. The wallet
+	// reserves forfeit inputs through the VTXO manager before
+	// sending RegisterIntentMsg, so VTXOs are already in
+	// PendingForfeitState by the time the round registers the
+	// intent. The manager handles atomic reservation and rollback.
 
 	a.log.InfoS(ctx, "Registered intent package",
 		slog.Int("forfeits", len(req.Package.Forfeits)),
