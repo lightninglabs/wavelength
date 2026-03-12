@@ -1412,17 +1412,11 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 		// Check if this message should be sent to the server. All
 		// server-bound messages implement the ServerMessage interface.
 		if serverMsg, ok := msg.(serverconn.ServerMessage); ok {
+			sm := serverMsg.ServiceMethod()
 			sendReq := &serverconn.SendClientEventRequest{
 				Message: serverMsg,
-			}
-
-			// Extract mailbox routing metadata if the message
-			// declares its target service and method. Without
-			// this the operator's clientconn ingress cannot
-			// dispatch the envelope to the correct handler.
-			if routed, ok := msg.(serverconn.RpcRouted); ok {
-				sendReq.Service = routed.RpcService()
-				sendReq.Method = routed.RpcMethod()
+				Service: sm.Service,
+				Method:  sm.Method,
 			}
 
 			if err := a.cfg.ServerConn.Tell(ctx, sendReq); err != nil {

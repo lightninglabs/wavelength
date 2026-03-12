@@ -40,4 +40,24 @@ const (
 	// ClientErrorResp. The server sends this for general error
 	// conditions.
 	MethodError = "Error"
+
+	// MethodJoinRound is the client→server method name for
+	// JoinRoundRequest.
+	MethodJoinRound = "JoinRound"
+
+	// MethodSubmitNonces is the client→server method name for
+	// SubmitNoncesRequest.
+	MethodSubmitNonces = "SubmitNonces"
+
+	// MethodSubmitPartialSigs is the client→server method name for
+	// SubmitPartialSigRequest.
+	MethodSubmitPartialSigs = "SubmitPartialSigs"
+
+	// MethodSubmitForfeitSigs is the client→server method name for
+	// SubmitForfeitSigRequest (boarding input signatures).
+	MethodSubmitForfeitSigs = "SubmitForfeitSigs"
+
+	// MethodSubmitVTXOForfeitSigs is the client→server method name
+	// for SubmitVTXOForfeitSigsToServer.
+	MethodSubmitVTXOForfeitSigs = "SubmitVTXOForfeitSigs"
 )

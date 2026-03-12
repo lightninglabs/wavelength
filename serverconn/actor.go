@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
@@ -42,26 +43,20 @@ type (
 // ServerMessage is an interface that client FSM outbox messages must implement
 // to be sent to the server. This allows conversion to proto messages without
 // creating import cycles.
+//
+// Every ServerMessage must declare its mailbox routing metadata via
+// ServiceMethod so the operator's clientconn ingress loop can dispatch
+// the envelope to the correct handler.
 type ServerMessage interface {
 	// ToProto converts the message to a protobuf message that can be
 	// sent over gRPC. An error is returned if serialization of any
 	// embedded field (e.g. signatures, transactions) fails.
 	ToProto() fn.Result[proto.Message]
-}
 
-// RpcRouted is an optional interface that ServerMessage implementations can
-// satisfy to provide mailbox routing metadata (service + method). When the
-// serverconn actor builds the outbound envelope, it checks for this interface
-// and populates the RpcMeta.Service and RpcMeta.Method fields. Without
-// routing metadata the operator's clientconn ingress loop cannot dispatch
-// the envelope to the correct handler.
-type RpcRouted interface {
-	// RpcService returns the fully-qualified protobuf service name
-	// (e.g. "round.v1.RoundService").
-	RpcService() string
-
-	// RpcMethod returns the RPC method name (e.g. "JoinRound").
-	RpcMethod() string
+	// ServiceMethod returns the fully-qualified protobuf service and
+	// method names used for mailbox envelope routing (e.g.
+	// Service: "round.v1.RoundService", Method: "JoinRound").
+	ServiceMethod() mailboxrpc.ServiceMethod
 }
 
 // InboundServerMessage is implemented by actor messages that arrive from the
@@ -84,6 +79,13 @@ type InboundServerMessage interface {
 // the global protobuf type registry via anypb.UnmarshalNew.
 type rawServerMessage struct {
 	anyMsg *anypb.Any
+}
+
+// ServiceMethod returns a zero-value ServiceMethod. After TLV decoding the
+// routing metadata lives on the enclosing SendClientEventRequest rather than
+// on the raw message wrapper.
+func (m *rawServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{}
 }
 
 // ToProto reconstructs the original proto message from the stored Any
@@ -136,13 +138,14 @@ type SendClientEventRequest struct {
 	IdempotencyKey string
 
 	// Service is the fully-qualified protobuf service name for mailbox
-	// routing (e.g. "round.v1.RoundService"). Set from the RpcRouted
-	// interface when available, persisted in TLV for crash-safe replay.
+	// routing (e.g. "round.v1.RoundService"). Populated from
+	// ServerMessage.ServiceMethod() at send time, persisted in TLV for
+	// crash-safe replay.
 	Service string
 
 	// Method is the RPC method name for mailbox routing (e.g.
-	// "JoinRound"). Set from the RpcRouted interface when available,
-	// persisted in TLV for crash-safe replay.
+	// "JoinRound"). Populated from ServerMessage.ServiceMethod() at
+	// send time, persisted in TLV for crash-safe replay.
 	Method string
 }
 

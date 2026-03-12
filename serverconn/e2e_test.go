@@ -53,6 +53,14 @@ type joinGreetingServerMsg struct {
 	SessionID string
 }
 
+// ServiceMethod returns test routing metadata for the greeting service.
+func (m *joinGreetingServerMsg) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: "hellotest.v1.HelloService",
+		Method:  "JoinGreeting",
+	}
+}
+
 // ToProto converts to a proto message for mailbox envelope transport.
 func (m *joinGreetingServerMsg) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](&hellotestpb.JoinGreetingRequest{
