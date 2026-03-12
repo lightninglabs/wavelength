@@ -167,3 +167,43 @@ type ReleaseForfeitResponse struct {
 
 // VTXOManagerResp implements the VTXOManagerResp marker interface.
 func (r *ReleaseForfeitResponse) VTXOManagerResp() {}
+
+// =============================================================================
+// Atomic cooperative select-and-reserve: wallet → Manager → VTXO actors
+// =============================================================================
+
+// SelectAndReserveForfeitRequest asks the VTXO manager to select VTXOs
+// covering a target amount and atomically reserve them for cooperative
+// consumption (PendingForfeitState). The manager runs largest-first
+// coin selection, then Asks each selected VTXO actor to process
+// PendingForfeitEvent. If any reservation fails, already-reserved
+// VTXOs are rolled back via ForfeitReleasedEvent.
+type SelectAndReserveForfeitRequest struct {
+	actor.BaseMessage
+
+	// TargetAmount is the minimum total value the selected VTXOs must
+	// cover.
+	TargetAmount btcutil.Amount
+}
+
+// VTXOManagerMsg implements VTXOManagerMsg marker interface.
+func (m *SelectAndReserveForfeitRequest) VTXOManagerMsg() {}
+
+// MessageType returns the message type for logging.
+func (m *SelectAndReserveForfeitRequest) MessageType() string {
+	return "SelectAndReserveForfeitRequest"
+}
+
+// SelectAndReserveForfeitResponse returns the VTXOs that were selected
+// and reserved for cooperative consumption.
+type SelectAndReserveForfeitResponse struct {
+	// SelectedVTXOs is the set of VTXOs reserved for this cooperative
+	// operation.
+	SelectedVTXOs []SelectedVTXO
+
+	// TotalSelected is the sum of all selected VTXO amounts.
+	TotalSelected btcutil.Amount
+}
+
+// VTXOManagerResp implements the VTXOManagerResp marker interface.
+func (r *SelectAndReserveForfeitResponse) VTXOManagerResp() {}
