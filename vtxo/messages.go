@@ -157,3 +157,11 @@ type ReleaseForfeitRequest = actormsg.ReleaseForfeitRequest
 
 // ReleaseForfeitResponse is an alias for the canonical type in actormsg.
 type ReleaseForfeitResponse = actormsg.ReleaseForfeitResponse
+
+// SelectAndReserveForfeitRequest is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveForfeitRequest = actormsg.SelectAndReserveForfeitRequest
+
+// SelectAndReserveForfeitResponse is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveForfeitResponse = actormsg.SelectAndReserveForfeitResponse

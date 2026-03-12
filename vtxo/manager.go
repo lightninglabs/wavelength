@@ -160,6 +160,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *ReleaseForfeitRequest:
 		return m.handleReleaseForfeit(ctx, req)
 
+	case *SelectAndReserveForfeitRequest:
+		return m.handleSelectAndReserveForfeit(ctx, req)
+
 	case *GetActiveVTXOCountRequest:
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
@@ -352,16 +355,27 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 // Spend admission handlers
 // =============================================================================
 
-// handleSelectAndReserveSpend selects VTXOs covering the target amount using
-// largest-first coin selection, then atomically reserves them for an OOR
-// spend by Asking each VTXO actor to process SpendReserveEvent. If any
-// reservation fails, already-reserved VTXOs are rolled back.
-func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
-	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
+// reserveParams bundles the per-caller differences for
+// selectAndReserveVTXOs so the shared coin-selection + reservation
+// logic does not need to be duplicated.
+type reserveParams struct {
+	targetAmount btcutil.Amount
+	reserveEvent actormsg.VTXOActorMsg
+	rollback     func(ctx context.Context, ops []wire.OutPoint)
+	label        string
+}
 
-	if req.TargetAmount <= 0 {
-		return fn.Err[ManagerResp](
-			fmt.Errorf("target amount must be positive"),
+// selectAndReserveVTXOs performs largest-first coin selection and
+// atomically reserves each selected VTXO by sending reserveEvent to
+// its actor. On partial failure the rollback function is called for
+// already-reserved outpoints. Returns the selected VTXO details and
+// total amount on success.
+func (m *Manager) selectAndReserveVTXOs(ctx context.Context,
+	p reserveParams) ([]SelectedVTXO, btcutil.Amount, error) {
+
+	if p.targetAmount <= 0 {
+		return nil, 0, fmt.Errorf(
+			"target amount must be positive",
 		)
 	}
 
@@ -370,17 +384,16 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 		ctx, VTXOStatusLive,
 	)
 	if err != nil {
-		return fn.Err[ManagerResp](
-			fmt.Errorf("list live vtxos: %w", err),
+		return nil, 0, fmt.Errorf(
+			"list live vtxos: %w", err,
 		)
 	}
 
 	// Run largest-first selection.
-	selected := selectLargestFirst(candidates, req.TargetAmount)
+	selected := selectLargestFirst(candidates, p.targetAmount)
 	if selected == nil {
-		return fn.Err[ManagerResp](
-			fmt.Errorf("insufficient funds: need %d",
-				req.TargetAmount),
+		return nil, 0, fmt.Errorf(
+			"insufficient funds: need %d", p.targetAmount,
 		)
 	}
 
@@ -390,34 +403,37 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 	for _, vtxo := range selected {
 		ref, ok := m.actors[vtxo.Outpoint]
 		if !ok {
-			m.rollbackSpend(ctx, reserved)
+			p.rollback(ctx, reserved)
 
-			return fn.Err[ManagerResp](fmt.Errorf(
+			return nil, 0, fmt.Errorf(
 				"no actor for outpoint %s",
 				vtxo.Outpoint,
-			))
+			)
 		}
 
-		result := ref.Ask(ctx, &SpendReserveEvent{}).Await(ctx)
+		result := ref.Ask(
+			ctx, p.reserveEvent,
+		).Await(ctx)
 		if _, err := result.Unpack(); err != nil {
 			m.logger(ctx).WarnS(
-				ctx, "Spend reserve failed", err,
+				ctx, p.label+" reserve failed", err,
 				slog.String(
 					"outpoint",
 					vtxo.Outpoint.String(),
 				),
 			)
-			m.rollbackSpend(ctx, reserved)
+			p.rollback(ctx, reserved)
 
-			return fn.Err[ManagerResp](fmt.Errorf(
-				"reserve %s: %w", vtxo.Outpoint, err,
-			))
+			return nil, 0, fmt.Errorf(
+				"reserve %s %s: %w", p.label,
+				vtxo.Outpoint, err,
+			)
 		}
 
 		reserved = append(reserved, vtxo.Outpoint)
 	}
 
-	// Build the response with selected VTXO details.
+	// Build the result with selected VTXO details.
 	var (
 		selectedVTXOs []SelectedVTXO
 		totalSelected btcutil.Amount
@@ -431,14 +447,36 @@ func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
 		totalSelected += vtxo.Amount
 	}
 
-	m.logger(ctx).InfoS(ctx, "Reserved VTXOs for spend",
+	m.logger(ctx).InfoS(
+		ctx, "Reserved VTXOs for "+p.label,
 		slog.Int("count", len(selected)),
 		slog.Int64("total", int64(totalSelected)),
-		slog.Int64("target", int64(req.TargetAmount)))
+		slog.Int64("target", int64(p.targetAmount)),
+	)
+
+	return selectedVTXOs, totalSelected, nil
+}
+
+// handleSelectAndReserveSpend selects VTXOs covering the target amount using
+// largest-first coin selection, then atomically reserves them for an OOR
+// spend by Asking each VTXO actor to process SpendReserveEvent. If any
+// reservation fails, already-reserved VTXOs are rolled back.
+func (m *Manager) handleSelectAndReserveSpend(ctx context.Context,
+	req *SelectAndReserveSpendRequest) fn.Result[ManagerResp] {
+
+	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
+		targetAmount: req.TargetAmount,
+		reserveEvent: &SpendReserveEvent{},
+		rollback:     m.rollbackSpend,
+		label:        "spend",
+	})
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
 
 	return fn.Ok[ManagerResp](&SelectAndReserveSpendResponse{
-		SelectedVTXOs: selectedVTXOs,
-		TotalSelected: totalSelected,
+		SelectedVTXOs: vtxos,
+		TotalSelected: total,
 	})
 }
 
@@ -676,6 +714,33 @@ func (m *Manager) handleReleaseForfeit(ctx context.Context,
 	return fn.Ok[ManagerResp](&ReleaseForfeitResponse{
 		ReleasedCount: released,
 	})
+}
+
+// handleSelectAndReserveForfeit selects VTXOs covering the target amount
+// using largest-first coin selection, then atomically reserves them for
+// cooperative consumption by Asking each VTXO actor to process
+// PendingForfeitEvent. If any reservation fails, already-reserved VTXOs
+// are rolled back. This is the directed-send counterpart of
+// handleSelectAndReserveSpend.
+func (m *Manager) handleSelectAndReserveForfeit(ctx context.Context,
+	req *SelectAndReserveForfeitRequest) fn.Result[ManagerResp] {
+
+	vtxos, total, err := m.selectAndReserveVTXOs(ctx, reserveParams{
+		targetAmount: req.TargetAmount,
+		reserveEvent: &PendingForfeitEvent{},
+		rollback:     m.rollbackForfeit,
+		label:        "forfeit",
+	})
+	if err != nil {
+		return fn.Err[ManagerResp](err)
+	}
+
+	return fn.Ok[ManagerResp](
+		&SelectAndReserveForfeitResponse{
+			SelectedVTXOs: vtxos,
+			TotalSelected: total,
+		},
+	)
 }
 
 // =============================================================================
