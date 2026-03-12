@@ -410,6 +410,13 @@ release: #? Cross compile for all supported platforms
 	done
 
 # ============
+# DOCS
+# ============
+
+doc-check: #? Verify documentation cross-links
+	@bash scripts/doc-check.sh
+
+# ============
 # HELP
 # ============
 
