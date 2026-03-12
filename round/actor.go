@@ -1811,7 +1811,10 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// Notify each forfeited VTXO that it is now pending cooperative
 	// consumption. This is done after FSM registration succeeds so we
 	// never mark a VTXO pending for a round that rejected the intent.
+	// We use a detached context so that notifications are not abandoned
+	// if the caller's request context expires after FSM registration.
 	if a.cfg.ActorSystem != nil {
+		tellCtx := context.WithoutCancel(ctx)
 		for _, forfeit := range req.Package.Forfeits {
 			if forfeit.VTXOOutpoint == nil {
 				continue
@@ -1820,7 +1823,7 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 			outpoint := *forfeit.VTXOOutpoint
 			serviceKey := actormsg.VTXOActorServiceKey(outpoint)
 			err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-				ctx, &PendingForfeitEvent{},
+				tellCtx, &PendingForfeitEvent{},
 			)
 			if err != nil {
 				a.log.WarnS(ctx,

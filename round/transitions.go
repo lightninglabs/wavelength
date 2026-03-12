@@ -261,6 +261,12 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			slog.Int("boarding_intent_count", len(s.Boarding)),
 			slog.Int("vtxo_intent_count", len(s.VTXOs)))
 
+		// Registration may outlive the triggering actor request, so use
+		// a detached context for local store and wallet operations. We
+		// still use the original actor context later when emitting the
+		// outbox.
+		opCtx := context.WithoutCancel(ctx)
+
 		// Calculate total input amount from all boarding intents.
 		var totalInput btcutil.Amount
 		for _, boarding := range s.Boarding {
@@ -275,7 +281,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 
 		// Include all forfeited VTXO amounts as inputs.
 		forfeitAmt, err := computeTotalForfeitAmount(
-			ctx, env.VTXOStore, s.Forfeits,
+			opCtx, env.VTXOStore, s.Forfeits,
 		)
 		if err != nil {
 			return failWithNotification(
@@ -395,7 +401,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// Derive a fresh identifier key for the join-request
 		// authorization challenge.
 		identifierKeyDesc, err := deriveJoinAuthIdentifierKey(
-			ctx, env.Wallet,
+			opCtx, env.Wallet,
 		)
 		if err != nil {
 			return failWithNotification(
@@ -411,7 +417,7 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		var joinAuth *types.JoinRoundAuth
 		if !env.DisableJoinRequestAuth {
 			auth, err := buildJoinRoundAuth(
-				ctx, env, identifierKeyDesc, intent, vtxoReqs,
+				opCtx, env, identifierKeyDesc, intent, vtxoReqs,
 				forfeitReqs, leaveReqs,
 			)
 			if err != nil {
@@ -1134,7 +1140,11 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 			ForfeitedVTXOs: forfeitedVTXOs,
 		}
 
-		err = env.RoundStore.CommitState(ctx, round, nextState)
+		// Checkpointing may outlive the triggering actor request, so
+		// use a detached context for the local store write.
+		opCtx := context.WithoutCancel(ctx)
+
+		err = env.RoundStore.CommitState(opCtx, round, nextState)
 		if err != nil {
 			return nil, fmt.Errorf("failed to commit round "+
 				"state: %w", err)
@@ -1485,7 +1495,11 @@ func (s *PartialSigsSentState) ProcessEvent(
 			ClientTrees:   s.ClientTrees,
 			InputSigs:     boardingInputSigs,
 		}
-		err = env.RoundStore.CommitState(ctx, round, nextState)
+		// Checkpointing may outlive the triggering actor request, so
+		// use a detached context for the local store write.
+		opCtx := context.WithoutCancel(ctx)
+
+		err = env.RoundStore.CommitState(opCtx, round, nextState)
 		if err != nil {
 			return nil, fmt.Errorf("failed to commit round "+
 				"state: %w", err)
@@ -1659,8 +1673,11 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("vtxo_count", len(vtxos)))
 
 		// Persist VTXOs with their extracted tree paths for future
-		// spending.
-		if err := env.VTXOStore.SaveVTXOs(ctx, vtxos); err != nil {
+		// spending. Confirmation handling may outlive the triggering
+		// actor request, so use a detached context for the store write.
+		opCtx := context.WithoutCancel(ctx)
+
+		if err := env.VTXOStore.SaveVTXOs(opCtx, vtxos); err != nil {
 			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
 		}
 
