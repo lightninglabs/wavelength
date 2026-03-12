@@ -58,6 +58,16 @@ service DaemonService {
     // confirmed boarding UTXOs. This sends RegistrationRequested to
     // the round FSM, which emits a JoinRoundRequest to the server.
     rpc Board (BoardRequest) returns (BoardResponse);
+
+    // ListRounds returns the current state of all round FSM instances.
+    // Each round is identified by its round ID (or a temporary key if
+    // the server hasn't assigned one yet).
+    rpc ListRounds (ListRoundsRequest) returns (ListRoundsResponse);
+
+    // WatchRounds opens a server-streaming connection that pushes
+    // round state updates as they occur. The stream stays open until
+    // the client disconnects.
+    rpc WatchRounds (WatchRoundsRequest) returns (stream WatchRoundsResponse);
 }
 
 message GetInfoRequest {
@@ -357,4 +367,129 @@ message BoardResponse {
     // status is "registered" on success, "no_boarding_utxos" if
     // nothing to board.
     string status = 1;
+}
+
+// RoundState represents the lifecycle state of a client's round FSM.
+enum RoundState {
+    // ROUND_STATE_UNKNOWN is the default zero value.
+    ROUND_STATE_UNKNOWN = 0;
+
+    // ROUND_STATE_IDLE indicates the FSM is waiting for boarding
+    // intents or VTXO requests.
+    ROUND_STATE_IDLE = 1;
+
+    // ROUND_STATE_PENDING_ASSEMBLY indicates boarding intents or VTXO
+    // requests have arrived but registration has not been triggered.
+    ROUND_STATE_PENDING_ASSEMBLY = 2;
+
+    // ROUND_STATE_REGISTRATION_SENT indicates a JoinRoundRequest has
+    // been sent to the server and the client is awaiting acceptance.
+    ROUND_STATE_REGISTRATION_SENT = 3;
+
+    // ROUND_STATE_JOINED indicates the server accepted the join and
+    // the client is waiting for the commitment transaction.
+    ROUND_STATE_JOINED = 4;
+
+    // ROUND_STATE_COMMITMENT_RECEIVED indicates the commitment
+    // transaction has been received and is being validated.
+    ROUND_STATE_COMMITMENT_RECEIVED = 5;
+
+    // ROUND_STATE_COMMITMENT_VALIDATED indicates the commitment
+    // transaction passed validation and is ready for MuSig2 signing.
+    ROUND_STATE_COMMITMENT_VALIDATED = 6;
+
+    // ROUND_STATE_FORFEIT_COLLECTING indicates the client is
+    // collecting forfeit signatures from VTXO actors.
+    ROUND_STATE_FORFEIT_COLLECTING = 7;
+
+    // ROUND_STATE_NONCES_SENT indicates MuSig2 nonces have been sent
+    // to the server.
+    ROUND_STATE_NONCES_SENT = 8;
+
+    // ROUND_STATE_NONCES_AGGREGATED indicates aggregated nonces have
+    // been received from the server.
+    ROUND_STATE_NONCES_AGGREGATED = 9;
+
+    // ROUND_STATE_PARTIAL_SIGS_SENT indicates partial signatures have
+    // been sent to the server.
+    ROUND_STATE_PARTIAL_SIGS_SENT = 10;
+
+    // ROUND_STATE_INPUT_SIG_SENT indicates the boarding input
+    // signature has been sent.
+    ROUND_STATE_INPUT_SIG_SENT = 11;
+
+    // ROUND_STATE_CONFIRMED is terminal: the round completed
+    // successfully.
+    ROUND_STATE_CONFIRMED = 12;
+
+    // ROUND_STATE_FAILED is terminal: the round failed.
+    ROUND_STATE_FAILED = 13;
+
+    // ROUND_STATE_RECOVERY indicates CSV recovery is in progress.
+    ROUND_STATE_RECOVERY = 14;
+}
+
+// RoundVTXOInfo describes a VTXO created in a round.
+message RoundVTXOInfo {
+    // outpoint is the VTXO's outpoint in "txid:index" format.
+    string outpoint = 1;
+
+    // amount_sat is the value of this VTXO in satoshis.
+    int64 amount_sat = 2;
+}
+
+// RoundInfo describes the current state of a single round FSM
+// instance.
+message RoundInfo {
+    // round_id is the server-assigned round identifier. Empty for
+    // temp-keyed rounds that haven't received a server response yet.
+    string round_id = 1;
+
+    // state is the current FSM state.
+    RoundState state = 2;
+
+    // is_temp indicates this round has a temporary key and hasn't
+    // been assigned a server round ID yet.
+    bool is_temp = 3;
+
+    // vtxos lists the VTXOs created by this round. Only populated
+    // for persisted rounds (input_sig_sent, confirmed). Empty for
+    // pending/in-memory rounds.
+    repeated RoundVTXOInfo vtxos = 4;
+}
+
+message ListRoundsRequest {
+    // page_size is the maximum number of persisted rounds to return.
+    // If zero, the server uses a default page size. Pending
+    // (in-memory) rounds are always returned and do not count
+    // against this limit.
+    int32 page_size = 1;
+
+    // page_token is an opaque cursor returned by a previous
+    // ListRoundsResponse. Pass it to resume listing from where the
+    // previous page ended.
+    string page_token = 2;
+
+    // persisted_only when true skips in-memory pending rounds and
+    // returns only rounds that have been persisted to disk
+    // (input_sig_sent, confirmed, etc.).
+    bool persisted_only = 3;
+}
+
+message ListRoundsResponse {
+    // rounds lists the current state of all round FSM instances.
+    repeated RoundInfo rounds = 1;
+
+    // next_page_token is an opaque cursor for the next page. Empty
+    // when there are no more results.
+    string next_page_token = 2;
+}
+
+message WatchRoundsRequest {
+}
+
+message WatchRoundsResponse {
+    // round contains the updated round state. Sent whenever a round
+    // FSM transitions to a new state.
+    RoundInfo round = 1;
 }

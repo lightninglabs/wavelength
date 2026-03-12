@@ -25,13 +25,14 @@ import (
 
 // Type aliases for sqlc generated types.
 type (
-	RoundRow               = sqlc.Round
-	RoundBoardingIntentRow = sqlc.RoundBoardingIntent
-	RoundClientTreeRow     = sqlc.RoundClientTree
-	RoundVtxoRequestRow    = sqlc.RoundVtxoRequest
-	VTXORow                = sqlc.Vtxo
-	InsertRoundParams      = sqlc.InsertRoundParams
-	InsertVTXOParams       = sqlc.InsertVTXOParams
+	RoundRow                  = sqlc.Round
+	RoundBoardingIntentRow    = sqlc.RoundBoardingIntent
+	RoundClientTreeRow        = sqlc.RoundClientTree
+	RoundVtxoRequestRow       = sqlc.RoundVtxoRequest
+	VTXORow                   = sqlc.Vtxo
+	InsertRoundParams         = sqlc.InsertRoundParams
+	InsertVTXOParams          = sqlc.InsertVTXOParams
+	ListRoundsPaginatedParams = sqlc.ListRoundsPaginatedParams
 )
 
 // RoundStore is the interface that groups all round-related database queries.
