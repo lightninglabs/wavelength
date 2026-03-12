@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check schema-check
+.PHONY: lint lint-source docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
@@ -261,6 +261,10 @@ check-go-version-yaml:
 check-migration-version: #? Check that LatestMigrationVersion matches migration files
 	@$(call print, "Checking migration version consistency.")
 	@./scripts/check-migration-latest-version.sh
+
+doc-check: #? Verify documentation cross-links are valid
+	@$(call print, "Checking documentation cross-links.")
+	@./scripts/doc-check.sh
 
 schema-check: #? Verify schema registry, MCP tools, and cobra commands are in sync
 	@$(call print, "Verifying schema registry consistency.")
