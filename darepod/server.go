@@ -222,8 +222,13 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 // context is cancelled. This is the harness-friendly entry point:
 // callers manage daemon lifecycle via context cancellation instead
 // of requiring a signal.Interceptor (which is process-global).
+// The derived cancel function is passed as shutdownFn so that
+// critical log events can trigger graceful shutdown.
 func (s *Server) RunWithContext(ctx context.Context) error {
-	return s.run(ctx, func() {})
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	return s.run(ctx, cancel)
 }
 
 // run is the shared core startup logic for both RunUntilShutdown
