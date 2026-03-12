@@ -846,6 +846,125 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 	}
 }
 
+// TestListRoundsPaginated verifies cursor-based pagination of persisted
+// rounds, including VTXO details returned per round.
+func TestListRoundsPaginated(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newRoundStoreForTest(t)
+	ctx := t.Context()
+
+	// Empty database returns empty results.
+	summaries, err := store.ListRoundsPaginated(ctx, "", 10)
+	require.NoError(t, err)
+	require.Empty(t, summaries)
+
+	// Insert 5 rounds with deterministic IDs so we know their
+	// lexicographic order.
+	const numRounds = 5
+	roundIDs := make([]round.RoundID, numRounds)
+	for i := 0; i < numRounds; i++ {
+		seed := "paginated-test-" + string(rune('a'+i))
+		roundIDs[i] = testRoundIDDB(seed)
+
+		testRound := createTestRound(t, roundIDs[i])
+		state := &round.InputSigSentState{
+			RoundID:     testRound.RoundID,
+			ClientTrees: make(map[round.SignerKey]*tree.Tree),
+		}
+
+		err := store.CommitState(ctx, testRound, state)
+		require.NoError(t, err)
+	}
+
+	// Save VTXOs for the first two rounds to test VTXO inclusion.
+	for i := 0; i < 2; i++ {
+		vtxos := make([]*round.ClientVTXO, 2)
+		for j := 0; j < 2; j++ {
+			vtxos[j] = createTestClientVTXO(
+				t, roundIDs[i], i*10+j,
+			)
+		}
+		err := store.SaveVTXOs(ctx, vtxos)
+		require.NoError(t, err)
+	}
+
+	// Fetch all rounds (limit > numRounds).
+	all, err := store.ListRoundsPaginated(ctx, "", 100)
+	require.NoError(t, err)
+	require.Len(t, all, numRounds)
+
+	// All should be input_sig_sent status.
+	for _, s := range all {
+		require.Equal(t, "input_sig_sent", s.Status)
+	}
+
+	// Verify ascending round_id order.
+	for i := 1; i < len(all); i++ {
+		require.True(
+			t, all[i-1].RoundID.String() < all[i].RoundID.String(),
+			"rounds not in ascending order",
+		)
+	}
+
+	// Verify VTXOs are attached to the right rounds. The first
+	// two rounds should each have 2 VTXOs; the rest have none.
+	vtxoRoundIDs := make(map[string]int)
+	for _, s := range all {
+		vtxoRoundIDs[s.RoundID.String()] = len(s.VTXOs)
+	}
+	for i := 0; i < 2; i++ {
+		cnt, ok := vtxoRoundIDs[roundIDs[i].String()]
+		require.True(t, ok)
+		require.Equal(t, 2, cnt,
+			"round %d should have 2 VTXOs", i)
+	}
+
+	// Test page_size limiting: request first 2 rounds.
+	page1, err := store.ListRoundsPaginated(ctx, "", 2)
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+
+	// Use last round_id as cursor for next page.
+	cursor := page1[len(page1)-1].RoundID.String()
+	page2, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	require.NoError(t, err)
+	require.Len(t, page2, 2)
+
+	// Third page should have 1 remaining round.
+	cursor = page2[len(page2)-1].RoundID.String()
+	page3, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	require.NoError(t, err)
+	require.Len(t, page3, 1)
+
+	// Fourth page should be empty.
+	cursor = page3[0].RoundID.String()
+	page4, err := store.ListRoundsPaginated(ctx, cursor, 2)
+	require.NoError(t, err)
+	require.Empty(t, page4)
+
+	// Finalize one round and verify status changes.
+	var txid chainhash.Hash
+	txid[0] = 0xff
+	confInfo := round.ConfInfo{
+		Height:    999,
+		BlockHash: chainhash.Hash{0xab},
+	}
+	err = store.FinalizeRound(ctx, roundIDs[0], txid, confInfo)
+	require.NoError(t, err)
+
+	// Re-fetch all — the finalized round should show "confirmed".
+	all, err = store.ListRoundsPaginated(ctx, "", 100)
+	require.NoError(t, err)
+	for _, s := range all {
+		if s.RoundID == roundIDs[0] {
+			require.Equal(t, "confirmed", s.Status)
+		} else {
+			require.Equal(t, "input_sig_sent", s.Status)
+		}
+	}
+}
+
 // TestRoundStoreWithBoardingGroup verifies that rounds with boarding intents
 // can be persisted and recovered correctly. This is critical because boarding
 // intents link on-chain UTXOs to virtual transaction outputs - losing this

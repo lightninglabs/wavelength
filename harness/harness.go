@@ -1428,6 +1428,45 @@ func (h *Harness) Faucet(address string, amount btcutil.Amount) string {
 	return txID
 }
 
+// FundOperatorLND sends coins to the harness's LND wallet so the
+// operator can fund commitment transactions during rounds. It
+// requests a new P2WKH address from LND, faucets the given amount,
+// and mines 6 blocks to confirm.
+func (h *Harness) FundOperatorLND(amount btcutil.Amount) {
+	h.T.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	// Connect to LND using the harness credential paths.
+	lndAddr := net.JoinHostPort("127.0.0.1", h.LNDGRPCPort)
+	conn, err := getLNDClientConn(
+		ctx, lndAddr, h.lndTLSCert, h.lndMacaroon,
+	)
+	require.NoError(h.T, err, "connect to LND for funding")
+	defer conn.Close()
+
+	// Get a fresh address from LND.
+	lndClient := lnrpc.NewLightningClient(conn)
+	addrResp, err := lndClient.NewAddress(
+		ctx, &lnrpc.NewAddressRequest{
+			Type: lnrpc.AddressType_WITNESS_PUBKEY_HASH,
+		},
+	)
+	require.NoError(h.T, err, "LND NewAddress")
+
+	// Fund via bitcoind and mine to confirm.
+	h.Faucet(addrResp.Address, amount)
+	h.Generate(6)
+
+	h.Logf(
+		"Funded operator LND wallet with %v to %s",
+		amount, addrResp.Address,
+	)
+}
+
 // MempoolTxIDs queries bitcoind's getrawmempool RPC to retrieve all
 // transaction IDs currently waiting in the mempool, enabling tests to verify
 // transaction broadcast and propagation before confirmation.

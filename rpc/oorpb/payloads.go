@@ -20,6 +20,9 @@ const (
 
 	// MethodFinalizePackage maps a client finalize-package request.
 	MethodFinalizePackage = "FinalizePackage"
+
+	// MethodIncomingAck maps a client incoming-transfer acknowledgment.
+	MethodIncomingAck = "IncomingAck"
 )
 
 // SigningDescriptor is the minimal signing metadata needed by the server OOR

@@ -13,7 +13,8 @@ when new boarding opportunities are available.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
 - `BlockEpochNotification` — Tell-message from chain source triggering UTXO polling.
-- `BoardingUtxoConfirmedEvent` — Tell-message sent when a UTXO confirms.
+- `BoardingUtxoConfirmedEvent` — Tell-message sent when a VTXO confirms.
+- `BoardRequest` / `BoardResponse` — Ask-request from RPC to trigger boarding flow (balance check, fee deduction, round registration).
 
 ## Relationships
 
@@ -21,11 +22,12 @@ when new boarding opportunities are available.
 - **Depended on by**: `round` (boarding intents), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
+  - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding)
   - → `vtxo`: `TriggerRefreshEvent`, `TriggerLeaveEvent`
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`
 
 ## Invariants
 

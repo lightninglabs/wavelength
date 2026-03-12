@@ -27,6 +27,14 @@ SELECT * FROM rounds WHERE status = 'input_sig_sent' ORDER BY creation_time ASC;
 -- name: ListRoundsByStatus :many
 SELECT * FROM rounds WHERE status = $1 ORDER BY creation_time DESC;
 
+-- name: ListRoundsPaginated :many
+-- ListRoundsPaginated returns rounds ordered by round_id with cursor-
+-- based pagination. When cursor is empty, returns from the beginning.
+SELECT * FROM rounds
+WHERE ($1 = '' OR round_id > $1)
+ORDER BY round_id ASC
+LIMIT $2;
+
 -- name: UpdateRoundStatus :exec
 UPDATE rounds
 SET status = $2, last_update_time = $3

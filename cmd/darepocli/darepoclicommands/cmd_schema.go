@@ -1,4 +1,4 @@
-package main
+package darepoclicommands
 
 import (
 	"fmt"
@@ -54,7 +54,7 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	printError("METHOD_NOT_FOUND", fmt.Sprintf(
+	PrintError("METHOD_NOT_FOUND", fmt.Sprintf(
 		"unknown method %q; run 'darepocli schema' "+
 			"to list available methods", methodName))
 

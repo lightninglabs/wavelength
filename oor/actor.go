@@ -848,13 +848,12 @@ func (b *oorDurableBehavior) askEvent(ctx context.Context, fsm *StateMachine,
 	return result.UnwrapOr(nil), nil
 }
 
-// Compile-time assertions that local outbox types satisfy
-// serverconn.ServerMessage. These exist to document why isTransportEvent uses
-// an explicit type switch rather than an interface assertion: if these types
-// were ever routed to the server, it would cause fund-loss (inputs not marked
-// spent locally) or liveness failure (retry timers lost).
-var _ serverconn.ServerMessage = (*MarkInputsSpentRequest)(nil)
-var _ serverconn.ServerMessage = (*ScheduleRetryRequest)(nil)
+// NOTE: MarkInputsSpentRequest and ScheduleRetryRequest have ToProto methods
+// for TLV persistence but intentionally do NOT implement
+// serverconn.ServerMessage (they lack ServiceMethod). Routing them to the
+// server would cause fund-loss (inputs not marked spent locally) or liveness
+// failure (retry timers lost). The isTransportEvent type switch below
+// enumerates only the true transport types.
 
 // isTransportEvent reports whether the outbox event should be routed to the
 // server via serverconn rather than handled locally. This uses an explicit type
@@ -888,8 +887,11 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			"ServerMessage", msg)
 	}
 
+	sm := serverMsg.ServiceMethod()
 	sendReq := &serverconn.SendClientEventRequest{
 		Message: serverMsg,
+		Service: sm.Service,
+		Method:  sm.Method,
 	}
 
 	if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {

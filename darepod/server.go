@@ -98,6 +98,7 @@ type Server struct {
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
 	vtxoStore     *db.VTXOPersistenceStore
+	roundStore    *db.RoundPersistenceStore
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -188,9 +189,55 @@ func (s *Server) markWalletReady() {
 // connects to an external lnd node and derives all backends from it;
 // in lwwallet mode, the daemon starts an in-process wallet and may
 // need to wait for wallet creation or unlock via RPC.
+func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel the context when the interceptor fires so blocking
+	// calls (like lndclient chain sync) unblock promptly.
+	go func() {
+		select {
+		case <-interceptor.ShutdownChannel():
+			cancel()
+
+		case <-ctx.Done():
+		}
+	}()
+
+	// Build a shutdown callback from the interceptor for the
+	// logging subsystem.
+	shutdownFn := func() {
+		if !interceptor.Listening() {
+			return
+		}
+
+		interceptor.RequestShutdown()
+	}
+
+	return s.run(ctx, shutdownFn)
+}
+
+// RunWithContext starts all subsystems and blocks until the given
+// context is cancelled. This is the harness-friendly entry point:
+// callers manage daemon lifecycle via context cancellation instead
+// of requiring a signal.Interceptor (which is process-global).
+// The derived cancel function is passed as shutdownFn so that
+// critical log events can trigger graceful shutdown.
+func (s *Server) RunWithContext(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	return s.run(ctx, cancel)
+}
+
+// run is the shared core startup logic for both RunUntilShutdown
+// and RunWithContext. The shutdownFn is wired into the logging
+// subsystem so critical log events can trigger daemon shutdown.
 //
 //nolint:funlen
-func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
+func (s *Server) run(ctx context.Context,
+	shutdownFn func()) error {
+
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
 	// -------------------------------------------------------
@@ -202,7 +249,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	// Register all package-level loggers with the manager. This
 	// replaces the default btclog.Disabled loggers so log output
 	// is captured from this point forward.
-	SetupLoggers(s.logManager, interceptor)
+	SetupLoggersWithShutdownFn(s.logManager, shutdownFn)
 
 	// Apply the configured debug level. A bare level like "info"
 	// sets all subsystems. A comma-separated list like
@@ -211,20 +258,6 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	if err := s.applyDebugLevel(); err != nil {
 		return fmt.Errorf("invalid debug level: %w", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Cancel the context when the interceptor fires so blocking calls
-	// (like lndclient chain sync) unblock promptly.
-	go func() {
-		select {
-		case <-interceptor.ShutdownChannel():
-			cancel()
-
-		case <-ctx.Done():
-		}
-	}()
 
 	log.InfoS(ctx, "Starting darepod",
 		slog.String("version", build.Version()),
@@ -471,7 +504,7 @@ func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	// -------------------------------------------------------
 	// 12. Block until shutdown.
 	// -------------------------------------------------------
-	<-interceptor.ShutdownChannel()
+	<-ctx.Done()
 
 	log.InfoS(ctx, "Shutting down darepod")
 
@@ -1127,6 +1160,17 @@ func (s *Server) registerRoundEventRoutes(
 		)
 	}
 
+	// JoinAck: server accepted the client's join request.
+	addRoundRoute(
+		roundpb.MethodJoinAck,
+		func() proto.Message {
+			return &roundpb.ClientSuccessResp{}
+		},
+		func() round.ClientEvent {
+			return &round.RoundJoined{}
+		},
+	)
+
 	// BatchInfo: server built the commitment transaction.
 	addRoundRoute(
 		roundpb.MethodBatchInfo,
@@ -1470,6 +1514,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
 	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
+	s.roundStore = roundStore
 
 	// Fetch the operator's terms from the server. These include
 	// the operator pubkey, sweep delay, exit delay, dust limit,
@@ -1480,19 +1525,26 @@ func (s *Server) initRoundActor(ctx context.Context,
 			"terms: %w", err)
 	}
 
+	// Default maximum operator fee the client is willing to pay
+	// per round. This is a safety limit to prevent the client
+	// from overpaying. Set to 0.01 BTC (1,000,000 sats) which
+	// is generous for regtest/testnet usage.
+	const defaultMaxOperatorFee = btcutil.Amount(1_000_000)
+
 	roundCfg := &round.RoundClientConfig{
-		Name:          "round-client",
-		Logger:        log,
-		Wallet:        clientWallet,
-		RoundStore:    roundStore,
-		VTXOStore:     roundStore,
-		OperatorTerms: operatorTerms,
-		ServerConn:    s.runtime.TellRef(),
-		ChainSource:   chainSourceRef,
-		WalletActor:   walletRef,
-		ChainParams:   s.chainParams,
-		ActorSystem:   s.actorSystem,
-		TimeoutActor:  timeoutRef,
+		Name:           "round-client",
+		Logger:         log,
+		Wallet:         clientWallet,
+		RoundStore:     roundStore,
+		VTXOStore:      roundStore,
+		OperatorTerms:  operatorTerms,
+		ServerConn:     s.runtime.TellRef(),
+		ChainSource:    chainSourceRef,
+		WalletActor:    walletRef,
+		ChainParams:    s.chainParams,
+		ActorSystem:    s.actorSystem,
+		TimeoutActor:   timeoutRef,
+		MaxOperatorFee: defaultMaxOperatorFee,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}

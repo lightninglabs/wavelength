@@ -34,6 +34,8 @@ interfaces, and core Ark types.
 ### lib/actormsg
 - `VTXOActorMsg`, `RoundReceivable` — Marker interfaces avoiding import cycles.
 - `VTXOActorServiceKey()`, `RoundActorServiceKey()` — Deterministic actor lookup.
+- `TriggerBoardMsg` — Cross-package message from wallet→round for boarding (VTXO amounts).
+- `TriggerVTXORefreshMsg`, `TriggerVTXOLeaveMsg` — Cross-package wallet→round triggers.
 
 ## Relationships
 

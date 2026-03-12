@@ -10,6 +10,8 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
@@ -100,6 +102,14 @@ func (m *SendSubmitPackageRequest) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *SendSubmitPackageRequest) outboxSealed() {}
 
+// ServiceMethod returns the mailbox routing metadata for SubmitPackage.
+func (m *SendSubmitPackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodSubmitPackage,
+	}
+}
+
 // ToProto converts SendSubmitPackageRequest to a protobuf message.
 func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 	payload, err := oortx.MarshalSubmitPackage(&oortx.SubmitPackage{
@@ -162,6 +172,14 @@ func (m *SendFinalizePackageRequest) outboxType() string {
 
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *SendFinalizePackageRequest) outboxSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for FinalizePackage.
+func (m *SendFinalizePackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodFinalizePackage,
+	}
+}
 
 // ToProto converts SendFinalizePackageRequest to a protobuf message.
 func (m *SendFinalizePackageRequest) ToProto() fn.Result[proto.Message] {
@@ -290,6 +308,14 @@ func (m *SendIncomingAckRequest) outboxType() string {
 
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *SendIncomingAckRequest) outboxSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for IncomingAck.
+func (m *SendIncomingAckRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodIncomingAck,
+	}
+}
 
 // ToProto converts SendIncomingAckRequest to a protobuf message.
 func (m *SendIncomingAckRequest) ToProto() fn.Result[proto.Message] {

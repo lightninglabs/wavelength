@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,11 @@ import (
 // bytesServerMessage is a minimal ServerMessage wrapper for TLV tests.
 type bytesServerMessage struct {
 	payload []byte
+}
+
+// ServiceMethod returns a zero-value routing key for tests.
+func (m *bytesServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{}
 }
 
 // ToProto converts the payload to a protobuf wrapper.

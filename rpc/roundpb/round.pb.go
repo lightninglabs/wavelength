@@ -949,7 +949,10 @@ type VTXORequest struct {
 	// client_key is the compressed public key (33 bytes) of the client.
 	ClientKey []byte `protobuf:"bytes,4,opt,name=client_key,json=clientKey,proto3" json:"client_key,omitempty"`
 	// operator_key is the compressed public key (33 bytes) of the operator.
-	OperatorKey   []byte `protobuf:"bytes,5,opt,name=operator_key,json=operatorKey,proto3" json:"operator_key,omitempty"`
+	OperatorKey []byte `protobuf:"bytes,5,opt,name=operator_key,json=operatorKey,proto3" json:"operator_key,omitempty"`
+	// signing_key is the compressed public key (33 bytes) used for MuSig2
+	// cosigning. Required for join-auth message verification.
+	SigningKey    []byte `protobuf:"bytes,6,opt,name=signing_key,json=signingKey,proto3" json:"signing_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1015,6 +1018,13 @@ func (x *VTXORequest) GetClientKey() []byte {
 func (x *VTXORequest) GetOperatorKey() []byte {
 	if x != nil {
 		return x.OperatorKey
+	}
+	return nil
+}
+
+func (x *VTXORequest) GetSigningKey() []byte {
+	if x != nil {
+		return x.SigningKey
 	}
 	return nil
 }
@@ -1820,14 +1830,16 @@ const file_round_proto_rawDesc = "" +
 	"\foperator_key\x18\x03 \x01(\fR\voperatorKey\x12\x1d\n" +
 	"\n" +
 	"exit_delay\x18\x04 \x01(\rR\texitDelay\x12\x19\n" +
-	"\btx_proof\x18\x05 \x01(\fR\atxProof\"\x9c\x01\n" +
+	"\btx_proof\x18\x05 \x01(\fR\atxProof\"\xbd\x01\n" +
 	"\vVTXORequest\x12\x16\n" +
 	"\x06amount\x18\x01 \x01(\x03R\x06amount\x12\x1b\n" +
 	"\tpk_script\x18\x02 \x01(\fR\bpkScript\x12\x16\n" +
 	"\x06expiry\x18\x03 \x01(\rR\x06expiry\x12\x1d\n" +
 	"\n" +
 	"client_key\x18\x04 \x01(\fR\tclientKey\x12!\n" +
-	"\foperator_key\x18\x05 \x01(\fR\voperatorKey\"I\n" +
+	"\foperator_key\x18\x05 \x01(\fR\voperatorKey\x12\x1f\n" +
+	"\vsigning_key\x18\x06 \x01(\fR\n" +
+	"signingKey\"I\n" +
 	"\x0eForfeitRequest\x127\n" +
 	"\rvtxo_outpoint\x18\x01 \x01(\v2\x12.round.v1.OutpointR\fvtxoOutpoint\"7\n" +
 	"\fLeaveRequest\x12'\n" +

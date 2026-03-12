@@ -304,10 +304,12 @@ func TestTreeProtoRoundTrip(t *testing.T) {
 		got, err := TreeFromProto(pb)
 		require.NoError(t, err)
 
-		// Compare structurally. FinalKey is nil after FromProto
-		// (not carried in proto), so we clear it on the original
-		// before comparison.
+		// Compare structurally. FinalKey is a derived field
+		// computed from CoSigners + SweepTapscriptRoot, not
+		// carried in the proto. Clear it on both sides so we
+		// only compare serialized fields.
 		clearFinalKeys(original.Root)
+		clearFinalKeys(got.Root)
 		assertTreeEqual(t, original, got)
 	})
 }

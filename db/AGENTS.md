@@ -10,7 +10,9 @@ Supports SQLite and PostgreSQL backends.
 
 - `BatchedTx[Q]` — Generic interface for atomic transactions (`ExecTx`, `Backend`).
 - `BoardingStore` — Interface for boarding intent persistence (CreateBoardingIntent, FetchByOutpoint, ListActive).
-- `RoundStore` — Interface for round state persistence (CreateRoundState, FetchByID, UpdateRoundState).
+- `RoundStore` — Interface for round state persistence (CommitState, FetchState, ListRoundsPaginated).
+- `RoundPersistenceStore` — Concrete implementation wrapping `BatchedTx[RoundStore]` with domain conversion.
+- `RoundSummary` / `VTXOSummary` — Lightweight descriptors for paginated round listing (avoids deserializing full trees).
 - `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint).
 - `OORArtifactStore` — Interface for OOR session state persistence.
 

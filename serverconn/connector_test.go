@@ -21,6 +21,11 @@ type testServerMessage struct {
 	value string
 }
 
+// ServiceMethod returns a zero-value routing key for tests.
+func (m *testServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{}
+}
+
 // ToProto converts the test message to a protobuf payload.
 func (m *testServerMessage) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](wrapperspb.String(m.value))

@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
@@ -56,6 +57,14 @@ type JoinRoundRequest struct {
 
 func (m *JoinRoundRequest) clientOutMsgSealed() {}
 
+// ServiceMethod returns the mailbox routing metadata for JoinRound.
+func (m *JoinRoundRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodJoinRound,
+	}
+}
+
 // SubmitNoncesRequest is sent from client to server with MuSig2 nonces.
 // This implements ClientOutMsg and is emitted via Outbox.
 type SubmitNoncesRequest struct {
@@ -72,6 +81,14 @@ type SubmitNoncesRequest struct {
 }
 
 func (m *SubmitNoncesRequest) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for SubmitNonces.
+func (m *SubmitNoncesRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodSubmitNonces,
+	}
+}
 
 // SubmitPartialSigRequest is sent from client to server with partial
 // signatures. This implements ClientEvent and is emitted via Outbox.
@@ -90,6 +107,14 @@ type SubmitPartialSigRequest struct {
 
 func (m *SubmitPartialSigRequest) clientOutMsgSealed() {}
 
+// ServiceMethod returns the mailbox routing metadata for SubmitPartialSigs.
+func (m *SubmitPartialSigRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodSubmitPartialSigs,
+	}
+}
+
 // SubmitForfeitSigRequest is sent from client to server with the boarding input
 // signature. This implements ClientEvent and is emitted via Outbox.
 type SubmitForfeitSigRequest struct {
@@ -105,6 +130,14 @@ type SubmitForfeitSigRequest struct {
 }
 
 func (m *SubmitForfeitSigRequest) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for SubmitForfeitSigs.
+func (m *SubmitForfeitSigRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodSubmitForfeitSigs,
+	}
+}
 
 // ToProto converts JoinRoundRequest to a protobuf message for mailbox
 // transport.
@@ -149,6 +182,10 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 		}
 		if req.OperatorKey != nil {
 			vr.OperatorKey = req.OperatorKey.
+				SerializeCompressed()
+		}
+		if req.SigningKey.PubKey != nil {
+			vr.SigningKey = req.SigningKey.PubKey.
 				SerializeCompressed()
 		}
 		vtxoReqs[i] = vr
@@ -383,6 +420,17 @@ type SubmitVTXOForfeitSigsToServer struct {
 }
 
 func (m *SubmitVTXOForfeitSigsToServer) clientOutMsgSealed() {}
+
+// ServiceMethod returns the mailbox routing metadata for
+// SubmitVTXOForfeitSigs.
+//
+//nolint:ll
+func (m *SubmitVTXOForfeitSigsToServer) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodSubmitVTXOForfeitSigs,
+	}
+}
 
 // MessageType returns the message type for logging.
 func (m *SubmitVTXOForfeitSigsToServer) MessageType() string {
