@@ -1,0 +1,785 @@
+//go:build systest
+
+package systest
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+)
+
+const (
+	// testOperatorFeeSat is the fake operator fee returned by the mailbox
+	// server and therefore charged by SendVTXO during the test.
+	testOperatorFeeSat = int64(1000)
+
+	// testRecipientAmountSat is the directed-send amount used by the test.
+	testRecipientAmountSat = int64(40000)
+
+	// testSeededAmountSat is the value of the preseeded live VTXO.
+	testSeededAmountSat = int64(100000)
+
+	// testDustLimitSat is the fake operator dust limit used by the test.
+	testDustLimitSat = int64(546)
+)
+
+// fakeMailboxServer implements just enough of the operator mailbox edge for the
+// daemon systest. It serves ArkService.GetInfo over mailbox unary RPC, records
+// round JoinRound requests, and long-polls empty inboxes so the ingress loop
+// does not busy-spin.
+type fakeMailboxServer struct {
+	mailboxpb.UnimplementedMailboxServiceServer
+
+	t                *testing.T
+	operatorMailbox  string
+	operatorInfoResp *arkrpc.GetInfoResponse
+
+	mu              sync.Mutex
+	mailboxes       map[string][]*mailboxpb.Envelope
+	nextEventSeq    map[string]uint64
+	joinRoundReqs   []*roundpb.JoinRoundRequest
+	joinRoundEnvs   []*mailboxpb.Envelope
+	inboxSignalChan chan struct{}
+}
+
+// newFakeMailboxServer constructs a fake mailbox edge with the given operator
+// mailbox ID and Ark GetInfo response.
+func newFakeMailboxServer(t *testing.T, operatorMailbox string,
+	operatorInfoResp *arkrpc.GetInfoResponse) *fakeMailboxServer {
+
+	t.Helper()
+
+	return &fakeMailboxServer{
+		t:                t,
+		operatorMailbox:  operatorMailbox,
+		operatorInfoResp: operatorInfoResp,
+		mailboxes:        make(map[string][]*mailboxpb.Envelope),
+		nextEventSeq:     make(map[string]uint64),
+		inboxSignalChan:  make(chan struct{}, 1),
+	}
+}
+
+// Send stores inbound envelopes addressed to the fake operator and synthesizes
+// unary Ark GetInfo responses back to the client's mailbox when requested.
+func (s *fakeMailboxServer) Send(ctx context.Context,
+	req *mailboxpb.SendRequest) (*mailboxpb.SendResponse, error) {
+
+	if req == nil || req.Envelope == nil {
+		return nil, fmt.Errorf("send request missing envelope")
+	}
+
+	env, ok := proto.Clone(
+		req.Envelope,
+	).(*mailboxpb.Envelope)
+	if !ok {
+		return nil, fmt.Errorf(
+			"clone envelope: unexpected type %T",
+			req.Envelope,
+		)
+	}
+
+	if env.Recipient == s.operatorMailbox {
+		if err := s.handleOperatorEnvelope(ctx, env); err != nil {
+			return nil, err
+		}
+	}
+
+	return &mailboxpb.SendResponse{
+		Status: &mailboxpb.Status{Ok: true},
+	}, nil
+}
+
+// Pull returns queued envelopes for a mailbox starting at the requested cursor.
+// When the mailbox is empty it waits up to the requested timeout so the
+// daemon's ingress loop behaves like it would against a real long-poll edge.
+func (s *fakeMailboxServer) Pull(ctx context.Context,
+	req *mailboxpb.PullRequest) (*mailboxpb.PullResponse, error) {
+
+	if req == nil {
+		return nil, fmt.Errorf("pull request is nil")
+	}
+
+	waitTimeout := time.Duration(req.WaitTimeoutMs) * time.Millisecond
+
+	for {
+		envelopes, nextCursor := s.pullBatch(
+			req.MailboxId, req.Cursor, req.MaxEnvelopes,
+		)
+		if len(envelopes) > 0 {
+			return &mailboxpb.PullResponse{
+				Status:     &mailboxpb.Status{Ok: true},
+				Envelopes:  envelopes,
+				NextCursor: nextCursor,
+			}, nil
+		}
+
+		if waitTimeout <= 0 {
+			return &mailboxpb.PullResponse{
+				Status:     &mailboxpb.Status{Ok: true},
+				NextCursor: req.Cursor,
+			}, nil
+		}
+
+		timer := time.NewTimer(waitTimeout)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return nil, ctx.Err()
+
+		case <-s.inboxSignalChan:
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+		case <-timer.C:
+			return &mailboxpb.PullResponse{
+				Status:     &mailboxpb.Status{Ok: true},
+				NextCursor: req.Cursor,
+			}, nil
+		}
+	}
+}
+
+// AckUpTo drops all envelopes with event sequence lower than the requested
+// cursor for the target mailbox.
+func (s *fakeMailboxServer) AckUpTo(_ context.Context,
+	req *mailboxpb.AckUpToRequest) (*mailboxpb.AckUpToResponse, error) {
+
+	if req == nil {
+		return nil, fmt.Errorf("ack request is nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	envelopes := s.mailboxes[req.MailboxId]
+	kept := envelopes[:0]
+	for _, env := range envelopes {
+		if env.EventSeq >= req.Cursor {
+			kept = append(kept, env)
+		}
+	}
+	s.mailboxes[req.MailboxId] = kept
+
+	return &mailboxpb.AckUpToResponse{
+		Status: &mailboxpb.Status{Ok: true},
+	}, nil
+}
+
+// handleOperatorEnvelope processes envelopes addressed to the fake operator
+// mailbox. The only mailbox RPC that needs a reply for this test is
+// ArkService.GetInfo; JoinRound requests are recorded for later assertions.
+func (s *fakeMailboxServer) handleOperatorEnvelope(ctx context.Context,
+	env *mailboxpb.Envelope) error {
+
+	if env.Rpc == nil {
+		return nil
+	}
+
+	switch {
+	case env.Rpc.Kind == mailboxpb.RpcMeta_KIND_REQUEST &&
+		env.Rpc.Service == "arkrpc.ArkService" &&
+		env.Rpc.Method == "GetInfo":
+		return s.replyWithOperatorInfo(ctx, env)
+
+	case env.Rpc.Service == roundpb.ServiceName &&
+		env.Rpc.Method == roundpb.MethodJoinRound:
+		return s.recordJoinRound(env)
+
+	default:
+		return nil
+	}
+}
+
+// replyWithOperatorInfo enqueues a mailbox unary response for Ark GetInfo back
+// to the requesting daemon mailbox.
+func (s *fakeMailboxServer) replyWithOperatorInfo(ctx context.Context,
+	env *mailboxpb.Envelope) error {
+
+	body, err := anypb.New(s.operatorInfoResp)
+	if err != nil {
+		return fmt.Errorf("wrap operator info: %w", err)
+	}
+
+	responseEnv := &mailboxpb.Envelope{
+		ProtocolVersion: env.ProtocolVersion,
+		Sender:          s.operatorMailbox,
+		Recipient:       env.Rpc.ReplyTo,
+		CreatedAtUnixMs: time.Now().UnixMilli(),
+		Body:            body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
+			Service:       env.Rpc.Service,
+			Method:        env.Rpc.Method,
+			CorrelationId: env.Rpc.CorrelationId,
+		},
+	}
+
+	s.enqueueEnvelope(responseEnv)
+
+	return nil
+}
+
+// recordJoinRound decodes and stores a JoinRound request envelope so the test
+// can assert on the actual round registration payload sent by the daemon.
+func (s *fakeMailboxServer) recordJoinRound(env *mailboxpb.Envelope) error {
+	if env.Body == nil {
+		return fmt.Errorf("join round envelope missing body")
+	}
+
+	var req roundpb.JoinRoundRequest
+	if err := env.Body.UnmarshalTo(&req); err != nil {
+		return fmt.Errorf("decode join round body: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.joinRoundReqs = append(s.joinRoundReqs, &req)
+	s.joinRoundEnvs = append(s.joinRoundEnvs, env)
+
+	return nil
+}
+
+// enqueueEnvelope appends an envelope to the recipient mailbox, assigning the
+// next event sequence for that mailbox.
+func (s *fakeMailboxServer) enqueueEnvelope(env *mailboxpb.Envelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	nextSeq := s.nextEventSeq[env.Recipient] + 1
+	s.nextEventSeq[env.Recipient] = nextSeq
+	env.EventSeq = nextSeq
+
+	s.mailboxes[env.Recipient] = append(s.mailboxes[env.Recipient], env)
+
+	select {
+	case s.inboxSignalChan <- struct{}{}:
+	default:
+	}
+}
+
+// pullBatch returns the available envelopes for a mailbox starting at the
+// requested cursor along with the exclusive next cursor.
+func (s *fakeMailboxServer) pullBatch(mailboxID string, cursor uint64,
+	maxEnvelopes uint32) ([]*mailboxpb.Envelope, uint64) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	envelopes := s.mailboxes[mailboxID]
+	if maxEnvelopes == 0 {
+		maxEnvelopes = uint32(len(envelopes))
+	}
+
+	var batch []*mailboxpb.Envelope
+	nextCursor := cursor
+
+	for _, env := range envelopes {
+		if env.EventSeq < cursor {
+			continue
+		}
+
+		cloned, ok := proto.Clone(
+			env,
+		).(*mailboxpb.Envelope)
+		if !ok {
+			continue
+		}
+
+		batch = append(batch, cloned)
+		nextCursor = env.EventSeq + 1
+
+		if uint32(len(batch)) >= maxEnvelopes {
+			break
+		}
+	}
+
+	return batch, nextCursor
+}
+
+// directedSendFixture owns the daemon under test, its fake operator edge, and
+// the gRPC client used by the systest.
+type directedSendFixture struct {
+	t              *testing.T
+	harness        *SysTestHarness
+	client         daemonrpc.DaemonServiceClient
+	conn           *grpc.ClientConn
+	mailboxServer  *fakeMailboxServer
+	seededOutpoint wire.OutPoint
+}
+
+// newDirectedSendFixture starts a full darepod instance against the systest
+// LND backend and a fake mailbox edge, then waits for the daemon RPC to become
+// ready.
+func newDirectedSendFixture(t *testing.T) *directedSendFixture {
+	t.Helper()
+
+	h := NewSysTestHarness(t)
+	ctx, cancel := context.WithCancel(h.Context())
+	t.Cleanup(cancel)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorInfo := &arkrpc.GetInfoResponse{
+		Pubkey:            operatorPriv.PubKey().SerializeCompressed(),
+		SweepKey:          operatorPriv.PubKey().SerializeCompressed(),
+		BoardingExitDelay: 144,
+		VtxoExitDelay:     144,
+		ForfeitScript:     []byte{0x51, 0x20},
+		SweepDelay:        1008,
+		DustLimit:         testDustLimitSat,
+		MinOperatorFee:    testOperatorFeeSat,
+		MinConfirmations:  1,
+	}
+
+	operatorMailbox := "operator-mailbox"
+	mailboxAddr, mailboxServer, stopMailbox := startFakeMailboxServer(
+		t, operatorMailbox, operatorInfo,
+	)
+	t.Cleanup(stopMailbox)
+
+	dataDir := t.TempDir()
+	rpcAddr := newLoopbackAddr(t)
+
+	cfg := darepod.DefaultConfig()
+	cfg.DataDir = dataDir
+	cfg.Network = "regtest"
+	cfg.DebugLevel = "info"
+	cfg.Wallet.Type = darepod.WalletTypeLnd
+	cfg.Lnd.Host = net.JoinHostPort("localhost", h.Harness.LNDGRPCPort)
+	lndDataDir := filepath.Join(h.Harness.BaseDir(), "lnd")
+	cfg.Lnd.TLSPath = filepath.Join(lndDataDir, "tls.cert")
+	cfg.Lnd.MacaroonPath = filepath.Join(
+		lndDataDir, "data", "chain", "bitcoin",
+		"regtest", "admin.macaroon",
+	)
+	cfg.Server.Host = mailboxAddr
+	cfg.Server.Insecure = true
+	cfg.Server.LocalMailboxID = "client-mailbox"
+	cfg.Server.RemoteMailboxID = operatorMailbox
+	cfg.RPC.ListenAddr = rpcAddr
+
+	seededOutpoint := seedLiveVTXO(
+		t, cfg, operatorPriv.PubKey(),
+		btcutil.Amount(testSeededAmountSat),
+	)
+
+	server, err := darepod.NewServer(cfg)
+	require.NoError(t, err)
+
+	serverErrChan := make(chan error, 1)
+	go func() {
+		serverErrChan <- server.RunWithContext(ctx)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+
+		select {
+		case runErr := <-serverErrChan:
+			if runErr != nil &&
+				!errors.Is(runErr, context.Canceled) {
+
+				require.NoError(t, runErr)
+			}
+
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for darepod shutdown")
+		}
+	})
+
+	conn, err := grpc.NewClient(
+		rpcAddr, grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, conn.Close())
+	})
+
+	client := daemonrpc.NewDaemonServiceClient(conn)
+	waitForDaemonReady(t, client)
+
+	return &directedSendFixture{
+		t:              t,
+		harness:        h,
+		client:         client,
+		conn:           conn,
+		mailboxServer:  mailboxServer,
+		seededOutpoint: seededOutpoint,
+	}
+}
+
+// waitForDaemonReady polls GetInfo until the daemon reports wallet
+// readiness.
+func waitForDaemonReady(t *testing.T, client daemonrpc.DaemonServiceClient) {
+	t.Helper()
+
+	require.Eventually(
+		t,
+		func() bool {
+			ctx, cancel := context.WithTimeout(
+				t.Context(), 2*time.Second,
+			)
+			defer cancel()
+
+			info, err := client.GetInfo(
+				ctx, &daemonrpc.GetInfoRequest{},
+			)
+			if err != nil {
+				return false
+			}
+
+			return info.WalletReady
+		},
+		30*time.Second,
+		200*time.Millisecond,
+		"daemon did not become ready",
+	)
+}
+
+// startFakeMailboxServer starts an in-process gRPC mailbox server and returns
+// its listen address, the server implementation, and a cleanup function.
+func startFakeMailboxServer(t *testing.T, operatorMailbox string,
+	operatorInfoResp *arkrpc.GetInfoResponse) (string, *fakeMailboxServer,
+	func()) {
+
+	t.Helper()
+
+	listener, err := net.Listen("tcp", newLoopbackAddr(t))
+	require.NoError(t, err)
+
+	serverImpl := newFakeMailboxServer(
+		t, operatorMailbox, operatorInfoResp,
+	)
+
+	grpcServer := grpc.NewServer()
+	mailboxpb.RegisterMailboxServiceServer(grpcServer, serverImpl)
+
+	go func() {
+		if serveErr := grpcServer.Serve(listener); serveErr != nil &&
+			!errors.Is(serveErr, grpc.ErrServerStopped) {
+
+			t.Errorf("fake mailbox server exited: %v", serveErr)
+		}
+	}()
+
+	stopFn := func() {
+		grpcServer.GracefulStop()
+		err := listener.Close()
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			require.NoError(t, err)
+		}
+	}
+
+	return listener.Addr().String(), serverImpl, stopFn
+}
+
+// newLoopbackAddr reserves and returns a free loopback TCP address for a test
+// server to bind immediately afterward.
+func newLoopbackAddr(t *testing.T) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	addr := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	return addr
+}
+
+// seedLiveVTXO creates the daemon database ahead of startup and inserts one
+// live VTXO so the manager can recover it during boot.
+func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
+	operatorKey *btcec.PublicKey,
+	amount btcutil.Amount) wire.OutPoint {
+
+	t.Helper()
+
+	networkDir, err := cfg.NetworkDir()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(networkDir, 0o700))
+
+	sqliteStore, err := db.NewSqliteStore(
+		db.DefaultSqliteConfig(networkDir), btclog.Disabled,
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, sqliteStore.Close())
+	}()
+
+	store := db.NewStore(
+		sqliteStore.DB, sqliteStore.Queries,
+		sqliteStore.Backend(), btclog.Disabled,
+	)
+	roundStore := store.NewRoundStore(
+		&chaincfg.RegressionNetParams, clock.NewDefaultClock(),
+	)
+	vtxoStore := store.NewVTXOStore(clock.NewDefaultClock())
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	roundID, err := round.NewRoundID()
+	require.NoError(t, err)
+
+	descriptor, err := tree.NewVTXODescriptor(
+		amount, clientPriv.PubKey(), operatorKey, 144,
+	)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte(t.Name() + "-seeded-vtxo")),
+		Index: 0,
+	}
+	commitmentTxID := chainhash.HashH([]byte(t.Name() + "-commitment"))
+	treePath := &tree.Tree{
+		BatchOutpoint: outpoint,
+		Root: &tree.Node{
+			Input:     outpoint,
+			Outputs:   []*wire.TxOut{},
+			CoSigners: []*btcec.PublicKey{},
+			Children:  make(map[uint32]*tree.Node),
+		},
+	}
+	commitmentTx := wire.NewMsgTx(2)
+	commitmentTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{0x11},
+			Index: 0,
+		},
+	})
+	commitmentTx.AddTxOut(&wire.TxOut{
+		Value:    int64(amount),
+		PkScript: descriptor.PkScript,
+	})
+	commitmentPSBT, err := psbt.NewFromUnsignedTx(commitmentTx)
+	require.NoError(t, err)
+
+	err = roundStore.CommitState(t.Context(), &round.Round{
+		RoundID:      roundID,
+		StartHeight:  1,
+		CommitmentTx: fn.Some(commitmentPSBT),
+		VTXOTreePaths: fn.Some(map[int]*tree.Tree{
+			0: treePath,
+		}),
+	}, &round.InputSigSentState{
+		RoundID:     roundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	})
+	require.NoError(t, err)
+
+	err = roundStore.FinalizeRound(
+		t.Context(),
+		roundID,
+		commitmentTx.TxHash(),
+		round.ConfInfo{
+			Height:    1,
+			BlockHash: chainhash.HashH([]byte(t.Name() + "-block")),
+		},
+	)
+	require.NoError(t, err)
+
+	err = vtxoStore.SaveVTXO(t.Context(), &vtxo.Descriptor{
+		Outpoint: outpoint,
+		Amount:   amount,
+		PkScript: descriptor.PkScript,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: clientPriv.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  7,
+			},
+		},
+		OperatorKey:    operatorKey,
+		TreePath:       treePath,
+		RoundID:        roundID.String(),
+		CommitmentTxID: commitmentTxID,
+		BatchExpiry:    500000,
+		RelativeExpiry: 144,
+		TreeDepth:      0,
+		CreatedHeight:  1,
+		Status:         vtxo.VTXOStatusLive,
+	})
+	require.NoError(t, err)
+
+	return outpoint
+}
+
+// listAllVTXOs returns the daemon's current VTXO view via the public RPC.
+func listAllVTXOs(t *testing.T,
+	client daemonrpc.DaemonServiceClient) []*daemonrpc.VTXO {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), 5*time.Second,
+	)
+	defer cancel()
+
+	resp, err := client.ListVTXOs(ctx, &daemonrpc.ListVTXOsRequest{})
+	require.NoError(t, err)
+
+	return resp.Vtxos
+}
+
+// listRounds returns the daemon's current round state view via the public RPC.
+func listRounds(t *testing.T,
+	client daemonrpc.DaemonServiceClient) []*daemonrpc.RoundInfo {
+
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), 5*time.Second,
+	)
+	defer cancel()
+
+	resp, err := client.ListRounds(ctx, &daemonrpc.ListRoundsRequest{})
+	require.NoError(t, err)
+
+	return resp.Rounds
+}
+
+// findVTXOByOutpoint looks up a daemonrpc.VTXO by its string outpoint.
+func findVTXOByOutpoint(vtxos []*daemonrpc.VTXO,
+	outpoint wire.OutPoint) *daemonrpc.VTXO {
+
+	target := fmt.Sprintf("%s:%d", outpoint.Hash, outpoint.Index)
+	for _, v := range vtxos {
+		if v.Outpoint == target {
+			return v
+		}
+	}
+
+	return nil
+}
+
+// TestSendVTXOEndToEnd exercises directed send through the full daemon stack:
+// gRPC RPC handling, wallet admission, VTXO manager state transition, round
+// registration, and mailbox egress of the JoinRound request.
+func TestSendVTXOEndToEnd(t *testing.T) {
+	ParallelN(t)
+
+	fixture := newDirectedSendFixture(t)
+
+	initialVTXOs := listAllVTXOs(t, fixture.client)
+	require.Len(t, initialVTXOs, 1)
+	require.Equal(
+		t, daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		initialVTXOs[0].Status,
+	)
+
+	recipientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), 10*time.Second,
+	)
+	defer cancel()
+
+	sendResp, err := fixture.client.SendVTXO(
+		ctx, &daemonrpc.SendVTXORequest{
+			Recipients: []*daemonrpc.Output{
+				{
+					Destination: &daemonrpc.Output_Pubkey{
+						Pubkey: schnorr.SerializePubKey(
+							recipientPriv.PubKey(),
+						),
+					},
+					AmountSat: testRecipientAmountSat,
+				},
+			},
+		})
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendResp.Status)
+	require.Equal(t, testRecipientAmountSat, sendResp.TotalAmountSat)
+	require.Equal(
+		t,
+		testSeededAmountSat-testRecipientAmountSat-testOperatorFeeSat,
+		sendResp.ChangeAmountSat,
+	)
+	require.Equal(t, int32(1), sendResp.SelectedCount)
+
+	require.Eventually(
+		t,
+		func() bool {
+			vtxos := listAllVTXOs(t, fixture.client)
+			vtxoInfo := findVTXOByOutpoint(
+				vtxos, fixture.seededOutpoint,
+			)
+			if vtxoInfo == nil {
+				return false
+			}
+
+			return vtxoInfo.Status ==
+				daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
+		},
+		20*time.Second,
+		200*time.Millisecond,
+		"seeded VTXO did not transition to pending forfeit",
+	)
+
+	statePending := daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY
+	stateRegSent := daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT
+
+	require.Eventually(
+		t,
+		func() bool {
+			rounds := listRounds(t, fixture.client)
+			for _, roundInfo := range rounds {
+				if !roundInfo.IsTemp {
+					continue
+				}
+
+				switch roundInfo.State {
+				case statePending, stateRegSent:
+					return true
+
+				default:
+				}
+			}
+
+			return false
+		},
+		20*time.Second,
+		200*time.Millisecond,
+		"round did not reach pending-assembly state",
+	)
+}
