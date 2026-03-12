@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 )
 
@@ -110,6 +111,14 @@ type Config struct {
 	// on mainnet. This guard prevents accidentally operating on
 	// mainnet during development, since DefaultNetwork is "mainnet".
 	AllowMainnet bool `mapstructure:"allow-mainnet"`
+
+	// LogHandler is an optional log handler for the daemon. When
+	// set, the server uses this handler instead of creating a
+	// default handler writing to os.Stdout. This allows embedders
+	// (such as a TUI or test harness) to route daemon logs to
+	// custom destinations. When nil, the server falls back to
+	// stdout.
+	LogHandler btclog.Handler
 }
 
 // LndConfig holds connection parameters for the backing lnd node.

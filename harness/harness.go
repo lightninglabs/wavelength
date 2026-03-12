@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -273,6 +274,12 @@ type Options struct {
 	// addition to the arkd log file.
 	ArkdLogStdOut bool
 
+	// LogWriter is an optional writer that receives harness log
+	// lines. When set, log output is written here instead of
+	// stdout. This allows embedders (such as a TUI) to route
+	// harness logs to a custom destination.
+	LogWriter io.Writer
+
 	// StartTapd if true, starts a tapd instance along with the harness.
 	// Default is false to speed up tests that don't need tapd.
 	StartTapd bool
@@ -376,9 +383,13 @@ func (h *Harness) logWithCaller(additionalSkip int, msg string) {
 		require.NoError(h.T, err, "failed to write harness log")
 	}
 
-	if h.opts.HarnessLogStdOut {
-		// Intentionally using Print as we want to ensure that logLine
-		// is printed as-is without extra formatting.
+	// Route log output to the custom writer when provided,
+	// otherwise fall back to stdout when HarnessLogStdOut is set.
+	if h.opts.LogWriter != nil {
+		_, _ = h.opts.LogWriter.Write([]byte(logLine))
+	} else if h.opts.HarnessLogStdOut {
+		// Intentionally using Print as we want to ensure that
+		// logLine is printed as-is without extra formatting.
 		fmt.Print(logLine)
 	}
 }

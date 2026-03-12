@@ -243,9 +243,14 @@ func (s *Server) run(ctx context.Context,
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
 	// -------------------------------------------------------
-	// Create a log handler writing to stdout. The SubLoggerManager
-	// manages per-subsystem loggers and supports runtime level changes.
-	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	// Use the caller-provided log handler when available so
+	// embedders (TUI, test harness) can route logs to custom
+	// destinations. Only standalone Main() entry points leave
+	// LogHandler nil, falling back to stdout.
+	logHandler := s.cfg.LogHandler
+	if logHandler == nil {
+		logHandler = btclog.NewDefaultHandler(os.Stdout)
+	}
 	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
 
 	// Register all package-level loggers with the manager. This
