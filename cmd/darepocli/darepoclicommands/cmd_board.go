@@ -39,7 +39,7 @@ func board(cmd *cobra.Command, _ []string) error {
 
 	resp, err := client.Board(context.Background(), req)
 	if err != nil {
-		return fmt.Errorf("Board RPC failed: %w", err)
+		return fmt.Errorf("board RPC failed: %w", err)
 	}
 
 	return printJSON(resp)

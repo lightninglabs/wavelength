@@ -1092,7 +1092,7 @@ func (r *RPCServer) ListRounds(ctx context.Context,
 	}
 
 	// Query persisted rounds from SQL with cursor pagination.
-	pageSize := int32(req.PageSize)
+	pageSize := req.PageSize
 	if pageSize <= 0 {
 		pageSize = defaultListRoundsPageSize
 	}

@@ -1408,6 +1408,8 @@ func (a *RoundClientActor) handleTimeout(ctx context.Context,
 
 // processOutbox processes messages emitted by the FSM via Outbox and routes
 // them to the appropriate destination (server or chainsource).
+//
+//nolint:funlen
 func (a *RoundClientActor) processOutbox(ctx context.Context,
 	outbox []ClientOutMsg) error {
 

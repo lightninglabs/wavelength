@@ -189,8 +189,6 @@ func (s *Server) markWalletReady() {
 // connects to an external lnd node and derives all backends from it;
 // in lwwallet mode, the daemon starts an in-process wallet and may
 // need to wait for wallet creation or unlock via RPC.
-//
-//nolint:funlen
 func (s *Server) RunUntilShutdown(interceptor signal.Interceptor) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -88,11 +88,12 @@ func (m *TriggerVTXOLeaveMsg) MessageType() string {
 	return "TriggerVTXOLeaveMsg"
 }
 
-// TriggerBoardMsg is sent from the wallet actor to the round actor to trigger
-// boarding of confirmed UTXOs into the next round. The wallet computes the VTXO
-// output amounts after deducting operator fees, then delegates round registration
-// to the round actor. Defined in actormsg to avoid import cycle between wallet
-// and round packages.
+// TriggerBoardMsg is sent from the wallet actor to the round actor
+// to trigger boarding of confirmed UTXOs into the next round. The
+// wallet computes the VTXO output amounts after deducting operator
+// fees, then delegates round registration to the round actor.
+// Defined in actormsg to avoid import cycle between wallet and
+// round packages.
 type TriggerBoardMsg struct {
 	actor.BaseMessage
 

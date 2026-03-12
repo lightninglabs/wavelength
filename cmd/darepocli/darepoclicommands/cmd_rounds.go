@@ -2,6 +2,7 @@ package darepoclicommands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -112,7 +113,7 @@ func roundsWatch(cmd *cobra.Command, _ []string) error {
 
 	for {
 		resp, err := stream.Recv()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

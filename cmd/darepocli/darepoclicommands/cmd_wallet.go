@@ -255,7 +255,6 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 	// override without fighting over stdin.
 	if envPass := os.Getenv(
 		"DAREPOD_WALLET_PASSWORD"); envPass != "" {
-
 		return []byte(envPass), nil
 	}
 
