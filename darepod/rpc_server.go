@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -622,9 +623,10 @@ func (r *RPCServer) Board(ctx context.Context,
 	}, nil
 }
 
-// SendVTXO initiates an in-round transfer by submitting a refresh
-// request with specific recipient outputs to the round coordinator.
-// The transfer completes asynchronously when the next round commits.
+// SendVTXO initiates an in-round directed transfer by forfeiting
+// existing VTXOs and creating new recipient VTXOs in the same round.
+// Coin selection, reservation, and round registration are handled
+// atomically by the wallet actor.
 func (r *RPCServer) SendVTXO(ctx context.Context,
 	req *daemonrpc.SendVTXORequest) (
 	*daemonrpc.SendVTXOResponse, error) {
@@ -638,43 +640,103 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			"at least one recipient is required")
 	}
 
-	// Validate recipients and compute total amount.
+	// Resolve each recipient's pkScript and client pubkey from
+	// the proto Output destination.
+	recipients := make(
+		[]wallet.SendRecipient, 0, len(req.Recipients),
+	)
 	var totalAmount int64
+
 	for i, out := range req.Recipients {
 		if out.GetDestination() == nil {
 			return nil, status.Errorf(
 				codes.InvalidArgument,
 				"recipient %d: destination is "+
-					"required", i)
+					"required", i,
+			)
 		}
 
 		if out.AmountSat <= 0 {
 			return nil, status.Errorf(
 				codes.InvalidArgument,
 				"recipient %d: amount must be "+
-					"positive", i)
+					"positive", i,
+			)
 		}
+
+		pkScript, clientKey, err := r.resolveRecipientOutput(
+			out,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"recipient %d: %v", i, err,
+			)
+		}
+
+		recipients = append(recipients, wallet.SendRecipient{
+			PkScript:  pkScript,
+			Amount:    btcutil.Amount(out.AmountSat),
+			ClientKey: clientKey,
+		})
 
 		totalAmount += out.AmountSat
 	}
 
-	// For dry_run, validate inputs and return a preview.
-	if req.DryRun {
-		return &daemonrpc.SendVTXOResponse{
-			Status:         "preview",
-			TotalAmountSat: totalAmount,
-		}, nil
+	// Fetch operator terms for fee, dust limit, exit delay, and
+	// operator key.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
 	}
 
-	// TODO(roasbeef): In-round directed sends are not yet
-	// implemented. The wallet actor's RefreshVTXOsRequest only
-	// supports self-refresh (sending back to self), not directed
-	// transfers to external recipients. Once the round protocol
-	// supports recipient outputs, this handler should build a
-	// proper send request with the validated recipients.
-	return nil, status.Errorf(codes.Unimplemented,
-		"in-round directed sends are not yet implemented; "+
-			"use SendOOR for out-of-round transfers")
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	sendReq := &wallet.SendVTXOsRequest{
+		Recipients:    recipients,
+		OperatorFee:   terms.MinOperatorFee,
+		DustLimit:     terms.DustLimit,
+		OperatorKey:   terms.PubKey,
+		VTXOExitDelay: terms.VTXOExitDelay,
+		DryRun:        req.DryRun,
+	}
+
+	future := wRef.Ask(ctx, sendReq)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"send failed: %v", err)
+	}
+
+	sendResp, ok := resp.(*wallet.SendVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", resp)
+	}
+
+	log.InfoS(ctx, "SendVTXO completed",
+		slog.String("status", sendResp.Status),
+		slog.Int("selected_count",
+			sendResp.SelectedCount),
+		slog.Int64("total_selected",
+			int64(sendResp.TotalSelected)),
+		slog.Int64("change",
+			int64(sendResp.ChangeAmount)))
+
+	return &daemonrpc.SendVTXOResponse{
+		Status:          sendResp.Status,
+		TotalAmountSat:  totalAmount,
+		ChangeAmountSat: int64(sendResp.ChangeAmount),
+		SelectedCount:   int32(sendResp.SelectedCount),
+	}, nil
 }
 
 // SendOOR initiates an out-of-round transfer directly between the
@@ -868,6 +930,98 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 	return wRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
 		Outpoints: outpoints,
 	})
+}
+
+// resolveRecipientOutput extracts both the pkScript and the client
+// public key from an Output proto. The client key is required for
+// constructing VTXO descriptors in directed sends. Only the pubkey and
+// taproot address destination types are supported — raw pk_script does
+// not carry the public key needed for MuSig2.
+func (r *RPCServer) resolveRecipientOutput(
+	out *daemonrpc.Output) ([]byte, *btcec.PublicKey, error) {
+
+	switch d := out.Destination.(type) {
+	case *daemonrpc.Output_Pubkey:
+		if len(d.Pubkey) != schnorr.PubKeyBytesLen {
+			return nil, nil, fmt.Errorf(
+				"pubkey must be %d bytes, got %d",
+				schnorr.PubKeyBytesLen,
+				len(d.Pubkey),
+			)
+		}
+
+		clientKey, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"invalid pubkey: %w", err,
+			)
+		}
+
+		// Derive the BIP-86 taproot pkScript from the
+		// x-only pubkey.
+		addr, err := btcutil.NewAddressTaproot(
+			d.Pubkey, r.server.chainParams,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"derive taproot address: %w", err,
+			)
+		}
+
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"derive pkScript: %w", err,
+			)
+		}
+
+		return pkScript, clientKey, nil
+
+	case *daemonrpc.Output_Address:
+		addr, err := btcutil.DecodeAddress(
+			d.Address, r.server.chainParams,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"invalid address: %w", err,
+			)
+		}
+
+		// Only taproot addresses carry the x-only pubkey
+		// needed for VTXO construction.
+		tapAddr, ok := addr.(*btcutil.AddressTaproot)
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"directed sends require a taproot "+
+					"address, got %T", addr,
+			)
+		}
+
+		clientKey, err := schnorr.ParsePubKey(
+			tapAddr.ScriptAddress(),
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"extract pubkey from address: %w",
+				err,
+			)
+		}
+
+		pkScript, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"derive pkScript: %w", err,
+			)
+		}
+
+		return pkScript, clientKey, nil
+
+	default:
+		return nil, nil, fmt.Errorf(
+			"directed sends require pubkey or taproot "+
+				"address destination, got %T", d,
+		)
+	}
 }
 
 // resolveOutputPkScript derives a pkScript from the Output's
