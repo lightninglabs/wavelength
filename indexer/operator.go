@@ -89,19 +89,38 @@ func NewOperator(cfg OperatorConfig, svc *Service) (*Operator, error) {
 	}, nil
 }
 
-// Dispatchers returns the EnvelopeDispatcher map for all 7 IndexerService
-// RPC methods. The returned map should be merged into each client's
-// PerClientConfig.Dispatchers when the client registers with the shared
-// bridge.
+// RegisterService registers an additional mailbox service on the
+// operator's internal ServeMux. This allows the operator to dispatch
+// requests for services beyond IndexerService (e.g., ArkService)
+// using the same response-building machinery.
+//
+// The register function receives the mux and should call the
+// appropriate RegisterXxxMailboxServer helper.
+func (o *Operator) RegisterService(
+	register func(mux *mailboxrpc.ServeMux)) {
+
+	register(o.mux)
+}
+
+// Dispatchers returns the EnvelopeDispatcher map for all 7
+// IndexerService RPC methods. The returned map should be merged
+// into each client's PerClientConfig.Dispatchers when the client
+// registers with the shared bridge.
 //
 // Each dispatcher is a closure that:
-//  1. Extracts the principal identity from the envelope's Sender field.
+//  1. Extracts the principal identity from the envelope's Sender
+//     field.
 //  2. Calls the ServeMux to process the request.
 //  3. Builds a KIND_RESPONSE envelope (including error headers on
 //     handler failure).
 //  4. Sends the response via the shared Edge.
+//
+// To include dispatchers for additional services registered via
+// RegisterService, call ServiceDispatchers separately and merge
+// the results.
 func (o *Operator) Dispatchers() clientconn.DispatcherMap {
-	methods := []string{
+	return o.ServiceDispatchers(
+		indexerServiceName,
 		"RegisterReceiveScript",
 		"ListMyReceiveScripts",
 		"UnregisterReceiveScript",
@@ -109,12 +128,21 @@ func (o *Operator) Dispatchers() clientconn.DispatcherMap {
 		"ListVTXOsByScripts",
 		"GetSubtreeByScripts",
 		"ListVTXOEventsByScripts",
-	}
+	)
+}
+
+// ServiceDispatchers builds a DispatcherMap for the given service and
+// methods using the operator's shared response-building machinery.
+// This is the generalized form of Dispatchers — callers use it to
+// create dispatchers for additional services registered on the
+// operator's mux via RegisterService.
+func (o *Operator) ServiceDispatchers(service string,
+	methods ...string) clientconn.DispatcherMap {
 
 	dm := make(clientconn.DispatcherMap, len(methods))
 	for _, method := range methods {
 		key := mailboxrpc.ServiceMethod{
-			Service: indexerServiceName,
+			Service: service,
 			Method:  method,
 		}
 
