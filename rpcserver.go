@@ -115,12 +115,19 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	return s, nil
 }
 
-// RegisterGRPCService allows co-hosting additional gRPC services on the
-// client-facing server. The callback receives the underlying registrar
-// so the caller can register arbitrary service implementations. Must be
-// called before Start.
+// RegisterGRPCService allows co-hosting additional gRPC services on
+// the client-facing server. The callback receives the underlying
+// registrar so the caller can register arbitrary service
+// implementations.
+//
+// Must be called before Start — panics if the server is already
+// serving, since gRPC does not allow registration after Serve.
 func (r *RPCServer) RegisterGRPCService(
 	register func(grpc.ServiceRegistrar)) {
+
+	if atomic.LoadUint32(&r.started) != 0 {
+		panic("RegisterGRPCService called after Start")
+	}
 
 	register(r.grpcServer)
 }
