@@ -53,7 +53,7 @@ func TestHandleInboundNilEnvelope(t *testing.T) {
 		WithOnUnknownClient(handler),
 	)
 
-	err := bridge.HandleInbound(context.Background(), nil)
+	err := bridge.HandleInbound(t.Context(), nil)
 	require.NoError(t, err)
 	require.Equal(t, 0, handler.callCount())
 }
@@ -69,7 +69,7 @@ func TestHandleInboundEmptySender(t *testing.T) {
 	)
 
 	env := &mailboxpb.Envelope{Sender: ""}
-	err := bridge.HandleInbound(context.Background(), env)
+	err := bridge.HandleInbound(t.Context(), env)
 	require.NoError(t, err)
 	require.Equal(t, 0, handler.callCount())
 }
@@ -82,7 +82,7 @@ func TestHandleInboundNoHandler(t *testing.T) {
 	bridge := NewClientsConnBridge()
 
 	env := &mailboxpb.Envelope{Sender: "client-1"}
-	err := bridge.HandleInbound(context.Background(), env)
+	err := bridge.HandleInbound(t.Context(), env)
 	require.NoError(t, err)
 }
 
@@ -97,18 +97,17 @@ func TestHandleInboundKnownClient(t *testing.T) {
 	)
 
 	// Pre-register client with a minimal config.
-	ctx := context.Background()
 	mb := newInMemoryMailbox()
 	store := newMemCheckpointStore()
 	cfg := newTestPerClientConfig(mb, store)
 	cfg.LocalMailboxID = "svc:client-1"
 	cfg.RemoteMailboxID = "client-1"
 
-	_, err := bridge.RegisterClient(ctx, "client-1", cfg)
+	_, err := bridge.RegisterClient(t.Context(), "client-1", cfg)
 	require.NoError(t, err)
 
 	env := &mailboxpb.Envelope{Sender: "client-1"}
-	err = bridge.HandleInbound(ctx, env)
+	err = bridge.HandleInbound(t.Context(), env)
 	require.NoError(t, err)
 	require.Equal(t, 0, handler.callCount())
 
@@ -129,7 +128,7 @@ func TestHandleInboundTriggersHandler(t *testing.T) {
 		Sender:    "new-client",
 		Recipient: "svc:new-client",
 	}
-	err := bridge.HandleInbound(context.Background(), env)
+	err := bridge.HandleInbound(t.Context(), env)
 	require.NoError(t, err)
 	require.Equal(t, 1, handler.callCount())
 }
@@ -147,7 +146,7 @@ func TestHandleInboundHandlerError(t *testing.T) {
 	)
 
 	env := &mailboxpb.Envelope{Sender: "fail-client"}
-	err := bridge.HandleInbound(context.Background(), env)
+	err := bridge.HandleInbound(t.Context(), env)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "registration failed")
 }
@@ -206,7 +205,7 @@ func TestHandleInboundConcurrentSameClient(t *testing.T) {
 			}
 
 			_ = bridge.HandleInbound(
-				context.Background(), env,
+				t.Context(), env,
 			)
 		}(i)
 	}
