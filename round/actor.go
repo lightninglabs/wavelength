@@ -811,6 +811,9 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *actormsg.TriggerVTXOLeaveMsg:
 		return a.handleTriggerVTXOLeave(ctx, m)
 
+	case *actormsg.TriggerBoardMsg:
+		return a.handleTriggerBoard(ctx, m)
+
 	default:
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"unknown message type: %T", msg))
@@ -1939,6 +1942,94 @@ func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
 
 	a.log.InfoS(ctx, "Triggered VTXO leave",
 		slog.Int("count", triggeredCount))
+
+	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// handleTriggerBoard processes a board request forwarded from the wallet actor.
+// It registers the VTXO output amounts into a round FSM and then triggers
+// RegistrationRequested to kick off the round join flow. This combines the
+// RegisterVTXORequests + TriggerRegistration steps that the Board RPC
+// previously performed directly.
+func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
+	cmd *actormsg.TriggerBoardMsg) fn.Result[actormsg.RoundActorResp] {
+
+	if len(cmd.Amounts) == 0 {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"board amounts are empty",
+		))
+	}
+
+	// Build VTXO requests from the provided amounts.
+	requests := make([]types.VTXORequest, 0, len(cmd.Amounts))
+	for i, amount := range cmd.Amounts {
+		if amount <= 0 {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf(
+					"board VTXO amount %d is "+
+						"invalid: %v",
+					i, amount,
+				),
+			)
+		}
+
+		req, err := a.buildVTXORequest(ctx, amount)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf(
+					"build board VTXO request "+
+						"%d: %w",
+					i, err,
+				),
+			)
+		}
+
+		requests = append(requests, *req)
+	}
+
+	a.log.InfoS(ctx, "Processing board request",
+		slog.Int("vtxo_count", len(requests)))
+
+	// Find an existing assembling round or create a new one.
+	roundFSM := a.findAssemblingRound()
+	if roundFSM == nil {
+		var err error
+		roundFSM, err = a.createNewRound(ctx)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf(
+					"create round for board: %w",
+					err,
+				),
+			)
+		}
+	}
+
+	// Register the VTXO output requests into the round FSM.
+	pkg := &IntentPackage{Intents: Intents{
+		VTXOs: requests,
+	}}
+
+	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"register board VTXO requests: %w", err,
+		))
+	}
+
+	// Trigger registration to kick off the round join flow.
+	// This transitions the FSM from PendingRoundAssembly to
+	// RegistrationSent.
+	regEvent := &RegistrationRequested{}
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, regEvent)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"trigger board registration: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Board registration triggered",
+		slog.Int("vtxo_count", len(requests)))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }

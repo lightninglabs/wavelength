@@ -280,6 +280,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *LeaveVTXOsRequest:
 		return a.handleLeaveVTXOs(ctx, m)
 
+	case *BoardRequest:
+		return a.handleBoard(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -708,6 +711,81 @@ func (a *Ark) handleLeaveVTXOs(ctx context.Context,
 	resp := &LeaveVTXOsResponse{
 		LeavingCount: len(req.TargetOutpoints),
 		Errors:       make(map[wire.OutPoint]error),
+	}
+
+	return fn.Ok[WalletResp](resp)
+}
+
+// handleBoard processes a boarding request by checking the confirmed balance,
+// computing the VTXO output amount after operator fees, and forwarding a
+// TriggerBoardMsg to the round actor. The round actor handles the actual
+// registration and FSM transitions asynchronously.
+func (a *Ark) handleBoard(ctx context.Context,
+	req *BoardRequest) fn.Result[WalletResp] {
+
+	// Fetch confirmed boarding balance from the store.
+	status := BoardingStatusConfirmed
+	intents, err := a.store.FetchBoardingIntentsByStatus(ctx, status)
+	if err != nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("fetch boarding intents: %w", err),
+		)
+	}
+
+	var totalBalance btcutil.Amount
+	for _, intent := range intents {
+		totalBalance += intent.ChainInfo.Amount
+	}
+
+	if totalBalance == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no confirmed boarding balance"),
+		)
+	}
+
+	// Compute the VTXO output amount: boarding balance minus the
+	// operator's minimum fee. When MinOperatorFee is zero the client
+	// keeps the full boarding balance as VTXOs.
+	vtxoAmount := totalBalance - req.MinOperatorFee
+	if vtxoAmount <= req.DustLimit {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"boarding balance (%d) too small after "+
+				"operator fee (%d)",
+			totalBalance, req.MinOperatorFee,
+		))
+	}
+
+	a.logger(ctx).InfoS(ctx, "Boarding request accepted",
+		slog.Int64("boarding_balance",
+			int64(totalBalance)),
+		slog.Int64("vtxo_amount", int64(vtxoAmount)),
+		slog.Int64("operator_fee",
+			int64(req.MinOperatorFee)))
+
+	// Forward to round actor via service key lookup. The round actor
+	// registers the VTXO output requests and triggers the round join.
+	if a.actorSystem == nil {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no actor system available for board"),
+		)
+	}
+
+	serviceKey := actormsg.RoundActorServiceKey()
+	roundRef := serviceKey.Ref(a.actorSystem)
+
+	if err := roundRef.Tell(
+		ctx, &actormsg.TriggerBoardMsg{
+			Amounts: []btcutil.Amount{vtxoAmount},
+		},
+	); err != nil {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"forward board to round actor: %w", err,
+		))
+	}
+
+	resp := &BoardResponse{
+		BoardingBalance: totalBalance,
+		VTXOAmount:      vtxoAmount,
 	}
 
 	return fn.Ok[WalletResp](resp)

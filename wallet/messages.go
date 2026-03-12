@@ -416,6 +416,53 @@ func (m *LeaveVTXOsRequest) MessageType() string {
 // walletMsgSealed implements the sealed WalletMsg interface.
 func (m *LeaveVTXOsRequest) walletMsgSealed() {}
 
+// BoardRequest triggers the wallet to board all confirmed boarding UTXOs into
+// the next round. The wallet checks the confirmed boarding balance, computes
+// the VTXO output amount after deducting operator fees, and forwards a
+// TriggerBoardMsg to the round actor. This is a non-blocking operation; use
+// ListRounds/WatchRounds to observe round progress.
+type BoardRequest struct {
+	actor.BaseMessage
+
+	// MinOperatorFee is the operator's minimum fee deducted from the
+	// boarding balance to compute the VTXO output amount.
+	MinOperatorFee btcutil.Amount
+
+	// DustLimit is the minimum viable VTXO amount. If the computed output
+	// amount falls at or below this threshold, boarding is rejected.
+	DustLimit btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BoardRequest) MessageType() string {
+	return "BoardRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *BoardRequest) walletMsgSealed() {}
+
+// BoardResponse contains the result of a boarding request. The actual round
+// registration happens asynchronously in the round actor.
+type BoardResponse struct {
+	actor.BaseMessage
+
+	// BoardingBalance is the total confirmed boarding balance found in the
+	// wallet.
+	BoardingBalance btcutil.Amount
+
+	// VTXOAmount is the VTXO output amount that was registered for the
+	// next round (boarding balance minus operator fee).
+	VTXOAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BoardResponse) MessageType() string {
+	return "BoardResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *BoardResponse) walletRespSealed() {}
+
 // LeaveVTXOsResponse indicates the result of the leave request.
 type LeaveVTXOsResponse struct {
 	actor.BaseMessage
