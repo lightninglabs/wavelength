@@ -89,6 +89,9 @@ type Querier interface {
 	ListOORVTXOBindingsBySession(ctx context.Context, sessionID []byte) ([]ListOORVTXOBindingsBySessionRow, error)
 	ListOwnedReceiveScripts(ctx context.Context) ([]OwnedReceiveScript, error)
 	ListRoundsByStatus(ctx context.Context, status string) ([]Round, error)
+	// ListRoundsPaginated returns rounds ordered by round_id with cursor-
+	// based pagination. When cursor is empty, returns from the beginning.
+	ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error)
 	// Unspent requires both spent=false and status!=Spent(4).
 	ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error)
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error)

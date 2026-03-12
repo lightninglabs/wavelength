@@ -712,6 +712,54 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, status string) ([]Roun
 	return items, nil
 }
 
+const ListRoundsPaginated = `-- name: ListRoundsPaginated :many
+SELECT round_id, start_height, confirmation_height, confirmation_block_hash, commitment_tx, commitment_txid, vtxt_tree, status, creation_time, last_update_time FROM rounds
+WHERE ($1 = '' OR round_id > $1)
+ORDER BY round_id ASC
+LIMIT $2
+`
+
+type ListRoundsPaginatedParams struct {
+	Column1 interface{}
+	Limit   int32
+}
+
+// ListRoundsPaginated returns rounds ordered by round_id with cursor-
+// based pagination. When cursor is empty, returns from the beginning.
+func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginatedParams) ([]Round, error) {
+	rows, err := q.db.QueryContext(ctx, ListRoundsPaginated, arg.Column1, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Round
+	for rows.Next() {
+		var i Round
+		if err := rows.Scan(
+			&i.RoundID,
+			&i.StartHeight,
+			&i.ConfirmationHeight,
+			&i.ConfirmationBlockHash,
+			&i.CommitmentTx,
+			&i.CommitmentTxid,
+			&i.VtxtTree,
+			&i.Status,
+			&i.CreationTime,
+			&i.LastUpdateTime,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
 SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time FROM vtxos
 WHERE spent = FALSE
