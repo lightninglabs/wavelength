@@ -1200,3 +1200,22 @@ func (r *RPCServer) WatchRounds(
 		}
 	}
 }
+
+// rpcMailboxAdapter wraps RPCServer to satisfy
+// DaemonServiceMailboxServer. The mailbox transport is unary
+// request/response, so server-streaming RPCs like WatchRounds
+// return an error indicating they are unsupported over mailbox.
+type rpcMailboxAdapter struct {
+	*RPCServer
+}
+
+// WatchRounds is unsupported over the mailbox transport because it
+// is a server-streaming RPC. Callers should use the gRPC transport
+// for streaming endpoints.
+func (a *rpcMailboxAdapter) WatchRounds(_ context.Context,
+	_ *daemonrpc.WatchRoundsRequest) (
+	*daemonrpc.WatchRoundsResponse, error) {
+
+	return nil, fmt.Errorf("WatchRounds is a server-streaming " +
+		"RPC and is not supported over mailbox transport")
+}

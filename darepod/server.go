@@ -398,7 +398,8 @@ func (s *Server) run(ctx context.Context,
 	// handler serves both transports.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	daemonrpc.RegisterDaemonServiceMailboxServer(
-		s.mailboxMux, s.rpcServer,
+		s.mailboxMux,
+		&rpcMailboxAdapter{RPCServer: s.rpcServer},
 	)
 
 	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)

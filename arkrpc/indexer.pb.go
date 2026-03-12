@@ -42,8 +42,8 @@ const (
 	// VTXO_STATUS_SPENT indicates the VTXO was spent via an out-of-round
 	// transaction (terminal).
 	VTXOStatus_VTXO_STATUS_SPENT VTXOStatus = 6
-	// VTXO_STATUS_UNILATERAL_EXIT indicates the VTXO has reached critical expiry
-	// and is being resolved on-chain (terminal for the VTXO actor).
+	// VTXO_STATUS_UNILATERAL_EXIT indicates the VTXO has reached critical
+	// expiry and is being resolved on-chain (terminal for the VTXO actor).
 	VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT VTXOStatus = 7
 	// VTXO_STATUS_FAILED indicates an unrecoverable error (terminal).
 	VTXOStatus_VTXO_STATUS_FAILED VTXOStatus = 8
@@ -63,15 +63,15 @@ var (
 		8: "VTXO_STATUS_FAILED",
 	}
 	VTXOStatus_value = map[string]int32{
-		"VTXO_STATUS_UNSPECIFIED":       0,
-		"VTXO_STATUS_UNCONFIRMED":       1,
-		"VTXO_STATUS_LIVE":              2,
+		"VTXO_STATUS_UNSPECIFIED":     0,
+		"VTXO_STATUS_UNCONFIRMED":     1,
+		"VTXO_STATUS_LIVE":            2,
 		"VTXO_STATUS_PENDING_FORFEIT": 3,
-		"VTXO_STATUS_FORFEITING":        4,
-		"VTXO_STATUS_FORFEITED":         5,
-		"VTXO_STATUS_SPENT":             6,
-		"VTXO_STATUS_UNILATERAL_EXIT":          7,
-		"VTXO_STATUS_FAILED":            8,
+		"VTXO_STATUS_FORFEITING":      4,
+		"VTXO_STATUS_FORFEITED":       5,
+		"VTXO_STATUS_SPENT":           6,
+		"VTXO_STATUS_UNILATERAL_EXIT": 7,
+		"VTXO_STATUS_FAILED":          8,
 	}
 )
 
@@ -2099,17 +2099,17 @@ const file_indexer_proto_rawDesc = "" +
 	"\bevent_id\x18\x01 \x01(\x04R\aeventId\x12)\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x15.arkrpc.VTXOEventTypeR\x04type\x12,\n" +
 	"\boutpoint\x18\x03 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12*\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x12.arkrpc.VTXOStatusR\x06status*\xff\x01\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x12.arkrpc.VTXOStatusR\x06status*\x84\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNCONFIRMED\x10\x01\x12\x14\n" +
-	"\x10VTXO_STATUS_LIVE\x10\x02\x12!\n" +
-	"\x1dVTXO_STATUS_PENDING_FORFEIT\x10\x03\x12\x1a\n" +
+	"\x10VTXO_STATUS_LIVE\x10\x02\x12\x1f\n" +
+	"\x1bVTXO_STATUS_PENDING_FORFEIT\x10\x03\x12\x1a\n" +
 	"\x16VTXO_STATUS_FORFEITING\x10\x04\x12\x19\n" +
 	"\x15VTXO_STATUS_FORFEITED\x10\x05\x12\x15\n" +
-	"\x11VTXO_STATUS_SPENT\x10\x06\x12\x18\n" +
-	"\x14VTXO_STATUS_UNILATERAL_EXIT\x10\a\x12\x16\n" +
+	"\x11VTXO_STATUS_SPENT\x10\x06\x12\x1f\n" +
+	"\x1bVTXO_STATUS_UNILATERAL_EXIT\x10\a\x12\x16\n" +
 	"\x12VTXO_STATUS_FAILED\x10\b*\x91\x01\n" +
 	"\rVTXOEventType\x12\x1f\n" +
 	"\x1bVTXO_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
