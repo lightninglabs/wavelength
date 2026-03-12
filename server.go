@@ -118,10 +118,6 @@ type Server struct {
 	// for sending messages through the actor system.
 	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
 
-	// oorOperator provides RPC dispatchers for the OOR service,
-	// translating inbound mailbox envelopes into actor messages.
-	oorOperator *oor.OOROperator
-
 	// deliveryStore is the shared actor delivery store used by
 	// auto-registered client runtimes for inbox persistence and
 	// checkpoint state.
@@ -364,12 +360,18 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			"server: %w", err)
 	}
 
-	// Register the ArkService on a ServeMux so the per-client
-	// ingress loop can dispatch GetInfo (and future ArkService
-	// methods) to the RPCServer. This must happen before the
-	// auto-registrar is wired, because RegisterClientWith-
-	// AllDispatchers reads s.mailboxMux to build the ArkService
-	// dispatcher entries.
+	// Register ArkService on the indexer operator's ServeMux so
+	// its RPC methods (GetInfo, etc.) are dispatched through the
+	// operator's shared response-building machinery alongside
+	// IndexerService methods.
+	s.indexerOperator.RegisterService(func(
+		mux *mailboxrpc.ServeMux) {
+
+		arkrpc.RegisterArkServiceMailboxServer(mux, rpcSrv)
+	})
+
+	// Register the ArkService on the server-level mux for the
+	// serverconn (1:1 in-process) dispatch path.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	arkrpc.RegisterArkServiceMailboxServer(
 		s.mailboxMux, rpcSrv,
@@ -378,21 +380,22 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// Register the mailbox edge service on the client-facing
 	// gRPC server so external client daemons (darepod) can
 	// reach the in-process mailbox store over the network.
+	// The auto-registering decorator calls
+	// bridge.HandleInbound before each Send to detect and
+	// register unknown clients transparently.
 	mailboxEdge, err := mailboxrpcserver.New(s.mailboxStore)
 	if err != nil {
 		return fmt.Errorf("unable to create mailbox "+
 			"edge server: %w", err)
 	}
 
-	// Wire auto-registration so external clients connecting
-	// through the mailbox edge are transparently registered on
-	// the bridge with merged dispatchers from all subsystems.
-	registrar := &autoRegistrar{server: s}
-	mailboxEdge.SetOnSend(registrar.onSend)
-
 	rpcSrv.RegisterGRPCService(func(r grpc.ServiceRegistrar) {
 		mailboxpb.RegisterMailboxServiceServer(
-			r, mailboxEdge,
+			r, &autoRegisteringMailbox{
+				MailboxServiceServer: mailboxEdge,
+				bridge:               s.clientBridge,
+				log:                  s.log,
+			},
 		)
 	})
 

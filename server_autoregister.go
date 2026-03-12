@@ -3,61 +3,60 @@ package darepo
 import (
 	"context"
 	"fmt"
-	"sync"
 
+	"github.com/btcsuite/btclog/v2"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/clientconn"
 )
 
-// autoRegistrar manages on-demand client registration triggered by
-// the first mailbox envelope from an unknown sender. When the mailbox
-// edge server receives a Send from a client whose sender ID is not yet
-// registered on the bridge, the registrar creates a per-client runtime
-// with merged dispatchers from all active subsystems.
-type autoRegistrar struct {
-	server *Server
+// autoRegisteringMailbox wraps a MailboxServiceServer and calls the
+// bridge's HandleInbound before each Send. This detects unknown
+// clients at the transport boundary and triggers registration via
+// the bridge's UnknownClientHandler, while keeping the underlying
+// mailbox server free of side-effect hooks.
+type autoRegisteringMailbox struct {
+	mailboxpb.MailboxServiceServer
 
-	// mu serializes registration attempts to prevent duplicate
-	// registrations from concurrent Send calls by the same client.
-	mu sync.Mutex
+	bridge *clientconn.ClientsConnBridge
+	log    btclog.Logger
 }
 
-// onSend is the SendHook callback. It checks whether the envelope's
-// sender is already registered on the bridge; if not, it creates a
-// new per-client runtime with merged dispatchers from all active
-// subsystems (indexer, rounds, OOR).
-func (r *autoRegistrar) onSend(ctx context.Context,
+// Send intercepts outbound envelopes to detect unknown clients
+// before delegating to the underlying mailbox server. If the
+// envelope's sender is unregistered, the bridge's unknown client
+// handler fires and registers them.
+func (m *autoRegisteringMailbox) Send(ctx context.Context,
+	req *mailboxpb.SendRequest) (*mailboxpb.SendResponse, error) {
+
+	if req != nil && req.Envelope != nil {
+		if err := m.bridge.HandleInbound(
+			ctx, req.Envelope,
+		); err != nil {
+			m.log.WarnS(ctx,
+				"Auto-registration failed", err,
+				"sender", req.Envelope.Sender,
+			)
+		}
+	}
+
+	return m.MailboxServiceServer.Send(ctx, req)
+}
+
+// HandleUnknownClient implements clientconn.UnknownClientHandler.
+// It builds a PerClientConfig from the triggering envelope and
+// registers the client with merged dispatchers from all active
+// subsystems.
+func (s *Server) HandleUnknownClient(ctx context.Context,
+	clientID clientconn.ClientID,
 	env *mailboxpb.Envelope) error {
-
-	senderID := env.Sender
-	if senderID == "" {
-		return nil
-	}
-
-	clientID := clientconn.ClientID(senderID)
-
-	// Fast path: already registered (lock-free read).
-	if _, ok := r.server.clientBridge.GetClient(clientID); ok {
-		return nil
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check under lock to handle concurrent first sends.
-	if _, ok := r.server.clientBridge.GetClient(clientID); ok {
-		return nil
-	}
 
 	// Build an in-process edge client for the new client's
 	// runtime. Each runtime gets its own edge instance backed
 	// by the shared mailbox store.
-	edgeClient, err := newLocalMailboxClient(
-		r.server.mailboxStore,
-	)
+	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
 	if err != nil {
 		return fmt.Errorf("build edge for %q: %w",
-			senderID, err)
+			clientID, err)
 	}
 
 	cfg := clientconn.DefaultPerClientConfig()
@@ -67,22 +66,25 @@ func (r *autoRegistrar) onSend(ctx context.Context,
 	// (where the client sends to) and sends responses back to
 	// the client's sender mailbox (where the client pulls from).
 	cfg.LocalMailboxID = env.Recipient
-	cfg.RemoteMailboxID = senderID
-	cfg.Store = r.server.deliveryStore
-	cfg.ProtocolVersion = 1
+	cfg.RemoteMailboxID = env.Sender
+	cfg.Store = s.deliveryStore
+	cfg.ProtocolVersion = env.ProtocolVersion
 
-	_, err = r.server.RegisterClientWithAllDispatchers(
+	_, err = s.RegisterClientWithAllDispatchers(
 		ctx, clientID, cfg,
 	)
 	if err != nil {
 		return fmt.Errorf("auto-register client %q: %w",
-			senderID, err)
+			clientID, err)
 	}
 
-	r.server.log.InfoS(ctx, "Auto-registered external client",
-		"client_id", senderID,
+	s.log.InfoS(ctx, "Auto-registered external client",
+		"client_id", string(clientID),
 		"local_mailbox", env.Recipient,
-		"remote_mailbox", senderID)
+		"remote_mailbox", env.Sender)
 
 	return nil
 }
+
+// Compile-time interface check.
+var _ clientconn.UnknownClientHandler = (*Server)(nil)

@@ -3,12 +3,10 @@ package darepo
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
-	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
@@ -18,7 +16,6 @@ import (
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/anypb"
 )
 
 const (
@@ -33,14 +30,6 @@ const (
 	// arkServiceName is the protobuf service name used in mailbox
 	// envelope routing for the ArkService.
 	arkServiceName = "arkrpc.ArkService"
-
-	// arkSenderMailboxID is the server identity stamped on
-	// ArkService response envelopes.
-	arkSenderMailboxID = "svc:ark"
-
-	// responseMsgIDPrefix prefixes mailbox response envelope IDs
-	// to distinguish responses from requests.
-	responseMsgIDPrefix = "resp-"
 )
 
 // localMailboxClient adapts a MailboxServiceServer for in-process client
@@ -131,7 +120,9 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// Create the shared per-client connection bridge. All subsystems
 	// contribute dispatchers to this bridge so a single client
 	// registration provides access to all server-side services.
-	s.clientBridge = clientconn.NewClientsConnBridge()
+	s.clientBridge = clientconn.NewClientsConnBridge(
+		clientconn.WithOnUnknownClient(s),
+	)
 
 	// Create the indexer service with registration-based authorization.
 	// Clients must register their receive scripts before querying for
@@ -191,124 +182,20 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 	return s.indexerOperator.Dispatchers()
 }
 
-// ArkServiceDispatchers returns a DispatcherMap for the ArkService
-// methods (currently just GetInfo). The dispatchers route through
-// s.mailboxMux, which has the RPCServer registered as the handler.
+// ArkServiceDispatchers returns a DispatcherMap for ArkService
+// methods (currently just GetInfo). These dispatchers route through
+// the indexer operator's shared ServeMux, reusing its response
+// envelope machinery.
 //
-// Returns nil if the mailbox mux has not been initialized yet.
+// Returns nil if the indexer operator has not been initialized.
 func (s *Server) ArkServiceDispatchers() clientconn.DispatcherMap {
-	if s.mailboxMux == nil {
+	if s.indexerOperator == nil {
 		return nil
 	}
 
-	// Build an in-process edge for sending ArkService responses
-	// back to clients through the shared mailbox store.
-	edge, err := newLocalMailboxClient(s.mailboxStore)
-	if err != nil {
-		s.log.WarnS(
-			context.TODO(),
-			"Failed to build ArkService edge", err,
-		)
-
-		return nil
-	}
-
-	methods := []string{
-		"GetInfo",
-	}
-
-	dm := make(clientconn.DispatcherMap, len(methods))
-	for _, method := range methods {
-		key := mailboxrpc.ServiceMethod{
-			Service: arkServiceName,
-			Method:  method,
-		}
-
-		dm[key] = s.makeArkServiceDispatcher(edge, method)
-	}
-
-	return dm
-}
-
-// makeArkServiceDispatcher creates an EnvelopeDispatcher closure for
-// a single ArkService RPC method. The closure routes the request
-// through the server's mailboxMux and sends the response back via
-// the provided edge client.
-func (s *Server) makeArkServiceDispatcher(
-	edge mailboxpb.MailboxServiceClient,
-	method string) clientconn.EnvelopeDispatcher {
-
-	return func(ctx context.Context,
-		env *mailboxpb.Envelope) error {
-
-		if env == nil || env.Rpc == nil {
-			return nil
-		}
-		if env.Body == nil {
-			return fmt.Errorf("missing request body")
-		}
-
-		resp, handlerErr := s.mailboxMux.ServeRPC(
-			ctx,
-			env.Rpc.Service,
-			method,
-			env.Body.Value,
-		)
-
-		// Determine where to send the response. Prefer
-		// ReplyTo if set, otherwise fall back to the
-		// envelope sender.
-		replyTo := env.Rpc.ReplyTo
-		if replyTo == "" {
-			replyTo = env.Sender
-		}
-
-		responseEnv := &mailboxpb.Envelope{
-			ProtocolVersion: env.ProtocolVersion,
-			MsgId:           responseMsgIDPrefix + env.MsgId,
-			Sender:          arkSenderMailboxID,
-			Recipient:       replyTo,
-			CreatedAtUnixMs: time.Now().UnixMilli(),
-			Headers: mailboxrpc.EncodeErrorHeaders(
-				handlerErr,
-			),
-			Rpc: &mailboxpb.RpcMeta{
-				Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
-				Service:       env.Rpc.Service,
-				Method:        method,
-				CorrelationId: env.Rpc.CorrelationId,
-			},
-		}
-
-		if handlerErr == nil && resp != nil {
-			respAny, err := anypb.New(resp)
-			if err != nil {
-				return fmt.Errorf(
-					"marshal response: %w", err,
-				)
-			}
-
-			responseEnv.Body = respAny
-		}
-
-		sendResp, err := edge.Send(
-			ctx, &mailboxpb.SendRequest{
-				Envelope: responseEnv,
-			},
-		)
-		if err != nil {
-			return fmt.Errorf("send response: %w", err)
-		}
-		if sendResp.Status != nil && !sendResp.Status.Ok {
-			return fmt.Errorf(
-				"send response status: %s (%s)",
-				sendResp.Status.Message,
-				sendResp.Status.Code,
-			)
-		}
-
-		return nil
-	}
+	return s.indexerOperator.ServiceDispatchers(
+		arkServiceName, "GetInfo",
+	)
 }
 
 // RegisterClientWithAllDispatchers creates a new per-client runtime
@@ -316,8 +203,9 @@ func (s *Server) makeArkServiceDispatcher(
 // single entry point for client registration so callers do not need
 // to know which subsystems are active.
 //
-// Dispatchers come from two sources:
-//  1. Indexer operator (synchronous request-response via ServeMux)
+// Dispatchers come from three sources:
+//  1. Indexer operator (synchronous request-response via ServeMux,
+//     covers both IndexerService and ArkService methods)
 //  2. EventRouter (fire-and-forget routes for rounds and OOR RPCs)
 //
 // The full end-to-end flow for a fire-and-forget client request is:
@@ -326,8 +214,9 @@ func (s *Server) makeArkServiceDispatcher(
 //	EnvelopeDispatcher → Unmarshal proto → Adapt(env, proto) →
 //	actor.Tell (durable commit)
 //
-// For synchronous indexer requests the flow goes through ServeMux
-// and the response is sent back via Edge.Send as before.
+// For synchronous requests (indexer, ArkService) the flow goes
+// through the operator's ServeMux and the response is sent back
+// via Edge.Send.
 //
 // IMPORTANT: Each dispatcher is wrapped to overwrite env.Sender
 // with the authenticated clientID before dispatch. The mailbox
@@ -345,16 +234,18 @@ func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
 	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
 
 	// Merge dispatchers from all active sources into the base
-	// config. Indexer uses the operator pattern (synchronous
-	// request-response); rounds and OOR use the EventRouter
-	// (fire-and-forget Tell).
+	// config. The indexer operator's Dispatchers covers
+	// IndexerService methods; ArkServiceDispatchers covers
+	// ArkService methods (GetInfo, etc.) via the same operator
+	// mux. Rounds and OOR use the EventRouter for fire-and-forget
+	// Tell dispatch.
 	merged := make(clientconn.DispatcherMap)
 
-	for k, v := range s.ArkServiceDispatchers() {
+	for k, v := range s.IndexerDispatchers() {
 		merged[k] = v
 	}
 
-	for k, v := range s.IndexerDispatchers() {
+	for k, v := range s.ArkServiceDispatchers() {
 		merged[k] = v
 	}
 
