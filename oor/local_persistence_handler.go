@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -42,6 +43,13 @@ type IncomingClientKeyResolver func(ctx context.Context,
 type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
+
+// SpendCompleter finalizes an OOR spend by routing the completion through the
+// VTXO manager so each VTXO actor transitions to SpentState via its own FSM.
+// This replaces the previous direct-store-write pattern and ensures the VTXO
+// actor remains the single source of truth for availability state.
+type SpendCompleter func(ctx context.Context,
+	outpoints []wire.OutPoint) error
 
 // IncomingVTXONotifier is called after incoming VTXOs are durably
 // materialized, allowing callers to spawn/manage VTXO actors for expiry and
@@ -90,6 +98,12 @@ type LocalPersistenceOutboxHandler struct {
 	// Production wiring should use this to notify the VTXO manager so newly
 	// received OOR VTXOs are actively monitored.
 	NotifyIncomingVTXOs IncomingVTXONotifier
+
+	// CompleteSpend routes OOR spend completion through the VTXO manager
+	// so each consumed VTXO transitions to SpentState via its own FSM.
+	// When nil, the handler falls back to direct store writes for
+	// backwards compatibility during migration.
+	CompleteSpend SpendCompleter
 }
 
 // Handle executes one outbox request and emits follow-up FSM events.
@@ -124,13 +138,17 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	}
 }
 
-// handleMarkInputsSpent updates local VTXO state for outgoing transfer inputs.
+// handleMarkInputsSpent completes the OOR spend for consumed VTXO inputs.
+//
+// When CompleteSpend is configured, the handler routes completion through the
+// VTXO manager so each VTXO actor transitions to SpentState via its own FSM.
+// This ensures the VTXO actor remains the single source of truth for
+// availability state.
+//
+// When CompleteSpend is nil, the handler falls back to direct store writes
+// for backwards compatibility during migration.
 func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	ctx context.Context, msg *MarkInputsSpentRequest) ([]Event, error) {
-
-	if h.Store == nil {
-		return nil, fmt.Errorf("vtxo store must be provided")
-	}
 
 	if len(msg.Outpoints) == 0 {
 		return nil, fmt.Errorf("outpoints must be provided")
@@ -138,6 +156,25 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 
 	log.InfoS(ctx, "Marking VTXO inputs as spent",
 		slog.Int("num_outpoints", len(msg.Outpoints)))
+
+	// When a SpendCompleter is configured, route completion through the
+	// VTXO manager so each actor processes SpendCompletedEvent and
+	// persists VTXOStatusSpent through its own outbox path.
+	if h.CompleteSpend != nil {
+		err := h.CompleteSpend(ctx, msg.Outpoints)
+		if err != nil {
+			return nil, fmt.Errorf("complete spend via "+
+				"manager: %w", err)
+		}
+
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+	}
+
+	// Fallback: direct store write for callers that have not yet wired
+	// the actor-owned completion path.
+	if h.Store == nil {
+		return nil, fmt.Errorf("vtxo store must be provided")
+	}
 
 	for i := range msg.Outpoints {
 		err := h.Store.UpdateVTXOStatus(

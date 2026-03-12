@@ -543,6 +543,110 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
 	require.Empty(t, events)
 }
 
+// TestLocalPersistenceHandlerMarkInputsSpentViaCompleter asserts that when
+// CompleteSpend is configured, the handler routes spend completion through the
+// callback instead of writing to the store directly.
+func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
+	t.Parallel()
+
+	outpoints := []wire.OutPoint{
+		{Hash: [32]byte{0x01}, Index: 0},
+		{Hash: [32]byte{0x02}, Index: 1},
+	}
+
+	var completedOutpoints []wire.OutPoint
+	handler := &LocalPersistenceOutboxHandler{
+		CompleteSpend: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			completedOutpoints = ops
+			return nil
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{Outpoints: outpoints},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
+	require.Equal(t, outpoints, completedOutpoints)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentCompleterError asserts that
+// CompleteSpend errors are surfaced to the caller.
+func TestLocalPersistenceHandlerMarkInputsSpentCompleterError(t *testing.T) {
+	t.Parallel()
+
+	handler := &LocalPersistenceOutboxHandler{
+		CompleteSpend: func(_ context.Context,
+			_ []wire.OutPoint) error {
+
+			return fmt.Errorf("actor unavailable")
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{
+			Outpoints: []wire.OutPoint{
+				{Hash: [32]byte{0x01}, Index: 0},
+			},
+		},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "actor unavailable")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentFallback asserts that the handler
+// falls back to direct store writes when CompleteSpend is nil.
+func TestLocalPersistenceHandlerMarkInputsSpentFallback(t *testing.T) {
+	t.Parallel()
+
+	store := newTestVTXOStore()
+	op := wire.OutPoint{Hash: [32]byte{0x01}, Index: 0}
+	store.records[op] = &vtxo.Descriptor{
+		Outpoint: op,
+		Status:   vtxo.VTXOStatusLive,
+	}
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store: store,
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{Outpoints: []wire.OutPoint{op}},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
+
+	desc, err := store.GetVTXO(t.Context(), op)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusSpent, desc.Status)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentEmptyOutpoints asserts that
+// empty outpoints are rejected regardless of the completion path.
+func TestLocalPersistenceHandlerMarkInputsSpentEmptyOutpoints(t *testing.T) {
+	t.Parallel()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store: newTestVTXOStore(),
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "outpoints must be provided")
+	require.Empty(t, events)
+}
+
 // TestLocalPersistenceOutboxHandlerIncomingAck asserts incoming ack requests
 // emit IncomingAckSentEvent.
 func TestLocalPersistenceOutboxHandlerIncomingAck(t *testing.T) {
