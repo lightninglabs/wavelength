@@ -91,7 +91,7 @@ func roundsList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ListRounds RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // roundsWatch executes the WatchRounds streaming RPC and prints
@@ -120,7 +120,7 @@ func roundsWatch(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("stream error: %w", err)
 		}
 
-		if err := printJSON(resp); err != nil {
+		if err := printJSON(cmd.OutOrStdout(), resp); err != nil {
 			return err
 		}
 	}

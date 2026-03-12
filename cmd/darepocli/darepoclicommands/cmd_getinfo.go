@@ -40,5 +40,5 @@ func getInfo(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("GetInfo RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }

@@ -3,7 +3,7 @@ package darepoclicommands
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -25,15 +25,15 @@ var jsonUnmarshalOpts = protojson.UnmarshalOptions{
 	DiscardUnknown: true,
 }
 
-// printJSON marshals a proto message to indented JSON and writes it to
-// stdout.
-func printJSON(v proto.Message) error {
+// printJSON marshals a proto message to indented JSON and writes it
+// to the given writer.
+func printJSON(w io.Writer, v proto.Message) error {
 	data, err := jsonMarshalOpts.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 
-	fmt.Fprintln(os.Stdout, string(data))
+	fmt.Fprintln(w, string(data))
 
 	return nil
 }
@@ -42,7 +42,9 @@ func printJSON(v proto.Message) error {
 // output to only include the specified fields. For responses containing
 // a top-level repeated field (e.g. "vtxos"), the field mask is applied
 // to each element in the array.
-func printJSONFields(v proto.Message, fields []string) error {
+func printJSONFields(w io.Writer, v proto.Message,
+	fields []string) error {
+
 	data, err := jsonMarshalOpts.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
@@ -69,7 +71,7 @@ func printJSONFields(v proto.Message, fields []string) error {
 		return fmt.Errorf("marshal filtered JSON: %w", err)
 	}
 
-	fmt.Fprintln(os.Stdout, string(out))
+	fmt.Fprintln(w, string(out))
 
 	return nil
 }
@@ -134,7 +136,7 @@ func keysOf(m map[string]bool) []string {
 // printNDJSONFields marshals each element as a single-line JSON object
 // filtered to the specified fields. This combines NDJSON streaming with
 // field mask filtering to reduce output size.
-func printNDJSONFields(items []proto.Message,
+func printNDJSONFields(w io.Writer, items []proto.Message,
 	fields []string) error {
 
 	opts := protojson.MarshalOptions{
@@ -180,7 +182,7 @@ func printNDJSONFields(items []proto.Message,
 			)
 		}
 
-		fmt.Fprintln(os.Stdout, string(out))
+		fmt.Fprintln(w, string(out))
 	}
 
 	return nil
@@ -189,7 +191,7 @@ func printNDJSONFields(items []proto.Message,
 // printNDJSON marshals each element of a repeated proto field as a
 // single-line JSON object (newline-delimited JSON). This is useful for
 // streaming large list responses into tools like jq or wc.
-func printNDJSON(items []proto.Message) error {
+func printNDJSON(w io.Writer, items []proto.Message) error {
 	opts := protojson.MarshalOptions{
 		UseProtoNames:   true,
 		EmitUnpopulated: true,
@@ -201,21 +203,21 @@ func printNDJSON(items []proto.Message) error {
 			return fmt.Errorf("marshal NDJSON: %w", err)
 		}
 
-		fmt.Fprintln(os.Stdout, string(data))
+		fmt.Fprintln(w, string(data))
 	}
 
 	return nil
 }
 
 // printRawJSON marshals an arbitrary Go value to indented JSON and
-// writes it to stdout. Used for non-proto types like schema output.
-func printRawJSON(v any) error {
+// writes it to the given writer.
+func printRawJSON(w io.Writer, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
 
-	fmt.Fprintln(os.Stdout, string(data))
+	fmt.Fprintln(w, string(data))
 
 	return nil
 }

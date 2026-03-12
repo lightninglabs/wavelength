@@ -42,5 +42,5 @@ func board(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("board RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }

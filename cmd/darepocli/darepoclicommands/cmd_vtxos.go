@@ -129,19 +129,23 @@ func vtxosList(cmd *cobra.Command, _ []string) error {
 
 		if fieldsStr != "" {
 			fields := strings.Split(fieldsStr, ",")
-			return printNDJSONFields(items, fields)
+			return printNDJSONFields(
+				cmd.OutOrStdout(), items, fields,
+			)
 		}
 
-		return printNDJSON(items)
+		return printNDJSON(cmd.OutOrStdout(), items)
 	}
 
 	// Apply field mask if --fields was specified.
 	if fieldsStr != "" {
 		fields := strings.Split(fieldsStr, ",")
-		return printJSONFields(resp, fields)
+		return printJSONFields(
+			cmd.OutOrStdout(), resp, fields,
+		)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // parseVTXOStatus converts a status string to the proto enum.
@@ -230,5 +234,5 @@ func vtxosRefresh(cmd *cobra.Command, _ []string) error {
 			"RefreshVTXOs RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }

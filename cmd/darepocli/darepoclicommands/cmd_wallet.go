@@ -80,7 +80,7 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 				"InitWallet RPC failed: %w", err)
 		}
 
-		return printJSON(resp)
+		return printJSON(cmd.OutOrStdout(), resp)
 	}
 
 	// Bespoke-flag path: GenSeed first, then InitWallet.
@@ -97,14 +97,16 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("GenSeed RPC failed: %w", err)
 	}
 
-	// Display the mnemonic to stderr so it doesn't mix with
-	// structured JSON output on stdout.
-	fmt.Fprintln(os.Stderr, "=== WRITE DOWN YOUR SEED ===")
+	// Display the mnemonic to the error stream so it doesn't
+	// mix with structured JSON output on stdout. Using
+	// cmd.ErrOrStderr() ensures the REPL can capture it.
+	errW := cmd.ErrOrStderr()
+	fmt.Fprintln(errW, "=== WRITE DOWN YOUR SEED ===")
 	for i, word := range genResp.Mnemonic {
-		fmt.Fprintf(os.Stderr, "%2d. %s\n", i+1, word)
+		fmt.Fprintf(errW, "%2d. %s\n", i+1, word)
 	}
-	fmt.Fprintln(os.Stderr, "============================")
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(errW, "============================")
+	fmt.Fprintln(errW)
 
 	password, err := readPassword(cmd)
 	if err != nil {
@@ -122,7 +124,7 @@ func walletCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("InitWallet RPC failed: %w", err)
 	}
 
-	return printJSON(initResp)
+	return printJSON(cmd.OutOrStdout(), initResp)
 }
 
 // newWalletUnlockCmd creates the wallet unlock subcommand.
@@ -172,7 +174,7 @@ func walletUnlock(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("UnlockWallet RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // newWalletBalanceCmd creates the wallet balance subcommand.
@@ -206,7 +208,7 @@ func walletBalance(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("GetBalance RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // newWalletNewAddressCmd creates the wallet newaddress subcommand.
@@ -241,7 +243,7 @@ func walletNewAddress(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("NewAddress RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // readPassword reads the wallet password from one of these sources,
@@ -287,7 +289,7 @@ func readPassword(cmd *cobra.Command) ([]byte, error) {
 	}
 
 	// Interactive prompt (TTY).
-	fmt.Fprint(os.Stderr, "Enter wallet password: ")
+	fmt.Fprint(cmd.ErrOrStderr(), "Enter wallet password: ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	if scanner.Scan() {

@@ -114,7 +114,7 @@ func sendInRound(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("SendVTXO RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }
 
 // newSendOORCmd creates the send oor subcommand.
@@ -183,5 +183,5 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("SendOOR RPC failed: %w", err)
 	}
 
-	return printJSON(resp)
+	return printJSON(cmd.OutOrStdout(), resp)
 }

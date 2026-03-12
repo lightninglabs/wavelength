@@ -34,7 +34,7 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 	registry := methodRegistry()
 
 	if all {
-		return printRawJSON(registry)
+		return printRawJSON(cmd.OutOrStdout(), registry)
 	}
 
 	if len(args) == 0 {
@@ -44,13 +44,13 @@ func schemaRun(cmd *cobra.Command, args []string) error {
 			names = append(names, m.Method)
 		}
 
-		return printRawJSON(names)
+		return printRawJSON(cmd.OutOrStdout(), names)
 	}
 
 	methodName := args[0]
 	for _, m := range registry {
 		if m.Method == methodName {
-			return printRawJSON(m)
+			return printRawJSON(cmd.OutOrStdout(), m)
 		}
 	}
 
