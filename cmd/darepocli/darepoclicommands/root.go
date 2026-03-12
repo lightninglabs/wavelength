@@ -56,6 +56,7 @@ func NewRootCmd() *cobra.Command {
 		newVTXOsCmd(),
 		newSendCmd(),
 		newBoardCmd(),
+		newRoundsCmd(),
 		newSchemaCmd(),
 		newMCPCmd(),
 	)
