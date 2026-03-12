@@ -36,6 +36,22 @@ type mockVTXOManagerBehavior struct {
 
 	// completeErr when set causes CompleteSpendRequest to fail.
 	completeErr error
+
+	// forfeitReserveResp is returned for ReserveForfeitRequest.
+	forfeitReserveResp *actormsg.ReserveForfeitResponse
+
+	// forfeitReserveErr when set causes ReserveForfeitRequest to fail.
+	forfeitReserveErr error
+
+	// forfeitReleaseResp is returned for ReleaseForfeitRequest.
+	forfeitReleaseResp *actormsg.ReleaseForfeitResponse
+
+	// forfeitReleaseErr when set causes ReleaseForfeitRequest to fail.
+	forfeitReleaseErr error
+
+	// forfeitReleaseCalls tracks how many ReleaseForfeitRequest were
+	// received.
+	forfeitReleaseCalls int
 }
 
 // Receive processes VTXO manager messages from the wallet.
@@ -69,6 +85,30 @@ func (m *mockVTXOManagerBehavior) Receive(_ context.Context,
 		}
 
 		return fn.Ok[actormsg.VTXOManagerResp](m.completeResp)
+
+	case *actormsg.ReserveForfeitRequest:
+		if m.forfeitReserveErr != nil {
+			return fn.Err[actormsg.VTXOManagerResp](
+				m.forfeitReserveErr,
+			)
+		}
+
+		return fn.Ok[actormsg.VTXOManagerResp](
+			m.forfeitReserveResp,
+		)
+
+	case *actormsg.ReleaseForfeitRequest:
+		m.forfeitReleaseCalls++
+
+		if m.forfeitReleaseErr != nil {
+			return fn.Err[actormsg.VTXOManagerResp](
+				m.forfeitReleaseErr,
+			)
+		}
+
+		return fn.Ok[actormsg.VTXOManagerResp](
+			m.forfeitReleaseResp,
+		)
 
 	default:
 		return fn.Err[actormsg.VTXOManagerResp](
@@ -277,4 +317,287 @@ func TestSelectAndLockNoActorSystem(t *testing.T) {
 	require.True(t, result.IsErr())
 	require.ErrorContains(t, result.Err(),
 		"actor system not configured")
+}
+
+// =============================================================================
+// Cooperative admission tests (refresh/leave gating)
+// =============================================================================
+
+// mockRoundActorBehavior implements actor.ActorBehavior for the round actor
+// service key type. It responds to RegisterIntentMsg with a configurable
+// error, enabling wallet handler tests without a real round actor.
+type mockRoundActorBehavior struct {
+	// registerErr when set causes RegisterIntentMsg to fail.
+	registerErr error
+
+	// registerCalls tracks how many times RegisterIntentMsg was received.
+	registerCalls int
+}
+
+// Receive processes round actor messages from the wallet.
+func (m *mockRoundActorBehavior) Receive(_ context.Context,
+	msg actormsg.RoundReceivable) fn.Result[actormsg.RoundActorResp] {
+
+	switch msg.(type) {
+	case *actormsg.RegisterIntentMsg:
+		m.registerCalls++
+
+		if m.registerErr != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				m.registerErr,
+			)
+		}
+
+		return fn.Ok[actormsg.RoundActorResp](nil)
+
+	default:
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("unexpected message: %T", msg),
+		)
+	}
+}
+
+// newTestWalletWithManagerAndRound creates a wallet with both mock VTXO
+// manager and mock round actor registered. The vtxoReader provides VTXO
+// descriptors for intent composition.
+func newTestWalletWithManagerAndRound(t *testing.T,
+	mgr *mockVTXOManagerBehavior,
+	roundActor *mockRoundActorBehavior,
+	vtxoReader VTXOReader) *Ark {
+
+	t.Helper()
+
+	system := actor.NewActorSystem()
+	t.Cleanup(func() {
+		// Use Background context because t.Context() is already
+		// cancelled by the time cleanup runs.
+		//nolint:usetesting
+		err := system.Shutdown(context.Background())
+		require.NoError(t, err)
+	})
+
+	// Register the mock VTXO manager.
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	actor.RegisterWithSystem(
+		system, actormsg.VTXOManagerServiceKeyName,
+		mgrKey, mgr,
+	)
+
+	// Register the mock round actor.
+	roundKey := actormsg.RoundActorServiceKey()
+	actor.RegisterWithSystem(
+		system, actormsg.RoundActorServiceKeyName,
+		roundKey, roundActor,
+	)
+
+	return NewArk(
+		nil, nil, vtxoReader, nil, system, btclog.Disabled,
+	)
+}
+
+// testVTXOReader returns a VTXOReader backed by a static map.
+func testVTXOReader(
+	descs map[wire.OutPoint]*VTXODescriptor) VTXOReader {
+
+	return VTXOReaderFunc(func(_ context.Context,
+		outpoint wire.OutPoint) (*VTXODescriptor, error) {
+
+		desc, ok := descs[outpoint]
+		if !ok {
+			return nil, fmt.Errorf(
+				"vtxo not found: %s", outpoint,
+			)
+		}
+
+		return desc, nil
+	})
+}
+
+// TestRefreshReservesBeforeRoundRegistration verifies that the wallet
+// reserves forfeit inputs through the VTXO manager before sending
+// RegisterIntentMsg to the round actor.
+func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	// Round should have received the intent.
+	require.Equal(t, 1, roundActor.registerCalls)
+}
+
+// TestRefreshReleasesOnRoundRejection verifies that the wallet releases
+// forfeit reservations when the round actor rejects the intent.
+func TestRefreshReleasesOnRoundRejection(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
+			ReleasedCount: 1,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{
+		registerErr: fmt.Errorf("round full"),
+	}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "round full")
+
+	// Manager should have received the release call.
+	require.Equal(t, 1, mgr.forfeitReleaseCalls)
+}
+
+// TestRefreshFailsOnManagerRejection verifies that the wallet surfaces
+// manager reservation errors without sending to the round actor.
+func TestRefreshFailsOnManagerRejection(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveErr: fmt.Errorf(
+			"VTXO already spending",
+		),
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &RefreshVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "VTXO already spending")
+
+	// Round should NOT have been called.
+	require.Equal(t, 0, roundActor.registerCalls)
+}
+
+// TestLeaveReservesBeforeRoundRegistration verifies that the wallet
+// reserves forfeit inputs before sending a leave intent to the round.
+func TestLeaveReservesBeforeRoundRegistration(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+	}
+	roundActor := &mockRoundActorBehavior{}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+		DestOutput:      &wire.TxOut{Value: 49000},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsOk(), "expected ok, got: %v",
+		result.Err())
+
+	require.Equal(t, 1, roundActor.registerCalls)
+}
+
+// TestLeaveReleasesOnRoundRejection verifies that the wallet releases
+// forfeit reservations when the round actor rejects the leave intent.
+func TestLeaveReleasesOnRoundRejection(t *testing.T) {
+	t.Parallel()
+
+	op := testOutpoint(0)
+	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
+		op: {
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+		},
+	}
+
+	mgr := &mockVTXOManagerBehavior{
+		forfeitReserveResp: &actormsg.ReserveForfeitResponse{},
+		forfeitReleaseResp: &actormsg.ReleaseForfeitResponse{
+			ReleasedCount: 1,
+		},
+	}
+	roundActor := &mockRoundActorBehavior{
+		registerErr: fmt.Errorf("round expired"),
+	}
+
+	w := newTestWalletWithManagerAndRound(
+		t, mgr, roundActor, testVTXOReader(vtxoDescs),
+	)
+
+	req := &LeaveVTXOsRequest{
+		TargetOutpoints: []wire.OutPoint{op},
+		DestOutput:      &wire.TxOut{Value: 49000},
+	}
+	result := w.Receive(t.Context(), req)
+	require.True(t, result.IsErr())
+	require.ErrorContains(t, result.Err(), "round expired")
+
+	// Manager should have received the release call.
+	require.Equal(t, 1, mgr.forfeitReleaseCalls)
 }
