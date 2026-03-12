@@ -177,11 +177,18 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	store := newTestVTXOStore()
 	packageStore := &testPackageStore{}
 
+	notifyCalls := 0
 	handler := &LocalPersistenceOutboxHandler{
 		Store:        store,
 		PackageStore: packageStore,
 		OperatorKey:  operatorKey,
 		ExitDelay:    10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			notifyCalls++
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -226,6 +233,7 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
+	require.Equal(t, 1, notifyCalls)
 
 	handledEvt, ok := events[0].(*IncomingHandledEvent)
 	require.True(t, ok)
@@ -280,6 +288,11 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -356,6 +369,11 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -391,6 +409,245 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 	events, err := handler.Handle(ctx, sessionID, req)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "no wallet-owned recipients")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure asserts
+// notifier failures abort incoming materialization completion.
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return fmt.Errorf("notify failed")
+		},
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				CreatedHeight:  700,
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "notify failed")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier asserts
+// notifier wiring is mandatory for incoming materialization.
+func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store:       store,
+		OperatorKey: operatorKey,
+		ExitDelay:   10,
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			_ = ctx
+			_ = recipient
+
+			return keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			}, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID SessionID, recipient ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			IncomingVTXOMetadata, error) {
+
+			_ = ctx
+			_ = sessionID
+			_ = recipient
+			_ = ark
+			_ = finalCheckpoints
+
+			return IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				CreatedHeight:  700,
+			}, nil
+		},
+	}
+
+	req := &MaterializeIncomingVTXOsRequest{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: finalCheckpoints,
+		Recipients:           recipients,
+	}
+	events, err := handler.Handle(ctx, sessionID, req)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "incoming VTXO notifier")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentViaCompleter asserts that when
+// CompleteSpend is configured, the handler routes spend completion through the
+// callback instead of writing to the store directly.
+func TestLocalPersistenceHandlerMarkInputsSpentViaCompleter(t *testing.T) {
+	t.Parallel()
+
+	outpoints := []wire.OutPoint{
+		{Hash: [32]byte{0x01}, Index: 0},
+		{Hash: [32]byte{0x02}, Index: 1},
+	}
+
+	var completedOutpoints []wire.OutPoint
+	handler := &LocalPersistenceOutboxHandler{
+		CompleteSpend: func(_ context.Context,
+			ops []wire.OutPoint) error {
+
+			completedOutpoints = ops
+			return nil
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{Outpoints: outpoints},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
+	require.Equal(t, outpoints, completedOutpoints)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentCompleterError asserts that
+// CompleteSpend errors are surfaced to the caller.
+func TestLocalPersistenceHandlerMarkInputsSpentCompleterError(t *testing.T) {
+	t.Parallel()
+
+	handler := &LocalPersistenceOutboxHandler{
+		CompleteSpend: func(_ context.Context,
+			_ []wire.OutPoint) error {
+
+			return fmt.Errorf("actor unavailable")
+		},
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{
+			Outpoints: []wire.OutPoint{
+				{Hash: [32]byte{0x01}, Index: 0},
+			},
+		},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "actor unavailable")
+	require.Empty(t, events)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentFallback asserts that the handler
+// falls back to direct store writes when CompleteSpend is nil.
+func TestLocalPersistenceHandlerMarkInputsSpentFallback(t *testing.T) {
+	t.Parallel()
+
+	store := newTestVTXOStore()
+	op := wire.OutPoint{Hash: [32]byte{0x01}, Index: 0}
+	store.records[op] = &vtxo.Descriptor{
+		Outpoint: op,
+		Status:   vtxo.VTXOStatusLive,
+	}
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store: store,
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{Outpoints: []wire.OutPoint{op}},
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.IsType(t, &InputsMarkedSpentEvent{}, events[0])
+
+	desc, err := store.GetVTXO(t.Context(), op)
+	require.NoError(t, err)
+	require.Equal(t, vtxo.VTXOStatusSpent, desc.Status)
+}
+
+// TestLocalPersistenceHandlerMarkInputsSpentEmptyOutpoints asserts that
+// empty outpoints are rejected regardless of the completion path.
+func TestLocalPersistenceHandlerMarkInputsSpentEmptyOutpoints(t *testing.T) {
+	t.Parallel()
+
+	handler := &LocalPersistenceOutboxHandler{
+		Store: newTestVTXOStore(),
+	}
+
+	events, err := handler.Handle(
+		t.Context(), SessionID{},
+		&MarkInputsSpentRequest{},
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "outpoints must be provided")
 	require.Empty(t, events)
 }
 

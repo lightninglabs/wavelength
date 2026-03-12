@@ -1729,10 +1729,38 @@ func (s *Server) initOORActor(ctx context.Context,
 		TimeoutActor: timeoutActor,
 	}
 
+	// Wire spend completion through the VTXO manager so each consumed
+	// VTXO transitions to SpentState via its own FSM, rather than
+	// writing VTXOStatusSpent directly to the store.
+	mgrKey := actormsg.VTXOManagerServiceKey()
+	completeSpend := func(ctx context.Context,
+		outpoints []wire.OutPoint) error {
+
+		req := &actormsg.CompleteSpendRequest{
+			Outpoints: outpoints,
+		}
+		mgrRef := mgrKey.Ref(s.actorSystem)
+		result := mgrRef.Ask(ctx, req).Await(ctx)
+		_, err := result.Unpack()
+
+		return err
+	}
+
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
+		NotifyIncomingVTXOs: func(ctx context.Context,
+			descs []*vtxo.Descriptor) error {
+
+			return vtxoManagerRef.Tell(
+				ctx,
+				&vtxo.VTXOsMaterializedNotification{
+					VTXOs: descs,
+				},
+			)
+		},
+		CompleteSpend: completeSpend,
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
