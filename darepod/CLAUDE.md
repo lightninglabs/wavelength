@@ -9,6 +9,7 @@ gRPC API.
 ## Key Types
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem.
+- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, etc.).
 - `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.).
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
 
@@ -22,6 +23,9 @@ gRPC API.
 - Server owns ActorSystem lifetime; shutdown stops all subsystems.
 - Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
 - Two wallet modes: LND-backed or lightweight (`lwwallet`).
+- Board RPC is non-blocking: delegates to wallet actor and returns immediately.
+- ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
+- Server holds a `roundStore` reference for direct SQL queries from the RPC layer.
 
 ## Deep Docs
 

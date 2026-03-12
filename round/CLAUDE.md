@@ -27,6 +27,7 @@ protocols with MuSig2 signing ceremonies.
 - **Receives**:
   - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - ← `vtxo`: `RefreshVTXORequest`, `LeaveVTXORequest`, `ForfeitSignatureSubmission`
+  - ← `wallet` (via `lib/actormsg`): `TriggerBoardMsg` (combines VTXO registration + registration trigger)
   - ← `wallet`: `BoardingUtxoConfirmedEvent`
   - ← `timeout`: `TimeoutMsg`
   - ← `chainsource`: `ConfirmationEvent`
