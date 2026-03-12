@@ -36,6 +36,35 @@ func genSubLogger(root *lndbuild.SubLoggerManager,
 	}
 }
 
+// logSubsystem pairs a subsystem name with its UseLogger function.
+type logSubsystem struct {
+	name      string
+	useLogger func(btclog.Logger)
+}
+
+// allSubsystems is the authoritative list of all package-level loggers
+// registered with the daemon's root SubLoggerManager. Both SetupLoggers
+// and SetupLoggersWithShutdownFn reference this slice so that adding a
+// new subsystem only requires a single edit.
+var allSubsystems = []logSubsystem{
+	{Subsystem, UseLogger},
+	{actor.Subsystem, actor.UseLogger},
+	{round.Subsystem, round.UseLogger},
+	{oor.Subsystem, oor.UseLogger},
+	{vtxo.Subsystem, vtxo.UseLogger},
+	{wallet.Subsystem, wallet.UseLogger},
+	{lwwallet.Subsystem, lwwallet.UseLogger},
+	{serverconn.Subsystem, serverconn.UseLogger},
+	{chainbackends.Subsystem, chainbackends.UseLogger},
+	{
+		chainbackends.LndClientSubsystem,
+		chainbackends.UseLndClientLogger,
+	},
+	{lndbackend.Subsystem, lndbackend.UseLogger},
+	{indexer.Subsystem, indexer.UseLogger},
+	{db.Subsystem, db.UseLogger},
+}
+
 // SetupLoggers initializes all package-level subsystem loggers and registers
 // them with the root SubLoggerManager. This must be called early in daemon
 // startup before any subsystem initialization to ensure log output is routed
@@ -47,32 +76,7 @@ func genSubLogger(root *lndbuild.SubLoggerManager,
 func SetupLoggers(root *lndbuild.SubLoggerManager,
 	interceptor signal.Interceptor) {
 
-	// Register all subsystem loggers. Each AddSubLogger call creates a
-	// child logger from the root backend, registers it with the manager
-	// for level control, and calls the package's UseLogger to activate
-	// the package-level logger.
-	subsystems := []struct {
-		name      string
-		useLogger func(btclog.Logger)
-	}{
-		{Subsystem, UseLogger},
-		{actor.Subsystem, actor.UseLogger},
-		{round.Subsystem, round.UseLogger},
-		{oor.Subsystem, oor.UseLogger},
-		{vtxo.Subsystem, vtxo.UseLogger},
-		{wallet.Subsystem, wallet.UseLogger},
-		{lwwallet.Subsystem, lwwallet.UseLogger},
-		{serverconn.Subsystem, serverconn.UseLogger},
-		{chainbackends.Subsystem, chainbackends.UseLogger},
-		{
-			chainbackends.LndClientSubsystem,
-			chainbackends.UseLndClientLogger,
-		},
-		{lndbackend.Subsystem, lndbackend.UseLogger},
-		{indexer.Subsystem, indexer.UseLogger},
-		{db.Subsystem, db.UseLogger},
-	}
-	for _, sub := range subsystems {
+	for _, sub := range allSubsystems {
 		AddSubLogger(root, sub.name, interceptor, sub.useLogger)
 	}
 }
@@ -107,28 +111,7 @@ func SetupLoggersWithShutdownFn(root *lndbuild.SubLoggerManager,
 		return root.GenSubLogger(tag, shutdownFn)
 	}
 
-	subsystems := []struct {
-		name      string
-		useLogger func(btclog.Logger)
-	}{
-		{Subsystem, UseLogger},
-		{actor.Subsystem, actor.UseLogger},
-		{round.Subsystem, round.UseLogger},
-		{oor.Subsystem, oor.UseLogger},
-		{vtxo.Subsystem, vtxo.UseLogger},
-		{wallet.Subsystem, wallet.UseLogger},
-		{lwwallet.Subsystem, lwwallet.UseLogger},
-		{serverconn.Subsystem, serverconn.UseLogger},
-		{chainbackends.Subsystem, chainbackends.UseLogger},
-		{
-			chainbackends.LndClientSubsystem,
-			chainbackends.UseLndClientLogger,
-		},
-		{lndbackend.Subsystem, lndbackend.UseLogger},
-		{indexer.Subsystem, indexer.UseLogger},
-		{db.Subsystem, db.UseLogger},
-	}
-	for _, sub := range subsystems {
+	for _, sub := range allSubsystems {
 		logger := lndbuild.NewSubLogger(sub.name, genLogger)
 		root.RegisterSubLogger(sub.name, logger)
 		sub.useLogger(logger)
