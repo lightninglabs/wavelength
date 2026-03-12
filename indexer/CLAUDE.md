@@ -8,7 +8,7 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
 
 ## Key Types
 
-- `Operator` — RPC dispatcher factory that creates per-request handlers.
+- `Operator` — RPC dispatcher factory that creates per-request handlers. Exposes `RegisterService` to host additional services (e.g., ArkService) on its internal `ServeMux`, and `ServiceDispatchers` to build `DispatcherMap` entries for any registered service.
 - `Service` — Query service implementation (list VTXOs, rounds, OOR events).
 - `Principal` — Authenticated client context (mailbox ID, wallet scope).
 - Event types for round, VTXO, and OOR state change notifications.
