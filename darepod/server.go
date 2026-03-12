@@ -324,14 +324,6 @@ func (s *Server) run(ctx context.Context,
 	// 3. Initialize the actor system.
 	// -------------------------------------------------------
 	s.actorSystem = actor.NewActorSystem()
-	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(), DefaultShutdownTimeout,
-		)
-		defer shutdownCancel()
-
-		_ = s.actorSystem.Shutdown(shutdownCtx)
-	}()
 
 	log.InfoS(ctx, "Actor system initialized")
 
@@ -374,6 +366,20 @@ func (s *Server) run(ctx context.Context,
 	}
 	defer func() {
 		_ = s.db.Close()
+	}()
+
+	// Shut down the actor system after the database is closed in
+	// the defer above. Go defers run in LIFO order, so this defer
+	// (registered after db.Close) executes first — ensuring all
+	// actor mailbox polling loops have stopped before the DB
+	// connection is torn down.
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), DefaultShutdownTimeout,
+		)
+		defer shutdownCancel()
+
+		_ = s.actorSystem.Shutdown(shutdownCtx)
 	}()
 
 	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
