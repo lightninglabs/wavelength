@@ -3,17 +3,19 @@
 ## Purpose
 
 Per-VTXO lifecycle management using a state machine that monitors expiry,
-coordinates forfeit signing, and tracks cooperative and unilateral exit paths.
-The VTXO FSM models lifecycle phases only (not business intent like
-refresh vs leave); intent composition is handled by the wallet.
+coordinates refresh (forfeit + new issuance), coordinates forfeit
+signing, and tracks cooperative and unilateral spending paths. The
+Manager actor is the single admission gate for all VTXO operations. The
+VTXO FSM models lifecycle phases only, not business intent like refresh
+versus leave.
 
 ## Key Types
 
-- `VTXOState` — Sealed interface for all states (Live, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
+- `VTXOState` — Sealed interface for all states (Live, Spending, Spent, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
 - `Descriptor` — Complete VTXO metadata: outpoint, amount, taproot key, CSV expiry, tree path to root.
-- `Manager` — Actor managing per-VTXO FSM instances and their lifecycle.
-- `VTXOEvent` — Inbound events (BlockEpochEvent, PendingForfeitEvent, ForfeitRequestEvent, ForfeitConfirmedEvent, ResumeVTXOEvent).
-- `VTXOOutMsg` — Outbound messages (ForfeitRequest, ForfeitSignatureSubmission, ExpiringNotification, VTXOStatusUpdate, VTXOTerminatedNotification).
+- `Manager` — Actor managing per-VTXO FSM instances, lifecycle, and admission gating.
+- `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, SpendReserveEvent, SpendCompletedEvent, etc.).
+- `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
 
 ## Relationships
 
@@ -24,15 +26,19 @@ refresh vs leave); intent composition is handled by the wallet.
   - → `db` (via outbox): `VTXOStatusUpdate`
   - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`
 - **Receives**:
-  - ← `round`: `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
+  - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
+  - ← `manager` (admission): `SpendReserveEvent`, `SpendReleasedEvent`, `SpendCompletedEvent`, `PendingForfeitEvent`, `ForfeitReleasedEvent`
   - ← `chainsource` (via Manager): `BlockEpochEvent`
-  - ← API: `ResumeVTXOEvent`
 
 ## Invariants
 
+- VTXO actor state is the single source of truth for availability.
 - Forfeit transaction is not broadcast until the connector output's round confirms (atomic replacement).
 - Refresh is auto-triggered at configurable height before expiry.
 - Once ForfeitedState is reached, the old VTXO is unspendable; the new VTXO is available only after round confirmation.
+- SpendingState is persisted as VTXOStatusSpending and survives restarts.
+- OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.
+- A VTXO in SpendingState cannot be admitted for cooperative consumption, and vice versa.
 
 ## Deep Docs
 
