@@ -3,7 +3,7 @@
 #
 # Checks:
 #   1. All docs/ files referenced in CLAUDE.md exist.
-#   2. All per-package CLAUDE.md files have a matching AGENTS.md.
+#   2. All per-package CLAUDE.md files have an identical AGENTS.md.
 #   3. All packages listed in ARCHITECTURE.md have a CLAUDE.md.
 #   4. All files in docs/ are listed in docs/index.md.
 
@@ -28,12 +28,14 @@ grep -oE 'docs/[a-zA-Z0-9_-]+\.md' CLAUDE.md | sort -u | while read -r docref; d
 done
 
 echo "==> Checking per-package CLAUDE.md / AGENTS.md pairs..."
-find . -mindepth 2 -maxdepth 2 -name 'CLAUDE.md' -not -path './.claude/*' \
-	-not -path './.git/*' | sort | while read -r claude_file; do
+find . -mindepth 2 -name 'CLAUDE.md' -not -path './.claude/*' \
+	-not -path './.git/*' -not -path './vendor/*' | sort | while read -r claude_file; do
 	dir="$(dirname "$claude_file")"
 	agents_file="$dir/AGENTS.md"
 	if [ ! -f "$agents_file" ]; then
 		fail "$claude_file exists but $agents_file is missing"
+	elif ! diff -q "$claude_file" "$agents_file" > /dev/null 2>&1; then
+		fail "$claude_file and $agents_file have diverged"
 	fi
 done
 
@@ -55,7 +57,7 @@ done
 echo "==> Checking docs/ files are listed in docs/index.md..."
 find docs/ -maxdepth 1 -name '*.md' -not -name 'index.md' | sort | while read -r docfile; do
 	basename="$(basename "$docfile")"
-	if ! grep -q "$basename" docs/index.md 2>/dev/null; then
+	if ! grep -qF -- "$basename" docs/index.md; then
 		fail "$docfile is not listed in docs/index.md"
 	fi
 done
