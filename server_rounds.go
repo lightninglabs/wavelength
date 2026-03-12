@@ -7,6 +7,8 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
@@ -15,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo/rounds"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"google.golang.org/protobuf/proto"
 )
 
 // setupRoundsSubsystem initializes the timeout actor, batch watcher,
@@ -133,24 +136,12 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		return fmt.Errorf("start rounds actor: %w", err)
 	}
 
-	// Create the round operator that provides mailbox RPC
-	// dispatchers for the per-client ingress loops. The local
-	// mailbox edge client is shared with the indexer subsystem.
-	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
-	if err != nil {
-		return fmt.Errorf("build rounds edge client: %w", err)
-	}
-
-	s.roundsOperator, err = rounds.NewRoundOperator(
-		rounds.RoundOperatorConfig{
-			Edge:            edgeClient,
-			SenderMailboxID: "svc:rounds",
-			RoundsRef:       s.roundsRef,
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("create rounds operator: %w", err)
-	}
+	// Register fire-and-forget dispatch routes for all round
+	// RPCs on the shared event router. Each route deserializes
+	// the envelope body, extracts the client ID from the
+	// envelope sender, converts the proto to a domain actor
+	// message, and Tell's the rounds actor.
+	s.registerRoundRoutes(roundsKey)
 
 	s.log.InfoS(ctx, "Rounds subsystem initialized",
 		slog.Uint64("conf_target",
@@ -166,19 +157,6 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 	if s.roundsActor != nil {
 		s.log.InfoS(ctx, "Rounds subsystem stopped")
 	}
-}
-
-// RoundsDispatchers returns the rounds operator's DispatcherMap for
-// merging into per-client PerClientConfig.Dispatchers during client
-// registration.
-//
-// Returns nil if the rounds subsystem has not been initialized.
-func (s *Server) RoundsDispatchers() clientconn.DispatcherMap {
-	if s.roundsOperator == nil {
-		return nil
-	}
-
-	return s.roundsOperator.Dispatchers()
 }
 
 // roundsTermsFromConfig maps a RoundsConfig into a batch.Terms
@@ -198,6 +176,299 @@ func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 		MinBoardingConfirmations:      rc.MinBoardingConfirmations,
 		SignatureCollectionTimeout:    rc.SignatureCollectionTimeout,
 	}
+}
+
+// registerRoundRoutes adds fire-and-forget dispatch routes for all
+// five round RPCs to the server's shared EventRouter. Each route
+// deserializes the envelope body into the expected proto type,
+// extracts the client ID from the envelope sender, converts the
+// proto to a domain actor message, and Tell's the rounds actor.
+//
+// This replaces the previous RoundOperator + ServeMux + Edge
+// response pattern with the simpler AddEnvelopeRoute model. Since
+// all round RPCs are fire-and-forget (the real response arrives
+// asynchronously via the outbox event path), no response envelope
+// needs to be built.
+func (s *Server) registerRoundRoutes( //nolint:funlen
+	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
+
+	svc := roundpb.ServiceName
+
+	// JoinRound: client wants to join a round. This is the
+	// only route that doesn't produce a RoundMsg wrapper,
+	// since JoinRoundRequest is a top-level actor message.
+	clientconn.AddEnvelopeRoute(
+		s.eventRouter,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  "JoinRound",
+			NewEvent: func() proto.Message {
+				return &roundpb.JoinRoundRequest{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.JoinRoundRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				domainReq, err :=
+					rounds.JoinRoundRequestFromProto(
+						req,
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse join request: %w",
+						err,
+					)
+				}
+
+				return &rounds.JoinRoundRequest{
+					ClientID: clientconn.ClientID(
+						env.Sender,
+					),
+					Request: domainReq,
+				}, nil
+			},
+		},
+	)
+
+	// SubmitNonces: client submits MuSig2 public nonces for a
+	// round's VTXO tree transactions.
+	clientconn.AddEnvelopeRoute(
+		s.eventRouter,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  "SubmitNonces",
+			NewEvent: func() proto.Message {
+				return &roundpb.SubmitNoncesRequest{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.SubmitNoncesRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				roundID, err := rounds.ParseRoundID(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				nonces, err := rounds.NoncesFromProto(
+					req.GetNonces(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse nonces: %w", err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event: &rounds.ClientVTXONoncesEvent{ //nolint:ll
+						ClientID: cID,
+						Nonces:   nonces,
+					},
+				}, nil
+			},
+		},
+	)
+
+	// SubmitPartialSigs: client submits MuSig2 partial
+	// signatures for a round's VTXO tree transactions.
+	clientconn.AddEnvelopeRoute(
+		s.eventRouter,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  "SubmitPartialSigs",
+			NewEvent: func() proto.Message {
+				return &roundpb.SubmitPartialSigRequest{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.SubmitPartialSigRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				roundID, err := rounds.ParseRoundID(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				sigs, err := rounds.PartialSigsFromProto(
+					req.GetSignatures(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse signatures: %w",
+						err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event: &rounds.ClientVTXOPartialSigsEvent{ //nolint:ll
+						ClientID:   cID,
+						Signatures: sigs,
+					},
+				}, nil
+			},
+		},
+	)
+
+	// SubmitForfeitSigs: client submits boarding input
+	// signatures (Schnorr) for on-chain inputs in a round.
+	clientconn.AddEnvelopeRoute(
+		s.eventRouter,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  "SubmitForfeitSigs",
+			NewEvent: func() proto.Message {
+				return &roundpb.SubmitForfeitSigRequest{}
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.SubmitForfeitSigRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				roundID, err := rounds.ParseRoundID(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				boardingSigs, err :=
+					rounds.BoardingInputSigsFromProto(
+						req.GetSignatures(),
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse boarding sigs: %w",
+						err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event: &rounds.ClientInputSignaturesEvent{ //nolint:ll
+						ClientID:   cID,
+						Signatures: boardingSigs,
+					},
+				}, nil
+			},
+		},
+	)
+
+	// SubmitVTXOForfeitSigs: client submits VTXO forfeit
+	// transaction signatures for cooperative spend paths.
+	clientconn.AddEnvelopeRoute(
+		s.eventRouter,
+		clientconn.EnvelopeRouteConfig[
+			rounds.ActorMsg, rounds.ActorResp,
+		]{
+			Service: svc,
+			Method:  "SubmitVTXOForfeitSigs",
+			NewEvent: func() proto.Message {
+				return &roundpb.SubmitVTXOForfeitSigsRequest{} //nolint:ll
+			},
+			Key: roundsKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				rounds.ActorMsg, error) {
+
+				req, ok := p.(*roundpb.SubmitVTXOForfeitSigsRequest) //nolint:ll
+				if !ok {
+					return nil, fmt.Errorf(
+						"unexpected type %T",
+						p,
+					)
+				}
+
+				roundID, err := rounds.ParseRoundID(
+					req.GetRoundId(),
+				)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse round_id: %w", err,
+					)
+				}
+
+				forfeitTxs, err :=
+					rounds.ForfeitTxSigsFromProto(
+						req.GetForfeitTxs(),
+					)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"parse forfeit sigs: %w",
+						err,
+					)
+				}
+
+				cID := clientconn.ClientID(env.Sender)
+
+				return &rounds.RoundMsg{
+					RoundID: roundID,
+					Event: &rounds.ClientInputSignaturesEvent{ //nolint:ll
+						ClientID:   cID,
+						ForfeitTxs: forfeitTxs,
+					},
+				}, nil
+			},
+		},
+	)
 }
 
 // networkToChainParams maps a network name to btcd chain parameters.

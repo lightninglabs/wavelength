@@ -160,47 +160,68 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 }
 
 // RegisterClientWithAllDispatchers creates a new per-client runtime
-// with dispatchers merged from all active operator subsystems (indexer,
-// rounds, OOR). This is the single entry point for client registration
-// so callers do not need to know which subsystems are active.
+// with dispatchers merged from all active subsystems. This is the
+// single entry point for client registration so callers do not need
+// to know which subsystems are active.
 //
-// Each operator exposes a Dispatchers() method returning a DispatcherMap
-// keyed by mailboxrpc.ServiceMethod{Service, Method}. The map values are
-// EnvelopeDispatcher closures created by makeDispatcher. This method
-// merges all operator maps into a single DispatcherMap and installs it
-// on the PerClientConfig.Dispatchers field. When the per-client ingress
-// loop receives an envelope, it looks up the dispatcher by the
-// envelope's RpcMeta (service + method) and invokes it.
+// Dispatchers come from two sources:
+//  1. Indexer operator (synchronous request-response via ServeMux)
+//  2. EventRouter (fire-and-forget routes for rounds and OOR RPCs)
 //
-// The full end-to-end flow for a client request is:
+// The full end-to-end flow for a fire-and-forget client request is:
 //
 //	Client → Mailbox → Ingress Loop → DispatcherMap lookup →
-//	EnvelopeDispatcher → ServeMux.ServeRPC (proto deserialize) →
-//	Typed Handler (e.g. JoinRound) → Actor Tell/Ask
+//	EnvelopeDispatcher → Unmarshal proto → Adapt(env, proto) →
+//	actor.Tell (durable commit)
 //
-// And the response path:
+// For synchronous indexer requests the flow goes through ServeMux
+// and the response is sent back via Edge.Send as before.
 //
-//	Handler result → makeDispatcher builds KIND_RESPONSE envelope →
-//	Edge.Send → Client's mailbox → Client ingress delivers response
+// IMPORTANT: Each dispatcher is wrapped to overwrite env.Sender
+// with the authenticated clientID before dispatch. The mailbox
+// transport does not currently stamp Sender server-side, so
+// env.Sender is client-controlled and untrusted. The wrapper
+// ensures that all downstream code (rounds actor, indexer
+// principal, etc.) receives the server-authenticated identity.
+//
+// TODO(security): Long-term, the mailbox transport layer should
+// enforce Sender authenticity via mTLS or session-bound tokens
+// so this wrapper becomes defense-in-depth rather than the
+// primary trust boundary.
 func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
 	clientID clientconn.ClientID,
 	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
 
-	// Merge dispatchers from all active operators into the base
-	// config. Each method returns nil if its subsystem has not
-	// been initialized, so the merge is safe.
+	// Merge dispatchers from all active sources into the base
+	// config. Indexer uses the operator pattern (synchronous
+	// request-response); rounds and OOR use the EventRouter
+	// (fire-and-forget Tell).
 	merged := make(clientconn.DispatcherMap)
 
 	for k, v := range s.IndexerDispatchers() {
 		merged[k] = v
 	}
 
-	for k, v := range s.RoundsDispatchers() {
+	// Merge fire-and-forget routes from the shared EventRouter
+	// (rounds + OOR RPCs).
+	for k, v := range s.eventRouter.AsDispatcherMap() {
 		merged[k] = v
 	}
 
-	for k, v := range s.OORDispatchers() {
-		merged[k] = v
+	// Wrap every dispatcher to stamp the authenticated clientID
+	// onto env.Sender before dispatch. This prevents a client
+	// from spoofing another client's identity via the
+	// client-controlled Sender field.
+	authenticatedSender := string(clientID)
+	for k, inner := range merged {
+		dispatch := inner
+		merged[k] = func(ctx context.Context,
+			env *mailboxpb.Envelope) error {
+
+			env.Sender = authenticatedSender
+
+			return dispatch(ctx, env)
+		}
 	}
 
 	baseCfg.Dispatchers = merged

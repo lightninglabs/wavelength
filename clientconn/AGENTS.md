@@ -16,6 +16,11 @@ to the appropriate service operator.
 - `ClientConnMsg` — Messages sent to the bridge actor.
 - `EnvelopeDispatcher` — `func(ctx, *Envelope) error` routing closure per service/method.
 - `DispatcherMap` — `map[ServiceMethod]EnvelopeDispatcher` for request routing.
+- `EventRouter` — Collects typed dispatch routes, returns `DispatcherMap` via `AsDispatcherMap()`.
+- `EventRouteConfig` — Generic config for fire-and-forget routes with custom `Adapt` closures.
+- `EnvelopeRouteConfig` — Like `EventRouteConfig` but passes the full envelope to `Adapt` (for extracting transport metadata like client ID).
+- `InboundActorMessage` — Constraint combining `actor.Message` + `InboundClientMessage` for self-deserializing messages.
+- `AddRoute` / `AddEnvelopeRoute` — Package-level generic functions registering typed routes on an `EventRouter`.
 
 ## Relationships
 
@@ -24,7 +29,8 @@ to the appropriate service operator.
 - **Messages to/from**:
   - Receives envelopes from clients via mailbox ingress.
   - Sends envelopes to clients via durable egress actors.
-  - Dispatches requests to `rounds`, `oor`, `indexer` operators.
+  - Dispatches fire-and-forget requests to `rounds`, `oor` actors via `EventRouter` (`AddEnvelopeRoute`).
+  - Dispatches synchronous request-response RPCs to `indexer` via operator pattern (`ServeMux`).
 
 ## Invariants
 

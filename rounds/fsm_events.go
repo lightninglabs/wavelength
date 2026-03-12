@@ -82,6 +82,12 @@ func (e *InputSignaturesTimeoutEvent) eventSealed() {}
 // ClientInputSignaturesEvent is sent when a client submits their signatures
 // for their boarding inputs. Each client must sign all their boarding inputs
 // before the round can proceed.
+//
+// This event is used by two dispatch routes: SubmitForfeitSigs populates
+// Signatures (boarding input sigs), while SubmitVTXOForfeitSigs populates
+// ForfeitTxs (VTXO forfeit tx sigs). The FSM handler validates counts
+// for both fields against the client's registration, so a nil/empty
+// field is accepted when the client has zero entries of that kind.
 type ClientInputSignaturesEvent struct {
 	// ClientID identifies which client is submitting signatures.
 	ClientID clientconn.ClientID

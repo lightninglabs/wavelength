@@ -102,10 +102,10 @@ type Server struct {
 	// for sending messages (e.g. TriggerBatch from admin RPC).
 	roundsRef actor.ActorRef[rounds.ActorMsg, rounds.ActorResp]
 
-	// roundsOperator provides RPC dispatchers for the round
-	// service, translating inbound mailbox envelopes into actor
-	// messages.
-	roundsOperator *rounds.RoundOperator
+	// eventRouter maps inbound envelope routes to actor mailboxes
+	// for fire-and-forget RPC methods (rounds, OOR). Created
+	// after the actor system so routes can resolve ServiceKeys.
+	eventRouter *clientconn.EventRouter
 
 	// oorActor is the OOR transfer coordinator that manages
 	// out-of-round transfers between clients.
@@ -114,10 +114,6 @@ type Server struct {
 	// oorRef is the actor reference for the OOR actor, used
 	// for sending messages through the actor system.
 	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
-
-	// oorOperator provides RPC dispatchers for the OOR service,
-	// translating inbound mailbox envelopes into actor messages.
-	oorOperator *oor.OOROperator
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -229,6 +225,12 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	}()
 
 	s.log.InfoS(ctx, "Actor system initialized")
+
+	// Create the event router that will collect fire-and-forget
+	// dispatch routes for rounds and OOR RPCs. Routes are
+	// registered during subsystem setup; the final map is
+	// consumed by RegisterClientWithAllDispatchers.
+	s.eventRouter = clientconn.NewEventRouter(s.actorSystem)
 
 	// -------------------------------------------------------
 	// 3. Create and register chain source actor.

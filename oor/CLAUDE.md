@@ -13,15 +13,15 @@ co-signing, finalization, and recipient notification.
 - `State` — Sealed interface for FSM states (Idle through Finalized/Failed).
 - `Event` — Inbound events (SubmitRequest, FinalizeRequest, etc.).
 - `OutboxEvent` — Outbound side effects (notify recipients, persist state).
-- `SubmitOORRequest` / `FinalizeOORRequest` — Primary actor messages.
+- `SubmitOORRequest` / `FinalizeOORRequest` — Primary actor messages (dispatched via `AddEnvelopeRoute` from `server_oor.go`).
 
 ## Relationships
 
 - **Depends on**: `clientconn` (outbound events to clients), `db` (OOR session persistence), `vtxo` (VTXO locking during transfers).
 - **Depended on by**: root `darepo` (wiring), `indexer` (OOR event queries).
 - **Messages to/from**:
-  - Receives submit/finalize requests <- `clientconn` (from clients).
-  - Sends recipient notifications -> `clientconn` (to clients).
+  - Receives submit/finalize requests <- `clientconn` via `AddEnvelopeRoute` (fire-and-forget Tell from clients).
+  - Sends recipient notifications -> `clientconn` (to clients via bridge egress).
   - Reads/writes OOR session state -> `db`.
 
 ## Invariants
