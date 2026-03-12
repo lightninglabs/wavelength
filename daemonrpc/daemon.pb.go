@@ -1427,8 +1427,14 @@ type SendVTXOResponse struct {
 	// total_amount_sat is the total amount being sent (sum of
 	// recipients).
 	TotalAmountSat int64 `protobuf:"varint,3,opt,name=total_amount_sat,json=totalAmountSat,proto3" json:"total_amount_sat,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// change_amount_sat is the change returned to the sender. Zero if
+	// the selected VTXOs exactly covered the total.
+	ChangeAmountSat int64 `protobuf:"varint,4,opt,name=change_amount_sat,json=changeAmountSat,proto3" json:"change_amount_sat,omitempty"`
+	// selected_count is the number of VTXOs selected as inputs for
+	// this send.
+	SelectedCount int32 `protobuf:"varint,5,opt,name=selected_count,json=selectedCount,proto3" json:"selected_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SendVTXOResponse) Reset() {
@@ -1478,6 +1484,20 @@ func (x *SendVTXOResponse) GetRoundId() string {
 func (x *SendVTXOResponse) GetTotalAmountSat() int64 {
 	if x != nil {
 		return x.TotalAmountSat
+	}
+	return 0
+}
+
+func (x *SendVTXOResponse) GetChangeAmountSat() int64 {
+	if x != nil {
+		return x.ChangeAmountSat
+	}
+	return 0
+}
+
+func (x *SendVTXOResponse) GetSelectedCount() int32 {
+	if x != nil {
+		return x.SelectedCount
 	}
 	return 0
 }
@@ -2292,11 +2312,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\n" +
 	"recipients\x18\x01 \x03(\v2\x11.daemonrpc.OutputR\n" +
 	"recipients\x12\x17\n" +
-	"\adry_run\x18\x02 \x01(\bR\x06dryRun\"o\n" +
+	"\adry_run\x18\x02 \x01(\bR\x06dryRun\"\xc2\x01\n" +
 	"\x10SendVTXOResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x19\n" +
 	"\bround_id\x18\x02 \x01(\tR\aroundId\x12(\n" +
-	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\"Z\n" +
+	"\x10total_amount_sat\x18\x03 \x01(\x03R\x0etotalAmountSat\x12*\n" +
+	"\x11change_amount_sat\x18\x04 \x01(\x03R\x0fchangeAmountSat\x12%\n" +
+	"\x0eselected_count\x18\x05 \x01(\x05R\rselectedCount\"Z\n" +
 	"\x0eSendOORRequest\x12/\n" +
 	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\"H\n" +

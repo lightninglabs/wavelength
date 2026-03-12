@@ -350,6 +350,14 @@ message SendVTXOResponse {
     // total_amount_sat is the total amount being sent (sum of
     // recipients).
     int64 total_amount_sat = 3;
+
+    // change_amount_sat is the change returned to the sender. Zero if
+    // the selected VTXOs exactly covered the total.
+    int64 change_amount_sat = 4;
+
+    // selected_count is the number of VTXOs selected as inputs for
+    // this send.
+    int32 selected_count = 5;
 }
 
 message SendOORRequest {
