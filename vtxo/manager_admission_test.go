@@ -1015,3 +1015,208 @@ func TestRecoveredPendingForfeitAllowsRelease(t *testing.T) {
 	_, ok = ref.state.(*LiveState)
 	require.True(t, ok, "expected LiveState, got %T", ref.state)
 }
+
+// =============================================================================
+// Atomic cooperative select-and-reserve tests
+// =============================================================================
+
+// TestSelectAndReserveForfeitSuccess verifies that the manager selects
+// and reserves VTXOs for cooperative consumption using largest-first
+// selection, driving each into PendingForfeitState.
+func TestSelectAndReserveForfeitSuccess(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 30000, 0)
+	vtxo2 := makeDescriptor(t, 50000, 1)
+	vtxo3 := makeDescriptor(t, 20000, 2)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2, vtxo3,
+	})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2, vtxo3}, nil)
+
+	result := mgr.Receive(
+		t.Context(), &SelectAndReserveForfeitRequest{
+			TargetAmount: 40000,
+		},
+	)
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	forfeitResp, ok := resp.(*SelectAndReserveForfeitResponse)
+	require.True(t, ok)
+
+	// Largest-first picks vtxo2 (50000) covering 40000.
+	require.Len(t, forfeitResp.SelectedVTXOs, 1)
+	require.Equal(t,
+		vtxo2.Outpoint, forfeitResp.SelectedVTXOs[0].Outpoint,
+	)
+	require.Equal(t,
+		btcutil.Amount(50000), forfeitResp.TotalSelected,
+	)
+
+	// Verify the actor is now in PendingForfeitState.
+	actorAny, ok := mgr.actors[vtxo2.Outpoint]
+	require.True(t, ok, "actor not found for vtxo2")
+
+	actorRef, ok := actorAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef")
+
+	_, ok = actorRef.state.(*PendingForfeitState)
+	require.True(t, ok,
+		"expected PendingForfeitState, got %T", actorRef.state,
+	)
+}
+
+// TestSelectAndReserveForfeitMultipleVTXOs verifies that coin selection
+// picks multiple VTXOs when no single VTXO covers the target.
+func TestSelectAndReserveForfeitMultipleVTXOs(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 30000, 0)
+	vtxo2 := makeDescriptor(t, 25000, 1)
+	vtxo3 := makeDescriptor(t, 20000, 2)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2, vtxo3,
+	})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2, vtxo3}, nil)
+
+	result := mgr.Receive(
+		t.Context(), &SelectAndReserveForfeitRequest{
+			TargetAmount: 50000,
+		},
+	)
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	forfeitResp, ok := resp.(*SelectAndReserveForfeitResponse)
+	require.True(t, ok, "expected *SelectAndReserveForfeitResponse")
+
+	// Largest-first: vtxo1 (30000) + vtxo2 (25000) = 55000.
+	require.Len(t, forfeitResp.SelectedVTXOs, 2)
+	require.Equal(t,
+		btcutil.Amount(55000), forfeitResp.TotalSelected,
+	)
+}
+
+// TestSelectAndReserveForfeitInsufficientFunds verifies that selection
+// fails when live candidates cannot cover the target.
+func TestSelectAndReserveForfeitInsufficientFunds(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 10000, 0)
+
+	mgr, store := newTestManager(t, []*Descriptor{vtxo1})
+
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1}, nil)
+
+	result := mgr.Receive(
+		t.Context(), &SelectAndReserveForfeitRequest{
+			TargetAmount: 50000,
+		},
+	)
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "insufficient funds")
+}
+
+// TestSelectAndReserveForfeitSkipsNonLive verifies that VTXOs already
+// in SpendingState or PendingForfeitState are excluded from candidates
+// because only Live VTXOs are returned by ListVTXOsByStatus.
+func TestSelectAndReserveForfeitSkipsNonLive(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 50000, 0)
+	vtxo2 := makeDescriptor(t, 30000, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2,
+	})
+
+	// Put vtxo1 into SpendingState so it won't be listed as Live.
+	mgr.actors[vtxo1.Outpoint] = newMockVTXOActorRef(
+		vtxo1.Outpoint.String(),
+		&SpendingState{VTXO: vtxo1},
+	)
+
+	// Store only returns vtxo2 as Live.
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo2}, nil)
+
+	result := mgr.Receive(
+		t.Context(), &SelectAndReserveForfeitRequest{
+			TargetAmount: 25000,
+		},
+	)
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	forfeitResp, ok := resp.(*SelectAndReserveForfeitResponse)
+	require.True(t, ok, "expected *SelectAndReserveForfeitResponse")
+
+	// Only vtxo2 was available and selected.
+	require.Len(t, forfeitResp.SelectedVTXOs, 1)
+	require.Equal(t,
+		vtxo2.Outpoint,
+		forfeitResp.SelectedVTXOs[0].Outpoint,
+	)
+}
+
+// TestSelectAndReserveForfeitPartialRollback verifies that if one VTXO
+// rejects PendingForfeitEvent, previously reserved VTXOs are rolled
+// back via ForfeitReleasedEvent.
+func TestSelectAndReserveForfeitPartialRollback(t *testing.T) {
+	t.Parallel()
+
+	vtxo1 := makeDescriptor(t, 30000, 0)
+	vtxo2 := makeDescriptor(t, 25000, 1)
+
+	mgr, store := newTestManager(t, []*Descriptor{
+		vtxo1, vtxo2,
+	})
+
+	// Put vtxo2 (second in sort order) into SpendingState so it
+	// will reject PendingForfeitEvent during reservation.
+	mgr.actors[vtxo2.Outpoint] = newMockVTXOActorRef(
+		vtxo2.Outpoint.String(),
+		&SpendingState{VTXO: vtxo2},
+	)
+
+	// Store returns both as Live (stale view).
+	store.On(
+		"ListVTXOsByStatus", t.Context(), VTXOStatusLive,
+	).Return([]*Descriptor{vtxo1, vtxo2}, nil)
+
+	// Target requires both VTXOs.
+	result := mgr.Receive(
+		t.Context(), &SelectAndReserveForfeitRequest{
+			TargetAmount: 50000,
+		},
+	)
+	_, err := result.Unpack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "reserve forfeit")
+
+	// Verify vtxo1 was rolled back to LiveState.
+	actorAny, ok := mgr.actors[vtxo1.Outpoint]
+	require.True(t, ok, "actor not found for vtxo1")
+
+	actorRef, ok := actorAny.(*mockVTXOActorRef)
+	require.True(t, ok, "expected *mockVTXOActorRef")
+
+	_, ok = actorRef.state.(*LiveState)
+	require.True(t, ok,
+		"expected LiveState after rollback, got %T",
+		actorRef.state,
+	)
+}
