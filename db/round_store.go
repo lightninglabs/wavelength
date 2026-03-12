@@ -130,6 +130,12 @@ type RoundStore interface {
 	GetBoardingAddress(
 		ctx context.Context, pkScript []byte,
 	) (BoardingAddrRow, error)
+
+	ListRoundsPaginated(
+		ctx context.Context, arg ListRoundsPaginatedParams,
+	) ([]RoundRow, error)
+
+	ListVTXOsByRound(ctx context.Context, roundID string) ([]VTXORow, error)
 }
 
 // BatchedRoundStore combines RoundStore with transaction support via the
@@ -1335,6 +1341,102 @@ func serializeVTXOTreePaths(
 	}
 
 	return nil, nil
+}
+
+// RoundSummary is a lightweight round descriptor returned by paginated
+// queries. It contains only the round ID, persisted status, and the
+// VTXOs created in this round.
+type RoundSummary struct {
+	// RoundID is the unique identifier for this round.
+	RoundID round.RoundID
+
+	// Status is the persisted status string (e.g. "input_sig_sent",
+	// "confirmed").
+	Status string
+
+	// VTXOs lists the outpoints and amounts of VTXOs created in this
+	// round.
+	VTXOs []VTXOSummary
+}
+
+// VTXOSummary is a lightweight VTXO descriptor containing only the
+// outpoint and amount.
+type VTXOSummary struct {
+	// Outpoint is the VTXO's outpoint.
+	Outpoint wire.OutPoint
+
+	// Amount is the VTXO value in satoshis.
+	Amount btcutil.Amount
+}
+
+// ListRoundsPaginated returns a page of persisted round summaries ordered by
+// round_id using cursor-based pagination. The cursor is the last round_id
+// from the previous page; pass "" to start from the beginning.
+func (s *RoundPersistenceStore) ListRoundsPaginated(ctx context.Context,
+	cursor string, limit int32) ([]RoundSummary, error) {
+
+	readTxOpts := ReadTxOption()
+
+	var result []RoundSummary
+
+	err := s.db.ExecTx(ctx, readTxOpts, func(q RoundStore) error {
+		params := ListRoundsPaginatedParams{
+			Column1: cursor,
+			Limit:   limit,
+		}
+
+		dbRounds, err := q.ListRoundsPaginated(ctx, params)
+		if err != nil {
+			return fmt.Errorf("list rounds paginated: %w", err)
+		}
+
+		summaries := make([]RoundSummary, 0, len(dbRounds))
+		for _, dbRound := range dbRounds {
+			roundID, err := round.ParseRoundID(dbRound.RoundID)
+			if err != nil {
+				return fmt.Errorf(
+					"parse round ID: %w", err,
+				)
+			}
+
+			// Fetch VTXOs created in this round.
+			dbVTXOs, err := q.ListVTXOsByRound(
+				ctx, dbRound.RoundID,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"list vtxos for round %s: %w",
+					dbRound.RoundID, err,
+				)
+			}
+
+			vtxos := make([]VTXOSummary, 0, len(dbVTXOs))
+			for _, v := range dbVTXOs {
+				var hash chainhash.Hash
+				copy(hash[:], v.OutpointHash)
+
+				vtxos = append(vtxos, VTXOSummary{
+					Outpoint: wire.OutPoint{
+						Hash:  hash,
+						Index: uint32(v.OutpointIndex),
+					},
+					Amount: btcutil.Amount(v.Amount),
+				})
+			}
+
+			summaries = append(summaries, RoundSummary{
+				RoundID: roundID,
+				Status:  dbRound.Status,
+				VTXOs:   vtxos,
+			})
+		}
+
+		result = summaries
+
+		return nil
+	})
+
+	return result, err
 }
 
 // Compile-time checks that RoundPersistenceStore implements the interfaces.

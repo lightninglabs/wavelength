@@ -938,3 +938,265 @@ func parseOutpointString(s string) (wire.OutPoint, error) {
 		Index: uint32(idx),
 	}, nil
 }
+
+// watchRoundsPollInterval is how often WatchRounds polls the round
+// actor for state changes.
+const watchRoundsPollInterval = 500 * time.Millisecond
+
+// clientStateToProto maps a round.ClientState to the proto RoundState
+// enum value.
+func clientStateToProto(
+	state round.ClientState) daemonrpc.RoundState {
+
+	switch state.(type) {
+	case *round.Idle:
+		return daemonrpc.RoundState_ROUND_STATE_IDLE
+
+	case *round.PendingRoundAssembly:
+		return daemonrpc.RoundState_ROUND_STATE_PENDING_ASSEMBLY
+
+	case *round.RegistrationSentState:
+		return daemonrpc.RoundState_ROUND_STATE_REGISTRATION_SENT
+
+	case *round.RoundJoinedState:
+		return daemonrpc.RoundState_ROUND_STATE_JOINED
+
+	case *round.CommitmentTxReceivedState:
+		return daemonrpc.RoundState_ROUND_STATE_COMMITMENT_RECEIVED
+
+	case *round.CommitmentTxValidatedState:
+		return daemonrpc.RoundState_ROUND_STATE_COMMITMENT_VALIDATED
+
+	case *round.ForfeitSignaturesCollectingState:
+		return daemonrpc.RoundState_ROUND_STATE_FORFEIT_COLLECTING
+
+	case *round.NoncesSentState:
+		return daemonrpc.RoundState_ROUND_STATE_NONCES_SENT
+
+	case *round.NoncesAggregatedState:
+		return daemonrpc.RoundState_ROUND_STATE_NONCES_AGGREGATED
+
+	case *round.PartialSigsSentState:
+		return daemonrpc.RoundState_ROUND_STATE_PARTIAL_SIGS_SENT
+
+	case *round.InputSigSentState:
+		return daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT
+
+	case *round.ConfirmedState:
+		return daemonrpc.RoundState_ROUND_STATE_CONFIRMED
+
+	case *round.ClientFailedState:
+		return daemonrpc.RoundState_ROUND_STATE_FAILED
+
+	case *round.RecoveryInitiatedState:
+		return daemonrpc.RoundState_ROUND_STATE_RECOVERY
+
+	default:
+		return daemonrpc.RoundState_ROUND_STATE_UNKNOWN
+	}
+}
+
+// queryRoundStates fetches the current FSM states from the round actor
+// and converts them to proto RoundInfo messages.
+func (r *RPCServer) queryRoundStates(
+	ctx context.Context) ([]*daemonrpc.RoundInfo, error) {
+
+	if r.server.actorSystem == nil {
+		return nil, status.Errorf(codes.Internal,
+			"actor system not initialized")
+	}
+
+	roundKey := round.NewServiceKey()
+	roundRef := roundKey.Ref(r.server.actorSystem)
+
+	stateMsg := &round.GetClientStateRequest{}
+	future := roundRef.Ask(ctx, stateMsg)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"failed to query round state: %v", err)
+	}
+
+	stateResp, ok := resp.(*round.GetClientStateResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected state response type: %T", resp)
+	}
+
+	rounds := make(
+		[]*daemonrpc.RoundInfo, 0, len(stateResp.States),
+	)
+	for _, info := range stateResp.States {
+		roundID := ""
+		if !info.IsTemp {
+			roundID = info.RoundID.String()
+		}
+
+		rounds = append(rounds, &daemonrpc.RoundInfo{
+			RoundId: roundID,
+			State:   clientStateToProto(info.State),
+			IsTemp:  info.IsTemp,
+		})
+	}
+
+	return rounds, nil
+}
+
+// defaultListRoundsPageSize is the page size used when the client
+// does not specify one.
+const defaultListRoundsPageSize = 100
+
+// dbStatusToProto maps a persisted round status string to the proto enum.
+func dbStatusToProto(status string) daemonrpc.RoundState {
+	switch status {
+	case "input_sig_sent":
+		return daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT
+
+	case "confirmed":
+		return daemonrpc.RoundState_ROUND_STATE_CONFIRMED
+
+	case "failed":
+		return daemonrpc.RoundState_ROUND_STATE_FAILED
+
+	default:
+		return daemonrpc.RoundState_ROUND_STATE_UNKNOWN
+	}
+}
+
+// ListRounds returns round state information split into two categories:
+//   - Pending rounds: live FSM instances from the round actor. Always
+//     returned (unless persisted_only is set) and do not count against
+//     page_size.
+//   - Persisted rounds: rounds stored on disk (input_sig_sent, confirmed,
+//     etc.) returned with cursor-based SQL pagination. Each persisted
+//     round includes VTXOs created in that round.
+//
+// Pending rounds appear first in the response, followed by persisted rounds.
+func (r *RPCServer) ListRounds(ctx context.Context,
+	req *daemonrpc.ListRoundsRequest) (
+	*daemonrpc.ListRoundsResponse, error) {
+
+	var rounds []*daemonrpc.RoundInfo
+
+	// Always include pending (in-memory) rounds unless the caller
+	// explicitly requested persisted-only results.
+	if !req.PersistedOnly {
+		pending, err := r.queryRoundStates(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		rounds = append(rounds, pending...)
+	}
+
+	// Query persisted rounds from SQL with cursor pagination.
+	pageSize := int32(req.PageSize)
+	if pageSize <= 0 {
+		pageSize = defaultListRoundsPageSize
+	}
+
+	var nextToken string
+
+	if r.server.roundStore != nil {
+		// Request one extra row to detect whether a next page
+		// exists.
+		dbRounds, err := r.server.roundStore.ListRoundsPaginated(
+			ctx, req.PageToken, pageSize+1,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"failed to list persisted rounds: %v", err)
+		}
+
+		// If we got more rows than pageSize, there's a next
+		// page.
+		if int32(len(dbRounds)) > pageSize {
+			dbRounds = dbRounds[:pageSize]
+			nextToken = dbRounds[len(dbRounds)-1].RoundID.String()
+		}
+
+		for _, s := range dbRounds {
+			info := &daemonrpc.RoundInfo{
+				RoundId: s.RoundID.String(),
+				State:   dbStatusToProto(s.Status),
+				IsTemp:  false,
+			}
+
+			// Populate VTXO details for persisted rounds.
+			for _, v := range s.VTXOs {
+				info.Vtxos = append(
+					info.Vtxos,
+					&daemonrpc.RoundVTXOInfo{
+						Outpoint:  v.Outpoint.String(),
+						AmountSat: int64(v.Amount),
+					},
+				)
+			}
+
+			rounds = append(rounds, info)
+		}
+	}
+
+	return &daemonrpc.ListRoundsResponse{
+		Rounds:        rounds,
+		NextPageToken: nextToken,
+	}, nil
+}
+
+// WatchRounds opens a server-streaming connection that pushes round
+// state updates as they occur. The stream polls the round actor and
+// sends updates whenever a round's state changes.
+func (r *RPCServer) WatchRounds(
+	_ *daemonrpc.WatchRoundsRequest,
+	stream daemonrpc.DaemonService_WatchRoundsServer) error {
+
+	ctx := stream.Context()
+
+	// Track previous state snapshot to detect changes.
+	prevStates := make(map[string]daemonrpc.RoundState)
+
+	ticker := time.NewTicker(watchRoundsPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case <-ticker.C:
+		}
+
+		rounds, err := r.queryRoundStates(ctx)
+		if err != nil {
+			log.WarnS(ctx, "WatchRounds poll failed", err)
+
+			continue
+		}
+
+		// Diff against previous snapshot and send updates
+		// for changed or new rounds.
+		for _, info := range rounds {
+			key := info.RoundId
+			if info.IsTemp {
+				key = "temp:" + key
+			}
+
+			prev, known := prevStates[key]
+			if known && prev == info.State {
+				continue
+			}
+
+			prevStates[key] = info.State
+
+			if err := stream.Send(
+				&daemonrpc.WatchRoundsResponse{
+					Round: info,
+				},
+			); err != nil {
+				return err
+			}
+		}
+	}
+}

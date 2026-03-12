@@ -98,6 +98,7 @@ type Server struct {
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
 	vtxoStore     *db.VTXOPersistenceStore
+	roundStore    *db.RoundPersistenceStore
 
 	// lnd holds the lndclient connection when wallet.type is "lnd".
 	// It is None in lwwallet mode.
@@ -1515,6 +1516,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 		s.db.DB, s.db.Queries, s.db.Backend(), log,
 	)
 	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
+	s.roundStore = roundStore
 
 	// Fetch the operator's terms from the server. These include
 	// the operator pubkey, sweep delay, exit delay, dust limit,
