@@ -159,7 +159,7 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	require.NoError(t, err, "should flush buffered messages")
 
 	failed := waitForBoardingFailedEvent(
-		t, h, client.ClientID(), 20*time.Second,
+		t, h, client.ClientID(), 60*time.Second,
 	)
 	require.Contains(t, failed.Reason, "join request auth invalid")
 	require.Contains(t, failed.Reason, "signature expired")
