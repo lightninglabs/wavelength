@@ -10,8 +10,8 @@ import (
 type LndBoardingBackend = lndbackend.BoardingBackend
 
 // NewLndBoardingBackend creates a new LND boarding backend.
-func NewLndBoardingBackend(
-	walletKit lndclient.WalletKitClient) *LndBoardingBackend {
+func NewLndBoardingBackend(walletKit lndclient.WalletKitClient,
+	chainKit lndclient.ChainKitClient) *LndBoardingBackend {
 
-	return lndbackend.NewBoardingBackend(walletKit)
+	return lndbackend.NewBoardingBackend(walletKit, chainKit)
 }

@@ -163,6 +163,14 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			br.OperatorKey = req.OperatorKey.
 				SerializeCompressed()
 		}
+
+		// Copy the pre-serialized TxProof bytes if present.
+		// The wallet layer serializes the proof when building
+		// the boarding request to avoid import cycles.
+		if len(req.RawTxProof) > 0 {
+			br.TxProof = req.RawTxProof
+		}
+
 		boardingReqs[i] = br
 	}
 

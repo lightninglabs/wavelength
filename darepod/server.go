@@ -433,6 +433,7 @@ func (s *Server) run(ctx context.Context,
 	connCfg.Edge = edge
 	connCfg.LocalMailboxID = s.cfg.Server.LocalMailboxID
 	connCfg.RemoteMailboxID = s.cfg.Server.RemoteMailboxID
+	connCfg.ProtocolVersion = 1
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
 
@@ -1444,7 +1445,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
 		boardingBackend = lndbackend.NewBoardingBackend(
-			lndSvc.WalletKit,
+			lndSvc.WalletKit, lndSvc.ChainKit,
 		)
 
 	case WalletTypeLwwallet:

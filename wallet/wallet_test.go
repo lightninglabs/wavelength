@@ -63,15 +63,33 @@ func (m *MockBoardingBackend) ListUnspent(ctx context.Context,
 }
 
 func (m *MockBoardingBackend) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, error) {
+	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
 
 	args := m.Called(ctx, txid)
+	if args.Get(0) == nil {
+		return nil, nil, args.Error(2)
+	}
+
+	var blockHash *chainhash.Hash
+	if args.Get(1) != nil {
+		//nolint:forcetypeassert
+		blockHash = args.Get(1).(*chainhash.Hash)
+	}
+
+	//nolint:forcetypeassert
+	return args.Get(0).(*wire.MsgTx), blockHash, args.Error(2)
+}
+
+func (m *MockBoardingBackend) GetBlock(ctx context.Context,
+	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
+
+	args := m.Called(ctx, blockHash)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 
 	//nolint:forcetypeassert
-	return args.Get(0).(*wire.MsgTx), args.Error(1)
+	return args.Get(0).(*wire.MsgBlock), args.Error(1)
 }
 
 // MockBoardingStore implements BoardingStore for testing.
@@ -452,10 +470,23 @@ func TestProcessNewUtxo(t *testing.T) {
 		},
 	}
 
+	// Use the epoch block hash as the confirmation block hash for
+	// the mock. This simulates the happy path where the UTXO was
+	// confirmed in the current epoch block.
+	epochHash := chainhash.Hash{0xaa, 0xbb}
+
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint.Hash,
-	).Return(mockTx, nil)
+	).Return(mockTx, &epochHash, nil)
+
+	// Return a block containing the mock tx so TxProof can be built.
+	mockBlock := &wire.MsgBlock{
+		Transactions: []*wire.MsgTx{mockTx},
+	}
+	backend.On(
+		"GetBlock", mock.Anything, epochHash,
+	).Return(mockBlock, nil)
 
 	store := &MockBoardingStore{}
 	store.On(
@@ -606,13 +637,27 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 		},
 	}
 
+	epochHash := chainhash.Hash{0xaa, 0xbb}
+
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint1.Hash,
-	).Return(mockTx1, nil)
+	).Return(mockTx1, &epochHash, nil)
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint2.Hash,
-	).Return(mockTx2, nil)
+	).Return(mockTx2, &epochHash, nil)
+
+	// Return blocks containing the respective mock txs.
+	backend.On(
+		"GetBlock", mock.Anything, epochHash,
+	).Return(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{mockTx1},
+	}, nil).Once()
+	backend.On(
+		"GetBlock", mock.Anything, epochHash,
+	).Return(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{mockTx2},
+	}, nil).Once()
 
 	store := &MockBoardingStore{}
 	store.On(
@@ -721,6 +766,156 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	default:
 		t.Fatal("high-conf notifier should have received notification")
 	}
+
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
+
+// TestProcessUtxoProofOmittedWhenTxNotInBlock verifies that when GetBlock
+// succeeds but the boarding transaction is not found in the returned block
+// (e.g., during catch-up after downtime where the block hash is wrong), the
+// TxProof is omitted (None) but the boarding intent is still persisted and
+// the notifier still receives the event.
+func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rootHash := []byte{0xaa, 0xbb, 0xcc}
+	taprootKey := txscript.ComputeTaprootOutputKey(
+		clientKey.PubKey(), rootHash,
+	)
+	address, err := btcutil.NewAddressTaproot(
+		taprootKey.SerializeCompressed()[1:],
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	boardingAddr := &BoardingAddress{
+		Address: address,
+		Tapscript: &waddrmgr.Tapscript{
+			Type:     waddrmgr.TapscriptTypeFullTree,
+			RootHash: rootHash,
+		},
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: 42,
+				Index:  0,
+			},
+		},
+		OperatorKey: operatorKey.PubKey(),
+		ExitDelay:   144,
+	}
+
+	testOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11, 0x22},
+		Index: 0,
+	}
+
+	// The actual boarding transaction.
+	boardingTx := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 100000, PkScript: pkScript},
+		},
+	}
+
+	// A different transaction that will be in the block instead.
+	// This simulates the catch-up case where the block returned
+	// doesn't contain the boarding tx.
+	otherTx := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 50000, PkScript: []byte{0xde, 0xad}},
+		},
+	}
+
+	confBlockHash := chainhash.Hash{0xcc, 0xdd}
+
+	backend := &MockBoardingBackend{}
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint.Hash,
+	).Return(boardingTx, &confBlockHash, nil)
+
+	// Return a block that does NOT contain the boarding tx — only
+	// otherTx. This simulates a block hash mismatch.
+	backend.On(
+		"GetBlock", mock.Anything, confBlockHash,
+	).Return(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{otherTx},
+	}, nil)
+
+	store := &MockBoardingStore{}
+	store.On(
+		"LookupBoardingAddress", mock.Anything, pkScript,
+	).Return(boardingAddr, nil)
+	store.On(
+		"InsertBoardingIntents", mock.Anything, mock.Anything,
+	).Return(nil)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+
+	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
+	walletActor.notifiers = make(map[string]notifierInfo)
+
+	notifyRef := actor.NewChannelTellOnlyRef[BoardingUtxoConfirmedEvent](
+		"test", 10,
+	)
+	req := &RegisterConfirmationNotifierRequest{
+		NotifierID:  "test",
+		NotifyActor: notifyRef,
+	}
+	result := walletActor.Receive(t.Context(), req)
+	require.True(t, result.IsOk())
+
+	testUtxo := &Utxo{
+		Outpoint:      testOutpoint,
+		PkScript:      pkScript,
+		Amount:        100000,
+		Confirmations: 6,
+	}
+
+	epoch := chainsource.BlockEpoch{
+		Height: 100,
+		Hash:   chainhash.Hash{0xaa, 0xbb},
+	}
+
+	processed := walletActor.processUtxo(t.Context(), epoch, testUtxo)
+	require.True(t, processed)
+
+	// Notification should still be sent even without a proof.
+	select {
+	case event := <-notifyRef.Messages():
+		require.Equal(t, testOutpoint, event.Outpoint)
+		require.Equal(
+			t, btcutil.Amount(100000),
+			event.ChainInfo.Amount,
+		)
+
+		// The TxProof should be None since the tx was not
+		// found in the block.
+		require.True(t, event.ChainInfo.TxProof.IsNone())
+		require.Nil(t, event.ChainInfo.RawTxProof)
+
+	default:
+		t.Fatal("notification not received")
+	}
+
+	// UTXO should still be marked as seen.
+	key := NewUtxoKey(testOutpoint)
+	require.True(t, walletActor.seenUtxos.Contains(key))
 
 	backend.AssertExpectations(t)
 	store.AssertExpectations(t)

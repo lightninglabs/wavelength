@@ -214,30 +214,75 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	return utxos, nil
 }
 
-// GetTransaction returns the full transaction for the given txid.
-// It first attempts to fetch from btcwallet's transaction store,
-// falling back to the Esplora API for transactions not yet indexed
-// by the wallet.
+// GetTransaction returns the full transaction and its confirmation block hash
+// for the given txid. It first attempts to fetch the raw tx from btcwallet's
+// transaction store, falling back to Esplora. The block hash is always fetched
+// from Esplora's tx status endpoint so it is available for TxProof
+// construction even when catching up on UTXOs confirmed many blocks ago.
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, error) {
+	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
 
-	// Try btcwallet's transaction store first.
+	// Try btcwallet's transaction store first for the raw tx.
 	tx, err := b.btcWallet.FetchTx(txid)
-	if err == nil && tx != nil {
-		return tx, nil
+	if err != nil || tx == nil {
+		// Fall back to Esplora for transactions not in the wallet
+		// DB.
+		b.log.DebugS(ctx,
+			"Transaction not in wallet, falling back "+
+				"to Esplora",
+			slog.String("txid", txid.String()),
+		)
+
+		tx, err = b.esplora.GetRawTx(txid)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"get transaction: %w", err,
+			)
+		}
 	}
 
-	// Fall back to Esplora for transactions not in the wallet DB.
-	b.log.DebugS(ctx,
-		"Transaction not in wallet, falling back to Esplora",
-		slog.String("txid", txid.String()))
+	// Fetch the confirmation status from Esplora to get the block
+	// hash. This is needed for TxProof construction.
+	var blockHash *chainhash.Hash
 
-	tx, err = b.esplora.GetRawTx(txid)
+	status, err := b.esplora.GetTxStatus(txid)
 	if err != nil {
-		return nil, fmt.Errorf("get transaction: %w", err)
+		b.log.WarnS(ctx,
+			"Failed fetching tx status from Esplora", err,
+			slog.String("txid", txid.String()),
+		)
+	} else if status.Confirmed && status.BlockHash != "" {
+		h, err := chainhash.NewHashFromStr(status.BlockHash)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"parse block hash: %w", err,
+			)
+		}
+
+		blockHash = h
 	}
 
-	return tx, nil
+	return tx, blockHash, nil
+}
+
+// GetBlock returns the full block for the given block hash via the Esplora
+// API. This is used to compute merkle inclusion proofs for boarding TxProofs.
+func (b *BoardingBackendAdapter) GetBlock(ctx context.Context,
+	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
+
+	b.log.DebugS(ctx, "Fetching block from Esplora",
+		slog.String("block_hash", blockHash.String()))
+
+	block, err := b.esplora.GetRawBlock(blockHash)
+	if err != nil {
+		return nil, fmt.Errorf("get block: %w", err)
+	}
+
+	b.log.DebugS(ctx, "Fetched block successfully",
+		slog.String("block_hash", blockHash.String()),
+		slog.Int("num_txs", len(block.Transactions)))
+
+	return block, nil
 }
 
 // Compile-time check that BoardingBackendAdapter implements
