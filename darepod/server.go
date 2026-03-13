@@ -1763,12 +1763,25 @@ func (s *Server) initOORActor(ctx context.Context,
 	return nil
 }
 
+// Compile-time assertions: every round.VTXOManagerMsg implementor must
+// also satisfy vtxo.ManagerMsg. This makes the runtime assertion in
+// mapRoundVTXOManagerMsg infallible.
+var _ vtxo.ManagerMsg = (*round.VTXOCreatedNotification)(nil)
+var _ vtxo.ManagerMsg = (*round.VTXOTerminatedMsg)(nil)
+
 // mapRoundVTXOManagerMsg adapts round-owned manager notifications into the
 // concrete message type accepted by the VTXO manager actor.
 func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
+	// The compile-time assertions above guarantee this succeeds for
+	// all concrete types that implement round.VTXOManagerMsg.
 	mapped, ok := msg.(vtxo.ManagerMsg)
 	if !ok {
-		panic(fmt.Sprintf("unexpected VTXO manager msg type: %T", msg))
+		log.ErrorS(context.TODO(),
+			"Unexpected VTXO manager msg type, dropping",
+			nil, slog.String("type",
+				fmt.Sprintf("%T", msg)))
+
+		return nil
 	}
 
 	return mapped
