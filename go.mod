@@ -21,6 +21,7 @@ require (
 	github.com/jackc/pgconn v1.14.3
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/jackc/pgx/v5 v5.7.6
+	github.com/jonboulle/clockwork v0.2.2
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client v0.0.0
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
@@ -116,7 +117,6 @@ require (
 	github.com/jackpal/gateway v1.0.5 // indirect
 	github.com/jackpal/go-nat-pmp v0.0.0-20170405195558-28a68d0c24ad // indirect
 	github.com/jessevdk/go-flags v1.4.0 // indirect
-	github.com/jonboulle/clockwork v0.2.2 // indirect
 	github.com/jrick/logrotate v1.1.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/juju/loggo v1.0.0 // indirect

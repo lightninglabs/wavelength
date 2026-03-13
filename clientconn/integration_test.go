@@ -8,6 +8,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	clientserverconn "github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo/clientconn/roundtestpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
@@ -220,6 +221,62 @@ func TestIntegrationSQLiteUnaryRPC(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, batchResp)
+}
+
+// TestIntegrationSQLiteTrackerRealClientHeartbeat verifies the status
+// tracker wiring against the production client serverconn runtime. A
+// real client runtime sends heartbeat envelopes to the server bridge,
+// which transitions the client online, then offline once the client
+// stops and heartbeats cease.
+func TestIntegrationSQLiteTrackerRealClientHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	serverStore := newRealDeliveryStore(t)
+
+	tracker := NewPullActivityTracker(
+		WithStaleThreshold(300*time.Millisecond),
+		WithSweepInterval(50*time.Millisecond),
+	)
+	defer tracker.Stop()
+
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+	defer bridge.Stop()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+
+	clientID := ClientID("client-1")
+	serverCfg := newTestPerClientConfig(mb, serverStore)
+	serverCfg.Dispatchers[HeartbeatServiceMethod()] =
+		HeartbeatDispatcher()
+
+	_, err := bridge.RegisterClient(ctx, clientID, serverCfg)
+	require.NoError(t, err)
+	require.Equal(t, StatusUnknown, bridge.ClientStatus(clientID))
+
+	clientCfg := clientserverconn.DefaultConnectorConfig()
+	clientCfg.Edge = &fakeMailboxServiceClient{mb: mb}
+	clientCfg.Store = newRealDeliveryStore(t)
+	clientCfg.LocalMailboxID = "client-1"
+	clientCfg.RemoteMailboxID = "server-for-client-1"
+	clientCfg.ProtocolVersion = 1
+	clientCfg.PullWaitTimeout = 50 * time.Millisecond
+	clientCfg.HeartbeatInterval = 100 * time.Millisecond
+
+	clientRuntime, err := clientserverconn.NewRuntime(clientCfg)
+	require.NoError(t, err)
+	require.NoError(t, clientRuntime.Start(ctx))
+
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus(clientID) == StatusOnline
+	}, 5*time.Second, 50*time.Millisecond)
+
+	clientRuntime.Stop()
+
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus(clientID) == StatusOffline
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 // TestIntegrationSQLiteUnaryRPCError verifies that gRPC errors are properly
