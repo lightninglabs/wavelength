@@ -18,6 +18,7 @@ import (
 	clientround "github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo/clientconn"
+	serveroor "github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -575,6 +576,37 @@ func (b *BridgeClientConn) handleSendServerEvent(
 	// Record the message to the transcript first.
 	b.transcript.Record(ServerToClient, targetID, req.Message)
 
+	// OOR responses are consumed by WaitForOORResponse subscribers
+	// only. They do not route to the rounds client actor, so
+	// broadcast the raw clientconn.ClientMessage and return early.
+	//
+	// We still validate ToProto() here to exercise the same code
+	// path the production ClientsConnBridge uses for durable
+	// egress serialization.
+	if isOORResponse(req.Message) {
+		if req.Message.ToProto() == nil {
+			return fn.Err[clientconn.ClientConnResp](
+				fmt.Errorf(
+					"OOR response ToProto() returned "+
+						"nil for %T",
+					req.Message,
+				),
+			)
+		}
+
+		b.mu.RLock()
+		if server, ok := b.eventServers[targetID]; ok {
+			_ = server.SendUpdate(req.Message)
+		}
+		b.mu.RUnlock()
+
+		return fn.Ok[clientconn.ClientConnResp](
+			&clientconn.SendClientEventResponse{
+				Success: true,
+			},
+		)
+	}
+
 	// Convert the server outbox message to a client event.
 	clientEvent, err := b.convertToClientEvent(req.Message)
 	if err != nil {
@@ -635,6 +667,95 @@ func (b *BridgeClientConn) handleSendServerEvent(
 			Success: true,
 		},
 	)
+}
+
+// isOORResponse returns true if the message is an OOR response type
+// that should be routed to WaitForOORResponse subscribers rather than
+// the rounds client actor delivery path.
+func isOORResponse(msg clientconn.ClientMessage) bool {
+	switch msg.(type) {
+	case *serveroor.SubmitOORResponse,
+		*serveroor.FinalizeOORResponse:
+
+		return true
+
+	default:
+		return false
+	}
+}
+
+// WaitForOORResponse waits for an OOR response matching the predicate
+// to be delivered to the specified client via the bridge. Returns the
+// matching response or an error if timeout occurs.
+func (b *BridgeClientConn) WaitForOORResponse(
+	clientID clientconn.ClientID,
+	predicate func(clientconn.ClientMessage) bool,
+	timeout time.Duration,
+) (clientconn.ClientMessage, error) {
+
+	sub, err := b.Subscribe(clientID)
+	if err != nil {
+		return nil, fmt.Errorf("subscribe: %w", err)
+	}
+	defer sub.Cancel()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case update := <-sub.Updates():
+			msg, ok := update.(clientconn.ClientMessage)
+			if !ok {
+				continue
+			}
+
+			if predicate(msg) {
+				return msg, nil
+			}
+
+		case <-sub.Quit():
+			return nil, fmt.Errorf("subscription closed")
+
+		case <-timer.C:
+			return nil, fmt.Errorf(
+				"timeout waiting for OOR response",
+			)
+		}
+	}
+}
+
+// bridgeClientConnRef wraps a BridgeClientConn as a TellOnlyRef so
+// it can be passed to oor.ActorCfg.ClientsConn without spawning via
+// an actor system.
+type bridgeClientConnRef struct {
+	bridge *BridgeClientConn
+}
+
+// ID returns the unique identifier for this actor reference.
+func (r *bridgeClientConnRef) ID() string {
+	return "bridge-client-conn-ref"
+}
+
+// Tell sends a message to the bridge client connection.
+func (r *bridgeClientConnRef) Tell(ctx context.Context,
+	msg clientconn.ClientConnMsg) error {
+
+	result := r.bridge.Receive(ctx, msg)
+	if result.IsErr() {
+		return result.Err()
+	}
+
+	return nil
+}
+
+// NewBridgeClientConnRef wraps a BridgeClientConn as a TellOnlyRef
+// for use as oor.ActorCfg.ClientsConn.
+func NewBridgeClientConnRef(
+	bridge *BridgeClientConn,
+) actor.TellOnlyRef[clientconn.ClientConnMsg] {
+
+	return &bridgeClientConnRef{bridge: bridge}
 }
 
 // convertToClientEvent converts a server outbox message to a client event.
