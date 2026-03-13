@@ -77,6 +77,12 @@ func TestSessionHappyPath(t *testing.T) {
 	require.True(t, ok)
 
 	// Step 1: Ark signatures are attached before submit is sent.
+	err = SignArkPSBT(
+		clientSigner, arkSignReq.ArkPSBT,
+		arkSignReq.CheckpointPSBTs, arkSignReq.TransferInputs,
+	)
+	require.NoError(t, err)
+
 	fut := session.FSM.AskEvent(ctx, &ArkSignedEvent{
 		ArkPSBT: arkSignReq.ArkPSBT,
 	})
