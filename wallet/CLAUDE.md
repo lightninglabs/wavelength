@@ -3,8 +3,10 @@
 ## Purpose
 
 Manages on-chain boarding addresses (2-of-2 multisig with operator + CSV
-timeout) and monitors for confirmed boarding UTXOs, notifying the round actor
-when new boarding opportunities are available.
+timeout), monitors for confirmed boarding UTXOs, and composes intent packages
+for round participation (refresh, leave). The wallet owns intent composition:
+it loads VTXO descriptors, builds forfeit+output pairings, and sends
+pre-composed `RegisterIntentMsg` to the round actor.
 
 ## Key Types
 
@@ -22,8 +24,7 @@ when new boarding opportunities are available.
 - **Depended on by**: `round` (boarding intents), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
-  - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding)
-  - → `vtxo`: `TriggerRefreshEvent`, `TriggerLeaveEvent`
+  - → `round` (via `lib/actormsg`): `RegisterIntentMsg` (pre-composed intent package with forfeits + VTXOs/leaves), `TriggerBoardMsg` (VTXO amounts for boarding)
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`

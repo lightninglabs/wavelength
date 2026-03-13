@@ -13,6 +13,9 @@ protocols with MuSig2 signing ceremonies.
 - `ClientOutMsg` — Outbound messages (JoinRoundRequest, SubmitNoncesRequest, SubmitPartialSigRequest, VTXOCreatedNotification).
 - `ClientEnvironment` — FSM environment providing storage access (boarding intents, round checkpoints, VTXO store).
 - `BoardingIntent` — Represents a funded on-chain input to include in a round.
+- `Intents` — Pools of boarding, VTXO, forfeit, and leave requests accumulated before registration.
+- `IntentPackage` — FSM event wrapping `Intents` for atomic delivery to the round FSM.
+- `RegisterIntentRequest` — Actor message carrying a pre-composed `IntentPackage` from the wallet.
 
 ## Relationships
 
@@ -20,14 +23,14 @@ protocols with MuSig2 signing ceremonies.
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`
-  - → `vtxo`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `RefreshAcknowledgedEvent`, `BlockEpochEvent`
+  - → `vtxo`: `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
   - → `vtxo` manager: `VTXOCreatedNotification`
   - → `wallet`: `RegisterConfirmationNotifierRequest`
   - → `timeout`: `ScheduleTimeoutRequest`, `CancelTimeoutRequest`
 - **Receives**:
   - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
-  - ← `vtxo`: `RefreshVTXORequest`, `LeaveVTXORequest`, `ForfeitSignatureSubmission`
-  - ← `wallet` (via `lib/actormsg`): `TriggerBoardMsg` (combines VTXO registration + registration trigger)
+  - ← `vtxo`: `RefreshVTXORequest`, `ForfeitSignatureSubmission`
+  - ← `wallet` (via `lib/actormsg`): `RegisterIntentMsg` (pre-composed intent package), `TriggerBoardMsg` (VTXO registration + registration trigger)
   - ← `wallet`: `BoardingUtxoConfirmedEvent`
   - ← `timeout`: `TimeoutMsg`
   - ← `chainsource`: `ConfirmationEvent`

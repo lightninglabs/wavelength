@@ -2199,7 +2199,8 @@ func TestHandleRegisterIntent(t *testing.T) {
 
 			var foundAssembly bool
 			for _, info := range states {
-				assembly, ok := info.State.(*PendingRoundAssembly)
+				s := info.State
+				assembly, ok := s.(*PendingRoundAssembly)
 				if !ok {
 					continue
 				}
