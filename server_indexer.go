@@ -118,11 +118,16 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 			err)
 	}
 
+	// Create the client status tracker so the bridge can report
+	// per-client liveness derived from inbound envelope activity.
+	s.statusTracker = clientconn.NewPullActivityTracker()
+
 	// Create the shared per-client connection bridge. All subsystems
 	// contribute dispatchers to this bridge so a single client
 	// registration provides access to all server-side services.
 	s.clientBridge = clientconn.NewClientsConnBridge(
 		clientconn.WithOnUnknownClient(s),
+		clientconn.WithStatusTracker(s.statusTracker),
 	)
 
 	// Create the indexer service with registration-based authorization.
@@ -167,6 +172,10 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 func (s *Server) stopIndexerSubsystem(ctx context.Context) {
 	if s.clientBridge != nil {
 		s.clientBridge.Stop()
+	}
+
+	if s.statusTracker != nil {
+		s.statusTracker.Stop()
 	}
 
 	if s.indexerOperator != nil {
@@ -258,6 +267,13 @@ func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
 	for k, v := range s.eventRouter.AsDispatcherMap() {
 		merged[k] = v
 	}
+
+	// Register the heartbeat no-op dispatcher so the ingress loop
+	// accepts heartbeat envelopes from the client. The real side
+	// effect is the MarkActive call in the ingress loop after
+	// successful dispatch.
+	merged[clientconn.HeartbeatServiceMethod()] =
+		clientconn.HeartbeatDispatcher()
 
 	// Wrap every dispatcher to stamp the authenticated clientID
 	// onto env.Sender before dispatch. This prevents a client
