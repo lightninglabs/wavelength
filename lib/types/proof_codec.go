@@ -1,15 +1,8 @@
-// TxProof TLV serialization for wire transport.
+// TxProof TLV serialization and deserialization.
 //
-// This file contains only the serialization half of the TxProof TLV
-// codec, duplicated from db/proof_codec.go to break the import cycle
-// between the round and db packages. The db package has both
-// SerializeTxProof and DeserializeTxProof; only serialization is needed
-// here for outbound wire encoding. The canonical TLV type assignments
-// are shared: any change here must be mirrored in db/proof_codec.go.
-//
-// TODO(roasbeef): Make lib/types the canonical location for TxProof
-// serialization once the import graph between db and round stabilizes,
-// then remove the duplicate in db/proof_codec.go.
+// This is the canonical location for the TxProof TLV codec. Both the
+// wallet (serialization for wire transport) and the db package
+// (persistence) import from here.
 
 package types
 
@@ -246,7 +239,6 @@ type tlvTxProof struct {
 }
 
 // SerializeTxProof serializes a proof.TxProof to TLV-encoded bytes.
-// The encoding is compatible with db.SerializeTxProof / DeserializeTxProof.
 func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 	if p == nil {
 		return nil, nil
@@ -299,4 +291,54 @@ func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// DeserializeTxProof deserializes a proof.TxProof from TLV-encoded bytes.
+func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	t := &tlvTxProof{}
+
+	records := []tlv.Record{
+		t.MsgTx.Record(),
+		t.BlockHeader.Record(),
+		t.BlockHeight.Record(),
+		t.MerkleProof.Record(),
+		t.ClaimedOutput.Record(),
+		t.InternalKey.Record(),
+		t.MerkleRoot.Record(),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, fmt.Errorf("create TLV stream: %w", err)
+	}
+
+	reader := bytes.NewReader(data)
+	if err := stream.Decode(reader); err != nil {
+		return nil, fmt.Errorf("decode TxProof: %w", err)
+	}
+
+	// Reconstruct the TxProof from decoded TLV fields.
+	p := &proof.TxProof{
+		BlockHeader:     t.BlockHeader.Val.Header,
+		BlockHeight:     t.BlockHeight.Val,
+		MerkleProof:     t.MerkleProof.Val.Proof,
+		ClaimedOutPoint: t.ClaimedOutput.Val.OutPoint,
+		MerkleRoot:      t.MerkleRoot.Val,
+	}
+
+	// Copy the MsgTx if present.
+	if t.MsgTx.Val.Tx != nil {
+		p.MsgTx = *t.MsgTx.Val.Tx
+	}
+
+	// Copy the InternalKey if present.
+	if t.InternalKey.Val != nil {
+		p.InternalKey = *t.InternalKey.Val
+	}
+
+	return p, nil
 }

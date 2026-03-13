@@ -811,7 +811,7 @@ func (s *RoundPersistenceStore) dbRoundIntentToDomainIntent(ctx context.Context,
 	// Deserialize TxProof if present.
 	var txProofOpt fn.Option[proof.TxProof]
 	if len(dbRoundIntent.TxProof) > 0 {
-		txProof, err := DeserializeTxProof(dbRoundIntent.TxProof)
+		txProof, err := types.DeserializeTxProof(dbRoundIntent.TxProof)
 		if err != nil {
 			return nil, fmt.Errorf("deserialize tx proof: %w", err)
 		}
@@ -1031,7 +1031,7 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 	var txProofBytes []byte
 	if intent.Request.TxProof.IsSome() {
 		p := intent.Request.TxProof.UnsafeFromSome()
-		data, err := SerializeTxProof(&p)
+		data, err := types.SerializeTxProof(&p)
 		if err != nil {
 			return sqlc.InsertRoundBoardingIntentParams{},
 				fmt.Errorf("serialize tx proof: %w", err)
