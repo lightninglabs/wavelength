@@ -1192,8 +1192,12 @@ type VTXO struct {
 	// oor_final_checkpoint_psbts are serialized finalized checkpoint PSBTs for
 	// virtual/OOR VTXOs.
 	OorFinalCheckpointPsbts [][]byte `protobuf:"bytes,14,rep,name=oor_final_checkpoint_psbts,json=oorFinalCheckpointPsbts,proto3" json:"oor_final_checkpoint_psbts,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// chain_depth is the number of OOR checkpoint hops between this VTXO
+	// and the most recent on-chain commitment. Round-created VTXOs have
+	// chain_depth 0.
+	ChainDepth    uint32 `protobuf:"varint,15,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -1322,6 +1326,13 @@ func (x *VTXO) GetOorFinalCheckpointPsbts() [][]byte {
 		return x.OorFinalCheckpointPsbts
 	}
 	return nil
+}
+
+func (x *VTXO) GetChainDepth() uint32 {
+	if x != nil {
+		return x.ChainDepth
+	}
+	return 0
 }
 
 type ListVTXOsByScriptsRequest struct {
@@ -2034,7 +2045,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\xa3\x04\n" +
+	"\x05proof\"\xc4\x04\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2052,7 +2063,9 @@ const file_indexer_proto_rawDesc = "" +
 	"\aleaf_tx\x18\f \x01(\fR\x06leafTx\x12 \n" +
 	"\foor_ark_psbt\x18\r \x01(\fR\n" +
 	"oorArkPsbt\x12;\n" +
-	"\x1aoor_final_checkpoint_psbts\x18\x0e \x03(\fR\x17oorFinalCheckpointPsbts\"\xb1\x01\n" +
+	"\x1aoor_final_checkpoint_psbts\x18\x0e \x03(\fR\x17oorFinalCheckpointPsbts\x12\x1f\n" +
+	"\vchain_depth\x18\x0f \x01(\rR\n" +
+	"chainDepth\"\xb1\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +

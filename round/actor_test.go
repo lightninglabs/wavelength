@@ -1580,6 +1580,48 @@ func TestVTXOCreatedNotificationForwarding(t *testing.T) {
 			t, clientVTXO.Outpoint, receivedNotif.VTXOs[0].Outpoint,
 		)
 	})
+
+	t.Run("nil_vtxo_manager_skips_notification", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+		h.actor.cfg.VTXOManager = nil
+
+		err := h.start()
+		require.NoError(t, err)
+
+		notification := &VTXOCreatedNotification{
+			VTXOs: []*ClientVTXO{
+				{
+					Outpoint: wire.OutPoint{
+						Hash: chainhash.HashH(
+							[]byte("no-mgr-vtxo"),
+						),
+						Index: 0,
+					},
+					Amount:      100000,
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.newKeyDescriptor(),
+					OperatorKey: h.operatorPubKey,
+					Expiry:      144,
+				},
+			},
+			RoundID: "no-mgr-round",
+			CommitmentTxID: chainhash.HashH(
+				[]byte("no-mgr-commitment"),
+			),
+			BatchExpiry:   1000,
+			CreatedHeight: 500,
+		}
+
+		// With nil VTXOManager, notification is silently
+		// skipped without error.
+		_ = h.actor.processOutbox(
+			h.ctx, []ClientOutMsg{notification},
+		)
+		require.Empty(t, h.vtxoManager.messages)
+	})
 }
 
 // TestActorIntentMapping verifies that the actor correctly maps external

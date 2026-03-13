@@ -130,15 +130,16 @@ DELETE FROM client_tree_txids WHERE round_id = $1 AND client_key = $2;
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
     client_key_family, client_key_index, client_pubkey, operator_pubkey,
-    tree_path, batch_expiry, tree_depth, created_height, commitment_txid,
-    spent, creation_time, last_update_time
+    tree_path, batch_expiry, tree_depth, chain_depth, created_height,
+    commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18
+    $16, $17, $18, $19
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
+    chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
     created_height = CASE WHEN excluded.created_height != 0 THEN excluded.created_height ELSE vtxos.created_height END,
     commitment_txid = CASE WHEN excluded.commitment_txid IS NOT NULL AND length(excluded.commitment_txid) > 0 THEN excluded.commitment_txid ELSE vtxos.commitment_txid END,
     last_update_time = excluded.last_update_time;

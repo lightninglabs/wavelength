@@ -10,8 +10,9 @@ refresh vs leave); intent composition is handled by the wallet.
 ## Key Types
 
 - `VTXOState` — Sealed interface for all states (Live, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
-- `Descriptor` — Complete VTXO metadata: outpoint, amount, taproot key, CSV expiry, tree path to root.
-- `Manager` — Actor managing per-VTXO FSM instances and their lifecycle.
+- `Descriptor` — Complete VTXO metadata: outpoint, amount, taproot key, CSV expiry, tree path to root, `ChainDepth` (OOR hop count from on-chain commitment).
+- `Manager` — Actor managing per-VTXO FSM instances and their lifecycle. Handles both round-created (`VTXOCreatedNotification`) and OOR-materialized (`VTXOsMaterializedNotification`) VTXOs.
+- `VTXOsMaterializedNotification` — Notifies the manager that VTXOs were already persisted by another actor (OOR receive) and only actor activation is needed.
 - `VTXOEvent` — Inbound events (BlockEpochEvent, PendingForfeitEvent, ForfeitRequestEvent, ForfeitConfirmedEvent, ResumeVTXOEvent).
 - `VTXOOutMsg` — Outbound messages (ForfeitRequest, ForfeitSignatureSubmission, ExpiringNotification, VTXOStatusUpdate, VTXOTerminatedNotification).
 
@@ -24,7 +25,8 @@ refresh vs leave); intent composition is handled by the wallet.
   - → `db` (via outbox): `VTXOStatusUpdate`
   - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`
 - **Receives**:
-  - ← `round`: `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
+  - ← `round`: `VTXOCreatedNotification`, `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
+  - ← `oor`: `VTXOsMaterializedNotification` (already-persisted VTXOs needing actor activation)
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← API: `ResumeVTXOEvent`
 

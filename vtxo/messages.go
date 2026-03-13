@@ -26,10 +26,36 @@ type VTXOCreatedResp struct{}
 
 func (r *VTXOCreatedResp) managerRespSealed() {}
 
+// VTXOsMaterializedResp is the response to VTXOsMaterializedNotification.
+type VTXOsMaterializedResp struct{}
+
+func (r *VTXOsMaterializedResp) managerRespSealed() {}
+
 // VTXOTerminatedResp is the response to VTXOTerminatedMsg.
 type VTXOTerminatedResp struct{}
 
 func (r *VTXOTerminatedResp) managerRespSealed() {}
+
+// VTXOsMaterializedNotification notifies the VTXO manager that VTXOs were
+// already durably persisted by another actor and only actor activation remains.
+//
+// The OOR receive path uses this after materializing incoming VTXOs so the
+// manager can spawn one VTXO actor per descriptor without performing another
+// store write.
+type VTXOsMaterializedNotification struct {
+	actor.BaseMessage
+
+	// VTXOs are the descriptors that were already persisted locally.
+	VTXOs []*Descriptor
+}
+
+// MessageType returns the message type identifier.
+func (m *VTXOsMaterializedNotification) MessageType() string {
+	return "VTXOsMaterializedNotification"
+}
+
+// VTXOManagerMsg implements actormsg.VTXOManagerMsg marker interface.
+func (m *VTXOsMaterializedNotification) VTXOManagerMsg() {}
 
 // GetActiveVTXOCountRequest requests the number of active VTXO actors managed
 // by the VTXO Manager. This goes through the actor message path to avoid

@@ -176,19 +176,12 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
 	store := newTestVTXOStore()
 	packageStore := &testPackageStore{}
-	notifyCalls := 0
 
 	handler := &LocalPersistenceOutboxHandler{
 		Store:        store,
 		PackageStore: packageStore,
 		OperatorKey:  operatorKey,
 		ExitDelay:    10,
-		NotifyIncomingVTXOs: func(_ context.Context,
-			_ []*vtxo.Descriptor) error {
-
-			notifyCalls++
-			return nil
-		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -234,6 +227,10 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.Len(t, events, 1)
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
 
+	handledEvt, ok := events[0].(*IncomingHandledEvent)
+	require.True(t, ok)
+	require.Len(t, handledEvt.MaterializedVTXOs, 1)
+
 	desc, err := store.GetVTXO(ctx, wire.OutPoint{
 		Hash:  arkPSBT.UnsignedTx.TxHash(),
 		Index: recipients[0].OutputIndex,
@@ -252,7 +249,6 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncoming(t *testing.T) {
 	require.IsType(t, &IncomingHandledEvent{}, events[0])
 	require.Equal(t, 2, packageStore.packageCalls)
 	require.Equal(t, 2, packageStore.bindingCalls)
-	require.Equal(t, 2, notifyCalls)
 	require.Equal(t, PackageDirectionIncoming, packageStore.lastDirection)
 	require.Equal(t, chainhash.Hash(sessionID), packageStore.lastSessionID)
 }
@@ -284,11 +280,6 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingSkipsNotOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
-		NotifyIncomingVTXOs: func(_ context.Context,
-			_ []*vtxo.Descriptor) error {
-
-			return nil
-		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -365,11 +356,6 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 		Store:       store,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
-		NotifyIncomingVTXOs: func(_ context.Context,
-			_ []*vtxo.Descriptor) error {
-
-			return nil
-		},
 		ResolveIncomingClientKey: func(ctx context.Context,
 			recipient ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
@@ -405,141 +391,6 @@ func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresOwned(
 	events, err := handler.Handle(ctx, sessionID, req)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "no wallet-owned recipients")
-	require.Empty(t, events)
-}
-
-// TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure asserts
-// notifier failures abort incoming materialization completion.
-func TestLocalPersistenceOutboxHandlerMaterializeIncomingNotifierFailure(
-	t *testing.T) {
-
-	t.Parallel()
-
-	ctx := t.Context()
-
-	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
-		operatorKey :=
-		buildTestIncomingMaterialization(t)
-
-	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
-	store := newTestVTXOStore()
-
-	handler := &LocalPersistenceOutboxHandler{
-		Store:       store,
-		OperatorKey: operatorKey,
-		ExitDelay:   10,
-		NotifyIncomingVTXOs: func(_ context.Context,
-			_ []*vtxo.Descriptor) error {
-
-			return fmt.Errorf("notify failed")
-		},
-		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
-
-			_ = ctx
-			_ = recipient
-
-			return keychain.KeyDescriptor{
-				PubKey: recipientKey.PubKey(),
-			}, nil
-		},
-		ResolveIncomingMetadata: func(ctx context.Context,
-			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
-			IncomingVTXOMetadata, error) {
-
-			_ = ctx
-			_ = sessionID
-			_ = recipient
-			_ = ark
-			_ = finalCheckpoints
-
-			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
-			}, nil
-		},
-	}
-
-	req := &MaterializeIncomingVTXOsRequest{
-		SessionID:            sessionID,
-		ArkPSBT:              arkPSBT,
-		FinalCheckpointPSBTs: finalCheckpoints,
-		Recipients:           recipients,
-	}
-	events, err := handler.Handle(ctx, sessionID, req)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "notify failed")
-	require.Empty(t, events)
-}
-
-// TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier asserts
-// notifier wiring is mandatory for incoming materialization.
-func TestLocalPersistenceOutboxHandlerMaterializeIncomingRequiresNotifier(
-	t *testing.T) {
-
-	t.Parallel()
-
-	ctx := t.Context()
-
-	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
-		operatorKey :=
-		buildTestIncomingMaterialization(t)
-
-	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
-	store := newTestVTXOStore()
-
-	handler := &LocalPersistenceOutboxHandler{
-		Store:       store,
-		OperatorKey: operatorKey,
-		ExitDelay:   10,
-		ResolveIncomingClientKey: func(ctx context.Context,
-			recipient ArkRecipientOutput) (
-			keychain.KeyDescriptor, error) {
-
-			_ = ctx
-			_ = recipient
-
-			return keychain.KeyDescriptor{
-				PubKey: recipientKey.PubKey(),
-			}, nil
-		},
-		ResolveIncomingMetadata: func(ctx context.Context,
-			sessionID SessionID, recipient ArkRecipientOutput,
-			ark *psbt.Packet,
-			finalCheckpoints []*psbt.Packet) (
-			IncomingVTXOMetadata, error) {
-
-			_ = ctx
-			_ = sessionID
-			_ = recipient
-			_ = ark
-			_ = finalCheckpoints
-
-			return IncomingVTXOMetadata{
-				RoundID:        "round-incoming",
-				CommitmentTxID: parentCommitment,
-				BatchExpiry:    1000,
-				TreeDepth:      1,
-				CreatedHeight:  700,
-			}, nil
-		},
-	}
-
-	req := &MaterializeIncomingVTXOsRequest{
-		SessionID:            sessionID,
-		ArkPSBT:              arkPSBT,
-		FinalCheckpointPSBTs: finalCheckpoints,
-		Recipients:           recipients,
-	}
-	events, err := handler.Handle(ctx, sessionID, req)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "incoming VTXO notifier")
 	require.Empty(t, events)
 }
 

@@ -825,8 +825,12 @@ type VTXO struct {
 	// commitment_txid is the hex-encoded txid of the on-chain commitment
 	// transaction anchoring this VTXO's tree.
 	CommitmentTxid string `protobuf:"bytes,9,opt,name=commitment_txid,json=commitmentTxid,proto3" json:"commitment_txid,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// chain_depth is the number of OOR checkpoint hops between this VTXO
+	// and the most recent on-chain commitment. Round-created VTXOs have
+	// chain_depth 0.
+	ChainDepth    uint32 `protobuf:"varint,10,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VTXO) Reset() {
@@ -920,6 +924,13 @@ func (x *VTXO) GetCommitmentTxid() string {
 		return x.CommitmentTxid
 	}
 	return ""
+}
+
+func (x *VTXO) GetChainDepth() uint32 {
+	if x != nil {
+		return x.ChainDepth
+	}
+	return 0
 }
 
 type ListVTXOsRequest struct {
@@ -2104,7 +2115,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
 	"\x10vtxo_balance_sat\x18\x03 \x01(\x03R\x0evtxoBalanceSat\x12.\n" +
-	"\x13total_confirmed_sat\x18\x04 \x01(\x03R\x11totalConfirmedSat\"\xc4\x02\n" +
+	"\x13total_confirmed_sat\x18\x04 \x01(\x03R\x11totalConfirmedSat\"\xe5\x02\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
@@ -2115,7 +2126,10 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0ecreated_height\x18\x06 \x01(\x05R\rcreatedHeight\x12'\n" +
 	"\x0frelative_expiry\x18\a \x01(\rR\x0erelativeExpiry\x12\x1b\n" +
 	"\tpk_script\x18\b \x01(\tR\bpkScript\x12'\n" +
-	"\x0fcommitment_txid\x18\t \x01(\tR\x0ecommitmentTxid\"t\n" +
+	"\x0fcommitment_txid\x18\t \x01(\tR\x0ecommitmentTxid\x12\x1f\n" +
+	"\vchain_depth\x18\n" +
+	" \x01(\rR\n" +
+	"chainDepth\"t\n" +
 	"\x10ListVTXOsRequest\x12:\n" +
 	"\rstatus_filter\x18\x01 \x01(\x0e2\x15.daemonrpc.VTXOStatusR\fstatusFilter\x12$\n" +
 	"\x0emin_amount_sat\x18\x02 \x01(\x03R\fminAmountSat\":\n" +

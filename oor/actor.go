@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -64,6 +65,10 @@ type ClientActorCfg struct {
 	// ActorID is the durable mailbox id used for this actor instance.
 	// Re-using the same ActorID across restarts enables checkpoint restore.
 	ActorID string
+
+	// VTXOManager receives notifications after incoming VTXOs are durably
+	// materialized so it can spawn VTXO actors for monitoring.
+	VTXOManager actor.TellOnlyRef[vtxo.ManagerMsg]
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor
@@ -948,6 +953,12 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		}
 
 		for _, followUp := range followUps {
+			// When incoming VTXOs are materialized, forward
+			// them to the VTXO manager so it can spawn
+			// monitoring actors. This mirrors the rounds
+			// actor pattern for VTXOCreatedNotification.
+			b.notifyMaterializedVTXOs(ctx, followUp)
+
 			finalizeState, err := b.captureFinalizeStateForEvent(
 				fsm, followUp,
 			)
@@ -984,6 +995,35 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	}
 
 	return nil
+}
+
+// notifyMaterializedVTXOs forwards newly materialized incoming VTXOs to the
+// VTXO manager when the follow-up event carries descriptors. This mirrors
+// the rounds actor pattern where VTXOCreatedNotification is Tell'd to the
+// manager from the actor's dispatch loop.
+func (b *oorDurableBehavior) notifyMaterializedVTXOs(ctx context.Context,
+	followUp Event) {
+
+	handled, ok := followUp.(*IncomingHandledEvent)
+	if !ok || len(handled.MaterializedVTXOs) == 0 {
+		return
+	}
+
+	if b.cfg.VTXOManager == nil {
+		return
+	}
+
+	notification := &vtxo.VTXOsMaterializedNotification{
+		VTXOs: handled.MaterializedVTXOs,
+	}
+
+	if err := b.cfg.VTXOManager.Tell(ctx, notification); err != nil {
+		b.logger(ctx).WarnS(
+			ctx, "Failed to notify VTXO manager of "+
+				"materialized incoming VTXOs", err,
+			slog.Int("num_vtxos",
+				len(handled.MaterializedVTXOs)))
+	}
 }
 
 // persistCheckpoint snapshots every active session into a single TLV

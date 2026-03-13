@@ -252,4 +252,5 @@ type Vtxo struct {
 	ReplacedByIndex sql.NullInt32
 	CreationTime    int64
 	LastUpdateTime  int64
+	ChainDepth      int32
 }

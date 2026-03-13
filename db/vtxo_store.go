@@ -350,6 +350,7 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 		TreePath:        treePathBytes,
 		BatchExpiry:     desc.BatchExpiry,
 		TreeDepth:       int32(desc.TreeDepth),
+		ChainDepth:      int32(desc.ChainDepth),
 		CreatedHeight:   desc.CreatedHeight,
 		CommitmentTxid:  desc.CommitmentTxID[:],
 		Spent:           false,
@@ -447,6 +448,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 		BatchExpiry:    row.BatchExpiry,
 		RelativeExpiry: uint32(row.Expiry),
 		TreeDepth:      int(row.TreeDepth),
+		ChainDepth:     int(row.ChainDepth),
 		CreatedHeight:  row.CreatedHeight,
 		Status:         vtxo.VTXOStatus(row.Status),
 	}, nil

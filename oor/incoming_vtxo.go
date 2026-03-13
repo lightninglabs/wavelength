@@ -34,6 +34,11 @@ type IncomingVTXOMetadata struct {
 	// TreeDepth is the VTXO depth in the commitment tree.
 	TreeDepth int
 
+	// ChainDepth is the number of OOR checkpoint hops between this
+	// VTXO and the last on-chain commitment. This is distinct from
+	// TreeDepth, which tracks position in the VTXT.
+	ChainDepth int
+
 	// CreatedHeight is the block height at which the VTXO was created.
 	CreatedHeight int32
 
@@ -86,6 +91,10 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	case cfg.Metadata.RoundID == "":
 		return nil, fmt.Errorf("round id must be provided")
+
+	case cfg.Metadata.ChainDepth < 0:
+		return nil, fmt.Errorf("chain depth must be "+
+			"non-negative, got %d", cfg.Metadata.ChainDepth)
 	}
 
 	if cfg.Metadata.CommitmentTxID == (chainhash.Hash{}) {
@@ -151,6 +160,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		BatchExpiry:    cfg.Metadata.BatchExpiry,
 		RelativeExpiry: cfg.ExitDelay,
 		TreeDepth:      cfg.Metadata.TreeDepth,
+		ChainDepth:     cfg.Metadata.ChainDepth,
 		CreatedHeight:  cfg.Metadata.CreatedHeight,
 		Status:         vtxo.VTXOStatusLive,
 	}, nil

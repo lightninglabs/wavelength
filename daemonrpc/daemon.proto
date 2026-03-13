@@ -246,6 +246,11 @@ message VTXO {
     // commitment_txid is the hex-encoded txid of the on-chain commitment
     // transaction anchoring this VTXO's tree.
     string commitment_txid = 9;
+
+    // chain_depth is the number of OOR checkpoint hops between this VTXO
+    // and the most recent on-chain commitment. Round-created VTXOs have
+    // chain_depth 0.
+    uint32 chain_depth = 10;
 }
 
 message ListVTXOsRequest {

@@ -247,11 +247,10 @@ type RoundClientConfig struct {
 	MaxOperatorFee btcutil.Amount
 
 	// VTXOManager receives VTXO creation notifications after rounds
-	// complete. The round actor forwards VTXOCreatedNotification messages
-	// to spawn VTXO actors for newly created VTXOs. Uses actor.Message to
-	// avoid import cycle with vtxo package. Optional - if nil,
-	// notifications are not forwarded.
-	VTXOManager actor.TellOnlyRef[actor.Message]
+	// complete. The round actor forwards VTXOCreatedNotification
+	// messages so newly created VTXOs get an active VTXO actor.
+	// Optional - if nil, notifications are not forwarded.
+	VTXOManager actor.TellOnlyRef[VTXOManagerMsg]
 
 	// ActorSystem enables direct communication with VTXO actors via service
 	// keys. Used to send PendingForfeitEvent, ForfeitRequestEvent, and
