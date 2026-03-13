@@ -907,7 +907,6 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 		// The TxProof should be None since the tx was not
 		// found in the block.
 		require.True(t, event.ChainInfo.TxProof.IsNone())
-		require.Nil(t, event.ChainInfo.RawTxProof)
 
 	default:
 		t.Fatal("notification not received")

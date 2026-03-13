@@ -588,22 +588,6 @@ func (a *Ark) processUtxo(ctx context.Context,
 		ctx, blockHash, epoch.Height, confTx, utxo.Outpoint, addr,
 	)
 
-	// Pre-serialize the TxProof to bytes for wire transport. This
-	// avoids import cycles in the round package (which cannot import
-	// db). The round actor copies RawTxProof directly into the proto.
-	var rawTxProof []byte
-	txProof.WhenSome(func(tp proof.TxProof) {
-		serialized, err := types.SerializeTxProof(&tp)
-		if err != nil {
-			a.logger(ctx).WarnS(
-				ctx, "Failed serializing TxProof", err,
-			)
-
-			return
-		}
-		rawTxProof = serialized
-	})
-
 	intent := BoardingIntent{
 		Address:  *addr,
 		Outpoint: utxo.Outpoint,
@@ -614,7 +598,6 @@ func (a *Ark) processUtxo(ctx context.Context,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,
 			TxProof:    txProof,
-			RawTxProof: rawTxProof,
 		},
 		Status: BoardingStatusConfirmed,
 	}

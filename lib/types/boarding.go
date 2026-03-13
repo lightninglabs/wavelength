@@ -156,13 +156,6 @@ type BoardingRequest struct {
 	// details (internal key and merkle root). None if the server will
 	// verify via its own chain source.
 	TxProof fn.Option[proof.TxProof]
-
-	// RawTxProof holds the TLV-serialized TxProof bytes for wire
-	// transport. This is populated by the wallet layer when constructing
-	// the boarding request, avoiding import cycles between the round and
-	// db packages. If non-nil, ToProto copies these bytes directly into
-	// the proto tx_proof field.
-	RawTxProof []byte
 }
 
 // BoardingInputSignature represents the client's signature for a boarding

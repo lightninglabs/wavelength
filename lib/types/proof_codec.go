@@ -30,8 +30,6 @@ type (
 	tlvTxProofMerkleRoot    = tlv.TlvType6
 )
 
-// ---- outpoint record (duplicated from db/tree_codec.go) ----
-
 type txProofOutpointRecord struct {
 	wire.OutPoint
 }
@@ -88,8 +86,6 @@ func txProofOutpointDecoder(r io.Reader, val interface{},
 	)
 }
 
-// ---- MsgTx record ----
-
 type txProofMsgTxRecord struct {
 	Tx *wire.MsgTx
 }
@@ -137,8 +133,6 @@ func txProofMsgTxDecoder(r io.Reader, val interface{},
 	)
 }
 
-// ---- BlockHeader record ----
-
 type txProofBlockHeaderRecord struct {
 	Header wire.BlockHeader
 }
@@ -178,8 +172,6 @@ func txProofBlockHeaderDecoder(r io.Reader, val interface{},
 		val, "txProofBlockHeaderRecord", l, 80,
 	)
 }
-
-// ---- MerkleProof record ----
 
 type txProofMerkleProofRecord struct {
 	Proof proof.TxMerkleProof
@@ -223,8 +215,6 @@ func txProofMerkleProofDecoder(r io.Reader, val interface{},
 		val, "txProofMerkleProofRecord", l, l,
 	)
 }
-
-// ---- Composite TLV struct ----
 
 type tlvTxProof struct {
 	MsgTx       tlv.RecordT[tlvTxProofMsgTx, txProofMsgTxRecord]

@@ -282,11 +282,6 @@ type BoardingChainInfo struct {
 	// querying its own chain source. None if the proof hasn't been
 	// constructed yet (e.g., block data not available).
 	TxProof fn.Option[proof.TxProof]
-
-	// RawTxProof holds the TLV-serialized TxProof bytes for wire
-	// transport. Populated alongside TxProof by the wallet to avoid
-	// import cycles in downstream consumers.
-	RawTxProof []byte
 }
 
 // BoardingIntent captures one confirmed boarding input. Intents are only
