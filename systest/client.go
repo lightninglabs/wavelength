@@ -256,9 +256,30 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	// Create and spawn WalletActor (Ark). The wallet uses service key
 	// lookup to find the round actor when forwarding refresh requests.
+	// The VTXOReader adapter uses a closure over vtxoStore which is
+	// initialized below, before any wallet message processing begins.
+	var vtxoStore *db.VTXOPersistenceStore
+	vtxoReader := wallet.VTXOReaderFunc(func(ctx context.Context,
+		op wire.OutPoint) (*wallet.VTXODescriptor, error) {
+
+		desc, err := vtxoStore.GetVTXO(ctx, op)
+		if err != nil {
+			return nil, err
+		}
+
+		return &wallet.VTXODescriptor{
+			Outpoint:    desc.Outpoint,
+			Amount:      desc.Amount,
+			PkScript:    desc.PkScript,
+			Expiry:      desc.RelativeExpiry,
+			ClientKey:   desc.ClientKey,
+			OperatorKey: desc.OperatorKey,
+		}, nil
+	})
 	walletActor := wallet.NewArk(
 		boardingBackend,
 		boardingStore,
+		vtxoReader,
 		chainSourceRef,
 		h.actorSystem,
 		h.SubLogger(wallet.Subsystem),
@@ -285,8 +306,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		roundDB, &chaincfg.RegressionNetParams, clock.NewDefaultClock(),
 	)
 
-	// Create VTXOStore for VTXO lifecycle management.
-	vtxoStore := db.NewVTXOPersistenceStore(
+	// Create VTXOStore for VTXO lifecycle management. The vtxoStore
+	// variable is declared above (captured by the wallet's VTXOReader
+	// closure).
+	vtxoStore = db.NewVTXOPersistenceStore(
 		roundDB, clock.NewDefaultClock(),
 	)
 
