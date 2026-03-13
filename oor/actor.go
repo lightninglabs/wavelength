@@ -283,6 +283,19 @@ type oorDurableBehavior struct {
 	cfg ClientActorCfg
 
 	sessions map[SessionID]*sessionHandle
+
+	// pendingTransport collects transport events (submit, finalize,
+	// ack) that must be sent to the serverconn actor AFTER the
+	// database transaction commits. Sending inside the transaction
+	// would deadlock because both actors share the same SQLite
+	// database and SQLite allows only one concurrent writer.
+	pendingTransport []OutboxEvent
+
+	// pendingLocal collects local outbox events that require DB
+	// writes (e.g. MarkInputsSpentRequest) and must be executed
+	// after the durable actor transaction commits to avoid
+	// SQLite write-lock deadlock.
+	pendingLocal []pendingLocalEvent
 }
 
 // logger returns the configured logger or falls back to extracting from
@@ -876,6 +889,32 @@ func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
 	}
 }
 
+// deferredFollowUps returns the optimistic follow-up events for an
+// outbox event that must be deferred to FlushPostCommit due to DB
+// write conflicts. If the event is not deferred, nil is returned.
+//
+// The follow-up events are fed into the FSM during the transaction
+// so the state transition is persisted atomically, while the actual
+// DB side-effect (e.g. marking inputs spent) runs after commit.
+func (b *oorDurableBehavior) deferredFollowUps(
+	msg OutboxEvent) []Event {
+
+	switch msg.(type) {
+	case *MarkInputsSpentRequest:
+		return []Event{&InputsMarkedSpentEvent{}}
+
+	default:
+		return nil
+	}
+}
+
+// pendingLocalEvent pairs a deferred outbox event with its session ID
+// so FlushPostCommit can route it to the correct handler.
+type pendingLocalEvent struct {
+	sessionID SessionID
+	event     OutboxEvent
+}
+
 // sendTransportEvent wraps the outbox message in a SendClientEventRequest and
 // Tell's it to the serverconn actor for durable delivery to the server.
 func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
@@ -918,12 +957,45 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		// asynchronously via DriveEventRequest.
 		if b.isTransportEvent(msg) {
 			//nolint:ll
-			b.logger(ctx).DebugS(ctx, "Sending transport event to server",
+			b.logger(ctx).DebugS(ctx, "Buffering transport event for post-commit send",
 				slog.String("session_id", sessionID.String()),
 				slog.String("event_type", fmt.Sprintf("%T", msg)))
 
-			if err := b.sendTransportEvent(ctx, msg); err != nil {
-				return err
+			b.pendingTransport = append(
+				b.pendingTransport, msg,
+			)
+
+			continue
+		}
+
+		// Local outbox events that require DB writes are
+		// deferred to FlushPostCommit to avoid SQLite
+		// write-lock deadlock with the durable actor tx.
+		// Optimistic follow-up events are fed into the FSM
+		// now so the state transition persists atomically.
+		if followUps := b.deferredFollowUps(msg); followUps != nil {
+			//nolint:ll
+			b.logger(ctx).DebugS(ctx, "Buffering local event for post-commit execution",
+				slog.String("session_id", sessionID.String()),
+				slog.String("event_type", fmt.Sprintf("%T", msg)))
+
+			b.pendingLocal = append(
+				b.pendingLocal, pendingLocalEvent{
+					sessionID: sessionID,
+					event:     msg,
+				},
+			)
+
+			// Feed optimistic follow-ups into the FSM so
+			// it transitions (e.g. to Completed) within
+			// this transaction.
+			for _, followUp := range followUps {
+				_, err := b.askEvent(
+					ctx, fsm, followUp,
+				)
+				if err != nil {
+					return err
+				}
 			}
 
 			continue
@@ -1066,3 +1138,49 @@ type durableBehaviorIface = actor.ActorBehavior[
 ]
 
 var _ durableBehaviorIface = (*oorDurableBehavior)(nil)
+
+// Compile-time check: oorDurableBehavior implements PostCommitHandler
+// so transport events are flushed after the database transaction commits.
+var _ actor.PostCommitHandler = (*oorDurableBehavior)(nil)
+
+// FlushPostCommit sends buffered transport events to the serverconn
+// actor. This runs after the message-processing transaction commits,
+// avoiding a SQLite write-lock deadlock between the OOR and serverconn
+// durable mailboxes.
+//
+// If a send fails, the error is returned and logged by the durable
+// actor framework. The OOR FSM checkpoint was already persisted inside
+// the transaction, so on restart OutboxForState will reconstruct and
+// retry the transport event.
+func (b *oorDurableBehavior) FlushPostCommit(
+	ctx context.Context) error {
+
+	pending := b.pendingTransport
+	b.pendingTransport = nil
+
+	for _, msg := range pending {
+		if err := b.sendTransportEvent(ctx, msg); err != nil {
+			return fmt.Errorf("flush transport event: %w",
+				err)
+		}
+	}
+
+	// Execute deferred local outbox events that require DB writes
+	// outside the durable actor transaction.
+	localPending := b.pendingLocal
+	b.pendingLocal = nil
+
+	handler := b.cfg.OutboxHandler
+	for _, p := range localPending {
+		if handler == nil {
+			continue
+		}
+
+		_, err := handler.Handle(ctx, p.sessionID, p.event)
+		if err != nil {
+			return fmt.Errorf("flush local event: %w", err)
+		}
+	}
+
+	return nil
+}
