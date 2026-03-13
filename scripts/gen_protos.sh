@@ -70,8 +70,8 @@ function generate_with_mailboxrpc() {
 	popd > /dev/null
 }
 
-# Generate protos for both arkrpc and adminrpc packages.
-generate "arkrpc"
+# Generate protos for adminrpc (arkrpc lives in the client submodule
+# and is handled by its own make rpc).
 generate "adminrpc"
 
 # Generate protos with mailbox RPC stubs for test packages that use
