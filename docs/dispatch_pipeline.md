@@ -57,8 +57,13 @@ Client sends KIND_REQUEST envelope to server's per-client mailbox
 
 ### Synchronous Request-Response (Operator)
 
-Used by the **indexer** subsystem. The operator dispatches through a ServeMux,
-builds a `KIND_RESPONSE` envelope, and sends it back via `Edge.Send`.
+Used by the **indexer** and **ArkService** subsystems. The key question for
+choosing a dispatch model is: **does the client expect a response envelope?**
+If yes, use the operator/ServeMux pattern. If no (fire-and-forget), use
+EventRouter/AddRoute.
+
+The operator dispatches through a ServeMux, builds a `KIND_RESPONSE` envelope,
+and sends it back via `Edge.Send`.
 
 ```
 EnvelopeDispatcher (operator makeDispatcher closure)
@@ -89,7 +94,9 @@ Actor system initialized
 
 setupIndexerSubsystem (server_indexer.go)
   └─ indexer.NewOperator(cfg, service)
-       └─ Registers on a ServeMux via RegisterIndexerServiceMailboxServer
+       └─ Registers IndexerService on a ServeMux
+  └─ NewClientsConnBridge(WithOnUnknownClient(s))
+       └─ Auto-registers unknown clients on first envelope
 
 setupRoundsSubsystem (server_rounds.go)
   └─ s.registerRoundRoutes(roundsKey)
@@ -102,15 +109,18 @@ setupOORSubsystem (server_oor.go)
 
 ### 2. Merge dispatchers on client registration
 
-When a client connects, `RegisterClientWithAllDispatchers` merges dispatchers
-from two sources:
+When a client connects (or is auto-registered on first envelope),
+`RegisterClientWithAllDispatchers` merges dispatchers from three sources:
 
 ```go
 func (s *Server) RegisterClientWithAllDispatchers(ctx, clientID, baseCfg) {
     merged := make(clientconn.DispatcherMap)
 
-    // Indexer: synchronous request-response via operator
+    // Indexer: synchronous request-response via operator ServeMux
     for k, v := range s.IndexerDispatchers() { merged[k] = v }
+
+    // ArkService: synchronous request-response via same operator ServeMux
+    for k, v := range s.ArkServiceDispatchers() { merged[k] = v }
 
     // Rounds + OOR: fire-and-forget via EventRouter
     for k, v := range s.eventRouter.AsDispatcherMap() { merged[k] = v }
@@ -118,6 +128,23 @@ func (s *Server) RegisterClientWithAllDispatchers(ctx, clientID, baseCfg) {
     baseCfg.Dispatchers = merged
     return s.clientBridge.RegisterClient(ctx, clientID, baseCfg)
 }
+```
+
+### Auto-Registration
+
+External clients (darepod) connecting via the mailbox gRPC edge are
+auto-registered on first contact. The flow:
+
+```
+darepod → MailboxService.Send(envelope)
+  └─ autoRegisteringMailbox decorator
+       └─ bridge.HandleInbound(ctx, envelope)
+            └─ singleflight dedup by clientID
+                 └─ Server.HandleUnknownClient (implements UnknownClientHandler)
+                      └─ RegisterClientWithAllDispatchers
+                           └─ Starts per-client ingress loop
+  └─ mailboxrpcserver.Send → store.Append (envelope persisted)
+       └─ Ingress loop pulls and dispatches the envelope
 ```
 
 ### 3. Ingress loop uses DispatcherMap
@@ -137,17 +164,18 @@ dispatcher by `{env.Rpc.Service, env.Rpc.Method}` and calls it.
 | `EnvelopeDispatcher` | `clientconn` | `func(ctx, *Envelope) error` — dispatch closure |
 | `EventRouter` | `clientconn` | Collects `AddEnvelopeRoute` registrations, returns `DispatcherMap` |
 | `EnvelopeRouteConfig` | `clientconn` | Typed config for fire-and-forget envelope routes |
-| `ServeMux` | `mailboxrpc` | Routes `(service, method, []byte)` to typed handlers (indexer only) |
+| `ServeMux` | `mailboxrpc` | Routes `(service, method, []byte)` to typed handlers (indexer + ArkService) |
 
 ---
 
 ## Registered Routes
 
-| Dispatch Model | Service | Methods | Actor Target |
-|----------------|---------|---------|-------------|
+| Dispatch Model | Service | Methods | Target |
+|----------------|---------|---------|--------|
 | `AddEnvelopeRoute` | `round.v1.RoundService` | `JoinRound`, `SubmitNonces`, `SubmitPartialSigs`, `SubmitForfeitSigs`, `SubmitVTXOForfeitSigs` | `rounds.Actor` via `Tell` |
-| `AddEnvelopeRoute` | `oorpb.OORMailboxService` | `SubmitPackage`, `FinalizePackage` | `oor.Actor` via `Tell` |
-| Operator (ServeMux) | `arkrpc.IndexerService` | (event pub + queries) | `indexer.Service` (direct) |
+| `AddRoute` | `oorpb.OORMailboxService` | `SubmitPackage`, `FinalizePackage` | `oor.Actor` via `Tell` |
+| Operator (ServeMux) | `arkrpc.IndexerService` | 7 query/registration methods | `indexer.Service` (direct) |
+| Operator (ServeMux) | `arkrpc.ArkService` | `GetInfo` | `RPCServer` (direct) |
 
 ---
 

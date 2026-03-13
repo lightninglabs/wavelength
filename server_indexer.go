@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
 	"github.com/lightninglabs/darepo/oor"
+	"github.com/lightningnetwork/lnd/clock"
 	"google.golang.org/grpc"
 )
 
@@ -25,6 +26,10 @@ const (
 	// defaultIndexerSenderMailboxID is the server identity stamped on
 	// response and event envelopes sent by the indexer operator.
 	defaultIndexerSenderMailboxID = "svc:indexer"
+
+	// arkServiceName is the protobuf service name used in mailbox
+	// envelope routing for the ArkService.
+	arkServiceName = "arkrpc.ArkService"
 )
 
 // localMailboxClient adapts a MailboxServiceServer for in-process client
@@ -96,10 +101,28 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 		return fmt.Errorf("build local mailbox client: %w", err)
 	}
 
+	// Create the shared actor delivery store for per-client
+	// runtimes created by auto-registration. This backs the
+	// durable actor inbox and checkpoint persistence.
+	clientDBStore := db.NewStore(
+		s.db.DB(), s.db.Queries, s.db.Backend(),
+		subLogger(s.cfg.Loggers, "CDBS"), nil,
+	)
+	s.deliveryStore, err = db.NewActorDeliveryStoreFromDB(
+		clientDBStore, clock.NewDefaultClock(),
+		subLogger(s.cfg.Loggers, "CDEL"),
+	)
+	if err != nil {
+		return fmt.Errorf("create client delivery store: %w",
+			err)
+	}
+
 	// Create the shared per-client connection bridge. All subsystems
 	// contribute dispatchers to this bridge so a single client
 	// registration provides access to all server-side services.
-	s.clientBridge = clientconn.NewClientsConnBridge()
+	s.clientBridge = clientconn.NewClientsConnBridge(
+		clientconn.WithOnUnknownClient(s),
+	)
 
 	// Create the indexer service with registration-based authorization.
 	// Clients must register their receive scripts before querying for
@@ -159,13 +182,30 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 	return s.indexerOperator.Dispatchers()
 }
 
+// ArkServiceDispatchers returns a DispatcherMap for ArkService
+// methods (currently just GetInfo). These dispatchers route through
+// the indexer operator's shared ServeMux, reusing its response
+// envelope machinery.
+//
+// Returns nil if the indexer operator has not been initialized.
+func (s *Server) ArkServiceDispatchers() clientconn.DispatcherMap {
+	if s.indexerOperator == nil {
+		return nil
+	}
+
+	return s.indexerOperator.ServiceDispatchers(
+		arkServiceName, "GetInfo",
+	)
+}
+
 // RegisterClientWithAllDispatchers creates a new per-client runtime
 // with dispatchers merged from all active subsystems. This is the
 // single entry point for client registration so callers do not need
 // to know which subsystems are active.
 //
-// Dispatchers come from two sources:
-//  1. Indexer operator (synchronous request-response via ServeMux)
+// Dispatchers come from three sources:
+//  1. Indexer operator (synchronous request-response via ServeMux,
+//     covers both IndexerService and ArkService methods)
 //  2. EventRouter (fire-and-forget routes for rounds and OOR RPCs)
 //
 // The full end-to-end flow for a fire-and-forget client request is:
@@ -174,8 +214,9 @@ func (s *Server) IndexerDispatchers() clientconn.DispatcherMap {
 //	EnvelopeDispatcher → Unmarshal proto → Adapt(env, proto) →
 //	actor.Tell (durable commit)
 //
-// For synchronous indexer requests the flow goes through ServeMux
-// and the response is sent back via Edge.Send as before.
+// For synchronous requests (indexer, ArkService) the flow goes
+// through the operator's ServeMux and the response is sent back
+// via Edge.Send.
 //
 // IMPORTANT: Each dispatcher is wrapped to overwrite env.Sender
 // with the authenticated clientID before dispatch. The mailbox
@@ -193,12 +234,18 @@ func (s *Server) RegisterClientWithAllDispatchers(ctx context.Context,
 	baseCfg clientconn.PerClientConfig) (*clientconn.ClientRuntime, error) {
 
 	// Merge dispatchers from all active sources into the base
-	// config. Indexer uses the operator pattern (synchronous
-	// request-response); rounds and OOR use the EventRouter
-	// (fire-and-forget Tell).
+	// config. The indexer operator's Dispatchers covers
+	// IndexerService methods; ArkServiceDispatchers covers
+	// ArkService methods (GetInfo, etc.) via the same operator
+	// mux. Rounds and OOR use the EventRouter for fire-and-forget
+	// Tell dispatch.
 	merged := make(clientconn.DispatcherMap)
 
 	for k, v := range s.IndexerDispatchers() {
+		merged[k] = v
+	}
+
+	for k, v := range s.ArkServiceDispatchers() {
 		merged[k] = v
 	}
 

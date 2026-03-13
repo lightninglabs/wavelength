@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batchwatcher"
@@ -21,11 +22,13 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/darepo/mailboxrpcserver"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/signal"
+	"google.golang.org/grpc"
 )
 
 // Server is the main operator daemon.
@@ -114,6 +117,11 @@ type Server struct {
 	// oorRef is the actor reference for the OOR actor, used
 	// for sending messages through the actor system.
 	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
+
+	// deliveryStore is the shared actor delivery store used by
+	// auto-registered client runtimes for inbox persistence and
+	// checkpoint state.
+	deliveryStore actor.DeliveryStore
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -351,6 +359,46 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		return fmt.Errorf("unable to create client RPC "+
 			"server: %w", err)
 	}
+
+	// Register ArkService on the indexer operator's ServeMux so
+	// its RPC methods (GetInfo, etc.) are dispatched through the
+	// operator's shared response-building machinery alongside
+	// IndexerService methods.
+	s.indexerOperator.RegisterService(func(
+		mux *mailboxrpc.ServeMux) {
+
+		arkrpc.RegisterArkServiceMailboxServer(mux, rpcSrv)
+	})
+
+	// Register the ArkService on the server-level mux for the
+	// serverconn (1:1 in-process) dispatch path.
+	s.mailboxMux = mailboxrpc.NewServeMux()
+	arkrpc.RegisterArkServiceMailboxServer(
+		s.mailboxMux, rpcSrv,
+	)
+
+	// Register the mailbox edge service on the client-facing
+	// gRPC server so external client daemons (darepod) can
+	// reach the in-process mailbox store over the network.
+	// The auto-registering decorator calls
+	// bridge.HandleInbound before each Send to detect and
+	// register unknown clients transparently.
+	mailboxEdge, err := mailboxrpcserver.New(s.mailboxStore)
+	if err != nil {
+		return fmt.Errorf("unable to create mailbox "+
+			"edge server: %w", err)
+	}
+
+	rpcSrv.RegisterGRPCService(func(r grpc.ServiceRegistrar) {
+		mailboxpb.RegisterMailboxServiceServer(
+			r, &autoRegisteringMailbox{
+				MailboxServiceServer: mailboxEdge,
+				bridge:               s.clientBridge,
+				log:                  s.log,
+			},
+		)
+	})
+
 	if err := rpcSrv.Start(ctx); err != nil {
 		return fmt.Errorf("unable to start client RPC "+
 			"server: %w", err)
@@ -359,16 +407,6 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	defer func() {
 		_ = rpcSrv.Stop(ctx)
 	}()
-
-	// Register the ArkService for mailbox RPC access. The
-	// ServeMux handles incoming KIND_REQUEST envelopes routed
-	// by the serverconn ingress loop. The RPCServer implements
-	// both the gRPC and mailbox server interfaces, so the same
-	// handler serves both transports.
-	s.mailboxMux = mailboxrpc.NewServeMux()
-	arkrpc.RegisterArkServiceMailboxServer(
-		s.mailboxMux, rpcSrv,
-	)
 
 	s.log.InfoS(ctx, "Daemon ready")
 

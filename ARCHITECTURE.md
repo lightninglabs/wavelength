@@ -103,7 +103,7 @@ Client requests follow one of two dispatch models:
 6. OutboxHandler executes side effects (DB, wallet, client notify via bridge)
 ```
 
-**Synchronous Request-Response (Operator)** — Used by indexer:
+**Synchronous Request-Response (Operator)** — Used by indexer and ArkService:
 ```
 1–2. Same ingress path as above
    ↓
