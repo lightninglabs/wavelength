@@ -9,10 +9,6 @@ function generate() {
 
 	pushd "${package}" > /dev/null
 
-	# Install the repo-local protoc plugin so make rpc generates mailbox RPC
-	# stubs consistently across development environments.
-	go install -buildvcs=false /build/cmd/protoc-gen-mailboxrpc
-
 	# Format proto files with clang-format using the proto-specific style.
 	find . -name "*.proto" -print0 | xargs -0 clang-format --style=file:/build/scripts/.clang-format-proto -i
 
