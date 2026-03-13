@@ -1,7 +1,14 @@
-package db
+// TxProof TLV serialization and deserialization.
+//
+// This is the canonical location for the TxProof TLV codec. Both the
+// wallet (serialization for wire transport) and the db package
+// (persistence) import from here.
+
+package types
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
 
@@ -11,7 +18,8 @@ import (
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
-// TLV type aliases for TxProof serialization.
+// TLV type aliases for TxProof serialization. These MUST match the
+// assignments in db/proof_codec.go.
 type (
 	tlvTxProofMsgTx         = tlv.TlvType0
 	tlvTxProofBlockHeader   = tlv.TlvType1
@@ -22,12 +30,66 @@ type (
 	tlvTxProofMerkleRoot    = tlv.TlvType6
 )
 
-// txProofMsgTxRecord is a TLV record for wire.MsgTx.
+type txProofOutpointRecord struct {
+	wire.OutPoint
+}
+
+func (o *txProofOutpointRecord) Record() tlv.Record {
+	return tlv.MakeStaticRecord(
+		0, o, 36,
+		txProofOutpointEncoder, txProofOutpointDecoder,
+	)
+}
+
+func txProofOutpointEncoder(w io.Writer, val interface{},
+	_ *[8]byte) error {
+
+	if o, ok := val.(*txProofOutpointRecord); ok {
+		if _, err := w.Write(o.Hash[:]); err != nil {
+			return err
+		}
+
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], o.Index)
+		_, err := w.Write(buf[:])
+
+		return err
+	}
+
+	return tlv.NewTypeForEncodingErr(val, "txProofOutpointRecord")
+}
+
+func txProofOutpointDecoder(r io.Reader, val interface{},
+	_ *[8]byte, l uint64) error {
+
+	if l != 36 {
+		return fmt.Errorf("invalid outpoint length: %d", l)
+	}
+
+	if o, ok := val.(*txProofOutpointRecord); ok {
+		if _, err := io.ReadFull(r, o.Hash[:]); err != nil {
+			return err
+		}
+
+		var buf [4]byte
+		if _, err := io.ReadFull(r, buf[:]); err != nil {
+			return err
+		}
+
+		o.Index = binary.LittleEndian.Uint32(buf[:])
+
+		return nil
+	}
+
+	return tlv.NewTypeForDecodingErr(
+		val, "txProofOutpointRecord", l, 36,
+	)
+}
+
 type txProofMsgTxRecord struct {
 	Tx *wire.MsgTx
 }
 
-// Record returns the TLV record for encoding/decoding.
 func (t *txProofMsgTxRecord) Record() tlv.Record {
 	recordSize := func() uint64 {
 		if t.Tx == nil {
@@ -38,11 +100,14 @@ func (t *txProofMsgTxRecord) Record() tlv.Record {
 	}
 
 	return tlv.MakeDynamicRecord(
-		0, t, recordSize, txProofMsgTxEncoder, txProofMsgTxDecoder,
+		0, t, recordSize,
+		txProofMsgTxEncoder, txProofMsgTxDecoder,
 	)
 }
 
-func txProofMsgTxEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
+func txProofMsgTxEncoder(w io.Writer, val interface{},
+	_ *[8]byte) error {
+
 	if t, ok := val.(*txProofMsgTxRecord); ok {
 		if t.Tx == nil {
 			return nil
@@ -54,8 +119,8 @@ func txProofMsgTxEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
 	return tlv.NewTypeForEncodingErr(val, "txProofMsgTxRecord")
 }
 
-func txProofMsgTxDecoder(r io.Reader, val interface{}, _ *[8]byte,
-	l uint64) error {
+func txProofMsgTxDecoder(r io.Reader, val interface{},
+	_ *[8]byte, l uint64) error {
 
 	if t, ok := val.(*txProofMsgTxRecord); ok {
 		t.Tx = &wire.MsgTx{}
@@ -63,32 +128,37 @@ func txProofMsgTxDecoder(r io.Reader, val interface{}, _ *[8]byte,
 		return t.Tx.Deserialize(r)
 	}
 
-	return tlv.NewTypeForDecodingErr(val, "txProofMsgTxRecord", l, l)
+	return tlv.NewTypeForDecodingErr(
+		val, "txProofMsgTxRecord", l, l,
+	)
 }
 
-// txProofBlockHeaderRecord is a TLV record for wire.BlockHeader.
 type txProofBlockHeaderRecord struct {
 	Header wire.BlockHeader
 }
 
-// Record returns the TLV record for encoding/decoding.
 func (t *txProofBlockHeaderRecord) Record() tlv.Record {
-	// Block header is always 80 bytes.
 	return tlv.MakeStaticRecord(
-		0, t, 80, txProofBlockHeaderEncoder, txProofBlockHeaderDecoder,
+		0, t, 80,
+		txProofBlockHeaderEncoder,
+		txProofBlockHeaderDecoder,
 	)
 }
 
-func txProofBlockHeaderEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
+func txProofBlockHeaderEncoder(w io.Writer, val interface{},
+	_ *[8]byte) error {
+
 	if t, ok := val.(*txProofBlockHeaderRecord); ok {
 		return t.Header.Serialize(w)
 	}
 
-	return tlv.NewTypeForEncodingErr(val, "txProofBlockHeaderRecord")
+	return tlv.NewTypeForEncodingErr(
+		val, "txProofBlockHeaderRecord",
+	)
 }
 
-func txProofBlockHeaderDecoder(
-	r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
+func txProofBlockHeaderDecoder(r io.Reader, val interface{},
+	_ *[8]byte, l uint64) error {
 
 	if l != 80 {
 		return fmt.Errorf("invalid block header length: %d", l)
@@ -98,19 +168,17 @@ func txProofBlockHeaderDecoder(
 		return t.Header.Deserialize(r)
 	}
 
-	return tlv.NewTypeForDecodingErr(val, "txProofBlockHeaderRecord", l, 80)
+	return tlv.NewTypeForDecodingErr(
+		val, "txProofBlockHeaderRecord", l, 80,
+	)
 }
 
-// txProofMerkleProofRecord is a TLV record for proof.TxMerkleProof.
-// Uses the TxMerkleProof's built-in Encode/Decode methods.
 type txProofMerkleProofRecord struct {
 	Proof proof.TxMerkleProof
 }
 
-// Record returns the TLV record for encoding/decoding.
 func (t *txProofMerkleProofRecord) Record() tlv.Record {
 	recordSize := func() uint64 {
-		// Estimate size: we need to encode to know exact size.
 		var buf bytes.Buffer
 		_ = t.Proof.Encode(&buf)
 
@@ -119,41 +187,48 @@ func (t *txProofMerkleProofRecord) Record() tlv.Record {
 
 	return tlv.MakeDynamicRecord(
 		0, t, recordSize,
-		txProofMerkleProofEncoder, txProofMerkleProofDecoder,
+		txProofMerkleProofEncoder,
+		txProofMerkleProofDecoder,
 	)
 }
 
-func txProofMerkleProofEncoder(w io.Writer, val interface{}, _ *[8]byte) error {
+func txProofMerkleProofEncoder(w io.Writer, val interface{},
+	_ *[8]byte) error {
+
 	if t, ok := val.(*txProofMerkleProofRecord); ok {
 		return t.Proof.Encode(w)
 	}
 
-	return tlv.NewTypeForEncodingErr(val, "txProofMerkleProofRecord")
+	return tlv.NewTypeForEncodingErr(
+		val, "txProofMerkleProofRecord",
+	)
 }
 
-func txProofMerkleProofDecoder(
-	r io.Reader, val interface{}, _ *[8]byte, l uint64) error {
+func txProofMerkleProofDecoder(r io.Reader, val interface{},
+	_ *[8]byte, l uint64) error {
 
 	if t, ok := val.(*txProofMerkleProofRecord); ok {
 		return t.Proof.Decode(r)
 	}
 
-	return tlv.NewTypeForDecodingErr(val, "txProofMerkleProofRecord", l, l)
+	return tlv.NewTypeForDecodingErr(
+		val, "txProofMerkleProofRecord", l, l,
+	)
 }
 
-// tlvTxProof is the TLV-encoded representation of proof.TxProof.
 type tlvTxProof struct {
 	MsgTx       tlv.RecordT[tlvTxProofMsgTx, txProofMsgTxRecord]
 	BlockHeader tlv.RecordT[tlvTxProofBlockHeader, txProofBlockHeaderRecord]
 	BlockHeight tlv.RecordT[tlvTxProofBlockHeight, uint32]
 	MerkleProof tlv.RecordT[tlvTxProofMerkleProof, txProofMerkleProofRecord]
 
-	ClaimedOutput tlv.RecordT[tlvTxProofClaimedOutput, outpointRecord]
+	//nolint:ll
+	ClaimedOutput tlv.RecordT[tlvTxProofClaimedOutput, txProofOutpointRecord]
 	InternalKey   tlv.RecordT[tlvTxProofInternalKey, *btcec.PublicKey]
 	MerkleRoot    tlv.RecordT[tlvTxProofMerkleRoot, []byte]
 }
 
-// SerializeTxProof serializes a proof.TxProof to bytes using TLV encoding.
+// SerializeTxProof serializes a proof.TxProof to TLV-encoded bytes.
 func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 	if p == nil {
 		return nil, nil
@@ -173,7 +248,9 @@ func SerializeTxProof(p *proof.TxProof) ([]byte, error) {
 			txProofMerkleProofRecord{Proof: p.MerkleProof},
 		),
 		ClaimedOutput: tlv.NewRecordT[tlvTxProofClaimedOutput](
-			outpointRecord{OutPoint: p.ClaimedOutPoint},
+			txProofOutpointRecord{
+				OutPoint: p.ClaimedOutPoint,
+			},
 		),
 		InternalKey: tlv.NewPrimitiveRecord[tlvTxProofInternalKey](
 			&p.InternalKey,
@@ -234,7 +311,7 @@ func DeserializeTxProof(data []byte) (*proof.TxProof, error) {
 		return nil, fmt.Errorf("decode TxProof: %w", err)
 	}
 
-	// Reconstruct the TxProof.
+	// Reconstruct the TxProof from decoded TLV fields.
 	p := &proof.TxProof{
 		BlockHeader:     t.BlockHeader.Val.Header,
 		BlockHeight:     t.BlockHeight.Val,

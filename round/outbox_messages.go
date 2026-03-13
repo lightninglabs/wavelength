@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 )
@@ -163,6 +164,15 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			br.OperatorKey = req.OperatorKey.
 				SerializeCompressed()
 		}
+
+		// Serialize the TxProof inline if present.
+		req.TxProof.WhenSome(func(tp proof.TxProof) {
+			data, err := types.SerializeTxProof(&tp)
+			if err == nil {
+				br.TxProof = data
+			}
+		})
+
 		boardingReqs[i] = br
 	}
 

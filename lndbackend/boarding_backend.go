@@ -19,12 +19,17 @@ import (
 )
 
 // BoardingBackend implements the wallet.BoardingBackend interface by
-// wrapping an lndclient.WalletKitClient. This provides the concrete
-// integration with an LND node for boarding address management.
+// wrapping an lndclient.WalletKitClient and ChainKitClient. This
+// provides the concrete integration with an LND node for boarding
+// address management and block retrieval.
 type BoardingBackend struct {
 	// walletKit is the LND wallet kit client used for key derivation,
 	// script import, and UTXO enumeration.
 	walletKit lndclient.WalletKitClient
+
+	// chainKit is the LND chain kit client used for block retrieval.
+	// This enables TxProof construction when boarding UTXOs confirm.
+	chainKit lndclient.ChainKitClient
 
 	// Log is an optional logger for this backend. If None, the backend
 	// falls back to the package-level log registered under the LNDB
@@ -33,11 +38,12 @@ type BoardingBackend struct {
 }
 
 // NewBoardingBackend creates a new LND boarding backend.
-func NewBoardingBackend(
-	walletKit lndclient.WalletKitClient) *BoardingBackend {
+func NewBoardingBackend(walletKit lndclient.WalletKitClient,
+	chainKit lndclient.ChainKitClient) *BoardingBackend {
 
 	return &BoardingBackend{
 		walletKit: walletKit,
+		chainKit:  chainKit,
 	}
 }
 
@@ -121,18 +127,33 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	return utxos, nil
 }
 
-// GetTransaction returns the full transaction for a given txid. This is used
-// to fetch transaction data when a new boarding UTXO is detected, allowing the
-// round actor to validate outputs and construct TxProofs.
+// GetTransaction returns the full transaction and its confirmation block hash
+// for a given txid. The block hash is extracted from LND's TransactionDetail
+// so callers can build TxProofs against the correct block even when catching
+// up on UTXOs confirmed many blocks ago.
 func (l *BoardingBackend) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, error) {
+	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
 
 	l.logger(ctx).DebugS(ctx, "Fetching transaction from LND",
 		btclog.Hex("txid", txid[:]))
 
 	txn, err := l.walletKit.GetTransaction(ctx, txid)
 	if err != nil {
-		return nil, fmt.Errorf("get transaction: %w", err)
+		return nil, nil, fmt.Errorf("get transaction: %w", err)
+	}
+
+	// Parse the confirmation block hash from the TransactionDetail.
+	// This is empty for unconfirmed transactions.
+	var blockHash *chainhash.Hash
+	if txn.BlockHash != "" {
+		h, err := chainhash.NewHashFromStr(txn.BlockHash)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"parse block hash: %w", err,
+			)
+		}
+
+		blockHash = h
 	}
 
 	l.logger(ctx).DebugS(ctx, "Fetched transaction successfully",
@@ -140,7 +161,27 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 		slog.Int("num_inputs", len(txn.Tx.TxIn)),
 		slog.Int("num_outputs", len(txn.Tx.TxOut)))
 
-	return txn.Tx, nil
+	return txn.Tx, blockHash, nil
+}
+
+// GetBlock returns the full block for the given block hash via LND's ChainKit
+// RPC. This is used to compute merkle inclusion proofs for boarding TxProofs.
+func (l *BoardingBackend) GetBlock(ctx context.Context,
+	blockHash chainhash.Hash) (*wire.MsgBlock, error) {
+
+	l.logger(ctx).DebugS(ctx, "Fetching block from LND",
+		btclog.Hex("block_hash", blockHash[:]))
+
+	block, err := l.chainKit.GetBlock(ctx, blockHash)
+	if err != nil {
+		return nil, fmt.Errorf("get block: %w", err)
+	}
+
+	l.logger(ctx).DebugS(ctx, "Fetched block successfully",
+		btclog.Hex("block_hash", blockHash[:]),
+		slog.Int("num_txs", len(block.Transactions)))
+
+	return block, nil
 }
 
 // Compile-time check that BoardingBackend implements wallet.BoardingBackend.

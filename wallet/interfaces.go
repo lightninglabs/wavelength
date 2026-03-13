@@ -156,13 +156,22 @@ type BoardingBackend interface {
 		ctx context.Context, minConfs, maxConfs int32,
 	) ([]*Utxo, error)
 
-	// GetTransaction returns the full transaction for a given txid. This
-	// is used to fetch the transaction data when a new boarding UTXO is
-	// detected, allowing the round actor to validate outputs and construct
-	// TxProofs.
+	// GetTransaction returns the full transaction and its confirmation
+	// block hash for a given txid. The block hash is needed for TxProof
+	// construction — using the actual confirmation block ensures proofs
+	// are correct even for UTXOs discovered during catch-up after
+	// downtime. The block hash pointer is nil when the tx is
+	// unconfirmed.
 	GetTransaction(
 		ctx context.Context, txid chainhash.Hash,
-	) (*wire.MsgTx, error)
+	) (*wire.MsgTx, *chainhash.Hash, error)
+
+	// GetBlock returns the full block for the given block hash. This is
+	// used to compute merkle inclusion proofs (TxProof) when a boarding
+	// UTXO confirms, enabling SPV verification on the server side.
+	GetBlock(
+		ctx context.Context, blockHash chainhash.Hash,
+	) (*wire.MsgBlock, error)
 }
 
 // Utxo represents an unspent transaction output returned by ListUnspent. This

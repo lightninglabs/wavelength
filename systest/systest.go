@@ -163,7 +163,9 @@ func (h *SysTestHarness) SubLogger(subsystem string) btclog.Logger {
 
 // NewBoardingBackend creates a new BoardingBackend connected to the shared LND.
 func (h *SysTestHarness) NewBoardingBackend() wallet.BoardingBackend {
-	return lndbackend.NewBoardingBackend(h.Harness.LND.WalletKit)
+	return lndbackend.NewBoardingBackend(
+		h.Harness.LND.WalletKit, h.Harness.LND.ChainKit,
+	)
 }
 
 // NewChainBackend creates a new ChainBackend connected to the shared LND.

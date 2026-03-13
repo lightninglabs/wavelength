@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
@@ -18,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -556,9 +558,13 @@ func (a *Ark) processUtxo(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 	)
 
-	// Fetch the full transaction to populate ChainInfo.ConfTx. This is
-	// needed by the round FSM to extract the output value.
-	confTx, err := a.backend.GetTransaction(ctx, utxo.Outpoint.Hash)
+	// Fetch the full transaction and its confirmation block hash. The
+	// block hash from GetTransaction is the UTXO's actual confirmation
+	// block, which may differ from epoch.Hash during catch-up after
+	// downtime.
+	confTx, confBlockHash, err := a.backend.GetTransaction(
+		ctx, utxo.Outpoint.Hash,
+	)
 	if err != nil {
 		a.logger(ctx).WarnS(
 			ctx, "Failed fetching boarding tx", err,
@@ -567,6 +573,20 @@ func (a *Ark) processUtxo(ctx context.Context,
 
 		return false
 	}
+
+	// Use the confirmation block hash from the transaction if
+	// available. Fall back to epoch.Hash for backends that don't
+	// provide it (e.g., unconfirmed or missing metadata).
+	blockHash := epoch.Hash
+	if confBlockHash != nil {
+		blockHash = *confBlockHash
+	}
+
+	// Build the SPV TxProof so the server can verify the boarding UTXO
+	// without querying its own chain source.
+	txProof := a.buildBoardingTxProof(
+		ctx, blockHash, epoch.Height, confTx, utxo.Outpoint, addr,
+	)
 
 	intent := BoardingIntent{
 		Address:  *addr,
@@ -577,6 +597,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 			ConfTx:     confTx,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,
+			TxProof:    txProof,
 		},
 		Status: BoardingStatusConfirmed,
 	}
@@ -946,6 +967,92 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// buildBoardingTxProof fetches the confirmation block and computes a merkle
+// inclusion proof for the boarding transaction. The blockHash parameter should
+// be the UTXO's actual confirmation block (from GetTransaction), not the
+// current epoch block, so proofs are correct even during catch-up. If anything
+// fails, it returns None — the intent will still be persisted, but without a
+// proof the server will need its own chain source to validate.
+func (a *Ark) buildBoardingTxProof(ctx context.Context,
+	blockHash chainhash.Hash, blockHeight int32,
+	confTx *wire.MsgTx, outpoint wire.OutPoint,
+	addr *BoardingAddress) fn.Option[proof.TxProof] {
+
+	// Fetch the full block to compute the merkle proof.
+	block, err := a.backend.GetBlock(ctx, blockHash)
+	if err != nil {
+		a.logger(ctx).WarnS(
+			ctx, "Failed fetching block for TxProof", err,
+			btclog.Fmt("block_hash", "%v", blockHash),
+		)
+
+		return fn.None[proof.TxProof]()
+	}
+
+	// Find the transaction index within the block.
+	txHash := confTx.TxHash()
+	txIdx := -1
+	for i, blockTx := range block.Transactions {
+		if blockTx.TxHash() == txHash {
+			txIdx = i
+			break
+		}
+	}
+	if txIdx < 0 {
+		a.logger(ctx).WarnS(
+			ctx, "Boarding tx not found in block", nil,
+			btclog.Fmt("txid", "%v", txHash),
+			btclog.Fmt("block_hash", "%v", blockHash),
+		)
+
+		return fn.None[proof.TxProof]()
+	}
+
+	// Compute the merkle inclusion proof.
+	merkleProof, err := proof.NewTxMerkleProof(
+		block.Transactions, txIdx,
+	)
+	if err != nil {
+		a.logger(ctx).WarnS(
+			ctx, "Failed computing merkle proof", err,
+			btclog.Fmt("txid", "%v", txHash),
+		)
+
+		return fn.None[proof.TxProof]()
+	}
+
+	// Extract the internal key and tapscript root hash from the boarding
+	// address. VTXOTapScript populates both ControlBlock.InternalKey and
+	// RootHash when constructing the tapscript.
+	if addr.Tapscript == nil || addr.Tapscript.ControlBlock == nil ||
+		addr.Tapscript.ControlBlock.InternalKey == nil {
+
+		a.logger(ctx).WarnS(
+			ctx, "Boarding address missing tapscript data",
+			nil,
+		)
+
+		return fn.None[proof.TxProof]()
+	}
+	internalKey := addr.Tapscript.ControlBlock.InternalKey
+	merkleRoot := addr.Tapscript.RootHash
+
+	a.logger(ctx).InfoS(ctx, "Built TxProof for boarding UTXO",
+		btclog.Fmt("outpoint", "%v", outpoint),
+		slog.Int("block_height", int(blockHeight)),
+	)
+
+	return fn.Some(proof.TxProof{
+		MsgTx:           *confTx,
+		BlockHeader:     block.Header,
+		BlockHeight:     uint32(blockHeight),
+		MerkleProof:     *merkleProof,
+		ClaimedOutPoint: outpoint,
+		InternalKey:     *internalKey,
+		MerkleRoot:      merkleRoot,
+	})
 }
 
 // buildBoardingTapscript constructs a 2-of-2 tapscript with CSV timeout for

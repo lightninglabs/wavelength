@@ -853,6 +853,7 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
 		OperatorKey: walletIntent.Address.OperatorKey,
 		ExitDelay:   walletIntent.Address.ExitDelay,
+		TxProof:     walletIntent.ChainInfo.TxProof,
 	}
 	intent := BoardingIntent{
 		BoardingIntent: *walletIntent,
