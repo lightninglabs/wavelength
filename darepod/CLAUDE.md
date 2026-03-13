@@ -26,6 +26,8 @@ gRPC API.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
 - Server holds a `roundStore` reference for direct SQL queries from the RPC layer.
+- Actor startup order: VTXO manager starts before round actor and OOR actor, so the manager ref is available for both. The round actor ref in the VTXO manager is lazy (service-key-based, resolved at Tell time).
+- `mapRoundVTXOManagerMsg` bridges `round.VTXOManagerMsg` → `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions enforce that all `round.VTXOManagerMsg` implementors satisfy `vtxo.ManagerMsg`.
 
 ## Deep Docs
 

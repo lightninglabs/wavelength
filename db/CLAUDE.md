@@ -13,7 +13,7 @@ Supports SQLite and PostgreSQL backends.
 - `RoundStore` — Interface for round state persistence (CommitState, FetchState, ListRoundsPaginated).
 - `RoundPersistenceStore` — Concrete implementation wrapping `BatchedTx[RoundStore]` with domain conversion.
 - `RoundSummary` / `VTXOSummary` — Lightweight descriptors for paginated round listing (avoids deserializing full trees).
-- `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint).
+- `VTXOPersistenceStore` — Persistent store for VTXO descriptors (InsertClientVTXO, FetchByOutpoint). Persists `ChainDepth` (OOR hop count) alongside other VTXO metadata.
 - `OORArtifactStore` — Interface for OOR session state persistence.
 
 ## Relationships
@@ -28,6 +28,7 @@ Supports SQLite and PostgreSQL backends.
 - Round checkpoints include commitment tx, VTXO tree, client sub-trees, boarding signatures, and every intent with updated status.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
+- Latest migration: `000005_vtxo_chain_depth` adds `chain_depth INTEGER NOT NULL DEFAULT 0` to `vtxos` table. UPSERT uses zero-value sentinel pattern (same as `tree_depth`, `batch_expiry`): zero means "not yet populated", non-zero overwrites.
 
 ## Deep Docs
 

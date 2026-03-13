@@ -11,7 +11,8 @@ resume semantics.
 - `SessionID` — Stable session identifier (Ark txid hash in v0).
 - `Environment` — FSM environment providing SessionID and external system access.
 - `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing, persistence).
-- `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler, ServerConn, PackageStore, DeliveryStore).
+- `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler, ServerConn, PackageStore, DeliveryStore, VTXOManager).
+- `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
 - `OORClientActor` — Durable actor wrapping per-session state machines.
 
 ## Relationships
@@ -22,6 +23,7 @@ resume semantics.
   - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`
   - → `db` (via outbox): `MarkInputsSpentRequest`
   - → `wallet`: `MaterializeIncomingVTXOsRequest`
+  - → `vtxo` manager: `VTXOsMaterializedNotification` (after incoming VTXOs are durably materialized)
 - **Receives**:
   - ← `serverconn` (via EventRouter): `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
   - ← API: `StartTransferRequest`, `DriveEventRequest`, `RestoreSessionRequest`, `ResumeSessionRequest`
