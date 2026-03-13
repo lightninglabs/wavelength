@@ -3,11 +3,13 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo/vtxo"
@@ -30,6 +32,8 @@ import (
 type InProcessOutboxDriver struct {
 	mu sync.Mutex
 
+	log btclog.Logger
+
 	seen []string
 
 	locker vtxo.Locker
@@ -39,6 +43,8 @@ type InProcessOutboxDriver struct {
 	sessionStore SessionStore
 
 	recipientEvents RecipientEventStore
+
+	recipientNotifier RecipientNotifier
 
 	coSigner CheckpointCoSigner
 
@@ -62,6 +68,16 @@ type DriverCfg struct {
 
 	// RecipientEvents persists recipient-notification cursors and payloads.
 	RecipientEvents RecipientEventStore
+
+	// RecipientNotifier receives best-effort notifications for each
+	// finalized recipient output. The notifier is called after durable
+	// recipient events are persisted, bridging OOR into the indexer
+	// event stream for connected clients. May be nil.
+	RecipientNotifier RecipientNotifier
+
+	// Logger is used for outbox driver logging. When nil,
+	// btclog.Disabled is used.
+	Logger btclog.Logger
 
 	// CoSigner customizes checkpoint co-signing strategy for tests.
 	CoSigner CheckpointCoSigner
@@ -140,16 +156,23 @@ func NewDriver(cfg DriverCfg) *InProcessOutboxDriver {
 		coSigner = NoopCoSigner{}
 	}
 
+	log := cfg.Logger
+	if log == nil {
+		log = btclog.Disabled
+	}
+
 	return &InProcessOutboxDriver{
-		seen:            make([]string, 0),
-		locker:          cfg.Locker,
-		store:           cfg.Store,
-		sessionStore:    cfg.SessionStore,
-		recipientEvents: cfg.RecipientEvents,
-		coSigner:        coSigner,
-		operatorKey:     cfg.OperatorKey,
-		sessionExpiry:   sessionExpiry,
-		operatorPolicy:  cfg.OperatorPolicy,
+		log:               log,
+		seen:              make([]string, 0),
+		locker:            cfg.Locker,
+		store:             cfg.Store,
+		sessionStore:      cfg.SessionStore,
+		recipientEvents:   cfg.RecipientEvents,
+		recipientNotifier: cfg.RecipientNotifier,
+		coSigner:          coSigner,
+		operatorKey:       cfg.OperatorKey,
+		sessionExpiry:     sessionExpiry,
+		operatorPolicy:    cfg.OperatorPolicy,
 	}
 }
 
@@ -220,6 +243,11 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 				ctx, msg.Inputs, owner, expiresAt,
 			)
 			if err != nil {
+				d.log.DebugS(ctx, "Input lock failed",
+					btclog.Hex("session_id", sessionID[:]),
+					slog.Int("num_inputs", len(msg.Inputs)),
+					slog.String("reason", err.Error()))
+
 				return []Event{
 					&InputsLockFailedEvent{
 						Reason: err.Error(),
@@ -229,6 +257,11 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 		} else {
 			err := d.locker.LockMany(ctx, msg.Inputs, owner)
 			if err != nil {
+				d.log.DebugS(ctx, "Input lock failed",
+					btclog.Hex("session_id", sessionID[:]),
+					slog.Int("num_inputs", len(msg.Inputs)),
+					slog.String("reason", err.Error()))
+
 				return []Event{
 					&InputsLockFailedEvent{
 						Reason: err.Error(),
@@ -237,6 +270,10 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 			}
 		}
 	}
+
+	d.log.DebugS(ctx, "Inputs locked",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Int("num_inputs", len(msg.Inputs)))
 
 	return []Event{
 		&InputsLockSucceededEvent{},
@@ -252,6 +289,10 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
+		d.log.DebugS(ctx, "Submit validation failed",
+			slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
+			slog.String("reason", err.Error()))
+
 		return []Event{
 			&SubmitFailedEvent{
 				Reason: err.Error(),
@@ -267,6 +308,10 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 			d.operatorPolicy,
 		)
 		if err != nil {
+			d.log.DebugS(ctx, "Submit rebuild/policy check failed",
+				slog.String("ark_txid", validated.ArkTxid.String()),
+				slog.String("reason", err.Error()))
+
 			return []Event{
 				&SubmitFailedEvent{
 					Reason: err.Error(),
@@ -274,6 +319,10 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 			}, nil
 		}
 	}
+
+	d.log.InfoS(ctx, "Submit package validated",
+		slog.String("ark_txid", validated.ArkTxid.String()),
+		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
 
 	return []Event{
 		&SubmitValidatedEvent{
@@ -287,18 +336,23 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 	sessionID SessionID, msg *CoSignReq) ([]Event, error) {
 
-	_ = ctx
-
 	err := d.coSigner.CoSignCheckpoints(
 		d.operatorKey, msg.VTXOSigningDescriptors, msg.CheckpointPSBTs,
 	)
 	if err != nil {
+		d.log.WarnS(ctx, "Co-sign checkpoints failed", err,
+			btclog.Hex("session_id", sessionID[:]))
+
 		return []Event{
 			&SignFailedEvent{
 				Reason: err.Error(),
 			},
 		}, nil
 	}
+
+	d.log.DebugS(ctx, "Checkpoints co-signed",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
 
 	owner := vtxo.OORLockOwner(sessionID.String())
 
@@ -435,8 +489,15 @@ func (d *InProcessOutboxDriver) handleFinalize(ctx context.Context,
 		}
 	}
 
+	d.log.InfoS(ctx, "Session finalized",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)),
+		slog.Int("num_inputs", len(msg.Inputs)))
+
 	return []Event{
-		&FinalizeSucceededEvent{},
+		&FinalizeSucceededEvent{
+			FinalCheckpointPSBTs: msg.FinalCheckpointPSBTs,
+		},
 	}, nil
 }
 
@@ -498,58 +559,62 @@ func (d *InProcessOutboxDriver) finalizeVTXOSet(ctx context.Context,
 }
 
 // handleNotifyRecipients appends durable recipient events for the finalized
-// Ark transaction and returns an FSM event indicating success or failure.
+// Ark transaction, pushes transfer notifications via clientconn, and returns
+// an FSM event indicating success or failure.
 func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 	sessionID SessionID,
 	msg *NotifyRecipientsReq) ([]Event, error) {
 
-	if d.recipientEvents == nil {
-		// Mark the session as fully notified even when there is no
-		// recipient event store, completing the awaiting_notify →
-		// finalized DB transition.
-		if d.sessionStore != nil {
-			err := d.sessionStore.MarkNotified(ctx, sessionID)
-			if err != nil {
-				return []Event{
-					&NotifyRecipientsFailedEvent{
-						Reason: err.Error(),
-					},
-				}, nil
-			}
+	ark := msg.ArkPSBT
+
+	// Extract recipients from the Ark PSBT when available. The
+	// recipient list is used for both RecipientEventStore persistence
+	// and the clientconn push path.
+	var recipients []clientoor.ArkRecipientOutput
+	if ark != nil {
+		var err error
+		recipients, err = clientoor.ExtractArkRecipients(ark)
+		if err != nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
+	}
+
+	// Persist recipient events to the polling store when configured.
+	if d.recipientEvents != nil {
+		if ark == nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: "ark psbt must be provided",
+				},
+			}, nil
 		}
 
-		return []Event{
-			&NotifyRecipientsSucceededEvent{},
-		}, nil
+		err := d.recipientEvents.AppendRecipientEvents(
+			ctx, sessionID, ark, recipients,
+		)
+		if err != nil {
+			return []Event{
+				&NotifyRecipientsFailedEvent{
+					Reason: err.Error(),
+				},
+			}, nil
+		}
 	}
 
-	ark := msg.ArkPSBT
-	if ark == nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: "ark psbt must be provided",
-			},
-		}, nil
-	}
-
-	recipients, err := clientoor.ExtractArkRecipients(ark)
-	if err != nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: err.Error(),
-			},
-		}, nil
-	}
-
-	err = d.recipientEvents.AppendRecipientEvents(
-		ctx, sessionID, ark, recipients,
-	)
-	if err != nil {
-		return []Event{
-			&NotifyRecipientsFailedEvent{
-				Reason: err.Error(),
-			},
-		}, nil
+	// Best-effort push each recipient through the indexer event
+	// bridge so connected clients receive real-time notification
+	// without polling. Failures are logged internally by the
+	// notifier and do not block finalization.
+	if d.recipientNotifier != nil {
+		for _, r := range recipients {
+			d.recipientNotifier.NotifyRecipientEvent(
+				ctx, sessionID, r,
+			)
+		}
 	}
 
 	// Mark the session as fully notified, completing the
@@ -564,6 +629,10 @@ func (d *InProcessOutboxDriver) handleNotifyRecipients(ctx context.Context,
 			}, nil
 		}
 	}
+
+	d.log.InfoS(ctx, "Recipients notified",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Int("num_recipients", len(recipients)))
 
 	return []Event{
 		&NotifyRecipientsSucceededEvent{},
@@ -582,6 +651,10 @@ func (d *InProcessOutboxDriver) handleUnlockInputs(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
+
+		d.log.DebugS(ctx, "Inputs unlocked",
+			btclog.Hex("session_id", sessionID[:]),
+			slog.Int("num_inputs", len(msg.Inputs)))
 	}
 
 	return nil, nil

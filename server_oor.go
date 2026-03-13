@@ -6,6 +6,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
@@ -66,10 +67,12 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// TODO(roasbeef): Wire the operator key and signer from
 	// LND once key management is in place.
 	driver := oor.NewDriver(oor.DriverCfg{
-		Locker:          s.vtxoLocker,
-		Store:           vtxoRecordStore,
-		SessionStore:    sessionStore,
-		RecipientEvents: recipientEvents,
+		Locker:            s.vtxoLocker,
+		Store:             vtxoRecordStore,
+		SessionStore:      sessionStore,
+		RecipientEvents:   recipientEvents,
+		RecipientNotifier: s.newOORRecipientNotifier(),
+		Logger:            oorLog,
 	})
 
 	// Build the OOR actor configuration. The checkpoint policy
@@ -84,6 +87,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		OutboxHandler:    driver,
 		DeliveryStore:    deliveryStore,
 		SessionStore:     sessionStore,
+		ClientsConn:      s.clientBridge,
 	}
 
 	// Register the OOR actor with the actor system via its
@@ -131,18 +135,18 @@ func (s *Server) stopOORSubsystem(ctx context.Context) {
 // OOR RPCs are async: the client submits a request, may go offline,
 // and receives the response later via the outbox event path.
 func (s *Server) registerOORRoutes(
-	oorKey actor.ServiceKey[oor.ActorMsg, oor.ActorResp]) {
+	oorKey actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp]) {
 
 	svc := oorpb.ServiceName
 
 	// SubmitPackage: client submits an OOR transfer package
 	// containing the Ark PSBT, checkpoint PSBTs, and signing
-	// descriptors. OOR messages don't carry a ClientID, so
-	// AddRoute (no envelope access) is used.
-	clientconn.AddRoute(
+	// descriptors. AddEnvelopeRoute extracts the client ID
+	// from the envelope sender for response routing.
+	clientconn.AddEnvelopeRoute(
 		s.eventRouter,
-		clientconn.EventRouteConfig[
-			oor.ActorMsg, oor.ActorResp,
+		clientconn.EnvelopeRouteConfig[
+			oor.OORDurableMsg, oor.ActorResp,
 		]{
 			Service: svc,
 			Method:  "SubmitPackage",
@@ -150,9 +154,9 @@ func (s *Server) registerOORRoutes(
 				return &oorpb.SubmitPackageRequest{}
 			},
 			Key: oorKey,
-			Adapt: func(
+			Adapt: func(env *mailboxpb.Envelope,
 				p proto.Message) (
-				oor.ActorMsg, error) {
+				oor.OORDurableMsg, error) {
 
 				req, ok := p.(*oorpb.SubmitPackageRequest) //nolint:ll
 				if !ok {
@@ -188,6 +192,9 @@ func (s *Server) registerOORRoutes(
 				}
 
 				return &oor.SubmitOORRequest{
+					ClientID: clientconn.ClientID(
+						env.Sender,
+					),
 					ArkPSBT:                arkPSBT,
 					CheckpointPSBTs:        checkpointPSBTs,
 					VTXOSigningDescriptors: vtxoDescs,
@@ -197,11 +204,12 @@ func (s *Server) registerOORRoutes(
 	)
 
 	// FinalizePackage: client submits final checkpoint
-	// signatures for an existing OOR session.
-	clientconn.AddRoute(
+	// signatures for an existing OOR session. Uses
+	// AddEnvelopeRoute for client ID extraction.
+	clientconn.AddEnvelopeRoute(
 		s.eventRouter,
-		clientconn.EventRouteConfig[
-			oor.ActorMsg, oor.ActorResp,
+		clientconn.EnvelopeRouteConfig[
+			oor.OORDurableMsg, oor.ActorResp,
 		]{
 			Service: svc,
 			Method:  "FinalizePackage",
@@ -209,9 +217,9 @@ func (s *Server) registerOORRoutes(
 				return &oorpb.FinalizePackageRequest{}
 			},
 			Key: oorKey,
-			Adapt: func(
+			Adapt: func(env *mailboxpb.Envelope,
 				p proto.Message) (
-				oor.ActorMsg, error) {
+				oor.OORDurableMsg, error) {
 
 				req, ok := p.(*oorpb.FinalizePackageRequest) //nolint:ll
 				if !ok {
@@ -233,6 +241,9 @@ func (s *Server) registerOORRoutes(
 				}
 
 				return &oor.FinalizeOORRequest{
+					ClientID: clientconn.ClientID(
+						env.Sender,
+					),
 					SessionID: oor.SessionID(
 						sessionHash,
 					),

@@ -253,13 +253,13 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 			msg.CheckpointPSBTs,
 		)
 
-		resp := h.server.Receive(
+		resp := h.server.Ref().Ask(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
 				CheckpointPSBTs:        msg.CheckpointPSBTs,
 				VTXOSigningDescriptors: h.signDescs,
 			},
-		)
+		).Await(ctx)
 		require.True(h.t, resp.IsOk(), resp.Err())
 
 		unwrapped := resp.UnwrapOr(nil)
@@ -302,7 +302,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 
 		h.lastFinalizeArkPSBT = msg.ArkPSBT
 
-		resp := h.server.Receive(
+		resp := h.server.Ref().Ask(
 			ctx, &serveroor.FinalizeOORRequest{
 				SessionID: serveroor.SessionID(
 					sessionID,
@@ -310,7 +310,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 				FinalCheckpointPSBTs: msg.
 					FinalCheckpointPSBTs,
 			},
-		)
+		).Await(ctx)
 		require.True(h.t, resp.IsOk())
 
 		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
@@ -484,13 +484,13 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 			msg.CheckpointPSBTs,
 		)
 
-		resp := h.server.Receive(
+		resp := h.server.Ref().Ask(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
 				CheckpointPSBTs:        msg.CheckpointPSBTs,
 				VTXOSigningDescriptors: h.signDescs,
 			},
-		)
+		).Await(ctx)
 		require.True(h.t, resp.IsOk())
 
 		unwrapped := resp.UnwrapOr(nil)
@@ -542,7 +542,7 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 			return nil, nil
 		}
 
-		resp := h.server.Receive(
+		resp := h.server.Ref().Ask(
 			ctx, &serveroor.FinalizeOORRequest{
 				SessionID: serveroor.SessionID(
 					sessionID,
@@ -550,7 +550,7 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 				FinalCheckpointPSBTs: msg.
 					FinalCheckpointPSBTs,
 			},
-		)
+		).Await(ctx)
 		require.True(h.t, resp.IsOk(), resp.Err())
 
 		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
@@ -938,7 +938,7 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	adaptor.server = server2
 	adaptor.pauseFinalize = false
 
-	finalizeResp := server2.Receive(
+	finalizeResp := server2.Ref().Ask(
 		ctx, &serveroor.FinalizeOORRequest{
 			SessionID: serveroor.SessionID(
 				startMsg.SessionID,
@@ -946,7 +946,7 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 			FinalCheckpointPSBTs: adaptor.
 				finalCheckpointPSBTs,
 		},
-	)
+	).Await(ctx)
 	require.True(t, finalizeResp.IsOk(), finalizeResp.Err())
 
 	// Drive the local client completion path after finalize
@@ -1078,7 +1078,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	arkPSBT.Inputs[0].TaprootLeafScript =
 		[]*psbt.TaprootTapLeafScript{leaf}
 
-	submitResp := server.Receive(
+	submitResp := server.Ref().Ask(
 		ctx, &serveroor.SubmitOORRequest{
 			ArkPSBT: arkPSBT,
 			CheckpointPSBTs: []*psbt.Packet{
@@ -1091,7 +1091,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 				ExitDelay: exitDelay,
 			}},
 		},
-	)
+	).Await(ctx)
 	require.True(t, submitResp.IsOk(), submitResp.Err())
 
 	submitMsg, ok := submitResp.UnwrapOr(
@@ -1139,12 +1139,12 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	}
 	require.True(t, tamperedOwner)
 
-	finalizeResp := server.Receive(
+	finalizeResp := server.Ref().Ask(
 		ctx, &serveroor.FinalizeOORRequest{
 			SessionID:            submitMsg.SessionID,
 			FinalCheckpointPSBTs: tampered,
 		},
-	)
+	).Await(ctx)
 	require.True(t, finalizeResp.IsErr())
 	require.ErrorContains(
 		t, finalizeResp.Err(), "owner signature invalid",

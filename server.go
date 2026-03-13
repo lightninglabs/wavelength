@@ -116,7 +116,7 @@ type Server struct {
 
 	// oorRef is the actor reference for the OOR actor, used
 	// for sending messages through the actor system.
-	oorRef actor.ActorRef[oor.ActorMsg, oor.ActorResp]
+	oorRef actor.ActorRef[oor.OORDurableMsg, oor.ActorResp]
 
 	// deliveryStore is the shared actor delivery store used by
 	// auto-registered client runtimes for inbox persistence and

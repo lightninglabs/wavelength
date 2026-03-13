@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
@@ -267,20 +269,13 @@ func buildFinalCheckpointPSBT(t *testing.T,
 	return finalCheckpoint
 }
 
-// startTestActor creates and starts a test actor instance.
-func startTestActor(t *testing.T, cfg ActorCfg) *Actor {
+// newTestActor creates a test actor without starting the durable runtime.
+// Tests that call Receive directly don't need the durable mailbox; starting
+// it would race with RestartMessage processing that clears the session map.
+func newTestActor(t *testing.T, cfg ActorCfg) *Actor {
 	t.Helper()
 
-	if cfg.DeliveryStore == nil {
-		cfg.DeliveryStore = newActorDeliveryStoreWithNewDB(t)
-	}
-
 	a := NewActor(cfg)
-
-	err := a.Start(t.Context())
-	require.NoError(t, err)
-
-	t.Cleanup(a.Stop)
 
 	return a
 }
@@ -369,7 +364,7 @@ func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 
-			handle, err := actor.behavior.getOrCreateSessionFSM(
+			handle, err := actor.getOrCreateSessionFSM(
 				ctx, sessionID,
 			)
 			if err != nil {
@@ -399,9 +394,9 @@ func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {
 		require.Same(t, first, handle)
 	}
 
-	actor.behavior.sessionsMu.RLock()
-	require.Len(t, actor.behavior.sessions, 1)
-	actor.behavior.sessionsMu.RUnlock()
+	actor.sessionsMu.RLock()
+	require.Len(t, actor.sessions, 1)
+	actor.sessionsMu.RUnlock()
 }
 
 // TestActorHappyPath exercises a submit and finalize flow through the actor
@@ -415,7 +410,7 @@ func TestActorHappyPath(t *testing.T) {
 	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -457,7 +452,7 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 	arkPsbt.Inputs[0].WitnessUtxo = nil
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -486,7 +481,7 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 	stripTapTreeMetadata(t, arkPsbt, 0)
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -514,7 +509,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -564,7 +559,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 		err: errors.New("notify failed"),
 	}
 	driver := NewDriver(DriverCfg{RecipientEvents: recipientEvents})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -636,7 +631,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	driver := NewDriver(DriverCfg{
 		SessionStore: failStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
@@ -691,7 +686,7 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 	driver := NewDriver(DriverCfg{
 		SessionStore: sessionStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		SessionStore:     sessionStore,
@@ -741,7 +736,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	driver := NewDriver(DriverCfg{
 		SessionStore: sessionStore,
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		SessionStore:     sessionStore,
@@ -803,7 +798,7 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 	outs[0], outs[1] = outs[1], outs[0]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -849,7 +844,7 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 	outs[0], outs[last] = outs[last], outs[0]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -881,7 +876,7 @@ func TestActorSubmitMissingAnchorAssertsUnlock(t *testing.T) {
 	arkPsbt.UnsignedTx.TxOut = outs[:len(outs)-1]
 
 	driver := NewDriver(DriverCfg{})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 	})
@@ -940,7 +935,7 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
 
 	driver := NewDriver(DriverCfg{Locker: locker})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
@@ -952,10 +947,12 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 	})
 	require.True(t, submitResp.IsErr())
 
+	// Failed sessions are cleaned from the in-memory map, so
+	// CurrentState returns an error for the evicted session.
 	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
-	state, err := actor.CurrentState(ctx, sessionID)
-	require.NoError(t, err)
-	require.IsType(t, &FailedState{}, state)
+	_, err = actor.CurrentState(ctx, sessionID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown session")
 
 	seen := driver.SeenOutboxTypes()
 	require.Contains(t, seen, "LockInputsReq")
@@ -995,7 +992,7 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
 
 	driver := NewDriver(DriverCfg{Locker: locker})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
@@ -1076,7 +1073,7 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 			PubKey: policy.OperatorKey,
 		},
 	})
-	actor := startTestActor(t, ActorCfg{
+	actor := newTestActor(t, ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
 		DeliveryStore:    deliveryStore,
@@ -1151,4 +1148,327 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 		_, ok := expectedScripts[string(outRec.PkScript)]
 		require.True(t, ok)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for session cleanup, restart, and delivery correctness.
+// ---------------------------------------------------------------------------
+
+// TestSubmitFailedCleansSessionMap verifies that sessions reaching FailedState
+// are removed from the in-memory map, preventing unbounded growth from
+// repeated failed submissions.
+func TestSubmitFailedCleansSessionMap(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+
+	// Use a driver that always fails validation to trigger
+	// FailedState after the session is created in the map.
+	failDriver := &failingOutboxHandler{}
+	a := newTestActor(t, ActorCfg{
+		OutboxHandler:    failDriver,
+		CheckpointPolicy: policy,
+	})
+
+	const numSubmits = 10
+
+	for i := 0; i < numSubmits; i++ {
+		// Each iteration uses a unique locktime to create a
+		// distinct session ID.
+		attackPsbt := clonePSBTSliceForTest(
+			t, []*psbt.Packet{arkPsbt},
+		)[0]
+		attackPsbt.UnsignedTx.LockTime = uint32(i + 1)
+
+		resp := a.Receive(ctx, &SubmitOORRequest{
+			ArkPSBT:         attackPsbt,
+			CheckpointPSBTs: checkpointPsbts,
+		})
+		require.True(t, resp.IsErr(),
+			"iteration %d should fail", i)
+	}
+
+	// All failed sessions must be cleaned up.
+	a.sessionsMu.RLock()
+	leakedCount := len(a.sessions)
+	a.sessionsMu.RUnlock()
+
+	require.Zero(t, leakedCount,
+		"expected 0 leaked sessions, got %d", leakedCount)
+}
+
+// TestRestartPopulatesFinalCheckpointPSBTs verifies that sessions restored
+// in AwaitingRecipientsNotifyState have FinalCheckpointPSBTs populated from
+// the DB session record. This uses the full durable actor restart flow
+// with a real DB-backed driver.
+func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	sqlStore := db.NewTestDB(t)
+	clk := clock.NewDefaultClock()
+	testLog := btclog.Disabled
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+
+	sessionStore1 := NewDBSessionStore(sqlStore, clk, testLog)
+	realDriver := NewDriver(DriverCfg{
+		SessionStore: sessionStore1,
+		OperatorKey:  keychain.KeyDescriptor{},
+	})
+
+	// Wrap the real driver to intercept notification and force it to
+	// fail, leaving the session in awaiting_notify state in the DB.
+	failNotifyDriver := &notifyFailingDriver{
+		OutboxHandler: realDriver,
+	}
+
+	// Use actor1 without durable runtime — call Receive directly for
+	// submit and finalize. The session is persisted to the DB via the
+	// outbox driver's SessionStore.
+	actor1 := NewActor(ActorCfg{
+		OutboxHandler:    failNotifyDriver,
+		CheckpointPolicy: policy,
+		SessionStore:     sessionStore1,
+	})
+
+	submitResp := actor1.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	require.True(t, submitResp.IsOk())
+
+	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
+	require.True(t, ok)
+
+	// Finalize returns an error because notification fails, but the
+	// session is persisted in awaiting_notify state in the DB.
+	finalizeResp := actor1.Receive(ctx, &FinalizeOORRequest{
+		SessionID: submitMsg.SessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
+	})
+	require.True(t, finalizeResp.IsErr(),
+		"finalize should error due to failed notification")
+
+	// Verify the DB row is in awaiting_notify state before restart.
+	row, err := sqlStore.GetOORSession(
+		ctx, sessionIDBytes(submitMsg.SessionID),
+	)
+	require.NoError(t, err)
+	require.Equal(t, string(oorStateAwaitingNotify), row.State)
+
+	// Simulate restart: new actor backed by the same DB. The durable
+	// runtime's RestartMessage rebuilds active sessions from persisted
+	// rows.
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+	sessionStore2 := NewDBSessionStore(sqlStore, clk, testLog)
+
+	actor2 := NewActor(ActorCfg{
+		OutboxHandler:    realDriver,
+		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
+		SessionStore:     sessionStore2,
+	})
+
+	err = actor2.Start(ctx)
+	require.NoError(t, err)
+	defer actor2.Stop()
+
+	// Send a no-op message through the durable ref to ensure restart
+	// processing completes before we inspect state. Use a fresh Ark
+	// PSBT so the session ID doesn't collide.
+	probeArkPsbt := clonePSBTSliceForTest(
+		t, []*psbt.Packet{arkPsbt},
+	)[0]
+	probeArkPsbt.UnsignedTx.LockTime = 999999
+	probeFut := actor2.Ref().Ask(ctx, &SubmitOORRequest{
+		ArkPSBT:         probeArkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	_ = probeFut.Await(ctx)
+
+	// Inspect the restored session's state.
+	state, err := actor2.CurrentState(ctx, submitMsg.SessionID)
+	require.NoError(t, err)
+
+	notifyState, isNotify := state.(*AwaitingRecipientsNotifyState)
+	require.True(t, isNotify,
+		"restored state must be AwaitingRecipientsNotifyState, "+
+			"got %T", state)
+	require.NotNil(t, notifyState.FinalCheckpointPSBTs,
+		"FinalCheckpointPSBTs must be populated on restart")
+	require.Len(t, notifyState.FinalCheckpointPSBTs, 1)
+}
+
+// TestToProtoReturnsNonNil verifies that SubmitOORResponse.ToProto() and
+// FinalizeOORResponse.ToProto() return non-nil proto messages, which is
+// required for the production durable egress delivery path.
+func TestToProtoReturnsNonNil(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+
+	driver := NewDriver(DriverCfg{})
+	a := newTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+	})
+
+	// Get a real SubmitOORResponse.
+	submitResp := a.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	require.True(t, submitResp.IsOk())
+
+	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
+	require.True(t, ok, "expected *SubmitOORResponse")
+	require.NotNil(t, submitMsg.ToProto(),
+		"SubmitOORResponse.ToProto() must not return nil")
+
+	// Get a real FinalizeOORResponse.
+	finalizeResp := a.Receive(ctx, &FinalizeOORRequest{
+		SessionID: submitMsg.SessionID,
+		FinalCheckpointPSBTs: []*psbt.Packet{
+			finalCheckpoint,
+		},
+	})
+	require.True(t, finalizeResp.IsOk())
+
+	finalizeMsg, ok := finalizeResp.UnwrapOr(nil).(*FinalizeOORResponse)
+	require.True(t, ok, "expected *FinalizeOORResponse")
+	require.NotNil(t, finalizeMsg.ToProto(),
+		"FinalizeOORResponse.ToProto() must not return nil")
+}
+
+// TestClientIDFlowsThroughPushDelivery verifies that when ClientID is set on
+// the request, it propagates to the response pushed via ClientsConn.
+func TestClientIDFlowsThroughPushDelivery(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+
+	driver := NewDriver(DriverCfg{})
+
+	// Capture the ClientID from the pushed response.
+	var pushedClientID clientconn.ClientID
+	mockConn := &mockTellOnlyRef{
+		tellFn: func(_ context.Context,
+			msg clientconn.ClientConnMsg) error {
+
+			sendReq, ok :=
+				msg.(*clientconn.SendServerEventRequest)
+			if ok {
+				pushedClientID =
+					sendReq.Message.ClientID()
+			}
+
+			return nil
+		},
+	}
+
+	a := newTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		ClientsConn:      mockConn,
+	})
+
+	const expectedClientID = clientconn.ClientID("test-client-42")
+
+	submitResp := a.Receive(ctx, &SubmitOORRequest{
+		ClientID:        expectedClientID,
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+	})
+	require.True(t, submitResp.IsOk())
+	require.Equal(t, expectedClientID, pushedClientID,
+		"pushed response must carry the submitting client's ID")
+}
+
+// -- Test helper types for regression tests --
+
+// notifyFailingDriver wraps a real OutboxHandler but intercepts
+// NotifyRecipientsReq to force a failure, leaving sessions in the
+// awaiting_notify state for restart testing.
+type notifyFailingDriver struct {
+	OutboxHandler
+}
+
+// Handle delegates to the wrapped handler except for notification, which
+// always returns a failure event.
+func (d *notifyFailingDriver) Handle(ctx context.Context,
+	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
+
+	if _, isNotify := outbox.(*NotifyRecipientsReq); isNotify {
+		return []Event{
+			&NotifyRecipientsFailedEvent{
+				Reason: "simulated notification failure",
+			},
+		}, nil
+	}
+
+	return d.OutboxHandler.Handle(ctx, sessionID, outbox)
+}
+
+// failingOutboxHandler is an OutboxHandler that always fails validation,
+// triggering FailedState after session creation.
+type failingOutboxHandler struct{}
+
+// Handle returns a lock success then a validation failure to exercise
+// the FailedState cleanup path.
+func (f *failingOutboxHandler) Handle(_ context.Context,
+	_ SessionID, outbox OutboxEvent) ([]Event, error) {
+
+	switch outbox.(type) {
+	case *LockInputsReq:
+		return []Event{
+			&InputsLockSucceededEvent{},
+		}, nil
+
+	case *ValidateSubmitReq:
+		return []Event{
+			&SubmitFailedEvent{
+				Reason: "simulated validation failure",
+			},
+		}, nil
+
+	case *UnlockInputsReq:
+		return nil, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected outbox: %T", outbox)
+	}
+}
+
+// mockTellOnlyRef implements actor.TellOnlyRef[clientconn.ClientConnMsg]
+// for testing push delivery routing.
+type mockTellOnlyRef struct {
+	tellFn func(context.Context, clientconn.ClientConnMsg) error
+}
+
+// ID returns a test identifier.
+func (m *mockTellOnlyRef) ID() string {
+	return "mock-clients-conn"
+}
+
+// Tell delegates to the configured function.
+func (m *mockTellOnlyRef) Tell(ctx context.Context,
+	msg clientconn.ClientConnMsg) error {
+
+	if m.tellFn != nil {
+		return m.tellFn(ctx, msg)
+	}
+
+	return nil
 }

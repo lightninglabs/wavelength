@@ -26,6 +26,7 @@ import (
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	serveroor "github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/vtxo"
@@ -500,191 +501,6 @@ func addTaprootScriptSpendSig(in *psbt.PInput, pubKey *btcec.PublicKey,
 	return nil
 }
 
-// oorClientToServerOutbox is a test-only adaptor that connects the client OOR
-// FSM outbox messages to the server OOR coordinator actor, without RPC.
-//
-// Unlike the pure in-process adaptor, this variant uses real signer backends
-// (LND signrpc) and captures the finalized checkpoint PSBT so the test can
-// broadcast it to bitcoind.
-type oorClientToServerOutbox struct {
-	t *testing.T
-
-	server *serveroor.Actor
-
-	senderSigner input.Signer
-
-	serverSignDescs []serveroor.VTXOSigningDescriptor
-
-	signingInputs []checkpointSignInput
-
-	finalCheckpointPSBTs []*psbt.Packet
-
-	coSignedBeforeClientSign [][]byte
-}
-
-// Handle processes a client outbox request and returns follow-up events.
-func (h *oorClientToServerOutbox) Handle(ctx context.Context,
-	sessionID clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
-
-	h.t.Helper()
-
-	switch msg := outbox.(type) {
-	case *clientoor.RequestArkSignatures:
-		return []clientoor.Event{
-			&clientoor.ArkSignedEvent{
-				ArkPSBT: msg.ArkPSBT,
-			},
-		}, nil
-
-	case *clientoor.SendSubmitPackageRequest:
-		resp := h.server.Receive(ctx, &serveroor.SubmitOORRequest{
-			ArkPSBT:                msg.ArkPSBT,
-			CheckpointPSBTs:        msg.CheckpointPSBTs,
-			VTXOSigningDescriptors: h.serverSignDescs,
-		})
-		if resp.IsErr() {
-			return nil, resp.Err()
-		}
-
-		unwrapped := resp.UnwrapOr(nil)
-		serverMsg, ok := unwrapped.(*serveroor.SubmitOORResponse)
-		require.True(h.t, ok)
-
-		return []clientoor.Event{
-			&clientoor.SubmitAcceptedEvent{
-				SessionID: clientoor.SessionID(
-					serverMsg.SessionID,
-				),
-				ArkPSBT: msg.ArkPSBT,
-				CoSignedCheckpointPSBTs: serverMsg.
-					CoSignedCheckpointPSBTs,
-			},
-		}, nil
-
-	case *clientoor.RequestCheckpointSignatures:
-		coSigned := make([][]byte, 0, len(msg.CoSignedCheckpointPSBTs))
-		for i := range msg.CoSignedCheckpointPSBTs {
-			raw, err := oorSerializePSBT(
-				msg.CoSignedCheckpointPSBTs[i],
-			)
-			require.NoError(h.t, err)
-
-			coSigned = append(coSigned, raw)
-		}
-
-		h.coSignedBeforeClientSign = coSigned
-
-		err := signCheckpointPSBTs(
-			h.senderSigner, h.signingInputs,
-			msg.CoSignedCheckpointPSBTs,
-		)
-		require.NoError(h.t, err)
-
-		return []clientoor.Event{
-			&clientoor.CheckpointsSignedEvent{
-				FinalCheckpointPSBTs: msg.
-					CoSignedCheckpointPSBTs,
-			},
-		}, nil
-
-	case *clientoor.SendFinalizePackageRequest:
-		if msg.ArkPSBT == nil || msg.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf("ark psbt must be provided")
-		}
-
-		h.finalCheckpointPSBTs = msg.FinalCheckpointPSBTs
-
-		resp := h.server.Receive(ctx, &serveroor.FinalizeOORRequest{
-			SessionID: serveroor.SessionID(sessionID),
-			FinalCheckpointPSBTs: msg.
-				FinalCheckpointPSBTs,
-		})
-		if resp.IsErr() {
-			return nil, resp.Err()
-		}
-
-		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
-		require.True(h.t, ok)
-
-		return []clientoor.Event{
-			&clientoor.FinalizeAcceptedEvent{},
-		}, nil
-
-	case *clientoor.MarkInputsSpentRequest:
-		return nil, fmt.Errorf("unexpected MarkInputsSpentRequest in " +
-			"transport adaptor (missing persistence handler)")
-
-	default:
-		return nil, nil
-	}
-}
-
-var _ clientoor.OutboxHandler = (*oorClientToServerOutbox)(nil)
-
-// dropSubmitAcceptedOutbox is a test-only outbox adaptor that simulates a crash
-// after the server has co-signed a submit package but before the client
-// receives SubmitAcceptedEvent.
-type dropSubmitAcceptedOutbox struct {
-	t *testing.T
-
-	server *serveroor.Actor
-
-	serverSignDescs []serveroor.VTXOSigningDescriptor
-
-	coSignedCheckpointBytes [][]byte
-}
-
-// Handle processes only submit requests and drops the response.
-func (h *dropSubmitAcceptedOutbox) Handle(ctx context.Context,
-	sessionID clientoor.SessionID,
-	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
-
-	h.t.Helper()
-
-	switch msg := outbox.(type) {
-	case *clientoor.RequestArkSignatures:
-		return []clientoor.Event{
-			&clientoor.ArkSignedEvent{
-				ArkPSBT: msg.ArkPSBT,
-			},
-		}, nil
-
-	case *clientoor.SendSubmitPackageRequest:
-		resp := h.server.Receive(ctx, &serveroor.SubmitOORRequest{
-			ArkPSBT:                msg.ArkPSBT,
-			CheckpointPSBTs:        msg.CheckpointPSBTs,
-			VTXOSigningDescriptors: h.serverSignDescs,
-		})
-		if resp.IsErr() {
-			return nil, resp.Err()
-		}
-
-		unwrapped := resp.UnwrapOr(nil)
-		serverMsg, ok := unwrapped.(*serveroor.SubmitOORResponse)
-		require.True(h.t, ok)
-
-		raw := make([][]byte, 0, len(serverMsg.CoSignedCheckpointPSBTs))
-		for i := range serverMsg.CoSignedCheckpointPSBTs {
-			b, err := oorSerializePSBT(
-				serverMsg.CoSignedCheckpointPSBTs[i],
-			)
-			require.NoError(h.t, err)
-
-			raw = append(raw, b)
-		}
-		h.coSignedCheckpointBytes = raw
-
-		// Drop the response to simulate a crash/lost RPC response.
-		return nil, nil
-
-	default:
-		return nil, fmt.Errorf("unexpected outbox type: %T", msg)
-	}
-}
-
-var _ clientoor.OutboxHandler = (*dropSubmitAcceptedOutbox)(nil)
-
 // TestOORClientServerCheckpointE2E drives the client-side outgoing transfer FSM
 // against the server coordinator actor, using a real regtest chain and real
 // signer backends, and confirms the finalized checkpoint tx.
@@ -767,10 +583,20 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 		},
 	})
 
+	// Create bridge infrastructure so OOR responses flow through the
+	// pushClientResponse -> ClientsConn -> BridgeClientConn path.
+	transcript := NewMessageTranscript()
+	bridge := NewBridgeClientConn(transcript)
+	t.Cleanup(bridge.Stop)
+	bridgeRef := NewBridgeClientConnRef(bridge)
+
+	const oorTestClientID = clientconn.ClientID("oor-test-sender")
+
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
 		DeliveryStore:    newServerDeliveryStore(t, dbStore),
+		ClientsConn:      bridgeRef,
 	})
 
 	err = server.Start(ctx)
@@ -785,9 +611,11 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	adaptor := &oorClientToServerOutbox{
+	adaptor := &bridgeOOROutbox{
 		t:            t,
+		clientID:     oorTestClientID,
 		server:       server,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -1006,10 +834,19 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 		},
 	})
 
+	// Create bridge infrastructure for OOR response routing.
+	transcript := NewMessageTranscript()
+	bridge := NewBridgeClientConn(transcript)
+	t.Cleanup(bridge.Stop)
+	bridgeRef := NewBridgeClientConnRef(bridge)
+
+	const aliceClientID = clientconn.ClientID("alice-oor")
+
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
 		DeliveryStore:    newServerDeliveryStore(t, dbStore),
+		ClientsConn:      bridgeRef,
 	})
 
 	err = server.Start(ctx)
@@ -1024,9 +861,11 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	adaptor := &oorClientToServerOutbox{
+	adaptor := &bridgeOOROutbox{
 		t:            t,
+		clientID:     aliceClientID,
 		server:       server,
+		bridge:       bridge,
 		senderSigner: aliceSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -1172,9 +1011,13 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 		},
 	}
 
-	returnAdaptor := &oorClientToServerOutbox{
+	const bobClientID = clientconn.ClientID("bob-oor")
+
+	returnAdaptor := &bridgeOOROutbox{
 		t:            t,
+		clientID:     bobClientID,
 		server:       server,
+		bridge:       bridge,
 		senderSigner: bobSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  bobOutpoint,
@@ -1354,10 +1197,19 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 		},
 	})
 
+	// Create bridge infrastructure for OOR response routing.
+	transcript := NewMessageTranscript()
+	bridge := NewBridgeClientConn(transcript)
+	t.Cleanup(bridge.Stop)
+	bridgeRef := NewBridgeClientConnRef(bridge)
+
+	const oorTestClientID = clientconn.ClientID("oor-test-sender")
+
 	server := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver,
 		DeliveryStore:    newServerDeliveryStore(t, dbStore),
+		ClientsConn:      bridgeRef,
 	})
 
 	err = server.Start(ctx)
@@ -1380,9 +1232,11 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	// - client must resume later and still obtain the same co-signed bytes
 	clientStore := newClientVTXOStore(t, vtxoDescs)
 
-	dropper := &dropSubmitAcceptedOutbox{
-		t:      t,
-		server: server,
+	dropper := &dropSubmitAcceptedBridgeOutbox{
+		t:        t,
+		clientID: oorTestClientID,
+		server:   server,
+		bridge:   bridge,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
 			OwnerKey:  minted.VTXO.ClientKey.PubKey,
@@ -1418,9 +1272,11 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	// deterministic transfer again. The server should return the same
 	// co-signed checkpoint bytes, and the client should complete to
 	// finalization.
-	adaptor := &oorClientToServerOutbox{
+	adaptor := &bridgeOOROutbox{
 		t:            t,
+		clientID:     oorTestClientID,
 		server:       server,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -1651,11 +1507,21 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 		},
 	})
 
+	// Create bridge infrastructure shared across server1 and
+	// server2 lifetimes.
+	transcript := NewMessageTranscript()
+	bridge := NewBridgeClientConn(transcript)
+	t.Cleanup(bridge.Stop)
+	bridgeRef := NewBridgeClientConnRef(bridge)
+
+	const oorTestClientID = clientconn.ClientID("oor-test-sender")
+
 	server1 := serveroor.NewActor(serveroor.ActorCfg{
 		CheckpointPolicy: policy,
 		OutboxHandler:    driver1,
 		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 		SessionStore:     sessionStore1,
+		ClientsConn:      bridgeRef,
 	})
 
 	err = server1.Start(ctx)
@@ -1672,9 +1538,11 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 
 	clientStore := newClientVTXOStore(t, vtxoDescs)
 
-	dropper := &dropSubmitAcceptedOutbox{
-		t:      t,
-		server: server1,
+	dropper := &dropSubmitAcceptedBridgeOutbox{
+		t:        t,
+		clientID: oorTestClientID,
+		server:   server1,
+		bridge:   bridge,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
 			OwnerKey:  minted.VTXO.ClientKey.PubKey,
@@ -1727,6 +1595,7 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 		OutboxHandler:    driver2,
 		DeliveryStore:    newServerDeliveryStore(t, dbStore),
 		SessionStore:     sessionStore2,
+		ClientsConn:      bridgeRef,
 	})
 	defer server2.Stop()
 
@@ -1772,9 +1641,11 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	}
 	require.Equal(t, dropper.coSignedCheckpointBytes, restoredCoSignedBytes)
 
-	adaptor := &oorClientToServerOutbox{
+	adaptor := &bridgeOOROutbox{
 		t:            t,
+		clientID:     oorTestClientID,
 		server:       server2,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
