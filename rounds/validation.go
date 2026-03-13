@@ -178,6 +178,21 @@ var (
 	ErrJoinRequestAuthInputOrderMismatch = errors.New(
 		"join request auth input order mismatch",
 	)
+
+	// ErrTxProofRequired is returned when no ChainSource is available
+	// and the boarding request does not include a TxProof.
+	ErrTxProofRequired = errors.New(
+		"TxProof is required when server has no chain source",
+	)
+
+	// ErrTxProofInvalid is returned when a TxProof fails validation.
+	ErrTxProofInvalid = errors.New("TxProof validation failed")
+
+	// ErrTxProofOutpointMismatch is returned when the TxProof's claimed
+	// outpoint does not match the boarding request outpoint.
+	ErrTxProofOutpointMismatch = errors.New(
+		"TxProof claimed outpoint does not match boarding outpoint",
+	)
 )
 
 const (
@@ -257,7 +272,7 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			ctx, env, boardReq,
+			ctx, env, boardReq, currentBlockHeight,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("invalid boarding request "+
@@ -609,7 +624,8 @@ func ValidateLeaveRequest(terms *batch.Terms,
 // On success, returns a BoardingInput containing all data needed for
 // transaction construction.
 func ValidateBoardingRequest(ctx context.Context, env *Environment,
-	req *types.BoardingRequest) (*BoardingInput, error) {
+	req *types.BoardingRequest,
+	currentHeight uint32) (*BoardingInput, error) {
 
 	// Make sure this boarding request input isn't already locked.
 	locked, _, err := env.BoardingInputLocker.IsLocked(ctx, req.Outpoint)
@@ -654,53 +670,202 @@ func ValidateBoardingRequest(ctx context.Context, env *Environment,
 			ErrScriptConstruction, err)
 	}
 
-	// Fetch the UTXO from the chain.
-	utxo, err := env.ChainSource.GetUTXO(*req.Outpoint)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrFetchUTXO, err)
-	}
-
-	// Verify the UTXO meets the minimum confirmation requirement.
-	if utxo.Confirmations < int64(terms.MinBoardingConfirmations) {
-		return nil, fmt.Errorf("%w: got %d, want %d",
-			ErrInsufficientConfirmations, utxo.Confirmations,
-			terms.MinBoardingConfirmations)
-	}
-
-	// Ensure the delay path isn't already hit or close to being hit. If
-	// the UTXO has too many confirmations (approaching the exit delay),
-	// the client could claim the funds via the delay path before the
-	// operator can use them in a round.
-	safetyMargin := terms.BoardingExitDelaySafetyMargin
-	maxSafeConfirmations := req.ExitDelay - safetyMargin
-	if utxo.Confirmations >= int64(maxSafeConfirmations) {
-		return nil, fmt.Errorf("%w: got %d confirmations, max "+
-			"safe %d (exit delay %d - safety margin %d)",
-			ErrDelayPathTooClose, utxo.Confirmations,
-			maxSafeConfirmations, req.ExitDelay, safetyMargin)
-	}
-
-	// Validate that the UTXO's script matches expectations.
 	expectedPkScript, err := buildP2TRScript(expectedTapscript)
 	if err != nil {
-		return nil, fmt.Errorf("%w (P2TR): %w", ErrScriptConstruction,
-			err)
+		return nil, fmt.Errorf("%w (P2TR): %w",
+			ErrScriptConstruction, err)
 	}
 
-	// Check that the pkScript matches the expected script.
-	if !bytes.Equal(utxo.Output.PkScript, expectedPkScript) {
-		return nil, ErrPkScriptMismatch
+	// When a ChainSource is available, fetch the UTXO from the
+	// chain and validate confirmations, delay path safety, and
+	// script match. When no ChainSource is configured, the client
+	// must provide a TxProof (SPV merkle inclusion proof) that
+	// proves the UTXO exists in a confirmed block.
+	var utxoValue btcutil.Amount
+	if env.ChainSource != nil {
+		utxo, err := env.ChainSource.GetUTXO(*req.Outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w",
+				ErrFetchUTXO, err)
+		}
+
+		// Verify the UTXO meets the minimum confirmation
+		// requirement.
+		if utxo.Confirmations < int64(
+			terms.MinBoardingConfirmations,
+		) {
+
+			return nil, fmt.Errorf("%w: got %d, want %d",
+				ErrInsufficientConfirmations,
+				utxo.Confirmations,
+				terms.MinBoardingConfirmations,
+			)
+		}
+
+		// Ensure the delay path isn't already hit or close
+		// to being hit.
+		safetyMargin := terms.BoardingExitDelaySafetyMargin
+		maxSafe := req.ExitDelay - safetyMargin
+		if utxo.Confirmations >= int64(maxSafe) {
+			return nil, fmt.Errorf(
+				"%w: got %d confirmations, max "+
+					"safe %d (exit delay %d "+
+					"- safety margin %d)",
+				ErrDelayPathTooClose,
+				utxo.Confirmations, maxSafe,
+				req.ExitDelay, safetyMargin,
+			)
+		}
+
+		// Check that the pkScript matches the expected
+		// script.
+		if !bytes.Equal(
+			utxo.Output.PkScript, expectedPkScript,
+		) {
+
+			return nil, ErrPkScriptMismatch
+		}
+
+		utxoValue = btcutil.Amount(utxo.Output.Value)
+	} else {
+		// No direct chain source: validate via the
+		// client-provided TxProof.
+		val, err := validateBoardingTxProof(
+			env, req, expectedPkScript, currentHeight,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		utxoValue = val
 	}
 
 	// Build the BoardingInput.
 	return &BoardingInput{
 		Outpoint:        req.Outpoint,
 		Tapscript:       expectedTapscript,
-		Value:           btcutil.Amount(utxo.Output.Value),
+		Value:           utxoValue,
 		PkScript:        expectedPkScript,
 		ClientKey:       req.ClientKey,
 		OperatorKeyDesc: &terms.OperatorKey,
 	}, nil
+}
+
+// validateBoardingTxProof verifies a client-provided TxProof for a
+// boarding request. This is used when the server has no direct chain
+// source and must rely on SPV proofs from clients. The proof
+// demonstrates that the claimed UTXO exists in a confirmed block by
+// providing the transaction, merkle inclusion proof, and block header.
+// The currentHeight parameter is used to compute confirmation depth
+// and enforce the same safety checks as the ChainSource path.
+func validateBoardingTxProof(env *Environment,
+	req *types.BoardingRequest,
+	expectedPkScript []byte,
+	currentHeight uint32) (btcutil.Amount, error) {
+
+	// A HeaderVerifier is required to anchor the proof to the
+	// real chain. Without one the proof is meaningless since a
+	// client could fabricate an arbitrary block header.
+	if env.HeaderVerifier == nil {
+		return 0, fmt.Errorf("%w: no header verifier "+
+			"configured", ErrTxProofInvalid,
+		)
+	}
+
+	// The TxProof must be present when there is no ChainSource.
+	txProofOpt := req.TxProof
+	if txProofOpt.IsNone() {
+		return 0, ErrTxProofRequired
+	}
+
+	txProof := txProofOpt.UnsafeFromSome()
+
+	// Verify the claimed outpoint in the proof matches the
+	// boarding request outpoint.
+	if txProof.ClaimedOutPoint != *req.Outpoint {
+		return 0, fmt.Errorf("%w: proof claims %v, "+
+			"request has %v", ErrTxProofOutpointMismatch,
+			txProof.ClaimedOutPoint, *req.Outpoint,
+		)
+	}
+
+	// Verify the transaction hash matches the outpoint hash.
+	txHash := txProof.MsgTx.TxHash()
+	if txHash != req.Outpoint.Hash {
+		return 0, fmt.Errorf("%w: tx hash %s does not "+
+			"match outpoint hash %s",
+			ErrTxProofInvalid, txHash,
+			req.Outpoint.Hash,
+		)
+	}
+
+	// Verify the output index is valid.
+	if req.Outpoint.Index >= uint32(len(txProof.MsgTx.TxOut)) {
+		return 0, fmt.Errorf("%w: output index %d out "+
+			"of range (tx has %d outputs)",
+			ErrTxProofInvalid, req.Outpoint.Index,
+			len(txProof.MsgTx.TxOut),
+		)
+	}
+
+	// Verify the output's pkScript matches what we expect.
+	provenOutput := txProof.MsgTx.TxOut[req.Outpoint.Index]
+	if !bytes.Equal(provenOutput.PkScript, expectedPkScript) {
+		return 0, ErrPkScriptMismatch
+	}
+
+	// Verify the merkle inclusion proof: the transaction is
+	// included in the block whose header is provided.
+	merkleRoot := txProof.BlockHeader.MerkleRoot
+	if !txProof.MerkleProof.Verify(
+		&txProof.MsgTx, merkleRoot,
+	) {
+
+		return 0, fmt.Errorf("%w: merkle inclusion "+
+			"proof failed", ErrTxProofInvalid,
+		)
+	}
+
+	// Verify the block header exists on the best chain at the
+	// claimed height using the server's header verifier.
+	err := env.HeaderVerifier(
+		txProof.BlockHeader, txProof.BlockHeight,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("%w: header "+
+			"verification failed: %w",
+			ErrTxProofInvalid, err,
+		)
+	}
+
+	// Enforce confirmation depth: the UTXO must have at least
+	// MinBoardingConfirmations blocks on top of it.
+	terms := env.Terms
+	confirmations := currentHeight - txProof.BlockHeight
+	if confirmations < terms.MinBoardingConfirmations {
+		return 0, fmt.Errorf("%w: got %d, want %d",
+			ErrInsufficientConfirmations,
+			confirmations,
+			terms.MinBoardingConfirmations,
+		)
+	}
+
+	// Ensure the delay path isn't already hit or close to being
+	// hit, matching the ChainSource validation path.
+	safetyMargin := terms.BoardingExitDelaySafetyMargin
+	maxSafe := req.ExitDelay - safetyMargin
+	if confirmations >= maxSafe {
+		return 0, fmt.Errorf(
+			"%w: got %d confirmations, max "+
+				"safe %d (exit delay %d "+
+				"- safety margin %d)",
+			ErrDelayPathTooClose,
+			confirmations, maxSafe,
+			req.ExitDelay, safetyMargin,
+		)
+	}
+
+	return btcutil.Amount(provenOutput.Value), nil
 }
 
 // buildP2TRScript builds a P2TR pkScript from the given tapscript.

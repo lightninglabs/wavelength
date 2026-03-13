@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/vtxo"
+	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -48,8 +49,14 @@ type ActorConfig struct {
 	BoardingInputLocker BoardingInputLocker
 
 	// ChainSource provides access to on-chain data. If not set, the FSM
-	// will not be able to validate UTXOs.
+	// relies on client-provided TxProofs for UTXO validation.
 	ChainSource ChainSource
+
+	// HeaderVerifier validates that a block header exists on the best
+	// chain at the claimed height. Used to verify TxProofs when
+	// ChainSource is nil. If nil and ChainSource is nil, TxProof
+	// header verification is skipped (regtest only).
+	HeaderVerifier proof.HeaderVerifier
 
 	// TimeoutActor is a reference to the timeout scheduling actor.
 	TimeoutActor actor.TellOnlyRef[timeout.Msg]
@@ -356,6 +363,7 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		ChainParams:            a.cfg.ChainParams,
 		BoardingInputLocker:    a.cfg.BoardingInputLocker,
 		ChainSource:            a.cfg.ChainSource,
+		HeaderVerifier:         a.cfg.HeaderVerifier,
 		Terms:                  a.cfg.Terms,
 		ForfeitScript:          a.cfg.ForfeitScript,
 		WalletController:       a.cfg.WalletController,
