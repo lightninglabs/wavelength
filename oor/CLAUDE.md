@@ -10,6 +10,10 @@ co-signing, finalization, and recipient notification.
 
 - `TransferCoordinatorActor` (alias `Actor`) — Durable OOR transfer coordinator
   with FSM state persistence and `ClientsConn` push for response delivery.
+  Implements `ActorBehavior[OORDurableMsg, ActorResp]` directly (no intermediate
+  behavior wrapper). Each `ActorMsg` type implements `TLVMessage` directly
+  (TLVType, Encode, Decode), so the durable mailbox serializes messages without
+  an intermediate envelope layer.
 - `OORDurableMsg` — Message constraint for the durable actor mailbox; embeds
   `actor.TLVMessage` so both application messages and framework restart messages
   satisfy it.
@@ -18,7 +22,7 @@ co-signing, finalization, and recipient notification.
 - `Event` — Inbound events (SubmitRequest, FinalizeRequest, etc.).
 - `OutboxEvent` — Outbound side effects (notify recipients, persist state).
 - `SubmitOORRequest` / `FinalizeOORRequest` — Primary actor messages implementing
-  `TLVMessage` directly (dispatched via `AddRoute` from `server_oor.go`).
+  `TLVMessage` directly (dispatched via `AddEnvelopeRoute` from `server_oor.go`).
 - `SubmitOORResponse` / `FinalizeOORResponse` — Response types implementing
   `clientconn.ClientMessage` for push delivery via `ClientsConn.Tell()`.
 - `InProcessOutboxDriver` — Reusable outbox handler for the OOR FSM session
@@ -26,6 +30,8 @@ co-signing, finalization, and recipient notification.
 - `RecipientNotifier` — Interface for best-effort recipient notification after
   durable event persistence; implemented by the indexer layer.
 - `RecipientEventStore` — Persists per-recipient notification cursors and payloads.
+- `VTXOSigningDescriptor` — Per-input signing metadata (outpoint, owner key,
+  exit delay) threaded through the FSM for checkpoint construction.
 
 ## Relationships
 
@@ -34,8 +40,8 @@ co-signing, finalization, and recipient notification.
 - **Depended on by**: root `darepo` (wiring in `server_oor.go`), `indexer`
   (OOR event queries, `RecipientNotifier` implementation).
 - **Messages to/from**:
-  - Receives submit/finalize requests <- `clientconn` via `AddRoute`
-    (fire-and-forget Tell from clients).
+  - Receives submit/finalize requests <- `clientconn` via `AddEnvelopeRoute`
+    (fire-and-forget Tell from clients; ClientID extracted from `env.Sender`).
   - Pushes `SubmitOORResponse`/`FinalizeOORResponse` -> originating client via
     `ClientsConn.Tell()` (wrapped in `SendServerEventRequest`).
   - Calls `RecipientNotifier.NotifyRecipientEvent()` -> indexer layer for
@@ -47,7 +53,11 @@ co-signing, finalization, and recipient notification.
 - VTXO inputs must be locked before validation proceeds (prevents double-spend).
 - Co-signing happens atomically: either all inputs are co-signed or none.
 - Recipients are notified only after finalization is persisted.
-- Failed transfers must release all VTXO locks.
+- Failed transfers must release all VTXO locks and clean up the session map
+  entry to prevent leaks.
+- `FinalCheckpointPSBTs` are threaded through FSM states so they survive
+  restart and are available for re-notification of `AwaitingRecipientsNotify`
+  sessions.
 - Structured logging emits at every key lifecycle event (submit, co-sign,
   finalize, restore, lock/unlock, validation, notification).
 
