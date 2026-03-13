@@ -20,6 +20,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -154,12 +155,20 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	// before catching up.
 	h.WaitForServerBlockHeight(targetHeight)
 
+	// Subscribe to client events BEFORE flushing the buffered join
+	// request. This avoids a race where the server processes the
+	// request and broadcasts BoardingFailed before Subscribe is
+	// called inside WaitForEvent.
+	sub, err := h.Bridge().Subscribe(client.ClientID())
+	require.NoError(t, err, "should subscribe to client events")
+	defer sub.Cancel()
+
 	client.serverConn.SetBuffered(false)
 	err = client.serverConn.FlushAll()
 	require.NoError(t, err, "should flush buffered messages")
 
-	failed := waitForBoardingFailedEvent(
-		t, h, client.ClientID(), 20*time.Second,
+	failed := waitForBoardingFailedFromSub(
+		t, sub, 60*time.Second,
 	)
 	require.Contains(t, failed.Reason, "join request auth invalid")
 	require.Contains(t, failed.Reason, "signature expired")
@@ -258,6 +267,38 @@ func waitForBoardingFailedEvent(t *testing.T, h *E2EHarness,
 	require.True(t, ok, "event should be BoardingFailed")
 
 	return failed
+}
+
+// waitForBoardingFailedFromSub waits for a BoardingFailed event on an
+// already-active subscription. Use this when the subscription must be
+// established before the action that triggers the event, to avoid a
+// race between event broadcast and Subscribe.
+func waitForBoardingFailedFromSub(t *testing.T,
+	sub *subscribe.Client,
+	timeout time.Duration) *clientround.BoardingFailed {
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case update := <-sub.Updates():
+			event, ok := update.(*clientround.BoardingFailed)
+			if ok {
+				return event
+			}
+
+		case <-sub.Quit():
+			require.FailNow(t, "subscription closed "+
+				"while waiting for BoardingFailed")
+
+		case <-timer.C:
+			require.FailNow(t, "timeout waiting for "+
+				"BoardingFailed event")
+
+			return nil
+		}
+	}
 }
 
 // buildForgedJoinRoundRequest constructs an attacker-authenticated join

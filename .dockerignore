@@ -1,0 +1,7 @@
+# Only include files needed for the protobuf builder image.
+# The repo is volume-mounted at runtime, so the image only needs
+# the client submodule's go.mod, go.sum, and protoc-gen-mailboxrpc source.
+*
+!client/go.mod
+!client/go.sum
+!client/cmd/protoc-gen-mailboxrpc/

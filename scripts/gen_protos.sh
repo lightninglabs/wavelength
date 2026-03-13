@@ -46,11 +46,6 @@ function generate_with_mailboxrpc() {
 	local package=$1
 	echo "Generating protos with mailboxrpc for ${package}"
 
-	# Install the mailboxrpc protoc plugin from the client submodule.
-	# The client submodule is a separate Go module (darepo-client), so
-	# we must cd into it before running go install.
-	(cd /build/client && go install -buildvcs=false ./cmd/protoc-gen-mailboxrpc)
-
 	pushd "${package}" > /dev/null
 
 	# Format proto files with clang-format using the proto-specific style.
@@ -75,8 +70,8 @@ function generate_with_mailboxrpc() {
 	popd > /dev/null
 }
 
-# Generate protos for both arkrpc and adminrpc packages.
-generate "arkrpc"
+# Generate protos for adminrpc (arkrpc lives in the client submodule
+# and is handled by its own make rpc).
 generate "adminrpc"
 
 # Generate protos with mailbox RPC stubs for test packages that use

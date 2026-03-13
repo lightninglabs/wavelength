@@ -137,12 +137,12 @@ func TestVTXORefreshE2E(t *testing.T) {
 	require.NoError(t, err, "should trigger VTXO refresh")
 	t.Logf("Triggered refresh for VTXO %s", vtxo1Outpoint)
 
-	// Wait for VTXO status to transition to RefreshRequested.
+	// Wait for VTXO status to transition to PendingForfeit.
 	err = client.WaitForVTXOStatus(
-		vtxo1Outpoint, vtxo.VTXOStatusRefreshRequested, 10*time.Second,
+		vtxo1Outpoint, vtxo.VTXOStatusPendingForfeit, 10*time.Second,
 	)
-	require.NoError(t, err, "VTXO should reach RefreshRequested status")
-	t.Log("VTXO status: RefreshRequested")
+	require.NoError(t, err, "VTXO should reach PendingForfeit status")
+	t.Log("VTXO status: PendingForfeit")
 
 	// Now trigger registration to send the JoinRoundRequest to the server.
 	// The round FSM has accumulated the refresh request in

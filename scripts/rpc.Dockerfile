@@ -30,6 +30,15 @@ RUN cd /tmp \
   && go install golang.org/x/tools/cmd/goimports@v0.1.7 \
   && chmod -R 777 /tmp/build/
 
+# Build the mailbox RPC protoc plugin from the client submodule into
+# the image so it doesn't need to be compiled on every invocation.
+# The .dockerignore limits the context to the files needed for this.
+COPY client/go.mod client/go.sum /tmp/mailboxrpc/
+COPY client/cmd/protoc-gen-mailboxrpc/ /tmp/mailboxrpc/cmd/protoc-gen-mailboxrpc/
+RUN cd /tmp/mailboxrpc \
+  && go install -buildvcs=false ./cmd/protoc-gen-mailboxrpc \
+  && rm -rf /tmp/mailboxrpc
+
 WORKDIR /build
 
 CMD ["/bin/bash", "/build/scripts/gen_protos.sh"]
