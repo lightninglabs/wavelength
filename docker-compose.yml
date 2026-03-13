@@ -1,0 +1,227 @@
+# Darepo E2E Stack
+#
+# Complete Ark protocol development environment:
+# - Bitcoin Core (regtest with ZMQ)
+# - LND server node (operator wallet)
+# - LND client node (client wallet)
+# - arkd (Ark operator daemon)
+# - darepod (Ark client daemon)
+#
+# Usage:
+#   docker-compose up -d --build       # Build and start everything
+#   ./scripts/docker-regtest-setup.sh  # Fund wallets after startup
+#   docker-compose logs -f arkd        # Follow server logs
+#   docker-compose down -v             # Stop and remove volumes
+
+services:
+  bitcoind:
+    image: lightninglabs/bitcoin-core:30
+    container_name: ark-bitcoind
+    restart: unless-stopped
+    command:
+      - -regtest
+      - -server=1
+      - -rpcuser=devuser
+      - -rpcpassword=devpass
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -txindex=1
+      - -fallbackfee=0.00001
+      - -addresstype=bech32m
+      - -changetype=bech32m
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+      - -zmqpubrawtx=tcp://0.0.0.0:28333
+      - -zmqpubhashblock=tcp://0.0.0.0:28332
+      - -zmqpubhashtx=tcp://0.0.0.0:28333
+    ports:
+      - "18443:18443"
+      - "28332:28332"
+      - "28333:28333"
+    volumes:
+      - bitcoind-data:/root/.bitcoin
+    networks:
+      - ark-regtest
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=devuser", "-rpcpassword=devpass", "getblockchaininfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Mine a single block so lnd nodes can complete their initial chain
+  # sync (regtest starts with zero blocks and lnd won't report synced
+  # until it sees at least one).
+  bitcoind-init:
+    image: lightninglabs/bitcoin-core:30
+    container_name: ark-bitcoind-init
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "/scripts/docker-bitcoind-init.sh"]
+    volumes:
+      - ./scripts:/scripts:ro
+    networks:
+      - ark-regtest
+
+  lnd-server:
+    build:
+      context: ${LND_SOURCE:?Set LND_SOURCE to the path of your lnd source tree}
+      dockerfile: dev.Dockerfile
+    image: ${LND_IMAGE:-lnd:local}
+    container_name: ark-lnd-server
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+      bitcoind-init:
+        condition: service_completed_successfully
+    # Bypass start-lnd.sh which binds rpclisten to $HOSTNAME instead of
+    # 0.0.0.0, making it unreachable from other containers.
+    entrypoint:
+      - lnd
+      - --noseedbackup
+      - --nobootstrap
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind
+      - --bitcoind.rpcuser=devuser
+      - --bitcoind.rpcpass=devpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10009
+      - --restlisten=0.0.0.0:8080
+      - --listen=0.0.0.0:9735
+      - --tlsextradomain=lnd-server
+      - --debuglevel=${LND_DEBUG:-debug}
+    ports:
+      - "10009:10009"
+      - "9735:9735"
+    volumes:
+      - lnd-server-data:/root/.lnd
+    networks:
+      - ark-regtest
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  lnd-client:
+    build:
+      context: ${LND_SOURCE:?Set LND_SOURCE to the path of your lnd source tree}
+      dockerfile: dev.Dockerfile
+    image: ${LND_IMAGE:-lnd:local}
+    container_name: ark-lnd-client
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+      bitcoind-init:
+        condition: service_completed_successfully
+    # Bypass start-lnd.sh to use port 10010 internally (start-lnd.sh
+    # hardcodes --rpclisten on 10009 which would collide if we tried to
+    # add a second listener via extra args).
+    entrypoint:
+      - lnd
+      - --noseedbackup
+      - --nobootstrap
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind
+      - --bitcoind.rpcuser=devuser
+      - --bitcoind.rpcpass=devpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10010
+      - --restlisten=0.0.0.0:8081
+      - --listen=0.0.0.0:9736
+      - --tlsextradomain=lnd-client
+      - --debuglevel=${LND_DEBUG:-debug}
+    ports:
+      - "10010:10010"
+      - "9736:9736"
+    volumes:
+      - lnd-client-data:/root/.lnd
+    networks:
+      - ark-regtest
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10010", "getinfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  arkd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: arkd:local
+    container_name: ark-server
+    restart: unless-stopped
+    depends_on:
+      lnd-server:
+        condition: service_healthy
+    command:
+      - --network=regtest
+      - --debuglevel=${ARKD_DEBUG:-debug}
+      - --lnd.host=lnd-server:10009
+      - --lnd.tlspath=/lnd/tls.cert
+      - --lnd.macaroonpath=/lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - --rpc.listen=0.0.0.0:7070
+      - --adminrpc.listen=0.0.0.0:8081
+      - --db.backend=sqlite
+    ports:
+      - "7070:7070"
+      - "8081:8081"
+    volumes:
+      - lnd-server-data:/lnd:ro
+      - arkd-data:/root/.arkd
+    networks:
+      - ark-regtest
+    healthcheck:
+      test: ["CMD", "arkcli", "--no-tls", "--rpcserver=localhost:8081", "getinfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  darepod:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    image: darepod:local
+    container_name: ark-client
+    restart: unless-stopped
+    depends_on:
+      lnd-client:
+        condition: service_healthy
+      arkd:
+        condition: service_healthy
+    command:
+      - --network=regtest
+      - --debuglevel=${DAREPOD_DEBUG:-debug}
+      - --wallet.type=lnd
+      - --lnd.host=lnd-client:10010
+      - --lnd.tlspath=/lnd/tls.cert
+      - --lnd.macaroonpath=/lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - --server.host=arkd:7070
+      - --server.insecure=true
+      - --server.localmailboxid=client-01
+      - --server.remotemailboxid=server-01
+      - --rpc.listenaddr=0.0.0.0:10029
+    ports:
+      - "10029:10029"
+    volumes:
+      - lnd-client-data:/lnd:ro
+      - darepod-data:/root/.darepod
+    networks:
+      - ark-regtest
+
+volumes:
+  bitcoind-data:
+  lnd-server-data:
+  lnd-client-data:
+  arkd-data:
+  darepod-data:
+
+networks:
+  ark-regtest:
+    driver: bridge
