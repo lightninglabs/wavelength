@@ -53,8 +53,18 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			TapScript:      tapscript,
 			RelativeExpiry: exitDelay,
 		},
-		OwnerLeafScript: []byte{0x51},
+		OwnerLeafScript: newTestOwnerLeaf(t, ownerKey.PubKey()),
 	}
+}
+
+// newTestOwnerLeaf builds the single-sig owner leaf script for tests.
+func newTestOwnerLeaf(t *testing.T, key *btcec.PublicKey) []byte {
+	t.Helper()
+
+	leaf, err := scripts.OwnerCheckSigLeaf(key)
+	require.NoError(t, err)
+
+	return leaf
 }
 
 // newTestTaprootPkScript returns a valid P2TR pkScript for tests.

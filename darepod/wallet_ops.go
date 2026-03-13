@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/aezeed"
@@ -121,9 +122,19 @@ func BuildTransferInputs(ctx context.Context,
 			)
 		}
 
+		ownerLeaf, err := scripts.OwnerCheckSigLeaf(
+			desc.ClientKey.PubKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"build owner leaf for %s: %w",
+				op, err,
+			)
+		}
+
 		inputs = append(inputs, oor.TransferInput{
 			VTXO:            desc,
-			OwnerLeafScript: desc.PkScript,
+			OwnerLeafScript: ownerLeaf,
 		})
 	}
 
