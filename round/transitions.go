@@ -238,8 +238,26 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 			)
 		}
 
+		// Deduplicate VTXO requests by PkScript. Two refresh
+		// paths (wallet-driven and auto-expiry) could race to
+		// create an output for the same VTXO. Duplicate outputs
+		// would inflate totalOutput and cause the balance check
+		// to fail, locking the VTXO in PendingForfeitState.
+		vtxoScriptSeen := fn.NewSet[string]()
+		for _, v := range s.VTXOs {
+			vtxoScriptSeen.Add(string(v.PkScript))
+		}
+
 		updatedVTXOs := slices.Clone(s.VTXOs)
-		updatedVTXOs = append(updatedVTXOs, evt.VTXOs...)
+		for _, newVTXO := range evt.VTXOs {
+			key := string(newVTXO.PkScript)
+			if vtxoScriptSeen.Contains(key) {
+				continue
+			}
+
+			vtxoScriptSeen.Add(key)
+			updatedVTXOs = append(updatedVTXOs, newVTXO)
+		}
 
 		updatedLeaves := slices.Clone(s.Leaves)
 		updatedLeaves = append(updatedLeaves, evt.Leaves...)

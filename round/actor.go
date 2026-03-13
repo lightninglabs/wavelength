@@ -1732,8 +1732,12 @@ func (a *RoundClientActor) processConfirmationRequest(
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
-	// Find a pending round or create one if none exists.
-	roundFSM := a.findPendingRound()
+	// Find an assembling round (Idle or PendingRoundAssembly) or create
+	// one. We must not use findPendingRound here because it matches by
+	// temp-key status, which includes rounds in RegistrationSentState.
+	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// silently, discarding the intent.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
@@ -1788,8 +1792,12 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 		)
 	}
 
-	// Find a pending round or create one if none exists.
-	roundFSM := a.findPendingRound()
+	// Find an assembling round (Idle or PendingRoundAssembly) or create
+	// one. We must not use findPendingRound here because it matches by
+	// temp-key status, which includes rounds in RegistrationSentState.
+	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// silently, discarding the intent.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)

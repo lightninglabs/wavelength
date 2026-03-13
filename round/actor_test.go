@@ -2143,4 +2143,130 @@ func TestHandleRegisterIntent(t *testing.T) {
 		require.Len(t, assembly.VTXOs, 1,
 			"1 from register intent")
 	})
+
+	t.Run("intent_creates_new_round_when_existing_in_registration_sent",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+
+			err := h.start()
+			require.NoError(t, err)
+
+			// Place a round in RegistrationSentState with a
+			// temp key. Before the fix, findPendingRound would
+			// match this round and the IntentPackage would be
+			// silently self-looped.
+			h.setupRoundInRegistrationSentState()
+
+			// Now register an intent. With findAssemblingRound,
+			// this should create a new round rather than
+			// matching the RegistrationSent one.
+			vtxoOutpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte("new-round"),
+				),
+				Index: 0,
+			}
+			req := &RegisterIntentRequest{
+				Package: &IntentPackage{Intents: Intents{
+					Forfeits: []types.ForfeitRequest{{
+						VTXOOutpoint: &vtxoOutpoint,
+					}},
+					VTXOs: []types.VTXORequest{{
+						Amount:      40000,
+						PkScript:    []byte{0x51, 0x20},
+						ClientKey:   h.clientPubKey,
+						OperatorKey: h.operatorPubKey,
+						Expiry:      144,
+					}},
+				}},
+			}
+
+			result := h.receive(req)
+			require.True(
+				t, result.IsOk(),
+				"expected Ok, got: %v", result.Err(),
+			)
+
+			// We should now have two rounds: one in
+			// RegistrationSent and a new one in
+			// PendingRoundAssembly with our intent.
+			states := h.queryState()
+			require.Len(t, states, 2,
+				"should have 2 rounds")
+
+			var foundAssembly bool
+			for _, info := range states {
+				assembly, ok := info.State.(*PendingRoundAssembly)
+				if !ok {
+					continue
+				}
+
+				foundAssembly = true
+				require.Len(
+					t, assembly.Forfeits, 1,
+					"intent should be in new round",
+				)
+			}
+			require.True(t, foundAssembly,
+				"should have a PendingRoundAssembly round")
+		},
+	)
+
+	t.Run("duplicate_vtxo_pkscript_deduplicated", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		pkScript := []byte{0x51, 0x20, 0x01, 0x02}
+
+		// Send two intent packages with VTXOs sharing the same
+		// PkScript. The second should be deduplicated.
+		for i := 0; i < 2; i++ {
+			outpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte(fmt.Sprintf("dup-vtxo-%d", i)),
+				),
+				Index: 0,
+			}
+			req := &RegisterIntentRequest{
+				Package: &IntentPackage{Intents: Intents{
+					Forfeits: []types.ForfeitRequest{{
+						VTXOOutpoint: &outpoint,
+					}},
+					VTXOs: []types.VTXORequest{{
+						Amount:      40000,
+						PkScript:    pkScript,
+						ClientKey:   h.clientPubKey,
+						OperatorKey: h.operatorPubKey,
+						Expiry:      144,
+					}},
+				}},
+			}
+
+			result := h.receive(req)
+			require.True(t, result.IsOk())
+		}
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		// Forfeits should have 2 (different outpoints).
+		require.Len(t, assembly.Forfeits, 2)
+
+		// VTXOs should be deduplicated to 1 (same PkScript).
+		require.Len(t, assembly.VTXOs, 1,
+			"duplicate VTXOs by PkScript should be "+
+				"deduplicated")
+	})
 }
