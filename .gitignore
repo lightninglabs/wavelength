@@ -1,6 +1,7 @@
 /arkcli
 /arkd
 /darepocli
+bin/*
 **/test-artifacts
 merge-sql-schemas
 
