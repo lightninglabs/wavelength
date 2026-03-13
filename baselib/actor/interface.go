@@ -156,6 +156,25 @@ type Stoppable interface {
 	OnStop(ctx context.Context) error
 }
 
+// PostCommitHandler is an optional interface that DurableActor behaviors
+// can implement to perform work after the message-processing transaction
+// commits. This is critical for behaviors that need to send messages to
+// other durable actors backed by the same SQLite database — doing so
+// inside the transaction would deadlock because SQLite only allows one
+// concurrent writer.
+//
+// FlushPostCommit is called with a fresh (non-transactional) context
+// after the transaction commits successfully. Errors are logged but do
+// not cause the message to be re-delivered, since the checkpoint was
+// already persisted within the transaction. The behavior should rely on
+// its FSM resume logic to retry any lost post-commit work on restart.
+type PostCommitHandler interface {
+	// FlushPostCommit executes deferred side-effects that were
+	// buffered during Receive but must run outside the database
+	// transaction.
+	FlushPostCommit(ctx context.Context) error
+}
+
 // SystemContext defines the minimal interface for system capabilities needed
 // by actors and service keys. This narrow interface enables dependency
 // injection and unit testing without requiring a full ActorSystem instance.

@@ -412,8 +412,24 @@ func (a *DurableActor[M, R]) processInTransaction(
 		return
 	}
 
-	// Transaction committed -- now it is safe to complete the
-	// in-memory promise so the caller observes the result.
+	// Transaction committed — flush any post-commit work the
+	// behavior buffered during Receive. This is needed when the
+	// behavior must Tell another durable actor backed by the same
+	// SQLite database: doing so inside the transaction would
+	// deadlock on the write lock.
+	if pch, ok := a.behavior.(PostCommitHandler); ok {
+		if pcErr := pch.FlushPostCommit(ctx); pcErr != nil {
+			log.WarnS(ctx,
+				"Post-commit flush failed "+
+					"(will retry on resume)",
+				pcErr,
+				"actor_id", a.id,
+				"delivery_id", delivery.ID)
+		}
+	}
+
+	// Now it is safe to complete the in-memory promise so the
+	// caller observes the result.
 	if delivery.IsAsk() && delivery.Promise != nil {
 		delivery.Promise.Complete(behaviorResult)
 	}
@@ -433,6 +449,16 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 
 	// Execute behavior with panic recovery.
 	result := a.executeBehaviorSafely(ctx, delivery)
+
+	// Flush any post-commit work the behavior buffered during
+	// Receive (e.g. transport events to sibling durable actors).
+	// Without a wrapping transaction, flush failures convert the
+	// result to an error so the caller can retry.
+	if pch, ok := a.behavior.(PostCommitHandler); ok {
+		if pcErr := pch.FlushPostCommit(ctx); pcErr != nil {
+			result = fn.Err[R](pcErr)
+		}
+	}
 
 	// For Ask messages, avoid marking as processed until after ack has
 	// succeeded. This prevents a crash between MarkProcessed and Ack from
