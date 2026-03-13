@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -1280,22 +1281,18 @@ func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
 	require.NoError(t, err)
 	defer actor2.Stop()
 
-	// Send a no-op message through the durable ref to ensure restart
-	// processing completes before we inspect state. Use a fresh Ark
-	// PSBT so the session ID doesn't collide.
-	probeArkPsbt := clonePSBTSliceForTest(
-		t, []*psbt.Packet{arkPsbt},
-	)[0]
-	probeArkPsbt.UnsignedTx.LockTime = 999999
-	probeFut := actor2.Ref().Ask(ctx, &SubmitOORRequest{
-		ArkPSBT:         probeArkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
-	_ = probeFut.Await(ctx)
+	// Poll the restored session state directly. Start enqueues a restart
+	// message and returns before the durable runtime has necessarily
+	// rebuilt active sessions from the DB.
+	var state State
+	require.Eventually(t, func() bool {
+		var currentErr error
+		state, currentErr = actor2.CurrentState(
+			ctx, submitMsg.SessionID,
+		)
 
-	// Inspect the restored session's state.
-	state, err := actor2.CurrentState(ctx, submitMsg.SessionID)
-	require.NoError(t, err)
+		return currentErr == nil
+	}, 5*time.Second, 100*time.Millisecond)
 
 	notifyState, isNotify := state.(*AwaitingRecipientsNotifyState)
 	require.True(t, isNotify,
