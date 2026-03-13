@@ -450,6 +450,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
+		log.WarnS(ctx, "Failed to convert to proto", err)
+
 		return fn.Err[ServerConnResp](fmt.Errorf(
 			"convert to proto: %w", err,
 		))
@@ -504,7 +506,15 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		},
 	}
 
-	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
+	// Use a fresh context for the gRPC call to avoid inheriting
+	// the SQLite transaction context which can cause the gRPC
+	// call to block.
+	sendCtx, sendCancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer sendCancel()
+
+	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
 	if err != nil {
