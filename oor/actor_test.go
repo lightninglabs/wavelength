@@ -1330,7 +1330,8 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 	})
 	require.True(t, submitResp.IsOk())
 
-	submitMsg := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
+	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
+	require.True(t, ok, "expected *SubmitOORResponse")
 	require.NotNil(t, submitMsg.ToProto(),
 		"SubmitOORResponse.ToProto() must not return nil")
 
@@ -1343,7 +1344,8 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 	})
 	require.True(t, finalizeResp.IsOk())
 
-	finalizeMsg := finalizeResp.UnwrapOr(nil).(*FinalizeOORResponse)
+	finalizeMsg, ok := finalizeResp.UnwrapOr(nil).(*FinalizeOORResponse)
+	require.True(t, ok, "expected *FinalizeOORResponse")
 	require.NotNil(t, finalizeMsg.ToProto(),
 		"FinalizeOORResponse.ToProto() must not return nil")
 }
