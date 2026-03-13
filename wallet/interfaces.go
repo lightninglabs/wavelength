@@ -13,6 +13,55 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// VTXODescriptor contains the VTXO information needed by the wallet to build
+// intent packages for round registration. This is a wallet-level view that
+// avoids importing the vtxo package (which would cause an import cycle).
+type VTXODescriptor struct {
+	// Outpoint identifies the VTXO's location in the virtual transaction
+	// tree.
+	Outpoint wire.OutPoint
+
+	// Amount is the value of this VTXO in satoshis.
+	Amount btcutil.Amount
+
+	// PkScript is the output script for this VTXO.
+	PkScript []byte
+
+	// Expiry is the CSV delay for the unilateral exit path. This
+	// corresponds to vtxo.Descriptor.RelativeExpiry.
+	Expiry uint32
+
+	// ClientKey is the client's key descriptor for this VTXO.
+	ClientKey keychain.KeyDescriptor
+
+	// OperatorKey is the operator's public key for collaborative spends.
+	OperatorKey *btcec.PublicKey
+}
+
+// VTXOReader provides read-only access to VTXO descriptors. The wallet uses
+// this to load VTXO data when building intent packages for round registration.
+// Implementors convert from their internal VTXO representation (e.g.,
+// vtxo.Descriptor) to the wallet-level VTXODescriptor.
+type VTXOReader interface {
+	// GetVTXO retrieves a VTXO descriptor by its outpoint. Returns an
+	// error if the VTXO is not found.
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (*VTXODescriptor, error)
+}
+
+// VTXOReaderFunc is an adapter to allow the use of ordinary functions as
+// VTXOReader. If f is a function with the appropriate signature,
+// VTXOReaderFunc(f) is a VTXOReader that calls f.
+type VTXOReaderFunc func(ctx context.Context,
+	outpoint wire.OutPoint) (*VTXODescriptor, error)
+
+// GetVTXO calls f(ctx, outpoint).
+func (f VTXOReaderFunc) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*VTXODescriptor, error) {
+
+	return f(ctx, outpoint)
+}
+
 // Ask documents a request-response message pair. The Req type is sent via
 // actor.Ask, and the Resp type is returned. This is used purely for
 // documentation to provide a quick reference of available operations.

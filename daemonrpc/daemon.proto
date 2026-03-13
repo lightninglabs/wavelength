@@ -192,9 +192,9 @@ enum VTXOStatus {
     // VTXO_STATUS_LIVE indicates the VTXO is active and spendable.
     VTXO_STATUS_LIVE = 1;
 
-    // VTXO_STATUS_REFRESH_REQUESTED indicates a refresh has been queued
-    // but the forfeit transaction has not yet been signed.
-    VTXO_STATUS_REFRESH_REQUESTED = 2;
+    // VTXO_STATUS_PENDING_FORFEIT indicates the VTXO has been committed
+    // to cooperative consumption and is awaiting forfeit details.
+    VTXO_STATUS_PENDING_FORFEIT = 2;
 
     // VTXO_STATUS_FORFEITING indicates the forfeit transaction has been
     // signed and the VTXO is awaiting confirmation of the new round.
@@ -208,9 +208,9 @@ enum VTXOStatus {
     // out-of-round transfer.
     VTXO_STATUS_SPENT = 5;
 
-    // VTXO_STATUS_EXPIRING is terminal: the VTXO is being resolved
-    // on-chain via the unilateral exit path.
-    VTXO_STATUS_EXPIRING = 6;
+    // VTXO_STATUS_UNILATERAL_EXIT is terminal: the VTXO has reached critical
+    // expiry and is being resolved on-chain.
+    VTXO_STATUS_UNILATERAL_EXIT = 6;
 
     // VTXO_STATUS_FAILED is terminal: an unrecoverable error occurred.
     VTXO_STATUS_FAILED = 7;

@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -397,7 +398,8 @@ func (s *Server) run(ctx context.Context,
 	// handler serves both transports.
 	s.mailboxMux = mailboxrpc.NewServeMux()
 	daemonrpc.RegisterDaemonServiceMailboxServer(
-		s.mailboxMux, s.rpcServer,
+		s.mailboxMux,
+		&rpcMailboxAdapter{RPCServer: s.rpcServer},
 	)
 
 	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
@@ -1450,9 +1452,30 @@ func (s *Server) initWalletActor(ctx context.Context,
 		boardingBackend = w.BoardingBackend()
 	}
 
+	// Adapt the VTXO persistence store to the wallet's VTXOReader
+	// interface. The wallet uses this to load VTXO descriptors when
+	// building intent packages for round registration.
+	vtxoReader := wallet.VTXOReaderFunc(func(ctx context.Context,
+		op wire.OutPoint) (*wallet.VTXODescriptor, error) {
+
+		desc, err := s.vtxoStore.GetVTXO(ctx, op)
+		if err != nil {
+			return nil, err
+		}
+
+		return &wallet.VTXODescriptor{
+			Outpoint:    desc.Outpoint,
+			Amount:      desc.Amount,
+			PkScript:    desc.PkScript,
+			Expiry:      desc.RelativeExpiry,
+			ClientKey:   desc.ClientKey,
+			OperatorKey: desc.OperatorKey,
+		}, nil
+	})
+
 	walletActor := wallet.NewArk(
-		boardingBackend, boardingStore, chainSourceRef,
-		s.actorSystem, log,
+		boardingBackend, boardingStore, vtxoReader,
+		chainSourceRef, s.actorSystem, log,
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,

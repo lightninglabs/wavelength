@@ -112,7 +112,7 @@ func NewBoardingWalletFixture(t *testing.T) *BoardingWalletFixture {
 	chainSourceRef := h.NewChainSourceActor()
 	backend := h.NewBoardingBackend()
 	walletActor := wallet.NewArk(
-		backend, h.BoardingStore(), chainSourceRef,
+		backend, h.BoardingStore(), nil, chainSourceRef,
 		h.ActorSystem(),
 		h.SubLogger(wallet.Subsystem),
 	)

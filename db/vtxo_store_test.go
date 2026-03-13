@@ -224,7 +224,7 @@ func TestVTXOPersistenceStoreListLiveVTXOs(t *testing.T) {
 
 	// Mark vtxo3 as RefreshRequested (non-terminal, should still be live).
 	err = vtxoStore.UpdateVTXOStatus(
-		ctx, vtxo3.Outpoint, vtxo.VTXOStatusRefreshRequested,
+		ctx, vtxo3.Outpoint, vtxo.VTXOStatusPendingForfeit,
 	)
 	require.NoError(t, err)
 
@@ -262,13 +262,13 @@ func TestVTXOPersistenceStoreStatusTransitions(t *testing.T) {
 
 	// Transition to RefreshRequested.
 	err = vtxoStore.UpdateVTXOStatus(
-		ctx, desc.Outpoint, vtxo.VTXOStatusRefreshRequested,
+		ctx, desc.Outpoint, vtxo.VTXOStatusPendingForfeit,
 	)
 	require.NoError(t, err)
 
 	fetched, err = vtxoStore.GetVTXO(ctx, desc.Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusRefreshRequested, fetched.Status)
+	require.Equal(t, vtxo.VTXOStatusPendingForfeit, fetched.Status)
 
 	// Transition to Forfeiting via MarkForfeiting.
 	forfeitRoundID := testRoundIDDB("forfeit-round")
@@ -528,7 +528,7 @@ func TestVTXOPersistenceStoreMultipleVTXOsLifecycle(t *testing.T) {
 	// VTXO 0: stays live (no changes).
 	// VTXO 1: goes to RefreshRequested (still live).
 	err = vtxoStore.UpdateVTXOStatus(
-		ctx, vtxos[1].Outpoint, vtxo.VTXOStatusRefreshRequested,
+		ctx, vtxos[1].Outpoint, vtxo.VTXOStatusPendingForfeit,
 	)
 	require.NoError(t, err)
 
@@ -577,7 +577,7 @@ func TestVTXOPersistenceStoreMultipleVTXOsLifecycle(t *testing.T) {
 
 	fetched1, err := vtxoStore.GetVTXO(ctx, vtxos[1].Outpoint)
 	require.NoError(t, err)
-	require.Equal(t, vtxo.VTXOStatusRefreshRequested, fetched1.Status)
+	require.Equal(t, vtxo.VTXOStatusPendingForfeit, fetched1.Status)
 
 	fetched2, err := vtxoStore.GetVTXO(ctx, vtxos[2].Outpoint)
 	require.NoError(t, err)

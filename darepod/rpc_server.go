@@ -278,8 +278,8 @@ func protoStatusToDomain(
 	case daemonrpc.VTXOStatus_VTXO_STATUS_LIVE:
 		return vtxo.VTXOStatusLive, nil
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED:
-		return vtxo.VTXOStatusRefreshRequested, nil
+	case daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT:
+		return vtxo.VTXOStatusPendingForfeit, nil
 
 	case daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING:
 		return vtxo.VTXOStatusForfeiting, nil
@@ -290,8 +290,8 @@ func protoStatusToDomain(
 	case daemonrpc.VTXOStatus_VTXO_STATUS_SPENT:
 		return vtxo.VTXOStatusSpent, nil
 
-	case daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING:
-		return vtxo.VTXOStatusExpiring, nil
+	case daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT:
+		return vtxo.VTXOStatusUnilateralExit, nil
 
 	case daemonrpc.VTXOStatus_VTXO_STATUS_FAILED:
 		return vtxo.VTXOStatusFailed, nil
@@ -307,8 +307,8 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 	case vtxo.VTXOStatusLive:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_LIVE
 
-	case vtxo.VTXOStatusRefreshRequested:
-		return daemonrpc.VTXOStatus_VTXO_STATUS_REFRESH_REQUESTED
+	case vtxo.VTXOStatusPendingForfeit:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_PENDING_FORFEIT
 
 	case vtxo.VTXOStatusForfeiting:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_FORFEITING
@@ -319,8 +319,8 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 	case vtxo.VTXOStatusSpent:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_SPENT
 
-	case vtxo.VTXOStatusExpiring:
-		return daemonrpc.VTXOStatus_VTXO_STATUS_EXPIRING
+	case vtxo.VTXOStatusUnilateralExit:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT
 
 	case vtxo.VTXOStatusFailed:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_FAILED
@@ -1199,4 +1199,23 @@ func (r *RPCServer) WatchRounds(
 			}
 		}
 	}
+}
+
+// rpcMailboxAdapter wraps RPCServer to satisfy
+// DaemonServiceMailboxServer. The mailbox transport is unary
+// request/response, so server-streaming RPCs like WatchRounds
+// return an error indicating they are unsupported over mailbox.
+type rpcMailboxAdapter struct {
+	*RPCServer
+}
+
+// WatchRounds is unsupported over the mailbox transport because it
+// is a server-streaming RPC. Callers should use the gRPC transport
+// for streaming endpoints.
+func (a *rpcMailboxAdapter) WatchRounds(_ context.Context,
+	_ *daemonrpc.WatchRoundsRequest) (
+	*daemonrpc.WatchRoundsResponse, error) {
+
+	return nil, fmt.Errorf("WatchRounds is a server-streaming " +
+		"RPC and is not supported over mailbox transport")
 }

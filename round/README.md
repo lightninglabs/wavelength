@@ -74,16 +74,15 @@ four independent pools:
 
 - **Boarding** — on-chain inputs to spend (from confirmed boarding UTXOs)
 - **VTXOs** — requested output amounts for new virtual UTXOs
-- **Forfeits** — VTXOs to be rolled into a new tree (from VTXO actors whose
-  VTXOs are approaching expiry)
-- **Leaves** — VTXOs to be exited on-chain (from VTXO actors or the wallet
-  when the user wants to offboard)
+- **Forfeits** — VTXOs to be rolled into a new tree
+- **Leaves** — VTXOs to be exited on-chain
 
-The actor translates external messages — `RefreshVTXORequest`,
-`LeaveVTXORequest`, wallet confirmations, and VTXO requests — into an
-`IntentPackage` before sending it to the FSM. This keeps input validation
-and intent construction in the actor layer, while the FSM focuses purely
-on pool accumulation and state management.
+The actor translates external messages — wallet-composed intent packages,
+boarding confirmations, VTXO requests, and the auto-expiry
+`RefreshVTXORequest` path from VTXO actors — into an `IntentPackage`
+before sending it to the FSM. This keeps round registration in the actor
+layer, while the FSM focuses purely on pool accumulation and state
+management.
 
 This separation supports fan-in (multiple inputs funding one output) and
 fan-out (one input creating multiple outputs) scenarios, as well as mixed
@@ -288,10 +287,11 @@ sequenceDiagram
     Note over A: User specifies VTXO amounts
     A->>C: IntentPackage(vtxos)
     opt Refresh / Leave
+        W->>A: RegisterIntentMsg(forfeit + vtxo/leave)
+        A->>C: IntentPackage(forfeit + vtxo/leave)
+        Note over V,A: Auto-expiry path:
         V->>A: RefreshVTXORequest
         A->>C: IntentPackage(forfeit + vtxo)
-        V->>A: LeaveVTXORequest
-        A->>C: IntentPackage(forfeit + leave)
     end
 
     Note over C,B: Round Registration Phase
@@ -433,14 +433,16 @@ differ in how intents are assembled and how old VTXOs are handled.
 
 ### Refresh
 
-When a VTXO approaches its CSV expiry, the VTXO actor sends a
-`RefreshVTXORequest` to the round actor (either automatically or via manual
-`TriggerRefreshEvent`). The round actor translates these into an
-`IntentPackage` with a forfeit request and corresponding VTXO output, which
-the FSM accumulates in `PendingRoundAssembly.Forfeits` and
-`PendingRoundAssembly.VTXOs` alongside any boarding intents. During
-registration, refresh requests are included in the `JoinRoundRequest` as
-forfeit outpoints with corresponding new VTXO outputs.
+Manual refresh now starts in the wallet: the wallet loads the target VTXOs,
+builds a forfeit plus replacement-VTXO `IntentPackage`, and sends it to the
+round actor via `RegisterIntentMsg`. The round actor registers that package
+with the FSM and marks the participating VTXOs as `PendingForfeit`.
+
+For the auto-expiry path, a VTXO actor may still emit
+`RefreshVTXORequest`. The round actor converts that request into the same
+forfeit-plus-VTXO `IntentPackage`, which the FSM accumulates in
+`PendingRoundAssembly.Forfeits` and `PendingRoundAssembly.VTXOs` alongside
+any boarding intents.
 
 After the operator signs the VTXO tree, the FSM enters
 ForfeitSignaturesCollecting and sends `ForfeitRequestToVTXO` to each VTXO
@@ -450,17 +452,17 @@ and returns a `ForfeitSignatureResponse`. This ensures atomic replacement: the
 old VTXO becomes unspendable only when the new commitment transaction
 confirms.
 
-On the VTXO actor side, the flow progresses through `RefreshRequestedState` →
+On the VTXO actor side, the flow progresses through `PendingForfeitState` →
 `ForfeitingState` → `ForfeitedState` as the forfeit is requested, signed, and
 confirmed.
 
 ### Leave
 
 Leave follows the same mechanics as refresh, but the output is an on-chain
-destination rather than a new VTXO. The user (or wallet) sends a
-`LeaveVTXORequest`, accumulated in `PendingRoundAssembly.Leaves`. During
-commitment transaction validation, the FSM verifies all leave outputs appear
-in the transaction via `validateLeaveOutputs()`.
+destination rather than a new VTXO. The wallet builds a forfeit-plus-leave
+`IntentPackage` and sends it to the round actor via `RegisterIntentMsg`.
+During commitment transaction validation, the FSM verifies all leave outputs
+appear in the transaction via `validateLeaveOutputs()`.
 
 ### Mixed Rounds
 

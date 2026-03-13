@@ -43,28 +43,33 @@ func (s *LiveState) IsTerminal() bool {
 
 func (s *LiveState) vtxoStateSealed() {}
 
-// RefreshRequestedState indicates a forfeit request has been sent to the round
-// actor to refresh this VTXO. The VTXO is waiting for acknowledgment or a
-// forfeit request to begin the batch swap process.
-type RefreshRequestedState struct {
+// PendingForfeitState indicates the VTXO has been committed to cooperative
+// consumption (forfeit) and is awaiting concrete forfeit details from the
+// round actor. This state is reached when the VTXO needs to be forfeited —
+// whether due to approaching expiry, a leave request, or an in-round send —
+// but the round actor has not yet supplied the connector outpoint and
+// forfeit parameters needed to build the forfeit transaction.
+type PendingForfeitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// RequestedAtHeight is the block height when the refresh was requested.
+	// RequestedAtHeight is the block height when the forfeit was
+	// requested. Zero if triggered manually rather than by expiry.
 	RequestedAtHeight int32
 }
 
 // String returns a human-readable state name.
-func (s *RefreshRequestedState) String() string {
-	return "RefreshRequested"
+func (s *PendingForfeitState) String() string {
+	return "PendingForfeit"
 }
 
-// IsTerminal returns false since RefreshRequestedState is not terminal.
-func (s *RefreshRequestedState) IsTerminal() bool {
+// IsTerminal returns false since PendingForfeitState is not terminal.
+func (s *PendingForfeitState) IsTerminal() bool {
 	return false
 }
 
-func (s *RefreshRequestedState) vtxoStateSealed() {}
+// vtxoStateSealed marks this as implementing the sealed VTXOState interface.
+func (s *PendingForfeitState) vtxoStateSealed() {}
 
 // ForfeitingState indicates the VTXO is being forfeited in a round. The VTXO
 // actor is waiting for the new commitment transaction to confirm.
@@ -100,16 +105,14 @@ func (s *ForfeitingState) IsTerminal() bool {
 
 func (s *ForfeitingState) vtxoStateSealed() {}
 
-// ForfeitedState is a terminal state indicating the VTXO has been forfeited.
-// The forfeit may have occurred as part of a batch swap (refresh into a new
-// round) or a leave request (withdrawal to an on-chain address).
+// ForfeitedState is a terminal state indicating the VTXO has been forfeited
+// cooperatively. The round actor determines the disposition of the forfeited
+// value (new VTXO in a fresh round, or an on-chain withdrawal output).
 type ForfeitedState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// NewRoundID is the round where the forfeit was processed. For batch
-	// swaps this contains the replacement VTXO; for leave requests it's
-	// the round that processed the withdrawal.
+	// NewRoundID is the round where the forfeit was processed.
 	NewRoundID string
 
 	// CommitmentTxID is the new commitment transaction that was confirmed.
@@ -128,27 +131,28 @@ func (s *ForfeitedState) IsTerminal() bool {
 
 func (s *ForfeitedState) vtxoStateSealed() {}
 
-// ExpiringState is a terminal state indicating the VTXO is critically close to
-// expiry and has been sent to the chain resolver for unilateral exit handling.
-type ExpiringState struct {
+// UnilateralExitState is a terminal state indicating the VTXO has reached
+// critical expiry and has been sent to the chain resolver for unilateral
+// on-chain exit handling. The chain resolver takes over from this point.
+type UnilateralExitState struct {
 	// VTXO is the descriptor for this VTXO.
 	VTXO *Descriptor
 
-	// Reason explains why the VTXO is expiring.
+	// Reason explains why the VTXO is being unilaterally exited.
 	Reason string
 }
 
 // String returns a human-readable state name.
-func (s *ExpiringState) String() string {
-	return "Expiring"
+func (s *UnilateralExitState) String() string {
+	return "UnilateralExit"
 }
 
-// IsTerminal returns true since ExpiringState is a terminal state.
-func (s *ExpiringState) IsTerminal() bool {
+// IsTerminal returns true since UnilateralExitState is a terminal state.
+func (s *UnilateralExitState) IsTerminal() bool {
 	return true
 }
 
-func (s *ExpiringState) vtxoStateSealed() {}
+func (s *UnilateralExitState) vtxoStateSealed() {}
 
 // FailedState is a terminal state indicating an unrecoverable error occurred.
 type FailedState struct {

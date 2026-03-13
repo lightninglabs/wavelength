@@ -46,6 +46,10 @@ type DaemonServiceMailboxServer interface {
 	RefreshVTXOs(ctx context.Context, req *RefreshVTXOsRequest) (*RefreshVTXOsResponse, error)
 	// Board handles Board.
 	Board(ctx context.Context, req *BoardRequest) (*BoardResponse, error)
+	// ListRounds handles ListRounds.
+	ListRounds(ctx context.Context, req *ListRoundsRequest) (*ListRoundsResponse, error)
+	// WatchRounds handles WatchRounds.
+	WatchRounds(ctx context.Context, req *WatchRoundsRequest) (*WatchRoundsResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -159,6 +163,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.Board(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ListRounds", func() proto.Message {
+		return &ListRoundsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ListRoundsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ListRounds(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "WatchRounds", func() proto.Message {
+		return &WatchRoundsRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*WatchRoundsRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.WatchRounds(ctx, req)
 	})
 }
 
@@ -408,6 +432,52 @@ func (c *DaemonServiceMailboxClient) Board(ctx context.Context, req *BoardReques
 	}
 
 	resp := new(BoardResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ListRounds calls the ListRounds RPC.
+func (c *DaemonServiceMailboxClient) ListRounds(ctx context.Context, req *ListRoundsRequest, opts ...rpc.RPCOptions) (*ListRoundsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ListRounds",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ListRoundsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// WatchRounds calls the WatchRounds RPC.
+func (c *DaemonServiceMailboxClient) WatchRounds(ctx context.Context, req *WatchRoundsRequest, opts ...rpc.RPCOptions) (*WatchRoundsResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "WatchRounds",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(WatchRoundsResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

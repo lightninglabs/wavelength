@@ -3,28 +3,28 @@
 ## Purpose
 
 Per-VTXO lifecycle management using a state machine that monitors expiry,
-coordinates refresh (forfeit + new issuance), and tracks cooperative and
-unilateral spending paths.
+coordinates forfeit signing, and tracks cooperative and unilateral exit paths.
+The VTXO FSM models lifecycle phases only (not business intent like
+refresh vs leave); intent composition is handled by the wallet.
 
 ## Key Types
 
-- `VTXOState` — Sealed interface for all states (Live, RefreshRequested, Forfeiting, Forfeited, Expiring, Failed).
+- `VTXOState` — Sealed interface for all states (Live, PendingForfeit, Forfeiting, Forfeited, UnilateralExit, Failed).
 - `Descriptor` — Complete VTXO metadata: outpoint, amount, taproot key, CSV expiry, tree path to root.
 - `Manager` — Actor managing per-VTXO FSM instances and their lifecycle.
-- `VTXOEvent` — Inbound events (BlockEpochEvent, ForfeitRequest, ForfeitConfirmed, ResumeVTXOEvent).
-- `VTXOOutMsg` — Outbound messages (ForfeitRequest, ExpiringNotify, StatusUpdate, Terminated).
+- `VTXOEvent` — Inbound events (BlockEpochEvent, PendingForfeitEvent, ForfeitRequestEvent, ForfeitConfirmedEvent, ResumeVTXOEvent).
+- `VTXOOutMsg` — Outbound messages (ForfeitRequest, ForfeitSignatureSubmission, ExpiringNotification, VTXOStatusUpdate, VTXOTerminatedNotification).
 
 ## Relationships
 
 - **Depends on**: `baselib/protofsm` (FSM engine), `lib/tree` (tree paths).
 - **Depended on by**: `round` (triggers forfeit requests), `oor` (incoming VTXOs), `db` (persistence), `darepod` (wiring).
 - **Sends**:
-  - → `round`: `ForfeitRequest`, `ForfeitSignatureSubmission`
+  - → `round` (via manager relay): `RefreshVTXORequest` (auto-expiry path), `ForfeitSignatureSubmission`
   - → `db` (via outbox): `VTXOStatusUpdate`
-  - → `vtxo` manager: `VTXOTerminatedMsg`
+  - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`
 - **Receives**:
-  - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `RefreshAcknowledgedEvent`, `BlockEpochEvent`
-  - ← `wallet`: `TriggerRefreshEvent`, `TriggerLeaveEvent`
+  - ← `round`: `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
   - ← `chainsource` (via Manager): `BlockEpochEvent`
   - ← API: `ResumeVTXOEvent`
 

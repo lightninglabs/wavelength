@@ -1001,6 +1001,41 @@ func (h *actorTestHarness) setupRoundInForfeitCollectingState(roundID RoundID) {
 	}
 }
 
+// setupRoundInRegistrationSentState creates a round FSM in
+// RegistrationSentState with a temp key and adds it to the actor's rounds map.
+// This simulates a round that has been sent to the server but not yet assigned
+// a RoundID.
+func (h *actorTestHarness) setupRoundInRegistrationSentState() TempRoundKey {
+	h.t.Helper()
+
+	tempKey, err := NewTempRoundKey()
+	require.NoError(h.t, err)
+
+	initialState := &RegistrationSentState{
+		Intents: Intents{},
+	}
+
+	errReporter := newContextErrorReporter(
+		h.ctx, tempKey.LogPrefix(),
+	)
+	fsmCfg := ClientStateMachineCfg{
+		Logger:        h.actor.log.WithPrefix(tempKey.LogPrefix()),
+		ErrorReporter: errReporter,
+		InitialState:  initialState,
+		Env:           h.actor.env,
+	}
+	newFSM := protofsm.NewStateMachine(fsmCfg)
+	newFSM.Start(h.ctx)
+
+	keyStr := RoundKeyStr(tempKey.KeyString())
+	h.actor.rounds[keyStr] = &RoundFSM{
+		FSM: &newFSM,
+		Key: tempKey,
+	}
+
+	return tempKey
+}
+
 // setupMockRoundStoreForRecovery configures the RoundStore mock to return
 // active rounds for recovery on Start(), using PartialSigsSentState which is
 // stable and won't immediately transition on recovery.

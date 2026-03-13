@@ -638,6 +638,100 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	f.verifyAuth(t, auth, proofPrevOuts)
 }
 
+// TestComputeTotalForfeitAmountFallsBackToEmbedded verifies that the embedded
+// Amount is used as a fallback when no VTXOStore is available (nil store).
+func TestComputeTotalForfeitAmountFallsBackToEmbedded(t *testing.T) {
+	t.Parallel()
+
+	total, err := computeTotalForfeitAmount(
+		t.Context(),
+		nil,
+		[]types.ForfeitRequest{{
+			VTXOOutpoint: &wire.OutPoint{},
+			Amount:       123,
+		}, {
+			VTXOOutpoint: &wire.OutPoint{
+				Index: 1,
+			},
+			Amount: 456,
+		}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(579), total)
+}
+
+// TestComputeTotalForfeitAmountStoreOverridesEmbedded verifies that
+// when a VTXOStore is provided, the store amount is used even if the
+// embedded Amount field is set. This prevents callers from inflating
+// the forfeit total.
+func TestComputeTotalForfeitAmountStoreOverridesEmbedded(t *testing.T) {
+	t.Parallel()
+
+	outpoint1 := wire.OutPoint{Hash: chainhash.Hash{0x01}}
+	outpoint2 := wire.OutPoint{Hash: chainhash.Hash{0x02}, Index: 1}
+
+	store := &MockVTXOStore{}
+	store.On("GetVTXO", mock.Anything, outpoint1).Return(
+		&ClientVTXO{Amount: 100}, nil,
+	)
+	store.On("GetVTXO", mock.Anything, outpoint2).Return(
+		&ClientVTXO{Amount: 200}, nil,
+	)
+
+	// The embedded amounts (999, 888) should be ignored when a store
+	// is available. The store values (100, 200) should be used.
+	total, err := computeTotalForfeitAmount(
+		t.Context(),
+		store,
+		[]types.ForfeitRequest{
+			{VTXOOutpoint: &outpoint1, Amount: 999},
+			{VTXOOutpoint: &outpoint2, Amount: 888},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, btcutil.Amount(300), total,
+		"store amounts (100+200) should override embedded (999+888)")
+}
+
+// TestSortedForfeitRequestsPreservesAmount verifies that the Amount
+// field survives the sort.
+func TestSortedForfeitRequestsPreservesAmount(t *testing.T) {
+	t.Parallel()
+
+	// Two forfeits with amounts, in reverse outpoint order.
+	forfeits := []types.ForfeitRequest{
+		{
+			VTXOOutpoint: &wire.OutPoint{
+				Hash:  chainhash.Hash{0xff},
+				Index: 1,
+			},
+			Amount: 300,
+		},
+		{
+			VTXOOutpoint: &wire.OutPoint{
+				Hash:  chainhash.Hash{0x01},
+				Index: 0,
+			},
+			Amount: 700,
+		},
+	}
+
+	sorted, err := sortedForfeitRequests(forfeits)
+	require.NoError(t, err)
+	require.Len(t, sorted, 2)
+
+	// After sorting, the 0x01 outpoint should come first.
+	require.Equal(t,
+		chainhash.Hash{0x01}, sorted[0].VTXOOutpoint.Hash,
+	)
+	require.Equal(t, btcutil.Amount(700), sorted[0].Amount)
+
+	require.Equal(t,
+		chainhash.Hash{0xff}, sorted[1].VTXOOutpoint.Hash,
+	)
+	require.Equal(t, btcutil.Amount(300), sorted[1].Amount)
+}
+
 // TestBuildJoinRoundAuthRejectsNoInputs verifies that
 // buildJoinRoundAuth returns an error when no proof-of-funds inputs
 // are provided.

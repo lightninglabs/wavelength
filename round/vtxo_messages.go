@@ -87,24 +87,6 @@ func (e *ForfeitRequestEvent) MessageType() string {
 	return "ForfeitRequestEvent"
 }
 
-// RefreshAcknowledgedEvent is received when the round actor acknowledges a
-// refresh request. This indicates the VTXO has been queued for inclusion in
-// the next round but the forfeit request hasn't been sent yet.
-type RefreshAcknowledgedEvent struct {
-	actor.BaseMessage
-
-	// RoundID is the round where the refresh will be processed.
-	RoundID string
-}
-
-// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
-func (e *RefreshAcknowledgedEvent) VTXOActorMsg() {}
-
-// MessageType returns the message type for logging.
-func (e *RefreshAcknowledgedEvent) MessageType() string {
-	return "RefreshAcknowledgedEvent"
-}
-
 // ForfeitConfirmedEvent indicates the new commitment transaction has been
 // confirmed on-chain, meaning the forfeit is final. The old VTXO is now
 // permanently forfeited and the new VTXO is live.
@@ -181,43 +163,22 @@ func (e *ResumeVTXOEvent) VTXOActorMsg() {}
 // MessageType returns the message type for logging.
 func (e *ResumeVTXOEvent) MessageType() string { return "ResumeVTXOEvent" }
 
-// TriggerRefreshEvent is sent to a VTXO actor to manually trigger a refresh
-// request. This bypasses the automatic expiry-based refresh and immediately
-// transitions the VTXO to RefreshRequested state. Used by the wallet actor
-// when the user explicitly requests a refresh.
-type TriggerRefreshEvent struct {
+// PendingForfeitEvent is sent to a VTXO actor when the round actor has
+// accepted this VTXO for cooperative consumption in a pending round, but does
+// not yet have the concrete connector/forfeit details needed for signing.
+// This transitions the VTXO into PendingForfeitState without encoding whether
+// the round intent is a refresh, leave, or another cooperative spend.
+type PendingForfeitEvent struct {
 	actor.BaseMessage
-
-	// ForceRefresh indicates this is a user-initiated refresh that should
-	// proceed regardless of expiry status.
-	ForceRefresh bool
 }
 
 // VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
-func (e *TriggerRefreshEvent) VTXOActorMsg() {}
+func (e *PendingForfeitEvent) VTXOActorMsg() {}
 
 // MessageType returns the message type for logging.
-func (e *TriggerRefreshEvent) MessageType() string {
-	return "TriggerRefreshEvent"
+func (e *PendingForfeitEvent) MessageType() string {
+	return "PendingForfeitEvent"
 }
-
-// TriggerLeaveEvent is sent to a VTXO actor to manually trigger a leave
-// (offboard) request. This transitions the VTXO to a state where it will be
-// forfeited and the value sent to the specified destination output. Used by
-// the wallet actor when the user explicitly requests to leave the Ark.
-type TriggerLeaveEvent struct {
-	actor.BaseMessage
-
-	// DestOutput is the on-chain destination output where the funds will
-	// be sent. This output will be included in the batch transaction.
-	DestOutput *wire.TxOut
-}
-
-// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
-func (e *TriggerLeaveEvent) VTXOActorMsg() {}
-
-// MessageType returns the message type for logging.
-func (e *TriggerLeaveEvent) MessageType() string { return "TriggerLeaveEvent" }
 
 // =============================================================================
 // Messages TO VTXO Manager

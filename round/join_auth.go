@@ -93,6 +93,12 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 func sortedForfeitRequests(
 	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
 
+	// Index amounts by outpoint so we can carry them through
+	// the sort.
+	amountByOP := make(
+		map[wire.OutPoint]btcutil.Amount, len(forfeits),
+	)
+
 	// Collect and sort the outpoints, validating that none are nil.
 	outpoints := make([]wire.OutPoint, 0, len(forfeits))
 	for i := 0; i < len(forfeits); i++ {
@@ -100,13 +106,15 @@ func sortedForfeitRequests(
 			return nil, fmt.Errorf("forfeit request %d "+
 				"has nil outpoint", i)
 		}
-		outpoints = append(
-			outpoints, *forfeits[i].VTXOOutpoint,
-		)
+
+		op := *forfeits[i].VTXOOutpoint
+		outpoints = append(outpoints, op)
+		amountByOP[op] = forfeits[i].Amount
 	}
 	sortOutPoints(outpoints)
 
-	// Build the sorted result with pointer-to-outpoint fields.
+	// Build the sorted result, preserving both the outpoint
+	// pointer and the embedded Amount.
 	requests := make(
 		[]*types.ForfeitRequest, 0, len(outpoints),
 	)
@@ -115,6 +123,7 @@ func sortedForfeitRequests(
 		requests = append(
 			requests, &types.ForfeitRequest{
 				VTXOOutpoint: &op,
+				Amount:       amountByOP[op],
 			},
 		)
 	}
@@ -138,25 +147,45 @@ func sortOutPoints(outpoints []wire.OutPoint) {
 }
 
 // computeTotalForfeitAmount looks up each forfeited VTXO's value from
-// the VTXOStore and returns the sum. This replaces the old approach of
-// carrying the amount inside ForfeitIntent — the outpoint is sufficient
-// and the store is the source of truth.
+// the VTXOStore and returns the sum. The VTXOStore is always used as
+// the canonical source of truth to prevent callers from inflating the
+// forfeit total via the embedded Amount field. If the store is nil (test
+// harness), the embedded Amount is used as a fallback.
 func computeTotalForfeitAmount(ctx context.Context,
 	store VTXOStore,
 	forfeits []types.ForfeitRequest) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
 	for i := 0; i < len(forfeits); i++ {
-		vtxo, err := store.GetVTXO(
-			ctx, *forfeits[i].VTXOOutpoint,
-		)
-		if err != nil {
-			return 0, fmt.Errorf(
-				"forfeit amount lookup %s: %w",
-				forfeits[i].VTXOOutpoint, err,
+		// When a store is available, always use it as the source
+		// of truth for the VTXO amount.
+		if store != nil {
+			vtxo, err := store.GetVTXO(
+				ctx, *forfeits[i].VTXOOutpoint,
 			)
+			if err != nil {
+				return 0, fmt.Errorf(
+					"forfeit amount lookup %s: %w",
+					forfeits[i].VTXOOutpoint, err,
+				)
+			}
+			total += vtxo.Amount
+
+			continue
 		}
-		total += vtxo.Amount
+
+		// Fallback to the embedded amount when no store is
+		// available (e.g., test environments).
+		if forfeits[i].Amount != 0 {
+			total += forfeits[i].Amount
+
+			continue
+		}
+
+		return 0, fmt.Errorf(
+			"no store and no embedded amount for %s",
+			forfeits[i].VTXOOutpoint,
+		)
 	}
 
 	return total, nil

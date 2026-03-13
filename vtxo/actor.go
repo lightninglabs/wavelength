@@ -42,14 +42,12 @@ type VTXOActorConfig struct {
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
 
-	// RoundActor receives refresh requests and forfeit signatures from this
-	// VTXO actor. Uses actormsg.RoundReceivable to avoid import cycles.
-	RoundActor actor.TellOnlyRef[actormsg.RoundReceivable]
-
 	// ChainResolver receives expiring notifications for unilateral exit.
 	ChainResolver actor.TellOnlyRef[ExpiringNotification]
 
-	// Manager receives termination notifications for cleanup.
+	// Manager receives relay messages and termination notifications.
+	// The VTXO actor routes round-bound signals through the manager
+	// rather than holding a direct round actor reference.
 	Manager actor.TellOnlyRef[ManagerMsg]
 }
 
@@ -87,6 +85,20 @@ func NewVTXOActor(ctx context.Context, cfg *VTXOActorConfig) *VTXOActor {
 // context. If no logger is found in either location, returns btclog.Disabled.
 func (a *VTXOActor) logger(ctx context.Context) btclog.Logger {
 	return a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// tellManager sends a message to the manager. All outbound signals from
+// the VTXO actor are routed through this single point.
+func (a *VTXOActor) tellManager(ctx context.Context, msg ManagerMsg) {
+	if a.cfg.Manager == nil {
+		return
+	}
+
+	if err := a.cfg.Manager.Tell(ctx, msg); err != nil {
+		a.logger(ctx).WarnS(ctx, "Failed to tell manager", err,
+			slog.String("msg_type", fmt.Sprintf("%T", msg)),
+			slog.String("outpoint", a.cfg.VTXO.Outpoint.String()))
+	}
 }
 
 // Start initializes the actor and subscribes to block epochs.
@@ -223,106 +235,39 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			}
 
 		case *ForfeitRequest:
-			// Route forfeit request to round actor. This tells
-			// the round to include this VTXO in the forfeit flow.
-			// The round FSM's RefreshVTXORequest handler creates
-			// the corresponding VTXORequest for the new output via
-			// buildVTXORequestFromRefresh, so we only need to send
-			// the refresh request here.
-			if a.cfg.RoundActor != nil {
-				vtxo := a.cfg.VTXO
-
-				// Send the refresh request for forfeit flow.
-				// The FSM adds both the forfeit input and the
-				// new VTXO output from this single message.
-				refreshReq := &round.RefreshVTXORequest{
-					VTXOOutpoint: m.VTXOOutpoint,
-					Amount:       int64(vtxo.Amount),
-					NewVTXOKey:   vtxo.ClientKey.PubKey,
-					PkScript:     vtxo.PkScript,
-					OperatorKey:  vtxo.OperatorKey,
-					Expiry:       vtxo.RelativeExpiry,
-					SigningKey:   vtxo.ClientKey,
-				}
-				if err := a.cfg.RoundActor.Tell(
-					ctx, refreshReq,
-				); err != nil {
-					a.logger(ctx).WarnS(
-						ctx, "Failed to tell refresh",
-						err)
-				}
-
-				a.logger(ctx).InfoS(
-					ctx, "Sent refresh request to round",
-					slog.String("outpoint", m.VTXOOutpoint.String()),
-				)
+			// Relay forfeit request through the manager. The
+			// manager forwards it to the round actor. We build
+			// the round-specific message here since the VTXO
+			// actor has the descriptor data needed.
+			vtxo := a.cfg.VTXO
+			refreshReq := &round.RefreshVTXORequest{
+				VTXOOutpoint: m.VTXOOutpoint,
+				Amount:       int64(vtxo.Amount),
+				NewVTXOKey:   vtxo.ClientKey.PubKey,
+				PkScript:     vtxo.PkScript,
+				OperatorKey:  vtxo.OperatorKey,
+				Expiry:       vtxo.RelativeExpiry,
+				SigningKey:   vtxo.ClientKey,
 			}
-
-		case *LeaveRequest:
-			// Route leave request to round actor. This tells the
-			// round to forfeit this VTXO and include a leave output
-			// in the batch transaction (no new VTXO is created).
-			if a.cfg.RoundActor != nil {
-				vtxo := a.cfg.VTXO
-				leaveReq := &round.LeaveVTXORequest{
-					VTXOOutpoint: vtxo.Outpoint,
-					Amount:       int64(vtxo.Amount),
-					Output:       m.DestOutput,
-				}
-				err := a.cfg.RoundActor.Tell(ctx, leaveReq)
-				if err != nil {
-					a.logger(ctx).WarnS(
-						ctx, "Failed to send leave "+
-							"request to round",
-						err,
-						slog.String(
-							"outpoint",
-							vtxo.Outpoint.String(),
-						),
-					)
-				}
-
-				a.logger(ctx).InfoS(
-					ctx, "Sent leave request to round",
-					slog.String(
-						"outpoint", vtxo.Outpoint.String(),
-					),
-					slog.Int64("amount", int64(vtxo.Amount)),
-				)
-			}
+			a.tellManager(ctx, &RelayToRoundMsg{
+				Payload: refreshReq,
+			})
 
 		case *ForfeitSignatureSubmission:
-			// Route forfeit signature to round actor.
-			if a.cfg.RoundActor != nil {
-				resp := &round.ForfeitSignatureResponse{
-					VTXOOutpoint: m.VTXOOutpoint,
-					RoundID:      m.RoundID,
-					ForfeitTx:    m.ForfeitTx,
-					Signature:    m.Signature,
-				}
-				err := a.cfg.RoundActor.Tell(ctx, resp)
-				if err != nil {
-					a.logger(ctx).WarnS(
-						ctx,
-						"Failed to send forfeit sig",
-						err,
-						slog.String(
-							"outpoint",
-							m.VTXOOutpoint.String(),
-						))
-				}
-				a.logger(ctx).InfoS(
-					ctx, "Sent forfeit signature",
-					slog.String(
-						"outpoint",
-						m.VTXOOutpoint.String(),
-					),
-					slog.String("round_id", m.RoundID),
-				)
+			// Relay forfeit signature through the manager.
+			resp := &round.ForfeitSignatureResponse{
+				VTXOOutpoint: m.VTXOOutpoint,
+				RoundID:      m.RoundID,
+				ForfeitTx:    m.ForfeitTx,
+				Signature:    m.Signature,
 			}
+			a.tellManager(ctx, &RelayToRoundMsg{
+				Payload: resp,
+			})
 
 		case *ExpiringNotification:
-			// Route to chain resolver for unilateral exit handling.
+			// Route directly to chain resolver for unilateral
+			// exit handling.
 			if a.cfg.ChainResolver != nil {
 				err := a.cfg.ChainResolver.Tell(ctx, *m)
 				if err != nil {
@@ -335,40 +280,15 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 							m.VTXO.Outpoint.String(),
 						))
 				}
-				a.logger(ctx).InfoS(
-					ctx,
-					"VTXO sent to chain resolver",
-					slog.String(
-						"outpoint",
-						m.VTXO.Outpoint.String(),
-					),
-					slog.Int(
-						"blocks_remaining",
-						int(m.BlocksRemaining),
-					),
-				)
 			}
 
 		case *VTXOTerminatedNotification:
 			// Notify manager to remove this actor from tracking.
-			if a.cfg.Manager != nil {
-				err := a.cfg.Manager.Tell(
-					ctx, &VTXOTerminatedMsg{
-						Outpoint:   m.VTXOOutpoint,
-						FinalState: m.FinalState,
-						Reason:     m.Reason,
-					})
-				if err != nil {
-					a.logger(ctx).WarnS(
-						ctx,
-						"Failed to notify manager",
-						err,
-						slog.String(
-							"outpoint",
-							m.VTXOOutpoint.String(),
-						))
-				}
-			}
+			a.tellManager(ctx, &VTXOTerminatedMsg{
+				Outpoint:   m.VTXOOutpoint,
+				FinalState: m.FinalState,
+				Reason:     m.Reason,
+			})
 		}
 	}
 }
@@ -455,8 +375,8 @@ func statusToState(
 			LastCheckedHeight: vtxo.CreatedHeight,
 		}
 
-	case VTXOStatusRefreshRequested:
-		return &RefreshRequestedState{VTXO: vtxo, RequestedAtHeight: 0}
+	case VTXOStatusPendingForfeit:
+		return &PendingForfeitState{VTXO: vtxo, RequestedAtHeight: 0}
 
 	case VTXOStatusForfeiting:
 		// Fetch the persisted forfeit tx for crash recovery.
@@ -481,8 +401,8 @@ func statusToState(
 	case VTXOStatusForfeited:
 		return &ForfeitedState{VTXO: vtxo, NewRoundID: vtxo.RoundID}
 
-	case VTXOStatusExpiring:
-		return &ExpiringState{
+	case VTXOStatusUnilateralExit:
+		return &UnilateralExitState{
 			VTXO:   vtxo,
 			Reason: "recovered from storage",
 		}

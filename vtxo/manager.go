@@ -40,9 +40,9 @@ type ManagerConfig struct {
 	// LoggerFromContext, or uses btclog.Disabled if no logger is found.
 	Log fn.Option[btclog.Logger]
 
-	// RoundActor receives refresh requests and forfeit signatures from VTXOs.
-	// Passed through to spawned VTXO actors. Uses actormsg.RoundReceivable to
-	// avoid import cycles.
+	// RoundActor receives forfeit requests and signatures relayed from VTXO
+	// actors through the manager. Uses actormsg.RoundReceivable to avoid
+	// import cycles.
 	RoundActor actor.TellOnlyRef[actormsg.RoundReceivable]
 
 	// ChainResolver receives expiring notifications for unilateral exit.
@@ -136,6 +136,9 @@ func (m *Manager) Receive(ctx context.Context,
 	case *round.VTXOTerminatedMsg:
 		return m.handleVTXOTerminated(ctx, req)
 
+	case *RelayToRoundMsg:
+		return m.handleRelayToRound(ctx, req)
+
 	case *GetActiveVTXOCountRequest:
 		return fn.Ok[ManagerResp](&GetActiveVTXOCountResponse{
 			Count: len(m.actors),
@@ -219,6 +222,34 @@ func (m *Manager) handleVTXOTerminated(ctx context.Context,
 	return fn.Ok[ManagerResp](&VTXOTerminatedResp{})
 }
 
+// handleRelayToRound forwards a VTXO actor's message to the round actor.
+// The VTXO actor pre-builds the round-specific message
+// (RefreshVTXORequest for the auto-expiry path, or
+// ForfeitSignatureResponse during forfeit signing) and wraps it in
+// RelayToRoundMsg. The manager just unwraps and forwards.
+//
+// Liveness guarantee: when a VTXO approaches expiry, the VTXO actor
+// autonomously emits a ForfeitRequest (wrapped in RelayToRoundMsg) without
+// requiring wallet input. The manager relays this immediately, ensuring
+// cooperative action is always attempted before critical expiry. This
+// default policy means safety does not depend on wallet reaction time.
+// PR 2 may add reservation checks here, but the default must always be
+// to relay forfeit requests promptly.
+func (m *Manager) handleRelayToRound(ctx context.Context,
+	msg *RelayToRoundMsg) fn.Result[ManagerResp] {
+
+	if err := m.cfg.RoundActor.Tell(ctx, msg.Payload); err != nil {
+		m.logger(ctx).WarnS(ctx, "Failed to relay to round", err,
+			slog.String("payload_type", fmt.Sprintf("%T", msg.Payload)))
+
+		return fn.Err[ManagerResp](
+			fmt.Errorf("relay to round: %w", err),
+		)
+	}
+
+	return fn.Ok[ManagerResp](&RelayToRoundResp{})
+}
+
 // spawnVTXOActor creates a new VTXO FSM actor.
 func (m *Manager) spawnVTXOActor(ctx context.Context,
 	vtxo *Descriptor) (VTXOActorRef, error) {
@@ -234,7 +265,6 @@ func (m *Manager) spawnVTXOActor(ctx context.Context,
 		ChainParams:   m.cfg.ChainParams,
 		ExpiryConfig:  m.cfg.ExpiryConfig,
 		Log:           m.cfg.Log,
-		RoundActor:    m.cfg.RoundActor,
 		ChainResolver: m.cfg.ChainResolver,
 		Manager:       m.managerRef,
 	}

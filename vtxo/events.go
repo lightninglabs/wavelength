@@ -22,10 +22,6 @@ type (
 	// is being forfeited as part of a batch swap.
 	ForfeitRequestEvent = round.ForfeitRequestEvent
 
-	// RefreshAcknowledgedEvent is received when the round actor
-	// acknowledges a refresh request.
-	RefreshAcknowledgedEvent = round.RefreshAcknowledgedEvent
-
 	// ForfeitConfirmedEvent indicates the new commitment transaction has
 	// been confirmed on-chain.
 	ForfeitConfirmedEvent = round.ForfeitConfirmedEvent
@@ -41,11 +37,8 @@ type (
 	// state.
 	ResumeVTXOEvent = round.ResumeVTXOEvent
 
-	// TriggerRefreshEvent is sent to manually trigger a refresh request.
-	TriggerRefreshEvent = round.TriggerRefreshEvent
-
-	// TriggerLeaveEvent is sent to manually trigger a leave (offboard)
-	// request. The VTXO will be forfeited and the value sent to the
-	// specified destination output.
-	TriggerLeaveEvent = round.TriggerLeaveEvent
+	// PendingForfeitEvent is sent when the round actor has committed this
+	// VTXO to cooperative consumption and the VTXO should become
+	// unavailable for other uses while awaiting concrete forfeit details.
+	PendingForfeitEvent = round.PendingForfeitEvent
 )

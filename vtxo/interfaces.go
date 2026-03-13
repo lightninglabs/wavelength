@@ -62,6 +62,8 @@ type InternalEvent[E VTXOEvent] struct{}
 //
 //   - BlockEpochEvent: From chain source (via VTXO manager), triggers expiry
 //     checks on each new block.
+//   - PendingForfeitEvent: From round actor, commits the VTXO to cooperative
+//     consumption before concrete forfeit details are available.
 //   - ForfeitRequestEvent: From round actor, initiates forfeit signing flow.
 //   - ForfeitConfirmedEvent: From round actor, confirms forfeit completion.
 //   - ResumeVTXOEvent: From VTXO manager, restores state after crash recovery.
@@ -87,20 +89,29 @@ var MessageSpec = struct {
 	// -----------------------------------------------------------------
 
 	// BlockEpochEvent is received from the chain source (routed via VTXO
-	// manager) when a new block is connected. Triggers expiry status checks
-	// and may cause state transitions if refresh or critical thresholds are
-	// crossed.
+	// manager) when a new block is connected. Triggers expiry checks and
+	// may cause transitions to PendingForfeit or UnilateralExit if expiry
+	// thresholds are crossed.
 	//
 	// Source: Chain source → VTXO Manager → VTXO Actor
-	// Handled in: LiveState, RefreshRequestedState, ForfeitingState
+	// Handled in: LiveState, PendingForfeitState, ForfeitingState
 	BlockEpochEvent InboundEvent[*BlockEpochEvent]
+
+	// PendingForfeitEvent is received from the round actor after it has
+	// accepted this VTXO into a pending cooperative-consumption round, but
+	// before it has concrete connector details to sign.
+	//
+	// Source: Round Actor → VTXO Actor
+	// Handled in: LiveState, PendingForfeitState
+	PendingForfeitEvent InboundEvent[*round.PendingForfeitEvent]
 
 	// ForfeitRequestEvent is received from the round actor when this VTXO
 	// has been selected for inclusion in a batch swap. The FSM should sign
 	// the forfeit transaction and submit it back to the round actor.
 	//
 	// Source: Round Actor → VTXO Actor
-	// Handled in: LiveState, RefreshRequestedState
+	// Handled in: LiveState, PendingForfeitState (signs and transitions
+	// to Forfeiting)
 	ForfeitRequestEvent InboundEvent[*round.ForfeitRequestEvent]
 
 	// ForfeitConfirmedEvent is received from the round actor when the new
@@ -129,9 +140,9 @@ var MessageSpec = struct {
 	// OUTBOUND MESSAGES (FSM → external actors)
 	// -----------------------------------------------------------------
 
-	// ForfeitRequest is sent to the round actor when the VTXO's expiry
-	// status crosses the refresh threshold. Requests inclusion in the next
-	// batch swap to extend the VTXO's lifetime.
+	// ForfeitRequest is sent when the VTXO's expiry status crosses
+	// the pending-forfeit threshold, requesting cooperative forfeiture
+	// in the next batch swap.
 	//
 	// Destination: VTXO Actor → Round Actor
 	// Emitted from: LiveState (on ExpiryStatusNeedsRefresh)
@@ -142,7 +153,7 @@ var MessageSpec = struct {
 	// combines this with the operator signature and broadcasts.
 	//
 	// Destination: VTXO Actor → Round Actor
-	// Emitted from: LiveState, RefreshRequestedState (on ForfeitRequest)
+	// Emitted from: LiveState, PendingForfeitState (on ForfeitRequest)
 	ForfeitSignatureSubmission OutboundMsg[*ForfeitSignatureSubmission]
 
 	// ExpiringNotification is sent to the chain resolver when the VTXO
@@ -150,7 +161,7 @@ var MessageSpec = struct {
 	// terminal transition for this actor.
 	//
 	// Destination: VTXO Actor → Chain Resolver
-	// Emitted from: LiveState, RefreshRequestedState, ForfeitingState
+	// Emitted from: LiveState, PendingForfeitState, ForfeitingState
 	//               (on ExpiryStatusCritical)
 	ExpiringNotification OutboundMsg[*ExpiringNotification]
 
@@ -213,9 +224,10 @@ const (
 	// VTXOStatusLive indicates the VTXO is active and can be spent.
 	VTXOStatusLive VTXOStatus = iota
 
-	// VTXOStatusRefreshRequested indicates a refresh has been requested but
-	// not yet completed via a new round.
-	VTXOStatusRefreshRequested
+	// VTXOStatusPendingForfeit indicates the VTXO has been committed to
+	// cooperative consumption and is awaiting forfeit details from the
+	// round actor.
+	VTXOStatusPendingForfeit
 
 	// VTXOStatusForfeiting indicates the VTXO is being forfeited in a
 	// round.
@@ -229,9 +241,10 @@ const (
 	// (OOR) transaction (terminal).
 	VTXOStatusSpent
 
-	// VTXOStatusExpiring indicates the VTXO is critically close to expiry
-	// and has been sent to the chain resolver (terminal for this actor).
-	VTXOStatusExpiring
+	// VTXOStatusUnilateralExit indicates the VTXO has reached critical
+	// expiry and been sent to the chain resolver for on-chain exit
+	// (terminal for this actor).
+	VTXOStatusUnilateralExit
 
 	// VTXOStatusFailed indicates an unrecoverable error (terminal).
 	VTXOStatusFailed
@@ -242,16 +255,16 @@ func (s VTXOStatus) String() string {
 	switch s {
 	case VTXOStatusLive:
 		return "live"
-	case VTXOStatusRefreshRequested:
-		return "refresh_requested"
+	case VTXOStatusPendingForfeit:
+		return "pending_forfeit"
 	case VTXOStatusForfeiting:
 		return "forfeiting"
 	case VTXOStatusForfeited:
 		return "forfeited"
 	case VTXOStatusSpent:
 		return "spent"
-	case VTXOStatusExpiring:
-		return "expiring"
+	case VTXOStatusUnilateralExit:
+		return "unilateral_exit"
 	case VTXOStatusFailed:
 		return "failed"
 	default:

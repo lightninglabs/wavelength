@@ -42,8 +42,8 @@ func (u RefreshUrgency) String() string {
 	}
 }
 
-// ForfeitRequest is sent to the round actor when a VTXO needs to be forfeited
-// as part of a refresh or leave operation.
+// ForfeitRequest is sent when a VTXO needs to be cooperatively forfeited.
+// Routed through the manager to the round actor.
 type ForfeitRequest struct {
 	actor.BaseMessage
 
@@ -135,15 +135,3 @@ type VTXOTerminatedNotification struct {
 }
 
 func (m *VTXOTerminatedNotification) vtxoOutMsgSealed() {}
-
-// LeaveRequest is sent to the round actor when a VTXO is being offboarded. The
-// round actor should queue this VTXO for forfeiture and include the destination
-// output in the batch transaction.
-type LeaveRequest struct {
-	actor.BaseMessage
-
-	// DestOutput is the on-chain output where the funds will be sent.
-	DestOutput *wire.TxOut
-}
-
-func (m *LeaveRequest) vtxoOutMsgSealed() {}

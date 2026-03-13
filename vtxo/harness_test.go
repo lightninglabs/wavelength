@@ -692,13 +692,14 @@ func assertOutboxContainsReal[T VTXOOutMsg](h *realVTXOSigningHarness) T {
 }
 
 // mockRoundActorRef captures messages sent to the round actor for test
-// verification. Implements actor.TellOnlyRef[actormsg.RoundReceivable].
+// verification. Used by manager relay tests.
 type mockRoundActorRef struct {
 	t        *testing.T
 	messages []actormsg.RoundReceivable
 	mu       sync.Mutex
 }
 
+// newMockRoundActorRef creates a new mock round actor ref.
 func newMockRoundActorRef(t *testing.T) *mockRoundActorRef {
 	return &mockRoundActorRef{
 		t:        t,
@@ -706,10 +707,12 @@ func newMockRoundActorRef(t *testing.T) *mockRoundActorRef {
 	}
 }
 
+// ID returns the mock actor ID.
 func (m *mockRoundActorRef) ID() string {
 	return "mock-round-actor"
 }
 
+// Tell captures the message for test verification.
 func (m *mockRoundActorRef) Tell(
 	_ context.Context, msg actormsg.RoundReceivable,
 ) error {
@@ -721,6 +724,7 @@ func (m *mockRoundActorRef) Tell(
 	return nil
 }
 
+// getMessages returns all captured messages.
 func (m *mockRoundActorRef) getMessages() []actormsg.RoundReceivable {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -774,6 +778,7 @@ type mockChainResolverRef struct {
 	mu       sync.Mutex
 }
 
+// newMockChainResolverRef creates a new mock chain resolver ref.
 func newMockChainResolverRef(t *testing.T) *mockChainResolverRef {
 	return &mockChainResolverRef{
 		t:        t,
@@ -781,10 +786,12 @@ func newMockChainResolverRef(t *testing.T) *mockChainResolverRef {
 	}
 }
 
+// ID returns the mock actor ID.
 func (m *mockChainResolverRef) ID() string {
 	return "mock-chain-resolver"
 }
 
+// Tell captures the message for test verification.
 func (m *mockChainResolverRef) Tell(
 	_ context.Context, msg ExpiringNotification,
 ) error {
@@ -796,6 +803,7 @@ func (m *mockChainResolverRef) Tell(
 	return nil
 }
 
+// getMessages returns all captured messages.
 func (m *mockChainResolverRef) getMessages() []ExpiringNotification {
 	m.mu.Lock()
 	defer m.mu.Unlock()

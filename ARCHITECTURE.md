@@ -139,8 +139,10 @@ InputSigSent → Confirmed → Idle
 
 ### VTXO FSM
 ```
-Live → RefreshRequested → Forfeiting → Forfeited
-Live → Expiring → (sweep or refresh)
+Live → PendingForfeit → Forfeiting → Forfeited
+Live → Forfeiting → Forfeited  (fast path: ForfeitRequestEvent in LiveState)
+PendingForfeit → UnilateralExit  (critical expiry while pending)
+Live → UnilateralExit  (critical expiry)
 Live → Spent
 Any → Failed
 ```

@@ -1230,6 +1230,10 @@ func TestHandleRefreshVTXORequest(t *testing.T) {
 			t, vtxoOutpoint,
 			*assembly.Forfeits[0].VTXOOutpoint,
 		)
+		require.Equal(
+			t, btcutil.Amount(refreshReq.Amount),
+			assembly.Forfeits[0].Amount,
+		)
 
 		// Verify the VTXO output request is tracked.
 		require.Len(t, assembly.VTXOs, 1)
@@ -1795,10 +1799,15 @@ func TestActorIntentMapping(t *testing.T) {
 			Value:    60000,
 			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
 		}
-		leaveReq := &LeaveVTXORequest{
-			VTXOOutpoint: vtxoOutpoint,
-			Amount:       60000,
-			Output:       leaveOutput,
+		leaveReq := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: leaveOutput,
+				}},
+			}},
 		}
 
 		result := h.receive(leaveReq)
@@ -1866,17 +1875,23 @@ func TestActorIntentMapping(t *testing.T) {
 		result := h.receive(refreshReq)
 		require.True(t, result.IsOk())
 
-		// 4. Leave request.
-		leaveReq := &LeaveVTXORequest{
-			VTXOOutpoint: wire.OutPoint{
-				Hash:  chainhash.HashH([]byte("leave")),
-				Index: 0,
-			},
-			Amount: 20000,
-			Output: &wire.TxOut{
-				Value:    20000,
-				PkScript: []byte{0x00, 0x14},
-			},
+		// 4. Leave request via RegisterIntentRequest.
+		leaveOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("leave")),
+			Index: 0,
+		}
+		leaveReq := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &leaveOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: &wire.TxOut{
+						Value:    20000,
+						PkScript: []byte{0x00, 0x14},
+					},
+				}},
+			}},
 		}
 		result = h.receive(leaveReq)
 		require.True(t, result.IsOk())
@@ -1938,5 +1953,321 @@ func TestActorIntentMapping(t *testing.T) {
 			t, assembly.Forfeits, 1,
 			"duplicate forfeit outpoint should be deduplicated",
 		)
+	})
+}
+
+// TestHandleRegisterIntent verifies that RegisterIntentRequest registers a
+// pre-composed intent package with the round FSM without the round actor
+// performing any intent composition.
+func TestHandleRegisterIntent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("registers_refresh_intent_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Build a refresh-style intent package: one forfeit + one
+		// new VTXO. This is what the wallet would compose.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("register-refresh")),
+			Index: 0,
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+					Amount:       50000,
+				}},
+				VTXOs: []types.VTXORequest{{
+					Amount:      50000,
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
+					OperatorKey: h.operatorPubKey,
+					Expiry:      144,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		// Verify FSM has the intent registered.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists,
+			"expected temp-keyed FSM state")
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok,
+			"expected PendingRoundAssembly, got %T",
+			tempState.State)
+
+		require.Len(t, assembly.Forfeits, 1)
+		require.Equal(
+			t, vtxoOutpoint,
+			*assembly.Forfeits[0].VTXOOutpoint,
+		)
+		require.Equal(
+			t, btcutil.Amount(50000),
+			assembly.Forfeits[0].Amount,
+		)
+		require.Len(t, assembly.VTXOs, 1)
+	})
+
+	t.Run("registers_leave_intent_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Build a leave-style intent package: one forfeit + one
+		// leave output.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("register-leave")),
+			Index: 0,
+		}
+		leaveOutput := &wire.TxOut{
+			Value:    60000,
+			PkScript: []byte{0x00, 0x14, 0x01, 0x02},
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				Leaves: []*types.LeaveRequest{{
+					Output: leaveOutput,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Forfeits, 1)
+		require.Len(t, assembly.Leaves, 1)
+		require.Equal(
+			t, leaveOutput.Value,
+			assembly.Leaves[0].Output.Value,
+		)
+		require.Empty(t, assembly.VTXOs)
+	})
+
+	t.Run("rejects_empty_package", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// Nil package.
+		result := h.receive(&RegisterIntentRequest{
+			Package: nil,
+		})
+		require.True(t, result.IsErr())
+
+		// Empty package.
+		result = h.receive(&RegisterIntentRequest{
+			Package: &IntentPackage{},
+		})
+		require.True(t, result.IsErr())
+	})
+
+	t.Run("accumulates_with_existing_intents", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		// First: add a boarding intent via the existing path.
+		intent := h.newTestBoardingIntent()
+		h.sendWalletConfirmation(intent)
+		h.assertFSMState("PendingRoundAssembly")
+
+		// Second: register a refresh intent package.
+		vtxoOutpoint := wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("accum-refresh")),
+			Index: 0,
+		}
+		req := &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: []types.ForfeitRequest{{
+					VTXOOutpoint: &vtxoOutpoint,
+				}},
+				VTXOs: []types.VTXORequest{{
+					Amount:      40000,
+					PkScript:    []byte{0x51, 0x20},
+					ClientKey:   h.clientPubKey,
+					OperatorKey: h.operatorPubKey,
+					Expiry:      144,
+				}},
+			}},
+		}
+
+		result := h.receive(req)
+		require.True(t, result.IsOk(),
+			"expected Ok, got: %v", result.Err())
+
+		// Verify both boarding and refresh intents are present.
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		require.Len(t, assembly.Boarding, 1)
+		require.Len(t, assembly.Forfeits, 1)
+		require.Len(t, assembly.VTXOs, 1,
+			"1 from register intent")
+	})
+
+	t.Run("intent_creates_new_round_when_existing_in_registration_sent",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newActorTestHarness(t)
+			h.setupMockRoundStoreForStart()
+
+			err := h.start()
+			require.NoError(t, err)
+
+			// Place a round in RegistrationSentState with a
+			// temp key. Before the fix, findPendingRound would
+			// match this round and the IntentPackage would be
+			// silently self-looped.
+			h.setupRoundInRegistrationSentState()
+
+			// Now register an intent. With findAssemblingRound,
+			// this should create a new round rather than
+			// matching the RegistrationSent one.
+			vtxoOutpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte("new-round"),
+				),
+				Index: 0,
+			}
+			req := &RegisterIntentRequest{
+				Package: &IntentPackage{Intents: Intents{
+					Forfeits: []types.ForfeitRequest{{
+						VTXOOutpoint: &vtxoOutpoint,
+					}},
+					VTXOs: []types.VTXORequest{{
+						Amount:      40000,
+						PkScript:    []byte{0x51, 0x20},
+						ClientKey:   h.clientPubKey,
+						OperatorKey: h.operatorPubKey,
+						Expiry:      144,
+					}},
+				}},
+			}
+
+			result := h.receive(req)
+			require.True(
+				t, result.IsOk(),
+				"expected Ok, got: %v", result.Err(),
+			)
+
+			// We should now have two rounds: one in
+			// RegistrationSent and a new one in
+			// PendingRoundAssembly with our intent.
+			states := h.queryState()
+			require.Len(t, states, 2,
+				"should have 2 rounds")
+
+			var foundAssembly bool
+			for _, info := range states {
+				s := info.State
+				assembly, ok := s.(*PendingRoundAssembly)
+				if !ok {
+					continue
+				}
+
+				foundAssembly = true
+				require.Len(
+					t, assembly.Forfeits, 1,
+					"intent should be in new round",
+				)
+			}
+			require.True(t, foundAssembly,
+				"should have a PendingRoundAssembly round")
+		},
+	)
+
+	t.Run("duplicate_vtxo_pkscript_deduplicated", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+		h.setupMockRoundStoreForStart()
+
+		err := h.start()
+		require.NoError(t, err)
+
+		pkScript := []byte{0x51, 0x20, 0x01, 0x02}
+
+		// Send two intent packages with VTXOs sharing the same
+		// PkScript. The second should be deduplicated.
+		for i := 0; i < 2; i++ {
+			outpoint := wire.OutPoint{
+				Hash: chainhash.HashH(
+					[]byte(fmt.Sprintf("dup-vtxo-%d", i)),
+				),
+				Index: 0,
+			}
+			req := &RegisterIntentRequest{
+				Package: &IntentPackage{Intents: Intents{
+					Forfeits: []types.ForfeitRequest{{
+						VTXOOutpoint: &outpoint,
+					}},
+					VTXOs: []types.VTXORequest{{
+						Amount:      40000,
+						PkScript:    pkScript,
+						ClientKey:   h.clientPubKey,
+						OperatorKey: h.operatorPubKey,
+						Expiry:      144,
+					}},
+				}},
+			}
+
+			result := h.receive(req)
+			require.True(t, result.IsOk())
+		}
+
+		states := h.queryState()
+		tempState, exists := h.findTempState(states)
+		require.True(t, exists)
+
+		assembly, ok := tempState.State.(*PendingRoundAssembly)
+		require.True(t, ok)
+
+		// Forfeits should have 2 (different outpoints).
+		require.Len(t, assembly.Forfeits, 2)
+
+		// VTXOs should be deduplicated to 1 (same PkScript).
+		require.Len(t, assembly.VTXOs, 1,
+			"duplicate VTXOs by PkScript should be "+
+				"deduplicated")
 	})
 }

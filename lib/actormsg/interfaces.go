@@ -2,8 +2,8 @@ package actormsg
 
 import (
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 )
 
 // VTXOActorMsg is the message type for VTXO actors. Messages sent TO VTXO
@@ -44,48 +44,32 @@ type VTXOManagerMsg interface {
 	VTXOManagerMsg()
 }
 
-// TriggerVTXORefreshMsg is sent from the wallet actor to the round actor to
-// request refresh of specific VTXOs. Defined in actormsg to avoid import cycle
-// between wallet and round packages.
-type TriggerVTXORefreshMsg struct {
+// RegisterIntentMsg is sent from the wallet actor to the round actor to
+// register a pre-composed intent package. The wallet builds the full set of
+// forfeits, VTXO requests, and leave requests; the round actor validates
+// and registers it with the FSM.
+//
+// Defined in actormsg to avoid the wallet→round import cycle.
+type RegisterIntentMsg struct {
 	actor.BaseMessage
 
-	// TargetOutpoints specifies which VTXOs to refresh.
-	TargetOutpoints []wire.OutPoint
+	// Forfeits contains the VTXOs being forfeited as inputs.
+	Forfeits []types.ForfeitRequest
 
-	// ForceRefresh indicates this is a user-initiated refresh that should
-	// proceed regardless of expiry status.
-	ForceRefresh bool
+	// VTXOs is the templates for the VTXO(s) requested in the round.
+	VTXOs []types.VTXORequest
+
+	// Leaves contains the leave requests for VTXOs being exited to
+	// on-chain outputs.
+	Leaves []*types.LeaveRequest
 }
 
 // RoundReceivable implements the RoundReceivable marker interface.
-func (m *TriggerVTXORefreshMsg) RoundReceivable() {}
+func (m *RegisterIntentMsg) RoundReceivable() {}
 
 // MessageType returns the message type for logging.
-func (m *TriggerVTXORefreshMsg) MessageType() string {
-	return "TriggerVTXORefreshMsg"
-}
-
-// TriggerVTXOLeaveMsg is sent from the wallet actor to the round actor to
-// request leave (offboard) of specific VTXOs. The VTXOs will be forfeited and
-// their value sent to the specified destination output.
-type TriggerVTXOLeaveMsg struct {
-	actor.BaseMessage
-
-	// TargetOutpoints specifies which VTXOs to leave (offboard).
-	TargetOutpoints []wire.OutPoint
-
-	// DestOutput is the on-chain destination output where the funds will
-	// be sent. This output will be included in the batch transaction.
-	DestOutput *wire.TxOut
-}
-
-// RoundReceivable implements the RoundReceivable marker interface.
-func (m *TriggerVTXOLeaveMsg) RoundReceivable() {}
-
-// MessageType returns the message type for logging.
-func (m *TriggerVTXOLeaveMsg) MessageType() string {
-	return "TriggerVTXOLeaveMsg"
+func (m *RegisterIntentMsg) MessageType() string {
+	return "RegisterIntentMsg"
 }
 
 // TriggerBoardMsg is sent from the wallet actor to the round actor

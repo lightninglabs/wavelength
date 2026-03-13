@@ -80,38 +80,24 @@ func (e *RefreshVTXORequest) MessageType() string {
 	return "RefreshVTXORequest"
 }
 
-// LeaveVTXORequest is sent from a VTXO actor (or wallet) when the user wants
-// to exit the Ark by forfeiting a VTXO and receiving an on-chain output. This
-// is similar to RefreshVTXORequest except the output is on-chain rather than a
-// new VTXO.
-//
-// The leave flow uses the same forfeit mechanism as refresh: the old VTXO is
-// forfeited via a connector output, and the leave output is included directly
-// in the batch transaction.
-//
-// NOTE: This type is an actor message (RoundReceivable), not an FSM event.
-// The actor translates it into an IntentPackage{Forfeits: [1], Leaves: [1]}.
-type LeaveVTXORequest struct {
+// RegisterIntentRequest is the primary entry point for registering a
+// pre-composed intent package with the round actor. The caller (typically
+// the wallet) builds the full IntentPackage containing forfeits, VTXO
+// requests, and/or leave requests. The round actor validates and registers
+// it with the FSM, then notifies affected VTXO actors.
+type RegisterIntentRequest struct {
 	actor.BaseMessage
 
-	// VTXOOutpoint identifies the VTXO to forfeit.
-	VTXOOutpoint wire.OutPoint
-
-	// Amount is the VTXO value in satoshis.
-	Amount int64
-
-	// Output is the on-chain destination output that will be included in
-	// the batch transaction. This contains the value and pkScript for the
-	// leave output.
-	Output *wire.TxOut
+	// Package is the fully composed round intent bundle.
+	Package *IntentPackage
 }
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
-func (e *LeaveVTXORequest) RoundReceivable() {}
+func (e *RegisterIntentRequest) RoundReceivable() {}
 
 // MessageType returns the message type for logging.
-func (e *LeaveVTXORequest) MessageType() string {
-	return "LeaveVTXORequest"
+func (e *RegisterIntentRequest) MessageType() string {
+	return "RegisterIntentRequest"
 }
 
 // buildVTXORequestFromRefresh constructs a types.VTXORequest from a
@@ -268,7 +254,7 @@ type RoundClientConfig struct {
 	VTXOManager actor.TellOnlyRef[actor.Message]
 
 	// ActorSystem enables direct communication with VTXO actors via service
-	// keys. Used to send ForfeitRequestEvent, RefreshAcknowledgedEvent, and
+	// keys. Used to send PendingForfeitEvent, ForfeitRequestEvent, and
 	// ForfeitConfirmedEvent to specific VTXO actors.
 	ActorSystem *actor.ActorSystem
 
@@ -796,20 +782,26 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 	case *TimeoutMsg:
 		return a.handleTimeout(ctx, m)
 
+	case *RegisterIntentRequest:
+		return a.handleRegisterIntent(ctx, m)
+
+	// NOTE: RegisterIntentMsg mirrors the fields of IntentPackage.
+	// If either type gains new fields, this adapter must be updated
+	// to carry them through.
+	case *actormsg.RegisterIntentMsg:
+		return a.handleRegisterIntent(ctx, &RegisterIntentRequest{
+			Package: &IntentPackage{Intents: Intents{
+				Forfeits: m.Forfeits,
+				VTXOs:    m.VTXOs,
+				Leaves:   m.Leaves,
+			}},
+		})
+
 	case *RefreshVTXORequest:
 		return a.handleRefreshVTXORequest(ctx, m)
 
-	case *LeaveVTXORequest:
-		return a.handleLeaveVTXORequest(ctx, m)
-
 	case *ForfeitSignatureResponse:
 		return a.handleForfeitSignatureResponse(ctx, m)
-
-	case *actormsg.TriggerVTXORefreshMsg:
-		return a.handleTriggerVTXORefresh(ctx, m)
-
-	case *actormsg.TriggerVTXOLeaveMsg:
-		return a.handleTriggerVTXOLeave(ctx, m)
 
 	case *actormsg.TriggerBoardMsg:
 		return a.handleTriggerBoard(ctx, m)
@@ -1547,7 +1539,7 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			m.RoundID.WhenSome(func(id RoundID) {
 				roundIDStr = id.String()
 			})
-			a.log.WarnS(ctx, "Round failed", nil,
+			a.log.WarnS(ctx, "Round failed", m.OriginalError,
 				slog.String("round_id", roundIDStr),
 				slog.String("reason", m.Reason),
 				slog.Bool("recoverable", m.Recoverable))
@@ -1732,11 +1724,20 @@ func (a *RoundClientActor) processConfirmationRequest(
 // The VTXO is approaching expiry and needs to be included in the next batch
 // swap round. The actor translates the request into a single IntentPackage
 // containing one forfeit input and one new VTXO output.
+//
+// NOTE: Unlike handleRegisterIntent, no PendingForfeitEvent is sent back to
+// the VTXO actor here. The VTXO actor has already self-transitioned to
+// PendingForfeitState before sending this relay message, so the notification
+// would be a no-op.
 func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	req *RefreshVTXORequest) fn.Result[actormsg.RoundActorResp] {
 
-	// Find a pending round or create one if none exists.
-	roundFSM := a.findPendingRound()
+	// Find an assembling round (Idle or PendingRoundAssembly) or create
+	// one. We must not use findPendingRound here because it matches by
+	// temp-key status, which includes rounds in RegistrationSentState.
+	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// silently, discarding the intent.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
@@ -1751,6 +1752,7 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	pkg := &IntentPackage{Intents: Intents{
 		Forfeits: []types.ForfeitRequest{{
 			VTXOOutpoint: &req.VTXOOutpoint,
+			Amount:       btcutil.Amount(req.Amount),
 		}},
 		VTXOs: []types.VTXORequest{
 			buildVTXORequestFromRefresh(req),
@@ -1767,60 +1769,86 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 		slog.String("outpoint", req.VTXOOutpoint.String()),
 		slog.Int64("amount", req.Amount))
 
-	// Send acknowledgment back to the VTXO actor using Router pattern.
-	// The RoundID is empty since we haven't assigned it to a round yet.
-	if a.cfg.ActorSystem != nil {
-		serviceKey := actormsg.VTXOActorServiceKey(req.VTXOOutpoint)
-		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-			ctx, &RefreshAcknowledgedEvent{
-				RoundID: "",
-			},
-		)
-		if err != nil {
-			a.log.WarnS(ctx, "Failed to send refresh ack to VTXO actor",
-				err,
-				slog.String("outpoint", req.VTXOOutpoint.String()))
-		}
-	}
-
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
 
-// handleLeaveVTXORequest processes a leave (offboard) request from a VTXO
-// actor. The actor translates the request into a single IntentPackage
-// containing one forfeit input and one leave output.
-func (a *RoundClientActor) handleLeaveVTXORequest(ctx context.Context,
-	req *LeaveVTXORequest) fn.Result[actormsg.RoundActorResp] {
+// handleRegisterIntent processes a pre-composed intent package from the
+// wallet. The wallet has already loaded VTXO descriptors and built the full
+// IntentPackage. The round actor registers it with the FSM and notifies
+// affected VTXO actors.
+//
+// If FSM registration succeeds but a PendingForfeitEvent notification fails
+// for one VTXO, the handler logs the failure and continues notifying the
+// remaining VTXOs. The round FSM already has the intent, so the forfeit
+// will proceed when the round advances. The missed VTXO will receive the
+// concrete ForfeitRequestEvent later and transition directly from Live to
+// Forfeiting via the existing fast path.
+func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
+	req *RegisterIntentRequest) fn.Result[actormsg.RoundActorResp] {
 
-	// Find a pending round or create one if none exists.
-	roundFSM := a.findPendingRound()
+	if req.Package == nil || req.Package.isEmpty() {
+		return fn.Err[actormsg.RoundActorResp](
+			fmt.Errorf("empty intent package"),
+		)
+	}
+
+	// Find an assembling round (Idle or PendingRoundAssembly) or create
+	// one. We must not use findPendingRound here because it matches by
+	// temp-key status, which includes rounds in RegistrationSentState.
+	// Feeding an IntentPackage to RegistrationSentState would self-loop
+	// silently, discarding the intent.
+	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
 		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-				"failed to create round for leave: %w", err,
+				"failed to create round for intent: %w", err,
 			))
 		}
 	}
 
-	// Bundle the forfeit input and leave output atomically.
-	pkg := &IntentPackage{Intents: Intents{
-		Forfeits: []types.ForfeitRequest{{
-			VTXOOutpoint: &req.VTXOOutpoint,
-		}},
-		Leaves: []*types.LeaveRequest{{Output: req.Output}},
-	}}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	// Feed the pre-composed package to the FSM.
+	err := a.askEventAndProcessOutbox(ctx, roundFSM, req.Package)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"FSM error processing leave package: %w", err,
+			"FSM error processing intent package: %w", err,
 		))
 	}
 
-	a.log.InfoS(ctx, "Queued VTXO for leave",
-		slog.String("outpoint", req.VTXOOutpoint.String()),
-		slog.Int64("amount", req.Amount))
+	// Notify each forfeited VTXO that it is now pending cooperative
+	// consumption. This is done after FSM registration succeeds so we
+	// never mark a VTXO pending for a round that rejected the intent.
+	// We use a detached context so that notifications are not abandoned
+	// if the caller's request context expires after FSM registration.
+	if a.cfg.ActorSystem != nil {
+		tellCtx := context.WithoutCancel(ctx)
+		for _, forfeit := range req.Package.Forfeits {
+			if forfeit.VTXOOutpoint == nil {
+				continue
+			}
+
+			outpoint := *forfeit.VTXOOutpoint
+			serviceKey := actormsg.VTXOActorServiceKey(outpoint)
+			err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
+				tellCtx, &PendingForfeitEvent{},
+			)
+			if err != nil {
+				a.log.WarnS(ctx,
+					"Failed to notify VTXO of pending "+
+						"forfeit", err,
+					slog.String(
+						"outpoint",
+						outpoint.String(),
+					))
+			}
+		}
+	}
+
+	a.log.InfoS(ctx, "Registered intent package",
+		slog.Int("forfeits", len(req.Package.Forfeits)),
+		slog.Int("vtxos", len(req.Package.VTXOs)),
+		slog.Int("leaves", len(req.Package.Leaves)))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
@@ -1858,92 +1886,6 @@ func (a *RoundClientActor) handleForfeitSignatureResponse(ctx context.Context,
 	a.log.InfoS(ctx, "Collected forfeit signature",
 		slog.String("outpoint", resp.VTXOOutpoint.String()),
 		slog.String("round_id", roundIDStr))
-
-	return fn.Ok[actormsg.RoundActorResp](nil)
-}
-
-// handleTriggerVTXORefresh processes a refresh trigger request from the wallet
-// actor. For each target outpoint, we send TriggerRefreshEvent to the VTXO
-// actor via its service key. The VTXO actor then emits RefreshVTXORequest back
-// to us through its outbox.
-func (a *RoundClientActor) handleTriggerVTXORefresh(ctx context.Context,
-	cmd *actormsg.TriggerVTXORefreshMsg) fn.Result[actormsg.RoundActorResp] {
-
-	if a.cfg.ActorSystem == nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"ActorSystem not configured, cannot trigger VTXO refresh",
-		))
-	}
-
-	triggeredCount := 0
-	for _, outpoint := range cmd.TargetOutpoints {
-		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
-		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-			ctx, &TriggerRefreshEvent{
-				ForceRefresh: cmd.ForceRefresh,
-			},
-		)
-		if err != nil {
-			a.log.WarnS(ctx,
-				"Failed to send refresh trigger "+
-					"to VTXO actor",
-				err,
-				slog.String(
-					"outpoint",
-					outpoint.String(),
-				))
-		}
-
-		a.log.InfoS(ctx, "Sent refresh trigger to VTXO actor",
-			slog.String("outpoint", outpoint.String()),
-			slog.Bool("force", cmd.ForceRefresh))
-
-		triggeredCount++
-	}
-
-	a.log.InfoS(ctx, "Triggered VTXO refresh",
-		slog.Int("count", triggeredCount))
-
-	return fn.Ok[actormsg.RoundActorResp](nil)
-}
-
-// handleTriggerVTXOLeave processes a leave (offboard) trigger request from the
-// wallet actor. For each target outpoint, we send TriggerLeaveEvent to the VTXO
-// actor via its service key. The VTXO actor then emits LeaveVTXORequest back to
-// us through its outbox.
-func (a *RoundClientActor) handleTriggerVTXOLeave(ctx context.Context,
-	cmd *actormsg.TriggerVTXOLeaveMsg) fn.Result[actormsg.RoundActorResp] {
-
-	if a.cfg.ActorSystem == nil {
-		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
-			"ActorSystem not configured, cannot trigger VTXO leave",
-		))
-	}
-
-	triggeredCount := 0
-	for _, outpoint := range cmd.TargetOutpoints {
-		serviceKey := actormsg.VTXOActorServiceKey(outpoint)
-		err := serviceKey.Ref(a.cfg.ActorSystem).Tell(
-			ctx, &TriggerLeaveEvent{
-				DestOutput: cmd.DestOutput,
-			},
-		)
-		if err != nil {
-			a.log.WarnS(ctx, "Failed to send leave trigger "+
-				"to VTXO actor", err,
-				slog.String(
-					"outpoint", outpoint.String(),
-				))
-		}
-
-		a.log.InfoS(ctx, "Sent leave trigger to VTXO actor",
-			slog.String("outpoint", outpoint.String()))
-
-		triggeredCount++
-	}
-
-	a.log.InfoS(ctx, "Triggered VTXO leave",
-		slog.Int("count", triggeredCount))
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
 }
