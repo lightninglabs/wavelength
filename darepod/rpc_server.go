@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -17,6 +18,7 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -696,10 +698,18 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"amount must be positive")
 	}
 
+	// Fetch operator terms early so pubkey destinations can derive
+	// VTXO-compatible pkScripts.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
+	}
+
 	// Resolve the recipient's pkScript from the destination
 	// oneof.
 	pkScript, err := r.resolveOutputPkScript(
-		req.Recipient,
+		req.Recipient, terms,
 	)
 	if err != nil {
 		return nil, err
@@ -725,13 +735,6 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	if r.server.vtxoStore == nil {
 		return nil, status.Errorf(codes.Internal,
 			"VTXO store not initialized")
-	}
-
-	// Fetch operator terms for the checkpoint policy.
-	terms, err := r.server.fetchOperatorTerms(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"unable to fetch operator terms: %v", err)
 	}
 
 	policy := scripts.CheckpointPolicy{
@@ -870,9 +873,11 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 
 // resolveOutputPkScript derives a pkScript from the Output's
 // destination oneof. It supports address, raw pubkey, and raw
-// pkScript destinations.
+// pkScript destinations. The operator terms are required for
+// pubkey destinations to build a VTXO-compatible taproot output.
 func (r *RPCServer) resolveOutputPkScript(
-	out *daemonrpc.Output) ([]byte, error) {
+	out *daemonrpc.Output,
+	terms *types.OperatorTerms) ([]byte, error) {
 
 	switch d := out.Destination.(type) {
 	case *daemonrpc.Output_Address:
@@ -896,6 +901,36 @@ func (r *RPCServer) resolveOutputPkScript(
 		}
 
 		return pkScript, nil
+
+	case *daemonrpc.Output_Pubkey:
+		if len(d.Pubkey) == 0 {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"pubkey is empty",
+			)
+		}
+
+		recipientKey, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"invalid pubkey: %v", err,
+			)
+		}
+
+		tapKey, err := scripts.VTXOTapKey(
+			recipientKey, terms.PubKey,
+			terms.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"unable to derive VTXO tap key: %v",
+				err,
+			)
+		}
+
+		return txscript.PayToTaprootScript(tapKey)
 
 	case *daemonrpc.Output_PkScript:
 		if len(d.PkScript) == 0 {
