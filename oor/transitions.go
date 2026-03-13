@@ -93,8 +93,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		signReq := &RequestArkSignatures{
-			ArkPSBT:        ark,
-			TransferInputs: evt.VTXOInputs,
+			ArkPSBT:         ark,
+			CheckpointPSBTs: checkpoints,
+			TransferInputs:  evt.VTXOInputs,
 		}
 
 		return &StateTransition{
