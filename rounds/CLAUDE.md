@@ -15,6 +15,8 @@ confirmation monitoring.
 - `OutboxEvent` — Outbound side effects (ClientSuccessResp, BuildBatchReq, etc.).
 - `ActorMsg` — Messages sent to the round actor (JoinRoundRequest, nonces, sigs).
 - `JoinRoundRequestFromProto`, `NoncesFromProto`, `PartialSigsFromProto`, etc. — Exported proto→domain conversion helpers in `proto_convert.go`, called from `server_rounds.go` `AddEnvelopeRoute` Adapt closures.
+- `BoardingInputLocker` — Interface for locking boarding inputs to prevent double-spending across concurrent rounds. Implemented by `inMemoryBoardingLocker` in the root package.
+- `Environment.HeaderVerifier` — `proof.HeaderVerifier` for TxProof SPV validation when no `ChainSource` is available. Wired from `lndbackend.NewLndHeaderVerifier`.
 
 ## Relationships
 
@@ -33,6 +35,8 @@ confirmation monitoring.
 - VTXO locks must be acquired before batch building and released on failure.
 - Round state is checkpointed atomically; crash before checkpoint means no partial state persists.
 - Boarding input signatures are only broadcast after all forfeit signatures are collected.
+- TxProof validation (when no ChainSource) requires a non-nil `HeaderVerifier` and enforces `MinBoardingConfirmations` and `BoardingExitDelaySafetyMargin` checks matching the ChainSource path.
+- `ValidateBoardingRequest` takes a `currentHeight` parameter for confirmation depth checks in both ChainSource and TxProof paths.
 
 ## Deep Docs
 
