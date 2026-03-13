@@ -100,7 +100,7 @@ Client requests follow one of two dispatch models:
    ↓
 5. Actor processes event → state transition → outbox messages
    ↓
-6. OutboxHandler executes side effects (DB, wallet, client notify via bridge)
+6. FSM transitions execute side effects inline (DB, wallet, client notify via bridge)
 ```
 
 **Synchronous Request-Response (Operator)** — Used by indexer and ArkService:
