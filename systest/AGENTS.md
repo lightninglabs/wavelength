@@ -16,6 +16,8 @@ backends and client connections.
   Tell and waits for async responses through the bridge subscription.
 - `MessageTranscript` — Records all server-to-client and client-to-server
   messages for test assertions.
+- `WithShouldSeal(pred)` — Harness option injecting a `rounds.SealPredicate` for early round sealing tests.
+- `WithRegistrationTimeout(d)` — Harness option overriding the registration timeout (used with seal predicates to prove the predicate fired, not the timer).
 
 ## Relationships
 

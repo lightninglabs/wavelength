@@ -141,6 +141,15 @@ type RoundsConfig struct {
 	// ConfirmationTarget is the number of on-chain confirmations
 	// required before transitioning a round to confirmed.
 	ConfirmationTarget uint32 `mapstructure:"confirmationtarget"`
+
+	// MaxRoundClients seals a round as soon as this many clients
+	// have joined. Zero disables the limit.
+	MaxRoundClients int `mapstructure:"maxroundclients"`
+
+	// MaxRoundOutputAmount seals a round once the total output
+	// value (VTXOs + leaves) reaches this amount in satoshis.
+	// Zero disables the limit.
+	MaxRoundOutputAmount btcutil.Amount `mapstructure:"maxroundoutputamount"` //nolint:ll
 }
 
 // DefaultRoundsConfig returns a RoundsConfig with sensible defaults
@@ -164,6 +173,8 @@ func DefaultRoundsConfig() *RoundsConfig {
 		ConfTarget:                    6,
 		MinConfs:                      1,
 		ConfirmationTarget:            1,
+		MaxRoundClients:               128,
+		MaxRoundOutputAmount:          0,
 	}
 }
 

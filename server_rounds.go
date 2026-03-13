@@ -175,6 +175,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		MinConfs:            rc.MinConfs,
 		ConfirmationTarget:  rc.ConfirmationTarget,
 		BatchWatcher:        fn.Some(s.batchWatcherRef),
+		ShouldSeal:          sealPredicateFromConfig(rc),
 	}
 
 	// Create and spawn the rounds actor.
@@ -533,6 +534,38 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 			},
 		},
 	)
+}
+
+// sealPredicateFromConfig builds a composite seal predicate from the
+// rounds configuration. Returns nil when no seal conditions are
+// configured, which means the round only seals on registration timeout.
+func sealPredicateFromConfig(rc *RoundsConfig) rounds.SealPredicate {
+	var preds []rounds.SealPredicate
+
+	if rc.MaxRoundClients > 0 {
+		preds = append(
+			preds,
+			rounds.MaxClients(rc.MaxRoundClients),
+		)
+	}
+
+	if rc.MaxRoundOutputAmount > 0 {
+		preds = append(
+			preds,
+			rounds.MaxOutputAmount(rc.MaxRoundOutputAmount),
+		)
+	}
+
+	switch len(preds) {
+	case 0:
+		return nil
+
+	case 1:
+		return preds[0]
+
+	default:
+		return rounds.AnySealPredicate(preds...)
+	}
 }
 
 // networkToChainParams maps a network name to btcd chain parameters.
