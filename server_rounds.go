@@ -168,13 +168,13 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		RoundStore:          roundStore,
 		VTXOStore:           vtxoStore,
 		VTXOLocker:          s.vtxoLocker,
-		WalletController:   walletCtrl,
-		FeeEstimator:       feeEstimator,
-		WalletAccount:      "",
-		ConfTarget:         rc.ConfTarget,
-		MinConfs:           rc.MinConfs,
-		ConfirmationTarget: rc.ConfirmationTarget,
-		BatchWatcher:       fn.Some(s.batchWatcherRef),
+		WalletController:    walletCtrl,
+		FeeEstimator:        feeEstimator,
+		WalletAccount:       "",
+		ConfTarget:          rc.ConfTarget,
+		MinConfs:            rc.MinConfs,
+		ConfirmationTarget:  rc.ConfirmationTarget,
+		BatchWatcher:        fn.Some(s.batchWatcherRef),
 	}
 
 	// Create and spawn the rounds actor.
@@ -238,7 +238,7 @@ func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 		SignatureCollectionTimeout:    rc.SignatureCollectionTimeout,
 		MinVTXOAmount:                 btcutil.Amount(rc.MinVTXOAmount),
 		MaxVTXOAmount:                 btcutil.Amount(rc.MaxVTXOAmount),
-		MinOperatorFee:                btcutil.Amount(rc.MinOperatorFee),
+		MinOperatorFee:                btcutil.Amount(rc.MinOperatorFee), //nolint:ll
 	}
 }
 
