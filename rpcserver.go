@@ -207,8 +207,6 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 	}
 
 	if r.server.lnd != nil {
-		resp.Pubkey = r.server.lnd.NodePubkey[:]
-
 		_, height, err := r.server.lnd.ChainKit.GetBestBlock(
 			ctx,
 		)
@@ -219,6 +217,32 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			resp.BlockHeight = uint32(height)
 		}
 	}
+
+	// Populate operator terms from the resolved batch terms.
+	// These are set during rounds subsystem setup and required
+	// by clients before they can create round actors.
+	if t := r.server.terms; t != nil {
+		// The pubkey field is the Ark operator key derived
+		// from LND's wallet, not the LND node identity key.
+		// Clients use this to construct boarding addresses
+		// and validate round signatures.
+		resp.Pubkey = t.OperatorKey.PubKey.
+			SerializeCompressed()
+
+		resp.SweepDelay = t.SweepDelay
+		resp.BoardingExitDelay = t.BoardingExitDelay
+		resp.VtxoExitDelay = t.VTXOExitDelay
+		resp.DustLimit = int64(t.MinVTXOAmount)
+		resp.MinBoardingAmount = int64(t.MinVTXOAmount)
+		resp.MaxBoardingAmount = int64(t.MaxVTXOAmount)
+		resp.MinConfirmations = t.MinBoardingConfirmations
+		resp.MinOperatorFee = int64(t.MinOperatorFee)
+
+		resp.SweepKey = t.SweepKey.PubKey.
+			SerializeCompressed()
+	}
+
+	resp.ForfeitScript = r.server.forfeitScript
 
 	return resp, nil
 }

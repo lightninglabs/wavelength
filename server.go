@@ -16,6 +16,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -95,6 +96,16 @@ type Server struct {
 		batchwatcher.BatchWatcherMsg,
 		batchwatcher.BatchWatcherResp,
 	]
+
+	// terms holds the batch terms (sweep delay, exit delays, keys,
+	// etc.) resolved during rounds subsystem setup. Stored here so
+	// the GetInfo RPC can return them to clients.
+	terms *batch.Terms
+
+	// forfeitScript is the P2TR output script that clients must
+	// use for the penalty output in forfeit transactions. Derived
+	// from the operator key during rounds setup.
+	forfeitScript []byte
 
 	// roundsActor is the server rounds actor that drives the round
 	// FSM lifecycle: registration, signing, broadcast, and
