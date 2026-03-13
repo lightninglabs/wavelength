@@ -9,16 +9,13 @@ set -e
 DIR="$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd)"
 REPO_ROOT="$(cd "$DIR/.." && pwd)"
 
-# Use golang image to extract versions from go.mod.
-GO_IMAGE=docker.io/library/golang:1.25.3-alpine
-
-echo "Extracting protobuf version from go.mod..."
-PROTOBUF_VERSION=$(docker run --rm -v "$REPO_ROOT":/build -w /build $GO_IMAGE \
-  go list -f '{{.Version}}' -m google.golang.org/protobuf)
-
-echo "Extracting grpc-gateway version from go.mod..."
-GRPC_GATEWAY_VERSION=$(docker run --rm -v "$REPO_ROOT":/build -w /build $GO_IMAGE \
-  go list -f '{{.Version}}' -m github.com/grpc-ecosystem/grpc-gateway/v2)
+# Extract dependency versions directly from go.mod instead of spinning up
+# Docker containers. This avoids two ~10s docker run calls per invocation.
+echo "Extracting dependency versions from go.mod..."
+PROTOBUF_VERSION=$(grep -E '^\s+google\.golang\.org/protobuf\s+' "$REPO_ROOT/go.mod" \
+  | awk '{print $2}')
+GRPC_GATEWAY_VERSION=$(grep -E '^\s+github\.com/grpc-ecosystem/grpc-gateway/v2\s+' "$REPO_ROOT/go.mod" \
+  | awk '{print $2}')
 
 echo "Building protobuf compiler docker image..."
 docker build -t darepo-protobuf-builder \
