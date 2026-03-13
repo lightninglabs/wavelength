@@ -30,6 +30,15 @@ RUN cd /tmp \
   && go install golang.org/x/tools/cmd/goimports@v0.1.7 \
   && chmod -R 777 /tmp/build/
 
+# Build the repo-local mailbox RPC protoc plugin into the image so it
+# doesn't need to be compiled on every invocation. The .dockerignore
+# limits the context to go.mod, go.sum, and the plugin source.
+COPY go.mod go.sum /tmp/mailboxrpc/
+COPY cmd/protoc-gen-mailboxrpc/ /tmp/mailboxrpc/cmd/protoc-gen-mailboxrpc/
+RUN cd /tmp/mailboxrpc \
+  && go install -buildvcs=false ./cmd/protoc-gen-mailboxrpc \
+  && rm -rf /tmp/mailboxrpc
+
 WORKDIR /build
 
 CMD ["/bin/bash", "/build/scripts/gen_protos.sh"]
