@@ -67,10 +67,12 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// TODO(roasbeef): Wire the operator key and signer from
 	// LND once key management is in place.
 	driver := oor.NewDriver(oor.DriverCfg{
-		Locker:          s.vtxoLocker,
-		Store:           vtxoRecordStore,
-		SessionStore:    sessionStore,
-		RecipientEvents: recipientEvents,
+		Locker:            s.vtxoLocker,
+		Store:             vtxoRecordStore,
+		SessionStore:      sessionStore,
+		RecipientEvents:   recipientEvents,
+		RecipientNotifier: s.newOORRecipientNotifier(),
+		Logger:            oorLog,
 	})
 
 	// Build the OOR actor configuration. The checkpoint policy
@@ -85,6 +87,7 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		OutboxHandler:    driver,
 		DeliveryStore:    deliveryStore,
 		SessionStore:     sessionStore,
+		ClientsConn:      s.clientBridge,
 	}
 
 	// Register the OOR actor with the actor system via its

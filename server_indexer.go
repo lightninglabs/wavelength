@@ -316,8 +316,6 @@ var _ oor.RecipientNotifier = (*indexerRecipientNotifier)(nil)
 // newOORRecipientNotifier builds the optional OOR->indexer notifier bridge.
 //
 // Returns nil if the indexer operator is not initialized.
-//
-//nolint:unused
 func (s *Server) newOORRecipientNotifier() oor.RecipientNotifier {
 	if s.indexerOperator == nil {
 		return nil
