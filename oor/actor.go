@@ -95,6 +95,11 @@ type TransferCoordinatorActor struct {
 var _ actor.ActorBehavior[OORDurableMsg, ActorResp] = (
 	*TransferCoordinatorActor)(nil)
 
+// log returns the configured logger or a disabled fallback.
+func (a *TransferCoordinatorActor) log() btclog.Logger {
+	return a.cfg.Log.UnwrapOr(btclog.Disabled)
+}
+
 // Actor is a backward-compatible alias for TransferCoordinatorActor.
 type Actor = TransferCoordinatorActor
 
@@ -104,10 +109,6 @@ type Actor = TransferCoordinatorActor
 // the durable runtime and begin processing.
 func NewTransferCoordinatorActor(
 	cfg ActorCfg) *TransferCoordinatorActor {
-
-	if cfg.Logger == nil {
-		cfg.Logger = btclog.Disabled
-	}
 
 	actorID := cfg.ActorID
 	if actorID == "" {
@@ -284,6 +285,11 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 
 	sessionID := SessionID(validated.ArkTxid)
 
+	a.log().InfoS(ctx, "Processing submit request",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
+		slog.Int("num_descs", len(msg.VTXOSigningDescriptors)))
+
 	session, err := a.getOrCreateSessionFSM(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -317,6 +323,10 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 			CoSignedCheckpointPSBTs: s.CoSignedCheckpointPSBTs,
 		}
 
+		a.log().InfoS(ctx, "Submit co-signed",
+			btclog.Hex("session_id", sessionID[:]),
+			slog.Int("num_co_signed", len(s.CoSignedCheckpointPSBTs)))
+
 		// Push the response to the submitting client via clientconn
 		// if configured. This is the primary delivery path for
 		// bridge/RPC callers using Tell.
@@ -330,6 +340,10 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		a.sessionsMu.Lock()
 		delete(a.sessions, sessionID)
 		a.sessionsMu.Unlock()
+
+		a.log().DebugS(ctx, "Submit failed",
+			btclog.Hex("session_id", sessionID[:]),
+			slog.String("reason", s.Reason))
 
 		return nil, fmt.Errorf("submit failed: %s", s.Reason)
 
@@ -347,6 +361,10 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 	if msg == nil {
 		return nil, fmt.Errorf("request must be provided")
 	}
+
+	a.log().InfoS(ctx, "Processing finalize request",
+		btclog.Hex("session_id", msg.SessionID[:]),
+		slog.Int("num_checkpoints", len(msg.FinalCheckpointPSBTs)))
 
 	a.sessionsMu.RLock()
 	session, ok := a.sessions[msg.SessionID]
@@ -386,6 +404,9 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 			SessionID: msg.SessionID,
 		}
 
+		a.log().InfoS(ctx, "Session finalized and cleaned up",
+			btclog.Hex("session_id", msg.SessionID[:]))
+
 		// Push the response to the requesting client via clientconn
 		// if configured.
 		a.pushClientResponse(ctx, resp)
@@ -408,6 +429,10 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		a.sessionsMu.Lock()
 		delete(a.sessions, msg.SessionID)
 		a.sessionsMu.Unlock()
+
+		a.log().DebugS(ctx, "Finalize failed",
+			btclog.Hex("session_id", msg.SessionID[:]),
+			slog.String("reason", s.Reason))
 
 		return nil, fmt.Errorf("finalize failed: %s", s.Reason)
 
@@ -432,7 +457,7 @@ func (a *TransferCoordinatorActor) pushClientResponse(ctx context.Context,
 		ctx, &clientconn.SendServerEventRequest{Message: msg},
 	)
 	if tellErr != nil {
-		a.cfg.Logger.WarnS(ctx,
+		a.log().WarnS(ctx,
 			"Failed to push OOR response via clientconn",
 			tellErr,
 			slog.String("client_id", string(msg.ClientID())),
@@ -547,7 +572,9 @@ func (a *TransferCoordinatorActor) createSessionFSM(ctx context.Context,
 		CheckpointPolicy: a.cfg.CheckpointPolicy,
 	}
 
-	fsmLogger := a.cfg.Logger.WithPrefix(sessionID.LogPrefix())
+	fsmLogger := a.cfg.Log.UnwrapOr(btclog.Disabled).WithPrefix(
+		sessionID.LogPrefix(),
+	)
 	fsmCfg := StateMachineCfg{
 		InitialState: initial,
 		Env:          env,
@@ -643,6 +670,9 @@ func (a *TransferCoordinatorActor) handleRestart(ctx context.Context,
 	if err != nil {
 		return err
 	}
+
+	a.log().InfoS(ctx, "Restoring active OOR sessions",
+		slog.Int("num_sessions", len(active)))
 
 	for _, session := range active {
 		var state State
