@@ -141,6 +141,12 @@ type ConnectorConfig struct {
 	// ResponseWaiterTTL bounds how long a response waiter (or buffered
 	// early response) is retained before stale cleanup.
 	ResponseWaiterTTL time.Duration
+
+	// HeartbeatInterval is the interval between heartbeat sends to
+	// the server. A zero or negative value uses
+	// DefaultHeartbeatInterval (30 s). The server's staleness
+	// threshold should be at least 2× this interval.
+	HeartbeatInterval time.Duration
 }
 
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
