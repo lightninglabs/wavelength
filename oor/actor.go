@@ -92,8 +92,7 @@ type TransferCoordinatorActor struct {
 
 // Compile-time check that TransferCoordinatorActor implements the durable
 // actor behavior interface.
-var _ actor.ActorBehavior[OORDurableMsg, ActorResp] = (
-	*TransferCoordinatorActor)(nil)
+var _ actor.ActorBehavior[OORDurableMsg, ActorResp] = (*TransferCoordinatorActor)(nil)
 
 // log returns the configured logger or a disabled fallback.
 func (a *TransferCoordinatorActor) log() btclog.Logger {

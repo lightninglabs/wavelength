@@ -103,7 +103,9 @@ func TestFinalizeOORRequestRoundTrip(t *testing.T) {
 	sessionHash[0] = 0xFE
 
 	original := &FinalizeOORRequest{
-		ClientID:             clientconn.ClientID("test-client-finalize"),
+		ClientID: clientconn.ClientID(
+			"test-client-finalize",
+		),
 		SessionID:            SessionID(sessionHash),
 		FinalCheckpointPSBTs: []*psbt.Packet{makeTestPSBT(t, 9)},
 	}

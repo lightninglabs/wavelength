@@ -24,11 +24,3 @@ func newActorDeliveryStoreForTest(t testing.TB,
 
 	return store
 }
-
-// newActorDeliveryStoreWithNewDB creates a fresh actor delivery store backed
-// by a new test database.
-func newActorDeliveryStoreWithNewDB(t testing.TB) actor.DeliveryStore {
-	t.Helper()
-
-	return newActorDeliveryStoreForTest(t, db.NewTestDB(t))
-}

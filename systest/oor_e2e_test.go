@@ -612,10 +612,10 @@ func TestOORClientServerCheckpointE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	adaptor := &bridgeOOROutbox{
-		t:        t,
-		clientID: oorTestClientID,
-		server:   server,
-		bridge:   bridge,
+		t:            t,
+		clientID:     oorTestClientID,
+		server:       server,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -862,10 +862,10 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	adaptor := &bridgeOOROutbox{
-		t:        t,
-		clientID: aliceClientID,
-		server:   server,
-		bridge:   bridge,
+		t:            t,
+		clientID:     aliceClientID,
+		server:       server,
+		bridge:       bridge,
 		senderSigner: aliceSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -1014,10 +1014,10 @@ func TestOORAliceBobRoundTripE2E(t *testing.T) {
 	const bobClientID = clientconn.ClientID("bob-oor")
 
 	returnAdaptor := &bridgeOOROutbox{
-		t:        t,
-		clientID: bobClientID,
-		server:   server,
-		bridge:   bridge,
+		t:            t,
+		clientID:     bobClientID,
+		server:       server,
+		bridge:       bridge,
 		senderSigner: bobSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  bobOutpoint,
@@ -1273,10 +1273,10 @@ func TestOORClientResumeAfterServerCoSignE2E(t *testing.T) {
 	// co-signed checkpoint bytes, and the client should complete to
 	// finalization.
 	adaptor := &bridgeOOROutbox{
-		t:        t,
-		clientID: oorTestClientID,
-		server:   server,
-		bridge:   bridge,
+		t:            t,
+		clientID:     oorTestClientID,
+		server:       server,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,
@@ -1642,10 +1642,10 @@ func TestOORClientResumeAfterServerRestartE2E(t *testing.T) {
 	require.Equal(t, dropper.coSignedCheckpointBytes, restoredCoSignedBytes)
 
 	adaptor := &bridgeOOROutbox{
-		t:        t,
-		clientID: oorTestClientID,
-		server:   server2,
-		bridge:   bridge,
+		t:            t,
+		clientID:     oorTestClientID,
+		server:       server2,
+		bridge:       bridge,
 		senderSigner: senderSigner,
 		serverSignDescs: []serveroor.VTXOSigningDescriptor{{
 			Outpoint:  minted.Outpoint,

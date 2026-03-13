@@ -208,13 +208,13 @@ func (s *CoSignedState) ProcessEvent(ctx context.Context, event Event,
 		return &StateTransition{
 			NextState: &AwaitingRecipientsNotifyState{
 				ArkPSBT:              s.ArkPSBT,
-				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs, //nolint:ll
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&NotifyRecipientsReq{
 						ArkPSBT:              s.ArkPSBT,
-						FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+						FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs, //nolint:ll
 					},
 				},
 			}),
@@ -393,7 +393,7 @@ func (s *AwaitingRecipientsNotifyState) ProcessEvent(ctx context.Context,
 				Outbox: []OutboxEvent{
 					&NotifyRecipientsReq{
 						ArkPSBT:              s.ArkPSBT,
-						FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+						FinalCheckpointPSBTs: s.FinalCheckpointPSBTs, //nolint:ll
 					},
 				},
 			}),

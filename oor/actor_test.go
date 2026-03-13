@@ -413,7 +413,7 @@ func TestActorHappyPath(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -425,7 +425,7 @@ func TestActorHappyPath(t *testing.T) {
 		t.Fatalf("unexpected submit response type: %T", submitRaw)
 	}
 
-	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -455,7 +455,7 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -484,7 +484,7 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -512,7 +512,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -529,7 +529,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -562,7 +562,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -578,7 +578,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 
 	// First finalize attempt fails because of the recipient event store
 	// error.
-	finalizeResp := actor.Receive(ctx,finalizeReq)
+	finalizeResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, finalizeResp.IsErr())
 	require.ErrorContains(
 		t, finalizeResp.Err(),
@@ -594,7 +594,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 	// Clear the error and retry succeeds.
 	recipientEvents.err = nil
 
-	retryResp := actor.Receive(ctx,finalizeReq)
+	retryResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, retryResp.IsOk())
 
 	// Session is cleaned up from the map after reaching
@@ -635,7 +635,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -648,7 +648,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	}
 
 	// First finalize fails on session store persistence.
-	finalizeResp := actor.Receive(ctx,finalizeReq)
+	finalizeResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, finalizeResp.IsErr())
 
 	// Session should still be in a retryable state.
@@ -657,7 +657,7 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 	require.IsType(t, &CoSignedState{}, state)
 
 	// Retry succeeds.
-	retryResp := actor.Receive(ctx,finalizeReq)
+	retryResp := actor.Receive(ctx, finalizeReq)
 	require.True(t, retryResp.IsOk())
 
 	// Session is cleaned up from the map after reaching
@@ -690,7 +690,7 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -702,12 +702,12 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	}
 
-	firstFinalize := actor.Receive(ctx,finalizeReq)
+	firstFinalize := actor.Receive(ctx, finalizeReq)
 	require.True(t, firstFinalize.IsOk())
 
 	// Session has been removed from memory after terminalization; retry
 	// should succeed via durable store fallback.
-	retryFinalize := actor.Receive(ctx,finalizeReq)
+	retryFinalize := actor.Receive(ctx, finalizeReq)
 	require.True(t, retryFinalize.IsOk())
 
 	_, ok := retryFinalize.UnwrapOr(nil).(*FinalizeOORResponse)
@@ -740,7 +740,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -748,7 +748,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 
 	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
 
-	firstFinalize := actor.Receive(ctx,&FinalizeOORRequest{
+	firstFinalize := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
 	})
@@ -757,7 +757,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	mismatch := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
 	mismatch.Inputs[0].FinalScriptWitness = []byte{0x02}
 
-	retryFinalize := actor.Receive(ctx,&FinalizeOORRequest{
+	retryFinalize := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{mismatch},
 	})
@@ -801,7 +801,7 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -847,7 +847,7 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -879,7 +879,7 @@ func TestActorSubmitMissingAnchorAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -939,7 +939,7 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -994,7 +994,7 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 	})
@@ -1075,7 +1075,7 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx,&SubmitOORRequest{
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
 		ArkPSBT:         arkPsbt,
 		CheckpointPSBTs: checkpointPsbts,
 		VTXOSigningDescriptors: []VTXOSigningDescriptor{
@@ -1111,7 +1111,7 @@ func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	finalizeResp := actor.Receive(ctx,&FinalizeOORRequest{
+	finalizeResp := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            submitMsg.SessionID,
 		FinalCheckpointPSBTs: finalized,
 	})
