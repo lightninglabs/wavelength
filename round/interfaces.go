@@ -230,8 +230,10 @@ type Intents struct {
 	Leaves []*types.LeaveRequest
 
 	// Forfeits contains the VTXOs being forfeited as inputs. Each entry
-	// carries only the outpoint; the VTXO amount is looked up from
-	// VTXOStore at registration time.
+	// carries the outpoint and an optional embedded Amount hint. The
+	// canonical amount is always looked up from VTXOStore at registration
+	// time; the embedded Amount is only used as a fallback when no store
+	// is available (e.g., test environments).
 	Forfeits []types.ForfeitRequest
 }
 

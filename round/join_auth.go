@@ -89,9 +89,7 @@ func deriveJoinAuthIdentifierKey(ctx context.Context,
 
 // sortedForfeitRequests sorts forfeit requests by outpoint (txid bytes
 // then output index) so the resulting list is deterministic. Returns an
-// error if any request has a nil VTXOOutpoint. The embedded Amount field
-// is preserved so callers can use the fast-path in
-// computeTotalForfeitAmount without a store lookup.
+// error if any request has a nil VTXOOutpoint.
 func sortedForfeitRequests(
 	forfeits []types.ForfeitRequest) ([]*types.ForfeitRequest, error) {
 
@@ -149,30 +147,45 @@ func sortOutPoints(outpoints []wire.OutPoint) {
 }
 
 // computeTotalForfeitAmount looks up each forfeited VTXO's value from
-// the VTXOStore and returns the sum. If the caller already populated the
-// local Amount field, we use that directly and avoid the store lookup.
+// the VTXOStore and returns the sum. The VTXOStore is always used as
+// the canonical source of truth to prevent callers from inflating the
+// forfeit total via the embedded Amount field. If the store is nil (test
+// harness), the embedded Amount is used as a fallback.
 func computeTotalForfeitAmount(ctx context.Context,
 	store VTXOStore,
 	forfeits []types.ForfeitRequest) (btcutil.Amount, error) {
 
 	var total btcutil.Amount
 	for i := 0; i < len(forfeits); i++ {
+		// When a store is available, always use it as the source
+		// of truth for the VTXO amount.
+		if store != nil {
+			vtxo, err := store.GetVTXO(
+				ctx, *forfeits[i].VTXOOutpoint,
+			)
+			if err != nil {
+				return 0, fmt.Errorf(
+					"forfeit amount lookup %s: %w",
+					forfeits[i].VTXOOutpoint, err,
+				)
+			}
+			total += vtxo.Amount
+
+			continue
+		}
+
+		// Fallback to the embedded amount when no store is
+		// available (e.g., test environments).
 		if forfeits[i].Amount != 0 {
 			total += forfeits[i].Amount
 
 			continue
 		}
 
-		vtxo, err := store.GetVTXO(
-			ctx, *forfeits[i].VTXOOutpoint,
+		return 0, fmt.Errorf(
+			"no store and no embedded amount for %s",
+			forfeits[i].VTXOOutpoint,
 		)
-		if err != nil {
-			return 0, fmt.Errorf(
-				"forfeit amount lookup %s: %w",
-				forfeits[i].VTXOOutpoint, err,
-			)
-		}
-		total += vtxo.Amount
 	}
 
 	return total, nil
