@@ -53,7 +53,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.NoError(t, err)
 
@@ -86,7 +86,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrBoardingInputLocked)
@@ -109,7 +109,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrCheckLockFailed)
@@ -132,7 +132,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrOperatorKeyMismatch)
@@ -158,7 +158,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrExitDelayTooLow)
@@ -184,7 +184,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrFetchUTXO)
@@ -211,7 +211,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrInsufficientConfirmations)
@@ -244,7 +244,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrPkScriptMismatch)
@@ -272,7 +272,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrDelayPathTooClose)
@@ -299,7 +299,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.Nil(t, boardingInput)
 		require.ErrorIs(t, err, ErrDelayPathTooClose)
@@ -326,7 +326,7 @@ func TestValidateBoardingRequest(t *testing.T) {
 		}
 
 		boardingInput, err := ValidateBoardingRequest(
-			t.Context(), h.env, req,
+			t.Context(), h.env, req, 100,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, boardingInput)

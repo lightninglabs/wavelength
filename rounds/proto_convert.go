@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
 
@@ -133,9 +134,9 @@ func JoinRoundRequestFromProto(
 }
 
 // boardingRequestFromProto converts a single proto BoardingRequest
-// to the domain types.BoardingRequest. The TxProof field is left
-// as None since the server verifies boarding UTXOs via its own
-// chain source.
+// to the domain types.BoardingRequest. If the proto includes a
+// non-empty tx_proof, it is deserialized into the domain TxProof
+// field for server-side SPV validation.
 func boardingRequestFromProto(
 	br *roundpb.BoardingRequest) (*types.BoardingRequest, error) {
 
@@ -154,18 +155,31 @@ func boardingRequestFromProto(
 		return nil, fmt.Errorf("operator_key: %w", err)
 	}
 
+	// Deserialize the TxProof if provided by the client.
+	var txProof fn.Option[proof.TxProof]
+	if len(br.GetTxProof()) > 0 {
+		p, err := types.DeserializeTxProof(br.GetTxProof())
+		if err != nil {
+			return nil, fmt.Errorf("tx_proof: %w", err)
+		}
+		if p != nil {
+			txProof = fn.Some(*p)
+		}
+	}
+
 	return &types.BoardingRequest{
 		Outpoint:    &op,
 		ClientKey:   clientKey,
 		OperatorKey: operatorKey,
 		ExitDelay:   br.GetExitDelay(),
-		TxProof:     fn.None[proof.TxProof](),
+		TxProof:     txProof,
 	}, nil
 }
 
 // vtxoRequestFromProto converts a single proto VTXORequest to the
-// domain types.VTXORequest. The SigningKey field is left zero since
-// it is a client-side concern used for MuSig2 key locators.
+// domain types.VTXORequest. The SigningKey PubKey is populated from
+// the proto signing_key field; the KeyLocator is left at zero since
+// it is a client-side concern.
 func vtxoRequestFromProto(
 	vr *roundpb.VTXORequest) (*types.VTXORequest, error) {
 
@@ -179,12 +193,20 @@ func vtxoRequestFromProto(
 		return nil, fmt.Errorf("operator_key: %w", err)
 	}
 
+	signingPub, err := btcec.ParsePubKey(vr.GetSigningKey())
+	if err != nil {
+		return nil, fmt.Errorf("signing_key: %w", err)
+	}
+
 	return &types.VTXORequest{
 		Amount:      btcutil.Amount(vr.GetAmount()),
 		PkScript:    vr.GetPkScript(),
 		Expiry:      vr.GetExpiry(),
 		ClientKey:   clientKey,
 		OperatorKey: operatorKey,
+		SigningKey: keychain.KeyDescriptor{
+			PubKey: signingPub,
+		},
 	}, nil
 }
 

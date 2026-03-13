@@ -10,6 +10,7 @@ derivation, signing, UTXO management) for the server.
 
 - `ChainSource` — Chain backend implementation backed by LND RPCs.
 - `LndWalletController` — Wallet operations (signing, key management) via LND.
+- `NewLndHeaderVerifier` — Returns a `proof.HeaderVerifier` that validates block headers against LND's chain backend via `ChainKit.GetBlockHash`. Used for TxProof SPV validation of boarding inputs.
 
 ## Relationships
 

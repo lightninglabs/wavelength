@@ -91,18 +91,25 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// needed for callback mapping in the batch watcher.
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
-	// Derive operator and sweep keys from LND for the batch
-	// terms. Both use the multi-sig key family so they are
-	// backed by real on-chain keys.
-	operatorKeyDesc, err := s.lnd.WalletKit.DeriveNextKey(
-		ctx, int32(keychain.KeyFamilyMultiSig),
+	// Derive operator and sweep keys from LND at fixed indices
+	// so they are stable across restarts. Both use the
+	// multi-sig key family so they are backed by real on-chain
+	// keys.
+	operatorKeyDesc, err := s.lnd.WalletKit.DeriveKey(
+		ctx, &keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
 	)
 	if err != nil {
 		return fmt.Errorf("derive operator key: %w", err)
 	}
 
-	sweepKeyDesc, err := s.lnd.WalletKit.DeriveNextKey(
-		ctx, int32(keychain.KeyFamilyMultiSig),
+	sweepKeyDesc, err := s.lnd.WalletKit.DeriveKey(
+		ctx, &keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  1,
+		},
 	)
 	if err != nil {
 		return fmt.Errorf("derive sweep key: %w", err)
@@ -128,23 +135,46 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	terms.SweepKey = *sweepKeyDesc
 	terms.ConnectorAddress = connectorAddr
 
+	// Derive the forfeit script from the operator key. This is a
+	// P2TR script that clients reference in forfeit transactions.
+	// The output key is the same one used for the connector
+	// address above (key-spend-only, no script root).
+	forfeitScript, err := txscript.PayToTaprootScript(outputKey)
+	if err != nil {
+		return fmt.Errorf("create forfeit script: %w", err)
+	}
+
+	// Store terms and forfeit script on the server so the
+	// GetInfo RPC can return them to clients.
+	s.terms = terms
+	s.forfeitScript = forfeitScript
+
+	// Create a header verifier for TxProof validation using LND's
+	// chain backend.
+	headerVerifier := lndbackend.NewLndHeaderVerifier(
+		s.lnd.ChainKit,
+	)
+
 	roundsCfg := &rounds.ActorConfig{
-		ChainParams:        chainParams,
-		Log:                fn.Some(roundsLog),
-		Terms:              terms,
-		ClientsConn:        s.clientBridge,
-		ChainSourceActor:   s.chainSourceRef,
-		TimeoutActor:       s.timeoutRef,
-		RoundStore:         roundStore,
-		VTXOStore:          vtxoStore,
-		VTXOLocker:         s.vtxoLocker,
-		WalletController:   walletCtrl,
-		FeeEstimator:       feeEstimator,
-		WalletAccount:      "",
-		ConfTarget:         rc.ConfTarget,
-		MinConfs:           rc.MinConfs,
-		ConfirmationTarget: rc.ConfirmationTarget,
-		BatchWatcher:       fn.Some(s.batchWatcherRef),
+		ChainParams:         chainParams,
+		Log:                 fn.Some(roundsLog),
+		Terms:               terms,
+		ForfeitScript:       forfeitScript,
+		ClientsConn:         s.clientBridge,
+		BoardingInputLocker: newInMemoryBoardingLocker(),
+		HeaderVerifier:      headerVerifier,
+		ChainSourceActor:    s.chainSourceRef,
+		TimeoutActor:        s.timeoutRef,
+		RoundStore:          roundStore,
+		VTXOStore:           vtxoStore,
+		VTXOLocker:          s.vtxoLocker,
+		WalletController:    walletCtrl,
+		FeeEstimator:        feeEstimator,
+		WalletAccount:       "",
+		ConfTarget:          rc.ConfTarget,
+		MinConfs:            rc.MinConfs,
+		ConfirmationTarget:  rc.ConfirmationTarget,
+		BatchWatcher:        fn.Some(s.batchWatcherRef),
 	}
 
 	// Create and spawn the rounds actor.
@@ -206,6 +236,9 @@ func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 		BoardingExitDelaySafetyMargin: rc.BoardingExitDelaySafetyMargin,
 		MinBoardingConfirmations:      rc.MinBoardingConfirmations,
 		SignatureCollectionTimeout:    rc.SignatureCollectionTimeout,
+		MinVTXOAmount:                 btcutil.Amount(rc.MinVTXOAmount),
+		MaxVTXOAmount:                 btcutil.Amount(rc.MaxVTXOAmount),
+		MinOperatorFee:                btcutil.Amount(rc.MinOperatorFee), //nolint:ll
 	}
 }
 

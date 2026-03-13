@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/vtxo"
+	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -25,7 +26,13 @@ type Environment struct {
 	BoardingInputLocker BoardingInputLocker
 
 	// ChainSource provides access to blockchain data for UTXO validation.
+	// When nil, the server relies on client-provided TxProofs instead.
 	ChainSource ChainSource
+
+	// HeaderVerifier validates that a block header exists on the best
+	// chain at the claimed height. Used to verify TxProofs when
+	// ChainSource is nil.
+	HeaderVerifier proof.HeaderVerifier
 
 	// Terms contains the operator's terms for this round.
 	Terms *batch.Terms

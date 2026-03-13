@@ -103,6 +103,18 @@ type RoundsConfig struct {
 	// for boarding inputs.
 	MinBoardingConfirmations uint32 `mapstructure:"minboardingconfirmations"` //nolint:ll
 
+	// MinVTXOAmount is the minimum amount for a VTXO output
+	// (satoshis).
+	MinVTXOAmount int64 `mapstructure:"minvtxoamount"`
+
+	// MaxVTXOAmount is the maximum amount for a VTXO output
+	// (satoshis).
+	MaxVTXOAmount int64 `mapstructure:"maxvtxoamount"`
+
+	// MinOperatorFee is the minimum operator fee per round
+	// (satoshis).
+	MinOperatorFee int64 `mapstructure:"minoperatorfee"`
+
 	// VTXOExitDelay is the minimum exit delay for VTXOs (blocks).
 	VTXOExitDelay uint32 `mapstructure:"vtxoexitdelay"`
 
@@ -135,13 +147,16 @@ type RoundsConfig struct {
 // suitable for development and regtest.
 func DefaultRoundsConfig() *RoundsConfig {
 	return &RoundsConfig{
-		SweepDelay:                    144,
+		SweepDelay:                    1008,
 		MaxVTXOsPerTree:               128,
 		TreeRadix:                     2,
 		MaxConnectorsPerTree:          32,
 		BoardingExitDelay:             512,
 		BoardingExitDelaySafetyMargin: 48,
 		MinBoardingConfirmations:      1,
+		MinVTXOAmount:                 1000,
+		MaxVTXOAmount:                 100_000_000_000,
+		MinOperatorFee:                1000,
 		VTXOExitDelay:                 144,
 		RegistrationTimeout:           10 * time.Second,
 		SignatureCollectionTimeout:    10 * time.Second,

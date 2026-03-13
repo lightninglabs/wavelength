@@ -152,7 +152,6 @@ func (a *AdminRPCServer) Info(ctx context.Context,
 	)
 
 	if a.server.lnd != nil {
-		pubkey = a.server.lnd.NodePubkey.String()
 		alias = a.server.lnd.NodeAlias
 
 		// Best-effort block height from the chain backend.
@@ -164,6 +163,15 @@ func (a *AdminRPCServer) Info(ctx context.Context,
 				blockHeight = uint32(height)
 			}
 		}
+	}
+
+	// Use the Ark operator key (not LND node identity) as the
+	// pubkey, since this is what clients use for boarding
+	// addresses and round validation.
+	if t := a.server.terms; t != nil {
+		pubkey = fmt.Sprintf(
+			"%x", t.OperatorKey.PubKey.SerializeCompressed(),
+		)
 	}
 
 	return &adminrpc.InfoResponse{

@@ -73,7 +73,9 @@ func newLNDBackendFromInstance(h *E2EHarness,
 	)
 
 	// Create BoardingBackend using client's LND.
-	boarding := clientlnd.NewBoardingBackend(lndServices.WalletKit)
+	boarding := clientlnd.NewBoardingBackend(
+		lndServices.WalletKit, lndServices.ChainKit,
+	)
 
 	// Create ClientWallet (LndWalletController implements
 	// input.Signer + DeriveNextKey).
