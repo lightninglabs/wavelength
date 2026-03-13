@@ -14,8 +14,10 @@ REPO_ROOT="$(cd "$DIR/.." && pwd)"
 echo "Extracting dependency versions from go.mod..."
 PROTOBUF_VERSION=$(grep -E '^\s+google\.golang\.org/protobuf\s+' "$REPO_ROOT/go.mod" \
   | awk '{print $2}')
+: "${PROTOBUF_VERSION:?Could not extract protobuf version from go.mod}"
 GRPC_GATEWAY_VERSION=$(grep -E '^\s+github\.com/grpc-ecosystem/grpc-gateway/v2\s+' "$REPO_ROOT/go.mod" \
   | awk '{print $2}')
+: "${GRPC_GATEWAY_VERSION:?Could not extract grpc-gateway version from go.mod}"
 
 echo "Building protobuf compiler docker image..."
 docker build -t darepo-protobuf-builder \
