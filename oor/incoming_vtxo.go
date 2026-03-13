@@ -91,6 +91,10 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 
 	case cfg.Metadata.RoundID == "":
 		return nil, fmt.Errorf("round id must be provided")
+
+	case cfg.Metadata.ChainDepth < 0:
+		return nil, fmt.Errorf("chain depth must be "+
+			"non-negative, got %d", cfg.Metadata.ChainDepth)
 	}
 
 	if cfg.Metadata.CommitmentTxID == (chainhash.Hash{}) {
