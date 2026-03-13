@@ -19,8 +19,8 @@ const OORActorServiceKeyName = "oor-server"
 
 // NewServiceKey returns the service key for looking up the OOR
 // server actor via the receptionist.
-func NewServiceKey() actor.ServiceKey[ActorMsg, ActorResp] {
-	return actor.NewServiceKey[ActorMsg, ActorResp](
+func NewServiceKey() actor.ServiceKey[OORDurableMsg, ActorResp] {
+	return actor.NewServiceKey[OORDurableMsg, ActorResp](
 		OORActorServiceKeyName,
 	)
 }
