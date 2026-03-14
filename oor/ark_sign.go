@@ -52,9 +52,36 @@ func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
 		return err
 	}
 
+	// Build a complete prevout map from all Ark PSBT inputs.
+	// BIP-341 SigHashDefault commits to ALL prevouts (sha_prevouts,
+	// sha_amounts, sha_scriptpubkeys), so we need a MultiPrevOutFetcher
+	// that returns the correct TxOut for each input. Using
+	// CannedPrevOutputFetcher would produce incorrect sighashes for
+	// multi-input Ark transactions.
+	prevOuts := make(
+		map[wire.OutPoint]*wire.TxOut,
+		len(arkPSBT.UnsignedTx.TxIn),
+	)
+	for i, txIn := range arkPSBT.UnsignedTx.TxIn {
+		wu := arkPSBT.Inputs[i].WitnessUtxo
+		if wu == nil {
+			return fmt.Errorf(
+				"ark input %d: missing witness utxo", i,
+			)
+		}
+
+		prevOuts[txIn.PreviousOutPoint] = wu
+	}
+
+	prevFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+	sigHashes := txscript.NewTxSigHashes(
+		arkPSBT.UnsignedTx, prevFetcher,
+	)
+
 	for i := range arkPSBT.UnsignedTx.TxIn {
 		err := signArkPSBTInput(
 			signer, arkPSBT, i, inputByCheckpointTxid,
+			prevFetcher, sigHashes,
 		)
 		if err != nil {
 			return fmt.Errorf("sign ark input %d: %w", i, err)
@@ -107,7 +134,9 @@ func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 // collab leaf (2-of-2 multisig between owner and operator).
 func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	inputIndex int,
-	inputMap map[chainhash.Hash]*checkpointInputEntry) error {
+	inputMap map[chainhash.Hash]*checkpointInputEntry,
+	prevFetcher txscript.PrevOutputFetcher,
+	sigHashes *txscript.TxSigHashes) error {
 
 	prevOut := arkPSBT.UnsignedTx.TxIn[inputIndex].PreviousOutPoint
 	entry, ok := inputMap[prevOut.Hash]
@@ -134,19 +163,11 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 		return fmt.Errorf("ark input %d: %w", inputIndex, err)
 	}
 
-	// Build the prevout for the checkpoint output being spent.
 	witnessUtxo := pInput.WitnessUtxo
 	if witnessUtxo == nil {
 		return fmt.Errorf("ark input %d: missing witness utxo",
 			inputIndex)
 	}
-
-	prevFetcher := txscript.NewCannedPrevOutputFetcher(
-		witnessUtxo.PkScript, witnessUtxo.Value,
-	)
-	sigHashes := txscript.NewTxSigHashes(
-		arkPSBT.UnsignedTx, prevFetcher,
-	)
 
 	// Pass the full KeyDescriptor (including KeyLocator) so
 	// signers that require the locator can find the private key.
