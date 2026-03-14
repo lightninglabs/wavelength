@@ -25,6 +25,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo-client/timeout"
+	darepo "github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
@@ -32,6 +33,7 @@ import (
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/lightninglabs/darepo/lndbackend"
+	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
@@ -159,8 +161,17 @@ type E2EHarness struct {
 	// mockTimeoutRef is the actor reference for the mock timeout.
 	mockTimeoutRef actor.ActorRef[timeout.Msg, timeout.Resp]
 
-	// bridge connects server to clients.
-	bridge *BridgeClientConn
+	// clientBridge is the production 1:N server→client connection
+	// bridge. Replaces the hand-rolled BridgeClientConn.
+	clientBridge *clientconn.ClientsConnBridge
+
+	// instrumentedMB wraps the production mailbox with transcript
+	// recording, buffering, and event subscription.
+	instrumentedMB *InstrumentedMailbox
+
+	// eventRouter holds the server-side dispatch routes for
+	// client→server requests (round RPCs, OOR RPCs).
+	eventRouter *clientconn.EventRouter
 
 	// transcript records all client-server messages.
 	transcript *MessageTranscript
@@ -386,17 +397,30 @@ func (h *E2EHarness) initActorSystem() {
 		h.actorSystem, "mock-timeout", h.mockTimeout,
 	)
 
-	// Create the bridge for server→client messages. The transcript was
-	// already initialized in NewE2EHarness.
-	h.bridge = NewBridgeClientConn(h.transcript)
-
-	// Spawn the bridge actor.
-	bridgeKey := actor.NewServiceKey[
-		clientconn.ClientConnMsg, clientconn.ClientConnResp,
-	]("bridge-client-conn")
-	bridgeRef := bridgeKey.Spawn(
-		h.actorSystem, "bridge-client-conn", h.bridge,
+	// Create the production mailbox infrastructure. The mailbox
+	// store persists envelopes for both server→client and
+	// client→server traffic.
+	mailboxStore := mailbox.NewMemoryStore(
+		mailbox.WithLogger(h.SubLogger("MBXS")),
 	)
+	localEdge, err := darepo.NewLocalMailboxClient(mailboxStore)
+	require.NoError(h.t, err, "create local mailbox client")
+
+	// Wrap the mailbox client with instrumentation for
+	// transcript recording, buffering, and event subscription.
+	h.instrumentedMB = NewInstrumentedMailbox(
+		localEdge, h.transcript,
+	)
+
+	// Create the server-side event router and register round +
+	// OOR dispatch routes. These are the same routes used in
+	// production (server_rounds.go, server_oor.go).
+	h.eventRouter = clientconn.NewEventRouter(h.actorSystem)
+
+	// Create the production 1:N client bridge. Unlike the old
+	// BridgeClientConn, this implements TellOnlyRef directly
+	// (not spawned as an actor).
+	h.clientBridge = clientconn.NewClientsConnBridge()
 
 	// Get the operator key from LND. This is a REAL key with an actual
 	// public key, not a mock.
@@ -541,7 +565,7 @@ func (h *E2EHarness) initActorSystem() {
 		Log:                 fn.Some(h.SubLogger(rounds.Subsystem)),
 		Terms:               h.terms,
 		ForfeitScript:       h.forfeitScript,
-		ClientsConn:         bridgeRef,
+		ClientsConn:         h.clientBridge,
 		BoardingInputLocker: h.mockBoardingLocker,
 		ChainSource:         h.chainSource,
 		ChainSourceActor:    h.chainSourceActorRef,
@@ -579,6 +603,11 @@ func (h *E2EHarness) initActorSystem() {
 	// Start the rounds actor.
 	err = roundsActor.Start(h.ctx)
 	require.NoError(h.t, err, "failed to start rounds actor")
+
+	// Register server-side dispatch routes. These must be
+	// registered after the actor keys are created so the
+	// dispatchers can resolve actors via the receptionist.
+	darepo.RegisterRoundRoutes(h.eventRouter, roundsKey)
 }
 
 // initBatchSweeper creates and wires a real BatchSweeperActor so systests can
@@ -734,11 +763,22 @@ func (h *E2EHarness) Transcript() *MessageTranscript {
 	return h.transcript
 }
 
-// Bridge returns the server-to-client bridge for message control. This allows
-// tests to buffer, hold, and release messages for orchestrating concurrent
-// round execution.
-func (h *E2EHarness) Bridge() *BridgeClientConn {
-	return h.bridge
+// Bridge returns the instrumented mailbox for message control. This
+// allows tests to buffer, hold, and release messages for orchestrating
+// concurrent round execution.
+func (h *E2EHarness) Bridge() *InstrumentedMailbox {
+	return h.instrumentedMB
+}
+
+// ClientBridge returns the production 1:N client connection bridge.
+func (h *E2EHarness) ClientBridge() *clientconn.ClientsConnBridge {
+	return h.clientBridge
+}
+
+// EventRouter returns the server-side event router for route
+// registration.
+func (h *E2EHarness) EventRouter() *clientconn.EventRouter {
+	return h.eventRouter
 }
 
 // BatchWatcher returns the batch watcher actor reference. This can be used to
