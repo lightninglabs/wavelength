@@ -91,17 +91,11 @@ func SignArkPSBT(signer input.Signer, arkPSBT *psbt.Packet,
 	return nil
 }
 
-// checkpointInputEntry pairs a transfer input with its checkpoint txid for
-// Ark input signing.
-type checkpointInputEntry struct {
-	transferInput *TransferInput
-}
-
 // buildCheckpointInputMap creates a lookup from checkpoint txid to the
 // corresponding transfer input.
 func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 	transferInputs []TransferInput) (
-	map[chainhash.Hash]*checkpointInputEntry, error) {
+	map[chainhash.Hash]*TransferInput, error) {
 
 	if len(checkpointPSBTs) != len(transferInputs) {
 		return nil, fmt.Errorf("checkpoint count %d does not match "+
@@ -110,7 +104,7 @@ func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 	}
 
 	result := make(
-		map[chainhash.Hash]*checkpointInputEntry,
+		map[chainhash.Hash]*TransferInput,
 		len(checkpointPSBTs),
 	)
 
@@ -122,9 +116,7 @@ func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 		}
 
 		cpTxid := cp.UnsignedTx.TxHash()
-		result[cpTxid] = &checkpointInputEntry{
-			transferInput: &transferInputs[i],
-		}
+		result[cpTxid] = &transferInputs[i]
 	}
 
 	return result, nil
@@ -134,18 +126,16 @@ func buildCheckpointInputMap(checkpointPSBTs []*psbt.Packet,
 // collab leaf (2-of-2 multisig between owner and operator).
 func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	inputIndex int,
-	inputMap map[chainhash.Hash]*checkpointInputEntry,
+	inputMap map[chainhash.Hash]*TransferInput,
 	prevFetcher txscript.PrevOutputFetcher,
 	sigHashes *txscript.TxSigHashes) error {
 
 	prevOut := arkPSBT.UnsignedTx.TxIn[inputIndex].PreviousOutPoint
-	entry, ok := inputMap[prevOut.Hash]
+	in, ok := inputMap[prevOut.Hash]
 	if !ok {
 		return fmt.Errorf("no transfer input for checkpoint "+
 			"txid %s", prevOut.Hash)
 	}
-
-	in := entry.transferInput
 	if err := in.Validate(); err != nil {
 		return err
 	}

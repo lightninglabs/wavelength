@@ -159,3 +159,164 @@ func TestSessionHappyPath(t *testing.T) {
 	_, ok = state.(*Completed)
 	require.True(t, ok)
 }
+
+// TestSessionMultiInputHappyPath verifies the outgoing transfer FSM with
+// multiple VTXO inputs. This exercises the multi-input Ark signing path
+// where BIP-341 sighash commits to ALL prevouts, requiring a
+// MultiPrevOutFetcher rather than a CannedPrevOutputFetcher.
+func TestSessionMultiInputHappyPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	// Use two distinct client keys and different amounts to ensure
+	// the sighash computation correctly handles heterogeneous inputs.
+	clientKey1, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientKey2, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey1, clientKey2}, nil,
+	)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	input1Value := btcutil.Amount(10000)
+	input2Value := btcutil.Amount(25000)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey1, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			input1Value,
+		),
+		newTestTransferInput(
+			t, clientKey2, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x02},
+				Index: 0,
+			},
+			input2Value,
+		),
+	}
+
+	outputs := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(
+				t, clientKey1.PubKey(),
+			),
+			Value: input1Value + input2Value,
+		},
+	}
+
+	session, outbox, err := NewSession(ctx, policy, inputs, outputs)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	require.Len(t, outbox, 1)
+
+	arkSignReq, ok := outbox[0].(*RequestArkSignatures)
+	require.True(t, ok)
+
+	// The Ark tx should have 2 inputs (one per checkpoint).
+	require.Len(t, arkSignReq.ArkPSBT.UnsignedTx.TxIn, 2,
+		"Ark tx should have one input per VTXO")
+	require.Len(t, arkSignReq.CheckpointPSBTs, 2,
+		"should have one checkpoint per VTXO")
+
+	// Sign the Ark PSBT with the client keys. This exercises the
+	// MultiPrevOutFetcher path for correct BIP-341 sighash
+	// computation across heterogeneous inputs.
+	err = SignArkPSBT(
+		clientSigner, arkSignReq.ArkPSBT,
+		arkSignReq.CheckpointPSBTs, arkSignReq.TransferInputs,
+	)
+	require.NoError(t, err)
+
+	// Verify the signed Ark PSBT has signatures on both inputs.
+	for i, pInput := range arkSignReq.ArkPSBT.Inputs {
+		require.NotEmpty(t, pInput.TaprootScriptSpendSig,
+			"Ark input %d should have a script spend sig", i)
+	}
+
+	// Feed the signed Ark PSBT back into the FSM.
+	fut := session.FSM.AskEvent(ctx, &ArkSignedEvent{
+		ArkPSBT: arkSignReq.ArkPSBT,
+	})
+	result := fut.Await(ctx)
+	require.False(t, result.IsErr(),
+		"ArkSignedEvent should succeed: %v", result.Err())
+
+	submitOutbox := result.UnwrapOr(nil)
+	require.Len(t, submitOutbox, 1)
+	submit, ok := submitOutbox[0].(*SendSubmitPackageRequest)
+	require.True(t, ok)
+	require.Len(t, submit.CheckpointPSBTs, 2)
+
+	// Operator co-signs the checkpoints.
+	err = coSignCheckpointPSBTsForTest(
+		operatorSigner, submit.TransferInputs,
+		submit.CheckpointPSBTs,
+	)
+	require.NoError(t, err)
+
+	// Server accepts submit.
+	fut = session.FSM.AskEvent(ctx, &SubmitAcceptedEvent{
+		SessionID:               session.ID,
+		ArkPSBT:                 submit.ArkPSBT,
+		CoSignedCheckpointPSBTs: submit.CheckpointPSBTs,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	signOutbox := result.UnwrapOr(nil)
+	require.Len(t, signOutbox, 1)
+	signReq, ok := signOutbox[0].(*RequestCheckpointSignatures)
+	require.True(t, ok)
+
+	// Client signs checkpoints.
+	err = SignCheckpointPSBTs(
+		clientSigner, signReq.TransferInputs,
+		signReq.CoSignedCheckpointPSBTs,
+	)
+	require.NoError(t, err)
+
+	fut = session.FSM.AskEvent(ctx, &CheckpointsSignedEvent{
+		FinalCheckpointPSBTs: signReq.CoSignedCheckpointPSBTs,
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	// Finalize.
+	fut = session.FSM.AskEvent(ctx, &FinalizeAcceptedEvent{})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	markOutbox := result.UnwrapOr(nil)
+	require.Len(t, markOutbox, 1)
+	_, ok = markOutbox[0].(*MarkInputsSpentRequest)
+	require.True(t, ok)
+
+	// Mark spent.
+	fut = session.FSM.AskEvent(ctx, &InputsMarkedSpentEvent{})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	state, err := session.FSM.CurrentState()
+	require.NoError(t, err)
+	_, ok = state.(*Completed)
+	require.True(t, ok, "FSM should reach Completed state")
+}
