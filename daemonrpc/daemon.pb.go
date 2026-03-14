@@ -1210,8 +1210,10 @@ type Output_Address struct {
 }
 
 type Output_Pubkey struct {
-	// pubkey is the 32-byte x-only public key used to derive a
-	// BIP-86 taproot output.
+	// pubkey is the 32-byte x-only (Schnorr) public key of the
+	// recipient. For OOR sends, this derives a VTXO-compatible
+	// taproot output using the operator's collab key and exit
+	// delay, so the recipient gets a standard Ark VTXO.
 	Pubkey []byte `protobuf:"bytes,3,opt,name=pubkey,proto3,oneof"`
 }
 

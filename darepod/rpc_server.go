@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -695,15 +696,15 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	}
 
 	// Resolve the recipient's pkScript from the destination
-	// oneof.
-	pkScript, err := r.resolveOutputPkScript(
-		req.Recipient,
-	)
+	// oneof. Pubkey destinations need operator terms to derive
+	// VTXO-compatible taproot outputs, so we pass a lazy fetcher.
+	pkScript, err := r.resolveOutputPkScript(ctx, req.Recipient)
 	if err != nil {
 		return nil, err
 	}
 
-	// For dry_run, validate inputs and return a preview.
+	// For dry_run, validate inputs and return a preview without
+	// contacting the operator.
 	if req.DryRun {
 		return &daemonrpc.SendOORResponse{
 			Status: "preview",
@@ -868,8 +869,9 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 
 // resolveOutputPkScript derives a pkScript from the Output's
 // destination oneof. It supports address, raw pubkey, and raw
-// pkScript destinations.
-func (r *RPCServer) resolveOutputPkScript(
+// pkScript destinations. For pubkey destinations, operator terms
+// are fetched to derive a VTXO-compatible taproot output.
+func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 	out *daemonrpc.Output) ([]byte, error) {
 
 	switch d := out.Destination.(type) {
@@ -894,6 +896,51 @@ func (r *RPCServer) resolveOutputPkScript(
 		}
 
 		return pkScript, nil
+
+	case *daemonrpc.Output_Pubkey:
+		if len(d.Pubkey) == 0 {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"pubkey is empty",
+			)
+		}
+
+		recipientKey, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"invalid pubkey: %v", err,
+			)
+		}
+
+		// For OOR sends, a pubkey destination creates a
+		// VTXO-compatible taproot output with the operator's
+		// collab key and exit delay (not a simple BIP-86
+		// key-path-only output). This ensures the recipient
+		// gets a standard Ark VTXO they can spend
+		// collaboratively or exit unilaterally.
+		terms, err := r.server.fetchOperatorTerms(ctx)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"fetch operator terms for pubkey "+
+					"destination: %v", err,
+			)
+		}
+
+		tapKey, err := scripts.VTXOTapKey(
+			recipientKey, terms.PubKey,
+			terms.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"unable to derive VTXO tap key: %v",
+				err,
+			)
+		}
+
+		return txscript.PayToTaprootScript(tapKey)
 
 	case *daemonrpc.Output_PkScript:
 		if len(d.PkScript) == 0 {
