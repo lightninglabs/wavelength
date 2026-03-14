@@ -31,6 +31,7 @@ build on.
 
 - Every actor message must embed `BaseMessage` to satisfy the sealed `Message` interface.
 - Actors registered with system are auto-stopped on `system.Shutdown()`.
+- `DurableMailbox.Send` preserves the sender's DB transaction in the context. Same-DB actors share the tx for atomic enqueue via `ExecTx` joining.
 - Protofsm processes events iteratively; internal events loop until exhausted before returning.
 - `EmittedEvent` separates internal events (routed back to FSM) from outbox events (dispatched externally).
 
