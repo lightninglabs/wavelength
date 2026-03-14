@@ -1090,11 +1090,11 @@ func (s *txCapturingStore) EnqueueMessage(ctx context.Context,
 	return s.mockDeliveryStore.EnqueueMessage(ctx, params)
 }
 
-// TestDurableMailboxSendStripsSenderTx verifies that Send strips the sender's
-// database transaction from the context before calling EnqueueMessage. This
-// prevents the receiver's delivery store from inheriting the sender's
-// transaction, which would cause cross-DB visibility issues or Ask deadlocks.
-func TestDurableMailboxSendStripsSenderTx(t *testing.T) {
+// TestDurableMailboxSendPreservesSenderTx verifies that Send preserves the
+// sender's database transaction in the context passed to EnqueueMessage.
+// This allows same-DB actors to share the transaction so the enqueue is
+// atomic with the sender's state change.
+func TestDurableMailboxSendPreservesSenderTx(t *testing.T) {
 	t.Parallel()
 
 	store := newMockDeliveryStore()
@@ -1126,9 +1126,10 @@ func TestDurableMailboxSendStripsSenderTx(t *testing.T) {
 	ok := mailbox.Send(sendCtx, env)
 	require.True(t, ok)
 
-	// The context received by EnqueueMessage should NOT carry a tx.
+	// The context received by EnqueueMessage should carry the
+	// sender's tx so same-DB actors share the transaction.
 	require.NotNil(t, capturing.lastCtx,
 		"EnqueueMessage should have been called")
-	require.False(t, HasTx(capturing.lastCtx),
-		"EnqueueMessage context should not carry the sender's tx")
+	require.True(t, HasTx(capturing.lastCtx),
+		"EnqueueMessage context should carry the sender's tx")
 }

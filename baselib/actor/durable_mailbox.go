@@ -107,13 +107,12 @@ func NewDurableMailbox[M TLVMessage, R any](
 // envelope is accepted, the provided context is cancelled, or the actor's
 // context is cancelled.
 //
-// The sender's database transaction is intentionally stripped before
-// enqueueing. Mailbox sends cross actor boundaries: the receiver's
-// delivery store must manage its own transaction lifecycle. Inheriting
-// the sender's transaction would either target the wrong database
-// (cross-DB actors) or deadlock for Ask-style calls where the sender
-// blocks on the response but the receiver cannot see the uncommitted
-// message.
+// The sender's database transaction (if any) is preserved in the context
+// passed to EnqueueMessage. When both actors share the same SQLite
+// database, ExecTx in the delivery store joins the outer transaction,
+// making the enqueue atomic with the sender's state change. This
+// eliminates the window where a crash could commit the sender's state
+// but lose the enqueued message.
 func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) bool {
 	m.closeMu.RLock()
 	defer m.closeMu.RUnlock()
@@ -185,11 +184,11 @@ func (m *DurableMailbox[M, R]) Send(ctx context.Context, env envelope[M, R]) boo
 		MaxAttempts:     m.cfg.MaxAttempts,
 	}
 
-	// Strip the sender's transaction so the receiver's delivery store
-	// creates its own transaction for the enqueue operation.
-	enqueueCtx := WithoutTx(ctx)
-
-	if err := m.cfg.Store.EnqueueMessage(enqueueCtx, params); err != nil {
+	// Allow the sender's transaction (if any) to flow through so
+	// same-DB actors share the tx and the enqueue is atomic with
+	// the sender's state change. ExecTx in the delivery store
+	// joins the outer tx when one exists in the context.
+	if err := m.cfg.Store.EnqueueMessage(ctx, params); err != nil {
 		// Clean up the promise registry entry to prevent unbounded
 		// stale entries from accumulating on repeated enqueue failures.
 		if promiseID != "" {

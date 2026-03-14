@@ -285,8 +285,10 @@ message Output {
         // address is the recipient's bech32m-encoded taproot address.
         string address = 1;
 
-        // pubkey is the 32-byte x-only public key used to derive a
-        // BIP-86 taproot output.
+        // pubkey is the 32-byte x-only (Schnorr) public key of the
+        // recipient. For OOR sends, this derives a VTXO-compatible
+        // taproot output using the operator's collab key and exit
+        // delay, so the recipient gets a standard Ark VTXO.
         bytes pubkey = 3;
 
         // pk_script is the raw output script for the recipient.

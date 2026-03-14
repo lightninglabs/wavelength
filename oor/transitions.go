@@ -93,8 +93,9 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		}
 
 		signReq := &RequestArkSignatures{
-			ArkPSBT:        ark,
-			TransferInputs: evt.VTXOInputs,
+			ArkPSBT:         ark,
+			CheckpointPSBTs: checkpoints,
+			TransferInputs:  evt.VTXOInputs,
 		}
 
 		return &StateTransition{
@@ -147,7 +148,11 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 			return nil, fmt.Errorf("ark txid mismatch")
 		}
 
-		_, err := oortx.ValidateSubmitPackageSigned(
+		// Validate structural correctness only. Full script VM
+		// validation is not possible here because the Ark tx only
+		// carries the client's half of the 2-of-2 checkpoint collab
+		// signature. The operator adds their half during submit.
+		_, err := oortx.ValidateSubmitPackage(
 			evt.ArkPSBT, s.CheckpointPSBTs,
 		)
 		if err != nil {

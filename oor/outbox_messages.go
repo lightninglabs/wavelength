@@ -6,10 +6,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -21,11 +20,6 @@ import (
 const (
 	oorOutboxProtoTypeURLPrefix = "type.lightninglabs.dev/darepo-client/" +
 		"oor/"
-)
-
-const (
-	finalizePayloadArkPSBTRecordType     tlv.Type = 1
-	finalizePayloadCheckpointsRecordType tlv.Type = 3
 )
 
 const (
@@ -59,6 +53,11 @@ type RequestArkSignatures struct {
 
 	// ArkPSBT is the canonical Ark transfer PSBT to sign.
 	ArkPSBT *psbt.Packet
+
+	// CheckpointPSBTs are the unsigned checkpoint PSBTs that correspond
+	// to the Ark inputs. These are needed to map each Ark input back to
+	// the transfer input that provides the client signing key.
+	CheckpointPSBTs []*psbt.Packet
 
 	// TransferInputs carry client signing context needed to authorize Ark
 	// inputs.
@@ -110,19 +109,26 @@ func (m *SendSubmitPackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
-// ToProto converts SendSubmitPackageRequest to a protobuf message.
+// ToProto converts SendSubmitPackageRequest to the concrete proto type
+// expected by the server-side OOR dispatcher.
 func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
-	payload, err := oortx.MarshalSubmitPackage(&oortx.SubmitPackage{
-		ArkPSBT:         m.ArkPSBT,
-		CheckpointPSBTs: m.CheckpointPSBTs,
-	})
+	descs := make([]oorpb.SigningDescriptor, 0, len(m.TransferInputs))
+	for _, ti := range m.TransferInputs {
+		descs = append(descs, oorpb.SigningDescriptor{
+			Outpoint:  ti.VTXO.Outpoint,
+			OwnerKey:  ti.VTXO.ClientKey.PubKey,
+			ExitDelay: ti.VTXO.RelativeExpiry,
+		})
+	}
+
+	req, err := oorpb.NewSubmitPackageRequest(
+		m.ArkPSBT, m.CheckpointPSBTs, descs,
+	)
 	if err != nil {
 		return fn.Err[proto.Message](err)
 	}
 
-	return fn.Ok[proto.Message](
-		protoEnvelope("SendSubmitPackageRequest", payload),
-	)
+	return fn.Ok[proto.Message](req)
 }
 
 // RequestCheckpointSignatures asks the signing layer to add client signature
@@ -181,18 +187,22 @@ func (m *SendFinalizePackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 	}
 }
 
-// ToProto converts SendFinalizePackageRequest to a protobuf message.
+// ToProto converts SendFinalizePackageRequest to the concrete proto type
+// expected by the server-side OOR dispatcher.
 func (m *SendFinalizePackageRequest) ToProto() fn.Result[proto.Message] {
-	payload, err := encodeFinalizePayload(
-		m.ArkPSBT, m.FinalCheckpointPSBTs,
+	sessionID, err := sessionIDFromArk(m.ArkPSBT)
+	if err != nil {
+		return fn.Err[proto.Message](err)
+	}
+
+	req, err := oorpb.NewFinalizePackageRequest(
+		chainhash.Hash(sessionID), m.FinalCheckpointPSBTs,
 	)
 	if err != nil {
 		return fn.Err[proto.Message](err)
 	}
 
-	return fn.Ok[proto.Message](
-		protoEnvelope("SendFinalizePackageRequest", payload),
-	)
+	return fn.Ok[proto.Message](req)
 }
 
 // MarkInputsSpentRequest asks the persistence layer to mark the OOR inputs as
@@ -365,47 +375,6 @@ func protoEnvelope(typeName string, payload []byte) proto.Message {
 	}
 }
 
-func encodeFinalizePayload(ark *psbt.Packet,
-	checkpoints []*psbt.Packet) ([]byte, error) {
-
-	arkRaw, err := psbtutil.Serialize(ark)
-	if err != nil {
-		return nil, err
-	}
-
-	checkpointRaws, err := serializePSBTSlice(checkpoints)
-	if err != nil {
-		return nil, err
-	}
-
-	checkpointPayload, err := encodeLengthPrefixedBlobList(checkpointRaws)
-	if err != nil {
-		return nil, err
-	}
-
-	checkpointPayloadRecord := tlv.MakePrimitiveRecord(
-		finalizePayloadCheckpointsRecordType, &checkpointPayload,
-	)
-
-	records := []tlv.Record{
-		tlv.MakePrimitiveRecord(
-			finalizePayloadArkPSBTRecordType, &arkRaw,
-		),
-		checkpointPayloadRecord,
-	}
-
-	stream, err := tlv.NewStream(records...)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	if err := stream.Encode(&buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
 func encodeRetryPayload(after time.Duration, reason string) ([]byte, error) {
 	if after < 0 {
 		return nil, fmt.Errorf("retry delay must be non-negative")
