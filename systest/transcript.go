@@ -102,6 +102,24 @@ func (t *MessageTranscript) Record(dir MessageDirection,
 	})
 }
 
+// RecordTypeName adds a transcript entry using the friendly type name
+// string directly, rather than extracting it from a Go value. This is
+// used by the InstrumentedMailbox which records from proto envelopes.
+func (t *MessageTranscript) RecordTypeName(dir MessageDirection,
+	clientID clientconn.ClientID, typeName string) {
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.entries = append(t.entries, TranscriptEntry{
+		Timestamp: time.Now(),
+		Direction: dir,
+		ClientID:  clientID,
+		MsgType:   typeName,
+		Msg:       nil,
+	})
+}
+
 // Entries returns a copy of all transcript entries.
 func (t *MessageTranscript) Entries() []TranscriptEntry {
 	t.mu.Lock()
