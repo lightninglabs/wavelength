@@ -19,8 +19,9 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 	case *AwaitingArkSignatures:
 		return []OutboxEvent{
 			&RequestArkSignatures{
-				ArkPSBT:        s.ArkPSBT,
-				TransferInputs: s.TransferInputs,
+				ArkPSBT:         s.ArkPSBT,
+				CheckpointPSBTs: s.CheckpointPSBTs,
+				TransferInputs:  s.TransferInputs,
 			},
 		}, nil
 

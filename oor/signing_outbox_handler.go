@@ -16,8 +16,8 @@ import (
 // This handler is intended to be used as the Next delegate inside
 // LocalPersistenceOutboxHandler. It handles the following outbox events:
 //
-//   - RequestArkSignatures: v0 pass-through (no additional local signing
-//     needed beyond deterministic package construction).
+//   - RequestArkSignatures: signs Ark PSBT inputs using the client key on
+//     each checkpoint output's owner leaf via SignArkPSBT.
 //   - RequestCheckpointSignatures: attaches client-side collaborative VTXO
 //     spend signatures to each checkpoint PSBT via SignCheckpointPSBTs.
 //   - ScheduleRetryRequest: schedules a timer via the timeout actor. When
@@ -45,17 +45,16 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
-		// v0 does not require extra local Ark signing beyond
-		// deterministic package construction. Forward the Ark
-		// PSBT as-is.
-		log.DebugS(ctx, "Ark signatures requested (v0 pass-through)",
-			slog.String("session_id", sessionID.String()))
+		numInputs := 0
+		if msg.ArkPSBT != nil && msg.ArkPSBT.UnsignedTx != nil {
+			numInputs = len(msg.ArkPSBT.UnsignedTx.TxIn)
+		}
 
-		return []Event{
-			&ArkSignedEvent{
-				ArkPSBT: msg.ArkPSBT,
-			},
-		}, nil
+		log.DebugS(ctx, "Ark signatures requested",
+			slog.String("session_id", sessionID.String()),
+			slog.Int("num_inputs", numInputs))
+
+		return h.handleArkSignatures(msg)
 
 	case *RequestCheckpointSignatures:
 		log.DebugS(ctx, "Checkpoint signatures requested",
@@ -84,6 +83,30 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 	default:
 		return nil, fmt.Errorf("unhandled outbox event %T", outbox)
 	}
+}
+
+// handleArkSignatures signs the Ark PSBT inputs using the client key on the
+// owner leaf path of each checkpoint output.
+func (h *SigningOutboxHandler) handleArkSignatures(
+	msg *RequestArkSignatures) ([]Event, error) {
+
+	if h.Signer == nil {
+		return nil, fmt.Errorf("signer is required")
+	}
+
+	err := SignArkPSBT(
+		h.Signer, msg.ArkPSBT, msg.CheckpointPSBTs,
+		msg.TransferInputs,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return []Event{
+		&ArkSignedEvent{
+			ArkPSBT: msg.ArkPSBT,
+		},
+	}, nil
 }
 
 // handleCheckpointSignatures attaches client-side collaborative VTXO spend
