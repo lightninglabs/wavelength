@@ -151,8 +151,8 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	// Pass the full KeyDescriptor (including KeyLocator) so
 	// signers that require the locator can find the private key.
 	signDesc := &input.SignDescriptor{
-		KeyDesc:       in.VTXO.ClientKey,
-		SignMethod:    input.TaprootScriptSpendSignMethod,
+		KeyDesc:    in.VTXO.ClientKey,
+		SignMethod: input.TaprootScriptSpendSignMethod,
 		Output: &wire.TxOut{
 			Value:    witnessUtxo.Value,
 			PkScript: witnessUtxo.PkScript,
@@ -200,6 +200,6 @@ func findTapLeafByScript(pInput *psbt.PInput,
 		}
 	}
 
-	return nil, fmt.Errorf("collab leaf script not found in "+
+	return nil, fmt.Errorf("collab leaf script not found in " +
 		"tapleaf entries")
 }

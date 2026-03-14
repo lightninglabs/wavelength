@@ -22,7 +22,6 @@ const (
 		"oor/"
 )
 
-
 const (
 	retryPayloadAfterNanosRecordType tlv.Type = 1
 	retryPayloadReasonRecordType     tlv.Type = 3
