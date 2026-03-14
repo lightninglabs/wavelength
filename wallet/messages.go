@@ -395,6 +395,40 @@ func (m *UnlockVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *UnlockVTXOsResponse) walletRespSealed() {}
 
+// CompleteSpendVTXOsRequest marks VTXOs as fully spent after a successful
+// OOR transfer. This transitions each VTXO from SpendingState to the
+// terminal SpentState via the VTXO manager.
+type CompleteSpendVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies the VTXOs to mark as spent.
+	Outpoints []wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *CompleteSpendVTXOsRequest) MessageType() string {
+	return "CompleteSpendVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *CompleteSpendVTXOsRequest) walletMsgSealed() {}
+
+// CompleteSpendVTXOsResponse confirms the spend completion.
+type CompleteSpendVTXOsResponse struct {
+	actor.BaseMessage
+
+	// CompletedCount is the number of VTXOs successfully marked as spent.
+	CompletedCount int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *CompleteSpendVTXOsResponse) MessageType() string {
+	return "CompleteSpendVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
+
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
 // will be forfeited and their value sent to the specified destination output.
 type LeaveVTXOsRequest struct {

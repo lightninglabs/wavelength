@@ -28,13 +28,15 @@ import (
 //	                 ┌──────────┐
 //	 BlockEpochEvent─│          │─ForfeitRequest ──▶ Round
 //	                 │          │
-//	 ForfeitRequest ─│ VTXO FSM │─ForfeitSigSubmit ─▶ Round
+//	 ForfeitRequest ─│          │─ForfeitSigSubmit ─▶ Round
 //	    (from Round) │          │
-//	                 │          │─ExpiringNotify ───▶ ChainResolver
-//	 ForfeitConfirm ─│          │
-//	    (from Round) │          │─StatusUpdate ─────▶ Persistence
-//	                 │          │
-//	 ResumeVTXOEvent─│          │─TerminatedNotify ─▶ VTXOManager
+//	 ForfeitConfirm ─│ VTXO FSM │─ExpiringNotify ───▶ ChainResolver
+//	    (from Round) │          │
+//	 SpendReserve   ─│          │─StatusUpdate ─────▶ Persistence
+//	 SpendReleased  ─│          │
+//	 SpendCompleted ─│          │─TerminatedNotify ─▶ VTXOManager
+//	 ForfeitReleased─│          │
+//	 ResumeVTXOEvent─│          │
 //	    (from Mgr)   └──────────┘
 //
 // =============================================================================
@@ -128,6 +130,35 @@ var MessageSpec = struct {
 	// Source: VTXO Manager → VTXO Actor
 	// Handled in: All non-terminal states
 	ResumeVTXOEvent InboundEvent[*ResumeVTXOEvent]
+
+	// SpendReserveEvent claims a VTXO for an out-of-round (OOR) spend.
+	// Only valid from LiveState. Rejected from PendingForfeitState,
+	// SpendingState, and all terminal states.
+	//
+	// Source: VTXO Manager (on behalf of wallet) → VTXO Actor
+	// Handled in: LiveState
+	SpendReserveEvent InboundEvent[*SpendReserveEvent]
+
+	// SpendReleasedEvent releases a VTXO from spend reservation back
+	// to LiveState. Only valid from SpendingState.
+	//
+	// Source: VTXO Manager (on behalf of wallet) → VTXO Actor
+	// Handled in: SpendingState
+	SpendReleasedEvent InboundEvent[*SpendReleasedEvent]
+
+	// SpendCompletedEvent marks an OOR spend as finalized. The VTXO
+	// transitions to terminal SpentState.
+	//
+	// Source: VTXO Manager (on behalf of OOR FSM) → VTXO Actor
+	// Handled in: SpendingState
+	SpendCompletedEvent InboundEvent[*SpendCompletedEvent]
+
+	// ForfeitReleasedEvent releases a VTXO from pending forfeit back
+	// to LiveState. Only valid from PendingForfeitState.
+	//
+	// Source: VTXO Manager (on behalf of wallet) → VTXO Actor
+	// Handled in: PendingForfeitState
+	ForfeitReleasedEvent InboundEvent[*ForfeitReleasedEvent]
 
 	// VTXOFailedEvent signals an unrecoverable error from any source.
 	// Transitions to terminal FailedState.
@@ -248,6 +279,15 @@ const (
 
 	// VTXOStatusFailed indicates an unrecoverable error (terminal).
 	VTXOStatusFailed
+
+	// VTXOStatusSpending indicates the VTXO has been claimed for an
+	// out-of-round (OOR) spend. The VTXO is unavailable for cooperative
+	// forfeit or other operations until the spend completes or is
+	// released. Persisted so the claim survives restarts.
+	//
+	// NOTE: Placed after VTXOStatusFailed to preserve the numeric
+	// values of existing statuses used in SQL queries.
+	VTXOStatusSpending
 )
 
 // String returns a human-readable representation of the VTXO status.
@@ -255,18 +295,28 @@ func (s VTXOStatus) String() string {
 	switch s {
 	case VTXOStatusLive:
 		return "live"
+
 	case VTXOStatusPendingForfeit:
 		return "pending_forfeit"
+
 	case VTXOStatusForfeiting:
 		return "forfeiting"
+
 	case VTXOStatusForfeited:
 		return "forfeited"
+
 	case VTXOStatusSpent:
 		return "spent"
+
 	case VTXOStatusUnilateralExit:
 		return "unilateral_exit"
+
 	case VTXOStatusFailed:
 		return "failed"
+
+	case VTXOStatusSpending:
+		return "spending"
+
 	default:
 		return "unknown"
 	}

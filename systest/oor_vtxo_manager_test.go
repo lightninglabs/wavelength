@@ -92,6 +92,11 @@ func TestOORIncomingMaterializationSpawnsVTXOActor(t *testing.T) {
 		Store:       vtxoStore,
 		OperatorKey: operatorKey,
 		ExitDelay:   10,
+		NotifyIncomingVTXOs: func(_ context.Context,
+			_ []*vtxo.Descriptor) error {
+
+			return nil
+		},
 		ResolveIncomingClientKey: func(_ context.Context,
 			recipient oor.ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {

@@ -6,17 +6,18 @@ import (
 	"github.com/lightninglabs/darepo-client/round"
 )
 
-// ManagerMsg embeds actormsg.VTXOManagerMsg for messages accepted by the VTXO
-// Manager actor. Message types are defined in round/vtxo_messages.go and
-// implement the actormsg.VTXOManagerMsg marker interface.
-type ManagerMsg interface {
-	actormsg.VTXOManagerMsg
-}
+// ManagerMsg is the message type accepted by the VTXO Manager actor. This is
+// a type alias for actormsg.VTXOManagerMsg so the manager can be registered
+// directly with the actormsg service key without generic type mismatch.
+// Message types are defined in round/vtxo_messages.go and vtxo/messages.go.
+type ManagerMsg = actormsg.VTXOManagerMsg
 
-// ManagerResp is the response type returned by the VTXO Manager actor.
-type ManagerResp interface {
-	managerRespSealed()
-}
+// ManagerResp is the response type returned by the VTXO Manager actor. This
+// is an alias for actormsg.VTXOManagerResp so admission responses defined in
+// actormsg can be returned directly from the manager without wrapping. The
+// actormsg marker interface enables cross-package service key lookup from
+// the wallet.
+type ManagerResp = actormsg.VTXOManagerResp
 
 // Type alias for VTXOTerminatedMsg - canonical definition is in round package.
 type VTXOTerminatedMsg = round.VTXOTerminatedMsg
@@ -24,17 +25,20 @@ type VTXOTerminatedMsg = round.VTXOTerminatedMsg
 // VTXOCreatedResp is the response to VTXOCreatedNotification.
 type VTXOCreatedResp struct{}
 
-func (r *VTXOCreatedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOCreatedResp) VTXOManagerResp() {}
 
 // VTXOsMaterializedResp is the response to VTXOsMaterializedNotification.
 type VTXOsMaterializedResp struct{}
 
-func (r *VTXOsMaterializedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOsMaterializedResp) VTXOManagerResp() {}
 
 // VTXOTerminatedResp is the response to VTXOTerminatedMsg.
 type VTXOTerminatedResp struct{}
 
-func (r *VTXOTerminatedResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *VTXOTerminatedResp) VTXOManagerResp() {}
 
 // VTXOsMaterializedNotification notifies the VTXO manager that VTXOs were
 // already durably persisted by another actor and only actor activation remains.
@@ -78,7 +82,8 @@ type GetActiveVTXOCountResponse struct {
 	Count int
 }
 
-func (r *GetActiveVTXOCountResponse) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *GetActiveVTXOCountResponse) VTXOManagerResp() {}
 
 // =============================================================================
 // Relay messages: VTXO actor → Manager → external actor
@@ -107,5 +112,48 @@ func (m *RelayToRoundMsg) MessageType() string { return "RelayToRoundMsg" }
 // RelayToRoundResp is the response for RelayToRoundMsg.
 type RelayToRoundResp struct{}
 
-// managerRespSealed implements the ManagerResp sealed interface.
-func (r *RelayToRoundResp) managerRespSealed() {}
+// VTXOManagerResp implements actormsg.VTXOManagerResp marker interface.
+func (r *RelayToRoundResp) VTXOManagerResp() {}
+
+// =============================================================================
+// Admission message aliases
+// =============================================================================
+//
+// The canonical admission request and response types are defined in actormsg
+// so both the wallet and vtxo packages can reference them without creating
+// an import cycle (wallet → vtxo → round → wallet). These type aliases
+// allow existing vtxo code to reference them without qualification.
+
+// SelectAndReserveSpendRequest is an alias for the canonical type in actormsg.
+type SelectAndReserveSpendRequest = actormsg.SelectAndReserveSpendRequest
+
+// SelectedVTXO is an alias for the canonical type in actormsg.
+type SelectedVTXO = actormsg.SelectedVTXO
+
+// SelectAndReserveSpendResponse is an alias for the canonical type in
+// actormsg.
+type SelectAndReserveSpendResponse = actormsg.SelectAndReserveSpendResponse
+
+// ReleaseSpendRequest is an alias for the canonical type in actormsg.
+type ReleaseSpendRequest = actormsg.ReleaseSpendRequest
+
+// ReleaseSpendResponse is an alias for the canonical type in actormsg.
+type ReleaseSpendResponse = actormsg.ReleaseSpendResponse
+
+// CompleteSpendRequest is an alias for the canonical type in actormsg.
+type CompleteSpendRequest = actormsg.CompleteSpendRequest
+
+// CompleteSpendResponse is an alias for the canonical type in actormsg.
+type CompleteSpendResponse = actormsg.CompleteSpendResponse
+
+// ReserveForfeitRequest is an alias for the canonical type in actormsg.
+type ReserveForfeitRequest = actormsg.ReserveForfeitRequest
+
+// ReserveForfeitResponse is an alias for the canonical type in actormsg.
+type ReserveForfeitResponse = actormsg.ReserveForfeitResponse
+
+// ReleaseForfeitRequest is an alias for the canonical type in actormsg.
+type ReleaseForfeitRequest = actormsg.ReleaseForfeitRequest
+
+// ReleaseForfeitResponse is an alias for the canonical type in actormsg.
+type ReleaseForfeitResponse = actormsg.ReleaseForfeitResponse

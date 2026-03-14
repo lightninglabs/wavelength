@@ -21,6 +21,9 @@ func (s *LiveState) ProcessEvent(
 	case *BlockEpochEvent:
 		return s.handleBlockEpoch(ctx, evt, env)
 
+	case *SpendReserveEvent:
+		return s.handleSpendReserve(ctx, env)
+
 	case *PendingForfeitEvent:
 		return s.handlePendingForfeit(ctx, env)
 
@@ -66,6 +69,29 @@ func (s *LiveState) handlePendingForfeit(
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
 					NewStatus: VTXOStatusPendingForfeit,
+				},
+			},
+		}),
+	}, nil
+}
+
+// handleSpendReserve claims this VTXO for an out-of-round (OOR) spend. The
+// VTXO enters SpendingState and becomes unavailable for cooperative forfeit
+// until the spend completes or is released.
+func (s *LiveState) handleSpendReserve(
+	_ context.Context, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	return &VTXOStateTransition{
+		NextState: &SpendingState{
+			VTXO:              s.VTXO,
+			LastCheckedHeight: s.LastCheckedHeight,
+		},
+		NewEvents: fn.Some(VTXOEmittedEvent{
+			Outbox: []VTXOOutMsg{
+				&VTXOStatusUpdate{
+					Outpoint:  s.VTXO.Outpoint,
+					NewStatus: VTXOStatusSpending,
 				},
 			},
 		}),
@@ -381,6 +407,33 @@ func (s *PendingForfeitState) ProcessEvent(
 			NextState: s,
 		}, nil
 
+	case *ForfeitReleasedEvent:
+		// Release this VTXO back to LiveState. This happens when
+		// cooperative round registration fails after admission.
+		// Restore RequestedAtHeight as LastCheckedHeight so expiry
+		// checking resumes from where it left off rather than
+		// re-evaluating from zero.
+		return &VTXOStateTransition{
+			NextState: &LiveState{
+				VTXO:              s.VTXO,
+				LastCheckedHeight: s.RequestedAtHeight,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusLive,
+					},
+				},
+			}),
+		}, nil
+
+	case *SpendReserveEvent:
+		// Cannot claim for OOR spend while pending forfeit.
+		return nil, fmt.Errorf(
+			"pending_forfeit: cannot reserve for spend",
+		)
+
 	case *ResumeVTXOEvent:
 		// On resume, stay in this state. The round actor should
 		// re-send forfeit details when it resumes.
@@ -518,6 +571,154 @@ func (s *ForfeitingState) ProcessEvent(
 	default:
 		return nil, fmt.Errorf("forfeiting: bad event: %T", event)
 	}
+}
+
+// ProcessEvent handles events in SpendingState. The VTXO has been claimed for
+// an OOR spend but must still monitor expiry. A spend can be completed,
+// released, or escalated to unilateral exit on critical expiry.
+func (s *SpendingState) ProcessEvent(
+	_ context.Context, event VTXOEvent, env *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	switch evt := event.(type) {
+	case *SpendCompletedEvent:
+		// OOR spend completed successfully. Transition to terminal
+		// SpentState. The VTXO actor will be cleaned up.
+		return &VTXOStateTransition{
+			NextState: &SpentState{VTXO: s.VTXO},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusSpent,
+					},
+					&VTXOTerminatedNotification{
+						VTXOOutpoint: s.VTXO.Outpoint,
+						FinalState:   "Spent",
+						Reason: "OOR spend " +
+							"completed",
+					},
+				},
+			}),
+		}, nil
+
+	case *SpendReleasedEvent:
+		// OOR operation failed or was cancelled. Return to LiveState
+		// so the VTXO can be used again.
+		return &VTXOStateTransition{
+			NextState: &LiveState{
+				VTXO:              s.VTXO,
+				LastCheckedHeight: s.LastCheckedHeight,
+			},
+			NewEvents: fn.Some(VTXOEmittedEvent{
+				Outbox: []VTXOOutMsg{
+					&VTXOStatusUpdate{
+						Outpoint:  s.VTXO.Outpoint,
+						NewStatus: VTXOStatusLive,
+					},
+				},
+			}),
+		}, nil
+
+	case *BlockEpochEvent:
+		// Expiry safety: even while spending, we must escalate to
+		// unilateral exit if critical expiry is reached.
+		s.LastCheckedHeight = evt.Height
+
+		expiryStatus := env.ExpiryConfig.CheckExpiry(
+			s.VTXO, evt.Height,
+		)
+
+		if expiryStatus == ExpiryStatusCritical ||
+			expiryStatus == ExpiryStatusExpired {
+
+			blocksRemaining := BlocksUntilExpiry(
+				s.VTXO, evt.Height,
+			)
+
+			outbox := []VTXOOutMsg{
+				&ExpiringNotification{
+					VTXO:            s.VTXO,
+					BlocksRemaining: blocksRemaining,
+					Reason:          "spend timeout",
+				},
+				&VTXOStatusUpdate{
+					Outpoint:  s.VTXO.Outpoint,
+					NewStatus: VTXOStatusUnilateralExit,
+				},
+				&VTXOTerminatedNotification{
+					VTXOOutpoint: s.VTXO.Outpoint,
+					FinalState:   "UnilateralExit",
+					Reason:       "spend timeout",
+				},
+			}
+
+			return &VTXOStateTransition{
+				NextState: &UnilateralExitState{
+					VTXO: s.VTXO,
+					Reason: "critical expiry while " +
+						"spending",
+				},
+				NewEvents: fn.Some(VTXOEmittedEvent{
+					Outbox: outbox,
+				}),
+			}, nil
+		}
+
+		// Refresh is intentionally blocked while spending. OOR
+		// spends are short-lived; on completion the VTXO moves
+		// to SpentState, on release it returns to LiveState
+		// where refresh will be re-evaluated.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case *PendingForfeitEvent:
+		// Cannot claim for cooperative forfeit while spending.
+		return nil, fmt.Errorf(
+			"spending: cannot accept pending forfeit",
+		)
+
+	case *SpendReserveEvent:
+		// Already reserved for spend.
+		return nil, fmt.Errorf(
+			"spending: already reserved for spend",
+		)
+
+	case *ResumeVTXOEvent:
+		// On resume, stay in SpendingState. The OOR session will
+		// resume and later release or complete the claim.
+		return &VTXOStateTransition{
+			NextState: s,
+		}, nil
+
+	case *VTXOFailedEvent:
+		return &VTXOStateTransition{
+			NextState: &FailedState{
+				VTXO:        s.VTXO,
+				Reason:      evt.Reason,
+				Error:       evt.Error,
+				Recoverable: evt.Recoverable,
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf(
+			"spending: unexpected event: %T", event,
+		)
+	}
+}
+
+// ProcessEvent for SpentState. This is a terminal state, so all events result
+// in staying in the same state.
+func (s *SpentState) ProcessEvent(
+	_ context.Context, _ VTXOEvent, _ *VTXOEnvironment,
+) (*VTXOStateTransition, error) {
+
+	// Terminal state: self-loop on all events.
+	return &VTXOStateTransition{
+		NextState: s,
+	}, nil
 }
 
 // ProcessEvent for ForfeitedState. This is a terminal state, so all events

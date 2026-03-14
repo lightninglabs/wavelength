@@ -325,6 +325,9 @@ func vtxoStatusToProto(s vtxo.VTXOStatus) daemonrpc.VTXOStatus {
 	case vtxo.VTXOStatusFailed:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_FAILED
 
+	case vtxo.VTXOStatusSpending:
+		return daemonrpc.VTXOStatus_VTXO_STATUS_SPENDING
+
 	default:
 		return daemonrpc.VTXOStatus_VTXO_STATUS_UNSPECIFIED
 	}

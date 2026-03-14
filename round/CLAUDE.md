@@ -23,14 +23,14 @@ protocols with MuSig2 signing ceremonies.
 - **Depended on by**: `vtxo` (forfeit coordination), `db` (round persistence), `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`, `SubmitVTXOForfeitSigsToServer`
-  - → `vtxo`: `PendingForfeitEvent`, `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
+  - → `vtxo`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `BlockEpochEvent`
   - → `vtxo` manager: `VTXOCreatedNotification`
   - → `wallet`: `RegisterConfirmationNotifierRequest`
   - → `timeout`: `ScheduleTimeoutRequest`, `CancelTimeoutRequest`
 - **Receives**:
   - ← `serverconn`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - ← `vtxo`: `RefreshVTXORequest`, `ForfeitSignatureSubmission`
-  - ← `wallet` (via `lib/actormsg`): `RegisterIntentMsg` (pre-composed intent package), `TriggerBoardMsg` (VTXO registration + registration trigger)
+  - ← `wallet` (via `lib/actormsg`): `RegisterIntentMsg` (cooperative intent packages pre-admitted by manager), `TriggerBoardMsg` (VTXO registration + registration trigger)
   - ← `wallet`: `BoardingUtxoConfirmedEvent`
   - ← `timeout`: `TimeoutMsg`
   - ← `chainsource`: `ConfirmationEvent`
@@ -41,6 +41,7 @@ protocols with MuSig2 signing ceremonies.
 - Round state is checkpointed atomically after tree validation; crash before checkpoint means client has no record of sent signatures.
 - Primary FSM handles interactive phases (through InputSigSent); a dedicated FSM per round handles confirmation monitoring.
 - Forfeit signatures must be collected BEFORE boarding inputs are signed (atomic replacement guarantee).
+- The round actor does not mark VTXOs as PendingForfeit — the wallet/manager admits VTXOs before sending RegisterIntentMsg.
 
 ## Deep Docs
 

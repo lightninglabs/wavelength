@@ -3,14 +3,13 @@
 ## Purpose
 
 Manages on-chain boarding addresses (2-of-2 multisig with operator + CSV
-timeout), monitors for confirmed boarding UTXOs, and composes intent packages
-for round participation (refresh, leave). The wallet owns intent composition:
-it loads VTXO descriptors, builds forfeit+output pairings, and sends
-pre-composed `RegisterIntentMsg` to the round actor.
+timeout), monitors for confirmed boarding UTXOs, composes cooperative
+intent packages, and gates round registration through the VTXO manager
+admission APIs.
 
 ## Key Types
 
-- `Ark` — Main actor managing boarding addresses, UTXO enumeration, and confirmation polling.
+- `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, and admission forwarding.
 - `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent).
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `CreateBoardingAddressRequest` / `CreateBoardingAddressResponse` — Ask-request for deriving new address.
@@ -20,11 +19,12 @@ pre-composed `RegisterIntentMsg` to the round actor.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications).
+- **Depends on**: `baselib/actor` (actor system), `chainsource` (block epoch notifications), `lib/actormsg` (VTXO manager admission types).
 - **Depended on by**: `round` (boarding intents), `db` (persistence), `darepod` (wiring).
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
-  - → `round` (via `lib/actormsg`): `RegisterIntentMsg` (pre-composed intent package with forfeits + VTXOs/leaves), `TriggerBoardMsg` (VTXO amounts for boarding)
+  - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding), `RegisterIntentMsg` (pre-composed cooperative intents with forfeits + VTXOs/leaves)
+  - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`
@@ -35,6 +35,8 @@ pre-composed `RegisterIntentMsg` to the round actor.
 - UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
 - `ListUnspent` queries are retried up to 5 times with 200ms delay (mitigates race between block epoch and wallet update).
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
+- Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
+- If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.
 
 ## Deep Docs
 
