@@ -35,6 +35,12 @@ func (h *pausedFinalizeHandler) Handle(_ context.Context, sessionID SessionID,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -114,6 +120,12 @@ func (h *pausedSubmitHandler) Handle(_ context.Context, sessionID SessionID,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -196,6 +208,12 @@ func (h *pausedCoSignedHandler) Handle(_ context.Context, sessionID SessionID,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -286,6 +304,12 @@ func (h *cosignedButDroppedHandler) Handle(_ context.Context,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,

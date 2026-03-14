@@ -36,8 +36,12 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
-		// Ark signing is modeled as an outbox boundary.
-		// Unit tests treat this as a deterministic pass-through.
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -256,6 +260,12 @@ func (h *retrySubmitOutboxHandler) Handle(
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,
@@ -489,6 +499,12 @@ func (h *localOnlyOutboxHandler) Handle(_ context.Context,
 
 	switch msg := outbox.(type) {
 	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
 		return []Event{
 			&ArkSignedEvent{
 				ArkPSBT: msg.ArkPSBT,

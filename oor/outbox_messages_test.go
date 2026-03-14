@@ -8,12 +8,13 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // TestOutboxToProtoSubmitRequest verifies that a valid submit package
-// outbox request serializes into the expected proto Any envelope.
+// outbox request serializes into the expected proto message.
 func TestOutboxToProtoSubmitRequest(t *testing.T) {
 	t.Parallel()
 
@@ -26,14 +27,8 @@ func TestOutboxToProtoSubmitRequest(t *testing.T) {
 
 	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := result.(*anypb.Any)
+	_, ok := result.(*oorpb.SubmitPackageRequest)
 	require.True(t, ok)
-	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"SendSubmitPackageRequest",
-		anyMsg.TypeUrl,
-	)
-	require.NotEmpty(t, anyMsg.Value)
 }
 
 // TestOutboxToProtoSubmitRequestError verifies that a submit request
@@ -48,8 +43,7 @@ func TestOutboxToProtoSubmitRequestError(t *testing.T) {
 }
 
 // TestOutboxToProtoFinalizeRequest verifies that a valid finalize
-// package outbox request serializes into the expected proto Any
-// envelope.
+// package outbox request serializes into the expected proto message.
 func TestOutboxToProtoFinalizeRequest(t *testing.T) {
 	t.Parallel()
 
@@ -62,14 +56,8 @@ func TestOutboxToProtoFinalizeRequest(t *testing.T) {
 
 	result := msg.ToProto().UnwrapOrFail(t)
 
-	anyMsg, ok := result.(*anypb.Any)
+	_, ok := result.(*oorpb.FinalizePackageRequest)
 	require.True(t, ok)
-	require.Equal(
-		t,
-		oorOutboxProtoTypeURLPrefix+"SendFinalizePackageRequest",
-		anyMsg.TypeUrl,
-	)
-	require.NotEmpty(t, anyMsg.Value)
 }
 
 // TestOutboxToProtoMarkInputsSpentRequest verifies that a mark-inputs-
