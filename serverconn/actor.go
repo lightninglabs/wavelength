@@ -30,6 +30,9 @@ const (
 	SendRPCRequestMsgType tlv.Type = 2001
 )
 
+// defaultSendEventTimeout is the timeout for outbound gRPC Edge.Send calls.
+const defaultSendEventTimeout = 30 * time.Second
+
 // TLV record type aliases for RecordT-style message field serialization.
 type (
 	protoPayloadRecordTLV = tlv.TlvType1
@@ -450,6 +453,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
+		log.WarnS(ctx, "Failed to convert to proto", err)
+
 		return fn.Err[ServerConnResp](fmt.Errorf(
 			"convert to proto: %w", err,
 		))
@@ -504,7 +509,15 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		},
 	}
 
-	resp, err := a.cfg.Edge.Send(ctx, &mailboxpb.SendRequest{
+	// Use a detached context for the gRPC call so that parent
+	// cancellation does not abort the outbound send, while
+	// preserving trace/logging context values.
+	sendCtx, sendCancel := context.WithTimeout(
+		context.WithoutCancel(ctx), defaultSendEventTimeout,
+	)
+	defer sendCancel()
+
+	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
 		Envelope: envelope,
 	})
 	if err != nil {
