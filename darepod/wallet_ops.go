@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/aezeed"
@@ -121,9 +122,23 @@ func BuildTransferInputs(ctx context.Context,
 			)
 		}
 
+		// The checkpoint output collab path is a 2-of-2 multisig
+		// between the VTXO owner and the operator, matching the
+		// VTXO's own collaborative spend path. This ensures both
+		// parties must sign the Ark tx that spends the checkpoint.
+		collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+			desc.ClientKey.PubKey, desc.OperatorKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"build collab leaf for %s: %w",
+				op, err,
+			)
+		}
+
 		inputs = append(inputs, oor.TransferInput{
 			VTXO:            desc,
-			OwnerLeafScript: desc.PkScript,
+			OwnerLeafScript: collabLeaf.Script,
 		})
 	}
 

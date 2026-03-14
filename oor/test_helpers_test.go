@@ -53,8 +53,24 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			TapScript:      tapscript,
 			RelativeExpiry: exitDelay,
 		},
-		OwnerLeafScript: []byte{0x51},
+		OwnerLeafScript: newTestCollabLeaf(
+			t, ownerKey.PubKey(), operatorKey,
+		),
 	}
+}
+
+// newTestCollabLeaf builds the 2-of-2 collaborative multisig leaf script
+// for checkpoint outputs in tests. This matches the protocol spec where
+// the checkpoint collab path requires both owner and operator signatures.
+func newTestCollabLeaf(t *testing.T, ownerKey,
+	operatorKey *btcec.PublicKey) []byte {
+
+	t.Helper()
+
+	leaf, err := scripts.MultiSigCollabTapLeaf(ownerKey, operatorKey)
+	require.NoError(t, err)
+
+	return leaf.Script
 }
 
 // newTestTaprootPkScript returns a valid P2TR pkScript for tests.
