@@ -130,6 +130,11 @@ message RegisteredReceiveScript {
 message UnregisterReceiveScriptResponse {
 }
 
+// ListOORRecipientEventsByScriptRequest is Phase 1 of the three-phase
+// incoming OOR receive flow. After a lightweight IncomingOOREvent
+// notification wakes the client, the client issues this query to fetch
+// the full OOR package data (Ark PSBT + checkpoint PSBTs) needed to
+// construct IncomingTransferEvent in the OOR FSM.
 message ListOORRecipientEventsByScriptRequest {
     bytes pk_script = 1;
     uint64 after_event_id = 2;
@@ -146,17 +151,44 @@ message ListOORRecipientEventsByScriptResponse {
     uint64 next_cursor = 2;
 }
 
+// OORRecipientEvent is returned by ListOORRecipientEventsByScript (Phase 1
+// query response). It carries the full Ark PSBT and checkpoint data that
+// the lightweight IncomingOOREvent notification intentionally omits.
 message OORRecipientEvent {
     bytes recipient_pk_script = 1;
     uint64 event_id = 2;
     bytes session_id = 3;
     uint32 output_index = 4;
     uint64 value = 5;
+
+    // ark_psbt is the serialized Ark PSBT for this OOR session. The
+    // client needs this to materialize the received VTXO via the
+    // IncomingTransferEvent in the OOR FSM.
+    bytes ark_psbt = 6;
+
+    // checkpoint_psbts are the finalized checkpoint PSBTs for the
+    // session. These provide lineage and unroll proof data for the
+    // materialized VTXO.
+    repeated bytes checkpoint_psbts = 7;
 }
 
-// IncomingOOREvent is delivered as a mailbox EVENT envelope. It is
-// intentionally bounded and acts as a durable hint that a wallet should fetch
-// full OOR proof material via wallet-scoped queries if needed.
+// IncomingOOREvent is a lightweight notification delivered as a mailbox EVENT
+// envelope. It acts as a durable wake-up hint that triggers the three-phase
+// incoming receive flow:
+//
+//   Phase 0 (notification): IncomingOOREvent arrives with session_id,
+//     pk_script, and event_id. No PSBTs or metadata; just enough to
+//     identify the transfer and persist a durable resolve request.
+//
+//   Phase 1 (package query): Client issues ListOORRecipientEventsByScript
+//     to fetch the full Ark PSBT + checkpoint PSBTs from the indexer.
+//
+//   Phase 2 (metadata query): Client issues ListVTXOsByScripts to fetch
+//     authoritative VTXO lineage metadata (round_id, commitment_txid,
+//     tree_path, batch_expiry, chain_depth) for materialization.
+//
+// Each phase boundary is a durable message, so the flow survives actor
+// restarts without re-issuing queries or losing state.
 message IncomingOOREvent {
     bytes recipient_pk_script = 1;
     uint64 recipient_event_id = 2;
@@ -171,6 +203,59 @@ message IncomingOOREvent {
 message OutPoint {
     bytes txid = 1;
     uint32 vout = 2;
+}
+
+// TxOut represents a Bitcoin transaction output.
+message TxOut {
+    // value is the output amount in satoshis.
+    int64 value = 1;
+
+    // pk_script is the output script (scriptPubKey).
+    bytes pk_script = 2;
+}
+
+// TreePathNode represents a single node in a VTXO tree path. Each node
+// corresponds to one transaction in the commitment lineage from root to leaf.
+message TreePathNode {
+    // input is the outpoint this transaction spends.
+    OutPoint input = 1;
+
+    // outputs are all the outputs created by this transaction.
+    repeated TxOut outputs = 2;
+
+    // co_signers are the compressed public keys (33 bytes each) that must
+    // participate in MuSig2 signing for this node's input.
+    repeated bytes co_signers = 3;
+
+    // children maps output index to the index of the child TreePathNode in
+    // the parent TreePath's flattened nodes array.
+    map<uint32, uint32> children = 4;
+
+    // amount is the total BTC value (satoshis) for this node.
+    int64 amount = 5;
+
+    // signature is the final aggregated MuSig2 schnorr signature (64 bytes)
+    // for the input. Empty if unsigned.
+    bytes signature = 6;
+}
+
+// TreePath is the minimal extracted VTXO tree path from root to a client's
+// leaf, required for unilateral exit of the underlying commitment lineage.
+message TreePath {
+    // nodes is the pre-order flattened list of tree nodes. Index 0 is the
+    // root.
+    repeated TreePathNode nodes = 1;
+
+    // batch_outpoint is the outpoint in the commitment transaction that the
+    // root transaction spends.
+    OutPoint batch_outpoint = 2;
+
+    // batch_output is the actual output at batch_outpoint.
+    TxOut batch_output = 3;
+
+    // sweep_tapscript_root is the tapscript root hash for tweaking branch
+    // outputs. Empty for connector trees.
+    bytes sweep_tapscript_root = 4;
 }
 
 // ScriptScope selects a pkScript and carries a proof-of-control for that
@@ -278,6 +363,10 @@ message VTXO {
     // and the most recent on-chain commitment. Round-created VTXOs have
     // chain_depth 0.
     uint32 chain_depth = 15;
+
+    // tree_path is the extracted VTXO tree path required for unilateral exit
+    // of this VTXO's underlying commitment lineage.
+    TreePath tree_path = 16;
 }
 
 message ListVTXOsByScriptsRequest {
