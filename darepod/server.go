@@ -1928,12 +1928,25 @@ func (s *Server) initOORActor(ctx context.Context,
 			finalCheckpoints []*psbt.Packet) (
 			oor.IncomingVTXOMetadata, error) {
 
-			// Derive chain depth from checkpoint
-			// count. Each OOR hop adds one checkpoint.
+			// Derive metadata from the Ark PSBT.
+			// The commitment tx is the parent of
+			// the sender's VTXO (first input).
+			var commitTxID chainhash.Hash
+			roundID := chainhash.Hash(sessionID).String()
+
+			if ark != nil && ark.UnsignedTx != nil &&
+				len(ark.UnsignedTx.TxIn) > 0 {
+
+				commitTxID = ark.UnsignedTx.TxIn[0].
+					PreviousOutPoint.Hash
+			}
+
 			chainDepth := len(finalCheckpoints)
 
 			return oor.IncomingVTXOMetadata{
-				ChainDepth: chainDepth,
+				RoundID:        roundID,
+				CommitmentTxID: commitTxID,
+				ChainDepth:     chainDepth,
 			}, nil
 		},
 	}
