@@ -1862,6 +1862,9 @@ func (s *Server) initOORActor(ctx context.Context,
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
+		// TODO(roasbeef): populate OperatorKey and ExitDelay
+		// from the operator terms once key derivation stores
+		// them on the Server struct.
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -1873,6 +1876,9 @@ func (s *Server) initOORActor(ctx context.Context,
 			)
 		},
 		CompleteSpend: completeSpend,
+		// TODO(roasbeef): wire ResolveIncomingClientKey and
+		// ResolveIncomingMetadata once the operator terms
+		// and client key descriptor are stored on Server.
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
