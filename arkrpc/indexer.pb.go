@@ -854,8 +854,16 @@ type OORRecipientEvent struct {
 	SessionId         []byte                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	OutputIndex       uint32                 `protobuf:"varint,4,opt,name=output_index,json=outputIndex,proto3" json:"output_index,omitempty"`
 	Value             uint64                 `protobuf:"varint,5,opt,name=value,proto3" json:"value,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// ark_psbt is the serialized Ark PSBT for this OOR session. The
+	// client needs this to materialize the received VTXO via the
+	// IncomingTransferEvent in the OOR FSM.
+	ArkPsbt []byte `protobuf:"bytes,6,opt,name=ark_psbt,json=arkPsbt,proto3" json:"ark_psbt,omitempty"`
+	// checkpoint_psbts are the finalized checkpoint PSBTs for the
+	// session. These provide lineage and unroll proof data for the
+	// materialized VTXO.
+	CheckpointPsbts [][]byte `protobuf:"bytes,7,rep,name=checkpoint_psbts,json=checkpointPsbts,proto3" json:"checkpoint_psbts,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OORRecipientEvent) Reset() {
@@ -921,6 +929,20 @@ func (x *OORRecipientEvent) GetValue() uint64 {
 		return x.Value
 	}
 	return 0
+}
+
+func (x *OORRecipientEvent) GetArkPsbt() []byte {
+	if x != nil {
+		return x.ArkPsbt
+	}
+	return nil
+}
+
+func (x *OORRecipientEvent) GetCheckpointPsbts() [][]byte {
+	if x != nil {
+		return x.CheckpointPsbts
+	}
+	return nil
 }
 
 // IncomingOOREvent is delivered as a mailbox EVENT envelope. It is
@@ -2022,14 +2044,16 @@ const file_indexer_proto_rawDesc = "" +
 	"&ListOORRecipientEventsByScriptResponse\x121\n" +
 	"\x06events\x18\x01 \x03(\v2\x19.arkrpc.OORRecipientEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\xb6\x01\n" +
+	"nextCursor\"\xfc\x01\n" +
 	"\x11OORRecipientEvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12\x19\n" +
 	"\bevent_id\x18\x02 \x01(\x04R\aeventId\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x03 \x01(\fR\tsessionId\x12!\n" +
 	"\foutput_index\x18\x04 \x01(\rR\voutputIndex\x12\x14\n" +
-	"\x05value\x18\x05 \x01(\x04R\x05value\"\xc8\x01\n" +
+	"\x05value\x18\x05 \x01(\x04R\x05value\x12\x19\n" +
+	"\bark_psbt\x18\x06 \x01(\fR\aarkPsbt\x12)\n" +
+	"\x10checkpoint_psbts\x18\a \x03(\fR\x0fcheckpointPsbts\"\xc8\x01\n" +
 	"\x10IncomingOOREvent\x12.\n" +
 	"\x13recipient_pk_script\x18\x01 \x01(\fR\x11recipientPkScript\x12,\n" +
 	"\x12recipient_event_id\x18\x02 \x01(\x04R\x10recipientEventId\x12\x1d\n" +

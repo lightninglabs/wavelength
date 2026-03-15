@@ -152,6 +152,16 @@ message OORRecipientEvent {
     bytes session_id = 3;
     uint32 output_index = 4;
     uint64 value = 5;
+
+    // ark_psbt is the serialized Ark PSBT for this OOR session. The
+    // client needs this to materialize the received VTXO via the
+    // IncomingTransferEvent in the OOR FSM.
+    bytes ark_psbt = 6;
+
+    // checkpoint_psbts are the finalized checkpoint PSBTs for the
+    // session. These provide lineage and unroll proof data for the
+    // materialized VTXO.
+    repeated bytes checkpoint_psbts = 7;
 }
 
 // IncomingOOREvent is delivered as a mailbox EVENT envelope. It is
