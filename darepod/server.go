@@ -147,6 +147,21 @@ type Server struct {
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
 
+	// operatorKey is the operator's public key from GetInfo.
+	// Used by the OOR receive path for checkpoint leaf
+	// construction.
+	operatorKey *btcec.PublicKey
+
+	// vtxoExitDelay is the operator's VTXO exit delay from
+	// GetInfo. Used by the OOR receive path for VTXO descriptor
+	// construction.
+	vtxoExitDelay uint32
+
+	// clientKeyDesc is the client's identity key descriptor,
+	// derived during wallet initialization. Used by the OOR
+	// receive path to match incoming recipient outputs.
+	clientKeyDesc keychain.KeyDescriptor
+
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
@@ -1515,6 +1530,19 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	var identityPubkey string
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		identityPubkey = lndSvc.NodePubkey.String()
+
+		// Store the client key descriptor for OOR
+		// incoming transfer resolution. Parse the
+		// LND node pubkey (route.Vertex) into a
+		// btcec public key.
+		nodePub, parseErr := btcec.ParsePubKey(
+			lndSvc.NodePubkey[:],
+		)
+		if parseErr == nil {
+			s.clientKeyDesc = keychain.KeyDescriptor{
+				PubKey: nodePub,
+			}
+		}
 	})
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		// Derive the node identity key from the wallet
@@ -1533,6 +1561,10 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				"%x",
 				desc.PubKey.SerializeCompressed(),
 			)
+
+			// Store the client key descriptor for
+			// OOR incoming transfer resolution.
+			s.clientKeyDesc = *desc
 		}
 	})
 
@@ -1679,6 +1711,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 		return nil, fmt.Errorf("unable to fetch operator "+
 			"terms: %w", err)
 	}
+
+	// Store operator terms on Server for the OOR receive path.
+	s.operatorKey = operatorTerms.PubKey
+	s.vtxoExitDelay = operatorTerms.VTXOExitDelay
 
 	// Default maximum operator fee the client is willing to pay
 	// per round. This is a safety limit to prevent the client
@@ -1862,9 +1898,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
-		// TODO(roasbeef): populate OperatorKey and ExitDelay
-		// from the operator terms once key derivation stores
-		// them on the Server struct.
+		OperatorKey: s.operatorKey,
+		ExitDelay:   s.vtxoExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -1876,9 +1911,31 @@ func (s *Server) initOORActor(ctx context.Context,
 			)
 		},
 		CompleteSpend: completeSpend,
-		// TODO(roasbeef): wire ResolveIncomingClientKey and
-		// ResolveIncomingMetadata once the operator terms
-		// and client key descriptor are stored on Server.
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient oor.ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			// Single-key model: return the client's
+			// identity key for any recipient output.
+			// Multi-key support would need pkScript
+			// matching against derived keys.
+			return s.clientKeyDesc, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID oor.SessionID,
+			recipient oor.ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			oor.IncomingVTXOMetadata, error) {
+
+			// Derive chain depth from checkpoint
+			// count. Each OOR hop adds one checkpoint.
+			chainDepth := len(finalCheckpoints)
+
+			return oor.IncomingVTXOMetadata{
+				ChainDepth: chainDepth,
+			}, nil
+		},
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
