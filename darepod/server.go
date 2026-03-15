@@ -14,7 +14,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -28,6 +30,7 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -1140,21 +1143,102 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 
 	// IncomingOOR: server notifies the client about an incoming
 	// OOR transfer via the indexer's ArkService. The
-	// IncomingOOREvent is a lightweight notification hint — the
-	// client needs to fetch the full Ark PSBT and checkpoint
-	// data from the server to materialize the received VTXO.
+	// IncomingOOREvent is a lightweight notification hint. The
+	// route's Adapt closure queries the indexer (via
+	// ListOORRecipientEventsByScript) to fetch the full Ark
+	// PSBT and checkpoint data needed by IncomingTransferEvent.
 	//
-	// For now, we construct a DriveEventRequest with the session
-	// ID. The IncomingTransferEvent currently requires ArkPSBT
-	// and FinalCheckpointPSBTs which must be resolved separately
-	// (e.g., via a wallet-scoped query to the indexer).
-	//
-	// TODO(roasbeef): Add full Ark PSBT resolution from the
-	// indexer's recipient event store before dispatching to the
-	// OOR FSM.
-	_ = oorKey
-	_ = arkServiceName
-	_ = MethodIncomingOOR
+	// The indexer query uses the ark mailbox client which is
+	// wired during server initialization. The query response
+	// now includes ark_psbt and checkpoint_psbts fields.
+	idxClient := s.indexer
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: arkServiceName,
+		Method:  MethodIncomingOOR,
+		NewEvent: func() proto.Message {
+			return &arkrpc.IncomingOOREvent{}
+		},
+		Key: oorKey,
+		Adapt: func(p proto.Message) (
+			oor.OORDurableMsg, error) {
+
+			evt, ok := p.(*arkrpc.IncomingOOREvent)
+			if !ok {
+				return nil, fmt.Errorf(
+					"expected IncomingOOREvent"+
+						", got %T", p,
+				)
+			}
+
+			sessionID, err := chainhash.NewHash(
+				evt.GetSessionId(),
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"parse session id: %w", err,
+				)
+			}
+
+			// Query the indexer for the full package
+			// data. The notification is just a hint.
+			resp, err := idxClient.ListOORRecipientEventsByScriptTaproot(
+				context.Background(),
+				evt.GetRecipientPkScript(),
+				evt.GetRecipientEventId()-1,
+				1,
+			)
+			if err != nil || len(resp.GetEvents()) == 0 {
+				return nil, fmt.Errorf(
+					"fetch OOR package for session "+
+						"%x: %w",
+					sessionID[:], err,
+				)
+			}
+
+			recipientEvt := resp.Events[0]
+
+			// Parse the Ark PSBT from the response.
+			arkPSBT, parseErr := psbtutil.Parse(
+				recipientEvt.GetArkPsbt(),
+			)
+			if parseErr != nil {
+				return nil, fmt.Errorf(
+					"parse ark psbt: %w", parseErr,
+				)
+			}
+
+			// Parse checkpoint PSBTs.
+			var checkpoints []*psbt.Packet
+			for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
+				cp, cpErr := psbtutil.Parse(cpRaw)
+				if cpErr != nil {
+					return nil, fmt.Errorf(
+						"parse checkpoint: %w",
+						cpErr,
+					)
+				}
+
+				checkpoints = append(
+					checkpoints, cp,
+				)
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: oor.SessionID(
+					*sessionID,
+				),
+				Event: &oor.IncomingTransferEvent{
+					SessionID: oor.SessionID(
+						*sessionID,
+					),
+					ArkPSBT: arkPSBT,
+					FinalCheckpointPSBTs: checkpoints,
+				},
+			}, nil
+		},
+	})
 
 	// TODO(roasbeef): Register an IncomingAck route once the
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
