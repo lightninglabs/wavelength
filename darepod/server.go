@@ -14,7 +14,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -28,6 +30,7 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -76,6 +79,16 @@ const (
 	// operational. All wallet RPCs (GetBalance, NewAddress, etc.)
 	// are available.
 	WalletStateReady
+)
+
+const (
+	// arkServiceName is the protobuf service name for ArkService
+	// events pushed by the server indexer.
+	arkServiceName = "arkrpc.ArkService"
+
+	// MethodIncomingOOR is the routing method name for incoming
+	// OOR transfer notifications pushed by the server indexer.
+	MethodIncomingOOR = "IncomingOOR"
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -133,6 +146,21 @@ type Server struct {
 	// mode this is populated from the lnd connection; in lwwallet
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
+
+	// operatorKey is the operator's public key from GetInfo.
+	// Used by the OOR receive path for checkpoint leaf
+	// construction.
+	operatorKey *btcec.PublicKey
+
+	// vtxoExitDelay is the operator's VTXO exit delay from
+	// GetInfo. Used by the OOR receive path for VTXO descriptor
+	// construction.
+	vtxoExitDelay uint32
+
+	// clientKeyDesc is the client's identity key descriptor,
+	// derived during wallet initialization. Used by the OOR
+	// receive path to match incoming recipient outputs.
+	clientKeyDesc keychain.KeyDescriptor
 
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
@@ -1128,6 +1156,105 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 		},
 	})
 
+	// IncomingOOR: server notifies the client about an incoming
+	// OOR transfer via the indexer's ArkService. The
+	// IncomingOOREvent is a lightweight notification hint. The
+	// route's Adapt closure queries the indexer (via
+	// ListOORRecipientEventsByScript) to fetch the full Ark
+	// PSBT and checkpoint data needed by IncomingTransferEvent.
+	//
+	// The indexer query uses the ark mailbox client which is
+	// wired during server initialization. The query response
+	// now includes ark_psbt and checkpoint_psbts fields.
+	idxClient := s.indexer
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: arkServiceName,
+		Method:  MethodIncomingOOR,
+		NewEvent: func() proto.Message {
+			return &arkrpc.IncomingOOREvent{}
+		},
+		Key: oorKey,
+		Adapt: func(p proto.Message) (
+			oor.OORDurableMsg, error) {
+
+			evt, ok := p.(*arkrpc.IncomingOOREvent)
+			if !ok {
+				return nil, fmt.Errorf(
+					"expected IncomingOOREvent"+
+						", got %T", p,
+				)
+			}
+
+			sessionID, err := chainhash.NewHash(
+				evt.GetSessionId(),
+			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"parse session id: %w", err,
+				)
+			}
+
+			// Query the indexer for the full package
+			// data. The notification is just a hint.
+			resp, err := idxClient.ListOORRecipientEventsByScriptTaproot(
+				context.Background(),
+				evt.GetRecipientPkScript(),
+				evt.GetRecipientEventId()-1,
+				1,
+			)
+			if err != nil || len(resp.GetEvents()) == 0 {
+				return nil, fmt.Errorf(
+					"fetch OOR package for session "+
+						"%x: %w",
+					sessionID[:], err,
+				)
+			}
+
+			recipientEvt := resp.Events[0]
+
+			// Parse the Ark PSBT from the response.
+			arkPSBT, parseErr := psbtutil.Parse(
+				recipientEvt.GetArkPsbt(),
+			)
+			if parseErr != nil {
+				return nil, fmt.Errorf(
+					"parse ark psbt: %w", parseErr,
+				)
+			}
+
+			// Parse checkpoint PSBTs.
+			var checkpoints []*psbt.Packet
+			for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
+				cp, cpErr := psbtutil.Parse(cpRaw)
+				if cpErr != nil {
+					return nil, fmt.Errorf(
+						"parse checkpoint: %w",
+						cpErr,
+					)
+				}
+
+				checkpoints = append(
+					checkpoints, cp,
+				)
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: oor.SessionID(
+					*sessionID,
+				),
+				Event: &oor.IncomingTransferEvent{
+					SessionID: oor.SessionID(
+						*sessionID,
+					),
+					ArkPSBT: arkPSBT,
+					FinalCheckpointPSBTs: checkpoints,
+				},
+			}, nil
+		},
+	})
+
 	// TODO(roasbeef): Register an IncomingAck route once the
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
 	// classified as a transport event but currently has no
@@ -1403,6 +1530,19 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	var identityPubkey string
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		identityPubkey = lndSvc.NodePubkey.String()
+
+		// Store the client key descriptor for OOR
+		// incoming transfer resolution. Parse the
+		// LND node pubkey (route.Vertex) into a
+		// btcec public key.
+		nodePub, parseErr := btcec.ParsePubKey(
+			lndSvc.NodePubkey[:],
+		)
+		if parseErr == nil {
+			s.clientKeyDesc = keychain.KeyDescriptor{
+				PubKey: nodePub,
+			}
+		}
 	})
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		// Derive the node identity key from the wallet
@@ -1421,6 +1561,10 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				"%x",
 				desc.PubKey.SerializeCompressed(),
 			)
+
+			// Store the client key descriptor for
+			// OOR incoming transfer resolution.
+			s.clientKeyDesc = *desc
 		}
 	})
 
@@ -1567,6 +1711,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 		return nil, fmt.Errorf("unable to fetch operator "+
 			"terms: %w", err)
 	}
+
+	// Store operator terms on Server for the OOR receive path.
+	s.operatorKey = operatorTerms.PubKey
+	s.vtxoExitDelay = operatorTerms.VTXOExitDelay
 
 	// Default maximum operator fee the client is willing to pay
 	// per round. This is a safety limit to prevent the client
@@ -1750,6 +1898,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
+		OperatorKey: s.operatorKey,
+		ExitDelay:   s.vtxoExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -1761,6 +1911,44 @@ func (s *Server) initOORActor(ctx context.Context,
 			)
 		},
 		CompleteSpend: completeSpend,
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient oor.ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			// Single-key model: return the client's
+			// identity key for any recipient output.
+			// Multi-key support would need pkScript
+			// matching against derived keys.
+			return s.clientKeyDesc, nil
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID oor.SessionID,
+			recipient oor.ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			oor.IncomingVTXOMetadata, error) {
+
+			// Derive metadata from the Ark PSBT.
+			// The commitment tx is the parent of
+			// the sender's VTXO (first input).
+			var commitTxID chainhash.Hash
+			roundID := chainhash.Hash(sessionID).String()
+
+			if ark != nil && ark.UnsignedTx != nil &&
+				len(ark.UnsignedTx.TxIn) > 0 {
+
+				commitTxID = ark.UnsignedTx.TxIn[0].
+					PreviousOutPoint.Hash
+			}
+
+			chainDepth := len(finalCheckpoints)
+
+			return oor.IncomingVTXOMetadata{
+				RoundID:        roundID,
+				CommitmentTxID: commitTxID,
+				ChainDepth:     chainDepth,
+			}, nil
+		},
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
