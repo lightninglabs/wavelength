@@ -78,6 +78,16 @@ const (
 	WalletStateReady
 )
 
+const (
+	// arkServiceName is the protobuf service name for ArkService
+	// events pushed by the server indexer.
+	arkServiceName = "arkrpc.ArkService"
+
+	// MethodIncomingOOR is the routing method name for incoming
+	// OOR transfer notifications pushed by the server indexer.
+	MethodIncomingOOR = "IncomingOOR"
+)
+
 // Main is the true entry point for the daemon. It is called after CLI flag
 // parsing, config validation, and signal interception are complete.
 func Main(cfg *Config, interceptor signal.Interceptor) error {
@@ -1127,6 +1137,24 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			}, nil
 		},
 	})
+
+	// IncomingOOR: server notifies the client about an incoming
+	// OOR transfer via the indexer's ArkService. The
+	// IncomingOOREvent is a lightweight notification hint — the
+	// client needs to fetch the full Ark PSBT and checkpoint
+	// data from the server to materialize the received VTXO.
+	//
+	// For now, we construct a DriveEventRequest with the session
+	// ID. The IncomingTransferEvent currently requires ArkPSBT
+	// and FinalCheckpointPSBTs which must be resolved separately
+	// (e.g., via a wallet-scoped query to the indexer).
+	//
+	// TODO(roasbeef): Add full Ark PSBT resolution from the
+	// indexer's recipient event store before dispatching to the
+	// OOR FSM.
+	_ = oorKey
+	_ = arkServiceName
+	_ = MethodIncomingOOR
 
 	// TODO(roasbeef): Register an IncomingAck route once the
 	// oorpb proto defines an ack RPC. SendIncomingAckRequest is
