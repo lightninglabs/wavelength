@@ -20,7 +20,7 @@ func TestResponseRegistry_DeliverBeforeRegister(t *testing.T) {
 	}
 
 	delivered := registry.DeliverResponse(id, env)
-	require.True(t, delivered)
+	require.Equal(t, DeliveryBuffered, delivered)
 
 	future := registry.RegisterWaiter(id)
 
@@ -41,7 +41,7 @@ func TestResponseRegistry_RegisterThenDeliver(t *testing.T) {
 	delivered := registry.DeliverResponse(id, &mailboxpb.Envelope{
 		MsgId: "msg-2",
 	})
-	require.True(t, delivered)
+	require.Equal(t, DeliveryWaiter, delivered)
 
 	got := future.Await(t.Context()).UnwrapOrFail(t)
 	require.Equal(t, "msg-2", got.MsgId)
@@ -55,9 +55,9 @@ func TestResponseRegistry_TTLPrunesPending(t *testing.T) {
 	registry := NewResponseRegistry(5 * time.Millisecond)
 	id := CorrelationID("corr-3")
 
-	require.True(t, registry.DeliverResponse(id, &mailboxpb.Envelope{
-		MsgId: "stale",
-	}))
+	require.Equal(t, DeliveryBuffered, registry.DeliverResponse(
+		id, &mailboxpb.Envelope{MsgId: "stale"},
+	))
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -114,5 +114,6 @@ func TestResponseRegistry_DeliverNilReturnsFalse(t *testing.T) {
 	t.Parallel()
 
 	registry := NewResponseRegistry(time.Minute)
-	require.False(t, registry.DeliverResponse("any", nil))
+	require.Equal(t, DeliveryDropped, registry.DeliverResponse("any",
+		nil))
 }

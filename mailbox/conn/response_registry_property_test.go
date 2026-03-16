@@ -107,10 +107,10 @@ func TestResponseRegistry_Interleavings_Property(t *testing.T) {
 					rapid.Int().Draw(rt, "msg_rand"),
 				)
 
-				ok := registry.DeliverResponse(
+				result := registry.DeliverResponse(
 					id, &mailboxpb.Envelope{MsgId: msgID},
 				)
-				if !ok {
+				if result == DeliveryDropped {
 					rt.Fatalf("delivery failed")
 				}
 
