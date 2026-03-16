@@ -16,7 +16,6 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -30,7 +29,6 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/types"
-	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -161,6 +159,11 @@ type Server struct {
 	// derived during wallet initialization. Used by the OOR
 	// receive path to match incoming recipient outputs.
 	clientKeyDesc keychain.KeyDescriptor
+
+	// oorReceiveKeyDesc is the stable wallet key used for the
+	// daemon's default OOR receive script and receive-script proof
+	// signing.
+	oorReceiveKeyDesc keychain.KeyDescriptor
 
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
@@ -710,6 +713,13 @@ func (s *Server) startLwwallet(ctx context.Context,
 
 	s.lwWallet = fn.Some(w)
 
+	// Refresh the RPC clients once the wallet is available so the
+	// indexer client picks up the wallet-backed identity key and signer
+	// before any deferred wallet-dependent actors start.
+	if s.runtime != nil {
+		s.initRPCClients(ctx)
+	}
+
 	log.InfoS(ctx, "Lightweight wallet started")
 
 	s.markWalletReady()
@@ -1157,16 +1167,11 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 	})
 
 	// IncomingOOR: server notifies the client about an incoming
-	// OOR transfer via the indexer's ArkService. The
-	// IncomingOOREvent is a lightweight notification hint. The
-	// route's Adapt closure queries the indexer (via
-	// ListOORRecipientEventsByScript) to fetch the full Ark
-	// PSBT and checkpoint data needed by IncomingTransferEvent.
-	//
-	// The indexer query uses the ark mailbox client which is
-	// wired during server initialization. The query response
-	// now includes ark_psbt and checkpoint_psbts fields.
-	idxClient := s.indexer
+	// OOR transfer via the indexer's ArkService. Persist only the
+	// lightweight notification hint here; the durable OOR actor
+	// performs the follow-up indexer query from its own worker
+	// context. This avoids deadlocking mailbox ingress on a unary
+	// response that must be delivered by the same runtime.
 	serverconn.AddRoute(router, serverconn.EventRouteConfig[
 		oor.OORDurableMsg, oor.ActorResp,
 	]{
@@ -1187,71 +1192,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 				)
 			}
 
-			sessionID, err := chainhash.NewHash(
-				evt.GetSessionId(),
-			)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"parse session id: %w", err,
-				)
-			}
-
-			// Query the indexer for the full package
-			// data. The notification is just a hint.
-			resp, err := idxClient.ListOORRecipientEventsByScriptTaproot(
-				context.Background(),
-				evt.GetRecipientPkScript(),
-				evt.GetRecipientEventId()-1,
-				1,
-			)
-			if err != nil || len(resp.GetEvents()) == 0 {
-				return nil, fmt.Errorf(
-					"fetch OOR package for session "+
-						"%x: %w",
-					sessionID[:], err,
-				)
-			}
-
-			recipientEvt := resp.Events[0]
-
-			// Parse the Ark PSBT from the response.
-			arkPSBT, parseErr := psbtutil.Parse(
-				recipientEvt.GetArkPsbt(),
-			)
-			if parseErr != nil {
-				return nil, fmt.Errorf(
-					"parse ark psbt: %w", parseErr,
-				)
-			}
-
-			// Parse checkpoint PSBTs.
-			var checkpoints []*psbt.Packet
-			for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
-				cp, cpErr := psbtutil.Parse(cpRaw)
-				if cpErr != nil {
-					return nil, fmt.Errorf(
-						"parse checkpoint: %w",
-						cpErr,
-					)
-				}
-
-				checkpoints = append(
-					checkpoints, cp,
-				)
-			}
-
-			return &oor.DriveEventRequest{
-				SessionID: oor.SessionID(
-					*sessionID,
-				),
-				Event: &oor.IncomingTransferEvent{
-					SessionID: oor.SessionID(
-						*sessionID,
-					),
-					ArkPSBT: arkPSBT,
-					FinalCheckpointPSBTs: checkpoints,
-				},
-			}, nil
+			return oor.NewResolveIncomingTransferRequest(evt)
 		},
 	})
 
@@ -1523,32 +1464,59 @@ func (s *Server) initDatabase(ctx context.Context) error {
 func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	packageStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
+
 	// Determine the node identity pubkey for indexer registration.
 	// In lnd mode this comes from the lnd connection. In lwwallet
 	// mode, the identity is derived from the wallet keyring once
 	// the wallet is ready.
-	var identityPubkey string
+	var signer indexer.SchnorrSigner
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		identityPubkey = lndSvc.NodePubkey.String()
-
-		// Store the client key descriptor for OOR
-		// incoming transfer resolution. Parse the
-		// LND node pubkey (route.Vertex) into a
-		// btcec public key.
-		nodePub, parseErr := btcec.ParsePubKey(
-			lndSvc.NodePubkey[:],
+		identityDesc, err := lndSvc.WalletKit.DeriveKey(ctx,
+			&keychain.KeyLocator{
+				Family: identityKeyFamily,
+				Index:  0,
+			},
 		)
-		if parseErr == nil {
-			s.clientKeyDesc = keychain.KeyDescriptor{
-				PubKey: nodePub,
-			}
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to derive identity key for indexer", err)
+
+			return
 		}
+
+		s.clientKeyDesc = *identityDesc
+
+		receiveDesc, err := EnsureDefaultOORReceiveKey(
+			ctx, packageStore, func(ctx context.Context) (
+				*keychain.KeyDescriptor, error,
+			) {
+				return lndSvc.WalletKit.DeriveNextKey(
+					ctx, int32(DefaultOORReceiveKeyFamily()),
+				)
+			},
+		)
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to resolve default OOR receive key",
+				err)
+
+			return
+		}
+
+		s.oorReceiveKeyDesc = *receiveDesc
+		signer = indexer.NewLNDSchnorrSigner(
+			lndSvc.Signer, *receiveDesc,
+		)
 	})
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		// Derive the node identity key from the wallet
 		// keyring. This is safe even if the wallet isn't
 		// fully synced, as it only depends on the seed.
-		desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+		identityDesc, err := w.DeriveKey(ctx, keychain.KeyLocator{
 			Family: identityKeyFamily,
 			Index:  0,
 		})
@@ -1557,23 +1525,36 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				"Unable to derive identity key for "+
 					"indexer", err)
 		} else {
-			identityPubkey = fmt.Sprintf(
-				"%x",
-				desc.PubKey.SerializeCompressed(),
-			)
+			s.clientKeyDesc = *identityDesc
 
-			// Store the client key descriptor for
-			// OOR incoming transfer resolution.
-			s.clientKeyDesc = *desc
+			receiveDesc, err := EnsureDefaultOORReceiveKey(
+				ctx, packageStore, func(ctx context.Context) (
+					*keychain.KeyDescriptor, error,
+				) {
+					return w.DeriveNextKey(
+						ctx, DefaultOORReceiveKeyFamily(),
+					)
+				},
+			)
+			if err != nil {
+				log.WarnS(ctx,
+					"Unable to resolve default OOR "+
+						"receive key", err)
+
+				return
+			}
+
+			s.oorReceiveKeyDesc = *receiveDesc
+			signer = indexer.NewKeyRingSchnorrSigner(
+				w.KeyRing(), *receiveDesc,
+			)
 		}
 	})
 
-	// TODO(roasbeef): wire SchnorrSigner from lnd backend once
-	// indexer proof-of-control is enabled in the daemon.
 	s.indexer = indexer.New(
-		s.runtime.Unary(), nil,
+		s.runtime.Unary(), signer,
 		s.cfg.Server.RemoteMailboxID,
-		identityPubkey,
+		s.cfg.Server.LocalMailboxID,
 	)
 
 	log.InfoS(ctx, "RPC clients initialized")
@@ -1867,6 +1848,15 @@ func (s *Server) initOORActor(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(clk)
 	packageStore := dbStore.NewOORArtifactStore(clk)
 
+	_, err := RegisterDefaultOORReceiveScript(
+		ctx, s.indexer, packageStore, s.oorReceiveKeyDesc,
+		s.operatorKey, s.vtxoExitDelay, "default-oor-receive",
+	)
+	if err != nil {
+		return fmt.Errorf("register default OOR receive "+
+			"script: %w", err)
+	}
+
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into
 	// a DriveEventRequest and Tell's it back to the OOR actor.
@@ -1879,27 +1869,26 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store.
+	// writing VTXOStatusSpent directly to the store. Use Tell rather
+	// than Ask so the OOR durable actor can commit its own delivery
+	// transaction before the VTXO actor performs follow-up DB writes.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
 
-		req := &actormsg.CompleteSpendRequest{
-			Outpoints: outpoints,
-		}
-		mgrRef := mgrKey.Ref(s.actorSystem)
-		result := mgrRef.Ask(ctx, req).Await(ctx)
-		_, err := result.Unpack()
-
-		return err
+		return mgrKey.Ref(s.actorSystem).Tell(
+			ctx, &actormsg.CompleteSpendRequest{
+				Outpoints: outpoints,
+			},
+		)
 	}
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
-		OperatorKey: s.operatorKey,
-		ExitDelay:   s.vtxoExitDelay,
+		OperatorKey:  s.operatorKey,
+		ExitDelay:    s.vtxoExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -1915,11 +1904,9 @@ func (s *Server) initOORActor(ctx context.Context,
 			recipient oor.ArkRecipientOutput) (
 			keychain.KeyDescriptor, error) {
 
-			// Single-key model: return the client's
-			// identity key for any recipient output.
-			// Multi-key support would need pkScript
-			// matching against derived keys.
-			return s.clientKeyDesc, nil
+			return ResolveOwnedReceiveScriptKey(
+				ctx, packageStore, recipient,
+			)
 		},
 		ResolveIncomingMetadata: func(ctx context.Context,
 			sessionID oor.SessionID,
@@ -1928,26 +1915,12 @@ func (s *Server) initOORActor(ctx context.Context,
 			finalCheckpoints []*psbt.Packet) (
 			oor.IncomingVTXOMetadata, error) {
 
-			// Derive metadata from the Ark PSBT.
-			// The commitment tx is the parent of
-			// the sender's VTXO (first input).
-			var commitTxID chainhash.Hash
-			roundID := chainhash.Hash(sessionID).String()
+			_ = ark
+			_ = finalCheckpoints
 
-			if ark != nil && ark.UnsignedTx != nil &&
-				len(ark.UnsignedTx.TxIn) > 0 {
-
-				commitTxID = ark.UnsignedTx.TxIn[0].
-					PreviousOutPoint.Hash
-			}
-
-			chainDepth := len(finalCheckpoints)
-
-			return oor.IncomingVTXOMetadata{
-				RoundID:        roundID,
-				CommitmentTxID: commitTxID,
-				ChainDepth:     chainDepth,
-			}, nil
+			return ResolveIncomingMetadataFromIndexer(
+				ctx, s.indexer, sessionID, recipient,
+			)
 		},
 	}
 
@@ -1960,6 +1933,17 @@ func (s *Server) initOORActor(ctx context.Context,
 		ActorSystem:   s.actorSystem,
 		ActorID:       oor.OORActorServiceKeyName,
 		VTXOManager:   vtxoManagerRef,
+		VTXOStore:     vtxoStore,
+		IncomingFetcher: func(ctx context.Context,
+			pkScript []byte, afterEventID uint64,
+			limit uint32) (
+			*arkrpc.ListOORRecipientEventsByScriptResponse,
+			error) {
+
+			return s.indexer.ListOORRecipientEventsByScriptTaproot(
+				ctx, pkScript, afterEventID, limit,
+			)
+		},
 	})
 
 	// Wire the timeout callback ref using the registered service
