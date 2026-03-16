@@ -31,6 +31,13 @@ type SigningDescriptor struct {
 	Outpoint  wire.OutPoint
 	OwnerKey  *btcec.PublicKey
 	ExitDelay uint32
+
+	// SpendWitnessScript is set for custom spend paths (e.g., vHTLC).
+	SpendWitnessScript []byte
+
+	// SpendControlBlock is the BIP-341 control block for the custom
+	// leaf.
+	SpendControlBlock []byte
 }
 
 // NewSubmitPackageRequest builds a typed proto request for SubmitPackage.
