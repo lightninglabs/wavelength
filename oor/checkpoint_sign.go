@@ -392,8 +392,29 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return err
 	}
 
-	return psbtutil.AddTaprootScriptSpendSig(
+	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
 		spendInfo.WitnessScript, sigBytes, signDesc.HashType,
 	)
+	if err != nil {
+		return err
+	}
+
+	sigRec, err := findTaprootScriptSpendSig(
+		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
+		spendInfo.WitnessScript,
+	)
+	if err != nil {
+		return err
+	}
+
+	err = verifyTaprootScriptSpendSig(
+		checkpoint.UnsignedTx, signDesc.InputIndex, prevFetcher,
+		spendInfo.WitnessScript, sigRec,
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
