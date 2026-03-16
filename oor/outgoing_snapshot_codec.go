@@ -23,7 +23,6 @@ const (
 	snapshotArkPSBTRecordType         tlv.Type = 7
 	snapshotCheckpointPSBTsRecordType tlv.Type = 9
 	snapshotTransferInputsRecordType  tlv.Type = 11
-	snapshotInputOutpointsRecordType  tlv.Type = 13
 	snapshotRetryAfterNanosRecordType tlv.Type = 15
 	snapshotResumeSnapshotRecordType  tlv.Type = 17
 	snapshotFailReasonRecordType      tlv.Type = 19
@@ -221,11 +220,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		return nil, err
 	}
 
-	outpointsRaw, err := encodeOutpoints(snapshot.InputOutpoints)
-	if err != nil {
-		return nil, err
-	}
-
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
 
@@ -252,9 +246,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotTransferInputsRecordType, &inputSnapshots,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotInputOutpointsRecordType, &outpointsRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
@@ -288,7 +279,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		arkPSBT            []byte
 		checkpointPSBTsRaw []byte
 		inputSnapshotsRaw  []byte
-		outpointsRaw       []byte
 		retryAfterNanos    uint64
 		resumeSnapshotRaw  []byte
 		failReasonRaw      []byte
@@ -306,9 +296,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotTransferInputsRecordType, &inputSnapshotsRaw,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotInputOutpointsRecordType, &outpointsRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
@@ -352,14 +339,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		inputSnapshots = nil
 	}
 
-	outpoints, err := decodeOutpoints(outpointsRaw)
-	if err != nil {
-		return nil, err
-	}
-	if len(outpoints) == 0 {
-		outpoints = nil
-	}
-
 	if len(arkPSBT) == 0 {
 		arkPSBT = nil
 	}
@@ -391,7 +370,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		ArkPSBT:                arkPSBT,
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
-		InputOutpoints:         outpoints,
 		RetryAfter:             decodedRetryAfter,
 		ResumeSnapshot:         resumeSnapshot,
 		FailReason:             string(failReasonRaw),
@@ -405,25 +383,6 @@ func encodeOutpoints(outpoints []wire.OutPoint) ([]byte, error) {
 	}
 
 	return encodeLengthPrefixedBlobList(blobs)
-}
-
-func decodeOutpoints(raw []byte) ([]wire.OutPoint, error) {
-	blobs, err := decodeLengthPrefixedBlobList(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	outpoints := make([]wire.OutPoint, 0, len(blobs))
-	for i := range blobs {
-		outpoint, err := parseOutPointBytes(blobs[i])
-		if err != nil {
-			return nil, err
-		}
-
-		outpoints = append(outpoints, outpoint)
-	}
-
-	return outpoints, nil
 }
 
 func decodeUint64ToUint8(value uint64, field string) (uint8, error) {

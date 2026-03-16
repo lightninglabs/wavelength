@@ -58,7 +58,6 @@ func TestHandleOutboxError(t *testing.T) {
 	require.NotEmpty(t, checkpoints)
 
 	current := &AwaitingSubmitAccepted{
-		InputOutpoints:  []wire.OutPoint{inputs[0].VTXO.Outpoint},
 		ArkPSBT:         ark,
 		CheckpointPSBTs: checkpoints,
 		TransferInputs:  inputs,
@@ -164,8 +163,8 @@ func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	state := &AwaitingFinalizeAccepted{
 		SessionID:            sessionID,
 		ArkPSBT:              ark,
-		InputOutpoints:       []wire.OutPoint{inputs[0].VTXO.Outpoint},
 		FinalCheckpointPSBTs: checkpoints,
+		TransferInputs:       inputs,
 	}
 
 	env := &Environment{SessionID: sessionID}

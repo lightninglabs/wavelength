@@ -729,7 +729,7 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 
 	b.logger(ctx).DebugS(ctx, "Persisting outgoing package",
 		slog.String("session_id", sessionID.String()),
-		slog.Int("num_inputs", len(state.InputOutpoints)),
+		slog.Int("num_inputs", len(state.TransferInputs)),
 		slog.Int("num_checkpoints", len(state.FinalCheckpointPSBTs)))
 
 	err := b.cfg.PackageStore.UpsertPackage(ctx,
@@ -740,9 +740,10 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 		return err
 	}
 
-	for i := range state.InputOutpoints {
+	outpoints := InputOutpoints(state.TransferInputs)
+	for i := range outpoints {
 		err := b.cfg.PackageStore.UpsertBinding(ctx,
-			state.InputOutpoints[i], sessionHash, uint32(i),
+			outpoints[i], sessionHash, uint32(i),
 			PackageLinkKindConsumedInput,
 		)
 		if err != nil {

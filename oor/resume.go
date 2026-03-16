@@ -105,7 +105,7 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 	case *AwaitingLocalVTXOUpdate:
 		return []OutboxEvent{
 			&MarkInputsSpentRequest{
-				Outpoints: s.InputOutpoints,
+				Outpoints: InputOutpoints(s.TransferInputs),
 			},
 		}, nil
 

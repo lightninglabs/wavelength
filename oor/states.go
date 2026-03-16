@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
 
@@ -38,9 +37,6 @@ func (s *Idle) stateSealed() {}
 // AwaitingArkSignatures indicates the submit package has been built and the
 // client must attach Ark signatures before submit can be sent.
 type AwaitingArkSignatures struct {
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the canonical Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
@@ -71,13 +67,6 @@ type AwaitingSubmitAccepted struct {
 	// AwaitingSubmitAccepted is the crash-sensitive phase where a submit
 	// request may have been sent, while the client has not yet observed
 	// the server's co-sign response.
-
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	//
-	// The FSM carries these through to the terminal state so it can emit a
-	// crash-resilient local persistence step after the server accepts
-	// finalize.
-	InputOutpoints []wire.OutPoint
 
 	// ArkPSBT is the Ark tx PSBT for this session.
 	ArkPSBT *psbt.Packet
@@ -120,9 +109,6 @@ type AwaitingCheckpointSignatures struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the Ark tx PSBT, needed to finalize checkpoint metadata.
 	ArkPSBT *psbt.Packet
 
@@ -162,9 +148,6 @@ type AwaitingFinalizeAccepted struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
@@ -174,6 +157,10 @@ type AwaitingFinalizeAccepted struct {
 	// These are persisted so resume/unilateral-exit paths can reconstruct
 	// checkpoint lineage without depending on a fresh server response.
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the VTXO descriptors consumed by this session.
+	// The local bookkeeping phase derives spent outpoints from these.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingFinalizeAccepted.
@@ -234,8 +221,9 @@ type AwaitingLocalVTXOUpdate struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
+	// TransferInputs carry the VTXO descriptors consumed by this session.
+	// The local persistence step derives spent outpoints from these.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingLocalVTXOUpdate.

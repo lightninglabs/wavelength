@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )
@@ -87,12 +86,6 @@ type OutgoingSnapshot struct {
 	// TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
 
-	// InputOutpoints are the VTXO outpoints consumed by this session.
-	//
-	// This is required to support crash-resilient local persistence
-	// after the server accepts finalize.
-	InputOutpoints []wire.OutPoint
-
 	// RetryAfter is the requested delay in retry backoff phases.
 	RetryAfter time.Duration
 
@@ -144,7 +137,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.TransferInputSnapshots = inputSnaps
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingSubmitAccepted:
 		// Snapshot the entire submit package because it is the
@@ -171,7 +163,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingCheckpointSignatures:
 		// This is the "point-of-no-return" state from the client's
@@ -196,7 +187,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingFinalizeAccepted:
 		// Once finalize is sent, the client should only need the
@@ -214,14 +204,20 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.CheckpointPSBTs = cps
-		snap.InputOutpoints = s.InputOutpoints
+		err = assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
+		}
 
 	case *AwaitingLocalVTXOUpdate:
 		// This phase is an off-chain bookkeeping step: after the server
 		// accepts finalize, the local wallet must update local state.
 		// That update reflects that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
-		snap.InputOutpoints = s.InputOutpoints
+		err := assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
+		}
 
 	case *Completed:
 		// Completed is a terminal state. There is no outbox implied by
@@ -314,7 +310,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingArkSignatures{
-			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
@@ -339,7 +334,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
-			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
@@ -365,7 +359,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 		return &AwaitingCheckpointSignatures{
 			SessionID:               snapshot.SessionID,
-			InputOutpoints:          snapshot.InputOutpoints,
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
@@ -384,21 +377,27 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			return nil, err
 		}
 
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
+		}
+
 		return &AwaitingFinalizeAccepted{
 			SessionID:            snapshot.SessionID,
-			InputOutpoints:       snapshot.InputOutpoints,
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: cps,
+			TransferInputs:       inputs,
 		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
-		if len(snapshot.InputOutpoints) == 0 {
-			return nil, fmt.Errorf("input outpoints required")
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
 		}
 
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
-			InputOutpoints: snapshot.InputOutpoints,
+			TransferInputs: inputs,
 		}, nil
 
 	case OutgoingPhaseRetryBackoff:

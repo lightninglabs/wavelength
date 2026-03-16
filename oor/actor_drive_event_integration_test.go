@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
@@ -137,6 +139,28 @@ func buildIncomingResolveResponse(t *testing.T) (
 	}, sessionID, recipient.PkScript, 7
 }
 
+func testRetryTransferInputs(t *testing.T) []TransferInput {
+	t.Helper()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	return []TransferInput{
+		newTestTransferInput(
+			t,
+			clientKey,
+			operatorKey.PubKey(),
+			wire.OutPoint{
+				Hash:  [32]byte{0x01},
+				Index: 0,
+			},
+			btcutil.Amount(10_000),
+		),
+	}
+}
 // TestOORClientActorDriveRetryDueEventDurablePath verifies the retry-due signal
 // can cross the durable actor boundary and re-drive the resumed outbox work.
 func TestOORClientActorDriveRetryDueEventDurablePath(t *testing.T) {
@@ -152,9 +176,9 @@ func TestOORClientActorDriveRetryDueEventDurablePath(t *testing.T) {
 		sessionID,
 		&AwaitingFinalizeAccepted{
 			SessionID:            sessionID,
-			InputOutpoints:       []wire.OutPoint{{}},
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
+			TransferInputs:       testRetryTransferInputs(t),
 		},
 	)
 	require.NoError(t, err)
@@ -386,9 +410,9 @@ func TestRetryBackoffProcessEventRetryDue(t *testing.T) {
 		sessionID,
 		&AwaitingFinalizeAccepted{
 			SessionID:            sessionID,
-			InputOutpoints:       []wire.OutPoint{{}},
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: checkpoints,
+			TransferInputs:       testRetryTransferInputs(t),
 		},
 	)
 	require.NoError(t, err)

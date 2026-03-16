@@ -50,9 +50,9 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 
 	state := &AwaitingFinalizeAccepted{
 		SessionID:            SessionID(ark.UnsignedTx.TxHash()),
-		InputOutpoints:       []wire.OutPoint{input.VTXO.Outpoint},
 		ArkPSBT:              ark,
 		FinalCheckpointPSBTs: checkpoints,
+		TransferInputs:       []TransferInput{input},
 	}
 
 	snapshot, err := NewOutgoingSnapshot(state.SessionID, state)
@@ -61,10 +61,6 @@ func TestNewOutgoingSnapshotFinalizeSentMinimality(t *testing.T) {
 	require.Equal(t, OutgoingPhaseFinalizeSent, snapshot.Phase)
 	require.NotEmpty(t, snapshot.ArkPSBT)
 	require.NotEmpty(t, snapshot.CheckpointPSBTs)
-	require.Equal(t, state.InputOutpoints, snapshot.InputOutpoints)
-
-	// Finalize retries do not require transfer input material, so the
-	// snapshot should not carry those fields in this phase.
-	require.Nil(t, snapshot.TransferInputs)
-	require.Nil(t, snapshot.TransferInputSnapshots)
+	require.NotNil(t, snapshot.TransferInputSnapshots)
+	require.Len(t, snapshot.TransferInputSnapshots, 1)
 }

@@ -8,7 +8,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -61,16 +60,12 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 				"provided")
 		}
 
-		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
 		for i := range evt.VTXOInputs {
 			if evt.VTXOInputs[i].VTXO == nil {
 				return nil, fmt.Errorf(
 					"checkpoint input vtxo required",
 				)
 			}
-			inputOutpoints = append(
-				inputOutpoints, evt.VTXOInputs[i].VTXO.Outpoint,
-			)
 		}
 
 		// If the FSM environment is already bound to a stable session
@@ -100,7 +95,6 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingArkSignatures{
-				InputOutpoints:  inputOutpoints,
 				ArkPSBT:         ark,
 				CheckpointPSBTs: checkpoints,
 				TransferInputs:  evt.VTXOInputs,
@@ -167,7 +161,6 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingSubmitAccepted{
-				InputOutpoints:  s.InputOutpoints,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: s.CheckpointPSBTs,
 				TransferInputs:  s.TransferInputs,
@@ -243,7 +236,6 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		return &StateTransition{
 			NextState: &AwaitingCheckpointSignatures{
 				SessionID:               evt.SessionID,
-				InputOutpoints:          s.InputOutpoints,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
 				TransferInputs:          s.TransferInputs,
@@ -309,9 +301,9 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &AwaitingFinalizeAccepted{
 				SessionID:            s.SessionID,
-				InputOutpoints:       s.InputOutpoints,
 				ArkPSBT:              s.ArkPSBT,
 				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+				TransferInputs:       s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -360,12 +352,14 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &AwaitingLocalVTXOUpdate{
 				SessionID:      s.SessionID,
-				InputOutpoints: s.InputOutpoints,
+				TransferInputs: s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&MarkInputsSpentRequest{
-						Outpoints: s.InputOutpoints,
+						Outpoints: InputOutpoints(
+							s.TransferInputs,
+						),
 					},
 				},
 			}),
