@@ -84,17 +84,20 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		OperatorPubKey:  operatorKey.SerializeCompressed(),
 		ExitDelay:       exitDelay,
 		OwnerLeafScript: i.OwnerLeafScript,
-		PkScript:        i.VTXO.PkScript,
-		ConditionWitness: i.ConditionWitness,
+		PkScript: i.VTXO.PkScript,
 	}
 
 	if i.VTXO.ClientKey.PubKey != nil {
 		snap.ClientPubKey = i.VTXO.ClientKey.PubKey.SerializeCompressed()
 	}
 
-	if i.SpendInfo != nil {
-		snap.SpendWitnessScript = i.SpendInfo.WitnessScript
-		snap.SpendControlBlock = i.SpendInfo.ControlBlock
+	if i.CustomSpend != nil {
+		snap.ConditionWitness = i.CustomSpend.Conditions
+
+		if i.CustomSpend.SpendInfo != nil {
+			snap.SpendWitnessScript = i.CustomSpend.SpendInfo.WitnessScript
+			snap.SpendControlBlock = i.CustomSpend.SpendInfo.ControlBlock
+		}
 	}
 
 	return snap, nil
@@ -178,15 +181,17 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 
 	result := TransferInput{
-		VTXO:             desc,
-		OwnerLeafScript:  snap.OwnerLeafScript,
-		ConditionWitness: snap.ConditionWitness,
+		VTXO:            desc,
+		OwnerLeafScript: snap.OwnerLeafScript,
 	}
 
 	if len(snap.SpendWitnessScript) > 0 {
-		result.SpendInfo = &arkscript.SpendInfo{
-			WitnessScript: snap.SpendWitnessScript,
-			ControlBlock:  snap.SpendControlBlock,
+		result.CustomSpend = &arkscript.SpendPath{
+			SpendInfo: &arkscript.SpendInfo{
+				WitnessScript: snap.SpendWitnessScript,
+				ControlBlock:  snap.SpendControlBlock,
+			},
+			Conditions: snap.ConditionWitness,
 		}
 	}
 

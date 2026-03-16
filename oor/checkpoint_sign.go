@@ -151,8 +151,8 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	// For custom spend paths, use the SpendInfo directly instead of
 	// deriving the collaborative leaf from the VTXO TapScript.
 	if in.IsCustomSpend() {
-		witnessScript := in.SpendInfo.WitnessScript
-		controlBlock := in.SpendInfo.ControlBlock
+		witnessScript := in.CustomSpend.SpendInfo.WitnessScript
+		controlBlock := in.CustomSpend.SpendInfo.ControlBlock
 
 		err := requireTapLeafScript(
 			&checkpoint.Inputs[0],
@@ -487,7 +487,7 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	// Build the sign descriptor directly from the custom SpendInfo
 	// rather than deriving it from the VTXO's collaborative leaf.
-	signDesc := in.SpendInfo.BuildSignDescriptor(
+	signDesc := in.CustomSpend.SpendInfo.BuildSignDescriptor(
 		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
 	)
 
@@ -503,8 +503,8 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	// Attach the custom leaf script and client signature to the PSBT.
 	spendData := &scripts.VTXOSpendData{
-		WitnessScript: in.SpendInfo.WitnessScript,
-		ControlBlock:  in.SpendInfo.ControlBlock,
+		WitnessScript: in.CustomSpend.SpendInfo.WitnessScript,
+		ControlBlock:  in.CustomSpend.SpendInfo.ControlBlock,
 	}
 
 	err = psbtutil.AddTapLeafScript(&checkpoint.Inputs[0], spendData)
@@ -514,7 +514,7 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 
 	err = psbtutil.AddTaprootScriptSpendSig(
 		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
-		in.SpendInfo.WitnessScript, sigBytes, signDesc.HashType,
+		in.CustomSpend.SpendInfo.WitnessScript, sigBytes, signDesc.HashType,
 	)
 	if err != nil {
 		return err
@@ -525,7 +525,7 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	// combines the operator sig, client sig, condition items,
 	// witness script, and control block into BIP-174
 	// FinalScriptWitness format.
-	if len(in.ConditionWitness) > 0 {
+	if len(in.CustomSpend.Conditions) > 0 {
 		err = assembleCustomFinalWitness(
 			in, &checkpoint.Inputs[0],
 		)
@@ -549,7 +549,7 @@ func assembleCustomFinalWitness(in *TransferInput,
 		in.VTXO.ClientKey.PubKey,
 	)
 	leafHash := txscript.NewBaseTapLeaf(
-		in.SpendInfo.WitnessScript,
+		in.CustomSpend.SpendInfo.WitnessScript,
 	).TapHash()
 	leafHashBytes := leafHash[:]
 
@@ -587,13 +587,13 @@ func assembleCustomFinalWitness(in *TransferInput,
 	// Build the witness stack: op_sig, client_sig,
 	// ...conditionItems, witnessScript, controlBlock.
 	witnessItems := make([][]byte, 0,
-		2+len(in.ConditionWitness)+2,
+		2+len(in.CustomSpend.Conditions)+2,
 	)
 	witnessItems = append(witnessItems, opSigBytes)
 	witnessItems = append(witnessItems, clientSigBytes)
-	witnessItems = append(witnessItems, in.ConditionWitness...)
-	witnessItems = append(witnessItems, in.SpendInfo.WitnessScript)
-	witnessItems = append(witnessItems, in.SpendInfo.ControlBlock)
+	witnessItems = append(witnessItems, in.CustomSpend.Conditions...)
+	witnessItems = append(witnessItems, in.CustomSpend.SpendInfo.WitnessScript)
+	witnessItems = append(witnessItems, in.CustomSpend.SpendInfo.ControlBlock)
 
 	// Serialize as BIP-174 FinalScriptWitness: count-prefixed
 	// vector of length-prefixed items.
