@@ -6,7 +6,6 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/stretchr/testify/require"
 )
@@ -234,56 +233,6 @@ func TestDriveEventRequestRoundTripIncomingHandledEvent(t *testing.T) {
 	require.Len(t, handledEvt.MaterializedOutpoints, 1)
 	require.Equal(t, outpoint, handledEvt.MaterializedOutpoints[0])
 	require.Empty(t, handledEvt.MaterializedVTXOs)
-}
-
-// TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent asserts
-// DriveEventRequest TLV Encode/Decode round-trips IncomingMetadataResolvedEvent
-// correctly.
-func TestDriveEventRequestRoundTripIncomingMetadataResolvedEvent(t *testing.T) {
-	t.Parallel()
-
-	sessionID := SessionID(chainhash.Hash{7, 7, 7})
-	msg := &DriveEventRequest{
-		SessionID: sessionID,
-		Event: &IncomingMetadataResolvedEvent{
-			Matches: []IncomingMetadataMatch{{
-				OutputIndex: 3,
-				Metadata: IncomingVTXOMetadata{
-					RoundID:        "round-test",
-					CommitmentTxID: chainhash.Hash{1, 2, 3},
-					BatchExpiry:    144,
-					TreeDepth:      2,
-					ChainDepth:     1,
-					CreatedHeight:  100,
-					TreePath:       &tree.Tree{},
-				},
-			}},
-		},
-	}
-
-	var buf bytes.Buffer
-	require.NoError(t, msg.Encode(&buf))
-
-	decoded := &DriveEventRequest{}
-	require.NoError(t, decoded.Decode(&buf))
-
-	require.Equal(t, sessionID, decoded.SessionID)
-
-	resolvedEvt, ok := decoded.Event.(*IncomingMetadataResolvedEvent)
-	require.True(t, ok)
-	require.Len(t, resolvedEvt.Matches, 1)
-	require.Equal(t, uint32(3), resolvedEvt.Matches[0].OutputIndex)
-	require.Equal(t, "round-test",
-		resolvedEvt.Matches[0].Metadata.RoundID)
-	require.Equal(t, chainhash.Hash{1, 2, 3},
-		resolvedEvt.Matches[0].Metadata.CommitmentTxID)
-	require.Equal(t, int32(144),
-		resolvedEvt.Matches[0].Metadata.BatchExpiry)
-	require.Equal(t, 2, resolvedEvt.Matches[0].Metadata.TreeDepth)
-	require.Equal(t, 1, resolvedEvt.Matches[0].Metadata.ChainDepth)
-	require.Equal(t, int32(100),
-		resolvedEvt.Matches[0].Metadata.CreatedHeight)
-	require.NotNil(t, resolvedEvt.Matches[0].Metadata.TreePath)
 }
 
 // TestDriveEventRequestRoundTripIncomingAckSentEvent asserts

@@ -167,6 +167,68 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	)
 }
 
+// TestVTXOPersistenceStoreSaveVTXOCreatesMissingRound verifies that SaveVTXO
+// creates a minimal local round row for imported OOR VTXOs whose source round
+// is otherwise unknown to the client.
+func TestVTXOPersistenceStoreSaveVTXOCreatesMissingRound(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, _, db := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-imported-oor")
+	desc := createTestVTXODescriptor(t, roundID, 77)
+
+	err := vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	row, err := db.GetRound(ctx, desc.RoundID)
+	require.NoError(t, err)
+	require.Equal(t, desc.RoundID, row.RoundID)
+	require.Equal(t, "confirmed", row.Status)
+	require.True(t, row.ConfirmationHeight.Valid)
+	require.Equal(t, desc.CreatedHeight, row.ConfirmationHeight.Int32)
+	require.Equal(t, desc.CommitmentTxID[:], row.CommitmentTxid)
+	require.Nil(t, row.CommitmentTx)
+	require.Nil(t, row.VtxtTree)
+
+	fetched, err := vtxoStore.GetVTXO(ctx, desc.Outpoint)
+	require.NoError(t, err)
+	require.Equal(t, desc.RoundID, fetched.RoundID)
+}
+
+// TestVTXOPersistenceStoreSaveVTXOKeepsExistingRound verifies that SaveVTXO
+// does not overwrite richer round state when the round row already exists.
+func TestVTXOPersistenceStoreSaveVTXOKeepsExistingRound(t *testing.T) {
+	t.Parallel()
+
+	vtxoStore, roundStore, db := newVTXOStoreForTest(t)
+	ctx := t.Context()
+
+	roundID := testRoundIDDB("test-round-existing-preserved")
+	testRound := createTestRound(t, roundID)
+	state := &round.InputSigSentState{
+		RoundID:     testRound.RoundID,
+		ClientTrees: make(map[round.SignerKey]*tree.Tree),
+	}
+	err := roundStore.CommitState(ctx, testRound, state)
+	require.NoError(t, err)
+
+	before, err := db.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+
+	desc := createTestVTXODescriptor(t, roundID, 78)
+	err = vtxoStore.SaveVTXO(ctx, desc)
+	require.NoError(t, err)
+
+	after, err := db.GetRound(ctx, roundID.String())
+	require.NoError(t, err)
+	require.Equal(t, before.Status, after.Status)
+	require.Equal(t, before.CommitmentTxid, after.CommitmentTxid)
+	require.Equal(t, before.CommitmentTx, after.CommitmentTx)
+	require.Equal(t, before.VtxtTree, after.VtxtTree)
+}
+
 // TestVTXOPersistenceStoreChainDepthRoundTrip verifies that a non-zero
 // ChainDepth survives a save/load cycle through the database.
 func TestVTXOPersistenceStoreChainDepthRoundTrip(t *testing.T) {
