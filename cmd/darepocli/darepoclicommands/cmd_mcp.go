@@ -162,6 +162,31 @@ func registerMCPTools(s *mcp.Server,
 	// agent logs or provider APIs. Use the CLI directly for wallet
 	// setup. See #164 and #165 for secure agent wallet init plans.
 
+	// oor_receive — fresh OOR receive script.
+	type oorReceiveArgs struct {
+		Label string `json:"label,omitempty" jsonschema:"optional indexer registration label"` //nolint:ll
+	}
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "oor_receive",
+		Description: "Allocate a fresh OOR receive script",
+	}, func(ctx context.Context,
+		req *mcp.CallToolRequest,
+		args oorReceiveArgs) (*mcp.CallToolResult, any, error) {
+
+		resp, err := client.NewOORReceiveScript(
+			ctx, &daemonrpc.NewOORReceiveScriptRequest{
+				Label: args.Label,
+			},
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		r, err := mcpResult(resp)
+
+		return r, nil, err
+	})
+
 	// vtxos_list — with optional filters.
 	type vtxosListArgs struct {
 		StatusFilter string `json:"status_filter,omitempty" jsonschema:"VTXO status filter (live, spent, expiring, etc.)"` //nolint:ll
@@ -297,9 +322,11 @@ func registerMCPSendTools(s *mcp.Server,
 
 	// send_oor — out-of-round send.
 	type sendOORArgs struct {
-		Address   string `json:"address" jsonschema:"recipient address"`                     //nolint:ll
-		AmountSat int64  `json:"amount_sat" jsonschema:"amount in sats"`                     //nolint:ll
-		DryRun    bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"` //nolint:ll
+		Address        string `json:"address,omitempty" jsonschema:"recipient address"`                            //nolint:ll
+		PubKeyXOnlyHex string `json:"pubkey_xonly_hex,omitempty" jsonschema:"recipient 32-byte x-only pubkey hex"` //nolint:ll
+		PkScriptHex    string `json:"pk_script_hex,omitempty" jsonschema:"recipient raw pk_script hex"`            //nolint:ll
+		AmountSat      int64  `json:"amount_sat" jsonschema:"amount in sats"`                                      //nolint:ll
+		DryRun         bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"`                  //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_oor",
@@ -308,15 +335,18 @@ func registerMCPSendTools(s *mcp.Server,
 		req *mcp.CallToolRequest,
 		args sendOORArgs) (*mcp.CallToolResult, any, error) {
 
+		recipient, err := buildOORRecipientOutput(
+			args.Address, args.PubKeyXOnlyHex,
+			args.PkScriptHex, args.AmountSat,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
 		resp, err := client.SendOOR(
 			ctx, &daemonrpc.SendOORRequest{
-				Recipient: &daemonrpc.Output{
-					Destination: &daemonrpc.Output_Address{
-						Address: args.Address,
-					},
-					AmountSat: args.AmountSat,
-				},
-				DryRun: args.DryRun,
+				Recipient: recipient,
+				DryRun:    args.DryRun,
 			},
 		)
 		if err != nil {

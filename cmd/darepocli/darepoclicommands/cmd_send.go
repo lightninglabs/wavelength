@@ -131,11 +131,21 @@ func newSendOORCmd() *cobra.Command {
 	cmd.Flags().String("to", "",
 		"recipient address")
 
+	cmd.Flags().String("pubkey", "",
+		"recipient 32-byte x-only pubkey hex")
+
+	cmd.Flags().String("pk_script", "",
+		"recipient raw pk_script hex")
+
 	cmd.Flags().Int64("amount", 0,
 		"amount in sats")
 
 	cmd.Flags().Bool("dry_run", false,
 		"validate without initiating")
+
+	cmd.MarkFlagsMutuallyExclusive(
+		"to", "pubkey", "pk_script",
+	)
 
 	return cmd
 }
@@ -151,24 +161,19 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 	req := &daemonrpc.SendOORRequest{}
 	if err := parseRequest(cmd, req, func() error {
 		address, _ := cmd.Flags().GetString("to")
+		pubKeyHex, _ := cmd.Flags().GetString("pubkey")
+		pkScriptHex, _ := cmd.Flags().GetString("pk_script")
 		amount, _ := cmd.Flags().GetInt64("amount")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
-		if address == "" {
-			return fmt.Errorf("--to is required")
+		recipient, err := buildOORRecipientOutput(
+			address, pubKeyHex, pkScriptHex, amount,
+		)
+		if err != nil {
+			return err
 		}
 
-		if amount <= 0 {
-			return fmt.Errorf(
-				"--amount must be positive")
-		}
-
-		req.Recipient = &daemonrpc.Output{
-			Destination: &daemonrpc.Output_Address{
-				Address: address,
-			},
-			AmountSat: amount,
-		}
+		req.Recipient = recipient
 		req.DryRun = dryRun
 
 		return nil
