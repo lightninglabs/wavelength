@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/lib/tx/checkpoint"
 )
@@ -78,7 +78,7 @@ type RecipientOutput struct {
 //
 // This function does not attempt to sign the checkpoint tx. It also does not
 // validate that the owner leaf is a canonical Ark closure (draft phase).
-func BuildCheckpointPSBT(policy scripts.CheckpointPolicy,
+func BuildCheckpointPSBT(policy arkscript.CheckpointPolicy,
 	in CheckpointInput) (*CheckpointArtifact, error) {
 
 	result, err := checkpoint.BuildPSBT(policy, in)
@@ -223,7 +223,7 @@ func BuildArkPSBT(checkpoints []CheckpointOutput,
 		})
 	}
 
-	tx.AddTxOut(scripts.AnchorOutput())
+	tx.AddTxOut(arkscript.AnchorOutput())
 
 	err := arktx.ValidateCanonicalTx(tx)
 	if err != nil {

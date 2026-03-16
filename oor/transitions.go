@@ -8,7 +8,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -465,7 +466,7 @@ func handleOutboxError(env *Environment, current State,
 
 // buildSubmitPackage constructs a v0 OOR submit package using the shared
 // darepo-client lib/tx/oor primitives.
-func buildSubmitPackage(policy scripts.CheckpointPolicy,
+func buildSubmitPackage(policy arkscript.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*psbt.Packet, []*psbt.Packet, error) {
 

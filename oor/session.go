@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 )
 
@@ -32,7 +32,7 @@ type Session struct {
 // caller is expected to:
 //  1. execute outbox requests and turn results into follow-up events; and
 //  2. feed those events back into the session FSM.
-func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
+func NewSession(ctx context.Context, policy arkscript.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 

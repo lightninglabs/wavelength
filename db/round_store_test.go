@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
@@ -525,14 +525,14 @@ func createBoardingIntentFixture(
 	exitDelay := uint32(144)
 
 	// Build the tapscript.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPubKey, operatorPubKey, exitDelay,
 	)
 	require.NoError(t, err)
 
 	// Create the taproot address.
 	taprootKey := txscript.ComputeTaprootOutputKey(
-		&scripts.ARKNUMSKey, tapscript.RootHash,
+		&arkscript.ARKNUMSKey, tapscript.RootHash,
 	)
 	address, err := btcutil.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],

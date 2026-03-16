@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // ValidateSubmitPackageSigned validates a v0 OOR submit package including
@@ -274,7 +274,7 @@ func tapLeafFromEncodedTree(encoded []byte,
 	}
 
 	proof := tree.LeafMerkleProofs[index]
-	control := proof.ToControlBlock(&scripts.ARKNUMSKey)
+	control := proof.ToControlBlock(&arkscript.ARKNUMSKey)
 	controlBytes, err := control.ToBytes()
 	if err != nil {
 		return nil, fmt.Errorf("encode control block: %w",

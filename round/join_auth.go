@@ -7,13 +7,14 @@ import (
 	"log/slog"
 	"sort"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -40,6 +41,10 @@ type joinAuthInput struct {
 
 	// KeyDesc identifies the key used for timeout-path signing.
 	KeyDesc keychain.KeyDescriptor
+
+	// OperatorKey is the operator public key used in the VTXO
+	// collaborative and timeout spend paths.
+	OperatorKey *btcec.PublicKey
 
 	// TapScript contains the two-leaf VTXO script tree used to
 	// derive the unilateral timeout spend witness.
@@ -378,9 +383,10 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 				Value:    int64(intent.ChainInfo.Amount),
 				PkScript: pkScript,
 			},
-			KeyDesc:   intent.Address.KeyDesc,
-			TapScript: intent.Address.Tapscript,
-			Sequence:  intent.Address.ExitDelay,
+			KeyDesc:     intent.Address.KeyDesc,
+			OperatorKey: intent.Address.OperatorKey,
+			TapScript:   intent.Address.Tapscript,
+			Sequence:    intent.Address.ExitDelay,
 		})
 	}
 
@@ -419,7 +425,7 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 			)
 		}
 
-		tapScript, err := scripts.VTXOTapScript(
+		tapScript, err := arkscript.VTXOTapScript(
 			vtxo.ClientKey.PubKey, vtxo.OperatorKey,
 			vtxo.Expiry,
 		)
@@ -436,9 +442,10 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 				Value:    int64(vtxo.Amount),
 				PkScript: bytes.Clone(vtxo.PkScript),
 			},
-			KeyDesc:   vtxo.ClientKey,
-			TapScript: tapScript,
-			Sequence:  vtxo.Expiry,
+			KeyDesc:     vtxo.ClientKey,
+			OperatorKey: vtxo.OperatorKey,
+			TapScript:   tapScript,
+			Sequence:    vtxo.Expiry,
 		})
 	}
 
@@ -582,8 +589,9 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 			slog.Int("sequence", int(si.Sequence)),
 		)
 
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			si.TapScript, scripts.VTXOTimeoutPathLeaf,
+		spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+			si.KeyDesc.PubKey, si.OperatorKey,
+			si.Sequence, 1,
 		)
 		if err != nil {
 			return fmt.Errorf(
@@ -592,13 +600,12 @@ func (s *joinRoundBIP322Signer) SignBIP322(toSpend *wire.MsgTx,
 			)
 		}
 
-		signDesc := scripts.VTXOSignDesc(
+		signDesc := spendInfo.BuildSignDescriptor(
 			si.KeyDesc, si.PrevOut,
-			sigHashes, prevFetcher,
-			inputIndex, spendInfo,
+			sigHashes, prevFetcher, inputIndex,
 		)
 
-		witness, err := scripts.VTXOTimeoutSpendWitness(
+		witness, err := arkscript.VTXOTimeoutSpendWitness(
 			s.wallet, signDesc, toSign,
 		)
 		if err != nil {

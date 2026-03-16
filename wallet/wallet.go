@@ -17,7 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -1298,7 +1298,7 @@ func buildBoardingTapscript(clientKey, operatorKey *btcec.PublicKey,
 	// VTXOs use the same script structure. The client is the "owner" who
 	// can recover funds after the CSV delay, and the operator is the
 	// "cosigner" who collaborates with the client for immediate spends.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	if err != nil {

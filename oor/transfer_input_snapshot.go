@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -141,14 +140,14 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			err)
 	}
 
-	tapScript, err := scripts.VTXOTapScript(clientPub, operatorPub,
+	tapScript, err := arkscript.VTXOTapScript(clientPub, operatorPub,
 		snap.ExitDelay)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
 			err)
 	}
 
-	tapKey, err := scripts.VTXOTapKey(clientPub, operatorPub,
+	tapKey, err := arkscript.VTXOTapKey(clientPub, operatorPub,
 		snap.ExitDelay)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",

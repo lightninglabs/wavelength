@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/bip322"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/input"
@@ -192,7 +192,7 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 
 	exitDelay := uint32(144)
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		exitDelay,
@@ -247,7 +247,7 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 
 	expiry := uint32(288)
 
-	tapScript, err := scripts.VTXOTapScript(
+	tapScript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		expiry,
@@ -493,7 +493,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 	}
 	vtxoAmount := btcutil.Amount(30000)
 
-	vtxoTapscript, err := scripts.VTXOTapScript(
+	vtxoTapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		vtxoExpiry,
@@ -580,7 +580,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 	}
 	vtxoAmount := btcutil.Amount(40000)
 
-	vtxoTapscript, err := scripts.VTXOTapScript(
+	vtxoTapscript, err := arkscript.VTXOTapScript(
 		f.clientPrivKey.PubKey(),
 		f.operatorPrivKey.PubKey(),
 		vtxoExpiry,

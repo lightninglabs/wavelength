@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/stretchr/testify/mock"
@@ -2226,7 +2226,7 @@ func TestForfeitSignaturesCollectingState(t *testing.T) {
 		})
 		forfeitTx.AddTxOut(&wire.TxOut{
 			Value:    0,
-			PkScript: scripts.AnchorPkScript,
+			PkScript: arkscript.AnchorPkScript,
 		})
 
 		// Create state expecting 50000 sats.

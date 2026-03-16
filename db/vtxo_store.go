@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
@@ -468,7 +468,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 	// and exit delay (expiry).
 	var tapscript *waddrmgr.Tapscript
 	if clientPubkey != nil && operatorPubkey != nil {
-		ts, err := scripts.VTXOTapScript(
+		ts, err := arkscript.VTXOTapScript(
 			clientPubkey, operatorPubkey, uint32(row.Expiry),
 		)
 		if err != nil {

@@ -18,7 +18,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -470,7 +470,7 @@ func (h *boardingTestHarness) newTestBoardingAddress() wallet.BoardingAddress {
 	exitDelay := uint32(144)
 
 	// Build the tapscript for the boarding address.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, exitDelay,
 	)
 	require.NoError(h.t, err)
@@ -1612,7 +1612,7 @@ func (h *realSigningTestHarness) newTestBoardingIntentWithTapscript() BoardingIn
 	outpoint := h.newTestOutpoint()
 
 	// Create the VTXO tapscript with collaborative and timeout paths.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, testExitDelay,
 	)
 	require.NoError(h.t, err)
@@ -1960,10 +1960,10 @@ func (h *boardingTestHarness) newTestForfeitTx(
 		PkScript: serverForfeitScript,
 	})
 
-	// Output 1: Standard P2A anchor (scripts.AnchorPkScript).
+	// Output 1: Standard P2A anchor (arkscript.AnchorPkScript).
 	tx.AddTxOut(&wire.TxOut{
 		Value:    0,
-		PkScript: scripts.AnchorPkScript,
+		PkScript: arkscript.AnchorPkScript,
 	})
 
 	return tx

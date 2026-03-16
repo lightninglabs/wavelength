@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -34,7 +34,7 @@ type StartTransferEvent struct {
 	RecipientOutputs []oortx.RecipientOutput
 
 	// Policy defines the checkpoint output tap tree policy.
-	Policy scripts.CheckpointPolicy
+	Policy arkscript.CheckpointPolicy
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

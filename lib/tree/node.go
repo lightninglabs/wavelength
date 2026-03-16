@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -83,7 +83,7 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 		wire.NewTxOut(int64(leaf.Amount), leaf.PkScript),
 
 		// The zero value ephemeral anchor output.
-		scripts.AnchorOutput(),
+		arkscript.AnchorOutput(),
 	}
 
 	// Compute the final key for this node's input at construction time.
@@ -197,7 +197,7 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}
 
 	// Add anchor output.
-	outputs = append(outputs, scripts.AnchorOutput())
+	outputs = append(outputs, arkscript.AnchorOutput())
 
 	// Use all unique cosigners for the branch transaction.
 	allCosigners = UniqueCosigners(allCosigners)
@@ -711,7 +711,7 @@ func (n *Node) GetNonAnchorOutpoint() (*wire.OutPoint, error) {
 	}
 
 	// Get the anchor script to compare against.
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 
 	// Find the non-anchor output (the one that is NOT the anchor script).
 	for i, output := range n.Outputs {

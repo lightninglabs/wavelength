@@ -15,7 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -747,7 +747,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 
 	// Construct the TapScript from the client and operator keys. This is
 	// the standard VTXO tapscript with collaborative and timeout paths.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		cv.ClientKey.PubKey, cv.OperatorKey, cv.Expiry,
 	)
 	if err != nil {

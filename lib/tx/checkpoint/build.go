@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 )
 
@@ -68,7 +68,7 @@ type Result struct {
 //
 // This function does not attempt to sign the checkpoint tx. It also does not
 // validate that the owner leaf is a canonical Ark closure (draft phase).
-func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
+func BuildPSBT(policy arkscript.CheckpointPolicy, in Input) (*Result, error) {
 	switch {
 	case policy.CSVDelay < MinCheckpointCSVDelay:
 		return nil, fmt.Errorf(
@@ -88,7 +88,7 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 			"provided")
 	}
 
-	tapscript, err := scripts.CheckpointTapScript(
+	tapscript, err := arkscript.CheckpointTapScript(
 		policy, in.OwnerLeafScript,
 	)
 	if err != nil {

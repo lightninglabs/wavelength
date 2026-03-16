@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -171,7 +171,7 @@ func TestValidateBoardingScriptNotFullTree(t *testing.T) {
 	tapscript := &waddrmgr.Tapscript{
 		Type: waddrmgr.TapscriptTypePartialReveal,
 		ControlBlock: &txscript.ControlBlock{
-			InternalKey: &scripts.ARKNUMSKey,
+			InternalKey: &arkscript.ARKNUMSKey,
 		},
 		Leaves: []txscript.TapLeaf{
 			{Script: []byte{0x01}},
@@ -198,7 +198,7 @@ func TestValidateBoardingScriptFullTreeWrongLeafCount(t *testing.T) {
 	tapscript := &waddrmgr.Tapscript{
 		Type: waddrmgr.TapscriptTypeFullTree,
 		ControlBlock: &txscript.ControlBlock{
-			InternalKey: &scripts.ARKNUMSKey,
+			InternalKey: &arkscript.ARKNUMSKey,
 		},
 		Leaves: []txscript.TapLeaf{
 			{Script: []byte{0x01}},

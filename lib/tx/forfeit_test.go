@@ -12,7 +12,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightningnetwork/lnd/input"
@@ -71,7 +71,7 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	vtxoOutput := nonAnchorOutput(t, leaf)
 	require.NotNil(t, vtxoOutput)
 
-	vtxoTapScript, err := scripts.VTXOTapScript(
+	vtxoTapScript, err := arkscript.VTXOTapScript(
 		clientKey, operatorKey, exitDelay,
 	)
 	require.NoError(t, err)
@@ -163,8 +163,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	witness, err := scripts.VTXOCollabSpendWitness(
-		clientSig, operatorSig, spendInfo,
+	witness, err := spendInfo.CollabWitness(
+		clientSig, operatorSig,
 	)
 	require.NoError(t, err)
 	forfeitTx.TxIn[tx.ForfeitVTXOInputIndex].Witness = witness
@@ -224,7 +224,7 @@ func mustTaprootAddr(key *btcec.PublicKey) btcutil.Address {
 func nonAnchorOutput(t *testing.T, node *tree.Node) *wire.TxOut {
 	t.Helper()
 
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 	for _, out := range node.Outputs {
 		if !bytes.Equal(out.PkScript, anchorScript) {
 			return out
@@ -299,7 +299,7 @@ func TestValidateForfeitTx(t *testing.T) {
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -325,7 +325,7 @@ func TestValidateForfeitTx(t *testing.T) {
 					Value:    int64(vtxoAmount),
 					PkScript: serverForfeitScript,
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -398,7 +398,7 @@ func TestValidateForfeitTx(t *testing.T) {
 						0x00, 0x14, 0x01, 0x02,
 					},
 				})
-				tx.AddTxOut(scripts.AnchorOutput())
+				tx.AddTxOut(arkscript.AnchorOutput())
 
 				return tx
 			}(),
@@ -467,7 +467,7 @@ func TestValidateForfeitTx(t *testing.T) {
 				})
 				tx.AddTxOut(&wire.TxOut{
 					Value:    1000,
-					PkScript: scripts.AnchorPkScript,
+					PkScript: arkscript.AnchorPkScript,
 				})
 
 				return tx

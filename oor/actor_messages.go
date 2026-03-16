@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -72,7 +72,7 @@ type StartTransferRequest struct {
 
 	// Policy defines the operator checkpoint policy used to build the
 	// transfer package.
-	Policy scripts.CheckpointPolicy
+	Policy arkscript.CheckpointPolicy
 
 	// Inputs are the VTXOs to transfer.
 	//
@@ -157,7 +157,7 @@ func (m *StartTransferRequest) Decode(r io.Reader) error {
 		return err
 	}
 
-	m.Policy = scripts.CheckpointPolicy{
+	m.Policy = arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey,
 		CSVDelay:    payload.CSVDelay,
 	}

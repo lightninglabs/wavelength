@@ -8,14 +8,14 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // AddTapLeafScript ensures the PSBT input includes the leaf script and
 // control block for the collaborative VTXO leaf. If the leaf is already
 // present the function is a no-op.
 func AddTapLeafScript(in *psbt.PInput,
-	spendInfo *scripts.VTXOSpendData) error {
+	spendInfo *arkscript.SpendInfo) error {
 
 	if in == nil {
 		return fmt.Errorf("psbt input must be provided")

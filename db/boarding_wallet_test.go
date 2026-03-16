@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -42,7 +42,7 @@ func newBoardingStoreForTest(
 }
 
 // createTestBoardingAddress creates a test boarding address with proper
-// tapscript construction using scripts.VTXOTapScript.
+// tapscript construction using arkscript.VTXOTapScript.
 func createTestBoardingAddress(t *testing.T,
 	keyIndex uint32) (*wallet.BoardingAddress, *btcec.PrivateKey) {
 
@@ -57,14 +57,14 @@ func createTestBoardingAddress(t *testing.T,
 	exitDelay := uint32(144)
 
 	// Build the tapscript using the proper VTXO construction.
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPubKey, operatorPubKey, exitDelay,
 	)
 	require.NoError(t, err)
 
 	// Create the taproot address from the tapscript.
 	taprootKey := txscript.ComputeTaprootOutputKey(
-		&scripts.ARKNUMSKey, tapscript.RootHash,
+		&arkscript.ARKNUMSKey, tapscript.RootHash,
 	)
 	address, err := btcutil.NewAddressTaproot(
 		taprootKey.SerializeCompressed()[1:],

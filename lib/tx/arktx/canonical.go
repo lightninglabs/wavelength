@@ -7,7 +7,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 const (
@@ -27,7 +27,7 @@ func IsAnchorOutput(out *wire.TxOut) bool {
 		return false
 	}
 
-	return bytes.Equal(out.PkScript, scripts.AnchorPkScript)
+	return bytes.Equal(out.PkScript, arkscript.AnchorPkScript)
 }
 
 // ValidateCanonicalTx validates canonical ordering rules for an Ark tx
