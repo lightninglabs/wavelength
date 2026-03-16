@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +43,7 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
@@ -98,7 +98,7 @@ func TestValidateSubmitPackageMissingWitness(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
@@ -160,7 +160,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)

@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1226,7 +1226,7 @@ func TestNewBranchSweepSpendInfo(t *testing.T) {
 	require.NotEmpty(t, spendInfo.WitnessScript)
 	require.NotEmpty(t, spendInfo.ControlBlock)
 
-	timeoutLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	timeoutLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	require.NoError(t, err)

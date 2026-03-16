@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestHandleOutboxError(t *testing.T) {
 	// error handling independently of any transport: the important part is
 	// that the current state contains enough information to retry safely
 	// (or to fail terminally in a deterministic way).
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -128,7 +128,7 @@ func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}

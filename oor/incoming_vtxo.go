@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -118,14 +118,14 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 			cfg.OutputIndex)
 	}
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("derive vtxo tapscript: %w", err)
 	}
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {

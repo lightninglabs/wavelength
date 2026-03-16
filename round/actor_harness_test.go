@@ -20,7 +20,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
@@ -713,7 +713,7 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	hash := chainhash.HashH([]byte(h.t.Name() + "-intent" + suffix))
 	outpoint := wire.OutPoint{Hash: hash, Index: 0}
 
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		h.clientPubKey, h.operatorPubKey, h.operatorTerms.VTXOExitDelay,
 	)
 	require.NoError(h.t, err)

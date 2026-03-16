@@ -17,7 +17,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -736,7 +736,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"unable to fetch operator terms: %v", err)
 	}
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.PubKey,
 		CSVDelay:    terms.VTXOExitDelay,
 	}

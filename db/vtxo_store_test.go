@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -90,7 +90,7 @@ func createTestVTXODescriptor(
 
 	// Build the tapscript from client and operator keys.
 	const exitDelay uint32 = 144
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		privKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)

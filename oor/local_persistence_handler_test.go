@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -676,7 +676,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -703,7 +703,7 @@ func buildTestIncomingMaterialization(t *testing.T) (*psbt.Packet,
 		},
 	}
 
-	vtxoTapKey, err := scripts.VTXOTapKey(
+	vtxoTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), policy.OperatorKey, 10,
 	)
 	require.NoError(t, err)

@@ -13,7 +13,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -472,7 +472,7 @@ func dbAddrToDomainAddr(chainParams *chaincfg.Params,
 	if err != nil {
 		return nil, fmt.Errorf("parse operator pubkey: %w", err)
 	}
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
 		clientPubkey, operatorPubkey, uint32(dbAddr.ExitDelay),
 	)
 	if err != nil {

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +34,7 @@ func TestCanonicalizeOrderingSortsAndValidates(t *testing.T) {
 			Value:    1,
 			PkScript: []byte{0x52},
 		},
-		scripts.AnchorOutput(),
+		arkscript.AnchorOutput(),
 		&wire.TxOut{
 			Value:    2,
 			PkScript: []byte{0x51},

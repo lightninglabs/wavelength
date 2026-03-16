@@ -13,13 +13,13 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // VTXODescriptor defines the complete specification for a single VTXO leaf.
 type VTXODescriptor struct {
 	// PkScript is the P2TR script for the VTXO output. This is typically
-	// generated using scripts.VTXOTapKey which creates a taproot script
+	// generated using arkscript.VTXOTapKey which creates a taproot script
 	// with both keyspend (collaborative) and scriptspend (timeout) paths.
 	PkScript []byte
 
@@ -39,7 +39,7 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 	error) {
 
 	// Use scripts package to compute the VTXO output key.
-	outputKey, err := scripts.VTXOTapKey(ownerKey, cosignerKey, exitDelay)
+	outputKey, err := arkscript.VTXOTapKey(ownerKey, cosignerKey, exitDelay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute VTXO tap key: %w",
 			err)
@@ -218,7 +218,7 @@ func BuildVTXOTree(batchOutpoint wire.OutPoint, batchOutput *wire.TxOut,
 	})
 
 	// Compute the sweep tap leaf for branch tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, sweepDelay,
 	)
 	if err != nil {
@@ -306,7 +306,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	}
 
 	// Compute the sweep tap leaf for tweaking.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, sweepDelay,
 	)
 	if err != nil {
@@ -413,7 +413,7 @@ func BuildConnectorOutput(
 // parameter must be the pre-tweaked MuSig2 aggregate key for the branch output.
 func NewBranchSweepSpendInfo(
 	internalKey, sweepKey *btcec.PublicKey, csvDelay uint32,
-) (*scripts.VTXOSpendData, error) {
+) (*arkscript.SpendInfo, error) {
 
 	if internalKey == nil {
 		return nil, fmt.Errorf("internal key cannot be nil")
@@ -423,7 +423,7 @@ func NewBranchSweepSpendInfo(
 		return nil, fmt.Errorf("sweep key cannot be nil")
 	}
 
-	sweepLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	if err != nil {
@@ -443,7 +443,7 @@ func NewBranchSweepSpendInfo(
 		return nil, err
 	}
 
-	return &scripts.VTXOSpendData{
+	return &arkscript.SpendInfo{
 		WitnessScript: sweepLeaf.Script,
 		ControlBlock:  ctrlBytes,
 	}, nil

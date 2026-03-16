@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -92,7 +92,7 @@ func BuildForfeitTx(vtxoOutpoint *wire.OutPoint, vtxoAmount btcutil.Amount,
 		PkScript: serverForfeitScript,
 	})
 
-	tx.AddTxOut(scripts.AnchorOutput())
+	tx.AddTxOut(arkscript.AnchorOutput())
 
 	return tx, nil
 }
@@ -121,18 +121,41 @@ func NewVTXOCollabSignDescriptor(vtxo *VTXOSpendContext,
 	keyDesc keychain.KeyDescriptor, inputIndex int,
 	sigHashes *txscript.TxSigHashes,
 	prevFetcher txscript.PrevOutputFetcher) (*input.SignDescriptor,
-	*scripts.VTXOSpendData, error) {
+	*arkscript.SpendInfo, error) {
 
 	if vtxo == nil || vtxo.TapScript == nil {
 		return nil, nil, fmt.Errorf("vtxo tapscript must be provided")
 	}
 
-	spendInfo, err := scripts.NewVTXOSpendInfo(
-		vtxo.TapScript, scripts.VTXOCollabPathLeaf,
+	// Derive the collaborative spend info from the tapscript. The
+	// collab leaf is always at index 0 in the VTXO tap tree.
+	const collabLeafIndex = 0
+
+	if len(vtxo.TapScript.Leaves) <= collabLeafIndex {
+		return nil, nil, fmt.Errorf("tapscript has no collab leaf")
+	}
+
+	targetLeaf := vtxo.TapScript.Leaves[collabLeafIndex]
+
+	tapTree := txscript.AssembleTaprootScriptTree(
+		vtxo.TapScript.Leaves...,
 	)
+	if len(tapTree.LeafMerkleProofs) <= collabLeafIndex {
+		return nil, nil, fmt.Errorf("missing taproot proof for " +
+			"vtxo collab leaf")
+	}
+
+	controlBlock := tapTree.LeafMerkleProofs[collabLeafIndex].
+		ToControlBlock(&arkscript.ARKNUMSKey)
+	ctrlBytes, err := controlBlock.ToBytes()
 	if err != nil {
-		return nil, nil, fmt.Errorf("unable to derive collaborative "+
-			"spend info: %w", err)
+		return nil, nil, fmt.Errorf("unable to encode control "+
+			"block: %w", err)
+	}
+
+	spendInfo := &arkscript.SpendInfo{
+		WitnessScript: targetLeaf.Script,
+		ControlBlock:  ctrlBytes,
 	}
 
 	signDesc := &input.SignDescriptor{
@@ -236,7 +259,7 @@ func ValidateForfeitTx(forfeitTx *wire.MsgTx, params ForfeitTxParams) error {
 
 	// Verify anchor output is a standard P2A with zero value.
 	anchorOut := forfeitTx.TxOut[ForfeitAnchorOutputIndex]
-	if !bytes.Equal(anchorOut.PkScript, scripts.AnchorPkScript) {
+	if !bytes.Equal(anchorOut.PkScript, arkscript.AnchorPkScript) {
 		return fmt.Errorf("forfeit tx output %d is not a P2A anchor",
 			ForfeitAnchorOutputIndex)
 	}

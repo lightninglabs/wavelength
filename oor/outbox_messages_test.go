@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -164,7 +164,7 @@ func testOutboxPSBTPair(t *testing.T) (*psbt.Packet, []*psbt.Packet) {
 		},
 	})
 	arkTx.AddTxOut(&wire.TxOut{Value: 5, PkScript: []byte{0x51}})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 	arkPSBT, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 

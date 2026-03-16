@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
@@ -95,9 +95,11 @@ func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
 				outpoint)
 		}
 
-		spendInfo, err := scripts.NewVTXOSpendInfo(
-			boardingIntent.Address.Tapscript,
-			scripts.VTXOCollabPathLeaf,
+		spendInfo, err := arkscript.NewVTXOSpendInfoFromPolicy(
+			boardingIntent.Address.KeyDesc.PubKey,
+			boardingIntent.Address.OperatorKey,
+			boardingIntent.Address.ExitDelay,
+			0,
 		)
 		if err != nil {
 			return nil, err
@@ -120,7 +122,7 @@ func signBoardingInputs(wallet ClientWallet, commitmentTx *psbt.Packet,
 			PkScript: pkScript,
 		}
 
-		signature, err := scripts.SignVTXOCollabInput(
+		signature, err := arkscript.SignVTXOCollabInput(
 			wallet, tx, inputIdx, spendInfo,
 			&boardingIntent.Address.KeyDesc, output,
 			sigHashes, prevOutFetcher,

@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
@@ -502,7 +502,7 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	}
 
 	// Attach the custom leaf script and client signature to the PSBT.
-	spendData := &scripts.VTXOSpendData{
+	spendData := &arkscript.SpendInfo{
 		WitnessScript: in.CustomSpend.SpendInfo.WitnessScript,
 		ControlBlock:  in.CustomSpend.SpendInfo.ControlBlock,
 	}
