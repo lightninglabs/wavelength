@@ -922,6 +922,7 @@ func TestIsTransportEventClassification(t *testing.T) {
 		&SendSubmitPackageRequest{},
 		&SendFinalizePackageRequest{},
 		&SendIncomingAckRequest{},
+		&QueryIncomingMetadataRequest{},
 	}
 	for _, evt := range transportEvents {
 		require.True(

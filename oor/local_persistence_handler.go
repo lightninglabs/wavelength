@@ -97,13 +97,9 @@ type LocalPersistenceOutboxHandler struct {
 
 	// NotifyIncomingVTXOs is invoked after incoming VTXOs are persisted.
 	// Production wiring should use this to notify the VTXO manager so newly
-	// received OOR VTXOs are actively monitored.
+	// received OOR VTXOs are actively monitored when the handler is used
+	// outside the OOR durable actor.
 	NotifyIncomingVTXOs IncomingVTXONotifier
-
-	// CallbackRef receives async materialization results so the handler can
-	// resume the durable actor with a fresh DriveEventRequest after the
-	// blocking indexer lookup finishes outside the actor transaction.
-	CallbackRef actor.TellOnlyRef[OORDurableMsg]
 
 	// CompleteSpend enqueues OOR spend completion through the VTXO
 	// manager so each consumed VTXO transitions to SpentState via its
@@ -128,6 +124,9 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 	switch msg := outbox.(type) {
 	case *MarkInputsSpentRequest:
 		return h.handleMarkInputsSpent(ctx, msg)
+
+	case *QueryIncomingMetadataRequest:
+		return h.handleQueryIncomingMetadata(ctx, msg)
 
 	case *MaterializeIncomingVTXOsRequest:
 		return h.handleMaterializeIncoming(ctx, msg)
@@ -208,11 +207,7 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		return nil, err
 	}
 
-	if hasActorDBTx(ctx) {
-		return h.scheduleMaterializeIncoming(ctx, msg)
-	}
-
-	return h.materializeIncoming(ctx, msg, true)
+	return h.materializeIncoming(ctx, msg, !hasActorDBTx(ctx))
 }
 
 // validateMaterializeIncoming verifies the dependencies needed to materialize
@@ -238,21 +233,7 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 		)
 	}
 
-	if h.ResolveIncomingMetadata == nil {
-		return fmt.Errorf(
-			"incoming metadata resolver must be provided",
-		)
-	}
-
-	if hasActorDBTx(ctx) && h.CallbackRef == nil {
-		return fmt.Errorf(
-			"incoming materialization callback ref must be " +
-				"provided",
-		)
-	}
-
-	if h.NotifyIncomingVTXOs == nil &&
-		!hasActorDBTx(ctx) && h.CallbackRef == nil {
+	if h.NotifyIncomingVTXOs == nil && !hasActorDBTx(ctx) {
 
 		return fmt.Errorf(
 			"incoming VTXO notifier must be provided",
@@ -266,44 +247,57 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 	return nil
 }
 
-// scheduleMaterializeIncoming moves the incoming materialization work off the
-// durable actor transaction and delivers the result back as a fresh actor
-// event once the blocking indexer query completes.
-func (h *LocalPersistenceOutboxHandler) scheduleMaterializeIncoming(
+// handleQueryIncomingMetadata resolves authoritative metadata for owned
+// recipients when the OOR actor is running without the durable serverconn
+// request/response path.
+func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 	ctx context.Context,
-	msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
+	msg *QueryIncomingMetadataRequest) ([]Event, error) {
 
 	if msg == nil {
-		return nil, fmt.Errorf("materialize request must be provided")
+		return nil, fmt.Errorf("incoming metadata query must be provided")
 	}
 
-	opCtx := actor.WithoutOutboxID(
-		actor.WithoutTx(context.WithoutCancel(ctx)),
-	)
+	if h.ResolveIncomingClientKey == nil {
+		return nil, fmt.Errorf("incoming client key resolver must be " +
+			"provided")
+	}
 
-	go func() {
-		followUps, err := h.materializeIncoming(opCtx, msg, false)
+	if h.ResolveIncomingMetadata == nil {
+		return nil, fmt.Errorf("incoming metadata resolver must be " +
+			"provided")
+	}
+
+	matches := make([]IncomingMetadataMatch, 0, len(msg.Recipients))
+	for i := range msg.Recipients {
+		recipient := msg.Recipients[i]
+
+		_, err := h.ResolveIncomingClientKey(ctx, recipient)
 		if err != nil {
-			followUps = []Event{&FailEvent{
-				Reason: fmt.Sprintf("materialize incoming: %v", err),
-			}}
-		}
-
-		for _, followUp := range followUps {
-			tellErr := h.CallbackRef.Tell(opCtx, &DriveEventRequest{
-				SessionID: msg.SessionID,
-				Event:     followUp,
-			})
-			if tellErr != nil {
-				log.WarnS(opCtx, "Failed to deliver incoming "+
-					"materialization result", tellErr,
-					slog.String("session_id",
-						msg.SessionID.String()))
+			if IsIncomingRecipientNotOwned(err) {
+				continue
 			}
-		}
-	}()
 
-	return nil, nil
+			return nil, err
+		}
+
+		metadata, err := h.ResolveIncomingMetadata(
+			ctx, msg.SessionID, recipient, msg.ArkPSBT,
+			msg.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		matches = append(matches, IncomingMetadataMatch{
+			OutputIndex: recipient.OutputIndex,
+			Metadata:    metadata,
+		})
+	}
+
+	return []Event{&IncomingMetadataResolvedEvent{
+		Matches: matches,
+	}}, nil
 }
 
 // materializeIncoming persists recipient VTXOs for an incoming transfer and
@@ -321,6 +315,13 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 	materializedVTXOs := make([]*vtxo.Descriptor, 0, len(msg.Recipients))
 	materializedOutpoints := make([]wire.OutPoint, 0, len(msg.Recipients))
 	sessionIDHash := chainhash.Hash(msg.SessionID)
+	metadataByOutput := make(map[uint32]IncomingVTXOMetadata,
+		len(msg.MetadataMatches))
+
+	for i := range msg.MetadataMatches {
+		match := msg.MetadataMatches[i]
+		metadataByOutput[match.OutputIndex] = match.Metadata
+	}
 
 	if h.PackageStore != nil {
 		err := h.PackageStore.UpsertPackage(ctx,
@@ -345,20 +346,23 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 
 		ownedRecipients++
 
-		metadata, err := h.ResolveIncomingMetadata(
-			ctx, msg.SessionID, recipient, msg.ArkPSBT,
-			msg.FinalCheckpointPSBTs,
-		)
-		if err != nil {
-			log.DebugS(ctx, "Incoming metadata resolution failed",
-				slog.String("session_id", msg.SessionID.String()),
-				slog.Int("output_index",
-					int(recipient.OutputIndex)),
-				slog.String("pk_script",
-					fmt.Sprintf("%x", recipient.PkScript)),
-				slog.String("err", err.Error()))
+		metadata, ok := metadataByOutput[recipient.OutputIndex]
+		if !ok && h.ResolveIncomingMetadata != nil &&
+			!hasActorDBTx(ctx) {
 
-			return nil, err
+			metadata, err = h.ResolveIncomingMetadata(
+				ctx, msg.SessionID, recipient, msg.ArkPSBT,
+				msg.FinalCheckpointPSBTs,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			ok = true
+		}
+		if !ok {
+			return nil, fmt.Errorf("incoming metadata missing for "+
+				"wallet-owned output %d", recipient.OutputIndex)
 		}
 
 		log.DebugS(ctx, "Resolved incoming metadata",

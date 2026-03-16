@@ -28,11 +28,12 @@ import (
 //   - extract recipients (for UI summary and wallet materialization)
 //   emits outbox (in order):
 //   1) IncomingTransferNotification: app/UI summary of the transfer
-//   2) MaterializeIncomingVTXOsRequest: wallet/state update (filter + persist)
+//   2) QueryIncomingMetadataRequest: authoritative indexer metadata lookup
 //   |
 //   v
 // ReceiveNotified
-//   - waits for IncomingHandledEvent after async materialization completes
+//   - waits for IncomingMetadataResolvedEvent then emits local materialization
+//   - waits for IncomingHandledEvent after local materialization completes
 //   |
 //   v
 // ReceiveAwaitingAck
@@ -97,12 +98,11 @@ func transitionIncomingTransfer(
 					ArkPSBT:    evt.ArkPSBT,
 					Recipients: recipients,
 				},
-				&MaterializeIncomingVTXOsRequest{
-					SessionID: evt.SessionID,
-					ArkPSBT:   evt.ArkPSBT,
-					FinalCheckpointPSBTs: evt.
-						FinalCheckpointPSBTs,
-					Recipients: recipients,
+				&QueryIncomingMetadataRequest{
+					SessionID:            evt.SessionID,
+					ArkPSBT:              evt.ArkPSBT,
+					FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+					Recipients:           recipients,
 				},
 			},
 		}),
@@ -161,6 +161,28 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 	_ = env
 
 	switch evt := event.(type) {
+	case *IncomingMetadataResolvedEvent:
+		recipients, err := ExtractArkRecipients(s.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&MaterializeIncomingVTXOsRequest{
+						SessionID: s.SessionID,
+						ArkPSBT:   s.ArkPSBT,
+						FinalCheckpointPSBTs: s.
+							FinalCheckpointPSBTs,
+						Recipients: recipients,
+						MetadataMatches: evt.Matches,
+					},
+				},
+			}),
+		}, nil
+
 	case *IncomingHandledEvent:
 		// The application signals it has processed the notification.
 		// Wallet state has been updated (materialization complete), so we

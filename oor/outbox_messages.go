@@ -266,6 +266,34 @@ func (m *IncomingTransferNotification) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *IncomingTransferNotification) outboxSealed() {}
 
+// QueryIncomingMetadataRequest asks the transport layer to query the
+// authoritative indexer inventory for the incoming Ark outputs referenced by
+// this session.
+type QueryIncomingMetadataRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the incoming transfer session.
+	SessionID SessionID
+
+	// ArkPSBT is the canonical Ark tx PSBT.
+	ArkPSBT *psbt.Packet
+
+	// FinalCheckpointPSBTs are the finalized checkpoint packages associated
+	// with this Ark transfer.
+	FinalCheckpointPSBTs []*psbt.Packet
+
+	// Recipients are the non-anchor recipient outputs in the Ark tx.
+	Recipients []ArkRecipientOutput
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *QueryIncomingMetadataRequest) outboxType() string {
+	return "QueryIncomingMetadataRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *QueryIncomingMetadataRequest) outboxSealed() {}
+
 // MaterializeIncomingVTXOsRequest asks the wallet/state layer to materialize
 // the incoming transfer into local VTXO records.
 //
@@ -289,6 +317,10 @@ type MaterializeIncomingVTXOsRequest struct {
 
 	// Recipients are the non-anchor recipient outputs in the Ark tx.
 	Recipients []ArkRecipientOutput
+
+	// MetadataMatches carries the authoritative lineage metadata resolved for
+	// the current Ark outputs.
+	MetadataMatches []IncomingMetadataMatch
 }
 
 // outboxType returns a stable identifier for this outbox message.

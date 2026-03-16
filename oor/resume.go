@@ -22,7 +22,7 @@ func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
 		}
 
 		return []OutboxEvent{
-			&MaterializeIncomingVTXOsRequest{
+			&QueryIncomingMetadataRequest{
 				SessionID:            s.SessionID,
 				ArkPSBT:              s.ArkPSBT,
 				FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
