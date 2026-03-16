@@ -39,12 +39,12 @@ const defaultSendEventTimeout = 30 * time.Second
 
 // TLV record type aliases for RecordT-style message field serialization.
 type (
-	protoPayloadRecordTLV = tlv.TlvType1
-	envelopeRecordTLV     = tlv.TlvType2
-	msgIDRecordTLV        = tlv.TlvType3
-	idempotencyRecordTLV  = tlv.TlvType4
-	rpcServiceRecordTLV   = tlv.TlvType5
-	rpcMethodRecordTLV    = tlv.TlvType6
+	protoPayloadRecordTLV   = tlv.TlvType1
+	envelopeRecordTLV       = tlv.TlvType2
+	msgIDRecordTLV          = tlv.TlvType3
+	idempotencyRecordTLV    = tlv.TlvType4
+	rpcServiceRecordTLV     = tlv.TlvType5
+	rpcMethodRecordTLV      = tlv.TlvType6
 	rpcCorrelationRecordTLV = tlv.TlvType7
 )
 
@@ -598,6 +598,14 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 	case *SendUnaryRequest:
 		return a.handleSendUnaryRequest(ctx, m)
 
+	case *SendListOORRecipientEventsByScriptRequest:
+		return a.handleSendListOORRecipientEventsByScriptRequest(
+			ctx, m,
+		)
+
+	case *SendListVTXOsByScriptsRequest:
+		return a.handleSendListVTXOsByScriptsRequest(ctx, m)
+
 	case *SendRPCRequest:
 		return a.handleSendRPCRequest(ctx, m)
 
@@ -754,6 +762,165 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 		}
 	}
 
+	return a.sendUnaryEnvelope(
+		ctx, req.Body, req.Service, req.Method, req.CorrelationID,
+		msgID, idempotencyKey,
+	)
+}
+
+// handleSendListOORRecipientEventsByScriptRequest builds and sends a durable
+// proof-gated indexer unary request for one taproot output script.
+func (a *ServerConnectionActor) handleSendListOORRecipientEventsByScriptRequest(
+	ctx context.Context, req *SendListOORRecipientEventsByScriptRequest,
+) fn.Result[ServerConnResp] {
+
+	if req == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"recipient-events query must be provided",
+		))
+	}
+
+	if a.cfg.DurableUnaryBuilder == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"durable unary builder must be provided",
+		))
+	}
+
+	protoReq, err := a.cfg.DurableUnaryBuilder.
+		BuildListOORRecipientEventsByScriptRequest(
+			ctx, req.PkScript, req.AfterEventID, req.Limit,
+		)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"build recipient-events request: %w", err,
+		))
+	}
+
+	body, err := anypb.New(protoReq)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"wrap recipient-events request in Any: %w", err,
+		))
+	}
+
+	if req.CorrelationID == "" {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"recipient-events query requires a " +
+				"correlation ID",
+		))
+	}
+
+	stableBytes, err := encodeRecipientEventsQueryIdentity(
+		req.PkScript, req.AfterEventID, req.Limit,
+		req.CorrelationID,
+	)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"encode recipient-events identity: %w", err,
+		))
+	}
+
+	msgID, idempotencyKey := deriveEnvelopeIDs(
+		req.MsgID, req.IdempotencyKey, stableBytes,
+	)
+
+	method := req.ServiceMethod()
+
+	return a.sendUnaryEnvelope(
+		ctx, body, method.Service, method.Method, req.CorrelationID,
+		msgID, idempotencyKey,
+	)
+}
+
+// handleSendListVTXOsByScriptsRequest builds and sends a durable proof-gated
+// indexer unary request for one or more taproot output scripts.
+func (a *ServerConnectionActor) handleSendListVTXOsByScriptsRequest(
+	ctx context.Context, req *SendListVTXOsByScriptsRequest,
+) fn.Result[ServerConnResp] {
+
+	if req == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"vtxo query must be provided",
+		))
+	}
+
+	if a.cfg.DurableUnaryBuilder == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"durable unary builder must be provided",
+		))
+	}
+
+	if req.CorrelationID == "" {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"vtxo query requires a correlation ID",
+		))
+	}
+
+	protoReq, err := a.cfg.DurableUnaryBuilder.
+		BuildListVTXOsByScriptsRequest(
+			ctx, req.PkScripts, req.AfterCursor, req.Limit,
+		)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"build vtxo query request: %w", err,
+		))
+	}
+
+	body, err := anypb.New(protoReq)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"wrap vtxo query in Any: %w", err,
+		))
+	}
+
+	stableBytes, err := encodeVTXOsByScriptsQueryIdentity(
+		req.PkScripts, req.AfterCursor, req.Limit,
+		req.CorrelationID,
+	)
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"encode vtxo query identity: %w", err,
+		))
+	}
+
+	msgID, idempotencyKey := deriveEnvelopeIDs(
+		req.MsgID, req.IdempotencyKey, stableBytes,
+	)
+
+	method := req.ServiceMethod()
+
+	return a.sendUnaryEnvelope(
+		ctx, body, method.Service, method.Method, req.CorrelationID,
+		msgID, idempotencyKey,
+	)
+}
+
+// deriveEnvelopeIDs returns the msgID and idempotencyKey to use for a durable
+// unary envelope. Caller-provided values take precedence; if empty, stable
+// deterministic IDs are derived from the identity bytes.
+func deriveEnvelopeIDs(reqMsgID, reqIdempotencyKey string,
+	stableBytes []byte) (string, string) {
+
+	msgID := reqMsgID
+	if msgID == "" {
+		msgID = mailboxconn.StableEventMsgID(stableBytes)
+	}
+
+	idempotencyKey := reqIdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = mailboxconn.
+			StableEventIdempotencyKey(stableBytes)
+	}
+
+	return msgID, idempotencyKey
+}
+
+// sendUnaryEnvelope sends one durable unary request envelope via the mailbox
+// edge using the given routing metadata and stable identifiers.
+func (a *ServerConnectionActor) sendUnaryEnvelope(ctx context.Context,
+	body *anypb.Any, service string, method string, correlationID string,
+	msgID string, idempotencyKey string) fn.Result[ServerConnResp] {
+
 	envelope := &mailboxpb.Envelope{
 		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
@@ -761,12 +928,12 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 		Sender:          a.cfg.LocalMailboxID,
 		Recipient:       a.cfg.RemoteMailboxID,
 		CreatedAtUnixMs: time.Now().UnixMilli(),
-		Body:            req.Body,
+		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_REQUEST,
-			Service:       req.Service,
-			Method:        req.Method,
-			CorrelationId: req.CorrelationID,
+			Service:       service,
+			Method:        method,
+			CorrelationId: correlationID,
 			ReplyTo:       a.cfg.LocalMailboxID,
 		},
 	}
@@ -948,6 +1115,18 @@ func NewServerConnCodec() *actor.MessageCodec {
 			return &SendUnaryRequest{}
 		},
 	)
+	codec.MustRegister(
+		SendListOORRecipientEventsByScriptRequestMsgType,
+		func() actor.TLVMessage {
+			return &SendListOORRecipientEventsByScriptRequest{}
+		},
+	)
+	codec.MustRegister(
+		SendListVTXOsByScriptsRequestMsgType,
+		func() actor.TLVMessage {
+			return &SendListVTXOsByScriptsRequest{}
+		},
+	)
 
 	return codec
 }
@@ -957,6 +1136,8 @@ var (
 	_ ServerConnMsg  = (*SendClientEventRequest)(nil)
 	_ ServerConnMsg  = (*SendUnaryRequest)(nil)
 	_ ServerConnMsg  = (*SendRPCRequest)(nil)
+	_ ServerConnMsg  = (*SendListOORRecipientEventsByScriptRequest)(nil)
+	_ ServerConnMsg  = (*SendListVTXOsByScriptsRequest)(nil)
 	_ ServerConnResp = (*SendClientEventResponse)(nil)
 	_ ServerConnResp = (*SendRPCResponse)(nil)
 

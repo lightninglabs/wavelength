@@ -10,9 +10,12 @@ background ingress polling with event routing.
 
 - `Runtime` — Main entry point wrapping DurableActor, ServerConnectionActor, and UnaryFacade.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop.
-- `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path).
-- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store).
+- `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Also provides `AwaitRPCTimeout` for bounded waits.
+- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder).
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
+- `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
+- `DurableUnaryBuilder` — Proof-gated request-body builder used by transport-native durable query messages.
+- `SendListOORRecipientEventsByScriptRequest` / `SendListVTXOsByScriptsRequest` — transport-native durable indexer query messages emitted by OOR receive.
 
 ## Relationships
 
@@ -21,6 +24,7 @@ background ingress polling with event routing.
 - **Sends (egress → remote mailbox)**:
   - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
+  - transport-native durable query messages for proof-gated indexer lookups
 - **Routes (ingress → local actors via EventRouter)**:
   - → `round`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - → `oor`: `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
@@ -31,7 +35,8 @@ background ingress polling with event routing.
 ## Invariants
 
 - Ack watermark only advances AFTER durable local dispatch commit (prevents message loss on crash).
-- Unary RPC responses use in-memory registry (no durability); on crash, callers retry with fresh correlation IDs.
+- Unary RPC responses use in-memory registry first; if no waiter exists (crash replay), the ingress falls back to durable EventRouter dispatch. The ResponseRegistry returns a tri-state delivery result (waiter/buffered/dropped) so the ingress knows whether to route durably.
+- `SendClientEventRequest` auto-derives `Service`/`Method` from `Message.ServiceMethod()` when callers leave them empty, preventing silent drops.
 - Idempotency keys are derived from message payload hash; same key on retry enables server deduplication.
 - Ingress loop checkpoints pull cursor and ack state; on restart, resumes from checkpoint.
 

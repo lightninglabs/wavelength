@@ -8,6 +8,7 @@ import (
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"google.golang.org/protobuf/proto"
 )
 
 // CorrelationID links a mailbox request to its response.
@@ -30,6 +31,27 @@ const ackStateType = mailboxconn.CheckpointStateType
 type EnvelopeDispatcher func(
 	ctx context.Context, env *mailboxpb.Envelope,
 ) error
+
+// DurableUnaryRequestBuilder constructs proof-gated unary request payloads
+// for durable transport messages that only persist the query spec. The
+// returned proto is wrapped into a mailbox KIND_REQUEST envelope after the
+// durable serverconn mailbox commit completes.
+type DurableUnaryRequestBuilder interface {
+	// BuildListOORRecipientEventsByScriptRequest builds the
+	// ListOORRecipientEventsByScript unary request for the given taproot
+	// output script and monotonic cursor.
+	BuildListOORRecipientEventsByScriptRequest(ctx context.Context,
+		pkScript []byte, afterEventID uint64, limit uint32) (
+		proto.Message, error,
+	)
+
+	// BuildListVTXOsByScriptsRequest builds the ListVTXOsByScripts unary
+	// request for the given taproot output scripts and cursor.
+	BuildListVTXOsByScriptsRequest(ctx context.Context,
+		pkScripts [][]byte, afterCursor uint64, limit uint32) (
+		proto.Message, error,
+	)
+}
 
 // ConnectorConfig holds all dependencies and tuning knobs for the server
 // connection actor. The connector is the single boundary for all mailbox
@@ -65,6 +87,11 @@ type ConnectorConfig struct {
 	// Codec handles TLV serialization of ServerConnMsg types for the
 	// durable actor mailbox.
 	Codec *actor.MessageCodec
+
+	// DurableUnaryBuilder constructs proof-gated unary request bodies for
+	// transport-native durable unary messages such as indexer script-scope
+	// queries. When nil, those message types are rejected.
+	DurableUnaryBuilder DurableUnaryRequestBuilder
 
 	// PullMaxEnvelopes bounds the number of envelopes returned per Pull
 	// call.
