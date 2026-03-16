@@ -5,32 +5,46 @@ package systest
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/darepod"
 	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/db/actordelivery"
+	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/darepo/clientconn"
+	serverdb "github.com/lightninglabs/darepo/db"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // TestClient represents a client participating in rounds for e2e tests. It
@@ -44,18 +58,17 @@ type TestClient struct {
 	// clientID is the unique identifier for this client.
 	clientID clientconn.ClientID
 
+	// actorSystem is the per-client actor system. Using a dedicated
+	// system per client preserves production service-key isolation so
+	// wallet/OOR lookups cannot bleed across test clients.
+	actorSystem *actor.ActorSystem
+
 	// backend is the pluggable wallet backend (LND or lwwallet).
 	backend ClientBackend
 
-	// serverConn is the bridge connection to the server for C→S messages.
-	serverConn *BridgeServerConn
-
-	// serverConnRef is the actor reference for the server connection
-	// bridge.
-	serverConnRef actor.ActorRef[
-		serverconn.ServerConnMsg,
-		serverconn.ServerConnResp,
-	]
+	// serverConnRuntime is the production serverconn.Runtime that
+	// handles C→S message routing through the InstrumentedMailbox.
+	serverConnRuntime *serverconn.Runtime
 
 	// chainSourceRef is the reference to the chain source actor.
 	chainSourceRef actor.ActorRef[
@@ -110,12 +123,32 @@ type TestClient struct {
 	// backend.
 	clientKeyDesc *keychain.KeyDescriptor
 
+	// oorReceiveKeyDesc is this client's stable wallet key for the
+	// default OOR receive script.
+	oorReceiveKeyDesc *keychain.KeyDescriptor
+
+	// oorReceivePkScript is the registered default OOR receive script for
+	// this client.
+	oorReceivePkScript []byte
+
 	// vtxoManager is the real VTXO manager that spawns VTXO actors.
 	vtxoManager *vtxo.Manager
 
 	// vtxoManagerRef is the actor reference for the VTXO manager.
 	// This is used to stop and unregister the manager during restart tests.
 	vtxoManagerRef actor.ActorRef[vtxo.ManagerMsg, vtxo.ManagerResp]
+
+	// indexerClient provides wallet-scoped queries to the server
+	// indexer through the production mailbox RPC path.
+	indexerClient *clientindexer.Client
+
+	// oorActor is the client-side OOR transfer coordinator actor.
+	oorActor *clientoor.OORClientActor
+
+	// oorRef is the actor reference for the OOR client actor.
+	oorRef actor.ActorRef[
+		clientoor.OORDurableMsg, clientoor.ActorResp,
+	]
 
 	// vtxoObserver receives VTXOCreatedNotification events from the round
 	// actor, enabling event-based detection of round completion.
@@ -135,6 +168,12 @@ type TestClient struct {
 
 	// pendingRound is the current round the client is participating in.
 	pendingRound *pendingRoundState
+}
+
+// ClientIDFromPubKey derives a ClientID from a public key by
+// hex-encoding the compressed public key bytes.
+func ClientIDFromPubKey(pubKey []byte) clientconn.ClientID {
+	return clientconn.ClientID(hex.EncodeToString(pubKey))
 }
 
 // pendingRoundState tracks state during an active round.
@@ -228,17 +267,37 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	chainBackend := opts.backend.ChainBackend()
 	boardingBackend := opts.backend.BoardingBackend()
 	clientWallet := opts.backend.ClientWallet()
+	clientSystem := actor.NewActorSystem()
+
+	oorClientStore := db.NewStore(
+		sqlDB.DB, sqlDB.Queries, sqlDB.Backend(),
+		h.SubLogger("OOPK"),
+	)
+	oorPackageStore := oorClientStore.NewOORArtifactStore(
+		clock.NewDefaultClock(),
+	)
+
+	oorReceiveKeyDesc, err := darepod.EnsureDefaultOORReceiveKey(
+		ctx, oorPackageStore, func(ctx context.Context) (
+			*keychain.KeyDescriptor, error,
+		) {
+			return clientWallet.DeriveNextKey(
+				ctx, darepod.DefaultOORReceiveKeyFamily(),
+			)
+		},
+	)
+	require.NoError(t, err, "failed to resolve OOR receive key")
 
 	// Create and spawn ChainSourceActor.
 	chainSourceActor := chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
 			Backend: chainBackend,
-			System:  h.actorSystem,
+			System:  clientSystem,
 		}.WithLogger(h.SubLogger(chainsource.Subsystem)),
 	)
 	chainSourceActorID := fmt.Sprintf("chain-source%s", opts.actorSuffix)
 	chainSourceRef := chainsource.ChainSourceKey.Spawn(
-		h.actorSystem, chainSourceActorID, chainSourceActor,
+		clientSystem, chainSourceActorID, chainSourceActor,
 	)
 
 	// Create BoardingStore.
@@ -281,14 +340,16 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		boardingStore,
 		vtxoReader,
 		chainSourceRef,
-		h.actorSystem,
+		clientSystem,
 		h.SubLogger(wallet.Subsystem),
 	)
 	walletActorID := fmt.Sprintf("wallet%s", opts.actorSuffix)
 	walletKey := actor.NewServiceKey[wallet.WalletMsg, wallet.WalletResp](
 		walletActorID,
 	)
-	walletRef := walletKey.Spawn(h.actorSystem, walletActorID, walletActor)
+	walletRef := walletKey.Spawn(
+		clientSystem, walletActorID, walletActor,
+	)
 
 	// Start wallet actor (registers for block epoch notifications).
 	err = walletActor.Start(ctx, walletRef)
@@ -313,15 +374,86 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		roundDB, clock.NewDefaultClock(),
 	)
 
-	// Create per-client C→S bridge.
-	serverConn := NewBridgeServerConn(clientID, h.roundsActor, h.transcript)
-	serverConnActorID := fmt.Sprintf("bridge-server%s", opts.actorSuffix)
-	serverConnKey := actor.NewServiceKey[
-		serverconn.ServerConnMsg, serverconn.ServerConnResp,
-	](serverConnActorID)
-	serverConnRef := serverConnKey.Spawn(
-		h.actorSystem, serverConnActorID, serverConn,
+	// Create per-client serverconn.Runtime wired through the
+	// InstrumentedMailbox. The client's local mailbox is its
+	// clientID, and the remote mailbox is the server's per-client
+	// mailbox.
+	clientMBID := string(clientID)
+	serverMBID := serverMailboxPrefix + clientMBID
+
+	// Register the mailbox pair for direction detection in the
+	// instrumented mailbox.
+	h.instrumentedMB.RegisterMailboxPair(
+		clientID, serverMBID, clientMBID,
 	)
+
+	// Create client-side EventRouter and register all routes.
+	clientRouter := serverconn.NewEventRouter(clientSystem)
+	roundKey := actormsg.RoundActorServiceKey()
+	registerClientRoundRoutes(clientRouter, roundKey)
+
+	oorKey := clientoor.NewServiceKey()
+	registerClientOORRoutes(clientRouter, oorKey)
+
+	// Create a per-client delivery store for durable actor
+	// inbox/checkpoint persistence. Uses the same SQLite DB as
+	// the VTXO and round stores, matching production wiring.
+	clientDeliveryStore, deliveryErr := actordelivery.NewTxAwareDeliveryStoreFromDB(
+		sqlDB.DB, sqlDB.Backend(), clock.NewDefaultClock(),
+		h.SubLogger("CDEL"),
+	)
+	require.NoError(
+		t, deliveryErr,
+		"failed to create client delivery store",
+	)
+
+	// Build the serverconn.ConnectorConfig with all routes.
+	clientConnCfg := serverconn.DefaultConnectorConfig()
+	clientConnCfg.Edge = h.instrumentedMB
+	clientConnCfg.LocalMailboxID = clientMBID
+	clientConnCfg.RemoteMailboxID = serverMBID
+	clientConnCfg.Dispatchers = clientRouter.AsDispatcherMap()
+	clientConnCfg.Store = clientDeliveryStore
+	clientConnCfg.ProtocolVersion = 1
+	clientConnCfg.PullWaitTimeout = 100 * time.Millisecond
+
+	serverConnRuntime, err := serverconn.NewRuntime(clientConnCfg)
+	require.NoError(t, err, "failed to create serverconn runtime")
+
+	// Register this client with the server-side bridge for
+	// server→client egress.
+	// Create a server-side delivery store for this client's
+	// per-client runtime. In production, the server uses its
+	// own DB; here we use the harness's shared SQL store.
+	serverDeliveryStore, srvDelErr := serverdb.NewActorDeliveryStoreFromDB(
+		h.sqlStore, clock.NewDefaultClock(),
+		h.SubLogger("SDEL"),
+	)
+	require.NoError(
+		t, srvDelErr,
+		"failed to create server delivery store",
+	)
+
+	serverPerClientCfg := clientconn.DefaultPerClientConfig()
+	serverPerClientCfg.Edge = h.instrumentedMB
+	serverPerClientCfg.LocalMailboxID = serverMBID
+	serverPerClientCfg.RemoteMailboxID = clientMBID
+	serverDispatchers := make(clientconn.DispatcherMap)
+	for key, dispatcher := range h.indexerOperator.Dispatchers() {
+		serverDispatchers[key] = dispatcher
+	}
+	for key, dispatcher := range h.eventRouter.AsDispatcherMap() {
+		serverDispatchers[key] = dispatcher
+	}
+	serverPerClientCfg.Dispatchers = serverDispatchers
+	serverPerClientCfg.Store = serverDeliveryStore
+	serverPerClientCfg.ProtocolVersion = 1
+	serverPerClientCfg.PullWaitTimeout = 100 * time.Millisecond
+
+	_, err = h.clientBridge.RegisterClient(
+		ctx, clientID, serverPerClientCfg,
+	)
+	require.NoError(t, err, "failed to register client with bridge")
 
 	// Create and spawn timeout actor for round phase deadlines.
 	timeoutActor := timeout.NewActor()
@@ -330,7 +462,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		timeoutActorID,
 	)
 	timeoutRef := timeoutKey.Spawn(
-		h.actorSystem, timeoutActorID, timeoutActor,
+		clientSystem, timeoutActorID, timeoutActor,
 	)
 
 	// Build operator terms for client. This mirrors what a real client
@@ -361,13 +493,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		RoundStore:     roundStore,
 		VTXOStore:      roundStore,
 		OperatorTerms:  operatorTerms,
-		ServerConn:     serverConnRef,
+		ServerConn:     serverConnRuntime.TellRef(),
 		ChainSource:    chainSourceRef,
 		WalletActor:    walletRef,
 		ChainParams:    &chaincfg.RegressionNetParams,
 		VTXOManager:    nil, // Set after vtxo.Manager is created.
 		MaxOperatorFee: maxOperatorFee,
-		ActorSystem:    h.actorSystem,
+		ActorSystem:    clientSystem,
 		TimeoutActor:   timeoutRef,
 	}
 
@@ -377,12 +509,12 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	roundActorResult := round.NewRoundClientActor(roundCfg)
 	roundActorInner := roundActorResult.UnwrapOrFail(t)
 
-	roundKey := actormsg.RoundActorServiceKey()
+	roundKey = actormsg.RoundActorServiceKey()
 	roundActorID := fmt.Sprintf(
 		"%s%s", actormsg.RoundActorServiceKeyName, opts.actorSuffix,
 	)
 	roundRef := roundKey.Spawn(
-		h.actorSystem, roundActorID, roundActorInner,
+		clientSystem, roundActorID, roundActorInner,
 	)
 
 	// Set SelfRef after spawning. Since roundRef is
@@ -398,7 +530,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		Store:         vtxoStore,
 		Wallet:        clientWallet,
 		ChainSource:   chainSourceRef,
-		ActorSystem:   h.actorSystem,
+		ActorSystem:   clientSystem,
 		ChainParams:   &chaincfg.RegressionNetParams,
 		ExpiryConfig:  nil, // Use defaults.
 		Log:           fn.Some(h.SubLogger("VTXO")),
@@ -409,11 +541,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	// Spawn the vtxo.Manager as an actor.
 	vtxoManagerActorID := fmt.Sprintf("vtxo-manager%s", opts.actorSuffix)
-	vtxoManagerKey := actor.NewServiceKey[
-		vtxo.ManagerMsg, vtxo.ManagerResp,
-	](vtxoManagerActorID)
+	vtxoManagerKey := actormsg.VTXOManagerServiceKey()
 	vtxoManagerActorRef := vtxoManagerKey.Spawn(
-		h.actorSystem, vtxoManagerActorID, vtxoManagerActor,
+		clientSystem, vtxoManagerActorID, vtxoManagerActor,
 	)
 
 	// Create a TellOnlyRef for the manager (used for termination
@@ -435,39 +565,43 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		VTXOObserverMsg, VTXOObserverResp,
 	](vtxoObserverActorID)
 	vtxoObserverRef := vtxoObserverKey.Spawn(
-		h.actorSystem, vtxoObserverActorID, vtxoObserver,
+		clientSystem, vtxoObserverActorID, vtxoObserver,
 	)
 
-	// Create fan-out ref that forwards to both vtxo.Manager and
-	// VTXOObserver.
-	// This allows the round actor to send VTXOCreatedNotification to both.
+	// Create fan-out ref that forwards VTXOManagerMsg to both the
+	// real vtxo.Manager and VTXOObserver. This allows the round
+	// actor to send VTXOCreatedNotification to both.
 	vtxoManagerMappedRef := actor.NewMapInputRef[
-		actor.Message, vtxo.ManagerMsg,
-	](vtxoManagerActorRef, func(m actor.Message) vtxo.ManagerMsg {
-		msg, ok := m.(vtxo.ManagerMsg)
-		if !ok {
-			panic(fmt.Sprintf(
-				"unexpected vtxo manager fan-out "+
-					"message: %T", m,
-			))
-		}
+		round.VTXOManagerMsg, vtxo.ManagerMsg,
+	](vtxoManagerActorRef,
+		func(m round.VTXOManagerMsg) vtxo.ManagerMsg {
+			msg, ok := m.(vtxo.ManagerMsg)
+			if !ok {
+				panic(fmt.Sprintf(
+					"unexpected vtxo manager "+
+						"fan-out message: %T",
+					m,
+				))
+			}
 
-		return msg
-	},
+			return msg
+		},
 	)
 	vtxoObserverMappedRef := actor.NewMapInputRef[
-		actor.Message, VTXOObserverMsg,
-	](vtxoObserverRef, func(m actor.Message) VTXOObserverMsg {
-		msg, ok := m.(VTXOObserverMsg)
-		if !ok {
-			panic(fmt.Sprintf(
-				"unexpected vtxo observer fan-out "+
-					"message: %T", m,
-			))
-		}
+		round.VTXOManagerMsg, VTXOObserverMsg,
+	](vtxoObserverRef,
+		func(m round.VTXOManagerMsg) VTXOObserverMsg {
+			msg, ok := m.(VTXOObserverMsg)
+			if !ok {
+				panic(fmt.Sprintf(
+					"unexpected vtxo observer "+
+						"fan-out message: %T",
+					m,
+				))
+			}
 
-		return msg
-	},
+			return msg
+		},
 	)
 	vtxoFanout := NewVTXOManagerFanout(
 		vtxoManagerMappedRef, vtxoObserverMappedRef,
@@ -480,36 +614,156 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	err = roundActorInner.Start(ctx)
 	require.NoError(t, err, "failed to start round actor")
 
-	// Register with S→C bridge.
-	h.bridge.RegisterClient(clientID, roundRef)
+	// Create the indexer client for this TestClient. This uses
+	// the production mailbox RPC path through the serverconn
+	// Runtime's UnaryFacade, identical to how darepod wires it.
+	idxSigner := opts.backend.IndexerSigner(*oorReceiveKeyDesc)
 
-	// Subscribe to bridge events for this client.
-	eventSub, err := h.bridge.Subscribe(clientID)
+	indexerClient := clientindexer.New(
+		serverConnRuntime.Unary(), idxSigner,
+		"server", string(clientID),
+	)
+
+	// Wire the client-side OOR actor using the same
+	// LocalPersistenceOutboxHandler + SigningOutboxHandler chain
+	// as production (darepod/server.go:initOORActor).
+	// Create the OOR outbox handler using the shared factory
+	// function. This ensures the systest constructs the exact
+	// same handler chain as production (darepod).
+	oorOutboxHandler := clientoor.NewOutboxHandler(
+		clientoor.OutboxHandlerConfig{
+			Signer:       opts.backend.ClientWallet(),
+			Store:        vtxoStore,
+			PackageStore: oorPackageStore,
+			OperatorKey:  h.operatorKeyDesc.PubKey,
+			ExitDelay:    h.terms.VTXOExitDelay,
+			NotifyIncomingVTXOs: func(ctx context.Context,
+				descs []*vtxo.Descriptor) error {
+
+				return vtxoManagerActorRef.Tell(
+					ctx,
+					&vtxo.VTXOsMaterializedNotification{
+						VTXOs: descs,
+					},
+				)
+			},
+			CompleteSpend: func(ctx context.Context,
+				outpoints []wire.OutPoint) error {
+
+				mgrKey := actormsg.VTXOManagerServiceKey()
+				return mgrKey.Ref(clientSystem).Tell(
+					ctx, &actormsg.CompleteSpendRequest{
+						Outpoints: outpoints,
+					},
+				)
+			},
+			ResolveIncomingClientKey: func(ctx context.Context,
+				recipient clientoor.ArkRecipientOutput) (
+				keychain.KeyDescriptor, error) {
+
+				return darepod.ResolveOwnedReceiveScriptKey(
+					ctx, oorPackageStore, recipient,
+				)
+			},
+			ResolveIncomingMetadata: func(ctx context.Context,
+				sessionID clientoor.SessionID,
+				recipient clientoor.ArkRecipientOutput,
+				ark *psbt.Packet,
+				finalCheckpoints []*psbt.Packet) (
+				clientoor.IncomingVTXOMetadata, error) {
+
+				_ = ark
+				_ = finalCheckpoints
+
+				return darepod.ResolveIncomingMetadataFromIndexer(
+					ctx, indexerClient, sessionID, recipient,
+				)
+			},
+		},
+	)
+
+	oorActorCfg := clientoor.ClientActorCfg{
+		Log:           fn.Some(h.SubLogger("OORC")),
+		OutboxHandler: oorOutboxHandler,
+		ServerConn:    serverConnRuntime.TellRef(),
+		PackageStore:  oorPackageStore,
+		DeliveryStore: clientConnCfg.Store,
+		ActorSystem:   clientSystem,
+		// The OOR client actor is durable, so it must reuse the same
+		// mailbox/checkpoint identity across process restarts. The
+		// client identity is stable when RestartClient clones the
+		// backend and reopens the same database.
+		ActorID:     fmt.Sprintf("oor-client-%s", clientID),
+		VTXOManager: vtxoManagerActorRef,
+		VTXOStore:   vtxoStore,
+		IncomingFetcher: func(ctx context.Context,
+			pkScript []byte, afterEventID uint64,
+			limit uint32) (
+			*arkrpc.ListOORRecipientEventsByScriptResponse,
+			error) {
+
+			return indexerClient.ListOORRecipientEventsByScriptTaproot(
+				ctx, pkScript, afterEventID, limit,
+			)
+		},
+	}
+
+	// NewOORClientActor creates a DurableActor and self-registers
+	// with the actor system via the OOR service key. Get the ref
+	// via service key lookup.
+	oorActor := clientoor.NewOORClientActor(oorActorCfg)
+	oorServiceKey := clientoor.NewServiceKey()
+	oorRef := oorServiceKey.Ref(clientSystem)
+
+	// Start the serverconn.Runtime for this client.
+	err = serverConnRuntime.Start(ctx)
+	require.NoError(t, err, "failed to start serverconn runtime")
+
+	_, oorReceivePkScript, err := darepod.EnsureDefaultOORReceiveScript(
+		ctx, indexerClient, oorPackageStore,
+		func(context.Context) (*keychain.KeyDescriptor, error) {
+			return oorReceiveKeyDesc, nil
+		},
+		h.operatorKeyDesc.PubKey, h.terms.VTXOExitDelay,
+		"systest-default-oor-receive",
+	)
+	require.NoError(
+		t, err,
+		"failed to register default OOR receive script",
+	)
+
+	// Subscribe to instrumented mailbox events for this client.
+	eventSub, err := h.instrumentedMB.Subscribe(clientID)
 	require.NoError(t, err, "failed to subscribe to bridge events")
 
 	client := &TestClient{
-		harness:         h,
-		clientID:        clientID,
-		backend:         opts.backend,
-		serverConn:      serverConn,
-		serverConnRef:   serverConnRef,
-		timeoutRef:      timeoutRef,
-		chainSourceRef:  chainSourceRef,
-		walletActor:     walletActor,
-		walletRef:       walletRef,
-		roundActor:      roundActorInner,
-		roundRef:        roundRef,
-		sqlDB:           sqlDB,
-		dbPath:          opts.dbPath,
-		roundStore:      roundStore,
-		vtxoStore:       vtxoStore,
-		boardingStore:   boardingStore,
-		clientKeyDesc:   clientKeyDesc,
-		vtxoManager:     vtxoManagerActor,
-		vtxoManagerRef:  vtxoManagerActorRef,
-		vtxoObserver:    vtxoObserver,
-		vtxoObserverRef: vtxoObserverRef,
-		eventSub:        eventSub,
+		harness:            h,
+		clientID:           clientID,
+		actorSystem:        clientSystem,
+		backend:            opts.backend,
+		serverConnRuntime:  serverConnRuntime,
+		timeoutRef:         timeoutRef,
+		chainSourceRef:     chainSourceRef,
+		walletActor:        walletActor,
+		walletRef:          walletRef,
+		roundActor:         roundActorInner,
+		roundRef:           roundRef,
+		sqlDB:              sqlDB,
+		dbPath:             opts.dbPath,
+		roundStore:         roundStore,
+		vtxoStore:          vtxoStore,
+		boardingStore:      boardingStore,
+		clientKeyDesc:      clientKeyDesc,
+		oorReceiveKeyDesc:  oorReceiveKeyDesc,
+		oorReceivePkScript: oorReceivePkScript,
+		vtxoManager:        vtxoManagerActor,
+		vtxoManagerRef:     vtxoManagerActorRef,
+		indexerClient:      indexerClient,
+		oorActor:           oorActor,
+		oorRef:             oorRef,
+		vtxoObserver:       vtxoObserver,
+		vtxoObserverRef:    vtxoObserverRef,
+		eventSub:           eventSub,
 	}
 
 	// Register the client with the harness.
@@ -536,6 +790,17 @@ func (c *TestClient) ClientID() clientconn.ClientID {
 // restart testing to clone the backend for the new client instance.
 func (c *TestClient) Backend() ClientBackend {
 	return c.backend
+}
+
+// ClientKeyDesc returns the client's identity key descriptor.
+func (c *TestClient) ClientKeyDesc() *keychain.KeyDescriptor {
+	return c.clientKeyDesc
+}
+
+// OORReceivePkScript returns the VTXO-compatible taproot receive script for
+// this client, matching production pubkey-destination behavior.
+func (c *TestClient) OORReceivePkScript() ([]byte, error) {
+	return c.oorReceivePkScript, nil
 }
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.
@@ -582,14 +847,13 @@ func (c *TestClient) JoinRound(ctx context.Context,
 		req.BoardingRequests = append(req.BoardingRequests, *input)
 	}
 
-	// Send via the bridge using serverconn message types.
+	// Send via the production serverconn.Runtime.
 	sendReq := &serverconn.SendClientEventRequest{
 		Message: req,
 	}
-	result := c.serverConn.Receive(ctx, sendReq)
-
-	if result.IsErr() {
-		return result.Err()
+	err := c.serverConnRuntime.TellRef().Tell(ctx, sendReq)
+	if err != nil {
+		return fmt.Errorf("send join request: %w", err)
 	}
 
 	// Track pending round.
@@ -608,9 +872,9 @@ func (c *TestClient) JoinRound(ctx context.Context,
 // RoundJoined event (which contains the round ID), then waits for VTXO
 // creation for that specific round.
 func (c *TestClient) WaitForRoundComplete(timeout time.Duration) error {
-	// Wait for RoundJoined event from the pre-existing subscription.
-	// The subscription was created when the TestClient was created, so
-	// we won't miss any events.
+	// Wait for a ClientSuccessResp (RoundJoined) envelope from
+	// the InstrumentedMailbox subscription. The subscription
+	// delivers raw *mailboxpb.Envelope values, not client events.
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -618,15 +882,31 @@ func (c *TestClient) WaitForRoundComplete(timeout time.Duration) error {
 	for {
 		select {
 		case update := <-c.eventSub.Updates():
-			event, ok := update.(round.ClientEvent)
+			env, ok := update.(*mailboxpb.Envelope)
 			if !ok {
 				continue
 			}
 
-			if rj, ok := event.(*round.RoundJoined); ok {
-				targetRoundID = rj.RoundID
-				goto gotRoundID
+			name := extractFriendlyTypeName(env)
+			if name != "ClientSuccessResp" {
+				continue
 			}
+
+			// Parse the RoundJoined from the envelope.
+			rj := &round.RoundJoined{}
+			msg, err := anypb.UnmarshalNew(
+				env.Body, proto.UnmarshalOptions{},
+			)
+			if err != nil {
+				continue
+			}
+
+			if err := rj.FromProto(msg); err != nil {
+				continue
+			}
+
+			targetRoundID = rj.RoundID
+			goto gotRoundID
 
 		case <-c.eventSub.Quit():
 			return fmt.Errorf("event subscription closed")
@@ -729,11 +1009,121 @@ func (c *TestClient) WaitForRound(targetRoundID round.RoundID,
 	}
 }
 
+// SendOOR initiates an out-of-round transfer to the given recipient.
+// It reuses the production wallet ops helpers (BuildTransferInputs)
+// for VTXO selection and collab leaf derivation, then sends a
+// StartTransferRequest to the client's OOR actor.
+func (c *TestClient) SendOOR(ctx context.Context, t *testing.T,
+	recipientPkScript []byte,
+	amount btcutil.Amount) error {
+
+	t.Helper()
+
+	selectResult := c.walletRef.Ask(ctx, &wallet.SelectAndLockVTXOsRequest{
+		TargetAmount: amount,
+	}).Await(ctx)
+	selectResp, err := selectResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("select and lock vtxos: %w", err)
+	}
+
+	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
+	if !ok {
+		return fmt.Errorf("unexpected wallet selection response: %T",
+			selectResp)
+	}
+
+	unlockSelected := func() {
+		outpoints := make(
+			[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
+		)
+		for _, selected := range locked.SelectedVTXOs {
+			outpoints = append(outpoints, selected.Outpoint)
+		}
+
+		if len(outpoints) == 0 {
+			return
+		}
+
+		err := c.walletRef.Tell(ctx, &wallet.UnlockVTXOsRequest{
+			Outpoints: outpoints,
+		})
+		require.NoError(t, err, "unlock selected vtxos")
+	}
+
+	selectedOutpoints := make(
+		[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
+	)
+	for _, selected := range locked.SelectedVTXOs {
+		selectedOutpoints = append(
+			selectedOutpoints, selected.Outpoint,
+		)
+	}
+
+	// Build transfer inputs using production wallet ops.
+	inputs, err := darepod.BuildTransferInputs(
+		ctx, c.vtxoStore, selectedOutpoints,
+	)
+	if err != nil {
+		unlockSelected()
+
+		return fmt.Errorf("build transfer inputs: %w", err)
+	}
+
+	// Build the recipient output.
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: recipientPkScript,
+			Value:    amount,
+		},
+	}
+
+	// Build the checkpoint policy from operator terms.
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: c.harness.operatorKeyDesc.PubKey,
+		CSVDelay:    c.harness.terms.VTXOExitDelay,
+	}
+
+	// Send StartTransferRequest to the OOR actor.
+	req := &clientoor.StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	}
+
+	oorKey := clientoor.NewServiceKey()
+	oorRef := oorKey.Ref(c.actorSystem)
+
+	startResult := oorRef.Ask(ctx, req).Await(ctx)
+
+	startResp, err := startResult.Unpack()
+	if err != nil {
+		unlockSelected()
+
+		return fmt.Errorf("start OOR transfer: %w", err)
+	}
+
+	if _, ok := startResp.(*clientoor.StartTransferResponse); !ok {
+		return fmt.Errorf("unexpected OOR start response: %T",
+			startResp)
+	}
+
+	return nil
+}
+
 // ListVTXOs queries the VTXO store for all VTXOs. This uses the real database.
 func (c *TestClient) ListVTXOs(
 	ctx context.Context) ([]*round.ClientVTXO, error) {
 
 	return c.roundStore.ListVTXOs(ctx)
+}
+
+// ListLiveVTXOs returns all VTXOs from the VTXO persistence store
+// that have a "live" status (available for spending).
+func (c *TestClient) ListLiveVTXOs(
+	ctx context.Context) ([]*vtxo.Descriptor, error) {
+
+	return c.vtxoStore.ListLiveVTXOs(ctx)
 }
 
 // AssertConfirmedRoundCountFromDB asserts the expected number of confirmed
@@ -1076,7 +1466,7 @@ func (c *TestClient) Stop() {
 	c.stopped = true
 
 	ctx := c.harness.ctx
-	sys := c.harness.actorSystem
+	sys := c.actorSystem
 
 	// Cancel event subscription to stop receiving server events.
 	if c.eventSub != nil {
@@ -1084,8 +1474,15 @@ func (c *TestClient) Stop() {
 		c.eventSub = nil
 	}
 
-	// Unregister from bridge to stop message routing to this client.
-	c.harness.bridge.UnregisterClient(c.clientID)
+	// Stop the serverconn runtime and deregister from the
+	// server-side bridge.
+	if c.serverConnRuntime != nil {
+		c.serverConnRuntime.Stop()
+	}
+	_ = c.harness.clientBridge.DeregisterClient(c.clientID)
+
+	// Unregister from instrumented mailbox.
+	c.harness.instrumentedMB.UnregisterClient(c.clientID)
 
 	// Stop the backend (e.g., chain polling loop for lwwallet).
 	c.backend.Stop()
@@ -1113,17 +1510,11 @@ func (c *TestClient) Stop() {
 		](c.walletRef.ID())
 		walletKey.Unregister(sys, c.walletRef)
 	}
-	if c.serverConnRef != nil {
-		serverConnKey := actor.NewServiceKey[
-			serverconn.ServerConnMsg, serverconn.ServerConnResp,
-		](c.serverConnRef.ID())
-		serverConnKey.Unregister(sys, c.serverConnRef)
-	}
+	// serverConnRuntime cleanup is handled above via Stop().
 	if c.vtxoManagerRef != nil {
-		vtxoManagerKey := actor.NewServiceKey[
-			vtxo.ManagerMsg, vtxo.ManagerResp,
-		](c.vtxoManagerRef.ID())
-		vtxoManagerKey.Unregister(sys, c.vtxoManagerRef)
+		actormsg.VTXOManagerServiceKey().Unregister(
+			sys, c.vtxoManagerRef,
+		)
 	}
 	if c.vtxoObserverRef != nil {
 		vtxoObserverKey := actor.NewServiceKey[
@@ -1166,9 +1557,7 @@ func (c *TestClient) Stop() {
 	if c.walletRef != nil {
 		sys.StopAndRemoveActor(c.walletRef.ID())
 	}
-	if c.serverConnRef != nil {
-		sys.StopAndRemoveActor(c.serverConnRef.ID())
-	}
+	// serverConnRuntime is stopped via its own Stop() method above.
 	if c.vtxoManagerRef != nil {
 		sys.StopAndRemoveActor(c.vtxoManagerRef.ID())
 	}
