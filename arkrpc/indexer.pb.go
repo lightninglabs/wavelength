@@ -1217,7 +1217,10 @@ type VTXO struct {
 	// chain_depth is the number of OOR checkpoint hops between this VTXO
 	// and the most recent on-chain commitment. Round-created VTXOs have
 	// chain_depth 0.
-	ChainDepth    uint32 `protobuf:"varint,15,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
+	ChainDepth uint32 `protobuf:"varint,15,opt,name=chain_depth,json=chainDepth,proto3" json:"chain_depth,omitempty"`
+	// tree_path_tlv is the TLV-encoded extracted tree.Tree path required for
+	// unilateral exit of this VTXO's underlying commitment lineage.
+	TreePathTlv   []byte `protobuf:"bytes,16,opt,name=tree_path_tlv,json=treePathTlv,proto3" json:"tree_path_tlv,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1355,6 +1358,13 @@ func (x *VTXO) GetChainDepth() uint32 {
 		return x.ChainDepth
 	}
 	return 0
+}
+
+func (x *VTXO) GetTreePathTlv() []byte {
+	if x != nil {
+		return x.TreePathTlv
+	}
+	return nil
 }
 
 type ListVTXOsByScriptsRequest struct {
@@ -2069,7 +2079,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x0ftaproot_schnorr\x18\n" +
 	" \x01(\v2\x1b.arkrpc.TaprootSchnorrProofH\x00R\x0etaprootSchnorr\x12-\n" +
 	"\x06bip322\x18\v \x01(\v2\x13.arkrpc.BIP322ProofH\x00R\x06bip322B\a\n" +
-	"\x05proof\"\xc4\x04\n" +
+	"\x05proof\"\xe8\x04\n" +
 	"\x04VTXO\x12,\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x10.arkrpc.OutPointR\boutpoint\x12\x1b\n" +
 	"\tvalue_sat\x18\x02 \x01(\x04R\bvalueSat\x12\x1b\n" +
@@ -2089,7 +2099,8 @@ const file_indexer_proto_rawDesc = "" +
 	"oorArkPsbt\x12;\n" +
 	"\x1aoor_final_checkpoint_psbts\x18\x0e \x03(\fR\x17oorFinalCheckpointPsbts\x12\x1f\n" +
 	"\vchain_depth\x18\x0f \x01(\rR\n" +
-	"chainDepth\"\xb1\x01\n" +
+	"chainDepth\x12\"\n" +
+	"\rtree_path_tlv\x18\x10 \x01(\fR\vtreePathTlv\"\xb1\x01\n" +
 	"\x19ListVTXOsByScriptsRequest\x12-\n" +
 	"\ascripts\x18\x01 \x03(\v2\x13.arkrpc.ScriptScopeR\ascripts\x127\n" +
 	"\rstatus_filter\x18\x02 \x03(\x0e2\x12.arkrpc.VTXOStatusR\fstatusFilter\x12\x16\n" +

@@ -288,6 +288,10 @@ message VTXO {
     // and the most recent on-chain commitment. Round-created VTXOs have
     // chain_depth 0.
     uint32 chain_depth = 15;
+
+    // tree_path_tlv is the TLV-encoded extracted tree.Tree path required for
+    // unilateral exit of this VTXO's underlying commitment lineage.
+    bytes tree_path_tlv = 16;
 }
 
 message ListVTXOsByScriptsRequest {
