@@ -3,6 +3,7 @@ package round
 import (
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -99,6 +100,48 @@ func TestAwaitingBoardingSigsFromProto(t *testing.T) {
 	var got AwaitingBoardingSigs
 	require.NoError(t, got.FromProto(pb))
 	require.Equal(t, RoundID(roundID), got.RoundID)
+}
+
+// TestJoinRoundRequestFromProtoPreservesVTXOSigningKey verifies the VTXO
+// signing pubkey survives the JoinRoundRequest proto decode path.
+func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
+	t.Parallel()
+
+	signingPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pb := &roundpb.JoinRoundRequest{
+		VtxoRequests: []*roundpb.VTXORequest{
+			{
+				Amount:    1234,
+				PkScript:  []byte{0x51},
+				Expiry:    144,
+				ClientKey: clientPriv.PubKey().SerializeCompressed(),
+				OperatorKey: operatorPriv.PubKey().
+					SerializeCompressed(),
+				SigningKey: signingPriv.PubKey().
+					SerializeCompressed(),
+			},
+		},
+	}
+
+	var got JoinRoundRequest
+	err = got.FromProto(pb)
+	require.NoError(t, err)
+	require.Len(t, got.VTXORequests, 1)
+	require.NotNil(t, got.VTXORequests[0].SigningKey.PubKey)
+	require.True(
+		t,
+		got.VTXORequests[0].SigningKey.PubKey.IsEqual(
+			signingPriv.PubKey(),
+		),
+	)
 }
 
 // TestNoncesAggregatedFromProto verifies that NoncesAggregated.FromProto
