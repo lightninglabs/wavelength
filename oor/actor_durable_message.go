@@ -72,7 +72,11 @@ const (
 	transferInputClientPubKeyRecordType    tlv.Type = 5
 	transferInputOperatorPubKeyRecordType  tlv.Type = 6
 	transferInputExitDelayRecordType       tlv.Type = 7
-	transferInputOwnerLeafScriptRecordType tlv.Type = 8
+	transferInputOwnerLeafScriptRecordType     tlv.Type = 8
+	transferInputPkScriptRecordType            tlv.Type = 9
+	transferInputSpendWitnessScriptRecordType  tlv.Type = 10
+	transferInputSpendControlBlockRecordType   tlv.Type = 11
+	transferInputConditionWitnessRecordType    tlv.Type = 12
 )
 
 const (
@@ -605,6 +609,44 @@ func encodeTransferInputSnapshot(input *TransferInputSnapshot) ([]byte, error) {
 		),
 	}
 
+	// Optional custom spend path fields.
+	pkScript := input.PkScript
+	if len(pkScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
+		))
+	}
+
+	witnessScript := input.SpendWitnessScript
+	if len(witnessScript) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&witnessScript,
+		))
+	}
+
+	controlBlock := input.SpendControlBlock
+	if len(controlBlock) > 0 {
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&controlBlock,
+		))
+	}
+
+	if len(input.ConditionWitness) > 0 {
+		condBlob, condErr := encodeConditionWitness(
+			input.ConditionWitness,
+		)
+		if condErr != nil {
+			return nil, condErr
+		}
+
+		records = append(records, tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType,
+			&condBlob,
+		))
+	}
+
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, err
@@ -628,6 +670,10 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		operatorPubKey  []byte
 		exitDelay       uint32
 		ownerLeafScript []byte
+		pkScript        []byte
+		witnessScript   []byte
+		controlBlock    []byte
+		condBlob        []byte
 	)
 
 	records := []tlv.Record{
@@ -655,6 +701,21 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		tlv.MakePrimitiveRecord(
 			transferInputOwnerLeafScriptRecordType,
 			&ownerLeafScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendWitnessScriptRecordType,
+			&witnessScript,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputSpendControlBlockRecordType,
+			&controlBlock,
+		),
+		tlv.MakePrimitiveRecord(
+			transferInputConditionWitnessRecordType,
+			&condBlob,
 		),
 	}
 
@@ -685,16 +746,72 @@ func decodeTransferInputSnapshot(raw []byte) (*TransferInputSnapshot, error) {
 		return nil, err
 	}
 
-	return &TransferInputSnapshot{
-		Outpoint:        outpoint,
-		AmountSat:       decodedAmountSat,
-		ClientKeyFamily: decodedClientFamily,
-		ClientKeyIndex:  clientIndex,
-		ClientPubKey:    clientPubKey,
-		OperatorPubKey:  operatorPubKey,
-		ExitDelay:       exitDelay,
-		OwnerLeafScript: ownerLeafScript,
-	}, nil
+	snap := &TransferInputSnapshot{
+		Outpoint:           outpoint,
+		AmountSat:          decodedAmountSat,
+		ClientKeyFamily:    decodedClientFamily,
+		ClientKeyIndex:     clientIndex,
+		ClientPubKey:       clientPubKey,
+		OperatorPubKey:     operatorPubKey,
+		ExitDelay:          exitDelay,
+		OwnerLeafScript:    ownerLeafScript,
+		PkScript:           pkScript,
+		SpendWitnessScript: witnessScript,
+		SpendControlBlock:  controlBlock,
+	}
+
+	if len(condBlob) > 0 {
+		items, condErr := decodeConditionWitness(condBlob)
+		if condErr != nil {
+			return nil, condErr
+		}
+
+		snap.ConditionWitness = items
+	}
+
+	return snap, nil
+}
+
+// encodeConditionWitness serializes a list of witness items as
+// count-prefixed length-prefixed byte strings.
+func encodeConditionWitness(items [][]byte) ([]byte, error) {
+	var buf bytes.Buffer
+
+	if err := wire.WriteVarInt(&buf, 0, uint64(len(items))); err != nil {
+		return nil, err
+	}
+
+	for _, item := range items {
+		if err := wire.WriteVarBytes(&buf, 0, item); err != nil {
+			return nil, err
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decodeConditionWitness deserializes a list of witness items.
+func decodeConditionWitness(raw []byte) ([][]byte, error) {
+	r := bytes.NewReader(raw)
+
+	count, err := wire.ReadVarInt(r, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([][]byte, count)
+	for i := uint64(0); i < count; i++ {
+		item, readErr := wire.ReadVarBytes(
+			r, 0, 10000, "condition witness item",
+		)
+		if readErr != nil {
+			return nil, readErr
+		}
+
+		items[i] = item
+	}
+
+	return items, nil
 }
 
 func encodeSessionPayload(sessionID SessionID) ([]byte, error) {

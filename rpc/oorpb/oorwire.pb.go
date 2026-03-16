@@ -85,9 +85,16 @@ type OORSigningDescriptor struct {
 	// owner_key is the compressed 33-byte owner public key.
 	OwnerKey []byte `protobuf:"bytes,2,opt,name=owner_key,json=ownerKey,proto3" json:"owner_key,omitempty"`
 	// exit_delay is the CSV delay for the input script path.
-	ExitDelay     uint32 `protobuf:"varint,3,opt,name=exit_delay,json=exitDelay,proto3" json:"exit_delay,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExitDelay uint32 `protobuf:"varint,3,opt,name=exit_delay,json=exitDelay,proto3" json:"exit_delay,omitempty"`
+	// spend_witness_script is the leaf script for custom VTXO types.
+	// When set, the operator signs this script directly instead of
+	// deriving from owner_key/exit_delay.
+	SpendWitnessScript []byte `protobuf:"bytes,4,opt,name=spend_witness_script,json=spendWitnessScript,proto3" json:"spend_witness_script,omitempty"`
+	// spend_control_block is the BIP-341 control block for the custom
+	// spend leaf.
+	SpendControlBlock []byte `protobuf:"bytes,5,opt,name=spend_control_block,json=spendControlBlock,proto3" json:"spend_control_block,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *OORSigningDescriptor) Reset() {
@@ -139,6 +146,20 @@ func (x *OORSigningDescriptor) GetExitDelay() uint32 {
 		return x.ExitDelay
 	}
 	return 0
+}
+
+func (x *OORSigningDescriptor) GetSpendWitnessScript() []byte {
+	if x != nil {
+		return x.SpendWitnessScript
+	}
+	return nil
+}
+
+func (x *OORSigningDescriptor) GetSpendControlBlock() []byte {
+	if x != nil {
+		return x.SpendControlBlock
+	}
+	return nil
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.
@@ -369,12 +390,14 @@ const file_oorwire_proto_rawDesc = "" +
 	"\roorwire.proto\x12\x05oorpb\"5\n" +
 	"\vOOROutPoint\x12\x12\n" +
 	"\x04txid\x18\x01 \x01(\fR\x04txid\x12\x12\n" +
-	"\x04vout\x18\x02 \x01(\rR\x04vout\"\x82\x01\n" +
+	"\x04vout\x18\x02 \x01(\rR\x04vout\"\xe4\x01\n" +
 	"\x14OORSigningDescriptor\x12.\n" +
 	"\boutpoint\x18\x01 \x01(\v2\x12.oorpb.OOROutPointR\boutpoint\x12\x1b\n" +
 	"\towner_key\x18\x02 \x01(\fR\bownerKey\x12\x1d\n" +
 	"\n" +
-	"exit_delay\x18\x03 \x01(\rR\texitDelay\"\xaa\x01\n" +
+	"exit_delay\x18\x03 \x01(\rR\texitDelay\x120\n" +
+	"\x14spend_witness_script\x18\x04 \x01(\fR\x12spendWitnessScript\x12.\n" +
+	"\x13spend_control_block\x18\x05 \x01(\fR\x11spendControlBlock\"\xaa\x01\n" +
 	"\x14SubmitPackageRequest\x12\x19\n" +
 	"\bark_psbt\x18\x01 \x01(\fR\aarkPsbt\x12)\n" +
 	"\x10checkpoint_psbts\x18\x02 \x03(\fR\x0fcheckpointPsbts\x12L\n" +
