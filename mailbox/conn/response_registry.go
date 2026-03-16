@@ -51,6 +51,22 @@ type ResponseRegistry struct {
 	waiterTTL time.Duration
 }
 
+// DeliveryResult reports how DeliverResponse handled a response envelope.
+type DeliveryResult uint8
+
+const (
+	// DeliveryDropped indicates the response could not be stored or
+	// delivered.
+	DeliveryDropped DeliveryResult = iota
+
+	// DeliveryWaiter indicates the response completed an active waiter.
+	DeliveryWaiter
+
+	// DeliveryBuffered indicates the response was buffered because no waiter
+	// was registered yet.
+	DeliveryBuffered
+)
+
 // NewResponseRegistry constructs a response registry with stale-state cleanup.
 func NewResponseRegistry(waiterTTL time.Duration) *ResponseRegistry {
 	if waiterTTL <= 0 {
@@ -114,6 +130,14 @@ func (r *ResponseRegistry) RemoveWaiter(id CorrelationID) {
 	}
 }
 
+// RemovePending drops any buffered early response for the correlation ID.
+func (r *ResponseRegistry) RemovePending(id CorrelationID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	delete(r.pending, id)
+}
+
 // DeliverResponse delivers a response envelope for correlation ID id.
 //
 // If a waiter exists, the promise is completed with the envelope. If a waiter
@@ -121,10 +145,10 @@ func (r *ResponseRegistry) RemoveWaiter(id CorrelationID) {
 // call still receives it.
 func (r *ResponseRegistry) DeliverResponse(
 	id CorrelationID, env *mailboxpb.Envelope,
-) bool {
+) DeliveryResult {
 
 	if env == nil {
-		return false
+		return DeliveryDropped
 	}
 
 	r.mu.Lock()
@@ -135,16 +159,16 @@ func (r *ResponseRegistry) DeliverResponse(
 	if waiter, ok := r.waiters[id]; ok {
 		waiter.Promise.Complete(fn.Ok(env))
 
-		return true
+		return DeliveryWaiter
 	}
 
 	if _, exists := r.pending[id]; exists {
-		return true
+		return DeliveryBuffered
 	}
 
 	responseCopy, ok := proto.Clone(env).(*mailboxpb.Envelope)
 	if !ok {
-		return false
+		return DeliveryDropped
 	}
 
 	r.pending[id] = &bufferedResponse{
@@ -152,7 +176,7 @@ func (r *ResponseRegistry) DeliverResponse(
 		Created:  time.Now(),
 	}
 
-	return true
+	return DeliveryBuffered
 }
 
 // pruneStaleLocked removes stale waiters and buffered responses. Stale
