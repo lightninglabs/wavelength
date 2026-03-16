@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -50,6 +51,11 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 	writeTxOpts := WriteTxOption()
 
 	return s.db.ExecTx(ctx, writeTxOpts, func(q RoundStore) error {
+		err := s.ensureRoundExists(ctx, q, desc)
+		if err != nil {
+			return fmt.Errorf("ensure round: %w", err)
+		}
+
 		params, err := s.descriptorToInsertParams(desc)
 		if err != nil {
 			return fmt.Errorf("convert descriptor: %w", err)
@@ -57,6 +63,55 @@ func (s *VTXOPersistenceStore) SaveVTXO(
 
 		return q.InsertVTXO(ctx, params)
 	})
+}
+
+// ensureRoundExists inserts a minimal confirmed round row when a VTXO refers
+// to a remote round that this client has not otherwise persisted locally.
+// If the round already exists (e.g. from the normal round flow), the existing
+// row is left untouched to avoid overwriting richer state.
+func (s *VTXOPersistenceStore) ensureRoundExists(ctx context.Context,
+	q RoundStore, desc *vtxo.Descriptor) error {
+
+	if desc == nil {
+		return fmt.Errorf("descriptor must be provided")
+	}
+
+	if desc.RoundID == "" {
+		return fmt.Errorf("round id must be provided")
+	}
+
+	// Check whether the round already exists before inserting, because
+	// InsertRound uses ON CONFLICT DO UPDATE which would overwrite
+	// fields like status on an existing row.
+	_, err := q.GetRound(ctx, desc.RoundID)
+	if err == nil {
+		return nil
+	}
+
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	var confirmationHeight sql.NullInt32
+	if desc.CreatedHeight > 0 {
+		confirmationHeight = sql.NullInt32{
+			Int32: desc.CreatedHeight,
+			Valid: true,
+		}
+	}
+
+	nowUnix := s.clock.Now().Unix()
+	params := InsertRoundParams{
+		RoundID:            desc.RoundID,
+		StartHeight:        0,
+		ConfirmationHeight: confirmationHeight,
+		CommitmentTxid:     desc.CommitmentTxID[:],
+		Status:             "confirmed",
+		CreationTime:       nowUnix,
+		LastUpdateTime:     nowUnix,
+	}
+
+	return q.InsertRound(ctx, params)
 }
 
 // GetVTXO retrieves a VTXO by its outpoint. Used for actor recovery on startup.
