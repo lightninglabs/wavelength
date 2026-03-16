@@ -7,7 +7,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -95,7 +94,7 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			operatorKey, _ := testutils.CreateKey(vec.OperatorKeyIndex)
 
 			// Create the VTXO tapscript.
-			tapscript, err := scripts.VTXOTapScript(
+			tapscript, err := VTXOTapScript(
 				ownerKey, operatorKey, vec.ExitDelay,
 			)
 			require.NoError(t, err)
@@ -137,23 +136,24 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			require.Equal(t, vec.TimeoutScriptHex, timeoutScriptHex,
 				"timeout script mismatch")
 
-			// Verify control blocks match.
-			collabSpendInfo, err := scripts.NewVTXOSpendInfo(
-				tapscript, scripts.VTXOCollabPathLeaf,
+			// Verify control blocks match via policy API.
+			policy, err := NewVTXOPolicy(
+				ownerKey, operatorKey, vec.ExitDelay,
 			)
 			require.NoError(t, err)
+
+			collabInfo, err := policy.CollabSpendInfo()
+			require.NoError(t, err)
 			collabControlHex := hex.EncodeToString(
-				collabSpendInfo.ControlBlock,
+				collabInfo.ControlBlock,
 			)
 			require.Equal(t, vec.CollabControlHex, collabControlHex,
 				"collab control block mismatch")
 
-			timeoutSpendInfo, err := scripts.NewVTXOSpendInfo(
-				tapscript, scripts.VTXOTimeoutPathLeaf,
-			)
+			exitInfo, err := policy.ExitSpendInfo()
 			require.NoError(t, err)
 			timeoutControlHex := hex.EncodeToString(
-				timeoutSpendInfo.ControlBlock,
+				exitInfo.ControlBlock,
 			)
 			require.Equal(t, vec.TimeoutControlHex, timeoutControlHex,
 				"timeout control block mismatch")
@@ -205,7 +205,7 @@ func TestGenerateGoldenVectors(t *testing.T) {
 		ownerKey, _ := testutils.CreateKey(tc.ownerKeyIndex)
 		operatorKey, _ := testutils.CreateKey(tc.operatorKeyIndex)
 
-		tapscript, err := scripts.VTXOTapScript(
+		tapscript, err := VTXOTapScript(
 			ownerKey, operatorKey, tc.exitDelay,
 		)
 		require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestVTXOScriptStructure(t *testing.T) {
 	operatorKey, _ := testutils.CreateKey(2)
 	exitDelay := uint32(100)
 
-	tapscript, err := scripts.VTXOTapScript(ownerKey, operatorKey, exitDelay)
+	tapscript, err := VTXOTapScript(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
 
 	// Verify we have exactly 2 leaves.
@@ -290,7 +290,7 @@ func TestVTXOScriptStructure(t *testing.T) {
 
 	// Verify internal key is the NUMS key.
 	require.Equal(t,
-		hex.EncodeToString(scripts.ARKNUMSKey.SerializeCompressed()),
+		hex.EncodeToString(ARKNUMSKey.SerializeCompressed()),
 		hex.EncodeToString(
 			tapscript.ControlBlock.InternalKey.SerializeCompressed(),
 		),
@@ -320,7 +320,7 @@ func TestNUMSKeyConsistency(t *testing.T) {
 
 	// The NUMS key should match the documented value.
 	expectedHex := "02372f225b3caee8213096de3229ee4335306b07c3c169438461b5d4749884ec65"
-	actualHex := hex.EncodeToString(scripts.ARKNUMSKey.SerializeCompressed())
+	actualHex := hex.EncodeToString(ARKNUMSKey.SerializeCompressed())
 	require.Equal(t, expectedHex, actualHex, "NUMS key mismatch")
 
 	// Verify the key is a valid point on the curve.

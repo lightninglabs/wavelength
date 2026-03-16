@@ -5,7 +5,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
 
 // VTXOPolicy represents a compiled VTXO taproot policy with canonical
@@ -119,7 +118,7 @@ func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
 	}
 
 	// Build the tree using the NUMS key as internal key.
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	if err != nil {
 		return nil, fmt.Errorf("vtxo: failed to build tree: %w", err)
 	}

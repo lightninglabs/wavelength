@@ -7,7 +7,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,21 +75,21 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 	}
 }
 
-// TestNewVTXOPolicyMatchesScriptsPackage verifies that NewVTXOPolicy produces
-// the same output as lib/scripts.VTXOTapScript.
-func TestNewVTXOPolicyMatchesScriptsPackage(t *testing.T) {
+// TestNewVTXOPolicyMatchesVTXOTapScript verifies that NewVTXOPolicy produces
+// the same output as VTXOTapScript.
+func TestNewVTXOPolicyMatchesVTXOTapScript(t *testing.T) {
 	t.Parallel()
 
 	ownerKey, _ := testutils.CreateKey(1)
 	operatorKey, _ := testutils.CreateKey(2)
 	exitDelay := uint32(100)
 
-	// Build using arkscript.
+	// Build using policy API.
 	policy, err := NewVTXOPolicy(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
 
-	// Build using scripts package.
-	tapscript, err := scripts.VTXOTapScript(ownerKey, operatorKey, exitDelay)
+	// Build using tapscript API.
+	tapscript, err := VTXOTapScript(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
 
 	// Verify output keys match.
@@ -106,31 +105,20 @@ func TestNewVTXOPolicyMatchesScriptsPackage(t *testing.T) {
 		"root hashes should match")
 
 	// Verify leaf scripts match.
-	require.Equal(t, tapscript.Leaves[0].Script, policy.Leaves[0].Leaf.Script,
+	require.Equal(t,
+		tapscript.Leaves[0].Script, policy.Leaves[0].Leaf.Script,
 		"collab scripts should match")
-	require.Equal(t, tapscript.Leaves[1].Script, policy.Leaves[1].Leaf.Script,
+	require.Equal(t,
+		tapscript.Leaves[1].Script, policy.Leaves[1].Leaf.Script,
 		"exit scripts should match")
 
-	// Verify control blocks match.
-	scriptsCollabInfo, err := scripts.NewVTXOSpendInfo(
-		tapscript, scripts.VTXOCollabPathLeaf,
-	)
-	require.NoError(t, err)
-	arkscriptCollabInfo, err := policy.CollabSpendInfo()
+	// Verify VTXOTapKey matches policy OutputKey.
+	tapKey, err := VTXOTapKey(ownerKey, operatorKey, exitDelay)
 	require.NoError(t, err)
 	require.Equal(t,
-		scriptsCollabInfo.ControlBlock, arkscriptCollabInfo.ControlBlock,
-		"collab control blocks should match")
-
-	scriptsExitInfo, err := scripts.NewVTXOSpendInfo(
-		tapscript, scripts.VTXOTimeoutPathLeaf,
-	)
-	require.NoError(t, err)
-	arkscriptExitInfo, err := policy.ExitSpendInfo()
-	require.NoError(t, err)
-	require.Equal(t,
-		scriptsExitInfo.ControlBlock, arkscriptExitInfo.ControlBlock,
-		"exit control blocks should match")
+		hex.EncodeToString(tapKey.SerializeCompressed()),
+		hex.EncodeToString(policy.OutputKey().SerializeCompressed()),
+		"VTXOTapKey should match policy OutputKey")
 }
 
 // TestNewVTXOPolicyValidation tests parameter validation.
