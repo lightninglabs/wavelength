@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/input"
@@ -146,6 +147,36 @@ func validateSingleOperatorCheckpointSignature(in *TransferInput,
 	prevFetcher := txscript.NewCannedPrevOutputFetcher(
 		prevOut.PkScript, prevOut.Value,
 	)
+
+	// For custom spend paths, use the SpendInfo directly instead of
+	// deriving the collaborative leaf from the VTXO TapScript.
+	if in.IsCustomSpend() {
+		witnessScript := in.SpendInfo.WitnessScript
+		controlBlock := in.SpendInfo.ControlBlock
+
+		err := requireTapLeafScript(
+			&checkpoint.Inputs[0],
+			witnessScript,
+			controlBlock,
+		)
+		if err != nil {
+			return err
+		}
+
+		sigRec, err := findTaprootScriptSpendSig(
+			&checkpoint.Inputs[0], vtxo.OperatorKey,
+			witnessScript,
+		)
+		if err != nil {
+			return err
+		}
+
+		return verifyTaprootScriptSpendSig(
+			checkpoint.UnsignedTx, 0, prevFetcher,
+			witnessScript, sigRec,
+		)
+	}
+
 	sigHashes := txscript.NewTxSigHashes(
 		checkpoint.UnsignedTx, prevFetcher,
 	)
@@ -340,6 +371,12 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 		return err
 	}
 
+	// For non-standard spend paths (e.g., vHTLC Claim), delegate to
+	// the custom signing flow that uses SpendInfo directly.
+	if in.IsCustomSpend() {
+		return signCustomCheckpointPSBT(signer, in, checkpoint)
+	}
+
 	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
 		len(checkpoint.Inputs) != 1 {
 
@@ -417,4 +454,165 @@ func signCheckpointPSBT(signer input.Signer, in *TransferInput,
 	}
 
 	return nil
+}
+
+// signCustomCheckpointPSBT signs a checkpoint input using a custom spend
+// path provided by the TransferInput's SpendInfo. This is used for
+// non-standard VTXOs such as vHTLC Claim paths where the spend leaf is
+// not the default collaborative VTXO leaf.
+func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
+	checkpoint *psbt.Packet) error {
+
+	if len(checkpoint.UnsignedTx.TxIn) != 1 ||
+		len(checkpoint.Inputs) != 1 {
+
+		return fmt.Errorf("checkpoint psbt must have exactly one "+
+			"input, got tx=%d psbt=%d",
+			len(checkpoint.UnsignedTx.TxIn),
+			len(checkpoint.Inputs))
+	}
+
+	prevOut := &wire.TxOut{
+		Value:    int64(in.VTXO.Amount),
+		PkScript: in.VTXO.PkScript,
+	}
+
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		prevOut.PkScript, prevOut.Value,
+	)
+
+	sigHashes := txscript.NewTxSigHashes(
+		checkpoint.UnsignedTx, prevFetcher,
+	)
+
+	// Build the sign descriptor directly from the custom SpendInfo
+	// rather than deriving it from the VTXO's collaborative leaf.
+	signDesc := in.SpendInfo.BuildSignDescriptor(
+		in.VTXO.ClientKey, prevOut, sigHashes, prevFetcher, 0,
+	)
+
+	sig, err := signer.SignOutputRaw(checkpoint.UnsignedTx, signDesc)
+	if err != nil {
+		return fmt.Errorf("sign output: %w", err)
+	}
+
+	sigBytes := sig.Serialize()
+	if len(sigBytes) == 0 {
+		return fmt.Errorf("signer returned empty signature")
+	}
+
+	// Attach the custom leaf script and client signature to the PSBT.
+	spendData := &scripts.VTXOSpendData{
+		WitnessScript: in.SpendInfo.WitnessScript,
+		ControlBlock:  in.SpendInfo.ControlBlock,
+	}
+
+	err = psbtutil.AddTapLeafScript(&checkpoint.Inputs[0], spendData)
+	if err != nil {
+		return err
+	}
+
+	err = psbtutil.AddTaprootScriptSpendSig(
+		&checkpoint.Inputs[0], in.VTXO.ClientKey.PubKey,
+		in.SpendInfo.WitnessScript, sigBytes, signDesc.HashType,
+	)
+	if err != nil {
+		return err
+	}
+
+	// If condition witness items are provided (e.g., hashlock
+	// preimage), assemble and set the final script witness. This
+	// combines the operator sig, client sig, condition items,
+	// witness script, and control block into BIP-174
+	// FinalScriptWitness format.
+	if len(in.ConditionWitness) > 0 {
+		err = assembleCustomFinalWitness(
+			in, &checkpoint.Inputs[0],
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// assembleCustomFinalWitness builds the FinalScriptWitness for a custom
+// spend path that requires condition witness elements beyond signatures.
+//
+// The witness stack is: [op_sig, client_sig, ...conditionItems,
+// witnessScript, controlBlock].
+func assembleCustomFinalWitness(in *TransferInput,
+	pIn *psbt.PInput) error {
+
+	clientKeyBytes := schnorr.SerializePubKey(
+		in.VTXO.ClientKey.PubKey,
+	)
+	leafHash := txscript.NewBaseTapLeaf(
+		in.SpendInfo.WitnessScript,
+	).TapHash()
+	leafHashBytes := leafHash[:]
+
+	// Find the operator sig: any TaprootScriptSpendSig that is NOT
+	// the client key on the same leaf.
+	var opSigBytes []byte
+	var clientSigBytes []byte
+
+	for _, sigRec := range pIn.TaprootScriptSpendSig {
+		if sigRec == nil {
+			continue
+		}
+
+		if !bytes.Equal(sigRec.LeafHash, leafHashBytes) {
+			continue
+		}
+
+		if bytes.Equal(sigRec.XOnlyPubKey, clientKeyBytes) {
+			clientSigBytes = sigRec.Signature
+		} else {
+			opSigBytes = sigRec.Signature
+		}
+	}
+
+	if len(opSigBytes) == 0 {
+		return fmt.Errorf("operator signature not found in " +
+			"psbt input")
+	}
+
+	if len(clientSigBytes) == 0 {
+		return fmt.Errorf("client signature not found in " +
+			"psbt input")
+	}
+
+	// Build the witness stack: op_sig, client_sig,
+	// ...conditionItems, witnessScript, controlBlock.
+	witnessItems := make([][]byte, 0,
+		2+len(in.ConditionWitness)+2,
+	)
+	witnessItems = append(witnessItems, opSigBytes)
+	witnessItems = append(witnessItems, clientSigBytes)
+	witnessItems = append(witnessItems, in.ConditionWitness...)
+	witnessItems = append(witnessItems, in.SpendInfo.WitnessScript)
+	witnessItems = append(witnessItems, in.SpendInfo.ControlBlock)
+
+	// Serialize as BIP-174 FinalScriptWitness: count-prefixed
+	// vector of length-prefixed items.
+	pIn.FinalScriptWitness = serializeWitness(witnessItems)
+
+	return nil
+}
+
+// serializeWitness encodes a witness stack into BIP-174
+// FinalScriptWitness format (CompactSize item count followed by
+// CompactSize-prefixed items).
+func serializeWitness(items [][]byte) []byte {
+	var buf bytes.Buffer
+
+	_ = wire.WriteVarInt(&buf, 0, uint64(len(items)))
+	for _, item := range items {
+		_ = wire.WriteVarInt(&buf, 0, uint64(len(item)))
+		buf.Write(item)
+	}
+
+	return buf.Bytes()
 }

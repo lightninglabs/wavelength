@@ -114,11 +114,16 @@ func (m *SendSubmitPackageRequest) ServiceMethod() mailboxrpc.ServiceMethod {
 func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 	descs := make([]oorpb.SigningDescriptor, 0, len(m.TransferInputs))
 	for _, ti := range m.TransferInputs {
-		descs = append(descs, oorpb.SigningDescriptor{
+		desc := oorpb.SigningDescriptor{
 			Outpoint:  ti.VTXO.Outpoint,
 			OwnerKey:  ti.VTXO.ClientKey.PubKey,
 			ExitDelay: ti.VTXO.RelativeExpiry,
-		})
+		}
+		if ti.SpendInfo != nil {
+			desc.SpendWitnessScript = ti.SpendInfo.WitnessScript
+			desc.SpendControlBlock = ti.SpendInfo.ControlBlock
+		}
+		descs = append(descs, desc)
 	}
 
 	req, err := oorpb.NewSubmitPackageRequest(

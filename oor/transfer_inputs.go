@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 )
@@ -24,6 +25,17 @@ type TransferInput struct {
 	// This is currently a draft implementation, and may change as the
 	// checkpoint policy is refined.
 	OwnerLeafScript []byte
+
+	// SpendInfo overrides the default collaborative leaf derivation
+	// for non-standard VTXOs (e.g., vHTLC Claim path). When set,
+	// checkpoint signing uses this spend path directly instead of
+	// deriving from VTXO.TapScript.
+	SpendInfo *arkscript.SpendInfo
+
+	// ConditionWitness provides extra witness elements needed by the
+	// spend script beyond signatures (e.g., preimage for vHTLC Claim
+	// hashlock).
+	ConditionWitness [][]byte
 }
 
 // InputOutpoints returns the VTXO outpoints for the transfer inputs.
@@ -51,10 +63,12 @@ func (i *TransferInput) Validate() error {
 	case len(i.VTXO.PkScript) == 0:
 		return fmt.Errorf("vtxo pkScript must be provided")
 
-	case i.VTXO.TapScript == nil:
+	// Custom spend paths may not have a TapScript or ClientKey, so
+	// skip these checks when SpendInfo is provided.
+	case i.SpendInfo == nil && i.VTXO.TapScript == nil:
 		return fmt.Errorf("vtxo tapscript must be provided")
 
-	case i.VTXO.ClientKey.PubKey == nil:
+	case i.SpendInfo == nil && i.VTXO.ClientKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
 
 	case len(i.OwnerLeafScript) == 0:
@@ -62,6 +76,13 @@ func (i *TransferInput) Validate() error {
 	}
 
 	return nil
+}
+
+// IsCustomSpend returns true when this input uses a non-standard spend
+// path (e.g., vHTLC Claim) rather than the default collaborative VTXO
+// leaf.
+func (i *TransferInput) IsCustomSpend() bool {
+	return i.SpendInfo != nil
 }
 
 // CheckpointInput converts the OOR transfer input into the common tx builder
