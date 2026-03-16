@@ -14,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -141,6 +142,16 @@ func (b *lwBackend) DeriveClientKey(_ context.Context) (
 	*keychain.KeyDescriptor, error) {
 
 	return b.identityKey, nil
+}
+
+// IndexerSigner returns the signer that proves control over the provided
+// receive key.
+func (b *lwBackend) IndexerSigner(
+	keyDesc keychain.KeyDescriptor) clientindexer.SchnorrSigner {
+
+	return clientindexer.NewKeyRingSchnorrSigner(
+		b.wallet.KeyRing(), keyDesc,
+	)
 }
 
 // GetOnChainBalance returns the confirmed on-chain balance across all

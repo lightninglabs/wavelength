@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
+	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	clientlnd "github.com/lightninglabs/darepo-client/lndbackend"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/wallet"
@@ -18,6 +19,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/stretchr/testify/require"
 )
 
 // lndBackend implements ClientBackend using an LND node for all wallet
@@ -42,6 +44,9 @@ type lndBackend struct {
 
 	// clientWallet is the LND-backed signing wallet.
 	clientWallet round.ClientWallet
+
+	// identityKey is the stable client identity key for this backend.
+	identityKey *keychain.KeyDescriptor
 }
 
 // NewLNDBackend creates a new LND-backed client backend. This starts a
@@ -84,6 +89,14 @@ func newLNDBackendFromInstance(h *E2EHarness,
 		fn.Some(h.SubLogger("LNDB")),
 	)
 
+	identityKey, err := lndServices.WalletKit.DeriveKey(
+		h.ctx, &keychain.KeyLocator{
+			Family: keychain.KeyFamilyNodeKey,
+			Index:  0,
+		},
+	)
+	require.NoError(h.t, err, "failed to derive identity key")
+
 	return &lndBackend{
 		harness:      h,
 		lndInstance:  lndInstance,
@@ -91,6 +104,7 @@ func newLNDBackendFromInstance(h *E2EHarness,
 		chain:        chain,
 		boarding:     boarding,
 		clientWallet: clientWallet,
+		identityKey:  identityKey,
 	}
 }
 
@@ -115,11 +129,18 @@ func (b *lndBackend) ClientWallet() round.ClientWallet {
 func (b *lndBackend) DeriveClientKey(ctx context.Context) (
 	*keychain.KeyDescriptor, error) {
 
-	return b.lndServices.WalletKit.DeriveKey(
-		ctx, &keychain.KeyLocator{
-			Family: keychain.KeyFamilyNodeKey,
-			Index:  0,
-		},
+	_ = ctx
+
+	return b.identityKey, nil
+}
+
+// IndexerSigner returns the signer that proves control over the provided
+// receive key.
+func (b *lndBackend) IndexerSigner(
+	keyDesc keychain.KeyDescriptor) clientindexer.SchnorrSigner {
+
+	return clientindexer.NewLNDSchnorrSigner(
+		b.lndServices.Signer, keyDesc,
 	)
 }
 

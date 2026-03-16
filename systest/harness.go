@@ -19,21 +19,26 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/google/uuid"
+	darepo "github.com/lightninglabs/darepo"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	clientharness "github.com/lightninglabs/darepo-client/harness"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	clientoor "github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/timeout"
-	darepo "github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/harness"
+	serverindexer "github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/mailbox"
+	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
@@ -165,6 +170,10 @@ type E2EHarness struct {
 	// bridge. Replaces the hand-rolled BridgeClientConn.
 	clientBridge *clientconn.ClientsConnBridge
 
+	// indexerOperator provides IndexerService mailbox dispatchers for
+	// per-client runtimes in the systest harness.
+	indexerOperator *serverindexer.Operator
+
 	// instrumentedMB wraps the production mailbox with transcript
 	// recording, buffering, and event subscription.
 	instrumentedMB *InstrumentedMailbox
@@ -172,6 +181,12 @@ type E2EHarness struct {
 	// eventRouter holds the server-side dispatch routes for
 	// client→server requests (round RPCs, OOR RPCs).
 	eventRouter *clientconn.EventRouter
+
+	// oorActor is the server-side OOR transfer coordinator actor.
+	oorActor *oor.TransferCoordinatorActor
+
+	// oorRef is the actor reference for the OOR actor.
+	oorRef actor.ActorRef[oor.OORDurableMsg, oor.ActorResp]
 
 	// transcript records all client-server messages.
 	transcript *MessageTranscript
@@ -412,9 +427,10 @@ func (h *E2EHarness) initActorSystem() {
 		localEdge, h.transcript,
 	)
 
-	// Create the server-side event router and register round +
-	// OOR dispatch routes. These are the same routes used in
-	// production (server_rounds.go, server_oor.go).
+	// Create the server-side event router. Round routes are
+	// registered after the rounds actor is spawned. OOR routes
+	// will be registered when the OOR actor is added to the
+	// harness.
 	h.eventRouter = clientconn.NewEventRouter(h.actorSystem)
 
 	// Create the production 1:N client bridge. Unlike the old
@@ -458,6 +474,28 @@ func (h *E2EHarness) initActorSystem() {
 		sqliteStore.DB, sqliteStore.Queries, sqliteStore.Backend(),
 		h.log, clock.NewDefaultClock(),
 	)
+
+	// Create the indexer service + operator so per-client runtimes can
+	// serve IndexerService mailbox RPCs just like the production server.
+	indexerStore := serverindexer.NewSQLCStore(h.sqlStore.Queries)
+	indexerSvc := serverindexer.NewService("server", indexerStore)
+	indexerSvc.SetScriptAuthorizer(
+		serverindexer.NewRegistrationScriptAuthorizer(indexerStore),
+	)
+	indexerSvc.SetVTXOProofPolicy(
+		h.operatorKeyDesc.PubKey, h.terms.VTXOExitDelay,
+	)
+
+	h.indexerOperator, err = serverindexer.NewOperator(
+		serverindexer.OperatorConfig{
+			Log:             fn.Some(h.SubLogger("INDX")),
+			Edge:            h.instrumentedMB,
+			SenderMailboxID: "svc:indexer",
+			Bridge:          h.clientBridge,
+		},
+		indexerSvc,
+	)
+	require.NoError(h.t, err, "failed to create indexer operator")
 
 	// Create real database-backed stores.
 	h.roundStore = h.sqlStore.NewRoundStore()
@@ -608,6 +646,10 @@ func (h *E2EHarness) initActorSystem() {
 	// registered after the actor keys are created so the
 	// dispatchers can resolve actors via the receptionist.
 	darepo.RegisterRoundRoutes(h.eventRouter, roundsKey)
+
+	// Set up the OOR transfer coordinator actor, mirroring the
+	// production setupOORSubsystem pattern in server_oor.go.
+	h.initOORSubsystem()
 }
 
 // initBatchSweeper creates and wires a real BatchSweeperActor so systests can
@@ -644,6 +686,120 @@ func (h *E2EHarness) initBatchSweeper() {
 
 	mappedRef := batchsweeper.MapBatchWatcherNotification(sweeperRef)
 	h.batchSweeperRouter.SetTargets(h.mockBatchSweeper, mappedRef)
+}
+
+// initOORSubsystem sets up the OOR transfer coordinator actor with
+// real DB-backed stores, mirroring the production setupOORSubsystem
+// pattern in server_oor.go.
+func (h *E2EHarness) initOORSubsystem() {
+	clk := clock.NewDefaultClock()
+	oorLog := h.SubLogger(oor.Subsystem)
+
+	// Create DB-backed stores using the shared sqlStore.
+	sessionStore := oor.NewDBSessionStore(
+		h.sqlStore, clk, oorLog,
+	)
+
+	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
+		h.sqlStore, clk, oorLog,
+	)
+	require.NoError(
+		h.t, err, "failed to create OOR delivery store",
+	)
+
+	vtxoRecordStore := h.sqlStore.NewVTXORecordStore()
+
+	recipientEvents := oor.NewDBRecipientEventStore(
+		h.sqlStore, clk, oorLog,
+	)
+
+	// Build the outbox driver with all DB-backed stores.
+	driver := oor.NewDriver(oor.DriverCfg{
+		Locker: db.NewVTXOLockerDB(
+			h.sqlStore, h.SubLogger("OORL"),
+		),
+		Store:             vtxoRecordStore,
+		SessionStore:      sessionStore,
+		RecipientEvents:   recipientEvents,
+		RecipientNotifier: h.newOORRecipientNotifier(),
+		OperatorSigner:    h.walletController,
+		OperatorKey:       *h.operatorKeyDesc,
+		Logger:            oorLog,
+	})
+
+	// Build the OOR actor config.
+	oorCfg := oor.ActorCfg{
+		Log: fn.Some(oorLog),
+		CheckpointPolicy: scripts.CheckpointPolicy{
+			OperatorKey: h.operatorKeyDesc.PubKey,
+			CSVDelay:    h.terms.VTXOExitDelay,
+		},
+		OutboxHandler: driver,
+		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
+		ClientsConn:   h.clientBridge,
+	}
+
+	// Spawn the OOR actor via service key.
+	h.oorActor = oor.NewActor(oorCfg)
+	oorKey := oor.NewServiceKey()
+	h.oorRef = oorKey.Spawn(
+		h.actorSystem, oor.OORActorServiceKeyName,
+		h.oorActor,
+	)
+
+	err = h.oorActor.Start(h.ctx)
+	require.NoError(h.t, err, "failed to start OOR actor")
+
+	// Register OOR dispatch routes on the shared event router.
+	darepo.RegisterOORRoutes(h.eventRouter, oorKey)
+}
+
+// harnessIndexerRecipientNotifier bridges finalized OOR recipients into the
+// harness indexer operator so systests exercise the same notification path as
+// the production server.
+type harnessIndexerRecipientNotifier struct {
+	operator *serverindexer.Operator
+	log      btclog.Logger
+}
+
+// NotifyRecipientEvent best-effort publishes an incoming OOR mailbox event.
+func (n *harnessIndexerRecipientNotifier) NotifyRecipientEvent(
+	ctx context.Context, sessionID oor.SessionID,
+	recipient clientoor.ArkRecipientOutput) {
+
+	if n == nil || n.operator == nil {
+		return
+	}
+
+	sessionIDBytes := append([]byte(nil), sessionID[:]...)
+	req := &arkrpc.OORRecipientEvent{
+		RecipientPkScript: append(
+			[]byte(nil), recipient.PkScript...,
+		),
+		SessionId:   sessionIDBytes,
+		OutputIndex: recipient.OutputIndex,
+		Value:       uint64(recipient.Value),
+	}
+
+	err := n.operator.PublishOORRecipientEvent(ctx, req)
+	if err != nil {
+		n.log.Warnf("Failed to publish incoming OOR indexer event: %v",
+			err)
+	}
+}
+
+// newOORRecipientNotifier builds the optional OOR->indexer notifier bridge for
+// the systest harness.
+func (h *E2EHarness) newOORRecipientNotifier() oor.RecipientNotifier {
+	if h.indexerOperator == nil {
+		return nil
+	}
+
+	return &harnessIndexerRecipientNotifier{
+		operator: h.indexerOperator,
+		log:      h.log,
+	}
 }
 
 // getOperatorKeyFromLND derives the operator key from the server's LND using
@@ -882,7 +1038,8 @@ func (h *E2EHarness) TriggerTimeout(phase rounds.TimeoutPhase) {
 		}
 	}
 
-	h.t.Logf("Warning: no pending timeout found for phase %s", phase)
+	h.log.Infof("WARNING: no pending timeout found for phase %s "+
+		"(pending: %v)", phase, pendingIDs)
 }
 
 // TriggerAllTimeouts fires all pending timeouts.
@@ -962,14 +1119,16 @@ func (h *E2EHarness) WaitForServerBlockHeight(targetHeight uint32) {
 	)
 }
 
-// RegisterClient registers a client with the bridge for message routing.
+// RegisterClient adds a client to the harness's internal client map
+// for lifecycle management and test lookups. Bridge registration and
+// mailbox wiring are handled during client creation in
+// newTestClientInternal via clientBridge.RegisterClient and
+// instrumentedMB.RegisterMailboxPair.
 func (h *E2EHarness) RegisterClient(client *TestClient) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.clients[client.clientID] = client
-
-	// TODO: Register with bridge once client actor is created.
 }
 
 // StartClientLND starts a new dedicated LND instance for a client. Each client

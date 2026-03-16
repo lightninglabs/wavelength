@@ -103,10 +103,18 @@ func (m *InstrumentedMailbox) RegisterMailboxPair(
 	m.serverMailboxes[serverMBID] = clientID
 	m.clientMailboxes[clientMBID] = clientID
 
-	// Create a subscribe.Server for this client if one doesn't
-	// exist already.
+	// Create and start a subscribe.Server for this client if one
+	// doesn't exist already.
 	if _, ok := m.eventServers[clientID]; !ok {
-		m.eventServers[clientID] = subscribe.NewServer()
+		server := subscribe.NewServer()
+		if err := server.Start(); err != nil {
+			panic(fmt.Sprintf(
+				"start event server for %s: %v",
+				clientID, err,
+			))
+		}
+
+		m.eventServers[clientID] = server
 	}
 }
 
@@ -373,8 +381,12 @@ func (m *InstrumentedMailbox) Send(ctx context.Context,
 	dir, clientID := m.detectDirection(env)
 	typeName := extractFriendlyTypeName(env)
 
-	// Always record to transcript, even when buffering.
-	m.transcript.RecordTypeName(dir, clientID, typeName)
+	// Skip startup receive-script registration chatter so transcript-based
+	// round/OOR assertions observe protocol traffic rather than client
+	// bootstrap noise.
+	if shouldRecordTranscriptEnvelope(typeName) {
+		m.transcript.RecordEnvelope(dir, clientID, typeName, env)
+	}
 
 	// Check buffering and hold envelope if needed.
 	m.mu.Lock()
@@ -496,6 +508,20 @@ func (m *InstrumentedMailbox) notifySubscribers(
 // Transcript returns the underlying message transcript.
 func (m *InstrumentedMailbox) Transcript() *MessageTranscript {
 	return m.transcript
+}
+
+// shouldRecordTranscriptEnvelope reports whether a mailbox envelope should be
+// included in the systest transcript.
+func shouldRecordTranscriptEnvelope(typeName string) bool {
+	switch typeName {
+	case "RegisterReceiveScriptRequest",
+		"RegisterReceiveScriptResponse":
+
+		return false
+
+	default:
+		return true
+	}
 }
 
 // extractFriendlyTypeName extracts a short type name from the
