@@ -22,9 +22,17 @@ type bytesServerMessage struct {
 	payload []byte
 }
 
-// ServiceMethod returns a zero-value routing key for tests.
+const (
+	testEventService = "test.v1.EventService"
+	testEventMethod  = "PushEvent"
+)
+
+// ServiceMethod returns deterministic routing metadata for tests.
 func (m *bytesServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
-	return mailboxrpc.ServiceMethod{}
+	return mailboxrpc.ServiceMethod{
+		Service: testEventService,
+		Method:  testEventMethod,
+	}
 }
 
 // ToProto converts the payload to a protobuf wrapper.
@@ -70,6 +78,10 @@ func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
 	require.Equal(
 		t, decodedA.IdempotencyKey, decodedB.IdempotencyKey,
 	)
+	require.Equal(t, testEventService, decodedA.Service)
+	require.Equal(t, testEventMethod, decodedA.Method)
+	require.Equal(t, testEventService, decodedB.Service)
+	require.Equal(t, testEventMethod, decodedB.Method)
 
 	protoMsg := decodedA.Message.ToProto().UnwrapOrFail(t)
 	msg, ok := protoMsg.(*wrapperspb.BytesValue)
