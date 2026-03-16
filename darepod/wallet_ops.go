@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -144,3 +145,50 @@ func BuildTransferInputs(ctx context.Context,
 
 	return inputs, nil
 }
+
+// BuildCustomTransferInputs constructs OOR transfer inputs from
+// explicit custom input specifications. This bypasses wallet VTXO
+// selection for non-standard spend paths (e.g., vHTLC claims).
+func BuildCustomTransferInputs(ctx context.Context,
+	store vtxo.VTXOStore,
+	customInputs []*daemonrpc.CustomOORInput) (
+	[]oor.TransferInput, error) {
+
+	inputs := make([]oor.TransferInput, 0, len(customInputs))
+
+	for _, ci := range customInputs {
+		outpoint, err := parseOutpointString(ci.Outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("parse outpoint %q: %w",
+				ci.Outpoint, err)
+		}
+
+		desc, err := store.GetVTXO(ctx, outpoint)
+		if err != nil {
+			return nil, fmt.Errorf("look up VTXO %s: %w",
+				outpoint, err)
+		}
+
+		input := oor.TransferInput{
+			VTXO: desc,
+			// OwnerLeafScript auto-derived by Validate()
+			// from VTXO.ClientKey + VTXO.OperatorKey.
+		}
+
+		// Attach custom spend path if provided.
+		if len(ci.SpendWitnessScript) > 0 {
+			input.CustomSpend = &arkscript.SpendPath{
+				SpendInfo: &arkscript.SpendInfo{
+					WitnessScript: ci.SpendWitnessScript,
+					ControlBlock:  ci.SpendControlBlock,
+				},
+				Conditions: ci.ConditionWitness,
+			}
+		}
+
+		inputs = append(inputs, input)
+	}
+
+	return inputs, nil
+}
+

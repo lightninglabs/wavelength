@@ -358,6 +358,31 @@ message SendOORRequest {
 
     // dry_run validates the request without initiating the transfer.
     bool dry_run = 2;
+
+    // custom_inputs overrides wallet VTXO selection. When set, the
+    // daemon uses these pre-specified inputs instead of selecting from
+    // the wallet. This enables non-standard spend paths like vHTLC
+    // claims.
+    repeated CustomOORInput custom_inputs = 3;
+}
+
+// CustomOORInput specifies a VTXO to spend with an optional custom
+// spend path (e.g., vHTLC Claim with preimage).
+message CustomOORInput {
+    // outpoint identifies the VTXO to spend in "txid:vout" format.
+    string outpoint = 1;
+
+    // spend_witness_script is the leaf script for custom spends.
+    // When empty, the standard collaborative leaf is used.
+    bytes spend_witness_script = 2;
+
+    // spend_control_block is the BIP-341 control block for the
+    // custom leaf.
+    bytes spend_control_block = 3;
+
+    // condition_witness holds extra witness elements needed by the
+    // spend script (e.g., preimage for hashlock).
+    repeated bytes condition_witness = 4;
 }
 
 message SendOORResponse {
