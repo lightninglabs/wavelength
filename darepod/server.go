@@ -454,7 +454,7 @@ func (s *Server) run(ctx context.Context,
 		&rpcMailboxAdapter{RPCServer: s.rpcServer},
 	)
 
-	lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
+lis, err := net.Listen("tcp", s.cfg.RPC.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("unable to listen on %s: %w",
 			s.cfg.RPC.ListenAddr, err)
