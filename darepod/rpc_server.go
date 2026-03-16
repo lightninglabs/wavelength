@@ -751,6 +751,8 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		// and build TransferInputs from the specified VTXOs.
 		selectedInputs, err = BuildCustomTransferInputs(
 			ctx, r.server.vtxoStore, req.CustomInputs,
+			r.server.clientKeyDesc, terms.PubKey,
+			terms.VTXOExitDelay,
 		)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal,
@@ -836,14 +838,16 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
 		// Unlock VTXOs on OOR failure so they can be
-		// reused.
-		if unlockErr := r.unlockVTXOs(
-			ctx, locked.SelectedVTXOs,
-		); unlockErr != nil {
-			log.ErrorS(
-				ctx, "Unable to unlock VTXOs",
-				unlockErr,
-			)
+		// reused (only for wallet-selected inputs).
+		if locked != nil {
+			if unlockErr := r.unlockVTXOs(
+				ctx, locked.SelectedVTXOs,
+			); unlockErr != nil {
+				log.ErrorS(ctx,
+					"Unable to unlock VTXOs",
+					unlockErr,
+				)
+			}
 		}
 
 		return nil, status.Errorf(codes.Internal,

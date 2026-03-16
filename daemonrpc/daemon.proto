@@ -383,6 +383,12 @@ message CustomOORInput {
     // condition_witness holds extra witness elements needed by the
     // spend script (e.g., preimage for hashlock).
     repeated bytes condition_witness = 4;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 5;
+
+    // pk_script is the VTXO taproot output script.
+    bytes pk_script = 6;
 }
 
 message SendOORResponse {

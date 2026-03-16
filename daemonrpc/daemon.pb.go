@@ -1563,8 +1563,12 @@ type CustomOORInput struct {
 	// condition_witness holds extra witness elements needed by the
 	// spend script (e.g., preimage for hashlock).
 	ConditionWitness [][]byte `protobuf:"bytes,4,rep,name=condition_witness,json=conditionWitness,proto3" json:"condition_witness,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// amount_sat is the VTXO value in satoshis.
+	AmountSat int64 `protobuf:"varint,5,opt,name=amount_sat,json=amountSat,proto3" json:"amount_sat,omitempty"`
+	// pk_script is the VTXO taproot output script.
+	PkScript      []byte `protobuf:"bytes,6,opt,name=pk_script,json=pkScript,proto3" json:"pk_script,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CustomOORInput) Reset() {
@@ -1621,6 +1625,20 @@ func (x *CustomOORInput) GetSpendControlBlock() []byte {
 func (x *CustomOORInput) GetConditionWitness() [][]byte {
 	if x != nil {
 		return x.ConditionWitness
+	}
+	return nil
+}
+
+func (x *CustomOORInput) GetAmountSat() int64 {
+	if x != nil {
+		return x.AmountSat
+	}
+	return 0
+}
+
+func (x *CustomOORInput) GetPkScript() []byte {
+	if x != nil {
+		return x.PkScript
 	}
 	return nil
 }
@@ -2389,12 +2407,15 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0eSendOORRequest\x12/\n" +
 	"\trecipient\x18\x01 \x01(\v2\x11.daemonrpc.OutputR\trecipient\x12\x17\n" +
 	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12>\n" +
-	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xbb\x01\n" +
+	"\rcustom_inputs\x18\x03 \x03(\v2\x19.daemonrpc.CustomOORInputR\fcustomInputs\"\xf7\x01\n" +
 	"\x0eCustomOORInput\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x120\n" +
 	"\x14spend_witness_script\x18\x02 \x01(\fR\x12spendWitnessScript\x12.\n" +
 	"\x13spend_control_block\x18\x03 \x01(\fR\x11spendControlBlock\x12+\n" +
-	"\x11condition_witness\x18\x04 \x03(\fR\x10conditionWitness\"H\n" +
+	"\x11condition_witness\x18\x04 \x03(\fR\x10conditionWitness\x12\x1d\n" +
+	"\n" +
+	"amount_sat\x18\x05 \x01(\x03R\tamountSat\x12\x1b\n" +
+	"\tpk_script\x18\x06 \x01(\fR\bpkScript\"H\n" +
 	"\x0fSendOORResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1d\n" +
 	"\n" +
