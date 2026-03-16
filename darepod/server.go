@@ -1166,6 +1166,69 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 		},
 	})
 
+	// ListVTXOsByScripts response: server returned authoritative incoming
+	// metadata for a durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListVTXOsByScripts",
+		NewEvent: func() proto.Message {
+			return &arkrpc.ListVTXOsByScriptsResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
+
+			if env == nil || env.Rpc == nil {
+				return nil, fmt.Errorf("incoming metadata "+
+					"response envelope must be provided")
+			}
+
+			sessionID, err := oor.ParseIncomingMetadataCorrelationID(
+				env.Rpc.CorrelationId,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			if rpcErr := mailboxrpc.DecodeErrorHeaders(
+				env.Headers,
+			); rpcErr != nil {
+
+				return &oor.DriveEventRequest{
+					SessionID: sessionID,
+					Event: &oor.FailEvent{
+						Reason: fmt.Sprintf(
+							"query incoming metadata: %v",
+							rpcErr,
+						),
+					},
+				}, nil
+			}
+
+			resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
+			if !ok {
+				return nil, fmt.Errorf("expected "+
+					"ListVTXOsByScriptsResponse, got %T", p)
+			}
+
+			matches, err := oor.IncomingMetadataMatchesFromResponse(
+				sessionID, resp,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: sessionID,
+				Event: &oor.IncomingMetadataResolvedEvent{
+					Matches: matches,
+				},
+			}, nil
+		},
+	})
+
 	// IncomingOOR: server notifies the client about an incoming
 	// OOR transfer via the indexer's ArkService. Persist only the
 	// lightweight notification hint here; the durable OOR actor
@@ -1942,6 +2005,44 @@ func (s *Server) initOORActor(ctx context.Context,
 
 			return s.indexer.ListOORRecipientEventsByScriptTaproot(
 				ctx, pkScript, afterEventID, limit,
+			)
+		},
+		BuildIncomingMetadataRPC: func(ctx context.Context,
+			req *oor.QueryIncomingMetadataRequest) (
+			*serverconn.SendUnaryRequest, error) {
+
+			if req == nil {
+				return nil, fmt.Errorf("incoming metadata query "+
+					"must be provided")
+			}
+
+			scopes := make([]indexer.TaprootScriptScope, 0,
+				len(req.Recipients))
+			for i := range req.Recipients {
+				scopes = append(scopes, indexer.TaprootScriptScope{
+					PkScript: append([]byte(nil),
+						req.Recipients[i].PkScript...),
+				})
+			}
+
+			rpcReq, err := s.indexer.
+				BuildListVTXOsByScriptsTaprootRequest(
+					ctx, scopes, 0,
+					incomingMetadataIndexPageSize, nil,
+				)
+			if err != nil {
+				return nil, err
+			}
+
+			return serverconn.NewSendUnaryRequest(
+				mailboxrpc.ServiceMethod{
+					Service: "arkrpc.IndexerService",
+					Method:  "ListVTXOsByScripts",
+				},
+				rpcReq,
+				oor.IncomingMetadataCorrelationID(
+				req.SessionID,
+				),
 			)
 		},
 	})
