@@ -741,57 +741,75 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		CSVDelay:    terms.VTXOExitDelay,
 	}
 
-	// Ask the wallet actor to select and lock VTXOs covering the
-	// send amount. This is atomic: selected VTXOs are locked to
-	// prevent double-spends until the transfer completes or is
-	// cancelled.
-	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
-	wRef := r.server.walletRef.UnsafeFromSome()
-
-	selectReq := &wallet.SelectAndLockVTXOsRequest{
-		TargetAmount: targetAmt,
-	}
-	selectFuture := wRef.Ask(ctx, selectReq)
-	selectResult := selectFuture.Await(ctx)
-
-	selectResp, err := selectResult.Unpack()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"VTXO selection failed: %v", err)
-	}
-
-	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
-	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", selectResp)
-	}
-
-	// Look up full VTXO descriptors from the store and build
-	// OOR transfer inputs. This is delegated to a package-level
-	// function so a future SDK can call it directly.
-	outpoints := make(
-		[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
+	var (
+		selectedInputs []oor.TransferInput
+		locked         *wallet.SelectAndLockVTXOsResponse
 	)
-	for _, sv := range locked.SelectedVTXOs {
-		outpoints = append(outpoints, sv.Outpoint)
-	}
 
-	selectedInputs, err := BuildTransferInputs(
-		ctx, r.server.vtxoStore, outpoints,
-	)
-	if err != nil {
-		if unlockErr := r.unlockVTXOs(
-			ctx, locked.SelectedVTXOs,
-		); unlockErr != nil {
-			log.ErrorS(
-				ctx, "Unable to unlock VTXOs",
-				unlockErr,
+	if len(req.CustomInputs) > 0 {
+		// Custom inputs provided — bypass wallet selection
+		// and build TransferInputs from the specified VTXOs.
+		selectedInputs, err = BuildCustomTransferInputs(
+			ctx, r.server.vtxoStore, req.CustomInputs,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"build custom inputs: %v", err)
+		}
+	} else {
+		// Standard path: select and lock VTXOs from wallet.
+		targetAmt := btcutil.Amount(req.Recipient.AmountSat)
+		wRef := r.server.walletRef.UnsafeFromSome()
+
+		selectReq := &wallet.SelectAndLockVTXOsRequest{
+			TargetAmount: targetAmt,
+		}
+		selectFuture := wRef.Ask(ctx, selectReq)
+		selectResult := selectFuture.Await(ctx)
+
+		selectResp, err := selectResult.Unpack()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"VTXO selection failed: %v", err)
+		}
+
+		var ok bool
+		locked, ok = selectResp.(*wallet.SelectAndLockVTXOsResponse)
+		if !ok {
+			return nil, status.Errorf(codes.Internal,
+				"unexpected response type: %T",
+				selectResp)
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0,
+			len(locked.SelectedVTXOs),
+		)
+		for _, sv := range locked.SelectedVTXOs {
+			outpoints = append(
+				outpoints, sv.Outpoint,
 			)
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"unable to build transfer inputs: %v", err)
+		selectedInputs, err = BuildTransferInputs(
+			ctx, r.server.vtxoStore, outpoints,
+		)
+		if err != nil {
+			if unlockErr := r.unlockVTXOs(
+				ctx, locked.SelectedVTXOs,
+			); unlockErr != nil {
+				log.ErrorS(ctx,
+					"Unable to unlock VTXOs",
+					unlockErr,
+				)
+			}
+
+			return nil, status.Errorf(codes.Internal,
+				"build transfer inputs: %v", err)
+		}
 	}
+
+	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 
 	// Build the recipient output for the OOR transfer.
 	recipients := []oortx.RecipientOutput{{
