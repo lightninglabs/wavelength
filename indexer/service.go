@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo/rounds"
@@ -32,6 +33,8 @@ type Service struct {
 	store Store
 
 	authorizer ScriptAuthorizer
+
+	proofConfig taprootProofVerificationConfig
 }
 
 // NewService creates a new indexer service.
@@ -61,6 +64,17 @@ func (s *Service) SetScriptAuthorizer(authorizer ScriptAuthorizer) {
 	}
 
 	s.authorizer = authorizer
+}
+
+// SetVTXOProofPolicy configures verification of owner-key proofs for the
+// standardized VTXO tapscript used by Ark receive outputs.
+func (s *Service) SetVTXOProofPolicy(operatorKey *btcec.PublicKey,
+	exitDelay uint32) {
+
+	s.proofConfig = taprootProofVerificationConfig{
+		vtxoOperatorKey: operatorKey,
+		vtxoExitDelay:   exitDelay,
+	}
 }
 
 // authorizeScripts applies the configured script authorization policy.
@@ -111,6 +125,7 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 		err := verifyTaprootSchnorrProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
+			purposeRegisterReceiveScript, s.proofConfig,
 		)
 		if err != nil {
 			return nil, status.Error(codes.Unauthenticated,
@@ -227,6 +242,29 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 			"missing pk_script")
 	}
 
+	now := s.now()
+
+	switch proof := req.Proof.(type) {
+	case *arkrpc.UnregisterReceiveScriptRequest_TaprootSchnorr:
+		err := verifyTaprootSchnorrProof(
+			now, pkScript, proof.TaprootSchnorr,
+			s.serverID, principal.MailboxID,
+			purposeUnregisterReceiveScript, s.proofConfig,
+		)
+		if err != nil {
+			return nil, status.Error(codes.Unauthenticated,
+				err.Error())
+		}
+
+	case *arkrpc.UnregisterReceiveScriptRequest_Bip322:
+		return nil, status.Error(codes.Unimplemented,
+			"bip322 proofs not implemented")
+
+	default:
+		return nil, status.Error(codes.InvalidArgument,
+			"missing proof")
+	}
+
 	if s.store == nil {
 		return nil, status.Error(
 			codes.FailedPrecondition,
@@ -272,12 +310,12 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 
 	switch proof := req.Proof.(type) {
 	case *arkrpc.ListOORRecipientEventsByScriptRequest_TaprootSchnorr:
-		if err := verifyTaprootSchnorrProof(
+		if err := verifyTaprootSchnorrScopeProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
+			purposeOORRecipientEvents, s.proofConfig,
 		); err != nil {
-			return nil, status.Error(codes.Unauthenticated,
-				err.Error())
+			return nil, scopeProofToStatus(err)
 		}
 
 	case *arkrpc.ListOORRecipientEventsByScriptRequest_Bip322:
@@ -322,6 +360,28 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 			SessionId:   append([]byte(nil), row.SessionID...),
 			OutputIndex: uint32(row.OutputIndex),
 			Value:       uint64(row.Value),
+			ArkPsbt:     append([]byte(nil), row.ArkPsbt...),
+		}
+
+		// Fetch checkpoint PSBTs for this session.
+		checkpoints, cpErr := s.store.GetOORSessionCheckpoints(
+			ctx, row.SessionID,
+		)
+		if cpErr == nil {
+			cpPSBTs := make(
+				[][]byte, 0, len(checkpoints),
+			)
+			for _, cp := range checkpoints {
+				cpPSBTs = append(
+					cpPSBTs,
+					append(
+						[]byte(nil),
+						cp.CheckpointPsbt...,
+					),
+				)
+			}
+
+			ev.CheckpointPsbts = cpPSBTs
 		}
 
 		out = append(out, ev)
@@ -372,6 +432,7 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeListVTXOsByScripts,
+			s.proofConfig,
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)
@@ -443,6 +504,8 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		}
 	}
 
+	lineage := newLineageResolver(q, roundRowByID)
+
 	var all []*arkrpc.VTXO
 	for _, row := range rows {
 		scriptHex := hex.EncodeToString(row.PkScript)
@@ -461,6 +524,12 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
+
+		lineageMeta, err := lineage.resolve(ctx, row)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		applyLineageMetadata(vtxo, lineageMeta)
 
 		if len(statusFilter) > 0 {
 			if _, ok := statusFilter[vtxo.Status]; !ok {
@@ -551,6 +620,7 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeGetSubtreeByScripts,
+			s.proofConfig,
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)
@@ -716,6 +786,7 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeListVTXOEventsByScripts,
+			s.proofConfig,
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)

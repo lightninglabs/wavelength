@@ -32,4 +32,16 @@ const (
 	// purposeListVTXOEventsByScripts is the canonical purpose string used
 	// in script-scope proofs for ListVTXOEventsByScripts.
 	purposeListVTXOEventsByScripts = "list_vtxo_events_by_scripts"
+
+	// purposeOORRecipientEvents is the canonical purpose string used in
+	// script-scope proofs for ListOORRecipientEventsByScript.
+	purposeOORRecipientEvents = "list_oor_recipient_events_by_script"
+
+	// purposeRegisterReceiveScript is the canonical purpose string used in
+	// receive-script proofs for RegisterReceiveScript.
+	purposeRegisterReceiveScript = "register_receive_script"
+
+	// purposeUnregisterReceiveScript is the canonical purpose string used in
+	// receive-script proofs for UnregisterReceiveScript.
+	purposeUnregisterReceiveScript = "unregister_receive_script"
 )

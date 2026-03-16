@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightningnetwork/lnd/tlv"
 )
 
@@ -85,6 +86,11 @@ const (
 	// proofTLVTypePurpose identifies the purpose string for
 	// script-scope proofs.
 	proofTLVTypePurpose tlv.Type = 9
+
+	// proofTLVTypeOwnerPubKey identifies the compressed owner pubkey used
+	// to prove control over supported standardized receive scripts such as
+	// VTXO tapscripts.
+	proofTLVTypeOwnerPubKey tlv.Type = 10
 )
 
 var (
@@ -99,28 +105,38 @@ var (
 // receiveScriptProofMessage is the decoded TLV proof message that a wallet
 // signs to bind a receive script to a mailbox principal.
 type receiveScriptProofMessage struct {
-	Type      string
-	Version   uint32
-	ServerID  string
-	Principal string
-	PkScript  []byte
-	IssuedAt  uint64
-	ExpiresAt uint64
-	Nonce     []byte
+	Type        string
+	Version     uint32
+	ServerID    string
+	Principal   string
+	Purpose     string
+	PkScript    []byte
+	OwnerPubKey []byte
+	IssuedAt    uint64
+	ExpiresAt   uint64
+	Nonce       []byte
 }
 
 // scriptScopeProofMessage is the decoded TLV proof message signed to prove
 // control of a receive script for a specific purpose (RPC method / feed).
 type scriptScopeProofMessage struct {
-	Type      string
-	Version   uint32
-	ServerID  string
-	Principal string
-	Purpose   string
-	PkScript  []byte
-	IssuedAt  uint64
-	ExpiresAt uint64
-	Nonce     []byte
+	Type        string
+	Version     uint32
+	ServerID    string
+	Principal   string
+	Purpose     string
+	PkScript    []byte
+	OwnerPubKey []byte
+	IssuedAt    uint64
+	ExpiresAt   uint64
+	Nonce       []byte
+}
+
+// taprootProofVerificationConfig carries optional server-side context for
+// validating owner-key proofs over standardized receive scripts.
+type taprootProofVerificationConfig struct {
+	vtxoOperatorKey *btcec.PublicKey
+	vtxoExitDelay   uint32
 }
 
 // parseReceiveScriptProofMessage decodes messageBytes from the canonical TLV
@@ -129,76 +145,16 @@ func parseReceiveScriptProofMessage(
 	messageBytes []byte) (*receiveScriptProofMessage, error) {
 
 	var (
-		proofType []byte
-		version   uint32
-		serverID  []byte
-		principal []byte
-		pkScript  []byte
-		issuedAt  uint64
-		expiresAt uint64
-		nonce     []byte
-	)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType, nil,
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(proofTLVTypeVersion, &version),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverID, nil,
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principal, nil,
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &pkScript, nil,
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(proofTLVTypeIssuedAt, &issuedAt),
-		tlv.MakePrimitiveRecord(proofTLVTypeExpiresAt, &expiresAt),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &nonce, nil,
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build TLV stream: %w", err)
-	}
-
-	if err := tlvStream.Decode(bytes.NewReader(messageBytes)); err != nil {
-		return nil, fmt.Errorf("decode TLV proof: %w", err)
-	}
-
-	return &receiveScriptProofMessage{
-		Type:      string(proofType),
-		Version:   version,
-		ServerID:  string(serverID),
-		Principal: string(principal),
-		PkScript:  pkScript,
-		IssuedAt:  issuedAt,
-		ExpiresAt: expiresAt,
-		Nonce:     nonce,
-	}, nil
-}
-
-// parseScriptScopeProofMessage decodes messageBytes from the canonical TLV
-// encoding into a typed scope-proof message.
-func parseScriptScopeProofMessage(
-	messageBytes []byte) (*scriptScopeProofMessage, error) {
-
-	var (
-		proofType []byte
-		version   uint32
-		serverID  []byte
-		principal []byte
-		pkScript  []byte
-		issuedAt  uint64
-		expiresAt uint64
-		nonce     []byte
-		purpose   []byte
+		proofType   []byte
+		version     uint32
+		serverID    []byte
+		principal   []byte
+		purpose     []byte
+		pkScript    []byte
+		ownerPubKey []byte
+		issuedAt    uint64
+		expiresAt   uint64
+		nonce       []byte
 	)
 
 	tlvStream, err := tlv.NewStream(
@@ -229,6 +185,83 @@ func parseScriptScopeProofMessage(
 			proofTLVTypePurpose, &purpose, nil,
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &ownerPubKey, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build TLV stream: %w", err)
+	}
+
+	if err := tlvStream.Decode(bytes.NewReader(messageBytes)); err != nil {
+		return nil, fmt.Errorf("decode TLV proof: %w", err)
+	}
+
+	return &receiveScriptProofMessage{
+		Type:        string(proofType),
+		Version:     version,
+		ServerID:    string(serverID),
+		Principal:   string(principal),
+		Purpose:     string(purpose),
+		PkScript:    pkScript,
+		OwnerPubKey: ownerPubKey,
+		IssuedAt:    issuedAt,
+		ExpiresAt:   expiresAt,
+		Nonce:       nonce,
+	}, nil
+}
+
+// parseScriptScopeProofMessage decodes messageBytes from the canonical TLV
+// encoding into a typed scope-proof message.
+func parseScriptScopeProofMessage(
+	messageBytes []byte) (*scriptScopeProofMessage, error) {
+
+	var (
+		proofType   []byte
+		version     uint32
+		serverID    []byte
+		principal   []byte
+		pkScript    []byte
+		ownerPubKey []byte
+		issuedAt    uint64
+		expiresAt   uint64
+		nonce       []byte
+		purpose     []byte
+	)
+
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofType, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(proofTLVTypeVersion, &version),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverID, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principal, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePkScript, &pkScript, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(proofTLVTypeIssuedAt, &issuedAt),
+		tlv.MakePrimitiveRecord(proofTLVTypeExpiresAt, &expiresAt),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &nonce, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePurpose, &purpose, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &ownerPubKey, nil,
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build TLV stream: %w", err)
@@ -239,15 +272,16 @@ func parseScriptScopeProofMessage(
 	}
 
 	return &scriptScopeProofMessage{
-		Type:      string(proofType),
-		Version:   version,
-		ServerID:  string(serverID),
-		Principal: string(principal),
-		Purpose:   string(purpose),
-		PkScript:  pkScript,
-		IssuedAt:  issuedAt,
-		ExpiresAt: expiresAt,
-		Nonce:     nonce,
+		Type:        string(proofType),
+		Version:     version,
+		ServerID:    string(serverID),
+		Principal:   string(principal),
+		Purpose:     string(purpose),
+		PkScript:    pkScript,
+		OwnerPubKey: ownerPubKey,
+		IssuedAt:    issuedAt,
+		ExpiresAt:   expiresAt,
+		Nonce:       nonce,
 	}, nil
 }
 
@@ -259,66 +293,8 @@ func encodeReceiveScriptProofTLV(
 	proofType := []byte(msg.Type)
 	serverID := []byte(msg.ServerID)
 	principal := []byte(msg.Principal)
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(
-			proofTLVTypeType, &proofType,
-			tlv.SizeVarBytes(&proofType),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeVersion, &msg.Version,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeServerID, &serverID,
-			tlv.SizeVarBytes(&serverID),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePrincipal, &principal,
-			tlv.SizeVarBytes(&principal),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypePkScript, &msg.PkScript,
-			tlv.SizeVarBytes(&msg.PkScript),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeIssuedAt, &msg.IssuedAt,
-		),
-		tlv.MakePrimitiveRecord(
-			proofTLVTypeExpiresAt, &msg.ExpiresAt,
-		),
-		tlv.MakeDynamicRecord(
-			proofTLVTypeNonce, &msg.Nonce,
-			tlv.SizeVarBytes(&msg.Nonce),
-			tlv.EVarBytes, tlv.DVarBytes,
-		),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("build TLV stream: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := tlvStream.Encode(&buf); err != nil {
-		return nil, fmt.Errorf("encode TLV proof: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// encodeScriptScopeProofTLV encodes a script-scope proof message to its
-// canonical TLV byte representation.
-func encodeScriptScopeProofTLV(
-	msg *scriptScopeProofMessage) ([]byte, error) {
-
-	proofType := []byte(msg.Type)
-	serverID := []byte(msg.ServerID)
-	principal := []byte(msg.Principal)
 	purpose := []byte(msg.Purpose)
-
-	tlvStream, err := tlv.NewStream(
+	records := []tlv.Record{
 		tlv.MakeDynamicRecord(
 			proofTLVTypeType, &proofType,
 			tlv.SizeVarBytes(&proofType),
@@ -358,7 +334,87 @@ func encodeScriptScopeProofTLV(
 			tlv.SizeVarBytes(&purpose),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
-	)
+	}
+	if len(msg.OwnerPubKey) > 0 {
+		records = append(records, tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &msg.OwnerPubKey,
+			tlv.SizeVarBytes(&msg.OwnerPubKey),
+			tlv.EVarBytes, tlv.DVarBytes,
+		))
+	}
+
+	tlvStream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, fmt.Errorf("build TLV stream: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tlvStream.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode TLV proof: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+// encodeScriptScopeProofTLV encodes a script-scope proof message to its
+// canonical TLV byte representation.
+func encodeScriptScopeProofTLV(
+	msg *scriptScopeProofMessage) ([]byte, error) {
+
+	proofType := []byte(msg.Type)
+	serverID := []byte(msg.ServerID)
+	principal := []byte(msg.Principal)
+	purpose := []byte(msg.Purpose)
+	records := []tlv.Record{
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofType,
+			tlv.SizeVarBytes(&proofType),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeVersion, &msg.Version,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverID,
+			tlv.SizeVarBytes(&serverID),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principal,
+			tlv.SizeVarBytes(&principal),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePkScript, &msg.PkScript,
+			tlv.SizeVarBytes(&msg.PkScript),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeIssuedAt, &msg.IssuedAt,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeExpiresAt, &msg.ExpiresAt,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &msg.Nonce,
+			tlv.SizeVarBytes(&msg.Nonce),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePurpose, &purpose,
+			tlv.SizeVarBytes(&purpose),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	}
+	if len(msg.OwnerPubKey) > 0 {
+		records = append(records, tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &msg.OwnerPubKey,
+			tlv.SizeVarBytes(&msg.OwnerPubKey),
+			tlv.EVarBytes, tlv.DVarBytes,
+		))
+	}
+
+	tlvStream, err := tlv.NewStream(records...)
 	if err != nil {
 		return nil, fmt.Errorf("build TLV stream: %w", err)
 	}
@@ -372,10 +428,10 @@ func encodeScriptScopeProofTLV(
 }
 
 // validateReceiveScriptProofMessage validates msg against the expected
-// serverID, principal, and pkScript.
+// serverID, principal, purpose, and pkScript.
 func validateReceiveScriptProofMessage(now time.Time,
 	msg *receiveScriptProofMessage, serverID string,
-	principal string, pkScript []byte) error {
+	principal string, purpose string, pkScript []byte) error {
 
 	if msg == nil {
 		return fmt.Errorf("missing proof message")
@@ -395,6 +451,10 @@ func validateReceiveScriptProofMessage(now time.Time,
 
 	if msg.Principal != principal {
 		return fmt.Errorf("unexpected principal: %s", msg.Principal)
+	}
+
+	if msg.Purpose != purpose {
+		return fmt.Errorf("unexpected purpose: %s", msg.Purpose)
 	}
 
 	if !bytes.Equal(msg.PkScript, pkScript) {
@@ -520,20 +580,61 @@ func taprootOutputKeyFromPkScript(pkScript []byte) (*btcec.PublicKey, error) {
 	return schnorr.ParsePubKey(pkScript[2:])
 }
 
+// proofSigningKey resolves the pubkey that should verify a proof for pkScript.
+// When the message carries an owner pubkey, we accept either a direct P2TR
+// key-path script for that pubkey or the standardized VTXO tapscript derived
+// from the server's operator policy. Otherwise we fall back to the taproot
+// output key embedded in pkScript.
+func proofSigningKey(pkScript []byte, ownerPubKeyBytes []byte,
+	cfg taprootProofVerificationConfig) (*btcec.PublicKey, error) {
+
+	if len(ownerPubKeyBytes) == 0 {
+		return taprootOutputKeyFromPkScript(pkScript)
+	}
+
+	ownerPubKey, err := btcec.ParsePubKey(ownerPubKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse owner pubkey: %w", err)
+	}
+
+	expectedOwnerScript, err := txscript.PayToTaprootScript(ownerPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive owner taproot script: %w", err)
+	}
+	if bytes.Equal(expectedOwnerScript, pkScript) {
+		return ownerPubKey, nil
+	}
+
+	if cfg.vtxoOperatorKey != nil && cfg.vtxoExitDelay > 0 {
+		vtxoTapKey, err := scripts.VTXOTapKey(
+			ownerPubKey, cfg.vtxoOperatorKey, cfg.vtxoExitDelay,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("derive vtxo tap key: %w", err)
+		}
+
+		expectedVTXOScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+		if err != nil {
+			return nil, fmt.Errorf("derive vtxo taproot script: %w", err)
+		}
+		if bytes.Equal(expectedVTXOScript, pkScript) {
+			return ownerPubKey, nil
+		}
+	}
+
+	return nil, fmt.Errorf("owner pubkey does not match supported script")
+}
+
 // verifyTaprootSchnorrProof verifies proof against pkScript and binds
 // it to the expected principal and server ID. The proof message is a
 // canonical TLV-encoded byte stream carried in the proto Message field.
 func verifyTaprootSchnorrProof(now time.Time, pkScript []byte,
 	proof *arkrpc.TaprootSchnorrProof, serverID string,
-	principal string) error {
+	principal string, purpose string,
+	cfg taprootProofVerificationConfig) error {
 
 	if proof == nil {
 		return fmt.Errorf("missing taproot schnorr proof")
-	}
-
-	pubKey, err := taprootOutputKeyFromPkScript(pkScript)
-	if err != nil {
-		return err
 	}
 
 	msg, err := parseReceiveScriptProofMessage(proof.Message)
@@ -541,8 +642,15 @@ func verifyTaprootSchnorrProof(now time.Time, pkScript []byte,
 		return err
 	}
 
+	pubKey, err := proofSigningKey(
+		pkScript, msg.OwnerPubKey, cfg,
+	)
+	if err != nil {
+		return err
+	}
+
 	if err := validateReceiveScriptProofMessage(
-		now, msg, serverID, principal, pkScript,
+		now, msg, serverID, principal, purpose, pkScript,
 	); err != nil {
 		return err
 	}
@@ -568,13 +676,14 @@ func verifyTaprootSchnorrProof(now time.Time, pkScript []byte,
 // verifyScriptScopeProof dispatches proof verification for script-scope
 // queries based on the oneof proof variant.
 func verifyScriptScopeProof(now time.Time, pkScript []byte,
-	proof any, serverID string, principal string, purpose string) error {
+	proof any, serverID string, principal string, purpose string,
+	cfg taprootProofVerificationConfig) error {
 
 	switch p := proof.(type) {
 	case *arkrpc.ScriptScope_TaprootSchnorr:
 		return verifyTaprootSchnorrScopeProof(
 			now, pkScript, p.TaprootSchnorr, serverID,
-			principal, purpose,
+			principal, purpose, cfg,
 		)
 
 	case *arkrpc.ScriptScope_Bip322:
@@ -589,18 +698,21 @@ func verifyScriptScopeProof(now time.Time, pkScript []byte,
 // proof including purpose binding.
 func verifyTaprootSchnorrScopeProof(now time.Time, pkScript []byte,
 	proof *arkrpc.TaprootSchnorrProof, serverID string,
-	principal string, purpose string) error {
+	principal string, purpose string,
+	cfg taprootProofVerificationConfig) error {
 
 	if proof == nil {
 		return fmt.Errorf("missing taproot schnorr proof")
 	}
 
-	pubKey, err := taprootOutputKeyFromPkScript(pkScript)
+	msg, err := parseScriptScopeProofMessage(proof.Message)
 	if err != nil {
 		return err
 	}
 
-	msg, err := parseScriptScopeProofMessage(proof.Message)
+	pubKey, err := proofSigningKey(
+		pkScript, msg.OwnerPubKey, cfg,
+	)
 	if err != nil {
 		return err
 	}
@@ -630,44 +742,89 @@ func verifyTaprootSchnorrScopeProof(now time.Time, pkScript []byte,
 }
 
 // BuildReceiveScriptProofMessage constructs and TLV-encodes a
-// receive-script registration proof message from the given parameters.
+// receive-script proof message from the given parameters.
+//
 // The returned bytes are the canonical message that should be hashed
-// with chainhash.TaggedHash(ProofTagHash, msg) and signed with the
-// P2TR output key using BIP-340 Schnorr.
+// with chainhash.TaggedHash(ProofTagHash, msg) and signed with either
+// the direct P2TR output key or the owner key committed through
+// BuildReceiveScriptProofMessageWithOwner.
 func BuildReceiveScriptProofMessage(serverID, principal string,
 	pkScript, nonce []byte,
 	issuedAt, expiresAt time.Time) ([]byte, error) {
 
+	return BuildReceiveScriptProofMessageWithOwner(
+		serverID, principal, purposeRegisterReceiveScript, pkScript,
+		nil, nonce, issuedAt, expiresAt,
+	)
+}
+
+// BuildReceiveScriptProofMessageWithOwner constructs and TLV-encodes a
+// receive-script proof message from the given parameters.
+//
+// The returned bytes are the canonical message that should be hashed
+// with chainhash.TaggedHash(ProofTagHash, msg) and signed with either
+// the direct P2TR output key or, for supported standardized receive
+// scripts, the owner key committed in ownerPubKey.
+func BuildReceiveScriptProofMessageWithOwner(serverID, principal,
+	purpose string, pkScript, ownerPubKey, nonce []byte,
+	issuedAt, expiresAt time.Time) ([]byte, error) {
+
+	if purpose == "" {
+		purpose = purposeRegisterReceiveScript
+	}
+
 	return encodeReceiveScriptProofTLV(&receiveScriptProofMessage{
-		Type:      proofTypeReceiveScriptRegistration,
-		Version:   0,
-		ServerID:  serverID,
-		Principal: principal,
-		PkScript:  pkScript,
-		IssuedAt:  uint64(issuedAt.Unix()),
-		ExpiresAt: uint64(expiresAt.Unix()),
-		Nonce:     nonce,
+		Type:        proofTypeReceiveScriptRegistration,
+		Version:     0,
+		ServerID:    serverID,
+		Principal:   principal,
+		Purpose:     purpose,
+		PkScript:    pkScript,
+		OwnerPubKey: ownerPubKey,
+		IssuedAt:    uint64(issuedAt.Unix()),
+		ExpiresAt:   uint64(expiresAt.Unix()),
+		Nonce:       nonce,
 	})
 }
 
 // BuildScriptScopeProofMessage constructs and TLV-encodes a script-scope
-// proof message from the given parameters. The returned bytes are the
-// canonical message that should be hashed with
-// chainhash.TaggedHash(ProofTagHash, msg) and signed with the P2TR
-// output key using BIP-340 Schnorr.
+// proof message from the given parameters.
+//
+// The returned bytes are the canonical message that should be hashed
+// with chainhash.TaggedHash(ProofTagHash, msg) and signed with either
+// the direct P2TR output key or the owner key committed through
+// BuildScriptScopeProofMessageWithOwner.
 func BuildScriptScopeProofMessage(serverID, principal, purpose string,
 	pkScript, nonce []byte,
 	issuedAt, expiresAt time.Time) ([]byte, error) {
 
+	return BuildScriptScopeProofMessageWithOwner(
+		serverID, principal, purpose, pkScript, nil, nonce,
+		issuedAt, expiresAt,
+	)
+}
+
+// BuildScriptScopeProofMessageWithOwner constructs and TLV-encodes a
+// script-scope proof message from the given parameters.
+//
+// The returned bytes are the canonical message that should be hashed
+// with chainhash.TaggedHash(ProofTagHash, msg) and signed with either
+// the direct P2TR output key or, for supported standardized receive
+// scripts, the owner key committed in ownerPubKey.
+func BuildScriptScopeProofMessageWithOwner(serverID, principal,
+	purpose string, pkScript, ownerPubKey, nonce []byte,
+	issuedAt, expiresAt time.Time) ([]byte, error) {
+
 	return encodeScriptScopeProofTLV(&scriptScopeProofMessage{
-		Type:      proofTypeScriptScope,
-		Version:   0,
-		ServerID:  serverID,
-		Principal: principal,
-		Purpose:   purpose,
-		PkScript:  pkScript,
-		IssuedAt:  uint64(issuedAt.Unix()),
-		ExpiresAt: uint64(expiresAt.Unix()),
-		Nonce:     nonce,
+		Type:        proofTypeScriptScope,
+		Version:     0,
+		ServerID:    serverID,
+		Principal:   principal,
+		Purpose:     purpose,
+		PkScript:    pkScript,
+		OwnerPubKey: ownerPubKey,
+		IssuedAt:    uint64(issuedAt.Unix()),
+		ExpiresAt:   uint64(expiresAt.Unix()),
+		Nonce:       nonce,
 	})
 }

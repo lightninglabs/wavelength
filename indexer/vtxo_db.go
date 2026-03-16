@@ -8,8 +8,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/rounds"
 )
@@ -34,6 +36,508 @@ type subtreeDBInputs struct {
 	roundIDByHex map[string]rounds.RoundID
 
 	virtualLeaves []*subtreeVirtualLeaf
+}
+
+type vtxoLineage struct {
+	roundID string
+
+	commitmentTxID chainhash.Hash
+
+	batchExpiry int32
+
+	relativeExpiry uint32
+
+	treeDepth int
+
+	chainDepth int
+
+	createdHeight int32
+
+	treePath *tree.Tree
+
+	treePathTLV []byte
+}
+
+type lineageResolver struct {
+	store Store
+
+	roundRowByID map[rounds.RoundID]*RoundRow
+
+	treeByKey map[subtreeTreeKey]*tree.Tree
+
+	lineageByOutpoint map[string]*vtxoLineage
+
+	sessionByID map[string]*OORSession
+
+	checkpointsBySessionID map[string][]OORCheckpoint
+}
+
+// newLineageResolver creates a per-request resolver for authoritative VTXO
+// lineage metadata.
+func newLineageResolver(store Store,
+	roundRowByID map[rounds.RoundID]*RoundRow) *lineageResolver {
+
+	if roundRowByID == nil {
+		roundRowByID = make(map[rounds.RoundID]*RoundRow)
+	}
+
+	return &lineageResolver{
+		store:             store,
+		roundRowByID:      roundRowByID,
+		treeByKey:         make(map[subtreeTreeKey]*tree.Tree),
+		lineageByOutpoint: make(map[string]*vtxoLineage),
+		sessionByID:       make(map[string]*OORSession),
+		checkpointsBySessionID: make(
+			map[string][]OORCheckpoint,
+		),
+	}
+}
+
+// resolve returns the authoritative lineage metadata for the provided VTXO
+// row.
+func (r *lineageResolver) resolve(ctx context.Context,
+	row VTXORow) (*vtxoLineage, error) {
+
+	key := row.Outpoint.String()
+	if cached, ok := r.lineageByOutpoint[key]; ok {
+		return cached, nil
+	}
+
+	var (
+		lineage *vtxoLineage
+		err     error
+	)
+
+	if row.RoundID != nil && row.BatchOutputIndex != nil {
+		lineage, err = r.resolveRoundBacked(
+			ctx, *row.RoundID, *row.BatchOutputIndex,
+			[]wire.OutPoint{row.Outpoint},
+		)
+	} else {
+		lineage, err = r.resolveVirtual(ctx, row)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	r.lineageByOutpoint[key] = lineage
+
+	return lineage, nil
+}
+
+// resolveRoundBacked resolves lineage for VTXOs directly backed by a
+// round-created tree leaf.
+func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
+	roundID rounds.RoundID, batchOutputIndex int32,
+	targetOutpoints []wire.OutPoint) (*vtxoLineage, error) {
+
+	roundRow, err := r.resolveRoundRow(ctx, roundID)
+	if err != nil {
+		return nil, err
+	}
+
+	key := subtreeTreeKey{
+		roundIDHex: hex.EncodeToString(roundID[:]),
+		batchIdx:   int(batchOutputIndex),
+	}
+
+	fullTree, ok := r.treeByKey[key]
+	if !ok {
+		fullTree, err = r.store.LoadVTXOTree(
+			ctx, roundID, int(batchOutputIndex),
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load vtxo tree: %w", err,
+			)
+		}
+
+		r.treeByKey[key] = fullTree
+	}
+
+	extracted, err := extractTreeForOutpoints(
+		fullTree, targetOutpoints,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("extract tree path: %w", err)
+	}
+
+	treePathTLV, err := clientdb.SerializeTree(extracted)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"serialize tree path: %w", err,
+		)
+	}
+
+	lineage := &vtxoLineage{
+		roundID:        roundID.String(),
+		commitmentTxID: roundRow.CommitmentTxid,
+		relativeExpiry: uint32(roundRow.CsvDelay),
+		treeDepth:      extracted.Depth(),
+		chainDepth:     0,
+		createdHeight:  0,
+		treePath:       extracted,
+		treePathTLV:    treePathTLV,
+	}
+
+	if roundRow.ConfirmationHeight != nil {
+		lineage.createdHeight = *roundRow.ConfirmationHeight
+		lineage.batchExpiry = *roundRow.ConfirmationHeight +
+			roundRow.CsvDelay
+	}
+
+	return lineage, nil
+}
+
+// resolveVirtual resolves lineage for OOR-created virtual VTXOs by inheriting
+// the commitment lineage from the checkpoint inputs that back the session.
+func (r *lineageResolver) resolveVirtual(ctx context.Context,
+	row VTXORow) (*vtxoLineage, error) {
+
+	sessionID := append([]byte(nil), row.Outpoint.Hash[:]...)
+	session, err := r.resolveSession(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve OOR session: %w", err)
+	}
+
+	checkpoints, err := r.resolveSessionCheckpoints(
+		ctx, sessionID, session,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"resolve OOR checkpoints: %w", err,
+		)
+	}
+
+	parentOutpoints, err := sessionParentOutpoints(
+		session, checkpoints,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(parentOutpoints) == 0 {
+		return nil, fmt.Errorf("missing session parent inputs")
+	}
+
+	parentRows := make([]VTXORow, 0, len(parentOutpoints))
+	parentLineages := make([]*vtxoLineage, 0, len(parentOutpoints))
+	for _, parentOutpoint := range parentOutpoints {
+		parentRow, err := r.store.GetVTXO(ctx, parentOutpoint)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"get parent vtxo %v: %w",
+				parentOutpoint, err,
+			)
+		}
+
+		parentLineage, err := r.resolve(ctx, parentRow)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolve parent lineage %v: %w",
+				parentOutpoint, err,
+			)
+		}
+
+		parentRows = append(parentRows, parentRow)
+		parentLineages = append(parentLineages, parentLineage)
+	}
+
+	return r.combineVirtualLineage(
+		ctx, row.Outpoint, parentRows, parentOutpoints,
+		parentLineages,
+	)
+}
+
+// combineVirtualLineage folds the parent lineage set into the authoritative
+// lineage for a virtual/OOR-created VTXO.
+func (r *lineageResolver) combineVirtualLineage(ctx context.Context,
+	outpoint wire.OutPoint, parentRows []VTXORow,
+	parentOutpoints []wire.OutPoint,
+	parentLineages []*vtxoLineage) (*vtxoLineage, error) {
+
+	if len(parentLineages) == 0 {
+		return nil, fmt.Errorf("missing parent lineage")
+	}
+
+	lineage := cloneLineage(parentLineages[0])
+
+	maxChainDepth := lineage.chainDepth
+	for i := 1; i < len(parentLineages); i++ {
+		next := parentLineages[i]
+
+		if next.roundID != lineage.roundID {
+			return nil, fmt.Errorf("OOR VTXO %v spans "+
+				"multiple rounds", outpoint)
+		}
+
+		if next.commitmentTxID != lineage.commitmentTxID {
+			return nil, fmt.Errorf("OOR VTXO %v spans "+
+				"multiple commitments", outpoint)
+		}
+
+		if next.batchExpiry != lineage.batchExpiry {
+			return nil, fmt.Errorf("OOR VTXO %v spans "+
+				"multiple batch expiries", outpoint)
+		}
+
+		if next.createdHeight != lineage.createdHeight {
+			return nil, fmt.Errorf("OOR VTXO %v spans "+
+				"multiple created heights", outpoint)
+		}
+
+		if next.relativeExpiry != lineage.relativeExpiry {
+			return nil, fmt.Errorf("OOR VTXO %v spans "+
+				"multiple CSV delays", outpoint)
+		}
+
+		if next.chainDepth > maxChainDepth {
+			maxChainDepth = next.chainDepth
+		}
+	}
+
+	if len(parentRows) > 1 {
+		combined, err := r.tryResolveCombinedRoundPath(
+			ctx, parentRows, parentOutpoints,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if combined != nil {
+			lineage.treePath = combined.treePath
+			lineage.treePathTLV = append(
+				[]byte(nil), combined.treePathTLV...,
+			)
+			lineage.treeDepth = combined.treeDepth
+		} else {
+			for i := 1; i < len(parentLineages); i++ {
+				if !bytes.Equal(
+					parentLineages[i].treePathTLV,
+					lineage.treePathTLV,
+				) {
+
+					return nil, fmt.Errorf("OOR VTXO %v "+
+						"requires multiple commitment "+
+						"paths", outpoint)
+				}
+			}
+		}
+	}
+
+	if lineage.treePath == nil || len(lineage.treePathTLV) == 0 {
+		return nil, fmt.Errorf("missing inherited tree path")
+	}
+
+	lineage.chainDepth = maxChainDepth + 1
+
+	return lineage, nil
+}
+
+// tryResolveCombinedRoundPath extracts a combined commitment path when all
+// parents are direct leaves in the same round-backed tree.
+func (r *lineageResolver) tryResolveCombinedRoundPath(ctx context.Context,
+	parentRows []VTXORow,
+	parentOutpoints []wire.OutPoint) (*vtxoLineage, error) {
+
+	if len(parentRows) != len(parentOutpoints) || len(parentRows) == 0 {
+		return nil, nil
+	}
+
+	firstRow := parentRows[0]
+	if firstRow.RoundID == nil || firstRow.BatchOutputIndex == nil {
+		return nil, nil
+	}
+
+	for i := 1; i < len(parentRows); i++ {
+		row := parentRows[i]
+		if row.RoundID == nil || row.BatchOutputIndex == nil {
+			return nil, nil
+		}
+
+		if *row.RoundID != *firstRow.RoundID {
+			return nil, nil
+		}
+
+		if *row.BatchOutputIndex != *firstRow.BatchOutputIndex {
+			return nil, nil
+		}
+	}
+
+	return r.resolveRoundBacked(
+		ctx, *firstRow.RoundID, *firstRow.BatchOutputIndex,
+		parentOutpoints,
+	)
+}
+
+// resolveRoundRow returns cached round metadata or fetches it on demand.
+func (r *lineageResolver) resolveRoundRow(ctx context.Context,
+	roundID rounds.RoundID) (*RoundRow, error) {
+
+	if roundRow, ok := r.roundRowByID[roundID]; ok {
+		return roundRow, nil
+	}
+
+	roundRow, err := r.store.GetRound(ctx, roundID)
+	if err != nil {
+		return nil, fmt.Errorf("get round: %w", err)
+	}
+
+	r.roundRowByID[roundID] = &roundRow
+
+	return &roundRow, nil
+}
+
+// resolveSession returns cached OOR session state or fetches it on demand.
+func (r *lineageResolver) resolveSession(ctx context.Context,
+	sessionID []byte) (*OORSession, error) {
+
+	key := hex.EncodeToString(sessionID)
+	if session, ok := r.sessionByID[key]; ok {
+		return session, nil
+	}
+
+	session, err := r.store.GetOORSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	r.sessionByID[key] = &session
+
+	return &session, nil
+}
+
+// resolveSessionCheckpoints returns cached checkpoint PSBTs or fetches them
+// on demand.
+func (r *lineageResolver) resolveSessionCheckpoints(ctx context.Context,
+	sessionID []byte, session *OORSession) ([]OORCheckpoint, error) {
+
+	key := hex.EncodeToString(sessionID)
+	if checkpoints, ok := r.checkpointsBySessionID[key]; ok {
+		return checkpoints, nil
+	}
+
+	checkpoints, err := r.store.ListOORCheckpoints(
+		ctx, int32(session.ID),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.checkpointsBySessionID[key] = checkpoints
+
+	return checkpoints, nil
+}
+
+// cloneLineage creates a defensive copy of immutable lineage metadata.
+func cloneLineage(src *vtxoLineage) *vtxoLineage {
+	if src == nil {
+		return nil
+	}
+
+	return &vtxoLineage{
+		roundID:        src.roundID,
+		commitmentTxID: src.commitmentTxID,
+		batchExpiry:    src.batchExpiry,
+		relativeExpiry: src.relativeExpiry,
+		treeDepth:      src.treeDepth,
+		chainDepth:     src.chainDepth,
+		createdHeight:  src.createdHeight,
+		treePath:       src.treePath,
+		treePathTLV: append(
+			[]byte(nil), src.treePathTLV...,
+		),
+	}
+}
+
+// sessionParentOutpoints extracts the current VTXO parents that back an OOR
+// session. Finalized checkpoints are authoritative; Ark PSBT inputs are a
+// fallback for older rows that predate checkpoint persistence.
+func sessionParentOutpoints(session *OORSession,
+	checkpoints []OORCheckpoint) ([]wire.OutPoint, error) {
+
+	if len(checkpoints) > 0 {
+		outpoints := make([]wire.OutPoint, 0, len(checkpoints))
+		seen := make(map[string]struct{}, len(checkpoints))
+
+		for _, checkpoint := range checkpoints {
+			if checkpoint.Psbt == nil ||
+				checkpoint.Psbt.UnsignedTx == nil {
+
+				return nil, fmt.Errorf("missing checkpoint tx")
+			}
+
+			if len(checkpoint.Psbt.UnsignedTx.TxIn) == 0 {
+				return nil, fmt.Errorf("checkpoint has no " +
+					"inputs")
+			}
+
+			outpoint := checkpoint.Psbt.UnsignedTx.TxIn[0].
+				PreviousOutPoint
+			key := outpoint.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+
+			seen[key] = struct{}{}
+			outpoints = append(outpoints, outpoint)
+		}
+
+		return outpoints, nil
+	}
+
+	if session == nil || len(session.ArkPsbt) == 0 {
+		return nil, fmt.Errorf("missing OOR session package")
+	}
+
+	ark, err := psbt.NewFromRawBytes(
+		bytes.NewReader(session.ArkPsbt), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse ark psbt: %w", err)
+	}
+
+	if ark.UnsignedTx == nil {
+		return nil, fmt.Errorf("missing ark unsigned tx")
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(ark.UnsignedTx.TxIn))
+	seen := make(map[string]struct{}, len(ark.UnsignedTx.TxIn))
+	for _, txIn := range ark.UnsignedTx.TxIn {
+		outpoint := txIn.PreviousOutPoint
+		key := outpoint.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+		outpoints = append(outpoints, outpoint)
+	}
+
+	return outpoints, nil
+}
+
+// applyLineageMetadata copies authoritative lineage fields onto the RPC view.
+func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) {
+	if out == nil || lineage == nil {
+		return
+	}
+
+	if lineage.roundID != "" {
+		out.RoundId = lineage.roundID
+	}
+
+	if lineage.commitmentTxID != (chainhash.Hash{}) {
+		out.CommitmentTxid = append(
+			[]byte(nil), lineage.commitmentTxID[:]...,
+		)
+	}
+
+	out.BatchExpiryHeight = lineage.batchExpiry
+	out.RelativeExpiry = lineage.relativeExpiry
+	out.TreeDepth = uint32(lineage.treeDepth)
+	out.ChainDepth = uint32(lineage.chainDepth)
+	out.CreatedHeight = lineage.createdHeight
+	out.TreePathTlv = append([]byte(nil), lineage.treePathTLV...)
 }
 
 // rpcVTXOFromDB converts an indexer VTXORow and optional RoundRow

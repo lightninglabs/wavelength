@@ -115,6 +115,31 @@ func (s *SQLCStore) ListOORRecipientEventsAfterWithSession(
 			SessionID:         r.SessionID,
 			OutputIndex:       r.OutputIndex,
 			Value:             r.Value,
+			ArkPsbt:           r.ArkPsbt,
+		}
+	}
+
+	return out, nil
+}
+
+// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+// session by querying the oor_checkpoints table joined with
+// oor_sessions.
+func (s *SQLCStore) GetOORSessionCheckpoints(ctx context.Context,
+	sessionID []byte) ([]OORSessionCheckpoint, error) {
+
+	rows, err := s.q.GetOORSessionCheckpoints(
+		ctx, sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]OORSessionCheckpoint, len(rows))
+	for i, r := range rows {
+		out[i] = OORSessionCheckpoint{
+			CheckpointIndex: r.CheckpointIndex,
+			CheckpointPsbt:  r.CheckpointPsbt,
 		}
 	}
 
@@ -159,6 +184,25 @@ func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 	}
 
 	return out, nil
+}
+
+// GetVTXO implements VTXOReader.
+func (s *SQLCStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (VTXORow, error) {
+
+	row, err := s.q.GetVTXO(ctx, sqlc.GetVTXOParams{
+		OutpointHash:  outpoint.Hash[:],
+		OutpointIndex: int32(outpoint.Index),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return VTXORow{}, ErrNotFound
+		}
+
+		return VTXORow{}, err
+	}
+
+	return vtxoRowFromSQLC(row)
 }
 
 // GetRound implements VTXOReader.
@@ -572,9 +616,16 @@ func roundRowFromSQLC(r sqlc.Round) (RoundRow, error) {
 		commitTxid = *decoded
 	}
 
-	return RoundRow{
+	roundRow := RoundRow{
 		RoundID:        roundID,
 		CommitmentTxid: commitTxid,
 		CsvDelay:       r.CsvDelay,
-	}, nil
+	}
+
+	if r.ConfirmationHeight.Valid {
+		height := r.ConfirmationHeight.Int32
+		roundRow.ConfirmationHeight = &height
+	}
+
+	return roundRow, nil
 }

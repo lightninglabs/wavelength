@@ -40,6 +40,10 @@ type VTXOReader interface {
 	ListVTXOsByPkScripts(ctx context.Context,
 		pkScripts [][]byte) ([]VTXORow, error)
 
+	// GetVTXO returns a single VTXO by outpoint.
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (VTXORow, error)
+
 	// GetRound returns a single round by its round ID.
 	GetRound(ctx context.Context,
 		roundID rounds.RoundID) (RoundRow, error)
@@ -100,6 +104,11 @@ type Store interface {
 	ListOORRecipientEventsAfterWithSession(ctx context.Context,
 		recipientPkScript []byte, afterEventID int64,
 		limit int32) ([]OORRecipientEventWithSession, error)
+
+	// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+	// session, ordered by index.
+	GetOORSessionCheckpoints(ctx context.Context,
+		sessionID []byte) ([]OORSessionCheckpoint, error)
 
 	// InsertOORRecipientEvent inserts an OOR recipient event and
 	// returns the assigned row ID.
