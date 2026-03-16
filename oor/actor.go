@@ -33,6 +33,11 @@ type OutboxHandler interface {
 		outbox OutboxEvent) ([]Event, error)
 }
 
+// IncomingMetadataRPCBuilder builds a durable serverconn unary request for the
+// authoritative incoming metadata query emitted by the receive FSM.
+type IncomingMetadataRPCBuilder func(ctx context.Context,
+	req *QueryIncomingMetadataRequest) (*serverconn.SendUnaryRequest, error)
+
 // ClientActorCfg configures the OORClientActor.
 type ClientActorCfg struct {
 	// Log is an optional logger for this actor instance. If None, the
@@ -79,6 +84,10 @@ type ClientActorCfg struct {
 	// IncomingFetcher resolves lightweight incoming OOR notifications into the
 	// full Ark package by querying the indexer from the actor context.
 	IncomingFetcher IncomingOORFetcher
+
+	// BuildIncomingMetadataRPC constructs the durable serverconn unary request
+	// used to resolve authoritative incoming VTXO metadata after commit.
+	BuildIncomingMetadataRPC IncomingMetadataRPCBuilder
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor
@@ -200,12 +209,6 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	actorRef.durable = durable
 	actorRef.ref = durable.Ref()
 	behavior.selfRef = durable.Ref()
-
-	if localHandler, ok := cfg.OutboxHandler.(*LocalPersistenceOutboxHandler); ok {
-		if localHandler.CallbackRef == nil {
-			localHandler.CallbackRef = durable.Ref()
-		}
-	}
 
 	checkpoint, err := cfg.DeliveryStore.LoadCheckpoint(
 		context.Background(), cfg.ActorID,
@@ -1194,7 +1197,7 @@ func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
 
 	switch msg.(type) {
 	case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
-		*SendIncomingAckRequest:
+		*SendIncomingAckRequest, *QueryIncomingMetadataRequest:
 
 		return true
 
@@ -1209,6 +1212,28 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 	msg OutboxEvent) error {
 
 	serverMsg, ok := msg.(serverconn.ServerMessage)
+	if queryReq, isQuery := msg.(*QueryIncomingMetadataRequest); isQuery {
+		if b.cfg.BuildIncomingMetadataRPC == nil {
+			return fmt.Errorf("incoming metadata rpc builder must be " +
+				"provided")
+		}
+
+		sendReq, err := b.cfg.BuildIncomingMetadataRPC(
+			ctx, queryReq,
+		)
+		if err != nil {
+			return fmt.Errorf("build incoming metadata rpc: %w",
+				err)
+		}
+
+		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+			return fmt.Errorf("send metadata query to server: %w",
+				err)
+		}
+
+		return nil
+	}
+
 	if !ok {
 		return fmt.Errorf("transport event %T does not implement "+
 			"ServerMessage", msg)

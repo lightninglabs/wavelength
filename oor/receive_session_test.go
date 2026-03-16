@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReceiveSessionNotifiesThenMaterializes verifies the incoming-transfer FSM
-// emits notification/materialization first, deferring ack until after incoming
-// materialization is confirmed.
-func TestReceiveSessionNotifiesThenMaterializes(t *testing.T) {
+// TestReceiveSessionNotifiesThenQueriesMetadata verifies the incoming-transfer
+// FSM emits notification and metadata-query outbox work first, deferring ack
+// until local materialization is confirmed.
+func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -28,7 +28,7 @@ func TestReceiveSessionNotifiesThenMaterializes(t *testing.T) {
 	// (checkpoint input -> recipients + anchor), then verify the receive
 	// session:
 	// - emits an application-facing notification
-	// - requests recipient materialization into local VTXO state
+	// - requests authoritative incoming metadata
 	// Ack is emitted only after materialization is confirmed.
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
@@ -107,14 +107,14 @@ func TestReceiveSessionNotifiesThenMaterializes(t *testing.T) {
 	_, ok := outbox[0].(*IncomingTransferNotification)
 	require.True(t, ok)
 
-	materializeMsg, ok := outbox[1].(*MaterializeIncomingVTXOsRequest)
+	queryMsg, ok := outbox[1].(*QueryIncomingMetadataRequest)
 	require.True(t, ok)
-	require.NotEmpty(t, materializeMsg.Recipients)
+	require.NotEmpty(t, queryMsg.Recipients)
 	parentCommitment := inputs[0].SpentVTXO.Outpoint.Hash
 
-	desc, err := BuildIncomingVTXODescriptor(materializeMsg.ArkPSBT,
+	desc, err := BuildIncomingVTXODescriptor(queryMsg.ArkPSBT,
 		IncomingVTXOConfig{
-			OutputIndex: materializeMsg.Recipients[0].OutputIndex,
+			OutputIndex: queryMsg.Recipients[0].OutputIndex,
 			ClientKey: keychain.KeyDescriptor{
 				PubKey: recipientKey.PubKey(),
 			},
@@ -149,8 +149,24 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, outbox, 2)
 
-	fut := sess.FSM.AskEvent(ctx, &IncomingHandledEvent{})
+	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{
+		Matches: []IncomingMetadataMatch{{
+			OutputIndex: 0,
+			Metadata: IncomingVTXOMetadata{
+				RoundID: "round-test",
+			},
+		}},
+	})
 	result := fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	materializeOutbox := result.UnwrapOr(nil)
+	require.Len(t, materializeOutbox, 1)
+	require.IsType(t, &MaterializeIncomingVTXOsRequest{},
+		materializeOutbox[0])
+
+	fut = sess.FSM.AskEvent(ctx, &IncomingHandledEvent{})
+	result = fut.Await(ctx)
 	require.False(t, result.IsErr())
 
 	ackOutbox := result.UnwrapOr(nil)

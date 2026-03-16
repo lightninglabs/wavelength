@@ -95,6 +95,13 @@ func WithOutboxID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, outboxIDContextKey{}, id)
 }
 
+// WithoutOutboxID returns a new context with any propagated outbox message ID
+// shadowed. This is used for internal async callbacks so they do not
+// accidentally reuse the caller's CDC deduplication identity.
+func WithoutOutboxID(ctx context.Context) context.Context {
+	return context.WithValue(ctx, outboxIDContextKey{}, "")
+}
+
 // OutboxIDFromContext retrieves the outbox message ID from the context, if
 // present. Returns the ID and true if found, empty string and false otherwise.
 func OutboxIDFromContext(ctx context.Context) (string, bool) {

@@ -32,8 +32,8 @@ const (
 	IncomingPhaseResolvePending IncomingPhase = "resolve_pending"
 
 	// IncomingPhaseMaterializePending indicates the incoming transfer has
-	// been validated and notified locally, and the wallet materialization
-	// step still needs to run.
+	// been validated and notified locally, and the authoritative metadata
+	// lookup/materialization work still needs to run.
 	IncomingPhaseMaterializePending IncomingPhase = "materialize_pending"
 
 	// IncomingPhaseAckPending indicates the incoming VTXOs were

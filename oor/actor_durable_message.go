@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -47,6 +48,7 @@ const (
 	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
 	eventPayloadReasonRecordType          tlv.Type = 9
 	eventPayloadOutpointsRecordType       tlv.Type = 11
+	eventPayloadMetadataMatchesRecordType tlv.Type = 13
 )
 
 const (
@@ -59,6 +61,7 @@ const (
 	eventKindIncomingTransfer  uint64 = 7
 	eventKindIncomingHandled   uint64 = 8
 	eventKindIncomingAckSent   uint64 = 9
+	eventKindIncomingMetadata  uint64 = 10
 )
 
 const (
@@ -75,6 +78,17 @@ const (
 const (
 	recipientPkScriptRecordType tlv.Type = 1
 	recipientValueSatRecordType tlv.Type = 2
+)
+
+const (
+	incomingMetadataMatchOutputIndexRecordType   tlv.Type = 1
+	incomingMetadataMatchRoundIDRecordType       tlv.Type = 3
+	incomingMetadataMatchCommitmentTxIDRecordType tlv.Type = 5
+	incomingMetadataMatchBatchExpiryRecordType   tlv.Type = 7
+	incomingMetadataMatchTreeDepthRecordType     tlv.Type = 9
+	incomingMetadataMatchChainDepthRecordType    tlv.Type = 11
+	incomingMetadataMatchCreatedHeightRecordType tlv.Type = 13
+	incomingMetadataMatchTreePathRecordType      tlv.Type = 15
 )
 
 type startTransferPayload struct {
@@ -242,6 +256,209 @@ func decodeOutPointList(raw []byte) ([]wire.OutPoint, error) {
 	}
 
 	return outpoints, nil
+}
+
+func encodeIncomingMetadataMatches(matches []IncomingMetadataMatch) ([]byte,
+	error) {
+
+	blobs := make([][]byte, 0, len(matches))
+	for i := range matches {
+		raw, err := encodeIncomingMetadataMatch(matches[i])
+		if err != nil {
+			return nil, err
+		}
+
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeIncomingMetadataMatches(raw []byte) ([]IncomingMetadataMatch, error) {
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]IncomingMetadataMatch, 0, len(blobs))
+	for i := range blobs {
+		match, err := decodeIncomingMetadataMatch(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		matches = append(matches, match)
+	}
+
+	return matches, nil
+}
+
+func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
+	outputIndex := match.OutputIndex
+	roundID := []byte(match.Metadata.RoundID)
+	commitmentTxID := match.Metadata.CommitmentTxID[:]
+	batchExpiry := uint32(match.Metadata.BatchExpiry)
+	treeDepth := uint32(match.Metadata.TreeDepth)
+	chainDepth := uint32(match.Metadata.ChainDepth)
+	createdHeight := uint32(match.Metadata.CreatedHeight)
+
+	treePath, err := clientdb.SerializeTree(match.Metadata.TreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOutputIndexRecordType,
+			&outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchRoundIDRecordType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCommitmentTxIDRecordType,
+			&commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchExpiryRecordType,
+			&batchExpiry,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchChainDepthRecordType,
+			&chainDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCreatedHeightRecordType,
+			&createdHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreePathRecordType, &treePath,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
+	var (
+		outputIndex   uint32
+		roundID       []byte
+		commitmentTxID []byte
+		batchExpiry   uint32
+		treeDepth     uint32
+		chainDepth    uint32
+		createdHeight uint32
+		treePath      []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOutputIndexRecordType,
+			&outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchRoundIDRecordType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCommitmentTxIDRecordType,
+			&commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchExpiryRecordType,
+			&batchExpiry,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchChainDepthRecordType,
+			&chainDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCreatedHeightRecordType,
+			&createdHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreePathRecordType, &treePath,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	if len(commitmentTxID) != chainhash.HashSize {
+		return IncomingMetadataMatch{}, fmt.Errorf("incoming metadata "+
+			"commitment txid must be provided")
+	}
+
+	decodedBatchExpiry, err := uint32ToInt32(
+		batchExpiry, "incoming batch expiry",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedTreeDepth, err := uint32ToInt32(
+		treeDepth, "incoming tree depth",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedChainDepth, err := uint32ToInt32(
+		chainDepth, "incoming chain depth",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedCreatedHeight, err := uint32ToInt32(
+		createdHeight, "incoming created height",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedTreePath, err := clientdb.DeserializeTree(treePath)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	var decodedCommitmentTxID chainhash.Hash
+	copy(decodedCommitmentTxID[:], commitmentTxID)
+
+	return IncomingMetadataMatch{
+		OutputIndex: outputIndex,
+		Metadata: IncomingVTXOMetadata{
+			RoundID:        string(roundID),
+			CommitmentTxID: decodedCommitmentTxID,
+			BatchExpiry:    decodedBatchExpiry,
+			TreeDepth:      int(decodedTreeDepth),
+			ChainDepth:     int(decodedChainDepth),
+			CreatedHeight:  decodedCreatedHeight,
+			TreePath:       decodedTreePath,
+		},
+	}, nil
 }
 
 func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
@@ -733,6 +950,7 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		checkpointPSBT  []byte
 		reason          []byte
 		outpointPayload []byte
+		metadataPayload []byte
 		err             error
 	)
 
@@ -836,6 +1054,16 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			return nil, err
 		}
 
+	case *IncomingMetadataResolvedEvent:
+		eventKind = eventKindIncomingMetadata
+
+		metadataPayload, err = encodeIncomingMetadataMatches(
+			evt.Matches,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 	case *IncomingAckSentEvent:
 		eventKind = eventKindIncomingAckSent
 
@@ -857,6 +1085,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
 		tlv.MakePrimitiveRecord(
 			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadMetadataMatchesRecordType, &metadataPayload,
 		),
 	}
 
@@ -881,6 +1112,7 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		checkpointPSBT  []byte
 		reason          []byte
 		outpointPayload []byte
+		metadataPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -897,6 +1129,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
 		tlv.MakePrimitiveRecord(
 			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadMetadataMatchesRecordType, &metadataPayload,
 		),
 	}
 
@@ -1012,6 +1247,18 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 		return &IncomingHandledEvent{
 			MaterializedOutpoints: outpoints,
+		}, nil
+
+	case eventKindIncomingMetadata:
+		matches, err := decodeIncomingMetadataMatches(
+			metadataPayload,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingMetadataResolvedEvent{
+			Matches: matches,
 		}, nil
 
 	case eventKindIncomingAckSent:
