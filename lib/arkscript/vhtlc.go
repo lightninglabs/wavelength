@@ -73,6 +73,9 @@ type VHTLCPolicy struct {
 	// unilateralRefundWithoutReceiverLeafIndex is the canonical index
 	// of the UnilateralRefundWithoutReceiver leaf.
 	unilateralRefundWithoutReceiverLeafIndex int
+
+	// orderedNodes maps leaf index → AST Node in canonical order.
+	orderedNodes []Node
 }
 
 // NewVHTLCPolicy constructs a vHTLC policy using the AST closure system.
@@ -201,6 +204,21 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		scriptToIndex[string(leaf.Leaf.Script)] = i
 	}
 
+	// Build ordered nodes slice (leaf index → AST Node).
+	scriptToNode := map[string]Node{
+		string(claimScript):                           claimClosure,
+		string(refundScript):                          refundClosure,
+		string(refundWithoutReceiverScript):           refundWithoutReceiverClosure,
+		string(unilateralClaimScript):                 unilateralClaimClosure,
+		string(unilateralRefundScript):                unilateralRefundClosure,
+		string(unilateralRefundWithoutReceiverScript): unilateralRefundWithoutReceiverClosure,
+	}
+
+	ordered := make([]Node, len(leaves))
+	for i, leaf := range leaves {
+		ordered[i] = scriptToNode[string(leaf.Leaf.Script)]
+	}
+
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	if err != nil {
 		return nil, fmt.Errorf("build vhtlc tree: %w", err)
@@ -221,6 +239,7 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		unilateralClaimLeafIndex:                scriptToIndex[string(unilateralClaimScript)],
 		unilateralRefundLeafIndex:               scriptToIndex[string(unilateralRefundScript)],
 		unilateralRefundWithoutReceiverLeafIndex: scriptToIndex[string(unilateralRefundWithoutReceiverScript)],
+		orderedNodes: ordered,
 	}, nil
 }
 
@@ -302,6 +321,12 @@ func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
 	}
 
 	return &SpendPath{SpendInfo: info}, nil
+}
+
+// OrderedNodes returns the AST nodes in canonical leaf order,
+// matching the Leaves slice indices.
+func (p *VHTLCPolicy) OrderedNodes() []Node {
+	return p.orderedNodes
 }
 
 // PkScript returns the P2TR pkScript for the vHTLC output.
