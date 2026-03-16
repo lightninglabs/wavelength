@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/tlv"
@@ -302,6 +303,16 @@ func (m *SubmitOORResponse) ToProto() proto.Message {
 	return resp
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch. Uses the same method name as the request RPC so the
+// client's EventRouter can match on a single (Service, Method) pair.
+func (m *SubmitOORResponse) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodSubmitPackage,
+	}
+}
+
 // FinalizeOORRequest requests finalizing an existing OOR transfer session.
 //
 // Finalize package vocabulary:
@@ -454,6 +465,16 @@ func (m *FinalizeOORResponse) ToProto() proto.Message {
 	return oorpb.NewFinalizePackageResponse(
 		chainhash.Hash(m.SessionID),
 	)
+}
+
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch. Uses the same method name as the request RPC so the
+// client's EventRouter can match on a single (Service, Method) pair.
+func (m *FinalizeOORResponse) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: oorpb.ServiceName,
+		Method:  oorpb.MethodFinalizePackage,
+	}
 }
 
 // newOORActorCodec builds the durable mailbox codec for the coordinator.

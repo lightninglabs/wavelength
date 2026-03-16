@@ -282,10 +282,14 @@ func (d *InProcessOutboxDriver) handleLockInputs(ctx context.Context,
 
 // handleValidateSubmit validates the submit package and returns an inbox event
 // indicating success/failure.
+//
+// Submit validation is structural at this stage. The Ark PSBT carries the
+// client-selected collaborative owner leaf, so full script-valid spends are
+// only expected after finalize.
 func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 	msg *ValidateSubmitReq) ([]Event, error) {
 
-	validated, err := oorlib.ValidateSubmitPackageSigned(
+	validated, err := oorlib.ValidateSubmitPackage(
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {

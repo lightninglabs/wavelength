@@ -264,9 +264,11 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		return nil, fmt.Errorf("ark psbt must be provided")
 	}
 
-	// Run submit validation before we touch lock state. Stateful/ownership
-	// checks remain at the outbox boundary.
-	validated, err := oorlib.ValidateSubmitPackageSigned(
+	// Run structural submit validation before we touch lock state.
+	// Submit packages carry the client-owned collaborative leaf, so the
+	// Ark PSBT is not fully spendable until finalize materializes the
+	// operator side of the package.
+	validated, err := oorlib.ValidateSubmitPackage(
 		msg.ArkPSBT, msg.CheckpointPSBTs,
 	)
 	if err != nil {
