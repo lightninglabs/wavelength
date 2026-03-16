@@ -213,10 +213,27 @@ func methodRegistry() []schemaMethod {
 			Description: "Send via out-of-round transfer",
 			Params: []schemaParam{
 				{
-					Name:        "to",
-					Type:        "string",
-					Required:    true,
-					Description: "recipient address",
+					Name: "to",
+					Type: "string",
+					Description: "recipient address " +
+						"(exactly one of to, pubkey, " +
+						"or pk_script)",
+				},
+				{
+					Name: "pubkey",
+					Type: "string",
+					Description: "recipient 32-byte " +
+						"x-only pubkey hex (exactly " +
+						"one of to, pubkey, or " +
+						"pk_script)",
+				},
+				{
+					Name: "pk_script",
+					Type: "string",
+					Description: "recipient raw " +
+						"pk_script hex (exactly one " +
+						"of to, pubkey, or " +
+						"pk_script)",
 				},
 				{
 					Name:        "amount",
