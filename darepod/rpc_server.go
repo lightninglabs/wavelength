@@ -931,19 +931,20 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 			)
 		}
 
-		tapKey, err := scripts.VTXOTapKey(
+		pkScript, err := BuildPubKeyVTXOReceiveScript(
 			recipientKey, terms.PubKey,
 			terms.VTXOExitDelay,
 		)
 		if err != nil {
 			return nil, status.Errorf(
 				codes.Internal,
-				"unable to derive VTXO tap key: %v",
+				"unable to derive VTXO receive "+
+					"script: %v",
 				err,
 			)
 		}
 
-		return txscript.PayToTaprootScript(tapKey)
+		return pkScript, nil
 
 	case *daemonrpc.Output_PkScript:
 		if len(d.PkScript) == 0 {
