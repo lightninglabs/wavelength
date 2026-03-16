@@ -16,21 +16,11 @@ type IncomingOORFetcher func(ctx context.Context,
 	pkScript []byte, afterEventID uint64,
 	limit uint32) (*arkrpc.ListOORRecipientEventsByScriptResponse, error)
 
-// AdaptIncomingOOREvent converts a lightweight IncomingOOREvent
-// notification into a DriveEventRequest by querying the indexer for
-// the full Ark PSBT and checkpoint data.
-//
-// This function implements the notification→query pattern:
-//  1. Parse session ID from the notification
-//  2. Query indexer for the OOR recipient event with Ark PSBT
-//  3. Parse Ark PSBT and checkpoint PSBTs from the response
-//  4. Construct IncomingTransferEvent with full data
-//
-// It is used by both the production darepod route handler and the
-// systest route handler to ensure identical behavior.
-func AdaptIncomingOOREvent(ctx context.Context,
-	evt *arkrpc.IncomingOOREvent,
-	fetcher IncomingOORFetcher) (*DriveEventRequest, error) {
+// NewResolveIncomingTransferRequest converts a lightweight IncomingOOREvent
+// notification into a durable actor request that can be persisted without
+// blocking mailbox ingress on a follow-up indexer query.
+func NewResolveIncomingTransferRequest(evt *arkrpc.IncomingOOREvent) (
+	*ResolveIncomingTransferRequest, error) {
 
 	if evt == nil {
 		return nil, fmt.Errorf("nil IncomingOOREvent")
@@ -41,14 +31,26 @@ func AdaptIncomingOOREvent(ctx context.Context,
 		return nil, fmt.Errorf("parse session id: %w", err)
 	}
 
-	// Query the indexer for the full package data. The
-	// notification is just a hint — the query returns the Ark
-	// PSBT and checkpoint PSBTs.
+	return &ResolveIncomingTransferRequest{
+		SessionID:         SessionID(*sessionID),
+		RecipientPkScript: append([]byte(nil), evt.GetRecipientPkScript()...),
+		RecipientEventID:  evt.GetRecipientEventId(),
+	}, nil
+}
+
+// ResolveIncomingTransferEvent queries the indexer for full OOR package data
+// given a durable incoming-transfer hint and returns the complete incoming
+// transfer event for the receive FSM.
+func ResolveIncomingTransferEvent(ctx context.Context, sessionID SessionID,
+	recipientPkScript []byte, recipientEventID uint64,
+	fetcher IncomingOORFetcher) (*IncomingTransferEvent, error) {
+
+	if fetcher == nil {
+		return nil, fmt.Errorf("incoming OOR fetcher not configured")
+	}
+
 	resp, err := fetcher(
-		ctx,
-		evt.GetRecipientPkScript(),
-		evt.GetRecipientEventId()-1,
-		1,
+		ctx, recipientPkScript, recipientEventID-1, 1,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -85,12 +87,44 @@ func AdaptIncomingOOREvent(ctx context.Context,
 		checkpoints = append(checkpoints, cp)
 	}
 
+	return &IncomingTransferEvent{
+		SessionID:            sessionID,
+		ArkPSBT:              arkPSBT,
+		FinalCheckpointPSBTs: checkpoints,
+	}, nil
+}
+
+// AdaptIncomingOOREvent converts a lightweight IncomingOOREvent
+// notification into a DriveEventRequest by querying the indexer for
+// the full Ark PSBT and checkpoint data.
+//
+// This function implements the notification→query pattern:
+//  1. Parse session ID from the notification
+//  2. Query indexer for the OOR recipient event with Ark PSBT
+//  3. Parse Ark PSBT and checkpoint PSBTs from the response
+//  4. Construct IncomingTransferEvent with full data
+//
+// It is used by both the production darepod route handler and the
+// systest route handler to ensure identical behavior.
+func AdaptIncomingOOREvent(ctx context.Context,
+	evt *arkrpc.IncomingOOREvent,
+	fetcher IncomingOORFetcher) (*DriveEventRequest, error) {
+
+	req, err := NewResolveIncomingTransferRequest(evt)
+	if err != nil {
+		return nil, err
+	}
+
+	incomingEvent, err := ResolveIncomingTransferEvent(
+		ctx, req.SessionID, req.RecipientPkScript,
+		req.RecipientEventID, fetcher,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &DriveEventRequest{
-		SessionID: SessionID(*sessionID),
-		Event: &IncomingTransferEvent{
-			SessionID:            SessionID(*sessionID),
-			ArkPSBT:              arkPSBT,
-			FinalCheckpointPSBTs: checkpoints,
-		},
+		SessionID: req.SessionID,
+		Event:     incomingEvent,
 	}, nil
 }

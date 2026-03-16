@@ -18,6 +18,10 @@ type StateTransition = protofsm.StateTransition[
 // when state transitions emit new events or outbox messages.
 type EmittedEvent = protofsm.EmittedEvent[Event, OutboxEvent]
 
+// SessionState is the common protofsm state interface implemented by both the
+// outgoing and incoming OOR session state machines.
+type SessionState = protofsm.State[Event, OutboxEvent, *Environment]
+
 // StateMachine is a type alias for the OOR client transfer FSM.
 type StateMachine = protofsm.StateMachine[
 	Event, OutboxEvent, *Environment,

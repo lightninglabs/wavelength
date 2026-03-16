@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -172,6 +173,11 @@ type IncomingHandledEvent struct {
 	// persisted during materialization. The OOR actor forwards these
 	// to the VTXO manager so it can spawn monitoring actors.
 	MaterializedVTXOs []*vtxo.Descriptor
+
+	// MaterializedOutpoints identifies the persisted VTXOs by outpoint so
+	// durable callback delivery can round-trip the event without embedding
+	// the full descriptor payload in the mailbox record.
+	MaterializedOutpoints []wire.OutPoint
 }
 
 // eventSealed marks this as implementing the sealed Event interface.

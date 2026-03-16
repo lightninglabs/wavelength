@@ -40,12 +40,30 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 	log.InfoS(ctx, "Creating receive session",
 		slog.String("session_id", sessionID.String()))
 
+	return newReceiveSessionWithState(
+		ctx, sessionID, &ReceiveIdle{},
+	)
+}
+
+// newReceiveSessionWithState creates an incoming-transfer FSM session with
+// the provided initial receive state.
+func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
+	state SessionState) (*ReceiveSession, error) {
+
+	if sessionID == (SessionID{}) {
+		return nil, fmt.Errorf("session id must be provided")
+	}
+
+	if state == nil {
+		return nil, fmt.Errorf("state must be provided")
+	}
+
 	env := &Environment{SessionID: sessionID}
 
 	fsmCfg := StateMachineCfg{
 		Logger:        log.WithPrefix(sessionID.LogPrefix()),
 		ErrorReporter: newContextErrorReporter(ctx, sessionID.LogPrefix()),
-		InitialState:  &ReceiveIdle{},
+		InitialState:  state,
 		Env:           env,
 	}
 
