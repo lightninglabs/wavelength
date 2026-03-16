@@ -90,6 +90,7 @@ func TestOORClientActorDriveEventAppliesEvent(t *testing.T) {
 	}}
 
 	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &noopOutboxHandler{},
 		DeliveryStore: newTestDeliveryStore(t),
 		ActorID:       "oor-drive-event-happy",
 	})

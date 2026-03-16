@@ -73,26 +73,6 @@ var _ interface {
 	Tell(context.Context, vtxo.ManagerMsg) error
 } = (*mockVTXOManagerRef)(nil)
 
-type mockOORDurableRef struct {
-	ch chan OORDurableMsg
-}
-
-// ID returns the stable ref identifier for mockOORDurableRef.
-func (m *mockOORDurableRef) ID() string {
-	return "mock-oor-self"
-}
-
-// Tell records an OOR durable message for assertions.
-func (m *mockOORDurableRef) Tell(_ context.Context, msg OORDurableMsg) error {
-	m.ch <- msg
-	return nil
-}
-
-var _ interface {
-	ID() string
-	Tell(context.Context, OORDurableMsg) error
-} = (*mockOORDurableRef)(nil)
-
 // buildIncomingResolveResponse creates an indexer response carrying the full
 // Ark/checkpoint package for a lightweight incoming-transfer hint.
 func buildIncomingResolveResponse(t *testing.T) (
@@ -245,6 +225,7 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	managerRef := &mockVTXOManagerRef{}
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
+			OutboxHandler: &noopOutboxHandler{},
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-drive-incoming-handled-notify",
 			VTXOManager:   managerRef,
@@ -323,6 +304,7 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 	managerRef := &mockVTXOManagerRef{}
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
+			OutboxHandler: &noopOutboxHandler{},
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-drive-incoming-handled-reload",
 			VTXOManager:   managerRef,
@@ -425,41 +407,26 @@ func TestRetryBackoffProcessEventRetryDueRequiresSnapshot(t *testing.T) {
 	require.ErrorContains(t, err, "resume snapshot must be provided")
 }
 
-// TestOORDurableBehaviorHandleResolveIncomingTransferAsync verifies the actor
-// checkpoints an incoming resolve-pending state and returns before the
-// follow-up indexer fetch completes.
-func TestOORDurableBehaviorHandleResolveIncomingTransferAsync(
+// TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary verifies the
+// actor checkpoints an incoming resolve-pending state, then enqueues the
+// durable unary request needed to resolve the full Ark package after commit.
+func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
 	t *testing.T) {
 
 	t.Parallel()
 
 	ctx := t.Context()
 
-	response, sessionID, recipientPkScript, recipientEventID :=
+	_, sessionID, recipientPkScript, recipientEventID :=
 		buildIncomingResolveResponse(t)
-
-	fetchStarted := make(chan struct{}, 1)
-	unblockFetch := make(chan struct{})
-	callbackRef := &mockOORDurableRef{
-		ch: make(chan OORDurableMsg, 1),
-	}
+	serverConn := newMockServerConnRef(t)
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-resolve-incoming-async",
-			IncomingFetcher: func(_ context.Context, _ []byte,
-				_ uint64, _ uint32) (
-				*arkrpc.ListOORRecipientEventsByScriptResponse,
-				error) {
-
-				fetchStarted <- struct{}{}
-				<-unblockFetch
-
-				return response, nil
-			},
+			ServerConn:    serverConn,
 		},
 		sessions: make(map[SessionID]*sessionHandle),
-		selfRef:  callbackRef,
 	}
 
 	resp := behavior.handleResolveIncomingTransfer(
@@ -482,38 +449,20 @@ func TestOORDurableBehaviorHandleResolveIncomingTransferAsync(
 	require.Equal(t, recipientPkScript, resolving.RecipientPkScript)
 	require.Equal(t, recipientEventID, resolving.RecipientEventID)
 
-	select {
-	case <-fetchStarted:
-	case <-time.After(time.Second):
-		t.Fatal("fetch did not start")
-	}
-
-	select {
-	case msg := <-callbackRef.ch:
-		t.Fatalf("unexpected callback before fetch unblocked: %T", msg)
-	default:
-	}
-
-	close(unblockFetch)
-
-	var callbackMsg OORDurableMsg
-	require.Eventually(t, func() bool {
-		select {
-		case callbackMsg = <-callbackRef.ch:
-			return true
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
-
-	driveReq, ok := callbackMsg.(*DriveEventRequest)
-	require.True(t, ok)
-	require.Equal(t, sessionID, driveReq.SessionID)
-	require.IsType(t, &IncomingTransferEvent{}, driveReq.Event)
+	unaryReq := serverConn.lastRecipientQuery()
+	require.Equal(t, recipientPkScript, unaryReq.PkScript)
+	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
+	require.Equal(t, uint32(1), unaryReq.Limit)
+	require.Equal(
+		t,
+		IncomingResolveCorrelationID(sessionID, recipientEventID),
+		unaryReq.CorrelationID,
+	)
 }
 
 // TestOORDurableBehaviorResumeRestoredSessionsResolvePending verifies restart
-// replay re-schedules incoming-hint resolution for resolve-pending sessions.
+// replay re-emits the durable unary needed to resolve an incoming transfer
+// hint for resolve-pending sessions.
 func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 	t *testing.T) {
 
@@ -521,7 +470,7 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 
 	ctx := t.Context()
 
-	response, sessionID, recipientPkScript, recipientEventID :=
+	_, sessionID, recipientPkScript, recipientEventID :=
 		buildIncomingResolveResponse(t)
 
 	session, err := newReceiveSessionWithState(
@@ -533,23 +482,12 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 	)
 	require.NoError(t, err)
 
-	unblockFetch := make(chan struct{})
-	callbackRef := &mockOORDurableRef{
-		ch: make(chan OORDurableMsg, 1),
-	}
+	serverConn := newMockServerConnRef(t)
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-resume-incoming-resolve",
-			IncomingFetcher: func(_ context.Context, _ []byte,
-				_ uint64, _ uint32) (
-				*arkrpc.ListOORRecipientEventsByScriptResponse,
-				error) {
-
-				<-unblockFetch
-
-				return response, nil
-			},
+			ServerConn:    serverConn,
 		},
 		sessions: map[SessionID]*sessionHandle{
 			sessionID: {
@@ -557,26 +495,18 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 				kind: sessionKindIncoming,
 			},
 		},
-		selfRef: callbackRef,
 	}
 
 	err = behavior.resumeRestoredSessions(ctx)
 	require.NoError(t, err)
 
-	close(unblockFetch)
-
-	var callbackMsg OORDurableMsg
-	require.Eventually(t, func() bool {
-		select {
-		case callbackMsg = <-callbackRef.ch:
-			return true
-		default:
-			return false
-		}
-	}, time.Second, 10*time.Millisecond)
-
-	driveReq, ok := callbackMsg.(*DriveEventRequest)
-	require.True(t, ok)
-	require.Equal(t, sessionID, driveReq.SessionID)
-	require.IsType(t, &IncomingTransferEvent{}, driveReq.Event)
+	unaryReq := serverConn.lastRecipientQuery()
+	require.Equal(t, recipientPkScript, unaryReq.PkScript)
+	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
+	require.Equal(t, uint32(1), unaryReq.Limit)
+	require.Equal(
+		t,
+		IncomingResolveCorrelationID(sessionID, recipientEventID),
+		unaryReq.CorrelationID,
+	)
 }

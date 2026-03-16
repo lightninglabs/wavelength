@@ -12,14 +12,22 @@ resume semantics.
 - `Environment` — FSM environment providing SessionID and external system access.
 - `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing, persistence).
 - `SignArkPSBT` — Signs Ark PSBT inputs using the client key on the checkpoint 2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash across multiple inputs.
-- `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler, ServerConn, PackageStore, DeliveryStore, VTXOManager, IncomingFetcher).
+- `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
+  ServerConn, PackageStore, DeliveryStore, VTXOManager).
 - `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution.
-- `ResolveIncomingTransferRequest` — TLV-durable message persisted by the ingress route, resolved asynchronously by the actor via `IncomingFetcher`.
-- `IncomingOORFetcher` — Callback type for querying the indexer for full Ark PSBT data from a lightweight notification hint.
+- `ResolveIncomingTransferRequest` — TLV-durable message persisted by the
+  ingress route, resumed via a durable unary indexer query.
+- `QueryIncomingTransferRequest` / `QueryIncomingMetadataRequest` — durable
+  transport outbox events that `oor/actor.go` maps to transport-native
+  durable `serverconn` query messages after commit.
+- `serverconn.SendListOORRecipientEventsByScriptRequest` /
+  `serverconn.SendListVTXOsByScriptsRequest` — durable post-commit transport
+  messages used to resolve incoming hints and authoritative metadata.
 - `AdaptIncomingOOREvent` / `NewResolveIncomingTransferRequest` — Shared adapters for the notification→query pattern used by both darepod and systest.
 - `NewOutboxHandler` / `OutboxHandlerConfig` — Shared factory for the standard two-layer outbox handler chain (LocalPersistenceOutboxHandler → SigningOutboxHandler).
-- `ReceiveResolving` — FSM state indicating a durable hint is persisted and pending async indexer resolution.
+- `ReceiveResolving` — FSM state indicating a durable hint is persisted and
+  pending the post-commit unary indexer resolution.
 
 ## Relationships
 
@@ -32,7 +40,11 @@ resume semantics.
   - → `vtxo` manager: `VTXOsMaterializedNotification` (after incoming VTXOs are durably materialized)
 - **Receives**:
   - ← `serverconn` (via EventRouter): `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `ResolveIncomingTransferRequest`
-  - ← self (async callback via `CallbackRef`): `DriveEventRequest{IncomingTransferEvent}`, `DriveEventRequest{IncomingHandledEvent}`
+  - ← `serverconn` durable unary response routes:
+    `DriveEventRequest{IncomingTransferEvent}`,
+    `DriveEventRequest{IncomingMetadataResolvedEvent}`
+  - ← local persistence callback path:
+    `DriveEventRequest{IncomingHandledEvent}`
   - ← API: `StartTransferRequest`, `DriveEventRequest`, `RestoreSessionRequest`, `ResumeSessionRequest`
 
 ## Invariants
@@ -43,7 +55,10 @@ resume semantics.
 - After checkpoint signature, client must resume and obtain byte-identical co-signed PSBTs (deterministic construction).
 - Transport outbox events (submit, finalize, ack) are Tell'd to ServerConn within the actor's DB transaction for atomic enqueue (same-DB tx joining via `ExecTx`).
 - Package persistence tracks finalized outgoing packages and local input bindings for recovery.
-- Incoming receive never performs synchronous unary RPCs inside the durable actor DB transaction. All indexer queries are scheduled asynchronously and delivered back as fresh durable messages.
+- Incoming receive never performs synchronous unary RPCs inside the durable
+  actor DB transaction. Both incoming-hint resolution and authoritative
+  metadata lookup are emitted as transport-native durable `serverconn`
+  query messages and delivered back as fresh durable messages.
 - `LocalPersistenceOutboxHandler.CallbackRef` receives async materialization results so indexer queries run outside the actor tx, preventing SQLite write-lock starvation.
 
 ## Deep Docs

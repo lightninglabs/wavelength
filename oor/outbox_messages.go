@@ -266,6 +266,32 @@ func (m *IncomingTransferNotification) outboxType() string {
 // outboxSealed marks this as implementing the sealed OutboxEvent interface.
 func (m *IncomingTransferNotification) outboxSealed() {}
 
+// QueryIncomingTransferRequest asks the transport layer to resolve a
+// lightweight incoming OOR hint into the full Ark/checkpoint package for this
+// session.
+type QueryIncomingTransferRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the incoming transfer session.
+	SessionID SessionID
+
+	// RecipientPkScript identifies the locally controlled output that the
+	// server notified us about.
+	RecipientPkScript []byte
+
+	// RecipientEventID identifies the authoritative recipient event row to
+	// resolve from the indexer.
+	RecipientEventID uint64
+}
+
+// outboxType returns a stable identifier for this outbox message.
+func (m *QueryIncomingTransferRequest) outboxType() string {
+	return "QueryIncomingTransferRequest"
+}
+
+// outboxSealed marks this as implementing the sealed OutboxEvent interface.
+func (m *QueryIncomingTransferRequest) outboxSealed() {}
+
 // QueryIncomingMetadataRequest asks the transport layer to query the
 // authoritative indexer inventory for the incoming Ark outputs referenced by
 // this session.
