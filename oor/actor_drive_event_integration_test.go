@@ -3,11 +3,16 @@ package oor
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/darepo-client/vtxo"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,6 +40,82 @@ func (h *retryDueIntegrationHandler) Handle(_ context.Context,
 }
 
 var _ OutboxHandler = (*retryDueIntegrationHandler)(nil)
+
+type mockVTXOManagerRef struct {
+	mu       sync.Mutex
+	messages []vtxo.ManagerMsg
+}
+
+func (m *mockVTXOManagerRef) ID() string {
+	return "mock-vtxo-manager"
+}
+
+func (m *mockVTXOManagerRef) Tell(_ context.Context,
+	msg vtxo.ManagerMsg) error {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.messages = append(m.messages, msg)
+
+	return nil
+}
+
+func (m *mockVTXOManagerRef) sent() []vtxo.ManagerMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]vtxo.ManagerMsg(nil), m.messages...)
+}
+
+var _ interface {
+	ID() string
+	Tell(context.Context, vtxo.ManagerMsg) error
+} = (*mockVTXOManagerRef)(nil)
+
+// buildIncomingResolveResponse creates an indexer response carrying the full
+// Ark/checkpoint package for a lightweight incoming-transfer hint.
+func buildIncomingResolveResponse(t *testing.T) (
+	*arkrpc.ListOORRecipientEventsByScriptResponse,
+	SessionID, []byte, uint64,
+) {
+
+	t.Helper()
+
+	arkPSBT, finalCheckpoints, recipients, _, _, _ :=
+		buildTestIncomingMaterialization(t)
+
+	arkRaw, err := psbtutil.Serialize(arkPSBT)
+	require.NoError(t, err)
+
+	checkpointRaws := make([][]byte, 0, len(finalCheckpoints))
+	for _, checkpoint := range finalCheckpoints {
+		checkpointRaw, checkpointErr := psbtutil.Serialize(
+			checkpoint,
+		)
+		require.NoError(t, checkpointErr)
+
+		checkpointRaws = append(checkpointRaws, checkpointRaw)
+	}
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	recipient := recipients[0]
+
+	return &arkrpc.ListOORRecipientEventsByScriptResponse{
+		Events: []*arkrpc.OORRecipientEvent{
+			{
+				RecipientPkScript: recipient.PkScript,
+				EventId:           7,
+				SessionId:         sessionID[:],
+				OutputIndex:       recipient.OutputIndex,
+				Value:             uint64(recipient.Value),
+				ArkPsbt:           arkRaw,
+				CheckpointPsbts:   checkpointRaws,
+			},
+		},
+		NextCursor: 8,
+	}, sessionID, recipient.PkScript, 7
+}
 
 // TestOORClientActorDriveRetryDueEventDurablePath verifies the retry-due signal
 // can cross the durable actor boundary and re-drive the resumed outbox work.
@@ -100,6 +181,158 @@ func TestOORClientActorDriveRetryDueEventDurablePath(t *testing.T) {
 	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
 	require.IsType(t, &AwaitingFinalizeAccepted{}, stateMsg.State)
+}
+
+// TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager verifies the
+// DriveEventRequest path forwards materialized incoming VTXOs to the manager
+// after the receive-state transition is durably checkpointed.
+func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	session, _, err := DriveIncomingTransferWithCheckpoints(
+		ctx, sessionID, arkPSBT, finalCheckpoints,
+	)
+	require.NoError(t, err)
+
+	desc, err := BuildIncomingVTXODescriptor(
+		arkPSBT, IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				ChainDepth:     len(finalCheckpoints),
+				CreatedHeight:  700,
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	managerRef := &mockVTXOManagerRef{}
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			OutboxHandler: &noopOutboxHandler{},
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-drive-incoming-handled-notify",
+			VTXOManager:   managerRef,
+		},
+		sessions: map[SessionID]*sessionHandle{
+			sessionID: {
+				FSM:  session.FSM,
+				kind: sessionKindIncoming,
+			},
+		},
+	}
+
+	resp := behavior.handleDriveEvent(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event: &IncomingHandledEvent{
+			MaterializedVTXOs: []*vtxo.Descriptor{desc},
+		},
+	})
+	require.True(t, resp.IsOk())
+
+	sent := managerRef.sent()
+	require.Len(t, sent, 1)
+
+	notification, ok := sent[0].(*vtxo.VTXOsMaterializedNotification)
+	require.True(t, ok)
+	require.Len(t, notification.VTXOs, 1)
+	require.Equal(t, desc.Outpoint, notification.VTXOs[0].Outpoint)
+
+	state, err := session.FSM.CurrentState()
+	require.NoError(t, err)
+	require.IsType(t, &ReceiveAwaitingAck{}, state)
+}
+
+// TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore verifies the
+// durable callback path can reload incoming VTXOs by outpoint after the event
+// round-trips through the mailbox without attached descriptors.
+func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey := buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	session, _, err := DriveIncomingTransferWithCheckpoints(
+		ctx, sessionID, arkPSBT, finalCheckpoints,
+	)
+	require.NoError(t, err)
+
+	desc, err := BuildIncomingVTXODescriptor(
+		arkPSBT, IncomingVTXOConfig{
+			OutputIndex: recipients[0].OutputIndex,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: recipientKey.PubKey(),
+			},
+			OperatorKey: operatorKey,
+			ExitDelay:   10,
+			Metadata: IncomingVTXOMetadata{
+				RoundID:        "round-incoming",
+				CommitmentTxID: parentCommitment,
+				BatchExpiry:    1000,
+				TreeDepth:      1,
+				ChainDepth:     len(finalCheckpoints),
+				CreatedHeight:  700,
+			},
+		},
+	)
+	require.NoError(t, err)
+
+	store := newTestVTXOStore()
+	require.NoError(t, store.SaveVTXO(ctx, desc))
+
+	managerRef := &mockVTXOManagerRef{}
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			OutboxHandler: &noopOutboxHandler{},
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-drive-incoming-handled-reload",
+			VTXOManager:   managerRef,
+			VTXOStore:     store,
+		},
+		sessions: map[SessionID]*sessionHandle{
+			sessionID: {
+				FSM:  session.FSM,
+				kind: sessionKindIncoming,
+			},
+		},
+	}
+
+	resp := behavior.handleDriveEvent(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event: &IncomingHandledEvent{
+			MaterializedOutpoints: []wire.OutPoint{desc.Outpoint},
+		},
+	})
+	require.True(t, resp.IsOk())
+
+	sent := managerRef.sent()
+	require.Len(t, sent, 1)
+
+	notification, ok := sent[0].(*vtxo.VTXOsMaterializedNotification)
+	require.True(t, ok)
+	require.Len(t, notification.VTXOs, 1)
+	require.Equal(t, desc.Outpoint, notification.VTXOs[0].Outpoint)
 }
 
 // TestOutboxForStateRetryBackoff asserts retry-backoff state emits a
@@ -172,4 +405,108 @@ func TestRetryBackoffProcessEventRetryDueRequiresSnapshot(t *testing.T) {
 	)
 	require.Nil(t, transition)
 	require.ErrorContains(t, err, "resume snapshot must be provided")
+}
+
+// TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary verifies the
+// actor checkpoints an incoming resolve-pending state, then enqueues the
+// durable unary request needed to resolve the full Ark package after commit.
+func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	_, sessionID, recipientPkScript, recipientEventID :=
+		buildIncomingResolveResponse(t)
+	serverConn := newMockServerConnRef(t)
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-resolve-incoming-async",
+			ServerConn:    serverConn,
+		},
+		sessions: make(map[SessionID]*sessionHandle),
+	}
+
+	resp := behavior.handleResolveIncomingTransfer(
+		ctx, &ResolveIncomingTransferRequest{
+			SessionID:         sessionID,
+			RecipientPkScript: recipientPkScript,
+			RecipientEventID:  recipientEventID,
+		},
+	)
+	require.True(t, resp.IsOk())
+
+	handle := behavior.sessions[sessionID]
+	require.NotNil(t, handle)
+
+	state, err := handle.currentSessionState()
+	require.NoError(t, err)
+
+	resolving, ok := state.(*ReceiveResolving)
+	require.True(t, ok)
+	require.Equal(t, recipientPkScript, resolving.RecipientPkScript)
+	require.Equal(t, recipientEventID, resolving.RecipientEventID)
+
+	unaryReq := serverConn.lastRecipientQuery()
+	require.Equal(t, recipientPkScript, unaryReq.PkScript)
+	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
+	require.Equal(t, uint32(1), unaryReq.Limit)
+	require.Equal(
+		t,
+		IncomingResolveCorrelationID(sessionID, recipientEventID),
+		unaryReq.CorrelationID,
+	)
+}
+
+// TestOORDurableBehaviorResumeRestoredSessionsResolvePending verifies restart
+// replay re-emits the durable unary needed to resolve an incoming transfer
+// hint for resolve-pending sessions.
+func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	_, sessionID, recipientPkScript, recipientEventID :=
+		buildIncomingResolveResponse(t)
+
+	session, err := newReceiveSessionWithState(
+		ctx, sessionID, &ReceiveResolving{
+			SessionID:         sessionID,
+			RecipientPkScript: recipientPkScript,
+			RecipientEventID:  recipientEventID,
+		},
+	)
+	require.NoError(t, err)
+
+	serverConn := newMockServerConnRef(t)
+	behavior := &oorDurableBehavior{
+		cfg: ClientActorCfg{
+			DeliveryStore: newTestDeliveryStore(t),
+			ActorID:       "oor-resume-incoming-resolve",
+			ServerConn:    serverConn,
+		},
+		sessions: map[SessionID]*sessionHandle{
+			sessionID: {
+				FSM:  session.FSM,
+				kind: sessionKindIncoming,
+			},
+		},
+	}
+
+	err = behavior.resumeRestoredSessions(ctx)
+	require.NoError(t, err)
+
+	unaryReq := serverConn.lastRecipientQuery()
+	require.Equal(t, recipientPkScript, unaryReq.PkScript)
+	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
+	require.Equal(t, uint32(1), unaryReq.Limit)
+	require.Equal(
+		t,
+		IncomingResolveCorrelationID(sessionID, recipientEventID),
+		unaryReq.CorrelationID,
+	)
 }

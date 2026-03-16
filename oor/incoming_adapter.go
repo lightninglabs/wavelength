@@ -1,8 +1,9 @@
 package oor
 
 import (
-	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -10,11 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )
 
-// IncomingOORFetcher queries the indexer for full OOR package data
-// given a lightweight notification hint.
-type IncomingOORFetcher func(ctx context.Context,
-	pkScript []byte, afterEventID uint64,
-	limit uint32) (*arkrpc.ListOORRecipientEventsByScriptResponse, error)
+const incomingResolveCorrelationPrefix = "oor-incoming-resolve:"
 
 // NewResolveIncomingTransferRequest converts a lightweight IncomingOOREvent
 // notification into a durable actor request that can be persisted without
@@ -38,50 +35,100 @@ func NewResolveIncomingTransferRequest(evt *arkrpc.IncomingOOREvent) (
 	}, nil
 }
 
-// ResolveIncomingTransferEvent queries the indexer for full OOR package data
-// given a durable incoming-transfer hint and returns the complete incoming
-// transfer event for the receive FSM.
-func ResolveIncomingTransferEvent(ctx context.Context, sessionID SessionID,
-	recipientPkScript []byte, recipientEventID uint64,
-	fetcher IncomingOORFetcher) (*IncomingTransferEvent, error) {
+// IncomingResolveCorrelationID returns the stable unary correlation ID used
+// for durable incoming-transfer resolution queries for the given session and
+// recipient event.
+func IncomingResolveCorrelationID(sessionID SessionID,
+	recipientEventID uint64) string {
 
-	if fetcher == nil {
-		return nil, fmt.Errorf("incoming OOR fetcher not configured")
+	return incomingResolveCorrelationPrefix +
+		chainhash.Hash(sessionID).String() + ":" +
+		strconv.FormatUint(recipientEventID, 10)
+}
+
+// ParseIncomingResolveCorrelationID decodes a durable incoming-transfer
+// resolution query correlation ID back into the OOR session ID and recipient
+// event ID.
+func ParseIncomingResolveCorrelationID(correlationID string) (
+	SessionID, uint64, error) {
+
+	if len(correlationID) <= len(incomingResolveCorrelationPrefix) ||
+		correlationID[:len(incomingResolveCorrelationPrefix)] !=
+			incomingResolveCorrelationPrefix {
+
+		return SessionID{}, 0, fmt.Errorf("unexpected incoming resolve "+
+			"correlation id: %q", correlationID)
 	}
 
-	resp, err := fetcher(
-		ctx, recipientPkScript, recipientEventID-1, 1,
-	)
+	suffix := correlationID[len(incomingResolveCorrelationPrefix):]
+	parts := strings.SplitN(suffix, ":", 2)
+	if len(parts) != 2 {
+		return SessionID{}, 0, fmt.Errorf("unexpected incoming resolve "+
+			"correlation id payload: %q", suffix)
+	}
+
+	hash, err := chainhash.NewHashFromStr(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf(
-			"fetch OOR package for session %x: %w",
-			sessionID[:], err,
-		)
+		return SessionID{}, 0, fmt.Errorf("parse incoming resolve "+
+			"session id: %w", err)
+	}
+
+	recipientEventID, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return SessionID{}, 0, fmt.Errorf("parse incoming resolve "+
+			"event id: %w", err)
+	}
+
+	return SessionID(*hash), recipientEventID, nil
+}
+
+// IncomingTransferEventFromResponse validates and converts one
+// ListOORRecipientEventsByScriptResponse payload into the complete incoming
+// transfer event expected by the receive FSM.
+func IncomingTransferEventFromResponse(sessionID SessionID,
+	recipientEventID uint64,
+	resp *arkrpc.ListOORRecipientEventsByScriptResponse) (
+	*IncomingTransferEvent, error) {
+
+	if resp == nil {
+		return nil, fmt.Errorf("incoming transfer response must be " +
+			"provided")
 	}
 
 	if len(resp.GetEvents()) == 0 {
-		return nil, fmt.Errorf(
-			"no events found for session %x",
-			sessionID[:],
-		)
+		return nil, fmt.Errorf("no events found for session %x",
+			sessionID[:])
 	}
 
 	recipientEvt := resp.Events[0]
+	if recipientEvt == nil {
+		return nil, fmt.Errorf("incoming transfer event must be provided")
+	}
 
-	// Parse the Ark PSBT from the query response.
+	if recipientEvt.GetEventId() != recipientEventID {
+		return nil, fmt.Errorf("unexpected recipient event id: got %d, "+
+			"want %d", recipientEvt.GetEventId(), recipientEventID)
+	}
+
+	eventSessionID, err := chainhash.NewHash(recipientEvt.GetSessionId())
+	if err != nil {
+		return nil, fmt.Errorf("parse event session id: %w", err)
+	}
+	if SessionID(*eventSessionID) != sessionID {
+		return nil, fmt.Errorf("incoming transfer session mismatch")
+	}
+
 	arkPSBT, err := psbtutil.Parse(recipientEvt.GetArkPsbt())
 	if err != nil {
 		return nil, fmt.Errorf("parse ark psbt: %w", err)
 	}
 
-	// Parse checkpoint PSBTs.
-	var checkpoints []*psbt.Packet
+	checkpoints := make([]*psbt.Packet, 0,
+		len(recipientEvt.GetCheckpointPsbts()))
 	for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
 		cp, cpErr := psbtutil.Parse(cpRaw)
 		if cpErr != nil {
-			return nil, fmt.Errorf(
-				"parse checkpoint: %w", cpErr,
-			)
+			return nil, fmt.Errorf("parse checkpoint: %w", cpErr)
 		}
 
 		checkpoints = append(checkpoints, cp)
@@ -91,40 +138,5 @@ func ResolveIncomingTransferEvent(ctx context.Context, sessionID SessionID,
 		SessionID:            sessionID,
 		ArkPSBT:              arkPSBT,
 		FinalCheckpointPSBTs: checkpoints,
-	}, nil
-}
-
-// AdaptIncomingOOREvent converts a lightweight IncomingOOREvent
-// notification into a DriveEventRequest by querying the indexer for
-// the full Ark PSBT and checkpoint data.
-//
-// This function implements the notification→query pattern:
-//  1. Parse session ID from the notification
-//  2. Query indexer for the OOR recipient event with Ark PSBT
-//  3. Parse Ark PSBT and checkpoint PSBTs from the response
-//  4. Construct IncomingTransferEvent with full data
-//
-// It is used by both the production darepod route handler and the
-// systest route handler to ensure identical behavior.
-func AdaptIncomingOOREvent(ctx context.Context,
-	evt *arkrpc.IncomingOOREvent,
-	fetcher IncomingOORFetcher) (*DriveEventRequest, error) {
-
-	req, err := NewResolveIncomingTransferRequest(evt)
-	if err != nil {
-		return nil, err
-	}
-
-	incomingEvent, err := ResolveIncomingTransferEvent(
-		ctx, req.SessionID, req.RecipientPkScript,
-		req.RecipientEventID, fetcher,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return &DriveEventRequest{
-		SessionID: req.SessionID,
-		Event:     incomingEvent,
 	}, nil
 }

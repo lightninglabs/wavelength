@@ -20,6 +20,10 @@ import (
 const (
 	oorCheckpointStateType = "oor.sessions"
 	oorCheckpointVersion   = 2
+
+	// incomingMetadataQueryLimit is the default page size for durable
+	// ListVTXOsByScripts lookups used by the receive FSM.
+	incomingMetadataQueryLimit uint32 = 128
 )
 
 // OutboxHandler executes FSM outbox requests and returns follow-up events.
@@ -32,11 +36,6 @@ type OutboxHandler interface {
 	Handle(ctx context.Context, sessionID SessionID,
 		outbox OutboxEvent) ([]Event, error)
 }
-
-// IncomingMetadataRPCBuilder builds a durable serverconn unary request for the
-// authoritative incoming metadata query emitted by the receive FSM.
-type IncomingMetadataRPCBuilder func(ctx context.Context,
-	req *QueryIncomingMetadataRequest) (*serverconn.SendUnaryRequest, error)
 
 // ClientActorCfg configures the OORClientActor.
 type ClientActorCfg struct {
@@ -80,14 +79,6 @@ type ClientActorCfg struct {
 	// a callback event is restored from the mailbox without in-memory
 	// descriptor attachments.
 	VTXOStore vtxo.VTXOStore
-
-	// IncomingFetcher resolves lightweight incoming OOR notifications into the
-	// full Ark package by querying the indexer from the actor context.
-	IncomingFetcher IncomingOORFetcher
-
-	// BuildIncomingMetadataRPC constructs the durable serverconn unary request
-	// used to resolve authoritative incoming VTXO metadata after commit.
-	BuildIncomingMetadataRPC IncomingMetadataRPCBuilder
 }
 
 // OORClientActor wraps the outgoing-transfer client FSM in a durable actor
@@ -208,7 +199,6 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 	durable := actor.NewDurableActor(durableCfg)
 	actorRef.durable = durable
 	actorRef.ref = durable.Ref()
-	behavior.selfRef = durable.Ref()
 
 	checkpoint, err := cfg.DeliveryStore.LoadCheckpoint(
 		context.Background(), cfg.ActorID,
@@ -314,8 +304,6 @@ type oorDurableBehavior struct {
 	cfg ClientActorCfg
 
 	sessions map[SessionID]*sessionHandle
-
-	selfRef actor.TellOnlyRef[OORDurableMsg]
 }
 
 // logger returns the configured logger or falls back to extracting from
@@ -554,8 +542,8 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 }
 
 // handleResolveIncomingTransfer durably records a lightweight incoming OOR
-// hint, then resolves the full Ark package asynchronously outside the live
-// durable actor transaction.
+// hint, then emits the transport query needed to resolve the full Ark package
+// after the checkpoint commits.
 func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 	ctx context.Context,
 	req *ResolveIncomingTransferRequest) fn.Result[ActorResp] {
@@ -575,6 +563,7 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 		slog.String("recipient_pk_script",
 			hex.EncodeToString(req.RecipientPkScript)))
 
+	created := false
 	handle, ok := b.sessions[req.SessionID]
 	if !ok {
 		session, err := newReceiveSessionWithState(
@@ -595,6 +584,7 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 			kind: sessionKindIncoming,
 		}
 		b.sessions[req.SessionID] = handle
+		created = true
 
 		err = b.persistCheckpoint(ctx)
 		if err != nil {
@@ -621,83 +611,25 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 		return fn.Ok[ActorResp](&DriveEventResponse{})
 	}
 
-	err = b.scheduleResolveIncomingTransfer(ctx, req)
+	if !created {
+		b.logger(ctx).DebugS(ctx, "Ignoring duplicate incoming "+
+			"resolve request for pending session",
+			slog.String("session_id", req.SessionID.String()))
+
+		return fn.Ok[ActorResp](&DriveEventResponse{})
+	}
+
+	outbox, err := outboxForHandle(handle, state)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	err = b.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
 
 	return fn.Ok[ActorResp](&DriveEventResponse{})
-}
-
-// scheduleResolveIncomingTransfer resolves a lightweight incoming OOR hint
-// outside the live actor transaction, then re-drives the actor with either
-// the resolved IncomingTransferEvent or a terminal FailEvent.
-func (b *oorDurableBehavior) scheduleResolveIncomingTransfer(
-	ctx context.Context,
-	req *ResolveIncomingTransferRequest) error {
-
-	if req == nil {
-		return fmt.Errorf("request must be provided")
-	}
-
-	if b.selfRef == nil {
-		return fmt.Errorf("self ref must be configured")
-	}
-
-	opCtx := actor.WithoutOutboxID(
-		actor.WithoutTx(context.WithoutCancel(ctx)),
-	)
-	sessionID := req.SessionID
-	recipientPkScript := append(
-		[]byte(nil), req.RecipientPkScript...,
-	)
-	recipientEventID := req.RecipientEventID
-
-	go func() {
-		incomingEvent, err := ResolveIncomingTransferEvent(
-			opCtx, sessionID, recipientPkScript,
-			recipientEventID, b.cfg.IncomingFetcher,
-		)
-
-		var msg *DriveEventRequest
-		if err != nil {
-			b.logger(opCtx).WarnS(opCtx,
-				"Resolve incoming transfer hint failed", err,
-				slog.String("session_id", sessionID.String()),
-				slog.Uint64("recipient_event_id",
-					recipientEventID))
-
-			msg = &DriveEventRequest{
-				SessionID: sessionID,
-				Event: &FailEvent{
-					Reason: fmt.Sprintf(
-						"resolve incoming transfer: %v", err,
-					),
-				},
-			}
-		} else {
-			b.logger(opCtx).DebugS(opCtx,
-				"Resolved incoming transfer hint",
-				slog.String("session_id", sessionID.String()),
-				slog.Int("num_checkpoints",
-					len(incomingEvent.FinalCheckpointPSBTs)))
-
-			msg = &DriveEventRequest{
-				SessionID: sessionID,
-				Event:     incomingEvent,
-			}
-		}
-
-		tellErr := b.selfRef.Tell(opCtx, msg)
-		if tellErr != nil {
-			b.logger(opCtx).WarnS(opCtx,
-				"Failed to deliver incoming resolve result",
-				tellErr,
-				slog.String("session_id", sessionID.String()))
-		}
-	}()
-
-	return nil
 }
 
 // handleIncomingTransfer drives a new incoming-transfer notification without
@@ -915,27 +847,6 @@ func (b *oorDurableBehavior) handleResumeSession(ctx context.Context,
 		slog.String("session_id", req.SessionID.String()),
 		slog.String("state", fmt.Sprintf("%T", state)))
 
-	if handle.kind == sessionKindIncoming {
-		if resolving, ok := state.(*ReceiveResolving); ok {
-			err = b.scheduleResolveIncomingTransfer(
-				ctx, &ResolveIncomingTransferRequest{
-					SessionID: req.SessionID,
-					RecipientPkScript: append(
-						[]byte(nil),
-						resolving.RecipientPkScript...,
-					),
-					RecipientEventID: resolving.
-						RecipientEventID,
-				},
-			)
-			if err != nil {
-				return fn.Err[ActorResp](err)
-			}
-
-			return fn.Ok[ActorResp](&ResumeSessionResponse{})
-		}
-	}
-
 	outbox, err := outboxForHandle(handle, state)
 	if err != nil {
 		return fn.Err[ActorResp](err)
@@ -1114,34 +1025,6 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 			return err
 		}
 
-		if handle.kind == sessionKindIncoming {
-			if resolving, ok := state.(*ReceiveResolving); ok {
-				b.logger(ctx).DebugS(ctx, "Resuming restored "+
-					"incoming resolve",
-					slog.String("session_id",
-						sessionID.String()),
-					slog.String("state",
-						fmt.Sprintf("%T", state)))
-
-				err = b.scheduleResolveIncomingTransfer(
-					ctx, &ResolveIncomingTransferRequest{
-						SessionID: sessionID,
-						RecipientPkScript: append(
-							[]byte(nil),
-							resolving.RecipientPkScript...,
-						),
-						RecipientEventID: resolving.
-							RecipientEventID,
-					},
-				)
-				if err != nil {
-					return err
-				}
-
-				continue
-			}
-		}
-
 		outbox, err := outboxForHandle(handle, state)
 		if err != nil {
 			return err
@@ -1197,7 +1080,8 @@ func (b *oorDurableBehavior) isTransportEvent(msg OutboxEvent) bool {
 
 	switch msg.(type) {
 	case *SendSubmitPackageRequest, *SendFinalizePackageRequest,
-		*SendIncomingAckRequest, *QueryIncomingMetadataRequest:
+		*SendIncomingAckRequest, *QueryIncomingTransferRequest,
+		*QueryIncomingMetadataRequest:
 
 		return true
 
@@ -1212,18 +1096,45 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 	msg OutboxEvent) error {
 
 	serverMsg, ok := msg.(serverconn.ServerMessage)
-	if queryReq, isQuery := msg.(*QueryIncomingMetadataRequest); isQuery {
-		if b.cfg.BuildIncomingMetadataRPC == nil {
-			return fmt.Errorf("incoming metadata rpc builder must be " +
-				"provided")
+	switch queryReq := msg.(type) {
+	case *QueryIncomingTransferRequest:
+		afterEventID := uint64(0)
+		if queryReq.RecipientEventID > 0 {
+			afterEventID = queryReq.RecipientEventID - 1
 		}
 
-		sendReq, err := b.cfg.BuildIncomingMetadataRPC(
-			ctx, queryReq,
-		)
-		if err != nil {
-			return fmt.Errorf("build incoming metadata rpc: %w",
-				err)
+		sendReq := &serverconn.SendListOORRecipientEventsByScriptRequest{
+			PkScript: append(
+				[]byte(nil), queryReq.RecipientPkScript...,
+			),
+			AfterEventID: afterEventID,
+			Limit:        1,
+			CorrelationID: IncomingResolveCorrelationID(
+				queryReq.SessionID, queryReq.RecipientEventID,
+			),
+		}
+
+		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
+			return fmt.Errorf("send incoming resolve query to "+
+				"server: %w", err)
+		}
+
+		return nil
+
+	case *QueryIncomingMetadataRequest:
+		pkScripts := make([][]byte, 0, len(queryReq.Recipients))
+		for i := range queryReq.Recipients {
+			pkScripts = append(pkScripts, append(
+				[]byte(nil), queryReq.Recipients[i].PkScript...,
+			))
+		}
+
+		sendReq := &serverconn.SendListVTXOsByScriptsRequest{
+			PkScripts: pkScripts,
+			Limit:     incomingMetadataQueryLimit,
+			CorrelationID: IncomingMetadataCorrelationID(
+				queryReq.SessionID,
+			),
 		}
 
 		if err := b.cfg.ServerConn.Tell(ctx, sendReq); err != nil {
@@ -1259,9 +1170,6 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 	sessionID SessionID, fsm *StateMachine, outbox []OutboxEvent) error {
 
 	handler := b.cfg.OutboxHandler
-	if handler == nil {
-		return nil
-	}
 
 	for _, msg := range outbox {
 		// Transport events (submit, finalize, ack) are Tell'd to
@@ -1305,6 +1213,11 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		b.logger(ctx).DebugS(ctx, "Handling local outbox event",
 			slog.String("session_id", sessionID.String()),
 			slog.String("event_type", fmt.Sprintf("%T", msg)))
+
+		if handler == nil {
+			return fmt.Errorf("outbox handler must be provided for " +
+				"local events")
+		}
 
 		// Local events (signing, persistence, timers) continue
 		// through the outbox handler.

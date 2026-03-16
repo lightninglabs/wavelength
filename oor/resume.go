@@ -13,7 +13,15 @@ func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
 
 	switch s := state.(type) {
 	case *ReceiveResolving:
-		return nil, nil
+		return []OutboxEvent{
+			&QueryIncomingTransferRequest{
+				SessionID: s.SessionID,
+				RecipientPkScript: append(
+					[]byte(nil), s.RecipientPkScript...,
+				),
+				RecipientEventID: s.RecipientEventID,
+			},
+		}, nil
 
 	case *ReceiveNotified:
 		recipients, err := ExtractArkRecipients(s.ArkPSBT)
