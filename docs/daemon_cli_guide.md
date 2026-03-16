@@ -216,6 +216,20 @@ Generate a new taproot boarding address for receiving on-chain funds.
 darepocli wallet newaddress --no-tls
 ```
 
+#### `oor receive`
+
+Allocate a fresh out-of-round receive script backed by a newly derived wallet
+key. The response includes the raw `pk_script_hex`, the owner's
+`pubkey_xonly_hex`, and the wallet key locator.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--label` | string | Optional indexer registration label |
+
+```bash
+darepocli oor receive --no-tls
+```
+
 #### `vtxos list`
 
 List VTXOs known to the wallet with optional filters.

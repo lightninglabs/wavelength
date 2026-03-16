@@ -17,13 +17,6 @@ import (
 
 const (
 	defaultOORReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
-
-	// defaultOORReceiveKeyFamily is the dedicated BIP32 key family used
-	// for the daemon's default OOR receive script. This must be separate
-	// from the node identity key family because lnd's signer path for the
-	// identity key does not produce valid tapscript spend signatures for
-	// rematerialized OOR VTXOs.
-	defaultOORReceiveKeyFamily keychain.KeyFamily = 44
 )
 
 // ownedReceiveScriptStore persists locally owned receive-script metadata.
@@ -53,17 +46,16 @@ type defaultOORReceiveScriptStateStore interface {
 	ownedReceiveScriptLister
 }
 
-// DeriveDefaultOORReceiveKeyFunc derives the next wallet-managed default OOR
-// receive key when no previously persisted key exists.
+// DeriveDefaultOORReceiveKeyFunc derives the next wallet-managed OOR receive
+// key when no previously persisted key exists.
 type DeriveDefaultOORReceiveKeyFunc func(context.Context) (
 	*keychain.KeyDescriptor, error,
 )
 
-// DefaultOORReceiveKeyFamily returns the dedicated key family used for
-// daemon-managed OOR receive keys.
-func DefaultOORReceiveKeyFamily() keychain.KeyFamily {
-	return defaultOORReceiveKeyFamily
-}
+// OORReceiveScriptSignerFactory constructs an indexer proof signer for the
+// wallet key that controls one owned receive script.
+type OORReceiveScriptSignerFactory func(
+	keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner
 
 // BuildPubKeyVTXOReceiveScript derives the standard VTXO-compatible taproot
 // output script for an OOR recipient pubkey.
@@ -118,6 +110,207 @@ func ResolveOwnedReceiveScriptKey(ctx context.Context,
 	}
 
 	return rec.ClientKey, nil
+}
+
+// ownedReceiveScriptSigner resolves the correct wallet key for each pkScript
+// from the persisted owned receive-script map, then delegates signing to the
+// backend-specific signer implementation for that key.
+type ownedReceiveScriptSigner struct {
+	store         ownedReceiveScriptLookup
+	signerFactory OORReceiveScriptSignerFactory
+}
+
+// NewOwnedReceiveScriptSigner returns an indexer signer that can prove control
+// for any persisted locally owned receive script instead of a single fixed key.
+func NewOwnedReceiveScriptSigner(store ownedReceiveScriptLookup,
+	signerFactory OORReceiveScriptSignerFactory) indexer.SchnorrSigner {
+
+	return &ownedReceiveScriptSigner{
+		store:         store,
+		signerFactory: signerFactory,
+	}
+}
+
+// resolveSigner loads the locally owned key for pkScript and constructs the
+// backend-specific signer that can prove control over it.
+func (s *ownedReceiveScriptSigner) resolveSigner(ctx context.Context,
+	pkScript []byte) (indexer.SchnorrSigner, error) {
+
+	if s.store == nil {
+		return nil, fmt.Errorf("owned receive script lookup must be " +
+			"provided")
+	}
+
+	if s.signerFactory == nil {
+		return nil, fmt.Errorf("receive script signer factory must be " +
+			"provided")
+	}
+
+	rec, err := s.store.LookupOwnedReceiveScript(ctx, pkScript)
+	if err != nil {
+		return nil, fmt.Errorf("lookup owned receive script: %w", err)
+	}
+
+	signer := s.signerFactory(rec.ClientKey)
+	if signer == nil {
+		return nil, fmt.Errorf("receive script signer factory returned " +
+			"nil signer")
+	}
+
+	return signer, nil
+}
+
+// SignSchnorr signs hash with the wallet key that controls pkScript.
+func (s *ownedReceiveScriptSigner) SignSchnorr(
+	pkScript []byte, hash [32]byte) ([]byte, error) {
+
+	signer, err := s.resolveSigner(context.Background(), pkScript)
+	if err != nil {
+		return nil, err
+	}
+
+	return signer.SignSchnorr(pkScript, hash)
+}
+
+// SignSchnorrMessage signs the canonical proof preimage for pkScript using the
+// backend-specific tagged-message path when available.
+func (s *ownedReceiveScriptSigner) SignSchnorrMessage(ctx context.Context,
+	pkScript []byte, message []byte, tag []byte) ([]byte, error) {
+
+	signer, err := s.resolveSigner(ctx, pkScript)
+	if err != nil {
+		return nil, err
+	}
+
+	msgSigner, ok := signer.(interface {
+		SignSchnorrMessage(context.Context, []byte, []byte,
+			[]byte) ([]byte, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("signer does not support tagged message " +
+			"signing")
+	}
+
+	return msgSigner.SignSchnorrMessage(
+		ctx, pkScript, message, tag,
+	)
+}
+
+// ProofPubKey returns the owner pubkey committed into proofs for pkScript.
+func (s *ownedReceiveScriptSigner) ProofPubKey(
+	pkScript []byte) (*btcec.PublicKey, error) {
+
+	signer, err := s.resolveSigner(context.Background(), pkScript)
+	if err != nil {
+		return nil, err
+	}
+
+	pubKeySource, ok := signer.(interface {
+		ProofPubKey([]byte) (*btcec.PublicKey, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("signer does not expose proof pubkey")
+	}
+
+	return pubKeySource.ProofPubKey(pkScript)
+}
+
+// CreateOORReceiveScript derives a fresh wallet key, registers the matching
+// receive script with the indexer, and persists the ownership metadata needed
+// to prove control over that script later.
+func CreateOORReceiveScript(ctx context.Context, idx *indexer.Client,
+	store ownedReceiveScriptStore,
+	deriveNextKey DeriveDefaultOORReceiveKeyFunc,
+	signerFactory OORReceiveScriptSignerFactory,
+	operatorKey *btcec.PublicKey, exitDelay uint32, label string) (
+	*keychain.KeyDescriptor, []byte, error,
+) {
+
+	if deriveNextKey == nil {
+		return nil, nil, fmt.Errorf("derive next key func must be " +
+			"provided")
+	}
+
+	keyDesc, err := deriveNextKey(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive oor receive key: %w", err)
+	}
+
+	if keyDesc == nil || keyDesc.PubKey == nil {
+		return nil, nil, fmt.Errorf("derive oor receive key: missing " +
+			"pubkey")
+	}
+
+	pkScript, err := RegisterOwnedOORReceiveScript(
+		ctx, idx, store, *keyDesc, signerFactory, operatorKey,
+		exitDelay, label,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return keyDesc, pkScript, nil
+}
+
+// RegisterOwnedOORReceiveScript registers and persists one wallet-owned OOR
+// receive script for clientKey using the signer produced by signerFactory.
+func RegisterOwnedOORReceiveScript(ctx context.Context,
+	idx *indexer.Client, store ownedReceiveScriptStore,
+	clientKey keychain.KeyDescriptor,
+	signerFactory OORReceiveScriptSignerFactory,
+	operatorKey *btcec.PublicKey, exitDelay uint32,
+	label string) ([]byte, error) {
+
+	switch {
+	case idx == nil:
+		return nil, fmt.Errorf("indexer client must be provided")
+
+	case signerFactory == nil:
+		return nil, fmt.Errorf("receive script signer factory must be " +
+			"provided")
+
+	case clientKey.PubKey == nil:
+		return nil, fmt.Errorf("client key must be provided")
+	}
+
+	pkScript, err := BuildPubKeyVTXOReceiveScript(
+		clientKey.PubKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	registerClient := idx.WithSigner(signerFactory(clientKey))
+	if registerClient == nil {
+		return nil, fmt.Errorf("indexer client must be provided")
+	}
+
+	expiresAt := time.Now().Add(defaultOORReceiveScriptRegistrationTTL)
+	_, err = registerClient.RegisterReceiveScriptTaproot(
+		ctx, pkScript, expiresAt, label,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register receive script: %w", err)
+	}
+
+	if store == nil {
+		return pkScript, nil
+	}
+
+	err = store.UpsertOwnedReceiveScript(ctx, db.OwnedReceiveScriptRecord{
+		PkScript:       pkScript,
+		ClientKey:      clientKey,
+		OperatorPubKey: operatorKey,
+		ExitDelay:      int64(exitDelay),
+		Source:         db.OwnedReceiveScriptSourceWallet,
+		CreatedAt:      time.Now(),
+		LastUsedAt:     fn.None[time.Time](),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist owned receive script: %w", err)
+	}
+
+	return pkScript, nil
 }
 
 // LoadDefaultOORReceiveKey loads the most recently persisted wallet-managed

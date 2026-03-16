@@ -38,6 +38,8 @@ type DaemonServiceMailboxServer interface {
 	ListVTXOs(ctx context.Context, req *ListVTXOsRequest) (*ListVTXOsResponse, error)
 	// NewAddress handles NewAddress.
 	NewAddress(ctx context.Context, req *NewAddressRequest) (*NewAddressResponse, error)
+	// NewOORReceiveScript handles NewOORReceiveScript.
+	NewOORReceiveScript(ctx context.Context, req *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error)
 	// SendVTXO handles SendVTXO.
 	SendVTXO(ctx context.Context, req *SendVTXORequest) (*SendVTXOResponse, error)
 	// SendOOR handles SendOOR.
@@ -123,6 +125,16 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.NewAddress(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "NewOORReceiveScript", func() proto.Message {
+		return &NewOORReceiveScriptRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*NewOORReceiveScriptRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.NewOORReceiveScript(ctx, req)
 	})
 	r.Handle("daemonrpc.DaemonService", "SendVTXO", func() proto.Message {
 		return &SendVTXORequest{}
@@ -340,6 +352,29 @@ func (c *DaemonServiceMailboxClient) NewAddress(ctx context.Context, req *NewAdd
 	}
 
 	resp := new(NewAddressResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// NewOORReceiveScript calls the NewOORReceiveScript RPC.
+func (c *DaemonServiceMailboxClient) NewOORReceiveScript(ctx context.Context, req *NewOORReceiveScriptRequest, opts ...rpc.RPCOptions) (*NewOORReceiveScriptResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "NewOORReceiveScript",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(NewOORReceiveScriptResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

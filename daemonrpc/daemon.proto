@@ -41,6 +41,12 @@ service DaemonService {
     // on-chain funds for use in the Ark protocol.
     rpc NewAddress (NewAddressRequest) returns (NewAddressResponse);
 
+    // NewOORReceiveScript allocates a fresh wallet key, registers the
+    // matching taproot OOR receive script with the indexer, and returns
+    // the script details needed to hand the destination to a sender.
+    rpc NewOORReceiveScript (NewOORReceiveScriptRequest)
+        returns (NewOORReceiveScriptResponse);
+
     // SendVTXO initiates an in-round transfer by submitting a refresh
     // request to the round coordinator. The transfer completes when the
     // next round commits.
@@ -277,6 +283,29 @@ message NewAddressRequest {
 message NewAddressResponse {
     // address is the bech32m-encoded taproot boarding address.
     string address = 1;
+}
+
+message NewOORReceiveScriptRequest {
+    // label is an optional human-readable label stored with the
+    // registration on the indexer.
+    string label = 1;
+}
+
+message NewOORReceiveScriptResponse {
+    // pk_script_hex is the raw taproot output script encoded as hex.
+    string pk_script_hex = 1;
+
+    // pubkey_xonly_hex is the 32-byte x-only owner pubkey encoded as hex.
+    string pubkey_xonly_hex = 2;
+
+    // key_family is the wallet key family used to derive the receive key.
+    uint32 key_family = 3;
+
+    // key_index is the wallet key index used to derive the receive key.
+    uint32 key_index = 4;
+
+    // label is the registration label stored with the indexer.
+    string label = 5;
 }
 
 // Output describes a single recipient in a send operation.
