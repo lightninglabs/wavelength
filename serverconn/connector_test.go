@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,31 @@ func (m *testServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
 // ToProto converts the test message to a protobuf payload.
 func (m *testServerMessage) ToProto() fn.Result[proto.Message] {
 	return fn.Ok[proto.Message](wrapperspb.String(m.value))
+}
+
+// testDurableUnaryBuilder is a minimal builder stub for durable query tests.
+type testDurableUnaryBuilder struct{}
+
+// BuildListOORRecipientEventsByScriptRequest builds a deterministic proto body
+// for recipient-events query tests.
+func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
+	_ context.Context, pkScript []byte, afterEventID uint64, limit uint32,
+) (proto.Message, error) {
+
+	return wrapperspb.String(fmt.Sprintf(
+		"recipient:%x:%d:%d", pkScript, afterEventID, limit,
+	)), nil
+}
+
+// BuildListVTXOsByScriptsRequest builds a deterministic proto body for
+// VTXO-by-scripts query tests.
+func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
+	_ context.Context, pkScripts [][]byte, afterCursor uint64, limit uint32,
+) (proto.Message, error) {
+
+	return wrapperspb.String(fmt.Sprintf(
+		"vtxos:%d:%d:%d", len(pkScripts), afterCursor, limit,
+	)), nil
 }
 
 // newTestConnector builds a ServerConnectionActor with in-memory test
@@ -147,6 +173,49 @@ func sendEventToMailbox(
 
 	status := mb.send(env)
 	require.True(t, status.Ok, "send event failed: %s", status.Message)
+}
+
+// TestServerConnectionActor_SendListOORRecipientEventsByScriptRequest verifies
+// the transport-native durable recipient-events query is built and sent as a
+// unary mailbox request with the expected route metadata.
+func TestServerConnectionActor_SendListOORRecipientEventsByScriptRequest(
+	t *testing.T) {
+
+	t.Parallel()
+
+	actor, mb, _ := newTestConnector(t, nil)
+	actor.cfg.DurableUnaryBuilder = &testDurableUnaryBuilder{}
+
+	result := actor.Receive(
+		t.Context(),
+		&SendListOORRecipientEventsByScriptRequest{
+			PkScript:      []byte{0x51, 0x20, 0x01},
+			AfterEventID:  7,
+			Limit:         1,
+			CorrelationID: "corr-recipient",
+		},
+	)
+	require.NoError(t, result.Err())
+
+	mb.mu.Lock()
+	require.Len(t, mb.mailboxes["server-1"], 1)
+	env := proto.Clone(mb.mailboxes["server-1"][0]).(*mailboxpb.Envelope)
+	mb.mu.Unlock()
+
+	require.Equal(
+		t, "arkrpc.IndexerService", env.GetRpc().GetService(),
+	)
+	require.Equal(
+		t, "ListOORRecipientEventsByScript",
+		env.GetRpc().GetMethod(),
+	)
+	require.Equal(
+		t, "corr-recipient", env.GetRpc().GetCorrelationId(),
+	)
+
+	payload := &wrapperspb.StringValue{}
+	require.NoError(t, env.GetBody().UnmarshalTo(payload))
+	require.Equal(t, "recipient:512001:7:1", payload.Value)
 }
 
 // TestIngress_DispatchAndAck verifies that the ingress loop pulls envelopes,

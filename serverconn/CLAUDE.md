@@ -11,9 +11,11 @@ background ingress polling with event routing.
 - `Runtime` — Main entry point wrapping DurableActor, ServerConnectionActor, and UnaryFacade.
 - `ServerConnectionActor` — Core behavior handling egress messages and the ingress loop.
 - `UnaryFacade` — Implements `mailboxrpc.RPCClient` for generated RPC stubs (low-latency path). Also provides `AwaitRPCTimeout` for bounded waits.
-- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store).
+- `ConnectorConfig` — Wiring configuration (edge address, mailbox IDs, dispatchers, store, durable unary builder).
 - `AckState` — Four-cursor watermark state machine (PullCursor, DispatchCommittedTo, AckTarget, AckCommittedTo).
 - `SendUnaryRequest` — Durable typed unary request that becomes a real unary RPC after commit. The response arrives via KIND_RESPONSE and, if no in-memory waiter exists, falls back to durable route dispatch via the EventRouter.
+- `DurableUnaryBuilder` — Proof-gated request-body builder used by transport-native durable query messages.
+- `SendListOORRecipientEventsByScriptRequest` / `SendListVTXOsByScriptsRequest` — transport-native durable indexer query messages emitted by OOR receive.
 
 ## Relationships
 
@@ -22,6 +24,7 @@ background ingress polling with event routing.
 - **Sends (egress → remote mailbox)**:
   - `SendClientEventRequest` (durable): wraps `JoinRoundRequest`, `SubmitNoncesRequest`, `SubmitPartialSigRequest`, `SubmitForfeitSigRequest`
   - `SendRPCRequest` (unary, non-durable): low-latency request-response RPCs
+  - transport-native durable query messages for proof-gated indexer lookups
 - **Routes (ingress → local actors via EventRouter)**:
   - → `round`: `CommitmentTxBuilt`, `NoncesAggregated`, `OperatorSigned`, `RoundJoined`, `BoardingFailed`
   - → `oor`: `SubmitAcceptedEvent`, `FinalizeAcceptedEvent`, `IncomingTransferEvent`
