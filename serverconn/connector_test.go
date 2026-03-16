@@ -21,9 +21,12 @@ type testServerMessage struct {
 	value string
 }
 
-// ServiceMethod returns a zero-value routing key for tests.
+// ServiceMethod returns deterministic routing metadata for tests.
 func (m *testServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
-	return mailboxrpc.ServiceMethod{}
+	return mailboxrpc.ServiceMethod{
+		Service: testEventService,
+		Method:  testEventMethod,
+	}
 }
 
 // ToProto converts the test message to a protobuf payload.
@@ -364,6 +367,12 @@ func TestEgress_EventRetriesPreserveIdempotencyKey(t *testing.T) {
 	require.Equal(
 		t, envs[0].IdempotencyKey, envs[1].IdempotencyKey,
 	)
+	require.NotNil(t, envs[0].Rpc)
+	require.NotNil(t, envs[1].Rpc)
+	require.Equal(t, testEventService, envs[0].Rpc.Service)
+	require.Equal(t, testEventMethod, envs[0].Rpc.Method)
+	require.Equal(t, testEventService, envs[1].Rpc.Service)
+	require.Equal(t, testEventMethod, envs[1].Rpc.Method)
 }
 
 // TestIngress_PartialDispatch_NoDuplicateRedelivery verifies that when

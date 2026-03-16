@@ -178,6 +178,8 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 		return fmt.Errorf("convert to proto: %w", err)
 	}
 
+	service, method := eventRoutingMetadata(m)
+
 	anyMsg, err := anypb.New(protoMsg)
 	if err != nil {
 		return fmt.Errorf("wrap proto in Any: %w", err)
@@ -215,10 +217,10 @@ func (m *SendClientEventRequest) Encode(w io.Writer) error {
 		idempotencyBytes,
 	)
 	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
-		[]byte(m.Service),
+		[]byte(service),
 	)
 	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
-		[]byte(m.Method),
+		[]byte(method),
 	)
 
 	stream, err := tlv.NewStream(
@@ -493,6 +495,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		}
 	}
 
+	service, method := eventRoutingMetadata(req)
+
 	envelope := &mailboxpb.Envelope{
 		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
@@ -503,8 +507,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
-			Service: req.Service,
-			Method:  req.Method,
+			Service: service,
+			Method:  method,
 			ReplyTo: a.cfg.LocalMailboxID,
 		},
 	}
@@ -536,6 +540,36 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	return fn.Ok[ServerConnResp](&SendClientEventResponse{
 		Success: true,
 	})
+}
+
+// eventRoutingMetadata returns the outbound routing metadata persisted on a
+// SendClientEventRequest. When callers leave Service/Method empty, we derive
+// them directly from the wrapped ServerMessage so direct sends remain aligned
+// with the production round-actor outbox path.
+func eventRoutingMetadata(req *SendClientEventRequest) (string, string) {
+	if req == nil {
+		return "", ""
+	}
+
+	if req.Service != "" && req.Method != "" {
+		return req.Service, req.Method
+	}
+
+	if req.Message == nil {
+		return req.Service, req.Method
+	}
+
+	sm := req.Message.ServiceMethod()
+	service := req.Service
+	method := req.Method
+	if service == "" {
+		service = sm.Service
+	}
+	if method == "" {
+		method = sm.Method
+	}
+
+	return service, method
 }
 
 // handleSendRPCRequest sends a pre-built unary RPC envelope via the mailbox
