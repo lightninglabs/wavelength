@@ -156,14 +156,8 @@ type Server struct {
 	vtxoExitDelay uint32
 
 	// clientKeyDesc is the client's identity key descriptor,
-	// derived during wallet initialization. Used by the OOR
-	// receive path to match incoming recipient outputs.
+	// derived during wallet initialization.
 	clientKeyDesc keychain.KeyDescriptor
-
-	// oorReceiveKeyDesc is the stable wallet key used for the
-	// daemon's default OOR receive script and receive-script proof
-	// signing.
-	oorReceiveKeyDesc keychain.KeyDescriptor
 
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
@@ -468,6 +462,9 @@ func (s *Server) run(ctx context.Context,
 	connCfg.ProtocolVersion = 1
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
+	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
+		server: s,
+	}
 
 	s.runtime, err = serverconn.NewRuntime(connCfg)
 	if err != nil {
@@ -1181,7 +1178,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			p proto.Message) (oor.OORDurableMsg, error) {
 
 			if env == nil || env.Rpc == nil {
-				return nil, fmt.Errorf("incoming metadata "+
+				return nil, fmt.Errorf("incoming metadata " +
 					"response envelope must be provided")
 			}
 
@@ -1225,6 +1222,70 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 				Event: &oor.IncomingMetadataResolvedEvent{
 					Matches: matches,
 				},
+			}, nil
+		},
+	})
+
+	// ListOORRecipientEventsByScript response: server resolved the
+	// lightweight incoming transfer hint into the full Ark package for a
+	// durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListOORRecipientEventsByScript",
+		NewEvent: func() proto.Message {
+			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
+
+			if env == nil || env.Rpc == nil {
+				return nil, fmt.Errorf("incoming resolve " +
+					"response envelope must be provided")
+			}
+
+			sessionID, recipientEventID, err :=
+				oor.ParseIncomingResolveCorrelationID(
+					env.Rpc.CorrelationId,
+				)
+			if err != nil {
+				return nil, err
+			}
+
+			if rpcErr := mailboxrpc.DecodeErrorHeaders(
+				env.Headers,
+			); rpcErr != nil {
+
+				return &oor.DriveEventRequest{
+					SessionID: sessionID,
+					Event: &oor.FailEvent{
+						Reason: fmt.Sprintf(
+							"resolve incoming transfer: %v",
+							rpcErr,
+						),
+					},
+				}, nil
+			}
+
+			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse)
+			if !ok {
+				return nil, fmt.Errorf("expected "+
+					"ListOORRecipientEventsByScriptResponse, "+
+					"got %T", p)
+			}
+
+			incomingEvent, err := oor.IncomingTransferEventFromResponse(
+				sessionID, recipientEventID, resp,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: sessionID,
+				Event:     incomingEvent,
 			}, nil
 		},
 	})
@@ -1536,6 +1597,11 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	// In lnd mode this comes from the lnd connection. In lwwallet
 	// mode, the identity is derived from the wallet keyring once
 	// the wallet is ready.
+	//
+	// The indexer client itself must prove control over multiple owned
+	// receive scripts, so it uses a dynamic signer that resolves the
+	// correct wallet key from the persisted owned-script map for each
+	// pkScript.
 	var signer indexer.SchnorrSigner
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
 		identityDesc, err := lndSvc.WalletKit.DeriveKey(ctx,
@@ -1552,27 +1618,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		}
 
 		s.clientKeyDesc = *identityDesc
-
-		receiveDesc, err := EnsureDefaultOORReceiveKey(
-			ctx, packageStore, func(ctx context.Context) (
-				*keychain.KeyDescriptor, error,
-			) {
-				return lndSvc.WalletKit.DeriveNextKey(
-					ctx, int32(DefaultOORReceiveKeyFamily()),
+		signer = NewOwnedReceiveScriptSigner(
+			packageStore,
+			func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+				return indexer.NewLNDSchnorrSigner(
+					lndSvc.Signer, keyDesc,
 				)
 			},
-		)
-		if err != nil {
-			log.WarnS(ctx,
-				"Unable to resolve default OOR receive key",
-				err)
-
-			return
-		}
-
-		s.oorReceiveKeyDesc = *receiveDesc
-		signer = indexer.NewLNDSchnorrSigner(
-			lndSvc.Signer, *receiveDesc,
 		)
 	})
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
@@ -1589,27 +1641,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 					"indexer", err)
 		} else {
 			s.clientKeyDesc = *identityDesc
-
-			receiveDesc, err := EnsureDefaultOORReceiveKey(
-				ctx, packageStore, func(ctx context.Context) (
-					*keychain.KeyDescriptor, error,
-				) {
-					return w.DeriveNextKey(
-						ctx, DefaultOORReceiveKeyFamily(),
+			signer = NewOwnedReceiveScriptSigner(
+				packageStore,
+				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+					return indexer.NewKeyRingSchnorrSigner(
+						w.KeyRing(), keyDesc,
 					)
 				},
-			)
-			if err != nil {
-				log.WarnS(ctx,
-					"Unable to resolve default OOR "+
-						"receive key", err)
-
-				return
-			}
-
-			s.oorReceiveKeyDesc = *receiveDesc
-			signer = indexer.NewKeyRingSchnorrSigner(
-				w.KeyRing(), *receiveDesc,
 			)
 		}
 	})
@@ -1911,15 +1949,6 @@ func (s *Server) initOORActor(ctx context.Context,
 	vtxoStore := dbStore.NewVTXOStore(clk)
 	packageStore := dbStore.NewOORArtifactStore(clk)
 
-	_, err := RegisterDefaultOORReceiveScript(
-		ctx, s.indexer, packageStore, s.oorReceiveKeyDesc,
-		s.operatorKey, s.vtxoExitDelay, "default-oor-receive",
-	)
-	if err != nil {
-		return fmt.Errorf("register default OOR receive "+
-			"script: %w", err)
-	}
-
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into
 	// a DriveEventRequest and Tell's it back to the OOR actor.
@@ -1997,54 +2026,6 @@ func (s *Server) initOORActor(ctx context.Context,
 		ActorID:       oor.OORActorServiceKeyName,
 		VTXOManager:   vtxoManagerRef,
 		VTXOStore:     vtxoStore,
-		IncomingFetcher: func(ctx context.Context,
-			pkScript []byte, afterEventID uint64,
-			limit uint32) (
-			*arkrpc.ListOORRecipientEventsByScriptResponse,
-			error) {
-
-			return s.indexer.ListOORRecipientEventsByScriptTaproot(
-				ctx, pkScript, afterEventID, limit,
-			)
-		},
-		BuildIncomingMetadataRPC: func(ctx context.Context,
-			req *oor.QueryIncomingMetadataRequest) (
-			*serverconn.SendUnaryRequest, error) {
-
-			if req == nil {
-				return nil, fmt.Errorf("incoming metadata query "+
-					"must be provided")
-			}
-
-			scopes := make([]indexer.TaprootScriptScope, 0,
-				len(req.Recipients))
-			for i := range req.Recipients {
-				scopes = append(scopes, indexer.TaprootScriptScope{
-					PkScript: append([]byte(nil),
-						req.Recipients[i].PkScript...),
-				})
-			}
-
-			rpcReq, err := s.indexer.
-				BuildListVTXOsByScriptsTaprootRequest(
-					ctx, scopes, 0,
-					incomingMetadataIndexPageSize, nil,
-				)
-			if err != nil {
-				return nil, err
-			}
-
-			return serverconn.NewSendUnaryRequest(
-				mailboxrpc.ServiceMethod{
-					Service: "arkrpc.IndexerService",
-					Method:  "ListVTXOsByScripts",
-				},
-				rpcReq,
-				oor.IncomingMetadataCorrelationID(
-				req.SessionID,
-				),
-			)
-		},
 	})
 
 	// Wire the timeout callback ref using the registered service
