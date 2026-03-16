@@ -3,12 +3,14 @@ package serverconn
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 )
@@ -199,9 +201,11 @@ func (a *ServerConnectionActor) pullBatch(
 // dispatchBatch iterates envelopes and routes each one to the correct
 // destination:
 //
-//   - KIND_RESPONSE: delivered to the response registry (unary waiters).
-//   - KIND_REQUEST/KIND_EVENT: dispatched to a local actor via the
-//     configured dispatch table.
+//   - KIND_RESPONSE: delivered to the response registry (unary waiters), or
+//     durably dispatched via the configured dispatch table when no waiter is
+//     registered for the correlation ID.
+//   - KIND_REQUEST/KIND_EVENT: dispatched to a local actor via the configured
+//     dispatch table.
 //
 // On success, returns the exclusive batch-next cursor (one past the last
 // envelope). On partial failure, returns the inclusive event_seq of the
@@ -228,9 +232,10 @@ func (a *ServerConnectionActor) dispatchBatch(
 
 		switch env.Rpc.Kind {
 		case mailboxpb.RpcMeta_KIND_RESPONSE:
-			// Route to response registry for unary RPC waiters.
-			// This is not a durable dispatch — the response is
-			// consumed immediately by the waiting goroutine.
+			// Prefer unary waiters for low-latency RPC callers. When no
+			// in-memory waiter is registered, fall back to the durable
+			// dispatch table so actor-driven unary flows can treat the
+			// response like any other ingress event.
 			corrID := CorrelationID(env.Rpc.CorrelationId)
 			if corrID == "" {
 				log.WarnS(ctx,
@@ -243,16 +248,38 @@ func (a *ServerConnectionActor) dispatchBatch(
 				continue
 			}
 
-			delivered := a.deliverResponse(corrID, env)
-			if !delivered {
+			delivery := a.deliverResponse(corrID, env)
+			if delivery == mailboxconn.DeliveryWaiter {
+				break
+			}
+
+			dispatcher, ok := a.cfg.Dispatchers[mailboxrpc.ServiceMethod{
+				Service: env.Rpc.Service,
+				Method:  env.Rpc.Method,
+			}]
+			if !ok {
 				log.WarnS(ctx,
 					"Failed to deliver response "+
 						"envelope",
 					nil,
+					slog.String("delivery_result",
+						fmt.Sprintf("%d", delivery)),
+					slog.String("service", env.Rpc.Service),
+					slog.String("method", env.Rpc.Method),
 					slog.String("correlation_id",
 						string(corrID)),
 					slog.Uint64("event_seq",
 						env.EventSeq))
+
+				break
+			}
+
+			if err := dispatcher(ctx, env); err != nil {
+				return lastCommitted, err
+			}
+
+			if delivery == mailboxconn.DeliveryBuffered {
+				a.removePendingResponse(corrID)
 			}
 
 		case mailboxpb.RpcMeta_KIND_REQUEST,

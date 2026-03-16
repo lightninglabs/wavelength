@@ -143,6 +143,40 @@ func TestSendRPCRequest_TLVRoundTrip(t *testing.T) {
 	require.True(t, proto.Equal(original.Envelope, decoded.Envelope))
 }
 
+// TestSendUnaryRequest_TLVRoundTrip verifies durable unary request payload
+// serialization round trips with stable derived identifiers.
+func TestSendUnaryRequest_TLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original, err := NewSendUnaryRequest(
+		mailboxrpc.ServiceMethod{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		},
+		wrapperspb.String("request"),
+		"corr-unary",
+	)
+	require.NoError(t, err)
+
+	var decoded SendUnaryRequest
+	encoded := encodeTLVMessage(t, original)
+
+	require.NoError(
+		t, decoded.Decode(bytes.NewReader(encoded)),
+	)
+
+	require.NotNil(t, decoded.Body)
+	require.NotEmpty(t, decoded.MsgID)
+	require.NotEmpty(t, decoded.IdempotencyKey)
+	require.Equal(t, original.Service, decoded.Service)
+	require.Equal(t, original.Method, decoded.Method)
+	require.Equal(t, original.CorrelationID, decoded.CorrelationID)
+
+	payload := &wrapperspb.StringValue{}
+	require.NoError(t, decoded.Body.UnmarshalTo(payload))
+	require.Equal(t, "request", payload.Value)
+}
+
 // TestServerConnMessageMetadata verifies static message metadata methods.
 func TestServerConnMessageMetadata(t *testing.T) {
 	t.Parallel()
@@ -160,6 +194,11 @@ func TestServerConnMessageMetadata(t *testing.T) {
 	require.Equal(t, "SendRPCRequest", rpcReq.MessageType())
 	require.Equal(t, SendRPCRequestMsgType, rpcReq.TLVType())
 	rpcReq.serverConnMsgSealed()
+
+	unaryReq := &SendUnaryRequest{}
+	require.Equal(t, "SendUnaryRequest", unaryReq.MessageType())
+	require.Equal(t, SendUnaryRequestMsgType, unaryReq.TLVType())
+	unaryReq.serverConnMsgSealed()
 }
 
 // TestRawServerMessage_ToProtoDecodeFailure verifies ToProto returns an error
@@ -230,6 +269,30 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, rpcReq.Envelope.MsgId, typedRPC.Envelope.MsgId)
 	require.Equal(t, rpcReq.Envelope.Sender, typedRPC.Envelope.Sender)
+
+	unaryReq, err := NewSendUnaryRequest(
+		mailboxrpc.ServiceMethod{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		},
+		wrapperspb.String("codec-unary"),
+		"corr-codec-unary",
+	)
+	require.NoError(t, err)
+
+	unaryBytes, err := codec.Encode(unaryReq)
+	require.NoError(t, err)
+
+	decodedUnary, err := codec.Decode(unaryBytes)
+	require.NoError(t, err)
+
+	typedUnary, ok := decodedUnary.(*SendUnaryRequest)
+	require.True(t, ok)
+	require.Equal(t, unaryReq.Service, typedUnary.Service)
+	require.Equal(t, unaryReq.Method, typedUnary.Method)
+	require.Equal(
+		t, unaryReq.CorrelationID, typedUnary.CorrelationID,
+	)
 }
 
 // unknownServerConnMsg is a test-only unsupported message for Receive.

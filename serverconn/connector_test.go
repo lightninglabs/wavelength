@@ -86,6 +86,40 @@ func sendResponseToMailbox(
 	require.True(t, status.Ok, "send response failed: %s", status.Message)
 }
 
+// sendRoutedResponseToMailbox injects a KIND_RESPONSE envelope that carries
+// service/method metadata so ingress can durably dispatch it when no unary
+// waiter is registered.
+func sendRoutedResponseToMailbox(
+	t *testing.T, mb *inMemoryMailbox, recipientID, correlationID,
+	service, method string, payload []byte,
+) {
+
+	t.Helper()
+
+	body := &anypb.Any{
+		TypeUrl: "test/response",
+		Value:   payload,
+	}
+
+	env := &mailboxpb.Envelope{
+		ProtocolVersion: 1,
+		Sender:          "server-1",
+		Recipient:       recipientID,
+		Body:            body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
+			CorrelationId: correlationID,
+			Service:       service,
+			Method:        method,
+			ReplyTo:       "server-1",
+		},
+	}
+
+	status := mb.send(env)
+	require.True(t, status.Ok, "send routed response failed: %s",
+		status.Message)
+}
+
 // sendEventToMailbox injects a KIND_EVENT envelope into the given mailbox
 // addressed to recipientID with the specified service/method.
 func sendEventToMailbox(
@@ -204,6 +238,52 @@ func TestIngress_ResponseDelivery(t *testing.T) {
 	require.Equal(
 		t, string(corrID), env.Rpc.CorrelationId,
 	)
+}
+
+// TestIngress_ResponseDispatchWithoutWaiter verifies that a KIND_RESPONSE
+// envelope without an in-memory unary waiter falls back to the durable
+// dispatcher map keyed by service and method.
+func TestIngress_ResponseDispatchWithoutWaiter(t *testing.T) {
+	t.Parallel()
+
+	var (
+		dispatched   []*mailboxpb.Envelope
+		dispatchedMu sync.Mutex
+	)
+
+	dispatchers := map[mailboxrpc.ServiceMethod]EnvelopeDispatcher{
+		{Service: "test.Svc", Method: "Unary"}: func(
+			ctx context.Context,
+			env *mailboxpb.Envelope,
+		) error {
+
+			dispatchedMu.Lock()
+			dispatched = append(dispatched, env)
+			dispatchedMu.Unlock()
+
+			return nil
+		},
+	}
+
+	actor, mb, _ := newTestConnector(t, dispatchers)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	require.NoError(t, actor.StartIngress(ctx))
+	defer actor.StopIngress()
+
+	sendRoutedResponseToMailbox(
+		t, mb, "client-1", "corr-routed", "test.Svc", "Unary",
+		[]byte("response-payload"),
+	)
+
+	require.Eventually(t, func() bool {
+		dispatchedMu.Lock()
+		defer dispatchedMu.Unlock()
+
+		return len(dispatched) == 1
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 // TestIngress_NoAckOnDispatchFailure verifies that when a dispatcher returns
