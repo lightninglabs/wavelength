@@ -119,9 +119,9 @@ func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 			OwnerKey:  ti.VTXO.ClientKey.PubKey,
 			ExitDelay: ti.VTXO.RelativeExpiry,
 		}
-		if ti.SpendInfo != nil {
-			desc.SpendWitnessScript = ti.SpendInfo.WitnessScript
-			desc.SpendControlBlock = ti.SpendInfo.ControlBlock
+		if ti.CustomSpend != nil {
+			desc.SpendWitnessScript = ti.CustomSpend.WitnessScript
+			desc.SpendControlBlock = ti.CustomSpend.ControlBlock
 		}
 		descs = append(descs, desc)
 	}

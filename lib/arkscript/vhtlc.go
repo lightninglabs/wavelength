@@ -264,6 +264,46 @@ func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 	)
 }
 
+// ClaimPath returns a SpendPath for claiming via the hashlock leaf.
+// The preimage is included as a condition witness element.
+func (p *VHTLCPolicy) ClaimPath(
+	preimage []byte) (*SpendPath, error) {
+
+	info, err := p.ClaimSpendInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	return &SpendPath{
+		SpendInfo:  info,
+		Conditions: [][]byte{preimage},
+	}, nil
+}
+
+// RefundPath returns a SpendPath for the cooperative refund
+// (all parties sign, no conditions).
+func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
+	info, err := p.RefundSpendInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	return &SpendPath{SpendInfo: info}, nil
+}
+
+// RefundWithoutReceiverPath returns a SpendPath for the CLTV-gated
+// refund without receiver.
+func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
+	error) {
+
+	info, err := p.RefundWithoutReceiverSpendInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	return &SpendPath{SpendInfo: info}, nil
+}
+
 // PkScript returns the P2TR pkScript for the vHTLC output.
 func (p *VHTLCPolicy) PkScript() ([]byte, error) {
 	return txscript.PayToTaprootScript(p.OutputKey())
