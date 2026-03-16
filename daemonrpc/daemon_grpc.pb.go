@@ -19,19 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_GetInfo_FullMethodName      = "/daemonrpc.DaemonService/GetInfo"
-	DaemonService_GenSeed_FullMethodName      = "/daemonrpc.DaemonService/GenSeed"
-	DaemonService_InitWallet_FullMethodName   = "/daemonrpc.DaemonService/InitWallet"
-	DaemonService_UnlockWallet_FullMethodName = "/daemonrpc.DaemonService/UnlockWallet"
-	DaemonService_GetBalance_FullMethodName   = "/daemonrpc.DaemonService/GetBalance"
-	DaemonService_ListVTXOs_FullMethodName    = "/daemonrpc.DaemonService/ListVTXOs"
-	DaemonService_NewAddress_FullMethodName   = "/daemonrpc.DaemonService/NewAddress"
-	DaemonService_SendVTXO_FullMethodName     = "/daemonrpc.DaemonService/SendVTXO"
-	DaemonService_SendOOR_FullMethodName      = "/daemonrpc.DaemonService/SendOOR"
-	DaemonService_RefreshVTXOs_FullMethodName = "/daemonrpc.DaemonService/RefreshVTXOs"
-	DaemonService_Board_FullMethodName        = "/daemonrpc.DaemonService/Board"
-	DaemonService_ListRounds_FullMethodName   = "/daemonrpc.DaemonService/ListRounds"
-	DaemonService_WatchRounds_FullMethodName  = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_GetInfo_FullMethodName             = "/daemonrpc.DaemonService/GetInfo"
+	DaemonService_GenSeed_FullMethodName             = "/daemonrpc.DaemonService/GenSeed"
+	DaemonService_InitWallet_FullMethodName          = "/daemonrpc.DaemonService/InitWallet"
+	DaemonService_UnlockWallet_FullMethodName        = "/daemonrpc.DaemonService/UnlockWallet"
+	DaemonService_GetBalance_FullMethodName          = "/daemonrpc.DaemonService/GetBalance"
+	DaemonService_ListVTXOs_FullMethodName           = "/daemonrpc.DaemonService/ListVTXOs"
+	DaemonService_NewAddress_FullMethodName          = "/daemonrpc.DaemonService/NewAddress"
+	DaemonService_NewOORReceiveScript_FullMethodName = "/daemonrpc.DaemonService/NewOORReceiveScript"
+	DaemonService_SendVTXO_FullMethodName            = "/daemonrpc.DaemonService/SendVTXO"
+	DaemonService_SendOOR_FullMethodName             = "/daemonrpc.DaemonService/SendOOR"
+	DaemonService_RefreshVTXOs_FullMethodName        = "/daemonrpc.DaemonService/RefreshVTXOs"
+	DaemonService_Board_FullMethodName               = "/daemonrpc.DaemonService/Board"
+	DaemonService_ListRounds_FullMethodName          = "/daemonrpc.DaemonService/ListRounds"
+	DaemonService_WatchRounds_FullMethodName         = "/daemonrpc.DaemonService/WatchRounds"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -68,6 +69,10 @@ type DaemonServiceClient interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(ctx context.Context, in *NewAddressRequest, opts ...grpc.CallOption) (*NewAddressResponse, error)
+	// NewOORReceiveScript allocates a fresh wallet key, registers the
+	// matching taproot OOR receive script with the indexer, and returns
+	// the script details needed to hand the destination to a sender.
+	NewOORReceiveScript(ctx context.Context, in *NewOORReceiveScriptRequest, opts ...grpc.CallOption) (*NewOORReceiveScriptResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -164,6 +169,16 @@ func (c *daemonServiceClient) NewAddress(ctx context.Context, in *NewAddressRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(NewAddressResponse)
 	err := c.cc.Invoke(ctx, DaemonService_NewAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) NewOORReceiveScript(ctx context.Context, in *NewOORReceiveScriptRequest, opts ...grpc.CallOption) (*NewOORReceiveScriptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(NewOORReceiveScriptResponse)
+	err := c.cc.Invoke(ctx, DaemonService_NewOORReceiveScript_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +288,10 @@ type DaemonServiceServer interface {
 	// NewAddress generates a new boarding address that can receive
 	// on-chain funds for use in the Ark protocol.
 	NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error)
+	// NewOORReceiveScript allocates a fresh wallet key, registers the
+	// matching taproot OOR receive script with the indexer, and returns
+	// the script details needed to hand the destination to a sender.
+	NewOORReceiveScript(context.Context, *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error)
 	// SendVTXO initiates an in-round transfer by submitting a refresh
 	// request to the round coordinator. The transfer completes when the
 	// next round commits.
@@ -325,6 +344,9 @@ func (UnimplementedDaemonServiceServer) ListVTXOs(context.Context, *ListVTXOsReq
 }
 func (UnimplementedDaemonServiceServer) NewAddress(context.Context, *NewAddressRequest) (*NewAddressResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method NewAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) NewOORReceiveScript(context.Context, *NewOORReceiveScriptRequest) (*NewOORReceiveScriptResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method NewOORReceiveScript not implemented")
 }
 func (UnimplementedDaemonServiceServer) SendVTXO(context.Context, *SendVTXORequest) (*SendVTXOResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SendVTXO not implemented")
@@ -491,6 +513,24 @@ func _DaemonService_NewAddress_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_NewOORReceiveScript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NewOORReceiveScriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).NewOORReceiveScript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_NewOORReceiveScript_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).NewOORReceiveScript(ctx, req.(*NewOORReceiveScriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_SendVTXO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SendVTXORequest)
 	if err := dec(in); err != nil {
@@ -626,6 +666,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "NewAddress",
 			Handler:    _DaemonService_NewAddress_Handler,
+		},
+		{
+			MethodName: "NewOORReceiveScript",
+			Handler:    _DaemonService_NewOORReceiveScript_Handler,
 		},
 		{
 			MethodName: "SendVTXO",

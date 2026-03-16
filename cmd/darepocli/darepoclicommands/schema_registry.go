@@ -110,6 +110,21 @@ func methodRegistry() []schemaMethod {
 			JSONInput:    true,
 		},
 		{
+			Method:      "oor.receive",
+			Description: "Allocate a fresh OOR receive script",
+			Params: []schemaParam{
+				{
+					Name: "label",
+					Type: "string",
+					Description: "optional indexer " +
+						"registration label",
+				},
+			},
+			RequestType:  "NewOORReceiveScriptRequest",
+			ResponseType: "NewOORReceiveScriptResponse",
+			JSONInput:    true,
+		},
+		{
 			Method:      "vtxos.list",
 			Description: "List VTXOs with optional filters",
 			Params: []schemaParam{
