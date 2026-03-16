@@ -212,6 +212,12 @@ func (w *Wallet) ChainBackend() *ChainBackend {
 	return w.chainBackend
 }
 
+// KeyRing returns the wallet's secret key ring for key derivation and message
+// signing operations that need direct access to wallet-owned keys.
+func (w *Wallet) KeyRing() keychain.SecretKeyRing {
+	return w.keyRing
+}
+
 // DeriveNextKey derives the next key in the specified key family.
 // This delegates to the btcwallet-backed keyring.
 func (w *Wallet) DeriveNextKey(_ context.Context,

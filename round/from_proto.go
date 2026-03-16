@@ -10,6 +10,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -425,6 +426,20 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 				)
 			}
 			req.OperatorKey = key
+		}
+
+		if len(vr.SigningKey) > 0 {
+			key, err := btcec.ParsePubKey(vr.SigningKey)
+			if err != nil {
+				return fmt.Errorf(
+					"vtxo_requests[%d].signing_key: %w",
+					i, err,
+				)
+			}
+
+			req.SigningKey = keychain.KeyDescriptor{
+				PubKey: key,
+			}
 		}
 
 		m.VTXORequests[i] = req

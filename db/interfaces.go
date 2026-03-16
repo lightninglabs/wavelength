@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"math"
 	prand "math/rand"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
@@ -247,6 +249,8 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 		return txBody(t.createQuery(tx))
 	}
 
+	callerFile, callerLine, callerFunc := txRetryCaller()
+
 	waitBeforeRetry := func(attemptNumber int) {
 		retryDelay := t.opts.randRetryDelay(attemptNumber)
 
@@ -256,6 +260,9 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 				"deadlock error",
 			"attempt_number", attemptNumber,
 			"delay", retryDelay,
+			"caller_file", callerFile,
+			"caller_line", callerLine,
+			"caller_func", callerFunc,
 		)
 
 		// Before we try again, we'll wait with a random backoff based
@@ -321,6 +328,43 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	// If we get to this point, then we weren't able to successfully commit
 	// a tx given the max number of retries.
 	return ErrRetriesExceeded
+}
+
+// txRetryCaller returns the first caller above the db transaction helpers so
+// retry logs can identify which store method is contending on the database.
+func txRetryCaller() (string, int, string) {
+	pcs := make([]uintptr, 16)
+	n := runtime.Callers(2, pcs)
+	if n == 0 {
+		return "unknown", 0, "unknown"
+	}
+
+	frames := runtime.CallersFrames(pcs[:n])
+
+	for {
+		frame, more := frames.Next()
+
+		// Skip frames inside the db transaction helper itself.
+		if filepath.Base(frame.File) == "interfaces.go" &&
+			filepath.Base(filepath.Dir(frame.File)) == "db" {
+
+			if !more {
+				break
+			}
+
+			continue
+		}
+
+		if frame.Function != "" {
+			return filepath.Base(frame.File), frame.Line, frame.Function
+		}
+
+		if !more {
+			break
+		}
+	}
+
+	return "unknown", 0, "unknown"
 }
 
 // Backend returns the type of the database backend used.
