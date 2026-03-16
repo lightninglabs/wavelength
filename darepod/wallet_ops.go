@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/oor"
@@ -151,7 +154,10 @@ func BuildTransferInputs(ctx context.Context,
 // selection for non-standard spend paths (e.g., vHTLC claims).
 func BuildCustomTransferInputs(ctx context.Context,
 	store vtxo.VTXOStore,
-	customInputs []*daemonrpc.CustomOORInput) (
+	customInputs []*daemonrpc.CustomOORInput,
+	clientKey keychain.KeyDescriptor,
+	operatorKey *btcec.PublicKey,
+	exitDelay uint32) (
 	[]oor.TransferInput, error) {
 
 	inputs := make([]oor.TransferInput, 0, len(customInputs))
@@ -163,16 +169,32 @@ func BuildCustomTransferInputs(ctx context.Context,
 				ci.Outpoint, err)
 		}
 
-		desc, err := store.GetVTXO(ctx, outpoint)
-		if err != nil {
-			return nil, fmt.Errorf("look up VTXO %s: %w",
-				outpoint, err)
+		var desc *vtxo.Descriptor
+
+		// If the caller provided amount and pkscript, build
+		// the descriptor directly (for VTXOs not in the local
+		// store, e.g., received via OOR).
+		if ci.AmountSat > 0 && len(ci.PkScript) > 0 {
+			desc = &vtxo.Descriptor{
+				Outpoint:       outpoint,
+				Amount:         btcutil.Amount(ci.AmountSat),
+				PkScript:       ci.PkScript,
+				ClientKey:      clientKey,
+				OperatorKey:    operatorKey,
+				RelativeExpiry: exitDelay,
+			}
+		} else {
+			// Fall back to store lookup.
+			desc, err = store.GetVTXO(ctx, outpoint)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"look up VTXO %s: %w",
+					outpoint, err)
+			}
 		}
 
 		input := oor.TransferInput{
 			VTXO: desc,
-			// OwnerLeafScript auto-derived by Validate()
-			// from VTXO.ClientKey + VTXO.OperatorKey.
 		}
 
 		// Attach custom spend path if provided.
