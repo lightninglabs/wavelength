@@ -6,7 +6,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -260,6 +259,6 @@ func TestComposedPolicyControlBlockValidation(t *testing.T) {
 
 	// Verify the internal key matches.
 	require.Equal(t,
-		scripts.ARKNUMSKey.SerializeCompressed()[1:],
+		ARKNUMSKey.SerializeCompressed()[1:],
 		ctrlBlock.InternalKey.SerializeCompressed()[1:])
 }

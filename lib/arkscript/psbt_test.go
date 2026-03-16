@@ -5,7 +5,6 @@ import (
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,7 +60,7 @@ func TestEncodeTapTreeFormat(t *testing.T) {
 		},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	encoded, err := EncodeTapTree(policy)
@@ -102,7 +101,7 @@ func TestEncodeTapTreeSingleLeaf(t *testing.T) {
 		},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	encoded, err := EncodeTapTree(policy)
@@ -231,7 +230,7 @@ func TestEncodeTapTreeLargeScript(t *testing.T) {
 		},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	encoded, err := EncodeTapTree(policy)

@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -124,7 +123,7 @@ func TestBuildTreeSingleLeaf(t *testing.T) {
 		{Role: LeafRoleCollab, Leaf: txscript.NewBaseTapLeaf(script)},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 	require.Len(t, policy.Leaves, 1)
 	require.Len(t, policy.merkleProofs[0], 0) // Single leaf has no siblings.
@@ -164,7 +163,7 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 	}
 
 	// Build tree using our implementation.
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	// Build tree using btcd's implementation.
@@ -181,7 +180,7 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 
 	// Verify output keys match.
 	expectedOutputKey := txscript.ComputeTaprootOutputKey(
-		&scripts.ARKNUMSKey, btcdRootHash[:],
+		&ARKNUMSKey, btcdRootHash[:],
 	)
 	require.Equal(t, expectedOutputKey, policy.OutputKey())
 
@@ -237,7 +236,7 @@ func TestBuildTreeMatchesGoldenVectors(t *testing.T) {
 			}
 
 			// Build tree.
-			policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+			policy, err := BuildTree(leaves, &ARKNUMSKey)
 			require.NoError(t, err)
 
 			// Verify root hash matches golden vector.
@@ -291,7 +290,7 @@ func TestBuildTreeFourLeaves(t *testing.T) {
 		}
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	// Build using btcd for comparison.
@@ -331,7 +330,7 @@ func TestBuildTreeThreeLeaves(t *testing.T) {
 		}
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	// For 3 leaves with our split (left=1, right=2):
@@ -342,7 +341,7 @@ func TestBuildTreeThreeLeaves(t *testing.T) {
 	require.Len(t, policy.merkleProofs[2], 2)
 
 	// Verify the tree structure is deterministic by rebuilding.
-	policy2, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy2, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 	require.Equal(t, policy.RootHash, policy2.RootHash,
 		"tree construction should be deterministic")
@@ -352,11 +351,11 @@ func TestBuildTreeThreeLeaves(t *testing.T) {
 func TestBuildTreeEmpty(t *testing.T) {
 	t.Parallel()
 
-	_, err := BuildTree(nil, &scripts.ARKNUMSKey)
+	_, err := BuildTree(nil, &ARKNUMSKey)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no leaves")
 
-	_, err = BuildTree([]PolicyLeaf{}, &scripts.ARKNUMSKey)
+	_, err = BuildTree([]PolicyLeaf{}, &ARKNUMSKey)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no leaves")
 }
@@ -370,7 +369,7 @@ func TestSpendInfoOutOfBounds(t *testing.T) {
 		{Role: LeafRoleCollab, Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	_, err = policy.SpendInfo(-1)
@@ -397,7 +396,7 @@ func TestControlBlockFormat(t *testing.T) {
 		{Role: LeafRoleExit, Leaf: txscript.NewBaseTapLeaf([]byte{0x51})},
 	}
 
-	policy, err := BuildTree(leaves, &scripts.ARKNUMSKey)
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
 	info, err := policy.SpendInfo(0)
@@ -414,6 +413,6 @@ func TestControlBlockFormat(t *testing.T) {
 
 	// Next 32 bytes are internal key.
 	internalKeyBytes := info.ControlBlock[1:33]
-	expectedInternalKey := scripts.ARKNUMSKey.SerializeCompressed()[1:]
+	expectedInternalKey := ARKNUMSKey.SerializeCompressed()[1:]
 	require.Equal(t, expectedInternalKey, internalKeyBytes)
 }
