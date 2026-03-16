@@ -15,6 +15,30 @@ type ReceiveState interface {
 	receiveStateSealed()
 }
 
+// ReceiveResolving indicates the client durably recorded a lightweight
+// incoming-transfer hint and still needs to fetch the full Ark/checkpoint
+// package outside the live durable actor transaction.
+type ReceiveResolving struct {
+	SessionID SessionID
+
+	RecipientPkScript []byte
+
+	RecipientEventID uint64
+}
+
+// String returns a human-readable representation of ReceiveResolving.
+func (s *ReceiveResolving) String() string {
+	return "ReceiveResolving"
+}
+
+// IsTerminal returns false as ReceiveResolving is not terminal.
+func (s *ReceiveResolving) IsTerminal() bool {
+	return false
+}
+
+// receiveStateSealed marks ReceiveResolving as implementing ReceiveState.
+func (s *ReceiveResolving) receiveStateSealed() {}
+
 // ReceiveIdle is the initial state for handling incoming transfers.
 type ReceiveIdle struct{}
 
@@ -32,11 +56,13 @@ func (s *ReceiveIdle) IsTerminal() bool {
 func (s *ReceiveIdle) receiveStateSealed() {}
 
 // ReceiveNotified indicates the client has validated and surfaced an incoming
-// transfer and is waiting to ack it.
+// transfer and is waiting for local materialization to finish.
 type ReceiveNotified struct {
 	SessionID SessionID
 
 	ArkPSBT *psbt.Packet
+
+	FinalCheckpointPSBTs []*psbt.Packet
 }
 
 // String returns a human-readable representation of ReceiveNotified.

@@ -4,6 +4,48 @@ import (
 	"fmt"
 )
 
+// OutboxForIncomingState returns the outbox implied by the current incoming
+// receive state.
+func OutboxForIncomingState(state SessionState) ([]OutboxEvent, error) {
+	if state == nil {
+		return nil, fmt.Errorf("state must be provided")
+	}
+
+	switch s := state.(type) {
+	case *ReceiveResolving:
+		return nil, nil
+
+	case *ReceiveNotified:
+		recipients, err := ExtractArkRecipients(s.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		return []OutboxEvent{
+			&MaterializeIncomingVTXOsRequest{
+				SessionID:            s.SessionID,
+				ArkPSBT:              s.ArkPSBT,
+				FinalCheckpointPSBTs: s.FinalCheckpointPSBTs,
+				Recipients:           recipients,
+			},
+		}, nil
+
+	case *ReceiveAwaitingAck:
+		return []OutboxEvent{
+			&SendIncomingAckRequest{
+				SessionID: s.SessionID,
+			},
+		}, nil
+
+	case *ReceiveCompleted, *Failed:
+		return nil, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported incoming state type: %T",
+			state)
+	}
+}
+
 // OutboxForState returns the outbox request implied by the current outgoing
 // session state.
 //

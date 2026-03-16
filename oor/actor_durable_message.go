@@ -26,6 +26,12 @@ const (
 )
 
 const (
+	resolveIncomingPayloadSessionIDRecordType tlv.Type = 1
+	resolveIncomingPayloadPkScriptRecordType  tlv.Type = 2
+	resolveIncomingPayloadEventIDRecordType   tlv.Type = 3
+)
+
+const (
 	restorePayloadSnapshotRecordType tlv.Type = 1
 )
 
@@ -40,6 +46,7 @@ const (
 	eventPayloadArkPSBTRecordType         tlv.Type = 5
 	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
 	eventPayloadReasonRecordType          tlv.Type = 9
+	eventPayloadOutpointsRecordType       tlv.Type = 11
 )
 
 const (
@@ -49,6 +56,9 @@ const (
 	eventKindInputsMarkedSpent uint64 = 4
 	eventKindFail              uint64 = 5
 	eventKindRetryDue          uint64 = 6
+	eventKindIncomingTransfer  uint64 = 7
+	eventKindIncomingHandled   uint64 = 8
+	eventKindIncomingAckSent   uint64 = 9
 )
 
 const (
@@ -203,6 +213,35 @@ func decodeRecipientPayloads(raw []byte) ([]recipientPayload, error) {
 	}
 
 	return payloads, nil
+}
+
+func encodeOutPointList(outpoints []wire.OutPoint) ([]byte, error) {
+	blobs := make([][]byte, 0, len(outpoints))
+
+	for _, outpoint := range outpoints {
+		blobs = append(blobs, outPointBytes(outpoint))
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeOutPointList(raw []byte) ([]wire.OutPoint, error) {
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(blobs))
+	for _, blob := range blobs {
+		outpoint, err := parseOutPointBytes(blob)
+		if err != nil {
+			return nil, err
+		}
+
+		outpoints = append(outpoints, outpoint)
+	}
+
+	return outpoints, nil
 }
 
 func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
@@ -479,6 +518,79 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 	return parseSessionID(sessionBytes)
 }
 
+func encodeResolveIncomingTransferPayload(sessionID SessionID,
+	recipientPkScript []byte, recipientEventID uint64) ([]byte, error) {
+
+	sessionBytes := sessionIDBytes(sessionID)
+	pkScript := recipientPkScript
+	eventID := recipientEventID
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadEventIDRecordType, &eventID,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
+	uint64, error) {
+
+	var (
+		sessionBytes      []byte
+		recipientPkScript []byte
+		recipientEventID  uint64
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadSessionIDRecordType, &sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadPkScriptRecordType,
+			&recipientPkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadEventIDRecordType,
+			&recipientEventID,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	sessionID, err := parseSessionID(sessionBytes)
+	if err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	return sessionID, recipientPkScript, recipientEventID, nil
+}
+
 func encodeRestoreSnapshotPayload(snapshot *OutgoingSnapshot) ([]byte, error) {
 	snapshotRaw, err := encodeOutgoingSnapshot(snapshot)
 	if err != nil {
@@ -602,6 +714,10 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 		return SessionID{}, nil, err
 	}
 
+	if incoming, ok := event.(*IncomingTransferEvent); ok {
+		incoming.SessionID = sessionID
+	}
+
 	// Validation of SubmitAcceptedEvent identity is deferred to the
 	// processing layer (handleDriveEvent), not the deserialization
 	// layer. See encodeDriveEventRequestPayload for rationale.
@@ -611,12 +727,13 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
-		eventKind      uint64
-		submitSession  []byte
-		arkPSBT        []byte
-		checkpointPSBT []byte
-		reason         []byte
-		err            error
+		eventKind       uint64
+		submitSession   []byte
+		arkPSBT         []byte
+		checkpointPSBT  []byte
+		reason          []byte
+		outpointPayload []byte
+		err             error
 	)
 
 	switch evt := event.(type) {
@@ -670,6 +787,58 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	case *RetryDueEvent:
 		eventKind = eventKindRetryDue
 
+	case *IncomingTransferEvent:
+		eventKind = eventKindIncomingTransfer
+
+		if evt.ArkPSBT == nil {
+			return nil, fmt.Errorf(
+				"incoming transfer event ark psbt must be provided",
+			)
+		}
+
+		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := serializePSBTSlice(
+			evt.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpointPSBT, err = encodeLengthPrefixedBlobList(
+			checkpoints,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *IncomingHandledEvent:
+		eventKind = eventKindIncomingHandled
+
+		outpoints := evt.MaterializedOutpoints
+		if len(outpoints) == 0 && len(evt.MaterializedVTXOs) > 0 {
+			outpoints = make([]wire.OutPoint, 0,
+				len(evt.MaterializedVTXOs))
+			for _, desc := range evt.MaterializedVTXOs {
+				if desc == nil {
+					continue
+				}
+
+				outpoints = append(outpoints, desc.Outpoint)
+			}
+		}
+
+		outpointPayload, err = encodeOutPointList(outpoints)
+		if err != nil {
+			return nil, err
+		}
+
+	case *IncomingAckSentEvent:
+		eventKind = eventKindIncomingAckSent
+
 	default:
 		return nil, fmt.Errorf("unsupported event type: %T", event)
 	}
@@ -686,6 +855,9 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
 		),
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -703,11 +875,12 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 func decodeEventPayload(raw []byte) (Event, error) {
 	var (
-		eventKind      uint64
-		submitSession  []byte
-		arkPSBT        []byte
-		checkpointPSBT []byte
-		reason         []byte
+		eventKind       uint64
+		submitSession   []byte
+		arkPSBT         []byte
+		checkpointPSBT  []byte
+		reason          []byte
+		outpointPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -722,6 +895,9 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
 		),
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -798,6 +974,48 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 	case eventKindRetryDue:
 		return &RetryDueEvent{}, nil
+
+	case eventKindIncomingTransfer:
+		if len(arkPSBT) == 0 {
+			return nil, fmt.Errorf(
+				"incoming transfer event ark psbt must be provided",
+			)
+		}
+
+		ark, err := psbtutil.Parse(arkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpointRaw, err := decodeLengthPrefixedBlobList(
+			checkpointPSBT,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := parsePSBTSlice(checkpointRaw)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingTransferEvent{
+			ArkPSBT:              ark,
+			FinalCheckpointPSBTs: checkpoints,
+		}, nil
+
+	case eventKindIncomingHandled:
+		outpoints, err := decodeOutPointList(outpointPayload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingHandledEvent{
+			MaterializedOutpoints: outpoints,
+		}, nil
+
+	case eventKindIncomingAckSent:
+		return &IncomingAckSentEvent{}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
