@@ -28,6 +28,10 @@ const (
 	// SendRPCRequestMsgType is the TLV type for outbound unary RPC
 	// envelopes from the unary facade.
 	SendRPCRequestMsgType tlv.Type = 2001
+
+	// SendUnaryRequestMsgType is the TLV type for durable correlated unary
+	// requests where the connector constructs the mailbox envelope.
+	SendUnaryRequestMsgType tlv.Type = 2002
 )
 
 // defaultSendEventTimeout is the timeout for outbound gRPC Edge.Send calls.
@@ -41,6 +45,7 @@ type (
 	idempotencyRecordTLV  = tlv.TlvType4
 	rpcServiceRecordTLV   = tlv.TlvType5
 	rpcMethodRecordTLV    = tlv.TlvType6
+	rpcCorrelationRecordTLV = tlv.TlvType7
 )
 
 // ServerMessage is an interface that client FSM outbox messages must implement
@@ -376,6 +381,158 @@ func (m *SendRPCRequest) Decode(r io.Reader) error {
 // serverConnMsgSealed implements the ServerConnMsg interface seal.
 func (m *SendRPCRequest) serverConnMsgSealed() {}
 
+// SendUnaryRequest wraps a typed unary RPC request for durable delivery via
+// the mailbox edge. Unlike SendRPCRequest, the caller provides the request
+// body and routing metadata rather than a pre-built envelope.
+type SendUnaryRequest struct {
+	actor.BaseMessage
+
+	// Body is the request payload wrapped as Any.
+	Body *anypb.Any
+
+	// MsgID uniquely identifies this send attempt. Retries of the same
+	// persisted request must reuse this ID.
+	MsgID string
+
+	// IdempotencyKey identifies the semantic operation for remote dedupe.
+	IdempotencyKey string
+
+	// Service is the fully-qualified protobuf service name.
+	Service string
+
+	// Method is the RPC method name.
+	Method string
+
+	// CorrelationID links this request to the eventual KIND_RESPONSE.
+	CorrelationID string
+}
+
+// NewSendUnaryRequest constructs a durable unary request from the given proto
+// payload and routing metadata.
+func NewSendUnaryRequest(method mailboxrpc.ServiceMethod, req proto.Message,
+	correlationID string) (*SendUnaryRequest, error) {
+
+	if req == nil {
+		return nil, fmt.Errorf("unary request body must be provided")
+	}
+
+	body, err := anypb.New(req)
+	if err != nil {
+		return nil, fmt.Errorf("wrap unary request in Any: %w", err)
+	}
+
+	return &SendUnaryRequest{
+		Body:          body,
+		Service:       method.Service,
+		Method:        method.Method,
+		CorrelationID: correlationID,
+	}, nil
+}
+
+// MessageType returns a human-readable type name for logging.
+func (m *SendUnaryRequest) MessageType() string {
+	return "SendUnaryRequest"
+}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *SendUnaryRequest) TLVType() tlv.Type {
+	return SendUnaryRequestMsgType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *SendUnaryRequest) Encode(w io.Writer) error {
+	body := m.Body
+	if body == nil {
+		return fmt.Errorf("unary request body must be provided")
+	}
+
+	bodyBytes, err := (proto.MarshalOptions{
+		Deterministic: true,
+	}).Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal unary request body: %w", err)
+	}
+
+	msgID := m.MsgID
+	if msgID == "" {
+		msgID = mailboxconn.StableEventMsgID(bodyBytes)
+	}
+
+	idempotencyKey := m.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = mailboxconn.
+			StableEventIdempotencyKey(bodyBytes)
+	}
+
+	bodyRec := tlv.NewRecordT[protoPayloadRecordTLV](
+		mailboxconn.WrappedProto[*anypb.Any]{Val: body},
+	)
+	msgIDRec := tlv.NewPrimitiveRecord[msgIDRecordTLV](
+		[]byte(msgID),
+	)
+	idemRec := tlv.NewPrimitiveRecord[idempotencyRecordTLV](
+		[]byte(idempotencyKey),
+	)
+	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
+		[]byte(m.Service),
+	)
+	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
+		[]byte(m.Method),
+	)
+	corrRec := tlv.NewPrimitiveRecord[rpcCorrelationRecordTLV](
+		[]byte(m.CorrelationID),
+	)
+
+	stream, err := tlv.NewStream(
+		bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
+		svcRec.Record(), methodRec.Record(), corrRec.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return stream.Encode(w)
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *SendUnaryRequest) Decode(r io.Reader) error {
+	bodyRec := tlv.ZeroRecordT[
+		protoPayloadRecordTLV,
+		mailboxconn.WrappedProto[*anypb.Any],
+	]()
+	bodyRec.Val.Val = &anypb.Any{}
+
+	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
+	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
+	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
+	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
+	corrRec := tlv.ZeroRecordT[rpcCorrelationRecordTLV, []byte]()
+
+	stream, err := tlv.NewStream(
+		bodyRec.Record(), msgIDRec.Record(), idemRec.Record(),
+		svcRec.Record(), methodRec.Record(), corrRec.Record(),
+	)
+	if err != nil {
+		return err
+	}
+
+	if _, err := stream.DecodeWithParsedTypes(r); err != nil {
+		return err
+	}
+
+	m.Body = bodyRec.Val.Val
+	m.MsgID = string(msgIDRec.Val)
+	m.IdempotencyKey = string(idemRec.Val)
+	m.Service = string(svcRec.Val)
+	m.Method = string(methodRec.Val)
+	m.CorrelationID = string(corrRec.Val)
+
+	return nil
+}
+
+// serverConnMsgSealed implements the ServerConnMsg interface seal.
+func (m *SendUnaryRequest) serverConnMsgSealed() {}
+
 // ServerConnectionActor is the unified connector boundary for all mailbox
 // traffic between the client and the remote server. It serves as both:
 //
@@ -437,6 +594,9 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 	switch m := msg.(type) {
 	case *SendClientEventRequest:
 		return a.handleSendClientEvent(ctx, m)
+
+	case *SendUnaryRequest:
+		return a.handleSendUnaryRequest(ctx, m)
 
 	case *SendRPCRequest:
 		return a.handleSendRPCRequest(ctx, m)
@@ -542,6 +702,101 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 	})
 }
 
+// handleSendUnaryRequest sends a durable correlated unary request via the
+// mailbox edge.
+func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
+	req *SendUnaryRequest) fn.Result[ServerConnResp] {
+
+	if req == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"unary request must be provided",
+		))
+	}
+
+	if req.Body == nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"unary request body must be provided",
+		))
+	}
+
+	if req.Service == "" || req.Method == "" {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"unary request service and method must be provided",
+		))
+	}
+
+	if req.CorrelationID == "" {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"unary request correlation id must be provided",
+		))
+	}
+
+	msgID := req.MsgID
+	idempotencyKey := req.IdempotencyKey
+
+	if msgID == "" || idempotencyKey == "" {
+		bodyBytes, err := (proto.MarshalOptions{
+			Deterministic: true,
+		}).Marshal(req.Body)
+		if err != nil {
+			return fn.Err[ServerConnResp](fmt.Errorf(
+				"marshal unary body: %w", err,
+			))
+		}
+
+		if msgID == "" {
+			msgID = mailboxconn.StableEventMsgID(bodyBytes)
+		}
+
+		if idempotencyKey == "" {
+			idempotencyKey = mailboxconn.
+				StableEventIdempotencyKey(bodyBytes)
+		}
+	}
+
+	envelope := &mailboxpb.Envelope{
+		ProtocolVersion: a.cfg.ProtocolVersion,
+		MsgId:           msgID,
+		IdempotencyKey:  idempotencyKey,
+		Sender:          a.cfg.LocalMailboxID,
+		Recipient:       a.cfg.RemoteMailboxID,
+		CreatedAtUnixMs: time.Now().UnixMilli(),
+		Body:            req.Body,
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_REQUEST,
+			Service:       req.Service,
+			Method:        req.Method,
+			CorrelationId: req.CorrelationID,
+			ReplyTo:       a.cfg.LocalMailboxID,
+		},
+	}
+
+	sendCtx, sendCancel := context.WithTimeout(
+		context.WithoutCancel(ctx), defaultSendEventTimeout,
+	)
+	defer sendCancel()
+
+	resp, err := a.cfg.Edge.Send(sendCtx, &mailboxpb.SendRequest{
+		Envelope: envelope,
+	})
+	if err != nil {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send unary request: %w", err,
+		))
+	}
+
+	if resp.Status != nil && !resp.Status.Ok {
+		return fn.Err[ServerConnResp](fmt.Errorf(
+			"send unary request: %s (%s)",
+			resp.Status.Message, resp.Status.Code,
+		))
+	}
+
+	return fn.Ok[ServerConnResp](&SendRPCResponse{
+		Success: true,
+	})
+}
+
 // eventRoutingMetadata returns the outbound routing metadata persisted on a
 // SendClientEventRequest. When callers leave Service/Method empty, we derive
 // them directly from the wrapped ServerMessage so direct sends remain aligned
@@ -615,12 +870,19 @@ func (a *ServerConnectionActor) removeWaiter(id CorrelationID) {
 	a.responseRegistry.RemoveWaiter(id)
 }
 
+// removePendingResponse drops any buffered early response for the correlation
+// ID. Durable response dispatchers use this after converting a response into a
+// local actor message so the in-memory unary path cannot consume it later.
+func (a *ServerConnectionActor) removePendingResponse(id CorrelationID) {
+	a.responseRegistry.RemovePending(id)
+}
+
 // deliverResponse looks up a waiter by correlation ID and delivers the
 // envelope. If no waiter exists yet, the response is buffered so a later
 // AwaitRPC call can still observe it.
 func (a *ServerConnectionActor) deliverResponse(
 	id CorrelationID, env *mailboxpb.Envelope,
-) bool {
+) mailboxconn.DeliveryResult {
 
 	return a.responseRegistry.DeliverResponse(id, env)
 }
@@ -680,6 +942,12 @@ func NewServerConnCodec() *actor.MessageCodec {
 			return &SendRPCRequest{}
 		},
 	)
+	codec.MustRegister(
+		SendUnaryRequestMsgType,
+		func() actor.TLVMessage {
+			return &SendUnaryRequest{}
+		},
+	)
 
 	return codec
 }
@@ -687,6 +955,7 @@ func NewServerConnCodec() *actor.MessageCodec {
 // Compile-time interface checks.
 var (
 	_ ServerConnMsg  = (*SendClientEventRequest)(nil)
+	_ ServerConnMsg  = (*SendUnaryRequest)(nil)
 	_ ServerConnMsg  = (*SendRPCRequest)(nil)
 	_ ServerConnResp = (*SendClientEventResponse)(nil)
 	_ ServerConnResp = (*SendRPCResponse)(nil)
