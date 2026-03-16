@@ -38,10 +38,6 @@ const (
 	// and the client is updating its local VTXO persistence state.
 	OutgoingPhaseLocalVTXOUpdate OutgoingPhase = "local_vtxo_update"
 
-	// OutgoingPhaseRetryBackoff indicates the client is waiting to retry a
-	// previously failed outbox request.
-	OutgoingPhaseRetryBackoff OutgoingPhase = "retry_backoff"
-
 	// OutgoingPhaseCompleted indicates the transfer is fully complete.
 	OutgoingPhaseCompleted OutgoingPhase = "completed"
 
@@ -86,14 +82,11 @@ type OutgoingSnapshot struct {
 	// TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
 
-	// RetryAfter is the requested delay in retry backoff phases.
+	// RetryAfter is the requested delay for a pending retry, if any.
 	RetryAfter time.Duration
 
-	// ResumeSnapshot is the snapshot to restore after retry backoff.
-	ResumeSnapshot *OutgoingSnapshot
-
-	// FailReason is the terminal failure reason, when Phase is
-	// Failed.
+	// FailReason is the terminal failure reason when Phase is Failed. When
+	// RetryAfter is non-zero, it carries the pending retry reason.
 	FailReason string
 }
 
@@ -227,17 +220,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 	case *Failed:
 		// Failed is terminal. Retrying is not attempted automatically.
 		snap.Phase = OutgoingPhaseFailed
-		snap.FailReason = s.Reason
-
-	case *RetryBackoff:
-		// RetryBackoff wraps another snapshot to support restart-safe
-		// retry.
-		// The intent is:
-		// 1) store the original "resume snapshot" that is safe to retry
-		// 2) store the requested delay and reason for UI/telemetry
-		snap.Phase = OutgoingPhaseRetryBackoff
-		snap.ResumeSnapshot = s.ResumeSnapshot
-		snap.RetryAfter = s.RetryAfter
 		snap.FailReason = s.Reason
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
@@ -398,22 +380,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
 			TransferInputs: inputs,
-		}, nil
-
-	case OutgoingPhaseRetryBackoff:
-		if snapshot.ResumeSnapshot == nil {
-			return nil, fmt.Errorf("resume snapshot required")
-		}
-
-		after := snapshot.RetryAfter
-		if after == 0 {
-			after = 1 * time.Second
-		}
-
-		return &RetryBackoff{
-			ResumeSnapshot: snapshot.ResumeSnapshot,
-			RetryAfter:     after,
-			Reason:         snapshot.FailReason,
 		}, nil
 
 	case OutgoingPhaseCompleted:

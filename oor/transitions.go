@@ -409,50 +409,6 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 	}
 }
 
-// ProcessEvent handles events for RetryBackoff.
-func (s *RetryBackoff) ProcessEvent(ctx context.Context, event Event,
-	env *Environment) (*StateTransition, error) {
-
-	_ = ctx
-	_ = env
-
-	switch evt := event.(type) {
-	case *RetryDueEvent:
-		_ = evt
-
-		if s.ResumeSnapshot == nil {
-			return nil, fmt.Errorf(
-				"resume snapshot must be provided",
-			)
-		}
-
-		nextState, err := OutgoingStateFromSnapshot(s.ResumeSnapshot)
-		if err != nil {
-			return nil, err
-		}
-
-		nextOutbox, err := OutboxForState(nextState)
-		if err != nil {
-			return nil, err
-		}
-
-		return &StateTransition{
-			NextState: nextState,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: nextOutbox,
-			}),
-		}, nil
-	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	default:
-		return unexpectedEvent(s), nil
-	}
-}
-
 // ProcessEvent handles events for Completed.
 func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
@@ -473,8 +429,8 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	return unexpectedEvent(s), nil
 }
 
-// handleOutboxError transitions the FSM into a RetryBackoff state if the error
-// is retryable, otherwise returning a terminal failure.
+// handleOutboxError emits retry scheduling for retryable errors while keeping
+// the FSM in the current protocol state.
 func handleOutboxError(env *Environment, current State,
 	evt *OutboxErrorEvent) (*StateTransition, error) {
 
@@ -489,26 +445,13 @@ func handleOutboxError(env *Environment, current State,
 		}, nil
 	}
 
-	if env == nil || env.SessionID == (SessionID{}) {
-		return nil, fmt.Errorf("internal: missing session id")
-	}
-
-	snap, err := NewOutgoingSnapshot(env.SessionID, current)
-	if err != nil {
-		return nil, err
-	}
-
 	after := evt.RetryAfter
 	if after == 0 {
 		after = defaultRetryDelay
 	}
 
 	return &StateTransition{
-		NextState: &RetryBackoff{
-			ResumeSnapshot: snap,
-			RetryAfter:     after,
-			Reason:         evt.ErrorReason,
-		},
+		NextState: current,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
 				&ScheduleRetryRequest{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
@@ -441,7 +442,7 @@ func (b *oorDurableBehavior) handleStartTransfer(ctx context.Context,
 		return fn.Err[ActorResp](err)
 	}
 
-	err = b.driveOutbox(ctx, session.ID, handle.FSM, outbox)
+	err = b.driveOutbox(ctx, session.ID, handle, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -517,6 +518,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
+	handle.clearRetryMetadata()
 
 	if finalizeState != nil {
 		err := b.persistOutgoingPackage(
@@ -534,7 +536,7 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 
 	b.notifyMaterializedVTXOs(ctx, req.Event)
 
-	err = b.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
+	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -626,7 +628,7 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 		return fn.Err[ActorResp](err)
 	}
 
-	err = b.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
+	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -685,7 +687,7 @@ func (b *oorDurableBehavior) handleIncomingTransfer(ctx context.Context,
 		return err
 	}
 
-	return b.driveOutbox(ctx, session.ID, handle.FSM, outbox)
+	return b.driveOutbox(ctx, session.ID, handle, outbox)
 }
 
 // enrichSubmitAcceptedArkPSBT populates a SubmitAcceptedEvent's ArkPSBT field
@@ -815,8 +817,10 @@ func (b *oorDurableBehavior) handleRestoreSession(ctx context.Context,
 	}
 
 	b.sessions[session.ID] = &sessionHandle{
-		FSM:  session.FSM,
-		kind: sessionKindOutgoing,
+		FSM:         session.FSM,
+		kind:        sessionKindOutgoing,
+		RetryAfter:  req.Snapshot.RetryAfter,
+		RetryReason: req.Snapshot.FailReason,
 	}
 
 	err = b.persistCheckpoint(ctx)
@@ -863,8 +867,14 @@ func (b *oorDurableBehavior) handleResumeSession(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
+	handle.clearRetryMetadata()
 
-	err = b.driveOutbox(ctx, req.SessionID, handle.FSM, outbox)
+	err = b.persistCheckpoint(ctx)
+	if err != nil {
+		return fn.Err[ActorResp](err)
+	}
+
+	err = b.driveOutbox(ctx, req.SessionID, handle, outbox)
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
@@ -902,6 +912,7 @@ func (b *oorDurableBehavior) handleExportSnapshot(ctx context.Context,
 	if err != nil {
 		return fn.Err[ActorResp](err)
 	}
+	handle.applyRetrySnapshot(snapshot)
 
 	return fn.Ok[ActorResp](&ExportSnapshotResponse{
 		Snapshot: snapshot,
@@ -976,8 +987,10 @@ func (b *oorDurableBehavior) restoreFromCheckpoint(ctx context.Context,
 		}
 
 		b.sessions[session.ID] = &sessionHandle{
-			FSM:  session.FSM,
-			kind: sessionKindOutgoing,
+			FSM:         session.FSM,
+			kind:        sessionKindOutgoing,
+			RetryAfter:  snapshot.RetryAfter,
+			RetryReason: snapshot.FailReason,
 		}
 
 		b.logger(ctx).DebugS(ctx, "Restored session from checkpoint",
@@ -1037,7 +1050,7 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 			return err
 		}
 
-		outbox, err := outboxForHandle(handle, state)
+		outbox, err := b.resumeOutboxForHandle(handle, state)
 		if err != nil {
 			return err
 		}
@@ -1047,7 +1060,7 @@ func (b *oorDurableBehavior) resumeRestoredSessions(ctx context.Context) error {
 			slog.String("state", fmt.Sprintf("%T", state)),
 			slog.Int("num_outbox", len(outbox)))
 
-		err = b.driveOutbox(ctx, sessionID, handle.FSM, outbox)
+		err = b.driveOutbox(ctx, sessionID, handle, outbox)
 		if err != nil {
 			return err
 		}
@@ -1180,9 +1193,14 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 // driveOutbox executes outbox work using the configured handler and feeds any
 // follow-up events back into the FSM.
 func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
-	sessionID SessionID, fsm *StateMachine, outbox []OutboxEvent) error {
+	sessionID SessionID, handle *sessionHandle,
+	outbox []OutboxEvent) error {
 
 	handler := b.cfg.OutboxHandler
+
+	if handle == nil {
+		return fmt.Errorf("session handle must be provided")
+	}
 
 	for _, msg := range outbox {
 		// Transport events (submit, finalize, ack) are Tell'd to
@@ -1201,7 +1219,9 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 
 			if _, ok := msg.(*SendIncomingAckRequest); ok {
 				nextOutbox, err := b.askEvent(
-					ctx, fsm, &IncomingAckSentEvent{},
+					ctx,
+					handle.FSM,
+					&IncomingAckSentEvent{},
 				)
 				if err != nil {
 					return err
@@ -1213,7 +1233,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 				}
 
 				err = b.driveOutbox(
-					ctx, sessionID, fsm, nextOutbox,
+					ctx, sessionID, handle, nextOutbox,
 				)
 				if err != nil {
 					return err
@@ -1254,7 +1274,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			b.notifyMaterializedVTXOs(ctx, followUp)
 
 			finalizeState, err := b.captureFinalizeStateForEvent(
-				fsm, followUp,
+				handle.FSM, followUp,
 			)
 			if err != nil {
 				return err
@@ -1263,10 +1283,11 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			// Feed follow-up events into the FSM.
 			// Recursively execute any emitted outbox work.
 			// Stop when none remains.
-			nextOutbox, err := b.askEvent(ctx, fsm, followUp)
+			nextOutbox, err := b.askEvent(ctx, handle.FSM, followUp)
 			if err != nil {
 				return err
 			}
+			handle.applyRetryEvent(followUp)
 
 			if finalizeState != nil {
 				err = b.persistOutgoingPackage(ctx, sessionID,
@@ -1281,7 +1302,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 				return err
 			}
 
-			err = b.driveOutbox(ctx, sessionID, fsm, nextOutbox)
+			err = b.driveOutbox(ctx, sessionID, handle, nextOutbox)
 			if err != nil {
 				return err
 			}
@@ -1413,6 +1434,7 @@ func (b *oorDurableBehavior) persistCheckpoint(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			handle.applyRetrySnapshot(snapshot)
 
 			outgoingSnapshots = append(
 				outgoingSnapshots, snapshot,
@@ -1463,6 +1485,9 @@ type sessionHandle struct {
 	FSM *StateMachine
 
 	kind sessionKind
+
+	RetryAfter  time.Duration
+	RetryReason string
 }
 
 type sessionKind uint8
@@ -1525,6 +1550,87 @@ func outboxForHandle(handle *sessionHandle,
 
 	default:
 		return nil, fmt.Errorf("unknown session kind: %d", handle.kind)
+	}
+}
+
+// applyRetryEvent updates retry metadata based on a follow-up event result.
+func (h *sessionHandle) applyRetryEvent(event Event) {
+	if h == nil {
+		return
+	}
+
+	retryEvent, ok := event.(*OutboxErrorEvent)
+	if !ok || !retryEvent.Retryable {
+		h.clearRetryMetadata()
+		return
+	}
+
+	after := retryEvent.RetryAfter
+	if after == 0 {
+		after = defaultRetryDelay
+	}
+
+	h.RetryAfter = after
+	h.RetryReason = retryEvent.ErrorReason
+}
+
+// clearRetryMetadata removes any pending retry scheduling metadata.
+func (h *sessionHandle) clearRetryMetadata() {
+	if h == nil {
+		return
+	}
+
+	h.RetryAfter = 0
+	h.RetryReason = ""
+}
+
+// applyRetrySnapshot copies retry metadata onto an exported snapshot.
+func (h *sessionHandle) applyRetrySnapshot(snapshot *OutgoingSnapshot) {
+	if h == nil || snapshot == nil || h.RetryAfter == 0 {
+		return
+	}
+
+	snapshot.RetryAfter = h.RetryAfter
+	snapshot.FailReason = h.RetryReason
+}
+
+// resumeOutboxForHandle returns either retry scheduling or the state's
+// natural outbox, depending on whether retry metadata is pending.
+func (b *oorDurableBehavior) resumeOutboxForHandle(
+	handle *sessionHandle, state SessionState,
+) ([]OutboxEvent, error) {
+
+	if handle == nil {
+		return nil, fmt.Errorf("session handle must be provided")
+	}
+
+	switch handle.kind {
+	case sessionKindOutgoing:
+		outgoingState, ok := state.(State)
+		if !ok {
+			return nil, fmt.Errorf(
+				"unexpected outgoing state type: %T",
+				state,
+			)
+		}
+
+		if handle.RetryAfter > 0 {
+			return []OutboxEvent{
+				&ScheduleRetryRequest{
+					After:  handle.RetryAfter,
+					Reason: handle.RetryReason,
+				},
+			}, nil
+		}
+
+		return OutboxForState(outgoingState)
+
+	case sessionKindIncoming:
+		return OutboxForIncomingState(state)
+
+	default:
+		return nil, fmt.Errorf("unknown session kind: %d",
+			handle.kind)
 	}
 }
 

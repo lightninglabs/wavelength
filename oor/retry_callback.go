@@ -6,11 +6,11 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 )
 
-// NewRetryCallbackRef creates a TellOnlyRef that transforms timeout expiry
-// notifications into OOR actor DriveEventRequest messages containing a
-// RetryDueEvent. The timeout ID is expected to be the hex-encoded session ID
-// (set by SigningOutboxHandler.handleScheduleRetry), which is parsed back
-// into a SessionID for the DriveEventRequest.
+// NewRetryCallbackRef creates a TellOnlyRef that transforms timeout
+// expiry notifications into OOR actor ResumeSessionRequest messages.
+// The timeout ID is expected to be the hex-encoded session ID (set by
+// SigningOutboxHandler.handleScheduleRetry), which is parsed back into
+// a SessionID for the resume request.
 //
 // This bridges the timeout actor's fire-and-forget callback with the OOR
 // actor's durable mailbox, enabling event-driven retry scheduling without
@@ -30,17 +30,14 @@ func NewRetryCallbackRef(
 			)
 			if err != nil {
 				// This should never happen since we control
-				// the timeout ID format. Return a nil-session
-				// drive request that the actor will reject
-				// gracefully.
-				return &DriveEventRequest{
-					Event: &RetryDueEvent{},
-				}
+				// the timeout ID format. Return a
+				// zero-session resume request that the
+				// actor will reject gracefully.
+				return &ResumeSessionRequest{}
 			}
 
-			return &DriveEventRequest{
+			return &ResumeSessionRequest{
 				SessionID: SessionID(*sessionHash),
-				Event:     &RetryDueEvent{},
 			}
 		},
 	)

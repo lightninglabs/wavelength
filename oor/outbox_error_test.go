@@ -63,29 +63,14 @@ func TestHandleOutboxError(t *testing.T) {
 		TransferInputs:  inputs,
 	}
 
-	sessionID, err := sessionIDFromArk(ark)
-	require.NoError(t, err)
-
-	env := &Environment{SessionID: sessionID}
-
 	// Nil event rejected: this is a programmer error and should not be
 	// treated as retryable.
-	_, err = handleOutboxError(env, current, nil)
-	require.Error(t, err)
-
-	// Retryable error requires a valid environment session id. The session
-	// id is used to reconstruct a safe resume snapshot.
-	_, err = handleOutboxError(nil, current, &OutboxErrorEvent{
-		OutboxType:  "x",
-		Retryable:   true,
-		RetryAfter:  0,
-		ErrorReason: "boom",
-	})
+	_, err = handleOutboxError(nil, current, nil)
 	require.Error(t, err)
 
 	// Non-retryable error causes terminal failure. The state machine does
 	// not attempt to guess whether retry is safe.
-	transition, err := handleOutboxError(env, current, &OutboxErrorEvent{
+	transition, err := handleOutboxError(nil, current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   false,
 		ErrorReason: "boom",
@@ -94,20 +79,17 @@ func TestHandleOutboxError(t *testing.T) {
 	require.IsType(t, &Failed{}, transition.NextState)
 	require.True(t, transition.NewEvents.IsNone())
 
-	// Retryable error schedules a retry and snapshots the resume state so
-	// the caller can survive a crash while waiting for the backoff timer.
-	transition, err = handleOutboxError(env, current, &OutboxErrorEvent{
+	// Retryable error keeps the FSM in the current state and emits retry
+	// scheduling. The actor persists retry metadata alongside the real
+	// protocol state.
+	transition, err = handleOutboxError(nil, current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   true,
 		RetryAfter:  0,
 		ErrorReason: "boom",
 	})
 	require.NoError(t, err)
-
-	backoff, ok := transition.NextState.(*RetryBackoff)
-	require.True(t, ok)
-	require.NotNil(t, backoff.ResumeSnapshot)
-	require.Equal(t, 1*time.Second, backoff.RetryAfter)
+	require.Same(t, current, transition.NextState)
 
 	require.True(t, transition.NewEvents.IsSome())
 	emitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
@@ -120,7 +102,8 @@ func TestHandleOutboxError(t *testing.T) {
 }
 
 // TestAwaitingFinalizeAcceptedOutboxError verifies that retryable outbox
-// failures in the finalize-ack wait state transition into RetryBackoff.
+// failures in the finalize-ack wait state stay in the current state while
+// scheduling retry.
 func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	t.Parallel()
 
@@ -157,25 +140,21 @@ func TestAwaitingFinalizeAcceptedOutboxError(t *testing.T) {
 	ark, checkpoints, err := buildSubmitPackage(policy, inputs, recipients)
 	require.NoError(t, err)
 
-	sessionID, err := sessionIDFromArk(ark)
-	require.NoError(t, err)
-
 	state := &AwaitingFinalizeAccepted{
-		SessionID:            sessionID,
+		SessionID:            SessionID(ark.UnsignedTx.TxHash()),
 		ArkPSBT:              ark,
 		FinalCheckpointPSBTs: checkpoints,
 		TransferInputs:       inputs,
 	}
 
-	env := &Environment{SessionID: sessionID}
 	transition, err := state.ProcessEvent(t.Context(), &OutboxErrorEvent{
 		OutboxType:  (&SendFinalizePackageRequest{}).outboxType(),
 		Retryable:   true,
 		RetryAfter:  0,
 		ErrorReason: "finalize transport unavailable",
-	}, env)
+	}, nil)
 	require.NoError(t, err)
-	require.IsType(t, &RetryBackoff{}, transition.NextState)
+	require.Same(t, state, transition.NextState)
 
 	emitted := transition.NewEvents.UnwrapOr(EmittedEvent{})
 	require.Len(t, emitted.Outbox, 1)

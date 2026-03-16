@@ -402,10 +402,7 @@ func (h *retrySubmitOutboxHandler) Handle(
 	case *ScheduleRetryRequest:
 		_ = msg
 
-		// For unit tests, trigger the retry immediately.
-		return []Event{
-			&RetryDueEvent{},
-		}, nil
+		return nil, nil
 
 	case *RequestCheckpointSignatures:
 		err := SignCheckpointPSBTs(
@@ -442,9 +439,9 @@ func (h *retrySubmitOutboxHandler) Handle(
 
 var _ OutboxHandler = (*retrySubmitOutboxHandler)(nil)
 
-// TestOORClientActorRetryBackoff asserts the client actor can handle a
-// retryable error emitted by the outbox handler and complete after retry.
-func TestOORClientActorRetryBackoff(t *testing.T) {
+// TestOORClientActorRetryResume asserts the client actor can handle a
+// retryable error, persist retry intent, and complete after explicit resume.
+func TestOORClientActorRetryResume(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -512,6 +509,20 @@ func TestOORClientActorRetryBackoff(t *testing.T) {
 	require.True(t, stateResp.IsOk())
 
 	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
+
+	resumeResp := actor.Receive(ctx, &ResumeSessionRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, resumeResp.IsOk())
+
+	stateResp = actor.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok = stateResp.UnwrapOr(nil).(*GetStateResponse)
 	require.True(t, ok)
 	require.IsType(t, &Completed{}, stateMsg.State)
 }

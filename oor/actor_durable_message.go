@@ -57,7 +57,6 @@ const (
 	eventKindFinalizeAccepted  uint64 = 3
 	eventKindInputsMarkedSpent uint64 = 4
 	eventKindFail              uint64 = 5
-	eventKindRetryDue          uint64 = 6
 	eventKindIncomingTransfer  uint64 = 7
 	eventKindIncomingHandled   uint64 = 8
 	eventKindIncomingAckSent   uint64 = 9
@@ -1021,9 +1020,6 @@ func encodeEventPayload(event Event) ([]byte, error) {
 		eventKind = eventKindFail
 		reason = []byte(evt.Reason)
 
-	case *RetryDueEvent:
-		eventKind = eventKindRetryDue
-
 	case *IncomingTransferEvent:
 		eventKind = eventKindIncomingTransfer
 
@@ -1226,9 +1222,6 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 	case eventKindFail:
 		return &FailEvent{Reason: string(reason)}, nil
-
-	case eventKindRetryDue:
-		return &RetryDueEvent{}, nil
 
 	case eventKindIncomingTransfer:
 		if len(arkPSBT) == 0 {

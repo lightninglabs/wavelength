@@ -24,7 +24,6 @@ const (
 	snapshotCheckpointPSBTsRecordType tlv.Type = 9
 	snapshotTransferInputsRecordType  tlv.Type = 11
 	snapshotRetryAfterNanosRecordType tlv.Type = 15
-	snapshotResumeSnapshotRecordType  tlv.Type = 17
 	snapshotFailReasonRecordType      tlv.Type = 19
 )
 
@@ -223,16 +222,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
 
-	var resumeSnapshot []byte
-	if snapshot.ResumeSnapshot != nil {
-		resumeSnapshot, err = encodeOutgoingSnapshot(
-			snapshot.ResumeSnapshot,
-		)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(snapshotVersionRecordType, &version),
@@ -249,9 +238,6 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshot,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReason,
@@ -280,7 +266,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		checkpointPSBTsRaw []byte
 		inputSnapshotsRaw  []byte
 		retryAfterNanos    uint64
-		resumeSnapshotRaw  []byte
 		failReasonRaw      []byte
 	)
 
@@ -299,9 +284,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,
@@ -343,14 +325,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		arkPSBT = nil
 	}
 
-	var resumeSnapshot *OutgoingSnapshot
-	if len(resumeSnapshotRaw) != 0 {
-		resumeSnapshot, err = decodeOutgoingSnapshot(resumeSnapshotRaw)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	decodedVersion, err := decodeUint64ToUint8(version, "snapshot version")
 	if err != nil {
 		return nil, err
@@ -371,7 +345,6 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
 		RetryAfter:             decodedRetryAfter,
-		ResumeSnapshot:         resumeSnapshot,
 		FailReason:             string(failReasonRaw),
 	}, nil
 }

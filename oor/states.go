@@ -1,8 +1,6 @@
 package oor
 
 import (
-	"time"
-
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
@@ -176,40 +174,6 @@ func (s *AwaitingFinalizeAccepted) IsTerminal() bool {
 // stateSealed marks AwaitingFinalizeAccepted as implementing the sealed State
 // interface.
 func (s *AwaitingFinalizeAccepted) stateSealed() {}
-
-// RetryBackoff indicates the client should wait before retrying the outbox
-// request implied by ResumeSnapshot.
-//
-// This state is intended to support retry/backoff without requiring durable
-// timers yet: the outbox boundary can implement ScheduleRetryRequest however it
-// wants (immediate in tests, time-based in apps).
-type RetryBackoff struct {
-	// RetryBackoff is a minimal "timer" state that models backoff without
-	// requiring a dedicated scheduler in the FSM runtime. A future durable
-	// actor runtime can replace this by persisting timers and wakeups.
-
-	// ResumeSnapshot captures the state to restore when the retry is due.
-	ResumeSnapshot *OutgoingSnapshot
-
-	// RetryAfter is the requested backoff delay.
-	RetryAfter time.Duration
-
-	// Reason is a human-readable error reason.
-	Reason string
-}
-
-// String returns a human-readable representation of RetryBackoff.
-func (s *RetryBackoff) String() string {
-	return "RetryBackoff"
-}
-
-// IsTerminal returns false as RetryBackoff is not terminal.
-func (s *RetryBackoff) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks RetryBackoff as implementing the sealed State interface.
-func (s *RetryBackoff) stateSealed() {}
 
 // AwaitingLocalVTXOUpdate indicates the server has accepted the finalize
 // package and the client must update its local VTXO persistence state.

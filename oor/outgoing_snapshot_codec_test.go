@@ -37,11 +37,6 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 			},
 		},
 		RetryAfter: 3 * time.Second,
-		ResumeSnapshot: &OutgoingSnapshot{
-			Version:   3,
-			SessionID: SessionID(chainhash.Hash{16, 17}),
-			Phase:     OutgoingPhaseCompleted,
-		},
 		FailReason: "retry later",
 	}
 
@@ -165,7 +160,6 @@ func encodeSnapshotRawForDecodeTest(version uint64,
 		return nil, err
 	}
 
-	resumeSnapshotRaw := []byte(nil)
 	failReasonRaw := []byte(nil)
 
 	records := []tlv.Record{
@@ -183,9 +177,6 @@ func encodeSnapshotRawForDecodeTest(version uint64,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,
