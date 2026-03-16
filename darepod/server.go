@@ -175,6 +175,21 @@ type Server struct {
 	grpcServer *grpc.Server
 	rpcServer  *RPCServer
 	mailboxMux *mailboxrpc.ServeMux
+
+	// rpcAddr stores the actual bound address of the gRPC server
+	// after startup (useful when listening on port :0).
+	rpcAddr atomic.Pointer[net.Addr]
+}
+
+// RPCAddr returns the actual bound address of the daemon's gRPC
+// server, or nil if the server hasn't started listening yet.
+func (s *Server) RPCAddr() net.Addr {
+	p := s.rpcAddr.Load()
+	if p == nil {
+		return nil
+	}
+
+	return *p
 }
 
 // NewServer allocates a Server from a validated Config. The server is
@@ -434,9 +449,13 @@ func (s *Server) run(ctx context.Context,
 			s.cfg.RPC.ListenAddr, err)
 	}
 
+	// Store the actual bound address for callers using port :0.
+	lisAddr := lis.Addr()
+	s.rpcAddr.Store(&lisAddr)
+
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			slog.String("addr", s.cfg.RPC.ListenAddr))
+			slog.String("addr", lis.Addr().String()))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
