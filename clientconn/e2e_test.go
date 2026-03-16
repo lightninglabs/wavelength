@@ -107,6 +107,15 @@ func (m *roundStartedServerMsg) ToProto() proto.Message {
 	}
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (m *roundStartedServerMsg) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: "hellotest.v1.HelloService",
+		Method:  "RoundStarted",
+	}
+}
+
 // Compile-time interface checks.
 var (
 	_ InboundActorMessage = (*roundStartedMsg)(nil)

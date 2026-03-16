@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"google.golang.org/protobuf/proto"
@@ -38,22 +39,29 @@ type (
 	msgIDRecordTLV        = tlv.TlvType3
 	idempotencyRecordTLV  = tlv.TlvType4
 	clientIDRecordTLV     = tlv.TlvType5
+	rpcServiceRecordTLV   = tlv.TlvType6
+	rpcMethodRecordTLV    = tlv.TlvType7
 )
 
 // ClientID is a unique identifier for a client.
 type ClientID string
 
-// ClientMessage is an interface that server rounds FSM outbox messages must
-// implement to send messages to clients. This allows conversion to proto
-// messages without creating import cycles.
+// ClientMessage is an interface that server rounds FSM outbox messages
+// must implement to send messages to clients. This allows conversion to
+// proto messages without creating import cycles.
 type ClientMessage interface {
-	// ClientID returns the identifier of the client to send the message
-	// to.
+	// ClientID returns the identifier of the client to send the
+	// message to.
 	ClientID() ClientID
 
-	// ToProto converts the message to a protobuf message that can be
-	// sent over gRPC.
+	// ToProto converts the message to a protobuf message that can
+	// be sent over gRPC.
 	ToProto() proto.Message
+
+	// ServiceMethod returns the fully-qualified protobuf service
+	// and method for this message. The client-side ingress loop
+	// uses these to dispatch the envelope to the correct handler.
+	ServiceMethod() mailboxrpc.ServiceMethod
 }
 
 // ClientConnMsg is the sealed interface for messages that can be sent to the
@@ -149,6 +157,14 @@ type sendEventMsg struct {
 
 	// clientID is the target client, serialized in TLV for replay.
 	clientID ClientID
+
+	// rpcService is the protobuf service name for client-side
+	// routing, serialized in TLV for replay fidelity.
+	rpcService string
+
+	// rpcMethod is the protobuf method name for client-side
+	// routing, serialized in TLV for replay fidelity.
+	rpcMethod string
 }
 
 // MessageType returns a human-readable type name for logging.
@@ -207,9 +223,22 @@ func (m *sendEventMsg) Encode(w io.Writer) error {
 		clientIDBytes,
 	)
 
+	// Persist the routing metadata so replayed events can be
+	// dispatched correctly on the client side.
+	sm := m.Message.ServiceMethod()
+	svcBytes := []byte(sm.Service)
+	methodBytes := []byte(sm.Method)
+	svcRec := tlv.NewPrimitiveRecord[rpcServiceRecordTLV](
+		svcBytes,
+	)
+	methodRec := tlv.NewPrimitiveRecord[rpcMethodRecordTLV](
+		methodBytes,
+	)
+
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(),
 		idemRec.Record(), clientIDRec.Record(),
+		svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -231,10 +260,13 @@ func (m *sendEventMsg) Decode(r io.Reader) error {
 	msgIDRec := tlv.ZeroRecordT[msgIDRecordTLV, []byte]()
 	idemRec := tlv.ZeroRecordT[idempotencyRecordTLV, []byte]()
 	clientIDRec := tlv.ZeroRecordT[clientIDRecordTLV, []byte]()
+	svcRec := tlv.ZeroRecordT[rpcServiceRecordTLV, []byte]()
+	methodRec := tlv.ZeroRecordT[rpcMethodRecordTLV, []byte]()
 
 	stream, err := tlv.NewStream(
 		payload.Record(), msgIDRec.Record(),
 		idemRec.Record(), clientIDRec.Record(),
+		svcRec.Record(), methodRec.Record(),
 	)
 	if err != nil {
 		return err
@@ -246,12 +278,16 @@ func (m *sendEventMsg) Decode(r io.Reader) error {
 
 	cid := ClientID(clientIDRec.Val)
 	m.Message = &rawClientMessage{
-		anyMsg:   payload.Val.Val,
-		clientID: cid,
+		anyMsg:     payload.Val.Val,
+		clientID:   cid,
+		rpcService: string(svcRec.Val),
+		rpcMethod:  string(methodRec.Val),
 	}
 	m.MsgID = string(msgIDRec.Val)
 	m.IdempotencyKey = string(idemRec.Val)
 	m.clientID = cid
+	m.rpcService = string(svcRec.Val)
+	m.rpcMethod = string(methodRec.Val)
 
 	return nil
 }
@@ -374,13 +410,25 @@ func (m *sendRPCResp) connectorRespSealed() {}
 // concrete type is recovered using the global protobuf type registry via
 // anypb.UnmarshalNew.
 type rawClientMessage struct {
-	anyMsg   *anypb.Any
-	clientID ClientID
+	anyMsg     *anypb.Any
+	clientID   ClientID
+	rpcService string
+	rpcMethod  string
 }
 
 // ClientID returns the target client identifier stored during TLV decode.
 func (m *rawClientMessage) ClientID() ClientID {
 	return m.clientID
+}
+
+// ServiceMethod returns the persisted routing metadata from TLV
+// deserialization. This enables replayed events to be dispatched
+// correctly on the client side.
+func (m *rawClientMessage) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: m.rpcService,
+		Method:  m.rpcMethod,
+	}
 }
 
 // ToProto reconstructs the original proto message from the stored Any
@@ -536,6 +584,11 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 		}
 	}
 
+	// Populate Service and Method from the message's
+	// ServiceMethod() so the client-side ingress can dispatch
+	// the envelope to the correct handler.
+	sm := req.Message.ServiceMethod()
+
 	envelope := &mailboxpb.Envelope{
 		ProtocolVersion: a.cfg.ProtocolVersion,
 		MsgId:           msgID,
@@ -546,6 +599,8 @@ func (a *ClientConnectionActor) handleSendEvent(ctx context.Context,
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
+			Service: sm.Service,
+			Method:  sm.Method,
 			ReplyTo: a.cfg.LocalMailboxID,
 		},
 	}
