@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1004,6 +1005,235 @@ func TestOORClientActorResumeFromSnapshotCoSigned(t *testing.T) {
 // TestOORClientActorDurableRestartAutoResume verifies the durable actor can
 // restore checkpointed sessions and auto-resume pending outbox work after a
 // process restart, without using ExportSnapshot/RestoreSession requests.
+// TestOORClientActorDurableRestartWithRetryMetadata verifies that when a
+// session has pending retry metadata at checkpoint time, a restart schedules a
+// retry timer instead of immediately re-driving the outbox.
+func TestOORClientActorDurableRestartWithRetryMetadata(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{clientKey}, nil,
+	)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x03},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(
+				t, clientKey.PubKey(),
+			),
+			Value: inputValue,
+		},
+	}
+
+	deliveryStore := newTestDeliveryStore(t)
+
+	const actorID = "oor-restart-retry-metadata"
+
+	// retrySubmitOnceHandler fails the first submit with a retryable
+	// error, then handles ScheduleRetryRequest as a no-op (no timeout
+	// actor). On the second actor instance, it succeeds.
+	handler1 := &retrySubmitOutboxHandler{
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
+	}
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler1,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	// After the retryable error, the session should remain in
+	// AwaitingSubmitAccepted (not RetryBackoff, which no longer
+	// exists).
+	stateResp := actor1.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingSubmitAccepted{}, stateMsg.State)
+
+	// Verify retry metadata was persisted to the snapshot by exporting
+	// it.
+	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, exportResp.IsOk())
+
+	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
+	require.True(t, ok)
+	require.NotZero(t, exportMsg.Snapshot.RetryAfter,
+		"retry metadata should be set on snapshot")
+	require.NotEmpty(t, exportMsg.Snapshot.FailReason,
+		"retry reason should be set on snapshot")
+
+	// Stop actor1 — simulates a crash.
+	actor1.Stop()
+
+	// recordingHandler tracks which outbox events it receives so we can
+	// verify that the restarted actor schedules a retry rather than
+	// immediately re-driving the submit outbox.
+	handler2 := &retryRecordingHandler{
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
+	}
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: handler2,
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+	defer actor2.Stop()
+
+	// Wait for the restart to process the checkpoint.
+	require.Eventually(t, func() bool {
+		resp := actor2.Receive(ctx, &GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+
+		return resp.IsOk()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// The restarted actor should have emitted ScheduleRetryRequest
+	// (not SendSubmitPackageRequest) because the checkpoint had
+	// RetryAfter > 0.
+	require.True(t, handler2.sawScheduleRetry.Load(),
+		"restart should schedule retry, not drive outbox")
+
+	// Now explicitly resume so the transfer can complete.
+	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, resumeResp.IsOk())
+
+	stateResp = actor2.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok = stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &Completed{}, stateMsg.State)
+}
+
+// retryRecordingHandler records whether it received a ScheduleRetryRequest
+// and succeeds on all operations. Used to verify restart behavior.
+type retryRecordingHandler struct {
+	t *testing.T
+
+	clientSigner   input.Signer
+	operatorSigner input.Signer
+
+	sawScheduleRetry atomic.Bool
+}
+
+// Handle processes the outbox request and returns follow-up events.
+func (h *retryRecordingHandler) Handle(_ context.Context,
+	sessionID SessionID, outbox OutboxEvent) ([]Event, error) {
+
+	h.t.Helper()
+
+	switch msg := outbox.(type) {
+	case *RequestArkSignatures:
+		err := SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
+		return []Event{
+			&ArkSignedEvent{ArkPSBT: msg.ArkPSBT},
+		}, nil
+
+	case *SendSubmitPackageRequest:
+		err := coSignCheckpointPSBTsForTest(
+			h.operatorSigner,
+			msg.TransferInputs,
+			msg.CheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
+
+		return []Event{
+			&SubmitAcceptedEvent{
+				SessionID:               sessionID,
+				ArkPSBT:                 msg.ArkPSBT,
+				CoSignedCheckpointPSBTs: msg.CheckpointPSBTs,
+			},
+		}, nil
+
+	case *RequestCheckpointSignatures:
+		err := SignCheckpointPSBTs(
+			h.clientSigner, msg.TransferInputs,
+			msg.CoSignedCheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
+
+		return []Event{
+			&CheckpointsSignedEvent{
+				FinalCheckpointPSBTs: msg.
+					CoSignedCheckpointPSBTs,
+			},
+		}, nil
+
+	case *SendFinalizePackageRequest:
+		return []Event{&FinalizeAcceptedEvent{}}, nil
+
+	case *MarkInputsSpentRequest:
+		return []Event{&InputsMarkedSpentEvent{}}, nil
+
+	case *ScheduleRetryRequest:
+		h.sawScheduleRetry.Store(true)
+		return nil, nil
+
+	default:
+		return nil, nil
+	}
+}
+
+var _ OutboxHandler = (*retryRecordingHandler)(nil)
+
 func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 	t.Parallel()
 
