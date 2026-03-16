@@ -75,3 +75,28 @@ func TestWithoutTxOnCleanContext(t *testing.T) {
 	require.False(t, ok)
 	require.Nil(t, tx)
 }
+
+// TestWithoutOutboxIDStripsPropagatedID verifies that internal async callbacks
+// can shadow a propagated outbox ID so they don't accidentally reuse CDC
+// deduplication identity from the inbound durable delivery.
+func TestWithoutOutboxIDStripsPropagatedID(t *testing.T) {
+	t.Parallel()
+
+	type customKey struct{}
+
+	ctx := context.WithValue(context.Background(), customKey{}, "preserved")
+	ctx = WithOutboxID(ctx, "outbox-123")
+
+	id, ok := OutboxIDFromContext(ctx)
+	require.True(t, ok)
+	require.Equal(t, "outbox-123", id)
+
+	stripped := WithoutOutboxID(ctx)
+
+	id, ok = OutboxIDFromContext(stripped)
+	require.False(t, ok)
+	require.Empty(t, id)
+
+	val := stripped.Value(customKey{})
+	require.Equal(t, "preserved", val)
+}

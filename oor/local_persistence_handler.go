@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -44,10 +45,10 @@ type IncomingMetadataResolver func(ctx context.Context, sessionID SessionID,
 	recipient ArkRecipientOutput, ark *psbt.Packet,
 	finalCheckpoints []*psbt.Packet) (IncomingVTXOMetadata, error)
 
-// SpendCompleter finalizes an OOR spend by routing the completion through the
-// VTXO manager so each VTXO actor transitions to SpentState via its own FSM.
-// This replaces the previous direct-store-write pattern and ensures the VTXO
-// actor remains the single source of truth for availability state.
+// SpendCompleter enqueues OOR spend completion through the VTXO manager so
+// each VTXO actor transitions to SpentState via its own FSM. Implementations
+// should avoid blocking on downstream DB writes because the OOR durable actor
+// may already be running inside a transaction.
 type SpendCompleter func(ctx context.Context,
 	outpoints []wire.OutPoint) error
 
@@ -99,10 +100,15 @@ type LocalPersistenceOutboxHandler struct {
 	// received OOR VTXOs are actively monitored.
 	NotifyIncomingVTXOs IncomingVTXONotifier
 
-	// CompleteSpend routes OOR spend completion through the VTXO manager
-	// so each consumed VTXO transitions to SpentState via its own FSM.
-	// When nil, the handler falls back to direct store writes for
-	// backwards compatibility during migration.
+	// CallbackRef receives async materialization results so the handler can
+	// resume the durable actor with a fresh DriveEventRequest after the
+	// blocking indexer lookup finishes outside the actor transaction.
+	CallbackRef actor.TellOnlyRef[OORDurableMsg]
+
+	// CompleteSpend enqueues OOR spend completion through the VTXO
+	// manager so each consumed VTXO transitions to SpentState via its
+	// own FSM. When nil, the handler falls back to direct store writes
+	// for backwards compatibility during migration.
 	CompleteSpend SpendCompleter
 }
 
@@ -140,10 +146,10 @@ func (h *LocalPersistenceOutboxHandler) Handle(ctx context.Context,
 
 // handleMarkInputsSpent completes the OOR spend for consumed VTXO inputs.
 //
-// When CompleteSpend is configured, the handler routes completion through the
-// VTXO manager so each VTXO actor transitions to SpentState via its own FSM.
-// This ensures the VTXO actor remains the single source of truth for
-// availability state.
+// When CompleteSpend is configured, the handler enqueues completion through
+// the VTXO manager so each VTXO actor transitions to SpentState via its own
+// FSM. This keeps the VTXO actor as the source of truth for availability
+// state without blocking the OOR durable actor on nested write transactions.
 //
 // When CompleteSpend is nil, the handler falls back to direct store writes
 // for backwards compatibility during migration.
@@ -197,35 +203,115 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 	ctx context.Context,
 	msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
 
+	err := h.validateMaterializeIncoming(ctx, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	if hasActorDBTx(ctx) {
+		return h.scheduleMaterializeIncoming(ctx, msg)
+	}
+
+	return h.materializeIncoming(ctx, msg, true)
+}
+
+// validateMaterializeIncoming verifies the dependencies needed to materialize
+// an incoming transfer.
+func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
+	ctx context.Context, msg *MaterializeIncomingVTXOsRequest) error {
+
+	if msg == nil {
+		return fmt.Errorf("materialize request must be provided")
+	}
+
 	if h.Store == nil {
-		return nil, fmt.Errorf("vtxo store must be provided")
+		return fmt.Errorf("vtxo store must be provided")
 	}
 
 	if h.OperatorKey == nil {
-		return nil, fmt.Errorf("operator key must be provided")
+		return fmt.Errorf("operator key must be provided")
 	}
 
 	if h.ResolveIncomingClientKey == nil {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"incoming client key resolver must be provided",
 		)
 	}
 
 	if h.ResolveIncomingMetadata == nil {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"incoming metadata resolver must be provided",
 		)
 	}
 
-	if h.NotifyIncomingVTXOs == nil {
-		return nil, fmt.Errorf(
+	if hasActorDBTx(ctx) && h.CallbackRef == nil {
+		return fmt.Errorf(
+			"incoming materialization callback ref must be " +
+				"provided",
+		)
+	}
+
+	if h.NotifyIncomingVTXOs == nil &&
+		!hasActorDBTx(ctx) && h.CallbackRef == nil {
+
+		return fmt.Errorf(
 			"incoming VTXO notifier must be provided",
 		)
 	}
 
 	if len(msg.Recipients) == 0 {
-		return nil, fmt.Errorf("incoming recipients must be provided")
+		return fmt.Errorf("incoming recipients must be provided")
 	}
+
+	return nil
+}
+
+// scheduleMaterializeIncoming moves the incoming materialization work off the
+// durable actor transaction and delivers the result back as a fresh actor
+// event once the blocking indexer query completes.
+func (h *LocalPersistenceOutboxHandler) scheduleMaterializeIncoming(
+	ctx context.Context,
+	msg *MaterializeIncomingVTXOsRequest) ([]Event, error) {
+
+	if msg == nil {
+		return nil, fmt.Errorf("materialize request must be provided")
+	}
+
+	opCtx := actor.WithoutOutboxID(
+		actor.WithoutTx(context.WithoutCancel(ctx)),
+	)
+
+	go func() {
+		followUps, err := h.materializeIncoming(opCtx, msg, false)
+		if err != nil {
+			followUps = []Event{&FailEvent{
+				Reason: fmt.Sprintf("materialize incoming: %v", err),
+			}}
+		}
+
+		for _, followUp := range followUps {
+			tellErr := h.CallbackRef.Tell(opCtx, &DriveEventRequest{
+				SessionID: msg.SessionID,
+				Event:     followUp,
+			})
+			if tellErr != nil {
+				log.WarnS(opCtx, "Failed to deliver incoming "+
+					"materialization result", tellErr,
+					slog.String("session_id",
+						msg.SessionID.String()))
+			}
+		}
+	}()
+
+	return nil, nil
+}
+
+// materializeIncoming persists recipient VTXOs for an incoming transfer and
+// optionally notifies the VTXO manager directly when the caller is not
+// resuming the durable actor with a follow-up event.
+func (h *LocalPersistenceOutboxHandler) materializeIncoming(
+	ctx context.Context, msg *MaterializeIncomingVTXOsRequest,
+	notifyIncoming bool) ([]Event, error) {
 
 	log.InfoS(ctx, "Materializing incoming VTXOs",
 		slog.String("session_id", msg.SessionID.String()),
@@ -233,6 +319,7 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 
 	ownedRecipients := 0
 	materializedVTXOs := make([]*vtxo.Descriptor, 0, len(msg.Recipients))
+	materializedOutpoints := make([]wire.OutPoint, 0, len(msg.Recipients))
 	sessionIDHash := chainhash.Hash(msg.SessionID)
 
 	if h.PackageStore != nil {
@@ -247,7 +334,6 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 
 	for i := range msg.Recipients {
 		recipient := msg.Recipients[i]
-
 		clientKey, err := h.ResolveIncomingClientKey(ctx, recipient)
 		if err != nil {
 			if IsIncomingRecipientNotOwned(err) {
@@ -264,8 +350,23 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 			msg.FinalCheckpointPSBTs,
 		)
 		if err != nil {
+			log.DebugS(ctx, "Incoming metadata resolution failed",
+				slog.String("session_id", msg.SessionID.String()),
+				slog.Int("output_index",
+					int(recipient.OutputIndex)),
+				slog.String("pk_script",
+					fmt.Sprintf("%x", recipient.PkScript)),
+				slog.String("err", err.Error()))
+
 			return nil, err
 		}
+
+		log.DebugS(ctx, "Resolved incoming metadata",
+			slog.String("session_id", msg.SessionID.String()),
+			slog.Int("output_index", int(recipient.OutputIndex)),
+			slog.String("round_id", metadata.RoundID),
+			slog.Int("tree_depth", metadata.TreeDepth),
+			slog.Int("chain_depth", metadata.ChainDepth))
 
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
@@ -303,6 +404,9 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		}
 
 		materializedVTXOs = append(materializedVTXOs, desc)
+		materializedOutpoints = append(
+			materializedOutpoints, desc.Outpoint,
+		)
 
 		if h.PackageStore != nil {
 			err := h.PackageStore.UpsertBinding(
@@ -326,16 +430,32 @@ func (h *LocalPersistenceOutboxHandler) handleMaterializeIncoming(
 		slog.Int("owned_recipients", ownedRecipients),
 		slog.Int("materialized_vtxos", len(materializedVTXOs)))
 
-	// Notify the VTXO manager so newly received OOR VTXOs are
-	// actively monitored for expiry and spend.
-	err := h.NotifyIncomingVTXOs(ctx, materializedVTXOs)
-	if err != nil {
-		return nil, err
+	// When the durable actor will receive an IncomingHandledEvent follow-up,
+	// defer notification to that actor path so the manager only sees the
+	// materialization once.
+	if notifyIncoming {
+		// Notify the VTXO manager so newly received OOR VTXOs are
+		// actively monitored for expiry and spend.
+		err := h.NotifyIncomingVTXOs(
+			ctx, materializedVTXOs,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return []Event{&IncomingHandledEvent{
-		MaterializedVTXOs: materializedVTXOs,
+		MaterializedVTXOs:     materializedVTXOs,
+		MaterializedOutpoints: materializedOutpoints,
 	}}, nil
+}
+
+// hasActorDBTx reports whether the current context is already scoped to a
+// durable actor database transaction.
+func hasActorDBTx(ctx context.Context) bool {
+	_, ok := actor.TxFromContext(ctx)
+
+	return ok
 }
 
 // handleIncomingAck forwards the ack request to the transport boundary (if
