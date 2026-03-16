@@ -205,17 +205,18 @@ func ParseFinalizePackageResponse(
 func encodeSigningDescriptor(desc SigningDescriptor,
 	index int) (*OORSigningDescriptor, error) {
 
-	if desc.OwnerKey == nil {
-		return nil, fmt.Errorf(
-			"signing descriptor %d missing owner key", index,
-		)
+	proto := &OORSigningDescriptor{
+		Outpoint:            encodeOutPoint(desc.Outpoint),
+		ExitDelay:           desc.ExitDelay,
+		SpendWitnessScript:  desc.SpendWitnessScript,
+		SpendControlBlock:   desc.SpendControlBlock,
 	}
 
-	return &OORSigningDescriptor{
-		Outpoint:  encodeOutPoint(desc.Outpoint),
-		OwnerKey:  desc.OwnerKey.SerializeCompressed(),
-		ExitDelay: desc.ExitDelay,
-	}, nil
+	if desc.OwnerKey != nil {
+		proto.OwnerKey = desc.OwnerKey.SerializeCompressed()
+	}
+
+	return proto, nil
 }
 
 // decodeSigningDescriptor converts one proto descriptor to domain form.
@@ -233,16 +234,23 @@ func decodeSigningDescriptor(desc *OORSigningDescriptor,
 		return SigningDescriptor{}, err
 	}
 
-	ownerKey, err := btcec.ParsePubKey(desc.OwnerKey)
-	if err != nil {
-		return SigningDescriptor{}, err
+	result := SigningDescriptor{
+		Outpoint:           outpoint,
+		ExitDelay:          desc.ExitDelay,
+		SpendWitnessScript: desc.SpendWitnessScript,
+		SpendControlBlock:  desc.SpendControlBlock,
 	}
 
-	return SigningDescriptor{
-		Outpoint:  outpoint,
-		OwnerKey:  ownerKey,
-		ExitDelay: desc.ExitDelay,
-	}, nil
+	if len(desc.OwnerKey) > 0 {
+		ownerKey, err := btcec.ParsePubKey(desc.OwnerKey)
+		if err != nil {
+			return SigningDescriptor{}, err
+		}
+
+		result.OwnerKey = ownerKey
+	}
+
+	return result, nil
 }
 
 // encodeOutPoint converts wire.OutPoint to proto form.

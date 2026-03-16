@@ -36,6 +36,15 @@ message OORSigningDescriptor {
 
     // exit_delay is the CSV delay for the input script path.
     uint32 exit_delay = 3;
+
+    // spend_witness_script is the leaf script for custom VTXO types.
+    // When set, the operator signs this script directly instead of
+    // deriving from owner_key/exit_delay.
+    bytes spend_witness_script = 4;
+
+    // spend_control_block is the BIP-341 control block for the custom
+    // spend leaf.
+    bytes spend_control_block = 5;
 }
 
 // SubmitPackageRequest carries submit-phase OOR data.

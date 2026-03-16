@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -41,10 +42,21 @@ type TransferInputSnapshot struct {
 
 	// OwnerLeafScript is the leaf script committed to the checkpoint tap
 	// tree.
-	//
-	// This is currently a draft implementation, and may change as the
-	// checkpoint policy is refined.
 	OwnerLeafScript []byte
+
+	// PkScript is the VTXO pkscript. Stored for custom spend paths
+	// where the pkscript cannot be derived from keys + exit delay.
+	PkScript []byte
+
+	// SpendWitnessScript is the leaf script for custom VTXO types.
+	SpendWitnessScript []byte
+
+	// SpendControlBlock is the BIP-341 control block for the custom
+	// spend leaf.
+	SpendControlBlock []byte
+
+	// ConditionWitness holds extra witness elements (e.g., preimage).
+	ConditionWitness [][]byte
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -64,16 +76,28 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		return nil, fmt.Errorf("vtxo exit delay must be provided")
 	}
 
-	return &TransferInputSnapshot{
+	snap := &TransferInputSnapshot{
 		Outpoint:        i.VTXO.Outpoint,
 		AmountSat:       int64(i.VTXO.Amount),
 		ClientKeyFamily: int32(i.VTXO.ClientKey.KeyLocator.Family),
 		ClientKeyIndex:  i.VTXO.ClientKey.KeyLocator.Index,
-		ClientPubKey:    i.VTXO.ClientKey.PubKey.SerializeCompressed(),
 		OperatorPubKey:  operatorKey.SerializeCompressed(),
 		ExitDelay:       exitDelay,
 		OwnerLeafScript: i.OwnerLeafScript,
-	}, nil
+		PkScript:        i.VTXO.PkScript,
+		ConditionWitness: i.ConditionWitness,
+	}
+
+	if i.VTXO.ClientKey.PubKey != nil {
+		snap.ClientPubKey = i.VTXO.ClientKey.PubKey.SerializeCompressed()
+	}
+
+	if i.SpendInfo != nil {
+		snap.SpendWitnessScript = i.SpendInfo.WitnessScript
+		snap.SpendControlBlock = i.SpendInfo.ControlBlock
+	}
+
+	return snap, nil
 }
 
 // TransferInputFromSnapshot reconstructs a transfer input from a snapshot.
@@ -153,8 +177,24 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		Status:         vtxo.VTXOStatusLive,
 	}
 
-	return TransferInput{
-		VTXO:            desc,
-		OwnerLeafScript: snap.OwnerLeafScript,
-	}, nil
+	result := TransferInput{
+		VTXO:             desc,
+		OwnerLeafScript:  snap.OwnerLeafScript,
+		ConditionWitness: snap.ConditionWitness,
+	}
+
+	if len(snap.SpendWitnessScript) > 0 {
+		result.SpendInfo = &arkscript.SpendInfo{
+			WitnessScript: snap.SpendWitnessScript,
+			ControlBlock:  snap.SpendControlBlock,
+		}
+	}
+
+	// For custom spend paths, use the stored PkScript instead of
+	// deriving from keys.
+	if len(snap.PkScript) > 0 {
+		desc.PkScript = snap.PkScript
+	}
+
+	return result, nil
 }
