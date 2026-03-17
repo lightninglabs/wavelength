@@ -205,12 +205,6 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 		}
 	}
 
-	b.log.DebugS(ctx, "ListUnspent called",
-		slog.Int("min_confs", int(minConfs)),
-		slog.Int("max_confs", int(maxConfs)),
-		slog.Int("tracked_addrs", len(addrs)),
-		slog.Int("utxo_count", len(utxos)))
-
 	return utxos, nil
 }
 
