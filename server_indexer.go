@@ -128,7 +128,10 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// Create the indexer service with registration-based authorization.
 	// Clients must register their receive scripts before querying for
 	// events or VTXOs scoped to those scripts.
-	indexerStore := indexer.NewSQLCStore(s.db.Queries)
+	indexerStore := indexer.NewSQLCStore(
+		s.db.Queries,
+		indexer.WithBatchedQuerier(s.db),
+	)
 	s.indexerService = indexer.NewService(
 		defaultIndexerServerID, indexerStore,
 	)

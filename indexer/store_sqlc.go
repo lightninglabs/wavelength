@@ -21,13 +21,60 @@ import (
 
 // SQLCStore adapts *sqlc.Queries to the indexer Store interface,
 // translating between sqlc-generated types and indexer domain types.
+// It embeds a TransactionExecutor for atomic multi-query operations.
 type SQLCStore struct {
-	q *sqlc.Queries
+	q  *sqlc.Queries
+	tx *db.TransactionExecutor[*sqlc.Queries]
 }
 
 // NewSQLCStore creates a new Store adapter wrapping the given queries.
-func NewSQLCStore(q *sqlc.Queries) *SQLCStore {
-	return &SQLCStore{q: q}
+// The optional BatchedQuerier enables transactional reads via
+// ExecReadTx; pass nil to use non-transactional queries only.
+func NewSQLCStore(q *sqlc.Queries,
+	opts ...SQLCStoreOption) *SQLCStore {
+
+	s := &SQLCStore{q: q}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
+}
+
+// SQLCStoreOption is a functional option for SQLCStore.
+type SQLCStoreOption func(*SQLCStore)
+
+// WithBatchedQuerier enables transactional reads by embedding a
+// TransactionExecutor backed by the provided BatchedQuerier.
+func WithBatchedQuerier(dbq db.BatchedQuerier) SQLCStoreOption {
+	return func(s *SQLCStore) {
+		s.tx = db.NewTransactionExecutor[*sqlc.Queries](
+			dbq,
+			func(tx *sql.Tx) *sqlc.Queries {
+				return sqlc.New(tx)
+			},
+			nil,
+		)
+	}
+}
+
+// ExecReadTx runs fn inside a read-only database transaction,
+// providing a transactional SQLCStore to the callback. All queries
+// issued through the callback's store see a consistent snapshot.
+func (s *SQLCStore) ExecReadTx(ctx context.Context,
+	fn func(Store) error) error {
+
+	if s.tx == nil {
+		return fn(s)
+	}
+
+	return s.tx.ExecTx(ctx, db.ReadTxOption(),
+		func(q *sqlc.Queries) error {
+			txStore := &SQLCStore{q: q}
+			return fn(txStore)
+		},
+	)
 }
 
 // Compile-time check that *SQLCStore satisfies the Store interface.

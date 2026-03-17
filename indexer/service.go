@@ -339,65 +339,76 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 		)
 	}
 
-	rows, err := s.store.ListOORRecipientEventsAfterWithSession(
-		ctx,
-		append([]byte(nil), pkScript...),
-		int64(req.AfterEventId),
-		int32(limit),
+	var (
+		out        []*arkrpc.OORRecipientEvent
+		nextCursor uint64
 	)
+
+	// Run the multi-query flow inside a read transaction so that
+	// the event list and per-session checkpoint fetches see a
+	// consistent snapshot.
+	err := s.store.ExecReadTx(ctx, func(q Store) error {
+		rows, err := q.ListOORRecipientEventsAfterWithSession(
+			ctx,
+			append([]byte(nil), pkScript...),
+			int64(req.AfterEventId),
+			int32(limit),
+		)
+		if err != nil {
+			return err
+		}
+
+		for _, row := range rows {
+			ev := &arkrpc.OORRecipientEvent{
+				RecipientPkScript: append(
+					[]byte(nil),
+					row.RecipientPkScript...,
+				),
+				EventId:   uint64(row.EventID),
+				SessionId: append(
+					[]byte(nil), row.SessionID...,
+				),
+				OutputIndex: uint32(row.OutputIndex),
+				Value:       uint64(row.Value),
+				ArkPsbt: append(
+					[]byte(nil), row.ArkPsbt...,
+				),
+			}
+
+			checkpoints, cpErr :=
+				q.GetOORSessionCheckpoints(
+					ctx, row.SessionID,
+				)
+			if cpErr != nil {
+				return fmt.Errorf(
+					"get oor checkpoints: %w",
+					cpErr,
+				)
+			}
+
+			cpPSBTs := make(
+				[][]byte, 0, len(checkpoints),
+			)
+			for _, cp := range checkpoints {
+				cpPSBTs = append(
+					cpPSBTs,
+					append(
+						[]byte(nil),
+						cp.CheckpointPsbt...,
+					),
+				)
+			}
+
+			ev.CheckpointPsbts = cpPSBTs
+
+			out = append(out, ev)
+			nextCursor = ev.EventId
+		}
+
+		return nil
+	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	var out []*arkrpc.OORRecipientEvent
-	var nextCursor uint64
-
-	for _, row := range rows {
-		ev := &arkrpc.OORRecipientEvent{
-			RecipientPkScript: append([]byte(nil),
-				row.RecipientPkScript...),
-			EventId:     uint64(row.EventID),
-			SessionId:   append([]byte(nil), row.SessionID...),
-			OutputIndex: uint32(row.OutputIndex),
-			Value:       uint64(row.Value),
-			ArkPsbt:     append([]byte(nil), row.ArkPsbt...),
-		}
-
-		// Fetch checkpoint PSBTs for this session. These queries
-		// run outside a single DB transaction; the Store interface
-		// does not yet expose ExecTx for read-only batches.
-		// This is safe because OOR session data is immutable once
-		// finalized, but should be wrapped in a read tx when the
-		// Store gains transaction support.
-		//
-		// TODO(roasbeef): wrap in Store.ReadTx once available.
-		checkpoints, cpErr := s.store.GetOORSessionCheckpoints(
-			ctx, row.SessionID,
-		)
-		if cpErr != nil {
-			return nil, status.Error(
-				codes.Internal,
-				fmt.Sprintf(
-					"get oor checkpoints: %v", cpErr,
-				),
-			)
-		}
-
-		cpPSBTs := make([][]byte, 0, len(checkpoints))
-		for _, cp := range checkpoints {
-			cpPSBTs = append(
-				cpPSBTs,
-				append(
-					[]byte(nil),
-					cp.CheckpointPsbt...,
-				),
-			)
-		}
-
-		ev.CheckpointPsbts = cpPSBTs
-
-		out = append(out, ev)
-		nextCursor = ev.EventId
 	}
 
 	return &arkrpc.ListOORRecipientEventsByScriptResponse{

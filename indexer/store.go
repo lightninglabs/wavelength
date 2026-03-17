@@ -110,6 +110,13 @@ type Store interface {
 	GetOORSessionCheckpoints(ctx context.Context,
 		sessionID []byte) ([]OORSessionCheckpoint, error)
 
+	// ExecReadTx runs fn inside a read-only database transaction,
+	// providing a transactional Store to the callback. All queries
+	// issued through the callback's store see a consistent
+	// snapshot. Implementations without transaction support may
+	// run fn directly against the non-transactional store.
+	ExecReadTx(ctx context.Context, fn func(Store) error) error
+
 	// InsertOORRecipientEvent inserts an OOR recipient event and
 	// returns the assigned row ID.
 	InsertOORRecipientEvent(ctx context.Context,
