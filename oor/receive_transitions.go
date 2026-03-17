@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -10,22 +11,34 @@ import (
 
 // Incoming transfer receive flow (human-readable):
 //
-// IncomingTransferEvent (delivered by transport; server believes we are a
-// recipient)
+// ResolveIncomingTransferRequest (delivered by transport as a lightweight
+// hint)
 //   |
 //   v
-// ReceiveIdle
+// ReceiveResolving
+//   - async indexer fetch outside the actor tx
+//   - callback re-enters with IncomingTransferEvent
+//   |
+//   v
+// IncomingTransferEvent
+//   |
+//   v
+// ReceiveIdle / ReceiveResolving
 //   - structural checks (SessionID/txid consistency)
 //   - canonical Ark PSBT validation (stable recipient extraction)
 //   - extract recipients (for UI summary and wallet materialization)
 //   emits outbox (in order):
 //   1) IncomingTransferNotification: app/UI summary of the transfer
-//   2) MaterializeIncomingVTXOsRequest: wallet/state update (filter + persist)
-//   3) SendIncomingAckRequest: best-effort ack to server
+//   2) QueryIncomingMetadataRequest: authoritative indexer metadata lookup
 //   |
 //   v
 // ReceiveNotified
-//   - waits for IncomingHandledEvent (app confirms it processed the transfer)
+//   - waits for IncomingMetadataResolvedEvent then emits local materialization
+//   - waits for IncomingHandledEvent after local materialization completes
+//   |
+//   v
+// ReceiveAwaitingAck
+//   - emits SendIncomingAckRequest after durable materialization succeeds
 //   |
 //   v
 // ReceiveCompleted
@@ -41,82 +54,72 @@ func unexpectedReceiveEvent(state ReceiveState, event Event) *StateTransition {
 	}
 }
 
+// transitionIncomingTransfer validates and applies a fully resolved incoming
+// transfer event, moving the receive FSM into the notified/materialize phase.
+func transitionIncomingTransfer(
+	evt *IncomingTransferEvent) (*StateTransition, error) {
+
+	if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
+		return nil, fmt.Errorf("ark psbt must be provided")
+	}
+
+	if evt.SessionID == (SessionID{}) {
+		return nil, fmt.Errorf("session id must be provided")
+	}
+
+	txid := evt.ArkPSBT.UnsignedTx.TxHash()
+	if SessionID(txid) != evt.SessionID {
+		return nil, fmt.Errorf("ark txid mismatch")
+	}
+
+	// Canonical ordering checks prevent subtle malleability in how the
+	// recipients are extracted and displayed.
+	err := arktx.ValidateCanonicalPSBT(evt.ArkPSBT)
+	if err != nil {
+		return nil, err
+	}
+
+	// The FSM intentionally does not decide which outputs belong to the
+	// local wallet. Ownership lives behind the materialization boundary.
+	recipients, err := ExtractArkRecipients(evt.ArkPSBT)
+	if err != nil {
+		return nil, err
+	}
+
+	return &StateTransition{
+		NextState: &ReceiveNotified{
+			SessionID:            evt.SessionID,
+			ArkPSBT:              evt.ArkPSBT,
+			FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+		},
+		NewEvents: fn.Some(EmittedEvent{
+			Outbox: []OutboxEvent{
+				&IncomingTransferNotification{
+					SessionID:  evt.SessionID,
+					ArkPSBT:    evt.ArkPSBT,
+					Recipients: recipients,
+				},
+				&QueryIncomingMetadataRequest{
+					SessionID: evt.SessionID,
+					ArkPSBT:   evt.ArkPSBT,
+					FinalCheckpointPSBTs: evt.
+						FinalCheckpointPSBTs, //nolint:ll
+					Recipients: recipients,
+				},
+			},
+		}),
+	}, nil
+}
+
 // ProcessEvent handles events for ReceiveIdle.
 func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
 	case *IncomingTransferEvent:
-		// Basic sanity checks: we only accept an incoming transfer
-		// notification if it is self-consistent (Ark txid matches
-		// SessionID) and structurally valid.
-		if evt.ArkPSBT == nil || evt.ArkPSBT.UnsignedTx == nil {
-			return nil, fmt.Errorf("ark psbt must be provided")
-		}
-
-		if evt.SessionID == (SessionID{}) {
-			return nil, fmt.Errorf("session id must be provided")
-		}
-
-		txid := evt.ArkPSBT.UnsignedTx.TxHash()
-		if SessionID(txid) != evt.SessionID {
-			return nil, fmt.Errorf("ark txid mismatch")
-		}
-
-		// Canonical ordering checks prevent subtle malleability in how
-		// the recipients are extracted and displayed.
-		//
-		// The goal is that all parties derive identical semantics from
-		// identical bytes.
-		err := arktx.ValidateCanonicalPSBT(evt.ArkPSBT)
-		if err != nil {
-			return nil, err
-		}
-
-		// Extract recipients and surface the notification to the
-		// application layer.
-		//
-		// Note: the FSM intentionally does not decide which of these
-		// outputs belong to the local wallet. That check depends on
-		// local wallet keys and policy, so it lives behind the outbox
-		// boundary in the materialization step.
-		recipients, err := ExtractArkRecipients(evt.ArkPSBT)
-		if err != nil {
-			return nil, err
-		}
-
-		// The outbox is intentionally ordered:
-		//   1) notify the app/UI so it can show the transfer;
-		//   2) materialize incoming VTXOs into local state.
-		//
-		// Ack is emitted only after the application confirms incoming
-		// handling to avoid acknowledging transfers that were not
-		// durably materialized yet.
-		return &StateTransition{
-			NextState: &ReceiveNotified{
-				SessionID: evt.SessionID,
-				ArkPSBT:   evt.ArkPSBT,
-			},
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: []OutboxEvent{
-					&IncomingTransferNotification{
-						SessionID:  evt.SessionID,
-						ArkPSBT:    evt.ArkPSBT,
-						Recipients: recipients,
-					},
-					&MaterializeIncomingVTXOsRequest{
-						SessionID: evt.SessionID,
-						ArkPSBT:   evt.ArkPSBT,
-						FinalCheckpointPSBTs: evt.
-							FinalCheckpointPSBTs,
-						Recipients: recipients,
-					},
-				},
-			}),
-		}, nil
+		return transitionIncomingTransfer(evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -125,6 +128,35 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
+		return unexpectedReceiveEvent(s, event), nil
+	}
+}
+
+// ProcessEvent handles events for ReceiveResolving.
+func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
+	env *Environment) (*StateTransition, error) {
+
+	_ = env
+
+	switch evt := event.(type) {
+	case *IncomingTransferEvent:
+		return transitionIncomingTransfer(evt)
+
+	case *FailEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.Reason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
+	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }
@@ -133,14 +165,36 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
+	case *IncomingMetadataResolvedEvent:
+		recipients, err := ExtractArkRecipients(s.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		return &StateTransition{
+			NextState: s,
+			NewEvents: fn.Some(EmittedEvent{
+				Outbox: []OutboxEvent{
+					&MaterializeIncomingVTXOsRequest{
+						SessionID: s.SessionID,
+						ArkPSBT:   s.ArkPSBT,
+						FinalCheckpointPSBTs: s.
+							FinalCheckpointPSBTs,
+						Recipients:      recipients,
+						MetadataMatches: evt.Matches,
+					},
+				},
+			}),
+		}, nil
+
 	case *IncomingHandledEvent:
-		// The application signals it has processed the notification.
-		// Wallet state has been updated (materialization complete), so
-		// we can now ack to the server.
+		// The application signals it has processed the
+		// notification. Wallet state has been updated
+		// (materialization complete), so we can now ack to the
+		// server.
 		_ = evt
 
 		return &StateTransition{
@@ -156,6 +210,12 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 			}),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.ErrorReason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -163,6 +223,10 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }
@@ -171,8 +235,11 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
+
+	log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		slog.String("state", fmt.Sprintf("%T", s)),
+		slog.String("event_type", fmt.Sprintf("%T", event)))
 
 	return unexpectedReceiveEvent(s, event), nil
 }
@@ -181,7 +248,6 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
@@ -193,6 +259,12 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 			NewEvents: fn.None[EmittedEvent](),
 		}, nil
 
+	case *OutboxErrorEvent:
+		return &StateTransition{
+			NextState: &Failed{Reason: evt.ErrorReason},
+			NewEvents: fn.None[EmittedEvent](),
+		}, nil
+
 	case *FailEvent:
 		return &StateTransition{
 			NextState: &Failed{Reason: evt.Reason},
@@ -200,6 +272,10 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }

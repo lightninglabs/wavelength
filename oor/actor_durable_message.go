@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightningnetwork/lnd/tlv"
 )
@@ -23,6 +24,12 @@ const (
 
 const (
 	sessionPayloadSessionIDRecordType tlv.Type = 1
+)
+
+const (
+	resolveIncomingPayloadSessionIDRecordType tlv.Type = 1
+	resolveIncomingPayloadPkScriptRecordType  tlv.Type = 2
+	resolveIncomingPayloadEventIDRecordType   tlv.Type = 3
 )
 
 const (
@@ -40,6 +47,8 @@ const (
 	eventPayloadArkPSBTRecordType         tlv.Type = 5
 	eventPayloadCheckpointPSBTsRecordType tlv.Type = 7
 	eventPayloadReasonRecordType          tlv.Type = 9
+	eventPayloadOutpointsRecordType       tlv.Type = 11
+	eventPayloadMetadataMatchesRecordType tlv.Type = 13
 )
 
 const (
@@ -49,6 +58,10 @@ const (
 	eventKindInputsMarkedSpent uint64 = 4
 	eventKindFail              uint64 = 5
 	eventKindRetryDue          uint64 = 6
+	eventKindIncomingTransfer  uint64 = 7
+	eventKindIncomingHandled   uint64 = 8
+	eventKindIncomingAckSent   uint64 = 9
+	eventKindIncomingMetadata  uint64 = 10
 )
 
 const (
@@ -65,6 +78,17 @@ const (
 const (
 	recipientPkScriptRecordType tlv.Type = 1
 	recipientValueSatRecordType tlv.Type = 2
+)
+
+const (
+	incomingMetadataMatchOutputIndexRecordType    tlv.Type = 1
+	incomingMetadataMatchRoundIDRecordType        tlv.Type = 3
+	incomingMetadataMatchCommitmentTxIDRecordType tlv.Type = 5
+	incomingMetadataMatchBatchExpiryRecordType    tlv.Type = 7
+	incomingMetadataMatchTreeDepthRecordType      tlv.Type = 9
+	incomingMetadataMatchChainDepthRecordType     tlv.Type = 11
+	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
+	incomingMetadataMatchTreePathRecordType       tlv.Type = 15
 )
 
 type startTransferPayload struct {
@@ -203,6 +227,242 @@ func decodeRecipientPayloads(raw []byte) ([]recipientPayload, error) {
 	}
 
 	return payloads, nil
+}
+
+func encodeOutPointList(outpoints []wire.OutPoint) ([]byte, error) {
+	blobs := make([][]byte, 0, len(outpoints))
+
+	for _, outpoint := range outpoints {
+		blobs = append(blobs, outPointBytes(outpoint))
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeOutPointList(raw []byte) ([]wire.OutPoint, error) {
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(blobs))
+	for _, blob := range blobs {
+		outpoint, err := parseOutPointBytes(blob)
+		if err != nil {
+			return nil, err
+		}
+
+		outpoints = append(outpoints, outpoint)
+	}
+
+	return outpoints, nil
+}
+
+func encodeIncomingMetadataMatches(matches []IncomingMetadataMatch) ([]byte,
+	error) {
+
+	blobs := make([][]byte, 0, len(matches))
+	for i := range matches {
+		raw, err := encodeIncomingMetadataMatch(matches[i])
+		if err != nil {
+			return nil, err
+		}
+
+		blobs = append(blobs, raw)
+	}
+
+	return encodeLengthPrefixedBlobList(blobs)
+}
+
+func decodeIncomingMetadataMatches(
+	raw []byte) ([]IncomingMetadataMatch, error) {
+
+	blobs, err := decodeLengthPrefixedBlobList(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]IncomingMetadataMatch, 0, len(blobs))
+	for i := range blobs {
+		match, err := decodeIncomingMetadataMatch(blobs[i])
+		if err != nil {
+			return nil, err
+		}
+
+		matches = append(matches, match)
+	}
+
+	return matches, nil
+}
+
+func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
+	outputIndex := match.OutputIndex
+	roundID := []byte(match.Metadata.RoundID)
+	commitmentTxID := match.Metadata.CommitmentTxID[:]
+	batchExpiry := uint32(match.Metadata.BatchExpiry)
+	treeDepth := uint32(match.Metadata.TreeDepth)
+	chainDepth := uint32(match.Metadata.ChainDepth)
+	createdHeight := uint32(match.Metadata.CreatedHeight)
+
+	treePath, err := clientdb.SerializeTree(match.Metadata.TreePath)
+	if err != nil {
+		return nil, err
+	}
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOutputIndexRecordType,
+			&outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchRoundIDRecordType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCommitmentTxIDRecordType,
+			&commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchExpiryRecordType,
+			&batchExpiry,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchChainDepthRecordType,
+			&chainDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCreatedHeightRecordType,
+			&createdHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreePathRecordType, &treePath,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
+	var (
+		outputIndex    uint32
+		roundID        []byte
+		commitmentTxID []byte
+		batchExpiry    uint32
+		treeDepth      uint32
+		chainDepth     uint32
+		createdHeight  uint32
+		treePath       []byte
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchOutputIndexRecordType,
+			&outputIndex,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchRoundIDRecordType, &roundID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCommitmentTxIDRecordType,
+			&commitmentTxID,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchBatchExpiryRecordType,
+			&batchExpiry,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreeDepthRecordType, &treeDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchChainDepthRecordType,
+			&chainDepth,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchCreatedHeightRecordType,
+			&createdHeight,
+		),
+		tlv.MakePrimitiveRecord(
+			incomingMetadataMatchTreePathRecordType, &treePath,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	if len(commitmentTxID) != chainhash.HashSize {
+		return IncomingMetadataMatch{}, fmt.Errorf(
+			"incoming metadata commitment txid " +
+				"must be provided",
+		)
+	}
+
+	decodedBatchExpiry, err := uint32ToInt32(
+		batchExpiry, "incoming batch expiry",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedTreeDepth, err := uint32ToInt32(
+		treeDepth, "incoming tree depth",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedChainDepth, err := uint32ToInt32(
+		chainDepth, "incoming chain depth",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedCreatedHeight, err := uint32ToInt32(
+		createdHeight, "incoming created height",
+	)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	decodedTreePath, err := clientdb.DeserializeTree(treePath)
+	if err != nil {
+		return IncomingMetadataMatch{}, err
+	}
+
+	var decodedCommitmentTxID chainhash.Hash
+	copy(decodedCommitmentTxID[:], commitmentTxID)
+
+	return IncomingMetadataMatch{
+		OutputIndex: outputIndex,
+		Metadata: IncomingVTXOMetadata{
+			RoundID:        string(roundID),
+			CommitmentTxID: decodedCommitmentTxID,
+			BatchExpiry:    decodedBatchExpiry,
+			TreeDepth:      int(decodedTreeDepth),
+			ChainDepth:     int(decodedChainDepth),
+			CreatedHeight:  decodedCreatedHeight,
+			TreePath:       decodedTreePath,
+		},
+	}, nil
 }
 
 func encodeRecipientPayload(payload recipientPayload) ([]byte, error) {
@@ -479,6 +739,94 @@ func decodeSessionPayload(raw []byte) (SessionID, error) {
 	return parseSessionID(sessionBytes)
 }
 
+func encodeResolveIncomingTransferPayload(sessionID SessionID,
+	recipientPkScript []byte, recipientEventID uint64) ([]byte, error) {
+
+	sessionBytes := sessionIDBytes(sessionID)
+	pkScript := recipientPkScript
+	eventID := recipientEventID
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadSessionIDRecordType,
+			&sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadPkScriptRecordType, &pkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadEventIDRecordType, &eventID,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := stream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
+	uint64, error) {
+
+	var (
+		sessionBytes      []byte
+		recipientPkScript []byte
+		recipientEventID  uint64
+	)
+
+	records := []tlv.Record{
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadSessionIDRecordType,
+			&sessionBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadPkScriptRecordType,
+			&recipientPkScript,
+		),
+		tlv.MakePrimitiveRecord(
+			resolveIncomingPayloadEventIDRecordType,
+			&recipientEventID,
+		),
+	}
+
+	stream, err := tlv.NewStream(records...)
+	if err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	reader := bytes.NewReader(raw)
+	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	sessionID, err := parseSessionID(sessionBytes)
+	if err != nil {
+		return SessionID{}, nil, 0, err
+	}
+
+	// TODO(oor-receive): The maxPkScriptLen limit guards against
+	// unbounded allocations from a corrupted or malicious TLV payload.
+	// Standard Bitcoin pk_scripts are well under 10 000 bytes; raise
+	// this constant via a tracked issue if a new script type requires
+	// a longer encoding.
+	const maxPkScriptLen = 10_000
+	if len(recipientPkScript) > maxPkScriptLen {
+		return SessionID{}, nil, 0, fmt.Errorf(
+			"recipient pk_script length %d exceeds limit %d",
+			len(recipientPkScript), maxPkScriptLen,
+		)
+	}
+
+	return sessionID, recipientPkScript, recipientEventID, nil
+}
+
 func encodeRestoreSnapshotPayload(snapshot *OutgoingSnapshot) ([]byte, error) {
 	snapshotRaw, err := encodeOutgoingSnapshot(snapshot)
 	if err != nil {
@@ -602,6 +950,10 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 		return SessionID{}, nil, err
 	}
 
+	if incoming, ok := event.(*IncomingTransferEvent); ok {
+		incoming.SessionID = sessionID
+	}
+
 	// Validation of SubmitAcceptedEvent identity is deferred to the
 	// processing layer (handleDriveEvent), not the deserialization
 	// layer. See encodeDriveEventRequestPayload for rationale.
@@ -611,12 +963,14 @@ func decodeDriveEventRequestPayload(raw []byte) (SessionID, Event, error) {
 
 func encodeEventPayload(event Event) ([]byte, error) {
 	var (
-		eventKind      uint64
-		submitSession  []byte
-		arkPSBT        []byte
-		checkpointPSBT []byte
-		reason         []byte
-		err            error
+		eventKind       uint64
+		submitSession   []byte
+		arkPSBT         []byte
+		checkpointPSBT  []byte
+		reason          []byte
+		outpointPayload []byte
+		metadataPayload []byte
+		err             error
 	)
 
 	switch evt := event.(type) {
@@ -670,6 +1024,69 @@ func encodeEventPayload(event Event) ([]byte, error) {
 	case *RetryDueEvent:
 		eventKind = eventKindRetryDue
 
+	case *IncomingTransferEvent:
+		eventKind = eventKindIncomingTransfer
+
+		if evt.ArkPSBT == nil {
+			return nil, fmt.Errorf(
+				"incoming transfer event " +
+					"ark psbt must be provided",
+			)
+		}
+
+		arkPSBT, err = psbtutil.Serialize(evt.ArkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := serializePSBTSlice(
+			evt.FinalCheckpointPSBTs,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpointPSBT, err = encodeLengthPrefixedBlobList(
+			checkpoints,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *IncomingHandledEvent:
+		eventKind = eventKindIncomingHandled
+
+		outpoints := evt.MaterializedOutpoints
+		if len(outpoints) == 0 && len(evt.MaterializedVTXOs) > 0 {
+			outpoints = make([]wire.OutPoint, 0,
+				len(evt.MaterializedVTXOs))
+			for _, desc := range evt.MaterializedVTXOs {
+				if desc == nil {
+					continue
+				}
+
+				outpoints = append(outpoints, desc.Outpoint)
+			}
+		}
+
+		outpointPayload, err = encodeOutPointList(outpoints)
+		if err != nil {
+			return nil, err
+		}
+
+	case *IncomingMetadataResolvedEvent:
+		eventKind = eventKindIncomingMetadata
+
+		metadataPayload, err = encodeIncomingMetadataMatches(
+			evt.Matches,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case *IncomingAckSentEvent:
+		eventKind = eventKindIncomingAckSent
+
 	default:
 		return nil, fmt.Errorf("unsupported event type: %T", event)
 	}
@@ -686,6 +1103,12 @@ func encodeEventPayload(event Event) ([]byte, error) {
 			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
 		),
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadMetadataMatchesRecordType, &metadataPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -703,11 +1126,13 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 func decodeEventPayload(raw []byte) (Event, error) {
 	var (
-		eventKind      uint64
-		submitSession  []byte
-		arkPSBT        []byte
-		checkpointPSBT []byte
-		reason         []byte
+		eventKind       uint64
+		submitSession   []byte
+		arkPSBT         []byte
+		checkpointPSBT  []byte
+		reason          []byte
+		outpointPayload []byte
+		metadataPayload []byte
 	)
 
 	records := []tlv.Record{
@@ -722,6 +1147,12 @@ func decodeEventPayload(raw []byte) (Event, error) {
 			eventPayloadCheckpointPSBTsRecordType, &checkpointPSBT,
 		),
 		tlv.MakePrimitiveRecord(eventPayloadReasonRecordType, &reason),
+		tlv.MakePrimitiveRecord(
+			eventPayloadOutpointsRecordType, &outpointPayload,
+		),
+		tlv.MakePrimitiveRecord(
+			eventPayloadMetadataMatchesRecordType, &metadataPayload,
+		),
 	}
 
 	stream, err := tlv.NewStream(records...)
@@ -798,6 +1229,61 @@ func decodeEventPayload(raw []byte) (Event, error) {
 
 	case eventKindRetryDue:
 		return &RetryDueEvent{}, nil
+
+	case eventKindIncomingTransfer:
+		if len(arkPSBT) == 0 {
+			return nil, fmt.Errorf(
+				"incoming transfer event " +
+					"ark psbt must be provided",
+			)
+		}
+
+		ark, err := psbtutil.Parse(arkPSBT)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpointRaw, err := decodeLengthPrefixedBlobList(
+			checkpointPSBT,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		checkpoints, err := parsePSBTSlice(checkpointRaw)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingTransferEvent{
+			ArkPSBT:              ark,
+			FinalCheckpointPSBTs: checkpoints,
+		}, nil
+
+	case eventKindIncomingHandled:
+		outpoints, err := decodeOutPointList(outpointPayload)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingHandledEvent{
+			MaterializedOutpoints: outpoints,
+		}, nil
+
+	case eventKindIncomingMetadata:
+		matches, err := decodeIncomingMetadataMatches(
+			metadataPayload,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &IncomingMetadataResolvedEvent{
+			Matches: matches,
+		}, nil
+
+	case eventKindIncomingAckSent:
+		return &IncomingAckSentEvent{}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown event kind: %d", eventKind)
@@ -889,6 +1375,19 @@ func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
 	count, err := tlv.ReadVarInt(reader, &scratch)
 	if err != nil {
 		return nil, err
+	}
+
+	// TODO(oor-receive): The maxBlobListCount limit is a pragmatic
+	// upper bound to prevent unbounded slice allocation from a
+	// malformed or malicious TLV payload. Raise this constant via a
+	// tracked issue if any blob-list field legitimately needs more
+	// entries.
+	const maxBlobListCount = 10_000
+	if count > maxBlobListCount {
+		return nil, fmt.Errorf(
+			"blob list count %d exceeds limit %d",
+			count, maxBlobListCount,
+		)
 	}
 
 	blobs := make([][]byte, 0, count)

@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	checkpointVersionRecordType   tlv.Type = 1
-	checkpointSnapshotsRecordType tlv.Type = 3
+	checkpointVersionRecordType           tlv.Type = 1
+	checkpointSnapshotsRecordType         tlv.Type = 3
+	checkpointIncomingSnapshotsRecordType tlv.Type = 5
 )
 
 const (
@@ -28,20 +29,45 @@ const (
 	snapshotFailReasonRecordType      tlv.Type = 19
 )
 
-func encodeOutgoingSessionsCheckpoint(
-	checkpoint outgoingSessionsCheckpoint) ([]byte, error) {
+type sessionsCheckpoint struct {
+	Version           int
+	OutgoingSnapshots []*OutgoingSnapshot
+	IncomingSnapshots []*IncomingSnapshot
+}
 
-	snapshotBlobs := make([][]byte, 0, len(checkpoint.Snapshots))
-	for i := range checkpoint.Snapshots {
-		raw, err := encodeOutgoingSnapshot(checkpoint.Snapshots[i])
+func encodeSessionsCheckpoint(
+	checkpoint sessionsCheckpoint) ([]byte, error) {
+
+	outgoingBlobs := make([][]byte, 0, len(checkpoint.OutgoingSnapshots))
+	for i := range checkpoint.OutgoingSnapshots {
+		raw, err := encodeOutgoingSnapshot(
+			checkpoint.OutgoingSnapshots[i],
+		)
 		if err != nil {
 			return nil, err
 		}
 
-		snapshotBlobs = append(snapshotBlobs, raw)
+		outgoingBlobs = append(outgoingBlobs, raw)
 	}
 
-	snapshotsRaw, err := encodeLengthPrefixedBlobList(snapshotBlobs)
+	outgoingRaw, err := encodeLengthPrefixedBlobList(outgoingBlobs)
+	if err != nil {
+		return nil, err
+	}
+
+	incomingBlobs := make([][]byte, 0, len(checkpoint.IncomingSnapshots))
+	for i := range checkpoint.IncomingSnapshots {
+		raw, err := encodeIncomingSnapshot(
+			checkpoint.IncomingSnapshots[i],
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		incomingBlobs = append(incomingBlobs, raw)
+	}
+
+	incomingRaw, err := encodeLengthPrefixedBlobList(incomingBlobs)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +76,10 @@ func encodeOutgoingSessionsCheckpoint(
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(checkpointVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
-			checkpointSnapshotsRecordType, &snapshotsRaw,
+			checkpointSnapshotsRecordType, &outgoingRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointIncomingSnapshotsRecordType, &incomingRaw,
 		),
 	}
 
@@ -67,54 +96,106 @@ func encodeOutgoingSessionsCheckpoint(
 	return buf.Bytes(), nil
 }
 
-func decodeOutgoingSessionsCheckpoint(
-	raw []byte) (outgoingSessionsCheckpoint, error) {
-
+func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 	var (
-		version      uint64
-		snapshotsRaw []byte
+		version     uint64
+		outgoingRaw []byte
+		incomingRaw []byte
 	)
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(checkpointVersionRecordType, &version),
 		tlv.MakePrimitiveRecord(
-			checkpointSnapshotsRecordType, &snapshotsRaw,
+			checkpointSnapshotsRecordType, &outgoingRaw,
+		),
+		tlv.MakePrimitiveRecord(
+			checkpointIncomingSnapshotsRecordType, &incomingRaw,
 		),
 	}
 
 	stream, err := tlv.NewStream(records...)
 	if err != nil {
-		return outgoingSessionsCheckpoint{}, err
+		return sessionsCheckpoint{}, err
 	}
 
 	reader := bytes.NewReader(raw)
 	if _, err := stream.DecodeWithParsedTypes(reader); err != nil {
-		return outgoingSessionsCheckpoint{}, err
+		return sessionsCheckpoint{}, err
 	}
 
-	snapshotBlobs, err := decodeLengthPrefixedBlobList(snapshotsRaw)
+	outgoingBlobs, err := decodeLengthPrefixedBlobList(outgoingRaw)
 	if err != nil {
-		return outgoingSessionsCheckpoint{}, err
+		return sessionsCheckpoint{}, err
 	}
 
-	snapshots := make([]*OutgoingSnapshot, 0, len(snapshotBlobs))
-	for i := range snapshotBlobs {
-		snapshot, err := decodeOutgoingSnapshot(snapshotBlobs[i])
+	outgoingSnapshots := make([]*OutgoingSnapshot, 0,
+		len(outgoingBlobs))
+	for i := range outgoingBlobs {
+		snapshot, err := decodeOutgoingSnapshot(outgoingBlobs[i])
 		if err != nil {
-			return outgoingSessionsCheckpoint{}, err
+			return sessionsCheckpoint{}, err
 		}
 
-		snapshots = append(snapshots, snapshot)
+		outgoingSnapshots = append(outgoingSnapshots, snapshot)
+	}
+
+	incomingSnapshots := make([]*IncomingSnapshot, 0)
+	if len(incomingRaw) != 0 {
+		incomingBlobs, err := decodeLengthPrefixedBlobList(
+			incomingRaw,
+		)
+		if err != nil {
+			return sessionsCheckpoint{}, err
+		}
+
+		incomingSnapshots = make([]*IncomingSnapshot, 0,
+			len(incomingBlobs))
+		for i := range incomingBlobs {
+			snapshot, err := decodeIncomingSnapshot(
+				incomingBlobs[i],
+			)
+			if err != nil {
+				return sessionsCheckpoint{}, err
+			}
+
+			incomingSnapshots = append(
+				incomingSnapshots, snapshot,
+			)
+		}
 	}
 
 	decodedVersion, err := decodeUint64ToInt(version, "checkpoint version")
+	if err != nil {
+		return sessionsCheckpoint{}, err
+	}
+
+	return sessionsCheckpoint{
+		Version:           decodedVersion,
+		OutgoingSnapshots: outgoingSnapshots,
+		IncomingSnapshots: incomingSnapshots,
+	}, nil
+}
+
+func encodeOutgoingSessionsCheckpoint(
+	checkpoint outgoingSessionsCheckpoint) ([]byte, error) {
+
+	return encodeSessionsCheckpoint(sessionsCheckpoint{
+		Version:           checkpoint.Version,
+		OutgoingSnapshots: checkpoint.Snapshots,
+	})
+}
+
+func decodeOutgoingSessionsCheckpoint(
+	raw []byte) (outgoingSessionsCheckpoint, error) {
+
+	checkpoint, err := decodeSessionsCheckpoint(raw)
 	if err != nil {
 		return outgoingSessionsCheckpoint{}, err
 	}
 
 	return outgoingSessionsCheckpoint{
-		Version:   decodedVersion,
-		Snapshots: snapshots,
+		Version:   checkpoint.Version,
+		Snapshots: checkpoint.OutgoingSnapshots,
 	}, nil
 }
 

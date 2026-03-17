@@ -117,6 +117,20 @@ func (h *testOutboxHandler) Handle(_ context.Context, sessionID SessionID,
 
 var _ OutboxHandler = (*testOutboxHandler)(nil)
 
+// noopOutboxHandler acknowledges local outbox events without producing any
+// follow-up events. Tests use this when they only need the actor plumbing,
+// not full wallet/server side effects.
+type noopOutboxHandler struct{}
+
+// Handle implements OutboxHandler.
+func (h *noopOutboxHandler) Handle(_ context.Context, _ SessionID,
+	_ OutboxEvent) ([]Event, error) {
+
+	return nil, nil
+}
+
+var _ OutboxHandler = (*noopOutboxHandler)(nil)
+
 // testOutgoingPackageStore records package persistence calls for assertions.
 type testOutgoingPackageStore struct {
 	packageCalls int
@@ -482,6 +496,28 @@ func (m *mockServerConnRef) lastSent() *serverconn.SendClientEventRequest {
 	return req
 }
 
+// lastRecipientQuery returns the most recent durable recipient-events query
+// captured by the mock. It fails the test if no messages have been captured.
+func (m *mockServerConnRef) lastRecipientQuery() *serverconn.
+	SendListOORRecipientEventsByScriptRequest {
+
+	m.t.Helper()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	require.NotEmpty(m.t, m.messages, "no messages captured")
+
+	last := m.messages[len(m.messages)-1]
+	req, ok := last.(*serverconn.SendListOORRecipientEventsByScriptRequest)
+	require.True(
+		m.t, ok,
+		"last message is not SendListOORRecipientEventsByScriptRequest",
+	)
+
+	return req
+}
+
 // localOnlyOutboxHandler handles only local outbox events (signing,
 // persistence, timers). Transport events should be routed through serverconn
 // and never reach this handler.
@@ -838,6 +874,8 @@ func TestIsTransportEventClassification(t *testing.T) {
 		&SendSubmitPackageRequest{},
 		&SendFinalizePackageRequest{},
 		&SendIncomingAckRequest{},
+		&QueryIncomingTransferRequest{},
+		&QueryIncomingMetadataRequest{},
 	}
 	for _, evt := range transportEvents {
 		require.True(

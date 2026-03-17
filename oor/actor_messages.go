@@ -31,12 +31,13 @@ func NewServiceKey() actor.ServiceKey[OORDurableMsg, ActorResp] {
 // identifier used for durable mailbox serialization. The 0x7xxx range avoids
 // collisions with the actor framework's reserved types.
 const (
-	StartTransferRequestTLVType  tlv.Type = 0x7010
-	DriveEventRequestTLVType     tlv.Type = 0x7011
-	GetStateRequestTLVType       tlv.Type = 0x7012
-	RestoreSessionRequestTLVType tlv.Type = 0x7013
-	ResumeSessionRequestTLVType  tlv.Type = 0x7014
-	ExportSnapshotRequestTLVType tlv.Type = 0x7015
+	StartTransferRequestTLVType    tlv.Type = 0x7010
+	DriveEventRequestTLVType       tlv.Type = 0x7011
+	GetStateRequestTLVType         tlv.Type = 0x7012
+	RestoreSessionRequestTLVType   tlv.Type = 0x7013
+	ResumeSessionRequestTLVType    tlv.Type = 0x7014
+	ExportSnapshotRequestTLVType   tlv.Type = 0x7015
+	ResolveIncomingTransferTLVType tlv.Type = 0x7016
 )
 
 // OORDurableMsg is the message constraint for the OOR durable actor mailbox.
@@ -277,6 +278,83 @@ func (m *DriveEventResponse) MessageType() string {
 // actorRespSealed marks this as implementing the sealed ActorResp interface.
 func (m *DriveEventResponse) actorRespSealed() {}
 
+// ResolveIncomingTransferRequest asks the actor to durably record a
+// lightweight incoming OOR notification and then resolve the full Ark package
+// asynchronously outside the live actor transaction.
+//
+// The serverconn dispatcher persists only the lightweight hint into the durable
+// OOR mailbox. The actor checkpoints a resolve-pending receive state first,
+// then performs the follow-up unary RPC on a detached callback path so restart
+// can safely re-drive the work.
+type ResolveIncomingTransferRequest struct {
+	actor.BaseMessage
+
+	// SessionID identifies the incoming transfer session.
+	SessionID SessionID
+
+	// RecipientPkScript is the registered receive script that matched the
+	// incoming OOR output.
+	RecipientPkScript []byte
+
+	// RecipientEventID is the monotonic per-script event ID
+	// for the incoming recipient event. The actor uses this as
+	// the cursor hint when querying the indexer for the full
+	// Ark PSBT payload.
+	RecipientEventID uint64
+}
+
+// MessageType returns the type of this message.
+func (m *ResolveIncomingTransferRequest) MessageType() string {
+	return "ResolveIncomingTransferRequest"
+}
+
+// actorMsgSealed marks this as implementing the sealed ActorMsg interface.
+func (m *ResolveIncomingTransferRequest) actorMsgSealed() {}
+
+// TLVType returns the unique TLV type identifier for this message.
+func (m *ResolveIncomingTransferRequest) TLVType() tlv.Type {
+	return ResolveIncomingTransferTLVType
+}
+
+// Encode serializes the message to the provided writer.
+func (m *ResolveIncomingTransferRequest) Encode(w io.Writer) error {
+	if m == nil {
+		return fmt.Errorf("resolve incoming transfer request must " +
+			"be provided")
+	}
+
+	raw, err := encodeResolveIncomingTransferPayload(
+		m.SessionID, m.RecipientPkScript, m.RecipientEventID,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+
+	return err
+}
+
+// Decode deserializes the message from the provided reader.
+func (m *ResolveIncomingTransferRequest) Decode(r io.Reader) error {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+
+	sessionID, recipientPkScript, recipientEventID, err :=
+		decodeResolveIncomingTransferPayload(raw)
+	if err != nil {
+		return err
+	}
+
+	m.SessionID = sessionID
+	m.RecipientPkScript = recipientPkScript
+	m.RecipientEventID = recipientEventID
+
+	return nil
+}
+
 // GetStateRequest asks the actor for the current state of a session.
 type GetStateRequest struct {
 	actor.BaseMessage
@@ -332,7 +410,7 @@ type GetStateResponse struct {
 	actor.BaseMessage
 
 	// State is the current session state machine state.
-	State State
+	State SessionState
 }
 
 // MessageType returns the type of this message.
