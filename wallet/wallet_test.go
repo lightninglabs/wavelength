@@ -63,21 +63,21 @@ func (m *MockBoardingBackend) ListUnspent(ctx context.Context,
 }
 
 func (m *MockBoardingBackend) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	txid chainhash.Hash) (*wire.MsgTx, *TxConfirmationInfo, error) {
 
 	args := m.Called(ctx, txid)
 	if args.Get(0) == nil {
 		return nil, nil, args.Error(2)
 	}
 
-	var blockHash *chainhash.Hash
+	var confInfo *TxConfirmationInfo
 	if args.Get(1) != nil {
 		//nolint:forcetypeassert
-		blockHash = args.Get(1).(*chainhash.Hash)
+		confInfo = args.Get(1).(*TxConfirmationInfo)
 	}
 
 	//nolint:forcetypeassert
-	return args.Get(0).(*wire.MsgTx), blockHash, args.Error(2)
+	return args.Get(0).(*wire.MsgTx), confInfo, args.Error(2)
 }
 
 func (m *MockBoardingBackend) GetBlock(ctx context.Context,
@@ -478,7 +478,10 @@ func TestProcessNewUtxo(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint.Hash,
-	).Return(mockTx, &epochHash, nil)
+	).Return(mockTx, &TxConfirmationInfo{
+		BlockHash:   epochHash,
+		BlockHeight: 100,
+	}, nil)
 
 	// Return a block containing the mock tx so TxProof can be built.
 	mockBlock := &wire.MsgBlock{
@@ -642,10 +645,16 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint1.Hash,
-	).Return(mockTx1, &epochHash, nil)
+	).Return(mockTx1, &TxConfirmationInfo{
+		BlockHash:   epochHash,
+		BlockHeight: 100,
+	}, nil)
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint2.Hash,
-	).Return(mockTx2, &epochHash, nil)
+	).Return(mockTx2, &TxConfirmationInfo{
+		BlockHash:   epochHash,
+		BlockHeight: 100,
+	}, nil)
 
 	// Return blocks containing the respective mock txs.
 	backend.On(
@@ -841,7 +850,10 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint.Hash,
-	).Return(boardingTx, &confBlockHash, nil)
+	).Return(boardingTx, &TxConfirmationInfo{
+		BlockHash:   confBlockHash,
+		BlockHeight: 95,
+	}, nil)
 
 	// Return a block that does NOT contain the boarding tx — only
 	// otherTx. This simulates a block hash mismatch.
@@ -915,6 +927,123 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	// UTXO should still be marked as seen.
 	key := NewUtxoKey(testOutpoint)
 	require.True(t, walletActor.seenUtxos.Contains(key))
+
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
+
+// TestProcessUtxoUsesActualConfirmationBlock verifies that catch-up flows use
+// the transaction's actual confirmation block metadata for persisted intents
+// and TxProofs instead of the current polling epoch.
+func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rootHash := []byte{0xaa, 0xbb, 0xcc}
+	taprootKey := txscript.ComputeTaprootOutputKey(
+		clientKey.PubKey(), rootHash,
+	)
+	address, err := btcutil.NewAddressTaproot(
+		taprootKey.SerializeCompressed()[1:],
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	boardingAddr := &BoardingAddress{
+		Address: address,
+		Tapscript: &waddrmgr.Tapscript{
+			Type: waddrmgr.TaprootKeySpendRootHash,
+			ControlBlock: &txscript.ControlBlock{
+				InternalKey: clientKey.PubKey(),
+			},
+			RootHash: rootHash,
+		},
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: 42,
+				Index:  0,
+			},
+		},
+		OperatorKey: operatorKey.PubKey(),
+		ExitDelay:   144,
+	}
+
+	testOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11, 0x22},
+		Index: 0,
+	}
+
+	boardingTx := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 100000, PkScript: pkScript},
+		},
+	}
+
+	confBlockHash := chainhash.Hash{0xcc, 0xdd}
+	confHeight := int32(95)
+	epoch := chainsource.BlockEpoch{
+		Height: 100,
+		Hash:   chainhash.Hash{0xaa, 0xbb},
+	}
+
+	backend := &MockBoardingBackend{}
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint.Hash,
+	).Return(boardingTx, &TxConfirmationInfo{
+		BlockHash:   confBlockHash,
+		BlockHeight: confHeight,
+	}, nil)
+	backend.On(
+		"GetBlock", mock.Anything, confBlockHash,
+	).Return(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{boardingTx},
+	}, nil)
+
+	var inserted BoardingIntent
+	store := &MockBoardingStore{}
+	store.On(
+		"LookupBoardingAddress", mock.Anything, pkScript,
+	).Return(boardingAddr, nil)
+	store.On(
+		"InsertBoardingIntents", mock.Anything, mock.Anything,
+	).Run(func(args mock.Arguments) {
+		inserted = args.Get(1).([]BoardingIntent)[0]
+	}).Return(nil)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
+	walletActor.notifiers = make(map[string]notifierInfo)
+
+	processed := walletActor.processUtxo(t.Context(), epoch, &Utxo{
+		Outpoint:      testOutpoint,
+		PkScript:      pkScript,
+		Amount:        100000,
+		Confirmations: 6,
+	})
+	require.True(t, processed)
+
+	require.Equal(t, confHeight, inserted.ChainInfo.ConfHeight)
+	require.Equal(t, confBlockHash, inserted.ChainInfo.ConfHash)
+	require.True(t, inserted.ChainInfo.TxProof.IsSome())
+
+	txProof := inserted.ChainInfo.TxProof.UnsafeFromSome()
+	require.Equal(t, uint32(confHeight), txProof.BlockHeight)
+	require.Equal(t, testOutpoint, txProof.ClaimedOutPoint)
 
 	backend.AssertExpectations(t)
 	store.AssertExpectations(t)

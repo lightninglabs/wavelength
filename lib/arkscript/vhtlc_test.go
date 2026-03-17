@@ -1,6 +1,7 @@
 package arkscript
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
@@ -18,13 +19,13 @@ func testVHTLCOpts(t *testing.T) VHTLCOpts {
 	server, _ := testutils.CreateKey(3)
 
 	preimage := []byte("test_preimage_32_bytes_exactly!!")
-	preimageHash := Hash160(preimage)
+	hash := sha256.Sum256(preimage)
 
 	return VHTLCOpts{
 		Sender:                               sender,
 		Receiver:                             receiver,
 		Server:                               server,
-		PreimageHash:                         preimageHash,
+		PreimageHash:                         hash[:],
 		RefundLocktime:                       500000,
 		UnilateralClaimDelay:                 144,
 		UnilateralRefundDelay:                288,
@@ -361,6 +362,6 @@ func TestVHTLCValidation(t *testing.T) {
 		bad.PreimageHash = []byte{0x01, 0x02}
 		_, err := NewVHTLCPolicy(bad)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "20 bytes")
+		require.Contains(t, err.Error(), "32 bytes")
 	})
 }

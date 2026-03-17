@@ -157,14 +157,14 @@ type BoardingBackend interface {
 	) ([]*Utxo, error)
 
 	// GetTransaction returns the full transaction and its confirmation
-	// block hash for a given txid. The block hash is needed for TxProof
-	// construction — using the actual confirmation block ensures proofs
-	// are correct even for UTXOs discovered during catch-up after
-	// downtime. The block hash pointer is nil when the tx is
-	// unconfirmed.
+	// metadata for a given txid. The confirmation block data is needed
+	// for TxProof construction. Using the actual confirmation block
+	// ensures proofs are correct even for UTXOs discovered during
+	// catch-up after downtime. The confirmation pointer is nil when the
+	// tx is unconfirmed.
 	GetTransaction(
 		ctx context.Context, txid chainhash.Hash,
-	) (*wire.MsgTx, *chainhash.Hash, error)
+	) (*wire.MsgTx, *TxConfirmationInfo, error)
 
 	// GetBlock returns the full block for the given block hash. This is
 	// used to compute merkle inclusion proofs (TxProof) when a boarding
@@ -189,6 +189,17 @@ type Utxo struct {
 
 	// Confirmations is the number of confirmations this UTXO has.
 	Confirmations int32
+}
+
+// TxConfirmationInfo contains the confirmation block metadata needed to
+// anchor a client-provided boarding TxProof to the correct block.
+type TxConfirmationInfo struct {
+	// BlockHash is the hash of the block that confirmed the transaction.
+	BlockHash chainhash.Hash
+
+	// BlockHeight is the height of the block that confirmed the
+	// transaction.
+	BlockHeight int32
 }
 
 // UtxoKey is used as a key in fn.Set to track which UTXOs we've already

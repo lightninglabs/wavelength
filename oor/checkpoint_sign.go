@@ -526,6 +526,13 @@ func signCustomCheckpointPSBT(signer input.Signer, in *TransferInput,
 	// witness script, and control block into BIP-174
 	// FinalScriptWitness format.
 	if len(in.CustomSpend.Conditions) > 0 {
+		err = arkscript.PutConditionWitnessPSBTInput(
+			checkpoint, 0, in.CustomSpend.Conditions[0],
+		)
+		if err != nil {
+			return err
+		}
+
 		err = assembleCustomFinalWitness(
 			in, &checkpoint.Inputs[0],
 		)

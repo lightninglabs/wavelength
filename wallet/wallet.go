@@ -567,11 +567,11 @@ func (a *Ark) processUtxo(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 	)
 
-	// Fetch the full transaction and its confirmation block hash. The
-	// block hash from GetTransaction is the UTXO's actual confirmation
-	// block, which may differ from epoch.Hash during catch-up after
-	// downtime.
-	confTx, confBlockHash, err := a.backend.GetTransaction(
+	// Fetch the full transaction and its confirmation block metadata. The
+	// confirmation block may differ from epoch.Hash/Height during catch-up
+	// after downtime, so proofs and persisted intent metadata must use the
+	// actual confirmation details when available.
+	confTx, confInfo, err := a.backend.GetTransaction(
 		ctx, utxo.Outpoint.Hash,
 	)
 	if err != nil {
@@ -583,26 +583,28 @@ func (a *Ark) processUtxo(ctx context.Context,
 		return false
 	}
 
-	// Use the confirmation block hash from the transaction if
-	// available. Fall back to epoch.Hash for backends that don't
-	// provide it (e.g., unconfirmed or missing metadata).
-	blockHash := epoch.Hash
-	if confBlockHash != nil {
-		blockHash = *confBlockHash
+	// Use the transaction's actual confirmation block metadata when
+	// available. Fall back to the current epoch values for backends that
+	// don't provide it.
+	confHeight := epoch.Height
+	confHash := epoch.Hash
+	if confInfo != nil {
+		confHeight = confInfo.BlockHeight
+		confHash = confInfo.BlockHash
 	}
 
 	// Build the SPV TxProof so the server can verify the boarding UTXO
 	// without querying its own chain source.
 	txProof := a.buildBoardingTxProof(
-		ctx, blockHash, epoch.Height, confTx, utxo.Outpoint, addr,
+		ctx, confHash, confHeight, confTx, utxo.Outpoint, addr,
 	)
 
 	intent := BoardingIntent{
 		Address:  *addr,
 		Outpoint: utxo.Outpoint,
 		ChainInfo: BoardingChainInfo{
-			ConfHeight: epoch.Height,
-			ConfHash:   epoch.Hash,
+			ConfHeight: confHeight,
+			ConfHash:   confHash,
 			ConfTx:     confTx,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,

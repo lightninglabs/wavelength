@@ -20,7 +20,9 @@ type VHTLCOpts struct {
 	// Server is the Ark operator key.
 	Server *btcec.PublicKey
 
-	// PreimageHash is the HASH160 of the preimage (20 bytes).
+	// PreimageHash is the SHA256 of the preimage (32 bytes).
+	// This matches the Lightning Network payment hash format:
+	// paymentHash = SHA256(preimage).
 	PreimageHash []byte
 
 	// RefundLocktime is the absolute locktime for refund without
@@ -95,10 +97,10 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		return nil, err
 	}
 
-	// 1. Claim: HashLock(HASH160, preimageHash,
+	// 1. Claim: HashLock(SHA256, preimageHash,
 	//    Multisig([receiver, server]))
 	claimClosure := &HashLock{
-		Algorithm: HashAlgoHash160,
+		Algorithm: HashAlgoSHA256,
 		Hash:      opts.PreimageHash,
 		Inner: &Multisig{
 			Keys: []*btcec.PublicKey{
@@ -129,11 +131,11 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	}
 
 	// 4. UnilateralClaim: CSV(delay,
-	//    HashLock(preimageHash, Checksig(receiver)))
+	//    HashLock(SHA256, preimageHash, Checksig(receiver)))
 	unilateralClaimClosure := &CSV{
 		Lock: opts.UnilateralClaimDelay,
 		Inner: &HashLock{
-			Algorithm: HashAlgoHash160,
+			Algorithm: HashAlgoSHA256,
 			Hash:      opts.PreimageHash,
 			Inner:     &Checksig{Key: opts.Receiver},
 		},
@@ -346,9 +348,9 @@ func (opts *VHTLCOpts) validate() error {
 	case opts.Server == nil:
 		return fmt.Errorf("vhtlc: server key is nil")
 
-	case len(opts.PreimageHash) != 20:
-		return fmt.Errorf("vhtlc: preimage hash must be 20 bytes "+
-			"(HASH160), got %d", len(opts.PreimageHash))
+	case len(opts.PreimageHash) != 32:
+		return fmt.Errorf("vhtlc: preimage hash must be 32 bytes "+
+			"(SHA256), got %d", len(opts.PreimageHash))
 
 	case opts.UnilateralClaimDelay == 0:
 		return fmt.Errorf("vhtlc: unilateral claim delay must " +

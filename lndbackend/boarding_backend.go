@@ -127,12 +127,12 @@ func (l *BoardingBackend) ListUnspent(ctx context.Context, minConfs,
 	return utxos, nil
 }
 
-// GetTransaction returns the full transaction and its confirmation block hash
-// for a given txid. The block hash is extracted from LND's TransactionDetail
-// so callers can build TxProofs against the correct block even when catching
-// up on UTXOs confirmed many blocks ago.
+// GetTransaction returns the full transaction and its confirmation metadata
+// for a given txid. The block data is extracted from LND's
+// TransactionDetail so callers can build TxProofs against the correct block
+// even when catching up on UTXOs confirmed many blocks ago.
 func (l *BoardingBackend) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	txid chainhash.Hash) (*wire.MsgTx, *wallet.TxConfirmationInfo, error) {
 
 	l.logger(ctx).DebugS(ctx, "Fetching transaction from LND",
 		btclog.Hex("txid", txid[:]))
@@ -144,7 +144,7 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 
 	// Parse the confirmation block hash from the TransactionDetail.
 	// This is empty for unconfirmed transactions.
-	var blockHash *chainhash.Hash
+	var confInfo *wallet.TxConfirmationInfo
 	if txn.BlockHash != "" {
 		h, err := chainhash.NewHashFromStr(txn.BlockHash)
 		if err != nil {
@@ -153,7 +153,10 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 			)
 		}
 
-		blockHash = h
+		confInfo = &wallet.TxConfirmationInfo{
+			BlockHash:   *h,
+			BlockHeight: txn.BlockHeight,
+		}
 	}
 
 	l.logger(ctx).DebugS(ctx, "Fetched transaction successfully",
@@ -161,7 +164,7 @@ func (l *BoardingBackend) GetTransaction(ctx context.Context,
 		slog.Int("num_inputs", len(txn.Tx.TxIn)),
 		slog.Int("num_outputs", len(txn.Tx.TxOut)))
 
-	return txn.Tx, blockHash, nil
+	return txn.Tx, confInfo, nil
 }
 
 // GetBlock returns the full block for the given block hash via LND's ChainKit

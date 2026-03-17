@@ -233,7 +233,7 @@ func TestValidatePolicy(t *testing.T) {
 	t.Run("valid vhtlc policy", func(t *testing.T) {
 		t.Parallel()
 
-		preimageHash := make([]byte, 20)
+		preimageHash := make([]byte, 32)
 
 		policy, err := NewVHTLCPolicy(VHTLCOpts{
 			Sender:       owner,

@@ -3,9 +3,11 @@ package arkscript
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -17,6 +19,14 @@ const PSBTKeyTapTree = PSBTKeyPrefix + "taptree"
 
 // PSBTKeyConditionWitness is the PSBT key for hashlock preimage witnesses.
 const PSBTKeyConditionWitness = PSBTKeyPrefix + "condition"
+
+var (
+	// ErrConditionWitnessNotFound indicates that a PSBT input does not
+	// include Ark condition witness metadata.
+	ErrConditionWitnessNotFound = errors.New(
+		"condition witness not found",
+	)
+)
 
 // EncodedLeaf represents a single leaf in the PSBT tap tree encoding.
 type EncodedLeaf struct {
@@ -193,6 +203,76 @@ func DecodeConditionWitness(data []byte) ([]byte, error) {
 	}
 
 	return preimage, nil
+}
+
+// PutConditionWitnessPSBTInput stores the given hashlock preimage into the
+// specified PSBT input's unknown fields using PSBTKeyConditionWitness.
+func PutConditionWitnessPSBTInput(pkt *psbt.Packet, inputIndex int,
+	preimage []byte) error {
+
+	switch {
+	case pkt == nil:
+		return fmt.Errorf("psbt packet must be provided")
+
+	case inputIndex < 0 || inputIndex >= len(pkt.Inputs):
+		return fmt.Errorf("input index out of range: %d",
+			inputIndex)
+
+	case len(preimage) == 0:
+		return fmt.Errorf("preimage cannot be empty")
+	}
+
+	encoded := EncodeConditionWitness(preimage)
+	unknowns := pkt.Inputs[inputIndex].Unknowns
+
+	for _, u := range unknowns {
+		if string(u.Key) == PSBTKeyConditionWitness {
+			u.Value = encoded
+			return nil
+		}
+	}
+
+	unknowns = append(unknowns, &psbt.Unknown{
+		Key:   []byte(PSBTKeyConditionWitness),
+		Value: encoded,
+	})
+	pkt.Inputs[inputIndex].Unknowns = unknowns
+
+	return nil
+}
+
+// GetConditionWitnessPSBTInput retrieves the hashlock preimage stored in the
+// given PSBT input's unknown fields using PSBTKeyConditionWitness.
+func GetConditionWitnessPSBTInput(input psbt.PInput) ([]byte, error) {
+	var (
+		encoded []byte
+		found   bool
+	)
+
+	for _, u := range input.Unknowns {
+		if string(u.Key) != PSBTKeyConditionWitness {
+			continue
+		}
+
+		if found {
+			return nil, fmt.Errorf("multiple condition witness " +
+				"entries found")
+		}
+
+		if len(u.Value) == 0 {
+			return nil, fmt.Errorf("condition witness value is " +
+				"empty")
+		}
+
+		encoded = u.Value
+		found = true
+	}
+
+	if !found {
+		return nil, ErrConditionWitnessNotFound
+	}
+
+	return DecodeConditionWitness(encoded)
 }
 
 // writeCompactSize writes a compact size integer to the writer.
