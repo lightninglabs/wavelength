@@ -91,13 +91,6 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	t.Logf("Client persisted round checkpoint: round_id=%q",
 		clientJoinedRound.RoundId)
 
-	waitForPersistedClientRoundState(
-		t, alice.RPCClient, clientJoinedRound.RoundId,
-		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
-	)
-	t.Logf("Client persisted round checkpoint: round_id=%q",
-		clientJoinedRound.RoundId)
-
 	broadcastRound := waitForOperatorRoundStatus(
 		t, h, clientJoinedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
@@ -138,4 +131,123 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 	t.Logf("Client received live VTXO amount=%d round_id=%q "+
 		"(boarding_confirmed_sat=%d)", liveVTXO.AmountSat,
 		liveVTXO.RoundId, finalBalance.BoardingConfirmedSat)
+}
+
+// TestBoardingIntegrationTwoClientsSharedRound exercises two real client
+// daemons boarding into the same operator-managed round and verifies both
+// sides observe shared-round formation through transaction broadcast.
+func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	boardingAmount := btcutil.Amount(100_000)
+	for _, tc := range []struct {
+		name   string
+		client daemonrpc.DaemonServiceClient
+	}{
+		{name: "alice", client: alice.RPCClient},
+		{name: "bob", client: bob.RPCClient},
+	} {
+		newAddrResp, err := tc.client.NewAddress(
+			t.Context(), &daemonrpc.NewAddressRequest{},
+		)
+		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
+		require.NotEmpty(
+			t, newAddrResp.Address,
+			"%s boarding address should be set", tc.name,
+		)
+
+		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
+		t.Logf("%s funded boarding address via txid=%s",
+			tc.name, fundingTxID)
+	}
+
+	// Mine one extra block beyond the advertised minimum so both
+	// clients and the operator's direct chain validation path
+	// observe all boarding inputs before JoinRound runs.
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	aliceBalance := waitForConfirmedBoardingBalance(
+		t, alice.RPCClient, int64(boardingAmount),
+	)
+	bobBalance := waitForConfirmedBoardingBalance(
+		t, bob.RPCClient, int64(boardingAmount),
+	)
+	t.Logf("Confirmed boarding balances: alice=%d bob=%d",
+		aliceBalance.BoardingConfirmedSat,
+		bobBalance.BoardingConfirmedSat,
+	)
+
+	aliceBoardResp := waitForBoardRegistered(t, alice.RPCClient)
+	bobBoardResp := waitForBoardRegistered(t, bob.RPCClient)
+	require.Equal(t, "registered", aliceBoardResp.Status)
+	require.Equal(t, "registered", bobBoardResp.Status)
+
+	clientResp := waitForRegisteredClients(t, h, 2)
+	require.Len(t, clientResp.Clients, 2)
+	t.Log("Operator registered both real client daemons")
+
+	aliceJoinedRound := waitForClientRoundState(
+		t, alice.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	bobJoinedRound := waitForClientRoundState(
+		t, bob.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+
+	require.NotEmpty(t, aliceJoinedRound.RoundId,
+		"alice joined round should have a concrete round id")
+	require.Equal(t, aliceJoinedRound.RoundId, bobJoinedRound.RoundId,
+		"alice and bob should join the same round")
+	require.False(t, aliceJoinedRound.IsTemp,
+		"alice joined round should no longer be temporary")
+	require.False(t, bobJoinedRound.IsTemp,
+		"bob joined round should no longer be temporary")
+	t.Logf("Both clients joined round_id=%q", aliceJoinedRound.RoundId)
+
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, aliceJoinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	waitForNamedClientRoundState(
+		t, bob.RPCClient, bobJoinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	t.Logf("Both clients reached input-sig-sent for round_id=%q",
+		aliceJoinedRound.RoundId)
+
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, aliceJoinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+	waitForPersistedClientRoundState(
+		t, bob.RPCClient, bobJoinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+	t.Logf("Both clients persisted round checkpoint: round_id=%q",
+		aliceJoinedRound.RoundId)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, aliceJoinedRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf("Shared round transaction broadcast: round_id=%q txid=%s",
+		aliceJoinedRound.RoundId, broadcastRound.TxId)
+
+	h.WaitMempoolTx(broadcastRound.TxId)
+	t.Logf("Shared round transaction reached mempool: txid=%s",
+		broadcastRound.TxId)
 }
