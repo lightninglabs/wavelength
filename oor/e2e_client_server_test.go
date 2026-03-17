@@ -1363,12 +1363,6 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 
 	ctx := t.Context()
 
-	sqlStore := db.NewTestDB(t)
-	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
-		sqlStore, clock.NewDefaultClock(), btclog.Disabled,
-	)
-	require.NoError(t, err)
-
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
@@ -1388,10 +1382,14 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 		},
 	})
 
-	server := startE2EServerActor(t, serveroor.ActorCfg{
+	// Construct the actor without starting the durable runtime. This
+	// test calls Receive directly (bypassing the durable mailbox), so
+	// starting the runtime would race: the restart message wipes the
+	// sessions map asynchronously, which can erase the session
+	// created by the submit call before finalize runs.
+	server := serveroor.NewActor(serveroor.ActorCfg{
 		OutboxHandler:    driver,
 		CheckpointPolicy: policy,
-		DeliveryStore:    deliveryStore,
 	})
 
 	inputValue := btcutil.Amount(10000)
