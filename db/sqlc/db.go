@@ -25,6 +25,15 @@ type Queries struct {
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
+	if wtx, ok := q.db.(*wrappedTX); ok {
+		return &Queries{
+			db: &wrappedTX{
+				DBTX:        tx,
+				backendType: wtx.backendType,
+			},
+		}
+	}
+
 	return &Queries{
 		db: tx,
 	}

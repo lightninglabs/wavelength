@@ -243,29 +243,43 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 	dispatcher := func(ctx context.Context,
 		env *mailboxpb.Envelope) error {
 
-		if env == nil || env.Body == nil {
+		if env == nil {
 			return fmt.Errorf(
-				"nil envelope or body for %s/%s",
+				"nil envelope for %s/%s",
 				cfg.Service, cfg.Method,
 			)
 		}
 
-		// Deserialize the envelope body into the registered
-		// proto type.
-		event := cfg.NewEvent()
-		if event == nil {
-			return fmt.Errorf(
-				"nil event prototype for %s/%s",
-				cfg.Service, cfg.Method,
-			)
-		}
+		// Error responses are encoded in headers
+		// and intentionally omit the response
+		// body. Let the adapter inspect those
+		// headers so it can translate
+		// transport-level RPC failures into
+		// actor events.
+		var event proto.Message
+		if env.Body != nil {
+			// Deserialize the envelope body into the registered
+			// proto type.
+			event = cfg.NewEvent()
+			if event == nil {
+				return fmt.Errorf(
+					"nil event prototype for %s/%s",
+					cfg.Service, cfg.Method,
+				)
+			}
 
-		if err := (proto.UnmarshalOptions{
-			DiscardUnknown: true,
-		}).Unmarshal(env.Body.Value, event); err != nil {
+			if err := (proto.UnmarshalOptions{
+				DiscardUnknown: true,
+			}).Unmarshal(env.Body.Value, event); err != nil {
+				return fmt.Errorf(
+					"unmarshal %s/%s event: %w",
+					cfg.Service, cfg.Method, err,
+				)
+			}
+		} else if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
 			return fmt.Errorf(
-				"unmarshal %s/%s event: %w",
-				cfg.Service, cfg.Method, err,
+				"nil envelope body for %s/%s",
+				cfg.Service, cfg.Method,
 			)
 		}
 

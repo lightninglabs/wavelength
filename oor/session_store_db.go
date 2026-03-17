@@ -39,7 +39,7 @@ func NewDBSessionStore(dbq db.BatchedQuerier, clk clock.Clock,
 	txExec := db.NewTransactionExecutor[*sqlc.Queries](
 		dbq,
 		func(tx *sql.Tx) *sqlc.Queries {
-			return sqlc.New(tx)
+			return sqlc.NewWithBackend(tx, dbq.Backend())
 		},
 		log,
 	)

@@ -52,7 +52,7 @@ func WithBatchedQuerier(dbq db.BatchedQuerier) SQLCStoreOption {
 		s.tx = db.NewTransactionExecutor[*sqlc.Queries](
 			dbq,
 			func(tx *sql.Tx) *sqlc.Queries {
-				return sqlc.New(tx)
+				return sqlc.NewWithBackend(tx, dbq.Backend())
 			},
 			nil,
 		)
