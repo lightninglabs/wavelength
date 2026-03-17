@@ -620,7 +620,8 @@ func (a *ClientConnectionActor) deliverResponse(
 	id CorrelationID, env *mailboxpb.Envelope,
 ) bool {
 
-	return a.responseRegistry.DeliverResponse(id, env)
+	return a.responseRegistry.DeliverResponse(id, env) !=
+		mailboxconn.DeliveryDropped
 }
 
 // StartIngress loads the ack checkpoint from the store and launches the

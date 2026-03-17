@@ -16,6 +16,12 @@ CREATE INDEX idx_indexer_receive_scripts_script
 CREATE INDEX idx_indexer_vtxo_events_script_event
     ON indexer_vtxo_events(pk_script, event_id);
 
+CREATE UNIQUE INDEX idx_mailbox_envelopes_dedup
+    ON mailbox_envelopes(recipient, msg_id);
+
+CREATE INDEX idx_mailbox_envelopes_recipient_seq
+    ON mailbox_envelopes(recipient, event_seq);
+
 CREATE INDEX idx_oor_recipient_events_session_db_id
     ON oor_recipient_events(session_db_id);
 
@@ -95,6 +101,36 @@ CREATE TABLE indexer_vtxo_events (
     status TEXT NOT NULL,
 
     -- created_at is the unix nano timestamp when the event row was written.
+    created_at BIGINT NOT NULL
+);
+
+CREATE TABLE mailbox_ack_cursors (
+    -- recipient is the mailbox identifier.
+    recipient TEXT PRIMARY KEY,
+
+    -- ack_cursor is the next expected event sequence number. All
+    -- envelopes with event_seq < ack_cursor are considered acknowledged.
+    ack_cursor BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE mailbox_envelopes (
+    -- event_seq is the monotonically increasing sequence number assigned
+    -- on append. It serves as both the primary key and the pull cursor
+    -- target.
+    event_seq INTEGER PRIMARY KEY,
+
+    -- recipient identifies the target mailbox (e.g., "client-<id>" or
+    -- "server-for-<id>").
+    recipient TEXT NOT NULL,
+
+    -- msg_id is the stable message identifier for deduplication.
+    msg_id TEXT NOT NULL,
+
+    -- envelope is the proto-serialized mailboxpb.Envelope bytes.
+    envelope BLOB NOT NULL,
+
+    -- created_at is the unix nano timestamp when the envelope was
+    -- appended.
     created_at BIGINT NOT NULL
 );
 

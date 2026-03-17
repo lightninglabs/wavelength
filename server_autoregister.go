@@ -53,7 +53,7 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	// Build an in-process edge client for the new client's
 	// runtime. Each runtime gets its own edge instance backed
 	// by the shared mailbox store.
-	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
+	edgeClient, err := NewLocalMailboxClient(s.mailboxStore)
 	if err != nil {
 		return fmt.Errorf("build edge for %q: %w",
 			clientID, err)

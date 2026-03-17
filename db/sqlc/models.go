@@ -32,6 +32,19 @@ type IndexerVtxoEvent struct {
 	CreatedAt     int64
 }
 
+type MailboxAckCursor struct {
+	Recipient string
+	AckCursor int64
+}
+
+type MailboxEnvelope struct {
+	EventSeq  int64
+	Recipient string
+	MsgID     string
+	Envelope  []byte
+	CreatedAt int64
+}
+
 type OorCheckpoint struct {
 	SessionDbID     int32
 	CheckpointIndex int32

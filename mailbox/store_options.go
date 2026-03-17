@@ -12,63 +12,73 @@ const (
 	defaultPullPollInterval = 25 * time.Millisecond
 )
 
-// storeConfig defines optional Store behavior that is not part of the public
-// Store interface but is useful for production tuning and safety limits.
-type storeConfig struct {
-	pullPollInterval time.Duration
+// StoreConfig defines optional Store behavior that is not part of the
+// public Store interface but is useful for production tuning and safety
+// limits.
+type StoreConfig struct {
+	// PullPollInterval is the polling interval used by SQL-backed
+	// Pull when no envelopes are available.
+	PullPollInterval time.Duration
 
-	maxEnvelopeBytes       int
-	maxEnvelopesPerMailbox int
+	// MaxEnvelopeBytes is the maximum protobuf-encoded size of an
+	// Envelope. A value of 0 disables the limit.
+	MaxEnvelopeBytes int
 
-	log btclog.Logger
+	// MaxEnvelopesPerMailbox caps the number of outstanding
+	// (unacked) envelopes per mailbox. A value of 0 disables.
+	MaxEnvelopesPerMailbox int
+
+	// Log is the logger used by the store.
+	Log btclog.Logger
 }
 
 // StoreOption is an option that modifies store behavior.
-type StoreOption func(*storeConfig)
+type StoreOption func(*StoreConfig)
 
-// defaultStoreConfig returns the default store configuration.
-func defaultStoreConfig() storeConfig {
-	return storeConfig{
-		pullPollInterval: defaultPullPollInterval,
-		log:              btclog.Disabled,
+// DefaultStoreConfig returns the default store configuration.
+func DefaultStoreConfig() StoreConfig {
+	return StoreConfig{
+		PullPollInterval: defaultPullPollInterval,
+		Log:              btclog.Disabled,
 	}
 }
 
-// WithPullPollInterval sets the polling interval used by SQL-backed Pull when
-// there are no envelopes available.
+// WithPullPollInterval sets the polling interval used by SQL-backed
+// Pull when there are no envelopes available.
 func WithPullPollInterval(d time.Duration) StoreOption {
-	return func(cfg *storeConfig) {
-		cfg.pullPollInterval = d
+	return func(cfg *StoreConfig) {
+		cfg.PullPollInterval = d
 	}
 }
 
-// WithMaxEnvelopeBytes sets the maximum protobuf-encoded size of an Envelope.
+// WithMaxEnvelopeBytes sets the maximum protobuf-encoded size of an
+// Envelope.
 //
 // A value of 0 disables the limit.
 func WithMaxEnvelopeBytes(maxBytes int) StoreOption {
-	return func(cfg *storeConfig) {
-		cfg.maxEnvelopeBytes = maxBytes
+	return func(cfg *StoreConfig) {
+		cfg.MaxEnvelopeBytes = maxBytes
 	}
 }
 
-// WithMaxEnvelopesPerMailbox sets the maximum number of envelopes that can be
-// stored for a single mailbox at once.
+// WithMaxEnvelopesPerMailbox sets the maximum number of envelopes that
+// can be stored for a single mailbox at once.
 //
-// Since AckUpTo is expected to delete acked envelopes, this effectively caps
-// the number of outstanding (unacked) envelopes.
+// Since AckUpTo is expected to delete acked envelopes, this effectively
+// caps the number of outstanding (unacked) envelopes.
 //
 // A value of 0 disables the limit.
 func WithMaxEnvelopesPerMailbox(maxEnvelopes int) StoreOption {
-	return func(cfg *storeConfig) {
-		cfg.maxEnvelopesPerMailbox = maxEnvelopes
+	return func(cfg *StoreConfig) {
+		cfg.MaxEnvelopesPerMailbox = maxEnvelopes
 	}
 }
 
 // WithLogger sets the logger used by the store.
 func WithLogger(log btclog.Logger) StoreOption {
-	return func(cfg *storeConfig) {
+	return func(cfg *StoreConfig) {
 		if log != nil {
-			cfg.log = log
+			cfg.Log = log
 		}
 	}
 }

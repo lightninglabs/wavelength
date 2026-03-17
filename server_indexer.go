@@ -3,6 +3,7 @@ package darepo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -32,17 +33,17 @@ const (
 	arkServiceName = "arkrpc.ArkService"
 )
 
-// localMailboxClient adapts a MailboxServiceServer for in-process client
-// usage.
+// LocalMailboxClient adapts a MailboxServiceServer for in-process
+// client usage.
 //
-// This avoids loopback gRPC networking when subsystems communicate through
-// the shared mailbox store within the same process.
-type localMailboxClient struct {
+// This avoids loopback gRPC networking when subsystems communicate
+// through the shared mailbox store within the same process.
+type LocalMailboxClient struct {
 	server mailboxpb.MailboxServiceServer
 }
 
 // Send forwards the request to the in-process mailbox server.
-func (c *localMailboxClient) Send(ctx context.Context,
+func (c *LocalMailboxClient) Send(ctx context.Context,
 	in *mailboxpb.SendRequest,
 	_ ...grpc.CallOption) (*mailboxpb.SendResponse, error) {
 
@@ -50,7 +51,7 @@ func (c *localMailboxClient) Send(ctx context.Context,
 }
 
 // Pull forwards the request to the in-process mailbox server.
-func (c *localMailboxClient) Pull(ctx context.Context,
+func (c *LocalMailboxClient) Pull(ctx context.Context,
 	in *mailboxpb.PullRequest,
 	_ ...grpc.CallOption) (*mailboxpb.PullResponse, error) {
 
@@ -58,7 +59,7 @@ func (c *localMailboxClient) Pull(ctx context.Context,
 }
 
 // AckUpTo forwards the request to the in-process mailbox server.
-func (c *localMailboxClient) AckUpTo(ctx context.Context,
+func (c *LocalMailboxClient) AckUpTo(ctx context.Context,
 	in *mailboxpb.AckUpToRequest,
 	_ ...grpc.CallOption) (*mailboxpb.AckUpToResponse, error) {
 
@@ -66,19 +67,19 @@ func (c *localMailboxClient) AckUpTo(ctx context.Context,
 }
 
 // Compile-time interface check.
-var _ mailboxpb.MailboxServiceClient = (*localMailboxClient)(nil)
+var _ mailboxpb.MailboxServiceClient = (*LocalMailboxClient)(nil)
 
-// newLocalMailboxClient builds an in-process mailbox client from the shared
-// mailbox store.
-func newLocalMailboxClient(
-	store mailbox.Store) (mailboxpb.MailboxServiceClient, error) {
+// NewLocalMailboxClient builds an in-process mailbox client from the
+// shared mailbox store.
+func NewLocalMailboxClient(
+	store mailbox.Store) (*LocalMailboxClient, error) {
 
 	server, err := mailboxrpcserver.New(store)
 	if err != nil {
 		return nil, err
 	}
 
-	return &localMailboxClient{
+	return &LocalMailboxClient{
 		server: server,
 	}, nil
 }
@@ -96,7 +97,7 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// through this store.
 	s.mailboxStore = mailbox.NewMemoryStore()
 
-	edgeClient, err := newLocalMailboxClient(s.mailboxStore)
+	edgeClient, err := NewLocalMailboxClient(s.mailboxStore)
 	if err != nil {
 		return fmt.Errorf("build local mailbox client: %w", err)
 	}
@@ -292,6 +293,12 @@ func (n *indexerRecipientNotifier) NotifyRecipientEvent(
 	if n == nil || n.operator == nil {
 		return
 	}
+
+	n.log.InfoS(ctx, "Publishing OOR recipient notification",
+		btclog.Hex("session_id", sessionID[:]),
+		slog.Uint64("output_index", uint64(recipient.OutputIndex)),
+		btclog.Hex("recipient_pk_script", recipient.PkScript),
+		slog.Uint64("value_sat", uint64(recipient.Value)))
 
 	sessionIDBytes := append([]byte(nil), sessionID[:]...)
 	req := &arkrpc.OORRecipientEvent{
