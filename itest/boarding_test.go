@@ -253,6 +253,114 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 		broadcastRound.TxId)
 }
 
+// TestBoardingIntegrationThreeClientsSharedRound verifies three real client
+// daemons can join the same round, sign successfully, and observe round
+// transaction broadcast via public RPC surfaces.
+func TestBoardingIntegrationThreeClientsSharedRound(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	operatorInfo := getOperatorInfo(t, h)
+
+	type testClient struct {
+		name   string
+		client daemonrpc.DaemonServiceClient
+	}
+
+	clients := []testClient{
+		{name: "alice", client: h.StartClientDaemon("alice").RPCClient},
+		{name: "bob", client: h.StartClientDaemon("bob").RPCClient},
+		{name: "carol", client: h.StartClientDaemon("carol").RPCClient},
+	}
+
+	boardingAmount := btcutil.Amount(100_000)
+	for _, tc := range clients {
+		newAddrResp, err := tc.client.NewAddress(
+			t.Context(), &daemonrpc.NewAddressRequest{},
+		)
+		require.NoError(t, err, "%s NewAddress RPC failed", tc.name)
+		require.NotEmpty(
+			t, newAddrResp.Address,
+			"%s boarding address should be set", tc.name,
+		)
+
+		fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
+		t.Logf("%s funded boarding address via txid=%s",
+			tc.name, fundingTxID)
+	}
+
+	// Mine one extra block beyond the advertised minimum so all clients and
+	// the operator observe every boarding input before JoinRound runs.
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	for _, tc := range clients {
+		waitForConfirmedBoardingBalance(
+			t, tc.client, int64(boardingAmount),
+		)
+		resp := waitForBoardRegistered(t, tc.client)
+		require.Equal(t, "registered", resp.Status)
+	}
+
+	clientResp := waitForRegisteredClients(t, h, len(clients))
+	require.Len(t, clientResp.Clients, len(clients))
+	t.Log("Operator registered all three real client daemons")
+
+	sharedRoundID := ""
+	for _, tc := range clients {
+		joined := waitForClientRoundState(
+			t, tc.client, daemonrpc.RoundState_ROUND_STATE_JOINED,
+		)
+		require.NotEmpty(t, joined.RoundId,
+			"%s joined round should have a concrete round id",
+			tc.name,
+		)
+		require.False(t, joined.IsTemp,
+			"%s joined round should no longer be temporary",
+			tc.name,
+		)
+
+		if sharedRoundID == "" {
+			sharedRoundID = joined.RoundId
+		} else {
+			require.Equal(t, sharedRoundID, joined.RoundId,
+				"all clients should join the same round")
+		}
+	}
+	t.Logf("All clients joined shared round_id=%q", sharedRoundID)
+
+	for _, tc := range clients {
+		waitForNamedClientRoundState(
+			t, tc.client, sharedRoundID,
+			daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+		)
+		waitForPersistedClientRoundState(
+			t, tc.client, sharedRoundID,
+			daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+		)
+	}
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, sharedRoundID,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf("Shared round transaction broadcast: round_id=%q txid=%s",
+		sharedRoundID, broadcastRound.TxId)
+
+	h.WaitMempoolTx(broadcastRound.TxId)
+	t.Logf("Shared round transaction reached mempool: txid=%s",
+		broadcastRound.TxId)
+}
+
 // TestBoardingIntegrationSingleClientSubsequentRounds verifies a single real
 // client daemon can board in multiple rounds back-to-back and persist both
 // outputs as independent live VTXOs.
