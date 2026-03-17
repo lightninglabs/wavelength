@@ -41,7 +41,8 @@ const (
 	// receive-script proofs for RegisterReceiveScript.
 	purposeRegisterReceiveScript = "register_receive_script"
 
-	// purposeUnregisterReceiveScript is the canonical purpose string used in
-	// receive-script proofs for UnregisterReceiveScript.
+	// purposeUnregisterReceiveScript is the canonical purpose
+	// string used in receive-script proofs for
+	// UnregisterReceiveScript.
 	purposeUnregisterReceiveScript = "unregister_receive_script"
 )

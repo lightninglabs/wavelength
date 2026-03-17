@@ -287,6 +287,8 @@ func parseScriptScopeProofMessage(
 
 // encodeReceiveScriptProofTLV encodes a receive-script registration proof
 // message to its canonical TLV byte representation.
+//
+//nolint:dupl
 func encodeReceiveScriptProofTLV(
 	msg *receiveScriptProofMessage) ([]byte, error) {
 
@@ -358,6 +360,8 @@ func encodeReceiveScriptProofTLV(
 
 // encodeScriptScopeProofTLV encodes a script-scope proof message to its
 // canonical TLV byte representation.
+//
+//nolint:dupl
 func encodeScriptScopeProofTLV(
 	msg *scriptScopeProofMessage) ([]byte, error) {
 
@@ -429,6 +433,8 @@ func encodeScriptScopeProofTLV(
 
 // validateReceiveScriptProofMessage validates msg against the expected
 // serverID, principal, purpose, and pkScript.
+//
+//nolint:dupl
 func validateReceiveScriptProofMessage(now time.Time,
 	msg *receiveScriptProofMessage, serverID string,
 	principal string, purpose string, pkScript []byte) error {
@@ -496,6 +502,8 @@ func validateReceiveScriptProofMessage(now time.Time,
 
 // validateScriptScopeProofMessage validates msg against the expected
 // serverID, principal, purpose, and pkScript.
+//
+//nolint:dupl
 func validateScriptScopeProofMessage(now time.Time,
 	msg *scriptScopeProofMessage, serverID string,
 	principal string, purpose string, pkScript []byte) error {
@@ -613,9 +621,13 @@ func proofSigningKey(pkScript []byte, ownerPubKeyBytes []byte,
 			return nil, fmt.Errorf("derive vtxo tap key: %w", err)
 		}
 
-		expectedVTXOScript, err := txscript.PayToTaprootScript(vtxoTapKey)
+		expectedVTXOScript, err := txscript.PayToTaprootScript(
+			vtxoTapKey,
+		)
 		if err != nil {
-			return nil, fmt.Errorf("derive vtxo taproot script: %w", err)
+			return nil, fmt.Errorf(
+				"derive vtxo taproot script: %w", err,
+			)
 		}
 		if bytes.Equal(expectedVTXOScript, pkScript) {
 			return ownerPubKey, nil
