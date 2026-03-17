@@ -22,9 +22,17 @@ type bytesServerMessage struct {
 	payload []byte
 }
 
-// ServiceMethod returns a zero-value routing key for tests.
+const (
+	testEventService = "test.v1.EventService"
+	testEventMethod  = "PushEvent"
+)
+
+// ServiceMethod returns deterministic routing metadata for tests.
 func (m *bytesServerMessage) ServiceMethod() mailboxrpc.ServiceMethod {
-	return mailboxrpc.ServiceMethod{}
+	return mailboxrpc.ServiceMethod{
+		Service: testEventService,
+		Method:  testEventMethod,
+	}
 }
 
 // ToProto converts the payload to a protobuf wrapper.
@@ -70,6 +78,10 @@ func TestSendClientEventRequest_TLVRoundTrip_DeterministicIDs(t *testing.T) {
 	require.Equal(
 		t, decodedA.IdempotencyKey, decodedB.IdempotencyKey,
 	)
+	require.Equal(t, testEventService, decodedA.Service)
+	require.Equal(t, testEventMethod, decodedA.Method)
+	require.Equal(t, testEventService, decodedB.Service)
+	require.Equal(t, testEventMethod, decodedB.Method)
 
 	protoMsg := decodedA.Message.ToProto().UnwrapOrFail(t)
 	msg, ok := protoMsg.(*wrapperspb.BytesValue)
@@ -131,6 +143,99 @@ func TestSendRPCRequest_TLVRoundTrip(t *testing.T) {
 	require.True(t, proto.Equal(original.Envelope, decoded.Envelope))
 }
 
+// TestSendUnaryRequest_TLVRoundTrip verifies durable unary request payload
+// serialization round trips with stable derived identifiers.
+func TestSendUnaryRequest_TLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original, err := NewSendUnaryRequest(
+		mailboxrpc.ServiceMethod{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		},
+		wrapperspb.String("request"),
+		"corr-unary",
+	)
+	require.NoError(t, err)
+
+	var decoded SendUnaryRequest
+	encoded := encodeTLVMessage(t, original)
+
+	require.NoError(
+		t, decoded.Decode(bytes.NewReader(encoded)),
+	)
+
+	require.NotNil(t, decoded.Body)
+	require.NotEmpty(t, decoded.MsgID)
+	require.NotEmpty(t, decoded.IdempotencyKey)
+	require.Equal(t, original.Service, decoded.Service)
+	require.Equal(t, original.Method, decoded.Method)
+	require.Equal(t, original.CorrelationID, decoded.CorrelationID)
+
+	payload := &wrapperspb.StringValue{}
+	require.NoError(t, decoded.Body.UnmarshalTo(payload))
+	require.Equal(t, "request", payload.Value)
+}
+
+// TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip verifies the
+// durable recipient-events query message round-trips through TLV encoding.
+func TestSendListOORRecipientEventsByScriptRequest_TLVRoundTrip(
+	t *testing.T) {
+
+	t.Parallel()
+
+	original := &SendListOORRecipientEventsByScriptRequest{
+		PkScript:      []byte{0x51, 0x20, 0x01},
+		AfterEventID:  7,
+		Limit:         1,
+		CorrelationID: "corr-recipient-query",
+	}
+
+	var decoded SendListOORRecipientEventsByScriptRequest
+	encoded := encodeTLVMessage(t, original)
+
+	require.NoError(
+		t, decoded.Decode(bytes.NewReader(encoded)),
+	)
+
+	require.Equal(t, original.PkScript, decoded.PkScript)
+	require.Equal(t, original.AfterEventID, decoded.AfterEventID)
+	require.Equal(t, original.Limit, decoded.Limit)
+	require.Equal(t, original.CorrelationID, decoded.CorrelationID)
+	require.NotEmpty(t, decoded.MsgID)
+	require.NotEmpty(t, decoded.IdempotencyKey)
+}
+
+// TestSendListVTXOsByScriptsRequest_TLVRoundTrip verifies the durable
+// VTXO-by-scripts query message round-trips through TLV encoding.
+func TestSendListVTXOsByScriptsRequest_TLVRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := &SendListVTXOsByScriptsRequest{
+		PkScripts: [][]byte{
+			{0x51, 0x20, 0x01},
+			{0x51, 0x20, 0x02},
+		},
+		AfterCursor:   11,
+		Limit:         128,
+		CorrelationID: "corr-vtxo-query",
+	}
+
+	var decoded SendListVTXOsByScriptsRequest
+	encoded := encodeTLVMessage(t, original)
+
+	require.NoError(
+		t, decoded.Decode(bytes.NewReader(encoded)),
+	)
+
+	require.Equal(t, original.PkScripts, decoded.PkScripts)
+	require.Equal(t, original.AfterCursor, decoded.AfterCursor)
+	require.Equal(t, original.Limit, decoded.Limit)
+	require.Equal(t, original.CorrelationID, decoded.CorrelationID)
+	require.NotEmpty(t, decoded.MsgID)
+	require.NotEmpty(t, decoded.IdempotencyKey)
+}
+
 // TestServerConnMessageMetadata verifies static message metadata methods.
 func TestServerConnMessageMetadata(t *testing.T) {
 	t.Parallel()
@@ -148,6 +253,31 @@ func TestServerConnMessageMetadata(t *testing.T) {
 	require.Equal(t, "SendRPCRequest", rpcReq.MessageType())
 	require.Equal(t, SendRPCRequestMsgType, rpcReq.TLVType())
 	rpcReq.serverConnMsgSealed()
+
+	unaryReq := &SendUnaryRequest{}
+	require.Equal(t, "SendUnaryRequest", unaryReq.MessageType())
+	require.Equal(t, SendUnaryRequestMsgType, unaryReq.TLVType())
+	unaryReq.serverConnMsgSealed()
+
+	recipientReq := &SendListOORRecipientEventsByScriptRequest{}
+	require.Equal(
+		t, "SendListOORRecipientEventsByScriptRequest",
+		recipientReq.MessageType(),
+	)
+	require.Equal(
+		t, SendListOORRecipientEventsByScriptRequestMsgType,
+		recipientReq.TLVType(),
+	)
+	recipientReq.serverConnMsgSealed()
+
+	vtxoReq := &SendListVTXOsByScriptsRequest{}
+	require.Equal(
+		t, "SendListVTXOsByScriptsRequest", vtxoReq.MessageType(),
+	)
+	require.Equal(
+		t, SendListVTXOsByScriptsRequestMsgType, vtxoReq.TLVType(),
+	)
+	vtxoReq.serverConnMsgSealed()
 }
 
 // TestRawServerMessage_ToProtoDecodeFailure verifies ToProto returns an error
@@ -218,6 +348,71 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, rpcReq.Envelope.MsgId, typedRPC.Envelope.MsgId)
 	require.Equal(t, rpcReq.Envelope.Sender, typedRPC.Envelope.Sender)
+
+	unaryReq, err := NewSendUnaryRequest(
+		mailboxrpc.ServiceMethod{
+			Service: "test.Svc",
+			Method:  "DoThing",
+		},
+		wrapperspb.String("codec-unary"),
+		"corr-codec-unary",
+	)
+	require.NoError(t, err)
+
+	unaryBytes, err := codec.Encode(unaryReq)
+	require.NoError(t, err)
+
+	decodedUnary, err := codec.Decode(unaryBytes)
+	require.NoError(t, err)
+
+	typedUnary, ok := decodedUnary.(*SendUnaryRequest)
+	require.True(t, ok)
+	require.Equal(t, unaryReq.Service, typedUnary.Service)
+	require.Equal(t, unaryReq.Method, typedUnary.Method)
+	require.Equal(
+		t, unaryReq.CorrelationID, typedUnary.CorrelationID,
+	)
+
+	recipientReq := &SendListOORRecipientEventsByScriptRequest{
+		PkScript:      []byte{0x51, 0x20, 0x04},
+		AfterEventID:  9,
+		Limit:         1,
+		CorrelationID: "corr-codec-recipient",
+	}
+
+	recipientBytes, err := codec.Encode(recipientReq)
+	require.NoError(t, err)
+
+	decodedRecipient, err := codec.Decode(recipientBytes)
+	require.NoError(t, err)
+
+	typedRecipient, ok := decodedRecipient.(*SendListOORRecipientEventsByScriptRequest) //nolint:ll
+	require.True(t, ok)
+	require.Equal(t, recipientReq.PkScript, typedRecipient.PkScript)
+	require.Equal(
+		t, recipientReq.CorrelationID, typedRecipient.CorrelationID,
+	)
+
+	vtxoReq := &SendListVTXOsByScriptsRequest{
+		PkScripts: [][]byte{
+			{0x51, 0x20, 0x05},
+			{0x51, 0x20, 0x06},
+		},
+		AfterCursor:   13,
+		Limit:         128,
+		CorrelationID: "corr-codec-vtxo",
+	}
+
+	vtxoBytes, err := codec.Encode(vtxoReq)
+	require.NoError(t, err)
+
+	decodedVTXO, err := codec.Decode(vtxoBytes)
+	require.NoError(t, err)
+
+	typedVTXO, ok := decodedVTXO.(*SendListVTXOsByScriptsRequest)
+	require.True(t, ok)
+	require.Equal(t, vtxoReq.PkScripts, typedVTXO.PkScripts)
+	require.Equal(t, vtxoReq.CorrelationID, typedVTXO.CorrelationID)
 }
 
 // unknownServerConnMsg is a test-only unsupported message for Receive.
