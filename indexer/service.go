@@ -484,85 +484,97 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		)
 	}
 
-	q := s.store
-
-	rows, err := q.ListVTXOsByPkScripts(ctx, allowedScriptBytes)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-
-	// Collect unique round IDs so we can batch-fetch round metadata
-	// in a single query rather than issuing one query per VTXO.
-	roundIDSet := make(map[rounds.RoundID]struct{})
-	for _, row := range rows {
-		if row.RoundID == nil {
-			continue
-		}
-
-		roundIDSet[*row.RoundID] = struct{}{}
-	}
-
-	roundRowByID := make(
-		map[rounds.RoundID]*RoundRow, len(roundIDSet),
-	)
-
-	if len(roundIDSet) > 0 {
-		uniqueIDs := make(
-			[]rounds.RoundID, 0, len(roundIDSet),
-		)
-		for id := range roundIDSet {
-			uniqueIDs = append(uniqueIDs, id)
-		}
-
-		roundRows, err := q.ListRoundsByIDs(ctx, uniqueIDs)
-		if err != nil {
-			return nil, status.Error(
-				codes.Internal, err.Error(),
-			)
-		}
-
-		for i := range roundRows {
-			rr := &roundRows[i]
-			roundRowByID[rr.RoundID] = rr
-		}
-	}
-
-	lineage := newLineageResolver(q, roundRowByID)
-
+	// Run the entire VTXO query + lineage resolution inside a read
+	// transaction so all queries see a consistent snapshot. The
+	// lineage resolver's recursive round/session/checkpoint lookups
+	// all run within the same transaction.
 	var all []*arkrpc.VTXO
-	for _, row := range rows {
-		scriptHex := hex.EncodeToString(row.PkScript)
-		if _, ok := allowedScripts[scriptHex]; !ok {
-			// Defensive: do not leak results outside the proven
-			// script set.
-			continue
+	err := s.store.ExecReadTx(ctx, func(q Store) error {
+		rows, qErr := q.ListVTXOsByPkScripts(
+			ctx, allowedScriptBytes,
+		)
+		if qErr != nil {
+			return qErr
 		}
 
-		var rr *RoundRow
-		if row.RoundID != nil {
-			rr = roundRowByID[*row.RoundID]
-		}
-
-		vtxo, err := rpcVTXOFromDB(row, rr)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-
-		lineageMeta, err := lineage.resolve(ctx, row)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		if err := applyLineageMetadata(vtxo, lineageMeta); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-
-		if len(statusFilter) > 0 {
-			if _, ok := statusFilter[vtxo.Status]; !ok {
+		// Collect unique round IDs for batch metadata fetch.
+		roundIDSet := make(map[rounds.RoundID]struct{})
+		for _, row := range rows {
+			if row.RoundID == nil {
 				continue
+			}
+
+			roundIDSet[*row.RoundID] = struct{}{}
+		}
+
+		roundRowByID := make(
+			map[rounds.RoundID]*RoundRow, len(roundIDSet),
+		)
+
+		if len(roundIDSet) > 0 {
+			uniqueIDs := make(
+				[]rounds.RoundID, 0, len(roundIDSet),
+			)
+			for id := range roundIDSet {
+				uniqueIDs = append(uniqueIDs, id)
+			}
+
+			roundRows, lErr := q.ListRoundsByIDs(
+				ctx, uniqueIDs,
+			)
+			if lErr != nil {
+				return lErr
+			}
+
+			for i := range roundRows {
+				rr := &roundRows[i]
+				roundRowByID[rr.RoundID] = rr
 			}
 		}
 
-		all = append(all, vtxo)
+		lineage := newLineageResolver(q, roundRowByID)
+
+		for _, row := range rows {
+			scriptHex := hex.EncodeToString(row.PkScript)
+			if _, ok := allowedScripts[scriptHex]; !ok {
+				continue
+			}
+
+			var rr *RoundRow
+			if row.RoundID != nil {
+				rr = roundRowByID[*row.RoundID]
+			}
+
+			vtxo, vErr := rpcVTXOFromDB(row, rr)
+			if vErr != nil {
+				return vErr
+			}
+
+			lineageMeta, lErr := lineage.Resolve(
+				ctx, row,
+			)
+			if lErr != nil {
+				return lErr
+			}
+			if mErr := applyLineageMetadata(
+				vtxo, lineageMeta,
+			); mErr != nil {
+				return mErr
+			}
+
+			if len(statusFilter) > 0 {
+				if _, ok := statusFilter[vtxo.Status]; !ok {
+					continue
+				}
+			}
+
+			all = append(all, vtxo)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	sort.Slice(all, func(i, j int) bool {

@@ -58,6 +58,20 @@ type vtxoLineage struct {
 	treePathTLV []byte
 }
 
+// LineageResolver resolves authoritative VTXO lineage metadata for
+// a given VTXO row. Implementations handle both round-backed and
+// virtual (OOR-created) VTXOs.
+type LineageResolver interface {
+	// Resolve returns the authoritative lineage metadata for the
+	// provided VTXO row, including the commitment round, tree
+	// path, chain depth, and creation height.
+	Resolve(ctx context.Context,
+		row VTXORow) (*vtxoLineage, error)
+}
+
+// Compile-time check that *lineageResolver satisfies LineageResolver.
+var _ LineageResolver = (*lineageResolver)(nil)
+
 type lineageResolver struct {
 	store Store
 
@@ -95,7 +109,7 @@ func newLineageResolver(store Store,
 
 // resolve returns the authoritative lineage metadata for the provided VTXO
 // row.
-func (r *lineageResolver) resolve(ctx context.Context,
+func (r *lineageResolver) Resolve(ctx context.Context,
 	row VTXORow) (*vtxoLineage, error) {
 
 	key := row.Outpoint.String()
@@ -230,7 +244,7 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 			)
 		}
 
-		parentLineage, err := r.resolve(ctx, parentRow)
+		parentLineage, err := r.Resolve(ctx, parentRow)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"resolve parent lineage %v: %w",
