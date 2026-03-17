@@ -1565,6 +1565,19 @@ func TestSendEventMsgTLVRoundTrip(t *testing.T) {
 	got, ok := decodedProto.(*roundtestpb.RoundStartedEvent)
 	require.True(t, ok)
 	require.Equal(t, "round-42", got.RoundId)
+
+	// Verify the routing metadata survives the TLV round-trip.
+	// These fields (TLV types 6/7) are critical for client-side
+	// ingress dispatch after crash-recovery replay.
+	decodedSM := decoded.Message.ServiceMethod()
+	require.Equal(
+		t, "hellotest.v1.HelloService", decodedSM.Service,
+		"rpcService must survive TLV round-trip",
+	)
+	require.Equal(
+		t, "RoundStarted", decodedSM.Method,
+		"rpcMethod must survive TLV round-trip",
+	)
 }
 
 // TestSendRPCMsgTLVRoundTrip verifies that a sendRPCMsg survives
