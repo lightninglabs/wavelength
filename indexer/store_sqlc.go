@@ -21,13 +21,60 @@ import (
 
 // SQLCStore adapts *sqlc.Queries to the indexer Store interface,
 // translating between sqlc-generated types and indexer domain types.
+// It embeds a TransactionExecutor for atomic multi-query operations.
 type SQLCStore struct {
-	q *sqlc.Queries
+	q  *sqlc.Queries
+	tx *db.TransactionExecutor[*sqlc.Queries]
 }
 
 // NewSQLCStore creates a new Store adapter wrapping the given queries.
-func NewSQLCStore(q *sqlc.Queries) *SQLCStore {
-	return &SQLCStore{q: q}
+// The optional BatchedQuerier enables transactional reads via
+// ExecReadTx; pass nil to use non-transactional queries only.
+func NewSQLCStore(q *sqlc.Queries,
+	opts ...SQLCStoreOption) *SQLCStore {
+
+	s := &SQLCStore{q: q}
+
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s
+}
+
+// SQLCStoreOption is a functional option for SQLCStore.
+type SQLCStoreOption func(*SQLCStore)
+
+// WithBatchedQuerier enables transactional reads by embedding a
+// TransactionExecutor backed by the provided BatchedQuerier.
+func WithBatchedQuerier(dbq db.BatchedQuerier) SQLCStoreOption {
+	return func(s *SQLCStore) {
+		s.tx = db.NewTransactionExecutor[*sqlc.Queries](
+			dbq,
+			func(tx *sql.Tx) *sqlc.Queries {
+				return sqlc.New(tx)
+			},
+			nil,
+		)
+	}
+}
+
+// ExecReadTx runs fn inside a read-only database transaction,
+// providing a transactional SQLCStore to the callback. All queries
+// issued through the callback's store see a consistent snapshot.
+func (s *SQLCStore) ExecReadTx(ctx context.Context,
+	fn func(Store) error) error {
+
+	if s.tx == nil {
+		return fn(s)
+	}
+
+	return s.tx.ExecTx(ctx, db.ReadTxOption(),
+		func(q *sqlc.Queries) error {
+			txStore := &SQLCStore{q: q}
+			return fn(txStore)
+		},
+	)
 }
 
 // Compile-time check that *SQLCStore satisfies the Store interface.
@@ -115,6 +162,31 @@ func (s *SQLCStore) ListOORRecipientEventsAfterWithSession(
 			SessionID:         r.SessionID,
 			OutputIndex:       r.OutputIndex,
 			Value:             r.Value,
+			ArkPsbt:           r.ArkPsbt,
+		}
+	}
+
+	return out, nil
+}
+
+// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+// session by querying the oor_checkpoints table joined with
+// oor_sessions.
+func (s *SQLCStore) GetOORSessionCheckpoints(ctx context.Context,
+	sessionID []byte) ([]OORSessionCheckpoint, error) {
+
+	rows, err := s.q.GetOORSessionCheckpoints(
+		ctx, sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]OORSessionCheckpoint, len(rows))
+	for i, r := range rows {
+		out[i] = OORSessionCheckpoint{
+			CheckpointIndex: r.CheckpointIndex,
+			CheckpointPsbt:  r.CheckpointPsbt,
 		}
 	}
 
@@ -159,6 +231,25 @@ func (s *SQLCStore) ListVTXOsByPkScripts(ctx context.Context,
 	}
 
 	return out, nil
+}
+
+// GetVTXO implements VTXOReader.
+func (s *SQLCStore) GetVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (VTXORow, error) {
+
+	row, err := s.q.GetVTXO(ctx, sqlc.GetVTXOParams{
+		OutpointHash:  outpoint.Hash[:],
+		OutpointIndex: int32(outpoint.Index),
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return VTXORow{}, ErrNotFound
+		}
+
+		return VTXORow{}, err
+	}
+
+	return vtxoRowFromSQLC(row)
 }
 
 // GetRound implements VTXOReader.
@@ -572,9 +663,16 @@ func roundRowFromSQLC(r sqlc.Round) (RoundRow, error) {
 		commitTxid = *decoded
 	}
 
-	return RoundRow{
+	roundRow := RoundRow{
 		RoundID:        roundID,
 		CommitmentTxid: commitTxid,
 		CsvDelay:       r.CsvDelay,
-	}, nil
+	}
+
+	if r.ConfirmationHeight.Valid {
+		height := r.ConfirmationHeight.Int32
+		roundRow.ConfirmationHeight = &height
+	}
+
+	return roundRow, nil
 }

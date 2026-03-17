@@ -20,13 +20,36 @@ ORDER BY event_id ASC
 LIMIT $3;
 
 -- name: ListOORRecipientEventsAfterWithSession :many
+-- ListOORRecipientEventsAfterWithSession returns recipient events
+-- with the session's Ark PSBT included for incoming transfer
+-- materialization. The Ark PSBT is needed by the client OOR
+-- FSM's IncomingTransferEvent to construct received VTXOs.
 SELECT re.recipient_pk_script, re.event_id, s.session_id,
-       re.output_index, re.value, re.created_at
+       re.output_index, re.value, re.created_at,
+       s.ark_psbt
 FROM oor_recipient_events re
 JOIN oor_sessions s ON s.id = re.session_db_id
 WHERE re.recipient_pk_script = $1 AND re.event_id > $2
 ORDER BY re.event_id ASC
 LIMIT $3;
+
+-- name: GetOORSessionPackage :one
+-- GetOORSessionPackage returns the Ark PSBT for a finalized OOR
+-- session. Used by the incoming transfer flow to construct the
+-- full IncomingTransferEvent with the Ark PSBT data.
+SELECT s.session_id, s.ark_psbt, s.state
+FROM oor_sessions s
+WHERE s.session_id = $1;
+
+-- name: GetOORSessionCheckpoints :many
+-- GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+-- session, ordered by index. Used alongside GetOORSessionPackage
+-- to construct the full incoming transfer event.
+SELECT c.checkpoint_index, c.checkpoint_psbt
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE s.session_id = $1
+ORDER BY c.checkpoint_index ASC;
 
 -- name: GetOORRecipientEventBySessionOutput :one
 SELECT re.recipient_pk_script, re.event_id, re.session_db_id,

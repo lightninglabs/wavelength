@@ -40,6 +40,10 @@ type VTXOReader interface {
 	ListVTXOsByPkScripts(ctx context.Context,
 		pkScripts [][]byte) ([]VTXORow, error)
 
+	// GetVTXO returns a single VTXO by outpoint.
+	GetVTXO(ctx context.Context,
+		outpoint wire.OutPoint) (VTXORow, error)
+
 	// GetRound returns a single round by its round ID.
 	GetRound(ctx context.Context,
 		roundID rounds.RoundID) (RoundRow, error)
@@ -100,6 +104,18 @@ type Store interface {
 	ListOORRecipientEventsAfterWithSession(ctx context.Context,
 		recipientPkScript []byte, afterEventID int64,
 		limit int32) ([]OORRecipientEventWithSession, error)
+
+	// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+	// session, ordered by index.
+	GetOORSessionCheckpoints(ctx context.Context,
+		sessionID []byte) ([]OORSessionCheckpoint, error)
+
+	// ExecReadTx runs fn inside a read-only database transaction,
+	// providing a transactional Store to the callback. All queries
+	// issued through the callback's store see a consistent
+	// snapshot. Implementations without transaction support may
+	// run fn directly against the non-transactional store.
+	ExecReadTx(ctx context.Context, fn func(Store) error) error
 
 	// InsertOORRecipientEvent inserts an OOR recipient event and
 	// returns the assigned row ID.

@@ -253,8 +253,17 @@ func (o *Operator) PublishOORRecipientEvent(ctx context.Context,
 	}
 
 	if len(principals) == 0 {
+		o.log.Infof("Indexer OOR event has no active principals for "+
+			"session=%x output_index=%d recipient_script=%x",
+			ev.SessionId, ev.OutputIndex, ev.RecipientPkScript)
+
 		return nil
 	}
+
+	o.log.Infof("Publishing indexer OOR event to %d principal(s) "+
+		"for session=%x output_index=%d recipient_script=%x",
+		len(principals), ev.SessionId, ev.OutputIndex,
+		ev.RecipientPkScript)
 
 	for _, mailboxID := range principals {
 		msg := &indexerEventMessage{

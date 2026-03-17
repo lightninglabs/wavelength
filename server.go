@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db"
 	"github.com/lightninglabs/darepo/indexer"
+	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
 	"github.com/lightninglabs/darepo/oor"
@@ -49,6 +50,11 @@ type Server struct {
 	// across both the rounds and OOR subsystems. Shared to
 	// ensure consistent locking semantics.
 	vtxoLocker *db.VTXOLockerDB
+
+	// walletController is the shared LND-backed wallet/signer used
+	// by the rounds and OOR subsystems for PSBT funding and
+	// operator signatures.
+	walletController *lndbackend.LndWalletController
 
 	adminRPC atomic.Pointer[AdminRPCServer]
 

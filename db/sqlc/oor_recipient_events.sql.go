@@ -51,6 +51,67 @@ func (q *Queries) GetOORRecipientEventBySessionOutput(ctx context.Context, arg G
 	return i, err
 }
 
+const GetOORSessionCheckpoints = `-- name: GetOORSessionCheckpoints :many
+SELECT c.checkpoint_index, c.checkpoint_psbt
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE s.session_id = $1
+ORDER BY c.checkpoint_index ASC
+`
+
+type GetOORSessionCheckpointsRow struct {
+	CheckpointIndex int32
+	CheckpointPsbt  []byte
+}
+
+// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+// session, ordered by index. Used alongside GetOORSessionPackage
+// to construct the full incoming transfer event.
+func (q *Queries) GetOORSessionCheckpoints(ctx context.Context, sessionID []byte) ([]GetOORSessionCheckpointsRow, error) {
+	rows, err := q.db.QueryContext(ctx, GetOORSessionCheckpoints, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetOORSessionCheckpointsRow
+	for rows.Next() {
+		var i GetOORSessionCheckpointsRow
+		if err := rows.Scan(&i.CheckpointIndex, &i.CheckpointPsbt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const GetOORSessionPackage = `-- name: GetOORSessionPackage :one
+SELECT s.session_id, s.ark_psbt, s.state
+FROM oor_sessions s
+WHERE s.session_id = $1
+`
+
+type GetOORSessionPackageRow struct {
+	SessionID []byte
+	ArkPsbt   []byte
+	State     string
+}
+
+// GetOORSessionPackage returns the Ark PSBT for a finalized OOR
+// session. Used by the incoming transfer flow to construct the
+// full IncomingTransferEvent with the Ark PSBT data.
+func (q *Queries) GetOORSessionPackage(ctx context.Context, sessionID []byte) (GetOORSessionPackageRow, error) {
+	row := q.db.QueryRowContext(ctx, GetOORSessionPackage, sessionID)
+	var i GetOORSessionPackageRow
+	err := row.Scan(&i.SessionID, &i.ArkPsbt, &i.State)
+	return i, err
+}
+
 const InsertOORRecipientEvent = `-- name: InsertOORRecipientEvent :execrows
 INSERT INTO oor_recipient_events (
     recipient_pk_script, event_id, session_db_id, output_index, value,
@@ -132,7 +193,8 @@ func (q *Queries) ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRe
 
 const ListOORRecipientEventsAfterWithSession = `-- name: ListOORRecipientEventsAfterWithSession :many
 SELECT re.recipient_pk_script, re.event_id, s.session_id,
-       re.output_index, re.value, re.created_at
+       re.output_index, re.value, re.created_at,
+       s.ark_psbt
 FROM oor_recipient_events re
 JOIN oor_sessions s ON s.id = re.session_db_id
 WHERE re.recipient_pk_script = $1 AND re.event_id > $2
@@ -153,8 +215,13 @@ type ListOORRecipientEventsAfterWithSessionRow struct {
 	OutputIndex       int32
 	Value             int64
 	CreatedAt         int64
+	ArkPsbt           []byte
 }
 
+// ListOORRecipientEventsAfterWithSession returns recipient events
+// with the session's Ark PSBT included for incoming transfer
+// materialization. The Ark PSBT is needed by the client OOR
+// FSM's IncomingTransferEvent to construct received VTXOs.
 func (q *Queries) ListOORRecipientEventsAfterWithSession(ctx context.Context, arg ListOORRecipientEventsAfterWithSessionParams) ([]ListOORRecipientEventsAfterWithSessionRow, error) {
 	rows, err := q.db.QueryContext(ctx, ListOORRecipientEventsAfterWithSession, arg.RecipientPkScript, arg.EventID, arg.Limit)
 	if err != nil {
@@ -171,6 +238,7 @@ func (q *Queries) ListOORRecipientEventsAfterWithSession(ctx context.Context, ar
 			&i.OutputIndex,
 			&i.Value,
 			&i.CreatedAt,
+			&i.ArkPsbt,
 		); err != nil {
 			return nil, err
 		}

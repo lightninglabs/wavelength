@@ -58,6 +58,10 @@ type RoundRow struct {
 	// CommitmentTxid is the commitment transaction hash.
 	CommitmentTxid chainhash.Hash
 
+	// ConfirmationHeight is the chain height at which the commitment
+	// transaction confirmed.
+	ConfirmationHeight *int32
+
 	// CsvDelay is the relative CSV timelock delay in blocks.
 	CsvDelay int32
 }
@@ -95,6 +99,20 @@ type OORRecipientEventWithSession struct {
 
 	// Value is the transferred amount in satoshis.
 	Value int64
+
+	// ArkPsbt is the serialized Ark PSBT for this session. The
+	// client needs this to materialize the received VTXO.
+	ArkPsbt []byte
+}
+
+// OORSessionCheckpoint is a single checkpoint PSBT from an OOR
+// session, ordered by checkpoint index.
+type OORSessionCheckpoint struct {
+	// CheckpointIndex is the checkpoint's ordinal position.
+	CheckpointIndex int32
+
+	// CheckpointPsbt is the serialized checkpoint PSBT bytes.
+	CheckpointPsbt []byte
 }
 
 // OORRecipientEvent is the indexer's view of an OOR recipient event

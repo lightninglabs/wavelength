@@ -40,6 +40,14 @@ type Querier interface {
 	GetOORRecipientEventBySessionOutput(ctx context.Context, arg GetOORRecipientEventBySessionOutputParams) (OorRecipientEvent, error)
 	GetOORSession(ctx context.Context, sessionID []byte) (OorSession, error)
 	GetOORSessionByID(ctx context.Context, id int64) (OorSession, error)
+	// GetOORSessionCheckpoints returns all checkpoint PSBTs for a
+	// session, ordered by index. Used alongside GetOORSessionPackage
+	// to construct the full incoming transfer event.
+	GetOORSessionCheckpoints(ctx context.Context, sessionID []byte) ([]GetOORSessionCheckpointsRow, error)
+	// GetOORSessionPackage returns the Ark PSBT for a finalized OOR
+	// session. Used by the incoming transfer flow to construct the
+	// full IncomingTransferEvent with the Ark PSBT data.
+	GetOORSessionPackage(ctx context.Context, sessionID []byte) (GetOORSessionPackageRow, error)
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
@@ -97,6 +105,10 @@ type Querier interface {
 	ListIndexerVTXOEventsAfterByScriptsSqlite(ctx context.Context, arg ListIndexerVTXOEventsAfterByScriptsSqliteParams) ([]IndexerVtxoEvent, error)
 	ListOORCheckpoints(ctx context.Context, sessionDbID int32) ([]OorCheckpoint, error)
 	ListOORRecipientEventsAfter(ctx context.Context, arg ListOORRecipientEventsAfterParams) ([]OorRecipientEvent, error)
+	// ListOORRecipientEventsAfterWithSession returns recipient events
+	// with the session's Ark PSBT included for incoming transfer
+	// materialization. The Ark PSBT is needed by the client OOR
+	// FSM's IncomingTransferEvent to construct received VTXOs.
 	ListOORRecipientEventsAfterWithSession(ctx context.Context, arg ListOORRecipientEventsAfterWithSessionParams) ([]ListOORRecipientEventsAfterWithSessionRow, error)
 	ListPendingRounds(ctx context.Context) ([]Round, error)
 	ListRoundsByIDsPostgres(ctx context.Context, roundIds [][]byte) ([]Round, error)
