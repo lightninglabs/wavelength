@@ -367,22 +367,27 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 		checkpoints, cpErr := s.store.GetOORSessionCheckpoints(
 			ctx, row.SessionID,
 		)
-		if cpErr == nil {
-			cpPSBTs := make(
-				[][]byte, 0, len(checkpoints),
+		if cpErr != nil {
+			return nil, status.Error(
+				codes.Internal,
+				fmt.Sprintf(
+					"get oor checkpoints: %v", cpErr,
+				),
 			)
-			for _, cp := range checkpoints {
-				cpPSBTs = append(
-					cpPSBTs,
-					append(
-						[]byte(nil),
-						cp.CheckpointPsbt...,
-					),
-				)
-			}
-
-			ev.CheckpointPsbts = cpPSBTs
 		}
+
+		cpPSBTs := make([][]byte, 0, len(checkpoints))
+		for _, cp := range checkpoints {
+			cpPSBTs = append(
+				cpPSBTs,
+				append(
+					[]byte(nil),
+					cp.CheckpointPsbt...,
+				),
+			)
+		}
+
+		ev.CheckpointPsbts = cpPSBTs
 
 		out = append(out, ev)
 		nextCursor = ev.EventId
