@@ -94,6 +94,14 @@ type UnrollState struct {
 
 	// RetryCount tracks broadcast retry attempts.
 	RetryCount int
+
+	// LastBroadcastHeight is the block height when the current
+	// level was last broadcast (or re-broadcast via fee bump).
+	LastBroadcastHeight int32
+
+	// CurrentFeeRate is the fee rate (sat/vB) used in the most
+	// recent broadcast. Used to calculate the next bump rate.
+	CurrentFeeRate int64
 }
 
 // LevelTxids groups transactions by tree level for ordered broadcasting.

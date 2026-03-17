@@ -108,6 +108,10 @@ type mockChainSourceRef struct {
 
 	// tells collects fire-and-forget messages for verification.
 	tells []chainsource.ChainSourceMsg
+
+	// askCallCounts tracks how many times Ask was called per
+	// message type. Used to verify fee bump resubmissions.
+	askCallCounts map[string]int
 }
 
 // csRespFunc shortens the chain source response function type
@@ -119,8 +123,9 @@ func newMockChainSourceRef(
 ) *mockChainSourceRef {
 
 	return &mockChainSourceRef{
-		t:            t,
-		askResponses: make(map[string]csRespFunc),
+		t:             t,
+		askResponses:  make(map[string]csRespFunc),
+		askCallCounts: make(map[string]int),
 	}
 }
 
@@ -141,6 +146,8 @@ func (m *mockChainSourceRef) Ask(
 ) actor.Future[chainsource.ChainSourceResp] {
 
 	key := msg.MessageType()
+	m.askCallCounts[key]++
+
 	respFn, ok := m.askResponses[key]
 	if !ok {
 		m.t.Fatalf("unexpected Ask for message type %q", key)
@@ -722,4 +729,225 @@ func TestReceiveUnknownMessage(t *testing.T) {
 	_, err := result.Unpack()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown message type")
+}
+
+// ===========================================================================
+// Tests: Fee Bumping
+// ===========================================================================
+
+// setupBroadcastingState creates an UnrollerActor with a single VTXO
+// in Broadcasting status, pre-seeded with a valid tree so that
+// feeBumpLevel can reconstruct signed transactions. The mock chain
+// source is wired to accept SubmitPackageRequest calls.
+func setupBroadcastingState(t *testing.T, bumpAfterBlocks int32,
+	lastBroadcastHeight int32, retryCount int,
+) (*UnrollerActor, *MockUnrollStore, *mockChainSourceRef, wire.OutPoint) {
+
+	t.Helper()
+
+	store := &MockUnrollStore{}
+	cs := newMockChainSourceRef(t)
+
+	selfRef := &mockSelfRef{}
+	cfg := &UnrollerConfig{
+		ChainSource:     cs,
+		Store:           store,
+		ChainParams:     &chaincfg.RegressionNetParams,
+		Logger:          btclog.Disabled,
+		SelfRef:         selfRef,
+		WalletKit:       nil,
+		BumpAfterBlocks: bumpAfterBlocks,
+	}
+	a := NewUnrollerActor(cfg)
+
+	// Build a minimal single-node tree for the VTXO.
+	outpoint := newTestOutpoint(t)
+	rootInput := newTestOutpoint(t)
+	rootNode := makeSimpleNode(t, rootInput, 50000)
+	vtxoTree := &tree.Tree{Root: rootNode}
+
+	levelOrder, err := extractLevelOrder(vtxoTree)
+	require.NoError(t, err)
+
+	state := &UnrollState{
+		VTXOOutpoint: outpoint,
+		VTXO: &round.ClientVTXO{
+			Outpoint: outpoint,
+			Expiry:   144,
+			TreePath: vtxoTree,
+		},
+		LevelOrder:          levelOrder,
+		CurrentLevel:        0,
+		BroadcastTxids:      make(map[chainhash.Hash]bool),
+		ConfirmedTxids:      make(map[chainhash.Hash]ConfirmationInfo),
+		Status:              UnrollStatusBroadcasting,
+		LastBroadcastHeight: lastBroadcastHeight,
+		RetryCount:          retryCount,
+	}
+
+	// Mark the root txid as broadcast.
+	if len(levelOrder) > 0 && len(levelOrder[0].Txids) > 0 {
+		state.BroadcastTxids[levelOrder[0].Txids[0]] = true
+	}
+
+	a.activeUnrolls[outpoint] = state
+	a.indexUnrollTxids(state)
+
+	// Wire up mock responses for fee bump resubmission.
+	cs.onAsk(
+		"SubmitPackageRequest",
+		func() fn.Result[chainsource.ChainSourceResp] {
+			return fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubmitPackageResponse{},
+			)
+		},
+	)
+
+	// UpdateUnrollState is called after fee bump and after
+	// failUnroll.
+	store.On("UpdateUnrollState", mock.Anything,
+		mock.Anything).Return(nil)
+
+	return a, store, cs, outpoint
+}
+
+func TestFeeBumpTriggeredAfterBlocks(t *testing.T) {
+	t.Parallel()
+
+	a, _, cs, _ := setupBroadcastingState(
+		t,
+		3,   // BumpAfterBlocks
+		100, // LastBroadcastHeight
+		0,   // RetryCount
+	)
+
+	// Send block at height 102 — only 2 blocks elapsed, should
+	// NOT trigger fee bump.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 102})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	submitCount := cs.askCallCounts["SubmitPackageRequest"]
+	require.Equal(t, 0, submitCount,
+		"no fee bump expected after only 2 blocks")
+
+	// Send block at height 103 — 3 blocks elapsed, SHOULD trigger
+	// fee bump.
+	result = a.Receive(t.Context(), &BlockEpochEvent{Height: 103})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	submitCount = cs.askCallCounts["SubmitPackageRequest"]
+	require.Equal(t, 1, submitCount,
+		"fee bump expected after 3 blocks")
+}
+
+func TestFeeBumpMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	a, _, cs, outpoint := setupBroadcastingState(
+		t,
+		3,                   // BumpAfterBlocks
+		100,                 // LastBroadcastHeight
+		maxFeeBumpRetries-1, // RetryCount = 9
+	)
+
+	// Trigger one more fee bump. Since RetryCount is 9 (< 10),
+	// the bump should proceed.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 103})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	submitCount := cs.askCallCounts["SubmitPackageRequest"]
+	require.Equal(t, 1, submitCount,
+		"expected one fee bump submission")
+
+	// The state should still be tracked (RetryCount now = 10).
+	state, active := a.activeUnrolls[outpoint]
+	require.True(t, active,
+		"unroll should still be active after bump")
+	require.Equal(t, maxFeeBumpRetries, state.RetryCount)
+
+	// After the successful bump, LastBroadcastHeight was updated
+	// to 103 (the bestHeight). Send a block at 106 to trigger
+	// another bump attempt (3 blocks later).
+	result = a.Receive(t.Context(), &BlockEpochEvent{Height: 106})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	// No additional SubmitPackageRequest should have been sent
+	// because RetryCount == maxFeeBumpRetries triggers failUnroll
+	// before any submission.
+	require.Equal(t, 1, cs.askCallCounts["SubmitPackageRequest"],
+		"no additional submission after retry limit reached")
+
+	// The unroll should now be removed from active tracking
+	// (failUnroll deletes it).
+	_, stillActive := a.activeUnrolls[outpoint]
+	require.False(t, stillActive,
+		"unroll should be removed after max retries exceeded")
+}
+
+func TestFeeBumpNotTriggeredForCSVWait(t *testing.T) {
+	t.Parallel()
+
+	store := &MockUnrollStore{}
+	cs := newMockChainSourceRef(t)
+
+	selfRef := &mockSelfRef{}
+	cfg := &UnrollerConfig{
+		ChainSource:     cs,
+		Store:           store,
+		ChainParams:     &chaincfg.RegressionNetParams,
+		Logger:          btclog.Disabled,
+		SelfRef:         selfRef,
+		WalletKit:       nil,
+		BumpAfterBlocks: 3,
+	}
+	a := NewUnrollerActor(cfg)
+
+	// Set up state in AwaitingCSV with LastBroadcastHeight=100.
+	outpoint := newTestOutpoint(t)
+	rootNode := makeSimpleNode(t, newTestOutpoint(t), 50000)
+	vtxoTree := &tree.Tree{Root: rootNode}
+
+	levelOrder, err := extractLevelOrder(vtxoTree)
+	require.NoError(t, err)
+
+	state := &UnrollState{
+		VTXOOutpoint: outpoint,
+		VTXO: &round.ClientVTXO{
+			Outpoint: outpoint,
+			Expiry:   144,
+			TreePath: vtxoTree,
+		},
+		LevelOrder:          levelOrder,
+		CurrentLevel:        0,
+		BroadcastTxids:      make(map[chainhash.Hash]bool),
+		ConfirmedTxids:      make(map[chainhash.Hash]ConfirmationInfo),
+		Status:              UnrollStatusAwaitingCSV,
+		LastBroadcastHeight: 100,
+		LeafConfirmHeight:   95,
+	}
+
+	a.activeUnrolls[outpoint] = state
+
+	// UpdateUnrollState may be called for CSV baseline logic.
+	store.On("UpdateUnrollState", mock.Anything,
+		mock.Anything).Return(nil)
+
+	// Send block at height 110 — this is 10 blocks past
+	// LastBroadcastHeight and well past BumpAfterBlocks=3, but
+	// should NOT trigger fee bump because status is AwaitingCSV.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 110})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	// No SubmitPackageRequest should have been sent.
+	require.Equal(t, 0, cs.askCallCounts["SubmitPackageRequest"],
+		"no fee bump expected for AwaitingCSV status")
+
+	// Status should still be AwaitingCSV (CSV target = 95+144 =
+	// 239, height 110 is well before that).
+	require.Equal(t, UnrollStatusAwaitingCSV, state.Status)
 }

@@ -166,8 +166,6 @@ func (a *UnrollerActor) startSingleUnroll(
 // (e.g. lwwallet mode), falls back to the chain backend's
 // SubmitPackage which auto-constructs a CPFP child using the
 // lwwallet for fee payment via the esplora package relay API.
-//
-//nolint:funlen
 func (a *UnrollerActor) broadcastLevel(
 	ctx context.Context, state *UnrollState, level int,
 ) {
@@ -421,6 +419,10 @@ func (a *UnrollerActor) broadcastLevel(
 		)
 	}
 
+	// Record broadcast height and fee rate for fee bumping.
+	state.LastBroadcastHeight = int32(heightHint)
+	state.CurrentFeeRate = int64(feeRate)
+
 	// Persist updated state.
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
 		a.cfg.Logger.WarnS(
@@ -428,6 +430,10 @@ func (a *UnrollerActor) broadcastLevel(
 			slog.String("vtxo", state.VTXOOutpoint.String()),
 		)
 	}
+
+	// Subscribe to block epochs so fee bumping can trigger
+	// when transactions don't confirm within BumpAfterBlocks.
+	a.subscribeBlockEpochs(ctx, state)
 }
 
 // broadcastLevelDirect broadcasts transactions via SubmitPackage with
@@ -494,11 +500,21 @@ func (a *UnrollerActor) broadcastLevelDirect(
 		).Await(ctx)
 		_, submitErr := submitResult.Unpack()
 		if submitErr != nil {
-			a.failUnroll(ctx, state,
-				fmt.Errorf("package broadcast %s: %w",
-					txid, submitErr))
+			if isBroadcastNonFatal(submitErr) {
+				a.cfg.Logger.InfoS(ctx,
+					"Tx already known, skipping",
+					slog.String("txid",
+						txid.String()),
+					slog.String("reason",
+						submitErr.Error()))
+			} else {
+				a.failUnroll(ctx, state,
+					fmt.Errorf("package broadcast "+
+						"%s: %w", txid,
+						submitErr))
 
-			return
+				return
+			}
 		}
 
 		a.cfg.Logger.InfoS(ctx, "Package broadcast OK",
@@ -511,6 +527,11 @@ func (a *UnrollerActor) broadcastLevelDirect(
 			signedTx.TxOut[0].PkScript, heightHint)
 	}
 
+	// Record broadcast height for fee bumping. Fee rate is
+	// managed by the chain backend in direct mode, so we leave
+	// CurrentFeeRate at zero.
+	state.LastBroadcastHeight = int32(heightHint)
+
 	if err := a.cfg.Store.UpdateUnrollState(
 		ctx, state,
 	); err != nil {
@@ -519,6 +540,10 @@ func (a *UnrollerActor) broadcastLevelDirect(
 			slog.String("vtxo",
 				state.VTXOOutpoint.String()))
 	}
+
+	// Subscribe to block epochs so fee bumping can trigger
+	// when transactions don't confirm within BumpAfterBlocks.
+	a.subscribeBlockEpochs(ctx, state)
 }
 
 // getFeeRate queries the chain source for the current fee rate estimate.
@@ -785,6 +810,24 @@ func (a *UnrollerActor) handleBlockEpoch(
 	a.bestHeight = evt.Height
 
 	for _, state := range a.activeUnrolls {
+		// Check if we should fee-bump unconfirmed transactions.
+		if state.Status == UnrollStatusBroadcasting {
+			bumpAfter := a.cfg.BumpAfterBlocks
+			if bumpAfter == 0 {
+				bumpAfter = 6 // default
+			}
+
+			sinceLastBroadcast := evt.Height -
+				state.LastBroadcastHeight
+			if state.LastBroadcastHeight > 0 &&
+				sinceLastBroadcast >= bumpAfter {
+
+				a.feeBumpLevel(ctx, state)
+			}
+
+			continue
+		}
+
 		csvDelay := int32(state.VTXO.Expiry)
 
 		if state.Status != UnrollStatusAwaitingCSV {
@@ -828,6 +871,122 @@ func (a *UnrollerActor) handleBlockEpoch(
 	}
 
 	return fn.Ok[UnrollerResp](&UnrollStartedResp{})
+}
+
+// maxFeeBumpRetries is the maximum number of fee bump attempts per
+// level before giving up. This prevents infinite bumping.
+const maxFeeBumpRetries = 10
+
+// feeBumpLevel attempts to rebroadcast the current level's
+// transactions with a higher fee. This is a best-effort operation:
+// errors are logged but do not fail the unroll. The next block epoch
+// will trigger another attempt if needed.
+func (a *UnrollerActor) feeBumpLevel(
+	ctx context.Context, state *UnrollState,
+) {
+
+	level := state.CurrentLevel
+	if level >= len(state.LevelOrder) {
+		return
+	}
+
+	if state.RetryCount >= maxFeeBumpRetries {
+		a.cfg.Logger.WarnS(ctx,
+			"Fee bump retry limit reached, giving up",
+			nil,
+			slog.String("vtxo",
+				state.VTXOOutpoint.String()),
+			slog.Int("retries", state.RetryCount))
+
+		a.failUnroll(ctx, state,
+			fmt.Errorf("fee bump retry limit (%d) "+
+				"reached for level %d",
+				maxFeeBumpRetries, level))
+
+		return
+	}
+
+	a.cfg.Logger.InfoS(ctx, "Attempting fee bump",
+		slog.String("vtxo", state.VTXOOutpoint.String()),
+		slog.Int("level", level),
+		slog.Int("retry", state.RetryCount+1),
+		slog.Int64("old_fee_rate", state.CurrentFeeRate))
+
+	levelTxids := state.LevelOrder[level]
+
+	for i, node := range levelTxids.Nodes {
+		if i >= len(levelTxids.Txids) {
+			break
+		}
+
+		txid := levelTxids.Txids[i]
+
+		signedTx, err := node.ToSignedTx()
+		if err != nil {
+			a.cfg.Logger.WarnS(ctx,
+				"Fee bump: failed to construct tx",
+				err,
+				slog.String("txid", txid.String()))
+
+			return
+		}
+
+		// Fee bumping works by resubmitting the same presigned
+		// parent with Child=nil. The chain backend constructs
+		// a new CPFP child with a fresh (higher) fee estimate.
+		// This is V3 package RBF: the new child replaces the
+		// old one if its total package fee is higher. The
+		// parent itself is NOT modified or RBF'd.
+		submitReq := &chainsource.SubmitPackageRequest{
+			Parents: []*wire.MsgTx{signedTx},
+			Child:   nil,
+		}
+
+		submitResult := a.cfg.ChainSource.Ask(
+			ctx, submitReq,
+		).Await(ctx)
+		_, submitErr := submitResult.Unpack()
+		if submitErr != nil {
+			// If the tx already confirmed, fee bump is
+			// unnecessary — the confirmation handler will
+			// advance the state.
+			if isBroadcastNonFatal(submitErr) {
+				a.cfg.Logger.InfoS(ctx,
+					"Fee bump: tx already known",
+					slog.String("txid",
+						txid.String()))
+
+				continue
+			}
+
+			// Best-effort: log and wait for next epoch.
+			a.cfg.Logger.WarnS(ctx,
+				"Fee bump broadcast failed",
+				submitErr,
+				slog.String("txid", txid.String()),
+				slog.Int("level", level))
+
+			return
+		}
+
+		a.cfg.Logger.InfoS(ctx, "Fee bump broadcast OK",
+			slog.String("txid", txid.String()),
+			slog.Int("level", level))
+	}
+
+	// Update state after successful rebroadcast.
+	state.LastBroadcastHeight = a.bestHeight
+	state.RetryCount++
+
+	if err := a.cfg.Store.UpdateUnrollState(
+		ctx, state,
+	); err != nil {
+		a.cfg.Logger.WarnS(ctx,
+			"Failed to update state after fee bump",
+			err,
+			slog.String("vtxo",
+				state.VTXOOutpoint.String()))
+	}
 }
 
 // getLevelConfirmHeight returns the confirmation height of a level.

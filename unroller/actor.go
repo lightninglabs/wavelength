@@ -43,6 +43,15 @@ type UnrollerConfig struct {
 	// will pay for CPFP children. Protects against fee spikes.
 	// Zero means use default (500 sat/vB).
 	MaxFeeRate btcutil.Amount
+
+	// BumpAfterBlocks is how many blocks to wait before fee
+	// bumping an unconfirmed level. Zero means default (6).
+	BumpAfterBlocks int32
+
+	// FeeMultiplier scales the fee rate on each bump attempt.
+	// Zero means default (2x). E.g., 2 means each bump doubles
+	// the fee rate.
+	FeeMultiplier int
 }
 
 // UnrollerActor manages on-chain unrolling of VTXO trees.
@@ -210,6 +219,9 @@ func (a *UnrollerActor) resumeUnroll(
 				)
 			}
 		}
+
+		// Subscribe to block epochs for fee bump monitoring.
+		a.subscribeBlockEpochs(ctx, state)
 
 	case UnrollStatusAwaitingCSV:
 		// Subscribe to block epochs to monitor CSV completion.
