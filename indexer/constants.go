@@ -11,6 +11,16 @@ const (
 	// limit.
 	defaultVTXOEventLimit = 200
 
+	// maxQueryLimit is the hard upper bound on client-supplied page
+	// sizes across all paginated query RPCs. This prevents a single
+	// request from materializing an unbounded result set.
+	maxQueryLimit = 1000
+
+	// maxScriptsPerRequest is the hard upper bound on the number
+	// of script scopes a single request can contain. Each script
+	// requires TLV parsing, schnorr verification, and DB queries.
+	maxScriptsPerRequest = 100
+
 	// defaultOperatorProtocolVersion is used for outbound EVENT
 	// envelopes when the operator does not override protocol version.
 	defaultOperatorProtocolVersion = 1

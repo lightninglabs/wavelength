@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -34,7 +35,7 @@ type Service struct {
 
 	authorizer ScriptAuthorizer
 
-	proofConfig taprootProofVerificationConfig
+	proofConfig atomic.Pointer[taprootProofVerificationConfig]
 }
 
 // NewService creates a new indexer service.
@@ -66,15 +67,28 @@ func (s *Service) SetScriptAuthorizer(authorizer ScriptAuthorizer) {
 	s.authorizer = authorizer
 }
 
-// SetVTXOProofPolicy configures verification of owner-key proofs for the
-// standardized VTXO tapscript used by Ark receive outputs.
+// SetVTXOProofPolicy configures verification of owner-key proofs for
+// the standardized VTXO tapscript used by Ark receive outputs. Safe
+// for concurrent use with RPC handlers that read the config.
 func (s *Service) SetVTXOProofPolicy(operatorKey *btcec.PublicKey,
 	exitDelay uint32) {
 
-	s.proofConfig = taprootProofVerificationConfig{
+	s.proofConfig.Store(&taprootProofVerificationConfig{
 		vtxoOperatorKey: operatorKey,
 		vtxoExitDelay:   exitDelay,
+	})
+}
+
+// loadProofConfig returns the current proof verification config. If
+// SetVTXOProofPolicy has not been called, an empty config is returned
+// which disables the VTXO tapscript verification path.
+func (s *Service) loadProofConfig() taprootProofVerificationConfig {
+	cfg := s.proofConfig.Load()
+	if cfg == nil {
+		return taprootProofVerificationConfig{}
 	}
+
+	return *cfg
 }
 
 // authorizeScripts applies the configured script authorization policy.
@@ -125,7 +139,7 @@ func (s *Service) RegisterReceiveScript(ctx context.Context,
 		err := verifyTaprootSchnorrProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
-			purposeRegisterReceiveScript, s.proofConfig,
+			purposeRegisterReceiveScript, s.loadProofConfig(),
 		)
 		if err != nil {
 			return nil, status.Error(codes.Unauthenticated,
@@ -249,7 +263,7 @@ func (s *Service) UnregisterReceiveScript(ctx context.Context,
 		err := verifyTaprootSchnorrProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
-			purposeUnregisterReceiveScript, s.proofConfig,
+			purposeUnregisterReceiveScript, s.loadProofConfig(),
 		)
 		if err != nil {
 			return nil, status.Error(codes.Unauthenticated,
@@ -313,7 +327,7 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 		if err := verifyTaprootSchnorrScopeProof(
 			now, pkScript, proof.TaprootSchnorr,
 			s.serverID, principal.MailboxID,
-			purposeOORRecipientEvents, s.proofConfig,
+			purposeOORRecipientEvents, s.loadProofConfig(),
 		); err != nil {
 			return nil, scopeProofToStatus(err)
 		}
@@ -330,6 +344,9 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 	limit := req.Limit
 	if limit == 0 {
 		limit = defaultRecipientEventLimit
+	}
+	if limit > maxQueryLimit {
+		limit = maxQueryLimit
 	}
 
 	if s.store == nil {
@@ -437,6 +454,11 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		return nil, status.Error(codes.InvalidArgument,
 			"missing scripts")
 	}
+	if len(req.Scripts) > maxScriptsPerRequest {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"too many scripts: %d (max %d)",
+			len(req.Scripts), maxScriptsPerRequest)
+	}
 
 	now := s.now()
 
@@ -455,7 +477,7 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeListVTXOsByScripts,
-			s.proofConfig,
+			s.loadProofConfig(),
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)
@@ -586,6 +608,9 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 	if limit == 0 {
 		limit = defaultVTXOLimit
 	}
+	if limit > maxQueryLimit {
+		limit = maxQueryLimit
+	}
 
 	// TODO(follow-up): The cursor is currently an integer offset into
 	// the in-memory sorted slice. This means concurrent inserts or
@@ -639,6 +664,11 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 		return nil, status.Error(codes.InvalidArgument,
 			"missing scripts")
 	}
+	if len(req.Scripts) > maxScriptsPerRequest {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"too many scripts: %d (max %d)",
+			len(req.Scripts), maxScriptsPerRequest)
+	}
 
 	now := s.now()
 
@@ -657,7 +687,7 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeGetSubtreeByScripts,
-			s.proofConfig,
+			s.loadProofConfig(),
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)
@@ -681,54 +711,65 @@ func (s *Service) GetSubtreeByScripts(ctx context.Context,
 		)
 	}
 
-	inputs, err := loadSubtreeInputs(
-		ctx, s.store, allowedScripts, allowedScriptBytes,
-	)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
+	// Run the subtree query + tree extraction + virtual leaf
+	// enrichment inside a read transaction so all queries see a
+	// consistent snapshot.
+	var inputs *subtreeDBInputs
 
 	nodesByTxid := make(map[string]*arkrpc.TreeNode)
 	edgesByKey := make(map[string]*arkrpc.TreeEdge)
 	leafTXByTxid := make(map[string][]byte)
 
-	for key, targets := range inputs.targetOutpointsByTree {
-		roundID := inputs.roundIDByHex[key.roundIDHex]
-
-		fullTree, err := s.store.LoadVTXOTree(
-			ctx, roundID, key.batchIdx,
+	err := s.store.ExecReadTx(ctx, func(q Store) error {
+		var loadErr error
+		inputs, loadErr = loadSubtreeInputs(
+			ctx, q, allowedScripts, allowedScriptBytes,
 		)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+		if loadErr != nil {
+			return loadErr
 		}
 
-		extracted, err := extractTreeForOutpoints(fullTree, targets)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
+		for key, targets := range inputs.targetOutpointsByTree {
+			roundID := inputs.roundIDByHex[key.roundIDHex]
+
+			fullTree, tErr := q.LoadVTXOTree(
+				ctx, roundID, key.batchIdx,
+			)
+			if tErr != nil {
+				return tErr
+			}
+
+			extracted, eErr := extractTreeForOutpoints(
+				fullTree, targets,
+			)
+			if eErr != nil {
+				return eErr
+			}
+
+			leafTXs, lErr := collectLeafProofTXs(extracted)
+			if lErr != nil {
+				return lErr
+			}
+			for txid, serializedLeafTX := range leafTXs {
+				leafTXByTxid[txid] = serializedLeafTX
+			}
+
+			if rErr := recordSubtreeRPCView(
+				extracted,
+				req.IncludeInternalNodes,
+				inputs.leafTxids,
+				nodesByTxid,
+				edgesByKey,
+			); rErr != nil {
+				return rErr
+			}
 		}
 
-		leafTXs, err := collectLeafProofTXs(extracted)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		for txid, serializedLeafTX := range leafTXs {
-			leafTXByTxid[txid] = serializedLeafTX
-		}
-
-		if err := recordSubtreeRPCView(
-			extracted,
-			req.IncludeInternalNodes,
-			inputs.leafTxids,
-			nodesByTxid,
-			edgesByKey,
-		); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	}
-
-	if err := enrichVirtualLeafProofs(
-		ctx, s.store, inputs.virtualLeaves,
-	); err != nil {
+		return enrichVirtualLeafProofs(
+			ctx, q, inputs.virtualLeaves,
+		)
+	})
+	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -806,6 +847,11 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 		return nil, status.Error(codes.InvalidArgument,
 			"missing scripts")
 	}
+	if len(req.Scripts) > maxScriptsPerRequest {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"too many scripts: %d (max %d)",
+			len(req.Scripts), maxScriptsPerRequest)
+	}
 
 	now := s.now()
 
@@ -823,7 +869,7 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 			s.serverID,
 			principal.MailboxID,
 			purposeListVTXOEventsByScripts,
-			s.proofConfig,
+			s.loadProofConfig(),
 		)
 		if err != nil {
 			return nil, scopeProofToStatus(err)
@@ -844,6 +890,9 @@ func (s *Service) ListVTXOEventsByScripts(ctx context.Context,
 	limit := req.Limit
 	if limit == 0 {
 		limit = defaultVTXOEventLimit
+	}
+	if limit > maxQueryLimit {
+		limit = maxQueryLimit
 	}
 
 	if s.store == nil {

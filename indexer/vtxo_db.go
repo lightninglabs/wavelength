@@ -75,6 +75,10 @@ var _ LineageResolver = (*lineageResolver)(nil)
 type lineageResolver struct {
 	store Store
 
+	// maxDepth bounds recursive descent through virtual VTXO
+	// parent chains. Zero means use DefaultMaxLineageDepth.
+	maxDepth int
+
 	roundRowByID map[rounds.RoundID]*RoundRow
 
 	treeByKey map[subtreeTreeKey]*tree.Tree
@@ -107,10 +111,39 @@ func newLineageResolver(store Store,
 	}
 }
 
-// resolve returns the authoritative lineage metadata for the provided VTXO
-// row.
+// DefaultMaxLineageDepth is the default maximum recursive depth for
+// virtual VTXO lineage resolution. Each OOR hop adds one level. This
+// prevents stack exhaustion and excessive DB queries from
+// pathologically deep or circular checkpoint chains. The value is
+// aligned with the client-side defaultMaxUnrollDepth (64) plus
+// headroom for in-flight sessions.
+//
+// TODO(roasbeef): Make configurable via Service-level config and
+// align with the client's maxUnrollDepth at the protocol level.
+const DefaultMaxLineageDepth = 100
+
+// Resolve returns the authoritative lineage metadata for the provided
+// VTXO row.
 func (r *lineageResolver) Resolve(ctx context.Context,
 	row VTXORow) (*vtxoLineage, error) {
+
+	return r.resolveWithDepth(ctx, row, 0)
+}
+
+// resolveWithDepth is the internal resolver that tracks recursion
+// depth through virtual VTXO parent chains.
+func (r *lineageResolver) resolveWithDepth(ctx context.Context,
+	row VTXORow, depth int) (*vtxoLineage, error) {
+
+	limit := r.maxDepth
+	if limit == 0 {
+		limit = DefaultMaxLineageDepth
+	}
+	if depth > limit {
+		return nil, fmt.Errorf("lineage resolution exceeded "+
+			"max depth %d for %v", limit,
+			row.Outpoint)
+	}
 
 	key := row.Outpoint.String()
 	if cached, ok := r.lineageByOutpoint[key]; ok {
@@ -128,7 +161,7 @@ func (r *lineageResolver) Resolve(ctx context.Context,
 			[]wire.OutPoint{row.Outpoint},
 		)
 	} else {
-		lineage, err = r.resolveVirtual(ctx, row)
+		lineage, err = r.resolveVirtual(ctx, row, depth)
 	}
 	if err != nil {
 		return nil, err
@@ -203,10 +236,12 @@ func (r *lineageResolver) resolveRoundBacked(ctx context.Context,
 	return lineage, nil
 }
 
-// resolveVirtual resolves lineage for OOR-created virtual VTXOs by inheriting
-// the commitment lineage from the checkpoint inputs that back the session.
+// resolveVirtual resolves lineage for OOR-created virtual VTXOs by
+// inheriting the commitment lineage from the checkpoint inputs that
+// back the session. The depth parameter tracks recursive descent
+// through parent chains to enforce maxLineageDepth.
 func (r *lineageResolver) resolveVirtual(ctx context.Context,
-	row VTXORow) (*vtxoLineage, error) {
+	row VTXORow, depth int) (*vtxoLineage, error) {
 
 	sessionID := append([]byte(nil), row.Outpoint.Hash[:]...)
 	session, err := r.resolveSession(ctx, sessionID)
@@ -244,7 +279,9 @@ func (r *lineageResolver) resolveVirtual(ctx context.Context,
 			)
 		}
 
-		parentLineage, err := r.Resolve(ctx, parentRow)
+		parentLineage, err := r.resolveWithDepth(
+			ctx, parentRow, depth+1,
+		)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"resolve parent lineage %v: %w",
@@ -442,7 +479,12 @@ func (r *lineageResolver) resolveSessionCheckpoints(ctx context.Context,
 	return checkpoints, nil
 }
 
-// cloneLineage creates a defensive copy of immutable lineage metadata.
+// cloneLineage creates a defensive copy of lineage metadata.
+// Scalar fields and treePathTLV are deep-copied. The treePath
+// pointer is shared — callers must treat the cached tree as
+// immutable after extraction. This is safe because treePath is
+// only replaced wholesale in combineVirtualLineage, never mutated
+// in place.
 func cloneLineage(src *vtxoLineage) *vtxoLineage {
 	if src == nil {
 		return nil
@@ -456,7 +498,8 @@ func cloneLineage(src *vtxoLineage) *vtxoLineage {
 		treeDepth:      src.treeDepth,
 		chainDepth:     src.chainDepth,
 		createdHeight:  src.createdHeight,
-		treePath:       src.treePath,
+		// Shallow copy: immutable after extraction.
+		treePath: src.treePath,
 		treePathTLV: append(
 			[]byte(nil), src.treePathTLV...,
 		),
@@ -485,15 +528,17 @@ func sessionParentOutpoints(session *OORSession,
 					"inputs")
 			}
 
-			outpoint := checkpoint.Psbt.UnsignedTx.TxIn[0].
-				PreviousOutPoint
-			key := outpoint.String()
-			if _, ok := seen[key]; ok {
-				continue
-			}
+			cpTx := checkpoint.Psbt.UnsignedTx
+			for _, txIn := range cpTx.TxIn {
+				outpoint := txIn.PreviousOutPoint
+				key := outpoint.String()
+				if _, ok := seen[key]; ok {
+					continue
+				}
 
-			seen[key] = struct{}{}
-			outpoints = append(outpoints, outpoint)
+				seen[key] = struct{}{}
+				outpoints = append(outpoints, outpoint)
+			}
 		}
 
 		return outpoints, nil
