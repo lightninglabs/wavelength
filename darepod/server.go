@@ -39,6 +39,7 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
+	"github.com/lightninglabs/darepo-client/unroller"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
@@ -178,6 +179,10 @@ type Server struct {
 		wallet.WalletMsg, wallet.WalletResp,
 	]]
 	oorActor *oor.OORClientActor
+
+	unrollerRef fn.Option[actor.ActorRef[
+		unroller.UnrollerMsg, unroller.UnrollerResp,
+	]]
 
 	serverConn *grpc.ClientConn
 
@@ -842,6 +847,15 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 	s.walletRef = fn.Some(walletRef)
+
+	// -------------------------------------------------------
+	// 9b. Register the unroller actor.
+	// -------------------------------------------------------
+	if err := s.initUnrollerActor(
+		ctx, chainSourceRef,
+	); err != nil {
+		return err
+	}
 
 	// -------------------------------------------------------
 	// 10. Start the VTXO manager before the round actor so
@@ -1784,6 +1798,77 @@ func (s *Server) initWalletActor(ctx context.Context,
 	return walletRef, nil
 }
 
+// initUnrollerActor creates, registers, and starts the unroller actor.
+// The unroller manages on-chain unrolling of VTXO trees when VTXOs are
+// critically close to expiry and need unilateral exit. It broadcasts
+// tree transactions level-by-level using 1P1C package relay and tracks
+// confirmation progress.
+func (s *Server) initUnrollerActor(ctx context.Context,
+	chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]) error {
+
+	// Select the WalletKit backend based on wallet type. The
+	// unroller needs WalletKit for CPFP child construction:
+	// UTXO selection, change address generation, and PSBT signing.
+	var walletKit unroller.WalletKit
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		lndSvc := s.lnd.UnsafeFromSome()
+		walletKit = lndSvc.WalletKit
+
+	case WalletTypeLwwallet:
+		// lwwallet doesn't expose lndclient.WalletKit, so
+		// WalletKit stays nil. The unroller falls back to the
+		// chain backend's automatic CPFP child construction.
+		log.WarnS(ctx, "Unroller using chain backend's "+
+			"auto-CPFP in lwwallet mode", nil)
+	}
+
+	clkUnroll := clock.NewDefaultClock()
+	dbStoreUnroll := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	unrollStore := dbStoreUnroll.NewUnrollStore(
+		s.vtxoStore, clkUnroll,
+	)
+
+	unrollerKey := actor.NewServiceKey[
+		unroller.UnrollerMsg, unroller.UnrollerResp,
+	]("unroller")
+
+	unrollerCfg := &unroller.UnrollerConfig{
+		ChainSource: chainSourceRef,
+		Store:       unrollStore,
+		ChainParams: s.chainParams,
+		Logger:      log,
+		WalletKit:   walletKit,
+	}
+
+	unrollerActor := unroller.NewUnrollerActor(unrollerCfg)
+
+	unrollerRef := actor.RegisterWithSystem(
+		s.actorSystem, "unroller",
+		unrollerKey, unrollerActor,
+	)
+
+	// Set the SelfRef after registration since the actor needs
+	// its own ref for receiving confirmation events. This is the
+	// same circular-dependency pattern used by the round actor.
+	unrollerCfg.SelfRef = unrollerRef
+
+	if err := unrollerActor.Start(ctx); err != nil {
+		return fmt.Errorf("unable to start unroller "+
+			"actor: %w", err)
+	}
+
+	s.unrollerRef = fn.Some(unrollerRef)
+
+	log.InfoS(ctx, "Unroller actor registered and started")
+
+	return nil
+}
+
 // initRoundActor creates, registers, and starts the round client
 // actor. The round actor manages client-side participation in Ark
 // rounds: boarding intent submission, MuSig2 nonce exchange, partial
@@ -1857,8 +1942,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 		ChainParams:    s.chainParams,
 		ActorSystem:    s.actorSystem,
 		TimeoutActor:   timeoutRef,
-		MaxOperatorFee: defaultMaxOperatorFee,
 		VTXOManager:    vtxoManager,
+		MaxOperatorFee: defaultMaxOperatorFee,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}
@@ -1877,9 +1962,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 		roundKey, roundActor,
 	)
 
-	// The round actor needs its own SelfRef for receiving
-	// asynchronous notifications (e.g., chain confirmations).
-	// We set it after registration since it's a circular dep.
+	// Set cross-references that couldn't be provided at
+	// construction time due to circular dependencies.
 	roundCfg.SelfRef = roundRef
 
 	if err := roundActor.Start(ctx); err != nil {
@@ -1919,14 +2003,29 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	)
 	vtxoStore := dbStore.NewVTXOStore(clk)
 
+	// Build ChainResolver if the unroller is available. In
+	// lwwallet mode the unroller is not started, so we leave
+	// ChainResolver nil — VTXO actors will skip unilateral
+	// exit notifications.
+	var chainResolver actor.TellOnlyRef[vtxo.ExpiringNotification]
+	s.unrollerRef.WhenSome(
+		func(ref actor.ActorRef[
+			unroller.UnrollerMsg, unroller.UnrollerResp,
+		]) {
+
+			chainResolver = newChainResolverAdapter(ref)
+		},
+	)
+
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
-		Store:       vtxoStore,
-		Wallet:      vtxoWallet,
-		ChainSource: chainSourceRef,
-		ActorSystem: s.actorSystem,
-		ChainParams: s.chainParams,
-		Log:         fn.Some(log),
-		RoundActor:  round.NewServiceKey().Ref(s.actorSystem),
+		Store:         vtxoStore,
+		Wallet:        vtxoWallet,
+		ChainSource:   chainSourceRef,
+		ActorSystem:   s.actorSystem,
+		ChainParams:   s.chainParams,
+		Log:           fn.Some(log),
+		RoundActor:    round.NewServiceKey().Ref(s.actorSystem),
+		ChainResolver: chainResolver,
 	})
 
 	managerKey := actor.NewServiceKey[vtxo.ManagerMsg, vtxo.ManagerResp](
