@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -1152,6 +1153,260 @@ func TestBridgeTellTypedNilPointer(t *testing.T) {
 	err := bridge.Tell(t.Context(), req)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "typed-nil")
+}
+
+// ---------------------------------------------------------------------------
+// StatusTracker integration tests
+// ---------------------------------------------------------------------------
+
+// TestTrackerWiringInboundActivity verifies the full bridge + ingress →
+// tracker integration: a real PullActivityTracker is injected into the
+// bridge, a client sends an envelope, and the tracker transitions the
+// client from unknown to online.
+func TestTrackerWiringInboundActivity(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+
+	tracker := NewPullActivityTracker()
+	defer tracker.Stop()
+
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	clientID := ClientID("client-1")
+	cfg := newTestPerClientConfig(mb, store)
+
+	// Add the heartbeat dispatcher so the heartbeat service/method
+	// is recognised by the ingress loop.
+	cfg.Dispatchers[HeartbeatServiceMethod()] =
+		HeartbeatDispatcher()
+
+	_, err := bridge.RegisterClient(ctx, clientID, cfg)
+	require.NoError(t, err)
+	defer bridge.Stop()
+
+	// Verify the tracker registered the client but status is
+	// still unknown (no activity yet).
+	require.Equal(t, StatusUnknown, bridge.ClientStatus(clientID))
+
+	// Simulate the client sending a heartbeat envelope to the
+	// server's per-client mailbox.
+	tc := newTestClient(mb, "client-1", "server-for-client-1")
+	tc.pushEvent(
+		t,
+		HeartbeatService, HeartbeatMethod,
+		&roundtestpb.ClientJoinedEvent{},
+	)
+
+	// The ingress loop should pull, dispatch, and call MarkActive.
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus(clientID) == StatusOnline
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// ListClients should also reflect the online status.
+	clients := bridge.ListClients()
+	require.Len(t, clients, 1)
+	require.Equal(t, StatusOnline, clients[0].Status)
+}
+
+// TestTrackerWiringDeregister verifies that deregistering a client
+// cleans up the tracker state and fires an offline callback.
+func TestTrackerWiringDeregister(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+
+	tracker := NewPullActivityTracker()
+	defer tracker.Stop()
+
+	var (
+		mu          sync.Mutex
+		transitions []ClientStatus
+	)
+	tracker.OnStatusChange(func(_ ClientID, s ClientStatus) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		transitions = append(transitions, s)
+	})
+
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	clientID := ClientID("client-1")
+	cfg := newTestPerClientConfig(mb, store)
+	cfg.Dispatchers[HeartbeatServiceMethod()] =
+		HeartbeatDispatcher()
+
+	_, err := bridge.RegisterClient(ctx, clientID, cfg)
+	require.NoError(t, err)
+
+	// Make the client online first.
+	tracker.MarkActive(clientID)
+	require.Equal(t, StatusOnline, bridge.ClientStatus(clientID))
+
+	// Deregister should clean up and fire offline callback.
+	err = bridge.DeregisterClient(clientID)
+	require.NoError(t, err)
+
+	require.Equal(t, StatusUnknown, bridge.ClientStatus(clientID))
+
+	mu.Lock()
+	require.Equal(
+		t,
+		[]ClientStatus{StatusOnline, StatusOffline},
+		transitions,
+	)
+	mu.Unlock()
+}
+
+// TestTrackerWiringStaleOffline verifies that a client that goes quiet
+// transitions from online to offline after the staleness threshold. Uses
+// a short threshold and sweep interval so the test completes quickly.
+func TestTrackerWiringStaleOffline(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+
+	tracker := NewPullActivityTracker(
+		WithStaleThreshold(500*time.Millisecond),
+		WithSweepInterval(100*time.Millisecond),
+	)
+	defer tracker.Stop()
+
+	var (
+		mu          sync.Mutex
+		transitions []ClientStatus
+	)
+	tracker.OnStatusChange(func(_ ClientID, s ClientStatus) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		transitions = append(transitions, s)
+	})
+
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	clientID := ClientID("client-1")
+	cfg := newTestPerClientConfig(mb, store)
+	cfg.Dispatchers[HeartbeatServiceMethod()] =
+		HeartbeatDispatcher()
+
+	_, err := bridge.RegisterClient(ctx, clientID, cfg)
+	require.NoError(t, err)
+	defer bridge.Stop()
+
+	// Send a heartbeat to go online.
+	tc := newTestClient(mb, "client-1", "server-for-client-1")
+	tc.pushEvent(
+		t,
+		HeartbeatService, HeartbeatMethod,
+		&roundtestpb.ClientJoinedEvent{},
+	)
+
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus(clientID) == StatusOnline
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Now go quiet. After the stale threshold + sweep, the
+	// tracker should transition to offline.
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus(clientID) == StatusOffline
+	}, 5*time.Second, 50*time.Millisecond)
+
+	mu.Lock()
+	require.Equal(
+		t,
+		[]ClientStatus{StatusOnline, StatusOffline},
+		transitions,
+	)
+	mu.Unlock()
+}
+
+// TestTrackerWiringMultipleClients verifies that ListClients returns
+// correct per-client status when multiple clients have different
+// activity patterns.
+func TestTrackerWiringMultipleClients(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+
+	tracker := NewPullActivityTracker()
+	defer tracker.Stop()
+
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	// Register two clients with separate stores and mailbox IDs.
+	store1 := newMemCheckpointStore()
+	cfg1 := newTestPerClientConfig(mb, store1)
+	cfg1.Dispatchers[HeartbeatServiceMethod()] =
+		HeartbeatDispatcher()
+
+	store2 := newMemCheckpointStore()
+	cfg2 := DefaultPerClientConfig()
+	cfg2.Edge = &fakeMailboxServiceClient{mb: mb}
+	cfg2.Store = store2
+	cfg2.LocalMailboxID = "server-for-client-2"
+	cfg2.RemoteMailboxID = "client-2"
+	cfg2.ProtocolVersion = 1
+	cfg2.PullWaitTimeout = 50 * time.Millisecond
+	cfg2.Dispatchers = DispatcherMap{
+		HeartbeatServiceMethod(): HeartbeatDispatcher(),
+	}
+
+	_, err := bridge.RegisterClient(
+		ctx, ClientID("client-1"), cfg1,
+	)
+	require.NoError(t, err)
+
+	_, err = bridge.RegisterClient(
+		ctx, ClientID("client-2"), cfg2,
+	)
+	require.NoError(t, err)
+	defer bridge.Stop()
+
+	// Only client-1 sends traffic.
+	tc := newTestClient(mb, "client-1", "server-for-client-1")
+	tc.pushEvent(
+		t,
+		HeartbeatService, HeartbeatMethod,
+		&roundtestpb.ClientJoinedEvent{},
+	)
+
+	require.Eventually(t, func() bool {
+		return bridge.ClientStatus("client-1") == StatusOnline
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Client-2 has not sent anything — should still be unknown.
+	require.Equal(
+		t, StatusUnknown,
+		bridge.ClientStatus("client-2"),
+	)
+
+	// ListClients should show both with correct statuses.
+	clients := bridge.ListClients()
+	require.Len(t, clients, 2)
+
+	statusMap := make(map[ClientID]ClientStatus)
+	for _, c := range clients {
+		statusMap[c.ID] = c.Status
+	}
+	require.Equal(t, StatusOnline, statusMap["client-1"])
+	require.Equal(t, StatusUnknown, statusMap["client-2"])
 }
 
 // ---------------------------------------------------------------------------

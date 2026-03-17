@@ -167,8 +167,20 @@ func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
 		}
 	}
 
+	// Stamp the client ID so the ingress loop can reference it
+	// for activity tracking without knowing the bridge's key map.
+	cfg.ClientID = clientID
+	cfg.ActivityMarker = b.statusTracker
+
+	// Notify the tracker of the new client so it can initialise
+	// per-client state.
+	b.statusTracker.RegisterClient(clientID)
+
 	runtime, err := NewClientRuntime(cfg)
 	if err != nil {
+		// Roll back the tracker registration on failure.
+		b.statusTracker.DeregisterClient(clientID)
+
 		return nil, fmt.Errorf(
 			"create runtime for client %q: %w",
 			clientID, err,
@@ -179,6 +191,9 @@ func (b *ClientsConnBridge) RegisterClient(ctx context.Context,
 		// Clean up the partially initialized runtime so its
 		// DurableActor and ingress goroutine don't leak.
 		runtime.Stop()
+
+		// Roll back the tracker registration on failure.
+		b.statusTracker.DeregisterClient(clientID)
 
 		return nil, fmt.Errorf(
 			"start runtime for client %q: %w",
@@ -197,18 +212,33 @@ func (b *ClientsConnBridge) DeregisterClient(
 	clientID ClientID,
 ) error {
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Remove from client map under lock, but defer the tracker
+	// notification to after the lock is released. The tracker's
+	// DeregisterClient fires status-change callbacks, and those
+	// callbacks may query bridge state — holding b.mu here would
+	// deadlock.
+	var runtime *ClientRuntime
 
-	runtime, ok := b.clients[clientID]
+	b.mu.Lock()
+	rt, ok := b.clients[clientID]
 	if !ok {
+		b.mu.Unlock()
+
 		return fmt.Errorf(
 			"client %q not registered", clientID,
 		)
 	}
 
-	runtime.Stop()
+	runtime = rt
 	delete(b.clients, clientID)
+	b.mu.Unlock()
+
+	runtime.Stop()
+
+	// Notify the tracker so it can clean up per-client state.
+	// This is deliberately outside b.mu to avoid the deadlock
+	// described above.
+	b.statusTracker.DeregisterClient(clientID)
 
 	return nil
 }
@@ -348,12 +378,28 @@ func (b *ClientsConnBridge) ListClients() []ClientSnapshot {
 // Stop shuts down all registered client runtimes and clears the client
 // map.
 func (b *ClientsConnBridge) Stop() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Snapshot the current runtimes under the lock, then stop and
+	// deregister them outside the lock. Deregistration can fire
+	// status-change callbacks that query bridge state.
+	type clientEntry struct {
+		id      ClientID
+		runtime *ClientRuntime
+	}
 
+	b.mu.Lock()
+	clients := make([]clientEntry, 0, len(b.clients))
 	for id, runtime := range b.clients {
-		runtime.Stop()
-		delete(b.clients, id)
+		clients = append(clients, clientEntry{
+			id:      id,
+			runtime: runtime,
+		})
+	}
+	b.clients = make(map[ClientID]*ClientRuntime)
+	b.mu.Unlock()
+
+	for _, client := range clients {
+		client.runtime.Stop()
+		b.statusTracker.DeregisterClient(client.id)
 	}
 }
 

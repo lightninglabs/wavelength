@@ -123,6 +123,13 @@ func (a *ClientConnectionActor) ingressLoop(
 		committedCursor, anyProcessed, dispatchErr :=
 			a.dispatchBatch(ctx, envelopes, nextCursor)
 
+		// Any successfully processed envelope proves the client
+		// was recently active. Notify the tracker so liveness
+		// state is updated.
+		if anyProcessed && a.cfg.ActivityMarker != nil {
+			a.cfg.ActivityMarker.MarkActive(a.cfg.ClientID)
+		}
+
 		if dispatchErr != nil {
 			a.log.WarnS(ctx, "Dispatch failed", dispatchErr,
 				slog.Uint64("committed_to",
@@ -341,10 +348,12 @@ func (a *ClientConnectionActor) dispatchBatch(
 		}
 
 		// Envelope was successfully dispatched or delivered to a
-		// response waiter. Advance lastSafe past it.
+		// response waiter. Advance lastSafe past it and mark
+		// that real processing occurred.
 		if env.EventSeq > lastSafe {
 			lastSafe = env.EventSeq
 		}
+		anyProcessed = true
 	}
 
 	// All envelopes dispatched successfully. Return the batch next

@@ -39,6 +39,11 @@ type EnvelopeDispatcher func(
 // serverconn.ConnectorConfig but is instantiated per-client rather than
 // once globally.
 type PerClientConfig struct {
+	// ClientID identifies the client this config belongs to. The
+	// bridge populates this during RegisterClient so the ingress
+	// loop can reference it for activity tracking.
+	ClientID ClientID
+
 	// Log is an optional logger. When None, logging is disabled.
 	Log fn.Option[btclog.Logger]
 
@@ -94,6 +99,13 @@ type PerClientConfig struct {
 	// ResponseWaiterTTL bounds how long a response waiter (or buffered
 	// early response) is retained before stale cleanup.
 	ResponseWaiterTTL time.Duration
+
+	// ActivityMarker is an optional hook for recording inbound client
+	// activity. When non-nil, the ingress loop calls MarkActive after
+	// each successfully dispatched envelope. The bridge populates this
+	// from its StatusTracker, but callers that construct runtimes
+	// directly may leave it unset.
+	ActivityMarker ActivityMarker
 }
 
 // DefaultPerClientConfig returns a PerClientConfig with sensible defaults for

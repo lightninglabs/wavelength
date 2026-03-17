@@ -74,6 +74,10 @@ type Server struct {
 	// subsystems for envelope persistence and delivery.
 	mailboxStore mailbox.Store
 
+	// statusTracker provides per-client liveness detection based
+	// on inbound envelope activity.
+	statusTracker *clientconn.PullActivityTracker
+
 	// clientBridge is the shared per-client connection bridge that
 	// multiplexes round, indexer, and other RPC dispatchers across
 	// all registered clients.

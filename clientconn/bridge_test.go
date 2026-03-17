@@ -20,6 +20,55 @@ type mockUnknownClientHandler struct {
 	err   error
 }
 
+// mockStatusTracker records lifecycle notifications for bridge tests.
+type mockStatusTracker struct {
+	mu           sync.Mutex
+	registered   []ClientID
+	deregistered []ClientID
+}
+
+// Status reports unknown for all clients.
+func (m *mockStatusTracker) Status(ClientID) ClientStatus {
+	return StatusUnknown
+}
+
+// OnStatusChange is unused in these tests.
+func (m *mockStatusTracker) OnStatusChange(
+	_ func(ClientID, ClientStatus),
+) {
+}
+
+// MarkActive is unused in these tests.
+func (m *mockStatusTracker) MarkActive(ClientID) {
+}
+
+// RegisterClient records the registration.
+func (m *mockStatusTracker) RegisterClient(clientID ClientID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.registered = append(m.registered, clientID)
+}
+
+// DeregisterClient records the deregistration.
+func (m *mockStatusTracker) DeregisterClient(clientID ClientID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.deregistered = append(m.deregistered, clientID)
+}
+
+// deregisteredIDs returns a snapshot of all deregistered IDs.
+func (m *mockStatusTracker) deregisteredIDs() []ClientID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make([]ClientID, len(m.deregistered))
+	copy(result, m.deregistered)
+
+	return result
+}
+
 // HandleUnknownClient records the call and returns the configured
 // error.
 func (m *mockUnknownClientHandler) HandleUnknownClient(
@@ -230,6 +279,44 @@ func TestHandleInboundConcurrentSameClient(t *testing.T) {
 	require.Equal(t, int32(1), callCount.Load())
 
 	bridge.Stop()
+}
+
+// TestBridgeStopDeregistersClients verifies that Stop notifies the
+// configured StatusTracker for every registered client.
+func TestBridgeStopDeregistersClients(t *testing.T) {
+	t.Parallel()
+
+	tracker := &mockStatusTracker{}
+	bridge := NewClientsConnBridge(WithStatusTracker(tracker))
+
+	mb := newInMemoryMailbox()
+
+	cfg1 := newTestPerClientConfig(mb, newMemCheckpointStore())
+	cfg1.LocalMailboxID = "svc:client-1"
+	cfg1.RemoteMailboxID = "client-1"
+
+	_, err := bridge.RegisterClient(t.Context(), "client-1", cfg1)
+	require.NoError(t, err)
+
+	cfg2 := newTestPerClientConfig(mb, newMemCheckpointStore())
+	cfg2.LocalMailboxID = "svc:client-2"
+	cfg2.RemoteMailboxID = "client-2"
+
+	_, err = bridge.RegisterClient(t.Context(), "client-2", cfg2)
+	require.NoError(t, err)
+
+	bridge.Stop()
+
+	require.ElementsMatch(t,
+		[]ClientID{"client-1", "client-2"},
+		tracker.deregisteredIDs(),
+	)
+
+	_, ok := bridge.GetClient("client-1")
+	require.False(t, ok)
+
+	_, ok = bridge.GetClient("client-2")
+	require.False(t, ok)
 }
 
 // registeringHandler is a test handler that registers the client

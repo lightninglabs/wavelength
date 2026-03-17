@@ -41,10 +41,14 @@ func (s ClientStatus) String() string {
 	}
 }
 
-// StatusTracker provides client liveness information to the server.
-// Implementation is deferred to a follow-up — the real tracker will
-// derive status from gRPC connection state or a heartbeat mechanism.
+// StatusTracker provides client liveness information to the server. A
+// tracker also receives inbound activity and client lifecycle signals
+// from the bridge so it can derive status transitions. Trackers that do
+// not use those signals can implement the methods as no-ops.
 type StatusTracker interface {
+	ActivityMarker
+	ClientRegistrar
+
 	// Status returns the current liveness status for a client.
 	Status(clientID ClientID) ClientStatus
 
@@ -52,6 +56,25 @@ type StatusTracker interface {
 	// The callback is invoked synchronously from the goroutine that
 	// detects the transition.
 	OnStatusChange(fn func(clientID ClientID, status ClientStatus))
+}
+
+// ActivityMarker records inbound client activity. The ingress loop calls
+// MarkActive after successfully dispatching an inbound envelope.
+type ActivityMarker interface {
+	// MarkActive records that the given client has been observed
+	// sending traffic. Implementations must be safe for concurrent
+	// use from multiple ingress goroutines.
+	MarkActive(clientID ClientID)
+}
+
+// ClientRegistrar receives client lifecycle notifications from the
+// bridge.
+type ClientRegistrar interface {
+	// RegisterClient initialises tracking state for a new client.
+	RegisterClient(clientID ClientID)
+
+	// DeregisterClient removes tracking state for a departing client.
+	DeregisterClient(clientID ClientID)
 }
 
 // noopStatusTracker is the default StatusTracker that always returns
@@ -67,6 +90,18 @@ func (n *noopStatusTracker) Status(_ ClientID) ClientStatus {
 func (n *noopStatusTracker) OnStatusChange(
 	_ func(ClientID, ClientStatus),
 ) {
+}
+
+// MarkActive is a no-op for the default tracker.
+func (n *noopStatusTracker) MarkActive(_ ClientID) {
+}
+
+// RegisterClient is a no-op for the default tracker.
+func (n *noopStatusTracker) RegisterClient(_ ClientID) {
+}
+
+// DeregisterClient is a no-op for the default tracker.
+func (n *noopStatusTracker) DeregisterClient(_ ClientID) {
 }
 
 // BridgeOption is a functional option for configuring a ClientsConnBridge.
