@@ -176,7 +176,7 @@ func TestSchnorrSigOverMessageSignVerify(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: priv}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msg, nil, signer,
+		t.Context(), msg, nil, signer,
 	)
 	require.NoError(t, err)
 	require.Len(t, sig64, 64)
@@ -203,12 +203,12 @@ func TestSchnorrSigOverMessageDeterministic(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: priv}
 	sig1, err := schnorrSigOverMessage(
-		context.Background(), msg, nil, signer,
+		t.Context(), msg, nil, signer,
 	)
 	require.NoError(t, err)
 
 	sig2, err := schnorrSigOverMessage(
-		context.Background(), msg, nil, signer,
+		t.Context(), msg, nil, signer,
 	)
 	require.NoError(t, err)
 
@@ -230,7 +230,7 @@ func TestSchnorrSigOverMessageWrongKeyFails(t *testing.T) {
 
 	signer1 := &PrivKeySchnorrSigner{Key: priv1}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msg, nil, signer1,
+		t.Context(), msg, nil, signer1,
 	)
 	require.NoError(t, err)
 
@@ -256,7 +256,7 @@ func TestSchnorrSigOverMessageUsesMessageSigner(t *testing.T) {
 	pkScript := []byte{0x51, 0x20, 0x01}
 
 	sig, err := schnorrSigOverMessage(
-		context.Background(), msg, pkScript, signer,
+		t.Context(), msg, pkScript, signer,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []byte("message-signed"), sig)

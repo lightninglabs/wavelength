@@ -56,7 +56,7 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msgBytes, pkScript, signer,
+		t.Context(), msgBytes, pkScript, signer,
 	)
 	require.NoError(t, err)
 
@@ -133,7 +133,7 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msgBytes, pkScript, signer,
+		t.Context(), msgBytes, pkScript, signer,
 	)
 	require.NoError(t, err)
 
@@ -232,7 +232,7 @@ func TestM1_ProofReplayWithinTTL(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msgBytes, pkScript, signer,
+		t.Context(), msgBytes, pkScript, signer,
 	)
 	require.NoError(t, err)
 
@@ -585,7 +585,7 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	regSig, err := schnorrSigOverMessage(
-		context.Background(), regMsg, pkScript, signer,
+		t.Context(), regMsg, pkScript, signer,
 	)
 	require.NoError(t, err)
 
@@ -657,7 +657,7 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	sig64, err := schnorrSigOverMessage(
-		context.Background(), msgBytes, ownedScript, signer,
+		t.Context(), msgBytes, ownedScript, signer,
 	)
 	require.NoError(t, err)
 
