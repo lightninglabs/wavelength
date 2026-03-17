@@ -121,11 +121,13 @@ func NewInvoiceGenerator(
 
 // CreateInvoice builds a signed BOLT-11 Lightning invoice with a
 // route hint pointing through the swap server's virtual channel.
-// Returns the invoice, its payment hash, and any error.
+// When preimage is non-nil, the invoice is locked to that preimage
+// so the caller can construct a matching vHTLC. Returns the
+// invoice, its payment hash, and any error.
 func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 	amountSat btcutil.Amount, memo string,
-	routeHint *RouteHint,
-	expiry time.Duration) (*invoices.Invoice, lntypes.Hash,
+	routeHint *RouteHint, expiry time.Duration,
+	preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
 	error) {
 
 	if expiry == 0 {
@@ -155,7 +157,8 @@ func (g *InvoiceGenerator) CreateInvoice(ctx context.Context,
 	}
 
 	invoiceData := &invoicesrpc.AddInvoiceData{
-		Memo: memo,
+		Memo:     memo,
+		Preimage: preimage,
 		Value: lnwire.NewMSatFromSatoshis(
 			amountSat,
 		),

@@ -17,7 +17,19 @@ import (
 
 const (
 	defaultOORReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
+
+	// oorReceiveKeyFamily is the key family used for OOR receive
+	// keys. Uses a custom family distinct from the identity key
+	// family to keep receive keys in their own derivation path.
+	oorReceiveKeyFamily = keychain.KeyFamily(987_200)
 )
+
+// DefaultOORReceiveKeyFamily returns the key family used for
+// deriving OOR receive keys. Exported so that test harnesses can
+// derive keys from the same family.
+func DefaultOORReceiveKeyFamily() keychain.KeyFamily {
+	return oorReceiveKeyFamily
+}
 
 // ownedReceiveScriptStore persists locally owned receive-script metadata.
 type ownedReceiveScriptStore interface {

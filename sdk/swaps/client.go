@@ -9,6 +9,37 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
+// ReceiveResult holds the outcome of a successful
+// ReceiveViaLightning call.
+type ReceiveResult struct {
+	// Invoice is the encoded BOLT-11 payment request that the
+	// payer should pay.
+	Invoice string
+
+	// Preimage is the preimage used to construct the vHTLC.
+	Preimage lntypes.Preimage
+
+	// PaymentHash is the SHA-256 hash of the preimage.
+	PaymentHash lntypes.Hash
+
+	// VTXOOutpoint is the outpoint of the claimed VTXO in
+	// "txid:vout" format.
+	VTXOOutpoint string
+
+	// AmountSat is the value of the claimed VTXO in satoshis.
+	AmountSat int64
+}
+
+// PayResult holds the outcome of a successful PayViaLightning call.
+type PayResult struct {
+	// PaymentHash is the SHA-256 payment hash of the paid
+	// invoice.
+	PaymentHash lntypes.Hash
+
+	// FeeSat is the fee in satoshis charged by the swap server.
+	FeeSat uint64
+}
+
 // RouteHint describes a single hop hint for Lightning invoices.
 type RouteHint struct {
 	// NodeID is the compressed public key of the hop's Lightning
@@ -55,29 +86,6 @@ type VHTLCConfig struct {
 	SwapServerPubkey []byte
 }
 
-// HtlcIntercept describes an intercepted HTLC forwarded by the
-// swap server.
-type HtlcIntercept struct {
-	// PaymentHash is the SHA-256 payment hash of the intercepted
-	// HTLC.
-	PaymentHash lntypes.Hash
-
-	// OnionBlob is the raw onion payload forwarded with the HTLC.
-	OnionBlob []byte
-
-	// IncomingAmountMsat is the value of the intercepted HTLC in
-	// milli-satoshis.
-	IncomingAmountMsat uint64
-
-	// IncomingExpiry is the absolute block height at which the
-	// incoming HTLC expires.
-	IncomingExpiry uint32
-
-	// VHTLCConfig contains the virtual HTLC parameters negotiated
-	// for this swap.
-	VHTLCConfig VHTLCConfig
-}
-
 // InSwapConfig is returned by the server when creating an in-swap.
 type InSwapConfig struct {
 	// PaymentHash is the SHA-256 payment hash extracted from the
@@ -109,18 +117,13 @@ type InSwapConfig struct {
 // gRPC service. This allows the client to talk to the swap server
 // without importing the server module.
 type SwapServerConn interface {
-	// RequestChannelID asks the server for a route hint.
+	// RequestChannelID asks the server for a route hint and
+	// the locked-in vHTLC configuration for this swap.
 	RequestChannelID(
 		ctx context.Context,
 		vhtlcPubkey *btcec.PublicKey,
 		expirySeconds uint32,
-	) (*RouteHint, error)
-
-	// RegisterReceiver opens a streaming connection to receive
-	// HTLC interception notifications.
-	RegisterReceiver(
-		ctx context.Context,
-	) (<-chan HtlcIntercept, error)
+	) (*RouteHint, *VHTLCConfig, error)
 
 	// CreateInSwap initiates an Ark->LN swap on the server.
 	CreateInSwap(
@@ -211,22 +214,26 @@ type VTXOInfo struct {
 // SwapClient is the high-level client API for Lightning<->Ark
 // swaps.
 type SwapClient struct {
-	server SwapServerConn
-	daemon DaemonConn
-	log    btclog.Logger
+	server     SwapServerConn
+	daemon     DaemonConn
+	invoiceGen *InvoiceGenerator
+	log        btclog.Logger
 }
 
-// NewSwapClient creates a new swap client.
+// NewSwapClient creates a new swap client. The optional
+// InvoiceGenerator is required for ReceiveViaLightning (out-swaps).
 func NewSwapClient(server SwapServerConn, daemon DaemonConn,
-	log btclog.Logger) *SwapClient {
+	log btclog.Logger,
+	invoiceGen *InvoiceGenerator) *SwapClient {
 
 	if log == nil {
 		log = btclog.Disabled
 	}
 
 	return &SwapClient{
-		server: server,
-		daemon: daemon,
-		log:    log,
+		server:     server,
+		daemon:     daemon,
+		invoiceGen: invoiceGen,
+		log:        log,
 	}
 }

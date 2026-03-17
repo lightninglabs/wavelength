@@ -3,7 +3,6 @@ package swaps
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -21,11 +20,6 @@ const (
 	// RequestChannelId RPC.
 	methodRequestChannelID = "/swaprpc.OutSwapsService/" +
 		"RequestChannelId"
-
-	// methodRegisterReceiver is the full gRPC method name for the
-	// RegisterReceiver server-streaming RPC.
-	methodRegisterReceiver = "/swaprpc.OutSwapsService/" +
-		"RegisterReceiver"
 
 	// methodCreateInSwap is the full gRPC method name for the
 	// CreateInSwap RPC.
@@ -102,14 +96,14 @@ func NewGRPCSwapServerConn(
 	return &GRPCSwapServerConn{conn: conn}
 }
 
-// RequestChannelID asks the server for a route hint. It encodes the
-// request manually using protowire and decodes the response the same
-// way.
+// RequestChannelID asks the server for a route hint and the
+// locked-in vHTLC configuration. It encodes the request manually
+// using protowire and decodes the response the same way.
 //
 // NOTE: This is part of the SwapServerConn interface.
 func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 	vhtlcPubkey *btcec.PublicKey,
-	expirySeconds uint32) (*RouteHint, error) {
+	expirySeconds uint32) (*RouteHint, *VHTLCConfig, error) {
 
 	req := encodeRequestChannelID(
 		vhtlcPubkey.SerializeCompressed(), expirySeconds,
@@ -120,81 +114,12 @@ func (g *GRPCSwapServerConn) RequestChannelID(ctx context.Context,
 		ctx, methodRequestChannelID, req, resp, forceRaw(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("RequestChannelID: %w", err)
+		return nil, nil, fmt.Errorf(
+			"RequestChannelID: %w", err,
+		)
 	}
 
 	return decodeRequestChannelIDResponse(resp.data)
-}
-
-// RegisterReceiver opens a server-streaming connection and delivers
-// intercepted HTLCs on the returned channel. The channel is closed
-// when the stream ends or the context is cancelled.
-//
-// NOTE: This is part of the SwapServerConn interface.
-func (g *GRPCSwapServerConn) RegisterReceiver(
-	ctx context.Context) (<-chan HtlcIntercept, error) {
-
-	// We need to use NewStream for server-streaming RPCs.
-	// Encode an empty RegisterReceiverRequest (no fields needed
-	// here; the server identifies us via TLS/macaroon auth).
-	reqBytes := &rawMsg{data: nil}
-
-	streamDesc := &grpc.StreamDesc{
-		StreamName:    "RegisterReceiver",
-		ServerStreams: true,
-	}
-
-	stream, err := g.conn.NewStream(
-		ctx, streamDesc, methodRegisterReceiver,
-		forceRaw(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("open stream: %w", err)
-	}
-
-	// Send the request and close the send side.
-	if err := stream.SendMsg(reqBytes); err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-	if err := stream.CloseSend(); err != nil {
-		return nil, fmt.Errorf("close send: %w", err)
-	}
-
-	ch := make(chan HtlcIntercept, 16)
-	go readReceiverStream(stream, ch)
-
-	return ch, nil
-}
-
-// readReceiverStream reads from the gRPC stream and publishes
-// decoded HTLC intercepts on the output channel until the stream
-// ends or errors.
-func readReceiverStream(stream grpc.ClientStream,
-	ch chan<- HtlcIntercept) {
-
-	defer close(ch)
-
-	for {
-		resp := &rawMsg{}
-		err := stream.RecvMsg(resp)
-		if err == io.EOF {
-			return
-		}
-		if err != nil {
-			return
-		}
-
-		intercepts, err := decodeRegisterReceiverResponse(
-			resp.data,
-		)
-		if err != nil {
-			continue
-		}
-
-		for _, htlc := range intercepts {
-			ch <- htlc
-		}
-	}
 }
 
 // CreateInSwap initiates an Ark->LN swap on the server and returns
@@ -256,17 +181,19 @@ func encodeRequestChannelID(pubkey []byte,
 
 // decodeRequestChannelIDResponse parses a
 // RequestChannelIdResponse from raw proto bytes. The response
-// contains a single RouteHint message at field 1.
+// contains a RouteHint at field 1 and a VHTLCConfig at field 2.
 func decodeRequestChannelIDResponse(
-	data []byte) (*RouteHint, error) {
+	data []byte) (*RouteHint, *VHTLCConfig, error) {
 
-	// Field 1 is a sub-message (RouteHint).
-	var hintBytes []byte
+	var (
+		hintBytes []byte
+		cfgBytes  []byte
+	)
 
 	for len(data) > 0 {
 		num, typ, n := protowire.ConsumeTag(data)
 		if n < 0 {
-			return nil, fmt.Errorf("invalid tag")
+			return nil, nil, fmt.Errorf("invalid tag")
 		}
 		data = data[n:]
 
@@ -274,37 +201,62 @@ func decodeRequestChannelIDResponse(
 		case protowire.BytesType:
 			v, n := protowire.ConsumeBytes(data)
 			if n < 0 {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"invalid bytes field",
 				)
 			}
 			data = data[n:]
 
-			if num == 1 {
+			switch num {
+			case 1:
 				hintBytes = v
+			case 2:
+				cfgBytes = v
 			}
 
 		case protowire.VarintType:
 			_, n := protowire.ConsumeVarint(data)
 			if n < 0 {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"invalid varint field",
 				)
 			}
 			data = data[n:]
 
 		default:
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"unsupported wire type %d", typ,
 			)
 		}
 	}
 
 	if hintBytes == nil {
-		return nil, fmt.Errorf("missing route_hint field")
+		return nil, nil, fmt.Errorf(
+			"missing route_hint field",
+		)
 	}
 
-	return decodeRouteHint(hintBytes)
+	hint, err := decodeRouteHint(hintBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"decode route hint: %w", err,
+		)
+	}
+
+	if cfgBytes == nil {
+		return nil, nil, fmt.Errorf(
+			"missing vhtlc_config field",
+		)
+	}
+
+	cfg, err := decodeVHTLCConfig(cfgBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"decode vhtlc config: %w", err,
+		)
+	}
+
+	return hint, cfg, nil
 }
 
 // decodeRouteHint parses a RouteHint proto message from raw bytes.
@@ -578,125 +530,6 @@ func decodeVHTLCConfig(data []byte) (*VHTLCConfig, error) {
 	}
 
 	return cfg, nil
-}
-
-// decodeRegisterReceiverResponse parses a RegisterReceiverResponse
-// containing a repeated HtlcIntercept field.
-func decodeRegisterReceiverResponse(
-	data []byte) ([]HtlcIntercept, error) {
-
-	var intercepts []HtlcIntercept
-
-	for len(data) > 0 {
-		num, typ, n := protowire.ConsumeTag(data)
-		if n < 0 {
-			return nil, fmt.Errorf("invalid tag")
-		}
-		data = data[n:]
-
-		if typ != protowire.BytesType {
-			// Skip non-bytes fields.
-			if typ == protowire.VarintType {
-				_, n := protowire.ConsumeVarint(data)
-				if n < 0 {
-					return nil, fmt.Errorf(
-						"invalid varint",
-					)
-				}
-				data = data[n:]
-
-				continue
-			}
-
-			return nil, fmt.Errorf(
-				"unsupported wire type %d", typ,
-			)
-		}
-
-		v, n := protowire.ConsumeBytes(data)
-		if n < 0 {
-			return nil, fmt.Errorf("invalid bytes")
-		}
-		data = data[n:]
-
-		// Field 1 is repeated HtlcIntercept.
-		if num == 1 {
-			htlc, err := decodeHtlcIntercept(v)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"decode htlc: %w", err,
-				)
-			}
-			intercepts = append(intercepts, *htlc)
-		}
-	}
-
-	return intercepts, nil
-}
-
-// decodeHtlcIntercept parses a single HtlcIntercept proto message.
-func decodeHtlcIntercept(data []byte) (*HtlcIntercept, error) {
-	htlc := &HtlcIntercept{}
-
-	for len(data) > 0 {
-		num, typ, n := protowire.ConsumeTag(data)
-		if n < 0 {
-			return nil, fmt.Errorf("invalid tag")
-		}
-		data = data[n:]
-
-		switch typ {
-		case protowire.BytesType:
-			v, n := protowire.ConsumeBytes(data)
-			if n < 0 {
-				return nil, fmt.Errorf(
-					"invalid bytes",
-				)
-			}
-			data = data[n:]
-
-			switch num {
-			case 1:
-				if len(v) == lntypes.HashSize {
-					copy(
-						htlc.PaymentHash[:],
-						v,
-					)
-				}
-			case 2:
-				htlc.OnionBlob = v
-			case 5:
-				cfg, err := decodeVHTLCConfig(v)
-				if err != nil {
-					return nil, err
-				}
-				htlc.VHTLCConfig = *cfg
-			}
-
-		case protowire.VarintType:
-			v, n := protowire.ConsumeVarint(data)
-			if n < 0 {
-				return nil, fmt.Errorf(
-					"invalid varint",
-				)
-			}
-			data = data[n:]
-
-			switch num {
-			case 3:
-				htlc.IncomingAmountMsat = v
-			case 4:
-				htlc.IncomingExpiry = uint32(v)
-			}
-
-		default:
-			return nil, fmt.Errorf(
-				"unsupported wire type %d", typ,
-			)
-		}
-	}
-
-	return htlc, nil
 }
 
 // Compile-time assertion that GRPCSwapServerConn implements

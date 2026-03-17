@@ -11,58 +11,19 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
-// InSwapState represents the client-side in-swap state.
-type InSwapState int
-
-const (
-	// InSwapCreated indicates the swap has been created but not
-	// yet funded.
-	InSwapCreated InSwapState = iota
-
-	// InSwapFundingVHTLC indicates the client is funding the
-	// vHTLC via OOR.
-	InSwapFundingVHTLC
-
-	// InSwapWaitingForPayment indicates the vHTLC is funded and
-	// the client is waiting for the server to claim it.
-	InSwapWaitingForPayment
-
-	// InSwapCompleted indicates the swap completed successfully.
-	InSwapCompleted
-
-	// InSwapFailed indicates the swap failed.
-	InSwapFailed
-)
-
-// String returns a human-readable representation of the in-swap
-// state.
-func (s InSwapState) String() string {
-	switch s {
-	case InSwapCreated:
-		return "Created"
-	case InSwapFundingVHTLC:
-		return "FundingVHTLC"
-	case InSwapWaitingForPayment:
-		return "WaitingForPayment"
-	case InSwapCompleted:
-		return "Completed"
-	case InSwapFailed:
-		return "Failed"
-	default:
-		return fmt.Sprintf("Unknown(%d)", s)
-	}
-}
-
-// SendPayment pays a Lightning invoice by funding a vHTLC that the
-// swap server will claim after paying the invoice. This is the
-// main entry point for in-swaps (Ark -> Lightning).
-func (c *SwapClient) SendPayment(ctx context.Context,
-	invoice string, maxFeeSat uint64) error {
+// PayViaLightning performs a complete Ark-to-Lightning swap in a
+// single blocking call. It creates an in-swap with the server,
+// builds and funds a vHTLC, then waits for the server to claim the
+// vHTLC (which means the Lightning invoice was paid).
+func (c *SwapClient) PayViaLightning(ctx context.Context,
+	invoice string, maxFeeSat uint64) (*PayResult, error) {
 
 	// Get our identity and operator keys.
 	clientKey, err := c.daemon.GetIdentityPubkey(ctx)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return nil, fmt.Errorf(
+			"get client pubkey: %w", err,
+		)
 	}
 
 	// Request swap parameters from the server.
@@ -70,7 +31,9 @@ func (c *SwapClient) SendPayment(ctx context.Context,
 		ctx, invoice, maxFeeSat, clientKey,
 	)
 	if err != nil {
-		return fmt.Errorf("create in-swap: %w", err)
+		return nil, fmt.Errorf(
+			"create in-swap: %w", err,
+		)
 	}
 
 	c.log.InfoS(ctx, "In-swap created",
@@ -81,7 +44,9 @@ func (c *SwapClient) SendPayment(ctx context.Context,
 
 	operatorKey, err := c.daemon.GetOperatorPubkey(ctx)
 	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
+		return nil, fmt.Errorf(
+			"get operator pubkey: %w", err,
+		)
 	}
 
 	// Build preimage hash from payment hash.
@@ -107,13 +72,17 @@ func (c *SwapClient) SendPayment(ctx context.Context,
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("build vHTLC policy: %w", err)
+		return nil, fmt.Errorf(
+			"build vHTLC policy: %w", err,
+		)
 	}
 
 	// Get the vHTLC pkScript.
 	vhtlcPkScript, err := policy.PkScript()
 	if err != nil {
-		return fmt.Errorf("get vHTLC pkScript: %w", err)
+		return nil, fmt.Errorf(
+			"get vHTLC pkScript: %w", err,
+		)
 	}
 
 	// Fund the vHTLC via OOR.
@@ -121,7 +90,7 @@ func (c *SwapClient) SendPayment(ctx context.Context,
 		ctx, vhtlcPkScript, cfg.AmountSat,
 	)
 	if err != nil {
-		return fmt.Errorf("fund vHTLC: %w", err)
+		return nil, fmt.Errorf("fund vHTLC: %w", err)
 	}
 
 	c.log.InfoS(ctx, "vHTLC funded",
@@ -131,16 +100,23 @@ func (c *SwapClient) SendPayment(ctx context.Context,
 
 	// Wait for the server to claim the vHTLC (which means it
 	// paid the invoice).
-	err = c.waitForVHTLCSpent(ctx, vhtlcPkScript, cfg.Expiry)
+	err = c.waitForVHTLCSpent(
+		ctx, vhtlcPkScript, cfg.Expiry,
+	)
 	if err != nil {
-		return fmt.Errorf("wait for claim: %w", err)
+		return nil, fmt.Errorf(
+			"wait for claim: %w", err,
+		)
 	}
 
 	c.log.InfoS(ctx, "In-swap completed",
 		btclog.Hex("hash", cfg.PaymentHash[:]),
 	)
 
-	return nil
+	return &PayResult{
+		PaymentHash: cfg.PaymentHash,
+		FeeSat:      cfg.FeeSat,
+	}, nil
 }
 
 // waitForVHTLCSpent polls the daemon's VTXOs until the vHTLC with

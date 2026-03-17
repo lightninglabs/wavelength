@@ -8,175 +8,153 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
-	"github.com/lightningnetwork/lnd/lntypes"
 )
 
-// OutSwapState represents the client-side out-swap state.
-type OutSwapState int
+// ReceiveViaLightning performs a complete Lightning-to-Ark swap in a
+// single blocking call. It generates a preimage, requests a route
+// hint and vHTLC config from the swap server, creates a signed
+// invoice, waits for the server to fund the vHTLC, and claims the
+// funds into the client's wallet.
+func (c *SwapClient) ReceiveViaLightning(ctx context.Context,
+	amountSat btcutil.Amount) (*ReceiveResult, error) {
 
-const (
-	// OutSwapWaitingForFunding indicates the swap is waiting for
-	// the swap server to fund the vHTLC.
-	OutSwapWaitingForFunding OutSwapState = iota
-
-	// OutSwapClaimingVHTLC indicates the client is claiming the
-	// vHTLC with the preimage.
-	OutSwapClaimingVHTLC
-
-	// OutSwapCompleted indicates the swap completed successfully.
-	OutSwapCompleted
-
-	// OutSwapFailed indicates the swap failed.
-	OutSwapFailed
-)
-
-// String returns a human-readable representation of the out-swap
-// state.
-func (s OutSwapState) String() string {
-	switch s {
-	case OutSwapWaitingForFunding:
-		return "WaitingForFunding"
-	case OutSwapClaimingVHTLC:
-		return "ClaimingVHTLC"
-	case OutSwapCompleted:
-		return "Completed"
-	case OutSwapFailed:
-		return "Failed"
-	default:
-		return fmt.Sprintf("Unknown(%d)", s)
+	if c.invoiceGen == nil {
+		return nil, fmt.Errorf(
+			"invoice generator required for " +
+				"ReceiveViaLightning",
+		)
 	}
-}
 
-// OutSwap represents a client-side out-swap (Lightning -> Ark).
-// The client receives a VTXO by claiming a vHTLC funded by the
-// swap server.
-type OutSwap struct {
-	// PaymentHash is the SHA-256 payment hash for the swap.
-	PaymentHash lntypes.Hash
+	// Get our identity and operator keys.
+	clientKey, err := c.daemon.GetIdentityPubkey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get client pubkey: %w", err,
+		)
+	}
 
-	// Preimage is the preimage that unlocks the payment hash.
-	Preimage lntypes.Preimage
+	operatorKey, err := c.daemon.GetOperatorPubkey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get operator pubkey: %w", err,
+		)
+	}
 
-	// AmountSat is the swap amount in satoshis.
-	AmountSat int64
+	// Generate a random preimage locally so we can construct
+	// both the invoice and the matching vHTLC.
+	preimage, err := NewPreimage()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"generate preimage: %w", err,
+		)
+	}
 
-	// State is the current state of the out-swap.
-	State OutSwapState
-
-	// VHTLCConfig holds the vHTLC parameters for this swap.
-	VHTLCConfig VHTLCConfig
-}
-
-// RequestRouteHint asks the swap server for a route hint that can
-// be embedded in a Lightning invoice. The returned route hint
-// directs payments through the swap server's virtual channel.
-func (c *SwapClient) RequestRouteHint(ctx context.Context,
-	vhtlcPubkey *btcec.PublicKey,
-	expirySeconds uint32) (*RouteHint, error) {
-
-	hint, err := c.server.RequestChannelID(
-		ctx, vhtlcPubkey, expirySeconds,
+	// Get a route hint and locked-in vHTLC config from the
+	// swap server.
+	hint, vhtlcCfg, err := c.server.RequestChannelID(
+		ctx, clientKey, 3600,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("request route hint: %w", err)
+		return nil, fmt.Errorf(
+			"request channel ID: %w", err,
+		)
 	}
 
 	c.log.InfoS(ctx, "Received route hint from swap server",
 		slog.Uint64("channel_id", hint.ChannelID),
 	)
 
-	return hint, nil
-}
-
-// ClaimOutSwap claims a vHTLC that was funded by the swap server
-// after an HTLC was intercepted. The client uses the preimage
-// from the original invoice to spend the vHTLC via the claim path.
-func (c *SwapClient) ClaimOutSwap(ctx context.Context,
-	intercept HtlcIntercept,
-	preimage lntypes.Preimage) error {
-
-	// Get our identity and operator keys.
-	clientKey, err := c.daemon.GetIdentityPubkey(ctx)
+	// Create a signed invoice locked to our preimage.
+	inv, hash, err := c.invoiceGen.CreateInvoice(
+		ctx, amountSat, "swap", hint, 0, &preimage,
+	)
 	if err != nil {
-		return fmt.Errorf("get client pubkey: %w", err)
+		return nil, fmt.Errorf(
+			"create invoice: %w", err,
+		)
 	}
 
-	operatorKey, err := c.daemon.GetOperatorPubkey(ctx)
-	if err != nil {
-		return fmt.Errorf("get operator pubkey: %w", err)
-	}
+	c.log.InfoS(ctx, "Invoice created for out-swap",
+		btclog.Hex("hash", hash[:]),
+		slog.Int64("amount_sat", int64(amountSat)),
+	)
 
-	// Parse the swap server's pubkey from the config.
+	// Build the expected vHTLC pkScript so we can identify
+	// the funded VTXO when it appears.
 	serverKey, err := btcec.ParsePubKey(
-		intercept.VHTLCConfig.SwapServerPubkey,
+		vhtlcCfg.SwapServerPubkey,
 	)
 	if err != nil {
-		return fmt.Errorf("parse server pubkey: %w", err)
+		return nil, fmt.Errorf(
+			"parse server pubkey: %w", err,
+		)
 	}
 
-	// Build the preimage hash (HASH160 of the payment hash).
-	preimageHash := arkscript.Hash160(
-		intercept.PaymentHash[:],
-	)
+	preimageHash := arkscript.Hash160(hash[:])
 
-	// Build the vHTLC policy matching what the server created.
-	// Server is the sender, client is the receiver.
 	policy, err := arkscript.NewVHTLCPolicy(
 		arkscript.VHTLCOpts{
-			Sender:   serverKey,
-			Receiver: clientKey,
-			Server:   operatorKey,
+			Sender:       serverKey,
+			Receiver:     clientKey,
+			Server:       operatorKey,
 			PreimageHash: preimageHash,
-			RefundLocktime: intercept.VHTLCConfig.
+			RefundLocktime: vhtlcCfg.
 				RefundLocktime,
-			UnilateralClaimDelay: intercept.VHTLCConfig.
+			UnilateralClaimDelay: vhtlcCfg.
 				UnilateralClaimDelay,
-			UnilateralRefundDelay: intercept.VHTLCConfig.
+			UnilateralRefundDelay: vhtlcCfg.
 				UnilateralRefundDelay,
-			UnilateralRefundWithoutReceiverDelay: intercept.
-				VHTLCConfig.
+			UnilateralRefundWithoutReceiverDelay: vhtlcCfg.
 				UnilateralRefundWithoutReceiverDelay,
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("build vHTLC policy: %w", err)
+		return nil, fmt.Errorf(
+			"build vHTLC policy: %w", err,
+		)
 	}
 
-	// Get the claim path with the preimage.
+	pkScript, err := policy.PkScript()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get vHTLC pkScript: %w", err,
+		)
+	}
+
+	// Wait for the swap server to fund the vHTLC.
+	outpoint, amount, err := c.waitForVHTLC(ctx, pkScript)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"wait for vHTLC: %w", err,
+		)
+	}
+
+	c.log.InfoS(ctx, "vHTLC found, claiming",
+		btclog.Hex("hash", hash[:]),
+		slog.String("outpoint", outpoint),
+		slog.Int64("amount", amount),
+	)
+
+	// Build the claim path using the preimage.
 	claimPath, err := policy.ClaimPath(preimage[:])
 	if err != nil {
-		return fmt.Errorf("build claim path: %w", err)
-	}
-
-	// Get the vHTLC pkScript.
-	vhtlcPkScript, err := policy.PkScript()
-	if err != nil {
-		return fmt.Errorf("get vHTLC pkScript: %w", err)
-	}
-
-	// Wait for the vHTLC to appear in our VTXOs.
-	outpoint, amount, err := c.waitForVHTLC(
-		ctx, vhtlcPkScript,
-	)
-	if err != nil {
-		return fmt.Errorf("wait for vHTLC: %w", err)
+		return nil, fmt.Errorf(
+			"build claim path: %w", err,
+		)
 	}
 
 	// Get a fresh receive script for the claimed funds.
 	receiveScript, err := c.daemon.NewOORReceiveScript(ctx)
 	if err != nil {
-		return fmt.Errorf("get receive script: %w", err)
+		return nil, fmt.Errorf(
+			"get receive script: %w", err,
+		)
 	}
 
-	c.log.InfoS(ctx, "vHTLC found, claiming",
-		btclog.Hex("hash", intercept.PaymentHash[:]),
-		slog.String("outpoint", outpoint),
-		slog.Int64("amount", amount),
-	)
-
-	// Claim via SendOOR with custom input.
+	// Claim the vHTLC via SendOOR with custom input.
 	_, err = c.daemon.SendOORWithCustomInputs(
 		ctx,
 		receiveScript,
@@ -184,7 +162,7 @@ func (c *SwapClient) ClaimOutSwap(ctx context.Context,
 		[]CustomInput{{
 			Outpoint:           outpoint,
 			AmountSat:          amount,
-			PkScript:           vhtlcPkScript,
+			PkScript:           pkScript,
 			SpendWitnessScript: claimPath.WitnessScript,
 			SpendControlBlock:  claimPath.ControlBlock,
 			ConditionWitness: [][]byte{
@@ -193,14 +171,20 @@ func (c *SwapClient) ClaimOutSwap(ctx context.Context,
 		}},
 	)
 	if err != nil {
-		return fmt.Errorf("claim vHTLC: %w", err)
+		return nil, fmt.Errorf("claim vHTLC: %w", err)
 	}
 
 	c.log.InfoS(ctx, "vHTLC claimed successfully",
-		btclog.Hex("hash", intercept.PaymentHash[:]),
+		btclog.Hex("hash", hash[:]),
 	)
 
-	return nil
+	return &ReceiveResult{
+		Invoice:      string(inv.PaymentRequest),
+		Preimage:     preimage,
+		PaymentHash:  hash,
+		VTXOOutpoint: outpoint,
+		AmountSat:    amount,
+	}, nil
 }
 
 // waitForVHTLC polls the daemon's VTXOs until one matching the
