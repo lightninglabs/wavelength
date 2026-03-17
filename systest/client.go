@@ -17,7 +17,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/darepod"
@@ -116,20 +115,16 @@ type TestClient struct {
 	// boardingStore provides boarding address persistence.
 	boardingStore *db.BoardingWalletStore
 
+	// oorPackageStore persists owned receive-script metadata and OOR
+	// session artifacts for this client.
+	oorPackageStore *db.OORArtifactPersistenceStore
+
 	// stopped tracks whether Stop() has been called already.
 	stopped bool
 
 	// clientKeyDesc is this client's identity key from the wallet
 	// backend.
 	clientKeyDesc *keychain.KeyDescriptor
-
-	// oorReceiveKeyDesc is this client's stable wallet key for the
-	// default OOR receive script.
-	oorReceiveKeyDesc *keychain.KeyDescriptor
-
-	// oorReceivePkScript is the registered default OOR receive script for
-	// this client.
-	oorReceivePkScript []byte
 
 	// vtxoManager is the real VTXO manager that spawns VTXO actors.
 	vtxoManager *vtxo.Manager
@@ -277,17 +272,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		clock.NewDefaultClock(),
 	)
 
-	oorReceiveKeyDesc, err := darepod.EnsureDefaultOORReceiveKey(
-		ctx, oorPackageStore, func(ctx context.Context) (
-			*keychain.KeyDescriptor, error,
-		) {
-			return clientWallet.DeriveNextKey(
-				ctx, darepod.DefaultOORReceiveKeyFamily(),
-			)
-		},
-	)
-	require.NoError(t, err, "failed to resolve OOR receive key")
-
 	// Create and spawn ChainSourceActor.
 	chainSourceActor := chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
@@ -416,6 +400,10 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	clientConnCfg.Store = clientDeliveryStore
 	clientConnCfg.ProtocolVersion = 1
 	clientConnCfg.PullWaitTimeout = 100 * time.Millisecond
+	var indexerClient *clientindexer.Client
+	clientConnCfg.DurableUnaryBuilder = &testDurableUnaryBuilder{
+		indexerClient: &indexerClient,
+	}
 
 	serverConnRuntime, err := serverconn.NewRuntime(clientConnCfg)
 	require.NoError(t, err, "failed to create serverconn runtime")
@@ -617,10 +605,13 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// Create the indexer client for this TestClient. This uses
 	// the production mailbox RPC path through the serverconn
 	// Runtime's UnaryFacade, identical to how darepod wires it.
-	idxSigner := opts.backend.IndexerSigner(*oorReceiveKeyDesc)
-
-	indexerClient := clientindexer.New(
-		serverConnRuntime.Unary(), idxSigner,
+	// The signer resolves the correct wallet key from the owned
+	// receive-script store for each pkScript.
+	indexerClient = clientindexer.New(
+		serverConnRuntime.Unary(),
+		darepod.NewOwnedReceiveScriptSigner(
+			oorPackageStore, opts.backend.IndexerSigner,
+		),
 		"server", string(clientID),
 	)
 
@@ -696,16 +687,6 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 		ActorID:     fmt.Sprintf("oor-client-%s", clientID),
 		VTXOManager: vtxoManagerActorRef,
 		VTXOStore:   vtxoStore,
-		IncomingFetcher: func(ctx context.Context,
-			pkScript []byte, afterEventID uint64,
-			limit uint32) (
-			*arkrpc.ListOORRecipientEventsByScriptResponse,
-			error) {
-
-			return indexerClient.ListOORRecipientEventsByScriptTaproot(
-				ctx, pkScript, afterEventID, limit,
-			)
-		},
 	}
 
 	// NewOORClientActor creates a DurableActor and self-registers
@@ -719,51 +700,37 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	err = serverConnRuntime.Start(ctx)
 	require.NoError(t, err, "failed to start serverconn runtime")
 
-	_, oorReceivePkScript, err := darepod.EnsureDefaultOORReceiveScript(
-		ctx, indexerClient, oorPackageStore,
-		func(context.Context) (*keychain.KeyDescriptor, error) {
-			return oorReceiveKeyDesc, nil
-		},
-		h.operatorKeyDesc.PubKey, h.terms.VTXOExitDelay,
-		"systest-default-oor-receive",
-	)
-	require.NoError(
-		t, err,
-		"failed to register default OOR receive script",
-	)
-
 	// Subscribe to instrumented mailbox events for this client.
 	eventSub, err := h.instrumentedMB.Subscribe(clientID)
 	require.NoError(t, err, "failed to subscribe to bridge events")
 
 	client := &TestClient{
-		harness:            h,
-		clientID:           clientID,
-		actorSystem:        clientSystem,
-		backend:            opts.backend,
-		serverConnRuntime:  serverConnRuntime,
-		timeoutRef:         timeoutRef,
-		chainSourceRef:     chainSourceRef,
-		walletActor:        walletActor,
-		walletRef:          walletRef,
-		roundActor:         roundActorInner,
-		roundRef:           roundRef,
-		sqlDB:              sqlDB,
-		dbPath:             opts.dbPath,
-		roundStore:         roundStore,
-		vtxoStore:          vtxoStore,
-		boardingStore:      boardingStore,
-		clientKeyDesc:      clientKeyDesc,
-		oorReceiveKeyDesc:  oorReceiveKeyDesc,
-		oorReceivePkScript: oorReceivePkScript,
-		vtxoManager:        vtxoManagerActor,
-		vtxoManagerRef:     vtxoManagerActorRef,
-		indexerClient:      indexerClient,
-		oorActor:           oorActor,
-		oorRef:             oorRef,
-		vtxoObserver:       vtxoObserver,
-		vtxoObserverRef:    vtxoObserverRef,
-		eventSub:           eventSub,
+		harness:           h,
+		clientID:          clientID,
+		actorSystem:       clientSystem,
+		backend:           opts.backend,
+		serverConnRuntime: serverConnRuntime,
+		timeoutRef:        timeoutRef,
+		chainSourceRef:    chainSourceRef,
+		walletActor:       walletActor,
+		walletRef:         walletRef,
+		roundActor:        roundActorInner,
+		roundRef:          roundRef,
+		sqlDB:             sqlDB,
+		dbPath:            opts.dbPath,
+		roundStore:        roundStore,
+		vtxoStore:         vtxoStore,
+		boardingStore:     boardingStore,
+		oorPackageStore:   oorPackageStore,
+		clientKeyDesc:     clientKeyDesc,
+		vtxoManager:       vtxoManagerActor,
+		vtxoManagerRef:    vtxoManagerActorRef,
+		indexerClient:     indexerClient,
+		oorActor:          oorActor,
+		oorRef:            oorRef,
+		vtxoObserver:      vtxoObserver,
+		vtxoObserverRef:   vtxoObserverRef,
+		eventSub:          eventSub,
 	}
 
 	// Register the client with the harness.
@@ -797,10 +764,35 @@ func (c *TestClient) ClientKeyDesc() *keychain.KeyDescriptor {
 	return c.clientKeyDesc
 }
 
-// OORReceivePkScript returns the VTXO-compatible taproot receive script for
-// this client, matching production pubkey-destination behavior.
+// OORReceivePkScript derives, registers, and persists a fresh
+// VTXO-compatible taproot receive script for this client, matching the
+// one-shot semantics of address generation rather than reusing a single
+// long-lived receive script.
 func (c *TestClient) OORReceivePkScript() ([]byte, error) {
-	return c.oorReceivePkScript, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	label := fmt.Sprintf(
+		"systest-oor-receive-%d", time.Now().UnixNano(),
+	)
+
+	_, pkScript, err := darepod.CreateOORReceiveScript(
+		c.harness.ctx, c.indexerClient, c.oorPackageStore,
+		func(ctx context.Context) (*keychain.KeyDescriptor, error) {
+			return c.backend.ClientWallet().DeriveNextKey(
+				ctx, keychain.KeyFamilyMultiSig,
+			)
+		},
+		c.backend.IndexerSigner,
+		c.harness.operatorKeyDesc.PubKey,
+		c.harness.terms.VTXOExitDelay,
+		label,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return pkScript, nil
 }
 
 // CreateBoardingAddress creates a new boarding address using the wallet actor.

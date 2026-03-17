@@ -8,6 +8,8 @@ import (
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
 	clientround "github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
@@ -344,6 +346,148 @@ func registerClientOORRoutes(router *serverconn.EventRouter,
 						sessionID,
 					),
 					Event: &clientoor.FinalizeAcceptedEvent{},
+				}, nil
+			},
+		},
+	)
+
+	// ListVTXOsByScripts response: server returned authoritative incoming
+	// metadata for a durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(
+		router,
+		serverconn.EnvelopeRouteConfig[
+			clientoor.OORDurableMsg, clientoor.ActorResp,
+		]{
+			Service: "arkrpc.IndexerService",
+			Method:  "ListVTXOsByScripts",
+			NewEvent: func() proto.Message {
+				return &arkrpc.ListVTXOsByScriptsResponse{}
+			},
+			Key: oorKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				clientoor.OORDurableMsg, error) {
+
+				if env == nil || env.Rpc == nil {
+					return nil, fmt.Errorf("incoming metadata " +
+						"response envelope must be provided")
+				}
+
+				sessionID, err :=
+					clientoor.ParseIncomingMetadataCorrelationID(
+						env.Rpc.CorrelationId,
+					)
+				if err != nil {
+					return nil, err
+				}
+
+				if rpcErr := mailboxrpc.DecodeErrorHeaders(
+					env.Headers,
+				); rpcErr != nil {
+
+					return &clientoor.DriveEventRequest{
+						SessionID: sessionID,
+						Event: &clientoor.FailEvent{
+							Reason: fmt.Sprintf(
+								"query incoming "+
+									"metadata: %v",
+								rpcErr,
+							),
+						},
+					}, nil
+				}
+
+				resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
+				if !ok {
+					return nil, fmt.Errorf("expected "+
+						"ListVTXOsByScriptsResponse, got %T",
+						p)
+				}
+
+				matches, err :=
+					clientoor.IncomingMetadataMatchesFromResponse(
+						sessionID, resp,
+					)
+				if err != nil {
+					return nil, err
+				}
+
+				return &clientoor.DriveEventRequest{
+					SessionID: sessionID,
+					Event: &clientoor.
+						IncomingMetadataResolvedEvent{
+						Matches: matches,
+					},
+				}, nil
+			},
+		},
+	)
+
+	// ListOORRecipientEventsByScript response: server resolved the
+	// lightweight incoming transfer hint into the full Ark package for a
+	// durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(
+		router,
+		serverconn.EnvelopeRouteConfig[
+			clientoor.OORDurableMsg, clientoor.ActorResp,
+		]{
+			Service: "arkrpc.IndexerService",
+			Method:  "ListOORRecipientEventsByScript",
+			NewEvent: func() proto.Message {
+				return &arkrpc.ListOORRecipientEventsByScriptResponse{}
+			},
+			Key: oorKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				p proto.Message) (
+				clientoor.OORDurableMsg, error) {
+
+				if env == nil || env.Rpc == nil {
+					return nil, fmt.Errorf("incoming resolve " +
+						"response envelope must be provided")
+				}
+
+				sessionID, recipientEventID, err :=
+					clientoor.ParseIncomingResolveCorrelationID(
+						env.Rpc.CorrelationId,
+					)
+				if err != nil {
+					return nil, err
+				}
+
+				if rpcErr := mailboxrpc.DecodeErrorHeaders(
+					env.Headers,
+				); rpcErr != nil {
+
+					return &clientoor.DriveEventRequest{
+						SessionID: sessionID,
+						Event: &clientoor.FailEvent{
+							Reason: fmt.Sprintf(
+								"resolve incoming "+
+									"transfer: %v",
+								rpcErr,
+							),
+						},
+					}, nil
+				}
+
+				resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse)
+				if !ok {
+					return nil, fmt.Errorf("expected "+
+						"ListOORRecipientEventsByScriptResponse"+
+						", got %T", p)
+				}
+
+				incomingEvent, err :=
+					clientoor.IncomingTransferEventFromResponse(
+						sessionID, recipientEventID, resp,
+					)
+				if err != nil {
+					return nil, err
+				}
+
+				return &clientoor.DriveEventRequest{
+					SessionID: sessionID,
+					Event:     incomingEvent,
 				}, nil
 			},
 		},
