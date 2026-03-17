@@ -36,6 +36,7 @@ type Querier interface {
 	DeleteVTXOTreeRecursive(ctx context.Context, arg DeleteVTXOTreeRecursiveParams) error
 	GetChainInfo(ctx context.Context, chainName string) (ChainInfo, error)
 	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
+	GetMailboxAckCursor(ctx context.Context, recipient string) (int64, error)
 	GetMaxOORRecipientEventID(ctx context.Context, recipientPkScript []byte) (int64, error)
 	GetOORRecipientEventBySessionOutput(ctx context.Context, arg GetOORRecipientEventBySessionOutputParams) (OorRecipientEvent, error)
 	GetOORSession(ctx context.Context, sessionID []byte) (OorSession, error)

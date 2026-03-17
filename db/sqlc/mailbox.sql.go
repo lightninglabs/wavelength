@@ -70,6 +70,19 @@ func (q *Queries) DeleteAckedMailboxEnvelopes(ctx context.Context, arg DeleteAck
 	return result.RowsAffected()
 }
 
+const GetMailboxAckCursor = `-- name: GetMailboxAckCursor :one
+SELECT ack_cursor
+FROM mailbox_ack_cursors
+WHERE recipient = $1
+`
+
+func (q *Queries) GetMailboxAckCursor(ctx context.Context, recipient string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, GetMailboxAckCursor, recipient)
+	var ack_cursor int64
+	err := row.Scan(&ack_cursor)
+	return ack_cursor, err
+}
+
 const PullMailboxEnvelopes = `-- name: PullMailboxEnvelopes :many
 SELECT event_seq, recipient, msg_id, envelope, created_at
 FROM mailbox_envelopes
