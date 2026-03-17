@@ -364,7 +364,7 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 					[]byte(nil),
 					row.RecipientPkScript...,
 				),
-				EventId:   uint64(row.EventID),
+				EventId: uint64(row.EventID),
 				SessionId: append(
 					[]byte(nil), row.SessionID...,
 				),
