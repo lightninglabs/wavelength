@@ -17,12 +17,12 @@ import (
 // specify an explicit backoff.
 const defaultRetryDelay = 1 * time.Second
 
-// unexpectedEvent returns a transition that stays in the current state and
-// emits no outbox work for an unexpected event.
+// ignoreEvent returns a transition that stays in the current state and emits
+// no outbox work for an event not handled by the current state.
 //
 // This makes the FSM resilient to retries and late deliveries at the actor
 // boundary.
-func unexpectedEvent(state State) *StateTransition {
+func ignoreEvent(state State) *StateTransition {
 	return &StateTransition{
 		NextState: state,
 		NewEvents: fn.None[EmittedEvent](),
@@ -113,7 +113,7 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -182,7 +182,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -257,7 +257,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -334,7 +334,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -375,7 +375,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -405,7 +405,7 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		}, nil
 
 	default:
-		return unexpectedEvent(s), nil
+		return ignoreEvent(s), nil
 	}
 }
 
@@ -416,7 +416,7 @@ func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s), nil
+	return ignoreEvent(s), nil
 }
 
 // ProcessEvent handles events for Failed.
@@ -426,7 +426,7 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	_ = ctx
 	_ = env
 
-	return unexpectedEvent(s), nil
+	return ignoreEvent(s), nil
 }
 
 // handleOutboxError emits retry scheduling for retryable errors while keeping

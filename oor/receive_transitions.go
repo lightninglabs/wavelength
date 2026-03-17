@@ -278,5 +278,5 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
 		return ignoreReceiveEvent(s, event), nil
-}
+	}
 }
