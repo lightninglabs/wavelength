@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
+	libtypes "github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -567,6 +569,39 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 
 	created := false
 	handle, ok := b.sessions[req.SessionID]
+	if ok && handle.kind != sessionKindIncoming {
+		state, err := handle.currentSessionState()
+		if err != nil {
+			return fn.Err[ActorResp](err)
+		}
+
+		outgoingState, isOutgoingState := state.(State)
+		if !isOutgoingState {
+			return fn.Err[ActorResp](fmt.Errorf("session %s has "+
+				"unexpected outgoing state type %T",
+				req.SessionID, state))
+		}
+
+		if !outgoingState.IsTerminal() {
+			b.logger(ctx).DebugS(ctx, "Deferring incoming self-transfer hint "+
+				"until outgoing session reaches terminal state",
+				slog.String("session_id", req.SessionID.String()),
+				slog.String("state", fmt.Sprintf("%T", state)))
+
+			return fn.Err[ActorResp](fmt.Errorf("outgoing session %s "+
+				"still active for incoming hint", req.SessionID))
+		}
+
+		b.logger(ctx).DebugS(ctx, "Replacing terminal outgoing session "+
+			"with incoming self-transfer session",
+			slog.String("session_id", req.SessionID.String()),
+			slog.String("state", fmt.Sprintf("%T", state)))
+
+		delete(b.sessions, req.SessionID)
+		handle = nil
+		ok = false
+	}
+
 	if !ok {
 		session, err := newReceiveSessionWithState(
 			ctx, req.SessionID, &ReceiveResolving{
@@ -746,6 +781,17 @@ func (b *oorDurableBehavior) persistOutgoingPackage(ctx context.Context,
 			PackageLinkKindConsumedInput,
 		)
 		if err != nil {
+			if errors.Is(err, libtypes.ErrOORBindingOutpointNotFound) {
+				b.logger(ctx).DebugS(ctx,
+					"Skipping non-local outgoing package input binding",
+					slog.String("session_id", sessionID.String()),
+					slog.String("outpoint",
+						state.InputOutpoints[i].String()),
+				)
+
+				continue
+			}
+
 			return err
 		}
 	}

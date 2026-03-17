@@ -181,3 +181,52 @@ func TestReceiveSessionAcksAfterHandled(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &ReceiveCompleted{}, finalState)
 }
+
+// TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure
+// verifies that receive sessions keep their state and re-query metadata when
+// incoming materialization returns a retryable outbox failure.
+func TestReceiveSessionRetriesMetadataAfterRetryableMaterializationFailure(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, _, _, _, _, _ := buildTestIncomingMaterialization(t)
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+
+	sess, _, err := DriveIncomingTransfer(ctx, sessionID, arkPSBT)
+	require.NoError(t, err)
+
+	fut := sess.FSM.AskEvent(ctx, &IncomingMetadataResolvedEvent{})
+	result := fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox := result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	require.IsType(t, &MaterializeIncomingVTXOsRequest{}, outbox[0])
+
+	fut = sess.FSM.AskEvent(ctx, &OutboxErrorEvent{
+		OutboxType: (&MaterializeIncomingVTXOsRequest{}).outboxType(),
+		Retryable:  true,
+		RetryAfter: defaultRetryDelay,
+		ErrorReason: "incoming metadata missing for " +
+			"wallet-owned output 0",
+	})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox = result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	schedule, ok := outbox[0].(*ScheduleRetryRequest)
+	require.True(t, ok)
+	require.Equal(t, defaultRetryDelay, schedule.After)
+
+	fut = sess.FSM.AskEvent(ctx, &RetryDueEvent{})
+	result = fut.Await(ctx)
+	require.False(t, result.IsErr())
+
+	outbox = result.UnwrapOr(nil)
+	require.Len(t, outbox, 1)
+	require.IsType(t, &QueryIncomingMetadataRequest{}, outbox[0])
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -199,6 +200,7 @@ func TestOORArtifactStoreUpsertPackageDirectionConflict(t *testing.T) {
 	err = store.UpsertPackage(ctx, OORPackageDirectionOutgoing,
 		sessionID, arkPSBT, checkpoints)
 	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrOORPackageDirectionConflict)
 	require.ErrorContains(t, err, "package direction conflict")
 }
 
@@ -333,6 +335,7 @@ func TestOORArtifactStoreBindingRequiresExistingVTXO(t *testing.T) {
 	err = store.UpsertBinding(ctx, outpoint, sessionID, 0,
 		OORPackageLinkKindCreatedOutput)
 	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrOORBindingOutpointNotFound)
 	require.ErrorContains(t, err, "not found in local vtxo store")
 }
 
