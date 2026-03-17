@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 )
@@ -14,18 +15,21 @@ import (
 // ark gRPC client stubs. It translates between the domain types in
 // this package and the generated protobuf types.
 type RPCDaemonConn struct {
-	daemon daemonrpc.DaemonServiceClient
-	ark    arkrpc.ArkServiceClient
+	daemon  daemonrpc.DaemonServiceClient
+	ark     arkrpc.ArkServiceClient
+	indexer arkrpc.IndexerServiceClient
 }
 
-// NewRPCDaemonConn creates a new DaemonConn backed by gRPC clients
-// for both the daemon and ark services.
+// NewRPCDaemonConn creates a new DaemonConn backed by gRPC clients for the
+// daemon, ark, and indexer services.
 func NewRPCDaemonConn(daemon daemonrpc.DaemonServiceClient,
-	ark arkrpc.ArkServiceClient) *RPCDaemonConn {
+	ark arkrpc.ArkServiceClient,
+	indexer arkrpc.IndexerServiceClient) *RPCDaemonConn {
 
 	return &RPCDaemonConn{
-		daemon: daemon,
-		ark:    ark,
+		daemon:  daemon,
+		ark:     ark,
+		indexer: indexer,
 	}
 }
 
@@ -187,6 +191,50 @@ func (r *RPCDaemonConn) ListLiveVTXOs(
 	}
 
 	return vtxos, nil
+}
+
+// FindLiveVTXOByPkScript queries the authoritative indexer for a live VTXO
+// matching the given pkScript.
+func (r *RPCDaemonConn) FindLiveVTXOByPkScript(ctx context.Context,
+	pkScript []byte) (*VTXOInfo, error) {
+
+	resp, err := r.indexer.ListVTXOsByScripts(
+		ctx, &arkrpc.ListVTXOsByScriptsRequest{
+			Scripts: []*arkrpc.ScriptScope{{
+				PkScript: pkScript,
+			}},
+			StatusFilter: []arkrpc.VTXOStatus{
+				arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+			},
+			Limit: 1,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"indexer ListVTXOsByScripts: %w", err,
+		)
+	}
+
+	if len(resp.GetVtxos()) == 0 {
+		return nil, nil
+	}
+
+	vtxo := resp.GetVtxos()[0]
+	outpoint := vtxo.GetOutpoint()
+	if outpoint == nil {
+		return nil, fmt.Errorf("indexer vtxo missing outpoint")
+	}
+
+	txid, err := chainhash.NewHash(outpoint.GetTxid())
+	if err != nil {
+		return nil, fmt.Errorf("parse vtxo txid: %w", err)
+	}
+
+	return &VTXOInfo{
+		Outpoint:  fmt.Sprintf("%s:%d", txid, outpoint.GetVout()),
+		AmountSat: int64(vtxo.GetValueSat()),
+		PkScript:  append([]byte(nil), vtxo.GetPkScript()...),
+	}, nil
 }
 
 // NewOORReceiveScript allocates a fresh OOR receive script from the

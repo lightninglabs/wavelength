@@ -49,8 +49,9 @@ func (c *SwapClient) PayViaLightning(ctx context.Context,
 		)
 	}
 
-	// Build preimage hash from payment hash.
-	preimageHash := arkscript.Hash160(cfg.PaymentHash[:])
+	// The LN payment hash is already SHA256(preimage), which is
+	// the format the vHTLC script expects for OP_SHA256 verification.
+	preimageHash := cfg.PaymentHash[:]
 
 	// Build the vHTLC policy. For in-swaps, client is sender
 	// and server is receiver.
@@ -114,8 +115,9 @@ func (c *SwapClient) PayViaLightning(ctx context.Context,
 	)
 
 	return &PayResult{
-		PaymentHash: cfg.PaymentHash,
-		FeeSat:      cfg.FeeSat,
+		PaymentHash:      cfg.PaymentHash,
+		FundingSessionID: txid,
+		FeeSat:           cfg.FeeSat,
 	}, nil
 }
 

@@ -1671,7 +1671,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
-		s.cfg.Server.RemoteMailboxID,
+		s.cfg.Server.IndexerServerID,
 		s.cfg.Server.LocalMailboxID,
 	)
 

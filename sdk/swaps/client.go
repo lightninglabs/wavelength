@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lntypes"
 )
 
@@ -36,8 +38,22 @@ type PayResult struct {
 	// invoice.
 	PaymentHash lntypes.Hash
 
+	// FundingSessionID is the OOR session identifier returned by the daemon
+	// when the vHTLC funding transfer is submitted.
+	FundingSessionID string
+
 	// FeeSat is the fee in satoshis charged by the swap server.
 	FeeSat uint64
+}
+
+// InvoiceCreator creates signed Lightning invoices for out-swaps.
+type InvoiceCreator interface {
+	// CreateInvoice builds one signed invoice using the provided route
+	// hint and optional fixed preimage.
+	CreateInvoice(ctx context.Context, amountSat btcutil.Amount, memo string,
+		routeHint *RouteHint, expiry time.Duration,
+		preimage *lntypes.Preimage) (*invoices.Invoice, lntypes.Hash,
+		error)
 }
 
 // RouteHint describes a single hop hint for Lightning invoices.
@@ -168,6 +184,12 @@ type DaemonConn interface {
 		ctx context.Context,
 	) ([]VTXOInfo, error)
 
+	// FindLiveVTXOByPkScript returns the live VTXO matching the given
+	// script when one is visible on the authoritative indexer.
+	FindLiveVTXOByPkScript(
+		ctx context.Context, pkScript []byte,
+	) (*VTXOInfo, error)
+
 	// NewOORReceiveScript allocates a fresh OOR receive script.
 	NewOORReceiveScript(
 		ctx context.Context,
@@ -216,24 +238,33 @@ type VTXOInfo struct {
 type SwapClient struct {
 	server     SwapServerConn
 	daemon     DaemonConn
-	invoiceGen *InvoiceGenerator
+	invoiceGen InvoiceCreator
 	log        btclog.Logger
+
+	waitPollInterval time.Duration
+	waitVHTLCTimeout time.Duration
+	claimRetryDelay  time.Duration
+	claimMaxAttempts int
 }
 
-// NewSwapClient creates a new swap client. The optional
-// InvoiceGenerator is required for ReceiveViaLightning (out-swaps).
+// NewSwapClient creates a new swap client. The optional invoice creator is
+// required for ReceiveViaLightning (out-swaps).
 func NewSwapClient(server SwapServerConn, daemon DaemonConn,
 	log btclog.Logger,
-	invoiceGen *InvoiceGenerator) *SwapClient {
+	invoiceGen InvoiceCreator) *SwapClient {
 
 	if log == nil {
 		log = btclog.Disabled
 	}
 
 	return &SwapClient{
-		server:     server,
-		daemon:     daemon,
-		invoiceGen: invoiceGen,
-		log:        log,
+		server:           server,
+		daemon:           daemon,
+		invoiceGen:       invoiceGen,
+		log:              log,
+		waitPollInterval: 2 * time.Second,
+		waitVHTLCTimeout: 60 * time.Second,
+		claimRetryDelay:  time.Second,
+		claimMaxAttempts: 10,
 	}
 }

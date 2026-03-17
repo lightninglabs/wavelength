@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -38,29 +39,37 @@ type rawCodec struct{}
 
 // Marshal implements encoding.Codec.
 func (rawCodec) Marshal(v any) ([]byte, error) {
-	msg, ok := v.(*rawMsg)
-	if !ok {
+	switch msg := v.(type) {
+	case *rawMsg:
+		return msg.data, nil
+
+	case proto.Message:
+		return proto.Marshal(msg)
+
+	default:
 		return nil, fmt.Errorf(
 			"rawCodec: unsupported type %T", v,
 		)
 	}
-
-	return msg.data, nil
 }
 
 // Unmarshal implements encoding.Codec.
 func (rawCodec) Unmarshal(data []byte, v any) error {
-	msg, ok := v.(*rawMsg)
-	if !ok {
+	switch msg := v.(type) {
+	case *rawMsg:
+		msg.data = make([]byte, len(data))
+		copy(msg.data, data)
+
+		return nil
+
+	case proto.Message:
+		return proto.Unmarshal(data, msg)
+
+	default:
 		return fmt.Errorf(
 			"rawCodec: unsupported type %T", v,
 		)
 	}
-
-	msg.data = make([]byte, len(data))
-	copy(msg.data, data)
-
-	return nil
 }
 
 // Name implements encoding.Codec.

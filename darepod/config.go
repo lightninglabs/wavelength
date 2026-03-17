@@ -31,6 +31,10 @@ const (
 	// mailbox edge server.
 	DefaultServerHost = "localhost:10010"
 
+	// DefaultIndexerServerID is the canonical operator identifier used
+	// in signed indexer proofs.
+	DefaultIndexerServerID = "arkd"
+
 	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
 	DefaultRPCTimeout = 30 * time.Second
 
@@ -160,6 +164,11 @@ type ServerConfig struct {
 	// RemoteMailboxID is the remote server's mailbox identifier.
 	// Outbound envelopes are addressed to this mailbox.
 	RemoteMailboxID string `mapstructure:"remotemailboxid"`
+
+	// IndexerServerID is the canonical operator identifier expected by
+	// indexer proof verification. This is distinct from RemoteMailboxID,
+	// which addresses the mailbox transport.
+	IndexerServerID string `mapstructure:"indexerserverid"`
 }
 
 // RPCConfig holds configuration for the daemon's own gRPC server.
@@ -216,8 +225,9 @@ func DefaultConfig() *Config {
 			RPCTimeout: DefaultRPCTimeout,
 		},
 		Server: &ServerConfig{
-			Host:         DefaultServerHost,
-			MaxTreeNodes: roundpb.DefaultMaxTreeNodes,
+			Host:            DefaultServerHost,
+			MaxTreeNodes:    roundpb.DefaultMaxTreeNodes,
+			IndexerServerID: DefaultIndexerServerID,
 		},
 		RPC: &RPCConfig{
 			ListenAddr: DefaultRPCHost,
@@ -295,6 +305,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.RemoteMailboxID == "" {
 		return fmt.Errorf("server remote mailbox ID is " +
+			"required")
+	}
+	if c.Server.IndexerServerID == "" {
+		return fmt.Errorf("server indexer server ID is " +
 			"required")
 	}
 

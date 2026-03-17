@@ -184,10 +184,11 @@ func buildSwapClient(cmd *cobra.Command,
 	// the daemon's connection info — the ark server is
 	// typically on the same host as the daemon's server.
 	arkClient := arkrpc.NewArkServiceClient(daemonConn)
+	indexerClient := arkrpc.NewIndexerServiceClient(daemonConn)
 
 	serverConn := swaps.NewGRPCSwapServerConn(swapConn)
 	daemonWrapper := swaps.NewRPCDaemonConn(
-		daemonClient, arkClient,
+		daemonClient, arkClient, indexerClient,
 	)
 
 	// For MVP, create swap client without InvoiceGenerator.
