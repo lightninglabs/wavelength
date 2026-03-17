@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	clientindexer "github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -46,6 +47,11 @@ type ClientBackend interface {
 	DeriveClientKey(ctx context.Context) (
 		*keychain.KeyDescriptor, error,
 	)
+
+	// IndexerSigner returns a Schnorr signer bound to the provided wallet
+	// key. Receive-script registration and proof-gated indexer queries must
+	// use the same key that controls the target receive script.
+	IndexerSigner(keyDesc keychain.KeyDescriptor) clientindexer.SchnorrSigner
 
 	// GetOnChainBalance returns the confirmed on-chain balance
 	// across all wallet-owned addresses.

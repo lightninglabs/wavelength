@@ -10,7 +10,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
-	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/stretchr/testify/require"
@@ -689,26 +688,24 @@ func TestTranscriptMessageSequence(t *testing.T) {
 	h := NewE2EHarness(t)
 	h.Start()
 
-	ctx := t.Context()
-
-	// Create a client and have it join.
+	// Create a client and drive the real funded-registration path, but buffer
+	// the outbound join so the transcript contains only the production
+	// JoinRoundRequest envelope.
 	client := NewTestClient(h)
+	prepareClientWithBoardingIntent(t, h, client, 200_000)
 
-	mockOutpoint := &wire.OutPoint{
-		Hash:  chainhash.Hash{0xAB},
-		Index: 0,
-	}
-	boardingReq := &types.BoardingRequest{
-		Outpoint:  mockOutpoint,
-		ExitDelay: 144,
-	}
+	h.Bridge().SetBufferedC2S(client.ClientID(), true)
 
-	err := client.JoinRound(ctx, []*types.BoardingRequest{boardingReq})
+	err := client.TriggerRegistration(t.Context())
 	require.NoError(t, err)
+	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
+	require.NoError(t, err, "join request should be recorded")
+	require.Equal(t, 1, h.Bridge().PendingC2SCount(client.ClientID()),
+		"join request should remain buffered")
 
 	// Test the AssertMessageSequence helper.
 	expected := []ExpectedMessage{
-		C2S("JoinRoundRequest"),
+		C2SFrom("JoinRoundRequest", client.ClientID()),
 	}
 	h.Transcript().AssertMessageSequence(t, expected)
 
@@ -774,12 +771,12 @@ func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
 
 	// Hold outbound client signing messages so the server hits the
 	// VTXO-nonce timeout for this round.
-	client.serverConn.SetBuffered(true)
+	h.Bridge().SetBufferedC2S(client.ClientID(), true)
 
 	h.TriggerRoundSeal()
 
 	require.Eventually(t, func() bool {
-		return client.serverConn.PendingCount() > 0
+		return h.Bridge().PendingC2SCount(client.ClientID()) > 0
 	}, 10*time.Second, pollInterval,
 		"expected buffered client->server signing messages")
 
@@ -804,7 +801,7 @@ func TestBoardingE2ETimeoutThenRejoin(t *testing.T) {
 		"failed round should no longer be tracked")
 
 	// Resume normal delivery for the rejoin path.
-	client.serverConn.SetBuffered(false)
+	h.Bridge().SetBufferedC2S(client.ClientID(), false)
 
 	err = client.WaitForFSMState("ClientFailedState", 10*time.Second)
 	require.NoError(t, err, "client should enter recoverable failed state")
@@ -1040,7 +1037,8 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// We buffer server messages so that signing-phase messages (BatchInfo,
 	// nonces, sigs) accumulate while we set up both rounds. This ensures
 	// both rounds enter signing before either client starts processing.
-	h.Bridge().SetBuffered(true)
+	h.Bridge().SetBufferedS2C(client1.ClientID(), true)
+	h.Bridge().SetBufferedS2C(client2.ClientID(), true)
 	t.Log("Enabled S→C message buffering")
 
 	// Seal Round 1 - this creates Round 2 and starts Round 1's batch
@@ -1065,8 +1063,8 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Check buffered message counts.
-	buffered1 := h.Bridge().PendingCountFor(client1.ClientID())
-	buffered2 := h.Bridge().PendingCountFor(client2.ClientID())
+	buffered1 := h.Bridge().PendingS2CCount(client1.ClientID())
+	buffered2 := h.Bridge().PendingS2CCount(client2.ClientID())
 	t.Logf(
 		"Buffered messages - Client1: %d, Client2: %d",
 		buffered1, buffered2,
@@ -1075,10 +1073,11 @@ func TestBoardingE2EConcurrentRounds(t *testing.T) {
 	// === Phase 4: Release All Messages - Both Rounds Sign Concurrently ===
 	// Disable buffering and flush. Both clients receive their messages and
 	// start their signing phases simultaneously.
-	h.Bridge().SetBuffered(false)
-	err = h.Bridge().FlushAllFor(client1.ClientID())
+	h.Bridge().SetBufferedS2C(client1.ClientID(), false)
+	h.Bridge().SetBufferedS2C(client2.ClientID(), false)
+	err = h.Bridge().FlushAllS2C(client1.ClientID())
 	require.NoError(t, err, "flush client1 buffered messages")
-	err = h.Bridge().FlushAllFor(client2.ClientID())
+	err = h.Bridge().FlushAllS2C(client2.ClientID())
 	require.NoError(t, err, "flush client2 buffered messages")
 	t.Log("Flushed all buffered messages - both rounds now signing")
 

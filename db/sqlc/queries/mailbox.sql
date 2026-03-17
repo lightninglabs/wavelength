@@ -25,6 +25,11 @@ ON CONFLICT (recipient) DO UPDATE
         ELSE mailbox_ack_cursors.ack_cursor
     END;
 
+-- name: GetMailboxAckCursor :one
+SELECT ack_cursor
+FROM mailbox_ack_cursors
+WHERE recipient = $1;
+
 -- name: CountMailboxEnvelopes :one
 SELECT COUNT(*) AS cnt
 FROM mailbox_envelopes

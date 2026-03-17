@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -14,10 +16,12 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	clientactor "github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	clientoor "github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	clientvtxo "github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo/db"
 	serveroor "github.com/lightninglabs/darepo/oor"
@@ -212,6 +216,316 @@ func clonePSBTSliceForTest(t *testing.T,
 	return clones
 }
 
+// localClientOutboxHandler handles only local client OOR outbox events. The
+// transport edge is exercised through the ServerConn bridge instead.
+type localClientOutboxHandler struct {
+	t *testing.T
+
+	clientSigner input.Signer
+}
+
+// Handle processes only local client-side outbox events.
+func (h *localClientOutboxHandler) Handle(_ context.Context,
+	_ clientoor.SessionID,
+	outbox clientoor.OutboxEvent) ([]clientoor.Event, error) {
+
+	h.t.Helper()
+
+	switch msg := outbox.(type) {
+	case *clientoor.RequestArkSignatures:
+		err := clientoor.SignArkPSBT(
+			h.clientSigner, msg.ArkPSBT,
+			msg.CheckpointPSBTs, msg.TransferInputs,
+		)
+		require.NoError(h.t, err)
+
+		return []clientoor.Event{
+			&clientoor.ArkSignedEvent{
+				ArkPSBT: msg.ArkPSBT,
+			},
+		}, nil
+
+	case *clientoor.RequestCheckpointSignatures:
+		err := clientoor.SignCheckpointPSBTs(
+			h.clientSigner, msg.TransferInputs,
+			msg.CoSignedCheckpointPSBTs,
+		)
+		require.NoError(h.t, err)
+
+		return []clientoor.Event{
+			&clientoor.CheckpointsSignedEvent{
+				FinalCheckpointPSBTs: msg.
+					CoSignedCheckpointPSBTs,
+			},
+		}, nil
+
+	case *clientoor.MarkInputsSpentRequest:
+		return []clientoor.Event{
+			&clientoor.InputsMarkedSpentEvent{},
+		}, nil
+
+	case *clientoor.SendSubmitPackageRequest,
+		*clientoor.SendFinalizePackageRequest,
+		*clientoor.SendIncomingAckRequest:
+
+		h.t.Fatalf("transport event %T should not reach "+
+			"local handler", outbox)
+
+		return nil, nil
+
+	default:
+		h.t.Fatalf("unhandled local event %T", outbox)
+
+		return nil, nil
+	}
+}
+
+var _ clientoor.OutboxHandler = (*localClientOutboxHandler)(nil)
+
+// inProcessServerConnBridge is a test-only serverconn bridge that forwards
+// client transport messages to the real server actor outside the client
+// durable actor transaction, then injects the resulting response events back
+// into the client actor.
+type inProcessServerConnBridge struct {
+	t *testing.T
+
+	mu sync.Mutex
+
+	id string
+
+	server *serveroor.Actor
+	client *clientoor.OORClientActor
+
+	pauseFinalize bool
+
+	lastFinalizeArkPSBT  *psbt.Packet
+	finalCheckpointPSBTs []*psbt.Packet
+
+	asyncErr error
+}
+
+// newInProcessServerConnBridge creates a new test transport bridge.
+func newInProcessServerConnBridge(t *testing.T,
+	server *serveroor.Actor) *inProcessServerConnBridge {
+
+	return &inProcessServerConnBridge{
+		t:      t,
+		id:     "oor-e2e-serverconn",
+		server: server,
+	}
+}
+
+// ID returns the stable test bridge identifier.
+func (b *inProcessServerConnBridge) ID() string {
+	return b.id
+}
+
+// Tell forwards transport messages asynchronously to the server actor.
+func (b *inProcessServerConnBridge) Tell(ctx context.Context,
+	msg serverconn.ServerConnMsg) error {
+
+	sendReq, ok := msg.(*serverconn.SendClientEventRequest)
+	if !ok {
+		return fmt.Errorf("unexpected serverconn message: %T", msg)
+	}
+
+	switch req := sendReq.Message.(type) {
+	case *clientoor.SendSubmitPackageRequest:
+		go b.handleSubmit(b.asyncContext(ctx), req)
+		return nil
+
+	case *clientoor.SendFinalizePackageRequest:
+		b.mu.Lock()
+		b.lastFinalizeArkPSBT = req.ArkPSBT
+		b.finalCheckpointPSBTs = req.FinalCheckpointPSBTs
+		pauseFinalize := b.pauseFinalize
+		b.mu.Unlock()
+
+		if pauseFinalize {
+			return nil
+		}
+
+		go b.handleFinalize(b.asyncContext(ctx), req)
+
+		return nil
+
+	default:
+		return fmt.Errorf("unexpected transport request: %T",
+			sendReq.Message)
+	}
+}
+
+// setClient binds the bridge to the client actor that should receive server
+// response events.
+func (b *inProcessServerConnBridge) setClient(
+	client *clientoor.OORClientActor) {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.client = client
+}
+
+// setServer swaps the active server actor used by future bridge requests.
+func (b *inProcessServerConnBridge) setServer(server *serveroor.Actor) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.server = server
+}
+
+// setPauseFinalize controls whether finalize transport is held for manual
+// replay by the test.
+func (b *inProcessServerConnBridge) setPauseFinalize(pause bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.pauseFinalize = pause
+}
+
+// asyncError returns any asynchronous bridge failure seen so far.
+func (b *inProcessServerConnBridge) asyncError() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.asyncErr
+}
+
+// asyncContext strips transaction-scoped actor metadata from an outbound
+// transport callback and detaches it from the originating request lifetime.
+func (b *inProcessServerConnBridge) asyncContext(
+	ctx context.Context,
+) context.Context {
+
+	strippedCtx := clientactor.WithoutTx(ctx)
+	strippedCtx = clientactor.WithoutOutboxID(strippedCtx)
+
+	return context.WithoutCancel(strippedCtx)
+}
+
+// lastFinalizePackage returns the most recent finalize payload captured by the
+// bridge.
+func (b *inProcessServerConnBridge) lastFinalizePackage() (*psbt.Packet,
+	[]*psbt.Packet) {
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.lastFinalizeArkPSBT, b.finalCheckpointPSBTs
+}
+
+// handleSubmit sends the submit package to the server actor and injects the
+// response back into the client actor.
+func (b *inProcessServerConnBridge) handleSubmit(ctx context.Context,
+	req *clientoor.SendSubmitPackageRequest) {
+
+	attachArkLeafScriptsForTest(
+		b.t, req.ArkPSBT, req.TransferInputs,
+		req.CheckpointPSBTs,
+	)
+
+	descs := make([]serveroor.VTXOSigningDescriptor, 0,
+		len(req.TransferInputs))
+	for i := range req.TransferInputs {
+		descs = append(descs, serveroor.VTXOSigningDescriptor{
+			Outpoint: req.TransferInputs[i].VTXO.Outpoint,
+			OwnerKey: req.TransferInputs[i].VTXO.ClientKey.PubKey,
+			ExitDelay: req.TransferInputs[i].VTXO.
+				RelativeExpiry,
+		})
+	}
+
+	b.mu.Lock()
+	server := b.server
+	client := b.client
+	b.mu.Unlock()
+
+	resp := server.Ref().Ask(
+		ctx, &serveroor.SubmitOORRequest{
+			ArkPSBT:                req.ArkPSBT,
+			CheckpointPSBTs:        req.CheckpointPSBTs,
+			VTXOSigningDescriptors: descs,
+		},
+	).Await(ctx)
+	if resp.IsErr() {
+		b.setAsyncErr(resp.Err())
+		return
+	}
+
+	unwrapped := resp.UnwrapOr(nil)
+	serverMsg, ok := unwrapped.(*serveroor.SubmitOORResponse)
+	if !ok {
+		b.setAsyncErr(fmt.Errorf("unexpected submit response: %T",
+			unwrapped))
+		return
+	}
+
+	coSigned := clonePSBTSliceForTest(
+		b.t, serverMsg.CoSignedCheckpointPSBTs,
+	)
+
+	driveResp := client.Receive(ctx, &clientoor.DriveEventRequest{
+		SessionID: clientoor.SessionID(serverMsg.SessionID),
+		Event: &clientoor.SubmitAcceptedEvent{
+			SessionID: clientoor.SessionID(
+				serverMsg.SessionID,
+			),
+			ArkPSBT:                 req.ArkPSBT,
+			CoSignedCheckpointPSBTs: coSigned,
+		},
+	})
+	if driveResp.IsErr() {
+		b.setAsyncErr(driveResp.Err())
+	}
+}
+
+// handleFinalize sends the finalize package to the server actor and injects
+// finalize acceptance back into the client actor.
+func (b *inProcessServerConnBridge) handleFinalize(ctx context.Context,
+	req *clientoor.SendFinalizePackageRequest) {
+
+	b.mu.Lock()
+	server := b.server
+	client := b.client
+	b.mu.Unlock()
+
+	sessionID := serveroor.SessionID(
+		req.ArkPSBT.UnsignedTx.TxHash(),
+	)
+	resp := server.Ref().Ask(
+		ctx, &serveroor.FinalizeOORRequest{
+			SessionID:            sessionID,
+			FinalCheckpointPSBTs: req.FinalCheckpointPSBTs,
+		},
+	).Await(ctx)
+	if resp.IsErr() {
+		b.setAsyncErr(resp.Err())
+		return
+	}
+
+	driveResp := client.Receive(ctx, &clientoor.DriveEventRequest{
+		SessionID: clientoor.SessionID(sessionID),
+		Event:     &clientoor.FinalizeAcceptedEvent{},
+	})
+	if driveResp.IsErr() {
+		b.setAsyncErr(driveResp.Err())
+	}
+}
+
+// setAsyncErr records the first asynchronous bridge error.
+func (b *inProcessServerConnBridge) setAsyncErr(err error) {
+	if err == nil {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.asyncErr == nil {
+		b.asyncErr = err
+	}
+}
+
 // inProcessClientToServerOutbox is a test-only adaptor that connects
 // the client OOR FSM outbox messages to the server OOR coordinator
 // actor, without RPC.
@@ -253,13 +567,17 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 			msg.CheckpointPSBTs,
 		)
 
-		resp := h.server.Ref().Ask(
+		// This package-local harness is white-box by design:
+		// drive the server behavior directly instead of
+		// nesting a request-response
+		// actor future inside the client durable actor's outbox walk.
+		resp := h.server.Receive(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
 				CheckpointPSBTs:        msg.CheckpointPSBTs,
 				VTXOSigningDescriptors: h.signDescs,
 			},
-		).Await(ctx)
+		)
 		require.True(h.t, resp.IsOk(), resp.Err())
 
 		unwrapped := resp.UnwrapOr(nil)
@@ -302,7 +620,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 
 		h.lastFinalizeArkPSBT = msg.ArkPSBT
 
-		resp := h.server.Ref().Ask(
+		resp := h.server.Receive(
 			ctx, &serveroor.FinalizeOORRequest{
 				SessionID: serveroor.SessionID(
 					sessionID,
@@ -310,7 +628,7 @@ func (h *inProcessClientToServerOutbox) Handle(ctx context.Context,
 				FinalCheckpointPSBTs: msg.
 					FinalCheckpointPSBTs,
 			},
-		).Await(ctx)
+		)
 		require.True(h.t, resp.IsOk())
 
 		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
@@ -361,6 +679,27 @@ func (h *inProcessReceiveOutbox) Handle(_ context.Context,
 	switch msg := outbox.(type) {
 	case *clientoor.IncomingTransferNotification:
 		return nil, nil
+
+	case *clientoor.QueryIncomingMetadataRequest:
+		matches := make(
+			[]clientoor.IncomingMetadataMatch, 0,
+			len(msg.Recipients),
+		)
+		for i := range msg.Recipients {
+			m := clientoor.IncomingMetadataMatch{
+				OutputIndex: msg.Recipients[i].OutputIndex,
+				Metadata: clientoor.IncomingVTXOMetadata{
+					RoundID: "oor-e2e",
+				},
+			}
+			matches = append(matches, m)
+		}
+
+		return []clientoor.Event{
+			&clientoor.IncomingMetadataResolvedEvent{
+				Matches: matches,
+			},
+		}, nil
 
 	case *clientoor.MaterializeIncomingVTXOsRequest:
 		arkTxid := msg.ArkPSBT.UnsignedTx.TxHash()
@@ -484,13 +823,13 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 			msg.CheckpointPSBTs,
 		)
 
-		resp := h.server.Ref().Ask(
+		resp := h.server.Receive(
 			ctx, &serveroor.SubmitOORRequest{
 				ArkPSBT:                msg.ArkPSBT,
 				CheckpointPSBTs:        msg.CheckpointPSBTs,
 				VTXOSigningDescriptors: h.signDescs,
 			},
-		).Await(ctx)
+		)
 		require.True(h.t, resp.IsOk())
 
 		unwrapped := resp.UnwrapOr(nil)
@@ -542,7 +881,7 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 			return nil, nil
 		}
 
-		resp := h.server.Ref().Ask(
+		resp := h.server.Receive(
 			ctx, &serveroor.FinalizeOORRequest{
 				SessionID: serveroor.SessionID(
 					sessionID,
@@ -550,7 +889,7 @@ func (h *pausedFinalizeAdaptor) Handle(ctx context.Context,
 				FinalCheckpointPSBTs: msg.
 					FinalCheckpointPSBTs,
 			},
-		).Await(ctx)
+		)
 		require.True(h.t, resp.IsOk(), resp.Err())
 
 		_, ok := resp.UnwrapOr(nil).(*serveroor.FinalizeOORResponse)
@@ -671,18 +1010,7 @@ func TestOORClientServerE2E(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	adaptor := &inProcessClientToServerOutbox{
-		t:            t,
-		server:       server,
-		clientSigner: clientSigner,
-		signDescs: []serveroor.VTXOSigningDescriptor{
-			{
-				Outpoint:  senderInputOutpoint,
-				OwnerKey:  senderKey.PubKey(),
-				ExitDelay: exitDelay,
-			},
-		},
-	}
+	bridge := newInProcessServerConnBridge(t, server)
 	// The client uses its own database for the delivery store since
 	// in production the client and server have separate databases.
 	clientSQLStore := db.NewTestDB(t)
@@ -692,10 +1020,15 @@ func TestOORClientServerE2E(t *testing.T) {
 	require.NoError(t, err)
 
 	client := clientoor.NewOORClientActor(clientoor.ClientActorCfg{
-		OutboxHandler: adaptor,
+		OutboxHandler: &localClientOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    bridge,
 		DeliveryStore: clientDeliveryStore,
 	})
 	defer client.Stop()
+	bridge.setClient(client)
 
 	startResp := client.Receive(ctx, &clientoor.StartTransferRequest{
 		Policy:     policy,
@@ -713,10 +1046,33 @@ func TestOORClientServerE2E(t *testing.T) {
 	//
 	// In production, this would arrive via RPC push or polling. For
 	// now, we drive the incoming-transfer FSM directly.
-	require.NotNil(t, adaptor.lastFinalizeArkPSBT)
+	var finalizeArkPSBT *psbt.Packet
+	require.Eventually(t, func() bool {
+		require.NoError(t, bridge.asyncError())
+
+		stateResp := client.Receive(ctx, &clientoor.GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if stateResp.IsErr() {
+			return false
+		}
+
+		stateMsg, ok := stateResp.UnwrapOr(
+			nil,
+		).(*clientoor.GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		finalizeArkPSBT, _ = bridge.lastFinalizePackage()
+
+		_, completed := stateMsg.State.(*clientoor.Completed)
+
+		return completed && finalizeArkPSBT != nil
+	}, 10*time.Second, 20*time.Millisecond)
 
 	receiveSess, receiveOutbox, err := clientoor.DriveIncomingTransfer(
-		ctx, startMsg.SessionID, adaptor.lastFinalizeArkPSBT,
+		ctx, startMsg.SessionID, finalizeArkPSBT,
 	)
 	require.NoError(t, err)
 
@@ -751,8 +1107,8 @@ func TestOORClientServerE2E(t *testing.T) {
 	require.NotNil(t, inRec)
 	require.Equal(t, vtxo.StatusSpent, inRec.Status)
 
-	require.NotNil(t, adaptor.lastFinalizeArkPSBT)
-	arkTxid := adaptor.lastFinalizeArkPSBT.UnsignedTx.TxHash()
+	require.NotNil(t, finalizeArkPSBT)
+	arkTxid := finalizeArkPSBT.UnsignedTx.TxHash()
 	outRec, err := store.Get(ctx, wire.OutPoint{
 		Hash:  arkTxid,
 		Index: 0,
@@ -849,19 +1205,8 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 		},
 	}
 
-	adaptor := &pausedFinalizeAdaptor{
-		t:             t,
-		server:        server1,
-		pauseFinalize: true,
-		clientSigner:  clientSigner,
-		signDescs: []serveroor.VTXOSigningDescriptor{
-			{
-				Outpoint:  senderInputOutpoint,
-				OwnerKey:  senderKey.PubKey(),
-				ExitDelay: exitDelay,
-			},
-		},
-	}
+	bridge := newInProcessServerConnBridge(t, server1)
+	bridge.setPauseFinalize(true)
 	// The client uses its own database for the delivery store since
 	// in production the client and server have separate databases.
 	clientDB := db.NewTestDB(t)
@@ -871,10 +1216,15 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	require.NoError(t, err)
 
 	client := clientoor.NewOORClientActor(clientoor.ClientActorCfg{
-		OutboxHandler: adaptor,
+		OutboxHandler: &localClientOutboxHandler{
+			t:            t,
+			clientSigner: clientSigner,
+		},
+		ServerConn:    bridge,
 		DeliveryStore: clientDeliveryStore,
 	})
 	defer client.Stop()
+	bridge.setClient(client)
 
 	startResp := client.Receive(
 		ctx, &clientoor.StartTransferRequest{
@@ -888,7 +1238,29 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 	startUnwrapped := startResp.UnwrapOr(nil)
 	startMsg, ok := startUnwrapped.(*clientoor.StartTransferResponse)
 	require.True(t, ok)
-	require.Equal(t, adaptor.sessionID, startMsg.SessionID)
+	require.Eventually(t, func() bool {
+		require.NoError(t, bridge.asyncError())
+
+		stateResp := client.Receive(ctx, &clientoor.GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if stateResp.IsErr() {
+			return false
+		}
+
+		stateMsg, ok := stateResp.UnwrapOr(
+			nil,
+		).(*clientoor.GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		_, awaitingFinalize := stateMsg.State.(*clientoor.
+			AwaitingFinalizeAccepted)
+		_, finalCheckpointPSBTs := bridge.lastFinalizePackage()
+
+		return awaitingFinalize && len(finalCheckpointPSBTs) > 0
+	}, 10*time.Second, 20*time.Millisecond)
 
 	// At this point the server should be at point-of-no-return and
 	// the session snapshot should be durable.
@@ -931,20 +1303,34 @@ func TestOORClientServerRestartBeforeFinalize(t *testing.T) {
 
 	// The paused adaptor captured the finalize package that must
 	// survive restart and be replayable.
-	require.NotNil(t, adaptor.arkPSBT)
-	require.NotEmpty(t, adaptor.finalCheckpointPSBTs)
+	finalizeArkPSBT, finalCheckpointPSBTs := bridge.lastFinalizePackage()
+	require.NotNil(t, finalizeArkPSBT)
+	require.NotEmpty(t, finalCheckpointPSBTs)
 
-	// Resume finalize against the restarted server.
-	adaptor.server = server2
-	adaptor.pauseFinalize = false
+	// Wait for the restarted server to restore the co-signed session
+	// from durable state before replaying finalize.
+	require.Eventually(t, func() bool {
+		state, stateErr := server2.CurrentState(
+			ctx, serveroor.SessionID(startMsg.SessionID),
+		)
+		if stateErr != nil {
+			return false
+		}
+
+		_, ok := state.(*serveroor.CoSignedState)
+
+		return ok
+	}, 10*time.Second, 20*time.Millisecond)
+
+	bridge.setServer(server2)
+	bridge.setPauseFinalize(false)
 
 	finalizeResp := server2.Ref().Ask(
 		ctx, &serveroor.FinalizeOORRequest{
 			SessionID: serveroor.SessionID(
 				startMsg.SessionID,
 			),
-			FinalCheckpointPSBTs: adaptor.
-				finalCheckpointPSBTs,
+			FinalCheckpointPSBTs: finalCheckpointPSBTs,
 		},
 	).Await(ctx)
 	require.True(t, finalizeResp.IsOk(), finalizeResp.Err())
@@ -1078,7 +1464,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	arkPSBT.Inputs[0].TaprootLeafScript =
 		[]*psbt.TaprootTapLeafScript{leaf}
 
-	submitResp := server.Ref().Ask(
+	submitResp := server.Receive(
 		ctx, &serveroor.SubmitOORRequest{
 			ArkPSBT: arkPSBT,
 			CheckpointPSBTs: []*psbt.Packet{
@@ -1091,7 +1477,7 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 				ExitDelay: exitDelay,
 			}},
 		},
-	).Await(ctx)
+	)
 	require.True(t, submitResp.IsOk(), submitResp.Err())
 
 	submitMsg, ok := submitResp.UnwrapOr(
@@ -1139,12 +1525,12 @@ func TestOORServerRejectsTamperedFinalizeSignature(t *testing.T) {
 	}
 	require.True(t, tamperedOwner)
 
-	finalizeResp := server.Ref().Ask(
+	finalizeResp := server.Receive(
 		ctx, &serveroor.FinalizeOORRequest{
 			SessionID:            submitMsg.SessionID,
 			FinalCheckpointPSBTs: tampered,
 		},
-	).Await(ctx)
+	)
 	require.True(t, finalizeResp.IsErr())
 	require.ErrorContains(
 		t, finalizeResp.Err(), "owner signature invalid",

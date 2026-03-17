@@ -343,9 +343,10 @@ func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 	}
 }
 
-// TestActorSubmitAcceptsCollaborativeOwnerLeaf ensures submit validation accepts
-// the real client flow where the Ark input uses the collaborative checkpoint
-// leaf and only carries the client-side signature at submit time.
+// TestActorSubmitAcceptsCollaborativeOwnerLeaf ensures submit
+// validation accepts the real client flow where the Ark input
+// uses the collaborative checkpoint leaf and only carries the
+// client-side signature at submit time.
 func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
 	t.Parallel()
 

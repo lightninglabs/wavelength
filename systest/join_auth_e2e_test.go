@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/bip322"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	clienttypes "github.com/lightninglabs/darepo-client/lib/types"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	clientround "github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo/clientconn"
@@ -22,6 +23,8 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // TestJoinAuthE2EForgedBoardingInputRejected verifies that a client cannot
@@ -43,13 +46,13 @@ func TestJoinAuthE2EForgedBoardingInputRejected(t *testing.T) {
 
 	// Buffer the victim's outbound join so we can capture a canonical
 	// boarding request payload without registering it server-side.
-	victim.serverConn.SetBuffered(true)
+	h.Bridge().SetBufferedC2S(victim.ClientID(), true)
 	err := victim.TriggerRegistration(ctx)
 	require.NoError(t, err, "victim should emit join request")
 
 	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
 	require.NoError(t, err, "victim join request should be recorded")
-	require.Equal(t, 1, victim.serverConn.PendingCount(),
+	require.Equal(t, 1, h.Bridge().PendingC2SCount(victim.ClientID()),
 		"victim join request should remain buffered")
 
 	victimJoinReq := latestClientJoinRoundRequest(
@@ -60,20 +63,24 @@ func TestJoinAuthE2EForgedBoardingInputRejected(t *testing.T) {
 		ctx, t, h, attacker, victimJoinReq,
 	)
 
-	sendResp := attacker.serverConn.Receive(
+	// Subscribe before sending the forged request so a fast rejection
+	// cannot race ahead of WaitForEvent's internal Subscribe call.
+	sub, err := h.Bridge().Subscribe(attacker.ClientID())
+	require.NoError(t, err, "should subscribe to attacker events")
+	defer sub.Cancel()
+
+	// Send the forged join request via the production serverconn
+	// Runtime. This exercises the same path a real attacker would
+	// use.
+	sendErr := attacker.serverConnRuntime.TellRef().Tell(
 		ctx, &serverconn.SendClientEventRequest{
 			Message: forgedReq,
 		},
 	)
-	resp, sendErr := sendResp.Unpack()
-	require.NoError(t, sendErr, "bridge should route forged join request")
+	require.NoError(t, sendErr, "should route forged join request")
 
-	sendAck, ok := resp.(*serverconn.SendClientEventResponse)
-	require.True(t, ok, "response should be SendClientEventResponse")
-	require.True(t, sendAck.Success, "bridge send should succeed")
-
-	failed := waitForBoardingFailedEvent(
-		t, h, attacker.ClientID(), 20*time.Second,
+	failed := waitForBoardingFailedFromSub(
+		t, sub, 20*time.Second,
 	)
 	require.Contains(t, failed.Reason, "join request invalid")
 	require.Contains(t, failed.Reason, "join request auth invalid")
@@ -114,13 +121,14 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 
 	// Hold the outbound join request so we can advance chain height past
 	// the request's embedded valid-until block.
-	client.serverConn.SetBuffered(true)
+	h.Bridge().SetBufferedC2S(client.ClientID(), true)
 	err := client.TriggerRegistration(ctx)
 	require.NoError(t, err, "client should emit join request")
 
 	err = h.Transcript().WaitForEntryCount(1, 10*time.Second)
 	require.NoError(t, err, "join request should be recorded")
-	require.Equal(t, 1, client.serverConn.PendingCount(),
+	require.Equal(t, 1,
+		h.Bridge().PendingC2SCount(client.ClientID()),
 		"join request should remain buffered")
 
 	joinReq := latestClientJoinRoundRequest(
@@ -163,8 +171,8 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	require.NoError(t, err, "should subscribe to client events")
 	defer sub.Cancel()
 
-	client.serverConn.SetBuffered(false)
-	err = client.serverConn.FlushAll()
+	h.Bridge().SetBufferedC2S(client.ClientID(), false)
+	err = h.Bridge().FlushAllC2S(client.ClientID())
 	require.NoError(t, err, "should flush buffered messages")
 
 	failed := waitForBoardingFailedFromSub(
@@ -236,9 +244,13 @@ func latestClientJoinRoundRequest(t *testing.T, transcript *MessageTranscript,
 			continue
 		}
 
-		joinReq, ok := entry.Msg.(*clientround.JoinRoundRequest)
-		require.True(t, ok,
-			"transcript entry should be JoinRoundRequest")
+		require.NotNil(t, entry.Envelope,
+			"join request transcript entry should retain envelope")
+
+		msg := extractProtoMessage(t, entry.Envelope)
+		joinReq := &clientround.JoinRoundRequest{}
+		require.NoError(t, joinReq.FromProto(msg),
+			"transcript envelope should deserialize to JoinRoundRequest")
 
 		return joinReq
 	}
@@ -249,33 +261,47 @@ func latestClientJoinRoundRequest(t *testing.T, transcript *MessageTranscript,
 	return nil
 }
 
-// waitForBoardingFailedEvent waits for a BoardingFailed event for the target
-// client and returns it.
+// waitForBoardingFailedEvent waits for a BoardingFailed event
+// (ClientErrorResp or ClientRoundFailedResp) for the target client
+// by watching the transcript. Returns a BoardingFailed with the
+// reason extracted from the envelope.
 func waitForBoardingFailedEvent(t *testing.T, h *E2EHarness,
 	clientID clientconn.ClientID,
 	timeout time.Duration) *clientround.BoardingFailed {
 
-	event, err := h.Bridge().WaitForEvent(
-		clientID, func(e clientround.ClientEvent) bool {
-			_, ok := e.(*clientround.BoardingFailed)
-			return ok
-		}, timeout,
-	)
-	require.NoError(t, err, "should receive BoardingFailed event")
+	t.Helper()
 
-	failed, ok := event.(*clientround.BoardingFailed)
-	require.True(t, ok, "event should be BoardingFailed")
+	env, err := h.Bridge().WaitForEvent(
+		clientID,
+		func(env *mailboxpb.Envelope) bool {
+			name := extractFriendlyTypeName(env)
+
+			return name == "ClientErrorResp" ||
+				name == "ClientRoundFailedResp"
+		},
+		timeout,
+	)
+	require.NoError(t, err, "should receive failure event")
+
+	// Parse the envelope body into a BoardingFailed event.
+	failed := &clientround.BoardingFailed{}
+	require.NoError(t,
+		failed.FromProto(extractProtoMessage(t, env)),
+		"should deserialize BoardingFailed",
+	)
 
 	return failed
 }
 
-// waitForBoardingFailedFromSub waits for a BoardingFailed event on an
-// already-active subscription. Use this when the subscription must be
-// established before the action that triggers the event, to avoid a
-// race between event broadcast and Subscribe.
+// waitForBoardingFailedFromSub waits for a BoardingFailed event on
+// an already-active subscription. The subscription now delivers raw
+// mailboxpb.Envelope values (not client events), so we filter by
+// proto type URL.
 func waitForBoardingFailedFromSub(t *testing.T,
 	sub *subscribe.Client,
 	timeout time.Duration) *clientround.BoardingFailed {
+
+	t.Helper()
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -283,10 +309,26 @@ func waitForBoardingFailedFromSub(t *testing.T,
 	for {
 		select {
 		case update := <-sub.Updates():
-			event, ok := update.(*clientround.BoardingFailed)
-			if ok {
-				return event
+			env, ok := update.(*mailboxpb.Envelope)
+			if !ok {
+				continue
 			}
+
+			name := extractFriendlyTypeName(env)
+			if name != "ClientErrorResp" &&
+				name != "ClientRoundFailedResp" {
+
+				continue
+			}
+
+			failed := &clientround.BoardingFailed{}
+			if err := failed.FromProto(
+				extractProtoMessage(t, env),
+			); err != nil {
+				continue
+			}
+
+			return failed
 
 		case <-sub.Quit():
 			require.FailNow(t, "subscription closed "+
@@ -299,6 +341,23 @@ func waitForBoardingFailedFromSub(t *testing.T,
 			return nil
 		}
 	}
+}
+
+// extractProtoMessage unmarshals the Any body from an envelope into
+// its concrete proto message type.
+func extractProtoMessage(t *testing.T,
+	env *mailboxpb.Envelope) proto.Message {
+
+	t.Helper()
+
+	require.NotNil(t, env.Body, "envelope body must not be nil")
+
+	msg, err := anypb.UnmarshalNew(
+		env.Body, proto.UnmarshalOptions{},
+	)
+	require.NoError(t, err, "unmarshal envelope body")
+
+	return msg
 }
 
 // buildForgedJoinRoundRequest constructs an attacker-authenticated join

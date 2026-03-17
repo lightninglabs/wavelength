@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // MessageDirection indicates the direction of a message.
@@ -55,6 +57,10 @@ type TranscriptEntry struct {
 
 	// Msg is the actual message payload.
 	Msg any
+
+	// Envelope stores the original mailbox envelope for transcript entries
+	// recorded from mailbox traffic.
+	Envelope *mailboxpb.Envelope
 }
 
 // MessageTranscript records all messages for test assertions.
@@ -99,6 +105,30 @@ func (t *MessageTranscript) Record(dir MessageDirection,
 		ClientID:  clientID,
 		MsgType:   msgType,
 		Msg:       msg,
+	})
+}
+
+// RecordEnvelope adds a transcript entry backed by a mailbox envelope. This is
+// used by the InstrumentedMailbox which records from proto envelopes.
+func (t *MessageTranscript) RecordEnvelope(dir MessageDirection,
+	clientID clientconn.ClientID, typeName string,
+	env *mailboxpb.Envelope) {
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var clone *mailboxpb.Envelope
+	if env != nil {
+		clone = proto.Clone(env).(*mailboxpb.Envelope)
+	}
+
+	t.entries = append(t.entries, TranscriptEntry{
+		Timestamp: time.Now(),
+		Direction: dir,
+		ClientID:  clientID,
+		MsgType:   typeName,
+		Msg:       nil,
+		Envelope:  clone,
 	})
 }
 

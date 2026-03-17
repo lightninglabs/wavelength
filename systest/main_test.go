@@ -12,9 +12,10 @@ import (
 // exhaustion and improve reliability.
 var parallelSem = make(chan struct{}, maxParallel())
 
-// maxParallel returns the maximum number of parallel tests. Default is 2 to
-// balance resource usage with reasonable test throughput on typical hardware.
-// Override with SYSTEST_PARALLEL environment variable if needed.
+// maxParallel returns the maximum number of parallel tests. Default is 1
+// because each systest starts multiple Docker-backed daemons and the combined
+// startup path is sensitive to resource contention. Override with
+// SYSTEST_PARALLEL if a faster machine can run more reliably.
 func maxParallel() int {
 	if v := os.Getenv("SYSTEST_PARALLEL"); v != "" {
 		var n int
@@ -32,7 +33,7 @@ func maxParallel() int {
 		}
 	}
 
-	return 2
+	return 1
 }
 
 // ParallelN marks the test as parallel with controlled concurrency. Call this
