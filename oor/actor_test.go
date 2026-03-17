@@ -343,6 +343,110 @@ func buildClientTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 	}
 }
 
+// TestActorSubmitAcceptsCollaborativeOwnerLeaf ensures submit validation accepts
+// the real client flow where the Ark input uses the collaborative checkpoint
+// leaf and only carries the client-side signature at submit time.
+func TestActorSubmitAcceptsCollaborativeOwnerLeaf(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	ownerKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	exitDelay := uint32(10)
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    exitDelay,
+	}
+
+	inputOutpoint := wire.OutPoint{
+		Hash:  [32]byte{0x21},
+		Index: 0,
+	}
+
+	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
+		ownerKey.PubKey(), operatorKey.PubKey(),
+	)
+	require.NoError(t, err)
+
+	transferInput := buildClientTransferInput(
+		t, ownerKey, operatorKey.PubKey(), exitDelay,
+		inputOutpoint, btcutil.Amount(testVTXOValue),
+		collabLeaf.Script,
+	)
+
+	checkpointRes, err := oorlib.BuildCheckpointPSBT(
+		policy, oorlib.CheckpointInput{
+			SpentVTXO: oorlib.SpentVTXORef{
+				Outpoint: inputOutpoint,
+				Output: &wire.TxOut{
+					Value:    testVTXOValue,
+					PkScript: transferInput.VTXO.PkScript,
+				},
+			},
+			OwnerLeafScript: collabLeaf.Script,
+		},
+	)
+	require.NoError(t, err)
+
+	arkPsbt, err := oorlib.BuildArkPSBT(
+		[]oorlib.CheckpointOutput{{
+			Txid: checkpointRes.PSBT.UnsignedTx.TxHash(),
+			Output: checkpointRes.PSBT.
+				UnsignedTx.TxOut[0],
+			TapTreeEncoded: checkpointRes.TapTreeEncoded,
+		}},
+		[]oorlib.RecipientOutput{{
+			PkScript: randomP2TRScript(t),
+			Value:    btcutil.Amount(testVTXOValue),
+		}},
+	)
+	require.NoError(t, err)
+
+	leaf, err := oorlib.BuildTaprootTapLeafScript(
+		checkpointRes.TapTreeEncoded, collabLeaf.Script,
+	)
+	require.NoError(t, err)
+
+	arkPsbt.Inputs[0].TaprootLeafScript =
+		[]*psbt.TaprootTapLeafScript{leaf}
+
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{ownerKey}, nil,
+	)
+	err = clientoor.SignArkPSBT(
+		clientSigner, arkPsbt, []*psbt.Packet{checkpointRes.PSBT},
+		[]clientoor.TransferInput{transferInput},
+	)
+	require.NoError(t, err)
+
+	_, err = oorlib.ValidateSubmitPackageSigned(
+		arkPsbt, []*psbt.Packet{checkpointRes.PSBT},
+	)
+	require.Error(t, err)
+
+	driver := NewDriver(DriverCfg{})
+	actor := newTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+	})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: []*psbt.Packet{checkpointRes.PSBT},
+		VTXOSigningDescriptors: []VTXOSigningDescriptor{{
+			Outpoint:  inputOutpoint,
+			OwnerKey:  ownerKey.PubKey(),
+			ExitDelay: exitDelay,
+		}},
+	})
+	require.True(t, submitResp.IsOk(), submitResp.Err())
+}
+
 // TestActorGetOrCreateSessionFSMConcurrent verifies concurrent access to the
 // session map safely converges on a single handle instance.
 func TestActorGetOrCreateSessionFSMConcurrent(t *testing.T) {

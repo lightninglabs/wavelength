@@ -8,10 +8,17 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo/clientconn"
 	"google.golang.org/protobuf/proto"
 )
+
+// Round outbox messages use the roundpb.Method* constants from the
+// client submodule as the single source of truth for routing keys.
+// The client-side EventRouter registers handlers under the same
+// constants, so any mismatch becomes a compile error rather than a
+// silent dispatch failure.
 
 // OutboxEvent is a sealed interface for all outbox messages emitted
 // by the round FSM. The sealed interface pattern prevents external
@@ -58,6 +65,15 @@ func (c *ClientErrorResp) ToProto() proto.Message {
 	}
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientErrorResp) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodError,
+	}
+}
+
 // outboxEventSealed marks ClientErrorResp as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientErrorResp) outboxEventSealed() {}
@@ -99,6 +115,15 @@ func (c *ClientSuccessResp) ToProto() proto.Message {
 	}
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientSuccessResp) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodJoinAck,
+	}
+}
+
 // outboxEventSealed marks ClientSuccessResp as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientSuccessResp) outboxEventSealed() {}
@@ -126,6 +151,15 @@ func (c *ClientAwaitingInputSigsResp) ClientID() clientconn.ClientID {
 func (c *ClientAwaitingInputSigsResp) ToProto() proto.Message {
 	return &roundpb.ClientAwaitingInputSigsResp{
 		RoundId: c.RoundID[:],
+	}
+}
+
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientAwaitingInputSigsResp) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodAwaitingInputSigs,
 	}
 }
 
@@ -169,6 +203,15 @@ func (c *ClientVTXOAggNonces) ToProto() proto.Message {
 	}
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientVTXOAggNonces) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodAggNonces,
+	}
+}
+
 // outboxEventSealed marks ClientVTXOAggNonces as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientVTXOAggNonces) outboxEventSealed() {}
@@ -208,6 +251,15 @@ func (c *ClientVTXOAggSigs) ToProto() proto.Message {
 	return &roundpb.ClientVTXOAggSigs{
 		RoundId: c.RoundID[:],
 		AggSigs: sigs,
+	}
+}
+
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientVTXOAggSigs) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodAggSigs,
 	}
 }
 
@@ -374,6 +426,15 @@ func connectorLeafInfoToProto(
 	}
 }
 
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientBatchInfo) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodBatchInfo,
+	}
+}
+
 // outboxEventSealed marks ClientBatchInfo as implementing the sealed
 // OutboxEvent interface.
 func (c *ClientBatchInfo) outboxEventSealed() {}
@@ -402,6 +463,15 @@ func (c *ClientRoundFailedResp) ToProto() proto.Message {
 	return &roundpb.ClientRoundFailedResp{
 		RoundId: c.RoundID[:],
 		Reason:  c.Reason,
+	}
+}
+
+// ServiceMethod returns the routing key for client-side ingress
+// dispatch.
+func (c *ClientRoundFailedResp) ServiceMethod() mailboxrpc.ServiceMethod {
+	return mailboxrpc.ServiceMethod{
+		Service: roundpb.ServiceName,
+		Method:  roundpb.MethodRoundFailed,
 	}
 }
 
