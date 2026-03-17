@@ -52,6 +52,10 @@ type DaemonServiceMailboxServer interface {
 	ListRounds(ctx context.Context, req *ListRoundsRequest) (*ListRoundsResponse, error)
 	// WatchRounds handles WatchRounds.
 	WatchRounds(ctx context.Context, req *WatchRoundsRequest) (*WatchRoundsResponse, error)
+	// FundingAddress handles FundingAddress.
+	FundingAddress(ctx context.Context, req *FundingAddressRequest) (*FundingAddressResponse, error)
+	// ExitVTXO handles ExitVTXO.
+	ExitVTXO(ctx context.Context, req *ExitVTXORequest) (*ExitVTXOResponse, error)
 }
 
 // RegisterDaemonServiceMailboxServer registers handlers for DaemonService.
@@ -195,6 +199,26 @@ func RegisterDaemonServiceMailboxServer(r rpc.Router, impl DaemonServiceMailboxS
 		}
 
 		return impl.WatchRounds(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "FundingAddress", func() proto.Message {
+		return &FundingAddressRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*FundingAddressRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.FundingAddress(ctx, req)
+	})
+	r.Handle("daemonrpc.DaemonService", "ExitVTXO", func() proto.Message {
+		return &ExitVTXORequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*ExitVTXORequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.ExitVTXO(ctx, req)
 	})
 }
 
@@ -513,6 +537,52 @@ func (c *DaemonServiceMailboxClient) WatchRounds(ctx context.Context, req *Watch
 	}
 
 	resp := new(WatchRoundsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// FundingAddress calls the FundingAddress RPC.
+func (c *DaemonServiceMailboxClient) FundingAddress(ctx context.Context, req *FundingAddressRequest, opts ...rpc.RPCOptions) (*FundingAddressResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "FundingAddress",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(FundingAddressResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// ExitVTXO calls the ExitVTXO RPC.
+func (c *DaemonServiceMailboxClient) ExitVTXO(ctx context.Context, req *ExitVTXORequest, opts ...rpc.RPCOptions) (*ExitVTXOResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "daemonrpc.DaemonService",
+		Method:  "ExitVTXO",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(ExitVTXOResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}

@@ -33,6 +33,8 @@ const (
 	DaemonService_Board_FullMethodName               = "/daemonrpc.DaemonService/Board"
 	DaemonService_ListRounds_FullMethodName          = "/daemonrpc.DaemonService/ListRounds"
 	DaemonService_WatchRounds_FullMethodName         = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_FundingAddress_FullMethodName      = "/daemonrpc.DaemonService/FundingAddress"
+	DaemonService_ExitVTXO_FullMethodName            = "/daemonrpc.DaemonService/ExitVTXO"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -95,6 +97,16 @@ type DaemonServiceClient interface {
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(ctx context.Context, in *WatchRoundsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchRoundsResponse], error)
+	// FundingAddress returns a plain on-chain P2TR address from the
+	// internal wallet for receiving fee-funding UTXOs. Unlike NewAddress
+	// (boarding address with ark spending conditions), this is a standard
+	// BIP-86 taproot output the wallet can spend unilaterally.
+	FundingAddress(ctx context.Context, in *FundingAddressRequest, opts ...grpc.CallOption) (*FundingAddressResponse, error)
+	// ExitVTXO initiates unilateral exit (on-chain unrolling) for one or
+	// more VTXOs. This broadcasts the presigned transaction tree to make
+	// the VTXOs spendable on-chain after the CSV delay. Can be used at
+	// any time, not just near expiry.
+	ExitVTXO(ctx context.Context, in *ExitVTXORequest, opts ...grpc.CallOption) (*ExitVTXOResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -254,6 +266,26 @@ func (c *daemonServiceClient) WatchRounds(ctx context.Context, in *WatchRoundsRe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsClient = grpc.ServerStreamingClient[WatchRoundsResponse]
 
+func (c *daemonServiceClient) FundingAddress(ctx context.Context, in *FundingAddressRequest, opts ...grpc.CallOption) (*FundingAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FundingAddressResponse)
+	err := c.cc.Invoke(ctx, DaemonService_FundingAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ExitVTXO(ctx context.Context, in *ExitVTXORequest, opts ...grpc.CallOption) (*ExitVTXOResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ExitVTXOResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ExitVTXO_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -314,6 +346,16 @@ type DaemonServiceServer interface {
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error
+	// FundingAddress returns a plain on-chain P2TR address from the
+	// internal wallet for receiving fee-funding UTXOs. Unlike NewAddress
+	// (boarding address with ark spending conditions), this is a standard
+	// BIP-86 taproot output the wallet can spend unilaterally.
+	FundingAddress(context.Context, *FundingAddressRequest) (*FundingAddressResponse, error)
+	// ExitVTXO initiates unilateral exit (on-chain unrolling) for one or
+	// more VTXOs. This broadcasts the presigned transaction tree to make
+	// the VTXOs spendable on-chain after the CSV delay. Can be used at
+	// any time, not just near expiry.
+	ExitVTXO(context.Context, *ExitVTXORequest) (*ExitVTXOResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -365,6 +407,12 @@ func (UnimplementedDaemonServiceServer) ListRounds(context.Context, *ListRoundsR
 }
 func (UnimplementedDaemonServiceServer) WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method WatchRounds not implemented")
+}
+func (UnimplementedDaemonServiceServer) FundingAddress(context.Context, *FundingAddressRequest) (*FundingAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FundingAddress not implemented")
+}
+func (UnimplementedDaemonServiceServer) ExitVTXO(context.Context, *ExitVTXORequest) (*ExitVTXOResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ExitVTXO not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -632,6 +680,42 @@ func _DaemonService_WatchRounds_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsServer = grpc.ServerStreamingServer[WatchRoundsResponse]
 
+func _DaemonService_FundingAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FundingAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).FundingAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_FundingAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).FundingAddress(ctx, req.(*FundingAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ExitVTXO_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExitVTXORequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ExitVTXO(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ExitVTXO_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ExitVTXO(ctx, req.(*ExitVTXORequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -690,6 +774,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRounds",
 			Handler:    _DaemonService_ListRounds_Handler,
+		},
+		{
+			MethodName: "FundingAddress",
+			Handler:    _DaemonService_FundingAddress_Handler,
+		},
+		{
+			MethodName: "ExitVTXO",
+			Handler:    _DaemonService_ExitVTXO_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

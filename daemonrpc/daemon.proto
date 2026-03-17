@@ -74,6 +74,18 @@ service DaemonService {
     // round state updates as they occur. The stream stays open until
     // the client disconnects.
     rpc WatchRounds (WatchRoundsRequest) returns (stream WatchRoundsResponse);
+
+    // FundingAddress returns a plain on-chain P2TR address from the
+    // internal wallet for receiving fee-funding UTXOs. Unlike NewAddress
+    // (boarding address with ark spending conditions), this is a standard
+    // BIP-86 taproot output the wallet can spend unilaterally.
+    rpc FundingAddress (FundingAddressRequest) returns (FundingAddressResponse);
+
+    // ExitVTXO initiates unilateral exit (on-chain unrolling) for one or
+    // more VTXOs. This broadcasts the presigned transaction tree to make
+    // the VTXOs spendable on-chain after the CSV delay. Can be used at
+    // any time, not just near expiry.
+    rpc ExitVTXO (ExitVTXORequest) returns (ExitVTXOResponse);
 }
 
 message GetInfoRequest {
@@ -532,4 +544,26 @@ message WatchRoundsResponse {
     // round contains the updated round state. Sent whenever a round
     // FSM transitions to a new state.
     RoundInfo round = 1;
+}
+
+message FundingAddressRequest {
+}
+
+message FundingAddressResponse {
+    // address is the bech32m-encoded P2TR funding address.
+    string address = 1;
+}
+
+message ExitVTXORequest {
+    // outpoints lists the VTXO outpoints to exit, in "txid:index" format.
+    repeated string outpoints = 1;
+}
+
+message ExitVTXOResponse {
+    // status is "started" on success.
+    string status = 1;
+
+    // started_count is the number of outpoints requested for unroll.
+    // Duplicates already in progress are silently skipped.
+    int32 started_count = 2;
 }

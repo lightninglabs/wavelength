@@ -47,6 +47,8 @@ type schemaMethod struct {
 // methodRegistry returns the full schema for all darepocli commands.
 // This is the single source of truth for both the schema command and
 // MCP tool definitions.
+//
+//nolint:funlen
 func methodRegistry() []schemaMethod {
 	return []schemaMethod{
 		{
@@ -206,6 +208,31 @@ func methodRegistry() []schemaMethod {
 			RequestType:  "SendVTXORequest",
 			ResponseType: "SendVTXOResponse",
 			DryRun:       true,
+			JSONInput:    true,
+		},
+		{
+			Method: "wallet.funding-address",
+			Description: "Generate a plain on-chain " +
+				"P2TR address for fee funding",
+			Params:       nil,
+			RequestType:  "FundingAddressRequest",
+			ResponseType: "FundingAddressResponse",
+			JSONInput:    true,
+		},
+		{
+			Method:      "wallet.exit",
+			Description: "Unilaterally exit VTXOs on-chain",
+			Params: []schemaParam{
+				{
+					Name:     "outpoints",
+					Type:     "string[]",
+					Required: true,
+					Description: "VTXO outpoint(s) " +
+						"to exit (txid:index)",
+				},
+			},
+			RequestType:  "ExitVTXORequest",
+			ResponseType: "ExitVTXOResponse",
 			JSONInput:    true,
 		},
 		{

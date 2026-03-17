@@ -107,7 +107,6 @@ func newRootCmd() *cobra.Command {
 		"path to file containing wallet password for "+
 			"auto-unlock at startup (lwwallet mode)",
 	)
-
 	// Daemon RPC server flags.
 	f.String("rpc.listenaddr", cfg.RPC.ListenAddr,
 		"daemon gRPC listen address",

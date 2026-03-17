@@ -2210,6 +2210,186 @@ func (x *WatchRoundsResponse) GetRound() *RoundInfo {
 	return nil
 }
 
+type FundingAddressRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FundingAddressRequest) Reset() {
+	*x = FundingAddressRequest{}
+	mi := &file_daemon_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingAddressRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingAddressRequest) ProtoMessage() {}
+
+func (x *FundingAddressRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingAddressRequest.ProtoReflect.Descriptor instead.
+func (*FundingAddressRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{33}
+}
+
+type FundingAddressResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// address is the bech32m-encoded P2TR funding address.
+	Address       string `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FundingAddressResponse) Reset() {
+	*x = FundingAddressResponse{}
+	mi := &file_daemon_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FundingAddressResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FundingAddressResponse) ProtoMessage() {}
+
+func (x *FundingAddressResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FundingAddressResponse.ProtoReflect.Descriptor instead.
+func (*FundingAddressResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *FundingAddressResponse) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+type ExitVTXORequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoints lists the VTXO outpoints to exit, in "txid:index" format.
+	Outpoints     []string `protobuf:"bytes,1,rep,name=outpoints,proto3" json:"outpoints,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitVTXORequest) Reset() {
+	*x = ExitVTXORequest{}
+	mi := &file_daemon_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitVTXORequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitVTXORequest) ProtoMessage() {}
+
+func (x *ExitVTXORequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitVTXORequest.ProtoReflect.Descriptor instead.
+func (*ExitVTXORequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ExitVTXORequest) GetOutpoints() []string {
+	if x != nil {
+		return x.Outpoints
+	}
+	return nil
+}
+
+type ExitVTXOResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is "started" on success.
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// started_count is the number of unrolls that were initiated.
+	StartedCount  int32 `protobuf:"varint,2,opt,name=started_count,json=startedCount,proto3" json:"started_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExitVTXOResponse) Reset() {
+	*x = ExitVTXOResponse{}
+	mi := &file_daemon_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExitVTXOResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExitVTXOResponse) ProtoMessage() {}
+
+func (x *ExitVTXOResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExitVTXOResponse.ProtoReflect.Descriptor instead.
+func (*ExitVTXOResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ExitVTXOResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ExitVTXOResponse) GetStartedCount() int32 {
+	if x != nil {
+		return x.StartedCount
+	}
+	return 0
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
@@ -2336,7 +2516,15 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x14\n" +
 	"\x12WatchRoundsRequest\"A\n" +
 	"\x13WatchRoundsResponse\x12*\n" +
-	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round*\x81\x02\n" +
+	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round\"\x17\n" +
+	"\x15FundingAddressRequest\"2\n" +
+	"\x16FundingAddressResponse\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"/\n" +
+	"\x0fExitVTXORequest\x12\x1c\n" +
+	"\toutpoints\x18\x01 \x03(\tR\toutpoints\"O\n" +
+	"\x10ExitVTXOResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12#\n" +
+	"\rstarted_count\x18\x02 \x01(\x05R\fstartedCount*\x81\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -2365,7 +2553,7 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1aROUND_STATE_INPUT_SIG_SENT\x10\v\x12\x19\n" +
 	"\x15ROUND_STATE_CONFIRMED\x10\f\x12\x16\n" +
 	"\x12ROUND_STATE_FAILED\x10\r\x12\x18\n" +
-	"\x14ROUND_STATE_RECOVERY\x10\x0e2\xa2\b\n" +
+	"\x14ROUND_STATE_RECOVERY\x10\x0e2\xbe\t\n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
 	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
@@ -2384,7 +2572,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x05Board\x12\x17.daemonrpc.BoardRequest\x1a\x18.daemonrpc.BoardResponse\x12I\n" +
 	"\n" +
 	"ListRounds\x12\x1c.daemonrpc.ListRoundsRequest\x1a\x1d.daemonrpc.ListRoundsResponse\x12N\n" +
-	"\vWatchRounds\x12\x1d.daemonrpc.WatchRoundsRequest\x1a\x1e.daemonrpc.WatchRoundsResponse0\x01B2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
+	"\vWatchRounds\x12\x1d.daemonrpc.WatchRoundsRequest\x1a\x1e.daemonrpc.WatchRoundsResponse0\x01\x12U\n" +
+	"\x0eFundingAddress\x12 .daemonrpc.FundingAddressRequest\x1a!.daemonrpc.FundingAddressResponse\x12C\n" +
+	"\bExitVTXO\x12\x1a.daemonrpc.ExitVTXORequest\x1a\x1b.daemonrpc.ExitVTXOResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -2399,7 +2589,7 @@ func file_daemon_proto_rawDescGZIP() []byte {
 }
 
 var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_daemon_proto_goTypes = []any{
 	(VTXOStatus)(0),                     // 0: daemonrpc.VTXOStatus
 	(RoundState)(0),                     // 1: daemonrpc.RoundState
@@ -2436,6 +2626,10 @@ var file_daemon_proto_goTypes = []any{
 	(*ListRoundsResponse)(nil),          // 32: daemonrpc.ListRoundsResponse
 	(*WatchRoundsRequest)(nil),          // 33: daemonrpc.WatchRoundsRequest
 	(*WatchRoundsResponse)(nil),         // 34: daemonrpc.WatchRoundsResponse
+	(*FundingAddressRequest)(nil),       // 35: daemonrpc.FundingAddressRequest
+	(*FundingAddressResponse)(nil),      // 36: daemonrpc.FundingAddressResponse
+	(*ExitVTXORequest)(nil),             // 37: daemonrpc.ExitVTXORequest
+	(*ExitVTXOResponse)(nil),            // 38: daemonrpc.ExitVTXOResponse
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,  // 0: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
@@ -2462,22 +2656,26 @@ var file_daemon_proto_depIdxs = []int32{
 	27, // 21: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
 	31, // 22: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
 	33, // 23: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
-	3,  // 24: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	5,  // 25: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	7,  // 26: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	9,  // 27: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	11, // 28: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	14, // 29: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	16, // 30: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	18, // 31: daemonrpc.DaemonService.NewOORReceiveScript:output_type -> daemonrpc.NewOORReceiveScriptResponse
-	21, // 32: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	23, // 33: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	26, // 34: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	28, // 35: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
-	32, // 36: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
-	34, // 37: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
-	24, // [24:38] is the sub-list for method output_type
-	10, // [10:24] is the sub-list for method input_type
+	35, // 24: daemonrpc.DaemonService.FundingAddress:input_type -> daemonrpc.FundingAddressRequest
+	37, // 25: daemonrpc.DaemonService.ExitVTXO:input_type -> daemonrpc.ExitVTXORequest
+	3,  // 26: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	5,  // 27: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
+	7,  // 28: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
+	9,  // 29: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
+	11, // 30: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
+	14, // 31: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
+	16, // 32: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
+	18, // 33: daemonrpc.DaemonService.NewOORReceiveScript:output_type -> daemonrpc.NewOORReceiveScriptResponse
+	21, // 34: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
+	23, // 35: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
+	26, // 36: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
+	28, // 37: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
+	32, // 38: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
+	34, // 39: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
+	36, // 40: daemonrpc.DaemonService.FundingAddress:output_type -> daemonrpc.FundingAddressResponse
+	38, // 41: daemonrpc.DaemonService.ExitVTXO:output_type -> daemonrpc.ExitVTXOResponse
+	26, // [26:42] is the sub-list for method output_type
+	10, // [10:26] is the sub-list for method input_type
 	10, // [10:10] is the sub-list for extension type_name
 	10, // [10:10] is the sub-list for extension extendee
 	0,  // [0:10] is the sub-list for field type_name
@@ -2503,7 +2701,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   33,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -27,6 +27,8 @@ func newWalletCmd() *cobra.Command {
 		newWalletUnlockCmd(),
 		newWalletBalanceCmd(),
 		newWalletNewAddressCmd(),
+		newWalletFundingAddressCmd(),
+		newWalletExitCmd(),
 	)
 
 	return cmd
