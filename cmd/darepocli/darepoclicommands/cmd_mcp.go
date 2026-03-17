@@ -322,11 +322,11 @@ func registerMCPSendTools(s *mcp.Server,
 
 	// send_oor — out-of-round send.
 	type sendOORArgs struct {
-		Address        string `json:"address,omitempty" jsonschema:"recipient address (mutually exclusive with pubkey_xonly_hex and pk_script_hex)"`                            //nolint:ll
+		Address        string `json:"address,omitempty" jsonschema:"recipient address (mutually exclusive with pubkey_xonly_hex and pk_script_hex)"`                   //nolint:ll
 		PubKeyXOnlyHex string `json:"pubkey_xonly_hex,omitempty" jsonschema:"recipient 32-byte x-only pubkey hex (mutually exclusive with address and pk_script_hex)"` //nolint:ll
-		PkScriptHex    string `json:"pk_script_hex,omitempty" jsonschema:"recipient raw pk_script hex (mutually exclusive with address and pubkey_xonly_hex)"`            //nolint:ll
-		AmountSat      int64  `json:"amount_sat" jsonschema:"amount in sats"`                                      //nolint:ll
-		DryRun         bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"`                  //nolint:ll
+		PkScriptHex    string `json:"pk_script_hex,omitempty" jsonschema:"recipient raw pk_script hex (mutually exclusive with address and pubkey_xonly_hex)"`         //nolint:ll
+		AmountSat      int64  `json:"amount_sat" jsonschema:"amount in sats"`                                                                                          //nolint:ll
+		DryRun         bool   `json:"dry_run,omitempty" jsonschema:"validate without initiating"`                                                                      //nolint:ll
 	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send_oor",

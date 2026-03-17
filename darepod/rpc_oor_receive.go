@@ -51,7 +51,7 @@ func (r *RPCServer) NewOORReceiveScript(ctx context.Context,
 	store, err := r.newOORReceiveScriptStore()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal,
-			"unable to initialize OOR receive-script store: %v", err)
+			"unable to initialize OOR receive-script store: %v", err) //nolint:ll
 	}
 
 	deriveNextKey, signerFactory, err := r.oorReceiveKeyOps()
@@ -116,16 +116,16 @@ func (r *RPCServer) oorReceiveKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 	case r.server.lnd.IsSome():
 		lndSvc := r.server.lnd.UnsafeFromSome()
 
-		return func(ctx context.Context) (*keychain.KeyDescriptor, error) {
+		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
 				keyDesc, err := lndSvc.WalletKit.DeriveNextKey(
 					ctx, int32(keychain.KeyFamilyMultiSig),
 				)
 				if err != nil {
-					return nil, fmt.Errorf("derive next key: %w", err)
+					return nil, fmt.Errorf("derive next key: %w", err) //nolint:ll
 				}
 
 				return keyDesc, nil
-			}, func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+			}, func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
 				return indexer.NewLNDSchnorrSigner(
 					lndSvc.Signer, keyDesc,
 				)
@@ -134,12 +134,12 @@ func (r *RPCServer) oorReceiveKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 	case r.server.lwWallet.IsSome():
 		wallet := r.server.lwWallet.UnsafeFromSome()
 
-		return func(ctx context.Context) (*keychain.KeyDescriptor, error) {
+		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
 				return wallet.DeriveNextKey(
 					ctx, keychain.KeyFamilyMultiSig,
 				)
 			}, func(
-				keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+				keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
 
 				return indexer.NewKeyRingSchnorrSigner(
 					wallet.KeyRing(), keyDesc,

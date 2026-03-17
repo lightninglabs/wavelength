@@ -142,7 +142,7 @@ func (s *ownedReceiveScriptSigner) resolveSigner(ctx context.Context,
 	}
 
 	if s.signerFactory == nil {
-		return nil, fmt.Errorf("receive script signer factory must be " +
+		return nil, fmt.Errorf("receive script signer factory must be " + //nolint:ll
 			"provided")
 	}
 
@@ -153,7 +153,7 @@ func (s *ownedReceiveScriptSigner) resolveSigner(ctx context.Context,
 
 	signer := s.signerFactory(rec.ClientKey)
 	if signer == nil {
-		return nil, fmt.Errorf("receive script signer factory returned " +
+		return nil, fmt.Errorf("receive script signer factory returned " + //nolint:ll
 			"nil signer")
 	}
 
@@ -187,7 +187,7 @@ func (s *ownedReceiveScriptSigner) SignSchnorrMessage(ctx context.Context,
 			[]byte) ([]byte, error)
 	})
 	if !ok {
-		return nil, fmt.Errorf("signer does not support tagged message " +
+		return nil, fmt.Errorf("signer does not support tagged message " + //nolint:ll
 			"signing")
 	}
 
@@ -266,7 +266,7 @@ func RegisterOwnedOORReceiveScript(ctx context.Context,
 		return nil, fmt.Errorf("indexer client must be provided")
 
 	case signerFactory == nil:
-		return nil, fmt.Errorf("receive script signer factory must be " +
+		return nil, fmt.Errorf("receive script signer factory must be " + //nolint:ll
 			"provided")
 
 	case clientKey.PubKey == nil:

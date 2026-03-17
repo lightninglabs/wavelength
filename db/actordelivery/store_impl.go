@@ -646,6 +646,7 @@ func (s *Store) SaveCheckpoint(
 			})
 		},
 	)
+
 	return err
 }
 

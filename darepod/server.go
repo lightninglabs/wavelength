@@ -1085,7 +1085,7 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
 // response events, the router decodes the oorpb proto, adapts it into a
 // DriveEventRequest, and Tell's it to the OOR actor via service key.
-func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
+func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
 	oorKey := oor.NewServiceKey()
 
 	// SubmitPackage: server accepted the submit and returned co-signed
@@ -1182,7 +1182,7 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 					"response envelope must be provided")
 			}
 
-			sessionID, err := oor.ParseIncomingMetadataCorrelationID(
+			sessionID, err := oor.ParseIncomingMetadataCorrelationID( //nolint:ll
 				env.Rpc.CorrelationId,
 			)
 			if err != nil {
@@ -1192,12 +1192,11 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			if rpcErr := mailboxrpc.DecodeErrorHeaders(
 				env.Headers,
 			); rpcErr != nil {
-
 				return &oor.DriveEventRequest{
 					SessionID: sessionID,
 					Event: &oor.FailEvent{
 						Reason: fmt.Sprintf(
-							"query incoming metadata: %v",
+							"query incoming metadata: %v", //nolint:ll
 							rpcErr,
 						),
 					},
@@ -1257,26 +1256,25 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 			if rpcErr := mailboxrpc.DecodeErrorHeaders(
 				env.Headers,
 			); rpcErr != nil {
-
 				return &oor.DriveEventRequest{
 					SessionID: sessionID,
 					Event: &oor.FailEvent{
 						Reason: fmt.Sprintf(
-							"resolve incoming transfer: %v",
+							"resolve incoming transfer: %v", //nolint:ll
 							rpcErr,
 						),
 					},
 				}, nil
 			}
 
-			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse)
+			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse) //nolint:ll
 			if !ok {
 				return nil, fmt.Errorf("expected "+
-					"ListOORRecipientEventsByScriptResponse, "+
+					"ListOORRecipientEventsByScriptResponse, "+ //nolint:ll
 					"got %T", p)
 			}
 
-			incomingEvent, err := oor.IncomingTransferEventFromResponse(
+			incomingEvent, err := oor.IncomingTransferEventFromResponse( //nolint:ll
 				sessionID, recipientEventID, resp,
 			)
 			if err != nil {
@@ -1620,7 +1618,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		s.clientKeyDesc = *identityDesc
 		signer = NewOwnedReceiveScriptSigner(
 			packageStore,
-			func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+			func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
 				return indexer.NewLNDSchnorrSigner(
 					lndSvc.Signer, keyDesc,
 				)
@@ -1643,7 +1641,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			s.clientKeyDesc = *identityDesc
 			signer = NewOwnedReceiveScriptSigner(
 				packageStore,
-				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
 					return indexer.NewKeyRingSchnorrSigner(
 						w.KeyRing(), keyDesc,
 					)

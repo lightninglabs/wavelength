@@ -323,7 +323,6 @@ func (t *TransactionExecutor[Q]) ExecTx(ctx context.Context,
 	return ErrRetriesExceeded
 }
 
-
 // Backend returns the type of the database backend used.
 func (t *TransactionExecutor[Q]) Backend() sqlc.BackendType {
 	return t.BatchedQuerier.Backend()

@@ -97,7 +97,7 @@ func TestEnsureDefaultOORReceiveKeyReusesPersistedKey(t *testing.T) {
 
 	derived := false
 	keyDesc, err := EnsureDefaultOORReceiveKey(
-		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) {
+		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
 			derived = true
 
 			return nil, nil
@@ -198,7 +198,7 @@ func TestNewOwnedReceiveScriptSignerUsesMatchingKey(t *testing.T) {
 			{
 				PkScript:       []byte{0x51, 0x20, 0x01},
 				ClientKey:      keyA,
-				Source:         db.OwnedReceiveScriptSourceWallet,
+				Source:         db.OwnedReceiveScriptSourceWallet, //nolint:ll
 				CreatedAt:      time.Unix(10, 0),
 				LastUsedAt:     fn.None[time.Time](),
 				OperatorPubKey: testKeyDescriptor(t, 31).PubKey,
@@ -206,7 +206,7 @@ func TestNewOwnedReceiveScriptSignerUsesMatchingKey(t *testing.T) {
 			{
 				PkScript:       []byte{0x51, 0x20, 0x02},
 				ClientKey:      keyB,
-				Source:         db.OwnedReceiveScriptSourceWallet,
+				Source:         db.OwnedReceiveScriptSourceWallet, //nolint:ll
 				CreatedAt:      time.Unix(11, 0),
 				LastUsedAt:     fn.None[time.Time](),
 				OperatorPubKey: testKeyDescriptor(t, 32).PubKey,
@@ -268,7 +268,7 @@ func TestEnsureDefaultOORReceiveKeyDerivesWhenMissing(t *testing.T) {
 	expected := testKeyDescriptor(t, 3)
 
 	keyDesc, err := EnsureDefaultOORReceiveKey(
-		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) {
+		ctx, store, func(context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
 			return &expected, nil
 		},
 	)

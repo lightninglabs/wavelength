@@ -22,7 +22,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 	recipient oor.ArkRecipientOutput) (oor.IncomingVTXOMetadata, error) {
 
 	if idx == nil {
-		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer client " +
+		return oor.IncomingVTXOMetadata{}, fmt.Errorf("indexer client " + //nolint:ll
 			"must be provided")
 	}
 
