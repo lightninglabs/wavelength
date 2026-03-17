@@ -267,10 +267,12 @@ func NewSessionFromSnapshot(ctx context.Context,
 	env := &Environment{SessionID: snapshot.SessionID}
 
 	fsmCfg := StateMachineCfg{
-		Logger:        log.WithPrefix(snapshot.SessionID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(ctx, snapshot.SessionID.LogPrefix()),
-		InitialState:  state,
-		Env:           env,
+		Logger: log.WithPrefix(snapshot.SessionID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(
+			ctx, snapshot.SessionID.LogPrefix(),
+		),
+		InitialState: state,
+		Env:          env,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)

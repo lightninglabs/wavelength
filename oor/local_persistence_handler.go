@@ -234,7 +234,6 @@ func (h *LocalPersistenceOutboxHandler) validateMaterializeIncoming(
 	}
 
 	if h.NotifyIncomingVTXOs == nil && !hasActorDBTx(ctx) {
-
 		return fmt.Errorf(
 			"incoming VTXO notifier must be provided",
 		)
@@ -255,7 +254,9 @@ func (h *LocalPersistenceOutboxHandler) handleQueryIncomingMetadata(
 	msg *QueryIncomingMetadataRequest) ([]Event, error) {
 
 	if msg == nil {
-		return nil, fmt.Errorf("incoming metadata query must be provided")
+		return nil, fmt.Errorf(
+			"incoming metadata query must be provided",
+		)
 	}
 
 	if h.ResolveIncomingClientKey == nil {
@@ -440,8 +441,9 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 		slog.Int("owned_recipients", ownedRecipients),
 		slog.Int("materialized_vtxos", len(materializedVTXOs)))
 
-	// When the durable actor will receive an IncomingHandledEvent follow-up,
-	// defer notification to that actor path so the manager only sees the
+	// When the durable actor will receive an
+	// IncomingHandledEvent follow-up, defer notification to
+	// that actor path so the manager only sees the
 	// materialization once.
 	if notifyIncoming {
 		// Notify the VTXO manager so newly received OOR VTXOs are

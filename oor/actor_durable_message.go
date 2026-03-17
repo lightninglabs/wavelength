@@ -81,14 +81,14 @@ const (
 )
 
 const (
-	incomingMetadataMatchOutputIndexRecordType   tlv.Type = 1
-	incomingMetadataMatchRoundIDRecordType       tlv.Type = 3
+	incomingMetadataMatchOutputIndexRecordType    tlv.Type = 1
+	incomingMetadataMatchRoundIDRecordType        tlv.Type = 3
 	incomingMetadataMatchCommitmentTxIDRecordType tlv.Type = 5
-	incomingMetadataMatchBatchExpiryRecordType   tlv.Type = 7
-	incomingMetadataMatchTreeDepthRecordType     tlv.Type = 9
-	incomingMetadataMatchChainDepthRecordType    tlv.Type = 11
-	incomingMetadataMatchCreatedHeightRecordType tlv.Type = 13
-	incomingMetadataMatchTreePathRecordType      tlv.Type = 15
+	incomingMetadataMatchBatchExpiryRecordType    tlv.Type = 7
+	incomingMetadataMatchTreeDepthRecordType      tlv.Type = 9
+	incomingMetadataMatchChainDepthRecordType     tlv.Type = 11
+	incomingMetadataMatchCreatedHeightRecordType  tlv.Type = 13
+	incomingMetadataMatchTreePathRecordType       tlv.Type = 15
 )
 
 type startTransferPayload struct {
@@ -274,7 +274,9 @@ func encodeIncomingMetadataMatches(matches []IncomingMetadataMatch) ([]byte,
 	return encodeLengthPrefixedBlobList(blobs)
 }
 
-func decodeIncomingMetadataMatches(raw []byte) ([]IncomingMetadataMatch, error) {
+func decodeIncomingMetadataMatches(
+	raw []byte) ([]IncomingMetadataMatch, error) {
+
 	blobs, err := decodeLengthPrefixedBlobList(raw)
 	if err != nil {
 		return nil, err
@@ -354,14 +356,14 @@ func encodeIncomingMetadataMatch(match IncomingMetadataMatch) ([]byte, error) {
 
 func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 	var (
-		outputIndex   uint32
-		roundID       []byte
+		outputIndex    uint32
+		roundID        []byte
 		commitmentTxID []byte
-		batchExpiry   uint32
-		treeDepth     uint32
-		chainDepth    uint32
-		createdHeight uint32
-		treePath      []byte
+		batchExpiry    uint32
+		treeDepth      uint32
+		chainDepth     uint32
+		createdHeight  uint32
+		treePath       []byte
 	)
 
 	records := []tlv.Record{
@@ -407,8 +409,10 @@ func decodeIncomingMetadataMatch(raw []byte) (IncomingMetadataMatch, error) {
 	}
 
 	if len(commitmentTxID) != chainhash.HashSize {
-		return IncomingMetadataMatch{}, fmt.Errorf("incoming metadata "+
-			"commitment txid must be provided")
+		return IncomingMetadataMatch{}, fmt.Errorf(
+			"incoming metadata commitment txid " +
+				"must be provided",
+		)
 	}
 
 	decodedBatchExpiry, err := uint32ToInt32(
@@ -744,7 +748,8 @@ func encodeResolveIncomingTransferPayload(sessionID SessionID,
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
-			resolveIncomingPayloadSessionIDRecordType, &sessionBytes,
+			resolveIncomingPayloadSessionIDRecordType,
+			&sessionBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			resolveIncomingPayloadPkScriptRecordType, &pkScript,
@@ -778,7 +783,8 @@ func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
 
 	records := []tlv.Record{
 		tlv.MakePrimitiveRecord(
-			resolveIncomingPayloadSessionIDRecordType, &sessionBytes,
+			resolveIncomingPayloadSessionIDRecordType,
+			&sessionBytes,
 		),
 		tlv.MakePrimitiveRecord(
 			resolveIncomingPayloadPkScriptRecordType,
@@ -1010,7 +1016,8 @@ func encodeEventPayload(event Event) ([]byte, error) {
 
 		if evt.ArkPSBT == nil {
 			return nil, fmt.Errorf(
-				"incoming transfer event ark psbt must be provided",
+				"incoming transfer event " +
+					"ark psbt must be provided",
 			)
 		}
 
@@ -1213,7 +1220,8 @@ func decodeEventPayload(raw []byte) (Event, error) {
 	case eventKindIncomingTransfer:
 		if len(arkPSBT) == 0 {
 			return nil, fmt.Errorf(
-				"incoming transfer event ark psbt must be provided",
+				"incoming transfer event " +
+					"ark psbt must be provided",
 			)
 		}
 

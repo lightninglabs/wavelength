@@ -29,9 +29,11 @@ func NewResolveIncomingTransferRequest(evt *arkrpc.IncomingOOREvent) (
 	}
 
 	return &ResolveIncomingTransferRequest{
-		SessionID:         SessionID(*sessionID),
-		RecipientPkScript: append([]byte(nil), evt.GetRecipientPkScript()...),
-		RecipientEventID:  evt.GetRecipientEventId(),
+		SessionID: SessionID(*sessionID),
+		RecipientPkScript: append(
+			[]byte(nil), evt.GetRecipientPkScript()...,
+		),
+		RecipientEventID: evt.GetRecipientEventId(),
 	}, nil
 }
 
@@ -56,15 +58,19 @@ func ParseIncomingResolveCorrelationID(correlationID string) (
 		correlationID[:len(incomingResolveCorrelationPrefix)] !=
 			incomingResolveCorrelationPrefix {
 
-		return SessionID{}, 0, fmt.Errorf("unexpected incoming resolve "+
-			"correlation id: %q", correlationID)
+		return SessionID{}, 0, fmt.Errorf(
+			"unexpected incoming resolve "+
+				"correlation id: %q", correlationID,
+		)
 	}
 
 	suffix := correlationID[len(incomingResolveCorrelationPrefix):]
 	parts := strings.SplitN(suffix, ":", 2)
 	if len(parts) != 2 {
-		return SessionID{}, 0, fmt.Errorf("unexpected incoming resolve "+
-			"correlation id payload: %q", suffix)
+		return SessionID{}, 0, fmt.Errorf(
+			"unexpected incoming resolve "+
+				"correlation id payload: %q", suffix,
+		)
 	}
 
 	hash, err := chainhash.NewHashFromStr(parts[0])
@@ -96,18 +102,23 @@ func IncomingTransferEventFromResponse(sessionID SessionID,
 	}
 
 	if len(resp.GetEvents()) == 0 {
-		return nil, fmt.Errorf("no events found for session %x",
+		return nil, fmt.Errorf("no events found for session %x", //nolint:ll
 			sessionID[:])
 	}
 
 	recipientEvt := resp.Events[0]
 	if recipientEvt == nil {
-		return nil, fmt.Errorf("incoming transfer event must be provided")
+		return nil, fmt.Errorf(
+			"incoming transfer event must be provided",
+		)
 	}
 
 	if recipientEvt.GetEventId() != recipientEventID {
-		return nil, fmt.Errorf("unexpected recipient event id: got %d, "+
-			"want %d", recipientEvt.GetEventId(), recipientEventID)
+		return nil, fmt.Errorf(
+			"unexpected recipient event id: "+
+				"got %d, want %d",
+			recipientEvt.GetEventId(), recipientEventID,
+		)
 	}
 
 	eventSessionID, err := chainhash.NewHash(recipientEvt.GetSessionId())

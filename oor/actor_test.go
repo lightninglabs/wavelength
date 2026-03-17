@@ -518,28 +518,6 @@ func (m *mockServerConnRef) lastRecipientQuery() *serverconn.
 	return req
 }
 
-// lastVTXOQuery returns the most recent durable ListVTXOsByScripts query
-// captured by the mock. It fails the test if no messages have been captured.
-func (m *mockServerConnRef) lastVTXOQuery() *serverconn.
-	SendListVTXOsByScriptsRequest {
-
-	m.t.Helper()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	require.NotEmpty(m.t, m.messages, "no messages captured")
-
-	last := m.messages[len(m.messages)-1]
-	req, ok := last.(*serverconn.SendListVTXOsByScriptsRequest)
-	require.True(
-		m.t, ok,
-		"last message is not SendListVTXOsByScriptsRequest",
-	)
-
-	return req
-}
-
 // localOnlyOutboxHandler handles only local outbox events (signing,
 // persistence, timers). Transport events should be routed through serverconn
 // and never reach this handler.

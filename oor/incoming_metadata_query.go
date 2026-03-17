@@ -64,11 +64,15 @@ func ParseIncomingMetadataCorrelationID(correlationID string) (
 // IncomingMetadataMatchesFromResponse filters an indexer
 // ListVTXOsByScriptsResponse down to the entries created by the given Ark
 // session and converts them into the local incoming metadata shape.
-func IncomingMetadataMatchesFromResponse(sessionID SessionID,
-	resp *arkrpc.ListVTXOsByScriptsResponse) ([]IncomingMetadataMatch, error) {
+func IncomingMetadataMatchesFromResponse(
+	sessionID SessionID,
+	resp *arkrpc.ListVTXOsByScriptsResponse,
+) ([]IncomingMetadataMatch, error) {
 
 	if resp == nil {
-		return nil, fmt.Errorf("incoming metadata response must be provided")
+		return nil, fmt.Errorf(
+			"incoming metadata response must be provided",
+		)
 	}
 
 	matches := make([]IncomingMetadataMatch, 0, len(resp.GetVtxos()))

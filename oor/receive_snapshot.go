@@ -64,8 +64,9 @@ type IncomingSnapshot struct {
 	// ArkPSBT is the canonical Ark transfer PSBT.
 	ArkPSBT []byte
 
-	// CheckpointPSBTs are the finalized checkpoint PSBTs associated with the
-	// incoming transfer when the phase needs them.
+	// CheckpointPSBTs are the finalized checkpoint PSBTs
+	// associated with the incoming transfer when the phase
+	// needs them.
 	CheckpointPSBTs [][]byte
 
 	// FailReason is the terminal failure reason, when Phase is Failed.

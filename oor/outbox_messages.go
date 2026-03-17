@@ -344,8 +344,8 @@ type MaterializeIncomingVTXOsRequest struct {
 	// Recipients are the non-anchor recipient outputs in the Ark tx.
 	Recipients []ArkRecipientOutput
 
-	// MetadataMatches carries the authoritative lineage metadata resolved for
-	// the current Ark outputs.
+	// MetadataMatches carries the authoritative lineage
+	// metadata resolved for the current Ark outputs.
 	MetadataMatches []IncomingMetadataMatch
 }
 

@@ -44,10 +44,12 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	startupID := SessionID{}
 
 	fsmCfg := StateMachineCfg{
-		Logger:        log.WithPrefix(startupID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(ctx, startupID.LogPrefix()),
-		InitialState:  &Idle{},
-		Env:           env,
+		Logger: log.WithPrefix(startupID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(
+			ctx, startupID.LogPrefix(),
+		),
+		InitialState: &Idle{},
+		Env:          env,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)

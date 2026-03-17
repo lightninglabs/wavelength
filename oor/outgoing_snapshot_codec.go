@@ -97,7 +97,6 @@ func encodeSessionsCheckpoint(
 }
 
 func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
-
 	var (
 		version     uint64
 		outgoingRaw []byte
@@ -140,8 +139,7 @@ func decodeSessionsCheckpoint(raw []byte) (sessionsCheckpoint, error) {
 		outgoingSnapshots = append(outgoingSnapshots, snapshot)
 	}
 
-	incomingSnapshots := make([]*IncomingSnapshot, 0,
-		0)
+	incomingSnapshots := make([]*IncomingSnapshot, 0)
 	if len(incomingRaw) != 0 {
 		incomingBlobs, err := decodeLengthPrefixedBlobList(
 			incomingRaw,

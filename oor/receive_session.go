@@ -61,10 +61,12 @@ func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
 	env := &Environment{SessionID: sessionID}
 
 	fsmCfg := StateMachineCfg{
-		Logger:        log.WithPrefix(sessionID.LogPrefix()),
-		ErrorReporter: newContextErrorReporter(ctx, sessionID.LogPrefix()),
-		InitialState:  state,
-		Env:           env,
+		Logger: log.WithPrefix(sessionID.LogPrefix()),
+		ErrorReporter: newContextErrorReporter(
+			ctx, sessionID.LogPrefix(),
+		),
+		InitialState: state,
+		Env:          env,
 	}
 
 	sm := protofsm.NewStateMachine(fsmCfg)

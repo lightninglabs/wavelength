@@ -75,9 +75,9 @@ type ClientActorCfg struct {
 	// materialized so it can spawn VTXO actors for monitoring.
 	VTXOManager actor.TellOnlyRef[vtxo.ManagerMsg]
 
-	// VTXOStore reloads durably materialized incoming VTXOs by outpoint when
-	// a callback event is restored from the mailbox without in-memory
-	// descriptor attachments.
+	// VTXOStore reloads durably materialized incoming VTXOs
+	// by outpoint when a callback event is restored from the
+	// mailbox without in-memory descriptor attachments.
 	VTXOStore vtxo.VTXOStore
 }
 
@@ -471,8 +471,9 @@ func (b *oorDurableBehavior) handleDriveEvent(ctx context.Context,
 	if !ok {
 		incoming, isIncoming := req.Event.(*IncomingTransferEvent)
 		if !isIncoming {
-			return fn.Err[ActorResp](fmt.Errorf("unknown session: %s",
-				req.SessionID))
+			return fn.Err[ActorResp](fmt.Errorf(
+				"unknown session: %s", req.SessionID,
+			))
 		}
 
 		err := b.handleIncomingTransfer(ctx, req.SessionID, incoming)
@@ -553,8 +554,9 @@ func (b *oorDurableBehavior) handleResolveIncomingTransfer(
 	}
 
 	if len(req.RecipientPkScript) == 0 {
-		return fn.Err[ActorResp](fmt.Errorf("recipient pk script must " +
-			"be provided"))
+		return fn.Err[ActorResp](fmt.Errorf(
+			"recipient pk script must be provided",
+		))
 	}
 
 	b.logger(ctx).DebugS(ctx, "Handling incoming transfer hint",
@@ -1103,6 +1105,7 @@ func (b *oorDurableBehavior) sendTransportEvent(ctx context.Context,
 			afterEventID = queryReq.RecipientEventID - 1
 		}
 
+		//nolint:ll
 		sendReq := &serverconn.SendListOORRecipientEventsByScriptRequest{
 			PkScript: append(
 				[]byte(nil), queryReq.RecipientPkScript...,
@@ -1215,8 +1218,8 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 			slog.String("event_type", fmt.Sprintf("%T", msg)))
 
 		if handler == nil {
-			return fmt.Errorf("outbox handler must be provided for " +
-				"local events")
+			return fmt.Errorf("outbox handler must " +
+				"be provided for local events")
 		}
 
 		// Local events (signing, persistence, timers) continue
@@ -1328,7 +1331,7 @@ func (b *oorDurableBehavior) loadMaterializedVTXOs(ctx context.Context,
 	if b.cfg.VTXOStore == nil {
 		b.logger(ctx).WarnS(
 			ctx, "Missing VTXO store for incoming callback reload",
-			nil, //nolint:ll
+			nil,
 			slog.Int("num_outpoints",
 				len(handled.MaterializedOutpoints)))
 
@@ -1466,12 +1469,7 @@ func (h *sessionHandle) currentSessionState() (SessionState, error) {
 		return nil, err
 	}
 
-	state, ok := current.(SessionState)
-	if !ok {
-		return nil, fmt.Errorf("unexpected state type: %T", current)
-	}
-
-	return state, nil
+	return current, nil
 }
 
 // currentOutgoingState returns the current outgoing session state.
@@ -1483,8 +1481,10 @@ func (h *sessionHandle) currentOutgoingState() (State, error) {
 
 	outgoingState, ok := state.(State)
 	if !ok {
-		return nil, fmt.Errorf("unexpected outgoing state type: %T",
-			state)
+		return nil, fmt.Errorf(
+			"unexpected outgoing state type: %T",
+			state,
+		)
 	}
 
 	return outgoingState, nil
@@ -1502,8 +1502,10 @@ func outboxForHandle(handle *sessionHandle,
 	case sessionKindOutgoing:
 		outgoingState, ok := state.(State)
 		if !ok {
-			return nil, fmt.Errorf("unexpected outgoing state type: %T",
-				state)
+			return nil, fmt.Errorf(
+				"unexpected outgoing state type: %T",
+				state,
+			)
 		}
 
 		return OutboxForState(outgoingState)

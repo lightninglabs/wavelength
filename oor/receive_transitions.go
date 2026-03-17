@@ -99,10 +99,11 @@ func transitionIncomingTransfer(
 					Recipients: recipients,
 				},
 				&QueryIncomingMetadataRequest{
-					SessionID:            evt.SessionID,
-					ArkPSBT:              evt.ArkPSBT,
-					FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
-					Recipients:           recipients,
+					SessionID: evt.SessionID,
+					ArkPSBT:   evt.ArkPSBT,
+					FinalCheckpointPSBTs: evt. //nolint:ll
+									FinalCheckpointPSBTs, //nolint:ll
+					Recipients: recipients,
 				},
 			},
 		}),
@@ -176,7 +177,7 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 						ArkPSBT:   s.ArkPSBT,
 						FinalCheckpointPSBTs: s.
 							FinalCheckpointPSBTs,
-						Recipients: recipients,
+						Recipients:      recipients,
 						MetadataMatches: evt.Matches,
 					},
 				},
@@ -184,9 +185,10 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *IncomingHandledEvent:
-		// The application signals it has processed the notification.
-		// Wallet state has been updated (materialization complete), so we
-		// can now ack to the server.
+		// The application signals it has processed the
+		// notification. Wallet state has been updated
+		// (materialization complete), so we can now ack to the
+		// server.
 		_ = evt
 
 		return &StateTransition{

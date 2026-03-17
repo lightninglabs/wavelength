@@ -296,9 +296,10 @@ type ResolveIncomingTransferRequest struct {
 	// incoming OOR output.
 	RecipientPkScript []byte
 
-	// RecipientEventID is the monotonic per-script event ID for the incoming
-	// recipient event. The actor uses this as the cursor hint when querying the
-	// indexer for the full Ark PSBT payload.
+	// RecipientEventID is the monotonic per-script event ID
+	// for the incoming recipient event. The actor uses this as
+	// the cursor hint when querying the indexer for the full
+	// Ark PSBT payload.
 	RecipientEventID uint64
 }
 

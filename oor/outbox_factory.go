@@ -68,14 +68,14 @@ func NewOutboxHandler(
 	}
 
 	return &LocalPersistenceOutboxHandler{
-		Next:                    signingHandler,
-		Store:                   cfg.Store,
-		PackageStore:            cfg.PackageStore,
-		OperatorKey:             cfg.OperatorKey,
-		ExitDelay:               cfg.ExitDelay,
-		NotifyIncomingVTXOs:     cfg.NotifyIncomingVTXOs,
-		CompleteSpend:           cfg.CompleteSpend,
+		Next:                     signingHandler,
+		Store:                    cfg.Store,
+		PackageStore:             cfg.PackageStore,
+		OperatorKey:              cfg.OperatorKey,
+		ExitDelay:                cfg.ExitDelay,
+		NotifyIncomingVTXOs:      cfg.NotifyIncomingVTXOs,
+		CompleteSpend:            cfg.CompleteSpend,
 		ResolveIncomingClientKey: cfg.ResolveIncomingClientKey,
-		ResolveIncomingMetadata: cfg.ResolveIncomingMetadata,
+		ResolveIncomingMetadata:  cfg.ResolveIncomingMetadata,
 	}
 }
