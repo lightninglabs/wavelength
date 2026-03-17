@@ -10,12 +10,16 @@ import (
 
 // testDurableUnaryBuilder adapts the shared client indexer proof builder to
 // the generic serverconn durable-unary builder interface used in systest.
+//
+//nolint:unused
 type testDurableUnaryBuilder struct {
 	indexerClient **clientindexer.Client
 }
 
-// BuildListOORRecipientEventsByScriptRequest builds the proof-gated request
-// body for one taproot recipient-event query.
+// BuildListOORRecipientEventsByScriptRequest builds the proof-gated
+// request body for one taproot recipient-event query.
+//
+//nolint:unused
 func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 	ctx context.Context, pkScript []byte, afterEventID uint64, limit uint32,
 ) (proto.Message, error) {
@@ -30,8 +34,10 @@ func (b *testDurableUnaryBuilder) BuildListOORRecipientEventsByScriptRequest(
 		)
 }
 
-// BuildListVTXOsByScriptsRequest builds the proof-gated request body for one
-// or more taproot VTXO scope queries.
+// BuildListVTXOsByScriptsRequest builds the proof-gated request body
+// for one or more taproot VTXO scope queries.
+//
+//nolint:unused
 func (b *testDurableUnaryBuilder) BuildListVTXOsByScriptsRequest(
 	ctx context.Context, pkScripts [][]byte, afterCursor uint64,
 	limit uint32,

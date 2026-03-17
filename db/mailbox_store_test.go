@@ -53,7 +53,7 @@ func TestMailboxStoreAppendPullRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	store := newTestMailboxStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Append two envelopes.
 	seq1, err := store.Append(ctx, makeTestEnvelope("alice", "msg-1"))
@@ -84,7 +84,7 @@ func TestMailboxStoreAppendIdempotent(t *testing.T) {
 	t.Parallel()
 
 	store := newTestMailboxStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	env := makeTestEnvelope("alice", "dup-msg")
 
@@ -111,12 +111,13 @@ func TestMailboxStoreAckCursorMonotonic(t *testing.T) {
 	t.Parallel()
 
 	store := newTestMailboxStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Append 3 envelopes.
 	for i := 1; i <= 3; i++ {
+		msgID := fmt.Sprintf("msg-%d", i)
 		_, err := store.Append(
-			ctx, makeTestEnvelope("bob", "msg-"+string(rune('0'+i))),
+			ctx, makeTestEnvelope("bob", msgID),
 		)
 		require.NoError(t, err)
 	}
@@ -157,7 +158,7 @@ func TestMailboxStorePullContextCancel(t *testing.T) {
 	)
 
 	ctx, cancel := context.WithTimeout(
-		context.Background(), 100*time.Millisecond,
+		t.Context(), 100*time.Millisecond,
 	)
 	defer cancel()
 
@@ -175,7 +176,7 @@ func TestMailboxStoreMaxEnvelopeBytes(t *testing.T) {
 	store := newTestMailboxStore(t,
 		mailbox.WithMaxEnvelopeBytes(50),
 	)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a large envelope.
 	env := makeTestEnvelope("alice", "big-msg")
@@ -196,7 +197,7 @@ func TestMailboxStoreMaxEnvelopesPerMailbox(t *testing.T) {
 	store := newTestMailboxStore(t,
 		mailbox.WithMaxEnvelopesPerMailbox(2),
 	)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Fill to capacity.
 	_, err := store.Append(
@@ -232,7 +233,7 @@ func TestMailboxStoreIsolation(t *testing.T) {
 	t.Parallel()
 
 	store := newTestMailboxStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	_, err := store.Append(
 		ctx, makeTestEnvelope("alice", "alice-msg"),
@@ -265,7 +266,7 @@ func TestMailboxStoreConcurrentAppendPull(t *testing.T) {
 	store := newTestMailboxStore(t,
 		mailbox.WithPullPollInterval(5*time.Millisecond),
 	)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	const (
 		numWriters    = 5
@@ -347,7 +348,7 @@ func TestMailboxStoreValidation(t *testing.T) {
 	t.Parallel()
 
 	store := newTestMailboxStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Nil envelope.
 	_, err := store.Append(ctx, nil)

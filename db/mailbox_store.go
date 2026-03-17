@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -109,10 +110,11 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 					)
 				}
 
-				if int(count) >= s.cfg.MaxEnvelopesPerMailbox {
+				maxPerMbox := s.cfg.MaxEnvelopesPerMailbox
+				if int(count) >= maxPerMbox {
 					return &mailbox.ErrMailboxFull{
 						Recipient: env.Recipient,
-						Max:       s.cfg.MaxEnvelopesPerMailbox,
+						Max:       maxPerMbox,
 					}
 				}
 			}
@@ -130,7 +132,7 @@ func (s *MailboxEnvelopeStore) Append(ctx context.Context,
 			// ON CONFLICT DO NOTHING returns
 			// sql.ErrNoRows when the msg_id already
 			// exists. Treat as idempotent success.
-			if appendErr == sql.ErrNoRows {
+			if errors.Is(appendErr, sql.ErrNoRows) {
 				seq = 0
 				return nil
 			}
@@ -184,6 +186,7 @@ func (s *MailboxEnvelopeStore) Pull(ctx context.Context,
 						Limit:     int32(limit),
 					},
 				)
+
 				return err
 			},
 		)

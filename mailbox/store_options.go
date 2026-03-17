@@ -32,10 +32,6 @@ type StoreConfig struct {
 	Log btclog.Logger
 }
 
-// storeConfig is a type alias for backward compatibility within the
-// mailbox package.
-type storeConfig = StoreConfig
-
 // StoreOption is an option that modifies store behavior.
 type StoreOption func(*StoreConfig)
 
@@ -45,11 +41,6 @@ func DefaultStoreConfig() StoreConfig {
 		PullPollInterval: defaultPullPollInterval,
 		Log:              btclog.Disabled,
 	}
-}
-
-// defaultStoreConfig is an alias for backward compatibility.
-func defaultStoreConfig() StoreConfig {
-	return DefaultStoreConfig()
 }
 
 // WithPullPollInterval sets the polling interval used by SQL-backed
