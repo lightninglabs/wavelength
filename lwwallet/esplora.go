@@ -527,6 +527,52 @@ type testMempoolAcceptFees struct {
 	Base float64 `json:"base"`
 }
 
+// SubmitPackage posts a package of raw transaction hex strings to the
+// Esplora /txs/package endpoint for atomic package relay. The txs
+// slice should contain hex-encoded serialized transactions in
+// dependency order (parents first, child last).
+func (c *EsploraClient) SubmitPackage(txHexes []string) error {
+	jsonBody, err := json.Marshal(txHexes)
+	if err != nil {
+		return fmt.Errorf("marshal package txs: %w", err)
+	}
+
+	url := c.baseURL + "/txs/package"
+
+	resp, err := c.httpClient.Post(
+		url, "application/json",
+		bytes.NewReader(jsonBody),
+	)
+	if err != nil {
+		return fmt.Errorf("submit package: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read package response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"submit package HTTP %d: %s",
+			resp.StatusCode, string(respBody),
+		)
+	}
+
+	// Log the response body for debugging partial acceptance
+	// scenarios. The esplora API may return 200 even when
+	// individual transactions in the package were rejected.
+	if len(respBody) > 0 {
+		c.log.DebugS(context.Background(),
+			"Package response",
+			slog.String("body",
+				string(respBody)))
+	}
+
+	return nil
+}
+
 // post performs an HTTP POST request with a text body and returns the
 // response body.
 func (c *EsploraClient) post(path string,

@@ -143,7 +143,7 @@ func New(cfg Config) (*Wallet, error) {
 		slog.String("db_dir", cfg.DBDir),
 		slog.Uint64("coin_type", uint64(coinType)))
 
-	return &Wallet{
+	w := &Wallet{
 		Signer:          btcw,
 		btcWallet:       btcw,
 		chainSvc:        chainSvc,
@@ -153,7 +153,13 @@ func New(cfg Config) (*Wallet, error) {
 		keyRing:         keyRing,
 		chainParams:     cfg.ChainParams,
 		walletLog:       cfg.Log,
-	}, nil
+	}
+
+	// Wire the wallet into the chain backend so SubmitPackage can
+	// auto-construct CPFP children using wallet UTXOs.
+	chainBackend.SetWallet(w)
+
+	return w, nil
 }
 
 // logger returns the configured logger or falls back to extracting from
