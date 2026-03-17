@@ -225,6 +225,6 @@ require (
 
 replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-display v1.33.0-hex-display
 
-replace github.com/lightninglabs/darepo-client => /Users/roasbeef/gocode/src/github.com/lightninglabs/darepo-client-oor-recv
+replace github.com/lightninglabs/darepo-client => ./client
 
 replace github.com/lightninglabs/darepo-client/baselib => ./client/baselib
