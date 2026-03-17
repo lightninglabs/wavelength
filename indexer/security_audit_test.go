@@ -55,7 +55,9 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
-	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
+	sig64, err := schnorrSigOverMessage(
+		t.Context(), msgBytes, pkScript, signer,
+	)
 	require.NoError(t, err)
 
 	// The attacker now takes the (msgBytes, sig64) pair -- which was
@@ -90,8 +92,9 @@ func TestH1_CrossPurposeProofReplay(t *testing.T) {
 }
 
 // TestH2_RegistrationExpiryMismatch demonstrates that the proto-level
-// ExpiresAtUnixS and the TLV-signed expiresAt can diverge if the caller
-// provides a different value.
+// ExpiresAtUnixS and the TLV-signed expiresAt intentionally diverge for
+// registrations with long retention, and that tampering the outer field widens
+// that divergence further.
 func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -107,13 +110,12 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 	serverID := "test-server"
 	principal := "client:test"
 
-	// The caller wants the registration to expire in 1 hour.
+	// The caller wants the registration to remain registered for 1 hour.
 	callerExpiry := time.Now().Add(1 * time.Hour)
 
-	// But the TLV proof is signed with the client's own timestamp
-	// logic. In RegisterReceiveScriptTaproot, the proof's expiresAt
-	// is uint64(expiresAt.Unix()) where expiresAt = the caller arg.
-	// The proto also carries ExpiresAtUnixS = uint64(expiresAt.Unix()).
+	// The real client signs the TLV proof with a short replay window while
+	// the outer request keeps the longer registration-retention deadline.
+	proofExpiry := time.Now().Add(offlineReceiveProofTTL)
 	//
 	// Now consider: an attacker intercepts the wire proto and modifies
 	// the outer ExpiresAtUnixS to a much later time.
@@ -125,12 +127,14 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 		registrationMessageType,
 		serverID, principal,
 		purposeRegisterReceiveScript, pkScript, nonce,
-		uint64(now.Unix()), uint64(callerExpiry.Unix()),
+		uint64(now.Unix()), uint64(proofExpiry.Unix()),
 	)
 	require.NoError(t, err)
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
-	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
+	sig64, err := schnorrSigOverMessage(
+		t.Context(), msgBytes, pkScript, signer,
+	)
 	require.NoError(t, err)
 
 	// Build the registration request as the honest client would.
@@ -154,9 +158,8 @@ func TestH2_RegistrationExpiryMismatch(t *testing.T) {
 		callerExpiry.Add(365 * 24 * time.Hour).Unix(),
 	)
 
-	// The signature is still valid -- it signed the TLV payload
-	// which has the original expiresAt. But the request-level
-	// ExpiresAtUnixS is now 1 year later.
+	// The signature is still valid because it covers the TLV payload
+	// only. The request-level ExpiresAtUnixS is now 1 year later.
 	tlvExpiry := decodeProofTLVBytes(t, msgBytes).expiresAt
 
 	require.NotEqual(t, tamperedReq.ExpiresAtUnixS, tlvExpiry,
@@ -228,7 +231,9 @@ func TestM1_ProofReplayWithinTTL(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
-	sig64, err := schnorrSigOverMessage(msgBytes, pkScript, signer)
+	sig64, err := schnorrSigOverMessage(
+		t.Context(), msgBytes, pkScript, signer,
+	)
 	require.NoError(t, err)
 
 	// Replay the exact same proof 100 times. Each is
@@ -579,7 +584,9 @@ func TestH4_CrossTypeProofConfusion(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
-	regSig, err := schnorrSigOverMessage(regMsg, pkScript, signer)
+	regSig, err := schnorrSigOverMessage(
+		t.Context(), regMsg, pkScript, signer,
+	)
 	require.NoError(t, err)
 
 	// Package the registration proof into a ScriptScope envelope
@@ -650,7 +657,7 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 
 	signer := &PrivKeySchnorrSigner{Key: privKey}
 	sig64, err := schnorrSigOverMessage(
-		msgBytes, ownedScript, signer,
+		t.Context(), msgBytes, ownedScript, signer,
 	)
 	require.NoError(t, err)
 
@@ -687,15 +694,16 @@ func TestM5_PkScriptEnvelopeMismatch(t *testing.T) {
 
 // decodedProof holds all fields decoded from a proof TLV message.
 type decodedProof struct {
-	proofType string
-	version   uint32
-	serverID  string
-	principal string
-	pkScript  []byte
-	issuedAt  uint64
-	expiresAt uint64
-	nonce     []byte
-	purpose   string
+	proofType   string
+	version     uint32
+	serverID    string
+	principal   string
+	pkScript    []byte
+	ownerPubKey []byte
+	issuedAt    uint64
+	expiresAt   uint64
+	nonce       []byte
+	purpose     string
 
 	// hasPurpose indicates whether the purpose field was present
 	// in the TLV stream.
@@ -716,6 +724,7 @@ func decodeProofTLVBytes(
 		serverIDBytes  []byte
 		principalBytes []byte
 		pkScript       []byte
+		ownerPubKey    []byte
 		issuedAt       uint64
 		expiresAt      uint64
 		nonce          []byte
@@ -762,6 +771,11 @@ func decodeProofTLVBytes(
 			tlv.SizeVarBytes(&purposeBytes),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &ownerPubKey,
+			tlv.SizeVarBytes(&ownerPubKey),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
 	)
 	require.NoError(t, err)
 
@@ -772,16 +786,17 @@ func decodeProofTLVBytes(
 	_, hasPurpose := parsedTypes[proofTLVTypePurpose]
 
 	return decodedProof{
-		proofType:  string(proofType),
-		version:    version,
-		serverID:   string(serverIDBytes),
-		principal:  string(principalBytes),
-		pkScript:   pkScript,
-		issuedAt:   issuedAt,
-		expiresAt:  expiresAt,
-		nonce:      nonce,
-		purpose:    string(purposeBytes),
-		hasPurpose: hasPurpose,
+		proofType:   string(proofType),
+		version:     version,
+		serverID:    string(serverIDBytes),
+		principal:   string(principalBytes),
+		pkScript:    pkScript,
+		ownerPubKey: ownerPubKey,
+		issuedAt:    issuedAt,
+		expiresAt:   expiresAt,
+		nonce:       nonce,
+		purpose:     string(purposeBytes),
+		hasPurpose:  hasPurpose,
 	}
 }
 
@@ -795,6 +810,7 @@ func extractPurposeFromTLVSafe(msg []byte) string {
 		serverIDBytes  []byte
 		principalBytes []byte
 		pkScript       []byte
+		ownerPubKey    []byte
 		issuedAt       uint64
 		expiresAt      uint64
 		nonce          []byte
@@ -839,6 +855,11 @@ func extractPurposeFromTLVSafe(msg []byte) string {
 		tlv.MakeDynamicRecord(
 			proofTLVTypePurpose, &purposeBytes,
 			tlv.SizeVarBytes(&purposeBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeOwnerPubKey, &ownerPubKey,
+			tlv.SizeVarBytes(&ownerPubKey),
 			tlv.EVarBytes, tlv.DVarBytes,
 		),
 	)

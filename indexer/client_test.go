@@ -2,13 +2,19 @@ package indexer
 
 import (
 	"bytes"
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightninglabs/darepo-client/arkrpc"
+	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestEncodeProofTLVRoundTrip encodes a proof and decodes it via a TLV
@@ -169,7 +175,9 @@ func TestSchnorrSigOverMessageSignVerify(t *testing.T) {
 	msg := []byte("test proof message content")
 
 	signer := &PrivKeySchnorrSigner{Key: priv}
-	sig64, err := schnorrSigOverMessage(msg, nil, signer)
+	sig64, err := schnorrSigOverMessage(
+		t.Context(), msg, nil, signer,
+	)
 	require.NoError(t, err)
 	require.Len(t, sig64, 64)
 
@@ -194,10 +202,14 @@ func TestSchnorrSigOverMessageDeterministic(t *testing.T) {
 	msg := []byte("deterministic signing test")
 
 	signer := &PrivKeySchnorrSigner{Key: priv}
-	sig1, err := schnorrSigOverMessage(msg, nil, signer)
+	sig1, err := schnorrSigOverMessage(
+		t.Context(), msg, nil, signer,
+	)
 	require.NoError(t, err)
 
-	sig2, err := schnorrSigOverMessage(msg, nil, signer)
+	sig2, err := schnorrSigOverMessage(
+		t.Context(), msg, nil, signer,
+	)
 	require.NoError(t, err)
 
 	require.Equal(t, sig1, sig2)
@@ -217,7 +229,9 @@ func TestSchnorrSigOverMessageWrongKeyFails(t *testing.T) {
 	msg := []byte("wrong key test")
 
 	signer1 := &PrivKeySchnorrSigner{Key: priv1}
-	sig64, err := schnorrSigOverMessage(msg, nil, signer1)
+	sig64, err := schnorrSigOverMessage(
+		t.Context(), msg, nil, signer1,
+	)
 	require.NoError(t, err)
 
 	// Parse and verify against the wrong key.
@@ -228,6 +242,99 @@ func TestSchnorrSigOverMessageWrongKeyFails(t *testing.T) {
 	wrongPub := priv2.PubKey()
 	require.False(t, sig.Verify(msgHash[:], wrongPub),
 		"signature must not verify with wrong key")
+}
+
+// TestSchnorrSigOverMessageUsesMessageSigner verifies that the helper prefers
+// the tagged-message signing path when it is available.
+func TestSchnorrSigOverMessageUsesMessageSigner(t *testing.T) {
+	t.Parallel()
+
+	signer := &testMessageSchnorrSigner{
+		result: []byte("message-signed"),
+	}
+	msg := []byte("message signer path")
+	pkScript := []byte{0x51, 0x20, 0x01}
+
+	sig, err := schnorrSigOverMessage(
+		t.Context(), msg, pkScript, signer,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []byte("message-signed"), sig)
+	require.Equal(t, msg, signer.message)
+	require.Equal(t, pkScript, signer.pkScript)
+	require.Equal(t, proofTag(), signer.tag)
+	require.False(t, signer.rawCalled)
+}
+
+// TestRegisterReceiveScriptTaprootUsesShortLivedProof verifies that the
+// registration proof TTL remains short even when the registration retention
+// window is much longer.
+func TestRegisterReceiveScriptTaprootUsesShortLivedProof(t *testing.T) {
+	t.Parallel()
+
+	privKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	pkScript := append(
+		[]byte{0x51, 0x20},
+		privKey.PubKey().SerializeCompressed()[1:]...,
+	)
+
+	rpcClient := &recordingRPCClient{}
+	client := New(
+		rpcClient, &PrivKeySchnorrSigner{Key: privKey},
+		"test-server", "client:test",
+	)
+
+	registrationExpiry := time.Now().Add(30 * 24 * time.Hour)
+	_, err = client.RegisterReceiveScriptTaproot(
+		t.Context(), pkScript, registrationExpiry, "oor receive",
+	)
+	require.NoError(t, err)
+
+	req := rpcClient.lastRegisterReceiveScriptRequest(t)
+	require.Equal(
+		t, uint64(registrationExpiry.Unix()), req.ExpiresAtUnixS,
+	)
+
+	decoded := decodeProofTLVBytes(
+		t, req.GetTaprootSchnorr().GetMessage(),
+	)
+	require.Equal(t, purposeRegisterReceiveScript, decoded.purpose)
+	require.Equal(t, uint64(registrationExpiry.Unix()), req.ExpiresAtUnixS)
+	require.NotEqual(t, req.ExpiresAtUnixS, decoded.expiresAt)
+	require.Equal(
+		t, uint64(offlineReceiveProofTTL/time.Second),
+		decoded.expiresAt-decoded.issuedAt,
+	)
+}
+
+type testMessageSchnorrSigner struct {
+	result    []byte
+	message   []byte
+	pkScript  []byte
+	tag       []byte
+	rawCalled bool
+}
+
+// SignSchnorr records an unexpected raw-digest call.
+func (s *testMessageSchnorrSigner) SignSchnorr(
+	_ []byte, _ [32]byte) ([]byte, error) {
+
+	s.rawCalled = true
+
+	return nil, nil
+}
+
+// SignSchnorrMessage records the canonical inputs passed by the helper.
+func (s *testMessageSchnorrSigner) SignSchnorrMessage(_ context.Context,
+	pkScript []byte, message []byte, tag []byte) ([]byte, error) {
+
+	s.message = append([]byte(nil), message...)
+	s.pkScript = append([]byte(nil), pkScript...)
+	s.tag = append([]byte(nil), tag...)
+
+	return append([]byte(nil), s.result...), nil
 }
 
 // TestValidateTaprootPkScript uses a table-driven approach to verify
@@ -339,4 +446,47 @@ func TestProofTagImmutable(t *testing.T) {
 	tag2 := proofTag()
 	require.Equal(t, original, tag2,
 		"mutating one proofTag() return must not affect the next")
+}
+
+type recordingRPCClient struct {
+	mu      sync.Mutex
+	lastReq proto.Message
+}
+
+// SendRPC records the last request and returns a static correlation pair.
+func (r *recordingRPCClient) SendRPC(_ context.Context,
+	_ mailboxrpc.ServiceMethod, req proto.Message,
+	_ mailboxrpc.RPCOptions) (mailboxrpc.SendResult, error) {
+
+	r.mu.Lock()
+	r.lastReq = proto.Clone(req)
+	r.mu.Unlock()
+
+	return mailboxrpc.SendResult{
+		CorrelationID:  "corr-1",
+		IdempotencyKey: "idemp-1",
+	}, nil
+}
+
+// AwaitRPC completes successfully with the zero-value response.
+func (r *recordingRPCClient) AwaitRPC(_ context.Context, _ string,
+	_ proto.Message) error {
+
+	return nil
+}
+
+// lastRegisterReceiveScriptRequest returns the last recorded registration
+// request.
+func (r *recordingRPCClient) lastRegisterReceiveScriptRequest(
+	t *testing.T) *arkrpc.RegisterReceiveScriptRequest {
+
+	t.Helper()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	req, ok := r.lastReq.(*arkrpc.RegisterReceiveScriptRequest)
+	require.True(t, ok)
+
+	return req
 }
