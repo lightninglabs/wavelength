@@ -14,6 +14,10 @@ PostgreSQL and SQLite backends with SQLC-generated type-safe queries.
 - `VTXOLockerDB` — Global VTXO locking across rounds and OOR.
 - `RecipientEventStore` — OOR recipient event log.
 - `TransactionExecutor` — Batched transaction support for atomic operations.
+- `MailboxEnvelopeStore` — SQL-backed `mailbox.Store` implementation that
+  persists envelopes with cursor-based pull and monotonic ack watermarks.
+  Supports both SQLite and Postgres via sqlc, with `UNIQUE(recipient, msg_id)`
+  deduplication and per-mailbox capacity enforcement.
 
 ## Relationships
 
