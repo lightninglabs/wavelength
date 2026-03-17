@@ -1418,6 +1418,36 @@ func (s *PartialSigsSentState) ProcessEvent(
 			}
 		}
 
+		// Propagate validated signatures to client sub-trees.
+		// ClientTrees were extracted before signing (in
+		// CommitmentTxReceivedState) via ExtractPathForCoSigners
+		// which creates new node objects. Those copies don't have
+		// the aggregated signatures that were just submitted to
+		// VTXOTreePaths. We submit the same signatures to ensure
+		// persisted client trees contain valid signatures for
+		// unilateral exit (unrolling).
+		for _, clientTree := range s.ClientTrees {
+			if err := clientTree.SubmitTreeSigs(
+				evt.AggSigs,
+			); err != nil {
+				return failWithNotification(
+					"failed to propagate sigs "+
+						"to client tree",
+					err, false,
+					fn.Some(s.RoundID),
+				), nil
+			}
+
+			if err := clientTree.VerifySigned(); err != nil {
+				return failWithNotification(
+					"client tree sig "+
+						"verification failed",
+					err, false,
+					fn.Some(s.RoundID),
+				), nil
+			}
+		}
+
 		env.Log.InfoS(ctx, "Validated aggregated signatures",
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("forfeit_mapping_count", len(s.ForfeitMappings)))
