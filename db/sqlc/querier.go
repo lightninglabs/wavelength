@@ -9,11 +9,14 @@ import (
 )
 
 type Querier interface {
+	AppendMailboxEnvelope(ctx context.Context, arg AppendMailboxEnvelopeParams) (int64, error)
 	ApplyFinalizeOORSession(ctx context.Context, arg ApplyFinalizeOORSessionParams) (int64, error)
 	CountAllRounds(ctx context.Context) (int64, error)
 	CountAllVTXOs(ctx context.Context) (int64, error)
+	CountMailboxEnvelopes(ctx context.Context, recipient string) (int64, error)
 	CountRoundsByStatus(ctx context.Context, status string) (int64, error)
 	CountVTXOsByStatus(ctx context.Context, status string) (int64, error)
+	DeleteAckedMailboxEnvelopes(ctx context.Context, arg DeleteAckedMailboxEnvelopesParams) (int64, error)
 	DeleteIndexerReceiveScript(ctx context.Context, arg DeleteIndexerReceiveScriptParams) (int64, error)
 	DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) error
 	// NOTE: This recursive query can be implemented in application code.
@@ -107,6 +110,7 @@ type Querier interface {
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
+	PullMailboxEnvelopes(ctx context.Context, arg PullMailboxEnvelopesParams) ([]MailboxEnvelope, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
 	UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
 	UnlockStaleVTXOsSqlite(ctx context.Context, pendingRoundIds [][]byte) (int64, error)
@@ -116,6 +120,7 @@ type Querier interface {
 	UpdateVTXOsLiveByRound(ctx context.Context, roundID []byte) error
 	UpsertChainInfo(ctx context.Context, arg UpsertChainInfoParams) error
 	UpsertIndexerReceiveScript(ctx context.Context, arg UpsertIndexerReceiveScriptParams) error
+	UpsertMailboxAckCursor(ctx context.Context, arg UpsertMailboxAckCursorParams) error
 	UpsertOORCheckpoint(ctx context.Context, arg UpsertOORCheckpointParams) error
 	UpsertOORSession(ctx context.Context, arg UpsertOORSessionParams) (int64, error)
 	UpsertRoundForfeitInfo(ctx context.Context, arg UpsertRoundForfeitInfoParams) error

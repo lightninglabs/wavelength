@@ -199,7 +199,7 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	var mailboxTableName string
 	err = backupDB.QueryRowContext(ctx, `
 		SELECT name FROM sqlite_master
-		WHERE type='table' AND name='mailbox_messages'
+		WHERE type='table' AND name='mailbox_envelopes'
 	`).Scan(&mailboxTableName)
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }

@@ -19,7 +19,7 @@ type MemoryStore struct {
 	mu        sync.Mutex
 	mailboxes map[string]*mailboxState
 
-	cfg storeConfig
+	cfg StoreConfig
 	log btclog.Logger
 }
 
@@ -42,7 +42,7 @@ type storedEnvelope struct {
 
 // NewMemoryStore creates an empty in-memory mailbox store.
 func NewMemoryStore(opts ...StoreOption) *MemoryStore {
-	cfg := defaultStoreConfig()
+	cfg := DefaultStoreConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -50,7 +50,7 @@ func NewMemoryStore(opts ...StoreOption) *MemoryStore {
 	return &MemoryStore{
 		mailboxes: make(map[string]*mailboxState),
 		cfg:       cfg,
-		log:       cfg.log,
+		log:       cfg.Log,
 	}
 }
 
@@ -77,11 +77,11 @@ func (s *MemoryStore) Append(
 	state.mu.Lock()
 	defer state.mu.Unlock()
 
-	if s.cfg.maxEnvelopesPerMailbox > 0 {
-		if len(state.envelopes) >= s.cfg.maxEnvelopesPerMailbox {
+	if s.cfg.MaxEnvelopesPerMailbox > 0 {
+		if len(state.envelopes) >= s.cfg.MaxEnvelopesPerMailbox {
 			return 0, &ErrMailboxFull{
 				Recipient: env.Recipient,
-				Max:       s.cfg.maxEnvelopesPerMailbox,
+				Max:       s.cfg.MaxEnvelopesPerMailbox,
 			}
 		}
 	}
@@ -96,12 +96,12 @@ func (s *MemoryStore) Append(
 	}
 	stored.EventSeq = seq
 
-	if s.cfg.maxEnvelopeBytes > 0 {
+	if s.cfg.MaxEnvelopeBytes > 0 {
 		size := proto.Size(stored)
-		if size > s.cfg.maxEnvelopeBytes {
+		if size > s.cfg.MaxEnvelopeBytes {
 			return 0, &ErrEnvelopeTooLarge{
 				Size: size,
-				Max:  s.cfg.maxEnvelopeBytes,
+				Max:  s.cfg.MaxEnvelopeBytes,
 			}
 		}
 	}

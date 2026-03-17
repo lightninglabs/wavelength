@@ -10,6 +10,11 @@ import (
 type Store interface {
 	// Append stores env in env.Recipient's mailbox and returns the assigned
 	// event sequence number.
+	//
+	// Duplicate msg_id values are silently ignored: the call returns
+	// (0, nil) without inserting a second copy. Callers can distinguish
+	// duplicates from fresh inserts because valid sequence numbers start
+	// at 1.
 	Append(ctx context.Context, env *Envelope) (uint64, error)
 
 	// Pull returns up to limit envelopes from recipient's mailbox starting
