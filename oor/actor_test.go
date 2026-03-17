@@ -14,7 +14,9 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo-client/serverconn"
+	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -250,6 +252,88 @@ func TestOORClientActorHappyPath(t *testing.T) {
 	require.Equal(t, PackageDirectionOutgoing, packageStore.lastDirection)
 	require.Equal(t, chainhash.Hash(startMsg.SessionID),
 		packageStore.lastSessionID)
+}
+
+// TestOORClientActorHandlesIncomingTransferWithoutExistingSession asserts the
+// actor can materialize a fresh incoming transfer before any session has been
+// registered under that session ID.
+func TestOORClientActorHandlesIncomingTransferWithoutExistingSession(
+	t *testing.T) {
+
+	t.Parallel()
+
+	ctx := t.Context()
+
+	arkPSBT, finalCheckpoints, recipients, parentCommitment, recipientKey,
+		operatorKey :=
+		buildTestIncomingMaterialization(t)
+
+	sessionID := SessionID(arkPSBT.UnsignedTx.TxHash())
+	store := newTestVTXOStore()
+	packageStore := &testPackageStore{}
+
+	notifyCalls := 0
+	actor := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &LocalPersistenceOutboxHandler{
+			Store:        store,
+			PackageStore: packageStore,
+			OperatorKey:  operatorKey,
+			ExitDelay:    10,
+			NotifyIncomingVTXOs: func(_ context.Context,
+				_ []*vtxo.Descriptor) error {
+
+				notifyCalls++
+				return nil
+			},
+			ResolveIncomingClientKey: func(_ context.Context,
+				_ ArkRecipientOutput) (
+				keychain.KeyDescriptor, error) {
+
+				return keychain.KeyDescriptor{
+					PubKey: recipientKey.PubKey(),
+				}, nil
+			},
+			ResolveIncomingMetadata: func(_ context.Context,
+				_ SessionID, _ ArkRecipientOutput, _ *psbt.Packet, //nolint:ll
+				_ []*psbt.Packet) (IncomingVTXOMetadata, error) { //nolint:ll
+
+				return IncomingVTXOMetadata{
+					RoundID:        "round-incoming",
+					CommitmentTxID: parentCommitment,
+					BatchExpiry:    1000,
+					TreeDepth:      1,
+					ChainDepth:     len(finalCheckpoints),
+					CreatedHeight:  700,
+				}, nil
+			},
+		},
+		DeliveryStore: newTestDeliveryStore(t),
+		ActorID:       "oor-actor-test-incoming",
+	})
+	defer actor.Stop()
+
+	resp := actor.Receive(ctx, &DriveEventRequest{
+		SessionID: sessionID,
+		Event: &IncomingTransferEvent{
+			SessionID:            sessionID,
+			ArkPSBT:              arkPSBT,
+			FinalCheckpointPSBTs: finalCheckpoints,
+		},
+	})
+	require.True(t, resp.IsOk())
+
+	liveVTXOs, err := store.ListLiveVTXOs(ctx)
+	require.NoError(t, err)
+	require.Len(t, liveVTXOs, 1)
+	require.Equal(t, 1, notifyCalls)
+	require.Equal(t, 1, packageStore.packageCalls)
+	require.Equal(t, 1, packageStore.bindingCalls)
+	require.Equal(t, "round-incoming", liveVTXOs[0].RoundID)
+	require.Equal(t, parentCommitment, liveVTXOs[0].CommitmentTxID)
+	require.Equal(t, wire.OutPoint{
+		Hash:  arkPSBT.UnsignedTx.TxHash(),
+		Index: recipients[0].OutputIndex,
+	}, liveVTXOs[0].Outpoint)
 }
 
 // retrySubmitOutboxHandler simulates a retryable transport error on the first
@@ -498,26 +582,6 @@ func (m *mockServerConnRef) lastSent() *serverconn.SendClientEventRequest {
 
 // lastRecipientQuery returns the most recent durable recipient-events query
 // captured by the mock. It fails the test if no messages have been captured.
-func (m *mockServerConnRef) lastRecipientQuery() *serverconn.
-	SendListOORRecipientEventsByScriptRequest {
-
-	m.t.Helper()
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	require.NotEmpty(m.t, m.messages, "no messages captured")
-
-	last := m.messages[len(m.messages)-1]
-	req, ok := last.(*serverconn.SendListOORRecipientEventsByScriptRequest)
-	require.True(
-		m.t, ok,
-		"last message is not SendListOORRecipientEventsByScriptRequest",
-	)
-
-	return req
-}
-
 // localOnlyOutboxHandler handles only local outbox events (signing,
 // persistence, timers). Transport events should be routed through serverconn
 // and never reach this handler.

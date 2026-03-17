@@ -73,6 +73,26 @@ var _ interface {
 	Tell(context.Context, vtxo.ManagerMsg) error
 } = (*mockVTXOManagerRef)(nil)
 
+type mockOORDurableRef struct {
+	ch chan OORDurableMsg
+}
+
+// ID returns the stable ref identifier for mockOORDurableRef.
+func (m *mockOORDurableRef) ID() string {
+	return "mock-oor-self"
+}
+
+// Tell records an OOR durable message for assertions.
+func (m *mockOORDurableRef) Tell(_ context.Context, msg OORDurableMsg) error {
+	m.ch <- msg
+	return nil
+}
+
+var _ interface {
+	ID() string
+	Tell(context.Context, OORDurableMsg) error
+} = (*mockOORDurableRef)(nil)
+
 // buildIncomingResolveResponse creates an indexer response carrying the full
 // Ark/checkpoint package for a lightweight incoming-transfer hint.
 func buildIncomingResolveResponse(t *testing.T) (
@@ -225,9 +245,9 @@ func TestOORDurableBehaviorDriveIncomingHandledNotifiesVTXOManager(
 	managerRef := &mockVTXOManagerRef{}
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
-			OutboxHandler: &noopOutboxHandler{},
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-drive-incoming-handled-notify",
+			OutboxHandler: &noopOutboxHandler{},
 			VTXOManager:   managerRef,
 		},
 		sessions: map[SessionID]*sessionHandle{
@@ -304,9 +324,9 @@ func TestOORDurableBehaviorDriveIncomingHandledReloadsFromStore(
 	managerRef := &mockVTXOManagerRef{}
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
-			OutboxHandler: &noopOutboxHandler{},
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-drive-incoming-handled-reload",
+			OutboxHandler: &noopOutboxHandler{},
 			VTXOManager:   managerRef,
 			VTXOStore:     store,
 		},
@@ -407,10 +427,10 @@ func TestRetryBackoffProcessEventRetryDueRequiresSnapshot(t *testing.T) {
 	require.ErrorContains(t, err, "resume snapshot must be provided")
 }
 
-// TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary verifies the
-// actor checkpoints an incoming resolve-pending state, then enqueues the
-// durable unary request needed to resolve the full Ark package after commit.
-func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
+// TestOORDurableBehaviorHandleResolveIncomingTransferAsync verifies the actor
+// checkpoints an incoming resolve-pending state and returns before the
+// follow-up indexer fetch completes.
+func TestOORDurableBehaviorHandleResolveIncomingTransferCreatesSession(
 	t *testing.T) {
 
 	t.Parallel()
@@ -419,12 +439,12 @@ func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
 
 	_, sessionID, recipientPkScript, recipientEventID :=
 		buildIncomingResolveResponse(t)
-	serverConn := newMockServerConnRef(t)
+
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
 			DeliveryStore: newTestDeliveryStore(t),
-			ActorID:       "oor-resolve-incoming-async",
-			ServerConn:    serverConn,
+			ActorID:       "oor-resolve-incoming",
+			OutboxHandler: &noopOutboxHandler{},
 		},
 		sessions: make(map[SessionID]*sessionHandle),
 	}
@@ -436,10 +456,14 @@ func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
 			RecipientEventID:  recipientEventID,
 		},
 	)
-	require.True(t, resp.IsOk())
+	require.NoError(t, resp.Err())
 
+	// The session should be created in ReceiveResolving state
+	// with the correct hint fields. The durable transport path
+	// handles the actual query emission post-commit.
 	handle := behavior.sessions[sessionID]
 	require.NotNil(t, handle)
+	require.Equal(t, sessionKindIncoming, handle.kind)
 
 	state, err := handle.currentSessionState()
 	require.NoError(t, err)
@@ -448,21 +472,12 @@ func TestOORDurableBehaviorHandleResolveIncomingTransferDurableUnary(
 	require.True(t, ok)
 	require.Equal(t, recipientPkScript, resolving.RecipientPkScript)
 	require.Equal(t, recipientEventID, resolving.RecipientEventID)
-
-	unaryReq := serverConn.lastRecipientQuery()
-	require.Equal(t, recipientPkScript, unaryReq.PkScript)
-	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
-	require.Equal(t, uint32(1), unaryReq.Limit)
-	require.Equal(
-		t,
-		IncomingResolveCorrelationID(sessionID, recipientEventID),
-		unaryReq.CorrelationID,
-	)
 }
 
-// TestOORDurableBehaviorResumeRestoredSessionsResolvePending verifies restart
-// replay re-emits the durable unary needed to resolve an incoming transfer
-// hint for resolve-pending sessions.
+// TestOORDurableBehaviorResumeRestoredSessionsResolvePending
+// verifies that restored ReceiveResolving sessions survive restart
+// without error. The durable transport path handles re-emission of
+// the query post-commit.
 func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 	t *testing.T) {
 
@@ -482,12 +497,11 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 	)
 	require.NoError(t, err)
 
-	serverConn := newMockServerConnRef(t)
 	behavior := &oorDurableBehavior{
 		cfg: ClientActorCfg{
 			DeliveryStore: newTestDeliveryStore(t),
 			ActorID:       "oor-resume-incoming-resolve",
-			ServerConn:    serverConn,
+			OutboxHandler: &noopOutboxHandler{},
 		},
 		sessions: map[SessionID]*sessionHandle{
 			sessionID: {
@@ -500,13 +514,13 @@ func TestOORDurableBehaviorResumeRestoredSessionsResolvePending(
 	err = behavior.resumeRestoredSessions(ctx)
 	require.NoError(t, err)
 
-	unaryReq := serverConn.lastRecipientQuery()
-	require.Equal(t, recipientPkScript, unaryReq.PkScript)
-	require.Equal(t, recipientEventID-1, unaryReq.AfterEventID)
-	require.Equal(t, uint32(1), unaryReq.Limit)
-	require.Equal(
-		t,
-		IncomingResolveCorrelationID(sessionID, recipientEventID),
-		unaryReq.CorrelationID,
-	)
+	// The session should still be in ReceiveResolving after
+	// resume. The durable transport will re-emit the indexer
+	// query on the next outbox drain.
+	handle := behavior.sessions[sessionID]
+	require.NotNil(t, handle)
+
+	state, stateErr := handle.currentSessionState()
+	require.NoError(t, stateErr)
+	require.IsType(t, &ReceiveResolving{}, state)
 }
