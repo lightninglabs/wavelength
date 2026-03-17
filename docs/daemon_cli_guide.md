@@ -216,6 +216,20 @@ Generate a new taproot boarding address for receiving on-chain funds.
 darepocli wallet newaddress --no-tls
 ```
 
+#### `oor receive`
+
+Allocate a fresh out-of-round receive script backed by a newly derived wallet
+key. The response includes the raw `pk_script_hex`, the owner's
+`pubkey_xonly_hex`, and the wallet key locator.
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--label` | string | Optional indexer registration label |
+
+```bash
+darepocli oor receive --no-tls
+```
+
 #### `vtxos list`
 
 List VTXOs known to the wallet with optional filters.
@@ -292,12 +306,20 @@ Send via out-of-round transfer (immediate, through operator).
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--to` | string | Recipient address |
+| `--to` | string | Recipient address (exactly one of `--to`, `--pubkey`, or `--pk_script`) |
+| `--pubkey` | string | Recipient 32-byte x-only pubkey hex |
+| `--pk_script` | string | Recipient raw pk_script hex |
 | `--amount` | int64 | Amount in sats |
 | `--dry_run` | bool | Validate without initiating |
 
 ```bash
 darepocli send oor --to tb1p... --amount 25000 --no-tls
+
+# Or send directly to the x-only pubkey returned by `oor receive`
+darepocli send oor --pubkey <pubkey_xonly_hex> --amount 25000 --no-tls
+
+# Or send to the exact registered taproot output script
+darepocli send oor --pk_script <pk_script_hex> --amount 25000 --no-tls
 ```
 
 #### `schema`
@@ -324,6 +346,8 @@ darepocli mcp serve --no-tls
 **Note:** Wallet management tools (create, unlock, genseed) are
 intentionally excluded from MCP to prevent sensitive material from
 transiting the protocol. Use the CLI directly for wallet operations.
+`oor_receive` is exposed over MCP because it only allocates a fresh
+wallet-derived receive target and does not reveal seed material.
 
 ## Regtest Quickstart
 

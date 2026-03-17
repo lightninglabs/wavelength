@@ -53,6 +53,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(
 		newGetInfoCmd(),
 		newWalletCmd(),
+		newOORCmd(),
 		newVTXOsCmd(),
 		newSendCmd(),
 		newBoardCmd(),

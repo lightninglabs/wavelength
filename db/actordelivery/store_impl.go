@@ -633,7 +633,7 @@ func (s *Store) SaveCheckpoint(
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(
+	err := s.db.ExecTx(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
@@ -646,6 +646,8 @@ func (s *Store) SaveCheckpoint(
 			})
 		},
 	)
+
+	return err
 }
 
 // LoadCheckpoint loads an FSM checkpoint for an actor.

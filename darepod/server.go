@@ -14,6 +14,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
@@ -78,6 +79,16 @@ const (
 	WalletStateReady
 )
 
+const (
+	// arkServiceName is the protobuf service name for ArkService
+	// events pushed by the server indexer.
+	arkServiceName = "arkrpc.ArkService"
+
+	// MethodIncomingOOR is the routing method name for incoming
+	// OOR transfer notifications pushed by the server indexer.
+	MethodIncomingOOR = "IncomingOOR"
+)
+
 // Main is the true entry point for the daemon. It is called after CLI flag
 // parsing, config validation, and signal interception are complete.
 func Main(cfg *Config, interceptor signal.Interceptor) error {
@@ -133,6 +144,20 @@ type Server struct {
 	// mode this is populated from the lnd connection; in lwwallet
 	// mode it is derived from the config's network string.
 	chainParams *chaincfg.Params
+
+	// operatorKey is the operator's public key from GetInfo.
+	// Used by the OOR receive path for checkpoint leaf
+	// construction.
+	operatorKey *btcec.PublicKey
+
+	// vtxoExitDelay is the operator's VTXO exit delay from
+	// GetInfo. Used by the OOR receive path for VTXO descriptor
+	// construction.
+	vtxoExitDelay uint32
+
+	// clientKeyDesc is the client's identity key descriptor,
+	// derived during wallet initialization.
+	clientKeyDesc keychain.KeyDescriptor
 
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
@@ -437,6 +462,9 @@ func (s *Server) run(ctx context.Context,
 	connCfg.ProtocolVersion = 1
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
+	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
+		server: s,
+	}
 
 	s.runtime, err = serverconn.NewRuntime(connCfg)
 	if err != nil {
@@ -681,6 +709,13 @@ func (s *Server) startLwwallet(ctx context.Context,
 	}
 
 	s.lwWallet = fn.Some(w)
+
+	// Refresh the RPC clients once the wallet is available so the
+	// indexer client picks up the wallet-backed identity key and signer
+	// before any deferred wallet-dependent actors start.
+	if s.runtime != nil {
+		s.initRPCClients(ctx)
+	}
 
 	log.InfoS(ctx, "Lightweight wallet started")
 
@@ -1050,7 +1085,7 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 // EventRouter. When the server pushes SubmitPackage or FinalizePackage
 // response events, the router decodes the oorpb proto, adapts it into a
 // DriveEventRequest, and Tell's it to the OOR actor via service key.
-func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
+func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) { //nolint:funlen,ll
 	oorKey := oor.NewServiceKey()
 
 	// SubmitPackage: server accepted the submit and returned co-signed
@@ -1125,6 +1160,161 @@ func (s *Server) registerOOREventRoutes(router *serverconn.EventRouter) {
 				SessionID: oor.SessionID(sessionID),
 				Event:     &oor.FinalizeAcceptedEvent{},
 			}, nil
+		},
+	})
+
+	// ListVTXOsByScripts response: server returned authoritative incoming
+	// metadata for a durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListVTXOsByScripts",
+		NewEvent: func() proto.Message {
+			return &arkrpc.ListVTXOsByScriptsResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
+
+			if env == nil || env.Rpc == nil {
+				return nil, fmt.Errorf("incoming metadata " +
+					"response envelope must be provided")
+			}
+
+			sessionID, err := oor.ParseIncomingMetadataCorrelationID( //nolint:ll
+				env.Rpc.CorrelationId,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			if rpcErr := mailboxrpc.DecodeErrorHeaders(
+				env.Headers,
+			); rpcErr != nil {
+				return &oor.DriveEventRequest{
+					SessionID: sessionID,
+					Event: &oor.FailEvent{
+						Reason: fmt.Sprintf(
+							"query incoming metadata: %v", //nolint:ll
+							rpcErr,
+						),
+					},
+				}, nil
+			}
+
+			resp, ok := p.(*arkrpc.ListVTXOsByScriptsResponse)
+			if !ok {
+				return nil, fmt.Errorf("expected "+
+					"ListVTXOsByScriptsResponse, got %T", p)
+			}
+
+			matches, err := oor.IncomingMetadataMatchesFromResponse(
+				sessionID, resp,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: sessionID,
+				Event: &oor.IncomingMetadataResolvedEvent{
+					Matches: matches,
+				},
+			}, nil
+		},
+	})
+
+	// ListOORRecipientEventsByScript response: server resolved the
+	// lightweight incoming transfer hint into the full Ark package for a
+	// durable OOR receive session query.
+	serverconn.AddEnvelopeRoute(router, serverconn.EnvelopeRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: "arkrpc.IndexerService",
+		Method:  "ListOORRecipientEventsByScript",
+		NewEvent: func() proto.Message {
+			return &arkrpc.ListOORRecipientEventsByScriptResponse{}
+		},
+		Key: oorKey,
+		Adapt: func(env *mailboxpb.Envelope,
+			p proto.Message) (oor.OORDurableMsg, error) {
+
+			if env == nil || env.Rpc == nil {
+				return nil, fmt.Errorf("incoming resolve " +
+					"response envelope must be provided")
+			}
+
+			sessionID, recipientEventID, err :=
+				oor.ParseIncomingResolveCorrelationID(
+					env.Rpc.CorrelationId,
+				)
+			if err != nil {
+				return nil, err
+			}
+
+			if rpcErr := mailboxrpc.DecodeErrorHeaders(
+				env.Headers,
+			); rpcErr != nil {
+				return &oor.DriveEventRequest{
+					SessionID: sessionID,
+					Event: &oor.FailEvent{
+						Reason: fmt.Sprintf(
+							"resolve incoming transfer: %v", //nolint:ll
+							rpcErr,
+						),
+					},
+				}, nil
+			}
+
+			resp, ok := p.(*arkrpc.ListOORRecipientEventsByScriptResponse) //nolint:ll
+			if !ok {
+				return nil, fmt.Errorf("expected "+
+					"ListOORRecipientEventsByScriptResponse, "+ //nolint:ll
+					"got %T", p)
+			}
+
+			incomingEvent, err := oor.IncomingTransferEventFromResponse( //nolint:ll
+				sessionID, recipientEventID, resp,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &oor.DriveEventRequest{
+				SessionID: sessionID,
+				Event:     incomingEvent,
+			}, nil
+		},
+	})
+
+	// IncomingOOR: server notifies the client about an incoming
+	// OOR transfer via the indexer's ArkService. Persist only the
+	// lightweight notification hint here; the durable OOR actor
+	// performs the follow-up indexer query from its own worker
+	// context. This avoids deadlocking mailbox ingress on a unary
+	// response that must be delivered by the same runtime.
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		oor.OORDurableMsg, oor.ActorResp,
+	]{
+		Service: arkServiceName,
+		Method:  MethodIncomingOOR,
+		NewEvent: func() proto.Message {
+			return &arkrpc.IncomingOOREvent{}
+		},
+		Key: oorKey,
+		Adapt: func(p proto.Message) (
+			oor.OORDurableMsg, error) {
+
+			evt, ok := p.(*arkrpc.IncomingOOREvent)
+			if !ok {
+				return nil, fmt.Errorf(
+					"expected IncomingOOREvent"+
+						", got %T", p,
+				)
+			}
+
+			return oor.NewResolveIncomingTransferRequest(evt)
 		},
 	})
 
@@ -1396,19 +1586,50 @@ func (s *Server) initDatabase(ctx context.Context) error {
 func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
+	dbStore := db.NewStore(
+		s.db.DB, s.db.Queries, s.db.Backend(), log,
+	)
+	packageStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
+
 	// Determine the node identity pubkey for indexer registration.
 	// In lnd mode this comes from the lnd connection. In lwwallet
 	// mode, the identity is derived from the wallet keyring once
 	// the wallet is ready.
-	var identityPubkey string
+	//
+	// The indexer client itself must prove control over multiple owned
+	// receive scripts, so it uses a dynamic signer that resolves the
+	// correct wallet key from the persisted owned-script map for each
+	// pkScript.
+	var signer indexer.SchnorrSigner
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		identityPubkey = lndSvc.NodePubkey.String()
+		identityDesc, err := lndSvc.WalletKit.DeriveKey(ctx,
+			&keychain.KeyLocator{
+				Family: identityKeyFamily,
+				Index:  0,
+			},
+		)
+		if err != nil {
+			log.WarnS(ctx,
+				"Unable to derive identity key for indexer", err)
+
+			return
+		}
+
+		s.clientKeyDesc = *identityDesc
+		signer = NewOwnedReceiveScriptSigner(
+			packageStore,
+			func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
+				return indexer.NewLNDSchnorrSigner(
+					lndSvc.Signer, keyDesc,
+				)
+			},
+		)
 	})
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
 		// Derive the node identity key from the wallet
 		// keyring. This is safe even if the wallet isn't
 		// fully synced, as it only depends on the seed.
-		desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+		identityDesc, err := w.DeriveKey(ctx, keychain.KeyLocator{
 			Family: identityKeyFamily,
 			Index:  0,
 		})
@@ -1417,19 +1638,22 @@ func (s *Server) initRPCClients(ctx context.Context) {
 				"Unable to derive identity key for "+
 					"indexer", err)
 		} else {
-			identityPubkey = fmt.Sprintf(
-				"%x",
-				desc.PubKey.SerializeCompressed(),
+			s.clientKeyDesc = *identityDesc
+			signer = NewOwnedReceiveScriptSigner(
+				packageStore,
+				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
+					return indexer.NewKeyRingSchnorrSigner(
+						w.KeyRing(), keyDesc,
+					)
+				},
 			)
 		}
 	})
 
-	// TODO(roasbeef): wire SchnorrSigner from lnd backend once
-	// indexer proof-of-control is enabled in the daemon.
 	s.indexer = indexer.New(
-		s.runtime.Unary(), nil,
+		s.runtime.Unary(), signer,
 		s.cfg.Server.RemoteMailboxID,
-		identityPubkey,
+		s.cfg.Server.LocalMailboxID,
 	)
 
 	log.InfoS(ctx, "RPC clients initialized")
@@ -1567,6 +1791,10 @@ func (s *Server) initRoundActor(ctx context.Context,
 		return nil, fmt.Errorf("unable to fetch operator "+
 			"terms: %w", err)
 	}
+
+	// Store operator terms on Server for the OOR receive path.
+	s.operatorKey = operatorTerms.PubKey
+	s.vtxoExitDelay = operatorTerms.VTXOExitDelay
 
 	// Default maximum operator fee the client is willing to pay
 	// per round. This is a safety limit to prevent the client
@@ -1731,25 +1959,26 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	// Wire spend completion through the VTXO manager so each consumed
 	// VTXO transitions to SpentState via its own FSM, rather than
-	// writing VTXOStatusSpent directly to the store.
+	// writing VTXOStatusSpent directly to the store. Use Tell rather
+	// than Ask so the OOR durable actor can commit its own delivery
+	// transaction before the VTXO actor performs follow-up DB writes.
 	mgrKey := actormsg.VTXOManagerServiceKey()
 	completeSpend := func(ctx context.Context,
 		outpoints []wire.OutPoint) error {
 
-		req := &actormsg.CompleteSpendRequest{
-			Outpoints: outpoints,
-		}
-		mgrRef := mgrKey.Ref(s.actorSystem)
-		result := mgrRef.Ask(ctx, req).Await(ctx)
-		_, err := result.Unpack()
-
-		return err
+		return mgrKey.Ref(s.actorSystem).Tell(
+			ctx, &actormsg.CompleteSpendRequest{
+				Outpoints: outpoints,
+			},
+		)
 	}
 
 	outboxHandler := &oor.LocalPersistenceOutboxHandler{
 		Next:         signingHandler,
 		Store:        vtxoStore,
 		PackageStore: packageStore,
+		OperatorKey:  s.operatorKey,
+		ExitDelay:    s.vtxoExitDelay,
 		NotifyIncomingVTXOs: func(ctx context.Context,
 			descs []*vtxo.Descriptor) error {
 
@@ -1761,6 +1990,28 @@ func (s *Server) initOORActor(ctx context.Context,
 			)
 		},
 		CompleteSpend: completeSpend,
+		ResolveIncomingClientKey: func(ctx context.Context,
+			recipient oor.ArkRecipientOutput) (
+			keychain.KeyDescriptor, error) {
+
+			return ResolveOwnedReceiveScriptKey(
+				ctx, packageStore, recipient,
+			)
+		},
+		ResolveIncomingMetadata: func(ctx context.Context,
+			sessionID oor.SessionID,
+			recipient oor.ArkRecipientOutput,
+			ark *psbt.Packet,
+			finalCheckpoints []*psbt.Packet) (
+			oor.IncomingVTXOMetadata, error) {
+
+			_ = ark
+			_ = finalCheckpoints
+
+			return ResolveIncomingMetadataFromIndexer(
+				ctx, s.indexer, sessionID, recipient,
+			)
+		},
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
@@ -1772,6 +2023,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		ActorSystem:   s.actorSystem,
 		ActorID:       oor.OORActorServiceKeyName,
 		VTXOManager:   vtxoManagerRef,
+		VTXOStore:     vtxoStore,
 	})
 
 	// Wire the timeout callback ref using the registered service

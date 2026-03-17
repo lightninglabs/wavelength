@@ -176,6 +176,21 @@ func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
 	return c
 }
 
+// WithSigner returns a shallow copy of the client that uses signer for
+// proof-of-control operations. This allows callers to reuse the same mailbox
+// RPC transport while switching to the wallet key that controls a specific
+// receive script.
+func (c *Client) WithSigner(signer SchnorrSigner) *Client {
+	if c == nil {
+		return nil
+	}
+
+	clone := *c
+	clone.signer = signer
+
+	return &clone
+}
+
 // firstOpt returns the first RPCOptions from opts, or the zero value
 // if none were provided. At most one option should be passed; any
 // additional options beyond the first are silently ignored.
@@ -488,13 +503,12 @@ func (c *Client) buildTaprootScopes(ctx context.Context,
 
 // ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
 // or more pkScripts.
-func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
+func (c *Client) BuildListVTXOsByScriptsTaprootRequest(ctx context.Context,
 	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
-	statusFilter []arkrpc.VTXOStatus,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListVTXOsByScriptsResponse, error) {
+	statusFilter []arkrpc.VTXOStatus) (
+	*arkrpc.ListVTXOsByScriptsRequest, error) {
 
-	c.logger(ctx).TraceS(ctx, "Listing VTXOs by scripts",
+	c.logger(ctx).TraceS(ctx, "Building ListVTXOsByScripts request",
 		slog.Int("scope_count", len(scopes)),
 		slog.Uint64("after_cursor", afterCursor),
 		slog.Int("limit", int(limit)),
@@ -507,11 +521,27 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 		return nil, err
 	}
 
-	req := &arkrpc.ListVTXOsByScriptsRequest{
+	return &arkrpc.ListVTXOsByScriptsRequest{
 		Scripts:      scriptScopes,
 		StatusFilter: statusFilter,
 		Cursor:       afterCursor,
 		Limit:        limit,
+	}, nil
+}
+
+// ListVTXOsByScriptsTaproot performs a proof-gated VTXO query for one
+// or more pkScripts.
+func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
+	scopes []TaprootScriptScope, afterCursor uint64, limit uint32,
+	statusFilter []arkrpc.VTXOStatus,
+	opts ...mailboxrpc.RPCOptions) (
+	*arkrpc.ListVTXOsByScriptsResponse, error) {
+
+	req, err := c.BuildListVTXOsByScriptsTaprootRequest(
+		ctx, scopes, afterCursor, limit, statusFilter,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := c.rpc.ListVTXOsByScripts(ctx, req, firstOpt(opts))
@@ -738,11 +768,10 @@ func (c *Client) ListMyReceiveScripts(ctx context.Context,
 // script-keyed recipient event query. This enables "offline receive
 // without registration" while preventing third-party enumeration
 // (proof-of-control required).
-func (c *Client) ListOORRecipientEventsByScriptTaproot(
+func (c *Client) BuildListOORRecipientEventsByScriptTaprootRequest(
 	ctx context.Context, pkScript []byte,
-	afterEventID uint64, limit uint32,
-	opts ...mailboxrpc.RPCOptions) (
-	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+	afterEventID uint64, limit uint32) (
+	*arkrpc.ListOORRecipientEventsByScriptRequest, error) {
 
 	if err := validateTaprootPkScript(pkScript); err != nil {
 		return nil, err
@@ -798,6 +827,26 @@ func (c *Client) ListOORRecipientEventsByScriptTaproot(
 		AfterEventId: afterEventID,
 		Limit:        limit,
 		Proof:        proofOneof,
+	}
+
+	return req, nil
+}
+
+// ListOORRecipientEventsByScriptTaproot performs a proof-gated
+// script-keyed recipient event query. This enables "offline receive
+// without registration" while preventing third-party enumeration
+// (proof-of-control required).
+func (c *Client) ListOORRecipientEventsByScriptTaproot(
+	ctx context.Context, pkScript []byte,
+	afterEventID uint64, limit uint32,
+	opts ...mailboxrpc.RPCOptions) (
+	*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+
+	req, err := c.BuildListOORRecipientEventsByScriptTaprootRequest(
+		ctx, pkScript, afterEventID, limit,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	return c.rpc.ListOORRecipientEventsByScript(ctx, req, firstOpt(opts))
