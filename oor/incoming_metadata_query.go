@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -75,6 +76,12 @@ func IncomingMetadataMatchesFromResponse(
 		)
 	}
 
+	// TODO(oor-receive): The maxIncomingMetadataMatches limit guards
+	// against unbounded allocations from a malicious or misconfigured
+	// indexer response. Raise this constant via a tracked issue if the
+	// protocol ever allows more outputs per incoming transfer.
+	const maxIncomingMetadataMatches = 128
+
 	matches := make([]IncomingMetadataMatch, 0, len(resp.GetVtxos()))
 	for _, candidate := range resp.GetVtxos() {
 		if candidate == nil {
@@ -99,6 +106,14 @@ func IncomingMetadataMatchesFromResponse(
 			OutputIndex: outpoint.GetVout(),
 			Metadata:    metadata,
 		})
+
+		if len(matches) > maxIncomingMetadataMatches {
+			return nil, fmt.Errorf(
+				"incoming metadata match count "+
+					"exceeds limit %d",
+				maxIncomingMetadataMatches,
+			)
+		}
 	}
 
 	return matches, nil
@@ -107,8 +122,7 @@ func IncomingMetadataMatchesFromResponse(
 // matchesIncomingVTXO reports whether the candidate txid belongs to the
 // current Ark session.
 func matchesIncomingVTXO(sessionID SessionID, txid []byte) bool {
-	return len(txid) == chainhash.HashSize &&
-		string(txid) == string(sessionID[:])
+	return bytes.Equal(txid, sessionID[:])
 }
 
 // incomingMetadataFromRPC maps the authoritative indexer VTXO view into the

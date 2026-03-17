@@ -3,6 +3,7 @@ package oor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -101,8 +102,8 @@ func transitionIncomingTransfer(
 				&QueryIncomingMetadataRequest{
 					SessionID: evt.SessionID,
 					ArkPSBT:   evt.ArkPSBT,
-					FinalCheckpointPSBTs: evt. //nolint:ll
-									FinalCheckpointPSBTs, //nolint:ll
+					FinalCheckpointPSBTs: evt.
+						FinalCheckpointPSBTs, //nolint:ll
 					Recipients: recipients,
 				},
 			},
@@ -114,7 +115,6 @@ func transitionIncomingTransfer(
 func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
@@ -128,6 +128,10 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }
@@ -136,7 +140,6 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
@@ -150,6 +153,10 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }
@@ -158,7 +165,6 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
@@ -217,6 +223,10 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }
@@ -225,8 +235,11 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
+
+	log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		slog.String("state", fmt.Sprintf("%T", s)),
+		slog.String("event_type", fmt.Sprintf("%T", event)))
 
 	return unexpectedReceiveEvent(s, event), nil
 }
@@ -235,7 +248,6 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
 
-	_ = ctx
 	_ = env
 
 	switch evt := event.(type) {
@@ -260,6 +272,10 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
+		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+			slog.String("state", fmt.Sprintf("%T", s)),
+			slog.String("event_type", fmt.Sprintf("%T", event)))
+
 		return unexpectedReceiveEvent(s, event), nil
 	}
 }

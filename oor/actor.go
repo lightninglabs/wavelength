@@ -646,6 +646,15 @@ func (b *oorDurableBehavior) handleIncomingTransfer(ctx context.Context,
 		return fmt.Errorf("incoming event must be provided")
 	}
 
+	// Reject if a session with this ID already exists in any
+	// kind (outgoing or incoming). A malicious server could
+	// push an IncomingTransferEvent with a known outgoing txid
+	// to create a shadow session that blocks outgoing restore.
+	if _, exists := b.sessions[sessionID]; exists {
+		return fmt.Errorf("session %s already exists, "+
+			"rejecting incoming transfer", sessionID)
+	}
+
 	if event.SessionID != (SessionID{}) && event.SessionID != sessionID {
 		return fmt.Errorf("incoming event session id mismatch")
 	}

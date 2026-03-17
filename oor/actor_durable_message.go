@@ -811,6 +811,19 @@ func decodeResolveIncomingTransferPayload(raw []byte) (SessionID, []byte,
 		return SessionID{}, nil, 0, err
 	}
 
+	// TODO(oor-receive): The maxPkScriptLen limit guards against
+	// unbounded allocations from a corrupted or malicious TLV payload.
+	// Standard Bitcoin pk_scripts are well under 10 000 bytes; raise
+	// this constant via a tracked issue if a new script type requires
+	// a longer encoding.
+	const maxPkScriptLen = 10_000
+	if len(recipientPkScript) > maxPkScriptLen {
+		return SessionID{}, nil, 0, fmt.Errorf(
+			"recipient pk_script length %d exceeds limit %d",
+			len(recipientPkScript), maxPkScriptLen,
+		)
+	}
+
 	return sessionID, recipientPkScript, recipientEventID, nil
 }
 
@@ -1362,6 +1375,19 @@ func decodeLengthPrefixedBlobList(raw []byte) ([][]byte, error) {
 	count, err := tlv.ReadVarInt(reader, &scratch)
 	if err != nil {
 		return nil, err
+	}
+
+	// TODO(oor-receive): The maxBlobListCount limit is a pragmatic
+	// upper bound to prevent unbounded slice allocation from a
+	// malformed or malicious TLV payload. Raise this constant via a
+	// tracked issue if any blob-list field legitimately needs more
+	// entries.
+	const maxBlobListCount = 10_000
+	if count > maxBlobListCount {
+		return nil, fmt.Errorf(
+			"blob list count %d exceeds limit %d",
+			count, maxBlobListCount,
+		)
 	}
 
 	blobs := make([][]byte, 0, count)

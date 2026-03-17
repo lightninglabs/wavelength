@@ -379,6 +379,12 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			slog.Int("tree_depth", metadata.TreeDepth),
 			slog.Int("chain_depth", metadata.ChainDepth))
 
+		// TODO(oor-receive): Use per-round operator key from
+		// indexer metadata instead of the startup-cached
+		// OperatorKey. If the operator rotates keys, VTXOs
+		// materialized with the stale key will have an incorrect
+		// collab tapscript leaf, locking funds until the
+		// unilateral exit delay expires.
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,

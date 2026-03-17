@@ -134,6 +134,19 @@ func IncomingTransferEventFromResponse(sessionID SessionID,
 		return nil, fmt.Errorf("parse ark psbt: %w", err)
 	}
 
+	// TODO(oor-receive): The maxCheckpointPSBTs limit is a pragmatic
+	// upper bound for the OOR checkpoint chain depth. If the protocol
+	// ever allows deeper chains this constant should be raised via a
+	// tracked issue rather than silently increasing memory exposure.
+	const maxCheckpointPSBTs = 64
+	if len(recipientEvt.GetCheckpointPsbts()) > maxCheckpointPSBTs { //nolint:ll
+		return nil, fmt.Errorf(
+			"checkpoint count %d exceeds limit %d",
+			len(recipientEvt.GetCheckpointPsbts()),
+			maxCheckpointPSBTs,
+		)
+	}
+
 	checkpoints := make([]*psbt.Packet, 0,
 		len(recipientEvt.GetCheckpointPsbts()))
 	for _, cpRaw := range recipientEvt.GetCheckpointPsbts() {
