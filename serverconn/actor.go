@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -568,6 +569,12 @@ type ServerConnectionActor struct {
 
 	// wg tracks the ingress loop goroutine for clean shutdown.
 	wg sync.WaitGroup
+
+	// lastSendNano stores the UnixNano timestamp of the last
+	// successful outbound Edge.Send. The heartbeat goroutine
+	// checks this to skip sending when real traffic already
+	// proves liveness.
+	lastSendNano atomic.Int64
 }
 
 // NewServerConnectionActor creates a new server connection actor with the
@@ -704,6 +711,8 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 			resp.Status.Message, resp.Status.Code,
 		))
 	}
+
+	a.lastSendNano.Store(time.Now().UnixNano())
 
 	return fn.Ok[ServerConnResp](&SendClientEventResponse{
 		Success: true,
@@ -917,6 +926,8 @@ func (a *ServerConnectionActor) handleSendRPCRequest(ctx context.Context,
 		))
 	}
 
+	a.lastSendNano.Store(time.Now().UnixNano())
+
 	return fn.Ok[ServerConnResp](&SendRPCResponse{
 		Success: true,
 	})
@@ -957,9 +968,9 @@ func (a *ServerConnectionActor) deliverResponse(
 }
 
 // StartIngress loads the ack checkpoint from the store and launches the
-// background ingress loop goroutine. If the checkpoint cannot be loaded,
-// an error is returned and the loop is not started — the caller should
-// treat this as a fatal startup failure.
+// background ingress loop and heartbeat goroutines. If the checkpoint
+// cannot be loaded, an error is returned and neither goroutine is
+// started — the caller should treat this as a fatal startup failure.
 func (a *ServerConnectionActor) StartIngress(
 	ctx context.Context,
 ) error {
@@ -971,9 +982,13 @@ func (a *ServerConnectionActor) StartIngress(
 
 	ingressCtx, cancel := context.WithCancel(ctx)
 
-	a.wg.Add(1)
+	a.wg.Add(2)
 	a.cancelCh <- cancel
 	go a.ingressLoop(ingressCtx, state)
+	go func() {
+		defer a.wg.Done()
+		a.startHeartbeat(ingressCtx)
+	}()
 
 	return nil
 }

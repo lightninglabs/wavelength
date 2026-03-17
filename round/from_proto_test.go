@@ -119,10 +119,11 @@ func TestJoinRoundRequestFromProtoPreservesVTXOSigningKey(t *testing.T) {
 	pb := &roundpb.JoinRoundRequest{
 		VtxoRequests: []*roundpb.VTXORequest{
 			{
-				Amount:    1234,
-				PkScript:  []byte{0x51},
-				Expiry:    144,
-				ClientKey: clientPriv.PubKey().SerializeCompressed(),
+				Amount:   1234,
+				PkScript: []byte{0x51},
+				Expiry:   144,
+				ClientKey: clientPriv.PubKey().
+					SerializeCompressed(),
 				OperatorKey: operatorPriv.PubKey().
 					SerializeCompressed(),
 				SigningKey: signingPriv.PubKey().

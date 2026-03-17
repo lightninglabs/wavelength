@@ -223,6 +223,30 @@ func driveIncomingOutbox(ctx context.Context, session *oor.ReceiveSession,
 				}
 			}
 
+		case *oor.QueryIncomingMetadataRequest:
+			followUps, err := handler.Handle(
+				ctx, sessionID, typedMsg,
+			)
+			if err != nil {
+				return err
+			}
+
+			for _, followUp := range followUps {
+				fut := session.FSM.AskEvent(ctx, followUp)
+				result := fut.Await(ctx)
+				if result.IsErr() {
+					return result.Err()
+				}
+
+				nextOutbox := result.UnwrapOr(nil)
+				if err := driveIncomingOutbox(
+					ctx, session, handler, sessionID,
+					managerRef, nextOutbox,
+				); err != nil {
+					return err
+				}
+			}
+
 		case *oor.SendIncomingAckRequest:
 			followUps, err := handler.Handle(
 				ctx, sessionID, typedMsg,
