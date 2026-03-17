@@ -126,6 +126,13 @@ func (b *errorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	return b.err
 }
 
+// SubmitPackage returns the configured error.
+func (b *errorBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	return b.err
+}
+
 func (b *errorBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
 	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {

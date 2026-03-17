@@ -64,6 +64,13 @@ func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	return nil
 }
 
+// SubmitPackage is a no-op for the mock backend.
+func (m *mockBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	return nil
+}
+
 // broadcastErrorBackend is a mock backend that allows injecting broadcast
 // errors and mempool accept behavior while reusing the base mock backend for
 // other operations.
