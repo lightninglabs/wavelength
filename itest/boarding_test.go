@@ -3,6 +3,7 @@
 package itest
 
 import (
+	"context"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -250,4 +251,80 @@ func TestBoardingIntegrationTwoClientsSharedRound(t *testing.T) {
 	h.WaitMempoolTx(broadcastRound.TxId)
 	t.Logf("Shared round transaction reached mempool: txid=%s",
 		broadcastRound.TxId)
+}
+
+// TestBoardingIntegrationSingleClientSubsequentRounds verifies a single real
+// client daemon can board in multiple rounds back-to-back and persist both
+// outputs as independent live VTXOs.
+func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForClientRegistration(t, h)
+	t.Log("Operator registered the client daemon")
+
+	round1, round1VTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+	t.Logf("Round 1 complete: round_id=%q outpoint=%s amount=%d",
+		round1.RoundId, round1VTXO.Outpoint, round1VTXO.AmountSat)
+
+	round2, round2VTXO, round2Balance := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 120_000,
+	)
+	t.Logf("Round 2 complete: round_id=%q outpoint=%s amount=%d",
+		round2.RoundId, round2VTXO.Outpoint, round2VTXO.AmountSat)
+
+	require.NotEqual(t, round1.RoundId, round2.RoundId,
+		"subsequent rounds must have distinct round IDs")
+	require.NotEqual(t, round1VTXO.Outpoint, round2VTXO.Outpoint,
+		"subsequent rounds must create distinct live VTXOs")
+
+	expectedTotal := round1VTXO.AmountSat + round2VTXO.AmountSat
+	exactBalance := waitForExactVTXOBalance(
+		t, alice.RPCClient, expectedTotal,
+	)
+	require.Equal(t, expectedTotal, exactBalance.VtxoBalanceSat)
+	require.Equal(t, expectedTotal, round2Balance.VtxoBalanceSat)
+
+	ctx, cancel := context.WithTimeout(t.Context(), defaultSmallTimeout)
+	defer cancel()
+
+	liveResp, err := alice.RPCClient.ListVTXOs(
+		ctx, &daemonrpc.ListVTXOsRequest{
+			StatusFilter: daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		},
+	)
+	require.NoError(t, err, "ListVTXOs RPC failed")
+
+	hasRound1 := false
+	hasRound2 := false
+	for _, vtxo := range liveResp.Vtxos {
+		switch vtxo.RoundId {
+		case round1.RoundId:
+			hasRound1 = true
+
+		case round2.RoundId:
+			hasRound2 = true
+		}
+	}
+
+	require.True(t, hasRound1, "missing live VTXO from round 1")
+	require.True(t, hasRound2, "missing live VTXO from round 2")
+	t.Logf(
+		"Client retained live VTXOs from both rounds "+
+			"(total_vtxo_sat=%d)",
+		exactBalance.VtxoBalanceSat)
 }
