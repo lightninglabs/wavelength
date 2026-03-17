@@ -343,16 +343,71 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	h.clientDaemonsMu.Unlock()
 
 	lnd := h.StartAdditionalLND(name)
-
 	dataDir := filepath.Join(h.BaseDir(), "client-daemons", name)
+	localMailboxID := fmt.Sprintf("client-%s", name)
+	remoteMailboxID := fmt.Sprintf("server-for-%s", name)
+
+	daemon := h.launchClientDaemon(
+		name, lnd, dataDir, localMailboxID, remoteMailboxID,
+	)
+
+	h.clientDaemonsMu.Lock()
+	h.clientDaemons[name] = daemon
+	h.clientDaemonsMu.Unlock()
+
+	return daemon
+}
+
+// RestartClientDaemon restarts an existing in-process darepod instance while
+// reusing its data directory, mailbox IDs, and backing LND node.
+func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
+	h.T.Helper()
+
+	h.clientDaemonsMu.Lock()
+	oldDaemon, ok := h.clientDaemons[name]
+	if !ok {
+		h.clientDaemonsMu.Unlock()
+		h.T.Fatalf("client daemon %q not found", name)
+	}
+	delete(h.clientDaemons, name)
+	h.clientDaemonsMu.Unlock()
+
+	oldRPCAddr := oldDaemon.RPCAddr
+	oldDaemon.Stop()
+
+	daemon := h.launchClientDaemon(
+		name, oldDaemon.LND, oldDaemon.DataDir,
+		oldDaemon.LocalMailboxID, oldDaemon.RemoteMailboxID,
+	)
+
+	h.clientDaemonsMu.Lock()
+	h.clientDaemons[name] = daemon
+	h.clientDaemonsMu.Unlock()
+
+	h.T.Logf("restarted client daemon %q: old_rpc=%s new_rpc=%s",
+		name, oldRPCAddr, daemon.RPCAddr)
+
+	return daemon
+}
+
+func (h *ArkHarness) launchClientDaemon(name string,
+	lnd *client_harness.LndInstance, dataDir, localMailboxID,
+	remoteMailboxID string) *ClientDaemonHarness {
+
+	h.T.Helper()
+
+	require.NotNil(h.T, lnd, "backing LND instance is required")
+	require.NotEmpty(h.T, dataDir, "client daemon data dir is required")
+	require.NotEmpty(h.T, localMailboxID, "local mailbox ID is required")
+	require.NotEmpty(h.T, remoteMailboxID, "remote mailbox ID is required")
+
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
 	logPath := filepath.Join(dataDir, "darepod.log")
 	logFile, err := os.OpenFile(
 		logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600,
 	)
 	require.NoError(h.T, err, "failed to open client daemon log file")
-	localMailboxID := fmt.Sprintf("client-%s", name)
-	remoteMailboxID := fmt.Sprintf("server-for-%s", name)
+
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
@@ -408,10 +463,6 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 		"client daemon %q RPC address never became available", name)
 
 	daemon.waitForReady()
-
-	h.clientDaemonsMu.Lock()
-	h.clientDaemons[name] = daemon
-	h.clientDaemonsMu.Unlock()
 
 	return daemon
 }

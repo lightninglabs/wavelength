@@ -436,3 +436,111 @@ func TestBoardingIntegrationSingleClientSubsequentRounds(t *testing.T) {
 			"(total_vtxo_sat=%d)",
 		exactBalance.VtxoBalanceSat)
 }
+
+// TestBoardingIntegrationRestartAfterRoundBroadcast verifies a real client
+// daemon can restart after the shared commitment transaction is broadcast but
+// before confirmation, then resume from persisted state and complete the round.
+func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	newAddrResp, err := alice.RPCClient.NewAddress(
+		t.Context(), &daemonrpc.NewAddressRequest{},
+	)
+	require.NoError(t, err, "NewAddress RPC failed")
+	require.NotEmpty(
+		t, newAddrResp.Address, "boarding address should be set",
+	)
+
+	boardingAmount := btcutil.Amount(100_000)
+	fundingTxID := h.Faucet(newAddrResp.Address, boardingAmount)
+	t.Logf("Funded boarding address via txid=%s", fundingTxID)
+
+	// Mine one extra block beyond the advertised minimum so both the
+	// client wallet view and the operator's direct bitcoind validation
+	// path observe the funding transaction before JoinRound runs.
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	waitForConfirmedBoardingBalance(
+		t, alice.RPCClient, int64(boardingAmount),
+	)
+	boardResp := waitForBoardRegistered(t, alice.RPCClient)
+	require.Equal(t, "registered", boardResp.Status)
+
+	waitForClientRegistration(t, h)
+	joinedRound := waitForClientRoundState(
+		t, alice.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, joinedRound.RoundId)
+	require.False(t, joinedRound.IsTemp)
+
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, joinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, joinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, joinedRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf(
+		"Round transaction broadcast before restart: "+
+			"round_id=%q txid=%s",
+		joinedRound.RoundId, broadcastRound.TxId,
+	)
+
+	oldRPCAddr := alice.RPCAddr
+	alice = h.RestartClientDaemon("alice")
+	t.Logf("Restarted client daemon: old_rpc=%s new_rpc=%s",
+		oldRPCAddr, alice.RPCAddr)
+
+	mineUntilOperatorRoundConfirmed(
+		t, h, joinedRound.RoundId, broadcastRound.TxId,
+	)
+	t.Logf("Mined blocks until round confirmed after restart: round_id=%q",
+		joinedRound.RoundId)
+
+	confirmedRound := waitForNamedClientRoundState(
+		t, alice.RPCClient, joinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
+	)
+	require.False(t, confirmedRound.IsTemp,
+		"confirmed round should be persisted after restart")
+
+	waitForOperatorRoundStatus(
+		t, h, joinedRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
+	)
+	t.Logf("Operator marked round confirmed after restart: round_id=%q",
+		joinedRound.RoundId)
+
+	liveVTXO := waitForLiveVTXO(t, alice.RPCClient, joinedRound.RoundId)
+	require.Equal(t, int64(99_000), liveVTXO.AmountSat)
+
+	finalBalance := waitForVTXOBalance(
+		t, alice.RPCClient, liveVTXO.AmountSat,
+	)
+	require.Equal(t, liveVTXO.AmountSat, finalBalance.VtxoBalanceSat)
+	t.Logf(
+		"Client recovered and completed round after restart: "+
+			"round_id=%q",
+		joinedRound.RoundId,
+	)
+}
