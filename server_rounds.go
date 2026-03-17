@@ -63,6 +63,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		s.lnd.WalletKit, s.lnd.Signer,
 		fn.Some(roundsLog),
 	)
+	s.walletController = walletCtrl
 
 	// Use a static floor fee estimator. A future config phase can
 	// wire the real LND fee estimator.
@@ -148,6 +149,11 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// GetInfo RPC can return them to clients.
 	s.terms = terms
 	s.forfeitScript = forfeitScript
+	if s.indexerService != nil {
+		s.indexerService.SetVTXOProofPolicy(
+			terms.OperatorKey.PubKey, terms.VTXOExitDelay,
+		)
+	}
 
 	// Create a header verifier for TxProof validation using LND's
 	// chain backend.
@@ -254,7 +260,22 @@ func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 // all round RPCs are fire-and-forget (the real response arrives
 // asynchronously via the outbox event path), no response envelope
 // needs to be built.
-func (s *Server) registerRoundRoutes( //nolint:funlen
+func (s *Server) registerRoundRoutes(
+	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
+
+	RegisterRoundRoutes(s.eventRouter, roundsKey)
+}
+
+// RegisterRoundRoutes adds fire-and-forget dispatch routes for round
+// RPCs (JoinRound, SubmitNonces, SubmitPartialSigs, SubmitForfeitSigs,
+// SubmitVTXOForfeitSigs) to the given EventRouter. Each route
+// deserializes the envelope body, converts the proto to a domain actor
+// message, and Tell's the rounds actor.
+//
+// This is exported so the systest package can register the same routes
+// on its own event router without duplicating route definitions.
+func RegisterRoundRoutes( //nolint:funlen
+	router *clientconn.EventRouter,
 	roundsKey actor.ServiceKey[rounds.ActorMsg, rounds.ActorResp]) {
 
 	svc := roundpb.ServiceName
@@ -263,7 +284,7 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 	// only route that doesn't produce a RoundMsg wrapper,
 	// since JoinRoundRequest is a top-level actor message.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			rounds.ActorMsg, rounds.ActorResp,
 		]{
@@ -309,7 +330,7 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 	// SubmitNonces: client submits MuSig2 public nonces for a
 	// round's VTXO tree transactions.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			rounds.ActorMsg, rounds.ActorResp,
 		]{
@@ -365,7 +386,7 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 	// SubmitPartialSigs: client submits MuSig2 partial
 	// signatures for a round's VTXO tree transactions.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			rounds.ActorMsg, rounds.ActorResp,
 		]{
@@ -422,7 +443,7 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 	// SubmitForfeitSigs: client submits boarding input
 	// signatures (Schnorr) for on-chain inputs in a round.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			rounds.ActorMsg, rounds.ActorResp,
 		]{
@@ -480,7 +501,7 @@ func (s *Server) registerRoundRoutes( //nolint:funlen
 	// SubmitVTXOForfeitSigs: client submits VTXO forfeit
 	// transaction signatures for cooperative spend paths.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			rounds.ActorMsg, rounds.ActorResp,
 		]{

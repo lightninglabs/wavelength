@@ -63,31 +63,29 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 	// Build the in-process outbox driver with all DB-backed
 	// stores. The driver handles locking, signing, persistence,
 	// and notification for each outbox event type.
-	//
-	// TODO(roasbeef): Wire the operator key and signer from
-	// LND once key management is in place.
 	driver := oor.NewDriver(oor.DriverCfg{
 		Locker:            s.vtxoLocker,
 		Store:             vtxoRecordStore,
 		SessionStore:      sessionStore,
 		RecipientEvents:   recipientEvents,
 		RecipientNotifier: s.newOORRecipientNotifier(),
+		OperatorSigner:    s.walletController,
+		OperatorKey:       s.terms.OperatorKey,
 		Logger:            oorLog,
 	})
 
-	// Build the OOR actor configuration. The checkpoint policy
-	// will be populated from server config once operator key
-	// derivation is wired.
-	//
-	// TODO(roasbeef): Wire CheckpointPolicy from operator key +
-	// CSV delay config.
+	// Build the OOR actor configuration using the same checkpoint
+	// policy exposed to clients via GetInfo/round terms.
 	oorCfg := oor.ActorCfg{
-		Log:              fn.Some(oorLog),
-		CheckpointPolicy: scripts.CheckpointPolicy{},
-		OutboxHandler:    driver,
-		DeliveryStore:    deliveryStore,
-		SessionStore:     sessionStore,
-		ClientsConn:      s.clientBridge,
+		Log: fn.Some(oorLog),
+		CheckpointPolicy: scripts.CheckpointPolicy{
+			OperatorKey: s.terms.OperatorKey.PubKey,
+			CSVDelay:    s.terms.VTXOExitDelay,
+		},
+		OutboxHandler: driver,
+		DeliveryStore: deliveryStore,
+		SessionStore:  sessionStore,
+		ClientsConn:   s.clientBridge,
 	}
 
 	// Register the OOR actor with the actor system via its
@@ -127,14 +125,24 @@ func (s *Server) stopOORSubsystem(ctx context.Context) {
 	}
 }
 
-// registerOORRoutes adds fire-and-forget dispatch routes for OOR
-// RPCs (SubmitPackage, FinalizePackage) to the server's shared
-// EventRouter. Each route deserializes the envelope body, converts
-// the proto to a domain actor message, and Tell's the OOR actor.
+// registerOORRoutes delegates to the exported RegisterOORRoutes.
+func (s *Server) registerOORRoutes(
+	oorKey actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp]) {
+
+	RegisterOORRoutes(s.eventRouter, oorKey)
+}
+
+// RegisterOORRoutes adds fire-and-forget dispatch routes for OOR
+// RPCs (SubmitPackage, FinalizePackage) to the given EventRouter.
+// Each route deserializes the envelope body, converts the proto to
+// a domain actor message, and Tell's the OOR actor.
 //
 // OOR RPCs are async: the client submits a request, may go offline,
 // and receives the response later via the outbox event path.
-func (s *Server) registerOORRoutes(
+//
+// This is exported so the systest package can register the same
+// routes on its own event router without duplicating definitions.
+func RegisterOORRoutes(router *clientconn.EventRouter,
 	oorKey actor.ServiceKey[oor.OORDurableMsg, oor.ActorResp]) {
 
 	svc := oorpb.ServiceName
@@ -144,7 +152,7 @@ func (s *Server) registerOORRoutes(
 	// descriptors. AddEnvelopeRoute extracts the client ID
 	// from the envelope sender for response routing.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			oor.OORDurableMsg, oor.ActorResp,
 		]{
@@ -207,7 +215,7 @@ func (s *Server) registerOORRoutes(
 	// signatures for an existing OOR session. Uses
 	// AddEnvelopeRoute for client ID extraction.
 	clientconn.AddEnvelopeRoute(
-		s.eventRouter,
+		router,
 		clientconn.EnvelopeRouteConfig[
 			oor.OORDurableMsg, oor.ActorResp,
 		]{
