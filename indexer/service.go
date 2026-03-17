@@ -363,7 +363,14 @@ func (s *Service) ListOORRecipientEventsByScript(ctx context.Context,
 			ArkPsbt:     append([]byte(nil), row.ArkPsbt...),
 		}
 
-		// Fetch checkpoint PSBTs for this session.
+		// Fetch checkpoint PSBTs for this session. These queries
+		// run outside a single DB transaction; the Store interface
+		// does not yet expose ExecTx for read-only batches.
+		// This is safe because OOR session data is immutable once
+		// finalized, but should be wrapped in a read tx when the
+		// Store gains transaction support.
+		//
+		// TODO(roasbeef): wrap in Store.ReadTx once available.
 		checkpoints, cpErr := s.store.GetOORSessionCheckpoints(
 			ctx, row.SessionID,
 		)
