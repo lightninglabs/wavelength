@@ -8,26 +8,83 @@ resume semantics.
 
 ## Key Types
 
+### Session Identifiers and FSM Infrastructure
+
 - `SessionID` — Stable session identifier (Ark txid hash in v0).
 - `Environment` — FSM environment providing SessionID and external system access.
 - `OutboxHandler` — Interface for executing FSM outbox requests (RPC, signing, persistence).
 - `SignArkPSBT` — Signs Ark PSBT inputs using the client key on the checkpoint 2-of-2 collab leaf; uses `MultiPrevOutFetcher` for correct BIP-341 sighash across multiple inputs.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
   ServerConn, PackageStore, DeliveryStore, VTXOManager).
-- `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution.
-- `ResolveIncomingTransferRequest` — TLV-durable message persisted by the
-  ingress route, resumed via a durable unary indexer query.
-- `QueryIncomingTransferRequest` / `QueryIncomingMetadataRequest` — durable
-  transport outbox events that `oor/actor.go` maps to transport-native
-  durable `serverconn` query messages after commit.
-- `serverconn.SendListOORRecipientEventsByScriptRequest` /
-  `serverconn.SendListVTXOsByScriptsRequest` — durable post-commit transport
-  messages used to resolve incoming hints and authoritative metadata.
-- `AdaptIncomingOOREvent` / `NewResolveIncomingTransferRequest` — Shared adapters for the notification→query pattern used by both darepod and systest.
+
+### Actor Messages (OORDurableMsg / ActorMsg)
+
+- `ResolveIncomingTransferRequest` — TLV-durable actor message (TLV type
+  `0x7016`) persisted by the ingress route. Carries SessionID,
+  RecipientPkScript, and RecipientEventID so the actor can resume
+  phase-1 indexer resolution after a crash.
+- `DriveEventRequest` — Generic actor message that wraps an Event and a
+  SessionID; used to feed FSM events back into a running session from
+  outbox callbacks and durable unary response routes.
+
+### Outbox Events (OutboxEvent)
+
+- `QueryIncomingTransferRequest` — Outbox event emitted after persisting
+  `ReceiveResolving`; actor.go maps this to a
+  `serverconn.SendListOORRecipientEventsByScriptRequest` durable query.
+- `QueryIncomingMetadataRequest` — Outbox event emitted after
+  `IncomingTransferEvent` is processed; actor.go maps this to a
+  `serverconn.SendListVTXOsByScriptsRequest` durable query.
+- `MaterializeIncomingVTXOsRequest` — Outbox event carrying the Ark PSBT,
+  checkpoint PSBTs, recipients, and resolved `MetadataMatches`; sent to
+  the wallet/state layer to persist incoming VTXO records.
+- `SendIncomingAckRequest` — Outbox event that asks the transport layer to
+  ack the incoming transfer to the server.
+
+### Events (Event / ReceiveState)
+
+- `IncomingTransferEvent` — FSM event carrying the full Ark PSBT and
+  checkpoint PSBTs for an incoming transfer; delivered by the phase-1
+  durable unary response route.
+- `IncomingMetadataResolvedEvent` — FSM event delivering authoritative
+  metadata query results back into the receive FSM; delivered by the
+  phase-2 durable unary response route.
+- `IncomingHandledEvent` — FSM event indicating the wallet layer has
+  persisted incoming VTXOs; carries `MaterializedOutpoints` for the
+  durable callback round-trip.
+
+### Incoming Receive FSM States (ReceiveState)
+
+- `ReceiveIdle` — Initial state; no pending incoming transfer.
+- `ReceiveResolving` — Durable hint persisted; waiting for the phase-1
+  indexer query (ListOORRecipientEventsByScript) to return the full Ark
+  package outside the actor transaction.
+- `ReceiveNotified` — Full Ark/checkpoint package received; waiting for
+  local materialization to complete.
+- `ReceiveAwaitingAck` — VTXOs materialized; waiting for ack transport to
+  complete.
+- `ReceiveCompleted` — Terminal success state.
+
+### Shared Adapters and Metadata Types
+
+- `IncomingVTXOMetadata` — Lineage metadata for incoming OOR VTXOs including `ChainDepth` (OOR checkpoint hop count).
+- `IncomingMetadataMatch` — Authoritative metadata for one materialized
+  incoming Ark output, keyed by OutputIndex.
+- `IncomingMetadataMatchesFromResponse` — Filters a
+  `ListVTXOsByScriptsResponse` down to outputs matching the current Ark
+  session and converts them to `[]IncomingMetadataMatch`.
+- `IncomingTransferEventFromResponse` — Validates and converts one
+  `ListOORRecipientEventsByScriptResponse` payload into an
+  `IncomingTransferEvent` for the receive FSM.
+- `NewResolveIncomingTransferRequest` — Converts a lightweight
+  `IncomingOOREvent` notification proto into a
+  `ResolveIncomingTransferRequest`; shared by darepod and systest.
+- `IncomingResolveCorrelationID` / `ParseIncomingResolveCorrelationID` —
+  Stable correlation ID helpers for phase-1 durable queries.
+- `IncomingMetadataCorrelationID` / `ParseIncomingMetadataCorrelationID` —
+  Stable correlation ID helpers for phase-2 durable queries.
 - `NewOutboxHandler` / `OutboxHandlerConfig` — Shared factory for the standard two-layer outbox handler chain (LocalPersistenceOutboxHandler → SigningOutboxHandler).
-- `ReceiveResolving` — FSM state indicating a durable hint is persisted and
-  pending the post-commit unary indexer resolution.
 
 ## Relationships
 
@@ -35,6 +92,7 @@ resume semantics.
 - **Depended on by**: `darepod` (wiring).
 - **Sends**:
   - → `serverconn`: `SendSubmitPackageRequest`, `SendFinalizePackageRequest`, `SendIncomingAckRequest`
+  - → `serverconn` (durable unary, via outbox): `QueryIncomingTransferRequest` → `SendListOORRecipientEventsByScriptRequest`; `QueryIncomingMetadataRequest` → `SendListVTXOsByScriptsRequest`
   - → `db` (via outbox): `MarkInputsSpentRequest`
   - → `wallet`: `MaterializeIncomingVTXOsRequest`
   - → `vtxo` manager: `VTXOsMaterializedNotification` (after incoming VTXOs are durably materialized)
