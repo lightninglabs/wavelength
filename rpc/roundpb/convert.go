@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -293,8 +294,18 @@ func flattenNode(n *tree.Node, nodes *[]*TreeNode,
 
 	*nodes = append(*nodes, protoNode)
 
-	// Recurse into children.
-	for outIdx, child := range n.Children {
+	// Recurse into children in deterministic order so the
+	// flattened output is stable across runs.
+	childIndices := make([]uint32, 0, len(n.Children))
+	for outIdx := range n.Children {
+		childIndices = append(childIndices, outIdx)
+	}
+	sort.Slice(childIndices, func(i, j int) bool {
+		return childIndices[i] < childIndices[j]
+	})
+
+	for _, outIdx := range childIndices {
+		child := n.Children[outIdx]
 		if err := flattenNode(
 			child, nodes, index,
 		); err != nil {
