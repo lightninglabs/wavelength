@@ -598,13 +598,13 @@ func (a *ServerConnectionActor) Receive(ctx context.Context,
 	case *SendUnaryRequest:
 		return a.handleSendUnaryRequest(ctx, m)
 
-	case *SendListOORRecipientEventsByScriptRequest:
-		return a.handleSendListOORRecipientEventsByScriptRequest(
-			ctx, m,
-		)
+	case DurableUnaryQuery:
+		unary, buildErr := a.buildDurableUnary(ctx, m)
+		if buildErr != nil {
+			return fn.Err[ServerConnResp](buildErr)
+		}
 
-	case *SendListVTXOsByScriptsRequest:
-		return a.handleSendListVTXOsByScriptsRequest(ctx, m)
+		return a.handleSendUnaryRequest(ctx, unary)
 
 	case *SendRPCRequest:
 		return a.handleSendRPCRequest(ctx, m)
@@ -768,151 +768,53 @@ func (a *ServerConnectionActor) handleSendUnaryRequest(ctx context.Context,
 	)
 }
 
-// handleSendListOORRecipientEventsByScriptRequest builds and sends a durable
-// proof-gated indexer unary request for one taproot output script.
-func (a *ServerConnectionActor) handleSendListOORRecipientEventsByScriptRequest(
-	ctx context.Context, req *SendListOORRecipientEventsByScriptRequest,
-) fn.Result[ServerConnResp] {
-
-	if req == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"recipient-events query must be provided",
-		))
-	}
+// buildDurableUnary converts a DurableUnaryQuery into a SendUnaryRequest by
+// calling the query's BuildBody with the configured DurableUnaryRequestBuilder.
+// The returned SendUnaryRequest can be passed directly to
+// handleSendUnaryRequest.
+func (a *ServerConnectionActor) buildDurableUnary(ctx context.Context,
+	q DurableUnaryQuery) (*SendUnaryRequest, error) {
 
 	if a.cfg.DurableUnaryBuilder == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
+		return nil, fmt.Errorf(
 			"durable unary builder must be provided",
-		))
-	}
-
-	protoReq, err := a.cfg.DurableUnaryBuilder.
-		BuildListOORRecipientEventsByScriptRequest(
-			ctx, req.PkScript, req.AfterEventID, req.Limit,
 		)
-	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"build recipient-events request: %w", err,
-		))
 	}
 
-	body, err := anypb.New(protoReq)
-	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"wrap recipient-events request in Any: %w", err,
-		))
-	}
-
-	if req.CorrelationID == "" {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"recipient-events query requires a " +
-				"correlation ID",
-		))
-	}
-
-	stableBytes, err := encodeRecipientEventsQueryIdentity(
-		req.PkScript, req.AfterEventID, req.Limit,
-		req.CorrelationID,
-	)
-	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"encode recipient-events identity: %w", err,
-		))
-	}
-
-	msgID, idempotencyKey := deriveEnvelopeIDs(
-		req.MsgID, req.IdempotencyKey, stableBytes,
-	)
-
-	method := req.ServiceMethod()
-
-	return a.sendUnaryEnvelope(
-		ctx, body, method.Service, method.Method, req.CorrelationID,
-		msgID, idempotencyKey,
-	)
-}
-
-// handleSendListVTXOsByScriptsRequest builds and sends a durable proof-gated
-// indexer unary request for one or more taproot output scripts.
-func (a *ServerConnectionActor) handleSendListVTXOsByScriptsRequest(
-	ctx context.Context, req *SendListVTXOsByScriptsRequest,
-) fn.Result[ServerConnResp] {
-
-	if req == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"vtxo query must be provided",
-		))
-	}
-
-	if a.cfg.DurableUnaryBuilder == nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"durable unary builder must be provided",
-		))
-	}
-
-	if req.CorrelationID == "" {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"vtxo query requires a correlation ID",
-		))
-	}
-
-	protoReq, err := a.cfg.DurableUnaryBuilder.
-		BuildListVTXOsByScriptsRequest(
-			ctx, req.PkScripts, req.AfterCursor, req.Limit,
+	if q.QueryCorrelationID() == "" {
+		return nil, fmt.Errorf(
+			"durable unary query requires a correlation ID",
 		)
-	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"build vtxo query request: %w", err,
-		))
 	}
 
-	body, err := anypb.New(protoReq)
-	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"wrap vtxo query in Any: %w", err,
-		))
-	}
-
-	stableBytes, err := encodeVTXOsByScriptsQueryIdentity(
-		req.PkScripts, req.AfterCursor, req.Limit,
-		req.CorrelationID,
+	body, stableBytes, err := q.BuildBody(
+		ctx, a.cfg.DurableUnaryBuilder,
 	)
 	if err != nil {
-		return fn.Err[ServerConnResp](fmt.Errorf(
-			"encode vtxo query identity: %w", err,
-		))
+		return nil, err
 	}
 
-	msgID, idempotencyKey := deriveEnvelopeIDs(
-		req.MsgID, req.IdempotencyKey, stableBytes,
-	)
-
-	method := req.ServiceMethod()
-
-	return a.sendUnaryEnvelope(
-		ctx, body, method.Service, method.Method, req.CorrelationID,
-		msgID, idempotencyKey,
-	)
-}
-
-// deriveEnvelopeIDs returns the msgID and idempotencyKey to use for a durable
-// unary envelope. Caller-provided values take precedence; if empty, stable
-// deterministic IDs are derived from the identity bytes.
-func deriveEnvelopeIDs(reqMsgID, reqIdempotencyKey string,
-	stableBytes []byte) (string, string) {
-
-	msgID := reqMsgID
+	msgID := q.QueryMsgID()
 	if msgID == "" {
 		msgID = mailboxconn.StableEventMsgID(stableBytes)
 	}
 
-	idempotencyKey := reqIdempotencyKey
+	idempotencyKey := q.QueryIdempotencyKey()
 	if idempotencyKey == "" {
 		idempotencyKey = mailboxconn.
 			StableEventIdempotencyKey(stableBytes)
 	}
 
-	return msgID, idempotencyKey
+	method := q.ServiceMethod()
+
+	return &SendUnaryRequest{
+		Body:           body,
+		Service:        method.Service,
+		Method:         method.Method,
+		CorrelationID:  q.QueryCorrelationID(),
+		MsgID:          msgID,
+		IdempotencyKey: idempotencyKey,
+	}, nil
 }
 
 // sendUnaryEnvelope sends one durable unary request envelope via the mailbox

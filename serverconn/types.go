@@ -9,6 +9,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // CorrelationID links a mailbox request to its response.
@@ -51,6 +52,34 @@ type DurableUnaryRequestBuilder interface {
 		pkScripts [][]byte, afterCursor uint64, limit uint32) (
 		proto.Message, error,
 	)
+}
+
+// DurableUnaryQuery is implemented by transport-native durable query messages
+// that persist raw query parameters and need a DurableUnaryRequestBuilder to
+// construct the proof-gated proto body at send time. Implementations are
+// handled generically in Receive by building a SendUnaryRequest on the fly.
+type DurableUnaryQuery interface {
+	ServerConnMsg
+
+	// BuildBody constructs the proto request body and returns stable
+	// identity bytes for deterministic ID derivation.
+	BuildBody(ctx context.Context,
+		builder DurableUnaryRequestBuilder) (
+		body *anypb.Any, stableBytes []byte, err error,
+	)
+
+	// QueryCorrelationID returns the correlation ID for response routing.
+	QueryCorrelationID() string
+
+	// QueryMsgID returns the caller-provided msg ID (empty = auto-derive).
+	QueryMsgID() string
+
+	// QueryIdempotencyKey returns the caller-provided idempotency key
+	// (empty = auto-derive).
+	QueryIdempotencyKey() string
+
+	// ServiceMethod returns the mailbox route for this query.
+	ServiceMethod() mailboxrpc.ServiceMethod
 }
 
 // ConnectorConfig holds all dependencies and tuning knobs for the server

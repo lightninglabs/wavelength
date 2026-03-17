@@ -386,7 +386,7 @@ func TestServerConnCodec_RoundTrip(t *testing.T) {
 	decodedRecipient, err := codec.Decode(recipientBytes)
 	require.NoError(t, err)
 
-	typedRecipient, ok := decodedRecipient.(*SendListOORRecipientEventsByScriptRequest)
+	typedRecipient, ok := decodedRecipient.(*SendListOORRecipientEventsByScriptRequest) //nolint:ll
 	require.True(t, ok)
 	require.Equal(t, recipientReq.PkScript, typedRecipient.PkScript)
 	require.Equal(

@@ -2,6 +2,7 @@ package serverconn
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -10,12 +11,14 @@ import (
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightningnetwork/lnd/tlv"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 const (
-	// SendListOORRecipientEventsByScriptRequestMsgType is the TLV type for
-	// durable proof-gated indexer queries that resolve a lightweight incoming
-	// OOR hint into the full recipient-event package.
+	// SendListOORRecipientEventsByScriptRequestMsgType is the TLV
+	// type for durable proof-gated indexer queries that resolve a
+	// lightweight incoming OOR hint into the full recipient-event
+	// package.
 	SendListOORRecipientEventsByScriptRequestMsgType tlv.Type = 2003
 
 	// SendListVTXOsByScriptsRequestMsgType is the TLV type for durable
@@ -76,12 +79,64 @@ func (m *SendListOORRecipientEventsByScriptRequest) TLVType() tlv.Type {
 }
 
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
-func (m *SendListOORRecipientEventsByScriptRequest) ServiceMethod() mailboxrpc.ServiceMethod {
-
+func (m *SendListOORRecipientEventsByScriptRequest) ServiceMethod() mailboxrpc.ServiceMethod { //nolint:ll
 	return mailboxrpc.ServiceMethod{
 		Service: "arkrpc.IndexerService",
 		Method:  "ListOORRecipientEventsByScript",
 	}
+}
+
+// BuildBody constructs the proof-gated proto body and returns
+// stable identity bytes for deterministic ID derivation.
+func (m *SendListOORRecipientEventsByScriptRequest) BuildBody(
+	ctx context.Context,
+	builder DurableUnaryRequestBuilder,
+) (*anypb.Any, []byte, error) {
+
+	protoReq, err := builder.
+		BuildListOORRecipientEventsByScriptRequest(
+			ctx, m.PkScript, m.AfterEventID, m.Limit,
+		)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"build recipient-events request: %w", err,
+		)
+	}
+
+	body, err := anypb.New(protoReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"wrap in Any: %w", err,
+		)
+	}
+
+	stable, err := encodeRecipientEventsQueryIdentity(
+		m.PkScript, m.AfterEventID, m.Limit,
+		m.CorrelationID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"encode identity: %w", err,
+		)
+	}
+
+	return body, stable, nil
+}
+
+// QueryCorrelationID returns the correlation ID.
+func (m *SendListOORRecipientEventsByScriptRequest) QueryCorrelationID() string { //nolint:ll
+	return m.CorrelationID
+}
+
+// QueryMsgID returns the caller-provided msg ID.
+func (m *SendListOORRecipientEventsByScriptRequest) QueryMsgID() string { //nolint:ll
+	return m.MsgID
+}
+
+// QueryIdempotencyKey returns the caller-provided idempotency
+// key.
+func (m *SendListOORRecipientEventsByScriptRequest) QueryIdempotencyKey() string { //nolint:ll
+	return m.IdempotencyKey
 }
 
 // Encode serializes the message to the provided writer.
@@ -107,20 +162,20 @@ func (m *SendListOORRecipientEventsByScriptRequest) Encode(w io.Writer) error {
 	pkScriptRec := tlv.NewPrimitiveRecord[listRecipientPkScriptRecordTLV](
 		m.PkScript,
 	)
-	afterEventRec := tlv.NewPrimitiveRecord[listRecipientAfterEventRecordTLV](
+	afterEventRec := tlv.NewPrimitiveRecord[listRecipientAfterEventRecordTLV]( //nolint:ll
 		m.AfterEventID,
 	)
 	limit := uint64(m.Limit)
 	limitRec := tlv.NewPrimitiveRecord[listRecipientLimitRecordTLV](
 		limit,
 	)
-	correlationRec := tlv.NewPrimitiveRecord[listRecipientCorrelationRecordTLV](
+	correlationRec := tlv.NewPrimitiveRecord[listRecipientCorrelationRecordTLV]( //nolint:ll
 		[]byte(m.CorrelationID),
 	)
 	msgIDRec := tlv.NewPrimitiveRecord[listRecipientMsgIDRecordTLV](
 		[]byte(msgID),
 	)
-	idempotencyRec := tlv.NewPrimitiveRecord[listRecipientIdempotencyRecordTLV](
+	idempotencyRec := tlv.NewPrimitiveRecord[listRecipientIdempotencyRecordTLV]( //nolint:ll
 		[]byte(idempotencyKey),
 	)
 
@@ -220,11 +275,63 @@ func (m *SendListVTXOsByScriptsRequest) TLVType() tlv.Type {
 }
 
 // ServiceMethod returns the fixed mailbox route for this indexer unary.
-func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod {
+func (m *SendListVTXOsByScriptsRequest) ServiceMethod() mailboxrpc.ServiceMethod { //nolint:ll
 	return mailboxrpc.ServiceMethod{
 		Service: "arkrpc.IndexerService",
 		Method:  "ListVTXOsByScripts",
 	}
+}
+
+// BuildBody constructs the proof-gated proto body and returns
+// stable identity bytes for deterministic ID derivation.
+func (m *SendListVTXOsByScriptsRequest) BuildBody(
+	ctx context.Context,
+	builder DurableUnaryRequestBuilder,
+) (*anypb.Any, []byte, error) {
+
+	protoReq, err := builder.BuildListVTXOsByScriptsRequest(
+		ctx, m.PkScripts, m.AfterCursor, m.Limit,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"build vtxo query: %w", err,
+		)
+	}
+
+	body, err := anypb.New(protoReq)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"wrap in Any: %w", err,
+		)
+	}
+
+	stable, err := encodeVTXOsByScriptsQueryIdentity(
+		m.PkScripts, m.AfterCursor, m.Limit,
+		m.CorrelationID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"encode identity: %w", err,
+		)
+	}
+
+	return body, stable, nil
+}
+
+// QueryCorrelationID returns the correlation ID.
+func (m *SendListVTXOsByScriptsRequest) QueryCorrelationID() string {
+	return m.CorrelationID
+}
+
+// QueryMsgID returns the caller-provided msg ID.
+func (m *SendListVTXOsByScriptsRequest) QueryMsgID() string {
+	return m.MsgID
+}
+
+// QueryIdempotencyKey returns the caller-provided idempotency
+// key.
+func (m *SendListVTXOsByScriptsRequest) QueryIdempotencyKey() string {
+	return m.IdempotencyKey
 }
 
 // Encode serializes the message to the provided writer.
@@ -477,3 +584,9 @@ func readLengthPrefixedBlob(r *bytes.Reader) ([]byte, error) {
 
 	return blob, nil
 }
+
+// Compile-time interface checks.
+var (
+	_ DurableUnaryQuery = (*SendListOORRecipientEventsByScriptRequest)(nil)
+	_ DurableUnaryQuery = (*SendListVTXOsByScriptsRequest)(nil)
+)

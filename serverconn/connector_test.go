@@ -199,7 +199,10 @@ func TestServerConnectionActor_SendListOORRecipientEventsByScriptRequest(
 
 	mb.mu.Lock()
 	require.Len(t, mb.mailboxes["server-1"], 1)
-	env := proto.Clone(mb.mailboxes["server-1"][0]).(*mailboxpb.Envelope)
+	env, ok := proto.Clone(
+		mb.mailboxes["server-1"][0],
+	).(*mailboxpb.Envelope)
+	require.True(t, ok)
 	mb.mu.Unlock()
 
 	require.Equal(
