@@ -15,7 +15,6 @@ import (
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,7 +51,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientSuccessResp,
+			Method:  roundpb.MethodJoinAck,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientSuccessResp{}
 			},
@@ -80,7 +79,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientBatchInfo,
+			Method:  roundpb.MethodBatchInfo,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientBatchInfo{}
 			},
@@ -108,7 +107,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientAwaitingInputSigsResp,
+			Method:  roundpb.MethodAwaitingInputSigs,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientAwaitingInputSigsResp{}
 			},
@@ -136,7 +135,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientVTXOAggNonces,
+			Method:  roundpb.MethodAggNonces,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientVTXOAggNonces{}
 			},
@@ -164,7 +163,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientVTXOAggSigs,
+			Method:  roundpb.MethodAggSigs,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientVTXOAggSigs{}
 			},
@@ -192,7 +191,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientRoundFailedResp,
+			Method:  roundpb.MethodRoundFailed,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientRoundFailedResp{}
 			},
@@ -220,7 +219,7 @@ func registerClientRoundRoutes(router *serverconn.EventRouter,
 			actormsg.RoundActorResp,
 		]{
 			Service: svc,
-			Method:  rounds.MethodClientErrorResp,
+			Method:  roundpb.MethodError,
 			NewEvent: func() proto.Message {
 				return &roundpb.ClientErrorResp{}
 			},
