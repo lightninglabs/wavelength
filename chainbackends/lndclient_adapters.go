@@ -346,6 +346,11 @@ type LNDBackendFromLndClientConfig struct {
 	// backend falls back to extracting a logger from context or uses
 	// btclog.Disabled.
 	Log fn.Option[btclog.Logger]
+
+	// PackageSubmitter is an optional package submitter for atomic
+	// parent+child package submission. When nil, SubmitPackage will
+	// return an "unsupported" error.
+	PackageSubmitter PackageSubmitter
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -366,7 +371,6 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 
 	// Use explicit struct initialization instead of type cast for safety -
 	// this ensures we don't silently miss fields if the types diverge.
-	//nolint:gosimple
 	notifier := NewLndClientChainNotifier(LndClientChainNotifierConfig{
 		LND: cfg.LND,
 		Log: cfg.Log,
@@ -376,6 +380,7 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 
 	backend := NewLNDBackend(notifier, feeEstimator, broadcaster)
 	backend.Log = cfg.Log
+	backend.packageSubmitter = cfg.PackageSubmitter
 
 	return backend
 }
