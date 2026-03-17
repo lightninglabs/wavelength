@@ -529,7 +529,9 @@ func (s *Service) ListVTXOsByScripts(ctx context.Context,
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
-		applyLineageMetadata(vtxo, lineageMeta)
+		if err := applyLineageMetadata(vtxo, lineageMeta); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 
 		if len(statusFilter) > 0 {
 			if _, ok := statusFilter[vtxo.Status]; !ok {

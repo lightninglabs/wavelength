@@ -517,9 +517,9 @@ func sessionParentOutpoints(session *OORSession,
 }
 
 // applyLineageMetadata copies authoritative lineage fields onto the RPC view.
-func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) {
+func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) error {
 	if out == nil || lineage == nil {
-		return
+		return nil
 	}
 
 	if lineage.roundID != "" {
@@ -537,7 +537,15 @@ func applyLineageMetadata(out *arkrpc.VTXO, lineage *vtxoLineage) {
 	out.TreeDepth = uint32(lineage.treeDepth)
 	out.ChainDepth = uint32(lineage.chainDepth)
 	out.CreatedHeight = lineage.createdHeight
-	out.TreePathTlv = append([]byte(nil), lineage.treePathTLV...)
+	if lineage.treePath != nil {
+		tp, err := arkrpc.TreePathFromTree(lineage.treePath)
+		if err != nil {
+			return fmt.Errorf("convert tree path: %w", err)
+		}
+		out.TreePath = tp
+	}
+
+	return nil
 }
 
 // rpcVTXOFromDB converts an indexer VTXORow and optional RoundRow
