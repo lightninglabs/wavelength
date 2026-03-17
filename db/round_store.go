@@ -136,6 +136,25 @@ type RoundStore interface {
 	) ([]RoundRow, error)
 
 	ListVTXOsByRound(ctx context.Context, roundID string) ([]VTXORow, error)
+
+	// Unroll store queries.
+	InsertUnroll(
+		ctx context.Context, arg sqlc.InsertUnrollParams,
+	) error
+
+	UpdateUnroll(
+		ctx context.Context, arg sqlc.UpdateUnrollParams,
+	) error
+
+	GetUnroll(
+		ctx context.Context, arg sqlc.GetUnrollParams,
+	) (sqlc.Unroll, error)
+
+	ListActiveUnrolls(ctx context.Context) ([]sqlc.Unroll, error)
+
+	DeleteUnroll(
+		ctx context.Context, arg sqlc.DeleteUnrollParams,
+	) error
 }
 
 // BatchedRoundStore combines RoundStore with transaction support via the

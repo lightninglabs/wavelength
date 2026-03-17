@@ -15,6 +15,7 @@ type Querier interface {
 	CountVTXOsByStatus(ctx context.Context, status int32) (int64, error)
 	DeleteClientTreeTxids(ctx context.Context, arg DeleteClientTreeTxidsParams) error
 	DeleteOORPackageCheckpoints(ctx context.Context, sessionID []byte) error
+	DeleteUnroll(ctx context.Context, arg DeleteUnrollParams) error
 	// DeleteVTXO removes a VTXO from storage. Used for cleanup after terminal
 	// states are reached and the VTXO is no longer needed.
 	DeleteVTXO(ctx context.Context, arg DeleteVTXOParams) error
@@ -38,6 +39,7 @@ type Querier interface {
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
+	GetUnroll(ctx context.Context, arg GetUnrollParams) (Unroll, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -60,6 +62,8 @@ type Querier interface {
 	InsertRoundClientTree(ctx context.Context, arg InsertRoundClientTreeParams) error
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
+	// Unroll store queries.
+	InsertUnroll(ctx context.Context, arg InsertUnrollParams) error
 	// VTXO queries.
 	// InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
 	// updated if the new values are non-zero/non-null (allowing the VTXO manager
@@ -67,6 +71,9 @@ type Querier interface {
 	// round store creates the initial record).
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
+	// Active unrolls are those not in terminal states:
+	// complete (3) or failed (4).
+	ListActiveUnrolls(ctx context.Context) ([]Unroll, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)
 	ListAllBoardingIntents(ctx context.Context) ([]BoardingIntent, error)
 	ListAllVTXOs(ctx context.Context) ([]Vtxo, error)
@@ -118,6 +125,7 @@ type Querier interface {
 	UpdateBoardingIntentStatus(ctx context.Context, arg UpdateBoardingIntentStatusParams) error
 	UpdateRoundBoardingIntentSignature(ctx context.Context, arg UpdateRoundBoardingIntentSignatureParams) error
 	UpdateRoundStatus(ctx context.Context, arg UpdateRoundStatusParams) error
+	UpdateUnroll(ctx context.Context, arg UpdateUnrollParams) error
 	// UpdateVTXOStatus atomically updates a VTXO's status. This is the primary
 	// method for state transitions that don't require additional data.
 	UpdateVTXOStatus(ctx context.Context, arg UpdateVTXOStatusParams) error

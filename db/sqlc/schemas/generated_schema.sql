@@ -673,6 +673,21 @@ CREATE TABLE rounds (
     FOREIGN KEY (status) REFERENCES round_statuses(status_name)
 );
 
+CREATE TABLE unrolls (
+    vtxo_outpoint_hash BLOB NOT NULL,
+    vtxo_outpoint_index INTEGER NOT NULL,
+    status INTEGER NOT NULL,
+    current_level INTEGER NOT NULL,
+    leaf_confirm_height INTEGER NOT NULL,
+    error_msg TEXT,
+    retry_count INTEGER NOT NULL,
+    last_broadcast_height INTEGER NOT NULL,
+    current_fee_rate BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (vtxo_outpoint_hash, vtxo_outpoint_index)
+);
+
 CREATE TABLE vtxos (
     -- outpoint_hash and outpoint_index form the VTXO outpoint (primary key).
     outpoint_hash BLOB NOT NULL,

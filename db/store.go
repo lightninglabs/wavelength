@@ -287,3 +287,26 @@ func (s *Store) NewOORArtifactStore(
 
 	return NewOORArtifactPersistenceStore(artifactDB, clk)
 }
+
+// NewUnrollStore builds an unroll persistence store backed by SQLite.
+//
+// The unroll store tracks in-progress VTXO tree unrolls so they survive
+// daemon restart. VTXO lookups are delegated to the given
+// VTXOPersistenceStore.
+func (s *Store) NewUnrollStore(
+	vtxoStore *VTXOPersistenceStore,
+	clk clock.Clock,
+) *UnrollPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	roundDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) RoundStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewUnrollPersistenceStore(roundDB, vtxoStore, clk)
+}

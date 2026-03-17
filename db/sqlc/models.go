@@ -160,6 +160,20 @@ type RoundVtxoRequest struct {
 	SigningPubkey    []byte
 }
 
+type Unroll struct {
+	VtxoOutpointHash    []byte
+	VtxoOutpointIndex   int32
+	Status              int32
+	CurrentLevel        int32
+	LeafConfirmHeight   int32
+	ErrorMsg            sql.NullString
+	RetryCount          int32
+	LastBroadcastHeight int32
+	CurrentFeeRate      int64
+	CreatedAt           int64
+	UpdatedAt           int64
+}
+
 type Vtxo struct {
 	OutpointHash    []byte
 	OutpointIndex   int32
