@@ -10,32 +10,33 @@ import (
 
 // TestServiceMethodAlignment verifies that each client-facing outbox
 // message's ServiceMethod() returns the correct (Service, Method) pair
-// for client-side EventRouter dispatch. A mismatch silently drops
-// messages with no compile-time error, so this test provides the
-// safety net.
+// for client-side EventRouter dispatch. The expected values reference
+// the roundpb.Method* constants directly — the same constants the
+// client-side route registration uses — so a mismatch between server
+// and client becomes a test failure rather than a silent dispatch drop.
 func TestServiceMethodAlignment(t *testing.T) {
 	t.Parallel()
 
 	// Each test case maps an outbox message type to its expected
-	// routing key. The Method must match the constant used in
-	// client_routes.go route registration.
+	// routing key. The Method must match the roundpb constant used
+	// in client/darepod/server.go route registration.
 	tests := []struct {
-		name           string
-		msg            clientconn.ClientMessage
-		expectService  string
-		expectMethod   string
+		name          string
+		msg           clientconn.ClientMessage
+		expectService string
+		expectMethod  string
 	}{
 		{
 			name:          "ClientErrorResp",
 			msg:           &ClientErrorResp{Client: "test"},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientErrorResp,
+			expectMethod:  roundpb.MethodError,
 		},
 		{
 			name:          "ClientSuccessResp",
 			msg:           &ClientSuccessResp{Client: "test"},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientSuccessResp,
+			expectMethod:  roundpb.MethodJoinAck,
 		},
 		{
 			name: "ClientAwaitingInputSigsResp",
@@ -43,25 +44,25 @@ func TestServiceMethodAlignment(t *testing.T) {
 				Client: "test",
 			},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientAwaitingInputSigsResp,
+			expectMethod:  roundpb.MethodAwaitingInputSigs,
 		},
 		{
 			name:          "ClientVTXOAggNonces",
 			msg:           &ClientVTXOAggNonces{Client: "test"},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientVTXOAggNonces,
+			expectMethod:  roundpb.MethodAggNonces,
 		},
 		{
 			name:          "ClientVTXOAggSigs",
 			msg:           &ClientVTXOAggSigs{Client: "test"},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientVTXOAggSigs,
+			expectMethod:  roundpb.MethodAggSigs,
 		},
 		{
 			name:          "ClientBatchInfo",
 			msg:           &ClientBatchInfo{Client: "test"},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientBatchInfo,
+			expectMethod:  roundpb.MethodBatchInfo,
 		},
 		{
 			name: "ClientRoundFailedResp",
@@ -69,7 +70,7 @@ func TestServiceMethodAlignment(t *testing.T) {
 				Client: "test",
 			},
 			expectService: roundpb.ServiceName,
-			expectMethod:  MethodClientRoundFailedResp,
+			expectMethod:  roundpb.MethodRoundFailed,
 		},
 	}
 

@@ -14,32 +14,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Method name constants for server→client round event routing. Each
-// outbox message's ServiceMethod().Method must match the corresponding
-// client-side EventRouter route key. These constants ensure a single
-// source of truth, matching the oorpb.MethodSubmitPackage pattern.
-const (
-	// MethodClientErrorResp routes error responses.
-	MethodClientErrorResp = "ClientErrorResp"
-
-	// MethodClientSuccessResp routes successful join responses.
-	MethodClientSuccessResp = "ClientSuccessResp"
-
-	// MethodClientAwaitingInputSigsResp routes boarding sig requests.
-	MethodClientAwaitingInputSigsResp = "ClientAwaitingInputSigsResp"
-
-	// MethodClientVTXOAggNonces routes aggregated nonces.
-	MethodClientVTXOAggNonces = "ClientVTXOAggNonces"
-
-	// MethodClientVTXOAggSigs routes aggregated signatures.
-	MethodClientVTXOAggSigs = "ClientVTXOAggSigs"
-
-	// MethodClientBatchInfo routes batch transaction data.
-	MethodClientBatchInfo = "ClientBatchInfo"
-
-	// MethodClientRoundFailedResp routes round failure notifications.
-	MethodClientRoundFailedResp = "ClientRoundFailedResp"
-)
+// Round outbox messages use the roundpb.Method* constants from the
+// client submodule as the single source of truth for routing keys.
+// The client-side EventRouter registers handlers under the same
+// constants, so any mismatch becomes a compile error rather than a
+// silent dispatch failure.
 
 // OutboxEvent is a sealed interface for all outbox messages emitted
 // by the round FSM. The sealed interface pattern prevents external
@@ -91,7 +70,7 @@ func (c *ClientErrorResp) ToProto() proto.Message {
 func (c *ClientErrorResp) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientErrorResp,
+		Method:  roundpb.MethodError,
 	}
 }
 
@@ -141,7 +120,7 @@ func (c *ClientSuccessResp) ToProto() proto.Message {
 func (c *ClientSuccessResp) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientSuccessResp,
+		Method:  roundpb.MethodJoinAck,
 	}
 }
 
@@ -180,7 +159,7 @@ func (c *ClientAwaitingInputSigsResp) ToProto() proto.Message {
 func (c *ClientAwaitingInputSigsResp) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientAwaitingInputSigsResp,
+		Method:  roundpb.MethodAwaitingInputSigs,
 	}
 }
 
@@ -229,7 +208,7 @@ func (c *ClientVTXOAggNonces) ToProto() proto.Message {
 func (c *ClientVTXOAggNonces) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientVTXOAggNonces,
+		Method:  roundpb.MethodAggNonces,
 	}
 }
 
@@ -280,7 +259,7 @@ func (c *ClientVTXOAggSigs) ToProto() proto.Message {
 func (c *ClientVTXOAggSigs) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientVTXOAggSigs,
+		Method:  roundpb.MethodAggSigs,
 	}
 }
 
@@ -452,7 +431,7 @@ func connectorLeafInfoToProto(
 func (c *ClientBatchInfo) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientBatchInfo,
+		Method:  roundpb.MethodBatchInfo,
 	}
 }
 
@@ -492,7 +471,7 @@ func (c *ClientRoundFailedResp) ToProto() proto.Message {
 func (c *ClientRoundFailedResp) ServiceMethod() mailboxrpc.ServiceMethod {
 	return mailboxrpc.ServiceMethod{
 		Service: roundpb.ServiceName,
-		Method:  MethodClientRoundFailedResp,
+		Method:  roundpb.MethodRoundFailed,
 	}
 }
 
