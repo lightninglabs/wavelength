@@ -11,12 +11,14 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/lightningnetwork/lnd/graph/db/models"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -117,7 +119,19 @@ func NewInvoiceGenerator(
 
 	nodeSigner := netann.NewNodeSigner(signer)
 
-	cfg := &invoicesrpc.AddInvoiceConfig{
+	return &InvoiceGenerator{
+		invoiceCfg:  genInvoiceCfg(nodeSigner, bestHeight, store, chainParams),
+		chainParams: chainParams,
+	}
+}
+
+// genInvoiceCfg returns the minimal AddInvoice configuration needed for swap
+// invoices that carry explicit route hints and do not depend on a real graph.
+func genInvoiceCfg(nodeSigner *netann.NodeSigner,
+	bestHeight func() (uint32, error), store InvoiceStore,
+	chainParams *chaincfg.Params) *invoicesrpc.AddInvoiceConfig {
+
+	return &invoicesrpc.AddInvoiceConfig{
 		AddInvoice: store.AddInvoice,
 		IsChannelActive: func(
 			chanID lnwire.ChannelID) bool {
@@ -127,6 +141,8 @@ func NewInvoiceGenerator(
 		ChainParams:       chainParams,
 		NodeSigner:        nodeSigner,
 		DefaultCLTVExpiry: defaultCLTVExpiry,
+		ChanDB:            nil,
+		Graph:             &mockGraph{},
 		GenInvoiceFeatures: func() *lnwire.FeatureVector {
 			return lnwire.NewFeatureVector(
 				lnwire.NewRawFeatureVector(
@@ -153,12 +169,30 @@ func NewInvoiceGenerator(
 			return lnwire.ShortChannelID{}, nil
 		},
 		BestHeight: bestHeight,
-	}
+		QueryBlindedRoutes: func(
+			amt lnwire.MilliSatoshi,
+		) ([]*route.Route, error) {
 
-	return &InvoiceGenerator{
-		invoiceCfg:  cfg,
-		chainParams: chainParams,
+			return nil, nil
+		},
 	}
+}
+
+// mockGraph satisfies the subset of graph lookups AddInvoice expects when
+// normalizing caller-provided route hints for virtual channels.
+type mockGraph struct{}
+
+// IsPublicNode reports all nodes as public for route hint validation.
+func (m *mockGraph) IsPublicNode(_ [33]byte) (bool, error) {
+	return true, nil
+}
+
+// FetchChannelEdgesByID reports no backing graph edges for swap virtual
+// channels.
+func (m *mockGraph) FetchChannelEdgesByID(_ uint64) (*models.ChannelEdgeInfo,
+	*models.ChannelEdgePolicy, *models.ChannelEdgePolicy, error) {
+
+	return nil, nil, nil, nil
 }
 
 // NewEphemeralInvoiceGenerator creates an ephemeral invoice creator backed by a

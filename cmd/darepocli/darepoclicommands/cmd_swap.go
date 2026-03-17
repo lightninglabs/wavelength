@@ -5,12 +5,16 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/sdk/swaps"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -27,6 +31,12 @@ func newSwapCmd() *cobra.Command {
 
 	cmd.PersistentFlags().String("swapserver", "localhost:10030",
 		"swap server gRPC address")
+	cmd.PersistentFlags().String("arkserver", "localhost:7070",
+		"ark operator gRPC address used for terms and indexer queries")
+	cmd.PersistentFlags().Bool("ark-no-tls", false,
+		"disable TLS for the ark server connection")
+	cmd.PersistentFlags().String("ark-tlscertpath", "",
+		"path to ark server TLS certificate")
 
 	cmd.AddCommand(
 		newSwapReceiveCmd(),
@@ -96,7 +106,7 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 
 	ctx := context.Background()
 
-	result, err := swapClient.ReceiveViaLightning(
+	session, err := swapClient.StartReceiveViaLightning(
 		ctx, btcutil.Amount(amount),
 	)
 	if err != nil {
@@ -106,12 +116,20 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"Invoice: %s\n"+
 			"Payment hash: %s\n"+
-			"Preimage: %x\n"+
-			"VTXO outpoint: %s\n"+
+			"Preimage: %x\n",
+		session.Invoice,
+		hex.EncodeToString(session.PaymentHash[:]),
+		session.Preimage[:],
+	)
+
+	result, err := session.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("receive wait failed: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"VTXO outpoint: %s\n"+
 			"Amount: %d sat\n",
-		result.Invoice,
-		hex.EncodeToString(result.PaymentHash[:]),
-		result.Preimage[:],
 		result.VTXOOutpoint,
 		result.AmountSat,
 	)
@@ -162,10 +180,13 @@ func swapPay(cmd *cobra.Command, _ []string) error {
 // returned cleanup function closes the swap server connection.
 func buildSwapClient(cmd *cobra.Command,
 	daemonClient daemonrpc.DaemonServiceClient,
-	daemonConn *grpc.ClientConn) (*swaps.SwapClient,
+	_ *grpc.ClientConn) (*swaps.SwapClient,
 	func(), error) {
 
 	swapAddr, _ := cmd.Flags().GetString("swapserver")
+	arkAddr, _ := cmd.Flags().GetString("arkserver")
+	arkNoTLS, _ := cmd.Flags().GetBool("ark-no-tls")
+	arkTLSCertPath, _ := cmd.Flags().GetString("ark-tlscertpath")
 
 	// Connect to the swap server.
 	swapConn, err := grpc.NewClient(
@@ -180,28 +201,137 @@ func buildSwapClient(cmd *cobra.Command,
 		)
 	}
 
-	// Connect to the ark server for operator pubkey. Reuse
-	// the daemon's connection info — the ark server is
-	// typically on the same host as the daemon's server.
-	arkClient := arkrpc.NewArkServiceClient(daemonConn)
-	indexerClient := arkrpc.NewIndexerServiceClient(daemonConn)
+	arkConn, err := dialARKSwapConn(arkAddr, arkNoTLS, arkTLSCertPath)
+	if err != nil {
+		swapConn.Close()
+
+		return nil, nil, err
+	}
+
+	info, err := daemonClient.GetInfo(
+		context.Background(), &daemonrpc.GetInfoRequest{},
+	)
+	if err != nil {
+		swapConn.Close()
+		arkConn.Close()
+
+		return nil, nil, fmt.Errorf("get daemon info: %w", err)
+	}
+
+	chainParams, err := chainParamsForNetwork(info.GetNetwork())
+	if err != nil {
+		swapConn.Close()
+		arkConn.Close()
+
+		return nil, nil, err
+	}
+
+	invoiceKey, err := btcec.NewPrivateKey()
+	if err != nil {
+		swapConn.Close()
+		arkConn.Close()
+
+		return nil, nil, fmt.Errorf("create invoice key: %w", err)
+	}
+
+	bestHeight := func() (uint32, error) {
+		resp, err := daemonClient.GetInfo(
+			context.Background(),
+			&daemonrpc.GetInfoRequest{},
+		)
+		if err != nil {
+			return 0, err
+		}
+
+		return resp.GetBlockHeight(), nil
+	}
+
+	arkClient := arkrpc.NewArkServiceClient(arkConn)
+	indexerClient := arkrpc.NewIndexerServiceClient(arkConn)
 
 	serverConn := swaps.NewGRPCSwapServerConn(swapConn)
 	daemonWrapper := swaps.NewRPCDaemonConn(
 		daemonClient, arkClient, indexerClient,
 	)
 
-	// For MVP, create swap client without InvoiceGenerator.
-	// ReceiveViaLightning will fail if called without one.
-	// TODO(swap): wire InvoiceGenerator from wallet signer.
 	client := swaps.NewSwapClient(
-		serverConn, daemonWrapper, nil, nil,
+		serverConn, daemonWrapper, nil,
+		swaps.NewInvoiceGenerator(
+			keychain.NewPrivKeyMessageSigner(
+				invoiceKey, keychain.KeyLocator{},
+			),
+			bestHeight,
+			swaps.NewMemoryInvoiceStore(),
+			chainParams,
+		),
 	)
 
 	cleanup := func() {
 		_ = serverConn.Close()
-		swapConn.Close()
+		_ = swapConn.Close()
+		_ = arkConn.Close()
 	}
 
 	return client, cleanup, nil
+}
+
+// dialARKSwapConn establishes the optional TLS/insecure Ark gRPC connection
+// used by the swap CLI for operator and indexer RPCs.
+func dialARKSwapConn(arkAddr string, noTLS bool,
+	tlsCertPath string) (*grpc.ClientConn, error) {
+
+	var opts []grpc.DialOption
+
+	switch {
+	case noTLS:
+		opts = append(opts, grpc.WithTransportCredentials(
+			insecure.NewCredentials(),
+		))
+
+	case tlsCertPath != "":
+		creds, err := credentials.NewClientTLSFromFile(
+			tlsCertPath, "",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("load ark TLS cert: %w", err)
+		}
+
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+
+	default:
+		return nil, fmt.Errorf("ark TLS cert is required unless " +
+			"--ark-no-tls is set")
+	}
+
+	conn, err := grpc.NewClient(arkAddr, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("connect to ark server: %w", err)
+	}
+
+	return conn, nil
+}
+
+// chainParamsForNetwork maps the daemon-reported network name to btcutil chain
+// parameters for invoice encoding.
+func chainParamsForNetwork(network string) (*chaincfg.Params, error) {
+	switch network {
+	case "bitcoin", "mainnet":
+		return &chaincfg.MainNetParams, nil
+
+	case "testnet", "testnet3":
+		return &chaincfg.TestNet3Params, nil
+
+	case "regtest":
+		return &chaincfg.RegressionNetParams, nil
+
+	case "signet":
+		return &chaincfg.SigNetParams, nil
+
+	case "simnet":
+		return &chaincfg.SimNetParams, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported daemon network: %s",
+			network)
+	}
 }
