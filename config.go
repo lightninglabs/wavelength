@@ -2,6 +2,7 @@ package darepo
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -195,6 +196,12 @@ type Config struct {
 
 	// LogFilePath is the path to write the log file.
 	LogFilePath string `mapstructure:"logfile"`
+
+	// LogWriter is an optional sink for daemon log output when the
+	// server is started programmatically rather than via cmd/arkd.
+	// When nil, NewServer leaves logging disabled unless the caller
+	// provides cfg.Loggers and cfg.Log explicitly.
+	LogWriter io.Writer
 
 	// DB contains the database configuration (sqlite or postgres).
 	DB *db.Config `mapstructure:"db"`

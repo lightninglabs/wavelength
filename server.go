@@ -29,6 +29,7 @@ import (
 	"github.com/lightninglabs/darepo/rounds"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 )
@@ -175,6 +176,20 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 // NewServer allocates a Server from a validated Config. The server is
 // inert until RunUntilShutdown or RunWithContext is called.
 func NewServer(cfg *Config) (*Server, error) {
+	if cfg.Loggers == nil && cfg.LogWriter != nil {
+		logHandler := btclog.NewDefaultHandler(cfg.LogWriter)
+		loggers := SetupLoggers(logHandler)
+
+		if err := ApplyDebugLevel(loggers, cfg.DebugLevel); err != nil {
+			return nil, fmt.Errorf(
+				"error setting log level: %w", err,
+			)
+		}
+
+		cfg.Loggers = loggers
+		cfg.Log = fn.Some(loggers[Subsystem])
+	}
+
 	return &Server{
 		cfg:  cfg,
 		log:  cfg.Log.UnwrapOr(btclog.Disabled),

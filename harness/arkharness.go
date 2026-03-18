@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,6 +69,10 @@ type ArkHarness struct {
 
 	// arkDataDir is the ark data dir (for logs and db etc).
 	arkDataDir string
+
+	// arkdLogFile is the operator log file kept open for the lifetime of
+	// the in-process server.
+	arkdLogFile *os.File
 
 	// ArkAdminAddr is the host:port to reach arkd admin RPC.
 	ArkAdminAddr string
@@ -138,6 +143,11 @@ func (h *ArkHarness) Stop() {
 		if h.arkdAdminConn != nil {
 			_ = h.arkdAdminConn.Close()
 		}
+
+		if h.arkdLogFile != nil {
+			_ = h.arkdLogFile.Close()
+			h.arkdLogFile = nil
+		}
 	}
 
 	// Stop the client harness.
@@ -151,6 +161,11 @@ func (h *ArkHarness) startArkd() {
 	require.NoError(h.T, os.MkdirAll(h.arkDataDir, 0755))
 
 	arkLogPath := filepath.Join(h.arkDataDir, "arkd.log")
+	arkLogFile, err := os.OpenFile(
+		arkLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600,
+	)
+	require.NoError(h.T, err, "failed to open arkd log file")
+	h.arkdLogFile = arkLogFile
 
 	// Build config for arkd. Use port 0 to let the OS allocate free
 	// ports, avoiding TOCTOU race conditions in parallel test execution.
@@ -159,6 +174,9 @@ func (h *ArkHarness) startArkd() {
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "trace"
 	cfg.LogFilePath = arkLogPath
+	cfg.LogWriter = io.MultiWriter(
+		newPrefixedWriter(os.Stdout, "operator"), arkLogFile,
+	)
 	cfg.DB.Backend = "sqlite"
 	cfg.DB.Sqlite.DatabaseFileName = filepath.Join(
 		h.arkDataDir, "darepo.db",
@@ -305,6 +323,8 @@ type ClientDaemonHarness struct {
 	wg     sync.WaitGroup
 
 	runErr chan error
+
+	logFile *os.File
 }
 
 // StartClientDaemon starts a real in-process darepod backed by a dedicated LND
@@ -326,12 +346,20 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 
 	dataDir := filepath.Join(h.BaseDir(), "client-daemons", name)
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
+	logPath := filepath.Join(dataDir, "darepod.log")
+	logFile, err := os.OpenFile(
+		logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600,
+	)
+	require.NoError(h.T, err, "failed to open client daemon log file")
 	localMailboxID := fmt.Sprintf("client-%s", name)
 	remoteMailboxID := fmt.Sprintf("server-for-%s", name)
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "trace"
+	cfg.LogWriter = io.MultiWriter(
+		newPrefixedWriter(os.Stdout, name), logFile,
+	)
 	cfg.Wallet.Type = clientdarepod.WalletTypeLnd
 	cfg.Lnd.Host = net.JoinHostPort("127.0.0.1", lnd.GRPCPort)
 	cfg.Lnd.TLSPath = lnd.TLSCert
@@ -358,6 +386,7 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 		server:          server,
 		cancel:          cancel,
 		runErr:          make(chan error, 1),
+		logFile:         logFile,
 	}
 
 	daemon.wg.Add(1)
@@ -416,6 +445,11 @@ func (d *ClientDaemonHarness) Stop() {
 
 	if d.RPCConn != nil {
 		_ = d.RPCConn.Close()
+	}
+
+	if d.logFile != nil {
+		_ = d.logFile.Close()
+		d.logFile = nil
 	}
 }
 
