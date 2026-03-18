@@ -172,22 +172,9 @@ func (c *ClientWallet) MuSig2CreateSession(
 		slog.Int("num_other_nonces", len(otherNonces)),
 		slog.Bool("has_local_nonces", localNonces != nil))
 
-	// Convert pubkeys to serialized form for lndclient. The
-	// remote signer expects either 33-byte compressed keys
-	// (MuSig2Version040) or 32-byte x-only keys
-	// (MuSig2Version100RC2+). lndclient passes the bytes
-	// through to lnd as-is, so we must match the format to
-	// the version.
-	signerBytes := make([][]byte, len(allSignerPubkeys))
-	for i, pk := range allSignerPubkeys {
-		switch version {
-		case input.MuSig2Version100RC2:
-			signerBytes[i] = schnorr.SerializePubKey(pk)
-
-		default:
-			signerBytes[i] = pk.SerializeCompressed()
-		}
-	}
+	signerBytes := serializeMuSig2SignerPubKeys(
+		version, allSignerPubkeys,
+	)
 
 	var opts []lndclient.MuSig2SessionOpts
 
@@ -229,6 +216,26 @@ func (c *ClientWallet) MuSig2CreateSession(
 		slog.Int("num_signers", len(allSignerPubkeys)))
 
 	return sessionInfo, nil
+}
+
+// serializeMuSig2SignerPubKeys matches lnd's RPC expectations for each
+// MuSig2 draft version. v0.4.0 uses x-only keys while v1.0.0rc2 uses
+// compressed public keys.
+func serializeMuSig2SignerPubKeys(version input.MuSig2Version,
+	allSignerPubkeys []*btcec.PublicKey) [][]byte {
+
+	signerBytes := make([][]byte, len(allSignerPubkeys))
+	for i, pk := range allSignerPubkeys {
+		switch version {
+		case input.MuSig2Version040:
+			signerBytes[i] = schnorr.SerializePubKey(pk)
+
+		default:
+			signerBytes[i] = pk.SerializeCompressed()
+		}
+	}
+
+	return signerBytes
 }
 
 // MuSig2RegisterNonces registers additional public nonces for a
