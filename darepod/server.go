@@ -84,6 +84,15 @@ const (
 	// events pushed by the server indexer.
 	arkServiceName = "arkrpc.ArkService"
 
+	// indexerProofServerID is the operator identifier currently used by
+	// the daemon indexer service when verifying taproot proof messages.
+	//
+	// This is intentionally decoupled from mailbox transport IDs:
+	// remote mailbox IDs can be per-client routing endpoints (for
+	// auto-registration), while proof server ID is a logical operator
+	// identity shared by all clients.
+	indexerProofServerID = "arkd"
+
 	// MethodIncomingOOR is the routing method name for incoming
 	// OOR transfer notifications pushed by the server indexer.
 	MethodIncomingOOR = "IncomingOOR"
@@ -1657,7 +1666,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
-		s.cfg.Server.RemoteMailboxID,
+		indexerProofServerID,
 		s.cfg.Server.LocalMailboxID,
 	)
 
