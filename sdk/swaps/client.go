@@ -32,6 +32,17 @@ type ReceiveResult struct {
 	AmountSat int64
 }
 
+// ReceiveVHTLCInfo holds the script details for one prepared
+// Lightning-to-Ark receive session.
+type ReceiveVHTLCInfo struct {
+	// PkScript is the taproot output script for the expected vHTLC.
+	PkScript []byte
+
+	// ClaimScript is the tapscript leaf used to sweep the funded vHTLC
+	// with the preimage.
+	ClaimScript []byte
+}
+
 // PayResult holds the outcome of a successful PayViaLightning call.
 type PayResult struct {
 	// PaymentHash is the SHA-256 payment hash of the paid

@@ -176,14 +176,31 @@ func (s *ReceiveSession) Wait(ctx context.Context) (*ReceiveResult, error) {
 		return nil, fmt.Errorf("receive session must be provided")
 	}
 
+	outpoint, amount, err := s.WaitForFunding(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.Claim(ctx, outpoint, amount)
+}
+
+// WaitForFunding blocks until the swap server funds the expected vHTLC and
+// returns the outpoint plus amount of the live vHTLC.
+func (s *ReceiveSession) WaitForFunding(ctx context.Context) (string, int64,
+	error) {
+
+	if s == nil || s.client == nil {
+		return "", 0, fmt.Errorf("receive session must be provided")
+	}
+
 	outpoint, amount, err := s.client.waitForVHTLC(
 		ctx, s.vhtlcPkScript,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("wait for vHTLC: %w", err)
+		return "", 0, fmt.Errorf("wait for vHTLC: %w", err)
 	}
 
-	return s.Claim(ctx, outpoint, amount)
+	return outpoint, amount, nil
 }
 
 // Claim submits the vHTLC claim for a funded out-swap into a fresh wallet-
@@ -209,6 +226,26 @@ func (s *ReceiveSession) Claim(ctx context.Context, outpoint string,
 		PaymentHash:  s.PaymentHash,
 		VTXOOutpoint: outpoint,
 		AmountSat:    amount,
+	}, nil
+}
+
+// VHTLCInfo returns the scripts for the expected incoming vHTLC and its
+// preimage sweep path.
+func (s *ReceiveSession) VHTLCInfo() (*ReceiveVHTLCInfo, error) {
+	if s == nil || s.client == nil {
+		return nil, fmt.Errorf("receive session must be provided")
+	}
+
+	claimPath, err := s.vhtlcPolicy.ClaimPath(s.Preimage[:])
+	if err != nil {
+		return nil, fmt.Errorf("build claim path: %w", err)
+	}
+
+	return &ReceiveVHTLCInfo{
+		PkScript: append([]byte(nil), s.vhtlcPkScript...),
+		ClaimScript: append(
+			[]byte(nil), claimPath.WitnessScript...,
+		),
 	}, nil
 }
 

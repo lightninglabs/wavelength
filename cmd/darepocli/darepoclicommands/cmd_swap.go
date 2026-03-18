@@ -61,6 +61,8 @@ func newSwapReceiveCmd() *cobra.Command {
 	cmd.Flags().Int64("amount", 0,
 		"amount in satoshis to receive (required)")
 	_ = cmd.MarkFlagRequired("amount")
+	cmd.Flags().Bool("verbose", false,
+		"print intermediate vHTLC funding and sweep details")
 
 	return cmd
 }
@@ -103,6 +105,7 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 	defer cleanup()
 
 	amount, _ := cmd.Flags().GetInt64("amount")
+	verbose, _ := cmd.Flags().GetBool("verbose")
 
 	ctx := context.Background()
 
@@ -122,9 +125,28 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 		session.Preimage[:],
 	)
 
-	result, err := session.Wait(ctx)
+	if verbose {
+		if err := printReceiveVerboseStart(
+			cmd, amount, session,
+		); err != nil {
+			return err
+		}
+	}
+
+	outpoint, fundedAmount, err := session.WaitForFunding(ctx)
 	if err != nil {
 		return fmt.Errorf("receive wait failed: %w", err)
+	}
+
+	if verbose {
+		printReceiveVerboseFunding(
+			cmd, outpoint, fundedAmount, session,
+		)
+	}
+
+	result, err := session.Claim(ctx, outpoint, fundedAmount)
+	if err != nil {
+		return fmt.Errorf("receive claim failed: %w", err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(),
@@ -135,6 +157,47 @@ func swapReceive(cmd *cobra.Command, _ []string) error {
 	)
 
 	return nil
+}
+
+// printReceiveVerboseStart prints the expected incoming vHTLC scripts for one
+// receive flow before funding is observed.
+func printReceiveVerboseStart(cmd *cobra.Command, amount int64,
+	session *swaps.ReceiveSession) error {
+
+	info, err := session.VHTLCInfo()
+	if err != nil {
+		return fmt.Errorf("describe receive vhtlc: %w", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"\nIncoming vHTLC\n"+
+			"  amount:        %d sat\n"+
+			"  output script: %x\n"+
+			"  claim script:  %x\n"+
+			"  waiting for:   funding via paid invoice\n",
+		amount,
+		info.PkScript,
+		info.ClaimScript,
+	)
+
+	return nil
+}
+
+// printReceiveVerboseFunding prints the funded vHTLC acceptance and the
+// upcoming preimage sweep step.
+func printReceiveVerboseFunding(cmd *cobra.Command, outpoint string,
+	amount int64, session *swaps.ReceiveSession) {
+
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"\nAccepted incoming vHTLC\n"+
+			"  outpoint: %s\n"+
+			"  amount:   %d sat\n"+
+			"\nSweeping vHTLC\n"+
+			"  preimage: %x\n",
+		outpoint,
+		amount,
+		session.Preimage[:],
+	)
 }
 
 // swapPay executes the swap pay command.
