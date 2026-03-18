@@ -270,7 +270,12 @@ func (s *Server) run(ctx context.Context,
 	// -------------------------------------------------------
 	// Create a log handler writing to stdout. The SubLoggerManager
 	// manages per-subsystem loggers and supports runtime level changes.
-	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	logWriter := s.cfg.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stdout
+	}
+
+	logHandler := btclog.NewDefaultHandler(logWriter)
 	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
 
 	// Register all package-level loggers with the manager. This

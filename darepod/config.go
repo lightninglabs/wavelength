@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,6 +85,10 @@ type Config struct {
 	// the list (without a '=') sets the default for unlisted subsystems.
 	// Valid levels: trace, debug, info, warn, error, critical, off.
 	DebugLevel string `mapstructure:"debuglevel"`
+
+	// LogWriter is the sink for daemon log output. When nil, darepod
+	// writes logs to stdout.
+	LogWriter io.Writer
 
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
