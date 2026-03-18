@@ -205,11 +205,18 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 			err)
 	}
 
+	// The caller context only scopes registration setup. Keep the delivery
+	// forwarder alive until the registration itself is cancelled so
+	// confirmations are not dropped when the originating actor request
+	// context is released.
+	notifyCtx, cancel := context.WithCancel(context.Background())
+
 	// Create a channel to convert lnd's TxConfirmation to our type.
 	confChan := make(chan *chainsource.TxConfirmation, 1)
 
 	go func() {
 		defer close(confChan)
+		defer cancel()
 		defer event.Cancel()
 
 		select {
@@ -228,14 +235,17 @@ func (b *LNDBackend) RegisterConf(ctx context.Context,
 
 			confChan <- conf
 
-		case <-ctx.Done():
+		case <-notifyCtx.Done():
 			return
 		}
 	}()
 
 	return &chainsource.ConfRegistration{
 		Confirmed: confChan,
-		Cancel:    event.Cancel,
+		Cancel: func() {
+			cancel()
+			event.Cancel()
+		},
 	}, nil
 }
 
@@ -258,12 +268,16 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 		return nil, fmt.Errorf("failed to register spend: %w", err)
 	}
 
+	// Keep spend delivery alive independently of the actor request context.
+	notifyCtx, cancel := context.WithCancel(context.Background())
+
 	// Create a channel to convert lnd's SpendDetail to our type.
 	spendChan := make(chan *chainsource.SpendDetail, 1)
 
 	// Start a goroutine to convert and forward the spend.
 	go func() {
 		defer close(spendChan)
+		defer cancel()
 		defer event.Cancel()
 
 		select {
@@ -283,14 +297,17 @@ func (b *LNDBackend) RegisterSpend(ctx context.Context,
 
 			spendChan <- spend
 
-		case <-ctx.Done():
+		case <-notifyCtx.Done():
 			return
 		}
 	}()
 
 	return &chainsource.SpendRegistration{
-		Spend:  spendChan,
-		Cancel: event.Cancel,
+		Spend: spendChan,
+		Cancel: func() {
+			cancel()
+			event.Cancel()
+		},
 	}, nil
 }
 
