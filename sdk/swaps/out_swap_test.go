@@ -56,6 +56,7 @@ type testDaemonConn struct {
 	vhtlc          *VTXOInfo
 	receiveScript  []byte
 	sendSessionID  string
+	spentPreimage  *lntypes.Preimage
 	lastClaimInput []CustomInput
 }
 
@@ -63,7 +64,7 @@ type testDaemonConn struct {
 func (d *testDaemonConn) SendOOR(context.Context, []byte, int64) (string,
 	error) {
 
-	return "", nil
+	return d.sendSessionID, nil
 }
 
 // SendOORWithCustomInputs records the claim request.
@@ -99,6 +100,13 @@ func (d *testDaemonConn) FindLiveVTXOByPkScript(context.Context,
 	[]byte) (*VTXOInfo, error) {
 
 	return d.vhtlc, nil
+}
+
+// GetSpentVTXOPreimage is unused in these tests.
+func (d *testDaemonConn) GetSpentVTXOPreimage(context.Context,
+	lntypes.Hash, []byte) (*lntypes.Preimage, error) {
+
+	return d.spentPreimage, nil
 }
 
 // NewOORReceiveScript returns the configured receive script.

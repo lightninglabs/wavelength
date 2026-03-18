@@ -24,6 +24,7 @@ const (
 	IndexerService_UnregisterReceiveScript_FullMethodName        = "/arkrpc.IndexerService/UnregisterReceiveScript"
 	IndexerService_ListOORRecipientEventsByScript_FullMethodName = "/arkrpc.IndexerService/ListOORRecipientEventsByScript"
 	IndexerService_ListVTXOsByScripts_FullMethodName             = "/arkrpc.IndexerService/ListVTXOsByScripts"
+	IndexerService_GetOORSessionByTxid_FullMethodName            = "/arkrpc.IndexerService/GetOORSessionByTxid"
 	IndexerService_GetSubtreeByScripts_FullMethodName            = "/arkrpc.IndexerService/GetSubtreeByScripts"
 	IndexerService_ListVTXOEventsByScripts_FullMethodName        = "/arkrpc.IndexerService/ListVTXOEventsByScripts"
 )
@@ -55,6 +56,10 @@ type IndexerServiceClient interface {
 	//
 	// This is the primary "wallet inventory" query surface.
 	ListVTXOsByScripts(ctx context.Context, in *ListVTXOsByScriptsRequest, opts ...grpc.CallOption) (*ListVTXOsByScriptsResponse, error)
+	// GetOORSessionByTxid returns the Ark package and finalized checkpoint
+	// PSBTs for an OOR session identified by its deterministic txid, gated by
+	// proof-of-control for a script that the session consumed.
+	GetOORSessionByTxid(ctx context.Context, in *GetOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetOORSessionByTxidResponse, error)
 	// GetSubtreeByScripts returns a minimal spanning subtree containing all
 	// VTXO leaves matching the provided scripts and the intermediate nodes
 	// needed to connect them.
@@ -128,6 +133,16 @@ func (c *indexerServiceClient) ListVTXOsByScripts(ctx context.Context, in *ListV
 	return out, nil
 }
 
+func (c *indexerServiceClient) GetOORSessionByTxid(ctx context.Context, in *GetOORSessionByTxidRequest, opts ...grpc.CallOption) (*GetOORSessionByTxidResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetOORSessionByTxidResponse)
+	err := c.cc.Invoke(ctx, IndexerService_GetOORSessionByTxid_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *indexerServiceClient) GetSubtreeByScripts(ctx context.Context, in *GetSubtreeByScriptsRequest, opts ...grpc.CallOption) (*GetSubtreeByScriptsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetSubtreeByScriptsResponse)
@@ -175,6 +190,10 @@ type IndexerServiceServer interface {
 	//
 	// This is the primary "wallet inventory" query surface.
 	ListVTXOsByScripts(context.Context, *ListVTXOsByScriptsRequest) (*ListVTXOsByScriptsResponse, error)
+	// GetOORSessionByTxid returns the Ark package and finalized checkpoint
+	// PSBTs for an OOR session identified by its deterministic txid, gated by
+	// proof-of-control for a script that the session consumed.
+	GetOORSessionByTxid(context.Context, *GetOORSessionByTxidRequest) (*GetOORSessionByTxidResponse, error)
 	// GetSubtreeByScripts returns a minimal spanning subtree containing all
 	// VTXO leaves matching the provided scripts and the intermediate nodes
 	// needed to connect them.
@@ -212,6 +231,9 @@ func (UnimplementedIndexerServiceServer) ListOORRecipientEventsByScript(context.
 }
 func (UnimplementedIndexerServiceServer) ListVTXOsByScripts(context.Context, *ListVTXOsByScriptsRequest) (*ListVTXOsByScriptsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListVTXOsByScripts not implemented")
+}
+func (UnimplementedIndexerServiceServer) GetOORSessionByTxid(context.Context, *GetOORSessionByTxidRequest) (*GetOORSessionByTxidResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetOORSessionByTxid not implemented")
 }
 func (UnimplementedIndexerServiceServer) GetSubtreeByScripts(context.Context, *GetSubtreeByScriptsRequest) (*GetSubtreeByScriptsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetSubtreeByScripts not implemented")
@@ -330,6 +352,24 @@ func _IndexerService_ListVTXOsByScripts_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IndexerService_GetOORSessionByTxid_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetOORSessionByTxidRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IndexerServiceServer).GetOORSessionByTxid(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IndexerService_GetOORSessionByTxid_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IndexerServiceServer).GetOORSessionByTxid(ctx, req.(*GetOORSessionByTxidRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _IndexerService_GetSubtreeByScripts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetSubtreeByScriptsRequest)
 	if err := dec(in); err != nil {
@@ -392,6 +432,10 @@ var IndexerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListVTXOsByScripts",
 			Handler:    _IndexerService_ListVTXOsByScripts_Handler,
+		},
+		{
+			MethodName: "GetOORSessionByTxid",
+			Handler:    _IndexerService_GetOORSessionByTxid_Handler,
 		},
 		{
 			MethodName: "GetSubtreeByScripts",

@@ -230,8 +230,10 @@ func swapPay(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"Payment hash: %s\n"+
+			"Preimage: %x\n"+
 			"Fee: %d sat\n",
 		hex.EncodeToString(result.PaymentHash[:]),
+		result.Preimage[:],
 		result.FeeSat,
 	)
 

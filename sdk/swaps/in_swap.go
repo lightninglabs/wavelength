@@ -9,6 +9,7 @@ import (
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/lib/arkscript"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 // PayViaLightning performs a complete Ark-to-Lightning swap in a
@@ -114,8 +115,18 @@ func (c *SwapClient) PayViaLightning(ctx context.Context,
 		btclog.Hex("hash", cfg.PaymentHash[:]),
 	)
 
+	preimage, err := c.waitForSpentVTXOPreimage(
+		ctx, cfg.PaymentHash, vhtlcPkScript, cfg.Expiry,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"wait for spent vhtlc preimage: %w", err,
+		)
+	}
+
 	return &PayResult{
 		PaymentHash:      cfg.PaymentHash,
+		Preimage:         *preimage,
 		FundingSessionID: txid,
 		FeeSat:           cfg.FeeSat,
 	}, nil
@@ -163,6 +174,39 @@ func (c *SwapClient) waitForVHTLCSpent(ctx context.Context,
 
 			if !found {
 				return nil
+			}
+		}
+	}
+}
+
+// waitForSpentVTXOPreimage polls until the daemon can recover the preimage
+// from the OOR package that consumed the spent vHTLC.
+func (c *SwapClient) waitForSpentVTXOPreimage(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte,
+	expiry time.Time) (*lntypes.Preimage, error) {
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+
+		case <-ticker.C:
+			if time.Now().After(expiry) {
+				return nil, fmt.Errorf("swap expired")
+			}
+
+			preimage, err := c.daemon.GetSpentVTXOPreimage(
+				ctx, paymentHash, pkScript,
+			)
+			if err != nil {
+				continue
+			}
+
+			if preimage != nil {
+				return preimage, nil
 			}
 		}
 	}

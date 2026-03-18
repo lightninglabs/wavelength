@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 // RPCDaemonConn implements DaemonConn by wrapping the daemon and
@@ -235,6 +236,69 @@ func (r *RPCDaemonConn) FindLiveVTXOByPkScript(ctx context.Context,
 		AmountSat: int64(vtxo.GetValueSat()),
 		PkScript:  append([]byte(nil), vtxo.GetPkScript()...),
 	}, nil
+}
+
+// GetSpentVTXOPreimage returns the preimage from the OOR package that
+// consumed the spent VHTLC matching the given script, when available.
+func (r *RPCDaemonConn) GetSpentVTXOPreimage(ctx context.Context,
+	paymentHash lntypes.Hash, pkScript []byte) (*lntypes.Preimage, error) {
+
+	resp, err := r.indexer.ListVTXOsByScripts(
+		ctx, &arkrpc.ListVTXOsByScriptsRequest{
+			Scripts: []*arkrpc.ScriptScope{{
+				PkScript: pkScript,
+			}},
+			StatusFilter: []arkrpc.VTXOStatus{
+				arkrpc.VTXOStatus_VTXO_STATUS_SPENT,
+			},
+			Limit: 1,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"indexer ListVTXOsByScripts (spent): %w", err,
+		)
+	}
+
+	if len(resp.GetVtxos()) == 0 {
+		return nil, nil
+	}
+
+	vtxo := resp.GetVtxos()[0]
+	if len(vtxo.GetSpentByTxid()) == 0 {
+		return nil, nil
+	}
+
+	sessionResp, err := r.indexer.GetOORSessionByTxid(
+		ctx, &arkrpc.GetOORSessionByTxidRequest{
+			Script: &arkrpc.ScriptScope{
+				PkScript: pkScript,
+			},
+			SessionTxid: append(
+				[]byte(nil), vtxo.GetSpentByTxid()...,
+			),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"indexer GetOORSessionByTxid: %w", err,
+		)
+	}
+
+	for _, cpPSBT := range sessionResp.GetCheckpointPsbts() {
+		preimage, err := extractPreimageFromCheckpoint(cpPSBT)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"extract preimage from checkpoint: %w", err,
+			)
+		}
+
+		if preimageMatchesHash(preimage, paymentHash) {
+			return preimage, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // NewOORReceiveScript allocates a fresh OOR receive script from the

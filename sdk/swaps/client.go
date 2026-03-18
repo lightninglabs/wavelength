@@ -49,6 +49,10 @@ type PayResult struct {
 	// invoice.
 	PaymentHash lntypes.Hash
 
+	// Preimage is the preimage used by the server to claim the funded
+	// vHTLC after paying the Lightning invoice.
+	Preimage lntypes.Preimage
+
 	// FundingSessionID is the OOR session identifier returned by the daemon
 	// when the vHTLC funding transfer is submitted.
 	FundingSessionID string
@@ -200,6 +204,13 @@ type DaemonConn interface {
 	FindLiveVTXOByPkScript(
 		ctx context.Context, pkScript []byte,
 	) (*VTXOInfo, error)
+
+	// GetSpentVTXOPreimage returns the preimage from the OOR package that
+	// consumed the spent VHTLC matching the given script, when available.
+	GetSpentVTXOPreimage(
+		ctx context.Context, paymentHash lntypes.Hash,
+		pkScript []byte,
+	) (*lntypes.Preimage, error)
 
 	// NewOORReceiveScript allocates a fresh OOR receive script.
 	NewOORReceiveScript(

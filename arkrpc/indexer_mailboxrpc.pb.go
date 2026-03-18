@@ -34,6 +34,8 @@ type IndexerServiceMailboxServer interface {
 	ListOORRecipientEventsByScript(ctx context.Context, req *ListOORRecipientEventsByScriptRequest) (*ListOORRecipientEventsByScriptResponse, error)
 	// ListVTXOsByScripts handles ListVTXOsByScripts.
 	ListVTXOsByScripts(ctx context.Context, req *ListVTXOsByScriptsRequest) (*ListVTXOsByScriptsResponse, error)
+	// GetOORSessionByTxid handles GetOORSessionByTxid.
+	GetOORSessionByTxid(ctx context.Context, req *GetOORSessionByTxidRequest) (*GetOORSessionByTxidResponse, error)
 	// GetSubtreeByScripts handles GetSubtreeByScripts.
 	GetSubtreeByScripts(ctx context.Context, req *GetSubtreeByScriptsRequest) (*GetSubtreeByScriptsResponse, error)
 	// ListVTXOEventsByScripts handles ListVTXOEventsByScripts.
@@ -91,6 +93,16 @@ func RegisterIndexerServiceMailboxServer(r rpc.Router, impl IndexerServiceMailbo
 		}
 
 		return impl.ListVTXOsByScripts(ctx, req)
+	})
+	r.Handle("arkrpc.IndexerService", "GetOORSessionByTxid", func() proto.Message {
+		return &GetOORSessionByTxidRequest{}
+	}, func(ctx context.Context, msg proto.Message) (proto.Message, error) {
+		req, ok := msg.(*GetOORSessionByTxidRequest)
+		if !ok {
+			return nil, fmt.Errorf("unexpected request type: %T", msg)
+		}
+
+		return impl.GetOORSessionByTxid(ctx, req)
 	})
 	r.Handle("arkrpc.IndexerService", "GetSubtreeByScripts", func() proto.Message {
 		return &GetSubtreeByScriptsRequest{}
@@ -222,6 +234,29 @@ func (c *IndexerServiceMailboxClient) ListVTXOsByScripts(ctx context.Context, re
 	}
 
 	resp := new(ListVTXOsByScriptsResponse)
+	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+// GetOORSessionByTxid calls the GetOORSessionByTxid RPC.
+func (c *IndexerServiceMailboxClient) GetOORSessionByTxid(ctx context.Context, req *GetOORSessionByTxidRequest, opts ...rpc.RPCOptions) (*GetOORSessionByTxidResponse, error) {
+	var opt rpc.RPCOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	result, err := c.C.SendRPC(ctx, rpc.ServiceMethod{
+		Service: "arkrpc.IndexerService",
+		Method:  "GetOORSessionByTxid",
+	}, req, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := new(GetOORSessionByTxidResponse)
 	if err := c.C.AwaitRPC(ctx, result.CorrelationID, resp); err != nil {
 		return nil, err
 	}
