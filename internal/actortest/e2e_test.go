@@ -172,6 +172,18 @@ func eventuallyWithOutboxPublish(
 // delivery assertions in this test suite.
 const durableAskResponseTimeout = 10 * time.Second
 
+// outboxForwardProcessingTimeout is the timeout budget for waiting on the
+// source actor to durably process a forward request before any outbox delivery
+// assertions. This is intentionally looser than basic actor assertions because
+// these end-to-end tests run with real SQLite persistence and under `-race` in
+// CI.
+const outboxForwardProcessingTimeout = 5 * time.Second
+
+// outboxDeliveryTimeout is the timeout budget for waiting on OutboxPublisher
+// delivery in end-to-end tests. The helper actively triggers publish attempts
+// during this window to reduce scheduler-induced flakiness under `-race`.
+const outboxDeliveryTimeout = 10 * time.Second
+
 // durableCounterRef is a shorthand alias for the generic durable ref used in
 // these end-to-end tests.
 type durableCounterRef = actor.DurableActorRef[CounterMessage, CounterResult]
@@ -388,14 +400,17 @@ func TestOutboxPublisher_DeliversToTarget(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for source to process the forward.
-	eventually(t, 2*time.Second, func() bool {
+	eventually(t, outboxForwardProcessingTimeout, func() bool {
 		return sourceBehavior.ForwardCount() == 1
 	})
 
 	// Wait for target to receive the increment via OutboxPublisher.
-	eventually(t, 5*time.Second, func() bool {
-		return targetBehavior.Count() == 25
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, outboxDeliveryTimeout,
+		func() bool {
+			return targetBehavior.Count() == 25
+		},
+	)
 
 	require.Equal(t, int64(25), targetBehavior.Count())
 }
@@ -455,19 +470,25 @@ func TestOutboxPublisher_MultiHopForwarding(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for A to process.
-	eventually(t, 2*time.Second, func() bool {
+	eventually(t, outboxForwardProcessingTimeout, func() bool {
 		return behaviorA.ForwardCount() == 1
 	})
 
 	// Wait for B to process (receives forward, writes to outbox).
-	eventually(t, 5*time.Second, func() bool {
-		return behaviorB.ForwardCount() == 1
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, outboxDeliveryTimeout,
+		func() bool {
+			return behaviorB.ForwardCount() == 1
+		},
+	)
 
 	// Wait for C to receive the increment.
-	eventually(t, 5*time.Second, func() bool {
-		return behaviorC.Count() == 100
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, outboxDeliveryTimeout,
+		func() bool {
+			return behaviorC.Count() == 100
+		},
+	)
 
 	require.Equal(t, int64(100), behaviorC.Count())
 }
@@ -758,14 +779,17 @@ func TestProperty_OutboxEventuallyDelivers(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for source to process.
-	eventually(t, 2*time.Second, func() bool {
+	eventually(t, outboxForwardProcessingTimeout, func() bool {
 		return sourceBehavior.ForwardCount() == 1
 	})
 
 	// Wait for target to receive.
-	eventually(t, 5*time.Second, func() bool {
-		return targetBehavior.Count() == amount
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, outboxDeliveryTimeout,
+		func() bool {
+			return targetBehavior.Count() == amount
+		},
+	)
 
 	require.Equal(t, amount, targetBehavior.Count())
 }
