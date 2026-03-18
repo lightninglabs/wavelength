@@ -3,6 +3,7 @@
 set -eu
 
 dest="${1:?usage: local-custom-gcl.sh <dest>}"
+script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 
 mkdir -p "$(dirname "$dest")"
 
@@ -12,14 +13,34 @@ if command -v custom-gcl >/dev/null 2>&1; then
 	exit 0
 fi
 
+if [ -x "$dest" ]; then
+	echo "Using local linter binary: $dest"
+	exit 0
+fi
+
 if command -v go >/dev/null 2>&1; then
+	if "$script_dir/install-custom-gcl.sh" "$dest"; then
+		echo "Built native custom-gcl: $dest"
+		exit 0
+	fi
+
 	cat >"$dest" <<'EOF'
 #!/bin/sh
 
 set -eu
 
+repo_root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
+config_file="$repo_root/tools/.custom-gcl.yml"
+gcl_version=""
+
+if [ -f "$config_file" ]; then
+	gcl_version=$(sed -n 's/^version:[[:space:]]*//p' "$config_file" | head -n 1)
+fi
+
+gcl_version=${gcl_version:-v1.64.5}
+
 run_golangci() {
-	exec go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5 "$@"
+	exec go run "github.com/golangci/golangci-lint/cmd/golangci-lint@${gcl_version}" "$@"
 }
 
 if [ "${1:-}" = "run" ]; then
@@ -67,11 +88,6 @@ EOF
 	chmod +x "$dest"
 	echo "custom-gcl not found; using golangci-lint v1.64.5 fallback"
 	echo "(custom linter plugin 'll' is disabled in local mode)."
-	exit 0
-fi
-
-if [ -x "$dest" ]; then
-	echo "Using local linter binary: $dest"
 	exit 0
 fi
 

@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local local-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
@@ -181,6 +181,9 @@ docker-tools:
 
 local-custom-gcl:
 	@./scripts/local-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
+
+install-custom-gcl: #? Build and install a native custom-gcl binary to dest=<path> (default: ./tools/custom-gcl)
+	@./scripts/install-custom-gcl.sh "$(if $(dest),$(dest),$(LOCAL_CUSTOM_GCL))"
 
 lint-source: docker-tools
 	@$(call print, "Linting source.")
