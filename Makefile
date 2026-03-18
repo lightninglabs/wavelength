@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-changed docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
@@ -74,6 +74,7 @@ endif
 
 # Keep this in sync with run.build-tags in .golangci.yml.
 LINT_BUILD_TAGS := test_postgres,test_sqlite
+LOCAL_CUSTOM_GCL := $(CURDIR)/$(TOOLS_DIR)/custom-gcl
 
 # Default base ref for linting only changes.
 LINT_BASE := $(if $(base),$(base),origin/master)
@@ -178,38 +179,34 @@ docker-tools:
 	@$(call print, "Building tools docker image.")
 	docker build -q -t darepo-tools $(TOOLS_DIR)
 
+local-custom-gcl:
+	@./scripts/local-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
+
+install-custom-gcl: #? Build and install a native custom-gcl binary to dest=<path> (default: ./tools/custom-gcl)
+	@./scripts/install-custom-gcl.sh "$(if $(dest),$(dest),$(LOCAL_CUSTOM_GCL))"
+
 lint-source: docker-tools
 	@$(call print, "Linting source.")
 	$(DOCKER_TOOLS) custom-gcl run -v $(LINT_WORKERS)
 	@$(call print, "Linting tag-guarded packages.")
-	$(DOCKER_TOOLS) sh -ec '\
-		base_pkgs=$$(mktemp); \
-		tagged_pkgs=$$(mktemp); \
-		guarded_tags=$$(mktemp); \
-		trap "rm -f $$base_pkgs $$tagged_pkgs $$guarded_tags" EXIT; \
-		go list ./... | sort -u > $$base_pkgs; \
-		find . -name "*.go" \
-			-not -path "./client/*" \
-			-not -path "./vendor/*" \
-			-not -path "./db/sqlc/*" \
-			-exec sed -n "s#^//go:build[[:space:]][[:space:]]*##p" {} + | \
-			tr "&|!()" "     " | tr "\t" " " | tr " " "\n" | \
-			grep -E "^[A-Za-z_][A-Za-z0-9_]*$$" | sort -u > $$guarded_tags; \
-		while IFS= read -r tag; do \
-			[ -z "$$tag" ] && continue; \
-			go list -tags "$$tag" ./... | sort -u > $$tagged_pkgs; \
-			extra_pkgs=$$(comm -13 $$base_pkgs $$tagged_pkgs); \
-			[ -z "$$extra_pkgs" ] && continue; \
-			pkg_patterns=$$(printf "%s\n" "$$extra_pkgs" | \
-				sed "s#^$(PKG)/#./#;s#^$(PKG)#.#"); \
-			echo "Linting tag=$$tag for packages:"; \
-			echo "$$pkg_patterns"; \
-			custom-gcl run -v $(LINT_WORKERS) \
-				--build-tags "$$tag,$(LINT_BUILD_TAGS)" \
-				$$pkg_patterns; \
-		done < $$guarded_tags'
+	$(DOCKER_TOOLS) env \
+		LINTER_BIN=custom-gcl \
+		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
+		LINT_CONCURRENCY="$(workers)" \
+		./scripts/lint_tag_guarded_pkgs.sh
+
+lint-source-local: local-custom-gcl
+	@$(call print, "Linting source locally (no Docker).")
+	$(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS)
+	@$(call print, "Linting tag-guarded packages locally.")
+	LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
+		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
+		LINT_CONCURRENCY="$(workers)" \
+		./scripts/lint_tag_guarded_pkgs.sh
 
 lint: check-go-version lint-source #? Run static code analysis
+
+lint-local: check-go-version lint-source-local #? Run static code analysis locally (no Docker)
 
 lint-changed: check-go-version docker-tools #? Run static code analysis only for changes against base=<ref> (default: origin/master)
 	@$(call print, "Linting source changes against $(LINT_BASE).")
@@ -217,34 +214,28 @@ lint-changed: check-go-version docker-tools #? Run static code analysis only for
 		--new-from-merge-base=$(LINT_BASE) \
 		--whole-files
 	@$(call print, "Linting source changes in tag-guarded packages.")
-	$(DOCKER_TOOLS) sh -ec '\
-		base_pkgs=$$(mktemp); \
-		tagged_pkgs=$$(mktemp); \
-		guarded_tags=$$(mktemp); \
-		trap "rm -f $$base_pkgs $$tagged_pkgs $$guarded_tags" EXIT; \
-		go list ./... | sort -u > $$base_pkgs; \
-		find . -name "*.go" \
-			-not -path "./client/*" \
-			-not -path "./vendor/*" \
-			-not -path "./db/sqlc/*" \
-			-exec sed -n "s#^//go:build[[:space:]][[:space:]]*##p" {} + | \
-			tr "&|!()" "     " | tr "\t" " " | tr " " "\n" | \
-			grep -E "^[A-Za-z_][A-Za-z0-9_]*$$" | sort -u > $$guarded_tags; \
-		while IFS= read -r tag; do \
-			[ -z "$$tag" ] && continue; \
-			go list -tags "$$tag" ./... | sort -u > $$tagged_pkgs; \
-			extra_pkgs=$$(comm -13 $$base_pkgs $$tagged_pkgs); \
-			[ -z "$$extra_pkgs" ] && continue; \
-			pkg_patterns=$$(printf "%s\n" "$$extra_pkgs" | \
-				sed "s#^$(PKG)/#./#;s#^$(PKG)#.#"); \
-			echo "Linting changed files for tag=$$tag in packages:"; \
-			echo "$$pkg_patterns"; \
-			custom-gcl run -v --timeout=15m $(LINT_WORKERS) \
-				--build-tags "$$tag,$(LINT_BUILD_TAGS)" \
-				--new-from-merge-base=$(LINT_BASE) \
-				--whole-files \
-				$$pkg_patterns; \
-		done < $$guarded_tags'
+	$(DOCKER_TOOLS) env \
+		LINTER_BIN=custom-gcl \
+		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
+		LINT_CONCURRENCY="$(workers)" \
+		LINT_TIMEOUT=15m \
+		LINT_BASE="$(LINT_BASE)" \
+		LINT_WHOLE_FILES=1 \
+		./scripts/lint_tag_guarded_pkgs.sh
+
+lint-changed-local: check-go-version local-custom-gcl #? Run static code analysis on changes locally (no Docker)
+	@$(call print, "Linting source changes against $(LINT_BASE) locally.")
+	$(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
+		--new-from-merge-base=$(LINT_BASE) \
+		--whole-files
+	@$(call print, "Linting source changes in tag-guarded packages locally.")
+	LINTER_BIN="$(LOCAL_CUSTOM_GCL)" \
+		LINT_BUILD_TAGS="$(LINT_BUILD_TAGS)" \
+		LINT_CONCURRENCY="$(workers)" \
+		LINT_TIMEOUT=15m \
+		LINT_BASE="$(LINT_BASE)" \
+		LINT_WHOLE_FILES=1 \
+		./scripts/lint_tag_guarded_pkgs.sh
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'
