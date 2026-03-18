@@ -65,12 +65,12 @@ func TestHandleOutboxError(t *testing.T) {
 
 	// Nil event rejected: this is a programmer error and should not be
 	// treated as retryable.
-	_, err = handleOutboxError(nil, current, nil)
+	_, err = handleOutboxError(current, nil)
 	require.Error(t, err)
 
 	// Non-retryable error causes terminal failure. The state machine does
 	// not attempt to guess whether retry is safe.
-	transition, err := handleOutboxError(nil, current, &OutboxErrorEvent{
+	transition, err := handleOutboxError(current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   false,
 		ErrorReason: "boom",
@@ -82,7 +82,7 @@ func TestHandleOutboxError(t *testing.T) {
 	// Retryable error keeps the FSM in the current state and emits retry
 	// scheduling. The actor persists retry metadata alongside the real
 	// protocol state.
-	transition, err = handleOutboxError(nil, current, &OutboxErrorEvent{
+	transition, err = handleOutboxError(current, &OutboxErrorEvent{
 		OutboxType:  "x",
 		Retryable:   true,
 		RetryAfter:  0,

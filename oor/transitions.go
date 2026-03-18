@@ -173,7 +173,7 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleOutboxError(s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -248,7 +248,7 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleOutboxError(s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -325,7 +325,7 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleOutboxError(s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -366,7 +366,7 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleOutboxError(s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -396,7 +396,7 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 		}, nil
 
 	case *OutboxErrorEvent:
-		return handleOutboxError(env, s, evt)
+		return handleOutboxError(s, evt)
 
 	case *FailEvent:
 		return &StateTransition{
@@ -431,7 +431,7 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 
 // handleOutboxError emits retry scheduling for retryable errors while keeping
 // the FSM in the current protocol state.
-func handleOutboxError(env *Environment, current State,
+func handleOutboxError(current State,
 	evt *OutboxErrorEvent) (*StateTransition, error) {
 
 	if evt == nil {
