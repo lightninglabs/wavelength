@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 )
@@ -38,10 +37,6 @@ const (
 	// OutgoingPhaseLocalVTXOUpdate indicates the server accepted finalize
 	// and the client is updating its local VTXO persistence state.
 	OutgoingPhaseLocalVTXOUpdate OutgoingPhase = "local_vtxo_update"
-
-	// OutgoingPhaseRetryBackoff indicates the client is waiting to retry a
-	// previously failed outbox request.
-	OutgoingPhaseRetryBackoff OutgoingPhase = "retry_backoff"
 
 	// OutgoingPhaseCompleted indicates the transfer is fully complete.
 	OutgoingPhaseCompleted OutgoingPhase = "completed"
@@ -87,20 +82,11 @@ type OutgoingSnapshot struct {
 	// TransferInputs.
 	TransferInputSnapshots []*TransferInputSnapshot
 
-	// InputOutpoints are the VTXO outpoints consumed by this session.
-	//
-	// This is required to support crash-resilient local persistence
-	// after the server accepts finalize.
-	InputOutpoints []wire.OutPoint
-
-	// RetryAfter is the requested delay in retry backoff phases.
+	// RetryAfter is the requested delay for a pending retry, if any.
 	RetryAfter time.Duration
 
-	// ResumeSnapshot is the snapshot to restore after retry backoff.
-	ResumeSnapshot *OutgoingSnapshot
-
-	// FailReason is the terminal failure reason, when Phase is
-	// Failed.
+	// FailReason is the terminal failure reason when Phase is Failed. When
+	// RetryAfter is non-zero, it carries the pending retry reason.
 	FailReason string
 }
 
@@ -144,7 +130,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.TransferInputSnapshots = inputSnaps
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingSubmitAccepted:
 		// Snapshot the entire submit package because it is the
@@ -171,7 +156,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingCheckpointSignatures:
 		// This is the "point-of-no-return" state from the client's
@@ -196,7 +180,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 		if err != nil {
 			return nil, err
 		}
-		snap.InputOutpoints = s.InputOutpoints
 
 	case *AwaitingFinalizeAccepted:
 		// Once finalize is sent, the client should only need the
@@ -214,14 +197,20 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 			return nil, err
 		}
 		snap.CheckpointPSBTs = cps
-		snap.InputOutpoints = s.InputOutpoints
+		err = assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
+		}
 
 	case *AwaitingLocalVTXOUpdate:
 		// This phase is an off-chain bookkeeping step: after the server
 		// accepts finalize, the local wallet must update local state.
 		// That update reflects that the inputs are spent.
 		snap.Phase = OutgoingPhaseLocalVTXOUpdate
-		snap.InputOutpoints = s.InputOutpoints
+		err := assignTransferInputSnapshots(snap, s.TransferInputs)
+		if err != nil {
+			return nil, err
+		}
 
 	case *Completed:
 		// Completed is a terminal state. There is no outbox implied by
@@ -231,17 +220,6 @@ func NewOutgoingSnapshot(sessionID SessionID, state State) (*OutgoingSnapshot,
 	case *Failed:
 		// Failed is terminal. Retrying is not attempted automatically.
 		snap.Phase = OutgoingPhaseFailed
-		snap.FailReason = s.Reason
-
-	case *RetryBackoff:
-		// RetryBackoff wraps another snapshot to support restart-safe
-		// retry.
-		// The intent is:
-		// 1) store the original "resume snapshot" that is safe to retry
-		// 2) store the requested delay and reason for UI/telemetry
-		snap.Phase = OutgoingPhaseRetryBackoff
-		snap.ResumeSnapshot = s.ResumeSnapshot
-		snap.RetryAfter = s.RetryAfter
 		snap.FailReason = s.Reason
 	default:
 		return nil, fmt.Errorf("unsupported outgoing state type: %T",
@@ -314,7 +292,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingArkSignatures{
-			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
@@ -339,7 +316,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 		}
 
 		return &AwaitingSubmitAccepted{
-			InputOutpoints:  snapshot.InputOutpoints,
 			ArkPSBT:         ark,
 			CheckpointPSBTs: cps,
 			TransferInputs:  inputs,
@@ -365,7 +341,6 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 
 		return &AwaitingCheckpointSignatures{
 			SessionID:               snapshot.SessionID,
-			InputOutpoints:          snapshot.InputOutpoints,
 			ArkPSBT:                 ark,
 			CoSignedCheckpointPSBTs: cps,
 			TransferInputs:          inputs,
@@ -384,37 +359,27 @@ func OutgoingStateFromSnapshot(snapshot *OutgoingSnapshot) (State, error) {
 			return nil, err
 		}
 
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
+		}
+
 		return &AwaitingFinalizeAccepted{
 			SessionID:            snapshot.SessionID,
-			InputOutpoints:       snapshot.InputOutpoints,
 			ArkPSBT:              ark,
 			FinalCheckpointPSBTs: cps,
+			TransferInputs:       inputs,
 		}, nil
 
 	case OutgoingPhaseLocalVTXOUpdate:
-		if len(snapshot.InputOutpoints) == 0 {
-			return nil, fmt.Errorf("input outpoints required")
+		inputs, err := restoreTransferInputs(snapshot)
+		if err != nil {
+			return nil, err
 		}
 
 		return &AwaitingLocalVTXOUpdate{
 			SessionID:      snapshot.SessionID,
-			InputOutpoints: snapshot.InputOutpoints,
-		}, nil
-
-	case OutgoingPhaseRetryBackoff:
-		if snapshot.ResumeSnapshot == nil {
-			return nil, fmt.Errorf("resume snapshot required")
-		}
-
-		after := snapshot.RetryAfter
-		if after == 0 {
-			after = 1 * time.Second
-		}
-
-		return &RetryBackoff{
-			ResumeSnapshot: snapshot.ResumeSnapshot,
-			RetryAfter:     after,
-			Reason:         snapshot.FailReason,
+			TransferInputs: inputs,
 		}, nil
 
 	case OutgoingPhaseCompleted:

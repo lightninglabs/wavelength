@@ -1,10 +1,7 @@
 package oor
 
 import (
-	"time"
-
 	"github.com/btcsuite/btcd/btcutil/psbt"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
 )
 
@@ -38,9 +35,6 @@ func (s *Idle) stateSealed() {}
 // AwaitingArkSignatures indicates the submit package has been built and the
 // client must attach Ark signatures before submit can be sent.
 type AwaitingArkSignatures struct {
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the canonical Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
@@ -71,13 +65,6 @@ type AwaitingSubmitAccepted struct {
 	// AwaitingSubmitAccepted is the crash-sensitive phase where a submit
 	// request may have been sent, while the client has not yet observed
 	// the server's co-sign response.
-
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	//
-	// The FSM carries these through to the terminal state so it can emit a
-	// crash-resilient local persistence step after the server accepts
-	// finalize.
-	InputOutpoints []wire.OutPoint
 
 	// ArkPSBT is the Ark tx PSBT for this session.
 	ArkPSBT *psbt.Packet
@@ -120,9 +107,6 @@ type AwaitingCheckpointSignatures struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the Ark tx PSBT, needed to finalize checkpoint metadata.
 	ArkPSBT *psbt.Packet
 
@@ -162,9 +146,6 @@ type AwaitingFinalizeAccepted struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
-
 	// ArkPSBT is the Ark tx PSBT.
 	ArkPSBT *psbt.Packet
 
@@ -174,6 +155,10 @@ type AwaitingFinalizeAccepted struct {
 	// These are persisted so resume/unilateral-exit paths can reconstruct
 	// checkpoint lineage without depending on a fresh server response.
 	FinalCheckpointPSBTs []*psbt.Packet
+
+	// TransferInputs carry the VTXO descriptors consumed by this session.
+	// The local bookkeeping phase derives spent outpoints from these.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingFinalizeAccepted.
@@ -190,40 +175,6 @@ func (s *AwaitingFinalizeAccepted) IsTerminal() bool {
 // interface.
 func (s *AwaitingFinalizeAccepted) stateSealed() {}
 
-// RetryBackoff indicates the client should wait before retrying the outbox
-// request implied by ResumeSnapshot.
-//
-// This state is intended to support retry/backoff without requiring durable
-// timers yet: the outbox boundary can implement ScheduleRetryRequest however it
-// wants (immediate in tests, time-based in apps).
-type RetryBackoff struct {
-	// RetryBackoff is a minimal "timer" state that models backoff without
-	// requiring a dedicated scheduler in the FSM runtime. A future durable
-	// actor runtime can replace this by persisting timers and wakeups.
-
-	// ResumeSnapshot captures the state to restore when the retry is due.
-	ResumeSnapshot *OutgoingSnapshot
-
-	// RetryAfter is the requested backoff delay.
-	RetryAfter time.Duration
-
-	// Reason is a human-readable error reason.
-	Reason string
-}
-
-// String returns a human-readable representation of RetryBackoff.
-func (s *RetryBackoff) String() string {
-	return "RetryBackoff"
-}
-
-// IsTerminal returns false as RetryBackoff is not terminal.
-func (s *RetryBackoff) IsTerminal() bool {
-	return false
-}
-
-// stateSealed marks RetryBackoff as implementing the sealed State interface.
-func (s *RetryBackoff) stateSealed() {}
-
 // AwaitingLocalVTXOUpdate indicates the server has accepted the finalize
 // package and the client must update its local VTXO persistence state.
 type AwaitingLocalVTXOUpdate struct {
@@ -234,8 +185,9 @@ type AwaitingLocalVTXOUpdate struct {
 	// SessionID is the stable session identifier (Ark txid).
 	SessionID SessionID
 
-	// InputOutpoints are the VTXO outpoints consumed by this OOR session.
-	InputOutpoints []wire.OutPoint
+	// TransferInputs carry the VTXO descriptors consumed by this session.
+	// The local persistence step derives spent outpoints from these.
+	TransferInputs []TransferInput
 }
 
 // String returns a human-readable representation of AwaitingLocalVTXOUpdate.

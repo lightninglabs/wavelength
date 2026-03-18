@@ -26,6 +26,16 @@ type TransferInput struct {
 	OwnerLeafScript []byte
 }
 
+// InputOutpoints returns the VTXO outpoints for the transfer inputs.
+func InputOutpoints(inputs []TransferInput) []wire.OutPoint {
+	outpoints := make([]wire.OutPoint, 0, len(inputs))
+	for i := range inputs {
+		outpoints = append(outpoints, inputs[i].VTXO.Outpoint)
+	}
+
+	return outpoints
+}
+
 // Validate performs basic structural validation.
 func (i *TransferInput) Validate() error {
 	switch {

@@ -23,9 +23,7 @@ const (
 	snapshotArkPSBTRecordType         tlv.Type = 7
 	snapshotCheckpointPSBTsRecordType tlv.Type = 9
 	snapshotTransferInputsRecordType  tlv.Type = 11
-	snapshotInputOutpointsRecordType  tlv.Type = 13
 	snapshotRetryAfterNanosRecordType tlv.Type = 15
-	snapshotResumeSnapshotRecordType  tlv.Type = 17
 	snapshotFailReasonRecordType      tlv.Type = 19
 )
 
@@ -221,23 +219,8 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 		return nil, err
 	}
 
-	outpointsRaw, err := encodeOutpoints(snapshot.InputOutpoints)
-	if err != nil {
-		return nil, err
-	}
-
 	retryAfterNanos := uint64(snapshot.RetryAfter)
 	failReason := []byte(snapshot.FailReason)
-
-	var resumeSnapshot []byte
-	if snapshot.ResumeSnapshot != nil {
-		resumeSnapshot, err = encodeOutgoingSnapshot(
-			snapshot.ResumeSnapshot,
-		)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	version := uint64(snapshot.Version)
 	records := []tlv.Record{
@@ -254,13 +237,7 @@ func encodeOutgoingSnapshot(snapshot *OutgoingSnapshot) ([]byte, error) {
 			snapshotTransferInputsRecordType, &inputSnapshots,
 		),
 		tlv.MakePrimitiveRecord(
-			snapshotInputOutpointsRecordType, &outpointsRaw,
-		),
-		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshot,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReason,
@@ -288,9 +265,7 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		arkPSBT            []byte
 		checkpointPSBTsRaw []byte
 		inputSnapshotsRaw  []byte
-		outpointsRaw       []byte
 		retryAfterNanos    uint64
-		resumeSnapshotRaw  []byte
 		failReasonRaw      []byte
 	)
 
@@ -308,13 +283,7 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 			snapshotTransferInputsRecordType, &inputSnapshotsRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			snapshotInputOutpointsRecordType, &outpointsRaw,
-		),
-		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,
@@ -352,24 +321,8 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		inputSnapshots = nil
 	}
 
-	outpoints, err := decodeOutpoints(outpointsRaw)
-	if err != nil {
-		return nil, err
-	}
-	if len(outpoints) == 0 {
-		outpoints = nil
-	}
-
 	if len(arkPSBT) == 0 {
 		arkPSBT = nil
-	}
-
-	var resumeSnapshot *OutgoingSnapshot
-	if len(resumeSnapshotRaw) != 0 {
-		resumeSnapshot, err = decodeOutgoingSnapshot(resumeSnapshotRaw)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	decodedVersion, err := decodeUint64ToUint8(version, "snapshot version")
@@ -391,9 +344,7 @@ func decodeOutgoingSnapshot(raw []byte) (*OutgoingSnapshot, error) {
 		ArkPSBT:                arkPSBT,
 		CheckpointPSBTs:        checkpointPSBTs,
 		TransferInputSnapshots: inputSnapshots,
-		InputOutpoints:         outpoints,
 		RetryAfter:             decodedRetryAfter,
-		ResumeSnapshot:         resumeSnapshot,
 		FailReason:             string(failReasonRaw),
 	}, nil
 }
@@ -405,25 +356,6 @@ func encodeOutpoints(outpoints []wire.OutPoint) ([]byte, error) {
 	}
 
 	return encodeLengthPrefixedBlobList(blobs)
-}
-
-func decodeOutpoints(raw []byte) ([]wire.OutPoint, error) {
-	blobs, err := decodeLengthPrefixedBlobList(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	outpoints := make([]wire.OutPoint, 0, len(blobs))
-	for i := range blobs {
-		outpoint, err := parseOutPointBytes(blobs[i])
-		if err != nil {
-			return nil, err
-		}
-
-		outpoints = append(outpoints, outpoint)
-	}
-
-	return outpoints, nil
 }
 
 func decodeUint64ToUint8(value uint64, field string) (uint8, error) {

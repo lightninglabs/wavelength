@@ -397,7 +397,7 @@ func (m *SendIncomingAckRequest) ToProto() fn.Result[proto.Message] {
 	)
 }
 
-// ScheduleRetryRequest asks the runtime to deliver a RetryDueEvent after the
+// ScheduleRetryRequest asks the runtime to resume the session after the
 // requested delay.
 type ScheduleRetryRequest struct {
 	actor.BaseMessage

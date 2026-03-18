@@ -145,27 +145,6 @@ func TestDriveEventRequestRoundTripSubmitAcceptedEvent(t *testing.T) {
 	require.Equal(t, chainhash.Hash(sessionID), decodedTxID)
 }
 
-// TestDriveEventRequestRoundTripRetryDueEvent asserts DriveEventRequest TLV
-// Encode/Decode round-trips RetryDueEvent correctly.
-func TestDriveEventRequestRoundTripRetryDueEvent(t *testing.T) {
-	t.Parallel()
-
-	sessionID := SessionID(chainhash.Hash{3, 3, 3})
-	msg := &DriveEventRequest{
-		SessionID: sessionID,
-		Event:     &RetryDueEvent{},
-	}
-
-	var buf bytes.Buffer
-	require.NoError(t, msg.Encode(&buf))
-
-	decoded := &DriveEventRequest{}
-	require.NoError(t, decoded.Decode(&buf))
-
-	require.Equal(t, sessionID, decoded.SessionID)
-	require.IsType(t, &RetryDueEvent{}, decoded.Event)
-}
-
 // TestDriveEventRequestRoundTripIncomingTransferEvent asserts
 // DriveEventRequest TLV Encode/Decode round-trips IncomingTransferEvent
 // correctly.

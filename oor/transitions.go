@@ -8,7 +8,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -61,16 +60,12 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 				"provided")
 		}
 
-		inputOutpoints := make([]wire.OutPoint, 0, len(evt.VTXOInputs))
 		for i := range evt.VTXOInputs {
 			if evt.VTXOInputs[i].VTXO == nil {
 				return nil, fmt.Errorf(
 					"checkpoint input vtxo required",
 				)
 			}
-			inputOutpoints = append(
-				inputOutpoints, evt.VTXOInputs[i].VTXO.Outpoint,
-			)
 		}
 
 		// If the FSM environment is already bound to a stable session
@@ -100,7 +95,6 @@ func (s *Idle) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingArkSignatures{
-				InputOutpoints:  inputOutpoints,
 				ArkPSBT:         ark,
 				CheckpointPSBTs: checkpoints,
 				TransferInputs:  evt.VTXOInputs,
@@ -167,7 +161,6 @@ func (s *AwaitingArkSignatures) ProcessEvent(ctx context.Context, event Event,
 
 		return &StateTransition{
 			NextState: &AwaitingSubmitAccepted{
-				InputOutpoints:  s.InputOutpoints,
 				ArkPSBT:         evt.ArkPSBT,
 				CheckpointPSBTs: s.CheckpointPSBTs,
 				TransferInputs:  s.TransferInputs,
@@ -243,7 +236,6 @@ func (s *AwaitingSubmitAccepted) ProcessEvent(ctx context.Context, event Event,
 		return &StateTransition{
 			NextState: &AwaitingCheckpointSignatures{
 				SessionID:               evt.SessionID,
-				InputOutpoints:          s.InputOutpoints,
 				ArkPSBT:                 evt.ArkPSBT,
 				CoSignedCheckpointPSBTs: checkpoints,
 				TransferInputs:          s.TransferInputs,
@@ -309,9 +301,9 @@ func (s *AwaitingCheckpointSignatures) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &AwaitingFinalizeAccepted{
 				SessionID:            s.SessionID,
-				InputOutpoints:       s.InputOutpoints,
 				ArkPSBT:              s.ArkPSBT,
 				FinalCheckpointPSBTs: evt.FinalCheckpointPSBTs,
+				TransferInputs:       s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
@@ -360,12 +352,14 @@ func (s *AwaitingFinalizeAccepted) ProcessEvent(ctx context.Context,
 		return &StateTransition{
 			NextState: &AwaitingLocalVTXOUpdate{
 				SessionID:      s.SessionID,
-				InputOutpoints: s.InputOutpoints,
+				TransferInputs: s.TransferInputs,
 			},
 			NewEvents: fn.Some(EmittedEvent{
 				Outbox: []OutboxEvent{
 					&MarkInputsSpentRequest{
-						Outpoints: s.InputOutpoints,
+						Outpoints: InputOutpoints(
+							s.TransferInputs,
+						),
 					},
 				},
 			}),
@@ -415,50 +409,6 @@ func (s *AwaitingLocalVTXOUpdate) ProcessEvent(ctx context.Context,
 	}
 }
 
-// ProcessEvent handles events for RetryBackoff.
-func (s *RetryBackoff) ProcessEvent(ctx context.Context, event Event,
-	env *Environment) (*StateTransition, error) {
-
-	_ = ctx
-	_ = env
-
-	switch evt := event.(type) {
-	case *RetryDueEvent:
-		_ = evt
-
-		if s.ResumeSnapshot == nil {
-			return nil, fmt.Errorf(
-				"resume snapshot must be provided",
-			)
-		}
-
-		nextState, err := OutgoingStateFromSnapshot(s.ResumeSnapshot)
-		if err != nil {
-			return nil, err
-		}
-
-		nextOutbox, err := OutboxForState(nextState)
-		if err != nil {
-			return nil, err
-		}
-
-		return &StateTransition{
-			NextState: nextState,
-			NewEvents: fn.Some(EmittedEvent{
-				Outbox: nextOutbox,
-			}),
-		}, nil
-	case *FailEvent:
-		return &StateTransition{
-			NextState: &Failed{Reason: evt.Reason},
-			NewEvents: fn.None[EmittedEvent](),
-		}, nil
-
-	default:
-		return unexpectedEvent(s), nil
-	}
-}
-
 // ProcessEvent handles events for Completed.
 func (s *Completed) ProcessEvent(ctx context.Context, event Event,
 	env *Environment) (*StateTransition, error) {
@@ -479,8 +429,8 @@ func (s *Failed) ProcessEvent(ctx context.Context, event Event,
 	return unexpectedEvent(s), nil
 }
 
-// handleOutboxError transitions the FSM into a RetryBackoff state if the error
-// is retryable, otherwise returning a terminal failure.
+// handleOutboxError emits retry scheduling for retryable errors while keeping
+// the FSM in the current protocol state.
 func handleOutboxError(env *Environment, current State,
 	evt *OutboxErrorEvent) (*StateTransition, error) {
 
@@ -495,26 +445,13 @@ func handleOutboxError(env *Environment, current State,
 		}, nil
 	}
 
-	if env == nil || env.SessionID == (SessionID{}) {
-		return nil, fmt.Errorf("internal: missing session id")
-	}
-
-	snap, err := NewOutgoingSnapshot(env.SessionID, current)
-	if err != nil {
-		return nil, err
-	}
-
 	after := evt.RetryAfter
 	if after == 0 {
 		after = defaultRetryDelay
 	}
 
 	return &StateTransition{
-		NextState: &RetryBackoff{
-			ResumeSnapshot: snap,
-			RetryAfter:     after,
-			Reason:         evt.ErrorReason,
-		},
+		NextState: current,
 		NewEvents: fn.Some(EmittedEvent{
 			Outbox: []OutboxEvent{
 				&ScheduleRetryRequest{

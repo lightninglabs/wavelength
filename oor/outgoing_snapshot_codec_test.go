@@ -36,18 +36,7 @@ func TestOutgoingSnapshotTLVRoundTrip(t *testing.T) {
 				OwnerLeafScript: []byte{0x51},
 			},
 		},
-		InputOutpoints: []wire.OutPoint{
-			{
-				Hash:  chainhash.Hash{12, 13, 14},
-				Index: 15,
-			},
-		},
 		RetryAfter: 3 * time.Second,
-		ResumeSnapshot: &OutgoingSnapshot{
-			Version:   3,
-			SessionID: SessionID(chainhash.Hash{16, 17}),
-			Phase:     OutgoingPhaseCompleted,
-		},
 		FailReason: "retry later",
 	}
 
@@ -171,12 +160,6 @@ func encodeSnapshotRawForDecodeTest(version uint64,
 		return nil, err
 	}
 
-	outpointsRaw, err := encodeOutpoints(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resumeSnapshotRaw := []byte(nil)
 	failReasonRaw := []byte(nil)
 
 	records := []tlv.Record{
@@ -193,13 +176,7 @@ func encodeSnapshotRawForDecodeTest(version uint64,
 			snapshotTransferInputsRecordType, &inputSnapshotsRaw,
 		),
 		tlv.MakePrimitiveRecord(
-			snapshotInputOutpointsRecordType, &outpointsRaw,
-		),
-		tlv.MakePrimitiveRecord(
 			snapshotRetryAfterNanosRecordType, &retryAfterNanos,
-		),
-		tlv.MakePrimitiveRecord(
-			snapshotResumeSnapshotRecordType, &resumeSnapshotRaw,
 		),
 		tlv.MakePrimitiveRecord(
 			snapshotFailReasonRecordType, &failReasonRaw,

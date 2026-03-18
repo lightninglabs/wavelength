@@ -99,13 +99,6 @@ type InputsMarkedSpentEvent struct{}
 // eventSealed marks this as implementing the sealed Event interface.
 func (e *InputsMarkedSpentEvent) eventSealed() {}
 
-// RetryDueEvent indicates that a previously requested retry backoff timer has
-// elapsed and the session can resume from the stored retry snapshot.
-type RetryDueEvent struct{}
-
-// eventSealed marks this as implementing the sealed Event interface.
-func (e *RetryDueEvent) eventSealed() {}
-
 // FailEvent forces the session to enter a terminal failure state.
 type FailEvent struct {
 	Reason string
