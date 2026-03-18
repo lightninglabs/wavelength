@@ -181,6 +181,9 @@ type Server struct {
 
 	serverConn *grpc.ClientConn
 
+	rpcAddrMu sync.RWMutex
+	rpcAddr   net.Addr
+
 	grpcServer *grpc.Server
 	rpcServer  *RPCServer
 	mailboxMux *mailboxrpc.ServeMux
@@ -217,6 +220,15 @@ func (s *Server) markWalletReady() {
 	s.walletReadyOnce.Do(func() {
 		close(s.walletReady)
 	})
+}
+
+// RPCAddr returns the bound daemon gRPC listener address once startup has
+// progressed far enough to create the listener.
+func (s *Server) RPCAddr() net.Addr {
+	s.rpcAddrMu.RLock()
+	defer s.rpcAddrMu.RUnlock()
+
+	return s.rpcAddr
 }
 
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
@@ -448,9 +460,13 @@ func (s *Server) run(ctx context.Context,
 			s.cfg.RPC.ListenAddr, err)
 	}
 
+	s.rpcAddrMu.Lock()
+	s.rpcAddr = lis.Addr()
+	s.rpcAddrMu.Unlock()
+
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			slog.String("addr", s.cfg.RPC.ListenAddr))
+			slog.String("addr", lis.Addr().String()))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
