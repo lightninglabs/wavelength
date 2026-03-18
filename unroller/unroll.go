@@ -1,6 +1,7 @@
 package unroller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 )
@@ -50,6 +52,141 @@ func isBroadcastNonFatal(err error) bool {
 	return false
 }
 
+// clampFeeRate caps the fee rate to the configured maximum.
+func (a *UnrollerActor) clampFeeRate(
+	ctx context.Context, feeRate btcutil.Amount,
+) btcutil.Amount {
+
+	maxRate := a.cfg.MaxFeeRate
+	if maxRate == 0 {
+		maxRate = defaultMaxFeeRate
+	}
+	if feeRate > maxRate {
+		a.cfg.Logger.WarnS(ctx,
+			"Fee rate exceeds cap, using max", nil,
+			slog.Int64("estimated", int64(feeRate)),
+			slog.Int64("max", int64(maxRate)))
+
+		return maxRate
+	}
+
+	return feeRate
+}
+
+// buildAndSubmitPackageWithWalletKit builds and submits an explicit CPFP child
+// for the given parent transaction using the configured WalletKit.
+func (a *UnrollerActor) buildAndSubmitPackageWithWalletKit(
+	ctx context.Context, txid chainhash.Hash, signedTx *wire.MsgTx,
+	feeRate btcutil.Amount, usedOutpoints map[wire.OutPoint]bool,
+) error {
+
+	anchorIdx, anchorOut := findAnchorOutput(signedTx)
+	if anchorIdx < 0 {
+		return fmt.Errorf("no P2A anchor in tx %s", txid)
+	}
+
+	// Compute fee for entire package: parent vsize + child vsize estimate,
+	// multiplied by the per-vbyte fee rate.
+	parentWeight := estimateWeight(signedTx)
+	parentVSize := (parentWeight + 3) / 4
+	totalFee := feeRate *
+		btcutil.Amount(parentVSize+childVSizeEstimate)
+	if totalFee < 1 {
+		totalFee = 1
+	}
+
+	// Select a confirmed wallet UTXO for the fee input. V3 rules
+	// require the child to have at most one unconfirmed input (the
+	// anchor), so the fee input must be confirmed.
+	feeInput, err := selectFeeUTXO(
+		ctx, a.cfg.WalletKit, totalFee, usedOutpoints,
+	)
+	if err != nil {
+		return fmt.Errorf("select fee UTXO for %s: %w", txid, err)
+	}
+
+	// Get a change address from the wallet.
+	changeAddr, err := a.cfg.WalletKit.NextAddr(
+		ctx, "",
+		walletrpc.AddressType_TAPROOT_PUBKEY, false,
+	)
+	if err != nil {
+		return fmt.Errorf("get change address: %w", err)
+	}
+
+	changePkScript, err := txscript.PayToAddrScript(changeAddr)
+	if err != nil {
+		return fmt.Errorf("encode change script: %w", err)
+	}
+
+	// Mark this fee UTXO as used so sibling nodes in this level select
+	// different UTXOs.
+	usedOutpoints[feeInput.outpoint] = true
+
+	// Build the unsigned CPFP child transaction.
+	parentTxid := signedTx.TxHash()
+	childTx, err := buildCPFPChild(
+		parentTxid, uint32(anchorIdx), feeInput,
+		changePkScript, totalFee,
+	)
+	if err != nil {
+		return fmt.Errorf("build CPFP child for %s: %w", txid, err)
+	}
+
+	// Sign the child via PSBT. The P2A anchor input gets an empty witness
+	// (anyone-can-spend). The wallet input is signed by LND.
+	signedChild, err := signCPFPChild(
+		ctx, a.cfg.WalletKit, childTx, anchorOut, feeInput,
+	)
+	if err != nil {
+		return fmt.Errorf("sign CPFP child for %s: %w", txid, err)
+	}
+
+	a.cfg.Logger.InfoS(ctx, "Submitting package",
+		slog.String("parent_txid", parentTxid.String()),
+		slog.Int("parent_inputs", len(signedTx.TxIn)),
+		slog.Int("parent_outputs", len(signedTx.TxOut)),
+		slog.Int64("parent_weight", parentWeight),
+		slog.Int("child_inputs", len(signedChild.TxIn)),
+		slog.Int("child_outputs", len(signedChild.TxOut)),
+		slog.Int64("total_fee", int64(totalFee)),
+		slog.Int("parent_version", int(signedTx.Version)),
+		slog.Int64("fee_rate", int64(feeRate)),
+		slog.Int64("anchor_value", anchorOut.Value),
+		slog.Int("anchor_pkscript_len", len(anchorOut.PkScript)))
+
+	// Submit via ChainSource atomically.
+	submitReq := &chainsource.SubmitPackageRequest{
+		Parents: []*wire.MsgTx{signedTx},
+		Child:   signedChild,
+	}
+
+	submitResult := a.cfg.ChainSource.Ask(
+		ctx, submitReq,
+	).Await(ctx)
+	_, err = submitResult.Unpack()
+	if err != nil {
+		// If the transaction is already in the mempool or confirmed,
+		// this is not a failure — it means a previous broadcast
+		// succeeded.
+		if isBroadcastNonFatal(err) {
+			a.cfg.Logger.InfoS(ctx,
+				"Tx already known, skipping",
+				slog.String("txid", txid.String()),
+				slog.String("reason", err.Error()))
+
+			return nil
+		}
+
+		return fmt.Errorf("package broadcast %s: %w", txid, err)
+	}
+
+	a.cfg.Logger.InfoS(ctx, "Package broadcast successful",
+		slog.String("txid", txid.String()))
+
+	return nil
+}
+
 // handleUnrollRequest initiates unroll for the requested VTXOs.
 func (a *UnrollerActor) handleUnrollRequest(
 	ctx context.Context, req *UnrollRequest,
@@ -78,7 +215,6 @@ func (a *UnrollerActor) handleUnrollRequest(
 func (a *UnrollerActor) startSingleUnroll(
 	ctx context.Context, outpoint wire.OutPoint,
 ) error {
-
 
 	// Check if already unrolling this VTXO.
 	if _, exists := a.activeUnrolls[outpoint]; exists {
@@ -218,19 +354,7 @@ func (a *UnrollerActor) broadcastLevel(
 		return
 	}
 
-	// Clamp fee rate to the configured maximum to protect
-	// against fee spikes draining wallet funds.
-	maxRate := a.cfg.MaxFeeRate
-	if maxRate == 0 {
-		maxRate = defaultMaxFeeRate
-	}
-	if feeRate > maxRate {
-		a.cfg.Logger.WarnS(ctx,
-			"Fee rate exceeds cap, using max", nil,
-			slog.Int64("estimated", int64(feeRate)),
-			slog.Int64("max", int64(maxRate)))
-		feeRate = maxRate
-	}
+	feeRate = a.clampFeeRate(ctx, feeRate)
 
 	// Track fee UTXOs selected within this level to prevent
 	// double-spending the same wallet UTXO across sibling nodes.
@@ -257,154 +381,13 @@ func (a *UnrollerActor) broadcastLevel(
 			return
 		}
 
-		anchorIdx, anchorOut := findAnchorOutput(signedTx)
-		if anchorIdx < 0 {
-			a.failUnroll(ctx, state, fmt.Errorf(
-				"no P2A anchor in tx %s", txid))
-
-			return
-		}
-
-		// Compute fee for entire package: parent vsize + child
-		// vsize estimate, multiplied by the per-vbyte fee rate.
-		parentWeight := estimateWeight(signedTx)
-		parentVSize := (parentWeight + 3) / 4
-		totalFee := feeRate *
-			btcutil.Amount(parentVSize+childVSizeEstimate)
-
-		if totalFee < 1 {
-			totalFee = 1
-		}
-
-		// Select a confirmed wallet UTXO for the fee input.
-		// V3 rules require the child to have at most one
-		// unconfirmed input (the anchor), so the fee input
-		// must be confirmed.
-		feeInput, err := selectFeeUTXO(
-			ctx, a.cfg.WalletKit, totalFee, usedOutpoints,
+		err = a.buildAndSubmitPackageWithWalletKit(
+			ctx, txid, signedTx, feeRate, usedOutpoints,
 		)
 		if err != nil {
-			a.failUnroll(
-				ctx, state,
-				fmt.Errorf("select fee UTXO for %s: %w",
-					txid, err),
-			)
-
+			a.failUnroll(ctx, state, err)
 			return
 		}
-
-		// Get a change address from the wallet.
-		changeAddr, err := a.cfg.WalletKit.NextAddr(
-			ctx, "",
-			walletrpc.AddressType_TAPROOT_PUBKEY, false,
-		)
-		if err != nil {
-			a.failUnroll(
-				ctx, state,
-				fmt.Errorf("get change address: %w", err),
-			)
-
-			return
-		}
-
-		changePkScript, err := txscript.PayToAddrScript(
-			changeAddr,
-		)
-		if err != nil {
-			a.failUnroll(
-				ctx, state,
-				fmt.Errorf("encode change script: %w",
-					err),
-			)
-
-			return
-		}
-
-		// Mark this fee UTXO as used so sibling nodes in
-		// this level select different UTXOs.
-		usedOutpoints[feeInput.outpoint] = true
-
-		// Build the unsigned CPFP child transaction.
-		parentTxid := signedTx.TxHash()
-		childTx, err := buildCPFPChild(
-			parentTxid, uint32(anchorIdx), feeInput,
-			changePkScript, totalFee,
-		)
-		if err != nil {
-			a.failUnroll(
-				ctx, state,
-				fmt.Errorf("build CPFP child for %s: %w",
-					txid, err),
-			)
-
-			return
-		}
-
-		// Sign the child via PSBT. The P2A anchor input gets
-		// an empty witness (anyone-can-spend). The wallet
-		// input is signed by LND.
-		signedChild, err := signCPFPChild(
-			ctx, a.cfg.WalletKit, childTx, anchorOut,
-			feeInput,
-		)
-		if err != nil {
-			a.failUnroll(
-				ctx, state,
-				fmt.Errorf("sign CPFP child for %s: %w",
-					txid, err),
-			)
-
-			return
-		}
-
-		a.cfg.Logger.InfoS(ctx, "Submitting package",
-			slog.String("parent_txid", parentTxid.String()),
-			slog.Int("parent_inputs", len(signedTx.TxIn)),
-			slog.Int("parent_outputs", len(signedTx.TxOut)),
-			slog.Int64("parent_weight", parentWeight),
-			slog.Int("child_inputs", len(signedChild.TxIn)),
-			slog.Int("child_outputs", len(signedChild.TxOut)),
-			slog.Int64("total_fee", int64(totalFee)),
-			slog.Int("parent_version", int(signedTx.Version)),
-			slog.Int64("fee_rate", int64(feeRate)),
-			slog.Int64("anchor_value", anchorOut.Value),
-			slog.Int("anchor_pkscript_len", len(anchorOut.PkScript)))
-
-		// Submit via ChainSource atomically.
-		submitReq := &chainsource.SubmitPackageRequest{
-			Parents: []*wire.MsgTx{signedTx},
-			Child:   signedChild,
-		}
-
-		submitResult := a.cfg.ChainSource.Ask(
-			ctx, submitReq,
-		).Await(ctx)
-		_, err = submitResult.Unpack()
-		if err != nil {
-			// If the transaction is already in the mempool
-			// or confirmed, this is not a failure — it
-			// means a previous broadcast succeeded.
-			if isBroadcastNonFatal(err) {
-				a.cfg.Logger.InfoS(ctx,
-					"Tx already known, skipping",
-					slog.String("txid",
-						txid.String()),
-					slog.String("reason",
-						err.Error()))
-			} else {
-				a.failUnroll(
-					ctx, state,
-					fmt.Errorf("package broadcast "+
-						"%s: %w", txid, err),
-				)
-
-				return
-			}
-		}
-
-		a.cfg.Logger.InfoS(ctx, "Package broadcast successful",
-			slog.String("txid", txid.String()),
-			slog.Int("level", level))
 
 		// Mark as broadcast.
 		state.BroadcastTxids[txid] = true
@@ -914,6 +897,38 @@ func (a *UnrollerActor) feeBumpLevel(
 
 	levelTxids := state.LevelOrder[level]
 
+	var (
+		err     error
+		feeRate btcutil.Amount
+	)
+	if a.cfg.WalletKit != nil {
+		feeRate, err = a.getFeeRate(ctx)
+		if err != nil {
+			a.cfg.Logger.WarnS(ctx,
+				"Fee bump: failed to estimate fee rate", err,
+				slog.String("vtxo",
+					state.VTXOOutpoint.String()))
+
+			return
+		}
+
+		multiplier := a.cfg.FeeMultiplier
+		if multiplier == 0 {
+			multiplier = 2
+		}
+
+		if state.CurrentFeeRate > 0 {
+			bumpedRate := btcutil.Amount(state.CurrentFeeRate) *
+				btcutil.Amount(multiplier)
+			if bumpedRate > feeRate {
+				feeRate = bumpedRate
+			}
+		}
+
+		feeRate = a.clampFeeRate(ctx, feeRate)
+	}
+
+	usedOutpoints := make(map[wire.OutPoint]bool)
 	for i, node := range levelTxids.Nodes {
 		if i >= len(levelTxids.Txids) {
 			break
@@ -931,42 +946,55 @@ func (a *UnrollerActor) feeBumpLevel(
 			return
 		}
 
-		// Fee bumping works by resubmitting the same presigned
-		// parent with Child=nil. The chain backend constructs
-		// a new CPFP child with a fresh (higher) fee estimate.
-		// This is V3 package RBF: the new child replaces the
-		// old one if its total package fee is higher. The
-		// parent itself is NOT modified or RBF'd.
-		submitReq := &chainsource.SubmitPackageRequest{
-			Parents: []*wire.MsgTx{signedTx},
-			Child:   nil,
-		}
-
-		submitResult := a.cfg.ChainSource.Ask(
-			ctx, submitReq,
-		).Await(ctx)
-		_, submitErr := submitResult.Unpack()
-		if submitErr != nil {
-			// If the tx already confirmed, fee bump is
-			// unnecessary — the confirmation handler will
-			// advance the state.
-			if isBroadcastNonFatal(submitErr) {
-				a.cfg.Logger.InfoS(ctx,
-					"Fee bump: tx already known",
-					slog.String("txid",
-						txid.String()))
-
-				continue
+		if a.cfg.WalletKit == nil {
+			// In lwwallet mode the chain backend auto-constructs a
+			// fresh CPFP child when Child=nil. In WalletKit mode we
+			// rebuild and sign an explicit child locally below.
+			submitReq := &chainsource.SubmitPackageRequest{
+				Parents: []*wire.MsgTx{signedTx},
+				Child:   nil,
 			}
 
-			// Best-effort: log and wait for next epoch.
-			a.cfg.Logger.WarnS(ctx,
-				"Fee bump broadcast failed",
-				submitErr,
-				slog.String("txid", txid.String()),
-				slog.Int("level", level))
+			submitResult := a.cfg.ChainSource.Ask(
+				ctx, submitReq,
+			).Await(ctx)
+			_, submitErr := submitResult.Unpack()
+			if submitErr != nil {
+				// If the tx already confirmed, fee bump is
+				// unnecessary — the confirmation handler will
+				// advance the state.
+				if isBroadcastNonFatal(submitErr) {
+					a.cfg.Logger.InfoS(ctx,
+						"Fee bump: tx already known",
+						slog.String("txid",
+							txid.String()))
 
-			return
+					continue
+				}
+
+				// Best-effort: log and wait for next epoch.
+				a.cfg.Logger.WarnS(ctx,
+					"Fee bump broadcast failed",
+					submitErr,
+					slog.String("txid", txid.String()),
+					slog.Int("level", level))
+
+				return
+			}
+		} else {
+			err = a.buildAndSubmitPackageWithWalletKit(
+				ctx, txid, signedTx, feeRate, usedOutpoints,
+			)
+			if err != nil {
+				// Best-effort: log and wait for next epoch.
+				a.cfg.Logger.WarnS(ctx,
+					"Fee bump broadcast failed",
+					err,
+					slog.String("txid", txid.String()),
+					slog.Int("level", level))
+
+				return
+			}
 		}
 
 		a.cfg.Logger.InfoS(ctx, "Fee bump broadcast OK",
@@ -976,6 +1004,9 @@ func (a *UnrollerActor) feeBumpLevel(
 
 	// Update state after successful rebroadcast.
 	state.LastBroadcastHeight = a.bestHeight
+	if a.cfg.WalletKit != nil {
+		state.CurrentFeeRate = int64(feeRate)
+	}
 	state.RetryCount++
 
 	if err := a.cfg.Store.UpdateUnrollState(
@@ -1034,9 +1065,195 @@ func (a *UnrollerActor) handleAllLevelsComplete(
 	a.subscribeBlockEpochs(ctx, state)
 }
 
+// sweepVTXO constructs and broadcasts a transaction that spends the
+// VTXO via the timeout path back to the user's wallet. The VTXO is
+// on-chain as an output of the final leaf transaction after unrolling.
+//
+// Per ARK-05 Step 5, the sweep transaction is:
+//
+//	Version: 2, Locktime: 0
+//	Input: leaf tx VTXO outpoint, sequence: csv_delay
+//	Witness: <signature> <timeout_script> <control_block>
+//	Output: destination (client wallet address)
+func (a *UnrollerActor) sweepVTXO(
+	ctx context.Context, state *UnrollState,
+) error {
+
+	vtxo := state.VTXO
+
+	// Find the on-chain outpoint of the VTXO. After unrolling, the
+	// VTXO lives as the non-anchor output of the last level's leaf
+	// transaction. The anchor output uses the P2A script; the VTXO
+	// output is the other one.
+	finalLevel := state.LevelOrder[len(state.LevelOrder)-1]
+	if len(finalLevel.Nodes) == 0 {
+		return fmt.Errorf("final level has no nodes")
+	}
+
+	leafNode := finalLevel.Nodes[0]
+	leafTx, err := leafNode.ToSignedTx()
+	if err != nil {
+		return fmt.Errorf("construct leaf tx: %w", err)
+	}
+
+	leafTxid := leafTx.TxHash()
+
+	// Find the VTXO output index (non-anchor output).
+	vtxoIdx := -1
+	for i, out := range leafTx.TxOut {
+		if !isAnchorOutput(out) {
+			vtxoIdx = i
+			break
+		}
+	}
+	if vtxoIdx < 0 {
+		return fmt.Errorf("no VTXO output found in leaf tx %s",
+			leafTxid)
+	}
+
+	vtxoOut := leafTx.TxOut[vtxoIdx]
+	onChainOutpoint := wire.OutPoint{
+		Hash:  leafTxid,
+		Index: uint32(vtxoIdx),
+	}
+
+	// Reconstruct the tapscript from VTXO keys.
+	tapscript, err := scripts.VTXOTapScript(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.Expiry,
+	)
+	if err != nil {
+		return fmt.Errorf("build VTXO tapscript: %w", err)
+	}
+
+	// Get spend info for the timeout leaf.
+	spendInfo, err := scripts.NewVTXOSpendInfo(
+		tapscript, scripts.VTXOTimeoutPathLeaf,
+	)
+	if err != nil {
+		return fmt.Errorf("VTXO spend info: %w", err)
+	}
+
+	// Get a sweep destination address.
+	destAddr, err := a.cfg.SweepAddress(ctx)
+	if err != nil {
+		return fmt.Errorf("get sweep address: %w", err)
+	}
+
+	destScript, err := txscript.PayToAddrScript(destAddr)
+	if err != nil {
+		return fmt.Errorf("encode dest script: %w", err)
+	}
+
+	// Build the sweep transaction (version 2, no anchor needed).
+	sweepTx := wire.NewMsgTx(2)
+	sweepTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: onChainOutpoint,
+		Sequence:         vtxo.Expiry,
+	})
+
+	// Estimate fee: sweep tx has 1 taproot script-path input and
+	// 1 P2TR output.
+	//
+	// Witness: ~1+64 (sig) + ~1+N (script) + ~1+M (control block)
+	// Typical total witness ~200 bytes.
+	// Non-witness: ~10 (overhead) + 41 (input) + 43 (P2TR output) = ~94.
+	// Weight = 94*4 + 200 = 576. VSize = 144.
+	const sweepVSizeEstimate = 144
+
+	feeRate, err := a.getFeeRate(ctx)
+	if err != nil {
+		// On regtest or fresh nodes, fee estimation may fail
+		// because there is no fee history. Fall back to the
+		// minimum relay fee of 1 sat/vB.
+		a.cfg.Logger.WarnS(ctx,
+			"Fee estimation failed, using 1 sat/vB fallback",
+			err)
+		feeRate = 1
+	}
+
+	maxRate := a.cfg.MaxFeeRate
+	if maxRate == 0 {
+		maxRate = defaultMaxFeeRate
+	}
+	if feeRate > maxRate {
+		feeRate = maxRate
+	}
+
+	fee := feeRate * btcutil.Amount(sweepVSizeEstimate)
+	if fee < 1 {
+		fee = 1
+	}
+
+	outputValue := btcutil.Amount(vtxoOut.Value) - fee
+	if outputValue <= 0 {
+		return fmt.Errorf("VTXO value %d too small to cover "+
+			"fee %d", vtxoOut.Value, int64(fee))
+	}
+
+	sweepTx.AddTxOut(&wire.TxOut{
+		Value:    int64(outputValue),
+		PkScript: destScript,
+	})
+
+	// Build the sign descriptor for the timeout path.
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		vtxoOut.PkScript, vtxoOut.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(sweepTx, prevFetcher)
+
+	signDesc := scripts.VTXOSignDesc(
+		vtxo.ClientKey, vtxoOut, sigHashes,
+		prevFetcher, 0, spendInfo,
+	)
+
+	// Sign and construct witness via the timeout spend path.
+	witness, err := scripts.VTXOTimeoutSpendWitness(
+		a.cfg.Signer, signDesc, sweepTx,
+	)
+	if err != nil {
+		return fmt.Errorf("sign sweep tx: %w", err)
+	}
+
+	sweepTx.TxIn[0].Witness = witness
+
+	// Broadcast the sweep transaction.
+	sweepTxid := sweepTx.TxHash()
+
+	a.cfg.Logger.InfoS(ctx, "Broadcasting VTXO sweep",
+		slog.String("sweep_txid", sweepTxid.String()),
+		slog.String("vtxo_outpoint", onChainOutpoint.String()),
+		slog.Int64("value", int64(outputValue)),
+		slog.Int64("fee", int64(fee)),
+		slog.String("dest", destAddr.EncodeAddress()))
+
+	broadcastReq := &chainsource.BroadcastTxRequest{
+		Tx:    sweepTx,
+		Label: fmt.Sprintf("vtxo-sweep-%s", state.VTXOOutpoint),
+	}
+
+	broadcastResult := a.cfg.ChainSource.Ask(
+		ctx, broadcastReq,
+	).Await(ctx)
+	_, err = broadcastResult.Unpack()
+	if err != nil {
+		return fmt.Errorf("broadcast sweep tx: %w", err)
+	}
+
+	a.cfg.Logger.InfoS(ctx, "VTXO sweep broadcast successful",
+		slog.String("sweep_txid", sweepTxid.String()),
+		slog.String("vtxo", state.VTXOOutpoint.String()))
+
+	return nil
+}
+
+// isAnchorOutput returns true if the output is a P2A ephemeral anchor.
+func isAnchorOutput(out *wire.TxOut) bool {
+	return bytes.Equal(out.PkScript, scripts.AnchorPkScript)
+}
+
 // handleCSVComplete marks the unroll as complete after CSV delay is satisfied.
-// The VTXO output is now spendable on-chain. A separate sweeper actor will
-// handle actually spending the output.
+// The VTXO output is now spendable on-chain. If a signer and sweep address
+// are configured, the VTXO is automatically swept to the wallet.
 func (a *UnrollerActor) handleCSVComplete(
 	ctx context.Context, state *UnrollState,
 ) {
@@ -1049,6 +1266,18 @@ func (a *UnrollerActor) handleCSVComplete(
 	if err := a.cfg.Store.UpdateUnrollState(ctx, state); err != nil {
 		a.cfg.Logger.WarnS(ctx, "Failed to update unroll state", err,
 			slog.String("vtxo", state.VTXOOutpoint.String()))
+	}
+
+	// Sweep the VTXO to the user's wallet if configured.
+	if a.cfg.Signer != nil && a.cfg.SweepAddress != nil {
+		if err := a.sweepVTXO(ctx, state); err != nil {
+			a.cfg.Logger.WarnS(ctx, "Failed to sweep VTXO",
+				err,
+				slog.String("vtxo",
+					state.VTXOOutpoint.String()))
+			// Don't fail the unroll -- the VTXO is on-chain
+			// and can be swept manually later.
+		}
 	}
 
 	// Clean up reverse-lookup entries.
@@ -1069,7 +1298,6 @@ func (a *UnrollerActor) handleCSVComplete(
 			slog.String("vtxo", state.VTXOOutpoint.String()))
 	}
 
-	// Remove from active tracking. The VTXO is now ready for sweeping
-	// by a dedicated sweeper actor.
+	// Remove from active tracking.
 	delete(a.activeUnrolls, state.VTXOOutpoint)
 }

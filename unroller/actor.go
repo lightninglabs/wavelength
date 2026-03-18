@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/input"
 )
 
 // UnrollerConfig holds configuration for the unroller actor.
@@ -52,6 +53,18 @@ type UnrollerConfig struct {
 	// Zero means default (2x). E.g., 2 means each bump doubles
 	// the fee rate.
 	FeeMultiplier int
+
+	// Signer signs sweep transactions using the VTXO owner key.
+	// In lnd mode this is lnd's remote signer (via ClientWallet).
+	// In lwwallet mode this is the btcwallet signer.
+	// If nil, the sweep step is skipped and the VTXO can be
+	// swept manually.
+	Signer input.Signer
+
+	// SweepAddress returns a fresh wallet address for receiving
+	// swept funds. Called once per completed unroll. If nil, the
+	// sweep step is skipped.
+	SweepAddress func(ctx context.Context) (btcutil.Address, error)
 }
 
 // UnrollerActor manages on-chain unrolling of VTXO trees.
@@ -135,7 +148,6 @@ func (a *UnrollerActor) Start(ctx context.Context) error {
 			// and including the current broadcast level.
 			for lvl := 0; lvl <= state.CurrentLevel &&
 				lvl < len(levelOrder); lvl++ {
-
 				for _, txid := range levelOrder[lvl].Txids {
 					state.BroadcastTxids[txid] = true
 				}

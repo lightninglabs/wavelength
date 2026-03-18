@@ -48,6 +48,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -1811,11 +1812,29 @@ func (s *Server) initUnrollerActor(ctx context.Context,
 	// Select the WalletKit backend based on wallet type. The
 	// unroller needs WalletKit for CPFP child construction:
 	// UTXO selection, change address generation, and PSBT signing.
+	// Also select the signer and sweep address function for the
+	// final VTXO sweep after CSV delay is satisfied.
 	var walletKit unroller.WalletKit
+	var sweepSigner input.Signer
+	var sweepAddrFn func(context.Context) (btcutil.Address, error)
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
 		walletKit = lndSvc.WalletKit
+		sweepSigner = lndbackend.NewClientWallet(
+			lndSvc.Signer, lndSvc.WalletKit,
+		)
+
+		sweepAddrFn = func(
+			ctx context.Context,
+		) (btcutil.Address, error) {
+
+			return lndSvc.WalletKit.NextAddr(
+				ctx, "",
+				walletrpc.AddressType_TAPROOT_PUBKEY,
+				false,
+			)
+		}
 
 	case WalletTypeLwwallet:
 		// lwwallet doesn't expose lndclient.WalletKit, so
@@ -1823,6 +1842,10 @@ func (s *Server) initUnrollerActor(ctx context.Context,
 		// chain backend's automatic CPFP child construction.
 		log.WarnS(ctx, "Unroller using chain backend's "+
 			"auto-CPFP in lwwallet mode", nil)
+
+		lww := s.lwWallet.UnsafeFromSome()
+		sweepSigner = lww
+		sweepAddrFn = lww.NewAddress
 	}
 
 	clkUnroll := clock.NewDefaultClock()
@@ -1838,11 +1861,13 @@ func (s *Server) initUnrollerActor(ctx context.Context,
 	]("unroller")
 
 	unrollerCfg := &unroller.UnrollerConfig{
-		ChainSource: chainSourceRef,
-		Store:       unrollStore,
-		ChainParams: s.chainParams,
-		Logger:      log,
-		WalletKit:   walletKit,
+		ChainSource:  chainSourceRef,
+		Store:        unrollStore,
+		ChainParams:  s.chainParams,
+		Logger:       log,
+		WalletKit:    walletKit,
+		Signer:       sweepSigner,
+		SweepAddress: sweepAddrFn,
 	}
 
 	unrollerActor := unroller.NewUnrollerActor(unrollerCfg)

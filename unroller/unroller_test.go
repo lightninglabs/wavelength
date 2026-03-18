@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -16,7 +18,10 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
+	"github.com/lightninglabs/lndclient"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -109,6 +114,9 @@ type mockChainSourceRef struct {
 	// tells collects fire-and-forget messages for verification.
 	tells []chainsource.ChainSourceMsg
 
+	// asks collects request/response messages for later inspection.
+	asks []chainsource.ChainSourceMsg
+
 	// askCallCounts tracks how many times Ask was called per
 	// message type. Used to verify fee bump resubmissions.
 	askCallCounts map[string]int
@@ -147,6 +155,7 @@ func (m *mockChainSourceRef) Ask(
 
 	key := msg.MessageType()
 	m.askCallCounts[key]++
+	m.asks = append(m.asks, msg)
 
 	respFn, ok := m.askResponses[key]
 	if !ok {
@@ -171,6 +180,98 @@ func (m *mockChainSourceRef) onAsk(
 var _ actor.ActorRef[
 	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 ] = (*mockChainSourceRef)(nil)
+
+// ---------------------------------------------------------------------------
+// Mock: WalletKit
+// ---------------------------------------------------------------------------
+
+// mockWalletKit implements WalletKit for LND-mode tests.
+type mockWalletKit struct {
+	t             *testing.T
+	utxos         []*lnwallet.Utxo
+	nextAddr      btcutil.Address
+	listCalls     int
+	nextAddrCalls int
+	finalizeCalls int
+}
+
+func newMockWalletKit(
+	t *testing.T, utxoValue int64,
+) *mockWalletKit {
+
+	t.Helper()
+
+	addr, err := btcutil.NewAddressWitnessPubKeyHash(
+		make([]byte, 20), &chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	var hash chainhash.Hash
+	_, err = rand.Read(hash[:])
+	require.NoError(t, err)
+
+	return &mockWalletKit{
+		t:        t,
+		nextAddr: addr,
+		utxos: []*lnwallet.Utxo{{
+			OutPoint: wire.OutPoint{
+				Hash:  hash,
+				Index: 1,
+			},
+			Value: btcutil.Amount(utxoValue),
+			PkScript: []byte{
+				0x00, 0x14, 0x01, 0x02, 0x03, 0x04,
+				0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+				0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+				0x11, 0x12, 0x13, 0x14,
+			},
+		}},
+	}
+}
+
+func (m *mockWalletKit) ListUnspent(
+	_ context.Context, minConfs, maxConfs int32,
+	_ ...lndclient.ListUnspentOption,
+) ([]*lnwallet.Utxo, error) {
+
+	require.Equal(m.t, int32(1), minConfs)
+	require.Equal(m.t, maxConfsForUTXO, maxConfs)
+	m.listCalls++
+
+	return m.utxos, nil
+}
+
+func (m *mockWalletKit) NextAddr(
+	_ context.Context, accountName string,
+	addressType walletrpc.AddressType,
+	change bool,
+) (btcutil.Address, error) {
+
+	require.Equal(m.t, "", accountName)
+	require.Equal(m.t, walletrpc.AddressType_TAPROOT_PUBKEY,
+		addressType)
+	require.False(m.t, change)
+	m.nextAddrCalls++
+
+	return m.nextAddr, nil
+}
+
+func (m *mockWalletKit) FinalizePsbt(
+	_ context.Context, packet *psbt.Packet, account string,
+) (*psbt.Packet, *wire.MsgTx, error) {
+
+	require.Equal(m.t, "", account)
+	m.finalizeCalls++
+
+	signedTx := packet.UnsignedTx.Copy()
+	signedTx.TxIn[1].Witness = wire.TxWitness{
+		make([]byte, 64),
+	}
+
+	return packet, signedTx, nil
+}
+
+var _ WalletKit = (*mockWalletKit)(nil)
 
 // ---------------------------------------------------------------------------
 // Mock: SelfRef (TellOnlyRef for UnrollerMsg)
@@ -811,6 +912,88 @@ func setupBroadcastingState(t *testing.T, bumpAfterBlocks int32,
 	return a, store, cs, outpoint
 }
 
+// setupBroadcastingStateWithWalletKit creates an UnrollerActor in LND mode
+// with WalletKit enabled so fee bumps must rebuild an explicit CPFP child.
+func setupBroadcastingStateWithWalletKit(t *testing.T, bumpAfterBlocks int32,
+	lastBroadcastHeight int32, retryCount int, currentFeeRate int64,
+) (*UnrollerActor, *MockUnrollStore, *mockChainSourceRef, *mockWalletKit,
+	wire.OutPoint) {
+
+	t.Helper()
+
+	store := &MockUnrollStore{}
+	cs := newMockChainSourceRef(t)
+	walletKit := newMockWalletKit(t, 100_000)
+
+	selfRef := &mockSelfRef{}
+	cfg := &UnrollerConfig{
+		ChainSource:     cs,
+		Store:           store,
+		ChainParams:     &chaincfg.RegressionNetParams,
+		Logger:          btclog.Disabled,
+		SelfRef:         selfRef,
+		WalletKit:       walletKit,
+		BumpAfterBlocks: bumpAfterBlocks,
+	}
+	a := NewUnrollerActor(cfg)
+
+	outpoint := newTestOutpoint(t)
+	rootInput := newTestOutpoint(t)
+	rootNode := makeSimpleNode(t, rootInput, 50_000)
+	vtxoTree := &tree.Tree{Root: rootNode}
+
+	levelOrder, err := extractLevelOrder(vtxoTree)
+	require.NoError(t, err)
+
+	state := &UnrollState{
+		VTXOOutpoint: outpoint,
+		VTXO: &round.ClientVTXO{
+			Outpoint: outpoint,
+			Expiry:   144,
+			TreePath: vtxoTree,
+		},
+		LevelOrder:          levelOrder,
+		CurrentLevel:        0,
+		BroadcastTxids:      make(map[chainhash.Hash]bool),
+		ConfirmedTxids:      make(map[chainhash.Hash]ConfirmationInfo),
+		Status:              UnrollStatusBroadcasting,
+		LastBroadcastHeight: lastBroadcastHeight,
+		RetryCount:          retryCount,
+		CurrentFeeRate:      currentFeeRate,
+	}
+
+	if len(levelOrder) > 0 && len(levelOrder[0].Txids) > 0 {
+		state.BroadcastTxids[levelOrder[0].Txids[0]] = true
+	}
+
+	a.activeUnrolls[outpoint] = state
+	a.indexUnrollTxids(state)
+
+	cs.onAsk(
+		"FeeEstimateRequest",
+		func() fn.Result[chainsource.ChainSourceResp] {
+			return fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.FeeEstimateResponse{
+					SatPerVByte: 15,
+				},
+			)
+		},
+	)
+	cs.onAsk(
+		"SubmitPackageRequest",
+		func() fn.Result[chainsource.ChainSourceResp] {
+			return fn.Ok[chainsource.ChainSourceResp](
+				&chainsource.SubmitPackageResponse{},
+			)
+		},
+	)
+
+	store.On("UpdateUnrollState", mock.Anything,
+		mock.Anything).Return(nil)
+
+	return a, store, cs, walletKit, outpoint
+}
+
 func TestFeeBumpTriggeredAfterBlocks(t *testing.T) {
 	t.Parallel()
 
@@ -886,6 +1069,236 @@ func TestFeeBumpMaxRetries(t *testing.T) {
 	_, stillActive := a.activeUnrolls[outpoint]
 	require.False(t, stillActive,
 		"unroll should be removed after max retries exceeded")
+}
+
+func TestFeeBumpRebuildsChildWithWalletKit(t *testing.T) {
+	t.Parallel()
+
+	a, store, cs, walletKit, outpoint :=
+		setupBroadcastingStateWithWalletKit(
+			t,
+			3,   // BumpAfterBlocks
+			100, // LastBroadcastHeight
+			0,   // RetryCount
+			10,  // CurrentFeeRate
+		)
+
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 103})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	require.Equal(t, 1, cs.askCallCounts["FeeEstimateRequest"])
+	require.Equal(t, 1, cs.askCallCounts["SubmitPackageRequest"])
+	require.Equal(t, 1, walletKit.listCalls)
+	require.Equal(t, 1, walletKit.nextAddrCalls)
+	require.Equal(t, 1, walletKit.finalizeCalls)
+
+	state, active := a.activeUnrolls[outpoint]
+	require.True(t, active)
+	require.Equal(t, int64(20), state.CurrentFeeRate)
+	require.Equal(t, 1, state.RetryCount)
+	require.Equal(t, int32(103), state.LastBroadcastHeight)
+
+	var submitReq *chainsource.SubmitPackageRequest
+	for _, msg := range cs.asks {
+		req, ok := msg.(*chainsource.SubmitPackageRequest)
+		if ok {
+			submitReq = req
+			break
+		}
+	}
+	require.NotNil(t, submitReq)
+	require.Len(t, submitReq.Parents, 1)
+	require.NotNil(t, submitReq.Child,
+		"WalletKit fee bump must submit an explicit CPFP child")
+
+	parentWeight := estimateWeight(submitReq.Parents[0])
+	parentVSize := (parentWeight + 3) / 4
+	expectedFee := btcutil.Amount(20) *
+		btcutil.Amount(parentVSize+childVSizeEstimate)
+	require.Len(t, submitReq.Child.TxOut, 1)
+	require.Equal(t,
+		int64(walletKit.utxos[0].Value-expectedFee),
+		submitReq.Child.TxOut[0].Value,
+	)
+
+	store.AssertCalled(t, "UpdateUnrollState",
+		mock.Anything, mock.MatchedBy(func(state *UnrollState) bool {
+			return state.CurrentFeeRate == 20 &&
+				state.RetryCount == 1 &&
+				state.LastBroadcastHeight == 103
+		}))
+}
+
+// ===========================================================================
+// Tests: CSV Completion and Sweep
+// ===========================================================================
+
+// setupCSVWaitState creates an UnrollerActor with a single VTXO in
+// AwaitingCSV status. The leaf is confirmed at leafConfirmHeight and
+// the CSV delay is set via the vtxo.Expiry field.
+func setupCSVWaitState(t *testing.T, leafConfirmHeight int32,
+	csvDelay uint32,
+) (*UnrollerActor, *MockUnrollStore, *mockChainSourceRef, wire.OutPoint) {
+
+	t.Helper()
+
+	store := &MockUnrollStore{}
+	cs := newMockChainSourceRef(t)
+
+	selfRef := &mockSelfRef{}
+	cfg := &UnrollerConfig{
+		ChainSource: cs,
+		Store:       store,
+		ChainParams: &chaincfg.RegressionNetParams,
+		Logger:      btclog.Disabled,
+		SelfRef:     selfRef,
+		WalletKit:   nil,
+		// Signer and SweepAddress intentionally nil —
+		// sweep is skipped.
+	}
+	a := NewUnrollerActor(cfg)
+
+	outpoint := newTestOutpoint(t)
+	rootNode := makeSimpleNode(t, newTestOutpoint(t), 50000)
+	vtxoTree := &tree.Tree{Root: rootNode}
+
+	levelOrder, err := extractLevelOrder(vtxoTree)
+	require.NoError(t, err)
+
+	state := &UnrollState{
+		VTXOOutpoint: outpoint,
+		VTXO: &round.ClientVTXO{
+			Outpoint: outpoint,
+			Expiry:   csvDelay,
+			TreePath: vtxoTree,
+		},
+		LevelOrder:        levelOrder,
+		CurrentLevel:      0,
+		BroadcastTxids:    make(map[chainhash.Hash]bool),
+		ConfirmedTxids:    make(map[chainhash.Hash]ConfirmationInfo),
+		Status:            UnrollStatusAwaitingCSV,
+		LeafConfirmHeight: leafConfirmHeight,
+	}
+
+	a.activeUnrolls[outpoint] = state
+	a.indexUnrollTxids(state)
+
+	store.On("UpdateUnrollState", mock.Anything,
+		mock.Anything).Return(nil)
+
+	return a, store, cs, outpoint
+}
+
+func TestCSVCompletionTransitionsToComplete(t *testing.T) {
+	t.Parallel()
+
+	// Leaf confirmed at height 100, CSV delay = 10.
+	// CSV target = 100 + 10 = 110.
+	a, store, _, outpoint := setupCSVWaitState(t, 100, 10)
+
+	// Block at 109: CSV not yet satisfied.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 109})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	state, active := a.activeUnrolls[outpoint]
+	require.True(t, active, "should still be active before CSV")
+	require.Equal(t, UnrollStatusAwaitingCSV, state.Status)
+
+	// Block at 110: CSV satisfied → state transitions to Complete.
+	result = a.Receive(t.Context(), &BlockEpochEvent{Height: 110})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	// After completion, the unroll is removed from active tracking.
+	_, stillActive := a.activeUnrolls[outpoint]
+	require.False(t, stillActive,
+		"unroll should be removed after CSV completion")
+
+	// UpdateUnrollState should have been called to persist the
+	// Complete status.
+	store.AssertCalled(t, "UpdateUnrollState",
+		mock.Anything, mock.Anything)
+}
+
+func TestCSVCompletionSkipsSweepWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	// Signer and SweepAddress are nil in setupCSVWaitState, so
+	// sweep should be skipped gracefully.
+	a, _, cs, outpoint := setupCSVWaitState(t, 100, 5)
+
+	// Trigger CSV completion.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 105})
+	_, err := result.Unpack()
+	require.NoError(t, err)
+
+	// Unroll should complete without attempting broadcast (sweep
+	// not configured).
+	_, active := a.activeUnrolls[outpoint]
+	require.False(t, active)
+
+	// No BroadcastTxRequest should have been issued.
+	require.Equal(t, 0, cs.askCallCounts["BroadcastTxRequest"],
+		"no sweep broadcast when signer is nil")
+}
+
+func TestCSVBaselineInitializedOnFirstEpoch(t *testing.T) {
+	t.Parallel()
+
+	// Set LeafConfirmHeight to 0 (not yet initialized).
+	store := &MockUnrollStore{}
+	cs := newMockChainSourceRef(t)
+
+	selfRef := &mockSelfRef{}
+	cfg := &UnrollerConfig{
+		ChainSource: cs,
+		Store:       store,
+		ChainParams: &chaincfg.RegressionNetParams,
+		Logger:      btclog.Disabled,
+		SelfRef:     selfRef,
+		WalletKit:   nil,
+	}
+	a := NewUnrollerActor(cfg)
+
+	outpoint := newTestOutpoint(t)
+	rootNode := makeSimpleNode(t, newTestOutpoint(t), 50000)
+	vtxoTree := &tree.Tree{Root: rootNode}
+
+	levelOrder, err := extractLevelOrder(vtxoTree)
+	require.NoError(t, err)
+
+	state := &UnrollState{
+		VTXOOutpoint: outpoint,
+		VTXO: &round.ClientVTXO{
+			Outpoint: outpoint,
+			Expiry:   10,
+			TreePath: vtxoTree,
+		},
+		LevelOrder:        levelOrder,
+		CurrentLevel:      0,
+		BroadcastTxids:    make(map[chainhash.Hash]bool),
+		ConfirmedTxids:    make(map[chainhash.Hash]ConfirmationInfo),
+		Status:            UnrollStatusAwaitingCSV,
+		LeafConfirmHeight: 0, // not yet set
+	}
+
+	a.activeUnrolls[outpoint] = state
+
+	store.On("UpdateUnrollState", mock.Anything,
+		mock.Anything).Return(nil)
+
+	// First block epoch should initialize the baseline.
+	result := a.Receive(t.Context(), &BlockEpochEvent{Height: 200})
+	_, err = result.Unpack()
+	require.NoError(t, err)
+
+	require.Equal(t, int32(200), state.LeafConfirmHeight,
+		"baseline should be initialized from first epoch")
+
+	// CSV target is now 200 + 10 = 210, so still waiting.
+	require.Equal(t, UnrollStatusAwaitingCSV, state.Status)
 }
 
 func TestFeeBumpNotTriggeredForCSVWait(t *testing.T) {
