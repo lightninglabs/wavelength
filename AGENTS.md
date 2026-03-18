@@ -8,6 +8,8 @@ This file is a **map**, not a manual. Follow links for details.
 |---------|---------|
 | `make build` | Compile the project |
 | `make lint` | Run linter (must pass before committing) |
+| `make lint-changed-local` | Run native local linter on changes vs base |
+| `make install-custom-gcl` | Build native `custom-gcl` for this host |
 | `make fmt` | Format all Go source files |
 | `make unit pkg=<pkg> case=<test>` | Run unit tests |
 | `make unit log="stdlog trace" pkg=<pkg> case=<test>` | Unit tests with debug logs |
@@ -49,6 +51,8 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 1. **Never edit generated code** — regenerate via `make rpc` or `make sqlc`.
 2. **Never write raw SQL in Go** — add queries to `db/queries/`, use sqlc.
 3. **Run `make lint` before every commit.**
+   Install native `custom-gcl` with `make install-custom-gcl` first if you
+   want the local no-Docker path to load the real `ll` plugin.
 4. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
 5. **No underscores in Go test names** — `TestFoo` not `Test_Foo`.
 6. Use early returns; do not nest error handling.

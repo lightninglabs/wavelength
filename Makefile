@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-local lint-source-local lint-changed-local local-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
+.PHONY: lint lint-source lint-local lint-source-local lint-changed-local local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
@@ -212,45 +212,10 @@ docker-tools:
 	docker build -q -t darepo-tools $(TOOLS_DIR)
 
 local-custom-gcl:
-	@mkdir -p $(TOOLS_DIR)
-	@if command -v custom-gcl >/dev/null 2>&1; then \
-		ln -sf "$$(command -v custom-gcl)" "$(LOCAL_CUSTOM_GCL)"; \
-		echo "Using custom-gcl from PATH."; \
-	elif command -v go >/dev/null 2>&1; then \
-		printf '%s\n' \
-			'#!/bin/sh' \
-			'set -e' \
-			'run_golangci() {' \
-			'	exec go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5 "$$@"' \
-			'}' \
-			'if [ "$$1" = "run" ]; then' \
-			'	shift' \
-			'	tmp="$$(mktemp)"' \
-			'	cfg="$$tmp.yml"' \
-			'	mv "$$tmp" "$$cfg"' \
-			'	trap '\''rm -f "$$cfg"'\'' EXIT' \
-			'	awk '\''{' \
-			'		if ($$0 ~ /^linters-settings:[[:space:]]*$$/) {in_ls=1; print; next}' \
-			'		if (in_ls && $$0 ~ /^  custom:[[:space:]]*$$/) {skip_custom=1; next}' \
-			'		if (skip_custom && $$0 ~ /^  [A-Za-z0-9_-]+:[[:space:]]*$$/) {skip_custom=0}' \
-			'		if (in_ls && $$0 ~ /^[^[:space:]]/) {in_ls=0}' \
-			'		if (skip_custom) {next}' \
-			'		if ($$0 ~ /^[[:space:]]*-[[:space:]]*ll[[:space:]]*$$/) {sub(/ll/, "lll"); print; next}' \
-			'		print $$0' \
-			'	}'\'' .golangci.yml > "$$cfg"' \
-			'	run_golangci run --config "$$cfg" "$$@"' \
-			'fi' \
-			'run_golangci "$$@"' \
-			> "$(LOCAL_CUSTOM_GCL)"; \
-		chmod +x "$(LOCAL_CUSTOM_GCL)"; \
-		echo "custom-gcl not found; using golangci-lint v1.64.5 fallback"; \
-		echo "(custom linter plugin 'll' is disabled in local mode)."; \
-	elif [ -x "$(LOCAL_CUSTOM_GCL)" ]; then \
-		echo "Using local linter binary: $(LOCAL_CUSTOM_GCL)"; \
-	else \
-		echo "error: install go or custom-gcl"; \
-		exit 1; \
-	fi
+	@./scripts/local-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
+
+install-custom-gcl: #? Build and install a native custom-gcl binary to dest=<path> (default: ./tools/custom-gcl)
+	@./scripts/install-custom-gcl.sh "$(if $(dest),$(dest),$(LOCAL_CUSTOM_GCL))"
 
 lint-source: docker-tools
 	@$(call print, "Linting source.")
