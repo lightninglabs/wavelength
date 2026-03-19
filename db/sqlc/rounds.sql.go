@@ -59,7 +59,7 @@ func (q *Queries) CountVTXOsByStatus(ctx context.Context, status string) (int64,
 }
 
 const GetLockedVTXOs = `-- name: GetLockedVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE lock_owner_kind = $1
 	AND lock_owner_id = $2
 `
@@ -84,8 +84,12 @@ func (q *Queries) GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) 
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -292,7 +296,7 @@ func (q *Queries) GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]Roun
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -310,8 +314,12 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.RoundID,
 		&i.BatchOutputIndex,
 		&i.Amount,
+		&i.ExitDelay,
 		&i.PkScript,
-		&i.CosignerKey,
+		&i.OwnerKey,
+		&i.OperatorKey,
+		&i.OperatorKeyFamily,
+		&i.OperatorKeyIndex,
 		&i.Status,
 		&i.LockOwnerKind,
 		&i.LockOwnerID,
@@ -480,21 +488,26 @@ const InsertVTXO = `-- name: InsertVTXO :exec
 
 INSERT INTO vtxos (
 	outpoint_hash, outpoint_index, round_id, batch_output_index,
-	amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	amount, exit_delay, pk_script, owner_key, operator_key, status,
+	operator_key_family, operator_key_index, lock_owner_kind, lock_owner_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 `
 
 type InsertVTXOParams struct {
-	OutpointHash     []byte
-	OutpointIndex    int32
-	RoundID          []byte
-	BatchOutputIndex sql.NullInt32
-	Amount           int64
-	PkScript         []byte
-	CosignerKey      []byte
-	Status           string
-	LockOwnerKind    sql.NullString
-	LockOwnerID      []byte
+	OutpointHash      []byte
+	OutpointIndex     int32
+	RoundID           []byte
+	BatchOutputIndex  sql.NullInt32
+	Amount            int64
+	ExitDelay         int32
+	PkScript          []byte
+	OwnerKey          []byte
+	OperatorKey       []byte
+	Status            string
+	OperatorKeyFamily int32
+	OperatorKeyIndex  int32
+	LockOwnerKind     sql.NullString
+	LockOwnerID       []byte
 }
 
 // VTXOStore queries.
@@ -505,9 +518,13 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.RoundID,
 		arg.BatchOutputIndex,
 		arg.Amount,
+		arg.ExitDelay,
 		arg.PkScript,
-		arg.CosignerKey,
+		arg.OwnerKey,
+		arg.OperatorKey,
 		arg.Status,
+		arg.OperatorKeyFamily,
+		arg.OperatorKeyIndex,
 		arg.LockOwnerKind,
 		arg.LockOwnerID,
 	)
@@ -560,7 +577,7 @@ func (q *Queries) ListAllRounds(ctx context.Context, arg ListAllRoundsParams) ([
 }
 
 const ListAllVTXOsPaged = `-- name: ListAllVTXOsPaged :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 ORDER BY outpoint_hash, outpoint_index LIMIT $1 OFFSET $2
 `
 
@@ -584,8 +601,12 @@ func (q *Queries) ListAllVTXOsPaged(ctx context.Context, arg ListAllVTXOsPagedPa
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -779,7 +800,7 @@ func (q *Queries) ListRoundsByStatus(ctx context.Context, arg ListRoundsByStatus
 }
 
 const ListVTXOsByPkScriptsPostgres = `-- name: ListVTXOsByPkScriptsPostgres :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE pk_script = ANY($1::bytea[])
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -799,8 +820,12 @@ func (q *Queries) ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts []
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -819,7 +844,7 @@ func (q *Queries) ListVTXOsByPkScriptsPostgres(ctx context.Context, pkScripts []
 }
 
 const ListVTXOsByPkScriptsSqlite = `-- name: ListVTXOsByPkScriptsSqlite :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE pk_script IN (/*SLICE:pk_scripts*/?)
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -849,8 +874,12 @@ func (q *Queries) ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -869,7 +898,7 @@ func (q *Queries) ListVTXOsByPkScriptsSqlite(ctx context.Context, pkScripts [][]
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE round_id = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -889,8 +918,12 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -909,7 +942,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID []byte) ([]Vtxo,
 }
 
 const ListVTXOsByStatus = `-- name: ListVTXOsByStatus :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos
 WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index
 `
@@ -929,8 +962,12 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,
@@ -949,7 +986,7 @@ func (q *Queries) ListVTXOsByStatus(ctx context.Context, status string) ([]Vtxo,
 }
 
 const ListVTXOsByStatusPaged = `-- name: ListVTXOsByStatusPaged :many
-SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, pk_script, cosigner_key, status, lock_owner_kind, lock_owner_id FROM vtxos WHERE status = $1
+SELECT outpoint_hash, outpoint_index, round_id, batch_output_index, amount, exit_delay, pk_script, owner_key, operator_key, operator_key_family, operator_key_index, status, lock_owner_kind, lock_owner_id FROM vtxos WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index LIMIT $2 OFFSET $3
 `
 
@@ -974,8 +1011,12 @@ func (q *Queries) ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsBySta
 			&i.RoundID,
 			&i.BatchOutputIndex,
 			&i.Amount,
+			&i.ExitDelay,
 			&i.PkScript,
-			&i.CosignerKey,
+			&i.OwnerKey,
+			&i.OperatorKey,
+			&i.OperatorKeyFamily,
+			&i.OperatorKeyIndex,
 			&i.Status,
 			&i.LockOwnerKind,
 			&i.LockOwnerID,

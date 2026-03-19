@@ -20,6 +20,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testKeyDesc(pub *btcec.PublicKey) keychain.KeyDescriptor {
+	return keychain.KeyDescriptor{PubKey: pub}
+}
+
 // TestValidateBoardingRequest tests the ValidateBoardingRequest validation
 // function with various scenarios.
 func TestValidateBoardingRequest(t *testing.T) {
@@ -351,7 +355,7 @@ func TestValidateVTXORequest(t *testing.T) {
 
 		// Build expected descriptor to get pkScript.
 		descriptor, err := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, 144,
+			10000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -359,7 +363,7 @@ func TestValidateVTXORequest(t *testing.T) {
 			Amount:      10000,
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -383,14 +387,14 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			500, clientPub, h.operatorPub, 144,
+			500, clientPub, h.operatorPub, nil, 144,
 		)
 
 		req := &types.VTXORequest{
 			Amount:      500,
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -412,14 +416,14 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			2000000, clientPub, h.operatorPub, 144,
+			2000000, clientPub, h.operatorPub, nil, 144,
 		)
 
 		req := &types.VTXORequest{
 			Amount:      2000000,
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -441,14 +445,14 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, 50,
+			10000, clientPub, h.operatorPub, nil, 50,
 		)
 
 		req := &types.VTXORequest{
 			Amount:      10000,
 			PkScript:    descriptor.PkScript,
 			Expiry:      50,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -472,14 +476,14 @@ func TestValidateVTXORequest(t *testing.T) {
 		wrongOpKey, _ := testutils.CreateKey(99)
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, wrongOpKey, 144,
+			10000, clientPub, wrongOpKey, nil, 144,
 		)
 
 		req := &types.VTXORequest{
 			Amount:      10000,
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: wrongOpKey,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -501,14 +505,14 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, 144,
+			10000, clientPub, h.operatorPub, nil, 144,
 		)
 
 		req := &types.VTXORequest{
 			Amount:      10000,
 			PkScript:    descriptor.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -538,7 +542,7 @@ func TestValidateVTXORequest(t *testing.T) {
 			// Wrong script.
 			PkScript:    []byte{0x00, 0x14},
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -560,17 +564,17 @@ func TestValidateVTXORequest(t *testing.T) {
 		h.env.Terms.VTXOExitDelay = 100
 
 		descriptor1, _ := tree.NewVTXODescriptor(
-			10000, clientPub, h.operatorPub, 144,
+			10000, clientPub, h.operatorPub, nil, 144,
 		)
 		descriptor2, _ := tree.NewVTXODescriptor(
-			20000, clientPub, h.operatorPub, 144,
+			20000, clientPub, h.operatorPub, nil, 144,
 		)
 
 		req1 := &types.VTXORequest{
 			Amount:      10000,
 			PkScript:    descriptor1.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			SigningKey: keychain.KeyDescriptor{
 				PubKey: signingKey1,
@@ -581,7 +585,7 @@ func TestValidateVTXORequest(t *testing.T) {
 			Amount:      20000,
 			PkScript:    descriptor2.PkScript,
 			Expiry:      144,
-			ClientKey:   clientPub,
+			OwnerKey:    testKeyDesc(clientPub),
 			OperatorKey: h.operatorPub,
 			// Different signing key.
 			SigningKey: keychain.KeyDescriptor{
@@ -747,7 +751,7 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 		// Create a live VTXO descriptor.
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
+			50000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -807,7 +811,7 @@ func TestValidateForfeitRequest(t *testing.T) {
 
 		// Create an unconfirmed VTXO descriptor.
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
+			50000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1050,12 +1054,12 @@ func TestValidateJoinRequest(t *testing.T) {
 		vtxoKey2, _ := testutils.CreateKey(11)
 
 		desc1, err := tree.NewVTXODescriptor(
-			30000, clientPub, h.operatorPub, 144,
+			30000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
 		desc2, err := tree.NewVTXODescriptor(
-			40000, clientPub, h.operatorPub, 144,
+			40000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1071,7 +1075,7 @@ func TestValidateJoinRequest(t *testing.T) {
 					Amount:      30000,
 					PkScript:    desc1.PkScript,
 					Expiry:      144,
-					ClientKey:   clientPub,
+					OwnerKey:    testKeyDesc(clientPub),
 					OperatorKey: h.operatorPub,
 					SigningKey: keychain.KeyDescriptor{
 						PubKey: vtxoKey1,
@@ -1081,7 +1085,7 @@ func TestValidateJoinRequest(t *testing.T) {
 					Amount:      40000,
 					PkScript:    desc2.PkScript,
 					Expiry:      144,
-					ClientKey:   clientPub,
+					OwnerKey:    testKeyDesc(clientPub),
 					OperatorKey: h.operatorPub,
 					SigningKey: keychain.KeyDescriptor{
 						PubKey: vtxoKey2,
@@ -1128,7 +1132,7 @@ func TestValidateJoinRequest(t *testing.T) {
 
 		// Request VTXO for more than boarding input value.
 		desc, err := tree.NewVTXODescriptor(
-			150000, clientPub, h.operatorPub, 144,
+			150000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1143,7 +1147,7 @@ func TestValidateJoinRequest(t *testing.T) {
 				Amount:      150000,
 				PkScript:    desc.PkScript,
 				Expiry:      144,
-				ClientKey:   clientPub,
+				OwnerKey:    testKeyDesc(clientPub),
 				OperatorKey: h.operatorPub,
 				SigningKey: keychain.KeyDescriptor{
 					PubKey: vtxoKey,
@@ -1285,7 +1289,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
+			50000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1333,7 +1337,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
+			50000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1371,7 +1375,7 @@ func TestValidateJoinRequest(t *testing.T) {
 		}
 
 		descriptor, err := tree.NewVTXODescriptor(
-			50000, clientPub, h.operatorPub, 144,
+			50000, clientPub, h.operatorPub, nil, 144,
 		)
 		require.NoError(t, err)
 
@@ -1430,7 +1434,7 @@ func TestValidateJoinRequest(t *testing.T) {
 			}
 
 			descriptor, err := tree.NewVTXODescriptor(
-				50000, clientPub, h.operatorPub, 144,
+				50000, clientPub, h.operatorPub, nil, 144,
 			)
 			require.NoError(t, err)
 
@@ -1501,7 +1505,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, exitDelay,
+			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1567,7 +1571,6 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: forfeitSig,
 			}},
 			reg, connectorAssignments, forfeitScript,
-			operatorPub,
 		)
 		require.NoError(t, err)
 	})
@@ -1608,7 +1611,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: dummySig,
 			}},
 			reg, map[wire.OutPoint]*ConnectorLeafAssignment{},
-			[]byte{0x51}, nil,
+			[]byte{0x51},
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "no connector assignment")
@@ -1630,7 +1633,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, exitDelay,
+			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1697,7 +1700,6 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: forfeitSig,
 			}},
 			reg, connectorAssignments, forfeitScript,
-			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -1720,7 +1722,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, exitDelay,
+			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1784,7 +1786,6 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: forfeitSig,
 			}},
 			reg, connectorAssignments, forfeitScript,
-			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -1807,7 +1808,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, exitDelay,
+			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1871,7 +1872,6 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: forfeitSig,
 			}},
 			reg, connectorAssignments, correctForfeitScript,
-			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(),
@@ -1894,7 +1894,7 @@ func TestValidateForfeitTxs(t *testing.T) {
 		operatorPub := operatorPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, operatorPub, exitDelay,
+			vtxoAmount, clientPub, operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
@@ -1957,7 +1957,6 @@ func TestValidateForfeitTxs(t *testing.T) {
 				ClientVTXOSig: badSig,
 			}},
 			reg, connectorAssignments, forfeitScript,
-			operatorPub,
 		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "invalid VTXO signature")
@@ -1989,7 +1988,7 @@ func forfeitTxSig(t *testing.T, ftx *wire.MsgTx,
 	t.Helper()
 
 	vtxoTapScript, err := scripts.VTXOTapScript(
-		desc.CoSignerKey, operatorPub, exitDelay,
+		desc.OwnerKey, operatorPub, exitDelay,
 	)
 	require.NoError(t, err)
 

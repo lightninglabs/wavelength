@@ -105,9 +105,9 @@ func (h *testHarness) createSimpleTree(t *testing.T) *tree.Tree {
 
 	// Create a leaf descriptor with matching amount.
 	leaf := tree.LeafDescriptor{
-		CoSignerKey: clientKey,
-		Amount:      leafAmount,
-		PkScript:    []byte{0x51, 0x20, 0x01, 0x02},
+		SigningKey: clientKey,
+		Amount:     leafAmount,
+		PkScript:   []byte{0x51, 0x20, 0x01, 0x02},
 	}
 
 	// Build a simple tree.

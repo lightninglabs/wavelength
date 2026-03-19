@@ -310,7 +310,10 @@ func createTestClientRegistration(t *testing.T,
 	vtxoDescriptor := &tree.VTXODescriptor{
 		Amount:      btcutil.Amount(40000),
 		PkScript:    []byte{0x51, 0x20, 0x03, 0x04},
-		CoSignerKey: vtxoKey.PubKey(),
+		ExitDelay:   144,
+		OwnerKey:    clientKey.PubKey(),
+		OperatorKey: operatorKey.PubKey(),
+		SigningKey:  vtxoKey.PubKey(),
 	}
 
 	return &rounds.ClientRegistration{
@@ -406,6 +409,9 @@ func createTestVTXO(t *testing.T, roundID rounds.RoundID,
 	clientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
 	return &rounds.VTXO{
 		Outpoint: wire.OutPoint{
 			Hash:  testOutpointHash(t, "vtxo"),
@@ -414,9 +420,18 @@ func createTestVTXO(t *testing.T, roundID rounds.RoundID,
 		RoundID:          roundID,
 		BatchOutputIndex: 0,
 		Descriptor: &tree.VTXODescriptor{
+			OwnerKey:    clientKey.PubKey(),
+			OperatorKey: operatorKey.PubKey(),
 			Amount:      btcutil.Amount(100000 * (idx + 1)),
+			ExitDelay:   144,
 			PkScript:    []byte{0x51, 0x20, byte(idx)},
-			CoSignerKey: clientKey.PubKey(),
+		},
+		OperatorKeyDesc: &keychain.KeyDescriptor{
+			KeyLocator: keychain.KeyLocator{
+				Family: 1,
+				Index:  uint32(idx),
+			},
+			PubKey: operatorKey.PubKey(),
 		},
 		Status: rounds.VTXOStatusPending,
 	}

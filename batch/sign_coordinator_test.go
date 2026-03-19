@@ -372,12 +372,12 @@ func TestTreeSignCoordinatorGetSignaturesForSigners(t *testing.T) {
 	// Build a simple treepkg using the VTXODescriptor system.
 	// Create two VTXOs - one for each client.
 	desc1, err := treepkg.NewVTXODescriptor(
-		5000, client1Key, operatorKey, 144,
+		5000, client1Key, operatorKey, client1Key, 144,
 	)
 	require.NoError(t, err)
 
 	desc2, err := treepkg.NewVTXODescriptor(
-		5000, client2Key, operatorKey, 144,
+		5000, client2Key, operatorKey, client2Key, 144,
 	)
 	require.NoError(t, err)
 
@@ -575,7 +575,7 @@ func TestTreeSignCoordinatorErrors(t *testing.T) {
 	sweepKey, _ := testutils.CreateKey(99)
 
 	vtxo, err := treepkg.NewVTXODescriptor(
-		5000, clientKey, operatorKey, 144,
+		5000, clientKey, operatorKey, clientKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -725,12 +725,12 @@ func TestTreeSignCoordinatorGetNoncesForSigners(t *testing.T) {
 	sweepKey, _ := testutils.CreateKey(99)
 
 	desc1, err := treepkg.NewVTXODescriptor(
-		5000, client1Key, operatorKey, 144,
+		5000, client1Key, operatorKey, client1Key, 144,
 	)
 	require.NoError(t, err)
 
 	desc2, err := treepkg.NewVTXODescriptor(
-		5000, client2Key, operatorKey, 144,
+		5000, client2Key, operatorKey, client2Key, 144,
 	)
 	require.NoError(t, err)
 
@@ -867,17 +867,19 @@ func TestEndToEndTreeSigning(t *testing.T) {
 
 	// Create VTXO descriptors.
 	vtxoA1, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientAKey1, operatorKey, 144,
+		btcutil.Amount(5000), clientAKey1,
+		operatorKey, clientAKey1, 144,
 	)
 	require.NoError(t, err)
 
 	vtxoA2, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(3000), clientAKey2, operatorKey, 144,
+		btcutil.Amount(3000), clientAKey2,
+		operatorKey, clientAKey2, 144,
 	)
 	require.NoError(t, err)
 
 	vtxoB, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(2000), clientBKey, operatorKey, 144,
+		btcutil.Amount(2000), clientBKey, operatorKey, clientBKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -1168,7 +1170,7 @@ func TestTreeSigningWithSingleClient(t *testing.T) {
 
 	// Create single VTXO.
 	vtxo, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientKey, operatorKey, 144,
+		btcutil.Amount(5000), clientKey, operatorKey, clientKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -1286,7 +1288,8 @@ func TestTreeSigningScriptValidation(t *testing.T) {
 	// Create VTXO.
 	exitDelay := uint32(144)
 	vtxo, err := treepkg.NewVTXODescriptor(
-		btcutil.Amount(5000), clientKey, operatorKey, exitDelay,
+		btcutil.Amount(5000), clientKey,
+		operatorKey, clientKey, exitDelay,
 	)
 	require.NoError(t, err)
 

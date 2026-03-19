@@ -24,7 +24,10 @@ import (
 const (
 	vtxoDescPkScriptType    tlv.Type = 0
 	vtxoDescAmountType      tlv.Type = 1
-	vtxoDescCoSignerKeyType tlv.Type = 2
+	vtxoDescExitDelayType   tlv.Type = 2
+	vtxoDescOwnerKeyType    tlv.Type = 3
+	vtxoDescOperatorKeyType tlv.Type = 4
+	vtxoDescSigningKeyType  tlv.Type = 5
 )
 
 // TLV type constants for ClientRegistration.
@@ -60,6 +63,7 @@ const (
 	vtxoBatchOutputIndexType tlv.Type = 2
 	vtxoDescriptorType       tlv.Type = 3
 	vtxoStatusType           tlv.Type = 4
+	vtxoOperatorKeyDescType  tlv.Type = 5
 )
 
 // TLV type constants for Tapscript (waddrmgr.Tapscript).
@@ -83,19 +87,44 @@ const (
 	keyLocatorIndexType  tlv.Type = 1
 )
 
-// SerializeVTXODescriptor serializes a tree.VTXODescriptor using TLV encoding.
-func SerializeVTXODescriptor(desc *tree.VTXODescriptor) ([]byte, error) {
+// SerializeVTXODescriptor serializes a VTXODescriptor
+// (which includes the ephemeral signing key) using TLV encoding.
+// This is used for client registration persistence.
+func SerializeVTXODescriptor(
+	desc *tree.VTXODescriptor) ([]byte, error) {
+
 	if desc == nil {
-		return nil, fmt.Errorf("cannot serialize nil VTXODescriptor")
+		return nil, fmt.Errorf(
+			"cannot serialize nil VTXODescriptor",
+		)
 	}
 
 	var (
-		buf    bytes.Buffer
-		amount = uint64(desc.Amount)
+		buf       bytes.Buffer
+		amount    = uint64(desc.Amount)
+		exitDelay = desc.ExitDelay
 	)
 
-	// Serialize cosigner key as compressed 33-byte format.
-	cosignerKeyBytes := desc.CoSignerKey.SerializeCompressed()
+	if desc.OwnerKey == nil {
+		return nil, fmt.Errorf(
+			"vtxo descriptor owner key is nil",
+		)
+	}
+	if desc.OperatorKey == nil {
+		return nil, fmt.Errorf(
+			"vtxo descriptor operator key is nil",
+		)
+	}
+	if desc.SigningKey == nil {
+		return nil, fmt.Errorf(
+			"vtxo descriptor signing key is nil",
+		)
+	}
+
+	// Serialize pubkeys as compressed 33-byte format.
+	ownerKeyBytes := desc.OwnerKey.SerializeCompressed()
+	operatorKeyBytes := desc.OperatorKey.SerializeCompressed()
+	signingKeyBytes := desc.SigningKey.SerializeCompressed()
 
 	tlvStream, err := tlv.NewStream(
 		tlv.MakeDynamicRecord(vtxoDescPkScriptType, &desc.PkScript,
@@ -103,8 +132,17 @@ func SerializeVTXODescriptor(desc *tree.VTXODescriptor) ([]byte, error) {
 				return uint64(len(desc.PkScript))
 			}, tlv.EVarBytes, tlv.DVarBytes),
 		tlv.MakePrimitiveRecord(vtxoDescAmountType, &amount),
-		tlv.MakeDynamicRecord(vtxoDescCoSignerKeyType,
-			&cosignerKeyBytes, func() uint64 {
+		tlv.MakePrimitiveRecord(vtxoDescExitDelayType, &exitDelay),
+		tlv.MakeDynamicRecord(vtxoDescOwnerKeyType,
+			&ownerKeyBytes, func() uint64 {
+				return 33
+			}, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescOperatorKeyType,
+			&operatorKeyBytes, func() uint64 {
+				return 33
+			}, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescSigningKeyType,
+			&signingKeyBytes, func() uint64 {
 				return 33
 			}, tlv.EVarBytes, tlv.DVarBytes),
 	)
@@ -119,21 +157,31 @@ func SerializeVTXODescriptor(desc *tree.VTXODescriptor) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// DeserializeVTXODescriptor deserializes a tree.VTXODescriptor from
-// TLV-encoded bytes.
-func DeserializeVTXODescriptor(data []byte) (*tree.VTXODescriptor, error) {
+// DeserializeVTXODescriptor deserializes a VTXODescriptor
+// from TLV-encoded bytes.
+func DeserializeVTXODescriptor(
+	data []byte) (*tree.VTXODescriptor, error) {
+
 	var (
 		pkScript         []byte
 		amount           uint64
-		cosignerKeyBytes []byte
+		exitDelay        uint32
+		ownerKeyBytes    []byte
+		operatorKeyBytes []byte
+		signingKeyBytes  []byte
 	)
 
 	tlvStream, err := tlv.NewStream(
 		tlv.MakeDynamicRecord(vtxoDescPkScriptType, &pkScript, nil,
 			tlv.EVarBytes, tlv.DVarBytes),
 		tlv.MakePrimitiveRecord(vtxoDescAmountType, &amount),
-		tlv.MakeDynamicRecord(vtxoDescCoSignerKeyType,
-			&cosignerKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakePrimitiveRecord(vtxoDescExitDelayType, &exitDelay),
+		tlv.MakeDynamicRecord(vtxoDescOwnerKeyType,
+			&ownerKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescOperatorKeyType,
+			&operatorKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescSigningKeyType,
+			&signingKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
 	)
 	if err != nil {
 		return nil, err
@@ -143,16 +191,134 @@ func DeserializeVTXODescriptor(data []byte) (*tree.VTXODescriptor, error) {
 		return nil, err
 	}
 
-	// Parse cosigner key.
-	cosignerKey, err := btcec.ParsePubKey(cosignerKeyBytes)
+	ownerKey, err := btcec.ParsePubKey(ownerKeyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse cosigner key: %w", err)
+		return nil, fmt.Errorf("parse owner key: %w", err)
+	}
+
+	operatorKey, err := btcec.ParsePubKey(operatorKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse operator key: %w", err)
+	}
+
+	signingKey, err := btcec.ParsePubKey(signingKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse signing key: %w", err)
 	}
 
 	return &tree.VTXODescriptor{
 		PkScript:    pkScript,
 		Amount:      btcutil.Amount(amount),
-		CoSignerKey: cosignerKey,
+		ExitDelay:   exitDelay,
+		OwnerKey:    ownerKey,
+		OperatorKey: operatorKey,
+		SigningKey:  signingKey,
+	}, nil
+}
+
+// serializeStoredVTXODescriptor serializes the VTXO definition that persists
+// with a created rounds.VTXO. Unlike round-registration descriptors, this
+// does not include the round tree signing key.
+func serializeStoredVTXODescriptor(
+	desc *tree.VTXODescriptor) ([]byte, error) {
+
+	if desc == nil {
+		return nil, fmt.Errorf("cannot serialize nil VTXODescriptor")
+	}
+
+	var (
+		buf       bytes.Buffer
+		amount    = uint64(desc.Amount)
+		exitDelay = desc.ExitDelay
+	)
+
+	if desc.OwnerKey == nil {
+		return nil, fmt.Errorf("stored vtxo descriptor " +
+			"owner key is nil")
+	}
+	if desc.OperatorKey == nil {
+		return nil, fmt.Errorf("stored vtxo descriptor " +
+			"operator key is nil")
+	}
+
+	ownerKeyBytes := desc.OwnerKey.SerializeCompressed()
+	operatorKeyBytes := desc.OperatorKey.SerializeCompressed()
+
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(vtxoDescPkScriptType, &desc.PkScript,
+			func() uint64 {
+				return uint64(len(desc.PkScript))
+			}, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakePrimitiveRecord(vtxoDescAmountType, &amount),
+		tlv.MakePrimitiveRecord(vtxoDescExitDelayType, &exitDelay),
+		tlv.MakeDynamicRecord(vtxoDescOwnerKeyType,
+			&ownerKeyBytes, func() uint64 {
+				return 33
+			}, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescOperatorKeyType,
+			&operatorKeyBytes, func() uint64 {
+				return 33
+			}, tlv.EVarBytes, tlv.DVarBytes),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tlvStream.Encode(&buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// deserializeStoredVTXODescriptor deserializes the persisted VTXO definition
+// from a rounds.VTXO. It reconstructs owner/operator/expiry metadata but does
+// not expect a round tree signing key.
+func deserializeStoredVTXODescriptor(
+	data []byte) (*tree.VTXODescriptor, error) {
+
+	var (
+		pkScript         []byte
+		amount           uint64
+		exitDelay        uint32
+		ownerKeyBytes    []byte
+		operatorKeyBytes []byte
+	)
+
+	tlvStream, err := tlv.NewStream(
+		tlv.MakeDynamicRecord(vtxoDescPkScriptType, &pkScript, nil,
+			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakePrimitiveRecord(vtxoDescAmountType, &amount),
+		tlv.MakePrimitiveRecord(vtxoDescExitDelayType, &exitDelay),
+		tlv.MakeDynamicRecord(vtxoDescOwnerKeyType,
+			&ownerKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoDescOperatorKeyType,
+			&operatorKeyBytes, nil, tlv.EVarBytes, tlv.DVarBytes),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tlvStream.Decode(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+
+	ownerKey, err := btcec.ParsePubKey(ownerKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse owner key: %w", err)
+	}
+
+	operatorKey, err := btcec.ParsePubKey(operatorKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse operator key: %w", err)
+	}
+
+	return &tree.VTXODescriptor{
+		PkScript:    pkScript,
+		Amount:      btcutil.Amount(amount),
+		ExitDelay:   exitDelay,
+		OwnerKey:    ownerKey,
+		OperatorKey: operatorKey,
 	}, nil
 }
 
@@ -1001,7 +1167,8 @@ func DeserializeClientRegistration(
 	}
 
 	vtxoDescriptors := make(
-		map[route.Vertex]*tree.VTXODescriptor, vtxoDescsCount,
+		map[route.Vertex]*tree.VTXODescriptor,
+		vtxoDescsCount,
 	)
 	for i := uint32(0); i < vtxoDescsCount; i++ {
 		// Read signing key (33 bytes).
@@ -1112,7 +1279,21 @@ func serializeRoundsVTXO(vtxo *rounds.VTXO) ([]byte, error) {
 	batchOutputIndex := uint32(vtxo.BatchOutputIndex)
 
 	// Serialize descriptor.
-	descriptorBytes, err := SerializeVTXODescriptor(vtxo.Descriptor)
+	descriptorBytes, err := serializeStoredVTXODescriptor(
+		vtxo.Descriptor,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if vtxo.OperatorKeyDesc == nil {
+		return nil, fmt.Errorf("rounds.VTXO operator key " +
+			"descriptor is nil")
+	}
+
+	operatorKeyDescBytes, err := serializeKeyDescriptor(
+		vtxo.OperatorKeyDesc,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,6 +1320,10 @@ func serializeRoundsVTXO(vtxo *rounds.VTXO) ([]byte, error) {
 			func() uint64 {
 				return uint64(len(statusBytes))
 			}, tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoOperatorKeyDescType,
+			&operatorKeyDescBytes, func() uint64 {
+				return uint64(len(operatorKeyDescBytes))
+			}, tlv.EVarBytes, tlv.DVarBytes),
 	)
 	if err != nil {
 		return nil, err
@@ -1154,11 +1339,12 @@ func serializeRoundsVTXO(vtxo *rounds.VTXO) ([]byte, error) {
 // deserializeRoundsVTXO deserializes a rounds.VTXO from TLV-encoded bytes.
 func deserializeRoundsVTXO(data []byte) (*rounds.VTXO, error) {
 	var (
-		roundIDBytes     []byte
-		outpointBytes    []byte
-		batchOutputIndex uint32
-		descriptorBytes  []byte
-		statusBytes      []byte
+		roundIDBytes         []byte
+		outpointBytes        []byte
+		batchOutputIndex     uint32
+		descriptorBytes      []byte
+		statusBytes          []byte
+		operatorKeyDescBytes []byte
 	)
 
 	tlvStream, err := tlv.NewStream(
@@ -1171,6 +1357,9 @@ func deserializeRoundsVTXO(data []byte) (*rounds.VTXO, error) {
 		tlv.MakeDynamicRecord(vtxoDescriptorType, &descriptorBytes,
 			nil, tlv.EVarBytes, tlv.DVarBytes),
 		tlv.MakeDynamicRecord(vtxoStatusType, &statusBytes, nil,
+			tlv.EVarBytes, tlv.DVarBytes),
+		tlv.MakeDynamicRecord(vtxoOperatorKeyDescType,
+			&operatorKeyDescBytes, nil,
 			tlv.EVarBytes, tlv.DVarBytes),
 	)
 	if err != nil {
@@ -1191,9 +1380,35 @@ func deserializeRoundsVTXO(data []byte) (*rounds.VTXO, error) {
 	}
 
 	// Deserialize descriptor.
-	descriptor, err := DeserializeVTXODescriptor(descriptorBytes)
+	descriptor, err := deserializeStoredVTXODescriptor(
+		descriptorBytes,
+	)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(operatorKeyDescBytes) == 0 {
+		return nil, fmt.Errorf("rounds.VTXO operator key descriptor " +
+			"is missing")
+	}
+
+	operatorKeyDesc, err := deserializeKeyDescriptor(operatorKeyDescBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	if operatorKeyDesc.PubKey == nil {
+		return nil, fmt.Errorf("rounds.VTXO operator key descriptor " +
+			"pubkey is missing")
+	}
+
+	if descriptor.OperatorKey == nil {
+		return nil, fmt.Errorf("rounds.VTXO operator key is missing")
+	}
+
+	if !operatorKeyDesc.PubKey.IsEqual(descriptor.OperatorKey) {
+		return nil, fmt.Errorf("rounds.VTXO operator key descriptor " +
+			"does not match descriptor operator key")
 	}
 
 	return &rounds.VTXO{
@@ -1201,6 +1416,7 @@ func deserializeRoundsVTXO(data []byte) (*rounds.VTXO, error) {
 		RoundID:          roundID,
 		BatchOutputIndex: int(batchOutputIndex),
 		Descriptor:       descriptor,
+		OperatorKeyDesc:  operatorKeyDesc,
 		Status:           rounds.VTXOStatus(statusBytes),
 	}, nil
 }

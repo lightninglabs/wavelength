@@ -23,6 +23,7 @@ import (
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -790,7 +791,7 @@ func (s *BatchBuiltState) handlePrepareClientNotifications(ctx context.Context,
 			)
 			for _, desc := range reg.VTXODescriptors {
 				clientKeys = append(
-					clientKeys, desc.CoSignerKey,
+					clientKeys, desc.SigningKey,
 				)
 			}
 
@@ -1165,7 +1166,7 @@ func (s *AwaitingInputSigsState) handleInputSignatures(ctx context.Context,
 	if len(reg.ForfeitInputs) > 0 {
 		err := validateForfeitTxs(
 			evt.ForfeitTxs, reg, s.ConnectorAssignments,
-			env.ForfeitScript, env.Terms.OperatorKey.PubKey,
+			env.ForfeitScript,
 		)
 		if err != nil {
 			return clientErrorTransition(
@@ -1908,7 +1909,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.CoSignerKey == nil || nonces == nil {
+		if desc == nil || desc.SigningKey == nil || nonces == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
@@ -1918,7 +1919,7 @@ func (s *AwaitingVTXONoncesState) handleClientNonces(ctx context.Context,
 
 		for idx, coordinator := range s.TreeSignCoordinators {
 			accepted, err := coordinator.AddNonces(
-				desc.CoSignerKey, nonces,
+				desc.SigningKey, nonces,
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
@@ -2030,7 +2031,7 @@ func (s *AwaitingVTXONoncesState) transitionToVTXOSignatures(
 			[]*btcec.PublicKey, 0, len(reg.VTXODescriptors),
 		)
 		for _, desc := range reg.VTXODescriptors {
-			clientKeys = append(clientKeys, desc.CoSignerKey)
+			clientKeys = append(clientKeys, desc.SigningKey)
 		}
 
 		// Aggregate nonces from all coordinators for this client.
@@ -2198,7 +2199,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 		}
 
 		desc := reg.VTXODescriptors[signingKeyHex]
-		if desc == nil || desc.CoSignerKey == nil || sigs == nil {
+		if desc == nil || desc.SigningKey == nil || sigs == nil {
 			errMsg := fmt.Sprintf(
 				"unknown signing key %x", signingKeyHex[:],
 			)
@@ -2208,7 +2209,7 @@ func (s *AwaitingVTXOSignaturesState) handleClientPartialSigs(
 
 		for idx, coordinator := range s.TreeSignCoordinators {
 			accepted, err := coordinator.AddPartialSignatures(
-				desc.CoSignerKey, sigs,
+				desc.SigningKey, sigs,
 			)
 			if err != nil {
 				errMsg := fmt.Sprintf(
@@ -2285,7 +2286,7 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 			[]*btcec.PublicKey, 0, len(reg.VTXODescriptors),
 		)
 		for _, desc := range reg.VTXODescriptors {
-			clientKeys = append(clientKeys, desc.CoSignerKey)
+			clientKeys = append(clientKeys, desc.SigningKey)
 		}
 
 		// Aggregate final signatures from all coordinators for this
@@ -2459,7 +2460,7 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 		spent, err := completeForfeitTxs(
 			forfeitTxs, reg, s.ConnectorAssignments,
 			env.WalletController, env.Terms.OperatorKey,
-			env.Terms.VTXOExitDelay, env.RoundID,
+			env.RoundID,
 		)
 		if err != nil {
 			return buildFailureTransition(
@@ -2539,9 +2540,10 @@ func (s *ServerSigningState) handleServerSigning(ctx context.Context,
 
 	// Persist VTXOs in unconfirmed state before broadcast.
 	if len(s.VTXOTrees) > 0 {
+		opKeyDesc := env.Terms.OperatorKey
 		vtxos, err := collectVTXOs(
 			env.RoundID, s.VTXOTrees,
-			s.ClientRegistrations,
+			s.ClientRegistrations, &opKeyDesc,
 		)
 		if err != nil {
 			return buildFailureTransition(
@@ -2727,14 +2729,18 @@ func serializeWitness(witness wire.TxWitness) ([]byte, error) {
 // collectVTXOs builds a slice of VTXOs from the constructed VTXO trees for
 // persistence. Each leaf in the tree corresponds to a VTXO.
 func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
-	clientRegs map[clientconn.ClientID]*ClientRegistration) ([]*VTXO,
-	error) {
+	clientRegs map[clientconn.ClientID]*ClientRegistration,
+	operatorKeyDesc *keychain.KeyDescriptor) ([]*VTXO, error) {
+
+	if operatorKeyDesc == nil {
+		return nil, fmt.Errorf("operator key descriptor is nil")
+	}
 
 	const leafMissingMsg = "leaf missing outputs or cosigners"
 
 	// Build an index of descriptors keyed by PkScript for fast lookup when
-	// traversing leaves. Each VTXO descriptor has a unique script derived
-	// from its signing keys.
+	// traversing leaves. Each requested VTXO descriptor corresponds to one
+	// concrete VTXO output definition.
 	descriptorIndex := make(map[string]*tree.VTXODescriptor)
 	for _, reg := range clientRegs {
 		for _, desc := range reg.VTXODescriptors {
@@ -2777,6 +2783,7 @@ func collectVTXOs(roundID RoundID, vtxoTrees map[int]*tree.Tree,
 					RoundID:          roundID,
 					BatchOutputIndex: outputIdx,
 					Descriptor:       desc,
+					OperatorKeyDesc:  operatorKeyDesc,
 					Status:           VTXOStatusPending,
 				})
 

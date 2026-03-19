@@ -167,12 +167,18 @@ func (v *VTXORecordStoreDB) Create(ctx context.Context,
 		lockOwnerID = ownerID
 	}
 
-	cosignerKey, err := cosignerFromPkScript(record.PkScript)
+	operatorKey, err := cosignerFromPkScript(record.PkScript)
 	if err != nil {
 		return err
 	}
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		// TODO(elle): The operator key, exit delay, and
+		// key locator are known at construction time and
+		// should be threaded through. The owner key is the
+		// only genuinely unknown field here — the OOR
+		// record model only has the PkScript, not the
+		// decomposed owner key.
 		insertParams := sqlc.InsertVTXOParams{
 			OutpointHash:  record.Outpoint.Hash[:],
 			OutpointIndex: int32(record.Outpoint.Index),
@@ -180,12 +186,16 @@ func (v *VTXORecordStoreDB) Create(ctx context.Context,
 			BatchOutputIndex: sql.NullInt32{
 				Valid: false,
 			},
-			Amount:        record.Value,
-			PkScript:      record.PkScript,
-			CosignerKey:   cosignerKey,
-			Status:        string(record.Status),
-			LockOwnerKind: lockOwnerKind,
-			LockOwnerID:   lockOwnerID,
+			Amount:            record.Value,
+			ExitDelay:         0,
+			PkScript:          record.PkScript,
+			OwnerKey:          operatorKey,
+			OperatorKey:       operatorKey,
+			OperatorKeyFamily: 0,
+			OperatorKeyIndex:  0,
+			Status:            string(record.Status),
+			LockOwnerKind:     lockOwnerKind,
+			LockOwnerID:       lockOwnerID,
 		}
 		err := qtx.InsertVTXO(ctx, insertParams)
 		if err == nil {
@@ -220,8 +230,11 @@ func (v *VTXORecordStoreDB) Create(ctx context.Context,
 			)
 		}
 
-		// Compare the relevant fields.
-		// We intentionally ignore round metadata here.
+		// Compare the relevant fields. We intentionally skip
+		// owner_key, operator_key, and exit_delay because the OOR
+		// path writes placeholders for those columns (see the TODO
+		// above). A round-inserted row may already exist with the
+		// correct keys; re-checking would always mismatch.
 		if row.Amount != record.Value {
 			return fmt.Errorf(
 				"vtxo %v already exists with different value",

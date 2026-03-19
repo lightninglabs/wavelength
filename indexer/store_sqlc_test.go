@@ -83,8 +83,10 @@ func TestSQLCStoreListVTXOsByPkScripts(t *testing.T) {
 				Int32: 0, Valid: true,
 			},
 			Amount:      1000 * int64(i+1),
+			ExitDelay:   144,
 			PkScript:    pk,
-			CosignerKey: cosignerKey,
+			OwnerKey:    cosignerKey,
+			OperatorKey: cosignerKey,
 			Status:      "live",
 		})
 		require.NoError(t, err)

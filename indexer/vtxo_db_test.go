@@ -221,8 +221,8 @@ func buildTestTree(t *testing.T,
 			PkScript: []byte(
 				fmt.Sprintf("vtxo_script_%d", i),
 			),
-			Amount:      btcutil.Amount(1000 * (i + 1)),
-			CoSignerKey: cosignerKey,
+			Amount:     btcutil.Amount(1000 * (i + 1)),
+			SigningKey: cosignerKey,
 		}
 	}
 

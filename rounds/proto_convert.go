@@ -176,10 +176,8 @@ func boardingRequestFromProto(
 	}, nil
 }
 
-// vtxoRequestFromProto converts a single proto VTXORequest to the
-// domain types.VTXORequest. The SigningKey PubKey is populated from
-// the proto signing_key field; the KeyLocator is left at zero since
-// it is a client-side concern.
+// vtxoRequestFromProto converts a single proto VTXORequest to
+// the domain types.VTXORequest.
 func vtxoRequestFromProto(
 	vr *roundpb.VTXORequest) (*types.VTXORequest, error) {
 
@@ -199,10 +197,12 @@ func vtxoRequestFromProto(
 	}
 
 	return &types.VTXORequest{
-		Amount:      btcutil.Amount(vr.GetAmount()),
-		PkScript:    vr.GetPkScript(),
-		Expiry:      vr.GetExpiry(),
-		ClientKey:   clientKey,
+		Amount:   btcutil.Amount(vr.GetAmount()),
+		PkScript: vr.GetPkScript(),
+		Expiry:   vr.GetExpiry(),
+		OwnerKey: keychain.KeyDescriptor{
+			PubKey: clientKey,
+		},
 		OperatorKey: operatorKey,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPub,

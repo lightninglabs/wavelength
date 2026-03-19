@@ -315,7 +315,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 			Amount:      desc.Amount,
 			PkScript:    desc.PkScript,
 			Expiry:      desc.RelativeExpiry,
-			ClientKey:   desc.ClientKey,
+			OwnerKey:    desc.OwnerKey,
 			OperatorKey: desc.OperatorKey,
 		}, nil
 	})
@@ -1169,13 +1169,13 @@ func (c *TestClient) AssertVTXOProperties() {
 		require.Equal(t, terms.BoardingExitDelay, vtxo.Expiry,
 			"VTXO %d expiry should match terms", i)
 
-		// ClientKey must be present. Note: The VTXO's client key
+		// OwnerKey must be present. Note: The VTXO's owner key
 		// comes from the boarding address creation
 		// (BoardingKeyFamily), not from the client's identity key
 		// (KeyFamilyNodeKey), so we just verify it exists and is
 		// valid.
-		require.NotNil(t, vtxo.ClientKey.PubKey,
-			"VTXO %d should have client key", i)
+		require.NotNil(t, vtxo.OwnerKey.PubKey,
+			"VTXO %d should have owner key", i)
 
 		// OperatorKey must match the server's operator key.
 		require.NotNil(t, vtxo.OperatorKey,
@@ -1233,7 +1233,7 @@ func (c *TestClient) AssertVTXOMatchesBoardingInput(
 
 	// Verify the client key exists. Note: The client key comes from
 	// BoardingKeyFamily, not the identity key, so we just check presence.
-	require.NotNil(t, vtxo.ClientKey.PubKey,
+	require.NotNil(t, vtxo.OwnerKey.PubKey,
 		"VTXO should have a client key")
 }
 

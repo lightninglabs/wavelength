@@ -1926,7 +1926,7 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.CoSignerKey)
+			signingKey = route.NewVertex(desc.SigningKey)
 			break
 		}
 
@@ -1961,8 +1961,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {SigningKey: key1},
+						keyHex2: {SigningKey: key2},
 					},
 				},
 			},
@@ -2007,8 +2007,8 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {SigningKey: key1},
+						keyHex2: {SigningKey: key2},
 					},
 				},
 			},
@@ -2057,7 +2057,7 @@ func TestFSMAwaitingVTXONoncesState(t *testing.T) {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
 						keyHex: {
-							CoSignerKey: key,
+							SigningKey: key,
 						},
 					},
 				},
@@ -2772,7 +2772,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.CoSignerKey)
+			signingKey = route.NewVertex(desc.SigningKey)
 			break
 		}
 
@@ -2807,8 +2807,8 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {SigningKey: key1},
+						keyHex2: {SigningKey: key2},
 					},
 				},
 			},
@@ -2853,7 +2853,7 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 		var signingKey SigningKeyHex
 		for _, desc := range awaitState.ClientRegistrations["client1"].
 			VTXODescriptors {
-			signingKey = route.NewVertex(desc.CoSignerKey)
+			signingKey = route.NewVertex(desc.SigningKey)
 			break
 		}
 
@@ -2888,8 +2888,8 @@ func TestFSMAwaitingVTXOSignaturesState(t *testing.T) {
 				"client1": {
 					ClientID: "client1",
 					VTXODescriptors: map[SigningKeyHex]*tree.VTXODescriptor{ //nolint:ll
-						keyHex1: {CoSignerKey: key1},
-						keyHex2: {CoSignerKey: key2},
+						keyHex1: {SigningKey: key1},
+						keyHex2: {SigningKey: key2},
 					},
 				},
 			},

@@ -59,7 +59,7 @@ func newClientTransferInput(t *testing.T, clientKey *btcec.PrivateKey,
 			Outpoint: outpoint,
 			Amount:   amount,
 			PkScript: pkScript,
-			ClientKey: keychain.KeyDescriptor{
+			OwnerKey: keychain.KeyDescriptor{
 				PubKey: clientKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,
@@ -429,7 +429,7 @@ func (b *inProcessServerConnBridge) handleSubmit(ctx context.Context,
 	for i := range req.TransferInputs {
 		descs = append(descs, serveroor.VTXOSigningDescriptor{
 			Outpoint: req.TransferInputs[i].VTXO.Outpoint,
-			OwnerKey: req.TransferInputs[i].VTXO.ClientKey.PubKey,
+			OwnerKey: req.TransferInputs[i].VTXO.OwnerKey.PubKey,
 			ExitDelay: req.TransferInputs[i].VTXO.
 				RelativeExpiry,
 		})
@@ -713,7 +713,7 @@ func (h *inProcessReceiveOutbox) Handle(_ context.Context,
 				},
 				Amount:         recipient.Value,
 				PkScript:       recipient.PkScript,
-				ClientKey:      h.recipientKey,
+				OwnerKey:       h.recipientKey,
 				OperatorKey:    h.operatorKey,
 				RelativeExpiry: h.exitDelay,
 				RoundID:        "oor-e2e",

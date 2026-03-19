@@ -118,16 +118,20 @@ type RoundVtxoTree struct {
 }
 
 type Vtxo struct {
-	OutpointHash     []byte
-	OutpointIndex    int32
-	RoundID          []byte
-	BatchOutputIndex sql.NullInt32
-	Amount           int64
-	PkScript         []byte
-	CosignerKey      []byte
-	Status           string
-	LockOwnerKind    sql.NullString
-	LockOwnerID      []byte
+	OutpointHash      []byte
+	OutpointIndex     int32
+	RoundID           []byte
+	BatchOutputIndex  sql.NullInt32
+	Amount            int64
+	ExitDelay         int32
+	PkScript          []byte
+	OwnerKey          []byte
+	OperatorKey       []byte
+	OperatorKeyFamily int32
+	OperatorKeyIndex  int32
+	Status            string
+	LockOwnerKind     sql.NullString
+	LockOwnerID       []byte
 }
 
 type VtxoStatus struct {
