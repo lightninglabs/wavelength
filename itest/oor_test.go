@@ -95,6 +95,176 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 		receivedVTXO.Outpoint, receivedVTXO.AmountSat)
 }
 
+// TestOORIntegrationDryRunPreview verifies SendOOR dry-run mode validates
+// output construction without mutating sender or recipient state.
+func TestOORIntegrationDryRunPreview(t *testing.T) {
+	alice, bob, aliceLiveVTXO, aliceStartBalance, bobStartBalance,
+		recipientPkScript := setupFundedOORValidationHarness(
+		t, "itest-oor-dry-run-preview",
+	)
+
+	sendResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: recipientPkScript,
+				},
+				AmountSat: aliceLiveVTXO.AmountSat,
+			},
+			DryRun: true,
+		},
+	)
+	require.NoError(t, err, "SendOOR dry-run RPC failed")
+	require.Equal(t, "preview", sendResp.Status)
+	require.Empty(t, sendResp.SessionId)
+
+	aliceAfterDryRun := waitForExactVTXOBalance(
+		t, alice.RPCClient, aliceStartBalance.VtxoBalanceSat,
+	)
+	bobAfterDryRun := waitForExactVTXOBalance(
+		t, bob.RPCClient, bobStartBalance.VtxoBalanceSat,
+	)
+	require.Equal(t, aliceStartBalance.VtxoBalanceSat,
+		aliceAfterDryRun.VtxoBalanceSat)
+	require.Equal(t, bobStartBalance.VtxoBalanceSat,
+		bobAfterDryRun.VtxoBalanceSat)
+
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+	)
+}
+
+// TestOORIntegrationInsufficientFunds verifies SendOOR rejects requests that
+// exceed available spendable VTXO balance without mutating wallet state.
+func TestOORIntegrationInsufficientFunds(t *testing.T) {
+	alice, bob, aliceLiveVTXO, aliceStartBalance, bobStartBalance,
+		recipientPkScript := setupFundedOORValidationHarness(
+		t, "itest-oor-insufficient-funds",
+	)
+
+	_, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: recipientPkScript,
+				},
+				AmountSat: aliceStartBalance.VtxoBalanceSat + 1,
+			},
+		},
+	)
+	require.Error(t, err, "SendOOR should fail when funds are insufficient")
+	require.ErrorContains(t, err, "insufficient funds")
+
+	waitForExactVTXOBalance(
+		t, alice.RPCClient, aliceStartBalance.VtxoBalanceSat,
+	)
+	waitForExactVTXOBalance(
+		t, bob.RPCClient, bobStartBalance.VtxoBalanceSat,
+	)
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_LIVE,
+	)
+}
+
+// TestOORIntegrationRejectsZeroAmount verifies SendOOR enforces positive
+// recipient amounts at the RPC boundary.
+func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+
+	waitForRegisteredClients(t, h, 2)
+
+	aliceStartBalance := waitForExactVTXOBalance(t, alice.RPCClient, 0)
+	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
+
+	recvResp, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: "itest-oor-zero-amount",
+		},
+	)
+	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+
+	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	require.NoError(t, err, "pk_script_hex must be valid hex")
+
+	_, err = alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: recipientPkScript,
+				},
+				AmountSat: 0,
+			},
+		},
+	)
+	require.Error(t, err, "SendOOR should reject zero amount")
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.ErrorContains(t, err, "amount must be positive")
+
+	waitForExactVTXOBalance(
+		t, alice.RPCClient, aliceStartBalance.VtxoBalanceSat,
+	)
+	waitForExactVTXOBalance(
+		t, bob.RPCClient, bobStartBalance.VtxoBalanceSat,
+	)
+}
+
+func setupFundedOORValidationHarness(t *testing.T, label string) (
+	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
+	*daemonrpc.VTXO,
+	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
+) {
+	t.Helper()
+
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 2)
+
+	_, aliceLiveVTXO, aliceStartBalance := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
+
+	recvResp, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{Label: label},
+	)
+	require.NoError(t, err, "NewOORReceiveScript RPC failed")
+
+	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	require.NoError(t, err, "pk_script_hex must be valid hex")
+
+	return alice, bob, aliceLiveVTXO, aliceStartBalance,
+		bobStartBalance, recipientPkScript
+}
+
 // TestOORIntegrationBidirectionalTransfer verifies both clients can perform
 // OOR sends in opposite directions using real daemon RPCs and persisted state.
 func TestOORIntegrationBidirectionalTransfer(t *testing.T) {
