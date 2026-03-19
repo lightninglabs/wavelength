@@ -84,6 +84,15 @@ const (
 	// events pushed by the server indexer.
 	arkServiceName = "arkrpc.ArkService"
 
+	// indexerProofServerID is the operator identifier currently used by
+	// the daemon indexer service when verifying taproot proof messages.
+	//
+	// This is intentionally decoupled from mailbox transport IDs:
+	// remote mailbox IDs can be per-client routing endpoints (for
+	// auto-registration), while proof server ID is a logical operator
+	// identity shared by all clients.
+	indexerProofServerID = "arkd"
+
 	// MethodIncomingOOR is the routing method name for incoming
 	// OOR transfer notifications pushed by the server indexer.
 	MethodIncomingOOR = "IncomingOOR"
@@ -172,6 +181,9 @@ type Server struct {
 
 	serverConn *grpc.ClientConn
 
+	rpcAddrMu sync.RWMutex
+	rpcAddr   net.Addr
+
 	grpcServer *grpc.Server
 	rpcServer  *RPCServer
 	mailboxMux *mailboxrpc.ServeMux
@@ -208,6 +220,15 @@ func (s *Server) markWalletReady() {
 	s.walletReadyOnce.Do(func() {
 		close(s.walletReady)
 	})
+}
+
+// RPCAddr returns the bound daemon gRPC listener address once startup has
+// progressed far enough to create the listener.
+func (s *Server) RPCAddr() net.Addr {
+	s.rpcAddrMu.RLock()
+	defer s.rpcAddrMu.RUnlock()
+
+	return s.rpcAddr
 }
 
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
@@ -270,7 +291,12 @@ func (s *Server) run(ctx context.Context,
 	// -------------------------------------------------------
 	// Create a log handler writing to stdout. The SubLoggerManager
 	// manages per-subsystem loggers and supports runtime level changes.
-	logHandler := btclog.NewDefaultHandler(os.Stdout)
+	logWriter := s.cfg.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stdout
+	}
+
+	logHandler := btclog.NewDefaultHandler(logWriter)
 	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
 
 	// Register all package-level loggers with the manager. This
@@ -434,9 +460,13 @@ func (s *Server) run(ctx context.Context,
 			s.cfg.RPC.ListenAddr, err)
 	}
 
+	s.rpcAddrMu.Lock()
+	s.rpcAddr = lis.Addr()
+	s.rpcAddrMu.Unlock()
+
 	go func() {
 		log.InfoS(ctx, "gRPC server listening",
-			slog.String("addr", s.cfg.RPC.ListenAddr))
+			slog.String("addr", lis.Addr().String()))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
 			log.ErrorS(ctx, "gRPC server error", err)
@@ -1652,7 +1682,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
-		s.cfg.Server.RemoteMailboxID,
+		indexerProofServerID,
 		s.cfg.Server.LocalMailboxID,
 	)
 
