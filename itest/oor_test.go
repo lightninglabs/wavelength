@@ -14,6 +14,8 @@ import (
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/harness"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestOORIntegrationAliceToBob verifies a real daemon-to-daemon OOR transfer
@@ -143,7 +145,7 @@ func TestOORIntegrationInsufficientFunds(t *testing.T) {
 		t, "itest-oor-insufficient-funds",
 	)
 
-	_, err := alice.RPCClient.SendOOR(
+	_, err = alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
 				Destination: &daemonrpc.Output_PkScript{
