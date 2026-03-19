@@ -77,7 +77,7 @@ func TestSnapshotRetryMetadataRoundTrip(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
