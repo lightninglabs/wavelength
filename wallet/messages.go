@@ -429,6 +429,41 @@ func (m *CompleteSpendVTXOsResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *CompleteSpendVTXOsResponse) walletRespSealed() {}
 
+// MarkBoardingIntentsAdoptedRequest asks the wallet actor to transition the
+// specified boarding intents from Confirmed to Adopted status after a round is
+// checkpointed at point-of-no-return.
+type MarkBoardingIntentsAdoptedRequest struct {
+	actor.BaseMessage
+
+	// Outpoints identifies boarding intents that were consumed by a
+	// checkpointed round and should no longer be counted as spendable.
+	Outpoints []wire.OutPoint
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *MarkBoardingIntentsAdoptedRequest) MessageType() string {
+	return "MarkBoardingIntentsAdoptedRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *MarkBoardingIntentsAdoptedRequest) walletMsgSealed() {}
+
+// MarkBoardingIntentsAdoptedResponse confirms how many intents were updated.
+type MarkBoardingIntentsAdoptedResponse struct {
+	actor.BaseMessage
+
+	// UpdatedCount is the number of boarding intents updated to Adopted.
+	UpdatedCount int
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *MarkBoardingIntentsAdoptedResponse) MessageType() string {
+	return "MarkBoardingIntentsAdoptedResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *MarkBoardingIntentsAdoptedResponse) walletRespSealed() {}
+
 // LeaveVTXOsRequest triggers leave (offboard) of specified VTXOs. The VTXOs
 // will be forfeited and their value sent to the specified destination output.
 type LeaveVTXOsRequest struct {

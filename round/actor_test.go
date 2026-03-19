@@ -617,10 +617,16 @@ func TestActorProcessOutbox(t *testing.T) {
 		require.Empty(t, h.actor.rounds)
 
 		roundID := testRoundID("checkpointed-round")
+		boardingIntent := h.newTestBoardingIntent()
+		roundIntent := BoardingIntent{
+			BoardingIntent: *boardingIntent,
+		}
 
 		// Set up a round in InputSigSentState, simulating the state
 		// after the round has completed through partial sigs.
-		commitmentTx := h.setupRoundInInputSigSentState(roundID)
+		commitmentTx := h.setupRoundInInputSigSentStateWithIntents(
+			roundID, []BoardingIntent{roundIntent},
+		)
 
 		outbox := []ClientOutMsg{
 			&RoundCheckpointedNotification{
@@ -640,6 +646,10 @@ func TestActorProcessOutbox(t *testing.T) {
 		indexedKeyStr, exists := h.actor.commitmentTxIndex[txid]
 		require.True(t, exists)
 		require.Equal(t, keyStr, indexedKeyStr)
+
+		adopted := h.walletActor.adoptedRequests()
+		require.Len(t, adopted, 1)
+		require.Equal(t, boardingIntent.Outpoint, adopted[0])
 	})
 
 	t.Run("new_boarding_creates_round", func(t *testing.T) {

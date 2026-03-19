@@ -314,6 +314,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *CompleteSpendVTXOsRequest:
 		return a.handleCompleteSpendVTXOs(ctx, m)
 
+	case *MarkBoardingIntentsAdoptedRequest:
+		return a.handleMarkBoardingIntentsAdopted(ctx, m)
+
 	default:
 		return fn.Err[WalletResp](
 			fmt.Errorf("unknown message type: %T", msg))
@@ -1046,6 +1049,29 @@ func (a *Ark) handleBoard(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// handleMarkBoardingIntentsAdopted marks the given boarding intents as
+// adopted. This is invoked by the round actor after checkpointing a round so
+// consumed boarding intents are no longer counted as spendable.
+func (a *Ark) handleMarkBoardingIntentsAdopted(ctx context.Context,
+	req *MarkBoardingIntentsAdoptedRequest) fn.Result[WalletResp] {
+
+	updated, err := a.store.MarkBoardingIntentsAdopted(
+		ctx, req.Outpoints,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"persist adopted boarding intents: %w", err,
+		))
+	}
+
+	a.logger(ctx).InfoS(ctx, "Marked boarding intents as adopted",
+		slog.Int("count", updated))
+
+	return fn.Ok[WalletResp](&MarkBoardingIntentsAdoptedResponse{
+		UpdatedCount: updated,
+	})
 }
 
 // buildBoardingTxProof fetches the confirmation block and computes a merkle

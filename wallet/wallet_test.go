@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -195,6 +196,14 @@ func (m *MockBoardingStore) GetIntent(ctx context.Context,
 
 	//nolint:forcetypeassert
 	return args.Get(0).(*BoardingIntent), args.Error(1)
+}
+
+func (m *MockBoardingStore) MarkBoardingIntentsAdopted(
+	ctx context.Context, outpoints []wire.OutPoint,
+) (int, error) {
+
+	args := m.Called(ctx, outpoints)
+	return args.Int(0), args.Error(1)
 }
 
 func (m *MockBoardingStore) LookupIntentByScript(ctx context.Context,
@@ -1020,6 +1029,93 @@ func TestGetBoardingBalance(t *testing.T) {
 	// With no intents, balance should be zero.
 	require.Equal(t, btcutil.Amount(0), resp.TotalBalance)
 	require.Equal(t, 0, resp.UtxoCount)
+
+	store.AssertExpectations(t)
+}
+
+// TestMarkBoardingIntentsAdopted verifies that checkpoint notifications from
+// the round actor transition consumed boarding intents out of Confirmed status.
+func TestMarkBoardingIntentsAdopted(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+
+	outpointA := wire.OutPoint{
+		Hash:  chainhash.Hash{0x01},
+		Index: 0,
+	}
+	outpointB := wire.OutPoint{
+		Hash:  chainhash.Hash{0x02},
+		Index: 1,
+	}
+
+	store.On(
+		"MarkBoardingIntentsAdopted", mock.Anything,
+		mock.MatchedBy(func(outpoints []wire.OutPoint) bool {
+			return len(outpoints) == 3 &&
+				outpoints[0] == outpointA &&
+				outpoints[1] == outpointB &&
+				outpoints[2] == outpointA
+		}),
+	).Return(1, nil).Once()
+
+	req := &MarkBoardingIntentsAdoptedRequest{
+		Outpoints: []wire.OutPoint{
+			outpointA, outpointB, outpointA,
+		},
+	}
+	result := walletActor.Receive(t.Context(), req)
+	require.True(t, result.IsOk())
+
+	respVal, _ := result.Unpack()
+
+	//nolint:forcetypeassert
+	resp := respVal.(*MarkBoardingIntentsAdoptedResponse)
+	require.Equal(t, 1, resp.UpdatedCount)
+
+	store.AssertExpectations(t)
+}
+
+// TestMarkBoardingIntentsAdoptedLookupError verifies that an unknown outpoint
+// fails the request and preserves fail-fast behavior.
+func TestMarkBoardingIntentsAdoptedLookupError(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x03},
+		Index: 0,
+	}
+	store.On(
+		"MarkBoardingIntentsAdopted", mock.Anything,
+		[]wire.OutPoint{outpoint},
+	).Return(0, errors.New("unexpected boarding intent state")).Once()
+
+	req := &MarkBoardingIntentsAdoptedRequest{
+		Outpoints: []wire.OutPoint{outpoint},
+	}
+	result := walletActor.Receive(t.Context(), req)
+	require.True(t, result.IsErr())
+	require.Contains(
+		t, result.Err().Error(), "persist adopted boarding intents",
+	)
 
 	store.AssertExpectations(t)
 }
