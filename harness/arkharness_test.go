@@ -64,8 +64,11 @@ func TestArkHarnessCanStartClientDaemon(t *testing.T) {
 	info, err := alice.RPCClient.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
 	require.NoError(t, err, "client daemon GetInfo RPC failed")
 	require.Equal(t, "regtest", info.Network)
-	require.Equal(t, "lnd", info.WalletType)
-	require.True(t, info.WalletReady, "wallet should be ready in lnd mode")
+
+	expectedWalletType, err := resolveClientDaemonWalletType("")
+	require.NoError(t, err)
+	require.Equal(t, expectedWalletType, info.WalletType)
+	require.True(t, info.WalletReady, "wallet should be ready")
 	require.NotEmpty(
 		t, info.IdentityPubkey, "daemon identity should be set",
 	)

@@ -18,7 +18,9 @@ import (
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -31,7 +33,34 @@ const (
 
 	// pollInterval is the interval at which to poll for conditions.
 	pollInterval = 200 * time.Millisecond
+
+	// clientWalletBackendEnv controls which wallet backend the daemon
+	// integration harness uses for in-process client daemons.
+	clientWalletBackendEnv = "ARK_ITEST_CLIENT_WALLET"
+
+	// ClientWalletBackendLND runs client daemons backed by per-daemon lnd
+	// instances.
+	ClientWalletBackendLND = clientdarepod.WalletTypeLnd
+
+	// ClientWalletBackendLWWallet runs client daemons using the in-process
+	// lightweight wallet backend.
+	ClientWalletBackendLWWallet = clientdarepod.WalletTypeLwwallet
+
+	// defaultLWWalletPassword is the deterministic test password used by
+	// the harness when creating and unlocking lwwallet-backed daemons.
+	defaultLWWalletPassword = "itest-wallet-password"
 )
+
+// ClientDaemonName is the logical identifier used to index client daemons
+// started by the harness.
+type ClientDaemonName string
+
+// ClientDaemonSet tracks started client daemons by name.
+type ClientDaemonSet map[ClientDaemonName]*ClientDaemonHarness
+
+// ClientLogWriterFactory returns the stdout sink to use for a named client
+// daemon's logs.
+type ClientLogWriterFactory func(name string) io.Writer
 
 // ArkHarnessOptions configures the ArkHarness behavior.
 type ArkHarnessOptions struct {
@@ -42,6 +71,20 @@ type ArkHarnessOptions struct {
 	// for in-process e2e tests where the server actors are run directly as
 	// goroutines rather than through the arkd binary.
 	SkipArkd bool
+
+	// ClientDaemonWalletType selects the wallet backend for in-process
+	// client daemons. Valid values: "lnd", "lwwallet". If empty, the
+	// value is read from ARK_ITEST_CLIENT_WALLET and defaults to "lnd".
+	ClientDaemonWalletType string
+
+	// OperatorLogWriter is the stdout sink used for operator daemon logs.
+	// When nil, logs are prefixed with [operator] and written to stdout.
+	OperatorLogWriter io.Writer
+
+	// ClientLogWriterFactory returns the stdout sink used for a named
+	// client daemon. When nil, logs are prefixed by daemon name and
+	// written to stdout.
+	ClientLogWriterFactory ClientLogWriterFactory
 }
 
 // ArkHarness extends the client harness with an in-process arkd server and
@@ -83,9 +126,19 @@ type ArkHarness struct {
 	// ArkAdminClient is a connected arkd admin client.
 	ArkAdminClient adminrpc.OperatorAdminClient
 
+	// clientDaemonWalletType selects which wallet backend newly launched
+	// in-process client daemons use.
+	clientDaemonWalletType string
+
+	// operatorLogWriter is the stdout sink used for operator daemon logs.
+	operatorLogWriter io.Writer
+
+	// clientLogWriterFactory resolves stdout sinks for client daemon logs.
+	clientLogWriterFactory ClientLogWriterFactory
+
 	// clientDaemons tracks any in-process darepod instances started through
 	// this harness so Stop can shut them down before tearing down arkd/LND.
-	clientDaemons map[string]*ClientDaemonHarness
+	clientDaemons ClientDaemonSet
 
 	// clientDaemonsMu guards clientDaemons for concurrent test helper
 	// access.
@@ -94,12 +147,64 @@ type ArkHarness struct {
 
 // NewArkHarness creates a new ArkHarness instance from the given options.
 func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
+	if opts == nil {
+		opts = &ArkHarnessOptions{}
+	}
+
+	if opts.ClientOptions == nil {
+		defaultOpts := client_harness.DefaultOptions()
+		opts.ClientOptions = &defaultOpts
+	}
+
+	walletType, err := resolveClientDaemonWalletType(
+		opts.ClientDaemonWalletType,
+	)
+	require.NoError(t, err)
+
+	operatorLogWriter := opts.OperatorLogWriter
+	if operatorLogWriter == nil {
+		operatorLogWriter = newPrefixedWriter(
+			os.Stdout, "operator",
+		)
+	}
+
+	clientLogWriterFactory := opts.ClientLogWriterFactory
+	if clientLogWriterFactory == nil {
+		clientLogWriterFactory = func(name string) io.Writer {
+			return newPrefixedWriter(os.Stdout, name)
+		}
+	}
+
 	clientHarness := client_harness.NewHarness(t, opts.ClientOptions)
 
 	return &ArkHarness{
-		Harness:       clientHarness,
-		skipArkd:      opts.SkipArkd,
-		clientDaemons: make(map[string]*ClientDaemonHarness),
+		Harness:                clientHarness,
+		skipArkd:               opts.SkipArkd,
+		clientDaemonWalletType: walletType,
+		operatorLogWriter:      operatorLogWriter,
+		clientLogWriterFactory: clientLogWriterFactory,
+		clientDaemons:          make(ClientDaemonSet),
+	}
+}
+
+func resolveClientDaemonWalletType(requestedType string) (string, error) {
+	backend := requestedType
+	if backend == "" {
+		backend = os.Getenv(clientWalletBackendEnv)
+	}
+	if backend == "" {
+		return ClientWalletBackendLND, nil
+	}
+
+	switch backend {
+	case ClientWalletBackendLND, ClientWalletBackendLWWallet:
+		return backend, nil
+
+	default:
+		return "", fmt.Errorf(
+			"invalid client daemon wallet backend %q",
+			backend,
+		)
 	}
 }
 
@@ -126,7 +231,7 @@ func (h *ArkHarness) Stop() {
 	for _, daemon := range h.clientDaemons {
 		clientDaemons = append(clientDaemons, daemon)
 	}
-	h.clientDaemons = make(map[string]*ClientDaemonHarness)
+	h.clientDaemons = make(ClientDaemonSet)
 	h.clientDaemonsMu.Unlock()
 
 	for _, daemon := range clientDaemons {
@@ -175,7 +280,7 @@ func (h *ArkHarness) startArkd() {
 	cfg.DebugLevel = "trace"
 	cfg.LogFilePath = arkLogPath
 	cfg.LogWriter = io.MultiWriter(
-		newPrefixedWriter(os.Stdout, "operator"), arkLogFile,
+		h.operatorLogWriter, arkLogFile,
 	)
 	cfg.DB.Backend = "sqlite"
 	cfg.DB.Sqlite.DatabaseFileName = filepath.Join(
@@ -287,8 +392,8 @@ func (h *ArkHarness) startArkd() {
 	h.T.Logf("arkd started successfully, version=%s", resp.Version)
 }
 
-// ClientDaemonHarness manages one real in-process darepod instance plus its
-// backing LND node and connected daemon RPC client.
+// ClientDaemonHarness manages one real in-process darepod instance and its
+// connected daemon RPC client.
 type ClientDaemonHarness struct {
 	T *testing.T
 
@@ -308,7 +413,9 @@ type ClientDaemonHarness struct {
 	// to.
 	RemoteMailboxID string
 
-	// LND is the dedicated backing LND instance for this daemon.
+	// LND is the dedicated backing LND instance for this daemon when
+	// running with the lnd wallet backend. It is nil for lwwallet
+	// daemons.
 	LND *client_harness.LndInstance
 
 	// RPCConn is the connected daemon gRPC client transport.
@@ -327,22 +434,27 @@ type ClientDaemonHarness struct {
 	logFile *os.File
 }
 
-// StartClientDaemon starts a real in-process darepod backed by a dedicated LND
-// instance and connects a daemon RPC client to it.
+// StartClientDaemon starts a real in-process darepod and connects a daemon RPC
+// client to it.
 func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	h.T.Helper()
 
 	require.NotEmpty(h.T, h.ArkRPCAddr, "arkd must be started first")
 	require.NotEmpty(h.T, name, "client daemon name is required")
+	daemonName := ClientDaemonName(name)
 
 	h.clientDaemonsMu.Lock()
-	if _, ok := h.clientDaemons[name]; ok {
+	if _, ok := h.clientDaemons[daemonName]; ok {
 		h.clientDaemonsMu.Unlock()
 		h.T.Fatalf("client daemon %q already exists", name)
 	}
 	h.clientDaemonsMu.Unlock()
 
-	lnd := h.StartAdditionalLND(name)
+	var lnd *client_harness.LndInstance
+	if h.clientDaemonWalletType == ClientWalletBackendLND {
+		lnd = h.StartAdditionalLND(name)
+	}
+
 	dataDir := filepath.Join(h.BaseDir(), "client-daemons", name)
 	localMailboxID := fmt.Sprintf("client-%s", name)
 	remoteMailboxID := fmt.Sprintf("server-for-%s", name)
@@ -352,24 +464,25 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	)
 
 	h.clientDaemonsMu.Lock()
-	h.clientDaemons[name] = daemon
+	h.clientDaemons[daemonName] = daemon
 	h.clientDaemonsMu.Unlock()
 
 	return daemon
 }
 
 // RestartClientDaemon restarts an existing in-process darepod instance while
-// reusing its data directory, mailbox IDs, and backing LND node.
+// reusing its data directory, mailbox IDs, and backing wallet resources.
 func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	h.T.Helper()
 
+	daemonName := ClientDaemonName(name)
 	h.clientDaemonsMu.Lock()
-	oldDaemon, ok := h.clientDaemons[name]
+	oldDaemon, ok := h.clientDaemons[daemonName]
 	if !ok {
 		h.clientDaemonsMu.Unlock()
 		h.T.Fatalf("client daemon %q not found", name)
 	}
-	delete(h.clientDaemons, name)
+	delete(h.clientDaemons, daemonName)
 	h.clientDaemonsMu.Unlock()
 
 	oldRPCAddr := oldDaemon.RPCAddr
@@ -381,7 +494,7 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	)
 
 	h.clientDaemonsMu.Lock()
-	h.clientDaemons[name] = daemon
+	h.clientDaemons[daemonName] = daemon
 	h.clientDaemonsMu.Unlock()
 
 	h.T.Logf("restarted client daemon %q: old_rpc=%s new_rpc=%s",
@@ -396,7 +509,6 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	h.T.Helper()
 
-	require.NotNil(h.T, lnd, "backing LND instance is required")
 	require.NotEmpty(h.T, dataDir, "client daemon data dir is required")
 	require.NotEmpty(h.T, localMailboxID, "local mailbox ID is required")
 	require.NotEmpty(h.T, remoteMailboxID, "remote mailbox ID is required")
@@ -413,12 +525,26 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Network = "regtest"
 	cfg.DebugLevel = "trace"
 	cfg.LogWriter = io.MultiWriter(
-		newPrefixedWriter(os.Stdout, name), logFile,
+		h.clientLogWriterFactory(name), logFile,
 	)
-	cfg.Wallet.Type = clientdarepod.WalletTypeLnd
-	cfg.Lnd.Host = net.JoinHostPort("127.0.0.1", lnd.GRPCPort)
-	cfg.Lnd.TLSPath = lnd.TLSCert
-	cfg.Lnd.MacaroonPath = lnd.Macaroon
+
+	switch h.clientDaemonWalletType {
+	case ClientWalletBackendLND:
+		require.NotNil(h.T, lnd, "backing LND instance is required")
+		cfg.Wallet.Type = clientdarepod.WalletTypeLnd
+		cfg.Lnd.Host = net.JoinHostPort("127.0.0.1", lnd.GRPCPort)
+		cfg.Lnd.TLSPath = lnd.TLSCert
+		cfg.Lnd.MacaroonPath = lnd.Macaroon
+
+	case ClientWalletBackendLWWallet:
+		cfg.Wallet.Type = clientdarepod.WalletTypeLwwallet
+		cfg.Wallet.EsploraURL = h.Harness.EsploraURL
+
+	default:
+		h.T.Fatalf("unsupported client daemon wallet backend: %s",
+			h.clientDaemonWalletType)
+	}
+
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
 	cfg.Server.LocalMailboxID = localMailboxID
@@ -463,6 +589,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 		"client daemon %q RPC address never became available", name)
 
 	daemon.waitForReady()
+	daemon.ensureWalletReady(h.clientDaemonWalletType)
 
 	return daemon
 }
@@ -474,7 +601,7 @@ func (h *ArkHarness) GetClientDaemon(name string) *ClientDaemonHarness {
 	h.clientDaemonsMu.Lock()
 	defer h.clientDaemonsMu.Unlock()
 
-	daemon, ok := h.clientDaemons[name]
+	daemon, ok := h.clientDaemons[ClientDaemonName(name)]
 	if !ok {
 		h.T.Fatalf("client daemon %q not found", name)
 	}
@@ -551,6 +678,90 @@ func (d *ClientDaemonHarness) waitForReady() {
 		return true
 	}, defaultTimeout, pollInterval,
 		fmt.Sprintf("client daemon %q RPC not ready", d.Name))
+}
+
+func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
+	d.T.Helper()
+
+	ctx, cancel := context.WithTimeout(
+		d.T.Context(), defaultSmallTimeout,
+	)
+	defer cancel()
+
+	info, err := d.RPCClient.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	require.NoError(d.T, err, "GetInfo RPC failed")
+	if info.WalletReady {
+		return
+	}
+
+	require.Equal(
+		d.T, ClientWalletBackendLWWallet, walletBackend,
+		"wallet must already be ready for backend %q", walletBackend,
+	)
+
+	if err := d.initOrUnlockLWWallet(); err != nil {
+		d.T.Fatalf(
+			"failed to initialize lwwallet-backed daemon %q: %v",
+			d.Name, err,
+		)
+	}
+
+	require.Eventually(d.T, func() bool {
+		waitCtx, waitCancel := context.WithTimeout(
+			d.T.Context(), defaultSmallTimeout,
+		)
+		defer waitCancel()
+
+		updatedInfo, getInfoErr := d.RPCClient.GetInfo(
+			waitCtx, &daemonrpc.GetInfoRequest{},
+		)
+		if getInfoErr != nil {
+			return false
+		}
+
+		return updatedInfo.WalletReady
+	}, defaultTimeout, pollInterval,
+		"client daemon %q wallet never became ready", d.Name)
+}
+
+func (d *ClientDaemonHarness) initOrUnlockLWWallet() error {
+	ctx, cancel := context.WithTimeout(
+		d.T.Context(), defaultSmallTimeout,
+	)
+	defer cancel()
+
+	seedResp, err := d.RPCClient.GenSeed(
+		ctx, &daemonrpc.GenSeedRequest{},
+	)
+	if err == nil {
+		_, initErr := d.RPCClient.InitWallet(
+			ctx, &daemonrpc.InitWalletRequest{
+				Mnemonic:       seedResp.Mnemonic,
+				WalletPassword: []byte(defaultLWWalletPassword),
+			},
+		)
+		if initErr != nil {
+			return fmt.Errorf("InitWallet RPC failed: %w", initErr)
+		}
+
+		return nil
+	}
+
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.FailedPrecondition {
+		return fmt.Errorf("GenSeed RPC failed: %w", err)
+	}
+
+	_, unlockErr := d.RPCClient.UnlockWallet(
+		ctx, &daemonrpc.UnlockWalletRequest{
+			WalletPassword: []byte(defaultLWWalletPassword),
+		},
+	)
+	if unlockErr != nil {
+		return fmt.Errorf("UnlockWallet RPC failed: %w", unlockErr)
+	}
+
+	return nil
 }
 
 // getDaemonServiceClient creates a fresh insecure daemon RPC client for this
