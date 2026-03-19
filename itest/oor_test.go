@@ -293,3 +293,108 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 		"inputs=[%s,%s]", sendResp.SessionId, sendAmount,
 		aliceVTXO1.Outpoint, aliceVTXO2.Outpoint)
 }
+
+// TestOORIntegrationChainedTransfer verifies an OOR output received by one
+// client can be spent again in a later OOR send to a third client.
+func TestOORIntegrationChainedTransfer(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 3)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	carol := h.StartClientDaemon("carol")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 3)
+
+	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+
+	// First leg: alice -> bob.
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+	bobRecv, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: "itest-chained-oor-bob",
+		},
+	)
+	require.NoError(t, err)
+
+	bobPkScript, err := hex.DecodeString(bobRecv.PkScriptHex)
+	require.NoError(t, err)
+
+	send1Amount := aliceLiveVTXO.AmountSat
+	send1Resp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: bobPkScript,
+				},
+				AmountSat: send1Amount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", send1Resp.Status)
+
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	)
+	waitForExactVTXOBalance(t, bob.RPCClient, send1Amount)
+	bobReceived := waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, send1Amount,
+	)
+	require.NotNil(t, bobReceived)
+
+	// Second leg: bob -> carol using the received output.
+	carolLiveBefore := outpointSet(listLiveVTXOs(t, carol.RPCClient))
+	carolRecv, err := carol.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: "itest-chained-oor-carol",
+		},
+	)
+	require.NoError(t, err)
+
+	carolPkScript, err := hex.DecodeString(carolRecv.PkScriptHex)
+	require.NoError(t, err)
+
+	send2Amount := bobReceived.AmountSat
+	send2Resp, err := bob.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: carolPkScript,
+				},
+				AmountSat: send2Amount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", send2Resp.Status)
+
+	waitForVTXOStatusByOutpoint(
+		t, bob.RPCClient, bobReceived.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	)
+	waitForVTXOBalanceBelow(t, bob.RPCClient, send1Amount)
+	waitForExactVTXOBalance(t, carol.RPCClient, send2Amount)
+	waitForNewLiveVTXOWithAmount(
+		t, carol.RPCClient, carolLiveBefore, send2Amount,
+	)
+
+	// TODO(bhandras): Once OOR unroll is implemented, end this flow by
+	// unrolling Carol's final output to prove receiver ownership.
+	t.Logf("chained OOR transfer completed: leg1_session=%s "+
+		"leg2_session=%s amount=%d", send1Resp.SessionId,
+		send2Resp.SessionId, send2Amount)
+}
