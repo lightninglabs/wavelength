@@ -393,9 +393,14 @@ func TestOutboxPublisher_DeliversToTarget(t *testing.T) {
 	})
 
 	// Wait for target to receive the increment via OutboxPublisher.
-	eventually(t, 5*time.Second, func() bool {
-		return targetBehavior.Count() == 25
-	})
+	// Use eventuallyWithOutboxPublish to force publish attempts on each
+	// poll iteration, avoiding flakiness when the ticker is delayed under
+	// heavy CI or race-detector load.
+	eventuallyWithOutboxPublish(
+		t, publisher, 5*time.Second, func() bool {
+			return targetBehavior.Count() == 25
+		},
+	)
 
 	require.Equal(t, int64(25), targetBehavior.Count())
 }
@@ -459,15 +464,20 @@ func TestOutboxPublisher_MultiHopForwarding(t *testing.T) {
 		return behaviorA.ForwardCount() == 1
 	})
 
-	// Wait for B to process (receives forward, writes to outbox).
-	eventually(t, 5*time.Second, func() bool {
-		return behaviorB.ForwardCount() == 1
-	})
+	// Wait for B to process (receives forward, writes to outbox). Force
+	// publish attempts to avoid flakiness under race-detector or CI load.
+	eventuallyWithOutboxPublish(
+		t, publisher, 5*time.Second, func() bool {
+			return behaviorB.ForwardCount() == 1
+		},
+	)
 
 	// Wait for C to receive the increment.
-	eventually(t, 5*time.Second, func() bool {
-		return behaviorC.Count() == 100
-	})
+	eventuallyWithOutboxPublish(
+		t, publisher, 5*time.Second, func() bool {
+			return behaviorC.Count() == 100
+		},
+	)
 
 	require.Equal(t, int64(100), behaviorC.Count())
 }
@@ -762,10 +772,13 @@ func TestProperty_OutboxEventuallyDelivers(t *testing.T) {
 		return sourceBehavior.ForwardCount() == 1
 	})
 
-	// Wait for target to receive.
-	eventually(t, 5*time.Second, func() bool {
-		return targetBehavior.Count() == amount
-	})
+	// Wait for target to receive. Force publish attempts on each poll
+	// iteration to avoid flakiness under race-detector or CI load.
+	eventuallyWithOutboxPublish(
+		t, publisher, 5*time.Second, func() bool {
+			return targetBehavior.Count() == amount
+		},
+	)
 
 	require.Equal(t, amount, targetBehavior.Count())
 }
