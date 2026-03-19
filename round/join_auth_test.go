@@ -265,10 +265,12 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 	require.NoError(t, err)
 
 	return types.VTXORequest{
-		Amount:      amount,
-		PkScript:    pkScript,
-		Expiry:      expiry,
-		ClientKey:   f.clientPrivKey.PubKey(),
+		Amount:   amount,
+		PkScript: pkScript,
+		Expiry:   expiry,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: f.clientPrivKey.PubKey(),
+		},
 		OperatorKey: f.operatorPrivKey.PubKey(),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingKey.PubKey(),

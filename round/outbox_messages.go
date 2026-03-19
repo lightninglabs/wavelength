@@ -186,8 +186,8 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			PkScript: req.PkScript,
 			Expiry:   req.Expiry,
 		}
-		if req.ClientKey != nil {
-			vr.ClientKey = req.ClientKey.
+		if req.ClientKey.PubKey != nil {
+			vr.ClientKey = req.ClientKey.PubKey.
 				SerializeCompressed()
 		}
 		if req.OperatorKey != nil {

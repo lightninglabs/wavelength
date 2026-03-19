@@ -1170,7 +1170,8 @@ func TestMakeVTXODescriptor(t *testing.T) {
 
 		// Verify descriptor fields.
 		require.Equal(t, btcutil.Amount(5000), desc.Amount)
-		require.Equal(t, timeoutKey, desc.CoSignerKey)
+		require.Equal(t, timeoutKey, desc.OwnerKey)
+		require.Equal(t, cosignerKey, desc.CoSignerKey)
 
 		// Verify PkScript is valid taproot.
 		require.NotEmpty(t, desc.PkScript)
@@ -1182,22 +1183,23 @@ func TestMakeVTXODescriptor(t *testing.T) {
 	})
 
 	t.Run("integrates with scripts package", func(t *testing.T) {
-		// Create multiple VTXOs with different cosigner keys.
-		cosigner1, _ := testutils.CreateKey(10)
-		operator, _ := testutils.CreateKey(20)
+		// Create multiple VTXOs with different tree cosigner keys.
+		owner1, _ := testutils.CreateKey(10)
+		signingKey1, _ := testutils.CreateKey(20)
 		desc1, err := NewVTXODescriptor(
 			btcutil.Amount(1000),
-			cosigner1,
-			operator,
+			owner1,
+			signingKey1,
 			144,
 		)
 		require.NoError(t, err)
 
-		cosigner2, _ := testutils.CreateKey(20)
+		owner2, _ := testutils.CreateKey(30)
+		signingKey2, _ := testutils.CreateKey(40)
 		desc2, err := NewVTXODescriptor(
 			btcutil.Amount(2000),
-			cosigner2,
-			operator,
+			owner2,
+			signingKey2,
 			144,
 		)
 		require.NoError(t, err)

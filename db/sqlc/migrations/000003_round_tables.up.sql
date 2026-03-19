@@ -138,6 +138,16 @@ CREATE TABLE IF NOT EXISTS round_vtxo_requests (
     -- VTXORequest.ClientKey - 33-byte compressed public key.
     client_pubkey BLOB NOT NULL,
 
+    -- VTXORequest.ClientKey.KeyLocator.Family
+    client_key_family INTEGER NOT NULL,
+
+    -- VTXORequest.ClientKey.KeyLocator.Index
+    client_key_index INTEGER NOT NULL,
+
+    -- OwnsClientKey records whether the local client controls the VTXO owner
+    -- key and should materialize this VTXO locally after confirmation.
+    owns_client_key BOOLEAN NOT NULL DEFAULT FALSE,
+
     -- VTXORequest.OperatorKey - 33-byte compressed public key.
     operator_pubkey BLOB NOT NULL,
 

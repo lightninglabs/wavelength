@@ -603,12 +603,19 @@ func createBoardingIntentFixture(
 		},
 	}
 	vtxoTemplates := []types.VTXORequest{{
-		Amount:      btcutil.Amount(90000),
-		PkScript:    pkScript,
-		Expiry:      exitDelay,
-		ClientKey:   clientPubKey,
-		OperatorKey: operatorPubKey,
-		SigningKey:  signingKey,
+		Amount:   btcutil.Amount(90000),
+		PkScript: pkScript,
+		Expiry:   exitDelay,
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  uint32(idx * 10),
+			},
+		},
+		OwnsClientKey: true,
+		OperatorKey:   operatorPubKey,
+		SigningKey:    signingKey,
 	}}
 
 	boardingRequest := types.BoardingRequest{
@@ -746,12 +753,19 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 		}
 
 		allVtxos[i] = types.VTXORequest{
-			Amount:      btcutil.Amount(30000 * (i + 1)),
-			PkScript:    fixtures[0].pkScript,
-			Expiry:      144,
-			ClientKey:   privKey.PubKey(),
-			OperatorKey: operatorKey.PubKey(),
-			SigningKey:  signingKey,
+			Amount:   btcutil.Amount(30000 * (i + 1)),
+			PkScript: fixtures[0].pkScript,
+			Expiry:   144,
+			ClientKey: keychain.KeyDescriptor{
+				PubKey: privKey.PubKey(),
+				KeyLocator: keychain.KeyLocator{
+					Family: types.VTXOOwnerKeyFamily,
+					Index:  uint32(i),
+				},
+			},
+			OwnsClientKey: true,
+			OperatorKey:   operatorKey.PubKey(),
+			SigningKey:    signingKey,
 		}
 	}
 
@@ -784,7 +798,7 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 		vtxtLeaves[i] = tree.LeafDescriptor{
 			PkScript:    fixtures[0].pkScript,
 			Amount:      btcutil.Amount(30000 * (i + 1)),
-			CoSignerKey: allVtxos[i].ClientKey,
+			CoSignerKey: allVtxos[i].SigningKey.PubKey,
 		}
 	}
 	vtxtTree, err := tree.NewTree(

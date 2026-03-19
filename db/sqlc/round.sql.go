@@ -262,7 +262,7 @@ func (q *Queries) GetRoundClientTrees(ctx context.Context, roundID string) ([]Ro
 }
 
 const GetRoundVtxoRequests = `-- name: GetRoundVtxoRequests :many
-SELECT round_id, request_index, amount, pk_script, expiry, client_pubkey, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
+SELECT round_id, request_index, amount, pk_script, expiry, client_pubkey, client_key_family, client_key_index, owns_client_key, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
 WHERE round_id = $1
 ORDER BY request_index ASC
 `
@@ -283,6 +283,9 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 			&i.PkScript,
 			&i.Expiry,
 			&i.ClientPubkey,
+			&i.ClientKeyFamily,
+			&i.ClientKeyIndex,
+			&i.OwnsClientKey,
 			&i.OperatorPubkey,
 			&i.SigningKeyFamily,
 			&i.SigningKeyIndex,
@@ -481,8 +484,9 @@ const InsertRoundVtxoRequest = `-- name: InsertRoundVtxoRequest :exec
 
 INSERT INTO round_vtxo_requests (
     round_id, request_index, amount, pk_script, expiry, client_pubkey,
-    operator_pubkey, signing_key_family, signing_key_index, signing_pubkey
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    client_key_family, client_key_index, owns_client_key, operator_pubkey,
+    signing_key_family, signing_key_index, signing_pubkey
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT (round_id, request_index) DO NOTHING
 `
 
@@ -493,6 +497,9 @@ type InsertRoundVtxoRequestParams struct {
 	PkScript         []byte
 	Expiry           int32
 	ClientPubkey     []byte
+	ClientKeyFamily  int32
+	ClientKeyIndex   int32
+	OwnsClientKey    bool
 	OperatorPubkey   []byte
 	SigningKeyFamily int32
 	SigningKeyIndex  int32
@@ -508,6 +515,9 @@ func (q *Queries) InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtx
 		arg.PkScript,
 		arg.Expiry,
 		arg.ClientPubkey,
+		arg.ClientKeyFamily,
+		arg.ClientKeyIndex,
+		arg.OwnsClientKey,
 		arg.OperatorPubkey,
 		arg.SigningKeyFamily,
 		arg.SigningKeyIndex,

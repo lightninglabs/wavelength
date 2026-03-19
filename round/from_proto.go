@@ -414,7 +414,9 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 					i, err,
 				)
 			}
-			req.ClientKey = key
+			req.ClientKey = keychain.KeyDescriptor{
+				PubKey: key,
+			}
 		}
 
 		if len(vr.OperatorKey) > 0 {

@@ -1083,8 +1083,8 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 	req *types.VTXORequest) sqlc.InsertRoundVtxoRequestParams {
 
 	var clientPubkey, operatorPubkey, signingPubkey []byte
-	if req.ClientKey != nil {
-		clientPubkey = req.ClientKey.SerializeCompressed()
+	if req.ClientKey.PubKey != nil {
+		clientPubkey = req.ClientKey.PubKey.SerializeCompressed()
 	}
 	if req.OperatorKey != nil {
 		operatorPubkey = req.OperatorKey.SerializeCompressed()
@@ -1100,6 +1100,9 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 		PkScript:         req.PkScript,
 		Expiry:           int32(req.Expiry),
 		ClientPubkey:     clientPubkey,
+		ClientKeyFamily:  int32(req.ClientKey.KeyLocator.Family),
+		ClientKeyIndex:   int32(req.ClientKey.KeyLocator.Index),
+		OwnsClientKey:    req.OwnsClientKey,
 		OperatorPubkey:   operatorPubkey,
 		SigningKeyFamily: int32(req.SigningKey.KeyLocator.Family),
 		SigningKeyIndex:  int32(req.SigningKey.KeyLocator.Index),
@@ -1134,11 +1137,18 @@ func dbVtxoRequestRowToVTXORequest(
 	}
 
 	return &types.VTXORequest{
-		Amount:      btcutil.Amount(t.Amount),
-		PkScript:    t.PkScript,
-		Expiry:      uint32(t.Expiry),
-		ClientKey:   clientKey,
-		OperatorKey: operatorKey,
+		Amount:   btcutil.Amount(t.Amount),
+		PkScript: t.PkScript,
+		Expiry:   uint32(t.Expiry),
+		ClientKey: keychain.KeyDescriptor{
+			PubKey: clientKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamily(t.ClientKeyFamily),
+				Index:  uint32(t.ClientKeyIndex),
+			},
+		},
+		OwnsClientKey: t.OwnsClientKey,
+		OperatorKey:   operatorKey,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubkey,
 			KeyLocator: keychain.KeyLocator{

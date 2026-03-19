@@ -221,6 +221,9 @@ type RoundVtxoRequest struct {
 	PkScript         []byte
 	Expiry           int32
 	ClientPubkey     []byte
+	ClientKeyFamily  int32
+	ClientKeyIndex   int32
+	OwnsClientKey    bool
 	OperatorPubkey   []byte
 	SigningKeyFamily int32
 	SigningKeyIndex  int32

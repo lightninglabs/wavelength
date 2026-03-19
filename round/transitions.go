@@ -1613,13 +1613,19 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 	}, nil
 }
 
-// buildClientVTXOs constructs ClientVTXO instances from the intents and client
-// trees.
-func buildClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
+// buildOwnedClientVTXOs constructs locally owned ClientVTXO instances from
+// the intents and client trees. Requests for foreign-owned VTXOs are skipped:
+// the client still co-signs their tree path, but it must not persist them as
+// spendable local balance.
+func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 	roundID RoundID) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, req := range intents.VTXOs {
+		if !req.OwnsClientKey {
+			continue
+		}
+
 		signerKey := NewSignerKey(req.SigningKey.PubKey)
 		clientTree := trees[signerKey]
 		if clientTree == nil {
@@ -1627,26 +1633,26 @@ func buildClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 				"for signing key")
 		}
 
-		leaves := clientTree.Root.GetLeafNodes()
+		// Each signing key maps to exactly one leaf
+		// (enforced by ValidatePath during tree validation).
+		leaf := clientTree.Root.GetLeafNodes()[0]
 
-		for _, leaf := range leaves {
-			outpoint, err := leaf.GetNonAnchorOutpoint()
-			if err != nil {
-				return nil, fmt.Errorf("failed to "+
-					"derive VTXO outpoint: %w", err)
-			}
-
-			vtxos = append(vtxos, &ClientVTXO{
-				Outpoint:    *outpoint,
-				Amount:      req.Amount,
-				PkScript:    req.PkScript,
-				Expiry:      req.Expiry,
-				ClientKey:   req.SigningKey,
-				OperatorKey: req.OperatorKey,
-				TreePath:    clientTree,
-				RoundID:     fn.Some(roundID),
-			})
+		outpoint, err := leaf.GetNonAnchorOutpoint()
+		if err != nil {
+			return nil, fmt.Errorf("failed to "+
+				"derive VTXO outpoint: %w", err)
 		}
+
+		vtxos = append(vtxos, &ClientVTXO{
+			Outpoint:    *outpoint,
+			Amount:      req.Amount,
+			PkScript:    req.PkScript,
+			Expiry:      req.Expiry,
+			ClientKey:   req.ClientKey,
+			OperatorKey: req.OperatorKey,
+			TreePath:    clientTree,
+			RoundID:     fn.Some(roundID),
+		})
 	}
 
 	return vtxos, nil
@@ -1678,7 +1684,7 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("block_height", int(evt.BlockHeight)),
 			slog.Int("confirmations", int(evt.Confirmations)))
 
-		vtxos, err := buildClientVTXOs(
+		vtxos, err := buildOwnedClientVTXOs(
 			s.Intents, s.ClientTrees, s.RoundID,
 		)
 		if err != nil {
@@ -1696,18 +1702,24 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.String("round_id", s.RoundID.String()),
 			slog.Int("vtxo_count", len(vtxos)))
 
-		// Persist VTXOs with their extracted tree paths for future
-		// spending. Confirmation handling may outlive the triggering
-		// actor request, so use a detached context for the store write.
-		opCtx := context.WithoutCancel(ctx)
+		if len(vtxos) > 0 {
+			// Persist VTXOs with their extracted tree paths for future
+			// spending. Confirmation handling may outlive the
+			// triggering actor request, so use a detached context for
+			// the store write.
+			opCtx := context.WithoutCancel(ctx)
 
-		if err := env.VTXOStore.SaveVTXOs(opCtx, vtxos); err != nil {
-			return nil, fmt.Errorf("failed to save VTXOs: %w", err)
+			if err := env.VTXOStore.SaveVTXOs(opCtx, vtxos); err != nil {
+				return nil, fmt.Errorf(
+					"failed to save VTXOs: %w", err,
+				)
+			}
+
+			env.Log.InfoS(ctx,
+				"Saved owned VTXOs to store, round complete",
+				slog.String("round_id", s.RoundID.String()),
+				slog.Int("vtxo_count", len(vtxos)))
 		}
-
-		env.Log.InfoS(ctx, "Saved VTXOs to store, round complete",
-			slog.String("round_id", s.RoundID.String()),
-			slog.Int("vtxo_count", len(vtxos)))
 
 		confInfo := ConfInfo{
 			Height:    evt.BlockHeight,
@@ -1719,20 +1731,21 @@ func (s *InputSigSentState) ProcessEvent(
 		batchExpiry := evt.BlockHeight + sweepDelay
 
 		// Build outbox messages starting with standard notifications.
-		outbox := []ClientOutMsg{
-			&VTXOCreatedNotification{
+		outbox := make([]ClientOutMsg, 0, 2)
+		if len(vtxos) > 0 {
+			outbox = append(outbox, &VTXOCreatedNotification{
 				VTXOs:          vtxos,
 				RoundID:        s.RoundID.String(),
 				CommitmentTxID: evt.TxID,
 				BatchExpiry:    batchExpiry,
 				CreatedHeight:  evt.BlockHeight,
-			},
-			&RoundCompletedNotification{
-				RoundID:  s.RoundID,
-				TxID:     evt.TxID,
-				ConfInfo: confInfo,
-			},
+			})
 		}
+		outbox = append(outbox, &RoundCompletedNotification{
+			RoundID:  s.RoundID,
+			TxID:     evt.TxID,
+			ConfInfo: confInfo,
+		})
 
 		// If this round included refresh requests, notify the old VTXO
 		// actors that their forfeit is now confirmed. This allows them

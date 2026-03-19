@@ -1463,6 +1463,44 @@ func TestInputSigSentState(t *testing.T) {
 		)
 	})
 
+	t.Run("foreign_VTXOs_not_persisted", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHarness(t)
+		h.setupMockVTXOStoreForSave()
+
+		intent := h.newTestBoardingIntent()
+		state := h.newInputSigSentState(
+			testRoundIDTr("round-foreign"),
+			[]BoardingIntent{intent},
+		)
+
+		// Mark the VTXO request as not locally owned. The
+		// client co-signed the tree path but does not own the
+		// resulting VTXO, so it must not be persisted.
+		state.Intents.VTXOs[0].OwnsClientKey = false
+
+		h.withState(state)
+
+		event := &BoardingConfirmed{
+			TxID:          state.CommitmentTx.UnsignedTx.TxHash(),
+			BlockHeight:   101,
+			BlockHash:     chainhash.Hash{0x01},
+			Confirmations: 6,
+		}
+
+		transition, err := h.sendEvent(event)
+		require.NoError(t, err)
+		require.NotNil(t, transition)
+
+		_ = assertStateType[*ConfirmedState](h)
+
+		// Only RoundCompletedNotification should be emitted.
+		// No VTXOCreatedNotification and no SaveVTXOs call.
+		h.assertOutboxLen(1)
+		h.vtxoStore.AssertNotCalled(t, "SaveVTXOs")
+	})
+
 	t.Run("buildClientVTXOs_error", func(t *testing.T) {
 		t.Parallel()
 

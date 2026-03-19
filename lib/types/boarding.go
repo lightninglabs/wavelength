@@ -11,6 +11,13 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner
+// keys. Owner keys are committed to the VTXO output script and must persist
+// across operator term rotations. This is distinct from the MuSig2
+// tree-signing key family (keychain.KeyFamilyMultiSig) used during round
+// construction.
+const VTXOOwnerKeyFamily keychain.KeyFamily = 44
+
 // OperatorTerms holds the information that the operator will share with
 // clients. It communicates the server's terms to the client.
 type OperatorTerms struct {
@@ -115,9 +122,15 @@ type VTXORequest struct {
 	// of the VTXO.
 	Expiry uint32
 
-	// ClientKey is the public key of the client used in the construction
-	// of the collaborative spend path of the VTXO.
-	ClientKey *btcec.PublicKey
+	// ClientKey is the owner's key descriptor for the VTXO. Only the
+	// public key is sent on the wire; the key locator is preserved locally
+	// when the client owns the resulting VTXO.
+	ClientKey keychain.KeyDescriptor
+
+	// OwnsClientKey reports whether this client owns the VTXO owner key and
+	// should persist the created VTXO locally once the round confirms.
+	// This is local-only metadata and is not sent on the wire.
+	OwnsClientKey bool
 
 	// OperatorKey is the public key of the operator used in the
 	// construction of the collaborative spend path of the VTXO.

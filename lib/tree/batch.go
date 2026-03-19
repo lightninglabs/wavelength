@@ -26,8 +26,11 @@ type VTXODescriptor struct {
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
-	// CoSignerKey is the public key of the VTXO owner who must co-sign
-	// along with the operator to spend this VTXO collaboratively.
+	// OwnerKey is the public key committed to the VTXO output script.
+	OwnerKey *btcec.PublicKey
+
+	// CoSignerKey is the MuSig2 tree co-signer key used during tree
+	// signing. This is distinct from the owner key.
 	CoSignerKey *btcec.PublicKey
 }
 
@@ -55,7 +58,8 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 	return &VTXODescriptor{
 		PkScript:    pkScript,
 		Amount:      amount,
-		CoSignerKey: ownerKey,
+		OwnerKey:    ownerKey,
+		CoSignerKey: cosignerKey,
 	}, nil
 }
 

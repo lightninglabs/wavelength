@@ -21,6 +21,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 const (
@@ -769,18 +770,34 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 
 		// Each refresh produces a forfeit of the old VTXO and a
 		// request for a new VTXO with the same parameters.
+		signingKey, err := a.backend.DeriveNextKey(
+			ctx, keychain.KeyFamilyMultiSig,
+		)
+		if err != nil {
+			a.logger(ctx).WarnS(ctx,
+				"Failed to derive refresh signing key",
+				err,
+				slog.String("outpoint",
+					outpoint.String()))
+
+			errors[outpoint] = err
+
+			continue
+		}
+
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
 			Amount:       vtxo.Amount,
 		})
 		vtxos = append(vtxos, types.VTXORequest{
-			Amount:      vtxo.Amount,
-			PkScript:    vtxo.PkScript,
-			Expiry:      vtxo.Expiry,
-			ClientKey:   vtxo.ClientKey.PubKey,
-			OperatorKey: vtxo.OperatorKey,
-			SigningKey:  vtxo.ClientKey,
+			Amount:        vtxo.Amount,
+			PkScript:      vtxo.PkScript,
+			Expiry:        vtxo.Expiry,
+			ClientKey:     vtxo.ClientKey,
+			OwnsClientKey: true,
+			OperatorKey:   vtxo.OperatorKey,
+			SigningKey:    *signingKey,
 		})
 	}
 

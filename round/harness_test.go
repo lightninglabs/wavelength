@@ -543,14 +543,22 @@ func (h *boardingTestHarness) newTestVTXORequestForIntent(
 			Index:  0,
 		},
 	}
+	clientKey := keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
+			Index:  0,
+		},
+	}
 
 	return types.VTXORequest{
-		Amount:      intent.ChainInfo.Amount,
-		PkScript:    pkScript,
-		Expiry:      testExitDelay,
-		ClientKey:   h.clientPubKey,
-		OperatorKey: h.operatorPubKey,
-		SigningKey:  signingKey,
+		Amount:        intent.ChainInfo.Amount,
+		PkScript:      pkScript,
+		Expiry:        testExitDelay,
+		ClientKey:     clientKey,
+		OwnsClientKey: true,
+		OperatorKey:   h.operatorPubKey,
+		SigningKey:    signingKey,
 	}
 }
 

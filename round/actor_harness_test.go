@@ -822,13 +822,25 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	}
 }
 
-// newKeyDescriptor creates a keychain.KeyDescriptor using the harness's client
-// key, useful for creating test ClientVTXO structs.
+// newKeyDescriptor creates a MuSig2 signing key descriptor using the harness's
+// client key.
 func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
 	return keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
 			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
+	}
+}
+
+// newOwnerKeyDescriptor creates a VTXO owner key descriptor using the
+// dedicated owner key family.
+func (h *actorTestHarness) newOwnerKeyDescriptor() keychain.KeyDescriptor {
+	return keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: types.VTXOOwnerKeyFamily,
 			Index:  0,
 		},
 	}
@@ -910,8 +922,52 @@ func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 
 	// Setup mock to return a key descriptor for each DeriveNextKey call.
 	for i := range amounts {
-		keyDesc := &keychain.KeyDescriptor{
+		signingPrivKey, err := btcec.NewPrivateKey()
+		require.NoError(h.t, err)
+
+		ownerKeyDesc := &keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
+			KeyLocator: keychain.KeyLocator{
+				Family: types.VTXOOwnerKeyFamily,
+				Index:  uint32(i),
+			},
+		}
+		signingKeyDesc := &keychain.KeyDescriptor{
+			PubKey: signingPrivKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyMultiSig,
+				Index:  uint32(i),
+			},
+		}
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			types.VTXOOwnerKeyFamily,
+		).Return(ownerKeyDesc, nil).Once()
+		h.wallet.On(
+			"DeriveNextKey", mock.Anything,
+			keychain.KeyFamilyMultiSig,
+		).Return(signingKeyDesc, nil).Once()
+	}
+
+	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
+	result := h.receive(msg)
+	require.True(
+		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
+	)
+}
+
+// expectRefreshSigningKeys wires up fresh MuSig2 signing keys for one or more
+// refresh requests. Refreshes reuse the owner key but must derive a new tree
+// signing key for each round request.
+func (h *actorTestHarness) expectRefreshSigningKeys(count int) {
+	h.t.Helper()
+
+	for i := 0; i < count; i++ {
+		signingPrivKey, err := btcec.NewPrivateKey()
+		require.NoError(h.t, err)
+
+		signingKeyDesc := &keychain.KeyDescriptor{
+			PubKey: signingPrivKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,
 				Index:  uint32(i),
@@ -920,14 +976,8 @@ func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 		h.wallet.On(
 			"DeriveNextKey", mock.Anything,
 			keychain.KeyFamilyMultiSig,
-		).Return(keyDesc, nil).Once()
+		).Return(signingKeyDesc, nil).Once()
 	}
-
-	msg := &RegisterVTXORequestsRequest{Amounts: amounts}
-	result := h.receive(msg)
-	require.True(
-		h.t, result.IsOk(), "actor receive failed: %v", result.Err(),
-	)
 }
 
 // newTestRound creates a test Round with a unique commitment transaction,
