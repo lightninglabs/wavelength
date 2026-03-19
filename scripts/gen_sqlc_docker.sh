@@ -75,3 +75,23 @@ for file in db/sqlc/*.sql.go; do
 		rm "$file.bak"
 	fi
 done
+
+# Preserve backend metadata when rebinding Queries to transactions. sqlc
+# regenerates `WithTx` without our wrapped backend type, so we patch the
+# generated helper to keep backend-specific query behavior stable.
+python3 <<'PY'
+from pathlib import Path
+import sys
+
+db_go = Path("db/sqlc/db.go")
+content = db_go.read_text()
+
+needle = """func (q *Queries) WithTx(tx *sql.Tx) *Queries {\n\treturn &Queries{\n\t\tdb: tx,\n\t}\n}\n"""
+replacement = """func (q *Queries) WithTx(tx *sql.Tx) *Queries {\n\tif wtx, ok := q.db.(*wrappedTX); ok {\n\t\treturn &Queries{\n\t\t\tdb: &wrappedTX{\n\t\t\t\tDBTX:        tx,\n\t\t\t\tbackendType: wtx.backendType,\n\t\t\t},\n\t\t}\n\t}\n\n\treturn &Queries{\n\t\tdb: tx,\n\t}\n}\n"""
+
+if needle not in content:
+    print("expected WithTx pattern not found in db/sqlc/db.go", file=sys.stderr)
+    sys.exit(1)
+
+db_go.write_text(content.replace(needle, replacement, 1))
+PY
