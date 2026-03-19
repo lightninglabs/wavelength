@@ -39,6 +39,20 @@ func (q *Queries) Backend() BackendType {
 	return wtx.backendType
 }
 
+// NewWithBackend creates a new Queries instance for the given backend type.
+func NewWithBackend(db DBTX, backend BackendType) *Queries {
+	switch backend {
+	case BackendTypeSqlite:
+		return NewSqlite(db)
+
+	case BackendTypePostgres:
+		return NewPostgres(db)
+
+	default:
+		return New(db)
+	}
+}
+
 // NewSqlite creates a new Queries instance for a SQLite database.
 func NewSqlite(db DBTX) *Queries {
 	return &Queries{db: &wrappedTX{db, BackendTypeSqlite}}

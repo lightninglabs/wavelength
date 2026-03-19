@@ -36,7 +36,7 @@ func NewVTXOLockerDB(dbq BatchedQuerier, log btclog.Logger) *VTXOLockerDB {
 	txExec := NewTransactionExecutor[*sqlc.Queries](
 		dbq,
 		func(tx *sql.Tx) *sqlc.Queries {
-			return sqlc.New(tx)
+			return sqlc.NewWithBackend(tx, dbq.Backend())
 		},
 		log,
 	)

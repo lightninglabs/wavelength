@@ -546,7 +546,12 @@ func (a *AdminRPCServer) ListClients(ctx context.Context,
 func mapDBRoundStatus(status string) adminrpc.RoundStatus {
 	switch status {
 	case "pending":
-		return adminrpc.RoundStatus_ROUND_STATUS_OPEN
+		// Persisted rounds only exist after the
+		// commitment transaction is finalized and
+		// broadcast, so the DB's pending state
+		// corresponds to the admin API's
+		// broadcast lifecycle phase.
+		return adminrpc.RoundStatus_ROUND_STATUS_BROADCAST
 
 	case "sealed":
 		return adminrpc.RoundStatus_ROUND_STATUS_SEALED
@@ -576,7 +581,10 @@ func mapRoundStatusToDBStr(
 
 	switch status {
 	case adminrpc.RoundStatus_ROUND_STATUS_OPEN:
-		return "pending", nil
+		return "", fmt.Errorf(
+			"round status %s is not persisted in the database",
+			status.String(),
+		)
 
 	case adminrpc.RoundStatus_ROUND_STATUS_SEALED:
 		return "sealed", nil
@@ -585,7 +593,7 @@ func mapRoundStatusToDBStr(
 		return "signing", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_BROADCAST:
-		return "broadcast", nil
+		return "pending", nil
 
 	case adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED:
 		return "confirmed", nil

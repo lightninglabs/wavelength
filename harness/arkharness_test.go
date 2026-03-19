@@ -1,16 +1,21 @@
+//go:build itest
+// +build itest
+
 package harness
 
 import (
 	"context"
 	"testing"
 
+	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/stretchr/testify/require"
 )
 
-// TestArkHarnessCanStart verifies that the ArkHarness can successfully start
-// the infrastructure and arkd server, then connect to the admin RPC.
+// TestArkHarnessCanStart verifies that the ArkHarness can
+// successfully start the infrastructure and arkd server, then connect to the
+// admin RPC.
 func TestArkHarnessCanStart(t *testing.T) {
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
@@ -34,4 +39,37 @@ func TestArkHarnessCanStart(t *testing.T) {
 
 	t.Logf("ArkAdminAddr=%s, ArkRPCAddr=%s", h.ArkAdminAddr, h.ArkRPCAddr)
 	t.Logf("ArkHarness test completed successfully")
+}
+
+// TestArkHarnessCanStartClientDaemon verifies the real-daemon integration
+// harness can boot arkd plus a real in-process darepod and reach the daemon
+// through its public gRPC surface.
+func TestArkHarnessCanStartClientDaemon(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := NewArkHarness(t, &ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+
+	alice := h.StartClientDaemon("alice")
+
+	ctx, cancel := context.WithTimeout(t.Context(), defaultSmallTimeout)
+	defer cancel()
+
+	info, err := alice.RPCClient.GetInfo(ctx, &daemonrpc.GetInfoRequest{})
+	require.NoError(t, err, "client daemon GetInfo RPC failed")
+	require.Equal(t, "regtest", info.Network)
+
+	expectedWalletType, err := resolveClientDaemonWalletType("")
+	require.NoError(t, err)
+	require.Equal(t, expectedWalletType, info.WalletType)
+	require.True(t, info.WalletReady, "wallet should be ready")
+	require.NotEmpty(
+		t, info.IdentityPubkey, "daemon identity should be set",
+	)
 }
