@@ -547,6 +547,48 @@ func listLiveVTXOs(t *testing.T,
 	return resp.Vtxos
 }
 
+// waitForVTXOStatusByOutpoint waits until the daemon reports the requested
+// lifecycle status for the given VTXO outpoint.
+func waitForVTXOStatusByOutpoint(t *testing.T,
+	client daemonrpc.DaemonServiceClient, outpoint string,
+	target daemonrpc.VTXOStatus) *daemonrpc.VTXO {
+
+	t.Helper()
+
+	var matched *daemonrpc.VTXO
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.ListVTXOs(
+			ctx, &daemonrpc.ListVTXOsRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, vtxo := range resp.Vtxos {
+			if vtxo.Outpoint != outpoint {
+				continue
+			}
+
+			if vtxo.Status == target {
+				matched = vtxo
+
+				return true
+			}
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"never observed outpoint %s in status %s",
+		outpoint, target.String())
+
+	return matched
+}
+
 // outpointSet converts a VTXO slice into a membership set keyed by outpoint.
 func outpointSet(vtxos []*daemonrpc.VTXO) map[string]struct{} {
 	set := make(map[string]struct{}, len(vtxos))
