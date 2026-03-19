@@ -3,11 +3,14 @@
 package itest
 
 import (
+	"context"
 	"encoding/hex"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/harness"
@@ -397,4 +400,101 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 	t.Logf("chained OOR transfer completed: leg1_session=%s "+
 		"leg2_session=%s amount=%d", send1Resp.SessionId,
 		send2Resp.SessionId, send2Amount)
+}
+// TestOORIntegrationOfflineRecipientEventVisibility verifies authoritative
+// indexer recipient-event queries expose an incoming OOR transfer while the
+// recipient daemon is offline. Once the daemon-side reconciliation path is
+// restart-safe, this should grow into a full post-restart convergence test.
+func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForRegisteredClients(t, h, 2)
+
+	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+
+	recvResp, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: "itest-indexer-reconcile-bob",
+		},
+	)
+	require.NoError(t, err)
+
+	recipientPkScript, err := hex.DecodeString(recvResp.PkScriptHex)
+	require.NoError(t, err)
+
+	indexerClient := h.StartIndexerTestClient(
+		"bob", recvResp.KeyFamily, recvResp.KeyIndex,
+	)
+
+	bob.Stop()
+	t.Log("stopped bob daemon before OOR send to force offline receive")
+
+	sendAmount := aliceLiveVTXO.AmountSat
+	sendResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: recipientPkScript,
+				},
+				AmountSat: sendAmount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendResp.Status)
+
+	var recipientEvents *arkrpc.ListOORRecipientEventsByScriptResponse
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, queryErr := indexerClient.Indexer.
+			ListOORRecipientEventsByScriptTaproot(
+				ctx, recipientPkScript, 0, 20,
+			)
+		if queryErr != nil {
+			return false
+		}
+
+		for _, ev := range resp.Events {
+			if int64(ev.Value) == sendAmount {
+				recipientEvents = resp
+
+				return true
+			}
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"indexer did not expose OOR recipient event while "+
+			"bob was offline")
+
+	require.NotNil(t, recipientEvents)
+
+	bob = h.RestartClientDaemon("bob")
+	waitForDaemonInfoReachable(t, bob.RPCClient)
+	require.NotNil(t, bob)
+	require.NotEmpty(t, bob.RPCAddr)
+
+	// TODO(bhandras): Extend this to assert Bob's local daemon state
+	// converges after restart once offline OOR receive materialization is
+	// resumable through the daemon path too.
 }

@@ -723,6 +723,36 @@ func waitForVTXOBalanceBelow(t *testing.T,
 	return lastResp
 }
 
+// waitForDaemonInfoReachable waits until the daemon's GetInfo RPC succeeds.
+// This is useful after operator restarts to force mailbox reconnect/restore
+// without assuming any specific connectivity flag semantics.
+func waitForDaemonInfoReachable(t *testing.T,
+	client daemonrpc.DaemonServiceClient) *daemonrpc.GetInfoResponse {
+
+	t.Helper()
+
+	var lastResp *daemonrpc.GetInfoResponse
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.GetInfo(
+			ctx, &daemonrpc.GetInfoRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		lastResp = resp
+
+		return true
+	}, defaultTimeout, pollInterval,
+		"daemon GetInfo never succeeded")
+
+	return lastResp
+}
 // boardClientAndConfirmRound drives a real client daemon through boarding,
 // round broadcast, block generation, confirmation, and live VTXO
 // materialization.
