@@ -370,6 +370,19 @@ func (s *Server) run(ctx context.Context,
 	// 3. Initialize the actor system.
 	// -------------------------------------------------------
 	s.actorSystem = actor.NewActorSystem()
+	// Register cleanup from least dependent to most dependent so that the
+	// defer LIFO order tears down components from most dependent to least
+	// dependent: actor system -> chain backend -> DB.
+	defer func() {
+		if s.db != nil {
+			_ = s.db.Close()
+		}
+	}()
+	defer func() {
+		if s.chainBackend != nil {
+			_ = s.chainBackend.Stop()
+		}
+	}()
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
@@ -377,6 +390,11 @@ func (s *Server) run(ctx context.Context,
 		defer shutdownCancel()
 
 		_ = s.actorSystem.Shutdown(shutdownCtx)
+	}()
+	defer func() {
+		if s.oorActor != nil {
+			s.oorActor.Stop()
+		}
 	}()
 
 	log.InfoS(ctx, "Actor system initialized")
@@ -395,9 +413,6 @@ func (s *Server) run(ctx context.Context,
 	if err := s.initChainBackend(ctx); err != nil {
 		return err
 	}
-	defer func() {
-		_ = s.chainBackend.Stop()
-	}()
 
 	chainActor := chainsource.NewChainSourceActor(
 		chainsource.ChainSourceConfig{
@@ -418,9 +433,6 @@ func (s *Server) run(ctx context.Context,
 	if err := s.initDatabase(ctx); err != nil {
 		return err
 	}
-	defer func() {
-		_ = s.db.Close()
-	}()
 
 	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
 	clk := clock.NewDefaultClock()
