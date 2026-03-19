@@ -1518,6 +1518,16 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 					"InputSigSentState, got %T", state)
 			}
 
+			err = a.markBoardingIntentsAdopted(
+				ctx, inputSigState.Intents.Boarding,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"mark checkpointed boarding intents adopted: %w",
+					err,
+				)
+			}
+
 			// Update round FSM with commitment tx info.
 			txid := inputSigState.CommitmentTx.UnsignedTx.TxHash()
 			roundFSM.TxID = txid
@@ -1624,6 +1634,44 @@ func (a *RoundClientActor) processOutbox(ctx context.Context,
 			)
 		}
 	}
+
+	return nil
+}
+
+// markBoardingIntentsAdopted asks the wallet actor to mark checkpointed
+// boarding intents as adopted so they are no longer counted as spendable
+// confirmed balance.
+func (a *RoundClientActor) markBoardingIntentsAdopted(
+	ctx context.Context, intents []BoardingIntent,
+) error {
+
+	if len(intents) == 0 {
+		return nil
+	}
+
+	outpoints := make([]wire.OutPoint, 0, len(intents))
+	for _, intent := range intents {
+		outpoints = append(outpoints, intent.Outpoint)
+	}
+
+	req := &wallet.MarkBoardingIntentsAdoptedRequest{
+		Outpoints: outpoints,
+	}
+	result := a.cfg.WalletActor.Ask(ctx, req).Await(ctx)
+	if result.IsErr() {
+		return result.Err()
+	}
+
+	resp, _ := result.Unpack()
+	adoptedResp, ok := resp.(*wallet.MarkBoardingIntentsAdoptedResponse)
+	if !ok {
+		return fmt.Errorf(
+			"unexpected wallet response type: %T", resp,
+		)
+	}
+
+	a.log.InfoS(ctx, "Marked checkpointed boarding intents as adopted",
+		slog.Int("count", adoptedResp.UpdatedCount))
 
 	return nil
 }

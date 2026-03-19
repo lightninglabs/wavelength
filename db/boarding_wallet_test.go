@@ -277,6 +277,110 @@ func TestBoardingIntentLifecycle(t *testing.T) {
 	require.Equal(t, wallet.BoardingStatusAdopted, retrievedIntent.Status)
 }
 
+// TestMarkBoardingIntentsAdopted verifies batch adoption updates execute
+// atomically and only transition expected statuses.
+func TestMarkBoardingIntentsAdopted(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 7)
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	outpointA := wire.OutPoint{
+		Hash:  chainhash.Hash{0x10},
+		Index: 0,
+	}
+	outpointB := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11},
+		Index: 1,
+	}
+
+	intents := []wallet.BoardingIntent{
+		{
+			Address:  *boardingAddr,
+			Outpoint: outpointA,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: 200,
+				ConfHash:   chainhash.Hash{0x21},
+				OutPoint:   outpointA,
+				Amount:     10000,
+			},
+			Status: wallet.BoardingStatusConfirmed,
+		},
+		{
+			Address:  *boardingAddr,
+			Outpoint: outpointB,
+			ChainInfo: wallet.BoardingChainInfo{
+				ConfHeight: 201,
+				ConfHash:   chainhash.Hash{0x22},
+				OutPoint:   outpointB,
+				Amount:     20000,
+			},
+			Status: wallet.BoardingStatusAdopted,
+		},
+	}
+	err = store.InsertBoardingIntents(ctx, intents...)
+	require.NoError(t, err)
+
+	updated, err := store.MarkBoardingIntentsAdopted(ctx, []wire.OutPoint{
+		outpointA, outpointB, outpointA,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, updated)
+
+	adoptedIntents, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusAdopted,
+	)
+	require.NoError(t, err)
+	require.Len(t, adoptedIntents, 2)
+
+	confirmedIntents, err := store.FetchBoardingIntentsByStatus(
+		ctx, wallet.BoardingStatusConfirmed,
+	)
+	require.NoError(t, err)
+	require.Len(t, confirmedIntents, 0)
+}
+
+// TestMarkBoardingIntentsAdoptedUnexpectedState verifies the store rejects
+// invalid transitions instead of silently mutating terminal states.
+func TestMarkBoardingIntentsAdoptedUnexpectedState(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store, _ := newBoardingStoreForTest(t)
+
+	boardingAddr, _ := createTestBoardingAddress(t, 8)
+	err := store.InsertBoardingAddress(ctx, boardingAddr)
+	require.NoError(t, err)
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x30},
+		Index: 0,
+	}
+	intent := wallet.BoardingIntent{
+		Address:  *boardingAddr,
+		Outpoint: outpoint,
+		ChainInfo: wallet.BoardingChainInfo{
+			ConfHeight: 300,
+			ConfHash:   chainhash.Hash{0x31},
+			OutPoint:   outpoint,
+			Amount:     50000,
+		},
+		Status: wallet.BoardingStatusSwept,
+	}
+	err = store.InsertBoardingIntents(ctx, intent)
+	require.NoError(t, err)
+
+	_, err = store.MarkBoardingIntentsAdopted(
+		ctx, []wire.OutPoint{outpoint},
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unexpected boarding intent state")
+}
+
 // TestFetchBoardingIntentsByStatus tests filtering intents by status.
 func TestFetchBoardingIntentsByStatus(t *testing.T) {
 	t.Parallel()

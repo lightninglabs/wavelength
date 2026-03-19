@@ -33,6 +33,8 @@ type IntentHeightFilter = sqlc.ListBoardingIntentsByStatusAndMinHeightParams
 
 // BoardingStore is the interface that groups all boarding-related database
 // queries. This is a subset of sqlc.Querier focused on boarding operations.
+//
+//nolint:interfacebloat
 type BoardingStore interface {
 	InsertBoardingAddress(ctx context.Context, arg NewAddrParams) error
 
@@ -61,6 +63,10 @@ type BoardingStore interface {
 	ListBoardingIntentsByStatusAndMinHeight(
 		ctx context.Context, arg IntentHeightFilter,
 	) ([]BoardingIntentRow, error)
+
+	UpdateBoardingIntentStatus(
+		ctx context.Context, arg sqlc.UpdateBoardingIntentStatusParams,
+	) error
 }
 
 // BatchedBoardingStore combines BoardingStore with transaction support via the
@@ -418,6 +424,94 @@ func (b *BoardingWalletStore) GetIntent(ctx context.Context,
 	})
 
 	return result, err
+}
+
+// MarkBoardingIntentsAdopted marks the provided boarding intent outpoints as
+// adopted in a single transaction. This operation validates expected state and
+// fails fast if any outpoint is missing or already in an unexpected terminal
+// state.
+func (b *BoardingWalletStore) MarkBoardingIntentsAdopted(ctx context.Context,
+	outpoints []wire.OutPoint) (int, error) {
+
+	if len(outpoints) == 0 {
+		return 0, nil
+	}
+
+	adoptedStatus, err := statusToString(wallet.BoardingStatusAdopted)
+	if err != nil {
+		return 0, fmt.Errorf("status to string: %w", err)
+	}
+	nowUnix := b.clock.Now().Unix()
+
+	updated := 0
+	seen := make(map[wire.OutPoint]struct{}, len(outpoints))
+	writeTxOpts := WriteTxOption()
+	err = b.db.ExecTx(ctx, writeTxOpts, func(q BoardingStore) error {
+		for _, outpoint := range outpoints {
+			if _, ok := seen[outpoint]; ok {
+				continue
+			}
+			seen[outpoint] = struct{}{}
+
+			key := BoardingIntentKey{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			}
+			dbIntent, err := q.GetBoardingIntent(ctx, key)
+			if err != nil {
+				return fmt.Errorf(
+					"get boarding intent %s: %w",
+					outpoint.String(), err,
+				)
+			}
+
+			currentStatus, err := stringToStatus(dbIntent.Status)
+			if err != nil {
+				return fmt.Errorf(
+					"parse boarding intent status %q "+
+						"for %s: %w",
+					dbIntent.Status,
+					outpoint.String(), err,
+				)
+			}
+
+			switch currentStatus {
+			case wallet.BoardingStatusAdopted:
+				continue
+
+			case wallet.BoardingStatusConfirmed:
+				update := sqlc.UpdateBoardingIntentStatusParams{
+					OutpointHash:   outpoint.Hash[:],
+					OutpointIndex:  int32(outpoint.Index),
+					Status:         adoptedStatus,
+					LastUpdateTime: nowUnix,
+				}
+				err = q.UpdateBoardingIntentStatus(ctx, update)
+				if err != nil {
+					return fmt.Errorf(
+						"mark boarding intent %s "+
+							"adopted: %w",
+						outpoint.String(), err,
+					)
+				}
+				updated++
+
+			default:
+				return fmt.Errorf(
+					"unexpected boarding intent state "+
+						"for %s: %s",
+					outpoint.String(), dbIntent.Status,
+				)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	return updated, nil
 }
 
 // LookupIntentByScript returns the stored intent associated with a boarding

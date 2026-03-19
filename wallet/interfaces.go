@@ -305,6 +305,8 @@ type BoardingIntent struct {
 
 // BoardingStore defines the storage interface for boarding addresses and
 // intents used by the wallet actor.
+//
+//nolint:interfacebloat
 type BoardingStore interface {
 	// InsertBoardingAddress persists a boarding address when it is first
 	// created. This method is idempotent.
@@ -351,6 +353,12 @@ type BoardingStore interface {
 	// GetIntent retrieves a boarding intent by its outpoint (primary key).
 	GetIntent(ctx context.Context,
 		outpoint wire.OutPoint) (*BoardingIntent, error)
+
+	// MarkBoardingIntentsAdopted marks the provided outpoints as adopted in
+	// a single atomic store operation. Implementations should validate that
+	// intents are in an expected pre-adoption state.
+	MarkBoardingIntentsAdopted(ctx context.Context,
+		outpoints []wire.OutPoint) (int, error)
 
 	// LookupIntentByScript returns the stored intent associated with a
 	// boarding pkScript.

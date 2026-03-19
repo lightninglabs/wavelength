@@ -3,6 +3,7 @@ package round
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -184,12 +185,17 @@ type mockWalletActorRef struct {
 	// registeredNotifier holds the actor ref provided during registration,
 	// enabling tests to send boarding confirmations.
 	registeredNotifier actor.TellOnlyRef[wallet.BoardingUtxoConfirmedEvent]
+
+	// adoptedOutpoints captures outpoints from
+	// MarkBoardingIntentsAdoptedRequest calls.
+	adoptedOutpoints []wire.OutPoint
 }
 
 func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
 	return &mockWalletActorRef{
-		t:  t,
-		id: "mock-wallet-actor",
+		t:                t,
+		id:               "mock-wallet-actor",
+		adoptedOutpoints: make([]wire.OutPoint, 0),
 	}
 }
 
@@ -224,7 +230,25 @@ func (m *mockWalletActorRef) Ask(_ context.Context,
 		return newImmediateFuture[wallet.WalletResp](resp)
 	}
 
+	if req, ok := msg.(*wallet.MarkBoardingIntentsAdoptedRequest); ok {
+		m.adoptedOutpoints = append(
+			m.adoptedOutpoints, req.Outpoints...,
+		)
+		resp := &wallet.MarkBoardingIntentsAdoptedResponse{
+			UpdatedCount: len(req.Outpoints),
+		}
+
+		return newImmediateFuture[wallet.WalletResp](resp)
+	}
+
 	return newImmediateFuture[wallet.WalletResp](nil)
+}
+
+func (m *mockWalletActorRef) adoptedRequests() []wire.OutPoint {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]wire.OutPoint(nil), m.adoptedOutpoints...)
 }
 
 // sendBoardingConfirmation simulates a boarding UTXO confirmation from wallet.
@@ -895,6 +919,16 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	roundID RoundID,
 ) *psbt.Packet {
 
+	return h.setupRoundInInputSigSentStateWithIntents(roundID, nil)
+}
+
+// setupRoundInInputSigSentStateWithIntents creates a round FSM in
+// InputSigSentState with the given boarding intents and adds it to the actor's
+// rounds map.
+func (h *actorTestHarness) setupRoundInInputSigSentStateWithIntents(
+	roundID RoundID, intents []BoardingIntent,
+) *psbt.Packet {
+
 	h.t.Helper()
 
 	// Create a unique commitment tx for this round.
@@ -911,6 +945,9 @@ func (h *actorTestHarness) setupRoundInInputSigSentState(
 	initialState := &InputSigSentState{
 		RoundID:      roundID,
 		CommitmentTx: packet,
+		Intents: Intents{
+			Boarding: slices.Clone(intents),
+		},
 	}
 
 	// Create a new FSM starting in InputSigSentState.

@@ -1180,7 +1180,10 @@ func (s *ForfeitSignaturesCollectingState) ProcessEvent(
 		return &ClientStateTransition{
 			NextState: nextState,
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(outboxMsgs, checkpointNotify),
+				Outbox: append(
+					[]ClientOutMsg{checkpointNotify},
+					outboxMsgs...,
+				),
 			}),
 		}, nil
 
@@ -1534,7 +1537,10 @@ func (s *PartialSigsSentState) ProcessEvent(
 		return &ClientStateTransition{
 			NextState: nextState,
 			NewEvents: fn.Some(ClientEmittedEvent{
-				Outbox: append(outboxMsgs, checkpointNotify),
+				Outbox: append(
+					[]ClientOutMsg{checkpointNotify},
+					outboxMsgs...,
+				),
 			}),
 		}, nil
 
