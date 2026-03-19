@@ -651,7 +651,7 @@ func decodeJoinAuthVTXORequest(raw []byte) (*VTXORequest, error) {
 		Amount:   btcutil.Amount(amount),
 		PkScript: bytes.Clone(script),
 		Expiry:   uint32(expiry),
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientPubKey,
 		},
 		OperatorKey: operatorPubKey,
@@ -1033,7 +1033,7 @@ func encodeJoinAuthVTXORequest(req *VTXORequest) ([]byte, error) {
 	script := bytes.Clone(req.PkScript)
 	expiry := uint64(req.Expiry)
 
-	clientKey, err := encodeJoinAuthPubKey(req.ClientKey.PubKey)
+	clientKey, err := encodeJoinAuthPubKey(req.OwnerKey.PubKey)
 	if err != nil {
 		return nil, fmt.Errorf("client key: %w", err)
 	}

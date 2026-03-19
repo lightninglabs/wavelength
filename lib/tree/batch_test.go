@@ -54,9 +54,9 @@ func TestBuildVTXOTree(t *testing.T) {
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    vtxoScript,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1PubKey,
+				PkScript:   vtxoScript,
+				Amount:     btcutil.Amount(5000),
+				SigningKey: user1PubKey,
 			},
 		}
 
@@ -109,14 +109,14 @@ func TestBuildVTXOTree(t *testing.T) {
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    vtxo1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1PubKey,
+				PkScript:   vtxo1Script,
+				Amount:     btcutil.Amount(5000),
+				SigningKey: user1PubKey,
 			},
 			{
-				PkScript:    vtxo2Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user2PubKey,
+				PkScript:   vtxo2Script,
+				Amount:     btcutil.Amount(3000),
+				SigningKey: user2PubKey,
 			},
 		}
 
@@ -188,9 +188,9 @@ func TestBuildVTXOTree(t *testing.T) {
 			require.NoError(t, err)
 
 			vtxos[i] = VTXODescriptor{
-				PkScript:    script,
-				Amount:      btcutil.Amount(1000 * (5 - i)),
-				CoSignerKey: key.PubKey(),
+				PkScript:   script,
+				Amount:     btcutil.Amount(1000 * (5 - i)),
+				SigningKey: key.PubKey(),
 			}
 		}
 
@@ -238,9 +238,9 @@ func TestBuildVTXOTree(t *testing.T) {
 		require.NoError(t, err)
 
 		validVTXO := VTXODescriptor{
-			PkScript:    vtxoScript,
-			Amount:      btcutil.Amount(1000),
-			CoSignerKey: user1PubKey,
+			PkScript:   vtxoScript,
+			Amount:     btcutil.Amount(1000),
+			SigningKey: user1PubKey,
 		}
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
@@ -321,9 +321,9 @@ func TestBuildVTXOTreeStableSort(t *testing.T) {
 	coSigner3, _ := testutils.CreateKey(103)
 
 	vtxos := []VTXODescriptor{
-		{PkScript: script3, Amount: 1000, CoSignerKey: coSigner3},
-		{PkScript: script1, Amount: 1000, CoSignerKey: coSigner1},
-		{PkScript: script2, Amount: 1000, CoSignerKey: coSigner2},
+		{PkScript: script3, Amount: 1000, SigningKey: coSigner3},
+		{PkScript: script1, Amount: 1000, SigningKey: coSigner1},
+		{PkScript: script2, Amount: 1000, SigningKey: coSigner2},
 	}
 
 	// Build tree multiple times - should be identical.
@@ -656,9 +656,9 @@ func TestBuildBatchOutput(t *testing.T) {
 	t.Run("single VTXO", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1Key,
+				PkScript:   user1Script,
+				Amount:     btcutil.Amount(5000),
+				SigningKey: user1Key,
 			},
 		}
 
@@ -678,14 +678,14 @@ func TestBuildBatchOutput(t *testing.T) {
 	t.Run("multiple VTXOs", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(5000),
-				CoSignerKey: user1Key,
+				PkScript:   user1Script,
+				Amount:     btcutil.Amount(5000),
+				SigningKey: user1Key,
 			},
 			{
-				PkScript:    user2Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user2Key,
+				PkScript:   user2Script,
+				Amount:     btcutil.Amount(3000),
+				SigningKey: user2Key,
 			},
 		}
 
@@ -706,14 +706,14 @@ func TestBuildBatchOutput(t *testing.T) {
 		// Same user has 2 VTXOs.
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(2000),
-				CoSignerKey: user1Key,
+				PkScript:   user1Script,
+				Amount:     btcutil.Amount(2000),
+				SigningKey: user1Key,
 			},
 			{
-				PkScript:    user1Script,
-				Amount:      btcutil.Amount(3000),
-				CoSignerKey: user1Key, // Same key!
+				PkScript:   user1Script,
+				Amount:     btcutil.Amount(3000),
+				SigningKey: user1Key, // Same key!
 			},
 		}
 
@@ -729,9 +729,9 @@ func TestBuildBatchOutput(t *testing.T) {
 
 	t.Run("error cases", func(t *testing.T) {
 		validVTXO := VTXODescriptor{
-			PkScript:    user1Script,
-			Amount:      btcutil.Amount(1000),
-			CoSignerKey: user1Key,
+			PkScript:   user1Script,
+			Amount:     btcutil.Amount(1000),
+			SigningKey: user1Key,
 		}
 
 		t.Run("empty VTXOs fails", func(t *testing.T) {
@@ -857,9 +857,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	t.Run("valid single VTXO", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -876,19 +876,19 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key2Pub,
+				PkScript:   script2,
+				Amount:     btcutil.Amount(20000),
+				SigningKey: key2Pub,
 			},
 			{
-				PkScript:    script3,
-				Amount:      btcutil.Amount(30000),
-				CoSignerKey: key3Pub,
+				PkScript:   script3,
+				Amount:     btcutil.Amount(30000),
+				SigningKey: key3Pub,
 			},
 		}
 
@@ -911,9 +911,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	t.Run("zero amount fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(0),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(0),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -925,9 +925,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	t.Run("negative amount fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(-1000),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(-1000),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -939,9 +939,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	t.Run("empty PkScript fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    []byte{},
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   []byte{},
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -953,9 +953,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 	t.Run("nil PkScript fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    nil,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   nil,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -975,9 +975,9 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    p2wpkhScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   p2wpkhScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 		}
 
@@ -986,40 +986,40 @@ func TestValidateVTXODescriptors(t *testing.T) {
 		require.Contains(t, err.Error(), "invalid taproot script")
 	})
 
-	t.Run("nil co-signer key fails", func(t *testing.T) {
+	t.Run("nil signing key fails", func(t *testing.T) {
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: nil,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: nil,
 			},
 		}
 
 		err := ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "nil co-signer key")
+		require.Contains(t, err.Error(), "nil signing key")
 	})
 
-	t.Run("duplicate co-signer keys fail", func(t *testing.T) {
+	t.Run("duplicate signing keys fail", func(t *testing.T) {
 		script2, err := txscript.PayToTaprootScript(key2Pub)
 		require.NoError(t, err)
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key1Pub, // Duplicate!
+				PkScript:   script2,
+				Amount:     btcutil.Amount(20000),
+				SigningKey: key1Pub, // Duplicate!
 			},
 		}
 
 		err = ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "duplicate co-signer key")
+		require.Contains(t, err.Error(), "duplicate signing key")
 	})
 
 	t.Run("duplicate detection multiple VTXOs", func(t *testing.T) {
@@ -1031,25 +1031,25 @@ func TestValidateVTXODescriptors(t *testing.T) {
 
 		vtxos := []VTXODescriptor{
 			{
-				PkScript:    validTaprootScript,
-				Amount:      btcutil.Amount(10000),
-				CoSignerKey: key1Pub,
+				PkScript:   validTaprootScript,
+				Amount:     btcutil.Amount(10000),
+				SigningKey: key1Pub,
 			},
 			{
-				PkScript:    script2,
-				Amount:      btcutil.Amount(20000),
-				CoSignerKey: key2Pub,
+				PkScript:   script2,
+				Amount:     btcutil.Amount(20000),
+				SigningKey: key2Pub,
 			},
 			{
-				PkScript:    script3,
-				Amount:      btcutil.Amount(30000),
-				CoSignerKey: key2Pub, // Duplicate of second!
+				PkScript:   script3,
+				Amount:     btcutil.Amount(30000),
+				SigningKey: key2Pub, // Duplicate of second!
 			},
 		}
 
 		err = ValidateVTXODescriptors(vtxos)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "duplicate co-signer key")
+		require.Contains(t, err.Error(), "duplicate signing key")
 	})
 }
 
@@ -1163,6 +1163,7 @@ func TestMakeVTXODescriptor(t *testing.T) {
 			btcutil.Amount(5000),
 			timeoutKey,
 			cosignerKey,
+			nil,
 			144, // exit delay
 		)
 		require.NoError(t, err)
@@ -1171,24 +1172,37 @@ func TestMakeVTXODescriptor(t *testing.T) {
 		// Verify descriptor fields.
 		require.Equal(t, btcutil.Amount(5000), desc.Amount)
 		require.Equal(t, timeoutKey, desc.OwnerKey)
-		require.Equal(t, cosignerKey, desc.CoSignerKey)
+		require.Equal(t, cosignerKey, desc.OperatorKey)
+		require.Nil(t, desc.SigningKey)
 
 		// Verify PkScript is valid taproot.
 		require.NotEmpty(t, desc.PkScript)
 		require.True(t, txscript.IsPayToTaproot(desc.PkScript))
 
-		// Verify descriptor passes validation.
-		err = ValidateVTXODescriptors([]VTXODescriptor{*desc})
+		// Verify the round descriptor passes tree-building validation.
+		roundDesc, err := NewVTXODescriptor(
+			btcutil.Amount(5000),
+			timeoutKey,
+			cosignerKey,
+			timeoutKey,
+			144,
+		)
+		require.NoError(t, err)
+
+		err = ValidateVTXODescriptors([]VTXODescriptor{*roundDesc})
 		require.NoError(t, err)
 	})
 
 	t.Run("integrates with scripts package", func(t *testing.T) {
-		// Create multiple VTXOs with different tree cosigner keys.
+		operatorKey, _ := testutils.CreateKey(50)
+
+		// Create multiple VTXOs with different tree signing keys.
 		owner1, _ := testutils.CreateKey(10)
 		signingKey1, _ := testutils.CreateKey(20)
 		desc1, err := NewVTXODescriptor(
 			btcutil.Amount(1000),
 			owner1,
+			operatorKey,
 			signingKey1,
 			144,
 		)
@@ -1199,12 +1213,13 @@ func TestMakeVTXODescriptor(t *testing.T) {
 		desc2, err := NewVTXODescriptor(
 			btcutil.Amount(2000),
 			owner2,
+			operatorKey,
 			signingKey2,
 			144,
 		)
 		require.NoError(t, err)
 
-		// Both should be valid and have unique cosigners.
+		// Both should be valid and have unique signing keys.
 		err = ValidateVTXODescriptors([]VTXODescriptor{*desc1, *desc2})
 		require.NoError(t, err)
 	})

@@ -153,7 +153,7 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 
 				return &PendingRoundAssembly{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs:    []VTXOIntent{vtxoReq},
 				}
 			},
 			event: &RoundComplete{},
@@ -165,7 +165,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &RegistrationSentState{Intents: intents}
@@ -179,7 +181,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &RoundJoinedState{
@@ -221,7 +225,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &NoncesSentState{
@@ -242,7 +248,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &NoncesAggregatedState{
@@ -263,7 +271,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &PartialSigsSentState{
@@ -284,7 +294,9 @@ func TestUnexpectedEventSelfLoop(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &InputSigSentState{
@@ -345,7 +357,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &RegistrationSentState{Intents: intents}
@@ -358,7 +372,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				vtxoReq := h.newTestVTXORequestForIntent(intent)
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &RoundJoinedState{
@@ -387,7 +403,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &NoncesSentState{
@@ -407,7 +425,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &PartialSigsSentState{
@@ -427,7 +447,9 @@ func TestBoardingFailedTransitions(t *testing.T) {
 				trees := map[int]*tree.Tree{0: vtxtTree}
 				intents := Intents{
 					Boarding: []BoardingIntent{intent},
-					VTXOs:    []types.VTXORequest{vtxoReq},
+					VTXOs: h.wrapVTXOIntents(
+						[]VTXOIntent{vtxoReq},
+					),
 				}
 
 				return &InputSigSentState{
@@ -515,9 +537,9 @@ func TestIdleState(t *testing.T) {
 		h.withState(&Idle{})
 
 		intent := h.newTestBoardingIntent()
-		event := &IntentPackage{Intents: Intents{
+		event := &IntentPackage{
 			Boarding: []BoardingIntent{intent},
-		}}
+		}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -535,10 +557,10 @@ func TestIdleState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		event := &IntentPackage{Intents: Intents{
+		event := &IntentPackage{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
-		}}
+			VTXOs:    []VTXOIntent{vtxoReq},
+		}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -576,13 +598,13 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		existingVtxoReq := h.newTestVTXORequestForIntent(existingIntent)
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{existingIntent},
-			VTXOs:    []types.VTXORequest{existingVtxoReq},
+			VTXOs:    []VTXOIntent{existingVtxoReq},
 		})
 
 		newIntent := h.newTestBoardingIntent()
-		event := &IntentPackage{Intents: Intents{
+		event := &IntentPackage{
 			Boarding: []BoardingIntent{newIntent},
-		}}
+		}
 
 		transition, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -601,7 +623,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -620,7 +642,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 		h := newTestHarness(t)
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{},
-			VTXOs:    []types.VTXORequest{},
+			VTXOs:    []VTXOIntent{},
 		})
 
 		event := &RegistrationRequested{}
@@ -649,7 +671,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -680,7 +702,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -714,7 +736,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -749,7 +771,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -780,7 +802,7 @@ func TestPendingRoundAssemblyState(t *testing.T) {
 
 		h.withState(&PendingRoundAssembly{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs:    []VTXOIntent{vtxoReq},
 		})
 
 		event := &RegistrationRequested{}
@@ -808,7 +830,9 @@ func TestRegistrationSentState(t *testing.T) {
 		h.withState(&RegistrationSentState{
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 		})
 
@@ -839,7 +863,9 @@ func TestRoundJoinedState(t *testing.T) {
 			RoundID: testRoundIDTr("round-001"),
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 		})
 
@@ -872,7 +898,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		intents := []BoardingIntent{intent}
-		vtxos := []types.VTXORequest{vtxoReq}
+		vtxos := []VTXOIntent{vtxoReq}
 		vtxtTree := h.newTestVTXOTreeForIntents(vtxos)
 		commitmentTx := h.newTestCommitmentTx(intents)
 
@@ -881,8 +907,11 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 			CommitmentTx:  commitmentTx,
 			TxID:          commitmentTx.UnsignedTx.TxHash(),
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
-			Intents:       Intents{Boarding: intents, VTXOs: vtxos},
-			ClientTrees:   make(map[SignerKey]*tree.Tree),
+			Intents: Intents{
+				Boarding: intents,
+				VTXOs:    h.wrapVTXOIntents(vtxos),
+			},
+			ClientTrees: make(map[SignerKey]*tree.Tree),
 		}
 		h.withState(state)
 
@@ -914,7 +943,7 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
-		vtxos := []types.VTXORequest{vtxoReq}
+		vtxos := []VTXOIntent{vtxoReq}
 		vtxtTree := h.newTestVTXOTreeForIntents(vtxos)
 
 		// Create tx WITHOUT the intent's outpoint. Create a fake intent
@@ -930,7 +959,9 @@ func TestCommitmentTxReceivedState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 		}
@@ -1132,7 +1163,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		intent := h.newTestBoardingIntentWithTapscript()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		vtxtTree := h.newTestVTXOTreeForIntents(
-			[]types.VTXORequest{vtxoReq},
+			[]VTXOIntent{vtxoReq},
 		)
 
 		validSigs, err := h.generateValidTreeSignatures(vtxtTree)
@@ -1143,8 +1174,14 @@ func TestPartialSigsSentState(t *testing.T) {
 			[]BoardingIntent{intent}, vtxtTree,
 		)
 
+		roundVTXOReqs := h.wrapVTXOIntents(
+			[]VTXOIntent{vtxoReq},
+		)
+
 		clientTrees := make(map[SignerKey]*tree.Tree)
-		signerKey := NewSignerKey(vtxoReq.SigningKey.PubKey)
+		signerKey := NewSignerKey(
+			roundVTXOReqs[0].SigningKey.PubKey,
+		)
 		clientTrees[signerKey] = vtxtTree
 
 		state := &PartialSigsSentState{
@@ -1153,7 +1190,7 @@ func TestPartialSigsSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs:    roundVTXOReqs,
 			},
 			ClientTrees: clientTrees,
 			BoardingInputIndices: map[wire.OutPoint]int{
@@ -1245,7 +1282,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		vtxtTree := h.newTestVTXOTreeForIntents(
-			[]types.VTXORequest{vtxoReq},
+			[]VTXOIntent{vtxoReq},
 		)
 		intents := []BoardingIntent{intent}
 		commitmentTx := h.newTestCommitmentTx(intents)
@@ -1256,7 +1293,9 @@ func TestPartialSigsSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
@@ -1286,7 +1325,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		vtxtTree := h.newTestVTXOTreeForIntents(
-			[]types.VTXORequest{vtxoReq},
+			[]VTXOIntent{vtxoReq},
 		)
 		intents := []BoardingIntent{intent}
 		commitmentTx := h.newTestCommitmentTx(intents)
@@ -1297,7 +1336,9 @@ func TestPartialSigsSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
@@ -1331,7 +1372,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		vtxtTree := h.newTestVTXOTreeForIntents(
-			[]types.VTXORequest{vtxoReq},
+			[]VTXOIntent{vtxoReq},
 		)
 		intents := []BoardingIntent{intent}
 		commitmentTx := h.newTestCommitmentTx(intents)
@@ -1342,7 +1383,9 @@ func TestPartialSigsSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees:          make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: make(map[wire.OutPoint]int),
@@ -1378,7 +1421,7 @@ func TestPartialSigsSentState(t *testing.T) {
 		intent := h.newTestBoardingIntent()
 		vtxoReq := h.newTestVTXORequestForIntent(intent)
 		vtxtTree := h.newTestVTXOTreeForIntents(
-			[]types.VTXORequest{vtxoReq},
+			[]VTXOIntent{vtxoReq},
 		)
 		intents := []BoardingIntent{intent}
 		commitmentTx := h.newTestCommitmentTx(intents)
@@ -1389,7 +1432,9 @@ func TestPartialSigsSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 			BoardingInputIndices: map[wire.OutPoint]int{
@@ -1478,7 +1523,7 @@ func TestInputSigSentState(t *testing.T) {
 		// Mark the VTXO request as not locally owned. The
 		// client co-signed the tree path but does not own the
 		// resulting VTXO, so it must not be persisted.
-		state.Intents.VTXOs[0].OwnsClientKey = false
+		state.Intents.VTXOs[0].IsOwner = false
 
 		h.withState(state)
 
@@ -1516,7 +1561,9 @@ func TestInputSigSentState(t *testing.T) {
 			VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
 			Intents: Intents{
 				Boarding: []BoardingIntent{intent},
-				VTXOs:    []types.VTXORequest{vtxoReq},
+				VTXOs: h.wrapVTXOIntents(
+					[]VTXOIntent{vtxoReq},
+				),
 			},
 			ClientTrees: make(map[SignerKey]*tree.Tree),
 		}
@@ -1719,7 +1766,7 @@ func TestBoardingFlowIdleToPendingToRegistrationSent(t *testing.T) {
 	vtxoReq := h.newTestVTXORequestForIntent(intent)
 	h.withState(&PendingRoundAssembly{
 		Boarding: []BoardingIntent{intent},
-		VTXOs:    []types.VTXORequest{vtxoReq},
+		VTXOs:    []VTXOIntent{vtxoReq},
 	})
 
 	// Step 1: Request registration.
@@ -1751,9 +1798,9 @@ func TestBoardingFlowMultipleIntentsAccumulation(t *testing.T) {
 	// ones.
 	for i := 0; i < 3; i++ {
 		intent := h.newTestBoardingIntent()
-		event := &IntentPackage{Intents: Intents{
+		event := &IntentPackage{
 			Boarding: []BoardingIntent{intent},
-		}}
+		}
 
 		_, err := h.sendEvent(event)
 		require.NoError(t, err)
@@ -1772,7 +1819,7 @@ func TestBoardingFlowPendingToRoundJoined(t *testing.T) {
 	vtxoReq := h.newTestVTXORequestForIntent(intent)
 	h.withState(&PendingRoundAssembly{
 		Boarding: []BoardingIntent{intent},
-		VTXOs:    []types.VTXORequest{vtxoReq},
+		VTXOs:    []VTXOIntent{vtxoReq},
 	})
 
 	// Step 1: PendingRoundAssembly → RegistrationSentState.
@@ -1806,12 +1853,14 @@ func TestBoardingFlowRoundJoinedToPartialSigsSent(t *testing.T) {
 		RoundID: testRoundIDTr("round-integration-002"),
 		Intents: Intents{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs: h.wrapVTXOIntents(
+				[]VTXOIntent{vtxoReq},
+			),
 		},
 	})
 
 	// Step 1: RoundJoined → CommitmentTxReceived.
-	vtxtTree := h.newTestVTXOTreeForIntents([]types.VTXORequest{vtxoReq})
+	vtxtTree := h.newTestVTXOTreeForIntents([]VTXOIntent{vtxoReq})
 	commitEvent := h.newCommitmentTxBuiltEvent(
 		testRoundIDTr("round-integration-002"),
 		[]BoardingIntent{intent},
@@ -1875,7 +1924,9 @@ func TestBoardingFlowFailureAndRecovery(t *testing.T) {
 		RoundID: testRoundIDTr("round-fail-001"),
 		Intents: Intents{
 			Boarding: []BoardingIntent{intent},
-			VTXOs:    []types.VTXORequest{vtxoReq},
+			VTXOs: h.wrapVTXOIntents(
+				[]VTXOIntent{vtxoReq},
+			),
 		},
 	})
 

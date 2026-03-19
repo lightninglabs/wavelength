@@ -46,7 +46,7 @@ func newTestTransferInput(t *testing.T, ownerKey *btcec.PrivateKey,
 			Outpoint: outpoint,
 			Amount:   amount,
 			PkScript: pkScript,
-			ClientKey: keychain.KeyDescriptor{
+			OwnerKey: keychain.KeyDescriptor{
 				PubKey: ownerKey.PubKey(),
 			},
 			OperatorKey:    operatorKey,

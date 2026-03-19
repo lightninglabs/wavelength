@@ -283,7 +283,7 @@ func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
 	// script and control block from the tapscript, which are needed for
 	// script-path spending.
 	signDesc, _, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, vtxo.ClientKey, tx.ForfeitVTXOInputIndex,
+		vtxoCtx, vtxo.OwnerKey, tx.ForfeitVTXOInputIndex,
 		sigHashes, prevFetcher,
 	)
 	if err != nil {

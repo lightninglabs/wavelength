@@ -20,9 +20,9 @@ func TestPartitionLeaves(t *testing.T) {
 		for i := 0; i < count; i++ {
 			privKey, _ := btcec.NewPrivateKey()
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: privKey.PubKey(),
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: privKey.PubKey(),
 			}
 		}
 
@@ -242,9 +242,9 @@ func TestBuildTreeBFS(t *testing.T) {
 			privKey, _ := btcec.NewPrivateKey()
 			keys[i] = privKey.PubKey()
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: keys[i],
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: keys[i],
 			}
 		}
 
@@ -707,9 +707,9 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		privKey, _ := btcec.NewPrivateKey()
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: privKey.PubKey(),
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: privKey.PubKey(),
 			},
 		}
 		input := createTestInput()
@@ -731,14 +731,14 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: nil, // Nil cosigner!
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: nil, // Nil cosigner!
 			},
 			{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: nil,
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: nil,
 			},
 		}
 		operatorKey := createOperatorKey()
@@ -748,7 +748,7 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		// Nil cosigner keys should cause an error during tree building.
 		_, err := runBuild(t, input, leaves, operatorKey, sweepRoot, 4)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "cosigner key cannot be nil")
+		require.Contains(t, err.Error(), "signing key cannot be nil")
 	})
 
 	t.Run("various radix values work correctly", func(t *testing.T) {
@@ -757,9 +757,9 @@ func TestBuildTreeBFSEdgeCases(t *testing.T) {
 		privKey, _ := btcec.NewPrivateKey()
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000),
-				CoSignerKey: privKey.PubKey(),
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000),
+				SigningKey: privKey.PubKey(),
 			},
 		}
 

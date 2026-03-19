@@ -337,8 +337,8 @@ type Descriptor struct {
 	// collaborative and timeout spend paths).
 	PkScript []byte
 
-	// ClientKey is the client's key descriptor for this VTXO.
-	ClientKey keychain.KeyDescriptor
+	// OwnerKey is the client's key descriptor for this VTXO.
+	OwnerKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey

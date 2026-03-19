@@ -321,8 +321,8 @@ func requireJoinRoundAuthRequestEqual(t *testing.T, expected *JoinRoundRequest,
 		require.Equal(t, expectedReq.PkScript, actualReq.PkScript)
 		require.Equal(t, expectedReq.Expiry, actualReq.Expiry)
 		require.Equal(
-			t, expectedReq.ClientKey.PubKey.SerializeCompressed(),
-			actualReq.ClientKey.PubKey.SerializeCompressed(),
+			t, expectedReq.OwnerKey.PubKey.SerializeCompressed(),
+			actualReq.OwnerKey.PubKey.SerializeCompressed(),
 		)
 		require.Equal(
 			t, expectedReq.OperatorKey.SerializeCompressed(),
@@ -419,7 +419,7 @@ func testJoinRoundAuthRequest(t *testing.T) *JoinRoundRequest {
 				Amount:   25_000,
 				PkScript: []byte{0x51, 0x20, 0x11},
 				Expiry:   288,
-				ClientKey: keychain.KeyDescriptor{
+				OwnerKey: keychain.KeyDescriptor{
 					PubKey: clientKey,
 				},
 				OperatorKey: operatorKey,

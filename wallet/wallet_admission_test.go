@@ -13,7 +13,6 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -392,14 +391,8 @@ func newTestWalletWithManagerAndRound(t *testing.T,
 		roundKey, roundActor,
 	)
 
-	backend := &MockBoardingBackend{}
-	backend.On(
-		"DeriveNextKey", mock.Anything,
-		keychain.KeyFamilyMultiSig,
-	).Return(&keychain.KeyDescriptor{}, nil).Maybe()
-
 	return NewArk(
-		backend, nil, vtxoReader, nil, system, btclog.Disabled,
+		nil, nil, vtxoReader, nil, system, btclog.Disabled,
 	)
 }
 
@@ -430,11 +423,11 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint:  op,
-			Amount:    50000,
-			PkScript:  []byte{0x51, 0x20, 0x01},
-			Expiry:    100,
-			ClientKey: keychain.KeyDescriptor{},
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 
@@ -466,11 +459,11 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 	op := testOutpoint(0)
 	vtxoDescs := map[wire.OutPoint]*VTXODescriptor{
 		op: {
-			Outpoint:  op,
-			Amount:    50000,
-			PkScript:  []byte{0x51, 0x20, 0x01},
-			Expiry:    100,
-			ClientKey: keychain.KeyDescriptor{},
+			Outpoint: op,
+			Amount:   50000,
+			PkScript: []byte{0x51, 0x20, 0x01},
+			Expiry:   100,
+			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 

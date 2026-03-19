@@ -55,8 +55,8 @@ type IncomingVTXOConfig struct {
 	// OutputIndex is the Ark tx output index being materialized.
 	OutputIndex uint32
 
-	// ClientKey is the recipient key descriptor that controls this VTXO.
-	ClientKey keychain.KeyDescriptor
+	// OwnerKey is the recipient key descriptor that controls this VTXO.
+	OwnerKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator public key used by the collaborative
 	// spend path.
@@ -83,7 +83,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 	case ark == nil || ark.UnsignedTx == nil:
 		return nil, fmt.Errorf("ark psbt must be provided")
 
-	case cfg.ClientKey.PubKey == nil:
+	case cfg.OwnerKey.PubKey == nil:
 		return nil, fmt.Errorf("client key must be provided")
 
 	case cfg.OperatorKey == nil:
@@ -119,14 +119,14 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 	}
 
 	tapscript, err := scripts.VTXOTapScript(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+		cfg.OwnerKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("derive vtxo tapscript: %w", err)
 	}
 
 	tapKey, err := scripts.VTXOTapKey(
-		cfg.ClientKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
+		cfg.OwnerKey.PubKey, cfg.OperatorKey, cfg.ExitDelay,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("derive vtxo tapkey: %w", err)
@@ -151,7 +151,7 @@ func BuildIncomingVTXODescriptor(ark *psbt.Packet,
 		},
 		Amount:         btcutil.Amount(out.Value),
 		PkScript:       out.PkScript,
-		ClientKey:      cfg.ClientKey,
+		OwnerKey:       cfg.OwnerKey,
 		OperatorKey:    cfg.OperatorKey,
 		TapScript:      tapscript,
 		TreePath:       cfg.Metadata.TreePath,

@@ -215,14 +215,66 @@ const (
 
 // Intents captures all the client's intents to be included in a single round
 // join request.
+// VTXOIntent is a client's request for a VTXO output in a round. It
+// carries the output metadata but no signing key — the FSM derives
+// signing keys at registration time. This is the type used by callers
+// (wallet, vtxo actor) to request VTXOs.
+type VTXOIntent struct {
+	// Amount is the amount of satoshis to lock in the VTXO.
+	Amount btcutil.Amount
+
+	// PkScript is the output script of the VTXO.
+	PkScript []byte
+
+	// Expiry is the CSV delay for the unilateral exit path.
+	Expiry uint32
+
+	// OwnerKey is the owner's key descriptor for the VTXO.
+	OwnerKey keychain.KeyDescriptor
+
+	// IsOwner reports whether this client controls the VTXO owner
+	// key and should persist the VTXO locally once confirmed.
+	IsOwner bool
+
+	// OperatorKey is the operator's public key for collaborative
+	// spends.
+	OperatorKey *btcec.PublicKey
+}
+
+// RoundVTXORequest pairs a VTXOIntent with the ephemeral signing key
+// derived for this round's MuSig2 tree construction.
+type RoundVTXORequest struct {
+	VTXOIntent
+
+	// SigningKey is the MuSig2 tree signing key derived for this
+	// round. It is ephemeral, must not be reused across rounds,
+	// and can be discarded after batch confirmation.
+	SigningKey keychain.KeyDescriptor
+}
+
+// ToVTXORequest converts a RoundVTXORequest to a types.VTXORequest
+// for wire encoding and DB persistence.
+func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
+	return types.VTXORequest{
+		Amount:      r.Amount,
+		PkScript:    r.PkScript,
+		Expiry:      r.Expiry,
+		OwnerKey:    r.OwnerKey,
+		IsOwner:     r.IsOwner,
+		OperatorKey: r.OperatorKey,
+		SigningKey:  r.SigningKey,
+	}
+}
+
+// Intents holds the accumulated round participation data after signing
+// keys have been derived. All VTXO requests carry their signing keys.
 type Intents struct {
 	// Boarding contains all boarding intents to include in the round.
 	Boarding []BoardingIntent
 
-	// VTXOs is the templates for the VTXO(s) requested in the round.
-	//
-	// TODO(roasbeef): add auxleaf for tap here.
-	VTXOs []types.VTXORequest
+	// VTXOs is the VTXO requests with their round-specific signing
+	// keys, derived by the FSM at registration time.
+	VTXOs []RoundVTXORequest
 
 	// Leaves contains the leave requests for VTXOs being exited to on-chain
 	// outputs. Each leave forfeits a VTXO and creates an on-chain output
@@ -377,8 +429,8 @@ type ClientVTXO struct {
 	// Expiry is the CSV delay for the unilateral exit path.
 	Expiry uint32
 
-	// ClientKey is the client's key descriptor for this VTXO.
-	ClientKey keychain.KeyDescriptor
+	// OwnerKey is the client's owner key descriptor for this VTXO.
+	OwnerKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey

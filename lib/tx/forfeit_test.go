@@ -43,13 +43,14 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	vtxoAmount := btcutil.Amount(5_000)
 
 	vtxoDesc, err := tree.NewVTXODescriptor(
-		vtxoAmount, clientKey, operatorKey, exitDelay,
+		vtxoAmount, clientKey, operatorKey, clientKey,
+		exitDelay,
 	)
 	require.NoError(t, err)
 
 	batchOutput, err := tree.BuildBatchOutput(
-		[]tree.VTXODescriptor{*vtxoDesc}, operatorKey, sweepKey,
-		exitDelay,
+		[]tree.VTXODescriptor{*vtxoDesc}, operatorKey,
+		sweepKey, exitDelay,
 	)
 	require.NoError(t, err)
 
@@ -59,7 +60,8 @@ func TestForfeitTransactionFlow(t *testing.T) {
 	}
 
 	vtxoTree, err := tree.BuildVTXOTree(
-		batchOutpoint, batchOutput, []tree.VTXODescriptor{*vtxoDesc},
+		batchOutpoint, batchOutput,
+		[]tree.VTXODescriptor{*vtxoDesc},
 		operatorKey, sweepKey, exitDelay, 2,
 	)
 	require.NoError(t, err)

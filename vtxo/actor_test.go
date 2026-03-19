@@ -196,7 +196,7 @@ func TestProcessOutboxForfeitRequest(t *testing.T) {
 	)
 	require.Equal(t, vtxo.Outpoint, refreshReq.VTXOOutpoint)
 	require.Equal(t, int64(vtxo.Amount), refreshReq.Amount)
-	require.Equal(t, vtxo.ClientKey, refreshReq.NewVTXOKey)
+	require.Equal(t, vtxo.OwnerKey, refreshReq.NewVTXOKey)
 	require.Equal(t, vtxo.OperatorKey, refreshReq.OperatorKey)
 	require.Equal(t, vtxo.RelativeExpiry, refreshReq.Expiry)
 	require.Equal(t, vtxo.PkScript, refreshReq.PkScript)

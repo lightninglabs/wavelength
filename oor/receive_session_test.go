@@ -115,7 +115,7 @@ func TestReceiveSessionNotifiesThenQueriesMetadata(t *testing.T) {
 	desc, err := BuildIncomingVTXODescriptor(queryMsg.ArkPSBT,
 		IncomingVTXOConfig{
 			OutputIndex: queryMsg.Recipients[0].OutputIndex,
-			ClientKey: keychain.KeyDescriptor{
+			OwnerKey: keychain.KeyDescriptor{
 				PubKey: recipientKey.PubKey(),
 			},
 			OperatorKey: policy.OperatorKey,

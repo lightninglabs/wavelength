@@ -385,8 +385,8 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 	}
 
 	var clientPubkey []byte
-	if desc.ClientKey.PubKey != nil {
-		clientPubkey = desc.ClientKey.PubKey.SerializeCompressed()
+	if desc.OwnerKey.PubKey != nil {
+		clientPubkey = desc.OwnerKey.PubKey.SerializeCompressed()
 	}
 
 	nowUnix := s.clock.Now().Unix()
@@ -398,8 +398,8 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 		Amount:          int64(desc.Amount),
 		PkScript:        desc.PkScript,
 		Expiry:          int32(desc.RelativeExpiry),
-		ClientKeyFamily: int32(desc.ClientKey.Family),
-		ClientKeyIndex:  int32(desc.ClientKey.Index),
+		ClientKeyFamily: int32(desc.OwnerKey.Family),
+		ClientKeyIndex:  int32(desc.OwnerKey.Index),
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
 		TreePath:        treePathBytes,
@@ -488,7 +488,7 @@ func (s *VTXOPersistenceStore) rowToDescriptor(
 		Outpoint: outpoint,
 		Amount:   btcutil.Amount(row.Amount),
 		PkScript: row.PkScript,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientPubkey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keyFamily,

@@ -127,7 +127,7 @@ func BuildTransferInputs(ctx context.Context,
 		// VTXO's own collaborative spend path. This ensures both
 		// parties must sign the Ark tx that spends the checkpoint.
 		collabLeaf, err := scripts.MultiSigCollabTapLeaf(
-			desc.ClientKey.PubKey, desc.OperatorKey,
+			desc.OwnerKey.PubKey, desc.OperatorKey,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(

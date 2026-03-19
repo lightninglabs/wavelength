@@ -72,9 +72,9 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 	operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte) (*Node,
 	error) {
 
-	// The cosigners for a leaf are the leaf owner and operator.
+	// The signers for a leaf are the leaf signing key and operator.
 	cosigners := []*btcec.PublicKey{
-		leaf.CoSignerKey,
+		leaf.SigningKey,
 		operatorKey,
 	}
 
@@ -116,15 +116,15 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 		return nil, fmt.Errorf("at least one group required")
 	}
 
-	// Validate all leaf cosigner keys.
+	// Validate all leaf signing keys.
 	for i, group := range groups {
 		if len(group) == 0 {
 			return nil, fmt.Errorf("group %d is empty", i)
 		}
 
 		for j, leaf := range group {
-			if leaf.CoSignerKey == nil {
-				return nil, fmt.Errorf("leaf cosigner key "+
+			if leaf.SigningKey == nil {
+				return nil, fmt.Errorf("leaf signing key "+
 					"cannot be nil at groups[%d][%d]", i, j)
 			}
 		}
@@ -135,7 +135,7 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 
 	// Each group will become an output.
 	for groupIdx, group := range groups {
-		// Calculate total amount and collect cosigners for this group.
+		// Calculate total amount and collect signers for this group.
 		var (
 			amount         = int64(0)
 			groupCosigners = []*btcec.PublicKey{operatorKey}
@@ -160,9 +160,9 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 
 			amount += leafAmt
 			groupCosigners = append(
-				groupCosigners, leaf.CoSignerKey,
+				groupCosigners, leaf.SigningKey,
 			)
-			allCosigners = append(allCosigners, leaf.CoSignerKey)
+			allCosigners = append(allCosigners, leaf.SigningKey)
 		}
 
 		// Deduplicate cosigners for this group.

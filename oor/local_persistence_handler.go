@@ -393,7 +393,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 		desc, err := BuildIncomingVTXODescriptor(msg.ArkPSBT,
 			IncomingVTXOConfig{
 				OutputIndex: recipient.OutputIndex,
-				ClientKey:   clientKey,
+				OwnerKey:    clientKey,
 				OperatorKey: h.OperatorKey,
 				ExitDelay:   h.ExitDelay,
 				Metadata:    metadata,

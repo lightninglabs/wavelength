@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // buildBoardingRequest constructs a types.BoardingRequest from a
@@ -388,7 +389,30 @@ func (s *PendingRoundAssembly) ProcessEvent(ctx context.Context,
 		// Extract the set of values from the intent map, as we don't
 		// need to track them by outpoint any longer.
 		boardingReqs := fn.Map(s.Boarding, buildBoardingRequest)
-		vtxoReqs := slices.Clone(s.VTXOs)
+
+		// Derive a fresh MuSig2 signing key for each VTXO
+		// request. Signing keys are ephemeral per-round and must
+		// not be reused across rounds.
+		vtxoReqs := make(
+			[]RoundVTXORequest, len(s.VTXOs),
+		)
+		for i, req := range s.VTXOs {
+			sigKey, keyErr := env.Wallet.DeriveNextKey(
+				opCtx, keychain.KeyFamilyMultiSig,
+			)
+			if keyErr != nil {
+				return failWithNotification(
+					"derive VTXO signing key",
+					keyErr, true,
+					fn.None[RoundID](),
+				), nil
+			}
+
+			vtxoReqs[i] = RoundVTXORequest{
+				VTXOIntent: req,
+				SigningKey: *sigKey,
+			}
+		}
 
 		// Build forfeit requests from the decoupled forfeit pool.
 		forfeitReqs, err := sortedForfeitRequests(s.Forfeits)
@@ -730,9 +754,9 @@ func (s *CommitmentTxReceivedState) ProcessEvent(
 		for i, vtxoReq := range s.Intents.VTXOs {
 			// Convert VTXORequest to LeafDescriptor for validation.
 			expectedLeaf := tree.LeafDescriptor{
-				Amount:      vtxoReq.Amount,
-				PkScript:    vtxoReq.PkScript,
-				CoSignerKey: vtxoReq.SigningKey.PubKey,
+				Amount:     vtxoReq.Amount,
+				PkScript:   vtxoReq.PkScript,
+				SigningKey: vtxoReq.SigningKey.PubKey,
 			}
 
 			// Search through all VTXO trees to find the one
@@ -1622,7 +1646,7 @@ func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, req := range intents.VTXOs {
-		if !req.OwnsClientKey {
+		if !req.IsOwner {
 			continue
 		}
 
@@ -1635,7 +1659,12 @@ func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 
 		// Each signing key maps to exactly one leaf
 		// (enforced by ValidatePath during tree validation).
-		leaf := clientTree.Root.GetLeafNodes()[0]
+		leaves := clientTree.Root.GetLeafNodes()
+		if len(leaves) == 0 {
+			return nil, fmt.Errorf("client tree for " +
+				"signing key has no leaves")
+		}
+		leaf := leaves[0]
 
 		outpoint, err := leaf.GetNonAnchorOutpoint()
 		if err != nil {
@@ -1648,7 +1677,7 @@ func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 			Amount:      req.Amount,
 			PkScript:    req.PkScript,
 			Expiry:      req.Expiry,
-			ClientKey:   req.ClientKey,
+			OwnerKey:    req.OwnerKey,
 			OperatorKey: req.OperatorKey,
 			TreePath:    clientTree,
 			RoundID:     fn.Some(roundID),
@@ -1703,13 +1732,14 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("vtxo_count", len(vtxos)))
 
 		if len(vtxos) > 0 {
-			// Persist VTXOs with their extracted tree paths for future
-			// spending. Confirmation handling may outlive the
-			// triggering actor request, so use a detached context for
-			// the store write.
+			// Persist VTXOs with their extracted tree paths.
+			// Use a detached context; confirmation handling can
+			// outlive the actor request.
 			opCtx := context.WithoutCancel(ctx)
 
-			if err := env.VTXOStore.SaveVTXOs(opCtx, vtxos); err != nil {
+			if err := env.VTXOStore.SaveVTXOs(
+				opCtx, vtxos,
+			); err != nil {
 				return nil, fmt.Errorf(
 					"failed to save VTXOs: %w", err,
 				)

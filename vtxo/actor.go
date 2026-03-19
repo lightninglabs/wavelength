@@ -243,7 +243,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			refreshReq := &round.RefreshVTXORequest{
 				VTXOOutpoint: m.VTXOOutpoint,
 				Amount:       int64(vtxo.Amount),
-				NewVTXOKey:   vtxo.ClientKey,
+				NewVTXOKey:   vtxo.OwnerKey,
 				PkScript:     vtxo.PkScript,
 				OperatorKey:  vtxo.OperatorKey,
 				Expiry:       vtxo.RelativeExpiry,

@@ -67,9 +67,9 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 	return &TransferInputSnapshot{
 		Outpoint:        i.VTXO.Outpoint,
 		AmountSat:       int64(i.VTXO.Amount),
-		ClientKeyFamily: int32(i.VTXO.ClientKey.KeyLocator.Family),
-		ClientKeyIndex:  i.VTXO.ClientKey.KeyLocator.Index,
-		ClientPubKey:    i.VTXO.ClientKey.PubKey.SerializeCompressed(),
+		ClientKeyFamily: int32(i.VTXO.OwnerKey.KeyLocator.Family),
+		ClientKeyIndex:  i.VTXO.OwnerKey.KeyLocator.Index,
+		ClientPubKey:    i.VTXO.OwnerKey.PubKey.SerializeCompressed(),
 		OperatorPubKey:  operatorKey.SerializeCompressed(),
 		ExitDelay:       exitDelay,
 		OwnerLeafScript: i.OwnerLeafScript,
@@ -138,7 +138,7 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		Outpoint: snap.Outpoint,
 		Amount:   btcutil.Amount(snap.AmountSat),
 		PkScript: pkScript,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(
 					snap.ClientKeyFamily,

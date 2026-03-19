@@ -1058,9 +1058,9 @@ func TestNodeConstructors(t *testing.T) {
 		_, operatorKey := createTestKey(t)
 
 		leaf := LeafDescriptor{
-			PkScript:    []byte("vtxo_script"),
-			Amount:      1000,
-			CoSignerKey: ownerKey,
+			PkScript:   []byte("vtxo_script"),
+			Amount:     1000,
+			SigningKey: ownerKey,
 		}
 
 		input := wire.OutPoint{
@@ -1103,14 +1103,14 @@ func TestNodeConstructors(t *testing.T) {
 
 			leaves := []LeafDescriptor{
 				{
-					PkScript:    []byte("script1"),
-					Amount:      1000,
-					CoSignerKey: key1,
+					PkScript:   []byte("script1"),
+					Amount:     1000,
+					SigningKey: key1,
 				},
 				{
-					PkScript:    []byte("script2"),
-					Amount:      2000,
-					CoSignerKey: key2,
+					PkScript:   []byte("script2"),
+					Amount:     2000,
+					SigningKey: key2,
 				},
 			}
 
@@ -1156,22 +1156,22 @@ func TestNodeConstructors(t *testing.T) {
 
 			group1 := []LeafDescriptor{
 				{
-					PkScript:    []byte("script1"),
-					Amount:      1000,
-					CoSignerKey: key1,
+					PkScript:   []byte("script1"),
+					Amount:     1000,
+					SigningKey: key1,
 				},
 				{
-					PkScript:    []byte("script2"),
-					Amount:      2000,
-					CoSignerKey: key2,
+					PkScript:   []byte("script2"),
+					Amount:     2000,
+					SigningKey: key2,
 				},
 			}
 
 			group2 := []LeafDescriptor{
 				{
-					PkScript:    []byte("script3"),
-					Amount:      3000,
-					CoSignerKey: key3,
+					PkScript:   []byte("script3"),
+					Amount:     3000,
+					SigningKey: key3,
 				},
 			}
 
@@ -1211,14 +1211,14 @@ func TestNodeConstructors(t *testing.T) {
 		// Create two leaves with the same cosigner key.
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script1"),
-				Amount:      1000,
-				CoSignerKey: key1,
+				PkScript:   []byte("script1"),
+				Amount:     1000,
+				SigningKey: key1,
 			},
 			{
-				PkScript:    []byte("script2"),
-				Amount:      2000,
-				CoSignerKey: key1, // Same key!
+				PkScript:   []byte("script2"),
+				Amount:     2000,
+				SigningKey: key1, // Same key!
 			},
 		}
 

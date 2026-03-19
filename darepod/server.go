@@ -1756,7 +1756,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 			Amount:      desc.Amount,
 			PkScript:    desc.PkScript,
 			Expiry:      desc.RelativeExpiry,
-			ClientKey:   desc.ClientKey,
+			OwnerKey:    desc.OwnerKey,
 			OperatorKey: desc.OperatorKey,
 		}, nil
 	})

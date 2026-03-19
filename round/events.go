@@ -299,8 +299,15 @@ func (e *RoundComplete) clientEventSealed() {}
 //   - Leave:     {Forfeits: [1], Leaves: [1]}
 //   - Consolidate N-to-1: {Forfeits: [N], VTXOs: [1]}
 //   - Resume:    {Boarding: [N], VTXOs: [M], Forfeits: [K], Leaves: [L]}
+//
+// IntentPackage carries raw client intents into the FSM accumulation phase.
+// VTXOs do not yet have signing keys; the round actor derives them at
+// registration time.
 type IntentPackage struct {
-	Intents
+	Boarding []BoardingIntent
+	VTXOs    []VTXOIntent
+	Leaves   []*types.LeaveRequest
+	Forfeits []types.ForfeitRequest
 }
 
 // isEmpty returns true if the package contains no intents.

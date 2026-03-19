@@ -395,9 +395,10 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 		m.BoardingRequests[i] = req
 	}
 
-	// Convert VTXO requests.
+	// Convert VTXO requests. Server-originated messages don't carry
+	// signing keys — those are derived locally by the FSM.
 	m.VTXORequests = make(
-		[]types.VTXORequest, len(pb.VtxoRequests),
+		[]RoundVTXORequest, len(pb.VtxoRequests),
 	)
 	for i, vr := range pb.VtxoRequests {
 		req := types.VTXORequest{
@@ -414,7 +415,7 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 					i, err,
 				)
 			}
-			req.ClientKey = keychain.KeyDescriptor{
+			req.OwnerKey = keychain.KeyDescriptor{
 				PubKey: key,
 			}
 		}
@@ -430,6 +431,13 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 			req.OperatorKey = key
 		}
 
+		roundReq := RoundVTXORequest{
+			VTXOIntent: vtxoRequestToIntent(req),
+		}
+
+		// Parse the signing key when present. Server-originated
+		// messages may omit it, but client round-trip decoding
+		// must preserve it.
 		if len(vr.SigningKey) > 0 {
 			key, err := btcec.ParsePubKey(vr.SigningKey)
 			if err != nil {
@@ -438,13 +446,12 @@ func (m *JoinRoundRequest) FromProto(p proto.Message) error {
 					i, err,
 				)
 			}
-
-			req.SigningKey = keychain.KeyDescriptor{
+			roundReq.SigningKey = keychain.KeyDescriptor{
 				PubKey: key,
 			}
 		}
 
-		m.VTXORequests[i] = req
+		m.VTXORequests[i] = roundReq
 	}
 
 	// Convert forfeit requests.

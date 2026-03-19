@@ -99,7 +99,7 @@ func createTestVTXODescriptor(
 		Outpoint: outpoint,
 		Amount:   btcutil.Amount(100000 * (idx + 1)),
 		PkScript: []byte{0x51, 0x20, byte(idx)},
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: privKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(0),
@@ -155,10 +155,10 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	require.Equal(t, desc.Status, fetched.Status)
 
 	// Verify keys.
-	require.NotNil(t, fetched.ClientKey.PubKey)
+	require.NotNil(t, fetched.OwnerKey.PubKey)
 	require.NotNil(t, fetched.OperatorKey)
-	require.Equal(t, desc.ClientKey.Family, fetched.ClientKey.Family)
-	require.Equal(t, desc.ClientKey.Index, fetched.ClientKey.Index)
+	require.Equal(t, desc.OwnerKey.Family, fetched.OwnerKey.Family)
+	require.Equal(t, desc.OwnerKey.Index, fetched.OwnerKey.Index)
 
 	// Verify tree path was persisted.
 	require.NotNil(t, fetched.TreePath)
@@ -782,7 +782,7 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		Amount:      desc.Amount,
 		PkScript:    desc.PkScript,
 		Expiry:      desc.RelativeExpiry,
-		ClientKey:   desc.ClientKey,
+		OwnerKey:    desc.OwnerKey,
 		OperatorKey: desc.OperatorKey,
 		TreePath:    desc.TreePath,
 		RoundID:     fn.Some(roundID),

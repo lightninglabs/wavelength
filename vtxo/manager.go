@@ -748,7 +748,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 	// Construct the TapScript from the client and operator keys. This is
 	// the standard VTXO tapscript with collaborative and timeout paths.
 	tapscript, err := scripts.VTXOTapScript(
-		cv.ClientKey.PubKey, cv.OperatorKey, cv.Expiry,
+		cv.OwnerKey.PubKey, cv.OperatorKey, cv.Expiry,
 	)
 	if err != nil {
 		return fn.Err[*Descriptor](
@@ -760,7 +760,7 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		Outpoint:       cv.Outpoint,
 		Amount:         cv.Amount,
 		PkScript:       cv.PkScript,
-		ClientKey:      cv.ClientKey,
+		OwnerKey:       cv.OwnerKey,
 		OperatorKey:    cv.OperatorKey,
 		TapScript:      tapscript,
 		TreePath:       cv.TreePath,

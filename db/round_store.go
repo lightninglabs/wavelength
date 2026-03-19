@@ -942,9 +942,9 @@ func (s *RoundPersistenceStore) reconstructInputSigSentState(
 		return nil, fmt.Errorf("get round vtxo requests: %w", err)
 	}
 
-	vtxos := make([]types.VTXORequest, 0, len(dbVtxoReqs))
+	vtxos := make([]round.RoundVTXORequest, 0, len(dbVtxoReqs))
 	for _, dbReq := range dbVtxoReqs {
-		req, err := dbVtxoRequestRowToVTXORequest(dbReq)
+		req, err := dbVtxoRequestRowToRoundVTXORequest(dbReq)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"convert round vtxo request: %w", err,
@@ -1077,14 +1077,14 @@ func (s *RoundPersistenceStore) domainIntentToRoundParams(
 	}, nil
 }
 
-// vtxoRequestToRoundParams converts a types.VTXORequest to sqlc insert
+// vtxoRequestToRoundParams converts a RoundVTXORequest to sqlc insert
 // parameters for the round_vtxo_requests table.
 func vtxoRequestToRoundParams(roundID string, requestIndex int,
-	req *types.VTXORequest) sqlc.InsertRoundVtxoRequestParams {
+	req *round.RoundVTXORequest) sqlc.InsertRoundVtxoRequestParams {
 
 	var clientPubkey, operatorPubkey, signingPubkey []byte
-	if req.ClientKey.PubKey != nil {
-		clientPubkey = req.ClientKey.PubKey.SerializeCompressed()
+	if req.OwnerKey.PubKey != nil {
+		clientPubkey = req.OwnerKey.PubKey.SerializeCompressed()
 	}
 	if req.OperatorKey != nil {
 		operatorPubkey = req.OperatorKey.SerializeCompressed()
@@ -1100,9 +1100,9 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 		PkScript:         req.PkScript,
 		Expiry:           int32(req.Expiry),
 		ClientPubkey:     clientPubkey,
-		ClientKeyFamily:  int32(req.ClientKey.KeyLocator.Family),
-		ClientKeyIndex:   int32(req.ClientKey.KeyLocator.Index),
-		OwnsClientKey:    req.OwnsClientKey,
+		ClientKeyFamily:  int32(req.OwnerKey.KeyLocator.Family),
+		ClientKeyIndex:   int32(req.OwnerKey.KeyLocator.Index),
+		OwnsClientKey:    req.IsOwner,
 		OperatorPubkey:   operatorPubkey,
 		SigningKeyFamily: int32(req.SigningKey.KeyLocator.Family),
 		SigningKeyIndex:  int32(req.SigningKey.KeyLocator.Index),
@@ -1110,9 +1110,10 @@ func vtxoRequestToRoundParams(roundID string, requestIndex int,
 	}
 }
 
-// dbVtxoRequestRowToVTXORequest converts a database row to a VTXORequest.
-func dbVtxoRequestRowToVTXORequest(
-	t RoundVtxoRequestRow) (*types.VTXORequest, error) {
+// dbVtxoRequestRowToRoundVTXORequest converts a database row to a
+// RoundVTXORequest.
+func dbVtxoRequestRowToRoundVTXORequest(
+	t RoundVtxoRequestRow) (*round.RoundVTXORequest, error) {
 
 	var clientKey, operatorKey, signingPubkey *btcec.PublicKey
 	var err error
@@ -1136,24 +1137,30 @@ func dbVtxoRequestRowToVTXORequest(
 		}
 	}
 
-	return &types.VTXORequest{
-		Amount:   btcutil.Amount(t.Amount),
-		PkScript: t.PkScript,
-		Expiry:   uint32(t.Expiry),
-		ClientKey: keychain.KeyDescriptor{
-			PubKey: clientKey,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(t.ClientKeyFamily),
-				Index:  uint32(t.ClientKeyIndex),
+	return &round.RoundVTXORequest{
+		VTXOIntent: round.VTXOIntent{
+			Amount:   btcutil.Amount(t.Amount),
+			PkScript: t.PkScript,
+			Expiry:   uint32(t.Expiry),
+			OwnerKey: keychain.KeyDescriptor{
+				PubKey: clientKey,
+				KeyLocator: keychain.KeyLocator{
+					Family: keychain.KeyFamily(
+						t.ClientKeyFamily,
+					),
+					Index: uint32(t.ClientKeyIndex),
+				},
 			},
+			IsOwner:     t.OwnsClientKey,
+			OperatorKey: operatorKey,
 		},
-		OwnsClientKey: t.OwnsClientKey,
-		OperatorKey:   operatorKey,
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingPubkey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamily(t.SigningKeyFamily),
-				Index:  uint32(t.SigningKeyIndex),
+				Family: keychain.KeyFamily(
+					t.SigningKeyFamily,
+				),
+				Index: uint32(t.SigningKeyIndex),
 			},
 		},
 	}, nil
@@ -1188,8 +1195,8 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 	}
 
 	var clientPubkey []byte
-	if vtxo.ClientKey.PubKey != nil {
-		clientPubkey = vtxo.ClientKey.PubKey.SerializeCompressed()
+	if vtxo.OwnerKey.PubKey != nil {
+		clientPubkey = vtxo.OwnerKey.PubKey.SerializeCompressed()
 	}
 
 	nowUnix := s.clock.Now().Unix()
@@ -1201,8 +1208,8 @@ func (s *RoundPersistenceStore) domainVTXOToInsertParams(
 		Amount:          int64(vtxo.Amount),
 		PkScript:        vtxo.PkScript,
 		Expiry:          int32(vtxo.Expiry),
-		ClientKeyFamily: int32(vtxo.ClientKey.Family),
-		ClientKeyIndex:  int32(vtxo.ClientKey.Index),
+		ClientKeyFamily: int32(vtxo.OwnerKey.Family),
+		ClientKeyIndex:  int32(vtxo.OwnerKey.Index),
 		ClientPubkey:    clientPubkey,
 		OperatorPubkey:  operatorPubkey,
 		TreePath:        treePathBytes,
@@ -1291,7 +1298,7 @@ func (s *RoundPersistenceStore) dbVTXOToDomainVTXO(
 		Amount:   btcutil.Amount(dbVTXO.Amount),
 		PkScript: dbVTXO.PkScript,
 		Expiry:   uint32(dbVTXO.Expiry),
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientPubkey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keyFamily,

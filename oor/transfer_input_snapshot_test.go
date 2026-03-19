@@ -47,7 +47,7 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 			},
 			Amount:   btcutil.Amount(5000),
 			PkScript: pkScript,
-			ClientKey: keychain.KeyDescriptor{
+			OwnerKey: keychain.KeyDescriptor{
 				KeyLocator: keychain.KeyLocator{
 					Family: 1,
 					Index:  2,
@@ -67,11 +67,11 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.NotNil(t, snap)
 	require.Equal(t, in.VTXO.Outpoint, snap.Outpoint)
 	require.Equal(t, int64(in.VTXO.Amount), snap.AmountSat)
-	require.Equal(t, int32(in.VTXO.ClientKey.KeyLocator.Family),
+	require.Equal(t, int32(in.VTXO.OwnerKey.KeyLocator.Family),
 		snap.ClientKeyFamily)
-	require.Equal(t, in.VTXO.ClientKey.KeyLocator.Index,
+	require.Equal(t, in.VTXO.OwnerKey.KeyLocator.Index,
 		snap.ClientKeyIndex)
-	require.Equal(t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
+	require.Equal(t, in.VTXO.OwnerKey.PubKey.SerializeCompressed(),
 		snap.ClientPubKey)
 	require.Equal(t, in.VTXO.OperatorKey.SerializeCompressed(),
 		snap.OperatorPubKey)
@@ -84,10 +84,10 @@ func TestTransferInputSnapshotRoundTrip(t *testing.T) {
 	require.Equal(t, in.VTXO.Outpoint, rebuilt.VTXO.Outpoint)
 	require.Equal(t, in.VTXO.Amount, rebuilt.VTXO.Amount)
 	require.Equal(t, in.VTXO.PkScript, rebuilt.VTXO.PkScript)
-	require.Equal(t, in.VTXO.ClientKey.KeyLocator,
-		rebuilt.VTXO.ClientKey.KeyLocator)
-	require.Equal(t, in.VTXO.ClientKey.PubKey.SerializeCompressed(),
-		rebuilt.VTXO.ClientKey.PubKey.SerializeCompressed())
+	require.Equal(t, in.VTXO.OwnerKey.KeyLocator,
+		rebuilt.VTXO.OwnerKey.KeyLocator)
+	require.Equal(t, in.VTXO.OwnerKey.PubKey.SerializeCompressed(),
+		rebuilt.VTXO.OwnerKey.PubKey.SerializeCompressed())
 	require.Equal(t, in.VTXO.OperatorKey.SerializeCompressed(),
 		rebuilt.VTXO.OperatorKey.SerializeCompressed())
 	require.Equal(t, in.VTXO.RelativeExpiry, rebuilt.VTXO.RelativeExpiry)

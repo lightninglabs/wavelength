@@ -197,7 +197,7 @@ func computeTotalForfeitAmount(ctx context.Context,
 // inputs, and signs everything.
 func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 	identifierKeyDesc keychain.KeyDescriptor,
-	intents Intents, vtxoReqs []types.VTXORequest,
+	intents Intents, vtxoReqs []RoundVTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundAuth, error) {
 
@@ -343,7 +343,7 @@ func buildJoinRoundAuth(ctx context.Context, env *ClientEnvironment,
 // inputs in the same order.
 func buildJoinRoundAuthRequest(ctx context.Context,
 	env *ClientEnvironment, intents Intents,
-	vtxoReqs []types.VTXORequest,
+	vtxoReqs []RoundVTXORequest,
 	forfeitReqs []*types.ForfeitRequest,
 	leaveReqs []*types.LeaveRequest) (*types.JoinRoundRequest,
 	[]joinAuthInput, error) {
@@ -405,7 +405,7 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 			)
 		}
 
-		if vtxo.ClientKey.PubKey == nil {
+		if vtxo.OwnerKey.PubKey == nil {
 			return nil, nil, fmt.Errorf(
 				"forfeit auth input %s missing "+
 					"client key", outpoint,
@@ -420,7 +420,7 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 		}
 
 		tapScript, err := scripts.VTXOTapScript(
-			vtxo.ClientKey.PubKey, vtxo.OperatorKey,
+			vtxo.OwnerKey.PubKey, vtxo.OperatorKey,
 			vtxo.Expiry,
 		)
 		if err != nil {
@@ -436,25 +436,25 @@ func buildJoinRoundAuthRequest(ctx context.Context,
 				Value:    int64(vtxo.Amount),
 				PkScript: bytes.Clone(vtxo.PkScript),
 			},
-			KeyDesc:   vtxo.ClientKey,
+			KeyDesc:   vtxo.OwnerKey,
 			TapScript: tapScript,
 			Sequence:  vtxo.Expiry,
 		})
 	}
 
-	// Convert VTXO requests to pointer slice for the shared type.
-	sharedVTXOReqs := make(
+	// Convert round VTXO requests to wire format.
+	wireVTXOReqs := make(
 		[]*types.VTXORequest, 0, len(vtxoReqs),
 	)
-	for i := 0; i < len(vtxoReqs); i++ {
-		reqCopy := vtxoReqs[i]
-		sharedVTXOReqs = append(sharedVTXOReqs, &reqCopy)
+	for i := range vtxoReqs {
+		req := vtxoReqs[i].ToVTXORequest()
+		wireVTXOReqs = append(wireVTXOReqs, &req)
 	}
 
 	return &types.JoinRoundRequest{
 		Identifier:   nil,
 		BoardingReqs: boardingReqs,
-		VTXOReqs:     sharedVTXOReqs,
+		VTXOReqs:     wireVTXOReqs,
 		ForfeitReqs:  forfeitReqs,
 		LeaveReqs:    leaveReqs,
 	}, signingInputs, nil

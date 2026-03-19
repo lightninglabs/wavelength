@@ -130,7 +130,7 @@ func createTestClientVTXO(
 		Amount:   btcutil.Amount(100000 * (idx + 1)),
 		PkScript: []byte{0x51, 0x20, byte(idx)},
 		Expiry:   144,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: privKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(0),
@@ -417,7 +417,7 @@ func TestVTXOStoreSaveAndList(t *testing.T) {
 	// Verify amounts.
 	for _, vtxo := range listedVTXOs {
 		require.NotZero(t, vtxo.Amount)
-		require.NotNil(t, vtxo.ClientKey.PubKey)
+		require.NotNil(t, vtxo.OwnerKey.PubKey)
 		require.NotNil(t, vtxo.OperatorKey)
 	}
 }
@@ -498,7 +498,7 @@ type boardingIntentFixture struct {
 	boardingAddr  *wallet.BoardingAddress
 	walletIntent  wallet.BoardingIntent
 	roundIntent   round.BoardingIntent
-	vtxoTemplates []types.VTXORequest
+	vtxoTemplates []round.RoundVTXORequest
 	outpoint      wire.OutPoint
 	pkScript      []byte
 	inputSig      *types.BoardingInputSignature
@@ -602,20 +602,22 @@ func createBoardingIntentFixture(
 			Index:  uint32(idx * 10),
 		},
 	}
-	vtxoTemplates := []types.VTXORequest{{
-		Amount:   btcutil.Amount(90000),
-		PkScript: pkScript,
-		Expiry:   exitDelay,
-		ClientKey: keychain.KeyDescriptor{
-			PubKey: clientPubKey,
-			KeyLocator: keychain.KeyLocator{
-				Family: types.VTXOOwnerKeyFamily,
-				Index:  uint32(idx * 10),
+	vtxoTemplates := []round.RoundVTXORequest{{
+		VTXOIntent: round.VTXOIntent{
+			Amount:   btcutil.Amount(90000),
+			PkScript: pkScript,
+			Expiry:   exitDelay,
+			OwnerKey: keychain.KeyDescriptor{
+				PubKey: clientPubKey,
+				KeyLocator: keychain.KeyLocator{
+					Family: types.VTXOOwnerKeyFamily,
+					Index:  uint32(idx * 10),
+				},
 			},
+			IsOwner:     true,
+			OperatorKey: operatorPubKey,
 		},
-		OwnsClientKey: true,
-		OperatorKey:   operatorPubKey,
-		SigningKey:    signingKey,
+		SigningKey: signingKey,
 	}}
 
 	boardingRequest := types.BoardingRequest{
@@ -655,9 +657,9 @@ func createBoardingIntentFixture(
 	}
 	leaves := []tree.LeafDescriptor{
 		{
-			PkScript:    pkScript,
-			Amount:      btcutil.Amount(90000 * (idx + 1)),
-			CoSignerKey: clientPubKey,
+			PkScript:   pkScript,
+			Amount:     btcutil.Amount(90000 * (idx + 1)),
+			SigningKey: clientPubKey,
 		},
 	}
 	clientTree, err := tree.NewTree(
@@ -737,7 +739,7 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 
 	// Create 3 VTXO requests (more than boarding intents) to test
 	// decoupled storage.
-	allVtxos := make([]types.VTXORequest, numVTXORequests)
+	allVtxos := make([]round.RoundVTXORequest, numVTXORequests)
 	for i := 0; i < numVTXORequests; i++ {
 		privKey, err := btcec.NewPrivateKey()
 		require.NoError(t, err)
@@ -752,20 +754,23 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 			},
 		}
 
-		allVtxos[i] = types.VTXORequest{
-			Amount:   btcutil.Amount(30000 * (i + 1)),
-			PkScript: fixtures[0].pkScript,
-			Expiry:   144,
-			ClientKey: keychain.KeyDescriptor{
-				PubKey: privKey.PubKey(),
-				KeyLocator: keychain.KeyLocator{
-					Family: types.VTXOOwnerKeyFamily,
-					Index:  uint32(i),
+		allVtxos[i] = round.RoundVTXORequest{
+			VTXOIntent: round.VTXOIntent{
+				Amount:   btcutil.Amount(30000 * (i + 1)),
+				PkScript: fixtures[0].pkScript,
+				Expiry:   144,
+				OwnerKey: keychain.KeyDescriptor{
+					PubKey: privKey.PubKey(),
+					KeyLocator: keychain.KeyLocator{
+						Family: types.
+							VTXOOwnerKeyFamily,
+						Index: uint32(i),
+					},
 				},
+				IsOwner:     true,
+				OperatorKey: operatorKey.PubKey(),
 			},
-			OwnsClientKey: true,
-			OperatorKey:   operatorKey.PubKey(),
-			SigningKey:    signingKey,
+			SigningKey: signingKey,
 		}
 	}
 
@@ -796,9 +801,9 @@ func TestRoundStoreDecoupledVTXOStorage(t *testing.T) {
 	vtxtLeaves := make([]tree.LeafDescriptor, numVTXORequests)
 	for i := 0; i < numVTXORequests; i++ {
 		vtxtLeaves[i] = tree.LeafDescriptor{
-			PkScript:    fixtures[0].pkScript,
-			Amount:      btcutil.Amount(30000 * (i + 1)),
-			CoSignerKey: allVtxos[i].SigningKey.PubKey,
+			PkScript:   fixtures[0].pkScript,
+			Amount:     btcutil.Amount(30000 * (i + 1)),
+			SigningKey: allVtxos[i].SigningKey.PubKey,
 		}
 	}
 	vtxtTree, err := tree.NewTree(
@@ -1028,7 +1033,7 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 
 	// Build the round's boarding group from the fixtures.
 	roundIntents := make([]round.BoardingIntent, numIntents)
-	allVtxos := make([]types.VTXORequest, 0, numIntents)
+	allVtxos := make([]round.RoundVTXORequest, 0, numIntents)
 	inputSigs := make([]*types.BoardingInputSignature, numIntents)
 	clientTrees := make(map[round.SignerKey]*tree.Tree)
 	for i, f := range fixtures {
@@ -1065,9 +1070,9 @@ func TestRoundStoreWithBoardingGroup(t *testing.T) {
 	for _, f := range fixtures {
 		for range f.vtxoTemplates {
 			vtxtLeaves = append(vtxtLeaves, tree.LeafDescriptor{
-				PkScript:    f.pkScript,
-				Amount:      45000,
-				CoSignerKey: f.clientPubKey,
+				PkScript:   f.pkScript,
+				Amount:     45000,
+				SigningKey: f.clientPubKey,
 			})
 		}
 	}

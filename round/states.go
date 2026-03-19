@@ -56,9 +56,9 @@ type PendingRoundAssembly struct {
 	// next round.
 	Boarding []BoardingIntent
 
-	// VTXOs contains the collected VTXO requests to include in the next
-	// round.
-	VTXOs []types.VTXORequest
+	// VTXOs contains the collected VTXO intents to include in the next
+	// round. Signing keys are derived at registration time.
+	VTXOs []VTXOIntent
 
 	// Forfeits tracks VTXOs being forfeited as inputs to this round.
 	// Decoupled from outputs to enable many-to-many operations.

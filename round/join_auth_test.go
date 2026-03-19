@@ -238,10 +238,10 @@ func (f *joinAuthTestFixture) newBoardingIntent(t *testing.T,
 	}
 }
 
-// newVTXORequest creates a fully-populated VTXORequest with all
+// newVTXORequest creates a fully-populated RoundVTXORequest with all
 // fields required for TLV encoding.
 func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
-	amount btcutil.Amount) types.VTXORequest {
+	amount btcutil.Amount) RoundVTXORequest {
 
 	t.Helper()
 
@@ -264,14 +264,16 @@ func (f *joinAuthTestFixture) newVTXORequest(t *testing.T,
 	signingKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	return types.VTXORequest{
-		Amount:   amount,
-		PkScript: pkScript,
-		Expiry:   expiry,
-		ClientKey: keychain.KeyDescriptor{
-			PubKey: f.clientPrivKey.PubKey(),
+	return RoundVTXORequest{
+		VTXOIntent: VTXOIntent{
+			Amount:   amount,
+			PkScript: pkScript,
+			Expiry:   expiry,
+			OwnerKey: keychain.KeyDescriptor{
+				PubKey: f.clientPrivKey.PubKey(),
+			},
+			OperatorKey: f.operatorPrivKey.PubKey(),
 		},
-		OperatorKey: f.operatorPrivKey.PubKey(),
 		SigningKey: keychain.KeyDescriptor{
 			PubKey: signingKey.PubKey(),
 		},
@@ -345,7 +347,7 @@ func TestBuildJoinRoundAuthBoardingOnly(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
@@ -406,7 +408,7 @@ func TestBuildJoinRoundAuthRejectsTamperedSig(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
@@ -515,7 +517,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 		Amount:   vtxoAmount,
 		PkScript: vtxoPkScript,
 		Expiry:   vtxoExpiry,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: f.clientPrivKey.PubKey(),
 		},
 		OperatorKey: f.operatorPrivKey.PubKey(),
@@ -525,7 +527,7 @@ func TestBuildJoinRoundAuthWithForfeit(t *testing.T) {
 		"GetVTXO", mock.Anything, vtxoOutpoint,
 	).Return(vtxo, nil)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 70000),
 	}
 	intents := Intents{
@@ -602,7 +604,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 		Amount:   vtxoAmount,
 		PkScript: vtxoPkScript,
 		Expiry:   vtxoExpiry,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: f.clientPrivKey.PubKey(),
 		},
 		OperatorKey: f.operatorPrivKey.PubKey(),
@@ -612,7 +614,7 @@ func TestBuildJoinRoundAuthForfeitOnly(t *testing.T) {
 		"GetVTXO", mock.Anything, vtxoOutpoint,
 	).Return(vtxo, nil)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 39000),
 	}
 	intents := Intents{
@@ -742,7 +744,7 @@ func TestBuildJoinRoundAuthRejectsNoInputs(t *testing.T) {
 
 	f := newJoinAuthTestFixture(t)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 10000),
 	}
 	intents := Intents{
@@ -769,7 +771,7 @@ func TestBuildJoinRoundAuthRejectsMissingValidFromQuery(t *testing.T) {
 	boardingAmount := btcutil.Amount(50000)
 	intent := f.newBoardingIntent(t, boardingAmount)
 
-	vtxoReqs := []types.VTXORequest{
+	vtxoReqs := []RoundVTXORequest{
 		f.newVTXORequest(t, 49000),
 	}
 	intents := Intents{
