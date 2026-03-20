@@ -10,8 +10,10 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/wallet"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -284,6 +286,64 @@ func TestActorRecovery(t *testing.T) {
 
 		require.Len(t, h.actor.commitmentTxIndex, 3)
 		require.Len(t, h.chainSource.registrations, 3)
+	})
+
+	t.Run("replays_checkpointed_boarding_input_sigs", func(t *testing.T) {
+		t.Parallel()
+
+		h := newActorTestHarness(t)
+
+		roundID := testRoundID("replay-input-sigs")
+		round := h.newTestRound(roundID)
+		walletIntent := h.newTestBoardingIntent()
+		intent, err := buildBoardingIntentFromWallet(walletIntent)
+		require.NoError(t, err)
+		inputSig := &types.BoardingInputSignature{
+			InputIndex: 0,
+			Outpoint:   walletIntent.Outpoint,
+			ClientSignature: testutils.TestSchnorrSignature(
+				t, "replay",
+			),
+		}
+
+		h.roundStore.On(
+			"ListActiveRounds", mock.Anything,
+		).Return([]*Round{round}, nil)
+		h.roundStore.On(
+			"FetchState", mock.Anything, round.RoundID,
+		).Return(
+			round,
+			&InputSigSentState{
+				RoundID: roundID,
+				CommitmentTx: round.CommitmentTx.
+					UnwrapOrFail(t),
+				Intents: Intents{
+					Boarding: []BoardingIntent{intent},
+				},
+				InputSigs: []*types.BoardingInputSignature{
+					inputSig,
+				},
+			},
+			nil,
+		)
+
+		err = h.start()
+		require.NoError(t, err)
+
+		msgs := h.serverMessages()
+		require.Len(t, msgs, 1)
+
+		req, ok := msgs[0].(*serverconn.SendClientEventRequest)
+		require.True(t, ok, "expected SendClientEventRequest, got %T",
+			msgs[0])
+
+		replayed, ok := req.Message.(*SubmitForfeitSigRequest)
+		require.True(t, ok, "expected SubmitForfeitSigRequest, got %T",
+			req.Message)
+		require.Equal(t, roundID, replayed.RoundID)
+		require.Len(t, replayed.Signatures, 1)
+		require.Equal(t, walletIntent.Outpoint,
+			replayed.Signatures[0].Outpoint)
 	})
 }
 
@@ -1331,6 +1391,53 @@ func TestHandleForfeitSignatureResponse(t *testing.T) {
 		require.True(t, result.IsErr())
 		require.Contains(t, result.Err().Error(), "unknown round")
 	})
+}
+
+// TestHandleTriggerBoard verifies the board trigger path rebuilds confirmed
+// boarding intents from the wallet actor before round registration.
+func TestHandleTriggerBoard(t *testing.T) {
+	t.Parallel()
+
+	h := newActorTestHarness(t)
+	h.setupMockRoundStoreForStart()
+
+	err := h.start()
+	require.NoError(t, err)
+
+	intent := h.newTestBoardingIntent()
+	h.walletActor.setConfirmedIntents(*intent)
+
+	h.wallet.On(
+		"DeriveNextKey", mock.Anything, keychain.KeyFamilyMultiSig,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: h.clientPubKey,
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+			Index:  0,
+		},
+	}, nil).Once()
+
+	result := h.receive(&actormsg.TriggerBoardMsg{
+		Amounts: []btcutil.Amount{49_000},
+	})
+	require.True(t, result.IsOk(), "expected Ok, got: %v",
+		result.Err())
+
+	states := h.queryState()
+	tempState, exists := h.findTempState(states)
+	require.True(t, exists, "expected temp-keyed FSM state")
+
+	regState, ok := tempState.State.(*RegistrationSentState)
+	require.True(t, ok, "expected RegistrationSentState, got %T",
+		tempState.State)
+	require.Len(t, regState.Intents.Boarding, 1)
+	require.Equal(
+		t, intent.Outpoint, regState.Intents.Boarding[0].Outpoint,
+	)
+	require.Len(t, regState.Intents.VTXOs, 1)
+	require.Equal(
+		t, btcutil.Amount(49_000), regState.Intents.VTXOs[0].Amount,
+	)
 }
 
 // TestHandleForfeitCollectionTimeout verifies timeout-message handling for
