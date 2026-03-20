@@ -186,6 +186,40 @@ func (m *RegisterConfirmationNotifierResponse) MessageType() string {
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *RegisterConfirmationNotifierResponse) walletRespSealed() {}
 
+// GetConfirmedBoardingIntentsRequest asks the wallet actor for the currently
+// confirmed boarding intents. Round retry after restart uses this to rebuild
+// the boarding side of round assembly from the wallet's persisted source of
+// truth.
+type GetConfirmedBoardingIntentsRequest struct {
+	actor.BaseMessage
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *GetConfirmedBoardingIntentsRequest) MessageType() string {
+	return "GetConfirmedBoardingIntentsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *GetConfirmedBoardingIntentsRequest) walletMsgSealed() {}
+
+// GetConfirmedBoardingIntentsResponse returns the confirmed boarding intents
+// currently tracked by the wallet actor.
+type GetConfirmedBoardingIntentsResponse struct {
+	actor.BaseMessage
+
+	// Intents are the confirmed boarding intents ready for round
+	// registration.
+	Intents []BoardingIntent
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *GetConfirmedBoardingIntentsResponse) MessageType() string {
+	return "GetConfirmedBoardingIntentsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *GetConfirmedBoardingIntentsResponse) walletRespSealed() {}
+
 // UnregisterConfirmationNotifierRequest removes a previously registered
 // confirmation notifier. The actor will no longer receive boarding UTXO
 // confirmation events.

@@ -85,6 +85,13 @@ func (m *mockServerConnRef) clearMessages() {
 	m.messages = m.messages[:0]
 }
 
+func (m *mockServerConnRef) snapshotMessages() []serverconn.ServerConnMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return append([]serverconn.ServerConnMsg(nil), m.messages...)
+}
+
 // assertMessageSent checks that a message of the given type was sent.
 func (m *mockServerConnRef) assertMessageSent(t *testing.T, msgType string) {
 	t.Helper()
@@ -189,6 +196,9 @@ type mockWalletActorRef struct {
 	// adoptedOutpoints captures outpoints from
 	// MarkBoardingIntentsAdoptedRequest calls.
 	adoptedOutpoints []wire.OutPoint
+
+	// confirmedIntents are returned to TriggerBoard recovery queries.
+	confirmedIntents []wallet.BoardingIntent
 }
 
 func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
@@ -196,6 +206,7 @@ func newMockWalletActorRef(t *testing.T) *mockWalletActorRef {
 		t:                t,
 		id:               "mock-wallet-actor",
 		adoptedOutpoints: make([]wire.OutPoint, 0),
+		confirmedIntents: make([]wallet.BoardingIntent, 0),
 	}
 }
 
@@ -241,6 +252,17 @@ func (m *mockWalletActorRef) Ask(_ context.Context,
 		return newImmediateFuture[wallet.WalletResp](resp)
 	}
 
+	if _, ok := msg.(*wallet.GetConfirmedBoardingIntentsRequest); ok {
+		resp := &wallet.GetConfirmedBoardingIntentsResponse{
+			Intents: append(
+				[]wallet.BoardingIntent(nil),
+				m.confirmedIntents...,
+			),
+		}
+
+		return newImmediateFuture[wallet.WalletResp](resp)
+	}
+
 	return newImmediateFuture[wallet.WalletResp](nil)
 }
 
@@ -249,6 +271,18 @@ func (m *mockWalletActorRef) adoptedRequests() []wire.OutPoint {
 	defer m.mu.Unlock()
 
 	return append([]wire.OutPoint(nil), m.adoptedOutpoints...)
+}
+
+func (m *mockWalletActorRef) setConfirmedIntents(
+	intents ...wallet.BoardingIntent,
+) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.confirmedIntents = append(
+		[]wallet.BoardingIntent(nil), intents...,
+	)
 }
 
 // sendBoardingConfirmation simulates a boarding UTXO confirmation from wallet.
@@ -859,6 +893,13 @@ func (h *actorTestHarness) assertServerMessageSent(msgType string) {
 // verify only new messages sent after this point.
 func (h *actorTestHarness) clearServerMessages() {
 	h.serverConn.clearMessages()
+}
+
+// serverMessages returns a snapshot of messages sent to the server.
+func (h *actorTestHarness) serverMessages() []serverconn.ServerConnMsg {
+	h.t.Helper()
+
+	return h.serverConn.snapshotMessages()
 }
 
 // sendVTXORequests sends VTXO request amounts to the actor. This sets up the

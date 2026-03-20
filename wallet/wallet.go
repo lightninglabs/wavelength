@@ -290,6 +290,9 @@ func (a *Ark) Receive(ctx context.Context,
 	case *RegisterConfirmationNotifierRequest:
 		return a.handleRegisterNotifier(ctx, m)
 
+	case *GetConfirmedBoardingIntentsRequest:
+		return a.handleGetConfirmedBoardingIntents(ctx, m)
+
 	case *UnregisterConfirmationNotifierRequest:
 		return a.handleUnregisterNotifier(ctx, m)
 
@@ -464,6 +467,26 @@ func (a *Ark) handleRegisterNotifier(ctx context.Context,
 	}
 
 	return fn.Ok[WalletResp](resp)
+}
+
+// handleGetConfirmedBoardingIntents returns the wallet's currently confirmed
+// boarding intents. This gives the round actor a restart-safe way to rebuild
+// pending boarding input packages from the wallet's persisted state.
+func (a *Ark) handleGetConfirmedBoardingIntents(ctx context.Context,
+	_ *GetConfirmedBoardingIntentsRequest) fn.Result[WalletResp] {
+
+	intents, err := a.store.FetchBoardingIntentsByStatus(
+		ctx, BoardingStatusConfirmed,
+	)
+	if err != nil {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"fetch confirmed boarding intents: %w", err,
+		))
+	}
+
+	return fn.Ok[WalletResp](&GetConfirmedBoardingIntentsResponse{
+		Intents: intents,
+	})
 }
 
 // handleUnregisterNotifier removes an actor from the notification list.

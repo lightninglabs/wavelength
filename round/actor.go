@@ -651,6 +651,41 @@ func (a *RoundClientActor) askEventAndProcessOutbox(
 	return nil
 }
 
+// replayCheckpointedServerMessages re-emits server-bound messages that are
+// logically required after the InputSigSent checkpoint. This closes the gap
+// where the daemon can restart after persisting the checkpoint but before the
+// in-memory actor loop forwards those messages to the durable serverconn
+// runtime.
+func (a *RoundClientActor) replayCheckpointedServerMessages(
+	ctx context.Context, roundFSM *RoundFSM,
+) error {
+
+	state, err := roundFSM.FSM.CurrentState()
+	if err != nil {
+		return fmt.Errorf("get current state: %w", err)
+	}
+
+	inputSigState, ok := state.(*InputSigSentState)
+	if !ok {
+		return nil
+	}
+
+	if len(inputSigState.InputSigs) == 0 {
+		return nil
+	}
+
+	a.log.InfoS(ctx, "Replaying checkpointed boarding input signatures",
+		slog.String("round_id", inputSigState.RoundID.String()),
+		slog.Int("boarding_sig_count", len(inputSigState.InputSigs)))
+
+	return a.processOutbox(ctx, []ClientOutMsg{
+		&SubmitForfeitSigRequest{
+			RoundID:    inputSigState.RoundID,
+			Signatures: inputSigState.InputSigs,
+		},
+	})
+}
+
 // OnStop implements actor.Stoppable to gracefully shut down all FSMs when the
 // actor is stopping. This prevents goroutine leaks by stopping all round FSMs.
 func (a *RoundClientActor) OnStop(ctx context.Context) error {
@@ -741,6 +776,11 @@ func (a *RoundClientActor) Start(ctx context.Context) error {
 			a.log.InfoS(ctx, "Resumed round awaiting confirmation",
 				slog.String("round_id", round.RoundID.String()),
 				slog.String("commitment_txid", roundFSM.TxID.String()))
+		}
+
+		if err := a.replayCheckpointedServerMessages(ctx, roundFSM); err != nil {
+			return fmt.Errorf("replay checkpointed messages for round %s: %w",
+				round.RoundID, err)
 		}
 	}
 
@@ -841,22 +881,11 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 			walletIntent.Outpoint.Hash))
 	}
 
-	// Build the boarding request from the wallet intent. Chain-level
-	// information (ConfHeight, ConfHash, ConfTx, TxProof, Amount) is
-	// carried through the embedded wallet.BoardingIntent.ChainInfo
-	// and remains available to downstream consumers (e.g.,
-	// buildJoinRoundAuthRequest uses ChainInfo.Amount for BIP-322
-	// proof construction).
-	boardingReq := types.BoardingRequest{
-		Outpoint:    &walletIntent.Outpoint,
-		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
-		OperatorKey: walletIntent.Address.OperatorKey,
-		ExitDelay:   walletIntent.Address.ExitDelay,
-		TxProof:     walletIntent.ChainInfo.TxProof,
-	}
-	intent := BoardingIntent{
-		BoardingIntent: *walletIntent,
-		Request:        boardingReq,
+	intent, err := buildBoardingIntentFromWallet(walletIntent)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"build boarding intent from wallet: %w", err,
+		))
 	}
 
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
@@ -864,7 +893,6 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	// accumulate in the same round.
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
-		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -876,13 +904,55 @@ func (a *RoundClientActor) handleWalletBoardingConfirmed(ctx context.Context,
 	pkg := &IntentPackage{Intents: Intents{
 		Boarding: []BoardingIntent{intent},
 	}}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing boarding confirmation: %w", err))
 	}
 
 	return fn.Ok[actormsg.RoundActorResp](nil)
+}
+
+// buildBoardingIntentFromWallet converts the wallet's persisted boarding
+// representation into the round actor's intent shape, validating the chain
+// data needed for round registration and join-auth.
+func buildBoardingIntentFromWallet(
+	walletIntent *wallet.BoardingIntent,
+) (BoardingIntent, error) {
+
+	if walletIntent == nil {
+		return BoardingIntent{}, fmt.Errorf("wallet intent is nil")
+	}
+
+	confTx := walletIntent.ChainInfo.ConfTx
+	if confTx == nil {
+		return BoardingIntent{}, fmt.Errorf(
+			"boarding confirmation missing tx",
+		)
+	}
+	if int(walletIntent.Outpoint.Index) >= len(confTx.TxOut) {
+		return BoardingIntent{}, fmt.Errorf(
+			"invalid outpoint index %d for tx %s",
+			walletIntent.Outpoint.Index,
+			walletIntent.Outpoint.Hash,
+		)
+	}
+
+	// Chain-level information (ConfHeight, ConfHash, ConfTx, TxProof,
+	// Amount) is carried through the embedded wallet.BoardingIntent and
+	// remains available to downstream consumers such as join-auth.
+	boardingReq := types.BoardingRequest{
+		Outpoint:    &walletIntent.Outpoint,
+		ClientKey:   walletIntent.Address.KeyDesc.PubKey,
+		OperatorKey: walletIntent.Address.OperatorKey,
+		ExitDelay:   walletIntent.Address.ExitDelay,
+		TxProof:     walletIntent.ChainInfo.TxProof,
+	}
+
+	return BoardingIntent{
+		BoardingIntent: *walletIntent,
+		Request:        boardingReq,
+	}, nil
 }
 
 // handleVTXORequests processes client-submitted VTXO requests and forwards
@@ -917,12 +987,13 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 	a.log.InfoS(ctx, "Received VTXO requests",
 		slog.Int("count", len(requests)))
 
+	var err error
+
 	// Find an existing assembling round (Idle or PendingRoundAssembly) or
 	// create a new one. This allows VTXOs to join a round that already has
 	// boarding intents being assembled.
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
-		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -935,7 +1006,7 @@ func (a *RoundClientActor) handleVTXORequests(ctx context.Context,
 		VTXOs: requests,
 	}}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing VTXO requests: %w", err,
@@ -1785,9 +1856,9 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 	// temp-key status, which includes rounds in RegistrationSentState.
 	// Feeding an IntentPackage to RegistrationSentState would self-loop
 	// silently, discarding the intent.
+	var err error
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
-		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
@@ -1806,7 +1877,7 @@ func (a *RoundClientActor) handleRefreshVTXORequest(ctx context.Context,
 			buildVTXORequestFromRefresh(req),
 		},
 	}}
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"FSM error processing refresh package: %w", err,
@@ -1956,10 +2027,43 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 	a.log.InfoS(ctx, "Processing board request",
 		slog.Int("vtxo_count", len(requests)))
 
+	confirmedBoarding, err := a.cfg.WalletActor.Ask(
+		ctx, &wallet.GetConfirmedBoardingIntentsRequest{},
+	).Await(ctx).Unpack()
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"fetch confirmed boarding intents: %w", err,
+		))
+	}
+
+	boardingResp, ok := confirmedBoarding.(*wallet.GetConfirmedBoardingIntentsResponse)
+	if !ok {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"unexpected wallet response type: %T",
+			confirmedBoarding,
+		))
+	}
+
+	boardingIntents := make(
+		[]BoardingIntent, 0, len(boardingResp.Intents),
+	)
+	for i := range boardingResp.Intents {
+		intent, err := buildBoardingIntentFromWallet(
+			&boardingResp.Intents[i],
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+				"convert confirmed boarding intent %d: %w",
+				i, err,
+			))
+		}
+
+		boardingIntents = append(boardingIntents, intent)
+	}
+
 	// Find an existing assembling round or create a new one.
 	roundFSM := a.findAssemblingRound()
 	if roundFSM == nil {
-		var err error
 		roundFSM, err = a.createNewRound(ctx)
 		if err != nil {
 			return fn.Err[actormsg.RoundActorResp](
@@ -1973,10 +2077,11 @@ func (a *RoundClientActor) handleTriggerBoard(ctx context.Context,
 
 	// Register the VTXO output requests into the round FSM.
 	pkg := &IntentPackage{Intents: Intents{
-		VTXOs: requests,
+		Boarding: boardingIntents,
+		VTXOs:    requests,
 	}}
 
-	err := a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, pkg)
 	if err != nil {
 		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
 			"register board VTXO requests: %w", err,

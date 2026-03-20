@@ -112,6 +112,13 @@ var MessageSpec = struct {
 		*RegisterConfirmationNotifierResponse,
 	]
 
+	// GetConfirmedBoardingIntents returns the currently confirmed boarding
+	// intents tracked by the wallet.
+	GetConfirmedBoardingIntents Ask[
+		*GetConfirmedBoardingIntentsRequest,
+		*GetConfirmedBoardingIntentsResponse,
+	]
+
 	// UnregisterConfirmationNotifier removes a previously registered
 	// confirmation notifier subscription.
 	UnregisterConfirmationNotifier Ask[

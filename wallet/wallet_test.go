@@ -1033,6 +1033,56 @@ func TestGetBoardingBalance(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestGetConfirmedBoardingIntents verifies the wallet actor returns the
+// currently confirmed boarding intents for restart-safe round retries.
+func TestGetConfirmedBoardingIntents(t *testing.T) {
+	t.Parallel()
+
+	backend := &MockBoardingBackend{}
+	store := &MockBoardingStore{}
+	confirmed := []BoardingIntent{{
+		Outpoint: wire.OutPoint{
+			Hash:  chainhash.HashH([]byte("confirmed")),
+			Index: 1,
+		},
+		Status: BoardingStatusConfirmed,
+		ChainInfo: BoardingChainInfo{
+			Amount: 42_000,
+		},
+	}}
+	store.On(
+		"FetchBoardingIntentsByStatus",
+		mock.Anything, BoardingStatusConfirmed,
+	).Return(
+		confirmed, nil,
+	)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+
+	result := walletActor.Receive(
+		t.Context(), &GetConfirmedBoardingIntentsRequest{},
+	)
+	require.True(t, result.IsOk())
+
+	respVal, _ := result.Unpack()
+	resp, ok := respVal.(*GetConfirmedBoardingIntentsResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Intents, 1)
+	require.Equal(t, confirmed[0].Outpoint, resp.Intents[0].Outpoint)
+	require.Equal(
+		t, confirmed[0].ChainInfo.Amount,
+		resp.Intents[0].ChainInfo.Amount,
+	)
+
+	store.AssertExpectations(t)
+}
+
 // TestMarkBoardingIntentsAdopted verifies that checkpoint notifications from
 // the round actor transition consumed boarding intents out of Confirmed status.
 func TestMarkBoardingIntentsAdopted(t *testing.T) {
