@@ -601,6 +601,9 @@ func TestLocalPersistenceHandlerMarkInputsSpentCompleterError(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "actor unavailable")
+	var retryErr *RetryableOutboxError
+	require.ErrorAs(t, err, &retryErr)
+	require.Equal(t, defaultRetryDelay, retryErr.RetryAfter)
 	require.Empty(t, events)
 }
 
