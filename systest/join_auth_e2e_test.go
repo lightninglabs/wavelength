@@ -162,6 +162,7 @@ func TestJoinAuthE2EJoinRequestExpiresInBuffer(t *testing.T) {
 	// at an older height and could accept the expired join auth
 	// before catching up.
 	h.WaitForServerBlockHeight(targetHeight)
+	h.WaitForServerChainSourceHeight(targetHeight)
 
 	// Subscribe to client events BEFORE flushing the buffered join
 	// request. This avoids a race where the server processes the

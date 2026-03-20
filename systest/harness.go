@@ -56,6 +56,10 @@ const (
 	// pollInterval is the interval for polling in require.Eventually.
 	pollInterval = 200 * time.Millisecond
 
+	// actorQueryTimeout bounds one actor query inside an Eventually poll so a
+	// stuck Ask/Await does not consume the full outer wait budget.
+	actorQueryTimeout = 5 * time.Second
+
 	// defaultRegistrationTimeout is a short timeout for test rounds.
 	defaultRegistrationTimeout = 1 * time.Second
 
@@ -1116,6 +1120,39 @@ func (h *E2EHarness) WaitForServerBlockHeight(targetHeight uint32) {
 		return info.BlockHeight >= targetHeight
 	}, defaultTimeout, pollInterval,
 		"server LND did not reach height %d", targetHeight,
+	)
+}
+
+// WaitForServerChainSourceHeight polls the server ChainSourceActor until it
+// reports a best height >= the target. Join request auth validation uses this
+// actor height (not direct LND info), so tests that depend on auth expiry
+// should wait for this value before flushing buffered requests.
+func (h *E2EHarness) WaitForServerChainSourceHeight(targetHeight uint32) {
+	h.t.Helper()
+
+	require.Eventually(h.t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			h.t.Context(), actorQueryTimeout,
+		)
+		defer cancel()
+
+		future := h.chainSourceActorRef.Ask(
+			ctx, &chainsource.BestHeightRequest{},
+		)
+		result := future.Await(ctx)
+		resp, err := result.Unpack()
+		if err != nil {
+			return false
+		}
+
+		bestHeightResp, ok := resp.(*chainsource.BestHeightResponse)
+		if !ok {
+			return false
+		}
+
+		return uint32(bestHeightResp.Height) >= targetHeight
+	}, 2*defaultTimeout, pollInterval,
+		"server chain source did not reach height %d", targetHeight,
 	)
 }
 
