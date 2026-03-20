@@ -69,14 +69,6 @@ func TestOORIntegrationAliceToBob(t *testing.T) {
 			},
 		},
 	)
-	if err != nil && strings.Contains(
-		err.Error(),
-		"fee-less ark tx requires equal input/output sums",
-	) {
-
-		t.Skipf("known multi-input OOR issue "+
-			"(darepo-client#199): %v", err)
-	}
 	require.NoError(t, err, "SendOOR RPC failed")
 	require.Equal(t, "submitted", sendResp.Status)
 	require.NotEmpty(t, sendResp.SessionId)
@@ -269,6 +261,14 @@ func TestOORIntegrationMultiInputTransfer(t *testing.T) {
 			},
 		},
 	)
+	if err != nil && strings.Contains(
+		err.Error(),
+		"fee-less ark tx requires equal input/output sums",
+	) {
+
+		t.Skipf("known multi-input OOR issue "+
+			"(darepo-client#199): %v", err)
+	}
 	require.NoError(t, err, "SendOOR RPC failed")
 	require.Equal(t, "submitted", sendResp.Status)
 	require.NotEmpty(t, sendResp.SessionId)

@@ -11,6 +11,7 @@ import (
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/harness"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 

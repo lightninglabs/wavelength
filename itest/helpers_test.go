@@ -409,7 +409,14 @@ func waitForOperatorRoundStatus(t *testing.T, h *harness.ArkHarness,
 		}
 
 		for _, round := range resp.Rounds {
-			if round.Id == roundID && round.Status == target {
+			if round.Id != roundID {
+				continue
+			}
+
+			if operatorRoundStatusSatisfiesTarget(
+				round.Status, target,
+			) {
+
 				matched = round
 
 				return true
@@ -422,6 +429,20 @@ func waitForOperatorRoundStatus(t *testing.T, h *harness.ArkHarness,
 		roundID, target.String())
 
 	return matched
+}
+
+// operatorRoundStatusSatisfiesTarget tolerates short-lived round status
+// transitions that can be missed by polling on fast CI runners.
+func operatorRoundStatusSatisfiesTarget(state,
+	target adminrpc.RoundStatus) bool {
+
+	if state == target {
+		return true
+	}
+
+	// Broadcast can be brief; confirmed implies broadcast happened.
+	return target == adminrpc.RoundStatus_ROUND_STATUS_BROADCAST &&
+		state == adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED
 }
 
 // operatorRoundHasStatus reports whether the operator currently exposes the
@@ -444,7 +465,14 @@ func operatorRoundHasStatus(t *testing.T, h *harness.ArkHarness,
 	}
 
 	for _, round := range resp.Rounds {
-		if round.Id == roundID && round.Status == target {
+		if round.Id != roundID {
+			continue
+		}
+
+		if operatorRoundStatusSatisfiesTarget(
+			round.Status, target,
+		) {
+
 			return true
 		}
 	}
@@ -563,7 +591,9 @@ func waitForVTXOStatusByOutpoint(t *testing.T,
 		defer cancel()
 
 		resp, err := client.ListVTXOs(
-			ctx, &daemonrpc.ListVTXOsRequest{},
+			ctx, &daemonrpc.ListVTXOsRequest{
+				StatusFilter: target,
+			},
 		)
 		if err != nil {
 			return false
