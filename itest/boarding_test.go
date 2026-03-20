@@ -11,7 +11,6 @@ import (
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/harness"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -546,10 +545,10 @@ func TestBoardingIntegrationRestartAfterRoundBroadcast(t *testing.T) {
 	)
 }
 
-// TestBoardingIntegrationRestartBeforeRoundBroadcast verifies a client daemon
-// can restart after joining a round but before round broadcast and still
-// progress to confirmed completion after recovering.
-func TestBoardingIntegrationRestartBeforeRoundBroadcast(t *testing.T) {
+// TestBoardingIntegrationRestartAfterInputSigSent verifies a client daemon can
+// restart after the round reaches the documented InputSigSent checkpoint and
+// still progress to confirmed completion on the same round.
+func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 	clientOpts := client_harness.DefaultOptions()
 	clientOpts.GroupName = t.Name()
 	clientOpts.StartTapd = false
@@ -588,49 +587,58 @@ func TestBoardingIntegrationRestartBeforeRoundBroadcast(t *testing.T) {
 	require.Equal(t, "registered", boardResp.Status)
 
 	waitForClientRegistration(t, h)
-	joinedRound := waitForClientRoundState(
-		t, alice.RPCClient, daemonrpc.RoundState_ROUND_STATE_JOINED,
+	checkpointedRound := waitForClientRoundState(
+		t, alice.RPCClient,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
 	)
-	require.NotEmpty(t, joinedRound.RoundId)
-	require.False(t, joinedRound.IsTemp)
+	require.NotEmpty(t, checkpointedRound.RoundId)
+	require.False(t, checkpointedRound.IsTemp)
+
+	waitForPersistedClientRoundState(
+		t, alice.RPCClient, checkpointedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
+	)
 
 	oldRPCAddr := alice.RPCAddr
 	alice = h.RestartClientDaemon("alice")
-	t.Logf("Restarted client daemon before round broadcast: "+
+	t.Logf("Restarted client daemon after round checkpoint: "+
 		"old_rpc=%s new_rpc=%s round_id=%s", oldRPCAddr,
-		alice.RPCAddr, joinedRound.RoundId)
+		alice.RPCAddr, checkpointedRound.RoundId)
 
-	waitForNamedClientRoundState(
-		t, alice.RPCClient, joinedRound.RoundId,
+	resumedRound := waitForNamedClientRoundState(
+		t, alice.RPCClient, checkpointedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
 	)
+	require.False(t, resumedRound.IsTemp)
 	waitForPersistedClientRoundState(
-		t, alice.RPCClient, joinedRound.RoundId,
+		t, alice.RPCClient, checkpointedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT, 0,
 	)
 
 	broadcastRound := waitForOperatorRoundStatus(
-		t, h, joinedRound.RoundId,
+		t, h, checkpointedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
 	)
 	require.NotEmpty(t, broadcastRound.TxId)
 
 	mineUntilOperatorRoundConfirmed(
-		t, h, joinedRound.RoundId, broadcastRound.TxId,
+		t, h, checkpointedRound.RoundId, broadcastRound.TxId,
 	)
 
 	confirmedRound := waitForNamedClientRoundState(
-		t, alice.RPCClient, joinedRound.RoundId,
+		t, alice.RPCClient, checkpointedRound.RoundId,
 		daemonrpc.RoundState_ROUND_STATE_CONFIRMED,
 	)
 	require.False(t, confirmedRound.IsTemp)
 
 	waitForOperatorRoundStatus(
-		t, h, joinedRound.RoundId,
+		t, h, checkpointedRound.RoundId,
 		adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED,
 	)
 
-	liveVTXO := waitForLiveVTXO(t, alice.RPCClient, joinedRound.RoundId)
+	liveVTXO := waitForLiveVTXO(
+		t, alice.RPCClient, checkpointedRound.RoundId,
+	)
 	require.Equal(t, int64(99_000), liveVTXO.AmountSat)
 
 	finalBalance := waitForVTXOBalance(

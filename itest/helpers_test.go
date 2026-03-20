@@ -783,6 +783,7 @@ func waitForDaemonInfoReachable(t *testing.T,
 
 	return lastResp
 }
+
 // boardClientAndConfirmRound drives a real client daemon through boarding,
 // round broadcast, block generation, confirmation, and live VTXO
 // materialization.
