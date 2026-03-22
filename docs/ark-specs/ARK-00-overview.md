@@ -148,8 +148,8 @@ Note: VTXO leaves do not have a sweep path — only VTXT branch nodes do. Simila
 
 The Batch Transaction is a Bitcoin transaction that anchors one or more batches on-chain. It contains:
 - **Inputs**: Boarding inputs from participants and/or operator wallet inputs
-- **Batch Outputs**: Outputs paying to VTXT roots
-- **Connector Outputs**: Outputs used for forfeit transaction atomicity
+- **Batch Outputs**: Outputs paying to VTXT roots that have VTXO leaves
+- **Connector Outputs**: Outputs paying to tree roots with connector leaves used for forfeit transaction atomicity
 - **Leave Outputs**: Direct on-chain outputs for leave requests
 - **Change Outputs**: Change returned to the operator
 

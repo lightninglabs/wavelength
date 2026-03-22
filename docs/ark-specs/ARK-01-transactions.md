@@ -103,9 +103,15 @@ This separation is a critical protocol design choice that provides privacy, secu
 
 **Privacy**: Using separate signing keys prevents linking a participant's VTXO
 ownership across multiple batches or rounds. The VTXT branch signatures reveal
-the signing key but not the VTXO ownership key. This means an observer cannot
-determine which VTXOs belong to the same participant by analyzing VTXT
-signatures.
+the signing key but not the VTXO ownership key.
+
+**Within-round linkability caveat**: Within a single round, the same signing
+key `P_s` is used in all VTXT branch nodes from the root down to the leaf
+transaction for a given VTXO. This means an observer who sees the VTXT can
+link a signing key to a specific VTXO within that round. However, since
+signing keys are ephemeral and change each round, this does NOT enable
+cross-round linkability. An observer cannot determine which VTXOs across
+different rounds belong to the same participant.
 
 **Signing Efficiency**: Signing keys can be generated fresh each round (per
 VTXO request) without affecting long-term key management. MuSig2 nonces can be
@@ -351,15 +357,15 @@ Leaf assignment MUST use deterministic LPT ordering:
 ```mermaid
 graph TD
     subgraph "VTXT Structure radix=2"
-        ROOT[Batch Output<br/>P_1+P_2+P_3+P_4+P_o]
+        ROOT[Batch Output<br/>P_s1+P_s2+P_s3+P_s4+P_o]
 
-        B1[Branch vtx_5<br/>P_1+P_2+P_o]
-        B2[Branch vtx_6<br/>P_3+P_4+P_o]
+        B1[Branch vtx_5<br/>P_s1+P_s2+P_o]
+        B2[Branch vtx_6<br/>P_s3+P_s4+P_o]
 
-        L1[Leaf vtx_1<br/>VTXO P_1]
-        L2[Leaf vtx_2<br/>VTXO P_2]
-        L3[Leaf vtx_3<br/>VTXO P_3]
-        L4[Leaf vtx_4<br/>VTXO P_4]
+        L1[Leaf vtx_1<br/>VTXO P_v1]
+        L2[Leaf vtx_2<br/>VTXO P_v2]
+        L3[Leaf vtx_3<br/>VTXO P_v3]
+        L4[Leaf vtx_4<br/>VTXO P_v4]
 
         ROOT --> B1
         ROOT --> B2
