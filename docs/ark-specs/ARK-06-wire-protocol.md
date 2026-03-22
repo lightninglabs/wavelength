@@ -211,7 +211,7 @@ message OperatorTerms {
     // Timelock parameters
     uint32 vtxo_csv_delay = 1;        // Blocks (CSV)
     uint32 boarding_timeout = 2;       // Blocks (CSV)
-    uint32 checkpoint_timeout = 3;     // Blocks (CSV)
+    uint32 checkpoint_timeout = 3;     // Blocks (CSV). v0: equals vtxo_csv_delay
     uint32 sweep_delay = 4;             // Blocks (CSV sweep delay T_e)
 
     // Fee parameters

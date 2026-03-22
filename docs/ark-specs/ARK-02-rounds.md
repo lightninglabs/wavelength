@@ -198,7 +198,32 @@ A participant's combined requests MUST balance:
 sum(boarding_values) + sum(forfeit_values) >= sum(vtxo_values) + sum(leave_values) + fees
 ```
 
-The operator validates this balance when processing a participant's complete request set. Excess value (if any) goes to the operator as fees.
+The operator validates this balance when processing a participant's complete
+request set. The implicit operator fee is the difference:
+
+```
+implicit_fee = sum(boarding_values) + sum(forfeit_values)
+             - sum(vtxo_values) - sum(leave_values)
+```
+
+#### Boarding Admission Fee (v0)
+
+When a request includes **boarding inputs**, the implicit operator fee MUST be
+at least the operator's `MinOperatorFee` (advertised in `OperatorTerms`):
+
+```
+if boarding_inputs_present:
+    implicit_fee >= MinOperatorFee   (REQUIRED)
+```
+
+Requests with only forfeit inputs (refresh/leave without boarding) are
+**exempt** from the minimum fee requirement. This exemption is intentional:
+forfeit-only requests do not consume new on-chain UTXO space, and the operator
+already holds a signed forfeit transaction as protection.
+
+This fee rule also discourages the griefing attack where a participant boards
+with a large UTXO and immediately leaves in the same batch, locking operator
+wallet inputs with minimal cost to the participant.
 
 ### VTXO Locking
 
@@ -207,6 +232,21 @@ When a request is accepted, the affected VTXOs MUST be locked:
 - **Lock scope**: The VTXO cannot be used for OOR transactions or other round requests.
 - **Lock duration**: Until the round completes (success or failure).
 - **Lock storage**: MAY be in-memory during early phases; MUST be persisted after signing begins.
+
+#### Shared Exclusion Lock (v0)
+
+In v0, the operator MUST use a **single shared exclusion lock** across both
+rounds and OOR sessions. This means:
+
+1. A VTXO locked by a round MUST be rejected by any concurrent OOR submit
+   request, and vice versa.
+2. A VTXO locked by one OOR session MUST be rejected by another OOR session.
+3. Lock acquisition is atomic: if any VTXO in a multi-input request is already
+   locked, the entire request MUST be rejected.
+4. Rejected requests due to locking MUST fail immediately with error code
+   `VTXO_LOCKED` (3001). Clients MAY retry after the lock is released.
+5. Each lock is identified by an owner (e.g., `round:<round_id>` or
+   `oor:<session_id>`) to support targeted release on failure or completion.
 
 ### Request Pre-Validation
 
@@ -224,6 +264,49 @@ SHOULD be queued for the next round.
 
 **Important:** Invalid requests do not abort rounds. They are rejected at submission
 time before being included in round construction.
+
+### Join Authorization (v0)
+
+Each join request MUST include a BIP-322 authorization proof binding the
+participant to their specific request. This prevents DoS attacks where a
+malicious client submits join requests for VTXOs they do not own.
+
+#### Authorization Payload
+
+The authorization is a BIP-322 signed message constructed from a canonical
+TLV-encoded representation of the join request. The message includes:
+
+1. **Request contents**: Ordered list of boarding outpoints, VTXO request
+   details, forfeit VTXO references, and leave request details.
+2. **Participant identifier**: A fresh public key derived for this request,
+   binding the proof to the requesting client.
+3. **Validity window**: `valid_from` and `valid_until` block heights bounding
+   the authorization's lifetime (RECOMMENDED: 144 blocks / ~24 hours).
+
+#### Proof-of-Funds Inputs
+
+The BIP-322 proof MUST demonstrate control of at least one input:
+
+- For **boarding requests**: The proof includes a script-path witness for the
+  boarding UTXO's timeout leaf, demonstrating the client controls the boarding
+  key.
+- For **forfeit requests**: The proof includes a script-path witness for the
+  forfeited VTXO's timeout leaf, demonstrating the client controls the VTXO
+  ownership key.
+
+Input ordering in the proof MUST be deterministic (derived canonically from
+the request contents).
+
+#### Operator Validation
+
+The operator MUST verify:
+
+1. The authorization message is correctly bound to the submitted request.
+2. At least one proof-of-funds input is valid.
+3. The current block height falls within `[valid_from, valid_until]`.
+4. The participant identifier is a valid public key.
+
+Invalid authorization MUST be rejected with an appropriate error code.
 
 ### Request Aggregation
 

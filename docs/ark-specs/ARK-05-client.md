@@ -320,17 +320,28 @@ When receiving or constructing OOR transactions:
 
 ### Incoming VTXO Verification
 
-When receiving a VTXO from another party:
+When receiving a VTXO from another party (see ARK-03 Recipient-Side OOR Flow):
 
-1. **Full chain verification**: Verify the entire chain back to the confirmed batch transaction.
+1. **Full chain verification**: Verify the entire chain back to the confirmed
+   batch transaction.
 2. **Batch confirmation**: Verify the batch transaction is confirmed on-chain.
-3. **Operator signature**: Verify operator co-signed all transactions.
+3. **Operator signature**: Verify operator co-signed all transactions in the
+   chain (checkpoint and Ark transactions).
 4. **Expiry check**: Verify sufficient time remains before batch sweep deadline.
+5. **Authoritative metadata**: Query the operator for round ID, batch txid,
+   tree path, and OOR chain depth. Do NOT treat the VTXO as live until this
+   metadata is verified.
+6. **Chain depth check**: Verify the OOR chain depth is within acceptable
+   limits (operator policy may cap chain depth).
 
-**Minimum Data Required from Sender:**
-- Batch transaction
-- VTXT path to origin VTXO
-- All checkpoint/Ark transactions to the received VTXO
+**Minimum Data Required:**
+- Batch transaction (from operator metadata query)
+- VTXT path to origin VTXO (from operator metadata query)
+- All checkpoint/Ark transactions to the received VTXO (from transfer
+  notification)
+
+Recipients SHOULD batch-swap preconfirmed VTXOs to confirmed status promptly
+to reduce trust exposure and monitoring requirements.
 
 ### Verification Failures
 

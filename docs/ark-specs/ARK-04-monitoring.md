@@ -60,7 +60,6 @@ stateDiagram-v2
 
     Locked --> Live: Request canceled
     Locked --> Forfeit: Forfeit signed
-    Locked --> Spent: OOR transaction
 
     Spent --> Unrolled: Double-spend attempt
     Forfeit --> Reclaimed: Forfeit broadcast
@@ -131,9 +130,11 @@ stateDiagram-v2
 2. Resume accepting OOR requests.
 3. Clear lock reference.
 
-#### Live/Locked → Spent
+#### Live → Spent
 
 **Trigger:** OOR transaction is completed (checkpoint signatures received).
+In v0, the VTXO MUST be in Live state (not Locked) for OOR to proceed — the
+shared exclusion lock prevents OOR on locked VTXOs (see ARK-02).
 
 **Actions:**
 1. Mark VTXO as Spent.

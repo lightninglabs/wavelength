@@ -319,26 +319,33 @@ The sender submits to the operator:
 
 The operator:
 
-1. **Validates the submit package:**
+1. **Acquires exclusive locks** on all input VTXOs via the shared lock
+   authority (see ARK-02 Shared Exclusion Lock). If any VTXO is already
+   locked by a round or another OOR session, the submit MUST be rejected
+   immediately with `VTXO_LOCKED`.
+2. **Validates the submit package:**
    - Ark PSBT is canonical (BIP-69 ordering, single anchor last).
    - Each Ark input has a corresponding checkpoint PSBT.
    - Each Ark input's `WitnessUtxo` matches the checkpoint output.
    - Each Ark input's `taptree` metadata is present and well-formed.
-2. **Validates checkpoints:**
+3. **Validates checkpoints:**
    - Each checkpoint spends a valid, unspent VTXO (status: Live).
    - The checkpoint output script matches the expected structure given the
      operator's key, CSV delay, and the owner closure leaf from the taptree.
    - The owner closure leaf is acceptable under operator policy.
-3. **Validates the Ark transaction:**
+4. **Validates the Ark transaction:**
    - Value conservation: output sum == input sum (v0 has no implicit fee).
    - All VTXO outputs have valid script structures.
    - Sender Ark input signatures are valid.
-4. **Co-signs:**
+5. **Co-signs:**
    - Produces operator BIP-340 signatures for each Ark input (owner closure
      leaf script-path).
    - Produces operator BIP-340 signatures for each checkpoint input
      (collaborative VTXO script-path).
-5. **Returns** updated PSBTs to the sender with operator signatures attached.
+6. **Returns** updated PSBTs to the sender with operator signatures attached.
+
+If validation fails at any step after lock acquisition, the operator MUST
+release the acquired VTXO locks before returning the error.
 
 ### Step 5: Sender Verifies and Signs Checkpoints
 
@@ -483,6 +490,79 @@ graph LR
     CP1 --> ARK
     CP2 --> ARK
     ARK --> V3
+```
+
+## Recipient-Side OOR Flow
+
+### Overview
+
+When an OOR transfer is finalized, the operator notifies the recipient(s) of
+incoming VTXOs. The recipient must validate and materialize the incoming VTXO
+before treating it as spendable.
+
+### Step 1: Notification
+
+The operator pushes an incoming transfer event to the recipient via the
+subscription channel (see ARK-06 `SubscribeVTXOs`). The notification includes
+the Ark transaction and checkpoint data for the recipient's output(s).
+
+### Step 2: Structural Validation
+
+The recipient validates the incoming Ark package:
+
+1. The Ark transaction is well-formed and canonical.
+2. The operator's co-signatures are valid on all inputs.
+3. The checkpoint transactions are valid and correctly chain to the Ark inputs.
+4. The recipient's output VTXO has the correct script structure and value.
+
+### Step 3: Authoritative Metadata Query
+
+The recipient queries the operator for authoritative metadata about the
+transfer's origin:
+
+- **Round ID**: Identifies the batch containing the origin confirmed VTXO(s).
+- **Batch transaction ID**: The on-chain commitment transaction.
+- **Batch lifetime**: The sweep delay for the origin batch.
+- **Tree path**: The VTXT path from batch output to the origin VTXO.
+- **OOR chain depth**: How many OOR transactions deep this VTXO is.
+
+The recipient MUST NOT treat the incoming VTXO as live until this metadata is
+verified. This metadata is necessary for unilateral exit if needed.
+
+### Step 4: Local Materialization
+
+Once metadata is verified, the recipient persists the incoming VTXO locally:
+
+1. Store the VTXO record with all data needed for unilateral exit.
+2. Store the full chain: batch transaction, VTXT path, checkpoint transactions,
+   and Ark transactions from the origin confirmed VTXO to this output.
+3. Mark the VTXO as Live (preconfirmed).
+
+### Step 5: Acknowledgment
+
+The recipient MAY acknowledge receipt to the operator. The operator MAY use
+this acknowledgment to finalize internal bookkeeping (e.g., marking the
+notification as delivered).
+
+### Recipient Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant O as Operator
+    participant R as Recipient
+
+    O->>R: Incoming transfer notification
+    R->>R: Validate Ark package structure
+    R->>R: Verify operator co-signatures
+
+    R->>O: Query authoritative metadata
+    O->>R: Return round ID, batch txid, tree path, chain depth
+
+    R->>R: Verify metadata (batch confirmed, path valid)
+    R->>R: Persist VTXO + full exit chain
+    R->>R: Mark VTXO as Live (preconfirmed)
+
+    R->>O: Acknowledge receipt (optional)
 ```
 
 ## Preconfirmed VTXO Trust Model

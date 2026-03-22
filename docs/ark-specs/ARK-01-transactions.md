@@ -549,7 +549,11 @@ Where:
   spent)
 - `P_o`: The operator's collaborative signing key
 - `P_sw`: The operator's sweep/unroll key (may be distinct from `P_o`)
-- `t_c`: The checkpoint timeout in blocks (relative)
+- `t_c`: The checkpoint timeout in blocks (relative). In v0, `t_c` is set
+  equal to the VTXO exit delay `t_e` from the operator's terms. This ensures
+  the operator has the same response window for checkpoint claims as for
+  forfeit responses. Clients MUST use at least the operator's advertised
+  `checkpoint_timeout`. A RECOMMENDED minimum safety floor is 10 blocks.
 
 **Closure System (v0):** The owner leaf is a closure-provided script committed
 in the tap tree. This design allows the checkpoint system to support arbitrary
