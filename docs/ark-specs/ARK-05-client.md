@@ -436,8 +436,15 @@ Broadcast transactions in order (following the fan-out path):
 
 1. Batch transaction (if not confirmed).
 2. VTXT branch transactions (root to leaf).
-3. Checkpoint transactions (if preconfirmed VTXO).
-4. Ark transactions (if preconfirmed VTXO).
+3. For preconfirmed VTXOs, interleave checkpoint and Ark transactions in
+   chain order: `checkpoint_1 → ark_1 → checkpoint_2 → ark_2 → ...`
+   Each checkpoint must confirm before the next Ark transaction can be
+   broadcast, since the Ark transaction spends the checkpoint output.
+
+**Important:** For OOR chains deeper than 1, the broadcasts MUST follow
+the alternating checkpoint→Ark pattern. Broadcasting all checkpoints first
+and then all Ark transactions would fail because each Ark transaction
+spends from its preceding checkpoint output.
 
 **For each transaction:**
 ```

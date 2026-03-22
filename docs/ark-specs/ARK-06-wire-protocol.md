@@ -107,6 +107,11 @@ Messages SHOULD be encoded using Protocol Buffers (protobuf) for:
 
 ### Message Structure
 
+**Note:** The `GetInfo` request is special-cased: it MUST be accepted
+regardless of the `version` field value, since the client does not yet know
+the negotiated version. The operator SHOULD accept version `0` or any
+supported version in `GetInfo` requests.
+
 All messages follow this general structure:
 
 ```protobuf
@@ -205,6 +210,9 @@ message GetInfoResponse {
 
     // Operator status
     OperatorStatus status = 5;
+
+    // Optional feature flags
+    OperatorFeatures features = 6;
 }
 
 message OperatorTerms {
@@ -375,7 +383,8 @@ message RoundProposal {
     // VTXT path for this participant
     repeated bytes vtxt_transactions = 3;
 
-    // Connector transactions (optional, for monitoring)
+    // Connector transactions (REQUIRED for leave/batch-swap participants
+    // who must verify the connector path before signing forfeits)
     repeated bytes connector_transactions = 4;
 
     // Connector leaf assignments (per forfeited VTXO)
@@ -704,6 +713,11 @@ message VTXOEvent {
 message VTXOCreatedData {
     bytes round_id = 1;
     bool is_confirmed = 2;  // True if from VTXT, false if from OOR
+
+    // For preconfirmed VTXOs (is_confirmed=false), include the OOR
+    // package data so the recipient can validate and materialize:
+    bytes ark_psbt = 3;                    // The Ark transaction PSBT
+    repeated bytes checkpoint_psbts = 4;   // Checkpoint PSBTs in chain
 }
 
 message VTXOSpentData {
