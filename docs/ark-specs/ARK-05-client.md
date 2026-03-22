@@ -6,7 +6,7 @@ This document specifies the requirements for Ark client wallet implementations. 
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -87,26 +87,37 @@ Where:
 ### Signing Keys
 
 Signing keys are used for MuSig2 signing sessions during rounds, specifically
-for VTXT branch node aggregated keys. These are provided **per VTXO request**.
+for VTXT branch node aggregated keys. These are provided **per VTXO request**
+and are ephemeral — they are used only during the round and can be discarded
+after batch confirmation.
 
 **Requirements:**
 1. Each VTXO MUST have its own signing key (in addition to its VTXO output key).
-2. Signing keys MAY be derived or randomly generated.
+2. Signing keys MAY be derived from the HD wallet or randomly generated.
 3. MUST be stored at least until the batch transaction is confirmed.
 4. MUST NOT be reused across different rounds.
-5. MAY be discarded after batch confirmation.
+5. MAY be discarded after batch confirmation (the signatures are already collected).
+6. MUST be different from the VTXO ownership key for the same VTXO.
 
 **Usage:**
-- Used in VTXT branch node aggregated keys.
+- Used exclusively in VTXT branch node MuSig2 aggregated keys.
 - Allows round participation without exposing VTXO ownership keys.
 - Distinct from VTXO output keys: signing keys sign VTXT branches, output keys
   are used in VTXO scripts.
-  OOR spends use VTXO ownership keys, not signing keys.
+- OOR spends use VTXO ownership keys (`P_v`), NOT signing keys (`P_s`).
 
 **Key separation:** Each VTXO conceptually has two keys:
-1. **Signing key** (`P_s`): Used for VTXT signing during the round.
-2. **Output key** (`P_v`): Used in the VTXO output script for collaborative/
-   unilateral spending.
+1. **Signing key** (`P_s`): Ephemeral, used for VTXT MuSig2 branch signing
+   during the round only. Provides privacy (prevents cross-round linkability)
+   and security isolation (compromise doesn't affect fund ownership).
+2. **Output key** (`P_v`): Long-lived, used in the VTXO output script for
+   collaborative spending (OOR, forfeit) and unilateral exit.
+
+**Privacy note:** Because the same signing key `P_s` is used in all VTXT
+branch nodes from root down to the leaf for a given VTXO, an observer who
+sees the VTXT can link a signing key to a specific VTXO within that round.
+However, since signing keys are ephemeral and change each round, this does
+not enable cross-round linkability.
 
 ### Boarding Keys
 
@@ -163,11 +174,11 @@ VTXORecord:
       output_index: uint32  // Which output this path continues from
     }, ...
   ]  // Path from batch output to VTXO (fan-out)
-  commitment_tx: SignedTransaction
+  batch_tx: SignedTransaction
   batch_id: bytes32
 
   // Metadata
-  batch_expiry: uint32 (block height)
+  batch_sweep_deadline: uint32 (block height)
   creation_height: uint32
   is_confirmed: bool  // Confirmed (VTXT leaf) vs preconfirmed (OOR)
 
@@ -186,7 +197,7 @@ VTXORecord:
 
 ```
 Required:
-  - Commitment transaction (signed)
+  - Batch transaction (signed)
   - VTXT path transactions (signed)
   - VTXO output details
   - Owner key reference
@@ -252,10 +263,15 @@ When receiving VTXT path transactions, verify:
 7. **Signatures valid**: All transactions are properly signed.
 
 **Verification Algorithm:**
+
+Note: VTXT nodes are **fan-out** — each transaction has exactly one input
+spending the parent output and multiple child outputs (radix determines the
+fan-out). The path from root to leaf visits one transaction per tree level.
+
 ```
-function VerifyVTXTPath(commitment_tx, vtxt_path, expected_vtxo):
+function VerifyVTXTPath(batch_tx, vtxt_path, expected_vtxo):
     // Start from the batch output outpoint
-    current_outpoint = (commitment_tx.txid, batch_output_index)
+    current_outpoint = (batch_tx.txid, batch_output_index)
 
     for entry in vtxt_path:
         tx = entry.tx
@@ -309,10 +325,10 @@ When receiving a VTXO from another party:
 1. **Full chain verification**: Verify the entire chain back to the confirmed batch transaction.
 2. **Batch confirmation**: Verify the batch transaction is confirmed on-chain.
 3. **Operator signature**: Verify operator co-signed all transactions.
-4. **Expiry check**: Verify sufficient time remains before batch expiry.
+4. **Expiry check**: Verify sufficient time remains before batch sweep deadline.
 
 **Minimum Data Required from Sender:**
-- Commitment transaction
+- Batch transaction
 - VTXT path to origin VTXO
 - All checkpoint/Ark transactions to the received VTXO
 
@@ -378,7 +394,7 @@ sequenceDiagram
 Collect all transactions needed for exit:
 
 **For Confirmed VTXO:**
-- Commitment transaction (if not already on-chain)
+- Batch transaction (if not already on-chain)
 - VTXT path transactions from root to VTXO leaf
 
 **For Preconfirmed VTXO:**
@@ -407,7 +423,7 @@ total_fee = sum(tx_size * fee_rate for tx in transaction_chain)
 
 Broadcast transactions in order (following the fan-out path):
 
-1. Commitment transaction (if not confirmed).
+1. Batch transaction (if not confirmed).
 2. VTXT branch transactions (root to leaf).
 3. Checkpoint transactions (if preconfirmed VTXO).
 4. Ark transactions (if preconfirmed VTXO).
@@ -472,14 +488,14 @@ If transactions are not confirming:
 
 ### Exit Timing Requirements
 
-**CRITICAL:** Unilateral exit MUST complete before batch expiry.
+**CRITICAL:** Unilateral exit MUST complete before batch sweep deadline.
 
 ```
 required_time = chain_length * avg_confirmation_time
               + csv_delay * avg_block_time
               + safety_margin
 
-assert current_height + required_time < batch_expiry
+assert current_height + required_time < batch_sweep_deadline
 ```
 
 If insufficient time remains:
@@ -494,7 +510,7 @@ If insufficient time remains:
 Clients SHOULD batch swap well before expiry:
 
 ```
-recommended_swap_time = batch_expiry - (csv_delay * 2) - safety_margin
+recommended_swap_time = batch_sweep_deadline - (csv_delay * 2) - safety_margin
 ```
 
 ### Monitoring
@@ -552,7 +568,7 @@ Clients SHOULD:
 Be aware of potential attacks:
 
 1. **Fee exhaustion**: Attacker tries to drain your on-chain funds via repeated unroll attempts.
-2. **Timing attacks**: Attacks timed near batch expiry when exit is difficult.
+2. **Timing attacks**: Attacks timed near batch sweep deadline when exit is difficult.
 3. **Collusion**: Operator collusion with malicious parties.
 
 ## References

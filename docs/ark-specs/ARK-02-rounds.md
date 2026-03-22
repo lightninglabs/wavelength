@@ -6,7 +6,7 @@ This document specifies the round lifecycle protocol for constructing, signing, 
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -114,14 +114,35 @@ A boarding request provides funds by spending an on-chain UTXO.
 - `boarding_outpoint`: The TXID and output index of the boarding UTXO
 - `boarding_script`: The full script of the boarding output
 - `proof_of_ownership`: Signature proving control of the boarding key
+- `tx_proof` (conditional): A TxProof for SPV-style validation (see below)
 
 **Operator Validation:**
 1. The boarding UTXO MUST exist and be unspent.
 2. The boarding UTXO MUST have sufficient confirmations (operator-defined minimum).
-3. The boarding script MUST match the expected format (see ARK-01).
+3. The boarding script MUST match the expected format (see ARK-01). The
+   operator reconstructs the expected script from the client's key, the
+   operator's own key, and the boarding timeout, then verifies it matches.
 4. The operator key in the script MUST match the operator's current key.
-5. The proof of ownership MUST be a valid signature.
+5. The proof of ownership MUST be a valid BIP-340 Schnorr signature.
 6. The boarding UTXO MUST NOT be too close to its timeout expiry.
+
+**TxProof Validation (SPV Mode):**
+
+When the operator does not have direct chain source access (e.g., operating
+in SPV or light client mode), the boarding request MUST include a `tx_proof`
+containing:
+
+- `raw_tx`: The full serialized boarding transaction.
+- `merkle_proof`: A merkle inclusion proof linking the transaction to a block
+  header.
+- `block_header`: The block header containing the transaction.
+
+The operator validates the TxProof as follows:
+1. Verify the merkle inclusion proof against the block header's merkle root.
+2. Verify the block header is part of the best chain (using a header verifier).
+3. Verify the claimed outpoint matches the TxProof's transaction.
+4. If no chain source is available AND no TxProof is provided, the operator
+   MUST reject the boarding request.
 
 ##### Forfeit Request
 
@@ -134,7 +155,7 @@ A forfeit request provides funds by forfeiting one or more existing VTXOs.
 **Operator Validation:**
 1. All VTXO references MUST point to valid, unspent VTXOs.
 2. No VTXO MUST be locked by another pending operation.
-3. No VTXO MUST be too close to batch expiry (sweep expiry).
+3. No VTXO MUST be too close to its batch's sweep delay expiry.
 4. All proofs MUST demonstrate ownership.
 
 #### Output Request Types
@@ -144,11 +165,22 @@ A forfeit request provides funds by forfeiting one or more existing VTXOs.
 A VTXO request creates new VTXOs in the batch.
 
 **Request Contents:**
-- `vtxo_specs`: List of VTXO specifications (owner pubkey, value, signing
-  pubkey). Each VTXO MUST include its own signing key for VTXT signing.
+- `vtxo_specs`: List of VTXO specifications, each containing:
+  - `owner_pubkey` (`P_v`): The VTXO ownership public key.
+  - `value`: The VTXO amount in satoshis.
+  - `signing_pubkey` (`P_s`): Per-VTXO ephemeral signing key for VTXT MuSig2.
+  - `pk_script`: The full P2TR pkScript for the VTXO output.
+
+Each VTXO MUST include its own signing key for VTXT branch signing.
 
 **Note:** Each VTXO SHOULD have a unique owner pubkey to prevent linking VTXOs
 to the same owner. Participants may send to themselves or to other recipients.
+
+**pkScript Verification:** The operator MUST recompute the expected pkScript
+from `(owner_pubkey, operator_key, exit_delay)` using the standard VTXO
+tapscript construction (see ARK-01) and MUST reject the request if the
+computed pkScript does not match the submitted `pk_script`. This prevents
+clients from submitting VTXO outputs with non-standard or malicious scripts.
 
 ##### Leave Request
 
@@ -265,11 +297,15 @@ function GroupVTXOs(vtxos, radix):
 
 A single batch transaction MAY contain multiple batch outputs, each paying to a separate VTXT root. This section specifies when and how to use multiple batches.
 
-#### Single Expiry per Batch (Recommended)
+#### Single Sweep Delay per Batch (Recommended)
 
-All VTXOs within a single batch SHOULD share the same expiry time. This simplifies sweeper logic and reduces implementation complexity. The operator defines the expiry time for each batch based on operational policy.
+All VTXOs within a single batch SHOULD share the same sweep delay (`T_e`).
+This simplifies sweeper logic and reduces implementation complexity. The
+operator defines the sweep delay for each batch based on operational policy.
 
-**Rationale:** Different expiries per VTXO within a batch would require tracking multiple sweep deadlines and complicate the sweeper implementation significantly.
+**Rationale:** Different sweep delays per VTXO within a batch would require
+tracking multiple sweep deadlines and complicate the sweeper implementation
+significantly.
 
 #### Scenarios for Multiple Batches
 
@@ -305,7 +341,7 @@ When multiple batches exist in a single batch transaction:
 Operators SHOULD document their batching policy in the `GetInfo` response, including:
 - Maximum VTXT depth allowed
 - Maximum participants per batch
-- Whether multiple expiries are supported
+- Whether multiple sweep delays are supported
 - Grouping criteria used (if any)
 - Any premium fees for specific batch types
 - Connector policy (max connectors per tree, connector dust amount, connector

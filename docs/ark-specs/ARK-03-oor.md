@@ -6,8 +6,8 @@ This document specifies the Out-of-Round (OOR) transaction protocol, also known 
 
 ## Status
 
-This specification is a working draft. The v0 OOR PSBT flow described here is
-draft and aligns with the current implementation work in progress.
+This specification is version 0.1 (initial release). The v0 OOR PSBT flow
+described here is normative and aligns with the current implementation.
 
 ## Table of Contents
 
@@ -164,10 +164,10 @@ Checkpoint Transaction:
   Locktime: 0
 
   Inputs:
-    - VTXO input (spent via owner-leaf script path)
+    - VTXO input (spent via collaborative script-path multi-sig)
 
   Outputs:
-    - Checkpoint output
+    - Checkpoint output (vout=0, sole output)
 ```
 
 **Note (v0):** Checkpoint transactions omit a P2A anchor output; version 3 is
@@ -270,82 +270,157 @@ These submit/finalize packages are normative for v0.
 
 ### Step 1: Transaction Construction
 
-The sender constructs:
+The sender constructs two sets of PSBTs:
 
 **Checkpoint PSBTs (one per input VTXO):**
-- Input: The VTXO being spent.
-- Output 0: Checkpoint output (script defined in ARK-01).
-- Owner leaf: Closure-provided script committed to the checkpoint tap tree.
+- Input (index 0): The VTXO being spent via the collaborative script-path.
+- Output (index 0): Checkpoint output with the closure owner leaf committed
+  to the tap tree (script defined in ARK-01).
+- No P2A anchor output (checkpoint txs are the v0 exception).
+- Transaction version MUST be 3 (for package relay compatibility).
+
+The checkpoint output value equals the full VTXO value being spent.
 
 **Ark PSBT:**
-- Inputs: Each spends checkpoint outpoint `(txid, vout=0)`.
-- Outputs: New VTXOs + optional change + P2A anchor (last).
-- Canonical ordering enforced (see Ark Transaction Format).
-- Each Ark input includes `WitnessUtxo` matching the checkpoint output.
-- Each Ark input includes `taptree` metadata (see Tap Tree Encoding below).
+- Inputs: Each spends a checkpoint outpoint `(txid, vout=0)`.
+- Outputs: New VTXO output(s) + optional change VTXO + P2A anchor (MUST be last).
+- Canonical ordering enforced (see Ark Transaction Format above).
+- Transaction version MUST be 3.
+
+**PSBT metadata requirements (per Ark input):**
+- `WitnessUtxo`: MUST be present, matching the referenced checkpoint output
+  (script + value). This allows the operator to verify the checkpoint output
+  without having the full checkpoint transaction.
+- `taptree`: MUST be present as a PSBT unknown field. Contains the TLV-encoded
+  tapleaf list for the corresponding checkpoint output (see Tap Tree Encoding
+  below). This allows the operator to reconstruct the checkpoint tap tree and
+  derive the correct signing parameters.
 
 ### Step 2: Sender Signs Ark PSBT
 
 The sender:
 
-1. Signs each Ark input (script‑path Schnorr signatures).
+1. Signs each Ark input with a BIP-340 Schnorr signature via the checkpoint
+   output's owner closure leaf (script-path spend).
 2. Does NOT sign checkpoint inputs yet.
 
 **Rationale:** The sender commits to the transfer by signing the Ark PSBT, but
-retains control until the operator co‑signs.
+retains control over the checkpoint transactions until the operator co-signs.
+This ensures the sender can abort if the operator misbehaves.
 
-### Step 3: Submit Package
+### Step 3: Submit Package (Client → Operator)
 
 The sender submits to the operator:
 
-- Ark PSBT (with sender Ark signatures).
-- Checkpoint PSBTs (unsigned).
+- **Ark PSBT** (with sender Ark input signatures attached).
+- **Checkpoint PSBTs** (unsigned — no signatures yet).
 
-### Step 4: Operator Validation and Signing
+### Step 4: Operator Validation and Co-Signing
 
 The operator:
 
-1. Validates the submit package (canonical ordering, mappings, metadata).
-2. Validates checkpoints against policy and VTXO state.
-3. Signs Ark inputs and checkpoint inputs.
-4. Returns updated PSBTs to the sender.
+1. **Validates the submit package:**
+   - Ark PSBT is canonical (BIP-69 ordering, single anchor last).
+   - Each Ark input has a corresponding checkpoint PSBT.
+   - Each Ark input's `WitnessUtxo` matches the checkpoint output.
+   - Each Ark input's `taptree` metadata is present and well-formed.
+2. **Validates checkpoints:**
+   - Each checkpoint spends a valid, unspent VTXO (status: Live).
+   - The checkpoint output script matches the expected structure given the
+     operator's key, CSV delay, and the owner closure leaf from the taptree.
+   - The owner closure leaf is acceptable under operator policy.
+3. **Validates the Ark transaction:**
+   - Value conservation: output sum == input sum (v0 has no implicit fee).
+   - All VTXO outputs have valid script structures.
+   - Sender Ark input signatures are valid.
+4. **Co-signs:**
+   - Produces operator BIP-340 signatures for each Ark input (owner closure
+     leaf script-path).
+   - Produces operator BIP-340 signatures for each checkpoint input
+     (collaborative VTXO script-path).
+5. **Returns** updated PSBTs to the sender with operator signatures attached.
 
-### Step 5: Sender Finalizes Checkpoints
+### Step 5: Sender Verifies and Signs Checkpoints
 
 The sender:
 
-1. Verifies operator signatures.
-2. Signs checkpoint inputs.
-3. Produces finalize package.
+1. Verifies all operator signatures (Ark inputs + checkpoint inputs).
+2. Signs each checkpoint input with the sender's BIP-340 signature
+   (completing the 2-of-2 collaborative VTXO script-path).
+3. Constructs the finalize package.
 
-### Step 6: Finalize Package
+### Step 6: Finalize Package (Client → Operator)
 
 The sender submits:
 
-- Ark PSBT (canonical, used to map inputs and tap tree metadata).
-- Checkpoint PSBTs with final signature material.
+- **Ark PSBT** (canonical, used for deterministic input-to-checkpoint mapping).
+- **Checkpoint PSBTs** with final signature material (sender checkpoint sigs).
 
 The operator:
 
-1. Validates finalize package structure.
-2. Persists fully signed checkpoint PSBTs.
-3. Marks input VTXOs as Spent and new VTXOs as Live (preconfirmed).
-4. Notifies registered recipients.
+1. **Validates finalize package:**
+   - Ark PSBT matches the previously submitted canonical Ark PSBT (same txid).
+   - Checkpoint PSBTs match the expected set.
+   - Sender checkpoint signatures are valid.
+2. **Persists** fully signed checkpoint PSBTs and the Ark transaction.
+3. **Marks input VTXOs as Spent** and new VTXOs as Live (preconfirmed).
+4. **Notifies** registered recipients of new incoming VTXOs.
+
+### OOR Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant S as Sender
+    participant O as Operator
+
+    Note over S,O: OOR Transfer (PSBT Submit/Finalize)
+
+    S->>S: Construct checkpoint PSBTs + Ark PSBT
+    S->>S: Sign Ark inputs (BIP-340 script-path)
+
+    S->>O: Submit Package (Ark PSBT + unsigned checkpoints)
+
+    O->>O: Validate submit package
+    O->>O: Validate checkpoints + VTXO state
+    O->>O: Validate Ark tx + sender sigs
+    O->>O: Co-sign Ark inputs + checkpoint inputs
+
+    O->>S: Return co-signed PSBTs
+
+    S->>S: Verify operator signatures
+    S->>S: Sign checkpoint inputs
+
+    S->>O: Finalize Package (Ark PSBT + signed checkpoints)
+
+    O->>O: Validate finalize package
+    O->>O: Persist signed txs
+    O->>O: Mark VTXOs: inputs→Spent, outputs→Live
+```
 
 ### Tap Tree Encoding (v0)
 
-The `taptree` PSBT input metadata (stored under the PSBT unknown key
-`taptree`) encodes the checkpoint tapleaf scripts using the same TLV format as
-`waddrmgr.Tapscript`:
+The `taptree` PSBT input metadata (stored under a PSBT unknown key with key
+data `taptree`) encodes the checkpoint tapleaf scripts using the same TLV
+format as `waddrmgr.Tapscript`:
 
-- Top-level TLV stream includes:
-  - `type=1` tapscript type (uint8, set to 0 in v0).
-  - `type=3` tapscript leaves (a sequence of leaf TLVs).
-- Each leaf is length-prefixed and encoded as a TLV stream containing:
-  - `type=1` leaf version (uint8, base tapscript leaf version in v0).
-  - `type=2` leaf script (raw script bytes).
+**Top-level TLV stream:**
+- `type=1`: Tapscript type (uint8). Set to `0` in v0, indicating a full tree
+  with explicit leaves.
+- `type=3`: Tapscript leaves. The value is a concatenation of length-prefixed
+  leaf TLV streams.
 
-Decoders MUST ignore the leaf version in v0 and return the raw script bytes.
+**Each leaf TLV stream (length-prefixed):**
+- `type=1`: Leaf version (uint8). Set to the base tapscript leaf version
+  (`0xC0`) in v0.
+- `type=2`: Leaf script (raw script bytes).
+
+**Leaf ordering:** The checkpoint tap tree for v0 has exactly two leaves:
+1. Operator unroll leaf (`<P_sw> OP_CHECKSIG <t_c> OP_CSV OP_DROP`)
+2. Owner closure leaf (closure-provided script)
+
+Decoders MUST ignore the leaf version field in v0 and use the raw script bytes.
+The leaf ordering in the TLV encoding MUST match the tap tree construction
+order used for computing the taproot output key.
 
 ## Cross-Batch Transactions
 
@@ -358,18 +433,21 @@ Ark transactions MAY spend VTXOs from different batches. This provides flexibili
 For cross-batch Ark transactions:
 
 1. Each input VTXO MUST have its own checkpoint transaction.
-2. All checkpoints MUST be from batches that have not expired.
+2. All checkpoints MUST be from batches whose sweep delay has not elapsed.
 3. The Ark transaction spends all checkpoint outputs together.
 
-### Effective Expiry
+### Effective Lifetime
 
-The effective expiry of a cross-batch Ark transaction is the **minimum** of all input batch expiries:
+The effective lifetime of a cross-batch Ark transaction is bounded by the
+**minimum** sweep delay across all input batches:
 
 ```
-effective_expiry = min(batch_expiry_1, batch_expiry_2, ..., batch_expiry_n)
+effective_lifetime = min(batch_lifetime_1, batch_lifetime_2, ..., batch_lifetime_n)
 ```
 
-**Rationale:** If any input batch expires, the operator can sweep that input, invalidating the entire Ark transaction chain.
+**Rationale:** If any input batch's sweep delay elapses and the operator sweeps
+that batch's outputs, the VTXT path for that input becomes invalid, which
+invalidates the entire Ark transaction chain.
 
 ### Unilateral Exit Considerations
 
@@ -397,7 +475,7 @@ graph LR
         CP1[Checkpoint A]
         CP2[Checkpoint B]
         ARK[Ark TX]
-        V3[New VTXO<br/>Effective Expiry: 1000]
+        V3[New VTXO<br/>Effective Lifetime: min]
     end
 
     V1 --> CP1
@@ -486,10 +564,12 @@ Deeper chains:
 
 ### Immediate Obligations
 
-After signing an OOR transaction, the operator MUST:
+After finalizing an OOR transaction (receiving valid checkpoint signatures), the
+operator MUST:
 
-1. **Persist state**: Store the signed checkpoint transaction.
-2. **Update VTXO states**: Mark input VTXOs as Spent, outputs as Live.
+1. **Persist state**: Store the fully signed checkpoint and Ark transactions.
+2. **Update VTXO states**: Mark input VTXOs as Spent, output VTXOs as Live
+   (preconfirmed).
 3. **Notify recipients**: Inform registered watchers of new VTXOs.
 
 ### Ongoing Obligations
@@ -512,9 +592,13 @@ When a spent VTXO is broadcast on-chain:
 
 The operator MAY delete OOR state after:
 
-1. The origin batch has been swept (expired and operator claimed).
+1. The origin batch has been swept (sweep delay elapsed and operator claimed).
 2. All VTXOs in the chain have been batch-swapped to new confirmed VTXOs.
 3. Sufficient time has passed with no activity.
+
+**Warning:** The operator MUST NOT delete checkpoint transactions for spent
+VTXOs while the origin batch is still active. These checkpoints are needed
+for fraud response if the original VTXO is unrolled on-chain.
 
 ## Validation Requirements
 
@@ -535,24 +619,31 @@ The operator MUST validate:
 
 The operator MUST validate:
 
-1. **Canonical Ark tx**: Inputs/outputs ordered per v0 rules; single anchor
-   output last.
-2. **Checkpoint mapping**: Each Ark input spends checkpoint outpoint
-   `(txid, vout=0)`; checkpoint set matches Ark inputs exactly.
+1. **Canonical Ark tx**: Inputs/outputs ordered per v0 rules (BIP-69 style);
+   single P2A anchor output last; transaction version 3.
+2. **Checkpoint mapping**: Each Ark input spends a checkpoint outpoint
+   `(txid, vout=0)`; the set of checkpoint PSBTs matches Ark inputs exactly
+   (one-to-one mapping).
 3. **Witness UTXO**: Each Ark PSBT input includes `WitnessUtxo` matching the
    corresponding checkpoint output (script + value).
 4. **Tap tree metadata**: Each Ark PSBT input includes the `taptree` TLV
-   blob (see Tap Tree Encoding).
+   blob (see Tap Tree Encoding). The operator reconstructs the checkpoint tap
+   tree from this metadata and verifies the checkpoint output script matches.
+5. **VTXO state**: Each checkpoint spends a VTXO that is Live (not locked,
+   spent, or forfeited).
+6. **Closure policy**: Each checkpoint's owner closure leaf is acceptable under
+   the operator's policy.
+7. **Sender signatures**: Sender BIP-340 signatures on Ark inputs are valid.
 
 ### Finalize Package Validation (v0)
 
 The operator MUST validate:
 
 1. **Canonical Ark tx**: Finalize package MUST include the Ark PSBT, and it
-   must be canonical for deterministic mapping.
+   MUST match the previously submitted Ark PSBT (same txid).
 2. **Checkpoint set**: Final checkpoint PSBTs match the Ark input set.
-3. **Signature material**: Each checkpoint PSBT contains some finalized
-   signature material (final witness or taproot sig fields).
+3. **Signature completeness**: Each checkpoint PSBT contains the sender's
+   BIP-340 signature for the collaborative VTXO script-path input.
 
 ### Ark Transaction Validation (semantic)
 

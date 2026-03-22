@@ -6,7 +6,7 @@ This document specifies the wire protocol for client-operator communication in t
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -167,9 +167,9 @@ Subscriptions use server-side streaming:
 | 33 | SubmitPartialSigs | C→O | Submit partial signatures |
 | 34 | FinalSignatures | O→C | Final VTXT signatures |
 | 35 | SubmitInputSigs | C→O | Submit input signatures |
-| 40 | SubmitArkTx | C→O | Submit OOR submit package |
-| 41 | ArkTxResponse | O→C | OOR transaction response |
-| 42 | SubmitCheckpointSig | C→O | Submit OOR finalize package |
+| 40 | SubmitArkTx | C→O | Submit OOR submit package (PSBT) |
+| 41 | ArkTxResponse | O→C | OOR co-signed response (PSBT) |
+| 42 | SubmitCheckpointSig | C→O | Submit OOR finalize package (PSBT) |
 | 50 | SubscribeRounds | C→O | Subscribe to round events |
 | 51 | RoundEvent | O→C | Round event notification |
 | 52 | SubscribeVTXOs | C→O | Subscribe to VTXO events |
@@ -212,7 +212,7 @@ message OperatorTerms {
     uint32 vtxo_csv_delay = 1;        // Blocks (CSV)
     uint32 boarding_timeout = 2;       // Blocks (CSV)
     uint32 checkpoint_timeout = 3;     // Blocks (CSV)
-    uint32 batch_expiry_delta = 4;     // Blocks (CSV from confirmation)
+    uint32 sweep_delay = 4;             // Blocks (CSV sweep delay T_e)
 
     // Fee parameters
     uint64 min_relay_fee_rate = 5;     // sats/vbyte
@@ -227,9 +227,9 @@ message OperatorTerms {
     uint32 max_oor_chain_depth = 12;
 
     // Connector policy
-    uint32 max_connectors_per_tree = 14;
-    uint64 connector_dust_amount = 15; // sats per connector leaf
-    bytes connector_address = 16;      // P2TR address bytes
+    uint32 max_connectors_per_tree = 14; // Max connector leaves per tree
+    uint64 connector_dust_amount = 15;   // Sats per connector leaf output
+    bytes connector_address = 16;        // Operator P2TR connector address
 
     // Round schedule
     uint32 round_interval_seconds = 17;
@@ -276,7 +276,7 @@ message RegisterRoundResponse {
 
     // Expected timeline
     uint64 collection_deadline = 2;    // Unix timestamp
-    uint32 expected_sweep_delay = 3;   // CSV delay (blocks)
+    uint32 expected_sweep_delay = 3;   // Sweep delay T_e (CSV blocks)
 }
 ```
 
@@ -305,11 +305,14 @@ message SubmitBoardingRequest {
 }
 
 message VTXORequest {
-    bytes owner_pubkey = 1;
-    uint64 value = 2;
-    uint32 expiry = 3;            // CSV delay for unilateral path
-    bytes pk_script = 4;          // Full P2TR pkScript
-    bytes signing_pubkey = 5;     // Per‑VTXO VTXT signing key (MuSig2)
+    bytes owner_pubkey = 1;       // VTXO ownership key (P_v)
+    uint64 value = 2;             // Amount in satoshis
+    uint32 expiry = 3;            // CSV delay for unilateral exit path (t_e)
+    bytes pk_script = 4;          // Full P2TR pkScript (server verifies)
+    bytes signing_pubkey = 5;     // Per-VTXO ephemeral VTXT signing key (P_s)
+                                  // Used for MuSig2 branch node aggregation.
+                                  // MUST be unique within the batch.
+                                  // MUST differ from owner_pubkey.
 }
 ```
 
@@ -512,20 +515,24 @@ message ForfeitTxSig {
 
 ## OOR Transaction Messages
 
-The v0 OOR flow is defined in terms of PSBT submit/finalize packages. The
-messages below are normative for v0.
+The v0 OOR flow is defined in terms of PSBT submit/finalize packages using
+BIP-340 script-path Schnorr signatures (NOT MuSig2). The messages below are
+normative for v0. See ARK-03 for the full OOR flow description.
 
 ### SubmitArkTx
 
 Submit an OOR/Ark **submit package** (v0).
 
 **PSBT Profile Notes (v0):**
-- Ark PSBT MUST be canonicalized (BIP-69 ordering: amount, then pkScript;
-  single anchor last).
+- Ark PSBT MUST be canonicalized (BIP-69 style ordering: inputs by outpoint,
+  non-anchor outputs by value then pkScript; single P2A anchor last).
+- Ark PSBT transaction version MUST be 3.
 - Each Ark PSBT input MUST include `WitnessUtxo` matching the referenced
-  checkpoint output.
+  checkpoint output (script + value).
 - Each Ark PSBT input MUST include an unknown field with key `taptree`
-  containing the TLV-encoded tapleaf list (see ARK-03).
+  containing the TLV-encoded tapleaf list for the checkpoint tap tree
+  (see ARK-03 Tap Tree Encoding).
+- Sender BIP-340 signatures for Ark inputs are attached to the PSBT.
 
 **Request:**
 ```protobuf
@@ -566,10 +573,11 @@ message VTXOInfo {
 
 ### SubmitCheckpointSig
 
-Submit the **finalize package** (v0).
+Submit the **finalize package** (v0). This completes the OOR transfer by
+providing the sender's checkpoint signatures.
 
 The Ark PSBT MUST match the canonical Ark PSBT previously submitted (same
-txid).
+txid). It is included for deterministic input-to-checkpoint mapping.
 
 **Request:**
 ```protobuf

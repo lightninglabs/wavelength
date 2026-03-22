@@ -6,7 +6,7 @@ This document specifies the operator's monitoring and fraud response requirement
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -90,7 +90,7 @@ stateDiagram-v2
 | **Forfeit** | Forfeit transaction signed | Store forfeit, monitor |
 | **Unrolled** | Broadcast on-chain by owner | None (legitimate exit) |
 | **Reclaimed** | Forfeit transaction broadcast | Await confirmation |
-| **Expired** | Batch absolute expiry reached (tracks prior state: was_live, was_spent, was_forfeit) | Sweep |
+| **Expired** | Batch sweep delay (`T_e`) elapsed (tracks prior state: was_live, was_spent, was_forfeit) | Sweep |
 | **Swept** | Funds recovered via sweep | Cleanup |
 
 ### Transition Rules
@@ -211,7 +211,7 @@ loss (the forfeit transactions become valid while VTXOs are also marked Live).
 
 #### Any → Expired
 
-**Trigger:** The batch absolute expiry is reached.
+**Trigger:** The batch sweep delay is reached.
 
 **Actions:**
 1. Mark all remaining Live/Spent/Forfeit VTXOs as Expired.
@@ -289,6 +289,7 @@ flowchart TD
 
     VTXO --> VSTATE{VTXO State?}
     VSTATE -->|Live| LEGIT[Legitimate unilateral exit]
+    VSTATE -->|Locked| LEGIT_LOCKED[Legitimate exit, release lock]
     VSTATE -->|Spent| FRAUD_SPENT[Checkpoint fraud response]
     VSTATE -->|Forfeit| FRAUD_FORFEIT[Forfeit fraud response]
 
@@ -345,15 +346,33 @@ BatchMonitorState:
 
 ### Response to Spent VTXO Unroll
 
-When a Spent VTXO appears on-chain (meaning the user is attempting to unilaterally exit a VTXO they already spent via OOR transaction):
+When a Spent VTXO appears on-chain (meaning the user is attempting to
+unilaterally exit a VTXO they already spent via OOR transaction):
 
-1. **Retrieve checkpoint transaction**: Get the first checkpoint transaction that spends this VTXO.
-2. **Race the CSV delay**: The user's unilateral exit is subject to a CSV delay (`t_e` blocks). The operator must broadcast the checkpoint before this delay expires.
-3. **Broadcast checkpoint**: Submit the checkpoint transaction that spends the same VTXO output.
-4. **Monitor confirmation**: The checkpoint and the user's unilateral exit are competing for the same UTXO. Only one can confirm.
-5. **Claim timeout**: If the checkpoint wins (confirms), wait `t_c` blocks and claim via the timeout path.
+1. **Retrieve checkpoint transaction**: Get the first checkpoint transaction
+   that spends this VTXO via the collaborative script-path.
+2. **Race the CSV delay**: The user's unilateral exit is subject to a CSV
+   delay (`t_e` blocks). The operator MUST broadcast the checkpoint before
+   this delay expires.
+3. **Broadcast checkpoint**: Submit the checkpoint transaction that spends
+   the same VTXO output via the collaborative path. Since the VTXO can only
+   be spent once, the checkpoint and the user's unilateral exit compete for
+   the same UTXO.
+4. **Monitor confirmation**: Only one transaction can confirm (the checkpoint
+   or the user's unilateral exit after CSV delay).
+5. **Claim timeout**: If the checkpoint confirms, wait `t_c` blocks and claim
+   the checkpoint output via the operator timeout path.
 
-**Key insight**: The operator only needs to broadcast one checkpoint transaction - the one that directly spends the contested VTXO. The rest of the OOR chain is irrelevant because the checkpoint claims the funds before the user can complete their unilateral exit.
+**Key insight**: The operator only needs to broadcast one checkpoint
+transaction — the one that directly spends the contested VTXO. The rest of
+the OOR chain is irrelevant because the checkpoint claims the full VTXO
+value. The operator is then economically whole and can reimburse the
+recipient(s) from the claimed funds in a future batch.
+
+**Important**: The checkpoint spends the VTXO via the collaborative
+script-path (2-of-2 multi-sig with individual BIP-340 signatures), which
+does not require a CSV delay. This gives the operator a timing advantage
+over the user's unilateral exit path, which requires waiting `t_e` blocks.
 
 ```mermaid
 sequenceDiagram
@@ -438,11 +457,11 @@ When response transactions are not confirming:
 3. **Bump strategy**: Increase fee by percentage or match next block target.
 4. **Maximum fee**: Cap at reasonable percentage of output value.
 
-## Batch Expiry and Sweeping
+## Batch Sweep Eligibility and Sweeping
 
-### Expiry Detection
+### Sweep Eligibility Detection
 
-Monitor for batch expiry:
+Monitor for batches becoming sweep-eligible (sweep delay `T_e` elapsed):
 
 ```
 for each active_batch:
@@ -451,9 +470,13 @@ for each active_batch:
         add_to_sweep_candidates(batch)
 ```
 
-### Pre-Expiry Actions
+Note: `expiry_height` is an estimate based on the batch transaction's
+confirmation height plus the sweep delay `T_e`. Since `T_e` is CSV, the
+actual sweep eligibility depends on when each branch output was confirmed.
 
-Before batch expiry, the operator SHOULD:
+### Pre-Sweep Actions
+
+Before the sweep delay elapses, the operator SHOULD:
 
 1. **Notify participants**: Warn of upcoming expiry.
 2. **Encourage batch swaps**: Promote VTXO refresh.
@@ -466,18 +489,24 @@ The sweep transaction claims all operator-recoverable funds:
 ```
 Sweep Transaction:
   Version: 2
-  Locktime: batch_expiry_height
+  Locktime: 0
 
   Inputs:
-    - Unspent batch outputs (via sweep path)
-    - Unspent VTXT nodes (via sweep path)
-    - Confirmed forfeit outputs
-    - Confirmed checkpoint outputs (via timeout)
+    - Unspent batch outputs (via sweep path, after T_e CSV)
+    - Unspent VTXT nodes (via sweep path, after T_e CSV)
+    - Confirmed forfeit outputs (immediately spendable)
+    - Confirmed checkpoint outputs (via timeout, after t_c CSV)
 
   Outputs:
     - Operator wallet output
     - (Optional) Anchor for fee bumping
 ```
+
+**Maturity note:** Checkpoint outputs are only spendable after `t_c` blocks
+from their confirmation. If a checkpoint was broadcast near the batch sweep
+time, the `t_c` delay may not have elapsed yet. The operator SHOULD split
+sweeps into separate transactions: one for CSV-mature outputs and a later
+one for outputs that are not yet mature.
 
 ### Sweep Scenarios
 
@@ -545,10 +574,10 @@ Operators MAY batch sweeps across multiple expired batches:
 
 | Event | Deadline | Consequence of Miss |
 |-------|----------|---------------------|
-| Forfeit broadcast | VTXO CSV expiry | Loss of forfeited funds |
-| Checkpoint broadcast | VTXO CSV expiry | Loss of spent funds |
-| Checkpoint claim | Checkpoint CSV expiry | User can reclaim |
-| Sweep | None (after expiry) | Delayed liquidity return |
+| Forfeit broadcast | VTXO exit delay (`t_e`) | Loss of forfeited funds |
+| Checkpoint broadcast | VTXO exit delay (`t_e`) | Loss of spent funds |
+| Checkpoint claim | Checkpoint timeout (`t_c`) | User can reclaim via Ark tx |
+| Sweep | None (after sweep delay `T_e`) | Delayed liquidity return |
 
 ### Recommended Timing Parameters
 

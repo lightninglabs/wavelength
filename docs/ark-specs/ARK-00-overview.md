@@ -8,7 +8,7 @@ Ark operates through a central coordinator called the Ark Operator (or Ark Servi
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@ The Ark protocol operates through periodic **Rounds** during which the operator 
 
 Between rounds, participants can spend their VTXOs through **Out-of-Round (OOR) Transactions**, also called **Ark Transactions**. These transactions are co-signed by the operator and create new VTXOs without requiring an on-chain transaction.
 
-VTXOs have a limited lifetime determined by their batch's **Absolute Expiry**. Before expiry, participants MUST either:
+VTXOs have a limited lifetime determined by their batch's **Sweep Delay** (`T_e`). Before the operator becomes eligible to sweep, participants MUST either:
 1. Perform a **Batch Swap** to obtain a fresh VTXO in a new batch
 2. Execute a **Leave Request** to exit to an on-chain UTXO
 3. Perform a **Unilateral Exit** by broadcasting the VTXT path on-chain
@@ -60,7 +60,7 @@ The Ark specification is organized into the following documents:
 
 ## Requirements Language
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in RFC 2119 [[1]](#references) when, and only when, they appear in all capitals.
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and "OPTIONAL" in these documents are to be interpreted as described in RFC 2119 [[1]](#references) when, and only when, they appear in all capitals.
 
 These words may also appear in this document in lower case as plain English words, and in that case do not carry the normative meaning defined above.
 
@@ -96,7 +96,9 @@ During connection establishment, clients and operators negotiate the protocol ve
 Operators MAY support multiple protocol versions simultaneously. When doing so:
 
 - Each batch MUST use exactly one version.
-- VTXOs from batches with different versions MAY be spent together in an OOR transaction if both versions are compatible.
+- New VTXOs created in a batch MUST use the operator's current preferred version, regardless of the version of the input VTXOs being spent or swapped.
+- VTXOs from batches with different versions MAY be spent together in an OOR transaction, provided the operator supports spending from those older versions.
+- The operator MUST support spending FROM VTXOs created under older versions (to allow batch swaps and OOR transfers), but is NOT required to create new batches using old versions.
 - The operator MUST reject OOR transactions that mix incompatible versions.
 
 ### Version Upgrade Transitions
@@ -117,8 +119,10 @@ When a new protocol version is deployed:
 A Virtual Transaction Output is an output that can be spent either collaboratively (with operator co-signature) or unilaterally (after a timeout). VTXOs are "virtual" in the sense that they exist off-chain unless explicitly broadcast.
 
 A VTXO has two spend paths:
-1. **Collaborative Path**: Spendable immediately via a script-path multi-sig of the VTXO owner and operator (not MuSig2 keypath, to avoid the need for interactive signing).
+1. **Collaborative Path**: Spendable immediately via a tapscript-path multi-sig of the VTXO owner and operator. This uses individual BIP-340 Schnorr signatures (not MuSig2 keypath) to avoid the need for interactive nonce exchange.
 2. **Unilateral Exit Path**: Spendable by the VTXO owner alone after a relative timelock (CSV delay).
+
+The internal key of a VTXO output is the ARKNUMSKey (a provably unspendable point), ensuring all spends go through script paths.
 
 VTXOs are categorized as:
 - **Confirmed VTXO**: A VTXO that is a direct leaf of the VTXT, spending from a VTXT branch transaction.
@@ -135,10 +139,10 @@ Leaves are assigned using a deterministic LPT ordering (amount descending,
 pkScript tiebreaker) to keep the fan-out balanced.
 
 VTXT branch nodes have two spend paths:
-1. **Collaborative Path**: MuSig2 aggregated signature of all downstream VTXO owners and the operator.
+1. **Collaborative Path**: MuSig2 aggregated signature of all downstream participants' ephemeral signing keys and the operator key. Note: these are per-round signing keys (`P_s`), NOT the VTXO ownership keys (`P_v`), to prevent cross-round linkability.
 2. **Sweep Path**: Spendable by the operator alone after a relative timelock (CSV delay) following the on-chain confirmation of the branch transaction.
 
-Note: VTXO leaves do not have a sweep path. Similarly, connector tree nodes do not have a sweep path.
+Note: VTXO leaves do not have a sweep path — only VTXT branch nodes do. Similarly, connector tree nodes do not have a sweep path.
 
 #### Batch Transaction
 
@@ -151,7 +155,9 @@ The Batch Transaction is a Bitcoin transaction that anchors one or more batches 
 
 #### Batch Output
 
-A Batch Output is an output of the Batch Transaction that pays to the root of a VTXT which has VTXOs as leaves. The total value of a Batch Output equals the sum of all VTXO values in that tree. Note that Connector Outputs also pay to VTXT roots, but those trees have connector leaves (not VTXOs) used for forfeit transaction atomicity.
+A Batch Output is an output of the Batch Transaction that pays to the root of a VTXT which has VTXOs as leaves. The total value of a Batch Output equals the sum of all VTXO values in that tree.
+
+Note that Connector Outputs also pay to tree roots, but those trees have connector leaves (not VTXOs) used for forfeit transaction atomicity. Connector tree nodes do not have a sweep path — only the operator can spend connector outputs.
 
 ### Operations
 
@@ -193,19 +199,31 @@ An OOR Transaction, also called an Ark Transaction, spends one or more VTXOs and
 
 A Checkpoint Transaction is an intermediate transaction between a VTXO and an Ark Transaction. It provides anti-griefing protection by allowing the operator to claim funds if a malicious participant attempts to force expensive on-chain resolution.
 
+The checkpoint output uses a tapscript tree with two leaves:
+1. **Operator Unroll Leaf**: Spendable by the operator after a CSV timeout (`t_c`), allowing the operator to claim funds if the participant abandons the chain.
+2. **Owner Closure Leaf**: A pluggable script (closure) that enables spending into the Ark transaction. The default closure is a collaborative multi-sig between the VTXO owner and operator.
+
+This mechanism also incentivizes users not to perform griefing attacks, as they would lose their funds to the operator via the timeout path.
+
+#### Closure
+
+A Closure is a pluggable script committed to the checkpoint tap tree's owner leaf. It defines how the Ark transaction can spend from the checkpoint output. The default v0 closure is a collaborative multi-sig (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`), but operators MAY define policy for acceptable closure types to support more advanced spending conditions.
+
 ### Timelocks
 
-#### Absolute Expiry (T_e)
+#### Sweep Delay / Batch Lifetime (T_e)
 
-The Absolute Expiry is a duration after which the operator can sweep all unspent VTXT branch node outputs. It is expressed as a relative timelock using `OP_CHECKSEQUENCEVERIFY` (CSV), which starts counting from when the branch transaction is confirmed on-chain.
+The Sweep Delay (also called Batch Lifetime) is the duration after which the operator can sweep unspent VTXT branch node outputs. It is expressed as a relative timelock using `OP_CHECKSEQUENCEVERIFY` (CSV), which starts counting from when the branch transaction is confirmed on-chain.
 
-All VTXOs in a batch share the same absolute expiry.
+**Important:** Because `T_e` is a CSV (relative) timelock rather than a CLTV (absolute) timelock, a participant who broadcasts VTXT branch transactions late can effectively extend the operator's lockup period. In the worst case, if a participant broadcasts just before the expected batch expiry, the operator's sweep becomes available `T_e` blocks after that late confirmation — extending the total lockup.
 
-#### Relative Delay (t_e)
+All VTXOs in a batch share the same sweep delay.
 
-The Relative Delay is the CSV (CheckSequenceVerify) delay on the unilateral exit path of VTXOs. It provides time for the operator to respond if a participant attempts to claim a VTXO that has been forfeited or spent via OOR transaction.
+#### VTXO Exit Delay (t_e)
 
-The relative delay ensures that even if a VTXO is broadcast just before the absolute expiry, the operator still has time to respond.
+The VTXO Exit Delay is the CSV (CheckSequenceVerify) delay on the unilateral exit path of VTXOs. It provides time for the operator to respond if a participant attempts to claim a VTXO that has been forfeited or spent via OOR transaction.
+
+The exit delay ensures that even if a VTXO is broadcast on-chain near the end of the batch lifetime, the operator still has time to respond by broadcasting a forfeit or checkpoint transaction before the CSV delay expires.
 
 #### Connector Output
 
@@ -220,8 +238,8 @@ Connector outputs are spendable only by the operator.
 The Ark protocol considers the following threat scenarios:
 
 1. **Malicious Participant**: A participant attempts to double-spend by unilaterally broadcasting spent VTXOs, or performs griefing attacks such as:
-   - Forcing on-chain resolution of long VTXO-spend chains
-   - Forcing the operator to lock up liquidity asymmetrically (e.g., boarding with a large UTXO and immediately leaving in the same batch, locking operator wallet inputs with no consequence to the participant)
+   - Forcing on-chain resolution of long VTXO-spend chains (mitigated by the checkpoint mechanism, which bounds operator costs)
+   - Forcing the operator to lock up liquidity asymmetrically (e.g., boarding with a large UTXO and immediately leaving in the same batch, locking operator wallet inputs for the batch lifetime with no consequence to the participant)
 2. **Malicious Operator**: The operator attempts to steal funds by refusing to honor valid VTXOs.
 3. **Colluding Parties**: Operator and participant(s) collude against other participants.
 
@@ -243,7 +261,7 @@ If a participant forfeits a VTXO (for a Leave Request or Batch Swap), the operat
 
 If a participant spends a VTXO via OOR transaction, the operator MUST be able to claim the funds if the participant later attempts to unilaterally exit from the spent VTXO.
 
-**Mechanism**: Checkpoint transactions ensure the operator can claim funds without needing to broadcast the full OOR chain. The checkpoint output has a timeout path allowing the operator to sweep if the participant doesn't continue the chain. This mechanism also incentivizes users to not perform griefing attacks, as they would lose their funds to the operator.
+**Mechanism**: Checkpoint transactions ensure the operator can claim funds without needing to broadcast the full OOR chain. The operator only needs to broadcast the single checkpoint transaction that directly spends the contested VTXO. If the participant doesn't continue the chain from the checkpoint (by broadcasting the Ark transaction), the operator claims the funds via the checkpoint timeout path after `t_c` blocks. This bounds the operator's on-chain costs to a single transaction regardless of OOR chain length.
 
 #### Property 4: Atomicity
 
@@ -255,10 +273,10 @@ Leave Requests and Batch Swaps MUST be atomic: either the participant receives t
 
 The operator MUST:
 1. Monitor all unswept batch outputs for spends.
-2. Respond to unilateral exits by broadcasting Forfeit or Checkpoint transactions within the CSV delay.
-3. Sweep expired batches to reclaim liquidity.
+2. Respond to unilateral exits by broadcasting Forfeit or Checkpoint transactions within the VTXO exit delay (`t_e`).
+3. Sweep expired batches to reclaim liquidity after the sweep delay (`T_e`) elapses.
 
-If the operator fails to respond within the CSV delay, participants may successfully double-spend forfeited or spent VTXOs.
+If the operator fails to respond within the VTXO exit delay, participants may successfully double-spend forfeited or spent VTXOs.
 
 ## Trust Assumptions
 
@@ -266,8 +284,8 @@ If the operator fails to respond within the CSV delay, participants may successf
 
 Participants trust the operator to:
 
-1. **Availability**: Remain online and responsive to facilitate rounds and OOR transactions. Note that even if the operator disappears, participants can still exit on-chain via unilateral exit.
-2. **Honest Signing**: Co-sign valid OOR transactions and not sign conflicting transactions. If the operator signs conflicting transactions, there is clear cryptographic evidence which can be publicized, causing the operator to immediately lose trust for future participation.
+1. **Availability**: Remain online and responsive to facilitate rounds and OOR transactions. Note that even if the operator disappears entirely, participants can still exit on-chain via unilateral exit — they do not lose funds, only the convenience of off-chain transfers.
+2. **Honest Signing**: Co-sign valid OOR transactions and not sign conflicting transactions. If the operator signs conflicting transactions, there is clear cryptographic evidence (two valid signatures on conflicting transactions spending the same VTXO) which can be publicized, causing the operator to immediately lose trust for future participation.
 3. **Timely Response**: Monitor the chain and respond to unilateral exits within the CSV delay.
 
 Participants do NOT need to trust the operator to:
@@ -279,18 +297,22 @@ Participants do NOT need to trust the operator to:
 
 Recipients of preconfirmed VTXOs (from OOR transactions) have additional trust considerations compared to confirmed VTXOs:
 
-1. **Sender Trust**: The sender could attempt to double-spend by unilaterally broadcasting the original VTXO. However, the receiver has defenses: they hold checkpoint transactions that can be broadcast if needed.
-2. **Monitoring Requirement**: The recipient should monitor the chain for parent VTX confirmations and potentially manage checkpoint transaction broadcasts if the operator is offline.
+1. **Sender Trust**: The sender could attempt to double-spend by unilaterally broadcasting the original VTXO. However, the operator holds checkpoint transactions that can be broadcast to reclaim the funds.
+2. **Monitoring Requirement**: If the recipient is not the owner of the confirmed-parent VTXOs in the chain, they should monitor the chain for parent VTXT confirmations and potentially manage checkpoint transaction broadcasts if the operator is offline.
 
 **Confirmed vs Preconfirmed VTXOs**:
-- A preconfirmed VTXO can be converted to a confirmed one via a Batch Swap.
-- A confirmed VTXO has fewer trust assumptions: it is a direct leaf of an on-chain VTXT and doesn't depend on parent VTXOs.
+- A preconfirmed VTXO can be converted to a confirmed one via a Batch Swap. Recipients SHOULD batch-swap promptly to reduce trust exposure.
+- A confirmed VTXO has significantly fewer trust assumptions: it is a direct leaf of an on-chain VTXT and doesn't depend on parent VTXOs or OOR transaction chains.
 - If a preconfirmed VTXO holder is not the owner of the confirmed-parent VTXOs, they must monitor the chain and potentially broadcast checkpoint transactions if the operator is unavailable.
 
 If the sender does attempt to double-spend:
-- The operator is incentivized to broadcast checkpoint transactions to prevent the double-spend and claim the funds.
+- The operator detects the on-chain broadcast of the original VTXO.
+- The operator broadcasts the checkpoint transaction that spends the same VTXO via the collaborative path, racing the sender's CSV delay.
+- If the checkpoint confirms, the operator claims the funds via the timeout path after `t_c` blocks. The operator is now economically whole and can include a replacement VTXO for the recipient in a future batch.
 - The recipient's funds are protected as long as the operator responds correctly.
-- The sender's malicious behavior becomes publicly provable (evidence of the double-sign).
+- The sender's malicious behavior becomes publicly provable (two valid signatures on conflicting transactions constitute cryptographic evidence of double-signing).
+
+Note: The recipient must trust the operator to include their replacement VTXO in a future batch. The economic incentive aligns: the operator benefits from maintaining reputation and the recipient's continued participation.
 
 ### Reputation
 
@@ -304,20 +326,21 @@ Operator double-signing (signing conflicting transactions) produces cryptographi
 
 | Notation | Description |
 |----------|-------------|
-| `P_o` | Operator's public key |
+| `P_o` | Operator's collaborative signing public key |
 | `P_c` | Client/participant's public key |
-| `P_v` | VTXO ownership public key |
-| `P_m` | MuSig2 aggregate public key |
-| `P_s` | Signing session public key |
+| `P_v` | VTXO ownership public key (used in VTXO scripts) |
+| `P_s` | Per-VTXO ephemeral signing key (used for VTXT MuSig2 branch signing) |
+| `P_sw` | Operator's sweep public key (may differ from `P_o`) |
+| `P_m` | MuSig2 aggregate public key (VTXT branches only) |
 
 ### Timelocks
 
 | Notation | Description |
 |----------|-------------|
-| `T_e` | Absolute expiry (CSV relative timelock) |
-| `t_e` | Relative delay in blocks (CSV) |
+| `T_e` | Sweep delay / batch lifetime (CSV relative timelock on VTXT branch nodes) |
+| `t_e` | VTXO exit delay in blocks (CSV on unilateral exit path) |
 | `t_b` | Boarding UTXO timeout (CSV) |
-| `t_c` | Checkpoint timeout (CSV) |
+| `t_c` | Checkpoint timeout (CSV on operator unroll leaf) |
 
 ### Transactions
 

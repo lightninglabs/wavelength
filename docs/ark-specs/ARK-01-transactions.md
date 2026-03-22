@@ -6,7 +6,7 @@ This document specifies the transaction formats and Bitcoin Script structures us
 
 ## Status
 
-This specification is a working draft.
+This specification is version 0.1 (initial release).
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ This specification is a working draft.
 6. [Connector Output Script](#connector-output-script)
 7. [Boarding Output Script](#boarding-output-script)
 8. [Checkpoint Output Script](#checkpoint-output-script)
-9. [Batch Transaction](#commitment-transaction)
+9. [Batch Transaction](#batch-transaction)
 10. [Forfeit Transaction](#forfeit-transaction)
 11. [Ark Transaction (OOR Transaction)](#ark-transaction-oor-transaction)
 12. [Anchor Outputs](#anchor-outputs)
@@ -69,8 +69,10 @@ be script-path only (no keypath spend). Its compressed public key is:
 ARKNUMSKey = 02372f225b3caee8213096de3229ee4335306b07c3c169438461b5d4749884ec65
 ```
 
-This key is derived from the seed phrase “Ark Protocol NUMS” using the
-`mailbox/numsgen` tool and has no known private key.
+This key is derived from the seed phrase `”Ark Protocol NUMS”` using the
+`lightning-node-connect/mailbox/numsgen` tool and has no known private key.
+Implementations MUST use this exact key for all VTXO, boarding, and checkpoint
+outputs.
 
 ### MuSig2 Usage
 
@@ -213,23 +215,42 @@ Operators validating VTXO requests MUST verify:
 4. The `P_o` in the collaborative leaf matches the operator's current signing
    key.
 
+### Witness Stack Order
+
+The witness stacks for each spend path are:
+
+**Collaborative Spend:**
+```
+<sig_operator> <sig_owner> <collab_script> <control_block>
+```
+
+**Unilateral Exit:**
+```
+<sig_owner> <unilateral_script> <control_block>
+```
+
+Note: In the collaborative path, the operator (cosigner) signature comes first,
+followed by the owner signature. This matches the script execution order where
+`OP_CHECKSIGVERIFY` consumes the owner signature first (top of stack), then
+`OP_CHECKSIG` consumes the operator signature.
+
 ### Mermaid Diagram
 
 ```mermaid
 graph TD
     subgraph "VTXO Taproot Output"
-        IK[Internal Key: ARKNUMSKey] --> OK[Output Key]
+        IK["Internal Key: ARKNUMSKey<br/>(provably unspendable)"] --> OK[Output Key]
         ST[Script Tree] --> OK
     end
 
-    subgraph "Script Tree"
-        ST --> CL[Collaborative Leaf]
-        ST --> UE[Unilateral Exit Leaf]
+    subgraph "Script Tree (two leaves)"
+        ST --> CL["Collaborative Leaf<br/>P_v CHECKSIGVERIFY<br/>P_o CHECKSIG"]
+        ST --> UE["Unilateral Exit Leaf<br/>P_v CHECKSIG<br/>t_e CSV DROP"]
     end
 
-    subgraph "Spend Paths"
-        OK --> SP1[Scriptpath: 2-of-2 sigs]
-        OK --> SP2[Scriptpath: sig + CSV wait]
+    subgraph "Spend Paths (both script-path)"
+        CL --> SP1["Scriptpath: owner sig + operator sig"]
+        UE --> SP2["Scriptpath: owner sig after CSV wait"]
     end
 ```
 
@@ -281,7 +302,7 @@ Operator Sweep Script:
 
 Where:
 - `P_sw`: The operator's sweep public key (may be distinct from `P_o`)
-- `T_e`: The expiry delay (relative, starts counting from when the branch
+- `T_e`: The sweep delay (relative CSV, starts counting from when the branch
   transaction is confirmed on-chain)
 
 ### Spend Paths
@@ -296,10 +317,10 @@ Used when all downstream participants agree to spend (e.g., during VTXT construc
 
 #### Operator Sweep (Script Path)
 
-Used by the operator to reclaim expired batch funds:
+Used by the operator to reclaim funds after the sweep delay:
 
 1. Wait for at least `T_e` blocks after the branch transaction is confirmed on-chain.
-2. Produce a signature with the operator's key.
+2. Produce a signature with the operator's sweep key (`P_sw`).
 3. Witness: `<signature> <sweep_script> <control_block>`
 
 ### Tree Construction (Fan-out)
@@ -313,8 +334,13 @@ single parent output and creates multiple child outputs:
 3. **Leaf Level**: Leaf node transactions create the VTXO outputs.
 
 For each node transaction:
-- Inputs: Exactly one input spending the parent output.
-- Outputs: One output per child plus a trailing anchor output.
+- Inputs: Exactly one input spending the parent output (fan-out: 1→N).
+- Outputs: One output per child plus a trailing ephemeral P2A anchor output.
+
+**Construction vs Unrolling:** The tree structure is *constructed* bottom-up
+(leaves first, then branches, then root) to compute aggregate keys and values.
+However, the transaction spending direction is top-down: the root spends the
+batch output, branches spend parent outputs, and leaves create VTXO outputs.
 
 Leaf assignment MUST use deterministic LPT ordering:
 1. Sort VTXO outputs by value (descending), then by pkScript bytes.
@@ -519,10 +545,19 @@ Where:
 - `P_sw`: The operator's sweep/unroll key (may be distinct from `P_o`)
 - `t_c`: The checkpoint timeout in blocks (relative)
 
-**Note (v0):** The owner leaf is a closure-provided script committed in the
-tap tree. Operators MAY enforce a policy that only accepts the default
-collaborative closure, but v0 is defined to allow arbitrary closures that are
-validated by policy.
+**Closure System (v0):** The owner leaf is a closure-provided script committed
+in the tap tree. This design allows the checkpoint system to support arbitrary
+spending conditions beyond the default collaborative multi-sig:
+
+- The **default closure** (`<P_c> OP_CHECKSIGVERIFY <P_o> OP_CHECKSIG`) is
+  RECOMMENDED for standard OOR transfers.
+- Operators MUST validate the owner leaf script against their policy before
+  co-signing. Operators MAY reject closures that do not match their accepted
+  policy set.
+- The closure script is provided by the client during OOR transaction
+  construction and is encoded in the PSBT taptree metadata (see ARK-03).
+- Future closure types (e.g., hash-locked closures for vHTLCs) can be
+  introduced without changing the checkpoint transaction structure.
 
 ### Spend Paths
 
@@ -696,7 +731,8 @@ Forfeit Transaction:
 #### Operator Output
 
 - Pays the forfeited value to an operator-controlled address.
-- Value equals the full VTXO value (fees are paid via CPFP anchor).
+- Value equals the full VTXO value. Fees are paid via CPFP on the ephemeral
+  anchor output, not deducted from the forfeit amount.
 
 #### Anchor Output
 
@@ -729,7 +765,7 @@ graph LR
     end
 
     subgraph "Batch Transaction"
-        CTX[Commitment TX] --> BATCH[Batch Output<br/>contains new VTXO]
+        CTX[Batch TX] --> BATCH[Batch Output<br/>contains new VTXO]
         CTX --> CONN
     end
 ```
@@ -848,11 +884,12 @@ This output:
 
 All off-chain transactions that may need CPFP fee bumping (VTXT transactions,
 connector tree transactions, Ark transactions, forfeit transactions) MUST
-include an ephemeral anchor output as the final output. These transactions MUST
-use version 3 to support P2A anchors.
+include an ephemeral anchor output as the **final** output. These transactions
+MUST use version 3 to support P2A anchors.
 
-Checkpoint transactions are a v0 exception: they use version 3 for package
-relay compatibility but do not include a P2A anchor output.
+**Checkpoint transactions** are a v0 exception: they use version 3 for package
+relay compatibility but do NOT include a P2A anchor output. The checkpoint
+output is the sole output (vout=0) of a checkpoint transaction.
 
 When broadcasting these transactions:
 1. Create a child transaction spending the anchor.
@@ -875,7 +912,7 @@ All Ark protocol transactions:
 1. Off-chain transactions (VTXT, connector trees, Ark, checkpoint, forfeit)
    MUST use transaction version 3 (P2A anchors or package relay
    compatibility).
-2. On-chain transactions (commitment) MUST use transaction version 2.
+2. On-chain transactions (batch transaction) MUST use transaction version 2.
 3. MUST use witness serialization (SegWit).
 4. MUST have valid signatures for all inputs.
 5. MUST NOT have negative fee (output sum <= input sum).
@@ -900,7 +937,7 @@ Forfeit transactions:
 
 ### Batch Transaction Rules
 
-Commitment transactions:
+Batch transactions:
 
 1. MUST have at least one batch output.
 2. MUST have connector output if any forfeits are processed.
