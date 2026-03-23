@@ -409,7 +409,14 @@ func waitForOperatorRoundStatus(t *testing.T, h *harness.ArkHarness,
 		}
 
 		for _, round := range resp.Rounds {
-			if round.Id == roundID && round.Status == target {
+			if round.Id != roundID {
+				continue
+			}
+
+			if operatorRoundStatusSatisfiesTarget(
+				round.Status, target,
+			) {
+
 				matched = round
 
 				return true
@@ -422,6 +429,20 @@ func waitForOperatorRoundStatus(t *testing.T, h *harness.ArkHarness,
 		roundID, target.String())
 
 	return matched
+}
+
+// operatorRoundStatusSatisfiesTarget tolerates short-lived round status
+// transitions that can be missed by polling on fast CI runners.
+func operatorRoundStatusSatisfiesTarget(state,
+	target adminrpc.RoundStatus) bool {
+
+	if state == target {
+		return true
+	}
+
+	// Broadcast can be brief; confirmed implies broadcast happened.
+	return target == adminrpc.RoundStatus_ROUND_STATUS_BROADCAST &&
+		state == adminrpc.RoundStatus_ROUND_STATUS_CONFIRMED
 }
 
 // operatorRoundHasStatus reports whether the operator currently exposes the
@@ -444,7 +465,14 @@ func operatorRoundHasStatus(t *testing.T, h *harness.ArkHarness,
 	}
 
 	for _, round := range resp.Rounds {
-		if round.Id == roundID && round.Status == target {
+		if round.Id != roundID {
+			continue
+		}
+
+		if operatorRoundStatusSatisfiesTarget(
+			round.Status, target,
+		) {
+
 			return true
 		}
 	}
@@ -545,6 +573,50 @@ func listLiveVTXOs(t *testing.T,
 	require.NoError(t, err, "failed to list live VTXOs")
 
 	return resp.Vtxos
+}
+
+// waitForVTXOStatusByOutpoint waits until the daemon reports the requested
+// lifecycle status for the given VTXO outpoint.
+func waitForVTXOStatusByOutpoint(t *testing.T,
+	client daemonrpc.DaemonServiceClient, outpoint string,
+	target daemonrpc.VTXOStatus) *daemonrpc.VTXO {
+
+	t.Helper()
+
+	var matched *daemonrpc.VTXO
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.ListVTXOs(
+			ctx, &daemonrpc.ListVTXOsRequest{
+				StatusFilter: target,
+			},
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, vtxo := range resp.Vtxos {
+			if vtxo.Outpoint != outpoint {
+				continue
+			}
+
+			if vtxo.Status == target {
+				matched = vtxo
+
+				return true
+			}
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"never observed outpoint %s in status %s",
+		outpoint, target.String())
+
+	return matched
 }
 
 // outpointSet converts a VTXO slice into a membership set keyed by outpoint.
@@ -677,6 +749,37 @@ func waitForVTXOBalanceBelow(t *testing.T,
 	}, defaultTimeout, pollInterval,
 		"VTXO balance never dropped below %d sats",
 		maxExclusiveVTXOBalanceSat)
+
+	return lastResp
+}
+
+// waitForDaemonInfoReachable waits until the daemon's GetInfo RPC succeeds.
+// This is useful after operator restarts to force mailbox reconnect/restore
+// without assuming any specific connectivity flag semantics.
+func waitForDaemonInfoReachable(t *testing.T,
+	client daemonrpc.DaemonServiceClient) *daemonrpc.GetInfoResponse {
+
+	t.Helper()
+
+	var lastResp *daemonrpc.GetInfoResponse
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.GetInfo(
+			ctx, &daemonrpc.GetInfoRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		lastResp = resp
+
+		return true
+	}, defaultTimeout, pollInterval,
+		"daemon GetInfo never succeeded")
 
 	return lastResp
 }
