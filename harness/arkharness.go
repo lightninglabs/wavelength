@@ -609,6 +609,18 @@ func (h *ArkHarness) GetClientDaemon(name string) *ClientDaemonHarness {
 	return daemon
 }
 
+// TriggerRoundRegistration advances the daemon's queued round intents by
+// injecting RegistrationRequested into the underlying round actor.
+func (d *ClientDaemonHarness) TriggerRoundRegistration() {
+	d.T.Helper()
+
+	ctx, cancel := context.WithTimeout(d.T.Context(), defaultSmallTimeout)
+	defer cancel()
+
+	require.NotNil(d.T, d.server, "client daemon server is not initialized")
+	require.NoError(d.T, d.server.TriggerRoundRegistration(ctx))
+}
+
 // Stop gracefully shuts down the daemon and closes the connected RPC client.
 func (d *ClientDaemonHarness) Stop() {
 	if d == nil {
