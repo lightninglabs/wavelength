@@ -182,7 +182,18 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 		}
 
 		var event proto.Message
-		if env.Body != nil {
+		if env.Body == nil {
+			// Header-only unary failures are valid when the server
+			// encodes the gRPC status in the envelope headers.
+			// A nil body without an encoded status is malformed.
+			if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
+				return fmt.Errorf(
+					"nil envelope body without encoded "+
+						"error for %s/%s",
+					cfg.Service, cfg.Method,
+				)
+			}
+		} else {
 			event = cfg.NewEvent()
 			if event == nil {
 				return fmt.Errorf(
@@ -199,9 +210,6 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 				return fmt.Errorf("unmarshal %s/%s event: %w",
 					cfg.Service, cfg.Method, err)
 			}
-		} else if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
-			return fmt.Errorf("nil envelope body for %s/%s",
-				cfg.Service, cfg.Method)
 		}
 
 		actorMsg, err := cfg.Adapt(env, event)
