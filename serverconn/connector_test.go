@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -144,6 +147,37 @@ func sendRoutedResponseToMailbox(
 	status := mb.send(env)
 	require.True(t, status.Ok, "send routed response failed: %s",
 		status.Message)
+}
+
+// sendRoutedErrorResponseToMailbox injects a KIND_RESPONSE envelope that
+// carries service/method metadata and a gRPC error encoded in headers, but no
+// response body.
+func sendRoutedErrorResponseToMailbox(
+	t *testing.T, mb *inMemoryMailbox, recipientID, correlationID,
+	service, method string, err error,
+) {
+
+	t.Helper()
+
+	env := &mailboxpb.Envelope{
+		ProtocolVersion: 1,
+		Sender:          "server-1",
+		Recipient:       recipientID,
+		Headers:         mailboxrpc.EncodeErrorHeaders(err),
+		Rpc: &mailboxpb.RpcMeta{
+			Kind:          mailboxpb.RpcMeta_KIND_RESPONSE,
+			CorrelationId: correlationID,
+			Service:       service,
+			Method:        method,
+			ReplyTo:       "server-1",
+		},
+	}
+
+	status := mb.send(env)
+	require.True(
+		t, status.Ok, "send routed error response failed: %s",
+		status.Message,
+	)
 }
 
 // sendEventToMailbox injects a KIND_EVENT envelope into the given mailbox
@@ -315,6 +349,76 @@ func TestIngress_ResponseDelivery(t *testing.T) {
 // TestIngress_ResponseDispatchWithoutWaiter verifies that a KIND_RESPONSE
 // envelope without an in-memory unary waiter falls back to the durable
 // dispatcher map keyed by service and method.
+// TestIngress_ResponseDispatchHeaderOnlyError verifies that routed response
+// dispatch still reaches EventRouter handlers when the server encodes a gRPC
+// error in headers and intentionally omits the response body.
+func TestIngress_ResponseDispatchHeaderOnlyError(t *testing.T) {
+	t.Parallel()
+
+	mb := newInMemoryMailbox()
+	store := newMemCheckpointStore()
+	system := actor.NewActorSystem()
+
+	greetingKey := actor.NewServiceKey[*helloStartedMsg, struct{}](
+		"greeting-actor",
+	)
+	behavior := &greetingBehavior{
+		received: make(chan *helloStartedMsg, 1),
+	}
+	actor.RegisterWithSystem(system, "greeting-1", greetingKey, behavior)
+
+	router := NewEventRouter(system)
+	AddEnvelopeRoute(
+		router, EnvelopeRouteConfig[*helloStartedMsg, struct{}]{
+			Service: "test.Svc",
+			Method:  "Unary",
+			NewEvent: func() proto.Message {
+				return &wrapperspb.StringValue{}
+			},
+			Key: greetingKey,
+			Adapt: func(env *mailboxpb.Envelope,
+				_ proto.Message) (*helloStartedMsg, error) {
+
+				rpcErr := mailboxrpc.DecodeErrorHeaders(
+					env.GetHeaders(),
+				)
+				if rpcErr == nil {
+					return nil, fmt.Errorf(
+						"expected encoded rpc error",
+					)
+				}
+
+				return &helloStartedMsg{
+					SessionID: rpcErr.Error(),
+				}, nil
+			},
+		},
+	)
+
+	cfg := newTestConnectorConfig(mb, store)
+	cfg.Dispatchers = router.AsDispatcherMap()
+	connector := NewServerConnectionActor(cfg)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	require.NoError(t, connector.StartIngress(ctx))
+	defer connector.StopIngress()
+
+	sendRoutedErrorResponseToMailbox(
+		t, mb, "client-1", "corr-routed", "test.Svc", "Unary",
+		status.Error(codes.Internal, "boom"),
+	)
+
+	select {
+	case msg := <-behavior.received:
+		require.Contains(t, msg.SessionID, "boom")
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for routed error response dispatch")
+	}
+}
+
 func TestIngress_ResponseDispatchWithoutWaiter(t *testing.T) {
 	t.Parallel()
 

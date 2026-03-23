@@ -176,22 +176,32 @@ func AddEnvelopeRoute[M actor.Message, R any](r *EventRouter,
 	dispatcher := func(ctx context.Context,
 		env *mailboxpb.Envelope) error {
 
-		if env == nil || env.Body == nil {
-			return fmt.Errorf("nil envelope or body for %s/%s",
+		if env == nil {
+			return fmt.Errorf("nil envelope for %s/%s",
 				cfg.Service, cfg.Method)
 		}
 
-		event := cfg.NewEvent()
-		if event == nil {
-			return fmt.Errorf("nil event prototype for %s/%s",
-				cfg.Service, cfg.Method)
-		}
+		var event proto.Message
+		if env.Body != nil {
+			event = cfg.NewEvent()
+			if event == nil {
+				return fmt.Errorf(
+					"nil event prototype for %s/%s",
+					cfg.Service, cfg.Method,
+				)
+			}
 
-		if err := (proto.UnmarshalOptions{
-			DiscardUnknown: true,
-		}).Unmarshal(env.Body.Value, event); err != nil {
-			return fmt.Errorf("unmarshal %s/%s event: %w",
-				cfg.Service, cfg.Method, err)
+			if err := (proto.UnmarshalOptions{
+				DiscardUnknown: true,
+			}).Unmarshal(
+				env.Body.Value, event,
+			); err != nil {
+				return fmt.Errorf("unmarshal %s/%s event: %w",
+					cfg.Service, cfg.Method, err)
+			}
+		} else if mailboxrpc.DecodeErrorHeaders(env.Headers) == nil {
+			return fmt.Errorf("nil envelope body for %s/%s",
+				cfg.Service, cfg.Method)
 		}
 
 		actorMsg, err := cfg.Adapt(env, event)
