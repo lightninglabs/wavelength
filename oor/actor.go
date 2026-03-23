@@ -1257,7 +1257,7 @@ func (b *oorDurableBehavior) driveOutbox(ctx context.Context,
 		followUps, err := handler.Handle(ctx, sessionID, msg)
 		if err != nil {
 			//nolint:ll
-			b.logger(ctx).WarnS(ctx, "Outbox handler error, wrapping as retryable event", err,
+			b.logger(ctx).WarnS(ctx, "Outbox handler error, mapping to outbox error event", err,
 				slog.String("session_id", sessionID.String()),
 				slog.String("event_type", fmt.Sprintf("%T", msg)))
 

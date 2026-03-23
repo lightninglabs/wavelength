@@ -2,6 +2,7 @@ package oor
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1338,4 +1339,187 @@ func TestOORClientActorDurableRestartAutoResume(t *testing.T) {
 			return false
 		}
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// TestOORClientActorDurableRestartRetriesMarkInputsSpent asserts that a
+// retryable local-spend completion failure survives restart without moving the
+// session into Failed.
+func TestOORClientActorDurableRestartRetriesMarkInputsSpent(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	policy := scripts.CheckpointPolicy{
+		OperatorKey: operatorKey.PubKey(),
+		CSVDelay:    10,
+	}
+
+	inputValue := btcutil.Amount(10000)
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	clientSigner := input.NewMockSigner([]*btcec.PrivateKey{clientKey}, nil)
+	operatorSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{operatorKey}, nil,
+	)
+
+	inputs := []TransferInput{
+		newTestTransferInput(
+			t, clientKey, policy.OperatorKey,
+			wire.OutPoint{
+				Hash:  [32]byte{0x04},
+				Index: 0,
+			},
+			inputValue,
+		),
+	}
+
+	recipients := []oortx.RecipientOutput{
+		{
+			PkScript: newTestTaprootPkScript(t, clientKey.PubKey()),
+			Value:    inputValue,
+		},
+	}
+
+	deliveryStore := newTestDeliveryStore(t)
+	const actorID = "oor-restart-mark-inputs-spent-retry"
+
+	handler1 := &retryRecordingHandler{
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
+	}
+
+	var completeSpendAttempts atomic.Int32
+	completeSpend := func(_ context.Context, ops []wire.OutPoint) error {
+		require.Equal(t, InputOutpoints(inputs), ops)
+
+		// The first local-spend completion simulates the transient
+		// manager-unavailable race we see during shutdown/restart
+		// overlap.
+		if completeSpendAttempts.Add(1) == 1 {
+			return fmt.Errorf("no actors available for service key")
+		}
+
+		return nil
+	}
+
+	actor1 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &LocalPersistenceOutboxHandler{
+			Next:          handler1,
+			CompleteSpend: completeSpend,
+		},
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+
+	startResp := actor1.Receive(ctx, &StartTransferRequest{
+		Policy:     policy,
+		Inputs:     inputs,
+		Recipients: recipients,
+	})
+	require.True(t, startResp.IsOk())
+
+	startMsg, ok := startResp.UnwrapOr(nil).(*StartTransferResponse)
+	require.True(t, ok)
+
+	stateResp := actor1.Receive(ctx, &GetStateRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, stateResp.IsOk())
+
+	stateMsg, ok := stateResp.UnwrapOr(nil).(*GetStateResponse)
+	require.True(t, ok)
+	require.IsType(t, &AwaitingLocalVTXOUpdate{}, stateMsg.State)
+
+	// Export the checkpoint so we can assert the retry metadata is already
+	// persisted before the first actor is stopped.
+	exportResp := actor1.Receive(ctx, &ExportSnapshotRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, exportResp.IsOk())
+
+	exportMsg, ok := exportResp.UnwrapOr(nil).(*ExportSnapshotResponse)
+	require.True(t, ok)
+	require.NotZero(t, exportMsg.Snapshot.RetryAfter)
+	require.Contains(t, exportMsg.Snapshot.FailReason,
+		"complete spend via manager")
+
+	actor1.Stop()
+
+	handler2 := &retryRecordingHandler{
+		t:              t,
+		clientSigner:   clientSigner,
+		operatorSigner: operatorSigner,
+	}
+
+	actor2 := NewOORClientActor(ClientActorCfg{
+		OutboxHandler: &LocalPersistenceOutboxHandler{
+			Next:          handler2,
+			CompleteSpend: completeSpend,
+		},
+		DeliveryStore: deliveryStore,
+		ActorID:       actorID,
+	})
+	defer actor2.Stop()
+
+	// Restart should honor the saved retry metadata by scheduling
+	// retry work rather than immediately re-driving
+	// MarkInputsSpentRequest.
+	require.Eventually(t, func() bool {
+		resp := actor2.Receive(ctx, &GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if resp.IsErr() {
+			return false
+		}
+
+		got, ok := resp.UnwrapOr(nil).(*GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		_, awaitingLocalUpdate := got.State.(*AwaitingLocalVTXOUpdate)
+
+		return awaitingLocalUpdate
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.True(t, handler2.sawScheduleRetry.Load(),
+		"restart should preserve retry intent for local "+
+			"spend completion")
+	require.EqualValues(t, 1, completeSpendAttempts.Load(),
+		"restart should not re-drive spend completion "+
+			"before explicit resume")
+
+	// Once the user explicitly resumes, the same durable state
+	// should replay the local spend completion and let the session
+	// finish cleanly.
+	resumeResp := actor2.Receive(ctx, &ResumeSessionRequest{
+		SessionID: startMsg.SessionID,
+	})
+	require.True(t, resumeResp.IsOk())
+
+	require.Eventually(t, func() bool {
+		resp := actor2.Receive(ctx, &GetStateRequest{
+			SessionID: startMsg.SessionID,
+		})
+		if resp.IsErr() {
+			return false
+		}
+
+		got, ok := resp.UnwrapOr(nil).(*GetStateResponse)
+		if !ok {
+			return false
+		}
+
+		_, completed := got.State.(*Completed)
+
+		return completed
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.EqualValues(t, 2, completeSpendAttempts.Load())
 }

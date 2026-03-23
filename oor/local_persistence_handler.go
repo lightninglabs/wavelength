@@ -168,8 +168,13 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 	if h.CompleteSpend != nil {
 		err := h.CompleteSpend(ctx, msg.Outpoints)
 		if err != nil {
-			return nil, fmt.Errorf("complete spend via "+
-				"manager: %w", err)
+			wrappedErr := fmt.Errorf(
+				"complete spend via manager: %w", err,
+			)
+
+			return nil, NewRetryableOutboxError(
+				wrappedErr, defaultRetryDelay,
+			)
 		}
 
 		return []Event{&InputsMarkedSpentEvent{}}, nil
