@@ -92,6 +92,10 @@ type RoundsConfig struct {
 	// leaves per connector tree.
 	MaxConnectorsPerTree uint32 `mapstructure:"maxconnectorspertree"`
 
+	// ConnectorDustAmount is the amount assigned to each connector
+	// leaf output (satoshis).
+	ConnectorDustAmount int64 `mapstructure:"connectordustamount"`
+
 	// BoardingExitDelay is the minimum exit delay for boarding
 	// inputs (blocks).
 	BoardingExitDelay uint32 `mapstructure:"boardingexitdelay"`
@@ -161,6 +165,7 @@ func DefaultRoundsConfig() *RoundsConfig {
 		MaxVTXOsPerTree:               128,
 		TreeRadix:                     2,
 		MaxConnectorsPerTree:          32,
+		ConnectorDustAmount:           330,
 		BoardingExitDelay:             512,
 		BoardingExitDelaySafetyMargin: 48,
 		MinBoardingConfirmations:      1,
@@ -325,6 +330,14 @@ func (c *Config) Validate() error {
 	}
 	if c.RPC.ListenAddr == "" {
 		return fmt.Errorf("rpc listen address is required")
+	}
+	if c.Rounds == nil {
+		return fmt.Errorf("rounds config is required")
+	}
+	if c.Rounds.ConnectorDustAmount <= 0 {
+		return fmt.Errorf(
+			"rounds connector dust amount must be > 0",
+		)
 	}
 
 	// Validate TLS config: if a cert path is set, a key path is
