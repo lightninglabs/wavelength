@@ -15,6 +15,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightningnetwork/lnd/clock"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -138,7 +139,7 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	)
 	idxClient := indexer.New(
 		runtime.Unary(), signer, defaultIndexerProofServerID,
-		localMailboxID,
+		localMailboxID, fn.None[btclog.Logger](),
 	)
 
 	indexerClient := &IndexerTestClient{
