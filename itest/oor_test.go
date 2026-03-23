@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -401,6 +400,108 @@ func TestOORIntegrationChainedTransfer(t *testing.T) {
 		"leg2_session=%s amount=%d", send1Resp.SessionId,
 		send2Resp.SessionId, send2Amount)
 }
+
+// TestOORIntegrationResumeAcrossClientRestart verifies an OOR transfer
+// submitted before a sender daemon restart still converges after restart
+// through persisted daemon state and mailbox replay.
+func TestOORIntegrationResumeAcrossClientRestart(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
+
+	alice := h.StartClientDaemon("alice")
+	bob := h.StartClientDaemon("bob")
+	operatorInfo := getOperatorInfo(t, h)
+	aliceMailbox := h.ClientMailbox("alice")
+	aliceMailbox.PauseType("FinalizePackageRequest")
+	t.Cleanup(aliceMailbox.ClearPausedTypes)
+
+	waitForRegisteredClients(t, h, 2)
+
+	_, aliceLiveVTXO, aliceStartBalance := boardClientAndConfirmRound(
+		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
+	)
+
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
+	bobRecv, err := bob.RPCClient.NewOORReceiveScript(
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: "itest-oor-restart-bob",
+		},
+	)
+	require.NoError(t, err)
+
+	bobPkScript, err := hex.DecodeString(bobRecv.PkScriptHex)
+	require.NoError(t, err)
+
+	sendAmount := aliceLiveVTXO.AmountSat
+	sendResp, err := alice.RPCClient.SendOOR(
+		t.Context(), &daemonrpc.SendOORRequest{
+			Recipient: &daemonrpc.Output{
+				Destination: &daemonrpc.Output_PkScript{
+					PkScript: bobPkScript,
+				},
+				AmountSat: sendAmount,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "submitted", sendResp.Status)
+
+	waitCtx, cancel := context.WithTimeout(t.Context(), defaultTimeout)
+	defer cancel()
+
+	// The controlled mailbox holds FinalizePackageRequest at the daemon
+	// edge so the restart happens after the client has durably produced
+	// the finalize step, but before the operator can observe it.
+	require.NoError(t, aliceMailbox.WaitForPendingType(
+		waitCtx, "FinalizePackageRequest",
+	))
+	require.Equal(t, 1,
+		aliceMailbox.PendingTypeCount("FinalizePackageRequest"))
+
+	// Drop the pre-restart finalize request so the restarted daemon must
+	// reproduce it from durable state before the test can proceed.
+	aliceMailbox.DropAllPending()
+
+	oldRPCAddr := alice.RPCAddr
+	alice = h.RestartClientDaemon("alice")
+	t.Logf("restarted sender daemon after OOR submit: old_rpc=%s "+
+		"new_rpc=%s session_id=%s", oldRPCAddr, alice.RPCAddr,
+		sendResp.SessionId)
+
+	waitCtx, cancel = context.WithTimeout(t.Context(), defaultTimeout)
+	defer cancel()
+
+	require.NoError(t, aliceMailbox.WaitForPendingType(
+		waitCtx, "FinalizePackageRequest",
+	))
+	aliceMailbox.ResumeType("FinalizePackageRequest")
+	require.Eventually(t, func() bool {
+		return aliceMailbox.FlushAll() == nil
+	}, defaultTimeout, pollInterval,
+		"finalize request never flushed after client restart")
+
+	waitForExactVTXOBalance(t, bob.RPCClient, sendAmount)
+	waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
+	waitForVTXOStatusByOutpoint(
+		t, alice.RPCClient, aliceLiveVTXO.Outpoint,
+		daemonrpc.VTXOStatus_VTXO_STATUS_SPENT,
+	)
+	waitForVTXOBalanceBelow(
+		t, alice.RPCClient, aliceStartBalance.VtxoBalanceSat,
+	)
+}
+
 // TestOORIntegrationOfflineRecipientEventVisibility verifies authoritative
 // indexer recipient-event queries expose an incoming OOR transfer while the
 // recipient daemon is offline. Once the daemon-side reconciliation path is
