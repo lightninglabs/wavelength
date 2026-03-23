@@ -163,7 +163,7 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 
 	txHash := tx.TxHash()
 	b.logger(ctx).InfoS(ctx, "Broadcasting transaction via LND",
-		btclog.Hex("txid", txHash[:]),
+		slog.String("txid", txHash.String()),
 		slog.String("label", label))
 
 	err := b.broadcaster.PublishTransaction(ctx, tx, label)
@@ -172,7 +172,7 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	}
 
 	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
-		btclog.Hex("txid", txHash[:]))
+		slog.String("txid", txHash.String()))
 
 	return nil
 }
