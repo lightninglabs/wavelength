@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -90,6 +92,11 @@ type Config struct {
 	// writes logs to stdout.
 	LogWriter io.Writer
 
+	// MailboxEdgeFactory optionally wraps the mailbox transport edge used
+	// by the serverconn runtime. Test harnesses use this to intercept
+	// durable transport traffic without changing production config files.
+	MailboxEdgeFactory MailboxEdgeFactory
+
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
 
@@ -116,6 +123,12 @@ type Config struct {
 	// mainnet during development, since DefaultNetwork is "mainnet".
 	AllowMainnet bool `mapstructure:"allow-mainnet"`
 }
+
+// MailboxEdgeFactory constructs the mailbox edge client used by the
+// serverconn runtime from the underlying gRPC connection to the operator.
+type MailboxEdgeFactory func(
+	conn grpc.ClientConnInterface,
+) mailboxpb.MailboxServiceClient
 
 // LndConfig holds connection parameters for the backing lnd node.
 type LndConfig struct {
