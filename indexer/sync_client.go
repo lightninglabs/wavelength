@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
@@ -266,57 +265,4 @@ func (c *SyncClient) SyncOORRecipientEventsTaproot(ctx context.Context,
 	}, nil
 }
 
-// MemorySyncCursorStore is an in-memory SyncCursorStore
-// implementation.
-type MemorySyncCursorStore struct {
-	mu      sync.RWMutex
-	cursors map[string]uint64
-}
-
-// NewMemorySyncCursorStore creates a new in-memory sync cursor store.
-func NewMemorySyncCursorStore() *MemorySyncCursorStore {
-	return &MemorySyncCursorStore{
-		cursors: make(map[string]uint64),
-	}
-}
-
-// LoadCursor returns the stored cursor for (namespace, key).
-func (s *MemorySyncCursorStore) LoadCursor(_ context.Context,
-	namespace string, key string) (uint64, error) {
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	namespacedKey := s.namespacedKey(namespace, key)
-
-	return s.cursors[namespacedKey], nil
-}
-
-// SaveCursor stores cursor for (namespace, key) monotonically.
-func (s *MemorySyncCursorStore) SaveCursor(_ context.Context,
-	namespace string, key string, cursor uint64) error {
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	namespacedKey := s.namespacedKey(namespace, key)
-	old := s.cursors[namespacedKey]
-	if cursor < old {
-		return nil
-	}
-
-	s.cursors[namespacedKey] = cursor
-
-	return nil
-}
-
-// namespacedKey returns the canonical map key for
-// (namespace, key).
-func (s *MemorySyncCursorStore) namespacedKey(namespace string,
-	key string) string {
-
-	return namespace + "/" + key
-}
-
-var _ SyncCursorStore = (*MemorySyncCursorStore)(nil)
 var _ SyncBackend = (*Client)(nil)
