@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -32,8 +33,7 @@ type BoardingBackend struct {
 	chainKit lndclient.ChainKitClient
 
 	// Log is an optional logger for this backend. If None, the backend
-	// falls back to the package-level log registered under the LNDB
-	// subsystem.
+	// falls back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
 }
 
@@ -47,10 +47,9 @@ func NewBoardingBackend(walletKit lndclient.WalletKitClient,
 	}
 }
 
-// logger returns the configured logger, falling back to the package-level log
-// registered under the LNDB subsystem.
+// logger returns the configured logger, falling back to the context logger.
 func (l *BoardingBackend) logger(ctx context.Context) btclog.Logger {
-	return l.Log.UnwrapOr(log)
+	return l.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // DeriveNextKey derives the next key in the specified key family using LND's

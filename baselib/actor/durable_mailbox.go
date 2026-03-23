@@ -260,7 +260,7 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			)
 
 			if err != nil {
-				log.WarnS(ctx, "Failed to lease message from mailbox",
+				logger(ctx).WarnS(ctx, "Failed to lease message from mailbox",
 					err, "mailbox_id", m.cfg.MailboxID)
 
 				select {
@@ -294,7 +294,7 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			if err != nil {
 				// Decode error - nack with backoff, or
 				// dead-letter if max attempts exhausted.
-				log.WarnS(ctx, "Failed to decode message payload",
+				logger(ctx).WarnS(ctx, "Failed to decode message payload",
 					err,
 					"mailbox_id", m.cfg.MailboxID,
 					"message_id", leased.ID,
@@ -314,7 +314,7 @@ func (m *DurableMailbox[M, R]) Receive(ctx context.Context) iter.Seq[envelope[M,
 			if !ok {
 				// Type mismatch - nack with backoff, or
 				// dead-letter if max attempts exhausted.
-				log.WarnS(ctx, "Message type mismatch",
+				logger(ctx).WarnS(ctx, "Message type mismatch",
 					nil,
 					"mailbox_id", m.cfg.MailboxID,
 					"message_id", leased.ID,
@@ -394,7 +394,7 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(
 		if dlErr := m.cfg.Store.MoveToDeadLetter(
 			ctx, leased.ID, dlReason,
 		); dlErr != nil {
-			log.WarnS(ctx,
+			logger(ctx).WarnS(ctx,
 				"Failed to dead-letter poison message",
 				dlErr,
 				"mailbox_id", m.cfg.MailboxID,
@@ -406,7 +406,7 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(
 		if delErr := m.cfg.Store.DeleteMessage(
 			ctx, leased.ID,
 		); delErr != nil {
-			log.WarnS(ctx,
+			logger(ctx).WarnS(ctx,
 				"Failed to delete dead-lettered poison "+
 					"message",
 				delErr,
@@ -414,7 +414,7 @@ func (m *DurableMailbox[M, R]) handlePoisonMessage(
 				"message_id", leased.ID)
 		}
 
-		log.InfoS(ctx, "Poison message moved to dead letter queue",
+		logger(ctx).InfoS(ctx, "Poison message moved to dead letter queue",
 			"mailbox_id", m.cfg.MailboxID,
 			"message_id", leased.ID,
 			"reason", dlReason)

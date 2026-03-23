@@ -109,6 +109,6 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 		Envelope: envelope,
 	})
 	if err != nil {
-		log.WarnS(ctx, "Heartbeat send failed", err)
+		a.log.WarnS(ctx, "Heartbeat send failed", err)
 	}
 }

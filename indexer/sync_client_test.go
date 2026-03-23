@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -108,7 +110,7 @@ func TestSyncClientVTXOEventCursorPersistence(t *testing.T) {
 		},
 	}
 	syncClient, err := NewSyncClient(
-		backend, NewMemorySyncCursorStore(),
+		backend, NewMemorySyncCursorStore(), fn.None[btclog.Logger](),
 	)
 	require.NoError(t, err)
 
@@ -156,7 +158,7 @@ func TestSyncClientOORCursorPersistence(t *testing.T) {
 		},
 	}
 	syncClient, err := NewSyncClient(
-		backend, NewMemorySyncCursorStore(),
+		backend, NewMemorySyncCursorStore(), fn.None[btclog.Logger](),
 	)
 	require.NoError(t, err)
 
@@ -208,7 +210,7 @@ func TestSyncClientVTXONoAckDoesNotAdvanceCursor(t *testing.T) {
 		},
 	}
 	syncClient, err := NewSyncClient(
-		backend, NewMemorySyncCursorStore(),
+		backend, NewMemorySyncCursorStore(), fn.None[btclog.Logger](),
 	)
 	require.NoError(t, err)
 
@@ -240,7 +242,9 @@ func TestSyncClientVTXONoAckDoesNotAdvanceCursor(t *testing.T) {
 func TestNewSyncClientRejectsNilStore(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewSyncClient(&testSyncBackend{}, nil)
+	_, err := NewSyncClient(
+		&testSyncBackend{}, nil, fn.None[btclog.Logger](),
+	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cursor store")
 }
@@ -250,7 +254,9 @@ func TestNewSyncClientRejectsNilStore(t *testing.T) {
 func TestNewSyncClientRejectsNilBackend(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewSyncClient(nil, NewMemorySyncCursorStore())
+	_, err := NewSyncClient(
+		nil, NewMemorySyncCursorStore(), fn.None[btclog.Logger](),
+	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "backend")
 }

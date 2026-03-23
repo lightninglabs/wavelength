@@ -186,7 +186,7 @@ func NewActor[M Message, R any](cfg ActorConfig[M, R]) *Actor[M, R] {
 // exited before proceeding with resource cleanup.
 func (a *Actor[M, R]) Start() {
 	a.startOnce.Do(func() {
-		log.DebugS(a.ctx, "Starting actor", "actor_id", a.id)
+		logger(a.ctx).DebugS(a.ctx, "Starting actor", "actor_id", a.id)
 
 		if a.wg != nil {
 			a.wg.Add(1)
@@ -226,7 +226,7 @@ func (a *Actor[M, R]) process() {
 			cancel = func() {}
 		}
 
-		log.TraceS(processCtx, "Actor processing message",
+		logger(processCtx).TraceS(processCtx, "Actor processing message",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
 			"is_ask", env.promise != nil)
@@ -253,7 +253,7 @@ func (a *Actor[M, R]) process() {
 	for env := range a.mailbox.Drain() {
 		drainedCount++
 
-		log.TraceS(a.ctx, "Draining message from terminated actor",
+		logger(a.ctx).TraceS(a.ctx, "Draining message from terminated actor",
 			"actor_id", a.id,
 			"msg_type", env.message.MessageType(),
 			"has_dlo", a.dlo != nil)
@@ -281,12 +281,12 @@ func (a *Actor[M, R]) process() {
 		defer cancel()
 
 		if err := stoppable.OnStop(cleanupCtx); err != nil {
-			log.WarnS(a.ctx, "Actor cleanup error during shutdown",
+			logger(a.ctx).WarnS(a.ctx, "Actor cleanup error during shutdown",
 				err, "actor_id", a.id)
 		}
 	}
 
-	log.DebugS(a.ctx, "Actor terminated",
+	logger(a.ctx).DebugS(a.ctx, "Actor terminated",
 		"actor_id", a.id,
 		"drained_messages", drainedCount)
 }
@@ -318,7 +318,7 @@ type actorRefImpl[M Message, R any] struct {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
-	log.TraceS(ctx, "Sending Tell message",
+	logger(ctx).TraceS(ctx, "Sending Tell message",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
@@ -335,7 +335,7 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 	if !ok {
 		// Check if actor is terminated.
 		if ref.actor.ctx.Err() != nil {
-			log.DebugS(ctx, "Tell failed, routing to DLO",
+			logger(ctx).DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
@@ -346,7 +346,7 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 
 		// Check if caller's context was cancelled.
 		if ctx.Err() != nil {
-			log.TraceS(ctx, "Tell failed, caller cancelled",
+			logger(ctx).TraceS(ctx, "Tell failed, caller cancelled",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
@@ -366,7 +366,7 @@ func (ref *actorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 //
 //nolint:lll
 func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
-	log.TraceS(ctx, "Sending Ask message",
+	logger(ctx).TraceS(ctx, "Sending Ask message",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
@@ -378,7 +378,7 @@ func (ref *actorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
 	// ErrActorTerminated and return immediately. This is the primary guard
 	// against trying to send to a stopped actor.
 	if ref.actor.ctx.Err() != nil {
-		log.DebugS(ctx, "Ask failed, actor already terminated",
+		logger(ctx).DebugS(ctx, "Ask failed, actor already terminated",
 			"actor_id", ref.actor.id,
 			"msg_type", msg.MessageType())
 

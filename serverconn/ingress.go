@@ -33,7 +33,7 @@ func (a *ServerConnectionActor) ingressLoop(
 
 	defer a.wg.Done()
 
-	log.InfoS(ctx, "Ingress loop starting",
+	a.log.InfoS(ctx, "Ingress loop starting",
 		slog.String("mailbox_id", a.cfg.LocalMailboxID))
 
 	var failCount int
@@ -41,7 +41,7 @@ func (a *ServerConnectionActor) ingressLoop(
 	for {
 		select {
 		case <-ctx.Done():
-			log.InfoS(ctx, "Ingress loop exiting",
+			a.log.InfoS(ctx, "Ingress loop exiting",
 				slog.String("mailbox_id",
 					a.cfg.LocalMailboxID))
 
@@ -57,7 +57,7 @@ func (a *ServerConnectionActor) ingressLoop(
 			if err := a.ackRemote(
 				ctx, state.AckTarget,
 			); err != nil {
-				log.WarnS(ctx, "AckUpTo failed, retrying",
+				a.log.WarnS(ctx, "AckUpTo failed, retrying",
 					err,
 					slog.Uint64("ack_target",
 						state.AckTarget))
@@ -70,7 +70,7 @@ func (a *ServerConnectionActor) ingressLoop(
 			state.AdvanceAck()
 
 			if err := a.saveCheckpoint(ctx, state); err != nil {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Failed to save checkpoint after ack",
 					err)
 
@@ -91,7 +91,7 @@ func (a *ServerConnectionActor) ingressLoop(
 			ctx, state.PullCursor,
 		)
 		if err != nil {
-			log.WarnS(ctx, "Pull failed, retrying", err,
+			a.log.WarnS(ctx, "Pull failed, retrying", err,
 				slog.Uint64("cursor", state.PullCursor))
 
 			a.sleepBackoff(ctx, &failCount)
@@ -108,7 +108,7 @@ func (a *ServerConnectionActor) ingressLoop(
 			continue
 		}
 
-		log.DebugS(ctx, "Pulled envelopes",
+		a.log.DebugS(ctx, "Pulled envelopes",
 			slog.Int("count", len(envelopes)),
 			slog.Uint64("cursor", state.PullCursor),
 			slog.Uint64("next_cursor", nextCursor))
@@ -120,7 +120,7 @@ func (a *ServerConnectionActor) ingressLoop(
 			ctx, envelopes, nextCursor,
 		)
 		if dispatchErr != nil {
-			log.WarnS(ctx, "Dispatch failed", dispatchErr,
+			a.log.WarnS(ctx, "Dispatch failed", dispatchErr,
 				slog.Uint64("committed_to", committedCursor))
 
 			// Even on partial failure, advance state past the
@@ -140,7 +140,7 @@ func (a *ServerConnectionActor) ingressLoop(
 				if cpErr := a.saveCheckpoint(
 					ctx, state,
 				); cpErr != nil {
-					log.WarnS(ctx,
+					a.log.WarnS(ctx,
 						"Failed to save checkpoint "+
 							"after partial dispatch",
 						cpErr)
@@ -158,7 +158,7 @@ func (a *ServerConnectionActor) ingressLoop(
 		state.PullCursor = committedCursor
 
 		if err := a.saveCheckpoint(ctx, state); err != nil {
-			log.WarnS(ctx,
+			a.log.WarnS(ctx,
 				"Failed to save checkpoint after dispatch",
 				err)
 
@@ -223,7 +223,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 
 	for _, env := range envelopes {
 		if env.Rpc == nil {
-			log.WarnS(ctx, "Skipping envelope without RPC metadata",
+			a.log.WarnS(ctx, "Skipping envelope without RPC metadata",
 				nil,
 				slog.Uint64("event_seq", env.EventSeq))
 
@@ -239,7 +239,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 			// like any other ingress event.
 			corrID := CorrelationID(env.Rpc.CorrelationId)
 			if corrID == "" {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Response envelope missing "+
 						"correlation ID",
 					nil,
@@ -260,7 +260,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 			}
 			dispatcher, ok := a.cfg.Dispatchers[svcMethod]
 			if !ok {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"Failed to deliver response "+
 						"envelope",
 					nil,
@@ -299,7 +299,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 
 			dispatcher, ok := a.cfg.Dispatchers[key]
 			if !ok {
-				log.WarnS(ctx,
+				a.log.WarnS(ctx,
 					"No dispatcher for service method",
 					nil,
 					slog.String("service",
@@ -320,7 +320,7 @@ func (a *ServerConnectionActor) dispatchBatch(
 			}
 
 		default:
-			log.WarnS(ctx,
+			a.log.WarnS(ctx,
 				"Skipping envelope with unknown RPC kind",
 				nil,
 				slog.Int("kind", int(env.Rpc.Kind)),
@@ -391,7 +391,7 @@ func (a *ServerConnectionActor) loadCheckpoint(
 		return AckState{}, err
 	}
 
-	log.InfoS(ctx, "Loaded ack checkpoint",
+	a.log.InfoS(ctx, "Loaded ack checkpoint",
 		slog.String("actor_id", actorID),
 		slog.Uint64("pull_cursor", state.PullCursor),
 		slog.Uint64("dispatch_committed_to",

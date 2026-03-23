@@ -37,7 +37,7 @@ func NewReceiveSession(ctx context.Context, ark *psbt.Packet,
 		return nil, fmt.Errorf("session id must be provided")
 	}
 
-	log.InfoS(ctx, "Creating receive session",
+	logger(ctx).InfoS(ctx, "Creating receive session",
 		slog.String("session_id", sessionID.String()))
 
 	return newReceiveSessionWithState(
@@ -60,8 +60,10 @@ func newReceiveSessionWithState(ctx context.Context, sessionID SessionID,
 
 	env := &Environment{SessionID: sessionID}
 
+	baseLogger := logger(ctx)
+
 	fsmCfg := StateMachineCfg{
-		Logger: log.WithPrefix(sessionID.LogPrefix()),
+		Logger: baseLogger.WithPrefix(sessionID.LogPrefix()),
 		ErrorReporter: newContextErrorReporter(
 			ctx, sessionID.LogPrefix(),
 		),

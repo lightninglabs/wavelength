@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -135,11 +136,9 @@ func NewLndClientChainNotifier(
 	}
 }
 
-// logger returns the configured logger, falling back to the context logger
-// and then to the package-level lndClientLog registered under the LNDC
-// subsystem.
+// logger returns the configured logger, falling back to the context logger.
 func (n *LndClientChainNotifier) logger(ctx context.Context) btclog.Logger {
-	return n.cfg.Log.UnwrapOr(lndClientLog)
+	return n.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Start is a no-op for lndclient-backed notifiers since the connection is
@@ -361,8 +360,10 @@ func (c LNDBackendFromLndClientConfig) WithLogger(
 // remote lnd connection. The config must include LND; use WithLogger() to
 // inject a specific logger.
 func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
-	log.InfoS(context.TODO(),
-		"Creating LND backend from lndclient services")
+	cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
+		context.Background(),
+		"Creating LND backend from lndclient services",
+	)
 
 	// Use explicit struct initialization instead of type cast for safety -
 	// this ensures we don't silently miss fields if the types diverge.

@@ -89,9 +89,9 @@ type Wallet struct {
 // is responsible for managing the directory's lifecycle (creation
 // before calling New, cleanup after Stop if desired).
 func New(cfg Config) (*Wallet, error) {
-	// Unwrap the optional logger, falling back to the package-level
-	// logger which is set via the central logging registry.
-	walletLog := cfg.Log.UnwrapOr(log)
+	// Constructors run before a contextual logger is guaranteed, so default to
+	// a disabled logger when one was not explicitly provided.
+	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
 
 	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
 

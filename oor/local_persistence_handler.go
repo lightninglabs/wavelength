@@ -159,7 +159,7 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 		return nil, fmt.Errorf("outpoints must be provided")
 	}
 
-	log.InfoS(ctx, "Marking VTXO inputs as spent",
+	logger(ctx).InfoS(ctx, "Marking VTXO inputs as spent",
 		slog.Int("num_outpoints", len(msg.Outpoints)))
 
 	// When a SpendCompleter is configured, route completion through the
@@ -194,7 +194,7 @@ func (h *LocalPersistenceOutboxHandler) handleMarkInputsSpent(
 			return nil, err
 		}
 
-		log.DebugS(ctx, "Marked VTXO input spent",
+		logger(ctx).DebugS(ctx, "Marked VTXO input spent",
 			slog.String("outpoint", msg.Outpoints[i].String()))
 	}
 
@@ -313,7 +313,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 	ctx context.Context, msg *MaterializeIncomingVTXOsRequest,
 	notifyIncoming bool) ([]Event, error) {
 
-	log.InfoS(ctx, "Materializing incoming VTXOs",
+	logger(ctx).InfoS(ctx, "Materializing incoming VTXOs",
 		slog.String("session_id", msg.SessionID.String()),
 		slog.Int("num_recipients", len(msg.Recipients)))
 
@@ -377,7 +377,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 				"wallet-owned output %d", recipient.OutputIndex)
 		}
 
-		log.DebugS(ctx, "Resolved incoming metadata",
+		logger(ctx).DebugS(ctx, "Resolved incoming metadata",
 			slog.String("session_id", msg.SessionID.String()),
 			slog.Int("output_index", int(recipient.OutputIndex)),
 			slog.String("round_id", metadata.RoundID),
@@ -447,7 +447,7 @@ func (h *LocalPersistenceOutboxHandler) materializeIncoming(
 			"wallet-owned recipients")
 	}
 
-	log.InfoS(ctx, "Incoming VTXOs materialized",
+	logger(ctx).InfoS(ctx, "Incoming VTXOs materialized",
 		slog.String("session_id", msg.SessionID.String()),
 		slog.Int("owned_recipients", ownedRecipients),
 		slog.Int("materialized_vtxos", len(materializedVTXOs)))

@@ -10,8 +10,10 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/tlv"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -284,6 +286,7 @@ func TestRegisterReceiveScriptTaprootUsesShortLivedProof(t *testing.T) {
 	client := New(
 		rpcClient, &PrivKeySchnorrSigner{Key: privKey},
 		"test-server", "client:test",
+		fn.None[btclog.Logger](),
 	)
 
 	registrationExpiry := time.Now().Add(30 * 24 * time.Hour)

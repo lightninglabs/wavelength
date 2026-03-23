@@ -116,6 +116,8 @@ type Server struct {
 	cfg *Config
 
 	logManager *lndbuild.SubLoggerManager
+	loggers    SubLoggers
+	log        btclog.Logger
 
 	db            *db.SqliteStore
 	deliveryStore actor.DeliveryStore
@@ -197,6 +199,19 @@ func NewServer(cfg *Config) (*Server, error) {
 		cfg:         cfg,
 		walletReady: make(chan struct{}),
 	}, nil
+}
+
+func (s *Server) subLogger(tag string) btclog.Logger {
+	if s.loggers == nil {
+		return btclog.Disabled
+	}
+
+	logger, ok := s.loggers[tag]
+	if !ok || logger == nil {
+		return btclog.Disabled
+	}
+
+	return logger
 }
 
 // isWalletReady returns true if the wallet subsystem has been fully
@@ -299,10 +314,11 @@ func (s *Server) run(ctx context.Context,
 	logHandler := btclog.NewDefaultHandler(logWriter)
 	s.logManager = lndbuild.NewSubLoggerManager(logHandler)
 
-	// Register all package-level loggers with the manager. This
-	// replaces the default btclog.Disabled loggers so log output
-	// is captured from this point forward.
-	SetupLoggersWithShutdownFn(s.logManager, shutdownFn)
+	// Register all subsystem loggers with the manager so later instance
+	// wiring can attach explicit loggers without relying on package-
+	// level globals.
+	s.loggers = SetupLoggersWithShutdownFn(s.logManager, shutdownFn)
+	s.log = s.subLogger(Subsystem)
 
 	// Apply the configured debug level. A bare level like "info"
 	// sets all subsystems. A comma-separated list like
@@ -312,7 +328,7 @@ func (s *Server) run(ctx context.Context,
 		return fmt.Errorf("invalid debug level: %w", err)
 	}
 
-	log.InfoS(ctx, "Starting darepod",
+	s.log.InfoS(ctx, "Starting darepod",
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
 		slog.String("network", s.cfg.Network),
@@ -354,7 +370,7 @@ func (s *Server) run(ctx context.Context,
 	// -------------------------------------------------------
 	// 2. Connect to the ark operator's mailbox edge server.
 	// -------------------------------------------------------
-	log.InfoS(ctx, "Connecting to ark server",
+	s.log.InfoS(ctx, "Connecting to ark server",
 		"host", s.cfg.Server.Host)
 
 	serverConn, err := s.dialServer(ctx)
@@ -364,12 +380,15 @@ func (s *Server) run(ctx context.Context,
 	s.serverConn = serverConn
 	defer s.serverConn.Close()
 
-	log.InfoS(ctx, "Connected to ark server")
+	s.log.InfoS(ctx, "Connected to ark server")
 
 	// -------------------------------------------------------
 	// 3. Initialize the actor system.
 	// -------------------------------------------------------
-	s.actorSystem = actor.NewActorSystem()
+	s.actorSystem = actor.NewActorSystemWithConfig(actor.SystemConfig{
+		MailboxCapacity: actor.DefaultConfig().MailboxCapacity,
+		Log:             fn.Some(s.subLogger(actor.Subsystem)),
+	})
 	// Register cleanup from least dependent to most dependent so that the
 	// defer LIFO order tears down components from most dependent to least
 	// dependent: actor system -> chain backend -> DB.
@@ -397,7 +416,7 @@ func (s *Server) run(ctx context.Context,
 		}
 	}()
 
-	log.InfoS(ctx, "Actor system initialized")
+	s.log.InfoS(ctx, "Actor system initialized")
 
 	// Register the shared timeout actor. This provides wall-clock
 	// timer scheduling for any subsystem that needs deadlines.
@@ -425,7 +444,7 @@ func (s *Server) run(ctx context.Context,
 		chainsource.ChainSourceKey, chainActor,
 	)
 
-	log.InfoS(ctx, "Chain source actor registered")
+	s.log.InfoS(ctx, "Chain source actor registered")
 
 	// -------------------------------------------------------
 	// 5. Open the database and create the delivery store.
@@ -437,7 +456,8 @@ func (s *Server) run(ctx context.Context,
 	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
 	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 	s.vtxoStore = dbStore.NewVTXOStore(clk)
 
@@ -477,11 +497,11 @@ func (s *Server) run(ctx context.Context,
 	s.rpcAddrMu.Unlock()
 
 	go func() {
-		log.InfoS(ctx, "gRPC server listening",
+		s.log.InfoS(ctx, "gRPC server listening",
 			slog.String("addr", lis.Addr().String()))
 
 		if err := s.grpcServer.Serve(lis); err != nil {
-			log.ErrorS(ctx, "gRPC server error", err)
+			s.log.ErrorS(ctx, "gRPC server error", err)
 		}
 	}()
 	defer s.grpcServer.GracefulStop()
@@ -507,6 +527,7 @@ func (s *Server) run(ctx context.Context,
 	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
 		server: s,
 	}
+	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
 
 	s.runtime, err = serverconn.NewRuntime(connCfg)
 	if err != nil {
@@ -520,7 +541,7 @@ func (s *Server) run(ctx context.Context,
 	}
 	defer s.runtime.Stop()
 
-	log.InfoS(ctx, "Mailbox transport runtime started",
+	s.log.InfoS(ctx, "Mailbox transport runtime started",
 		slog.String("local_mailbox",
 			s.cfg.Server.LocalMailboxID),
 		slog.String("remote_mailbox",
@@ -560,27 +581,27 @@ func (s *Server) run(ctx context.Context,
 			if err := s.startWalletDependentActors(
 				ctx, chainSourceRef, timeoutRef,
 			); err != nil {
-				log.ErrorS(ctx,
+				s.log.ErrorS(ctx,
 					"Failed to start wallet actors",
 					err)
 			}
 		}()
 
-		log.InfoS(ctx, "Wallet not ready, waiting for "+
+		s.log.InfoS(ctx, "Wallet not ready, waiting for "+
 			"InitWallet or UnlockWallet RPC",
 			slog.Int("state", int(
 				s.walletState.Load(),
 			)))
 	}
 
-	log.InfoS(ctx, "Daemon ready")
+	s.log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
 	// 12. Block until shutdown.
 	// -------------------------------------------------------
 	<-ctx.Done()
 
-	log.InfoS(ctx, "Shutting down darepod")
+	s.log.InfoS(ctx, "Shutting down darepod")
 
 	return nil
 }
@@ -588,7 +609,7 @@ func (s *Server) run(ctx context.Context,
 // initLndBackend connects to the lnd node and populates the server's
 // lnd connection, chain params, and marks the wallet as ready.
 func (s *Server) initLndBackend(ctx context.Context) error {
-	log.InfoS(ctx, "Connecting to lnd",
+	s.log.InfoS(ctx, "Connecting to lnd",
 		"host", s.cfg.Lnd.Host)
 
 	lndServices, err := s.connectLnd(ctx)
@@ -600,7 +621,7 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 	// Use lnd's chain params as the authoritative source.
 	s.chainParams = lndServices.ChainParams
 
-	log.InfoS(ctx, "Connected to lnd",
+	s.log.InfoS(ctx, "Connected to lnd",
 		"alias", lndServices.NodeAlias,
 		"pubkey", lndServices.NodePubkey)
 
@@ -620,17 +641,17 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	// Check for a raw seed in the environment (dev/CI path).
 	seed, err := LoadSeedFromEnv()
 	if err != nil {
-		log.WarnS(ctx, "Invalid seed in environment variable",
+		s.log.WarnS(ctx, "Invalid seed in environment variable",
 			err)
 
 		return
 	}
 
 	if seed != nil {
-		log.InfoS(ctx, "Loaded seed from environment variable")
+		s.log.InfoS(ctx, "Loaded seed from environment variable")
 
 		if err := s.startLwwallet(ctx, *seed); err != nil {
-			log.ErrorS(ctx,
+			s.log.ErrorS(ctx,
 				"Failed to start lwwallet from env seed",
 				err)
 
@@ -642,7 +663,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	networkDir, err := s.cfg.NetworkDir()
 	if err != nil {
-		log.ErrorS(ctx, "Unable to resolve network directory",
+		s.log.ErrorS(ctx, "Unable to resolve network directory",
 			err)
 
 		return
@@ -650,7 +671,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 
 	// Check for an encrypted seed file on disk.
 	if !SeedFileExists(networkDir) {
-		log.InfoS(ctx, "No wallet seed found, awaiting "+
+		s.log.InfoS(ctx, "No wallet seed found, awaiting "+
 			"InitWallet RPC")
 
 		s.walletState.Store(int32(WalletStateNone))
@@ -669,7 +690,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 			s.cfg.Wallet.PasswordFile,
 		)
 		if err != nil {
-			log.WarnS(ctx,
+			s.log.WarnS(ctx,
 				"Failed to read wallet password file",
 				err)
 
@@ -680,7 +701,7 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	}
 
 	if !ok {
-		log.InfoS(ctx, "Encrypted seed found but no password "+
+		s.log.InfoS(ctx, "Encrypted seed found but no password "+
 			"available, awaiting UnlockWallet RPC")
 
 		return
@@ -690,23 +711,23 @@ func (s *Server) tryAutoUnlockLwwallet(ctx context.Context) {
 	seedPath := SeedFilePath(networkDir)
 	ciphertext, err := LoadEncryptedSeed(seedPath)
 	if err != nil {
-		log.ErrorS(ctx, "Failed to load encrypted seed", err)
+		s.log.ErrorS(ctx, "Failed to load encrypted seed", err)
 
 		return
 	}
 
 	decryptedSeed, err := DecryptSeed(ciphertext, password)
 	if err != nil {
-		log.ErrorS(ctx, "Failed to decrypt seed at startup",
+		s.log.ErrorS(ctx, "Failed to decrypt seed at startup",
 			err)
 
 		return
 	}
 
-	log.InfoS(ctx, "Auto-unlocking lwwallet from encrypted seed")
+	s.log.InfoS(ctx, "Auto-unlocking lwwallet from encrypted seed")
 
 	if err := s.startLwwallet(ctx, decryptedSeed); err != nil {
-		log.ErrorS(ctx, "Failed to start lwwallet", err)
+		s.log.ErrorS(ctx, "Failed to start lwwallet", err)
 
 		return
 	}
@@ -740,7 +761,7 @@ func (s *Server) startLwwallet(ctx context.Context,
 		PollInterval:   pollInterval,
 		RecoveryWindow: recoveryWindow,
 		DBDir:          networkDir,
-		Log:            fn.Some(log),
+		Log:            fn.Some(s.subLogger(lwwallet.Subsystem)),
 	})
 	if err != nil {
 		return fmt.Errorf("create lwwallet: %w", err)
@@ -759,7 +780,7 @@ func (s *Server) startLwwallet(ctx context.Context,
 		s.initRPCClients(ctx)
 	}
 
-	log.InfoS(ctx, "Lightweight wallet started")
+	s.log.InfoS(ctx, "Lightweight wallet started")
 
 	s.markWalletReady()
 
@@ -780,11 +801,28 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
-		s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
-			chainbackends.LNDBackendFromLndClientConfig{
+		notifier := chainbackends.NewLndClientChainNotifier(
+			chainbackends.LndClientChainNotifierConfig{
 				LND: &lndSvc.LndServices,
+				Log: fn.Some(
+					s.subLogger(
+						chainbackends.
+							LndClientSubsystem,
+					),
+				),
 			},
 		)
+		backend := chainbackends.NewLNDBackend(
+			notifier,
+			chainbackends.NewLndClientFeeEstimator(
+				lndSvc.WalletKit,
+			),
+			chainbackends.NewLndClientTxBroadcaster(
+				lndSvc.WalletKit,
+			),
+		)
+		backend.Log = fn.Some(s.subLogger(chainbackends.Subsystem))
+		s.chainBackend = backend
 
 	case WalletTypeLwwallet:
 		// If the lwwallet is already started (auto-unlock
@@ -799,9 +837,11 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		} else {
 			s.chainBackend = lwwallet.NewChainBackend(
 				lwwallet.NewEsploraClient(
-					s.cfg.Wallet.EsploraURL, log,
+					s.cfg.Wallet.EsploraURL,
+					s.subLogger(lwwallet.Subsystem),
 				),
-				s.cfg.Wallet.PollInterval, log,
+				s.cfg.Wallet.PollInterval,
+				s.subLogger(lwwallet.Subsystem),
 			)
 		}
 
@@ -818,7 +858,7 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 		}
 	}
 
-	log.InfoS(ctx, "Chain backend started",
+	s.log.InfoS(ctx, "Chain backend started",
 		"type", s.cfg.Wallet.Type)
 
 	return nil
@@ -875,7 +915,7 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 		return err
 	}
 
-	log.InfoS(ctx, "Wallet-dependent actors started")
+	s.log.InfoS(ctx, "Wallet-dependent actors started")
 
 	return nil
 }
@@ -1606,21 +1646,23 @@ func (s *Server) initDatabase(ctx context.Context) error {
 
 	sqliteCfg := db.DefaultSqliteConfig(networkDir)
 
-	s.db, err = db.NewSqliteStore(sqliteCfg, log)
+	s.db, err = db.NewSqliteStore(
+		sqliteCfg, s.subLogger(db.Subsystem),
+	)
 	if err != nil {
 		return fmt.Errorf("unable to open database: %w", err)
 	}
 
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
 		s.db.DB, s.db.Backend(), clock.NewDefaultClock(),
-		log,
+		s.subLogger(actor.Subsystem),
 	)
 	if err != nil {
 		return fmt.Errorf("unable to create delivery "+
 			"store: %w", err)
 	}
 
-	log.InfoS(ctx, "Database initialized",
+	s.log.InfoS(ctx, "Database initialized",
 		slog.String("path", sqliteCfg.DatabaseFileName))
 
 	return nil
@@ -1633,7 +1675,8 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	s.ark = arkrpc.NewArkServiceMailboxClient(s.runtime.Unary())
 
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 	packageStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
 
@@ -1655,7 +1698,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			},
 		)
 		if err != nil {
-			log.WarnS(ctx,
+			s.log.WarnS(ctx,
 				"Unable to derive identity key for indexer", err)
 
 			return
@@ -1680,7 +1723,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			Index:  0,
 		})
 		if err != nil {
-			log.WarnS(ctx,
+			s.log.WarnS(ctx,
 				"Unable to derive identity key for "+
 					"indexer", err)
 		} else {
@@ -1700,9 +1743,10 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		s.runtime.Unary(), signer,
 		indexerProofServerID,
 		s.cfg.Server.LocalMailboxID,
+		fn.Some(s.subLogger(indexer.Subsystem)),
 	)
 
-	log.InfoS(ctx, "RPC clients initialized")
+	s.log.InfoS(ctx, "RPC clients initialized")
 }
 
 // initWalletActor creates, registers, and starts the boarding wallet
@@ -1722,7 +1766,8 @@ func (s *Server) initWalletActor(ctx context.Context,
 	clk := clock.NewDefaultClock()
 
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 	boardingStore := dbStore.NewBoardingStore(s.chainParams, clk)
 
@@ -1731,9 +1776,11 @@ func (s *Server) initWalletActor(ctx context.Context,
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
-		boardingBackend = lndbackend.NewBoardingBackend(
+		backend := lndbackend.NewBoardingBackend(
 			lndSvc.WalletKit, lndSvc.ChainKit,
 		)
+		backend.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+		boardingBackend = backend
 
 	case WalletTypeLwwallet:
 		w := s.lwWallet.UnsafeFromSome()
@@ -1763,7 +1810,8 @@ func (s *Server) initWalletActor(ctx context.Context,
 
 	walletActor := wallet.NewArk(
 		boardingBackend, boardingStore, vtxoReader,
-		chainSourceRef, s.actorSystem, log,
+		chainSourceRef, s.actorSystem,
+		s.subLogger(wallet.Subsystem),
 	)
 	walletKey := actor.NewServiceKey[
 		wallet.WalletMsg, wallet.WalletResp,
@@ -1783,7 +1831,7 @@ func (s *Server) initWalletActor(ctx context.Context,
 		)
 	}
 
-	log.InfoS(ctx, "Wallet actor registered and started")
+	s.log.InfoS(ctx, "Wallet actor registered and started")
 
 	return walletRef, nil
 }
@@ -1813,9 +1861,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
-		clientWallet = lndbackend.NewClientWallet(
+		lndWallet := lndbackend.NewClientWallet(
 			lndSvc.Signer, lndSvc.WalletKit,
 		)
+		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+		clientWallet = lndWallet
 
 	case WalletTypeLwwallet:
 		clientWallet = s.lwWallet.UnsafeFromSome()
@@ -1824,7 +1874,8 @@ func (s *Server) initRoundActor(ctx context.Context,
 	clk := clock.NewDefaultClock()
 
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
 	s.roundStore = roundStore
@@ -1850,7 +1901,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 
 	roundCfg := &round.RoundClientConfig{
 		Name:           "round-client",
-		Logger:         log,
+		Logger:         s.subLogger(round.Subsystem),
 		Wallet:         clientWallet,
 		RoundStore:     roundStore,
 		VTXOStore:      roundStore,
@@ -1891,7 +1942,7 @@ func (s *Server) initRoundActor(ctx context.Context,
 			"actor: %w", err)
 	}
 
-	log.InfoS(ctx, "Round actor registered and started")
+	s.log.InfoS(ctx, "Round actor registered and started")
 
 	return roundActor, nil
 }
@@ -1909,9 +1960,11 @@ func (s *Server) initVTXOManager(ctx context.Context,
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
-		vtxoWallet = lndbackend.NewClientWallet(
+		lndWallet := lndbackend.NewClientWallet(
 			lndSvc.Signer, lndSvc.WalletKit,
 		)
+		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+		vtxoWallet = lndWallet
 
 	case WalletTypeLwwallet:
 		vtxoWallet = s.lwWallet.UnsafeFromSome()
@@ -1919,7 +1972,8 @@ func (s *Server) initVTXOManager(ctx context.Context,
 
 	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 	vtxoStore := dbStore.NewVTXOStore(clk)
 
@@ -1929,7 +1983,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		ChainSource: chainSourceRef,
 		ActorSystem: s.actorSystem,
 		ChainParams: s.chainParams,
-		Log:         fn.Some(log),
+		Log:         fn.Some(s.subLogger(vtxo.Subsystem)),
 		RoundActor:  round.NewServiceKey().Ref(s.actorSystem),
 	})
 
@@ -1949,7 +2003,7 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		return zero, fmt.Errorf("unable to start vtxo manager: %w", err)
 	}
 
-	log.InfoS(ctx, "VTXO manager registered and started")
+	s.log.InfoS(ctx, "VTXO manager registered and started")
 
 	return managerRef, nil
 }
@@ -1972,7 +2026,8 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
-		s.db.DB, s.db.Queries, s.db.Backend(), log,
+		s.db.DB, s.db.Queries, s.db.Backend(),
+		s.subLogger(db.Subsystem),
 	)
 
 	// Select the OOR signer based on wallet type. The
@@ -1982,9 +2037,11 @@ func (s *Server) initOORActor(ctx context.Context,
 	switch s.cfg.Wallet.Type {
 	case WalletTypeLnd:
 		lndSvc := s.lnd.UnsafeFromSome()
-		oorSigner = lndbackend.NewClientWallet(
+		lndWallet := lndbackend.NewClientWallet(
 			lndSvc.Signer, lndSvc.WalletKit,
 		)
+		lndWallet.Log = fn.Some(s.subLogger(lndbackend.Subsystem))
+		oorSigner = lndWallet
 
 	case WalletTypeLwwallet:
 		oorSigner = s.lwWallet.UnsafeFromSome()
@@ -2055,13 +2112,16 @@ func (s *Server) initOORActor(ctx context.Context,
 			_ = finalCheckpoints
 
 			return ResolveIncomingMetadataFromIndexer(
-				ctx, s.indexer, sessionID, recipient,
+				build.ContextWithLogger(
+					ctx, s.subLogger(Subsystem),
+				),
+				s.indexer, sessionID, recipient,
 			)
 		},
 	}
 
 	s.oorActor = oor.NewOORClientActor(oor.ClientActorCfg{
-		Log:           fn.Some(log),
+		Log:           fn.Some(s.subLogger(oor.Subsystem)),
 		OutboxHandler: outboxHandler,
 		ServerConn:    s.runtime.TellRef(),
 		PackageStore:  packageStore,
@@ -2084,7 +2144,7 @@ func (s *Server) initOORActor(ctx context.Context,
 		oorKey.Ref(s.actorSystem),
 	)
 
-	log.InfoS(ctx, "OOR client actor started")
+	s.log.InfoS(ctx, "OOR client actor started")
 
 	return nil
 }
@@ -2102,12 +2162,7 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 	// all concrete types that implement round.VTXOManagerMsg.
 	mapped, ok := msg.(vtxo.ManagerMsg)
 	if !ok {
-		log.ErrorS(context.TODO(),
-			"Unexpected VTXO manager msg type, dropping",
-			nil, slog.String("type",
-				fmt.Sprintf("%T", msg)))
-
-		return nil
+		panic(fmt.Sprintf("unexpected VTXO manager msg type: %T", msg))
 	}
 
 	return mapped

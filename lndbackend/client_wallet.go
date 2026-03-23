@@ -13,6 +13,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/lndclient"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
@@ -32,9 +33,8 @@ type ClientWallet struct {
 	signer    lndclient.SignerClient
 	walletKit lndclient.WalletKitClient
 
-	// Log is an optional logger for this wallet. If None, the wallet
-	// falls back to the package-level log registered under the LNDB
-	// subsystem.
+	// Log is an optional logger for this wallet. If None, the wallet falls
+	// back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
 }
 
@@ -51,10 +51,9 @@ func NewClientWallet(
 	}
 }
 
-// logger returns the configured logger, falling back to the package-level log
-// registered under the LNDB subsystem.
+// logger returns the configured logger, falling back to the context logger.
 func (c *ClientWallet) logger(ctx context.Context) btclog.Logger {
-	return c.Log.UnwrapOr(log)
+	return c.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // Compile-time check that ClientWallet satisfies the interface

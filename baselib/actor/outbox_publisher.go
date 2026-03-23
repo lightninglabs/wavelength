@@ -112,7 +112,7 @@ func NewOutboxPublisher(cfg OutboxPublisherConfig) *OutboxPublisher {
 // Start begins the background publishing loop.
 func (p *OutboxPublisher) Start() {
 	p.startOnce.Do(func() {
-		log.DebugS(p.ctx, "Starting outbox publisher",
+		logger(p.ctx).DebugS(p.ctx, "Starting outbox publisher",
 			"poll_interval", p.cfg.PollInterval,
 			"batch_size", p.cfg.BatchSize)
 
@@ -127,7 +127,7 @@ func (p *OutboxPublisher) Stop() {
 		p.cancel()
 		p.wg.Wait()
 
-		log.DebugS(context.Background(), "Outbox publisher stopped")
+		logger(p.ctx).DebugS(p.ctx, "Outbox publisher stopped")
 	})
 }
 
@@ -164,7 +164,7 @@ func (p *OutboxPublisher) publishBatch() {
 		},
 	)
 	if err != nil {
-		log.WarnS(p.ctx, "Failed to claim outbox batch", err)
+		logger(p.ctx).WarnS(p.ctx, "Failed to claim outbox batch", err)
 		return
 	}
 
@@ -172,7 +172,7 @@ func (p *OutboxPublisher) publishBatch() {
 		return
 	}
 
-	log.TraceS(p.ctx, "Processing outbox batch",
+	logger(p.ctx).TraceS(p.ctx, "Processing outbox batch",
 		"count", len(messages),
 		"claim_token", claimToken)
 
@@ -186,7 +186,7 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// Check if max delivery attempts exceeded. ClaimOutboxBatch already
 	// incremented DeliveryAttempts, so we check against the configured max.
 	if msg.DeliveryAttempts > p.cfg.MaxDeliveryAttempts {
-		log.WarnS(p.ctx, "Outbox message exceeded max delivery attempts",
+		logger(p.ctx).WarnS(p.ctx, "Outbox message exceeded max delivery attempts",
 			nil,
 			"message_id", msg.ID,
 			"target", msg.TargetActorID,
@@ -197,7 +197,7 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			p.ctx, msg.ID, msg.ClaimToken,
 		)
 		if dlErr != nil {
-			log.WarnS(p.ctx,
+			logger(p.ctx).WarnS(p.ctx,
 				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
 		}
@@ -208,7 +208,7 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// Decode the message payload.
 	decoded, err := p.cfg.Codec.Decode(msg.Payload)
 	if err != nil {
-		log.WarnS(p.ctx, "Failed to decode outbox message", err,
+		logger(p.ctx).WarnS(p.ctx, "Failed to decode outbox message", err,
 			"message_id", msg.ID,
 			"message_type", msg.MessageType)
 
@@ -217,7 +217,7 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 			p.ctx, msg.ID, msg.ClaimToken,
 		)
 		if dlErr != nil {
-			log.WarnS(p.ctx,
+			logger(p.ctx).WarnS(p.ctx,
 				"Failed to dead-letter outbox message",
 				dlErr, "message_id", msg.ID)
 		}
@@ -243,7 +243,7 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 	// Deliver the message. Tell now returns an error if the message could
 	// not be durably enqueued to the target's mailbox.
 	if err := ref.Tell(deliverCtx, decoded); err != nil {
-		log.WarnS(p.ctx, "Failed to deliver outbox message", err,
+		logger(p.ctx).WarnS(p.ctx, "Failed to deliver outbox message", err,
 			"message_id", msg.ID,
 			"target", msg.TargetActorID,
 			"attempts", msg.DeliveryAttempts)
@@ -259,11 +259,11 @@ func (p *OutboxPublisher) deliverMessage(msg OutboxMessage) {
 		p.ctx, msg.ID, msg.ClaimToken,
 	)
 	if completeErr != nil {
-		log.WarnS(p.ctx, "Failed to complete outbox message",
+		logger(p.ctx).WarnS(p.ctx, "Failed to complete outbox message",
 			completeErr, "message_id", msg.ID)
 	}
 
-	log.TraceS(p.ctx, "Delivered outbox message",
+	logger(p.ctx).TraceS(p.ctx, "Delivered outbox message",
 		"message_id", msg.ID,
 		"source", msg.SourceActorID,
 		"target", msg.TargetActorID,

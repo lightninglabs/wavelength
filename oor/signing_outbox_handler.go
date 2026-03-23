@@ -50,21 +50,21 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 			numInputs = len(msg.ArkPSBT.UnsignedTx.TxIn)
 		}
 
-		log.DebugS(ctx, "Ark signatures requested",
+		logger(ctx).DebugS(ctx, "Ark signatures requested",
 			slog.String("session_id", sessionID.String()),
 			slog.Int("num_inputs", numInputs))
 
 		return h.handleArkSignatures(msg)
 
 	case *RequestCheckpointSignatures:
-		log.DebugS(ctx, "Checkpoint signatures requested",
+		logger(ctx).DebugS(ctx, "Checkpoint signatures requested",
 			slog.String("session_id", sessionID.String()),
 			slog.Int("num_checkpoints", len(msg.CoSignedCheckpointPSBTs)))
 
 		return h.handleCheckpointSignatures(msg)
 
 	case *ScheduleRetryRequest:
-		log.InfoS(ctx, "Scheduling retry",
+		logger(ctx).InfoS(ctx, "Scheduling retry",
 			slog.String("session_id", sessionID.String()),
 			slog.String("reason", msg.Reason),
 			slog.Duration("after", msg.After))
@@ -74,9 +74,11 @@ func (h *SigningOutboxHandler) Handle(ctx context.Context,
 	case *IncomingTransferNotification:
 		// Informational notification for UI/logging. No FSM
 		// follow-up events are required.
-		log.InfoS(ctx, "Incoming transfer notification received",
+		logger(ctx).InfoS(
+			ctx, "Incoming transfer notification received",
 			slog.String("session_id", msg.SessionID.String()),
-			slog.Int("num_recipients", len(msg.Recipients)))
+			slog.Int("num_recipients", len(msg.Recipients)),
+		)
 
 		return nil, nil
 

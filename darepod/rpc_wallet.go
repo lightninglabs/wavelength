@@ -106,7 +106,7 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 			"unable to initialize wallet: %v", err)
 	}
 
-	log.InfoS(ctx, "Wallet seed encrypted and saved",
+	r.server.log.InfoS(ctx, "Wallet seed encrypted and saved",
 		"path", SeedFilePath(networkDir))
 
 	// Start the lwwallet with the derived seed.
@@ -173,7 +173,7 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 			"unable to unlock wallet: %v", err)
 	}
 
-	log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
+	r.server.log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
 
 	// Start the lwwallet with the decrypted seed.
 	if err := r.server.startLwwallet(ctx, seed); err != nil {

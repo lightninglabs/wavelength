@@ -168,8 +168,8 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 		cfg.ActorID = fmt.Sprintf("oor-client-%s", uuid.NewString())
 	}
 
-	logger := cfg.Log.UnwrapOr(log)
-	logger.InfoS(context.Background(), "Creating OOR client actor",
+	ctorLogger := cfg.Log.UnwrapOr(btclog.Disabled)
+	ctorLogger.InfoS(context.Background(), "Creating OOR client actor",
 		slog.String("actor_id", cfg.ActorID))
 
 	actorRef := &OORClientActor{cfg: cfg}
@@ -223,7 +223,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 
 	durable.Start()
 
-	logger.InfoS(context.Background(), "OOR durable actor started",
+	ctorLogger.InfoS(context.Background(), "OOR durable actor started",
 		slog.String("actor_id", cfg.ActorID))
 
 	// Register the durable actor's ref with the actor system so the
@@ -242,7 +242,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 			return actorRef
 		}
 
-		logger.InfoS(
+		ctorLogger.InfoS(
 			context.Background(),
 			"OOR actor registered with receptionist",
 			slog.String("actor_id", cfg.ActorID),
@@ -274,6 +274,10 @@ func (a *OORClientActor) Receive(ctx context.Context,
 		)
 	}
 
+	ctx = build.ContextWithLogger(
+		ctx, a.cfg.Log.UnwrapOr(build.LoggerFromContext(ctx)),
+	)
+
 	fut := a.ref.Ask(ctx, msg)
 
 	return fut.Await(ctx)
@@ -283,7 +287,7 @@ func (a *OORClientActor) Receive(ctx context.Context,
 //
 // Stop is safe to call multiple times.
 func (a *OORClientActor) Stop() {
-	a.cfg.Log.UnwrapOr(log).InfoS(
+	a.cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
 		context.Background(), "Stopping OOR client actor",
 		slog.String("actor_id", a.cfg.ActorID),
 	)
@@ -292,7 +296,7 @@ func (a *OORClientActor) Stop() {
 		a.durable.Stop()
 	}
 
-	a.cfg.Log.UnwrapOr(log).InfoS(
+	a.cfg.Log.UnwrapOr(btclog.Disabled).InfoS(
 		context.Background(), "OOR client actor stopped",
 		slog.String("actor_id", a.cfg.ActorID),
 	)

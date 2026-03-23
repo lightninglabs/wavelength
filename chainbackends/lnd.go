@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -44,8 +45,7 @@ type LNDBackend struct {
 	broadcaster TxBroadcaster
 
 	// Log is an optional logger for this backend. If None, the backend
-	// falls back to the package-level log registered under the CBKD
-	// subsystem.
+	// falls back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
 }
 
@@ -62,10 +62,9 @@ func NewLNDBackend(notifier chainntnfs.ChainNotifier,
 	}
 }
 
-// logger returns the configured logger, falling back to the package-level log
-// registered under the CBKD subsystem.
+// logger returns the configured logger, falling back to the context logger.
 func (b *LNDBackend) logger(ctx context.Context) btclog.Logger {
-	return b.Log.UnwrapOr(log)
+	return b.Log.UnwrapOr(build.LoggerFromContext(ctx))
 }
 
 // EstimateFee returns the estimated fee rate in satoshis per vbyte for the

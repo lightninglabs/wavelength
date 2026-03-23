@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
@@ -553,6 +554,8 @@ type ServerConnectionActor struct {
 	// cfg holds all dependencies and tuning knobs for the connector.
 	cfg ConnectorConfig
 
+	log btclog.Logger
+
 	// responseRegistry maps correlation IDs to unary RPC waiters and
 	// buffers early responses that arrive before a waiter is registered.
 	// This is in-memory only.
@@ -586,6 +589,7 @@ func NewServerConnectionActor(
 
 	return &ServerConnectionActor{
 		cfg: cfg,
+		log: cfg.Log.UnwrapOr(btclog.Disabled),
 		responseRegistry: mailboxconn.NewResponseRegistry(
 			cfg.ResponseWaiterTTL,
 		),
@@ -630,7 +634,7 @@ func (a *ServerConnectionActor) handleSendClientEvent(ctx context.Context,
 
 	protoMsg, err := req.Message.ToProto().Unpack()
 	if err != nil {
-		log.WarnS(ctx, "Failed to convert to proto", err)
+		a.log.WarnS(ctx, "Failed to convert to proto", err)
 
 		return fn.Err[ServerConnResp](fmt.Errorf(
 			"convert to proto: %w", err,

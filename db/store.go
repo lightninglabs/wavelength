@@ -88,7 +88,8 @@ type Config struct {
 	Postgres *PostgresConfig `group:"postgres" namespace:"postgres"`
 
 	// Log is an optional logger for the database store. When None, the
-	// store falls back to the package-level logger set via UseLogger.
+	// store falls back to btclog.Disabled unless the caller threads a
+	// logger through explicit constructor parameters.
 	Log fn.Option[btclog.Logger]
 }
 

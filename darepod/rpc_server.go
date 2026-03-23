@@ -72,7 +72,7 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			_, height, err :=
 				lndSvc.ChainKit.GetBestBlock(ctx)
 			if err != nil {
-				log.WarnS(ctx,
+				r.server.log.WarnS(ctx,
 					"Unable to fetch block height",
 					err)
 			} else {
@@ -96,7 +96,7 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 				},
 			)
 			if err != nil {
-				log.WarnS(ctx,
+				r.server.log.WarnS(ctx,
 					"Unable to derive identity key",
 					err)
 			} else {
@@ -113,7 +113,7 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 						ctx,
 					)
 				if err != nil {
-					log.WarnS(ctx,
+					r.server.log.WarnS(ctx,
 						"Unable to fetch block "+
 							"height", err)
 				} else {
@@ -161,7 +161,7 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 
 		balResp, err := result.Unpack()
 		if err != nil {
-			log.WarnS(ctx,
+			r.server.log.WarnS(ctx,
 				"Unable to fetch boarding balance",
 				err)
 		} else {
@@ -181,7 +181,7 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 			ctx,
 		)
 		if err != nil {
-			log.WarnS(ctx,
+			r.server.log.WarnS(ctx,
 				"Unable to fetch VTXO balance", err)
 		} else {
 			resp.VtxoBalanceSat = int64(
@@ -498,7 +498,7 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 	// Log any per-outpoint errors but don't fail the overall
 	// request.
 	for op, opErr := range resp.Errors {
-		log.WarnS(ctx, "VTXO refresh error", opErr,
+		r.server.log.WarnS(ctx, "VTXO refresh error", opErr,
 			"outpoint", op.String())
 	}
 
@@ -531,7 +531,7 @@ func (r *RPCServer) RefreshVTXOs(ctx context.Context,
 		}
 	}
 
-	log.InfoS(ctx, "VTXOs queued for refresh",
+	r.server.log.InfoS(ctx, "VTXOs queued for refresh",
 		slog.Int("queued_count", len(queued)),
 		slog.Int("error_count", len(resp.Errors)))
 
@@ -587,7 +587,7 @@ func (r *RPCServer) Board(ctx context.Context,
 		case strings.Contains(errStr, "no confirmed boarding"),
 			strings.Contains(errStr, "no inputs to register"):
 
-			log.InfoS(ctx,
+			r.server.log.InfoS(ctx,
 				"Board skipped: no boarding UTXOs")
 
 			return &daemonrpc.BoardResponse{
@@ -611,7 +611,7 @@ func (r *RPCServer) Board(ctx context.Context,
 			"unexpected board response type: %T", resp)
 	}
 
-	log.InfoS(ctx, "Board request accepted",
+	r.server.log.InfoS(ctx, "Board request accepted",
 		btclog.Fmt("boarding_balance", "%v",
 			boardResp.BoardingBalance),
 		btclog.Fmt("vtxo_amount", "%v",
@@ -783,7 +783,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		if unlockErr := r.unlockVTXOs(
 			ctx, locked.SelectedVTXOs,
 		); unlockErr != nil {
-			log.ErrorS(
+			r.server.log.ErrorS(
 				ctx, "Unable to unlock VTXOs",
 				unlockErr,
 			)
@@ -822,7 +822,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 		if unlockErr := r.unlockVTXOs(
 			ctx, locked.SelectedVTXOs,
 		); unlockErr != nil {
-			log.ErrorS(
+			r.server.log.ErrorS(
 				ctx, "Unable to unlock VTXOs",
 				unlockErr,
 			)
@@ -838,7 +838,7 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"unexpected response type: %T", oorResp)
 	}
 
-	log.InfoS(ctx, "OOR transfer submitted",
+	r.server.log.InfoS(ctx, "OOR transfer submitted",
 		slog.String("session_id", resp.SessionID.String()),
 		slog.Int64("amount_sat", req.Recipient.AmountSat))
 
@@ -1222,7 +1222,7 @@ func (r *RPCServer) WatchRounds(
 
 		rounds, err := r.queryRoundStates(ctx)
 		if err != nil {
-			log.WarnS(ctx, "WatchRounds poll failed", err)
+			r.server.log.WarnS(ctx, "WatchRounds poll failed", err)
 
 			continue
 		}
