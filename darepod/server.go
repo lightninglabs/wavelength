@@ -1067,6 +1067,10 @@ func (s *Server) dialServer(ctx context.Context) (
 // connection. The runtime uses this to send and pull envelopes through the
 // operator's mailbox edge service.
 func (s *Server) newMailboxEdge() mailboxpb.MailboxServiceClient {
+	if s.cfg.MailboxEdgeFactory != nil {
+		return s.cfg.MailboxEdgeFactory(s.serverConn)
+	}
+
 	return mailboxpb.NewMailboxServiceClient(s.serverConn)
 }
 
