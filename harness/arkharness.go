@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
+	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -61,6 +62,9 @@ type ClientDaemonSet map[ClientDaemonName]*ClientDaemonHarness
 // ClientLogWriterFactory returns the stdout sink to use for a named client
 // daemon's logs.
 type ClientLogWriterFactory func(name string) io.Writer
+
+type mailboxEdgeFactory = clientdarepod.MailboxEdgeFactory
+type mailboxClient = mailboxpb.MailboxServiceClient
 
 // ArkHarnessOptions configures the ArkHarness behavior.
 type ArkHarnessOptions struct {
@@ -143,6 +147,11 @@ type ArkHarness struct {
 	// clientDaemonsMu guards clientDaemons for concurrent test helper
 	// access.
 	clientDaemonsMu sync.Mutex
+
+	// clientMailboxEdges keeps per-daemon mailbox wrappers so tests can
+	// pause selected outbound durable transport messages across daemon
+	// restarts.
+	clientMailboxEdges map[ClientDaemonName]*ControlledMailboxClient
 }
 
 // NewArkHarness creates a new ArkHarness instance from the given options.
@@ -184,6 +193,9 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 		operatorLogWriter:      operatorLogWriter,
 		clientLogWriterFactory: clientLogWriterFactory,
 		clientDaemons:          make(ClientDaemonSet),
+		clientMailboxEdges: make(
+			map[ClientDaemonName]*ControlledMailboxClient,
+		),
 	}
 }
 
@@ -503,6 +515,21 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	return daemon
 }
 
+// ClientMailbox returns the controlled mailbox wrapper for a started client
+// daemon so integration tests can pause specific outbound transport messages.
+func (h *ArkHarness) ClientMailbox(name string) *ControlledMailboxClient {
+	h.T.Helper()
+
+	h.clientDaemonsMu.Lock()
+	defer h.clientDaemonsMu.Unlock()
+
+	edge, ok := h.clientMailboxEdges[ClientDaemonName(name)]
+	if !ok {
+		h.T.Fatalf("client mailbox edge %q not found", name)
+	}
+
+	return edge
+}
 func (h *ArkHarness) launchClientDaemon(name string,
 	lnd *client_harness.LndInstance, dataDir, localMailboxID,
 	remoteMailboxID string) *ClientDaemonHarness {
@@ -551,6 +578,9 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.RemoteMailboxID = remoteMailboxID
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 
+	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
+	cfg.MailboxEdgeFactory = newEdgeFactory(mailboxEdge)
+
 	require.NoError(h.T, cfg.Validate())
 
 	server, err := clientdarepod.NewServer(cfg)
@@ -592,6 +622,30 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	daemon.ensureWalletReady(h.clientDaemonWalletType)
 
 	return daemon
+}
+
+func newEdgeFactory(edge *ControlledMailboxClient) mailboxEdgeFactory {
+	return func(conn grpc.ClientConnInterface) mailboxClient {
+		edge.SetInner(mailboxpb.NewMailboxServiceClient(conn))
+
+		return edge
+	}
+}
+
+func (h *ArkHarness) clientMailboxEdge(
+	name ClientDaemonName) *ControlledMailboxClient {
+
+	h.clientDaemonsMu.Lock()
+	defer h.clientDaemonsMu.Unlock()
+
+	if edge, ok := h.clientMailboxEdges[name]; ok {
+		return edge
+	}
+
+	edge := NewControlledMailboxClient()
+	h.clientMailboxEdges[name] = edge
+
+	return edge
 }
 
 // GetClientDaemon returns a previously started client daemon by name.
