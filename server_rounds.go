@@ -233,10 +233,13 @@ func (s *Server) stopRoundsSubsystem(ctx context.Context) {
 // ConnectorAddress) are left at their zero values.
 func roundsTermsFromConfig(rc *RoundsConfig) *batch.Terms {
 	return &batch.Terms{
-		SweepDelay:                    rc.SweepDelay,
-		MaxVTXOsPerTree:               rc.MaxVTXOsPerTree,
-		TreeRadix:                     rc.TreeRadix,
-		MaxConnectorsPerTree:          rc.MaxConnectorsPerTree,
+		SweepDelay:           rc.SweepDelay,
+		MaxVTXOsPerTree:      rc.MaxVTXOsPerTree,
+		TreeRadix:            rc.TreeRadix,
+		MaxConnectorsPerTree: rc.MaxConnectorsPerTree,
+		ConnectorDustAmount: btcutil.Amount(
+			rc.ConnectorDustAmount,
+		),
 		BoardingExitDelay:             rc.BoardingExitDelay,
 		VTXOExitDelay:                 rc.VTXOExitDelay,
 		RegistrationTimeout:           rc.RegistrationTimeout,

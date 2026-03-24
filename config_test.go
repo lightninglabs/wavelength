@@ -82,6 +82,20 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "rpc config is required",
 		},
 		{
+			name: "nil rounds config",
+			modify: func(c *Config) {
+				c.Rounds = nil
+			},
+			wantErr: "rounds config is required",
+		},
+		{
+			name: "zero connector dust amount",
+			modify: func(c *Config) {
+				c.Rounds.ConnectorDustAmount = 0
+			},
+			wantErr: "rounds connector dust amount must be > 0",
+		},
+		{
 			name: "empty rpc listen",
 			modify: func(c *Config) {
 				c.RPC.ListenAddr = ""

@@ -141,6 +141,10 @@ func newRootCmd() *cobra.Command {
 		rc.MaxConnectorsPerTree,
 		"max connector leaves per tree",
 	)
+	f.Int64("rounds.connectordustamount",
+		rc.ConnectorDustAmount,
+		"connector dust amount per leaf (satoshis)",
+	)
 	f.Uint32("rounds.boardingexitdelay",
 		rc.BoardingExitDelay,
 		"min exit delay for boarding inputs (blocks)",
