@@ -1068,6 +1068,9 @@ func (h *Harness) startBitcoind() {
 		// Match the lower fee estimates we see from electrs in tests so
 		// commitment packages targeting ~0.5 sat/vB still pass policy.
 		"-minrelaytxfee=0.00000500",
+		// Keep the miner inclusion floor aligned with relay policy so
+		// low-fee mempool transactions are still mined on regtest.
+		"-blockmintxfee=0.00000500",
 		fmt.Sprintf("-rpcuser=%s", bitcoindRPCUser),
 		fmt.Sprintf("-rpcpassword=%s", bitcoindRPCPass),
 		"-rpcallowip=0.0.0.0/0",
