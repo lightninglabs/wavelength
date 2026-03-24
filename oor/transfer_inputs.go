@@ -54,7 +54,7 @@ func (i *TransferInput) Validate() error {
 	case i.VTXO.TapScript == nil:
 		return fmt.Errorf("vtxo tapscript must be provided")
 
-	case i.VTXO.ClientKey.PubKey == nil:
+	case i.VTXO.OwnerKey.PubKey == nil:
 		return fmt.Errorf("vtxo client key must be provided")
 
 	case len(i.OwnerLeafScript) == 0:

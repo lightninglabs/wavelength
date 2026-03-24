@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -426,6 +427,7 @@ func TestRefreshReservesBeforeRoundRegistration(t *testing.T) {
 			Amount:   50000,
 			PkScript: []byte{0x51, 0x20, 0x01},
 			Expiry:   100,
+			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 
@@ -461,6 +463,7 @@ func TestRefreshReleasesOnRoundRejection(t *testing.T) {
 			Amount:   50000,
 			PkScript: []byte{0x51, 0x20, 0x01},
 			Expiry:   100,
+			OwnerKey: keychain.KeyDescriptor{},
 		},
 	}
 

@@ -32,7 +32,7 @@ func TestClientVTXOToDescriptorChainDepthZero(t *testing.T) {
 		},
 		Amount:   btcutil.Amount(50000),
 		PkScript: []byte{0x51, 0x20},
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: clientKey.PubKey(),
 		},
 		OperatorKey: operatorKey.PubKey(),

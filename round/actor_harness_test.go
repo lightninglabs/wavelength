@@ -588,6 +588,17 @@ func newActorTestHarness(t *testing.T) *actorTestHarness {
 		PubKey: identifierPrivKey.PubKey(),
 	}, nil)
 
+	// The registration transition derives MuSig2 signing keys.
+	walletMock.On(
+		"DeriveNextKey", mock.Anything,
+		keychain.KeyFamilyMultiSig,
+	).Return(&keychain.KeyDescriptor{
+		PubKey: identifierPrivKey.PubKey(),
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamilyMultiSig,
+		},
+	}, nil)
+
 	operatorTerms := &types.OperatorTerms{
 		PubKey:            operatorPubKey,
 		BoardingExitDelay: 144,
@@ -822,13 +833,13 @@ func (h *actorTestHarness) newTestBoardingIntentWithSuffix(
 	}
 }
 
-// newKeyDescriptor creates a keychain.KeyDescriptor using the harness's client
-// key, useful for creating test ClientVTXO structs.
-func (h *actorTestHarness) newKeyDescriptor() keychain.KeyDescriptor {
+// newOwnerKeyDescriptor creates a VTXO owner key descriptor using the
+// dedicated owner key family.
+func (h *actorTestHarness) newOwnerKeyDescriptor() keychain.KeyDescriptor {
 	return keychain.KeyDescriptor{
 		PubKey: h.clientPubKey,
 		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: types.VTXOOwnerKeyFamily,
 			Index:  0,
 		},
 	}
@@ -908,19 +919,20 @@ func (h *actorTestHarness) serverMessages() []serverconn.ServerConnMsg {
 func (h *actorTestHarness) sendVTXORequests(amounts ...btcutil.Amount) {
 	h.t.Helper()
 
-	// Setup mock to return a key descriptor for each DeriveNextKey call.
+	// Setup mock to return an owner key descriptor for each VTXO.
+	// Signing keys are derived later at registration time by the FSM.
 	for i := range amounts {
-		keyDesc := &keychain.KeyDescriptor{
+		ownerKeyDesc := &keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyMultiSig,
+				Family: types.VTXOOwnerKeyFamily,
 				Index:  uint32(i),
 			},
 		}
 		h.wallet.On(
 			"DeriveNextKey", mock.Anything,
-			keychain.KeyFamilyMultiSig,
-		).Return(keyDesc, nil).Once()
+			types.VTXOOwnerKeyFamily,
+		).Return(ownerKeyDesc, nil).Once()
 	}
 
 	msg := &RegisterVTXORequestsRequest{Amounts: amounts}

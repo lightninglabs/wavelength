@@ -31,9 +31,9 @@ func TestNewTree(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("vtxo_script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("vtxo_script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -68,9 +68,9 @@ func TestNewTree(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -104,9 +104,9 @@ func TestNewTree(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -139,9 +139,9 @@ func TestNewTree(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -160,9 +160,9 @@ func TestNewTree(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -196,9 +196,9 @@ func TestNewTree(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -223,9 +223,9 @@ func TestTreeVerify(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -252,9 +252,9 @@ func TestTreeVerify(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -295,14 +295,14 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script1"),
-				Amount:      1000,
-				CoSignerKey: key1,
+				PkScript:   []byte("script1"),
+				Amount:     1000,
+				SigningKey: key1,
 			},
 			{
-				PkScript:    []byte("script2"),
-				Amount:      2000,
-				CoSignerKey: key2,
+				PkScript:   []byte("script2"),
+				Amount:     2000,
+				SigningKey: key2,
 			},
 		}
 
@@ -343,9 +343,9 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -370,19 +370,19 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script1"),
-				Amount:      1000,
-				CoSignerKey: key1,
+				PkScript:   []byte("script1"),
+				Amount:     1000,
+				SigningKey: key1,
 			},
 			{
-				PkScript:    []byte("script2"),
-				Amount:      2000,
-				CoSignerKey: key2,
+				PkScript:   []byte("script2"),
+				Amount:     2000,
+				SigningKey: key2,
 			},
 			{
-				PkScript:    []byte("script3"),
-				Amount:      3000,
-				CoSignerKey: key3,
+				PkScript:   []byte("script3"),
+				Amount:     3000,
+				SigningKey: key3,
 			},
 		}
 
@@ -433,9 +433,9 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -457,9 +457,9 @@ func TestTreeExtractPathForCoSigners(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -489,9 +489,9 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000 * (i + 1)),
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000 * (i + 1)),
+				SigningKey: key,
 			}
 		}
 
@@ -518,9 +518,9 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -543,9 +543,9 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -570,9 +570,9 @@ func TestTreeExtractPathForIndices(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      btcutil.Amount(1000 * (i + 1)),
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     btcutil.Amount(1000 * (i + 1)),
+				SigningKey: key,
 			}
 		}
 
@@ -603,9 +603,9 @@ func TestVerifyVTXOPath(t *testing.T) {
 		vtxoScript := []byte("vtxo_script_1234")
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    vtxoScript,
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   vtxoScript,
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -627,9 +627,9 @@ func TestVerifyVTXOPath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("actual_script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("actual_script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -653,9 +653,9 @@ func TestVerifyVTXOPath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -678,9 +678,9 @@ func TestVerifyVTXOPath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -703,9 +703,9 @@ func TestVerifyVTXOPath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -730,14 +730,14 @@ func TestVerifyVTXOPath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script1"),
-				Amount:      1000,
-				CoSignerKey: key1,
+				PkScript:   []byte("script1"),
+				Amount:     1000,
+				SigningKey: key1,
 			},
 			{
-				PkScript:    []byte("script2"),
-				Amount:      2000,
-				CoSignerKey: key2,
+				PkScript:   []byte("script2"),
+				Amount:     2000,
+				SigningKey: key2,
 			},
 		}
 
@@ -767,9 +767,9 @@ func TestSubmitTreeSigs(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -809,9 +809,9 @@ func TestSubmitTreeSigs(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -835,9 +835,9 @@ func TestSubmitTreeSigs(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -869,9 +869,9 @@ func TestTreeMetrics(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -895,9 +895,9 @@ func TestTreeMetrics(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -922,9 +922,9 @@ func TestTreeMetrics(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -960,9 +960,9 @@ func TestTreePrettyPrint(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1008,9 +1008,9 @@ func TestTreeExtractTxids(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1038,9 +1038,9 @@ func TestTreeExtractTxids(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -1077,9 +1077,9 @@ func TestTreeExtractTxids(t *testing.T) {
 		for i := range leaves {
 			_, key := createTestKey(t)
 			leaves[i] = LeafDescriptor{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: key,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: key,
 			}
 		}
 
@@ -1125,9 +1125,9 @@ func TestValidatePath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1138,9 +1138,9 @@ func TestValidatePath(t *testing.T) {
 		require.NoError(t, err)
 
 		expectedLeaf := LeafDescriptor{
-			PkScript:    []byte("script"),
-			Amount:      1000,
-			CoSignerKey: ownerKey,
+			PkScript:   []byte("script"),
+			Amount:     1000,
+			SigningKey: ownerKey,
 		}
 		_, err = tree.ValidatePath(nil, expectedLeaf, operatorKey)
 		require.Error(t, err)
@@ -1156,9 +1156,9 @@ func TestValidatePath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    vtxoScript,
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   vtxoScript,
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1170,9 +1170,9 @@ func TestValidatePath(t *testing.T) {
 		require.NoError(t, err)
 
 		expectedLeaf := LeafDescriptor{
-			PkScript:    vtxoScript,
-			Amount:      1000,
-			CoSignerKey: ownerKey,
+			PkScript:   vtxoScript,
+			Amount:     1000,
+			SigningKey: ownerKey,
 		}
 		clientTree, err := tree.ValidatePath(
 			ownerKey, expectedLeaf, operatorKey,
@@ -1194,9 +1194,9 @@ func TestValidatePath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    vtxoScript,
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   vtxoScript,
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1209,9 +1209,9 @@ func TestValidatePath(t *testing.T) {
 
 		// Use wrong amount to trigger validation error.
 		expectedLeaf := LeafDescriptor{
-			PkScript:    vtxoScript,
-			Amount:      2000,
-			CoSignerKey: ownerKey,
+			PkScript:   vtxoScript,
+			Amount:     2000,
+			SigningKey: ownerKey,
 		}
 		_, err = tree.ValidatePath(ownerKey, expectedLeaf, operatorKey)
 		require.Error(t, err)
@@ -1228,9 +1228,9 @@ func TestValidatePath(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    vtxoScript,
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   vtxoScript,
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1242,9 +1242,9 @@ func TestValidatePath(t *testing.T) {
 		require.NoError(t, err)
 
 		expectedLeaf := LeafDescriptor{
-			PkScript:    vtxoScript,
-			Amount:      1000,
-			CoSignerKey: ownerKey,
+			PkScript:   vtxoScript,
+			Amount:     1000,
+			SigningKey: ownerKey,
 		}
 
 		// Use wrong operator key to trigger validation error.
@@ -1280,9 +1280,9 @@ func TestValidateAndSubmitSignatures(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 
@@ -1306,9 +1306,9 @@ func TestValidateAndSubmitSignatures(t *testing.T) {
 
 		leaves := []LeafDescriptor{
 			{
-				PkScript:    []byte("script"),
-				Amount:      1000,
-				CoSignerKey: ownerKey,
+				PkScript:   []byte("script"),
+				Amount:     1000,
+				SigningKey: ownerKey,
 			},
 		}
 

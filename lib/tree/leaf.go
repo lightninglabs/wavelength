@@ -16,7 +16,7 @@ type LeafDescriptor struct {
 	// Amount is the value of the leaf output in satoshis.
 	Amount btcutil.Amount
 
-	// CoSignerKey is the public key of the leaf owner who must participate
-	// in signing this leaf's transaction along with the operator.
-	CoSignerKey *btcec.PublicKey
+	// SigningKey is the client key that must participate in signing this
+	// leaf's transaction along with the operator during round tree signing.
+	SigningKey *btcec.PublicKey
 }

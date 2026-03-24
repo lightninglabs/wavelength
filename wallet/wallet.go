@@ -768,7 +768,8 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 		}
 
 		// Each refresh produces a forfeit of the old VTXO and a
-		// request for a new VTXO with the same parameters.
+		// request for a new VTXO with the same parameters. The
+		// round actor derives the signing key at registration.
 		op := vtxo.Outpoint
 		forfeits = append(forfeits, types.ForfeitRequest{
 			VTXOOutpoint: &op,
@@ -778,9 +779,9 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			Amount:      vtxo.Amount,
 			PkScript:    vtxo.PkScript,
 			Expiry:      vtxo.Expiry,
-			ClientKey:   vtxo.ClientKey.PubKey,
+			OwnerKey:    vtxo.OwnerKey,
+			IsOwner:     true,
 			OperatorKey: vtxo.OperatorKey,
-			SigningKey:  vtxo.ClientKey,
 		})
 	}
 

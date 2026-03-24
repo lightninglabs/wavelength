@@ -35,8 +35,9 @@ type JoinRoundRequest struct {
 	// request so the server can register them in a single batch.
 	BoardingRequests []types.BoardingRequest
 
-	// VTXORequests specifies the VTXOs the client wants to receive.
-	VTXORequests []types.VTXORequest
+	// VTXORequests specifies the VTXOs the client wants to receive,
+	// paired with their round-specific signing keys.
+	VTXORequests []RoundVTXORequest
 
 	// ForfeitRequests specifies the VTXOs the client wants to forfeit.
 	ForfeitRequests []*types.ForfeitRequest
@@ -186,8 +187,8 @@ func (m *JoinRoundRequest) ToProto() fn.Result[proto.Message] {
 			PkScript: req.PkScript,
 			Expiry:   req.Expiry,
 		}
-		if req.ClientKey != nil {
-			vr.ClientKey = req.ClientKey.
+		if req.OwnerKey.PubKey != nil {
+			vr.ClientKey = req.OwnerKey.PubKey.
 				SerializeCompressed()
 		}
 		if req.OperatorKey != nil {

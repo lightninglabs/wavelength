@@ -16,7 +16,10 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 )
 
-// VTXODescriptor defines the complete specification for a single VTXO leaf.
+// VTXODescriptor defines the specification for a single VTXO in a round's
+// transaction tree. It carries both the VTXO output metadata (owner key,
+// operator key, exit delay) and the ephemeral signing key used for MuSig2
+// tree construction.
 type VTXODescriptor struct {
 	// PkScript is the P2TR script for the VTXO output. This is typically
 	// generated using scripts.VTXOTapKey which creates a taproot script
@@ -26,20 +29,32 @@ type VTXODescriptor struct {
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
-	// CoSignerKey is the public key of the VTXO owner who must co-sign
-	// along with the operator to spend this VTXO collaboratively.
-	CoSignerKey *btcec.PublicKey
+	// ExitDelay is the CSV delay committed to the unilateral timeout path
+	// of the VTXO output.
+	ExitDelay uint32
+
+	// OwnerKey is the public key committed to the VTXO output script.
+	OwnerKey *btcec.PublicKey
+
+	// OperatorKey is the collaborative spend cosigner committed to the
+	// VTXO output script.
+	OperatorKey *btcec.PublicKey
+
+	// SigningKey is the MuSig2 tree signing key used during round tree
+	// construction. This is distinct from the owner key and operator
+	// key, is ephemeral per round, and must not be reused.
+	SigningKey *btcec.PublicKey
 }
 
 // NewVTXODescriptor constructs a VTXODescriptor by building the VTXO taproot
-// script using the scripts package. This is a convenience helper for clients to
-// easily create VTXO descriptors for tree construction.
+// script using the scripts package and combining it with the signing key for
+// tree construction.
 func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
-	cosignerKey *btcec.PublicKey, exitDelay uint32) (*VTXODescriptor,
-	error) {
+	operatorKey *btcec.PublicKey, signingKey *btcec.PublicKey,
+	exitDelay uint32) (*VTXODescriptor, error) {
 
 	// Use scripts package to compute the VTXO output key.
-	outputKey, err := scripts.VTXOTapKey(ownerKey, cosignerKey, exitDelay)
+	outputKey, err := scripts.VTXOTapKey(ownerKey, operatorKey, exitDelay)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute VTXO tap key: %w",
 			err)
@@ -55,21 +70,25 @@ func NewVTXODescriptor(amount btcutil.Amount, ownerKey *btcec.PublicKey,
 	return &VTXODescriptor{
 		PkScript:    pkScript,
 		Amount:      amount,
-		CoSignerKey: ownerKey,
+		ExitDelay:   exitDelay,
+		OwnerKey:    ownerKey,
+		OperatorKey: operatorKey,
+		SigningKey:  signingKey,
 	}, nil
 }
 
-// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor.
+// ToLeafDescriptor converts a VTXODescriptor to a generic LeafDescriptor
+// for tree construction.
 func (v VTXODescriptor) ToLeafDescriptor() LeafDescriptor {
 	pkScript := make([]byte, len(v.PkScript))
 	copy(pkScript, v.PkScript)
 
-	cosignerKey := *v.CoSignerKey
+	signingKey := *v.SigningKey
 
 	return LeafDescriptor{
-		PkScript:    pkScript,
-		Amount:      v.Amount,
-		CoSignerKey: &cosignerKey,
+		PkScript:   pkScript,
+		Amount:     v.Amount,
+		SigningKey: &signingKey,
 	}
 }
 
@@ -112,16 +131,16 @@ func ValidateVTXODescriptors(vtxos []VTXODescriptor) error {
 				"VTXO %d has invalid taproot script", i,
 			)
 		}
-		if vtxo.CoSignerKey == nil {
-			return fmt.Errorf("VTXO %d has nil co-signer key", i)
+		if vtxo.SigningKey == nil {
+			return fmt.Errorf("VTXO %d has nil signing key", i)
 		}
 
 		keyStr := hex.EncodeToString(
-			schnorr.SerializePubKey(vtxo.CoSignerKey),
+			schnorr.SerializePubKey(vtxo.SigningKey),
 		)
 		if _, exists := seen[keyStr]; exists {
 			return fmt.Errorf(
-				"VTXO %d has duplicate co-signer key", i,
+				"VTXO %d has duplicate signing key", i,
 			)
 		}
 		seen[keyStr] = struct{}{}
@@ -156,7 +175,7 @@ func ValidateConnectorDescriptor(conn ConnectorDescriptor) error {
 }
 
 // ToLeafDescriptors expands a connector descriptor into identical leaves using
-// the provided operator key as cosigner.
+// the provided operator key as signer.
 func (c ConnectorDescriptor) ToLeafDescriptors(
 	operatorKey *btcec.PublicKey,
 ) []LeafDescriptor {
@@ -164,9 +183,9 @@ func (c ConnectorDescriptor) ToLeafDescriptors(
 	leaves := make([]LeafDescriptor, c.NumLeaves)
 	for i := 0; i < c.NumLeaves; i++ {
 		leaves[i] = LeafDescriptor{
-			PkScript:    c.PkScript,
-			Amount:      c.Amount,
-			CoSignerKey: operatorKey,
+			PkScript:   c.PkScript,
+			Amount:     c.Amount,
+			SigningKey: operatorKey,
 		}
 	}
 
@@ -315,7 +334,7 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	}
 	sweepTapRoot := sweepTapLeaf.TapHash()
 
-	// Collect unique cosigners (operator + all client cosigners).
+	// Collect unique signers (operator + all client tree signers).
 	signers := []*btcec.PublicKey{operatorMuSigKey}
 	seenSigners := make(map[string]struct{})
 	operatorKeyStr := hex.EncodeToString(
@@ -324,9 +343,15 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 	seenSigners[operatorKeyStr] = struct{}{}
 
 	var totalAmount btcutil.Amount
-	for _, vtxo := range vtxos {
+	for i, vtxo := range vtxos {
 		if vtxo.Amount < 0 {
 			return nil, fmt.Errorf("vtxo amount cannot be negative")
+		}
+
+		if vtxo.SigningKey == nil {
+			return nil, fmt.Errorf(
+				"VTXO %d has nil signing key", i,
+			)
 		}
 
 		// Check overflow before adding.
@@ -337,17 +362,17 @@ func BuildBatchOutput(vtxos []VTXODescriptor,
 
 		totalAmount += vtxo.Amount
 
-		// Add cosigner if not already seen.
+		// Add signer if not already seen.
 		keyStr := hex.EncodeToString(
-			schnorr.SerializePubKey(vtxo.CoSignerKey),
+			schnorr.SerializePubKey(vtxo.SigningKey),
 		)
 		if _, seen := seenSigners[keyStr]; !seen {
 			seenSigners[keyStr] = struct{}{}
-			signers = append(signers, vtxo.CoSignerKey)
+			signers = append(signers, vtxo.SigningKey)
 		}
 	}
 
-	// Aggregate cosigner keys and tweak with sweep tapscript root.
+	// Aggregate signer keys and tweak with sweep tapscript root.
 	aggKey, _, _, err := musig2.AggregateKeys(
 		signers, true,
 		musig2.WithTaprootKeyTweak(sweepTapRoot[:]),

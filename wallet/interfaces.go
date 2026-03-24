@@ -31,8 +31,8 @@ type VTXODescriptor struct {
 	// corresponds to vtxo.Descriptor.RelativeExpiry.
 	Expiry uint32
 
-	// ClientKey is the client's key descriptor for this VTXO.
-	ClientKey keychain.KeyDescriptor
+	// OwnerKey is the client's owner key descriptor for this VTXO.
+	OwnerKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey

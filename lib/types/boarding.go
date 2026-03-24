@@ -11,6 +11,13 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 )
 
+// VTXOOwnerKeyFamily is the key family used for long-lived VTXO owner
+// keys. Owner keys are committed to the VTXO output script and must persist
+// across operator term rotations. This is distinct from the MuSig2
+// tree-signing key family (keychain.KeyFamilyMultiSig) used during round
+// construction.
+const VTXOOwnerKeyFamily keychain.KeyFamily = 44
+
 // OperatorTerms holds the information that the operator will share with
 // clients. It communicates the server's terms to the client.
 type OperatorTerms struct {
@@ -103,6 +110,9 @@ type ForfeitRequest struct {
 	Amount btcutil.Amount
 }
 
+// VTXORequest is the wire message describing a VTXO the client wants to
+// receive in a round. It includes the ephemeral signing key because the
+// server needs it for tree construction.
 type VTXORequest struct {
 	// Amount is the amount of satoshis to lock in the VTXO.
 	Amount btcutil.Amount
@@ -111,22 +121,28 @@ type VTXORequest struct {
 	// both a collaborative and unilateral spend path.
 	PkScript []byte
 
-	// Expiry is the CSV delay used in the unilateral timeout script path
-	// of the VTXO.
+	// Expiry is the CSV delay used in the unilateral timeout script
+	// path of the VTXO.
 	Expiry uint32
 
-	// ClientKey is the public key of the client used in the construction
-	// of the collaborative spend path of the VTXO.
-	ClientKey *btcec.PublicKey
+	// OwnerKey is the owner's key descriptor for the VTXO. Only
+	// the public key is sent on the wire; the key locator is
+	// preserved locally when the client owns the resulting VTXO.
+	OwnerKey keychain.KeyDescriptor
+
+	// IsOwner reports whether this client controls the VTXO owner
+	// key and should persist the created VTXO locally once the
+	// round confirms. This is local-only metadata and is not sent
+	// on the wire.
+	IsOwner bool
 
 	// OperatorKey is the public key of the operator used in the
 	// construction of the collaborative spend path of the VTXO.
 	OperatorKey *btcec.PublicKey
 
-	// SigningKey is the key descriptor that the client will use in the
-	// building of the VTXO tree during Musig2 signing sessions. We use
-	// keychain.KeyDescriptor instead of just *btcec.PublicKey because we
-	// need the key locator for signing operations.
+	// SigningKey is the ephemeral MuSig2 tree signing key for this
+	// round. Only the public key is sent on the wire; the key
+	// locator is preserved locally for signing operations.
 	SigningKey keychain.KeyDescriptor
 }
 

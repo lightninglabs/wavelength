@@ -38,7 +38,7 @@ func TestOutboxMessagesToProto(t *testing.T) {
 			BoardingRequests: []types.BoardingRequest{
 				{ClientKey: pubKey, OperatorKey: pubKey},
 			},
-			VTXORequests: []types.VTXORequest{},
+			VTXORequests: []RoundVTXORequest{},
 		}
 
 		result := msg.ToProto().UnwrapOrFail(t)

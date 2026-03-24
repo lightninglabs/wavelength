@@ -116,7 +116,7 @@ func (m *SendSubmitPackageRequest) ToProto() fn.Result[proto.Message] {
 	for _, ti := range m.TransferInputs {
 		descs = append(descs, oorpb.SigningDescriptor{
 			Outpoint:  ti.VTXO.Outpoint,
-			OwnerKey:  ti.VTXO.ClientKey.PubKey,
+			OwnerKey:  ti.VTXO.OwnerKey.PubKey,
 			ExitDelay: ti.VTXO.RelativeExpiry,
 		})
 	}

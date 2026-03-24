@@ -364,7 +364,7 @@ func (h *vtxoTestHarness) newTestDescriptor() *Descriptor {
 	return &Descriptor{
 		Outpoint: outpoint,
 		Amount:   btcutil.Amount(50000),
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,
@@ -622,7 +622,7 @@ func (h *realVTXOSigningHarness) newTestDescriptor() *Descriptor {
 		Outpoint: outpoint,
 		Amount:   btcutil.Amount(50000),
 		PkScript: pkScript,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			PubKey: h.clientPubKey,
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,
