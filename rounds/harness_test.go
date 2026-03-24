@@ -697,7 +697,7 @@ func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 
 	// Create a live VTXO descriptor.
 	descriptor, err := tree.NewVTXODescriptor(
-		50000, clientKey, c.operatorPub, 144,
+		50000, clientKey, c.operatorPub, nil, 144,
 	)
 	require.NoError(c.t, err)
 
@@ -706,7 +706,10 @@ func (c *commonMockSetup) setupValidForfeitVTXO(outpoint *wire.OutPoint,
 		RoundID:          roundID,
 		BatchOutputIndex: 0,
 		Descriptor:       descriptor,
-		Status:           VTXOStatusLive,
+		OperatorKeyDesc: &keychain.KeyDescriptor{
+			PubKey: c.operatorPub,
+		},
+		Status: VTXOStatusLive,
 	}
 
 	// Set up the VTXO store mock to return the VTXO.
@@ -908,7 +911,7 @@ func buildAwaitingVTXONoncesState(
 			keyVertex := route.NewVertex(testKey)
 			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
 				keyVertex: {
-					CoSignerKey: testKey,
+					SigningKey: testKey,
 				},
 			}
 			reg.VTXODescriptors = vtxoDescs
@@ -953,7 +956,7 @@ func buildAwaitingVTXOSignaturesState(
 			keyVertex := route.NewVertex(testKey)
 			vtxoDescs := map[SigningKeyHex]*tree.VTXODescriptor{
 				keyVertex: {
-					CoSignerKey: testKey,
+					SigningKey: testKey,
 				},
 			}
 			reg.VTXODescriptors = vtxoDescs
@@ -1262,7 +1265,7 @@ func (c *clientHarness) createVTXORequest(
 	c.vtxoMuSigSigners[keyVertex] = musigSigner
 
 	desc, err := tree.NewVTXODescriptor(
-		amount, signingKey, c.operatorKey, c.expiry,
+		amount, signingKey, c.operatorKey, nil, c.expiry,
 	)
 	require.NoError(c.t, err, "failed to build vtxo descriptor")
 
@@ -1273,7 +1276,7 @@ func (c *clientHarness) createVTXORequest(
 		Amount:      amount,
 		PkScript:    desc.PkScript,
 		Expiry:      c.expiry,
-		ClientKey:   signingKey,
+		OwnerKey:    testKeyDesc(signingKey),
 		OperatorKey: c.operatorKey,
 		SigningKey:  *keyDesc,
 	}

@@ -893,9 +893,25 @@ func buildP2TRScript(tapscript *waddrmgr.Tapscript) ([]byte, error) {
 //   - The pkScript matches the expected VTXO descriptor.
 //
 // On success, returns the validated VTXO descriptor.
-func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
+func ValidateVTXORequest(terms *batch.Terms,
+	req *types.VTXORequest,
 	usedSigningKeys map[SigningKeyHex]*btcec.PublicKey) (
 	*tree.VTXODescriptor, error) {
+
+	if req.OwnerKey.PubKey == nil {
+		return nil, fmt.Errorf("%w: missing owner key",
+			ErrVTXODescriptorConstruction)
+	}
+
+	if req.SigningKey.PubKey == nil {
+		return nil, fmt.Errorf("%w: missing signing key",
+			ErrVTXODescriptorConstruction)
+	}
+
+	if req.OperatorKey == nil {
+		return nil, fmt.Errorf("%w: missing operator key",
+			ErrVTXODescriptorConstruction)
+	}
 
 	// Validate amount is within bounds.
 	if req.Amount < terms.MinVTXOAmount {
@@ -925,13 +941,15 @@ func ValidateVTXORequest(terms *batch.Terms, req *types.VTXORequest,
 	// Verify signing key is unique for this batch.
 	signingKeyVertex := route.NewVertex(req.SigningKey.PubKey)
 	if _, exists := usedSigningKeys[signingKeyVertex]; exists {
-		return nil, fmt.Errorf("%w: %x", ErrSigningKeyNotUnique,
+		return nil, fmt.Errorf("%w: %x",
+			ErrSigningKeyNotUnique,
 			req.SigningKey.PubKey.SerializeCompressed())
 	}
 
 	// Compute the expected VTXO descriptor.
 	expectedDescriptor, err := tree.NewVTXODescriptor(
-		req.Amount, req.ClientKey, req.OperatorKey, req.Expiry,
+		req.Amount, req.OwnerKey.PubKey, req.OperatorKey,
+		req.SigningKey.PubKey, req.Expiry,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrVTXODescriptorConstruction,
@@ -998,7 +1016,7 @@ func validateForfeitTxs(
 	forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
-	forfeitScript []byte, operatorKey *btcec.PublicKey) error {
+	forfeitScript []byte) error {
 
 	// Build a map of expected forfeit outpoints from the registration.
 	expectedForfeits := make(map[wire.OutPoint]*ForfeitInput)
@@ -1111,7 +1129,7 @@ func validateForfeitTxs(
 		if err := validateForfeitVTXOSignature(
 			ftx, forfeitTxSig.ClientVTXOSig,
 			forfeitInput.VTXO, vtxoOutpoint,
-			assignment.LeafOutput, operatorKey,
+			assignment.LeafOutput,
 		); err != nil {
 			return fmt.Errorf("invalid VTXO signature for %v: %w",
 				vtxoOutpoint, err)
@@ -1129,15 +1147,16 @@ func validateForfeitTxs(
 // the VTXO input in a forfeit transaction.
 func validateForfeitVTXOSignature(
 	ftx *wire.MsgTx, clientSig *schnorr.Signature, vtxo *VTXO,
-	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut,
-	operatorKey *btcec.PublicKey) error {
+	vtxoOutpoint wire.OutPoint, connectorLeafOutput *wire.TxOut) error {
 
 	if vtxo == nil || vtxo.Descriptor == nil {
 		return fmt.Errorf("VTXO descriptor must be provided")
 	}
-
-	if operatorKey == nil {
-		return fmt.Errorf("operator key must be provided")
+	if vtxo.Descriptor.OwnerKey == nil {
+		return fmt.Errorf("VTXO owner key must be provided")
+	}
+	if vtxo.Descriptor.OperatorKey == nil {
+		return fmt.Errorf("VTXO operator key must be provided")
 	}
 
 	// Create the VTXO output.
@@ -1152,7 +1171,7 @@ func validateForfeitVTXOSignature(
 
 	// Reconstruct the collaborative spend leaf for the VTXO.
 	collabLeaf, err := scripts.MultiSigCollabTapLeaf(
-		vtxo.Descriptor.CoSignerKey, operatorKey,
+		vtxo.Descriptor.OwnerKey, vtxo.Descriptor.OperatorKey,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to reconstruct VTXO collab leaf: %w",
@@ -1197,7 +1216,7 @@ func validateForfeitVTXOSignature(
 	}
 
 	// Verify the schnorr signature against the client's public key.
-	if !clientSig.Verify(sigHash, vtxo.Descriptor.CoSignerKey) {
+	if !clientSig.Verify(sigHash, vtxo.Descriptor.OwnerKey) {
 		return fmt.Errorf("invalid client VTXO signature")
 	}
 

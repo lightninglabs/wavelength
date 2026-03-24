@@ -15,6 +15,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/internal/testutils"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,13 +49,16 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		// structure: a collaborative path (client + operator) and an
 		// exit path (client after timelock).
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, h.operatorPub, exitDelay,
+			vtxoAmount, clientPub, h.operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
 		vtxo := &VTXO{
 			Descriptor: vtxoDesc,
-			Status:     VTXOStatusLive,
+			OperatorKeyDesc: &keychain.KeyDescriptor{
+				PubKey: h.operatorPub,
+			},
+			Status: VTXOStatusLive,
 		}
 
 		// Define the outpoint for the VTXO being forfeited.
@@ -164,7 +168,6 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			reg, connectorAssignments,
 			h.env.WalletController,
 			h.env.Terms.OperatorKey,
-			h.env.Terms.VTXOExitDelay,
 			h.env.RoundID,
 		)
 		require.NoError(t, err)
@@ -278,13 +281,16 @@ func TestCompleteForfeitTxs(t *testing.T) {
 		clientPub := clientPriv.PubKey()
 
 		vtxoDesc, err := tree.NewVTXODescriptor(
-			vtxoAmount, clientPub, h.operatorPub, exitDelay,
+			vtxoAmount, clientPub, h.operatorPub, nil, exitDelay,
 		)
 		require.NoError(t, err)
 
 		vtxo := &VTXO{
 			Descriptor: vtxoDesc,
-			Status:     VTXOStatusLive,
+			OperatorKeyDesc: &keychain.KeyDescriptor{
+				PubKey: h.operatorPub,
+			},
+			Status: VTXOStatusLive,
 		}
 
 		vtxoOutpoint := wire.OutPoint{
@@ -352,7 +358,6 @@ func TestCompleteForfeitTxs(t *testing.T) {
 			reg, connectorAssignments,
 			h.env.WalletController,
 			h.env.Terms.OperatorKey,
-			h.env.Terms.VTXOExitDelay,
 			h.env.RoundID,
 		)
 		require.Error(t, err)

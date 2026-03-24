@@ -39,7 +39,7 @@ func makeVTXODescriptorsWithKeys(t *testing.T, n int, baseAmount btcutil.Amount,
 		clientKey, _ := testutils.CreateKey(int32(i))
 		desc, err := tree.NewVTXODescriptor(
 			baseAmount*btcutil.Amount(i+1), clientKey,
-			opKey, 144,
+			opKey, clientKey, 144,
 		)
 		require.NoError(t, err)
 

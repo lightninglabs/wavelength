@@ -511,9 +511,9 @@ func toSharedJoinRoundRequest(req *clientround.JoinRoundRequest,
 		shared.BoardingReqs = append(shared.BoardingReqs, &boardingReq)
 	}
 
-	for i := 0; i < len(req.VTXORequests); i++ {
-		vtxoReq := req.VTXORequests[i]
-		shared.VTXOReqs = append(shared.VTXOReqs, &vtxoReq)
+	for i := range req.VTXORequests {
+		vr := req.VTXORequests[i].ToVTXORequest()
+		shared.VTXOReqs = append(shared.VTXOReqs, &vr)
 	}
 
 	// ForfeitRequests and LeaveRequests are already
@@ -554,7 +554,7 @@ func cloneClientJoinRoundRequest(
 			[]clienttypes.BoardingRequest, nBoarding,
 		),
 		VTXORequests: make(
-			[]clienttypes.VTXORequest, nVTXO,
+			[]clientround.RoundVTXORequest, nVTXO,
 		),
 		ForfeitRequests: make(
 			[]*clienttypes.ForfeitRequest, nForfeit,

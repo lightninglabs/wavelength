@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -236,8 +237,18 @@ type VTXO struct {
 	BatchOutputIndex int
 
 	// Descriptor contains the VTXO specification (amount, script,
-	// cosigner).
+	// owner, operator, and exit delay).
+	//
+	// TODO(elle): Replace with a server-side stored VTXO type
+	// instead of reusing tree.VTXODescriptor. The tree package
+	// type is for round construction and always carries a
+	// SigningKey; stored VTXOs never have one. A dedicated type
+	// would eliminate the nil-SigningKey convention.
 	Descriptor *tree.VTXODescriptor
+
+	// OperatorKeyDesc identifies the operator key that must sign the
+	// collaborative spend path for this VTXO.
+	OperatorKeyDesc *keychain.KeyDescriptor
 
 	// Status is the current lifecycle state of the VTXO.
 	Status VTXOStatus

@@ -34,7 +34,6 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 	reg *ClientRegistration,
 	connectorAssignments map[wire.OutPoint]*ConnectorLeafAssignment,
 	walletCtrl WalletController, operatorKey keychain.KeyDescriptor,
-	vtxoExitDelay uint32,
 	roundID RoundID) ([]*SpentVTXO, error) {
 
 	forfeitInputs := make(map[wire.OutPoint]*ForfeitInput)
@@ -98,7 +97,6 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 		if err := signForfeitVTXOInput(
 			ftx, forfeitInput, forfeitTxSig.ClientVTXOSig,
 			assignment.LeafOutput, walletCtrl,
-			operatorKey, vtxoExitDelay,
 		); err != nil {
 			return nil, fmt.Errorf("failed to sign VTXO input for "+
 				"%v: %w", vtxoOutpoint, err)
@@ -136,15 +134,24 @@ func completeForfeitTxs(forfeitTxSigs []*types.ForfeitTxSig,
 // which requires both client and operator signatures.
 func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	clientSig *schnorr.Signature, connectorOutput *wire.TxOut,
-	walletCtrl WalletController,
-	operatorKey keychain.KeyDescriptor,
-	vtxoExitDelay uint32) error {
+	walletCtrl WalletController) error {
 
 	if forfeitInput == nil || forfeitInput.VTXO == nil {
 		return fmt.Errorf("forfeit VTXO must be provided")
 	}
 
 	vtxo := forfeitInput.VTXO
+	if vtxo.Descriptor == nil || vtxo.Descriptor.OwnerKey == nil {
+		return fmt.Errorf("forfeit VTXO owner key must be provided")
+	}
+	if vtxo.Descriptor.OperatorKey == nil {
+		return fmt.Errorf("forfeit VTXO operator key must be provided")
+	}
+	if vtxo.OperatorKeyDesc == nil {
+		return fmt.Errorf("forfeit VTXO operator key " +
+			"descriptor must be provided")
+	}
+
 	vtxoOutpoint := *forfeitInput.Outpoint
 
 	vtxoOutput := &wire.TxOut{
@@ -156,8 +163,8 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 		ftx.TxIn[tx.ForfeitConnectorInputIndex].PreviousOutPoint
 
 	vtxoTapScript, err := scripts.VTXOTapScript(
-		vtxo.Descriptor.CoSignerKey, operatorKey.PubKey,
-		vtxoExitDelay,
+		vtxo.Descriptor.OwnerKey, vtxo.Descriptor.OperatorKey,
+		vtxo.Descriptor.ExitDelay,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to reconstruct VTXO tapscript: %w",
@@ -186,7 +193,7 @@ func signForfeitVTXOInput(ftx *wire.MsgTx, forfeitInput *ForfeitInput,
 	sigHashes := txscript.NewTxSigHashes(ftx, prevOutFetcher)
 
 	signDesc, spendInfo, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, operatorKey,
+		vtxoCtx, *vtxo.OperatorKeyDesc,
 		tx.ForfeitVTXOInputIndex, sigHashes, prevOutFetcher,
 	)
 	if err != nil {

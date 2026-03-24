@@ -185,7 +185,7 @@ func oorMintRealVTXO(t *testing.T, h *E2EHarness, operatorSigner input.Signer,
 		Outpoint: vtxoOutpoint,
 		Amount:   amount,
 		PkScript: pkScript,
-		ClientKey: keychain.KeyDescriptor{
+		OwnerKey: keychain.KeyDescriptor{
 			KeyLocator: ownerKey.KeyLocator,
 			PubKey:     ownerKey.PubKey,
 		},
