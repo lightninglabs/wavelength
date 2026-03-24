@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -96,6 +97,11 @@ type Server struct {
 	chainSourceRef actor.ActorRef[
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]
+
+	// boardingChainSource is an optional direct bitcoind-backed
+	// chain source for UTXO validation during boarding. When nil,
+	// the rounds FSM falls back to client-provided TxProofs.
+	boardingChainSource rounds.ChainSource
 
 	// timeoutRef is the actor reference for the shared timeout
 	// scheduling actor used by round phase deadlines.
@@ -279,32 +285,11 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	// -------------------------------------------------------
 	// 3. Create and register chain source actor.
 	// -------------------------------------------------------
-	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
-		chainbackends.LNDBackendFromLndClientConfig{
-			LND: &s.lnd.LndServices,
-		},
-	)
-
-	if err := s.chainBackend.Start(); err != nil {
-		return fmt.Errorf("unable to start chain "+
-			"backend: %w", err)
+	if err := s.setupChainSource(ctx); err != nil {
+		return fmt.Errorf("unable to setup chain source: %w",
+			err)
 	}
-	defer func() {
-		_ = s.chainBackend.Stop()
-	}()
-
-	chainActor := chainsource.NewChainSourceActor(
-		chainsource.ChainSourceConfig{
-			Backend: s.chainBackend,
-			System:  s.actorSystem,
-		},
-	)
-	s.chainSourceRef = actor.RegisterWithSystem(
-		s.actorSystem, "chain-source",
-		chainsource.ChainSourceKey, chainActor,
-	)
-
-	s.log.InfoS(ctx, "Chain source actor registered")
+	defer func() { _ = s.chainBackend.Stop() }()
 
 	// -------------------------------------------------------
 	// 4. Initialize database.
@@ -343,6 +328,17 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			"subsystem: %w", err)
 	}
 	defer s.stopIndexerSubsystem(ctx)
+
+	// -------------------------------------------------------
+	// 4b. Optional: connect to bitcoind for direct UTXO
+	//     validation during boarding.
+	// -------------------------------------------------------
+	btcCleanup, err := s.connectBitcoind(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to connect to "+
+			"bitcoind: %w", err)
+	}
+	defer btcCleanup()
 
 	// -------------------------------------------------------
 	// 5a. Setup rounds subsystem.
@@ -489,6 +485,68 @@ func (s *Server) RPCAddr() net.Addr {
 // multiple times thanks to sync.Once.
 func (s *Server) Shutdown() {
 	s.shutdownOnce.Do(func() { close(s.quit) })
+}
+
+// setupChainSource creates the LND-backed chain backend and registers
+// the chain source actor with the actor system.
+func (s *Server) setupChainSource(ctx context.Context) error {
+	s.chainBackend = chainbackends.NewLNDBackendFromLndClient(
+		chainbackends.LNDBackendFromLndClientConfig{
+			LND: &s.lnd.LndServices,
+		},
+	)
+
+	if err := s.chainBackend.Start(); err != nil {
+		return err
+	}
+
+	chainActor := chainsource.NewChainSourceActor(
+		chainsource.ChainSourceConfig{
+			Backend: s.chainBackend,
+			System:  s.actorSystem,
+		},
+	)
+	s.chainSourceRef = actor.RegisterWithSystem(
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
+	)
+
+	s.log.InfoS(ctx, "Chain source actor registered")
+
+	return nil
+}
+
+// connectBitcoind optionally connects to a bitcoind RPC endpoint for
+// direct UTXO validation during boarding. Returns a cleanup function
+// that shuts down the RPC client. When no bitcoind config is set the
+// cleanup is a no-op.
+func (s *Server) connectBitcoind(ctx context.Context) (func(), error) {
+	noop := func() {}
+
+	bc := s.cfg.Bitcoind
+	if bc == nil || bc.Host == "" {
+		return noop, nil
+	}
+
+	rpcCfg := &rpcclient.ConnConfig{
+		Host:         bc.Host,
+		User:         bc.User,
+		Pass:         bc.Pass,
+		HTTPPostMode: true,
+		DisableTLS:   true,
+	}
+
+	btcClient, err := rpcclient.New(rpcCfg, nil)
+	if err != nil {
+		return noop, err
+	}
+
+	s.boardingChainSource = lndbackend.NewChainSource(btcClient)
+
+	s.log.InfoS(ctx, "Bitcoind chain source connected",
+		slog.String("host", bc.Host))
+
+	return btcClient.Shutdown, nil
 }
 
 // connectLnd establishes a connection to the lnd node using the

@@ -209,6 +209,11 @@ type Config struct {
 	// Lnd configures the connection to the backing lnd node.
 	Lnd *LndConfig `mapstructure:"lnd"`
 
+	// Bitcoind configures an optional direct bitcoind RPC
+	// connection for UTXO validation. When set, boarding requests
+	// are validated via GetTxOut rather than client TxProofs.
+	Bitcoind *BitcoindConfig `mapstructure:"bitcoind"`
+
 	// AdminRPC contains the admin RPC server configuration.
 	AdminRPC *AdminRPCConfig `mapstructure:"adminrpc"`
 
@@ -231,6 +236,21 @@ type Config struct {
 
 	// Shutdown is a callback that triggers graceful server shutdown.
 	Shutdown func()
+}
+
+// BitcoindConfig holds optional connection parameters for a direct
+// bitcoind RPC connection. When configured, the operator validates
+// boarding UTXOs via GetTxOut instead of relying on client-provided
+// TxProofs. This is strongly recommended for production deployments.
+type BitcoindConfig struct {
+	// Host is the bitcoind RPC address (host:port).
+	Host string `mapstructure:"host"`
+
+	// User is the RPC username.
+	User string `mapstructure:"user"`
+
+	// Pass is the RPC password.
+	Pass string `mapstructure:"pass"`
 }
 
 // LndConfig holds connection parameters for the backing lnd node.

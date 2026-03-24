@@ -168,6 +168,7 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		ForfeitScript:       forfeitScript,
 		ClientsConn:         s.clientBridge,
 		BoardingInputLocker: newInMemoryBoardingLocker(),
+		ChainSource:         s.boardingChainSource,
 		HeaderVerifier:      headerVerifier,
 		ChainSourceActor:    s.chainSourceRef,
 		TimeoutActor:        s.timeoutRef,

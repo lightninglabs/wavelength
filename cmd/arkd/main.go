@@ -176,6 +176,18 @@ func newRootCmd() *cobra.Command {
 		"confirmations before round is confirmed",
 	)
 
+	// Optional bitcoind direct chain source flags.
+	f.String("bitcoind.host", "",
+		"bitcoind RPC address (host:port); enables "+
+			"direct UTXO validation",
+	)
+	f.String("bitcoind.user", "",
+		"bitcoind RPC username",
+	)
+	f.String("bitcoind.pass", "",
+		"bitcoind RPC password",
+	)
+
 	// Admin RPC server flags.
 	f.String("adminrpc.listen", cfg.AdminRPC.ListenAddr,
 		"admin gRPC listen address",
