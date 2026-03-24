@@ -1969,7 +1969,18 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// PendingForfeitState by the time the round registers the
 	// intent. The manager handles atomic reservation and rollback.
 
-	a.log.InfoS(ctx, "Registered intent package",
+	// Trigger registration to advance the FSM from
+	// PendingRoundAssembly to RegistrationSent, which emits the
+	// JoinRoundRequest to the server via the mailbox.
+	regEvent := &RegistrationRequested{}
+	err = a.askEventAndProcessOutbox(ctx, roundFSM, regEvent)
+	if err != nil {
+		return fn.Err[actormsg.RoundActorResp](fmt.Errorf(
+			"trigger send registration: %w", err,
+		))
+	}
+
+	a.log.InfoS(ctx, "Directed send intent registered",
 		slog.Int("forfeits", len(req.Package.Forfeits)),
 		slog.Int("vtxos", len(req.Package.VTXOs)),
 		slog.Int("leaves", len(req.Package.Leaves)))
