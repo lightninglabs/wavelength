@@ -646,3 +646,111 @@ func TestBoardingIntegrationRestartAfterInputSigSent(t *testing.T) {
 	)
 	require.Equal(t, liveVTXO.AmountSat, finalBalance.VtxoBalanceSat)
 }
+
+// TestBoardingIntegrationTriggerBatchCreatesNewRound verifies that after
+// a round is sealed via the admin TriggerBatch RPC (SealEvent path),
+// the operator creates a new round. Without the fix that emits
+// RoundSealedReq from the SealEvent handler, the actor never spawns
+// a replacement round, making subsequent TriggerBatch calls hit the
+// already-sealed round.
+func TestBoardingIntegrationTriggerBatchCreatesNewRound(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	operatorInfo := getOperatorInfo(t, h)
+
+	waitForClientRegistration(t, h)
+
+	// Fund and board alice into a round.
+	newAddrResp, err := alice.RPCClient.NewAddress(
+		t.Context(), &daemonrpc.NewAddressRequest{},
+	)
+	require.NoError(t, err)
+
+	boardingAmount := btcutil.Amount(100_000)
+	h.Faucet(newAddrResp.Address, boardingAmount)
+	h.Generate(int(operatorInfo.MinConfirmations) + 1)
+
+	waitForConfirmedBoardingBalance(
+		t, alice.RPCClient, int64(boardingAmount),
+	)
+	boardResp := waitForBoardRegistered(t, alice.RPCClient)
+	require.Equal(t, "registered", boardResp.Status)
+
+	joinedRound := waitForClientRoundState(
+		t, alice.RPCClient,
+		daemonrpc.RoundState_ROUND_STATE_JOINED,
+	)
+	require.NotEmpty(t, joinedRound.RoundId)
+	t.Logf("Client joined round_id=%q", joinedRound.RoundId)
+
+	// Seal via explicit TriggerBatch (SealEvent path).
+	triggerCtx, triggerCancel := context.WithTimeout(
+		t.Context(), defaultSmallTimeout,
+	)
+	defer triggerCancel()
+
+	triggerResp, err := h.ArkAdminClient.TriggerBatch(
+		triggerCtx, &adminrpc.TriggerBatchRequest{},
+	)
+	require.NoError(t, err, "TriggerBatch RPC failed")
+	t.Logf("TriggerBatch sealed: returned round_id=%q",
+		triggerResp.RoundId)
+
+	// The sealed round should progress through signing.
+	waitForNamedClientRoundState(
+		t, alice.RPCClient, joinedRound.RoundId,
+		daemonrpc.RoundState_ROUND_STATE_INPUT_SIG_SENT,
+	)
+
+	broadcastRound := waitForOperatorRoundStatus(
+		t, h, joinedRound.RoundId,
+		adminrpc.RoundStatus_ROUND_STATUS_BROADCAST,
+	)
+	require.NotEmpty(t, broadcastRound.TxId)
+	t.Logf("Round broadcast: round_id=%q txid=%s",
+		joinedRound.RoundId, broadcastRound.TxId)
+
+	// The key assertion: after TriggerBatch seals the round and
+	// the outbox processes RoundSealedReq, the operator should
+	// have a second (new) round. Without the SealEvent fix, the
+	// actor never creates a replacement round.
+	var newRoundID string
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		// Call TriggerBatch again — it returns the current
+		// round's ID. If a new round was created, this will
+		// differ from the sealed round.
+		resp, err := h.ArkAdminClient.TriggerBatch(
+			ctx, &adminrpc.TriggerBatchRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		if resp.RoundId != joinedRound.RoundId {
+			newRoundID = resp.RoundId
+
+			return true
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"new round was never created after TriggerBatch seal")
+
+	t.Logf("New round created after seal: round_id=%q", newRoundID)
+}

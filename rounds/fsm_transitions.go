@@ -409,14 +409,11 @@ func (s *CreatedState) ProcessEvent(ctx context.Context, event Event,
 
 			// Cancel the registration timeout we just
 			// started — the predicate already sealed the
-			// round.
+			// round. SealEvent emits RoundSealedReq.
 			outbox = append(outbox,
 				&CancelTimeoutReq{
 					RoundID: env.RoundID,
 					Phase:   TimeoutPhaseRegistration,
-				},
-				&RoundSealedReq{
-					SealedRoundID: env.RoundID,
 				},
 			)
 
@@ -552,14 +549,12 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 				LogClientCount(newClientCount))
 
 			// Cancel the registration timeout — the
-			// predicate sealed the round early.
+			// predicate sealed the round early. SealEvent
+			// emits RoundSealedReq.
 			outbox = append(outbox,
 				&CancelTimeoutReq{
 					RoundID: env.RoundID,
 					Phase:   TimeoutPhaseRegistration,
-				},
-				&RoundSealedReq{
-					SealedRoundID: env.RoundID,
 				},
 			)
 
@@ -585,18 +580,14 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 		env.Log.InfoS(ctx, "Registration timeout, sealing round",
 			LogClientCount(len(s.ClientRegistrations)))
 
-		// Registration timeout expired. Emit internal SealEvent to seal
-		// the round and outbox RoundSealedReq to notify actor.
+		// Registration timeout expired. Emit internal SealEvent to
+		// seal the round. SealEvent emits RoundSealedReq to notify
+		// the actor to create a new round.
 		return &StateTransition{
 			NextState: s,
 			NewEvents: fn.Some(EmittedEvent{
 				InternalEvent: []Event{
 					&SealEvent{},
-				},
-				Outbox: []OutboxEvent{
-					&RoundSealedReq{
-						SealedRoundID: env.RoundID,
-					},
 				},
 			}),
 		}, nil
@@ -606,7 +597,9 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			LogClientCount(len(s.ClientRegistrations)))
 
 		// Registration is closed. Transition to BatchBuildingState with
-		// internal event to trigger PSBT construction.
+		// internal event to trigger PSBT construction. Emit
+		// RoundSealedReq so the actor creates a new round for
+		// subsequent registrations.
 		return &StateTransition{
 			NextState: &BatchBuildingState{
 				ClientRegistrations: s.ClientRegistrations,
@@ -614,6 +607,11 @@ func (s *RegistrationState) ProcessEvent(ctx context.Context, event Event,
 			NewEvents: fn.Some(EmittedEvent{
 				InternalEvent: []Event{
 					&BuildBatchTxEvent{},
+				},
+				Outbox: []OutboxEvent{
+					&RoundSealedReq{
+						SealedRoundID: env.RoundID,
+					},
 				},
 			}),
 		}, nil
