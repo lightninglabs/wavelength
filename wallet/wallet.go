@@ -18,9 +18,11 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/taproot-assets/proof"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/keychain"
 )
 
 const (
@@ -319,6 +321,9 @@ func (a *Ark) Receive(ctx context.Context,
 
 	case *MarkBoardingIntentsAdoptedRequest:
 		return a.handleMarkBoardingIntentsAdopted(ctx, m)
+
+	case *SendVTXOsRequest:
+		return a.handleSendVTXOs(ctx, m)
 
 	default:
 		return fn.Err[WalletResp](
@@ -1356,4 +1361,264 @@ func buildBoardingTapscript(clientKey, operatorKey *btcec.PublicKey,
 	}
 
 	return tapscript, nil
+}
+
+// handleSendVTXOs processes an in-round directed send. It atomically
+// selects and reserves VTXOs for cooperative consumption, builds an
+// IntentPackage with forfeits + recipient VTXOs + change, and
+// registers it with the round actor. On failure, all reservations are
+// released. For dry-run, the reservation is immediately released
+// after validation.
+func (a *Ark) handleSendVTXOs(ctx context.Context,
+	req *SendVTXOsRequest) fn.Result[WalletResp] {
+
+	if len(req.Recipients) == 0 {
+		return fn.Err[WalletResp](
+			fmt.Errorf("no recipients provided"),
+		)
+	}
+
+	var totalRecipientAmount btcutil.Amount
+	for i, r := range req.Recipients {
+		if r.OwnerKey == nil {
+			return fn.Err[WalletResp](fmt.Errorf(
+				"recipient %d: nil owner key", i,
+			))
+		}
+
+		if r.Amount <= 0 {
+			return fn.Err[WalletResp](fmt.Errorf(
+				"recipient %d: amount must be positive",
+				i,
+			))
+		}
+
+		totalRecipientAmount += r.Amount
+	}
+
+	totalNeeded := totalRecipientAmount + req.OperatorFee
+
+	a.logger(ctx).InfoS(ctx, "Processing directed send",
+		slog.Int("recipients", len(req.Recipients)),
+		slog.Int64("total_amount",
+			int64(totalRecipientAmount)),
+		slog.Int64("operator_fee",
+			int64(req.OperatorFee)),
+		slog.Bool("dry_run", req.DryRun))
+
+	// Atomic select-and-reserve for cooperative consumption.
+	resp, err := a.askManager(
+		ctx,
+		&actormsg.SelectAndReserveForfeitRequest{
+			TargetAmount: totalNeeded,
+		},
+	)
+	if err != nil {
+		return fn.Err[WalletResp](fmt.Errorf(
+			"select and reserve forfeit: %w", err,
+		))
+	}
+
+	//nolint:forcetypeassert
+	mgrResp := resp.(*actormsg.SelectAndReserveForfeitResponse)
+
+	reservedOutpoints := make(
+		[]wire.OutPoint, 0, len(mgrResp.SelectedVTXOs),
+	)
+	for _, v := range mgrResp.SelectedVTXOs {
+		reservedOutpoints = append(
+			reservedOutpoints, v.Outpoint,
+		)
+	}
+
+	releaseAndFail := func(primary error) fn.Result[WalletResp] {
+		releaseErr := a.releaseManagerForfeitStrict(
+			ctx, reservedOutpoints,
+		)
+		if releaseErr != nil {
+			return fn.Err[WalletResp](fmt.Errorf(
+				"%w; additionally, forfeit "+
+					"release failed: %v",
+				primary, releaseErr,
+			))
+		}
+
+		return fn.Err[WalletResp](primary)
+	}
+
+	change := mgrResp.TotalSelected - totalNeeded
+	if change < 0 {
+		return releaseAndFail(fmt.Errorf(
+			"selection shortfall: selected %d, need %d",
+			mgrResp.TotalSelected, totalNeeded,
+		))
+	}
+
+	if change > 0 && change <= req.DustLimit {
+		return releaseAndFail(fmt.Errorf(
+			"change %d is below dust limit %d; "+
+				"adjust send amount",
+			change, req.DustLimit,
+		))
+	}
+
+	if req.DryRun {
+		releaseErr := a.releaseManagerForfeitStrict(
+			ctx, reservedOutpoints,
+		)
+		if releaseErr != nil {
+			return fn.Err[WalletResp](fmt.Errorf(
+				"dry-run release failed, funds may "+
+					"be temporarily unavailable: "+
+					"%w", releaseErr,
+			))
+		}
+
+		return fn.Ok[WalletResp](&SendVTXOsResponse{
+			Status:        "preview",
+			SelectedCount: len(mgrResp.SelectedVTXOs),
+			TotalSelected: mgrResp.TotalSelected,
+			ChangeAmount:  change,
+		})
+	}
+
+	// Build the intent package.
+	forfeits := make(
+		[]types.ForfeitRequest, 0,
+		len(mgrResp.SelectedVTXOs),
+	)
+	for _, v := range mgrResp.SelectedVTXOs {
+		op := v.Outpoint
+		forfeits = append(forfeits, types.ForfeitRequest{
+			VTXOOutpoint: &op,
+			Amount:       v.Amount,
+		})
+	}
+
+	vtxoRequests, buildErr := a.buildSendVTXORequests(
+		ctx, req, change,
+	)
+	if buildErr != nil {
+		return releaseAndFail(buildErr)
+	}
+
+	// Register the intent with the round actor.
+	serviceKey := actormsg.RoundActorServiceKey()
+	roundRef := serviceKey.Ref(a.actorSystem)
+
+	future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
+		Forfeits: forfeits,
+		VTXOs:    vtxoRequests,
+	})
+	result := future.Await(ctx)
+	if result.IsErr() {
+		a.logger(ctx).WarnS(ctx,
+			"Round rejected send intent", result.Err())
+
+		return releaseAndFail(fmt.Errorf(
+			"round rejected send intent: %w",
+			result.Err(),
+		))
+	}
+
+	a.logger(ctx).InfoS(ctx, "Directed send intent registered",
+		slog.Int("forfeits", len(forfeits)),
+		slog.Int("recipient_vtxos", len(req.Recipients)),
+		slog.Int64("change", int64(change)))
+
+	return fn.Ok[WalletResp](&SendVTXOsResponse{
+		Status:        "submitted",
+		SelectedCount: len(mgrResp.SelectedVTXOs),
+		TotalSelected: mgrResp.TotalSelected,
+		ChangeAmount:  change,
+	})
+}
+
+// buildSendVTXORequests assembles VTXORequest entries for each
+// recipient plus an optional change output. The PkScript for each
+// VTXO is derived from the VTXO descriptor (owner key + operator
+// key + exit delay). Signing keys are left empty — they are derived
+// later by the round FSM during the signing ceremony.
+func (a *Ark) buildSendVTXORequests(ctx context.Context,
+	req *SendVTXOsRequest,
+	change btcutil.Amount) ([]types.VTXORequest, error) {
+
+	vtxoRequests := make(
+		[]types.VTXORequest, 0,
+		len(req.Recipients)+1,
+	)
+	for i, r := range req.Recipients {
+		desc, err := tree.NewVTXODescriptor(
+			r.Amount, r.OwnerKey,
+			req.OperatorKey, nil,
+			req.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"build recipient %d descriptor: %w",
+				i, err,
+			)
+		}
+
+		vtxoRequests = append(vtxoRequests, types.VTXORequest{
+			Amount:   r.Amount,
+			PkScript: desc.PkScript,
+			Expiry:   req.VTXOExitDelay,
+			OwnerKey: keychain.KeyDescriptor{
+				PubKey: r.OwnerKey,
+			},
+			IsOwner:     false,
+			OperatorKey: req.OperatorKey,
+		})
+	}
+
+	// Add change VTXO if needed. The sender owns the change.
+	if change > 0 {
+		changeOwnerKey, err := a.backend.DeriveNextKey(
+			ctx, types.VTXOOwnerKeyFamily,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"derive change owner key: %w", err,
+			)
+		}
+
+		changeDesc, err := tree.NewVTXODescriptor(
+			change, changeOwnerKey.PubKey,
+			req.OperatorKey, nil,
+			req.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"build change descriptor: %w", err,
+			)
+		}
+
+		vtxoRequests = append(
+			vtxoRequests, types.VTXORequest{
+				Amount:      change,
+				PkScript:    changeDesc.PkScript,
+				Expiry:      req.VTXOExitDelay,
+				OwnerKey:    *changeOwnerKey,
+				IsOwner:     true,
+				OperatorKey: req.OperatorKey,
+			},
+		)
+	}
+
+	return vtxoRequests, nil
+}
+
+// releaseManagerForfeitStrict releases forfeit reservations and returns
+// the error rather than swallowing it.
+func (a *Ark) releaseManagerForfeitStrict(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	_, err := a.askManager(
+		ctx, &actormsg.ReleaseForfeitRequest{
+			Outpoints: outpoints,
+		},
+	)
+
+	return err
 }
