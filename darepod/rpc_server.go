@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -638,43 +639,130 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			"at least one recipient is required")
 	}
 
-	// Validate recipients and compute total amount.
+	// Resolve each recipient's owner key from the proto Output.
+	recipients := make(
+		[]wallet.SendRecipient, 0, len(req.Recipients),
+	)
 	var totalAmount int64
-	for i, out := range req.Recipients {
-		if out.GetDestination() == nil {
-			return nil, status.Errorf(
-				codes.InvalidArgument,
-				"recipient %d: destination is "+
-					"required", i)
-		}
 
+	for i, out := range req.Recipients {
 		if out.AmountSat <= 0 {
 			return nil, status.Errorf(
 				codes.InvalidArgument,
 				"recipient %d: amount must be "+
-					"positive", i)
+					"positive", i,
+			)
 		}
+
+		ownerKey, err := resolveRecipientOwnerKey(out)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"recipient %d: %v", i, err,
+			)
+		}
+
+		recipients = append(recipients, wallet.SendRecipient{
+			OwnerKey: ownerKey,
+			Amount:   btcutil.Amount(out.AmountSat),
+		})
 
 		totalAmount += out.AmountSat
 	}
 
-	// For dry_run, validate inputs and return a preview.
-	if req.DryRun {
-		return &daemonrpc.SendVTXOResponse{
-			Status:         "preview",
-			TotalAmountSat: totalAmount,
-		}, nil
+	// Fetch operator terms for fee, dust limit, exit delay, and
+	// operator key.
+	terms, err := r.server.fetchOperatorTerms(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"unable to fetch operator terms: %v", err)
 	}
 
-	// TODO(roasbeef): In-round directed sends are not yet
-	// implemented. The wallet actor's RefreshVTXOsRequest only
-	// supports self-refresh (sending back to self), not directed
-	// transfers to external recipients. Once the round protocol
-	// supports recipient outputs, this handler should build a
-	// proper send request with the validated recipients.
-	return nil, status.Errorf(codes.Unimplemented,
-		"in-round directed sends are not yet implemented; "+
-			"use SendOOR for out-of-round transfers")
+	if !r.server.walletRef.IsSome() {
+		return nil, status.Errorf(codes.Internal,
+			"wallet actor not initialized")
+	}
+
+	wRef := r.server.walletRef.UnsafeFromSome()
+
+	sendReq := &wallet.SendVTXOsRequest{
+		Recipients:    recipients,
+		OperatorFee:   terms.MinOperatorFee,
+		DustLimit:     terms.DustLimit,
+		OperatorKey:   terms.PubKey,
+		VTXOExitDelay: terms.VTXOExitDelay,
+		DryRun:        req.DryRun,
+	}
+
+	future := wRef.Ask(ctx, sendReq)
+	result := future.Await(ctx)
+
+	resp, err := result.Unpack()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"send failed: %v", err)
+	}
+
+	sendResp, ok := resp.(*wallet.SendVTXOsResponse)
+	if !ok {
+		return nil, status.Errorf(codes.Internal,
+			"unexpected response type: %T", resp)
+	}
+
+	return &daemonrpc.SendVTXOResponse{
+		Status:          sendResp.Status,
+		TotalAmountSat:  totalAmount,
+		ChangeAmountSat: int64(sendResp.ChangeAmount),
+		SelectedCount:   int32(sendResp.SelectedCount),
+	}, nil
+}
+
+// resolveRecipientOwnerKey extracts the recipient's x-only public key
+// from a proto Output destination. Only pubkey destinations are
+// supported for directed sends — the recipient's owner key is needed
+// to construct the VTXO descriptor.
+func resolveRecipientOwnerKey(
+	out *daemonrpc.Output) (*btcec.PublicKey, error) {
+
+	switch d := out.Destination.(type) {
+	case *daemonrpc.Output_Pubkey:
+		if len(d.Pubkey) != schnorr.PubKeyBytesLen {
+			return nil, fmt.Errorf(
+				"pubkey must be %d bytes, got %d",
+				schnorr.PubKeyBytesLen,
+				len(d.Pubkey),
+			)
+		}
+
+		key, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"invalid pubkey: %w", err,
+			)
+		}
+
+		return key, nil
+
+	case *daemonrpc.Output_Address:
+		return nil, fmt.Errorf(
+			"address destinations are not supported " +
+				"for directed sends; use the " +
+				"recipient's x-only public key",
+		)
+
+	case *daemonrpc.Output_PkScript:
+		return nil, fmt.Errorf(
+			"pk_script destinations are not supported " +
+				"for directed sends; use the " +
+				"recipient's x-only public key",
+		)
+
+	default:
+		return nil, fmt.Errorf(
+			"unsupported destination type: %T",
+			out.Destination,
+		)
+	}
 }
 
 // SendOOR initiates an out-of-round transfer directly between the
