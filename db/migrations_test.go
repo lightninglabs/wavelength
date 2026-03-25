@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -196,12 +195,20 @@ func TestSqliteMigrationBackup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "regtest", chainName)
 
-	var mailboxTableName string
+	// The backup was taken at LatestMigrationVersion-1, so its
+	// schema_migrations version must equal LatestMigrationVersion-1.
+	// Checking the migration-tracking table directly avoids
+	// hardcoding any specific table name and keeps this test
+	// stable as new migrations are added — whatever the latest
+	// migration introduces, the backup must predate it.
+	var backupVersion uint
 	err = backupDB.QueryRowContext(ctx, `
-		SELECT name FROM sqlite_master
-		WHERE type='table' AND name='mailbox_envelopes'
-	`).Scan(&mailboxTableName)
-	require.ErrorIs(t, err, sql.ErrNoRows)
+		SELECT version FROM schema_migrations
+	`).Scan(&backupVersion)
+	require.NoError(t, err)
+	require.Equal(t, LatestMigrationVersion-1, backupVersion,
+		"backup should be at exactly LatestMigrationVersion-1 "+
+			"since that was the pre-migration state")
 }
 
 // TestDirtySqliteVersion tests that if a migration fails and leaves a SQLite
