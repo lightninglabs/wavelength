@@ -1,3 +1,14 @@
+CREATE TABLE account_types (
+    account_type TEXT PRIMARY KEY
+);
+
+CREATE TABLE accounts (
+    account_id TEXT PRIMARY KEY,
+    account_name TEXT NOT NULL,
+    account_type TEXT NOT NULL
+        REFERENCES account_types(account_type)
+);
+
 CREATE TABLE ask_results (
     -- promise_id links to the original Ask message.
     promise_id TEXT PRIMARY KEY,
@@ -189,6 +200,25 @@ CREATE INDEX idx_boarding_intents_pk_script
 CREATE INDEX idx_boarding_intents_status
     ON boarding_intents(status);
 
+CREATE INDEX idx_client_ledger_created
+    ON ledger_entries(created_at DESC);
+
+CREATE INDEX idx_client_ledger_credit
+    ON ledger_entries(credit_account);
+
+CREATE INDEX idx_client_ledger_debit
+    ON ledger_entries(debit_account);
+
+CREATE INDEX idx_client_ledger_event_type
+    ON ledger_entries(event_type);
+
+CREATE UNIQUE INDEX idx_client_ledger_idempotent
+    ON ledger_entries(round_id, event_type, debit_account, credit_account)
+    WHERE round_id IS NOT NULL;
+
+CREATE INDEX idx_client_ledger_round
+    ON ledger_entries(round_id);
+
 CREATE INDEX idx_client_tree_txids_tree
     ON client_tree_txids(round_id, client_key, tree_level);
 
@@ -255,6 +285,39 @@ CREATE INDEX idx_vtxos_spent
 
 CREATE INDEX idx_vtxos_status
     ON vtxos(status);
+
+CREATE TABLE ledger_entries (
+    entry_id INTEGER PRIMARY KEY,
+
+    debit_account TEXT NOT NULL
+        REFERENCES accounts(account_id),
+
+    credit_account TEXT NOT NULL
+        REFERENCES accounts(account_id),
+
+    -- amount_sat is the entry amount in satoshis.
+    amount_sat BIGINT NOT NULL CHECK (amount_sat > 0),
+
+    -- round_id optionally links this entry to a round.
+    round_id BLOB,
+
+    -- event_type classifies the entry.
+    event_type TEXT NOT NULL
+        REFERENCES ledger_event_types(event_type),
+
+    -- description is a human-readable note.
+    description TEXT NOT NULL,
+
+    -- created_at is the Unix timestamp.
+    created_at BIGINT NOT NULL,
+
+    -- Debit and credit must target different accounts.
+    CHECK (debit_account != credit_account)
+);
+
+CREATE TABLE ledger_event_types (
+    event_type TEXT PRIMARY KEY
+);
 
 CREATE TABLE mailbox_messages (
     -- id is a UUIDv7 providing time-ordering and uniqueness.

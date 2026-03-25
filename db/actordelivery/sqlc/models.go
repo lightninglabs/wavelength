@@ -16,50 +16,6 @@ type AskResult struct {
 	ExpiresAt  int64
 }
 
-type BoardingAddress struct {
-	PkScript            []byte
-	AddressString       string
-	ClientPubkey        []byte
-	ClientKeyFamily     int32
-	ClientKeyIndex      int32
-	OperatorPubkey      []byte
-	ExitDelay           int32
-	LastConfirmedHeight int32
-	CreationTime        int64
-}
-
-type BoardingIntent struct {
-	OutpointHash   []byte
-	OutpointIndex  int32
-	PkScript       []byte
-	Amount         int64
-	ConfHeight     int32
-	ConfHash       []byte
-	ConfTx         []byte
-	Status         string
-	CreationTime   int64
-	LastUpdateTime int64
-}
-
-type BoardingStatus struct {
-	ID         int64
-	StatusName string
-}
-
-type ChainInfo struct {
-	ID          int64
-	ChainName   string
-	GenesisHash []byte
-}
-
-type ClientTreeTxid struct {
-	Txid        []byte
-	RoundID     string
-	ClientKey   []byte
-	TreeLevel   int32
-	OutputIndex int32
-}
-
 type DeadLetter struct {
 	ID            string
 	Source        string
@@ -96,48 +52,6 @@ type MailboxMessage struct {
 	CreatedAt       int64
 }
 
-type OorPackage struct {
-	SessionID []byte
-	Direction int32
-	ArkPsbt   []byte
-	CreatedAt int64
-	UpdatedAt int64
-}
-
-type OorPackageCheckpoint struct {
-	SessionID       []byte
-	CheckpointIndex int32
-	CheckpointPsbt  []byte
-	CreatedAt       int64
-}
-
-type OorPackageDirection struct {
-	Direction int64
-	Name      string
-}
-
-type OorRecipientCursor struct {
-	RecipientPkScript []byte
-	LastEventID       int64
-	UpdatedAt         int64
-	LastSessionID     []byte
-}
-
-type OorVtxoBinding struct {
-	OutpointHash  []byte
-	OutpointIndex int32
-	SessionID     []byte
-	OutputIndex   int32
-	LinkKind      int32
-	CreatedAt     int64
-	UpdatedAt     int64
-}
-
-type OorVtxoBindingLinkKind struct {
-	LinkKind int64
-	Name     string
-}
-
 type OutboxMessage struct {
 	ID               string
 	SourceActorID    string
@@ -154,106 +68,9 @@ type OutboxMessage struct {
 	CompletedAt      sql.NullInt64
 }
 
-type OwnedReceiveScript struct {
-	PkScript        []byte
-	ClientKeyFamily int64
-	ClientKeyIndex  int64
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	ExitDelay       int64
-	Source          int32
-	CreatedAt       int64
-	LastUsedAt      sql.NullInt64
-}
-
-type OwnedReceiveScriptSource struct {
-	Source int64
-	Name   string
-}
-
 type ProcessedMessage struct {
 	ID          string
 	ActorID     string
 	ProcessedAt int64
 	ExpiresAt   int64
-}
-
-type Round struct {
-	RoundID               string
-	StartHeight           int32
-	ConfirmationHeight    sql.NullInt32
-	ConfirmationBlockHash []byte
-	CommitmentTx          []byte
-	CommitmentTxid        []byte
-	VtxtTree              []byte
-	Status                string
-	CreationTime          int64
-	LastUpdateTime        int64
-}
-
-type RoundBoardingIntent struct {
-	RoundID        string
-	OutpointHash   []byte
-	OutpointIndex  int32
-	ClientKey      []byte
-	OperatorKey    []byte
-	ExitDelay      int32
-	TxProof        []byte
-	InputIndex     sql.NullInt32
-	InputSignature []byte
-}
-
-type RoundClientTree struct {
-	RoundID   string
-	ClientKey []byte
-	TreeData  []byte
-}
-
-type RoundStatus struct {
-	ID         int64
-	StatusName string
-}
-
-type RoundVtxoRequest struct {
-	RoundID          string
-	RequestIndex     int32
-	Amount           int64
-	PkScript         []byte
-	Expiry           int32
-	ClientPubkey     []byte
-	ClientKeyFamily  int32
-	ClientKeyIndex   int32
-	OwnsClientKey    bool
-	OperatorPubkey   []byte
-	SigningKeyFamily int32
-	SigningKeyIndex  int32
-	SigningPubkey    []byte
-}
-
-type Vtxo struct {
-	OutpointHash    []byte
-	OutpointIndex   int32
-	RoundID         string
-	Amount          int64
-	PkScript        []byte
-	Expiry          int32
-	ClientKeyFamily int32
-	ClientKeyIndex  int32
-	ClientPubkey    []byte
-	OperatorPubkey  []byte
-	TreePath        []byte
-	BatchExpiry     int32
-	TreeDepth       int32
-	CreatedHeight   int32
-	CommitmentTxid  []byte
-	Spent           bool
-	Status          int32
-	ForfeitRoundID  sql.NullString
-	ForfeitTx       []byte
-	ForfeitTxid     []byte
-	ReplacedByHash  []byte
-	ReplacedByIndex sql.NullInt32
-	CreationTime    int64
-	LastUpdateTime  int64
-	ChainDepth      int32
 }

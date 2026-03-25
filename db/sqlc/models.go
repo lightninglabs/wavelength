@@ -8,6 +8,16 @@ import (
 	"database/sql"
 )
 
+type Account struct {
+	AccountID   string
+	AccountName string
+	AccountType string
+}
+
+type AccountType struct {
+	AccountType string
+}
+
 type BoardingAddress struct {
 	PkScript            []byte
 	AddressString       string
@@ -50,6 +60,21 @@ type ClientTreeTxid struct {
 	ClientKey   []byte
 	TreeLevel   int32
 	OutputIndex int32
+}
+
+type LedgerEntry struct {
+	EntryID       int64
+	DebitAccount  string
+	CreditAccount string
+	AmountSat     int64
+	RoundID       []byte
+	EventType     string
+	Description   string
+	CreatedAt     int64
+}
+
+type LedgerEventType struct {
+	EventType string
 }
 
 type OorPackage struct {
