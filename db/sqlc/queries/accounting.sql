@@ -68,6 +68,10 @@ WHERE debit_account = sqlc.arg('account_id')
 -- name: CountLedgerEntries :one
 SELECT COUNT(*) FROM ledger_entries;
 
+-- name: CountLedgerEntriesByEventType :one
+SELECT COUNT(*) FROM ledger_entries
+WHERE event_type = $1;
+
 -- name: ListAccounts :many
 SELECT account_id, account_name, account_type
 FROM accounts

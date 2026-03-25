@@ -14,6 +14,7 @@ type Querier interface {
 	CountAllRounds(ctx context.Context) (int64, error)
 	CountAllVTXOs(ctx context.Context) (int64, error)
 	CountLedgerEntries(ctx context.Context) (int64, error)
+	CountLedgerEntriesByEventType(ctx context.Context, eventType string) (int64, error)
 	CountMailboxEnvelopes(ctx context.Context, recipient string) (int64, error)
 	CountRoundsByStatus(ctx context.Context, status string) (int64, error)
 	CountVTXOsByStatus(ctx context.Context, status string) (int64, error)
