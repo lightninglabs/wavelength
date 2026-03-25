@@ -8,10 +8,33 @@ import (
 	"database/sql"
 )
 
+type Account struct {
+	AccountID   string
+	AccountName string
+	AccountType string
+}
+
+type AccountType struct {
+	AccountType string
+}
+
 type ChainInfo struct {
 	ID          int64
 	ChainName   string
 	GenesisHash []byte
+}
+
+type FeeScheduleHistory struct {
+	ID                    int64
+	AnnualRate            float64
+	BaseMarginSat         int64
+	UtilThresholdBps      int32
+	UtilSpreadDelta0Bps   int32
+	UtilSpreadDelta1Bps   int32
+	MinRefreshDeltaBlocks int32
+	MinViablePolicy       string
+	MinViablePct          int32
+	CreatedAt             int64
 }
 
 type IndexerReceiveScript struct {
@@ -39,6 +62,21 @@ type IndexerVtxoEvent struct {
 	RelativeExpiry    int32
 	Origin            string
 	CommitmentTxid    []byte
+}
+
+type LedgerEntry struct {
+	EntryID       int64
+	DebitAccount  string
+	CreditAccount string
+	AmountSat     int64
+	RoundID       []byte
+	EventType     string
+	Description   string
+	CreatedAt     int64
+}
+
+type LedgerEventType struct {
+	EventType string
 }
 
 type MailboxAckCursor struct {
@@ -126,6 +164,14 @@ type RoundVtxoTree struct {
 	BatchOutputIndex int32
 }
 
+type UtxoClassification struct {
+	Classification string
+}
+
+type UtxoEvent struct {
+	Event string
+}
+
 type Vtxo struct {
 	OutpointHash      []byte
 	OutpointIndex     int32
@@ -177,4 +223,15 @@ type VtxoTreeNodeOutput struct {
 	OutputIndex      int32
 	Value            int64
 	PkScript         []byte
+}
+
+type WalletUtxoLog struct {
+	EntryID       int64
+	OutpointHash  []byte
+	OutpointIndex int32
+	AmountSat     int64
+	Event         string
+	BlockHeight   int32
+	ClassifiedAs  string
+	CreatedAt     int64
 }
