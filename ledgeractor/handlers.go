@@ -191,18 +191,3 @@ func (a *LedgerActor) handleExitCost(
 	)
 }
 
-// handleBlockEpoch processes a new block notification. This is a
-// placeholder for future UTXO set diffing to track wallet
-// balance changes.
-func (a *LedgerActor) handleBlockEpoch(
-	ctx context.Context, msg *BlockEpochMsg) error {
-
-	a.log.DebugS(ctx, "Block epoch received",
-		slog.Uint64("height", uint64(msg.BlockHeight)),
-	)
-
-	// TODO(fees): implement UTXO set diffing here once
-	// wallet UTXO listing is wired.
-
-	return nil
-}
