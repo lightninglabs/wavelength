@@ -244,7 +244,7 @@ func NewDurableActor[M TLVMessage, R any](
 // Start initiates the actor's message processing loop.
 func (a *DurableActor[M, R]) Start() {
 	a.startOnce.Do(func() {
-		log.DebugS(a.ctx, "Starting durable actor", "actor_id", a.id)
+		logger(a.ctx).DebugS(a.ctx, "Starting durable actor", "actor_id", a.id)
 
 		if a.wg != nil {
 			a.wg.Add(1)
@@ -269,7 +269,7 @@ func (a *DurableActor[M, R]) process() {
 		if !ok || delivery == nil {
 			// This shouldn't happen for properly configured durable
 			// actors, but handle gracefully.
-			log.WarnS(a.ctx, "No delivery found in envelope", nil,
+			logger(a.ctx).WarnS(a.ctx, "No delivery found in envelope", nil,
 				"actor_id", a.id,
 				"msg_type", env.message.MessageType())
 
@@ -293,12 +293,12 @@ func (a *DurableActor[M, R]) process() {
 		defer cancel()
 
 		if err := stoppable.OnStop(cleanupCtx); err != nil {
-			log.WarnS(a.ctx, "Durable actor cleanup error",
+			logger(a.ctx).WarnS(a.ctx, "Durable actor cleanup error",
 				err, "actor_id", a.id)
 		}
 	}
 
-	log.DebugS(a.ctx, "Durable actor terminated", "actor_id", a.id)
+	logger(a.ctx).DebugS(a.ctx, "Durable actor terminated", "actor_id", a.id)
 }
 
 // processDelivery handles a single message delivery with deduplication,
@@ -317,7 +317,7 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	}
 	defer cancel()
 
-	log.TraceS(processCtx, "Durable actor processing message",
+	logger(processCtx).TraceS(processCtx, "Durable actor processing message",
 		"actor_id", a.id,
 		"msg_type", delivery.Message.MessageType(),
 		"delivery_id", delivery.ID,
@@ -327,12 +327,12 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 	// Check deduplication - skip if already processed.
 	processed, err := a.store.IsProcessed(processCtx, delivery.ID)
 	if err != nil {
-		log.WarnS(processCtx, "Failed to check deduplication", err,
+		logger(processCtx).WarnS(processCtx, "Failed to check deduplication", err,
 			"actor_id", a.id,
 			"delivery_id", delivery.ID)
 		// Continue processing on error - idempotent handling should be safe.
 	} else if processed {
-		log.DebugS(processCtx, "Skipping duplicate message",
+		logger(processCtx).DebugS(processCtx, "Skipping duplicate message",
 			"actor_id", a.id,
 			"delivery_id", delivery.ID)
 
@@ -342,12 +342,12 @@ func (a *DurableActor[M, R]) processDelivery(delivery *Delivery[M, R]) {
 			processCtx, delivery.ID, delivery.LeaseToken,
 		)
 		if err != nil {
-			log.WarnS(processCtx, "Failed to ack duplicate", err,
+			logger(processCtx).WarnS(processCtx, "Failed to ack duplicate", err,
 				"delivery_id", delivery.ID)
 			return
 		}
 		if rows == 0 {
-			log.WarnS(processCtx, "Duplicate ack failed (lease expired)",
+			logger(processCtx).WarnS(processCtx, "Duplicate ack failed (lease expired)",
 				ErrLeaseExpired,
 				"delivery_id", delivery.ID)
 		}
@@ -398,13 +398,13 @@ func (a *DurableActor[M, R]) processInTransaction(
 	})
 
 	if err != nil {
-		log.WarnS(ctx, "Transaction failed, nacking message", err,
+		logger(ctx).WarnS(ctx, "Transaction failed, nacking message", err,
 			"actor_id", a.id,
 			"delivery_id", delivery.ID)
 
 		// Transaction failed - Nack for retry.
 		if nackErr := delivery.Nack(ctx, err, 10*time.Second); nackErr != nil {
-			log.WarnS(ctx, "Failed to nack after tx failure",
+			logger(ctx).WarnS(ctx, "Failed to nack after tx failure",
 				nackErr,
 				"delivery_id", delivery.ID)
 		}
@@ -447,7 +447,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 			if err := a.writeAskResponseToOutbox(
 				ctx, delivery, result, a.store,
 			); err != nil {
-				log.WarnS(ctx,
+				logger(ctx).WarnS(ctx,
 					"Failed to write ask response to "+
 						"outbox, nacking for retry",
 					err,
@@ -459,7 +459,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 				if nackErr := delivery.Nack(
 					ctx, err, 5*time.Second,
 				); nackErr != nil {
-					log.WarnS(ctx,
+					logger(ctx).WarnS(ctx,
 						"Failed to nack after "+
 							"outbox write failure",
 						nackErr,
@@ -471,7 +471,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 		}
 
 		if err := delivery.Ack(ctx, result); err != nil {
-			log.WarnS(ctx, "Failed to ack Ask message", err,
+			logger(ctx).WarnS(ctx, "Failed to ack Ask message", err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
 
@@ -481,7 +481,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 		if err := a.store.MarkProcessed(
 			ctx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
-			log.WarnS(ctx, "Failed to mark processed", err,
+			logger(ctx).WarnS(ctx, "Failed to mark processed", err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
 		}
@@ -511,7 +511,7 @@ func (a *DurableActor[M, R]) processWithoutTransaction(
 		if err := a.store.MarkProcessed(
 			ctx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
-			log.WarnS(ctx, "Failed to mark processed", err,
+			logger(ctx).WarnS(ctx, "Failed to mark processed", err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
 			// Continue anyway - dedup is defense in depth.
@@ -532,7 +532,7 @@ func (a *DurableActor[M, R]) executeBehaviorSafely(
 		if r := recover(); r != nil {
 			err := fmt.Errorf("panic: %v", r)
 
-			log.ErrorS(ctx, "Panic during message processing",
+			logger(ctx).ErrorS(ctx, "Panic during message processing",
 				err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
@@ -656,7 +656,7 @@ func (a *DurableActor[M, R]) handleResult(
 		if err := a.writeAskResponseToOutbox(
 			ctx, delivery, result, a.store,
 		); err != nil {
-			log.WarnS(ctx,
+			logger(ctx).WarnS(ctx,
 				"Failed to write ask response to outbox, "+
 					"nacking for retry",
 				err,
@@ -667,7 +667,7 @@ func (a *DurableActor[M, R]) handleResult(
 			if nackErr := delivery.Nack(
 				ctx, err, 5*time.Second,
 			); nackErr != nil {
-				log.WarnS(ctx,
+				logger(ctx).WarnS(ctx,
 					"Failed to nack after outbox write "+
 						"failure",
 					nackErr,
@@ -681,14 +681,14 @@ func (a *DurableActor[M, R]) handleResult(
 		if err := a.store.MarkProcessed(
 			ctx, delivery.ID, a.id, a.deduplicationTTL,
 		); err != nil {
-			log.WarnS(ctx, "Failed to mark DurableAsk processed",
+			logger(ctx).WarnS(ctx, "Failed to mark DurableAsk processed",
 				err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
 		}
 
 		if err := delivery.Ack(ctx, result); err != nil {
-			log.WarnS(ctx, "Failed to ack DurableAsk message",
+			logger(ctx).WarnS(ctx, "Failed to ack DurableAsk message",
 				err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
@@ -701,7 +701,7 @@ func (a *DurableActor[M, R]) handleResult(
 	// The error is persisted as part of the result.
 	if delivery.IsAsk() {
 		if err := delivery.Ack(ctx, result); err != nil {
-			log.WarnS(ctx, "Failed to ack Ask message", err,
+			logger(ctx).WarnS(ctx, "Failed to ack Ask message", err,
 				"actor_id", a.id,
 				"delivery_id", delivery.ID)
 		}
@@ -715,7 +715,7 @@ func (a *DurableActor[M, R]) handleResult(
 		retry, delay := a.tellRetryPolicy(err, delivery.Attempts)
 		if retry {
 			if nackErr := delivery.Nack(ctx, err, delay); nackErr != nil {
-				log.WarnS(ctx, "Failed to nack Tell message",
+				logger(ctx).WarnS(ctx, "Failed to nack Tell message",
 					nackErr,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
@@ -727,7 +727,7 @@ func (a *DurableActor[M, R]) handleResult(
 			if dlErr := a.store.MoveToDeadLetter(
 				ctx, delivery.ID, reason,
 			); dlErr != nil {
-				log.WarnS(ctx, "Failed to dead-letter Tell message",
+				logger(ctx).WarnS(ctx, "Failed to dead-letter Tell message",
 					dlErr,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
@@ -737,7 +737,7 @@ func (a *DurableActor[M, R]) handleResult(
 			if delErr := a.store.DeleteMessage(
 				ctx, delivery.ID,
 			); delErr != nil {
-				log.WarnS(ctx, "Failed to delete dead-lettered message",
+				logger(ctx).WarnS(ctx, "Failed to delete dead-lettered message",
 					delErr,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
@@ -749,7 +749,7 @@ func (a *DurableActor[M, R]) handleResult(
 
 	// Success - Ack the message.
 	if err := delivery.Ack(ctx, result); err != nil {
-		log.WarnS(ctx, "Failed to ack Tell message", err,
+		logger(ctx).WarnS(ctx, "Failed to ack Tell message", err,
 			"actor_id", a.id,
 			"delivery_id", delivery.ID)
 	}
@@ -776,7 +776,7 @@ func (a *DurableActor[M, R]) heartbeat(
 		case <-ticker.C:
 			// Extend the lease.
 			if err := delivery.Extend(ctx, a.leaseDuration); err != nil {
-				log.WarnS(ctx, "Failed to extend lease",
+				logger(ctx).WarnS(ctx, "Failed to extend lease",
 					err,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
@@ -784,7 +784,7 @@ func (a *DurableActor[M, R]) heartbeat(
 				return
 			}
 
-			log.TraceS(ctx, "Extended lease for delivery",
+			logger(ctx).TraceS(ctx, "Extended lease for delivery",
 				"actor_id", a.id,
 				"delivery_id", delivery.ID,
 				"new_expiry", delivery.LeaseUntil)
@@ -849,7 +849,7 @@ func (a *DurableActor[M, R]) writeAskResponseToOutbox(
 		return fmt.Errorf("enqueue outbox: %w", err)
 	}
 
-	log.DebugS(ctx, "Wrote DurableAsk response to outbox",
+	logger(ctx).DebugS(ctx, "Wrote DurableAsk response to outbox",
 		"actor_id", a.id,
 		"delivery_id", delivery.ID,
 		"callback_actor_id", delivery.CallbackActorID,
@@ -889,7 +889,7 @@ func (ref *durableActorRefImpl[M, R]) ID() string {
 // Tell sends a message without waiting for a response. Returns an error if
 // the message could not be durably enqueued.
 func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
-	log.TraceS(ctx, "Sending Tell to durable actor",
+	logger(ctx).TraceS(ctx, "Sending Tell to durable actor",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
@@ -903,7 +903,7 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 	if !ok {
 		// Check if actor is terminated.
 		if ref.actor.ctx.Err() != nil {
-			log.DebugS(ctx, "Tell failed, routing to DLO",
+			logger(ctx).DebugS(ctx, "Tell failed, routing to DLO",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 
@@ -928,7 +928,7 @@ func (ref *durableActorRefImpl[M, R]) Tell(ctx context.Context, msg M) error {
 
 // Ask sends a message and returns a Future for the response.
 func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] {
-	log.TraceS(ctx, "Sending Ask to durable actor",
+	logger(ctx).TraceS(ctx, "Sending Ask to durable actor",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType())
 
@@ -936,7 +936,7 @@ func (ref *durableActorRefImpl[M, R]) Ask(ctx context.Context, msg M) Future[R] 
 
 	// Check if actor is already terminated.
 	if ref.actor.ctx.Err() != nil {
-		log.DebugS(ctx, "Ask failed, actor already terminated",
+		logger(ctx).DebugS(ctx, "Ask failed, actor already terminated",
 			"actor_id", ref.actor.id,
 			"msg_type", msg.MessageType())
 
@@ -1016,7 +1016,7 @@ func (ref *durableActorRefImpl[M, R]) DurableAsk(
 		return fmt.Errorf("correlation ID is required for DurableAsk")
 	}
 
-	log.TraceS(ctx, "Sending DurableAsk to durable actor",
+	logger(ctx).TraceS(ctx, "Sending DurableAsk to durable actor",
 		"actor_id", ref.actor.id,
 		"msg_type", msg.MessageType(),
 		"callback_actor_id", params.CallbackActorID,
@@ -1033,7 +1033,7 @@ func (ref *durableActorRefImpl[M, R]) DurableAsk(
 	ok := ref.actor.mailbox.Send(ctx, env)
 	if !ok {
 		if ref.actor.ctx.Err() != nil {
-			log.DebugS(ctx, "DurableAsk failed, actor terminated",
+			logger(ctx).DebugS(ctx, "DurableAsk failed, actor terminated",
 				"actor_id", ref.actor.id,
 				"msg_type", msg.MessageType())
 

@@ -101,7 +101,8 @@ func (r *RPCServer) newOORReceiveScriptStore() (
 	}
 
 	dbStore := db.NewStore(
-		r.server.db.DB, r.server.db.Queries, r.server.db.Backend(), log,
+		r.server.db.DB, r.server.db.Queries, r.server.db.Backend(),
+		r.server.subLogger(db.Subsystem),
 	)
 
 	return dbStore.NewOORArtifactStore(clock.NewDefaultClock()), nil

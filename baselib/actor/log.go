@@ -1,26 +1,17 @@
 package actor
 
 import (
+	"context"
+
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 )
 
 // Subsystem defines the logging code for this subsystem.
 const Subsystem = "ACTR"
 
-// log is a logger that is initialized with no output filters. This means the
-// package will not perform any logging by default until the caller requests
-// it.
-var log = btclog.Disabled
-
-// DisableLog disables all library log output. Logging output is disabled by
-// default until UseLogger is called.
-func DisableLog() {
-	UseLogger(btclog.Disabled)
-}
-
-// UseLogger uses a specified Logger to output package logging info. This
-// should be used in preference to SetLogWriter if the caller is also using
-// btclog.
-func UseLogger(logger btclog.Logger) {
-	log = logger
+// logger resolves the logger attached to ctx, falling back to
+// btclog.Disabled when no logger was configured for this actor runtime.
+func logger(ctx context.Context) btclog.Logger {
+	return build.LoggerFromContext(ctx)
 }

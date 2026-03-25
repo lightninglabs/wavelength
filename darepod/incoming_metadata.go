@@ -8,6 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/lightninglabs/darepo-client/arkrpc"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightninglabs/darepo-client/oor"
 )
@@ -26,7 +27,9 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 			"must be provided")
 	}
 
-	log.DebugS(ctx, "Resolving incoming metadata from indexer",
+	logger := build.LoggerFromContext(ctx)
+
+	logger.DebugS(ctx, "Resolving incoming metadata from indexer",
 		slog.String("session_id", chainhash.Hash(sessionID).String()),
 		slog.Int("output_index", int(recipient.OutputIndex)),
 		slog.String("pk_script", fmt.Sprintf("%x", recipient.PkScript)))
@@ -58,7 +61,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 				continue
 			}
 
-			log.DebugS(ctx, "Matched incoming indexer VTXO",
+			logger.DebugS(ctx, "Matched incoming indexer VTXO",
 				slog.String("session_id",
 					chainhash.Hash(sessionID).String()),
 				slog.Int("output_index",
@@ -81,7 +84,7 @@ func ResolveIncomingMetadataFromIndexer(ctx context.Context,
 		cursor = nextCursor
 	}
 
-	log.DebugS(ctx, "Incoming indexer VTXO not found",
+	logger.DebugS(ctx, "Incoming indexer VTXO not found",
 		slog.String("session_id", chainhash.Hash(sessionID).String()),
 		slog.Int("output_index", int(recipient.OutputIndex)))
 

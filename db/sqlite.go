@@ -60,7 +60,7 @@ type SqliteConfig struct {
 	DatabaseFileName string `long:"dbfile" description:"The full path to the database."`
 
 	// Log is an optional logger for the SQLite store. When None, the store
-	// falls back to the package-level logger set via UseLogger.
+	// falls back to the explicit constructor logger.
 	Log fn.Option[btclog.Logger]
 }
 

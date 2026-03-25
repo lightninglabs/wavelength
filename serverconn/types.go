@@ -4,10 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -121,6 +123,9 @@ type ConnectorConfig struct {
 	// transport-native durable unary messages such as indexer script-scope
 	// queries. When nil, those message types are rejected.
 	DurableUnaryBuilder DurableUnaryRequestBuilder
+
+	// Log is an optional logger for this connector instance.
+	Log fn.Option[btclog.Logger]
 
 	// PullMaxEnvelopes bounds the number of envelopes returned per Pull
 	// call.

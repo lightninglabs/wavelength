@@ -60,7 +60,7 @@ type PostgresConfig struct {
 	RequireSSL         bool          `long:"requiressl" description:"Whether to require using SSL (mode: require) when connecting to the server."`
 
 	// Log is an optional logger for the Postgres store. When None, the
-	// store falls back to the package-level logger set via UseLogger.
+	// store falls back to the explicit constructor logger.
 	Log fn.Option[btclog.Logger]
 }
 

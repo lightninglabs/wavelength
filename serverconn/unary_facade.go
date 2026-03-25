@@ -114,7 +114,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 	if err != nil {
 		f.connector.removeWaiter(corrID)
 
-		log.WarnS(ctx, "Unary send failed", err,
+		f.connector.log.WarnS(ctx, "Unary send failed", err,
 			slog.String("service", method.Service),
 			slog.String("method", method.Method))
 
@@ -131,14 +131,14 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 			Status: resp.Status,
 		}
 
-		log.WarnS(ctx, "Unary send returned non-OK status", sendErr,
+		f.connector.log.WarnS(ctx, "Unary send returned non-OK status", sendErr,
 			slog.String("service", method.Service),
 			slog.String("method", method.Method))
 
 		return mailboxrpc.SendResult{}, sendErr
 	}
 
-	log.DebugS(ctx, "Sent unary RPC request",
+	f.connector.log.DebugS(ctx, "Sent unary RPC request",
 		slog.String("service", method.Service),
 		slog.String("method", method.Method),
 		slog.String("correlation_id", correlationID))

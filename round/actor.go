@@ -271,10 +271,11 @@ type RoundClientConfig struct {
 // The FSM uses interfaces directly and calls lib package functions as needed.
 // Chain operations are handled via outbox messages (not direct calls).
 func NewRoundClientActor(cfg *RoundClientConfig) fn.Result[*RoundClientActor] {
-	// Use the configured logger, falling back to the global package logger.
+	// Use the configured logger, falling back to a disabled logger during
+	// construction when no instance logger was provided.
 	actorLog := cfg.Logger
 	if actorLog == nil {
-		actorLog = log
+		actorLog = btclog.Disabled
 	}
 
 	// Create base FSM environment template with direct interface

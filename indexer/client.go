@@ -158,20 +158,25 @@ const (
 
 // New creates an Indexer client wrapper. The signer is used for all
 // proof-of-control operations; its SignSchnorr method receives the
-// pkScript so it can select the appropriate key.
+// pkScript so it can select the appropriate key. The optional log is
+// used for constructor and runtime logging; if unset, the client falls
+// back to context-based logging.
 func New(rpc mailboxrpc.RPCClient, signer SchnorrSigner,
-	serverID string, principal string) *Client {
-
-	log.InfoS(context.TODO(), "Initializing indexer client",
-		slog.String("server_id", serverID),
-		slog.String("principal", principal))
+	serverID string, principal string, log fn.Option[btclog.Logger]) *Client {
 
 	c := &Client{
 		rpc:       arkrpc.NewIndexerServiceMailboxClient(rpc),
 		signer:    signer,
 		serverID:  serverID,
 		principal: principal,
+		Log:       log,
 	}
+
+	c.logger(context.Background()).InfoS(
+		context.Background(), "Initializing indexer client",
+		slog.String("server_id", serverID),
+		slog.String("principal", principal),
+	)
 
 	return c
 }

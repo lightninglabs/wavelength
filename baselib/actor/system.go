@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -21,6 +23,10 @@ type stoppable interface {
 type SystemConfig struct {
 	// MailboxCapacity is the default capacity for actor mailboxes.
 	MailboxCapacity int
+
+	// Log is an optional logger for the actor runtime. When None, actor-system
+	// logs are disabled unless a logger is attached to a derived context.
+	Log fn.Option[btclog.Logger]
 }
 
 // DefaultConfig returns a default configuration for the ActorSystem.
@@ -68,7 +74,10 @@ func NewActorSystem() *ActorSystem {
 
 // NewActorSystemWithConfig creates a new actor system with custom configuration
 func NewActorSystemWithConfig(config SystemConfig) *ActorSystem {
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx := build.ContextWithLogger(
+		context.Background(), config.Log.UnwrapOr(btclog.Disabled),
+	)
+	ctx, cancel := context.WithCancel(baseCtx)
 
 	// Initialize the core ActorSystem components.
 	system := &ActorSystem{
@@ -167,7 +176,7 @@ func RegisterWithSystem[M Message, R any](as *ActorSystem, id string, key Servic
 		return newStoppedActorRef[M, R](id)
 	}
 
-	log.DebugS(as.ctx, "Actor registered with system",
+	logger(as.ctx).DebugS(as.ctx, "Actor registered with system",
 		"actor_id", id,
 		"service_key", key.name)
 
@@ -211,7 +220,7 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	}
 	as.mu.RUnlock()
 
-	log.InfoS(ctx, "Actor system shutting down",
+	logger(ctx).InfoS(ctx, "Actor system shutting down",
 		"num_actors", len(actorsToStop))
 
 	// Notify all managed actors to stop. Actor.Stop() is non-blocking.
@@ -242,7 +251,7 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 	select {
 	case <-done:
 		// All actors have finished processing.
-		log.InfoS(ctx, "Actor system shutdown completed")
+		logger(ctx).InfoS(ctx, "Actor system shutdown completed")
 
 		return nil
 
@@ -250,7 +259,7 @@ func (as *ActorSystem) Shutdown(ctx context.Context) error {
 		// Context expired before all actors finished—some goroutines
 		// are still running and may leak. This indicates either
 		// misbehaving actors or insufficient shutdown timeout.
-		log.ErrorS(ctx, "Actor system shutdown incomplete, "+
+		logger(ctx).ErrorS(ctx, "Actor system shutdown incomplete, "+
 			"some actors may have leaked", ctx.Err())
 
 		return ctx.Err()
@@ -275,7 +284,7 @@ func (as *ActorSystem) StopAndRemoveActor(id string) bool {
 	// Remove from the system's management.
 	delete(as.actors, id)
 
-	log.DebugS(as.ctx, "Actor stopped and removed from system",
+	logger(as.ctx).DebugS(as.ctx, "Actor stopped and removed from system",
 		"actor_id", id)
 
 	return true

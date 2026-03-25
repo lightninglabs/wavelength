@@ -129,7 +129,7 @@ func (s *ReceiveIdle) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
@@ -154,7 +154,7 @@ func (s *ReceiveResolving) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
@@ -224,7 +224,7 @@ func (s *ReceiveNotified) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 
@@ -238,7 +238,7 @@ func (s *ReceiveCompleted) ProcessEvent(ctx context.Context, event Event,
 
 	_ = env
 
-	log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+	logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
 		slog.String("state", fmt.Sprintf("%T", s)),
 		slog.String("event_type", fmt.Sprintf("%T", event)))
 
@@ -273,7 +273,7 @@ func (s *ReceiveAwaitingAck) ProcessEvent(ctx context.Context, event Event,
 		}, nil
 
 	default:
-		log.WarnS(ctx, "Unexpected event in receive FSM", nil,
+		logger(ctx).WarnS(ctx, "Unexpected event in receive FSM", nil,
 			slog.String("state", fmt.Sprintf("%T", s)),
 			slog.String("event_type", fmt.Sprintf("%T", event)))
 

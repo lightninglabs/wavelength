@@ -36,15 +36,17 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	inputs []TransferInput,
 	outputs []oortx.RecipientOutput) (*Session, []OutboxEvent, error) {
 
-	log.DebugS(ctx, "Creating new OOR session",
+	logger(ctx).DebugS(ctx, "Creating new OOR session",
 		slog.Int("num_inputs", len(inputs)),
 		slog.Int("num_outputs", len(outputs)))
 
 	env := &Environment{}
 	startupID := SessionID{}
 
+	baseLogger := logger(ctx)
+
 	fsmCfg := StateMachineCfg{
-		Logger: log.WithPrefix(startupID.LogPrefix()),
+		Logger: baseLogger.WithPrefix(startupID.LogPrefix()),
 		ErrorReporter: newContextErrorReporter(
 			ctx, startupID.LogPrefix(),
 		),
@@ -92,7 +94,7 @@ func NewSession(ctx context.Context, policy scripts.CheckpointPolicy,
 	// StartTransfer has deterministically built the package.
 	env.SessionID = sessionID
 
-	log.InfoS(ctx, "OOR session created with stable ID",
+	logger(ctx).InfoS(ctx, "OOR session created with stable ID",
 		slog.String("session_id", sessionID.String()))
 
 	return &Session{

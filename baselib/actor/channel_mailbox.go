@@ -83,20 +83,20 @@ func (m *ChannelMailbox[M, R]) Send(ctx context.Context,
 	// and the actor's context for cancellation.
 	select {
 	case m.ch <- env:
-		log.TraceS(ctx, "Mailbox send succeeded",
+		logger(ctx).TraceS(ctx, "Mailbox send succeeded",
 			"msg_type", env.message.MessageType(),
 			"queue_len", len(m.ch))
 
 		return true
 
 	case <-ctx.Done():
-		log.TraceS(ctx, "Mailbox send failed, caller context cancelled",
+		logger(ctx).TraceS(ctx, "Mailbox send failed, caller context cancelled",
 			"msg_type", env.message.MessageType())
 
 		return false
 
 	case <-m.actorCtx.Done():
-		log.TraceS(ctx, "Mailbox send failed, actor context cancelled",
+		logger(ctx).TraceS(ctx, "Mailbox send failed, actor context cancelled",
 			"msg_type", env.message.MessageType())
 
 		return false
@@ -176,7 +176,7 @@ func (m *ChannelMailbox[M, R]) Close() {
 		defer m.mu.Unlock()
 
 		remainingMsgs := len(m.ch)
-		log.DebugS(m.actorCtx, "Mailbox closing",
+		logger(m.actorCtx).DebugS(m.actorCtx, "Mailbox closing",
 			"remaining_messages", remainingMsgs)
 
 		m.closed.Store(true)

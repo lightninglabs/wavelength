@@ -243,9 +243,10 @@ func NewSessionFromSnapshot(ctx context.Context,
 	}
 
 	env := &Environment{SessionID: snapshot.SessionID}
+	baseLogger := logger(ctx)
 
 	fsmCfg := StateMachineCfg{
-		Logger: log.WithPrefix(snapshot.SessionID.LogPrefix()),
+		Logger: baseLogger.WithPrefix(snapshot.SessionID.LogPrefix()),
 		ErrorReporter: newContextErrorReporter(
 			ctx, snapshot.SessionID.LogPrefix(),
 		),

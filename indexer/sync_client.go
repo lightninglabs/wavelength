@@ -78,9 +78,12 @@ type SyncClient struct {
 }
 
 // NewSyncClient creates a SyncClient. Both backend and store are
-// required; passing nil for either is a programming error.
+// required; passing nil for either is a programming error. The optional
+// log is used for constructor and runtime logging; if unset, the client
+// falls back to context-based logging.
 func NewSyncClient(backend SyncBackend,
-	store SyncCursorStore) (*SyncClient, error) {
+	store SyncCursorStore,
+	log fn.Option[btclog.Logger]) (*SyncClient, error) {
 
 	if backend == nil {
 		return nil, fmt.Errorf("sync backend must not be nil")
@@ -89,12 +92,17 @@ func NewSyncClient(backend SyncBackend,
 		return nil, fmt.Errorf("sync cursor store must not be nil")
 	}
 
-	log.InfoS(context.TODO(), "Initializing sync client")
-
-	return &SyncClient{
+	client := &SyncClient{
 		backend: backend,
 		cursors: store,
-	}, nil
+		Log:     log,
+	}
+
+	client.logger(context.Background()).InfoS(
+		context.Background(), "Initializing sync client",
+	)
+
+	return client, nil
 }
 
 // logger returns the configured logger, falling back to extracting a logger
