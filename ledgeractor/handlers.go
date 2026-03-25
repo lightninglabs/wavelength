@@ -1,0 +1,208 @@
+package ledgeractor
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+)
+
+// zeroRoundID is the zero value used to detect empty round IDs.
+var zeroRoundID [16]byte
+
+// roundIDOrNil converts a 16-byte round ID to a slice, returning
+// nil for zero-valued IDs so the database stores NULL (which
+// correctly bypasses the conditional idempotency unique index).
+func roundIDOrNil(id [16]byte) []byte {
+	if id == zeroRoundID {
+		return nil
+	}
+
+	return id[:]
+}
+
+// timeNowUnix returns the current time as a Unix timestamp.
+func timeNowUnix() int64 {
+	return time.Now().Unix()
+}
+
+// handleFeePaid records a fee payment by the client. Fees paid
+// during boarding or refresh are debited from fees_paid and
+// credited to vtxo_balance (the fee reduces the client's VTXO
+// balance).
+func (a *LedgerActor) handleFeePaid(
+	ctx context.Context, msg *FeePaidMsg) error {
+
+	roundID := roundIDOrNil(msg.RoundID)
+
+	// Map the fee type string to the appropriate event type.
+	var eventType string
+	switch msg.FeeType {
+	case "boarding":
+		eventType = EventBoardingFeePaid
+	case "refresh":
+		eventType = EventRefreshFeePaid
+	default:
+		return fmt.Errorf("unknown fee type: %q", msg.FeeType)
+	}
+
+	a.log.InfoS(ctx, "Recording fee payment",
+		slog.String("round_id",
+			fmt.Sprintf("%x", msg.RoundID)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.String("fee_type", msg.FeeType),
+		slog.Uint64("block_height",
+			uint64(msg.BlockHeight)),
+	)
+
+	return a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, LedgerEntry{
+			DebitAccount:  AccountFeesPaid,
+			CreditAccount: AccountVTXOBalance,
+			AmountSat:     msg.AmountSat,
+			RoundID:       roundID,
+			EventType:     eventType,
+			Description: fmt.Sprintf(
+				"%s fee paid in round %x",
+				msg.FeeType, msg.RoundID,
+			),
+			CreatedAt: timeNowUnix(),
+		},
+	)
+}
+
+// handleVTXOReceived records a VTXO received by the client.
+// For OOR transfers, income is recorded (transfer_income ->
+// vtxo_balance). For round receipts, the balance moves from
+// wallet_balance to vtxo_balance.
+func (a *LedgerActor) handleVTXOReceived(
+	ctx context.Context, msg *VTXOReceivedMsg) error {
+
+	roundID := roundIDOrNil(msg.RoundID)
+
+	a.log.InfoS(ctx, "Recording VTXO received",
+		slog.String("outpoint",
+			fmt.Sprintf("%x:%d",
+				msg.OutpointHash,
+				msg.OutpointIndex)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.String("source", msg.Source),
+	)
+
+	var (
+		debitAccount  string
+		creditAccount string
+	)
+
+	switch msg.Source {
+	case "oor":
+		// OOR receive: income from a transfer.
+		debitAccount = AccountVTXOBalance
+		creditAccount = AccountTransferIncome
+
+	case "round":
+		// Round receive (boarding/refresh): on-chain
+		// wallet funds converted to VTXO balance.
+		debitAccount = AccountVTXOBalance
+		creditAccount = AccountWalletBalance
+
+	default:
+		return fmt.Errorf(
+			"unknown vtxo source: %q", msg.Source,
+		)
+	}
+
+	return a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, LedgerEntry{
+			DebitAccount:  debitAccount,
+			CreditAccount: creditAccount,
+			AmountSat:     msg.AmountSat,
+			RoundID:       roundID,
+			EventType:     EventVTXOReceived,
+			Description: fmt.Sprintf(
+				"VTXO received via %s: %x:%d",
+				msg.Source, msg.OutpointHash,
+				msg.OutpointIndex,
+			),
+			CreatedAt: timeNowUnix(),
+		},
+	)
+}
+
+// handleVTXOSent records VTXOs sent by the client during an OOR
+// transfer. The VTXO balance decreases (credit) and the
+// transfer is recorded as an outflow.
+func (a *LedgerActor) handleVTXOSent(
+	ctx context.Context, msg *VTXOSentMsg) error {
+
+	a.log.InfoS(ctx, "Recording VTXO sent",
+		slog.String("session_id",
+			fmt.Sprintf("%x", msg.SessionID)),
+		slog.Int64("amount_sat", msg.AmountSat),
+	)
+
+	return a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, LedgerEntry{
+			DebitAccount:  AccountTransferIncome,
+			CreditAccount: AccountVTXOBalance,
+			AmountSat:     msg.AmountSat,
+			RoundID:       msg.SessionID[:],
+			EventType:     EventVTXOSent,
+			Description: fmt.Sprintf(
+				"VTXO sent in OOR session %x",
+				msg.SessionID,
+			),
+			CreatedAt: timeNowUnix(),
+		},
+	)
+}
+
+// handleExitCost records the on-chain fee cost when the client
+// performs a unilateral exit. The exit cost is an expense debited
+// from onchain_fees and credited against vtxo_balance.
+func (a *LedgerActor) handleExitCost(
+	ctx context.Context, msg *ExitCostMsg) error {
+
+	a.log.InfoS(ctx, "Recording exit cost",
+		slog.String("outpoint",
+			fmt.Sprintf("%x:%d",
+				msg.OutpointHash,
+				msg.OutpointIndex)),
+		slog.Int64("amount_sat", msg.AmountSat),
+		slog.Int64("exit_cost_sat", msg.ExitCostSat),
+		slog.Uint64("block_height",
+			uint64(msg.BlockHeight)),
+	)
+
+	return a.cfg.LedgerStore.InsertLedgerEntry(
+		ctx, LedgerEntry{
+			DebitAccount:  AccountOnchainFees,
+			CreditAccount: AccountVTXOBalance,
+			AmountSat:     msg.ExitCostSat,
+			EventType:     EventOnchainFeePaid,
+			Description: fmt.Sprintf(
+				"exit cost for %x:%d at height %d",
+				msg.OutpointHash,
+				msg.OutpointIndex,
+				msg.BlockHeight,
+			),
+			CreatedAt: timeNowUnix(),
+		},
+	)
+}
+
+// handleBlockEpoch processes a new block notification. This is a
+// placeholder for future UTXO set diffing to track wallet
+// balance changes.
+func (a *LedgerActor) handleBlockEpoch(
+	ctx context.Context, msg *BlockEpochMsg) error {
+
+	a.log.DebugS(ctx, "Block epoch received",
+		slog.Uint64("height", uint64(msg.BlockHeight)),
+	)
+
+	// TODO(fees): implement UTXO set diffing here once
+	// wallet UTXO listing is wired.
+
+	return nil
+}
