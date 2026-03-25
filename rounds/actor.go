@@ -19,6 +19,8 @@ import (
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/fees"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
@@ -135,6 +137,21 @@ type ActorConfig struct {
 	// indexer after round confirmation. When nil, events are not
 	// published.
 	VTXOEventPublisher VTXOEventPublisher
+
+	// FeeCalculator computes dynamic fees based on the current
+	// fee schedule and treasury utilization. When nil, the
+	// flat MinOperatorFee from Terms is used instead.
+	FeeCalculator *fees.Calculator
+
+	// TreasuryTracker provides current utilization for
+	// congestion pricing. When nil, utilization is assumed to
+	// be zero.
+	TreasuryTracker *fees.TreasuryTracker
+
+	// LedgerRef is the actor reference for the ledger
+	// accounting actor. When non-nil, round lifecycle events
+	// are forwarded via fire-and-forget Tell.
+	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -222,6 +239,29 @@ func (a *Actor) Start(ctx context.Context) error {
 	// expiry mid-round which could lead to double-spend attempts.
 	if err := a.cfg.Terms.ValidateFundPsbtLockDuration(); err != nil {
 		return fmt.Errorf("invalid terms: %w", err)
+	}
+
+	// FeeEstimator is always required (buildCommitmentTx uses it).
+	// FeeCalculator is optional -- without it validateOperatorFee
+	// falls back to the flat MinOperatorFee from Terms. But if a
+	// FeeCalculator is configured, FeeEstimator must be too,
+	// LedgerRef and TreasuryTracker must be wired, and the
+	// dynamic-fee validation path derefs each of them. Missing any
+	// of them would make the very first join request panic at
+	// runtime (or silently admit rounds whose accounting is never
+	// persisted) -- fail the boot here instead.
+	if a.cfg.FeeEstimator == nil {
+		return fmt.Errorf("FeeEstimator must be configured")
+	}
+	if a.cfg.FeeCalculator != nil {
+		if a.cfg.LedgerRef == nil {
+			return fmt.Errorf("LedgerRef must be set when " +
+				"FeeCalculator is configured")
+		}
+		if a.cfg.TreasuryTracker == nil {
+			return fmt.Errorf("TreasuryTracker must be set " +
+				"when FeeCalculator is configured")
+		}
 	}
 
 	// Load previous rounds from storage that still need to be managed
@@ -395,6 +435,9 @@ func (a *Actor) buildAndStartRoundFSM(ctx context.Context, roundID RoundID,
 		StartHeight:            startHeight,
 		DisableJoinRequestAuth: a.cfg.DisableJoinRequestAuth,
 		ShouldSeal:             a.cfg.ShouldSeal,
+		FeeCalculator:          a.cfg.FeeCalculator,
+		TreasuryTracker:        a.cfg.TreasuryTracker,
+		LedgerRef:              a.cfg.LedgerRef,
 	}
 
 	fsmCfg := StateMachineCfg{

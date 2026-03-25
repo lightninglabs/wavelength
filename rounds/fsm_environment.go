@@ -5,7 +5,10 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/fees"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -89,6 +92,21 @@ type Environment struct {
 	// sealed immediately without waiting for the registration
 	// timeout. A nil predicate is equivalent to "never seal early".
 	ShouldSeal SealPredicate
+
+	// FeeCalculator computes dynamic fees based on the current
+	// fee schedule and treasury utilization. When nil, the
+	// flat MinOperatorFee from Terms is used instead.
+	FeeCalculator *fees.Calculator
+
+	// TreasuryTracker provides current utilization for
+	// congestion pricing. When nil, utilization is assumed to
+	// be zero.
+	TreasuryTracker *fees.TreasuryTracker
+
+	// LedgerRef is the actor reference for the ledger
+	// accounting actor. When non-nil, round lifecycle events
+	// are forwarded via fire-and-forget Tell.
+	LedgerRef actor.TellOnlyRef[ledger.LedgerMsg]
 }
 
 // Name returns the unique identifier for this FSM instance.
