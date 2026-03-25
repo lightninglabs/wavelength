@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batchwatcher"
+	"github.com/lightninglabs/darepo/ledger"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -131,6 +132,11 @@ type ActorConfig struct {
 	// SelfRef is a reference to this actor for receiving mapped
 	// notifications and internal timer callbacks.
 	SelfRef actor.TellOnlyRef[Msg]
+
+	// LedgerRef is an optional reference to the ledger actor
+	// for recording capital reclamation events when sweeps
+	// confirm.
+	LedgerRef fn.Option[actor.TellOnlyRef[ledger.LedgerMsg]]
 }
 
 // SweepTxBuilder constructs a sweep transaction spending the provided
@@ -152,6 +158,7 @@ type pendingSweep struct {
 	broadcastAt time.Time
 	feeRate     btcutil.Amount
 	numInputs   int
+	sweepAmount int64
 }
 
 // retryableError is returned by trySweep when the operation should be retried.
@@ -565,13 +572,22 @@ func (a *Actor) trySweep(ctx context.Context,
 	// the cache so the next sweep gets a fresh destination.
 	a.cachedSweepPkScript = nil
 
-	// Track this pending sweep and register for confirmation notification.
+	// Compute the total value of swept inputs for ledger
+	// tracking.
+	var sweepAmount int64
+	for _, c := range candidates {
+		sweepAmount += c.TxOut.Value
+	}
+
+	// Track this pending sweep and register for confirmation
+	// notification.
 	a.pendingSweeps[batchID] = &pendingSweep{
 		txid:        txid,
 		batchID:     batchID,
 		broadcastAt: time.Now(),
 		feeRate:     feeRate,
 		numInputs:   len(candidates),
+		sweepAmount: sweepAmount,
 	}
 
 	err = a.registerSweepConfirmation(
@@ -746,6 +762,33 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 		"block_height", msg.BlockHeight,
 		"fee_rate_sat_vb", pending.feeRate,
 		"num_inputs", pending.numInputs)
+
+	// Notify the ledger actor of capital reclamation. The
+	// absolute mining fee is derived from the sweep tx
+	// directly where available; producers that have not yet
+	// captured the fee leave MiningFeeSat zero and the ledger
+	// handler skips the mining_fees leg.
+	a.cfg.LedgerRef.WhenSome(func(
+		ref actor.TellOnlyRef[ledger.LedgerMsg]) {
+
+		tellErr := ref.Tell(
+			ctx, &ledger.SweepCompletedMsg{
+				BatchID:            msg.BatchID,
+				ReclaimedAmountSat: pending.sweepAmount,
+				Count:              int32(pending.numInputs),
+				BlockHeight:        uint32(msg.BlockHeight),
+				FeeRateSatVB:       int64(pending.feeRate),
+			},
+		)
+		if tellErr != nil {
+			a.log.WarnS(
+				ctx,
+				"Failed to notify ledger of "+
+					"sweep completion",
+				tellErr,
+			)
+		}
+	})
 
 	// Clean up tracking state. The watcher self-unregisters and sends
 	// a BatchSweptNotification when it detects the batch root spend,
