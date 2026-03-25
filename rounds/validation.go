@@ -19,6 +19,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/fees"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -134,6 +135,13 @@ var (
 	// consolidation service.
 	ErrOperatorFeeTooLow = errors.New(
 		"operator fee is below minimum",
+	)
+
+	// ErrVTXOBelowMinViable is returned when a VTXO amount is below
+	// the economic viability threshold (fee exceeds configured
+	// percentage of value) and the dust policy is set to reject.
+	ErrVTXOBelowMinViable = errors.New(
+		"VTXO amount is below minimum viable threshold",
 	)
 
 	// ErrForfeitVTXONotFound is returned when a forfeit request references
@@ -387,20 +395,27 @@ func validateJoinRequest(ctx context.Context, env *Environment,
 			totalInputValue)
 	}
 
-	// Enforce the minimum operator fee when boarding inputs are
-	// present. The fee is the implicit difference between total input
-	// and total output value. Without this check a client could
-	// submit equal boarding inputs and outputs, effectively using the
-	// operator as a free UTXO consolidator. Refresh and leave
-	// requests (forfeit-only) are exempt because the operator already
-	// collected a fee when the VTXO was originally created.
+	// Enforce the operator fee when boarding inputs are present.
+	// The fee is the implicit difference between total input and
+	// total output value. Without this check a client could submit
+	// equal boarding inputs and outputs, effectively using the
+	// operator as a free UTXO consolidator.
+	//
+	// When a FeeCalculator is configured, the required fee is
+	// computed dynamically from the amount, batch size, VTXO
+	// lifetime, current fee rate, and treasury utilization.
+	// Otherwise, the flat MinOperatorFee from Terms is used.
+	//
+	// Refresh and leave requests (forfeit-only) are exempt
+	// because the operator already collected a fee when the VTXO
+	// was originally created.
 	operatorFee := totalInputValue - totalOutputValue
-	if len(boardingInputs) > 0 &&
-		operatorFee < env.Terms.MinOperatorFee {
-
-		return nil, fmt.Errorf("%w: got %d sats, min %d sats",
-			ErrOperatorFeeTooLow, operatorFee,
-			env.Terms.MinOperatorFee)
+	if len(boardingInputs) > 0 {
+		if err := validateOperatorFee(
+			env, operatorFee, boardingInputs,
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	// Validate the join authorization proof once all request components
@@ -1585,4 +1600,105 @@ func ValidateForfeitRequest(ctx context.Context, env *Environment,
 		Outpoint: req.VTXOOutpoint,
 		VTXO:     vtxo,
 	}, nil
+}
+
+// validateOperatorFee checks that the implicit operator fee meets
+// the required minimum for the boarding inputs this join request
+// brought. When a FeeCalculator is available, the expected fee is
+// computed dynamically as per-input-fee * number-of-boarding-inputs,
+// and each input is checked for economic viability individually.
+// Otherwise, the flat MinOperatorFee from Terms is used as a
+// backward-compatible fallback.
+//
+// boardingInputs must be non-empty; the caller is responsible for
+// skipping the call on refresh-only rounds (no boarding inputs,
+// operator fee already collected at the original VTXO's round).
+func validateOperatorFee(
+	env *Environment, operatorFee btcutil.Amount,
+	boardingInputs []*BoardingInput) error {
+
+	if env.FeeCalculator != nil {
+		feeRate, err := env.FeeEstimator.EstimateFeePerKW(
+			env.ConfTarget,
+		)
+		if err != nil {
+			return fmt.Errorf("estimate fee rate: %w", err)
+		}
+
+		// Boarding inputs do not deploy new operator capital
+		// (the user brings the on-chain BTC), so the fee is
+		// only the on-chain share plus the operator margin.
+		// ComputeBoardingFee does not take a utilization
+		// argument -- boarding is exempt from congestion
+		// pricing today (see docs/fee-model.md "Boarding vs
+		// Refresh"). If a future fee model weights boarding
+		// by congestion, the utilization read belongs here.
+		//
+		// batchSize is pinned to the theoretical maximum
+		// tree size rather than the actual occupancy of
+		// this round. The on-chain cost share F_round / B
+		// then spreads the round's on-chain cost over the
+		// full batch capacity, which under-charges thin
+		// rounds relative to their true per-VTXO cost --
+		// an intentional subsidy to incentivize client
+		// participation while the operator is bootstrapping
+		// traffic. Sizing by len(req.VTXORequests) would
+		// price rounds accurately but discourage joins into
+		// light rounds.
+		batchSize := int(env.Terms.MaxVTXOsPerTree)
+
+		// The expected operator fee is per-input * number of
+		// boarding inputs. Without the multiplier, N-input
+		// rounds would pay one input's worth of fee -- a
+		// structural free-consolidation vector. Each input is
+		// also checked for economic viability individually so
+		// dust inputs cannot hide behind a larger sibling in
+		// the same join request.
+		sched := env.FeeCalculator.Schedule()
+		var expectedTotal int64
+		for _, bin := range boardingInputs {
+			breakdown := env.FeeCalculator.ComputeBoardingFee(
+				int64(bin.Value), batchSize, feeRate,
+			)
+			expectedTotal += breakdown.TotalFeeSat
+
+			if breakdown.BelowMinViable &&
+				sched.MinViableVTXOPolicy ==
+					fees.DustPolicyReject {
+
+				return fmt.Errorf(
+					"%w: amount %d sats, fee %d "+
+						"sats (%.1f%% of value)",
+					ErrVTXOBelowMinViable,
+					bin.Value,
+					breakdown.TotalFeeSat,
+					float64(breakdown.TotalFeeSat)/
+						float64(bin.Value)*100,
+				)
+			}
+		}
+
+		if int64(operatorFee) < expectedTotal {
+			return fmt.Errorf(
+				"%w: got %d sats, required %d sats "+
+					"across %d boarding inputs",
+				ErrOperatorFeeTooLow, operatorFee,
+				expectedTotal, len(boardingInputs),
+			)
+		}
+
+		return nil
+	}
+
+	// Fallback: flat MinOperatorFee when no calculator is
+	// configured.
+	if operatorFee < env.Terms.MinOperatorFee {
+		return fmt.Errorf(
+			"%w: got %d sats, min %d sats",
+			ErrOperatorFeeTooLow, operatorFee,
+			env.Terms.MinOperatorFee,
+		)
+	}
+
+	return nil
 }
