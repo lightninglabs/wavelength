@@ -22,6 +22,12 @@ into specific topics below.
 | [commit-tooling.md](commit-tooling.md) | commit_message.py workflows for linting and rewording |
 | [testing-guide.md](testing-guide.md) | Coverage targets, test approaches, pre-commit checklist |
 
+## Economics
+
+| Document | Description |
+|----------|-------------|
+| [fee-model.md](fee-model.md) | Fee model spec: liquidity cost, on-chain share, congestion pricing, dust thresholds (companion: [fee-model-explorer.html](fee-model-explorer.html)) |
+
 ## Testing
 
 | Document | Description |
