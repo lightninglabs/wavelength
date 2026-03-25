@@ -8,6 +8,16 @@ import (
 	"database/sql"
 )
 
+type Account struct {
+	AccountID   string
+	AccountName string
+	AccountType string
+}
+
+type AccountType struct {
+	AccountType string
+}
+
 type AskResult struct {
 	PromiseID  string
 	ResultBlob []byte
@@ -33,6 +43,21 @@ type FsmCheckpoint struct {
 	StateData []byte
 	Version   int32
 	UpdatedAt int64
+}
+
+type LedgerEntry struct {
+	EntryID       int64
+	DebitAccount  string
+	CreditAccount string
+	AmountSat     int64
+	RoundID       []byte
+	EventType     string
+	Description   string
+	CreatedAt     int64
+}
+
+type LedgerEventType struct {
+	EventType string
 }
 
 type MailboxMessage struct {
