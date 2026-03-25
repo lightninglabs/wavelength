@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ark Fee Model Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"
+        integrity="sha384-cCVCZkAjYNxaYKbM8lsArLznDF/SvMFr1jcZrvOpSTCa0W40ZAdLzHCEulnUa5i7"
+        crossorigin="anonymous"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-deep: #0c0e1a;
+    --bg-surface: #141829;
+    --bg-elevated: #1a1f38;
+    --bg-panel: #0d1a3a;
+    --border-dim: #252a45;
+    --border-accent: #2a3558;
+    --amber: #f5a623;
+    --amber-dim: rgba(245, 166, 35, 0.15);
+    --amber-glow: rgba(245, 166, 35, 0.08);
+    --teal: #36d7b7;
+    --red: #e74c3c;
+    --purple: #9b59b6;
+    --text-primary: #e8e8f0;
+    --text-secondary: #8890a8;
+    --text-dim: #5a6078;
+    --mono: 'JetBrains Mono', 'Courier New', monospace;
+    --sans: 'DM Sans', 'Segoe UI', Tahoma, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    padding: 28px 24px;
+    line-height: 1.6;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(245,166,35,0.03) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 100%, rgba(54,215,183,0.02) 0%, transparent 50%);
+  }
+
+  /* ── Header ────────────────────────────────────────────────── */
+  .header {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+  .header h1 {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--amber);
+    font-size: 1.8em;
+    letter-spacing: -0.02em;
+    margin-bottom: 10px;
+    text-shadow: 0 0 40px rgba(245,166,35,0.15);
+  }
+  .header .tagline {
+    max-width: 720px;
+    margin: 0 auto;
+    color: var(--text-secondary);
+    font-size: 0.92em;
+    line-height: 1.7;
+  }
+
+  /* ── Equation ─────────────────────────────────────────────── */
+  .equation-section {
+    max-width: 900px;
+    margin: 0 auto 22px auto;
+    padding: 20px 28px;
+    background: var(--bg-surface);
+    border-radius: 10px;
+    border: 1px solid var(--border-dim);
+    box-shadow: 0 2px 16px rgba(0,0,0,0.15);
+  }
+  .equation-main {
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 1.05em;
+    color: var(--amber);
+    font-weight: 600;
+    padding: 10px 0 14px 0;
+    letter-spacing: -0.01em;
+  }
+  .equation-components {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .eq-component {
+    padding: 12px 16px;
+    background: rgba(13, 26, 58, 0.6);
+    border-radius: 8px;
+    border: 1px solid var(--border-accent);
+  }
+  .eq-component .eq-name {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+  }
+  .eq-component .eq-formula {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    color: var(--amber);
+    margin-bottom: 4px;
+  }
+  .eq-component .eq-desc {
+    font-size: 0.8em;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* ── Controls ──────────────────────────────────────────────── */
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 6px 28px;
+    max-width: 1400px;
+    margin: 0 auto 20px auto;
+    padding: 18px 24px;
+    background: var(--bg-surface);
+    border-radius: 10px;
+    border: 1px solid var(--border-dim);
+    box-shadow: 0 2px 20px rgba(0,0,0,0.2);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(12px);
+    background: rgba(20, 24, 41, 0.95);
+  }
+  .control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 0;
+  }
+  .control label {
+    min-width: 145px;
+    font-size: 0.84em;
+    font-weight: 500;
+    color: var(--text-secondary);
+    text-align: right;
+    letter-spacing: 0.01em;
+  }
+  .control input[type=range] {
+    flex: 1;
+    min-width: 120px;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border-accent);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .control input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--amber);
+    border: 2px solid var(--bg-deep);
+    box-shadow: 0 0 8px rgba(245,166,35,0.3);
+    cursor: pointer;
+    transition: box-shadow 0.15s ease;
+  }
+  .control input[type=range]::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 14px rgba(245,166,35,0.5);
+  }
+  .control input[type=range]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--amber);
+    border: 2px solid var(--bg-deep);
+    box-shadow: 0 0 8px rgba(245,166,35,0.3);
+    cursor: pointer;
+  }
+  .control .readout {
+    width: 100px;
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--amber);
+    white-space: nowrap;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 2px 6px;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+    -moz-appearance: textfield;
+  }
+  .control .readout:hover {
+    border-color: var(--border-accent);
+    background: rgba(245,166,35,0.05);
+  }
+  .control .readout:focus {
+    border-color: var(--amber);
+    background: rgba(245,166,35,0.08);
+  }
+  .control .readout::-webkit-inner-spin-button,
+  .control .readout::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .control .unit {
+    color: var(--text-dim);
+    font-size: 0.78em;
+    min-width: 36px;
+  }
+
+  /* ── Breakdown Panel ───────────────────────────────────────── */
+  .breakdown-panel {
+    max-width: 640px;
+    margin: 0 auto 24px auto;
+    background: var(--bg-panel);
+    border-radius: 10px;
+    padding: 20px 28px;
+    font-family: var(--mono);
+    font-size: 0.88em;
+    border: 1px solid var(--border-accent);
+    box-shadow:
+      0 4px 24px rgba(0,0,0,0.25),
+      inset 0 1px 0 rgba(255,255,255,0.03);
+    position: relative;
+    overflow: visible;
+  }
+  .breakdown-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--amber), transparent);
+    opacity: 0.4;
+  }
+  .breakdown-panel .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    gap: 8px;
+  }
+  .breakdown-panel .row.total {
+    border-top: 1px solid rgba(245,166,35,0.2);
+    margin-top: 6px;
+    padding-top: 8px;
+    color: var(--amber);
+    font-weight: 600;
+  }
+  .breakdown-panel .label {
+    color: #7a9cc0;
+    cursor: help;
+    position: relative;
+  }
+  .breakdown-panel .formula { color: var(--text-dim); font-size: 0.8em; }
+
+  /* ── Tooltips ──────────────────────────────────────────────── */
+  [data-tip] {
+    position: relative;
+    cursor: help;
+  }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a1f38;
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 0.78em;
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-accent);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    white-space: normal;
+    width: 260px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+    z-index: 200;
+  }
+  [data-tip]:hover::after {
+    opacity: 1;
+  }
+  .control [data-tip]::after {
+    left: 0;
+    transform: none;
+  }
+  .breakdown-panel [data-tip]::after {
+    bottom: auto;
+    top: calc(100% + 8px);
+    left: 0;
+    transform: none;
+  }
+
+  /* ── Charts ────────────────────────────────────────────────── */
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    max-width: 1400px;
+    margin: 0 auto 28px auto;
+  }
+  .chart-container {
+    background: var(--bg-surface);
+    border-radius: 10px;
+    border: 1px solid var(--border-dim);
+    padding: 6px;
+    min-height: 400px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.15);
+    transition: border-color 0.2s ease;
+  }
+  .chart-container:hover {
+    border-color: var(--border-accent);
+  }
+  .chart-container > div {
+    min-height: 380px;
+  }
+
+  /* ── Explanation ────────────────────────────────────────────── */
+  .explanation {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 28px 32px;
+    background: var(--bg-surface);
+    border-radius: 10px;
+    border: 1px solid var(--border-dim);
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    line-height: 1.75;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.15);
+  }
+  .explanation h2 {
+    font-family: var(--mono);
+    color: var(--amber);
+    font-size: 1.15em;
+    font-weight: 600;
+    margin-bottom: 14px;
+    letter-spacing: -0.01em;
+  }
+  .explanation h3 {
+    color: #c8b070;
+    font-size: 0.95em;
+    font-weight: 600;
+    margin: 18px 0 6px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(200,176,112,0.1);
+  }
+  .explanation p { margin-bottom: 10px; }
+  .explanation code {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    color: var(--teal);
+    background: rgba(54,215,183,0.08);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  .explanation em { color: var(--text-primary); font-style: italic; }
+  .explanation strong { color: var(--text-primary); }
+
+  /* ── Responsive ────────────────────────────────────────────── */
+  @media (max-width: 1024px) {
+    .charts-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 768px) {
+    body { padding: 14px 10px; }
+    .header h1 { font-size: 1.35em; }
+    .header .tagline { font-size: 0.85em; }
+    .controls-grid {
+      grid-template-columns: 1fr;
+      padding: 14px 16px;
+      gap: 4px;
+    }
+    .control label { min-width: 115px; font-size: 0.8em; }
+    .control .readout { min-width: 80px; font-size: 0.8em; }
+    .control .unit { font-size: 0.72em; }
+    .breakdown-panel {
+      max-width: 100%;
+      padding: 14px 18px;
+      font-size: 0.8em;
+    }
+    .explanation {
+      padding: 18px 18px;
+      font-size: 0.85em;
+    }
+    .chart-container { min-height: 340px; }
+    .chart-container > div { min-height: 320px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Ark Fee Model Explorer</h1>
+  <p class="tagline">
+    Interactive explorer for the Ark round fee model.
+    Each round batches participants into a shared on-chain transaction.
+    The total fee combines an on-chain cost share, a liquidity fee for the
+    operator's deployed capital, and a base margin.
+    Adjust the sliders to see how fees respond.
+  </p>
+</div>
+
+<!-- Fee Equation -->
+<div class="equation-section">
+  <div class="equation-main">
+    Total Fee &nbsp;=&nbsp; Liquidity &nbsp;+&nbsp; On-chain Share &nbsp;+&nbsp; Margin
+    <span style="color:var(--text-dim);font-size:0.75em;display:block;margin-top:4px;">
+      Exit Reserve &nbsp;=&nbsp; feerate &times; (depth &times; branchVB + claimVB)
+    </span>
+  </div>
+  <div class="equation-components">
+    <div class="eq-component">
+      <div class="eq-name">Liquidity Fee</div>
+      <div class="eq-formula">A &middot; (&delta; / 365) &middot; r<sub>eff</sub></div>
+      <div class="eq-desc">
+        Compensates the operator for locking capital.
+        Scales with VTXO amount (A), remaining life (&delta;),
+        and the effective annual rate.
+      </div>
+    </div>
+    <div class="eq-component">
+      <div class="eq-name">On-chain Share</div>
+      <div class="eq-formula">F<sub>round</sub> / B</div>
+      <div class="eq-desc">
+        Your share of the round transaction's on-chain cost.
+        F<sub>round</sub> = feerate &times; tx_weight.
+        Splits evenly among B participants.
+      </div>
+    </div>
+    <div class="eq-component">
+      <div class="eq-name">Operator Margin</div>
+      <div class="eq-formula">&epsilon;</div>
+      <div class="eq-desc">
+        Flat base fee per VTXO covering the operator's
+        fixed costs (infrastructure, signing, coordination).
+      </div>
+    </div>
+    <div class="eq-component">
+      <div class="eq-name">Exit Cost (worst case)</div>
+      <div class="eq-formula">feerate &times; (d &times; branchVB + claimVB)</div>
+      <div class="eq-desc">
+        On-chain cost to unilaterally exit by revealing all tree
+        branches. Depth d = ceil(log<sub>R</sub>(B)).
+        Each branch reveals R&minus;1 sibling hashes.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Controls -->
+<div class="controls-grid">
+  <div class="control">
+    <label for="sl-amount" data-tip="The VTXO value in satoshis. Larger amounts pay more liquidity fee (linear scaling) but the on-chain share stays the same.">Amount A</label>
+    <input type="range" id="sl-amount" min="3" max="8" step="0.01" value="6">
+    <input type="text" class="readout" id="ro-amount" value="1,000,000">
+    <span class="unit">sats</span>
+  </div>
+  <div class="control">
+    <label for="sl-batch" data-tip="Number of participants in the round. More participants = lower on-chain cost per person. Does not affect liquidity fee.">Batch Size B</label>
+    <input type="range" id="sl-batch" min="1" max="256" step="1" value="64">
+    <input type="number" class="readout" id="ro-batch" value="64" min="1" max="256" step="1">
+    <span class="unit"></span>
+  </div>
+  <div class="control">
+    <label for="sl-rate" data-tip="Base annual interest rate the operator charges for locking capital. The effective rate may be higher when utilization exceeds the threshold.">Annual Rate r</label>
+    <input type="range" id="sl-rate" min="0.01" max="0.20" step="0.005" value="0.05">
+    <input type="text" class="readout" id="ro-rate" value="5.00%">
+    <span class="unit"></span>
+  </div>
+  <div class="control">
+    <label for="sl-feerate" data-tip="On-chain transaction fee rate in sat/vB. Higher feerates increase the on-chain share of the total fee and raise the dust threshold.">Feerate</label>
+    <input type="range" id="sl-feerate" min="1" max="200" step="1" value="10">
+    <input type="number" class="readout" id="ro-feerate" value="10" min="1" max="200" step="1">
+    <span class="unit">sat/vB</span>
+  </div>
+  <div class="control">
+    <label for="sl-lifetime" data-tip="Total lifetime of the VTXO before it expires. Longer lifetimes mean fewer refreshes per year but higher per-refresh liquidity cost.">VTXO Lifetime L</label>
+    <input type="range" id="sl-lifetime" min="1" max="365" step="1" value="30">
+    <input type="number" class="readout" id="ro-lifetime" value="30" min="1" max="365" step="1">
+    <span class="unit">days</span>
+  </div>
+  <div class="control">
+    <label for="sl-delta" data-tip="Days of operator capital lock-up remaining. This is the time period the liquidity fee covers. For new VTXOs, delta = L.">Remaining Life &delta;</label>
+    <input type="range" id="sl-delta" min="0" max="30" step="1" value="15">
+    <input type="number" class="readout" id="ro-delta" value="15" min="0" max="30" step="1">
+    <span class="unit">days</span>
+  </div>
+  <div class="control">
+    <label for="sl-epsilon" data-tip="Flat fee per VTXO in sats. Covers the operator's fixed costs (infrastructure, signing). Independent of amount or time.">Base Margin &epsilon;</label>
+    <input type="range" id="sl-epsilon" min="0" max="1000" step="10" value="100">
+    <input type="number" class="readout" id="ro-epsilon" value="100" min="0" max="1000" step="10">
+    <span class="unit">sats</span>
+  </div>
+  <div class="control">
+    <label for="sl-util" data-tip="Fraction of operator's treasury currently deployed as VTXOs. When this exceeds the threshold, a congestion spread is added to the rate.">Utilization u</label>
+    <input type="range" id="sl-util" min="0" max="1" step="0.05" value="0.3">
+    <input type="text" class="readout" id="ro-util" value="0.30">
+    <span class="unit"></span>
+  </div>
+  <div class="control">
+    <label for="sl-uthresh" data-tip="Utilization threshold set by the operator. Below this, no congestion spread. Above it, rates increase linearly to discourage over-deployment.">Threshold u*</label>
+    <input type="range" id="sl-uthresh" min="0" max="1" step="0.05" value="0.7">
+    <input type="text" class="readout" id="ro-uthresh" value="0.70">
+    <span class="unit"></span>
+  </div>
+  <div class="control">
+    <label for="sl-radix" data-tip="Branching factor of the VTXO tree. Higher radix = fewer levels but larger branch transactions. Binary (2) is default. There is an optimal radix that minimizes exit cost.">Tree Radix R</label>
+    <input type="range" id="sl-radix" min="2" max="16" step="1" value="2">
+    <input type="number" class="readout" id="ro-radix" value="2" min="2" max="16" step="1">
+    <span class="unit"></span>
+  </div>
+</div>
+
+<!-- Fee Breakdown -->
+<div class="breakdown-panel" id="breakdown">
+  <!-- filled by JS -->
+</div>
+
+<!-- Charts -->
+<p style="max-width:1400px;margin:0 auto 8px auto;padding:0 4px;font-size:0.78em;color:var(--text-dim);font-style:italic;">
+  Charts use logarithmic axes where noted &mdash; equal visual distances represent
+  equal multiplicative changes (e.g. 1k&rarr;10k is the same distance as 10k&rarr;100k).
+</p>
+<div class="charts-grid">
+  <div class="chart-container"><div id="chart1"></div></div>
+  <div class="chart-container"><div id="chart2"></div></div>
+  <div class="chart-container"><div id="chart3"></div></div>
+  <div class="chart-container"><div id="chart4"></div></div>
+  <div class="chart-container"><div id="chart5"></div></div>
+</div>
+
+<!-- Explanation -->
+<div class="explanation">
+  <h2>How the Fee Model Works</h2>
+
+  <h3>The Zero-Coupon Bond Analogy</h3>
+  <p>
+    When the Ark operator creates a VTXO, it locks its own BTC as a
+    counterparty guarantee for the duration of the VTXO's lifetime. This is
+    economically equivalent to buying a zero-coupon bond: the operator lends
+    capital now and gets it back when the VTXO expires. The liquidity fee
+    compensates the operator for the time-value of that locked capital, just as
+    a bond's discount compensates the lender.
+  </p>
+
+  <h3>Liquidity Cost is Proportional to Amount &times; Time</h3>
+  <p>
+    The liquidity component A &middot; (&delta;/365) &middot; r scales linearly
+    with both the VTXO value and the remaining time the operator's capital stays
+    locked. A 1 BTC VTXO with 30 days remaining costs exactly 10&times; more in
+    liquidity fees than a 0.1 BTC VTXO with the same lifetime, and twice as
+    much as a 1 BTC VTXO with 15 days remaining.
+  </p>
+
+  <h3>Batch Size Reduces On-chain Cost, Not Liquidity Cost</h3>
+  <p>
+    The on-chain share F<sub>round</sub>/B shrinks as more participants join a
+    round, because the fixed transaction overhead is amortized. However, the
+    liquidity fee depends only on each user's own amount and time &mdash; adding
+    more participants to the round does not reduce it. For large VTXOs,
+    liquidity dominates; batching helps most for small VTXOs where on-chain cost
+    is the main component.
+  </p>
+
+  <h3>Annual Cost Insight</h3>
+  <p>
+    The "Annual Cost of Ownership" chart assumes the user refreshes at
+    <em>half-lifetime</em> (δ = L/2), which is the cadence that makes the
+    annualized liquidity component equal to A &middot; r. At this cadence,
+    a 4-week timelock means ~26 refreshes/year paying 2 weeks of interest
+    each, and a 1-week timelock means ~104 refreshes/year paying half a week
+    of interest each &mdash; both liquidity totals equal A &middot; r. The
+    visible difference between the curves comes from the on-chain share and
+    base margin, which are paid per round and thus favor longer timelocks
+    (fewer rounds per year).
+  </p>
+  <p>
+    Refreshing earlier (larger δ) <em>increases</em> the annualized liquidity
+    cost above A &middot; r; refreshing lazily (smaller δ, closer to
+    expiry) <em>decreases</em> it. The precise closed-form is
+    <code>C_liq_annual = A &middot; r &middot; x / (L &minus; x)</code>
+    where <code>x</code> is the remaining lifetime at refresh.
+  </p>
+
+  <h3>OOR Transfers are Free</h3>
+  <p>
+    Off-round (OOR) transfers between users already inside the Ark do not
+    require the operator to deploy new capital &mdash; the existing VTXO simply
+    changes hands. Because no new liquidity is locked, the operator bears no
+    time-value cost, and OOR transfers can be offered at zero or near-zero fees.
+  </p>
+
+  <h3>Boarding is Free of Liquidity Fee</h3>
+  <p>
+    Boarding brings on-chain BTC from the user into the shared output. The
+    operator's own wallet is unchanged and no new operator capital is locked
+    up, so boarding pays only the on-chain share and flat margin &mdash; no
+    liquidity fee. The double-commitment rationale that prices refresh has
+    no analog in boarding (there is no prior UTXO the operator is waiting to
+    recover). See fee-model.md "Boarding vs Refresh" and the tracking issue
+    on this decision for the full argument.
+  </p>
+  <p>
+    The charts above use the refresh/offboard pricing (with liquidity fee).
+    For the boarding case, set the liquidity term to zero mentally &mdash;
+    the total collapses to <code>F_round/B + &epsilon;</code>.
+  </p>
+
+  <h3>Refresh Fee Floor (&delta;_min)</h3>
+  <p>
+    To prevent a "lazy refresh" bypass &mdash; refreshing at
+    <code>&delta; &approx; 0</code> just before expiry for a near-zero
+    liquidity fee &mdash; the refresh fee uses a floor on the effective
+    <code>&delta;</code>:
+    <code>liquidity_fee = A &middot; max(&delta;, &delta;_min) / 365 &middot; r_eff</code>.
+    The default <code>&delta;_min</code> is ~1 day. Users can still refresh
+    at any <code>&delta;</code> &mdash; the floor only affects the fee
+    calculation, not admission &mdash; so no one is forced into unilateral
+    on-chain exit. The breakdown panel shows "floor" when the floor is
+    active for your current parameter set.
+  </p>
+
+  <h3>Exit Cost and Tree Structure</h3>
+  <p>
+    Each VTXO sits as a leaf in a Merkle-like tree. To unilaterally exit, a user
+    must reveal every branch from their leaf to the root on-chain. The tree's
+    <em>radix</em> (branching factor R) determines depth:
+    <code>depth = ceil(log_R(B))</code>. Each branch transaction must reveal
+    R&minus;1 sibling hashes as witness data.
+  </p>
+  <p>
+    This creates a tradeoff: low radix (R=2) means many levels with small branch
+    transactions; high radix (R=8) means few levels but large branch transactions.
+    The "Exit Cost vs Radix" chart shows the resulting U-shaped cost curve. The
+    optimal radix minimizes total exit cost for a given batch size and feerate.
+  </p>
+  <p>
+    The <strong>effective minimum viable VTXO</strong> is the maximum of the
+    economic dust threshold (where fees exceed 50% of value) and the security dust
+    threshold (where exit cost exceeds the VTXO value). For small VTXOs at high
+    feerates, exit cost is typically the binding constraint.
+  </p>
+  <p>
+    <em>Disclaimer:</em> the branch and claim transaction sizes used in the
+    exit cost formula (<code>branchVBytes(R) = 80 + (R&minus;1)&middot;32</code>,
+    <code>claimVBytes = 150</code>) are ballpark P2TR estimates for
+    illustration. The real implementation must compute these from the actual
+    transaction structure; treat the exit-cost curves here as shape-accurate
+    and magnitude-approximate.
+  </p>
+
+  <h3>Congestion Spread for Operators</h3>
+  <p>
+    The effective rate <code>r_eff = r + &Delta;(u)</code> rises when the
+    operator's treasury utilization <em>u</em> exceeds a configurable threshold
+    <em>u*</em>.  Below the threshold, &Delta; = 0 and users pay only the base
+    rate.  Above it, &Delta; = &Delta;<sub>0</sub> + &Delta;<sub>1</sub> &times;
+    (u &minus; u*), where &Delta;<sub>0</sub> is a base spread and
+    &Delta;<sub>1</sub> is a linear coefficient.
+  </p>
+  <p>
+    <strong>In practice:</strong> if an operator's treasury is 85% deployed
+    (u = 0.85) with a threshold of 70% (u* = 0.70), the congestion spread
+    automatically raises rates to discourage further capital deployment until
+    sweeps and VTXO expirations return funds. Operators tune u* to set their
+    comfort level, and &Delta;<sub>0</sub>/&Delta;<sub>1</sub> to control how
+    aggressively rates climb above that level.
+  </p>
+</div>
+
+<script>
+// ── Plotly load check ────────────────────────────────────────────────────────
+
+if (typeof Plotly === 'undefined') {
+  var chartIds = ['chart1', 'chart2', 'chart3', 'chart4', 'chart5'];
+  for (var i = 0; i < chartIds.length; i++) {
+    var el = document.getElementById(chartIds[i]);
+    if (el) {
+      el.style.cssText = 'display:flex;align-items:center;justify-content:center;' +
+        'height:380px;color:#e74c3c;font-size:1.1em;text-align:center;padding:20px;';
+      el.innerHTML = 'Failed to load Plotly charting library.<br>' +
+        'Check your internet connection and reload the page.';
+    }
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'k';
+  return Math.round(n).toLocaleString();
+}
+
+function fmtSats(n) { return Math.round(n).toLocaleString(); }
+
+// ── Model ────────────────────────────────────────────────────────────────────
+
+const BASE_WEIGHT = 176;
+const PER_OUTPUT_WEIGHT = 172;
+
+function roundCost(feerate, B) {
+  return feerate * (BASE_WEIGHT + B * PER_OUTPUT_WEIGHT) / 4;
+}
+
+function effectiveRate(r, u, uStar) {
+  if (u <= uStar) return r;
+  const delta0 = 0.01;
+  const delta1 = 0.05;
+  const excess = u - uStar;
+  return r + delta0 + delta1 * excess;
+}
+
+// DELTA_MIN_DAYS is the refresh liquidity fee floor: the effective delta
+// used in the liquidity component is max(delta, DELTA_MIN_DAYS). This
+// closes the lazy-refresh bypass (refreshing at delta ≈ 0 for a near-zero
+// fee) without hard-rejecting refreshes near expiry. Default ~1 day to
+// match min_refresh_delta_blocks = 144 in the spec.
+const DELTA_MIN_DAYS = 1.0;
+
+// Fee model for refresh / offboard (capital-committing operations).
+// Boarding uses feeBoarding() below, which omits the liquidity term.
+function fee(A, B, delta, r, feerate, epsilon, u, uStar) {
+  const rEff = effectiveRate(r, u, uStar);
+  const effectiveDelta = Math.max(delta, DELTA_MIN_DAYS);
+  const liq = A * (effectiveDelta / 365) * rEff;
+  const onchain = roundCost(feerate, B) / B;
+  return {
+    liq, onchain, epsilon,
+    total: liq + onchain + epsilon,
+    rEff,
+    effectiveDelta,
+    floored: delta < DELTA_MIN_DAYS,
+  };
+}
+
+// Fee model for boarding. Boarding does not commit new operator capital
+// (the user brings on-chain BTC), so it pays only the on-chain share and
+// flat margin — see fee-model.md "Boarding vs Refresh" and issue #225.
+function feeBoarding(B, feerate, epsilon) {
+  const onchain = roundCost(feerate, B) / B;
+  return { liq: 0, onchain, epsilon, total: onchain + epsilon };
+}
+
+function treeDepth(B, R) {
+  if (B <= 1) return 0;
+  return Math.ceil(Math.log(B) / Math.log(R));
+}
+
+// NOTE: branchVBytes and claimVB below are ballpark P2TR estimates for
+// illustration only, not exact protocol weights. The real implementation
+// should compute these from the actual transaction structure (see issue
+// lightninglabs/darepo#163 Phase 5). The constants chosen here:
+//   - 80 vB baseline tx overhead: 10 vB header + ~41 vB per-input witness
+//     + ~29 vB for the anchor output.
+//   - 32 vB per sibling hash revealed: one 32-byte witness element per
+//     sibling in the branch.
+//   - 150 vB claim tx: a single-input, single-output P2TR sweep with a
+//     full script-path witness.
+// Treat the "Exit Cost" curves as shape-accurate and magnitude-approximate.
+function branchVBytes(R) {
+  // Each branch tx reveals R-1 sibling hashes (32 bytes each) plus
+  // base overhead (~80 vB for tx structure, input, output).
+  return 80 + (R - 1) * 32;
+}
+
+function exitCost(feerate, B, R) {
+  const depth = treeDepth(B, R);
+  const claimVB = 150;
+  return feerate * (depth * branchVBytes(R) + claimVB);
+}
+
+function optimalRadix(feerate, B) {
+  let bestR = 2, bestCost = Infinity;
+  for (let R = 2; R <= 16; R++) {
+    const cost = exitCost(feerate, B, R);
+    if (cost < bestCost) { bestCost = cost; bestR = R; }
+  }
+  return { R: bestR, cost: bestCost, depth: treeDepth(B, bestR) };
+}
+
+// Numerically solve for the smallest VTXO where the fee is less than
+// 50% of its value. Shared between the chart3 sweep and the breakdown
+// panel so the two stay in lockstep.
+function solveMinEcon(p, feerateOverride) {
+  const feerate = feerateOverride ?? p.feerate;
+  let lo = 100, hi = 1e8;
+  for (let iter = 0; iter < 60; iter++) {
+    const mid = (lo + hi) / 2;
+    const f = fee(mid, p.B, p.delta, p.r, feerate, p.epsilon, p.u, p.uStar);
+    if (f.total / mid > 0.5) lo = mid; else hi = mid;
+  }
+  return Math.round(lo);
+}
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+
+const sliders = {
+  amount:   document.getElementById('sl-amount'),
+  batch:    document.getElementById('sl-batch'),
+  rate:     document.getElementById('sl-rate'),
+  feerate:  document.getElementById('sl-feerate'),
+  lifetime: document.getElementById('sl-lifetime'),
+  delta:    document.getElementById('sl-delta'),
+  epsilon:  document.getElementById('sl-epsilon'),
+  util:     document.getElementById('sl-util'),
+  uthresh:  document.getElementById('sl-uthresh'),
+  radix:    document.getElementById('sl-radix'),
+};
+
+const readouts = {
+  amount:   document.getElementById('ro-amount'),
+  batch:    document.getElementById('ro-batch'),
+  rate:     document.getElementById('ro-rate'),
+  feerate:  document.getElementById('ro-feerate'),
+  lifetime: document.getElementById('ro-lifetime'),
+  delta:    document.getElementById('ro-delta'),
+  epsilon:  document.getElementById('ro-epsilon'),
+  util:     document.getElementById('ro-util'),
+  uthresh:  document.getElementById('ro-uthresh'),
+  radix:    document.getElementById('ro-radix'),
+};
+
+function getParams() {
+  const A = Math.round(Math.pow(10, parseFloat(sliders.amount.value)));
+  const B = parseInt(sliders.batch.value);
+  const r = parseFloat(sliders.rate.value);
+  const feerate = parseInt(sliders.feerate.value);
+  const L = parseInt(sliders.lifetime.value);
+  const delta = parseInt(sliders.delta.value);
+  const epsilon = parseInt(sliders.epsilon.value);
+  const u = parseFloat(sliders.util.value);
+  const uStar = parseFloat(sliders.uthresh.value);
+  const R = parseInt(sliders.radix.value);
+  return { A, B, r, feerate, L, delta, epsilon, u, uStar, R };
+}
+
+function setReadout(el, val) {
+  // Only update if the input is not currently focused (avoid clobbering typing).
+  if (document.activeElement !== el) el.value = val;
+}
+
+function updateReadouts(p) {
+  setReadout(readouts.amount, fmtSats(p.A));
+  setReadout(readouts.batch, p.B);
+  setReadout(readouts.rate, (p.r * 100).toFixed(2) + '%');
+  setReadout(readouts.feerate, p.feerate);
+  setReadout(readouts.lifetime, p.L);
+  setReadout(readouts.delta, p.delta);
+  setReadout(readouts.epsilon, p.epsilon);
+  setReadout(readouts.util, p.u.toFixed(2));
+  setReadout(readouts.uthresh, p.uStar.toFixed(2));
+  setReadout(readouts.radix, p.R);
+}
+
+// Bidirectional sync: typing in a readout input updates the slider.
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+readouts.amount.addEventListener('change', function() {
+  const v = parseInt(this.value.replace(/,/g, ''));
+  if (!isNaN(v) && v > 0) {
+    sliders.amount.value = clamp(Math.log10(v), 3, 8);
+    update();
+  }
+});
+readouts.batch.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) { sliders.batch.value = clamp(v, 1, 256); update(); }
+});
+readouts.rate.addEventListener('change', function() {
+  const v = parseFloat(this.value.replace('%', ''));
+  if (!isNaN(v)) { sliders.rate.value = clamp(v / 100, 0.01, 0.20); update(); }
+});
+readouts.feerate.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) { sliders.feerate.value = clamp(v, 1, 200); update(); }
+});
+readouts.lifetime.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) {
+    const L = clamp(v, 1, 365);
+    sliders.lifetime.value = L;
+    sliders.delta.max = L;
+    if (parseInt(sliders.delta.value) > L) sliders.delta.value = L;
+    update();
+  }
+});
+readouts.delta.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) { sliders.delta.value = clamp(v, 0, parseInt(sliders.lifetime.value)); update(); }
+});
+readouts.epsilon.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) { sliders.epsilon.value = clamp(v, 0, 1000); update(); }
+});
+readouts.util.addEventListener('change', function() {
+  const v = parseFloat(this.value);
+  if (!isNaN(v)) { sliders.util.value = clamp(v, 0, 1); update(); }
+});
+readouts.uthresh.addEventListener('change', function() {
+  const v = parseFloat(this.value);
+  if (!isNaN(v)) { sliders.uthresh.value = clamp(v, 0, 1); update(); }
+});
+readouts.radix.addEventListener('change', function() {
+  const v = parseInt(this.value);
+  if (!isNaN(v)) { sliders.radix.value = clamp(v, 2, 16); update(); }
+});
+
+// Keep delta <= lifetime.
+sliders.lifetime.addEventListener('input', function() {
+  const L = parseInt(this.value);
+  sliders.delta.max = L;
+  if (parseInt(sliders.delta.value) > L) sliders.delta.value = L;
+});
+
+// ── Plotly layout defaults ───────────────────────────────────────────────────
+
+const darkLayout = {
+  paper_bgcolor: '#141829',
+  plot_bgcolor: '#0d1a3a',
+  font: { color: '#c0c8d8', family: 'DM Sans, sans-serif', size: 12 },
+  margin: { l: 70, r: 30, t: 44, b: 54 },
+  legend: { bgcolor: 'rgba(0,0,0,0)', font: { size: 11 } },
+  xaxis: { gridcolor: '#1a2e50', zerolinecolor: '#1a2e50' },
+  yaxis: { gridcolor: '#1a2e50', zerolinecolor: '#1a2e50' },
+};
+
+function dl(overrides) {
+  const base = JSON.parse(JSON.stringify(darkLayout));
+  for (const k in overrides) {
+    if (typeof overrides[k] === 'object' && !Array.isArray(overrides[k]) && base[k]) {
+      Object.assign(base[k], overrides[k]);
+    } else {
+      base[k] = overrides[k];
+    }
+  }
+  return base;
+}
+
+// ── Chart builders ───────────────────────────────────────────────────────────
+
+function logspace(lo, hi, n) {
+  const arr = [];
+  for (let i = 0; i < n; i++) arr.push(Math.pow(10, lo + (hi - lo) * i / (n - 1)));
+  return arr;
+}
+
+function linspace(lo, hi, n) {
+  const arr = [];
+  for (let i = 0; i < n; i++) arr.push(lo + (hi - lo) * i / (n - 1));
+  return arr;
+}
+
+function buildChart1(p) {
+  const xs = logspace(3, 8, 200);
+  const totals = [], liqs = [], onchains = [], exits = [], breakeven = [];
+  for (const a of xs) {
+    const f = fee(a, p.B, p.delta, p.r, p.feerate, p.epsilon, p.u, p.uStar);
+    totals.push(f.total);
+    liqs.push(f.liq);
+    onchains.push(f.onchain);
+    exits.push(exitCost(p.feerate, p.B, p.R));
+    breakeven.push(a);
+  }
+  // Dust zone: shade where total > amount.
+  const dustX = [], dustY = [];
+  for (let i = 0; i < xs.length; i++) {
+    if (totals[i] >= xs[i]) { dustX.push(xs[i]); dustY.push(xs[i]); }
+  }
+
+  const traces = [
+    { x: xs, y: totals, name: 'Total Fee', line: { color: '#f5a623', width: 2.5 } },
+    { x: xs, y: liqs, name: 'Liquidity Fee', line: { color: '#36d7b7', width: 1.5, dash: 'dot' } },
+    { x: xs, y: onchains, name: 'On-chain Share', line: { color: '#e74c3c', width: 1.5, dash: 'dot' } },
+    { x: xs, y: exits, name: 'Exit Cost', line: { color: '#9b59b6', width: 1.5, dash: 'dashdot' } },
+    { x: xs, y: breakeven, name: '100% of Value', line: { color: '#ffffff', width: 1, dash: 'dot' }, opacity: 0.4 },
+  ];
+  if (dustX.length > 1) {
+    traces.push({
+      x: dustX, y: dustY, fill: 'tozeroy', fillcolor: 'rgba(231,76,60,0.15)',
+      line: { width: 0 }, showlegend: true, name: 'Dust Zone',
+    });
+  }
+
+  const layout = dl({
+    title: { text: 'Fee vs Amount', font: { size: 14 } },
+    xaxis: { title: 'VTXO Amount (sats)', type: 'log', gridcolor: '#1a2e50' },
+    yaxis: { title: 'Fee (sats)', type: 'log', gridcolor: '#1a2e50' },
+    height: 380,
+  });
+  Plotly.react('chart1', traces, layout, { responsive: true });
+}
+
+function buildChart2(p) {
+  const xs = logspace(3, 8, 200);
+  const pcts = [];
+  for (const a of xs) {
+    const f = fee(a, p.B, p.delta, p.r, p.feerate, p.epsilon, p.u, p.uStar);
+    pcts.push((f.total / a) * 100);
+  }
+  // Find min viable VTXO (fee < 50% of value).
+  let minViable = xs[xs.length - 1];
+  for (let i = 0; i < xs.length; i++) {
+    if (pcts[i] < 50) { minViable = xs[i]; break; }
+  }
+
+  const traces = [
+    { x: xs, y: pcts, name: 'Fee %', line: { color: '#f5a623', width: 2 } },
+  ];
+  const shapes = [
+    { type: 'line', x0: minViable, x1: minViable, y0: 0, y1: 100, line: { color: '#e74c3c', width: 1.5, dash: 'dash' } },
+  ];
+  const annotations = [
+    { x: Math.log10(minViable), y: 55, text: 'Min Viable', showarrow: false, font: { color: '#e74c3c', size: 10 }, xref: 'x', yref: 'y' },
+  ];
+  const refLines = [1, 5, 10];
+  for (const rl of refLines) {
+    shapes.push({ type: 'line', x0: 1e3, x1: 1e8, y0: rl, y1: rl, line: { color: '#555', width: 1, dash: 'dot' } });
+    annotations.push({ x: Math.log10(1.2e3), y: rl + 1.5, text: rl + '%', showarrow: false, font: { color: '#777', size: 10 } });
+  }
+
+  const layout = dl({
+    title: { text: 'Fee as % of Amount', font: { size: 14 } },
+    xaxis: { title: 'VTXO Amount (sats)', type: 'log', gridcolor: '#1a2e50' },
+    yaxis: { title: 'Fee %', range: [0, Math.min(100, Math.max(...pcts) * 1.1)], gridcolor: '#1a2e50' },
+    shapes, annotations, height: 380,
+  });
+  Plotly.react('chart2', traces, layout, { responsive: true });
+}
+
+function buildChart3(p) {
+  const feerates = linspace(1, 200, 200);
+  const econDust = [], secDust = [];
+  for (const fr of feerates) {
+    econDust.push(solveMinEcon(p, fr));
+    // Security dust: exit cost > value.
+    const ec = exitCost(fr, p.B, p.R);
+    secDust.push(Math.round(ec));
+  }
+  const traces = [
+    { x: feerates, y: econDust, name: 'Economic Dust (fee > 50%)', line: { color: '#f5a623', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(245,166,35,0.1)' },
+    { x: feerates, y: secDust, name: 'Security Dust (exit > value)', line: { color: '#e74c3c', width: 2 }, fill: 'tozeroy', fillcolor: 'rgba(231,76,60,0.1)' },
+  ];
+  const layout = dl({
+    title: { text: 'Min Viable VTXO by Feerate', font: { size: 14 } },
+    xaxis: { title: 'On-chain Feerate (sat/vB)', gridcolor: '#1a2e50' },
+    yaxis: { title: 'Min VTXO (sats)', type: 'log', gridcolor: '#1a2e50' },
+    height: 380,
+  });
+  Plotly.react('chart3', traces, layout, { responsive: true });
+}
+
+function buildChart4(p) {
+  const weeks = linspace(1, 52, 52);
+  const feerates = [5, 20, 50];
+  const colors = ['#36d7b7', '#f5a623', '#e74c3c'];
+  const traces = [];
+  // Annual cost assumes the user refreshes at the half-lifetime point,
+  // which is the cadence where the liquidity component equals A·r and the
+  // total cost is closest to minimized (see fee-model.md "Annualized
+  // liquidity cost"). At half-lifetime:
+  //   refresh interval = L/2 days  → refreshes_per_year = 365·2/L = 730/L
+  //   δ at refresh     = L/2 days  (old VTXO has L/2 days remaining)
+  for (let fi = 0; fi < feerates.length; fi++) {
+    const fr = feerates[fi];
+    const ys = [];
+    for (const w of weeks) {
+      const Ldays = w * 7;
+      const refreshesPerYear = 730 / Ldays;
+      const deltaHalf = Ldays / 2;
+      const f = fee(p.A, p.B, deltaHalf, p.r, fr, p.epsilon, p.u, p.uStar);
+      ys.push(refreshesPerYear * f.total);
+    }
+    traces.push({
+      x: weeks, y: ys, name: fr + ' sat/vB',
+      line: { color: colors[fi], width: 2 },
+    });
+  }
+  const layout = dl({
+    title: {
+      text: 'Annual Cost of Ownership vs Timelock (refresh at L/2)',
+      font: { size: 14 },
+    },
+    xaxis: { title: 'VTXO Lifetime (weeks)', gridcolor: '#1a2e50' },
+    yaxis: { title: 'Annual Cost (sats)', gridcolor: '#1a2e50' },
+    height: 380,
+  });
+  Plotly.react('chart4', traces, layout, { responsive: true });
+}
+
+function buildChart5(p) {
+  const radixes = [];
+  const costs = [];
+  const depths = [];
+  for (let R = 2; R <= 16; R++) {
+    radixes.push(R);
+    costs.push(exitCost(p.feerate, p.B, R));
+    depths.push(treeDepth(p.B, R));
+  }
+  const opt = optimalRadix(p.feerate, p.B);
+  const traces = [
+    {
+      x: radixes, y: costs, name: 'Exit Cost',
+      line: { color: '#9b59b6', width: 2.5 },
+      text: depths.map(d => 'depth=' + d),
+      hovertemplate: 'R=%{x}<br>Cost: %{y:,.0f} sats<br>%{text}<extra></extra>',
+    },
+  ];
+  const shapes = [
+    {
+      type: 'line', x0: opt.R, x1: opt.R, y0: 0, y1: Math.max(...costs),
+      line: { color: '#36d7b7', width: 1.5, dash: 'dash' },
+    },
+  ];
+  const annotations = [
+    {
+      x: opt.R, y: opt.cost, text: 'Optimal R=' + opt.R,
+      showarrow: true, arrowcolor: '#36d7b7', arrowwidth: 1,
+      font: { color: '#36d7b7', size: 11 }, ax: 30, ay: -30,
+    },
+  ];
+  // Mark current radix if different from optimal.
+  if (p.R !== opt.R) {
+    const curCost = exitCost(p.feerate, p.B, p.R);
+    shapes.push({
+      type: 'line', x0: p.R, x1: p.R, y0: 0, y1: Math.max(...costs),
+      line: { color: '#f5a623', width: 1.5, dash: 'dot' },
+    });
+    annotations.push({
+      x: p.R, y: curCost, text: 'Current R=' + p.R,
+      showarrow: true, arrowcolor: '#f5a623', arrowwidth: 1,
+      font: { color: '#f5a623', size: 11 }, ax: -30, ay: -30,
+    });
+  }
+  const layout = dl({
+    title: { text: 'Exit Cost vs Tree Radix (B=' + p.B + ')', font: { size: 14 } },
+    xaxis: { title: 'Tree Radix R', dtick: 1, gridcolor: '#1a2e50' },
+    yaxis: { title: 'Exit Cost (sats)', gridcolor: '#1a2e50' },
+    shapes, annotations, height: 380,
+  });
+  Plotly.react('chart5', traces, layout, { responsive: true });
+}
+
+// ── Breakdown panel ──────────────────────────────────────────────────────────
+
+function updateBreakdown(p) {
+  const f = fee(p.A, p.B, p.delta, p.r, p.feerate, p.epsilon, p.u, p.uStar);
+
+  // Min viable VTXO (economic): fee > 50% of value.
+  const minEcon = solveMinEcon(p);
+
+  // Min viable VTXO (security): exit cost > value.
+  const ec = exitCost(p.feerate, p.B, p.R);
+  const minSec = Math.round(ec);
+  const minEffective = Math.max(minEcon, minSec);
+
+  // Exit cost details.
+  const depth = treeDepth(p.B, p.R);
+  const bvb = branchVBytes(p.R);
+  const opt = optimalRadix(p.feerate, p.B);
+
+  const el = document.getElementById('breakdown');
+  const spreadActive = p.u > p.uStar;
+  const spreadAmt = f.rEff - p.r;
+  const rateExplain = spreadActive
+    ? `<span>${(f.rEff * 100).toFixed(2)}% annual</span><span class="formula">(= ${(p.r * 100).toFixed(2)}% + ${(spreadAmt * 100).toFixed(2)}% congestion spread)</span>`
+    : `<span>${(f.rEff * 100).toFixed(2)}% annual</span><span class="formula">(= base rate, no congestion)</span>`;
+
+  const congestionDetail = spreadActive
+    ? `<div class="row"><span class="label">Congestion Spread:</span><span>+${(spreadAmt * 100).toFixed(2)}%</span><span class="formula">u=${p.u.toFixed(2)} &gt; u*=${p.uStar.toFixed(2)}, excess=${(p.u - p.uStar).toFixed(2)}</span></div>`
+    : '';
+
+  const optNote = (opt.R !== p.R)
+    ? `<div class="row"><span class="label" data-tip="The radix value that minimizes total exit cost for the current batch size and feerate.">Optimal Radix:</span><span>R=${opt.R}</span><span class="formula">(saves ${fmtSats(Math.round(ec - opt.cost))} sats, depth=${opt.depth})</span></div>`
+    : `<div class="row"><span class="label" data-tip="The radix value that minimizes total exit cost for the current batch size and feerate.">Optimal Radix:</span><span>R=${opt.R} (current)</span></div>`;
+
+  const liqFormula = f.floored
+    ? `(A&middot;max(&delta;,&delta;_min)/365&middot;r_eff, floor)`
+    : `(A&middot;&delta;/365&middot;r_eff)`;
+
+  el.innerHTML = `
+    <div class="row"><span class="label" data-tip="Refresh/offboard only. Cost of the operator's double-commitment window. Floored at δ_min to prevent lazy-refresh bypass. Boarding does not incur this fee.">Liquidity Fee:</span><span>${fmtSats(Math.round(f.liq))} sats</span><span class="formula">${liqFormula}</span></div>
+    <div class="row"><span class="label" data-tip="Your share of the round's on-chain transaction cost. Splits the total tx fee evenly among all participants.">On-chain Share:</span><span>${fmtSats(Math.round(f.onchain))} sats</span><span class="formula">(F_round/B)</span></div>
+    <div class="row"><span class="label" data-tip="Flat per-VTXO fee covering the operator's infrastructure and coordination costs.">Operator Margin:</span><span>${fmtSats(p.epsilon)} sats</span><span class="formula">(&epsilon;)</span></div>
+    <div class="row total"><span class="label" data-tip="Sum of liquidity fee + on-chain share + operator margin. This is what the participant pays per round.">Total Round Fee:</span><span>${fmtSats(Math.round(f.total))} sats</span></div>
+    <div class="row"><span class="label" data-tip="Total fee expressed as a percentage of the VTXO amount.">Fee Rate:</span><span>${(f.total / p.A * 100).toFixed(2)}%</span><span class="formula">(totalFee / amount)</span></div>
+    <div class="row"><span class="label" data-tip="The annual rate actually applied. Equals base rate when utilization is below threshold, or base rate + congestion spread when above.">Effective Rate:</span>${rateExplain}</div>
+    ${congestionDetail}
+    <div class="row" style="border-top:1px solid rgba(155,89,182,0.2);margin-top:6px;padding-top:6px"><span class="label" data-tip="Worst-case on-chain cost to unilaterally exit this VTXO by revealing all tree branches from leaf to root.">Exit Cost:</span><span style="color:#9b59b6">${fmtSats(Math.round(ec))} sats</span><span class="formula">(depth=${depth}, R=${p.R}, ${bvb} vB/branch)</span></div>
+    ${optNote}
+    <div class="row" style="border-top:1px solid var(--border-accent);margin-top:6px;padding-top:6px"><span class="label" data-tip="Smallest VTXO where fees are less than 50% of its value.">Min Viable (economic):</span><span>${fmtSats(minEcon)} sats</span></div>
+    <div class="row"><span class="label" data-tip="Smallest VTXO where exit cost is less than the VTXO value. Below this, you cannot profitably exit on-chain.">Min Viable (security):</span><span>${fmtSats(minSec)} sats</span></div>
+    <div class="row" style="color:var(--amber);font-weight:600"><span class="label">Min Viable (effective):</span><span>${fmtSats(minEffective)} sats</span><span class="formula">(max of both)</span></div>
+  `;
+}
+
+// ── Main update loop ─────────────────────────────────────────────────────────
+
+function update() {
+  const p = getParams();
+  updateReadouts(p);
+  updateBreakdown(p);
+  if (typeof Plotly !== 'undefined') {
+    buildChart1(p);
+    buildChart2(p);
+    buildChart3(p);
+    buildChart4(p);
+    buildChart5(p);
+  }
+}
+
+// Attach listeners.
+for (const key in sliders) {
+  sliders[key].addEventListener('input', update);
+}
+
+// Initial render.
+update();
+</script>
+</body>
+</html>
