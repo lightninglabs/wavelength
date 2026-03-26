@@ -134,6 +134,46 @@ func TestBoardingIntegrationSingleClient(t *testing.T) {
 		liveVTXO.RoundId, finalBalance.BoardingConfirmedSat)
 }
 
+// TestBoardingIntegrationNoConfirmedInputs verifies Board returns
+// no_boarding_utxos when the client has not funded any boarding address.
+func TestBoardingIntegrationNoConfirmedInputs(t *testing.T) {
+	clientOpts := client_harness.DefaultOptions()
+	clientOpts.GroupName = t.Name()
+	clientOpts.StartTapd = false
+
+	h := harness.NewArkHarness(t, &harness.ArkHarnessOptions{
+		ClientOptions: &clientOpts,
+	})
+	t.Cleanup(h.Stop)
+
+	h.Start()
+	h.FundOperatorLND(btcutil.SatoshiPerBitcoin)
+
+	alice := h.StartClientDaemon("alice")
+	waitForClientRegistration(t, h)
+
+	ctx, cancel := context.WithTimeout(t.Context(), defaultSmallTimeout)
+	defer cancel()
+
+	balanceResp, err := alice.RPCClient.GetBalance(
+		ctx, &daemonrpc.GetBalanceRequest{},
+	)
+	require.NoError(t, err, "GetBalance RPC failed")
+	require.Zero(t, balanceResp.BoardingConfirmedSat)
+
+	boardResp, err := alice.RPCClient.Board(
+		ctx, &daemonrpc.BoardRequest{},
+	)
+	require.NoError(t, err, "Board RPC failed")
+	require.Equal(t, "no_boarding_utxos", boardResp.Status)
+
+	roundsResp, err := alice.RPCClient.ListRounds(
+		ctx, &daemonrpc.ListRoundsRequest{},
+	)
+	require.NoError(t, err, "ListRounds RPC failed")
+	require.Empty(t, roundsResp.Rounds, "no round should be started")
+}
+
 // TestBoardingIntegrationTwoClientsSharedRound exercises two real client
 // daemons boarding into the same operator-managed round and verifies both
 // sides observe shared-round formation through transaction broadcast.
