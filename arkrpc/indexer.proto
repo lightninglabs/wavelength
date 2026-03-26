@@ -472,11 +472,49 @@ message ListVTXOEventsByScriptsResponse {
     uint64 next_cursor = 2;
 }
 
-// IncomingVTXOEvent is delivered as a mailbox EVENT envelope. It is a durable
-// hint that a wallet should reconcile state by polling event feeds.
+// VTXOOrigin distinguishes how a VTXO was created so the receiving
+// client can apply the correct materialization logic.
+enum VTXOOrigin {
+    // VTXO_ORIGIN_UNSPECIFIED is the default zero value.
+    VTXO_ORIGIN_UNSPECIFIED = 0;
+
+    // VTXO_ORIGIN_IN_ROUND indicates the VTXO was created as part of
+    // a confirmed round (directed in-round send).
+    VTXO_ORIGIN_IN_ROUND = 1;
+
+    // VTXO_ORIGIN_OOR indicates the VTXO was created via an
+    // out-of-round transfer.
+    VTXO_ORIGIN_OOR = 2;
+}
+
+// IncomingVTXOEvent is delivered as a mailbox EVENT envelope. For
+// VTXO_CREATED events from confirmed rounds, the pk_script and
+// value_sat fields carry enough data for the client to materialize
+// the VTXO without a follow-up indexer query.
 message IncomingVTXOEvent {
     uint64 event_id = 1;
     VTXOEventType type = 2;
     OutPoint outpoint = 3;
     VTXOStatus status = 4;
+
+    // pk_script is the VTXO output script. Present for CREATED events
+    // so the client can match against registered receive scripts.
+    bytes pk_script = 5;
+
+    // value_sat is the VTXO amount in satoshis.
+    uint64 value_sat = 6;
+
+    // round_id identifies the round that created this VTXO.
+    string round_id = 7;
+
+    // batch_expiry_height is the absolute height at which the batch
+    // expires.
+    int32 batch_expiry_height = 8;
+
+    // relative_expiry is the CSV delay for the unilateral exit path.
+    uint32 relative_expiry = 9;
+
+    // origin indicates how the VTXO was created (in-round send vs
+    // out-of-round transfer).
+    VTXOOrigin origin = 10;
 }
