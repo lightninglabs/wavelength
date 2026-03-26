@@ -100,6 +100,18 @@ type BoardingInputLocker interface {
 		outpoint *wire.OutPoint) (bool, RoundID, error)
 }
 
+// VTXOEventPublisher publishes VTXO lifecycle events to the indexer.
+// Used by the rounds actor to notify registered receive-script holders
+// when their VTXOs are created in a confirmed round.
+type VTXOEventPublisher interface {
+	// PublishVTXOCreated publishes a VTXO_CREATED event for a
+	// confirmed round VTXO output.
+	PublishVTXOCreated(ctx context.Context, pkScript []byte,
+		outpoint wire.OutPoint, valueSat int64,
+		roundID string, batchExpiry int32,
+		relativeExpiry uint32) error
+}
+
 // ChainSource provides access to blockchain data for UTXO validation.
 type ChainSource interface {
 	// GetUTXO fetches the UTXO for the given outpoint. Returns an error
