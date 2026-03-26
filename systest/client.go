@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	btclog "github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/darepod"
@@ -613,6 +614,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 			oorPackageStore, opts.backend.IndexerSigner,
 		),
 		"server", string(clientID),
+		fn.None[btclog.Logger](),
 	)
 
 	// Wire the client-side OOR actor using the same
