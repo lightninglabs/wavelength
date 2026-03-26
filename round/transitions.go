@@ -1660,28 +1660,34 @@ func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 		// Each signing key maps to exactly one leaf
 		// (enforced by ValidatePath during tree validation).
 		leaves := clientTree.Root.GetLeafNodes()
-		if len(leaves) == 0 {
-			return nil, fmt.Errorf("client tree for " +
-				"signing key has no leaves")
-		}
-		leaf := leaves[0]
 
-		outpoint, err := leaf.GetNonAnchorOutpoint()
-		if err != nil {
-			return nil, fmt.Errorf("failed to "+
-				"derive VTXO outpoint: %w", err)
-		}
+		for _, leaf := range leaves {
+			outpoint, err := leaf.GetNonAnchorOutpoint()
+			if err != nil {
+				return nil, fmt.Errorf("failed to "+
+					"derive VTXO outpoint: %w", err)
+			}
 
-		vtxos = append(vtxos, &ClientVTXO{
-			Outpoint:    *outpoint,
-			Amount:      req.Amount,
-			PkScript:    req.PkScript,
-			Expiry:      req.Expiry,
-			OwnerKey:    req.OwnerKey,
-			OperatorKey: req.OperatorKey,
-			TreePath:    clientTree,
-			RoundID:     fn.Some(roundID),
-		})
+			// Use the VTXO's declared OwnerKey rather
+			// than the SigningKey (MuSig2 co-signer). For
+			// self-refresh these are the same key, but for
+			// directed sends the recipient's OwnerKey
+			// differs from the sender's SigningKey.
+			ownerKeyDesc := keychain.KeyDescriptor{
+				PubKey: req.OwnerKey.PubKey,
+			}
+
+			vtxos = append(vtxos, &ClientVTXO{
+				Outpoint:    *outpoint,
+				Amount:      req.Amount,
+				PkScript:    req.PkScript,
+				Expiry:      req.Expiry,
+				OwnerKey:    ownerKeyDesc,
+				OperatorKey: req.OperatorKey,
+				TreePath:    clientTree,
+				RoundID:     fn.Some(roundID),
+			})
+		}
 	}
 
 	return vtxos, nil

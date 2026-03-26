@@ -70,6 +70,15 @@ type RegisterIntentMsg struct {
 	// Leaves contains the leave requests for VTXOs being exited to
 	// on-chain outputs.
 	Leaves []*types.LeaveRequest
+
+	// TriggerRegistration when true causes the round actor to
+	// immediately fire RegistrationRequested after accepting the
+	// intent, advancing the FSM from PendingRoundAssembly to
+	// RegistrationSent. Set this for directed sends that should
+	// join the server round immediately. Leave false for flows
+	// that accumulate intents before registering (e.g., refresh
+	// batching with boarding).
+	TriggerRegistration bool
 }
 
 // RoundReceivable implements the RoundReceivable marker interface.

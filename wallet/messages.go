@@ -584,3 +584,88 @@ func (m *LeaveVTXOsResponse) MessageType() string {
 
 // walletRespSealed implements the sealed WalletResp interface.
 func (m *LeaveVTXOsResponse) walletRespSealed() {}
+
+// SendRecipient describes a single recipient for an in-round directed
+// send. The PkScript is the fully resolved VTXO output script.
+type SendRecipient struct {
+	// PkScript is the recipient's VTXO output script. For pubkey
+	// destinations this is derived from the recipient's key, the
+	// operator's key, and the VTXO exit delay via
+	// tree.NewVTXODescriptor. For pk_script destinations the caller
+	// provides the raw script directly.
+	PkScript []byte
+
+	// Amount is the value to send to this recipient in satoshis.
+	Amount btcutil.Amount
+
+	// ClientKey is the recipient's public key for the collaborative
+	// spend path. Nil for pk_script destinations where the key is
+	// embedded in the script but not provided separately.
+	ClientKey *btcec.PublicKey
+}
+
+// SendVTXOsRequest asks the wallet to execute an in-round directed
+// send. The wallet atomically selects and reserves VTXOs for
+// cooperative consumption, builds the IntentPackage (forfeits +
+// recipient VTXOs + change), and registers it with the round actor.
+type SendVTXOsRequest struct {
+	actor.BaseMessage
+
+	// Recipients is the list of send destinations with resolved
+	// pkScripts and amounts.
+	Recipients []SendRecipient
+
+	// OperatorFee is the fee deducted from the total to pay the
+	// operator.
+	OperatorFee btcutil.Amount
+
+	// DustLimit is the minimum viable VTXO output amount. Change
+	// below this threshold causes the send to be rejected.
+	DustLimit btcutil.Amount
+
+	// OperatorKey is the operator's public key for constructing
+	// new VTXO descriptors (change output).
+	OperatorKey *btcec.PublicKey
+
+	// VTXOExitDelay is the CSV delay for the unilateral exit path
+	// of new VTXOs.
+	VTXOExitDelay uint32
+
+	// DryRun when true validates coin selection and immediately
+	// releases the reservation without registering with the round.
+	DryRun bool
+}
+
+// MessageType returns the message type identifier for logging.
+func (m *SendVTXOsRequest) MessageType() string {
+	return "SendVTXOsRequest"
+}
+
+// walletMsgSealed implements the sealed WalletMsg interface.
+func (m *SendVTXOsRequest) walletMsgSealed() {}
+
+// SendVTXOsResponse contains the result of a directed send request.
+type SendVTXOsResponse struct {
+	actor.BaseMessage
+
+	// Status is "submitted" for real sends or "preview" for dry-run.
+	Status string
+
+	// SelectedCount is the number of VTXOs selected as inputs.
+	SelectedCount int
+
+	// TotalSelected is the sum of selected VTXO amounts.
+	TotalSelected btcutil.Amount
+
+	// ChangeAmount is the change returned to the sender. Zero if
+	// the selection exactly covered the total.
+	ChangeAmount btcutil.Amount
+}
+
+// MessageType returns the message type identifier for logging.
+func (m *SendVTXOsResponse) MessageType() string {
+	return "SendVTXOsResponse"
+}
+
+// walletRespSealed implements the sealed WalletResp interface.
+func (m *SendVTXOsResponse) walletRespSealed() {}

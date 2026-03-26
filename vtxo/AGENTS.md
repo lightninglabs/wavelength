@@ -31,7 +31,7 @@ versus leave.
   - → `vtxo` manager: `VTXOTerminatedNotification`, `RelayToRoundMsg`
 - **Receives**:
   - ← `round`: `ForfeitRequestEvent`, `ForfeitConfirmedEvent`, `ForfeitSignedEvent`, `ForfeitReleasedEvent`, `BlockEpochEvent`, `PendingForfeitEvent`, `SpendReserveEvent`, `SpendReleasedEvent`, `SpendCompletedEvent`, `ResumeVTXOEvent`
-  - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`
+  - ← `wallet` (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
   - ← `chainsource` (via Manager): `BlockEpochEvent`
 
 ## Invariants
@@ -43,7 +43,8 @@ versus leave.
 - SpendingState is persisted as VTXOStatusSpending and survives restarts.
 - OOR completion transitions VTXOs to SpentState through the VTXO actor FSM, not by direct store writes.
 - A VTXO in SpendingState cannot be admitted for cooperative consumption, and vice versa.
-- Admission types (`SelectAndReserveSpendRequest`, `ReserveForfeitRequest`, etc.) are defined in `lib/actormsg` and re-exported as type aliases to avoid wallet → vtxo → round → wallet import cycles.
+- Admission types (`SelectAndReserveSpendRequest`, `SelectAndReserveForfeitRequest`, `ReserveForfeitRequest`, etc.) are defined in `lib/actormsg` and re-exported as type aliases to avoid wallet → vtxo → round → wallet import cycles.
+- `selectAndReserveVTXOs` is a shared helper parameterized by `reserveParams` that serves both the OOR spend and cooperative forfeit coin selection paths, avoiding code duplication.
 - Per-subsystem logging: `ManagerConfig.Log` provides an optional instance logger; falls back to `build.LoggerFromContext` (no global mutable loggers).
 
 ## Deep Docs

@@ -9,7 +9,7 @@ gRPC API.
 ## Key Types
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem.
-- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, etc.). Includes test hooks for mailbox edge factory and round registration.
+- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration.
 - `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception.
 - `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
@@ -17,6 +17,8 @@ gRPC API.
 - `NewOwnedReceiveScriptSigner` — Indexer signer that resolves the wallet key for any persisted owned receive script, then delegates signing to the backend-specific signer.
 - `EnsureDefaultOORReceiveScript` / `CreateOORReceiveScript` — Receive-key lifecycle: derive, register with indexer (proof-of-control), persist ownership record.
 - `ResolveIncomingMetadataFromIndexer` — Resolves authoritative VTXO lineage metadata from the indexer's `ListVTXOsByScripts` response for incoming materialization.
+- `SendVTXO` — RPC handler for in-round directed sends. Validates recipients, resolves destinations via `resolveRecipientOutput`, and delegates to the wallet actor.
+- `resolveRecipientOutput` — Extracts pkScript and client pubkey from an `Output` proto oneof (pubkey or address). Enforces taproot-only for directed sends.
 
 ## Relationships
 
