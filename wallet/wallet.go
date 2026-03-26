@@ -1361,10 +1361,17 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 			))
 		}
 
-		if r.Amount <= 0 {
+		if r.Amount <= 0 || r.Amount > btcutil.MaxSatoshi {
 			return fn.Err[WalletResp](fmt.Errorf(
-				"recipient %d: amount must be positive",
-				i,
+				"recipient %d: amount must be "+
+					"between 1 and %d",
+				i, btcutil.MaxSatoshi,
+			))
+		}
+
+		if totalRecipientAmount+r.Amount < 0 {
+			return fn.Err[WalletResp](fmt.Errorf(
+				"total recipient amount overflows",
 			))
 		}
 
@@ -1407,37 +1414,41 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		)
 	}
 
-	// releaseAndFail attempts a strict forfeit release and
-	// returns the primary error, augmented with release failure
-	// info if the release itself fails.
-	releaseAndFail := func(primary error) fn.Result[WalletResp] {
-		releaseErr := a.releaseManagerForfeitStrict(
-			ctx, reservedOutpoints,
-		)
-		if releaseErr != nil {
-			return fn.Err[WalletResp](fmt.Errorf(
-				"%w; additionally, forfeit "+
-					"release failed: %v",
-				primary, releaseErr,
-			))
+	// Ensure reserved VTXOs are released if we don't reach the
+	// successful registration at the end. Use a background
+	// context so cleanup survives client disconnection.
+	committed := false
+	defer func() {
+		if committed {
+			return
 		}
 
-		return fn.Err[WalletResp](primary)
-	}
+		releaseCtx := context.WithoutCancel(ctx)
+		releaseErr := a.releaseManagerForfeitStrict(
+			releaseCtx, reservedOutpoints,
+		)
+		if releaseErr != nil {
+			a.logger(releaseCtx).WarnS(
+				releaseCtx,
+				"Failed to release reserved "+
+					"VTXOs", releaseErr,
+			)
+		}
+	}()
 
 	// Compute change.
 	change := mgrResp.TotalSelected - totalNeeded
 	if change < 0 {
 		// Should not happen since coin selection covers the
 		// target, but be defensive.
-		return releaseAndFail(fmt.Errorf(
+		return fn.Err[WalletResp](fmt.Errorf(
 			"selection shortfall: selected %d, need %d",
 			mgrResp.TotalSelected, totalNeeded,
 		))
 	}
 
 	if change > 0 && change <= req.DustLimit {
-		return releaseAndFail(fmt.Errorf(
+		return fn.Err[WalletResp](fmt.Errorf(
 			"change %d is below dust limit %d; "+
 				"adjust send amount",
 			change, req.DustLimit,
@@ -1446,17 +1457,7 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 
 	// Dry-run: validate coin selection then release immediately.
 	if req.DryRun {
-		releaseErr := a.releaseManagerForfeitStrict(
-			ctx, reservedOutpoints,
-		)
-		if releaseErr != nil {
-			return fn.Err[WalletResp](fmt.Errorf(
-				"dry-run release failed, funds may "+
-					"be temporarily unavailable: "+
-					"%w", releaseErr,
-			))
-		}
-
+		// The deferred cleanup releases the reservation.
 		return fn.Ok[WalletResp](&SendVTXOsResponse{
 			Status:        "preview",
 			SelectedCount: len(mgrResp.SelectedVTXOs),
@@ -1483,7 +1484,7 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		ctx, req, change,
 	)
 	if buildErr != nil {
-		return releaseAndFail(buildErr)
+		return fn.Err[WalletResp](buildErr)
 	}
 
 	// Register the intent with the round actor.
@@ -1500,11 +1501,13 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 		a.logger(ctx).WarnS(ctx,
 			"Round rejected send intent", result.Err())
 
-		return releaseAndFail(fmt.Errorf(
+		return fn.Err[WalletResp](fmt.Errorf(
 			"round rejected send intent: %w",
 			result.Err(),
 		))
 	}
+
+	committed = true
 
 	a.logger(ctx).InfoS(ctx, "Directed send intent registered",
 		slog.Int("forfeits", len(forfeits)),

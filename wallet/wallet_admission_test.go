@@ -906,9 +906,9 @@ func TestSendVTXOsDryRun(t *testing.T) {
 	require.Equal(t, 1, mgr.forfeitReleaseCalls)
 }
 
-// TestSendVTXOsDryRunReleaseFails verifies that a dry-run where
-// release fails returns an explicit error about lingering
-// reservations.
+// TestSendVTXOsDryRunReleaseFails verifies that a dry-run succeeds
+// even when the deferred forfeit release fails. The release is
+// best-effort — errors are logged but don't propagate.
 func TestSendVTXOsDryRunReleaseFails(t *testing.T) {
 	t.Parallel()
 
@@ -937,9 +937,12 @@ func TestSendVTXOsDryRunReleaseFails(t *testing.T) {
 		VTXOExitDelay: 144,
 		DryRun:        true,
 	})
-	_, err := result.Unpack()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "temporarily unavailable")
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+
+	sendResp, ok := resp.(*SendVTXOsResponse)
+	require.True(t, ok)
+	require.Equal(t, "preview", sendResp.Status)
 }
 
 // TestSendVTXOsRoundRejectsAndReleases verifies that when the round
