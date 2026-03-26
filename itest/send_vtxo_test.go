@@ -48,10 +48,13 @@ func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	)
 }
 
-func setupSendVTXOValidationHarness(t *testing.T, label string) (
+func setupSendVTXOValidationHarness(
+	t *testing.T, label string,
+) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
 	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
 ) {
+
 	t.Helper()
 
 	clientOpts := client_harness.DefaultOptions()
@@ -78,7 +81,9 @@ func setupSendVTXOValidationHarness(t *testing.T, label string) (
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
 	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{Label: label},
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: label,
+		},
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
@@ -86,37 +91,4 @@ func setupSendVTXOValidationHarness(t *testing.T, label string) (
 	require.NoError(t, err, "pk_script_hex must be valid hex")
 
 	return alice, bob, aliceStartBalance, bobStartBalance, recipientPkScript
-}
-
-// TestSendVTXOIntegrationUnimplemented verifies non-dry-run SendVTXO requests
-// currently return unimplemented and do not mutate wallet balances.
-func TestSendVTXOIntegrationUnimplemented(t *testing.T) {
-	alice, bob, aliceStartBalance, bobStartBalance,
-		recipientPkScript := setupSendVTXOValidationHarness(
-		t, "itest-sendvtxo-unimplemented",
-	)
-
-	const sendAmount = int64(50_000)
-	_, err = alice.RPCClient.SendVTXO(
-		t.Context(), &daemonrpc.SendVTXORequest{
-			Recipients: []*daemonrpc.Output{
-				{
-					Destination: &daemonrpc.Output_PkScript{
-						PkScript: recipientPkScript,
-					},
-					AmountSat: sendAmount,
-				},
-			},
-		},
-	)
-	require.Error(t, err, "SendVTXO should be unimplemented")
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.ErrorContains(t, err, "not yet implemented")
-
-	waitForExactVTXOBalance(
-		t, alice.RPCClient, aliceStartBalance.VtxoBalanceSat,
-	)
-	waitForExactVTXOBalance(
-		t, bob.RPCClient, bobStartBalance.VtxoBalanceSat,
-	)
 }

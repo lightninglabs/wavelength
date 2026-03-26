@@ -145,7 +145,7 @@ func TestOORIntegrationInsufficientFunds(t *testing.T) {
 		t, "itest-oor-insufficient-funds",
 	)
 
-	_, err = alice.RPCClient.SendOOR(
+	_, err := alice.RPCClient.SendOOR(
 		t.Context(), &daemonrpc.SendOORRequest{
 			Recipient: &daemonrpc.Output{
 				Destination: &daemonrpc.Output_PkScript{
@@ -225,11 +225,14 @@ func TestOORIntegrationRejectsZeroAmount(t *testing.T) {
 	)
 }
 
-func setupFundedOORValidationHarness(t *testing.T, label string) (
+func setupFundedOORValidationHarness(
+	t *testing.T, label string,
+) (
 	*harness.ClientDaemonHarness, *harness.ClientDaemonHarness,
 	*daemonrpc.VTXO,
 	*daemonrpc.GetBalanceResponse, *daemonrpc.GetBalanceResponse, []byte,
 ) {
+
 	t.Helper()
 
 	clientOpts := client_harness.DefaultOptions()
@@ -256,7 +259,9 @@ func setupFundedOORValidationHarness(t *testing.T, label string) (
 	bobStartBalance := waitForExactVTXOBalance(t, bob.RPCClient, 0)
 
 	recvResp, err := bob.RPCClient.NewOORReceiveScript(
-		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{Label: label},
+		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
+			Label: label,
+		},
 	)
 	require.NoError(t, err, "NewOORReceiveScript RPC failed")
 
