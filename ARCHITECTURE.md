@@ -126,6 +126,9 @@ corresponding state transition being durable.
 | `RPCClient` | mailbox/rpc | SendRPC/AwaitRPC interface for generated stubs |
 | `Message` | baselib/actor | Sealed interface for actor messages |
 | `Ref[Msg, Resp]` | baselib/actor | Typed actor reference (Tell, Ask) |
+| `ClientWallet` | round | MuSig2 signing + key derivation interface for round participation |
+| `VTXOReader` | wallet | Read-only VTXO descriptor access (breaks import cycle) |
+| `SelectedVTXO` | wallet | Locked VTXO descriptor for transfer inputs (breaks import cycle) |
 
 ## State Machines
 
@@ -136,6 +139,11 @@ CommitmentTxReceived → CommitmentTxValidated → NoncesSent →
 NoncesAggregated → PartialSigsSent → [ForfeitSignaturesCollecting] →
 InputSigSent → Confirmed → Idle
 ```
+ForfeitSignaturesCollecting is entered only when `len(ForfeitMappings) > 0`
+(i.e., the round includes refresh or leave VTXOs). Boarding-only rounds
+skip directly from PartialSigsSent to InputSigSent. Forfeit collection
+happens after VTXO tree signing to ensure clients only forfeit old VTXOs
+once new ones are confirmed signed.
 
 ### VTXO FSM
 ```

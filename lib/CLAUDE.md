@@ -32,10 +32,10 @@ interfaces, and core Ark types.
 - `Signer` — Interface for producing BIP-322 signatures over intents.
 
 ### lib/actormsg
-- `VTXOActorMsg`, `RoundReceivable` — Marker interfaces avoiding import cycles.
-- `VTXOActorServiceKey()`, `RoundActorServiceKey()` — Deterministic actor lookup.
-- `TriggerBoardMsg` — Cross-package message from wallet→round for boarding (VTXO amounts).
-- `TriggerVTXORefreshMsg`, `TriggerVTXOLeaveMsg` — Cross-package wallet→round triggers.
+- `VTXOActorMsg`, `VTXOManagerMsg`, `RoundReceivable` — Marker interfaces avoiding import cycles.
+- `VTXOActorServiceKey()`, `VTXOManagerServiceKey()`, `RoundActorServiceKey()` — Deterministic actor lookup.
+- `TriggerBoardMsg`, `RegisterIntentMsg` — Cross-package messages from wallet→round.
+- `SelectAndReserveSpendRequest`, `ReserveForfeitRequest`, etc. — VTXO manager admission types.
 
 ## Relationships
 

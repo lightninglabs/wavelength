@@ -15,6 +15,8 @@ proofs for proof-of-control.
   (LND wallet), `KeyRingSchnorrSigner` (btcwallet keyring).
 - `ProofPubKey` — Returns the owner pubkey used in proof construction.
   Added to `SchnorrSigner` implementations for receive script ownership.
+- `SyncClient` / `SyncCursorStore` / `SyncBackend` — Cursor-based sync infrastructure for VTXO/OOR event polling.
+- `MemorySyncCursorStore` — In-memory cursor store (test-only compilation unit).
 
 ## Relationships
 
