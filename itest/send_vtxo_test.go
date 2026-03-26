@@ -19,7 +19,9 @@ import (
 // validates recipients and reports transfer totals without mutating state.
 func TestSendVTXOIntegrationDryRunPreview(t *testing.T) {
 	alice, bob, aliceStartBalance, bobStartBalance,
-		recipientPubkey := setupSendVTXOValidationHarness(t)
+		recipientPubkey := setupSendVTXOValidationHarness(
+		t, "itest-sendvtxo-dry-run-preview",
+	)
 
 	const sendAmount = int64(50_000)
 	sendResp, err := alice.RPCClient.SendVTXO(
@@ -86,13 +88,11 @@ func setupSendVTXOValidationHarness(t *testing.T) (
 	)
 	require.NoError(t, err, "GetInfo RPC failed for bob")
 
-	compressedBytes, err := hex.DecodeString(bobInfo.IdentityPubkey)
-	require.NoError(t, err, "identity_pubkey must be valid hex")
+	recipientPubkey, err := hex.DecodeString(
+		recvResp.PubkeyXonlyHex,
+	)
+	require.NoError(t, err, "pubkey_xonly_hex must be valid hex")
 
-	bobKey, err := btcec.ParsePubKey(compressedBytes)
-	require.NoError(t, err, "identity_pubkey must be a valid pubkey")
-
-	recipientPubkey := schnorr.SerializePubKey(bobKey)
-
-	return alice, bob, aliceStartBalance, bobStartBalance, recipientPubkey
+	return alice, bob, aliceStartBalance, bobStartBalance,
+		recipientPubkey
 }
