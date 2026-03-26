@@ -14,7 +14,6 @@ import (
 	"github.com/lightninglabs/darepo/db/sqlc"
 	"github.com/lightninglabs/darepo/rounds"
 	vtxostate "github.com/lightninglabs/darepo/vtxo"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // VTXOStoreDB implements rounds.VTXOStore using sqlc-generated queries.
@@ -46,28 +45,8 @@ func (v *VTXOStoreDB) PersistVTXOs(ctx context.Context,
 
 	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
 		for _, vtxo := range vtxos {
-			if vtxo.Descriptor == nil {
-				return fmt.Errorf("vtxo %v missing descriptor",
-					vtxo.Outpoint)
-			}
-			if vtxo.Descriptor.OwnerKey == nil {
-				return fmt.Errorf("vtxo %v missing owner key",
-					vtxo.Outpoint)
-			}
-			if vtxo.Descriptor.OperatorKey == nil {
-				return fmt.Errorf("vtxo %v missing "+
-					"operator key", vtxo.Outpoint)
-			}
-			if vtxo.OperatorKeyDesc == nil {
-				return fmt.Errorf("vtxo %v missing "+
-					"operator key descriptor",
-					vtxo.Outpoint)
-			}
-
 			// Serialize descriptor fields.
-			ownerKeyBytes := vtxo.Descriptor.OwnerKey.
-				SerializeCompressed()
-			operatorKeyBytes := vtxo.Descriptor.OperatorKey.
+			cosignerKeyBytes := vtxo.Descriptor.CoSignerKey.
 				SerializeCompressed()
 
 			err := qtx.InsertVTXO(ctx, sqlc.InsertVTXOParams{
@@ -78,18 +57,13 @@ func (v *VTXOStoreDB) PersistVTXOs(ctx context.Context,
 					Int32: int32(vtxo.BatchOutputIndex),
 					Valid: true,
 				},
-				Amount:      int64(vtxo.Descriptor.Amount),
-				ExitDelay:   int32(vtxo.Descriptor.ExitDelay),
-				PkScript:    vtxo.Descriptor.PkScript,
-				OwnerKey:    ownerKeyBytes,
-				OperatorKey: operatorKeyBytes,
-				OperatorKeyFamily: int32(
-					vtxo.OperatorKeyDesc.Family,
+				Amount:   int64(vtxo.Descriptor.Amount),
+				PkScript: vtxo.Descriptor.PkScript,
+				PolicyTemplate: bytes.Clone(
+					vtxo.Descriptor.PolicyTemplate,
 				),
-				OperatorKeyIndex: int32(
-					vtxo.OperatorKeyDesc.Index,
-				),
-				Status: string(vtxo.Status),
+				CosignerKey: cosignerKeyBytes,
+				Status:      string(vtxo.Status),
 			})
 			if err != nil {
 				return fmt.Errorf("insert vtxo %v: %w",
@@ -210,22 +184,16 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 		}
 
 		// Reconstruct descriptor.
-		ownerKey, err := btcec.ParsePubKey(row.OwnerKey)
+		cosignerKey, err := btcec.ParsePubKey(row.CosignerKey)
 		if err != nil {
-			return fmt.Errorf("parse owner key: %w", err)
-		}
-
-		operatorKey, err := btcec.ParsePubKey(row.OperatorKey)
-		if err != nil {
-			return fmt.Errorf("parse operator key: %w", err)
+			return fmt.Errorf("parse cosigner key: %w", err)
 		}
 
 		descriptor := &tree.VTXODescriptor{
-			OwnerKey:    ownerKey,
-			OperatorKey: operatorKey,
-			PkScript:    row.PkScript,
-			Amount:      btcutil.Amount(row.Amount),
-			ExitDelay:   uint32(row.ExitDelay),
+			PolicyTemplate: bytes.Clone(row.PolicyTemplate),
+			PkScript:       row.PkScript,
+			Amount:         btcutil.Amount(row.Amount),
+			CoSignerKey:    cosignerKey,
 		}
 
 		// Reconstruct round ID.
@@ -250,16 +218,7 @@ func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
 				return 0
 			}(),
 			Descriptor: descriptor,
-			OperatorKeyDesc: &keychain.KeyDescriptor{
-				KeyLocator: keychain.KeyLocator{
-					Family: keychain.KeyFamily(
-						row.OperatorKeyFamily,
-					),
-					Index: uint32(row.OperatorKeyIndex),
-				},
-				PubKey: operatorKey,
-			},
-			Status: rounds.VTXOStatus(row.Status),
+			Status:     rounds.VTXOStatus(row.Status),
 		}
 
 		return nil

@@ -7,8 +7,6 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/lightninglabs/darepo/db/sqlc"
-	"github.com/lightninglabs/darepo/vtxo"
-	"github.com/lightningnetwork/lnd/keychain"
 )
 
 // ReceiveScriptVTXOMetadata is the standardized Ark VTXO descriptor metadata
@@ -125,59 +123,4 @@ func metadataFromReceiveScriptRow(row sqlc.IndexerReceiveScript) (
 		OperatorPubKey: operatorKey,
 		ExitDelay:      uint32(row.ExitDelay.Int64),
 	}, nil
-}
-
-// enrichRecordDescriptorMetadataTx upgrades a generic live record into a
-// fully described Ark VTXO when the pkScript matches an active registered
-// receive script with standardized descriptor metadata.
-//
-// The lookup runs on the caller's query context so callers can compose the
-// enrichment step into a larger atomic transaction.
-func enrichRecordDescriptorMetadataTx(ctx context.Context,
-	qtx *sqlc.Queries, record *vtxo.Record, expiresAtUnixS int64,
-	operatorKey keychain.KeyDescriptor) (*vtxo.Record, error) {
-
-	enriched := *record
-	hasDescriptorMetadata := enriched.OwnerKey != nil ||
-		enriched.OperatorKeyDesc != nil ||
-		enriched.ExitDelay != 0
-	if hasDescriptorMetadata {
-		if err := vtxo.ValidateDescriptorMetadata(
-			&enriched,
-		); err != nil {
-			return nil, err
-		}
-
-		return &enriched, nil
-	}
-
-	meta, err := ResolveActiveReceiveScriptVTXOMetadataTx(
-		ctx, qtx, enriched.PkScript, expiresAtUnixS,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if meta == nil {
-		return &enriched, nil
-	}
-
-	if operatorKey.PubKey == nil {
-		return nil, fmt.Errorf("operator key must be provided")
-	}
-	if !operatorKey.PubKey.IsEqual(meta.OperatorPubKey) {
-		return nil, fmt.Errorf(
-			"recipient metadata operator key mismatch",
-		)
-	}
-
-	operatorKeyCopy := operatorKey
-	enriched.OwnerKey = meta.OwnerPubKey
-	enriched.OperatorKeyDesc = &operatorKeyCopy
-	enriched.ExitDelay = meta.ExitDelay
-
-	if err := vtxo.ValidateDescriptorMetadata(&enriched); err != nil {
-		return nil, err
-	}
-
-	return &enriched, nil
 }

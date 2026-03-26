@@ -45,6 +45,11 @@ type Querier interface {
 	GetLockedVTXOs(ctx context.Context, arg GetLockedVTXOsParams) ([]Vtxo, error)
 	GetMailboxAckCursor(ctx context.Context, recipient string) (int64, error)
 	GetMaxOORRecipientEventID(ctx context.Context, recipientPkScript []byte) (int64, error)
+	// GetOORCheckpointByInput returns the checkpoint PSBT for the
+	// checkpoint that consumed the given input outpoint. This is used
+	// to extract condition witness data (e.g., preimage) from a
+	// finalized checkpoint that spent a specific VTXO.
+	GetOORCheckpointByInput(ctx context.Context, arg GetOORCheckpointByInputParams) ([]byte, error)
 	GetOORRecipientEventBySessionOutput(ctx context.Context, arg GetOORRecipientEventBySessionOutputParams) (OorRecipientEvent, error)
 	GetOORSession(ctx context.Context, sessionID []byte) (OorSession, error)
 	GetOORSessionByID(ctx context.Context, id int64) (OorSession, error)
@@ -57,6 +62,10 @@ type Querier interface {
 	// full IncomingTransferEvent with the Ark PSBT data.
 	GetOORSessionPackage(ctx context.Context, sessionID []byte) (GetOORSessionPackageRow, error)
 	GetOORSessionStatsByState(ctx context.Context) ([]GetOORSessionStatsByStateRow, error)
+	// GetOORSpendingSessionTxidByInput returns the OOR session txid that consumed
+	// the given input outpoint. The session_id is the deterministic Ark txid for
+	// the spending OOR package.
+	GetOORSpendingSessionTxidByInput(ctx context.Context, arg GetOORSpendingSessionTxidByInputParams) ([]byte, error)
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
@@ -147,6 +156,9 @@ type Querier interface {
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
 	MarkVTXOExpired(ctx context.Context, arg MarkVTXOExpiredParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
+	// OORSessionSpendsScript reports whether the given OOR session consumed at
+	// least one VTXO with the provided pkScript.
+	OORSessionSpendsScript(ctx context.Context, arg OORSessionSpendsScriptParams) (bool, error)
 	PullMailboxEnvelopes(ctx context.Context, arg PullMailboxEnvelopesParams) ([]MailboxEnvelope, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
 	UnlockStaleVTXOsPostgres(ctx context.Context, pendingRoundIds [][]byte) (int64, error)

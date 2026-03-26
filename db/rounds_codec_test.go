@@ -29,10 +29,7 @@ func TestSerializeVTXODescriptor(t *testing.T) {
 	desc := &tree.VTXODescriptor{
 		Amount:      btcutil.Amount(100000),
 		PkScript:    []byte{0x51, 0x20, 0x12, 0x34},
-		ExitDelay:   144,
-		OwnerKey:    clientKey.PubKey(),
-		OperatorKey: clientKey.PubKey(),
-		SigningKey:  clientKey.PubKey(),
+		CoSignerKey: clientKey.PubKey(),
 	}
 
 	// Serialize.
@@ -47,152 +44,7 @@ func TestSerializeVTXODescriptor(t *testing.T) {
 	// Verify fields match.
 	require.Equal(t, desc.Amount, decoded.Amount)
 	require.Equal(t, desc.PkScript, decoded.PkScript)
-	require.Equal(t, desc.ExitDelay, decoded.ExitDelay)
-	require.True(t, desc.OwnerKey.IsEqual(decoded.OwnerKey))
-	require.True(t, desc.OperatorKey.IsEqual(decoded.OperatorKey))
-	require.True(t, desc.SigningKey.IsEqual(decoded.SigningKey))
-}
-
-// TestSerializeRoundsVTXO tests round-trip serialization of a persisted
-// rounds.VTXO. Created VTXOs must retain the owner/operator/expiry data plus
-// the operator key descriptor needed for future collaborative spends, but they
-// do not carry a round signing key.
-func TestSerializeRoundsVTXO(t *testing.T) {
-	t.Parallel()
-
-	roundID := testRoundID("rounds-vtxo")
-	vtxo := createTestVTXO(t, roundID, 7)
-
-	data, err := serializeRoundsVTXO(vtxo)
-	require.NoError(t, err)
-	require.NotEmpty(t, data)
-
-	decoded, err := deserializeRoundsVTXO(data)
-	require.NoError(t, err)
-
-	require.Equal(t, vtxo.Outpoint, decoded.Outpoint)
-	require.Equal(t, vtxo.RoundID, decoded.RoundID)
-	require.Equal(t, vtxo.BatchOutputIndex, decoded.BatchOutputIndex)
-	require.Equal(t, vtxo.Status, decoded.Status)
-	require.Equal(t, vtxo.Descriptor.Amount, decoded.Descriptor.Amount)
-	require.Equal(t, vtxo.Descriptor.PkScript, decoded.Descriptor.PkScript)
-	require.Equal(
-		t, vtxo.Descriptor.ExitDelay, decoded.Descriptor.ExitDelay,
-	)
-	require.True(t, vtxo.Descriptor.OwnerKey.IsEqual(
-		decoded.Descriptor.OwnerKey,
-	))
-	require.True(
-		t,
-		vtxo.Descriptor.OperatorKey.IsEqual(
-			decoded.Descriptor.OperatorKey,
-		),
-	)
-	require.Nil(t, decoded.Descriptor.SigningKey)
-	require.Equal(
-		t, vtxo.OperatorKeyDesc.KeyLocator,
-		decoded.OperatorKeyDesc.KeyLocator,
-	)
-	require.True(
-		t, vtxo.OperatorKeyDesc.PubKey.IsEqual(
-			decoded.OperatorKeyDesc.PubKey,
-		),
-	)
-}
-
-// TestSerializeStoredVTXODescriptor tests the stored VTXO descriptor codec in
-// isolation. The stored variant deliberately omits SigningKey since it is only
-// needed during round construction, not for post-round VTXO operations.
-func TestSerializeStoredVTXODescriptor(t *testing.T) {
-	t.Parallel()
-
-	clientPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-	operatorPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-	signingPriv, err := btcec.NewPrivateKey()
-	require.NoError(t, err)
-
-	clientKey := clientPriv.PubKey()
-	operatorKey := operatorPriv.PubKey()
-	signingKey := signingPriv.PubKey()
-
-	desc := &tree.VTXODescriptor{
-		Amount:      btcutil.Amount(50000),
-		PkScript:    []byte{0x51, 0x20, 0xab, 0xcd},
-		ExitDelay:   288,
-		OwnerKey:    clientKey,
-		OperatorKey: operatorKey,
-		SigningKey:  signingKey,
-	}
-
-	data, err := serializeStoredVTXODescriptor(desc)
-	require.NoError(t, err)
-	require.NotEmpty(t, data)
-
-	decoded, err := deserializeStoredVTXODescriptor(data)
-	require.NoError(t, err)
-
-	require.Equal(t, desc.Amount, decoded.Amount)
-	require.Equal(t, desc.PkScript, decoded.PkScript)
-	require.Equal(t, desc.ExitDelay, decoded.ExitDelay)
-	require.True(t, desc.OwnerKey.IsEqual(decoded.OwnerKey))
-	require.True(t, desc.OperatorKey.IsEqual(decoded.OperatorKey))
-	require.Nil(t, decoded.SigningKey,
-		"stored descriptor must not include SigningKey")
-}
-
-// TestDeserializeRoundsVTXORequiresOperatorKeyDesc ensures persisted round
-// VTXOs remain self-contained and always include the operator key descriptor
-// needed for future collaborative signing.
-func TestDeserializeRoundsVTXORequiresOperatorKeyDesc(t *testing.T) {
-	t.Parallel()
-
-	roundID := testRoundID("missing-operator-key-desc")
-	vtxo := createTestVTXO(t, roundID, 3)
-
-	descriptorBytes, err := serializeStoredVTXODescriptor(vtxo.Descriptor)
-	require.NoError(t, err)
-
-	var (
-		buf              bytes.Buffer
-		roundIDBytes     = vtxo.RoundID[:]
-		batchOutputIndex = uint32(vtxo.BatchOutputIndex)
-		statusBytes      = []byte(vtxo.Status)
-	)
-
-	var outpointBuf bytes.Buffer
-	err = serializeOutpoint(&outpointBuf, &vtxo.Outpoint)
-	require.NoError(t, err)
-	outpointBytes := outpointBuf.Bytes()
-
-	tlvStream, err := tlv.NewStream(
-		tlv.MakeDynamicRecord(vtxoRoundIDType, &roundIDBytes,
-			func() uint64 {
-				return 16
-			}, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(vtxoOutpointType, &outpointBytes,
-			func() uint64 {
-				return uint64(len(outpointBytes))
-			}, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakePrimitiveRecord(vtxoBatchOutputIndexType,
-			&batchOutputIndex),
-		tlv.MakeDynamicRecord(vtxoDescriptorType, &descriptorBytes,
-			func() uint64 {
-				return uint64(len(descriptorBytes))
-			}, tlv.EVarBytes, tlv.DVarBytes),
-		tlv.MakeDynamicRecord(vtxoStatusType, &statusBytes,
-			func() uint64 {
-				return uint64(len(statusBytes))
-			}, tlv.EVarBytes, tlv.DVarBytes),
-	)
-	require.NoError(t, err)
-
-	err = tlvStream.Encode(&buf)
-	require.NoError(t, err)
-
-	_, err = deserializeRoundsVTXO(buf.Bytes())
-	require.ErrorContains(t, err, "operator key descriptor is missing")
+	require.True(t, desc.CoSignerKey.IsEqual(decoded.CoSignerKey))
 }
 
 // TestSerializeBoardingInput tests round-trip serialization of BoardingInput.
@@ -375,10 +227,7 @@ func TestSerializeClientRegistration(t *testing.T) {
 	vtxoDescriptor := &tree.VTXODescriptor{
 		Amount:      btcutil.Amount(40000),
 		PkScript:    []byte{0x51, 0x20, 0x03, 0x04},
-		ExitDelay:   144,
-		OwnerKey:    clientKey.PubKey(),
-		OperatorKey: operatorKey.PubKey(),
-		SigningKey:  vtxoKey.PubKey(),
+		CoSignerKey: vtxoKey.PubKey(),
 	}
 
 	reg := &rounds.ClientRegistration{

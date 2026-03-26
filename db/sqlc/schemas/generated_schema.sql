@@ -573,26 +573,18 @@ CREATE TABLE vtxos (
 	-- amount is the value of this VTXO in satoshis.
 	amount BIGINT NOT NULL,
 
-	-- exit_delay is the CSV delay committed to the unilateral timeout
-	-- path of the VTXO.
-	exit_delay INTEGER NOT NULL,
-
 	-- pk_script is the P2TR script for the VTXO output.
 	pk_script BLOB NOT NULL,
 
-	-- owner_key is the 33-byte compressed public key of the VTXO owner.
+	-- policy_template is the semantic arkscript policy for this VTXO.
+	-- The server still indexes by pk_script, but this semantic form is the
+	-- authoritative ownership/policy representation.
+	policy_template BLOB,
+
+	-- cosigner_key is the 33-byte compressed public key of the VTXO owner.
 	--
-	-- This key is required for spend path reconstruction.
-	owner_key BLOB NOT NULL,
-
-	-- operator_key is the 33-byte compressed operator public key required
-	-- by the VTXO collaborative spend path.
-	operator_key BLOB NOT NULL,
-
-	-- operator_key_family and operator_key_index identify the wallet key
-	-- that must sign the collaborative spend path for this VTXO.
-	operator_key_family INTEGER NOT NULL,
-	operator_key_index INTEGER NOT NULL,
+	-- This key is always required for spend path reconstruction.
+	cosigner_key BLOB NOT NULL,
 
 	-- status tracks VTXO lifecycle (pending, live, in_flight, forfeited, spent).
 	status TEXT NOT NULL DEFAULT 'pending',

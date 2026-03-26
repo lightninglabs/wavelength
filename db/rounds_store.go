@@ -10,7 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/db/sqlc"
@@ -316,7 +316,7 @@ func loadRound(ctx context.Context, q *sqlc.Queries,
 	csvDelay := uint32(roundRow.CsvDelay)
 
 	// Compute sweep tapscript root for VTXO trees.
-	sweepTapLeaf, err := scripts.UnilateralCSVTimeoutTapLeaf(
+	sweepTapLeaf, err := arkscript.UnilateralCSVTimeoutTapLeaf(
 		sweepKey, csvDelay,
 	)
 	if err != nil {

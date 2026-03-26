@@ -69,3 +69,34 @@ SELECT session_db_id, checkpoint_index, input_txid, input_vout,
 FROM oor_checkpoints
 WHERE session_db_id = $1
 ORDER BY checkpoint_index ASC;
+
+-- name: GetOORCheckpointByInput :one
+-- GetOORCheckpointByInput returns the checkpoint PSBT for the
+-- checkpoint that consumed the given input outpoint. This is used
+-- to extract condition witness data (e.g., preimage) from a
+-- finalized checkpoint that spent a specific VTXO.
+SELECT checkpoint_psbt
+FROM oor_checkpoints
+WHERE input_txid = $1 AND input_vout = $2;
+
+-- name: GetOORSpendingSessionTxidByInput :one
+-- GetOORSpendingSessionTxidByInput returns the OOR session txid that consumed
+-- the given input outpoint. The session_id is the deterministic Ark txid for
+-- the spending OOR package.
+SELECT s.session_id
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE c.input_txid = $1 AND c.input_vout = $2;
+
+-- name: OORSessionSpendsScript :one
+-- OORSessionSpendsScript reports whether the given OOR session consumed at
+-- least one VTXO with the provided pkScript.
+SELECT EXISTS(
+    SELECT 1
+    FROM oor_sessions s
+    JOIN oor_checkpoints c ON c.session_db_id = s.id
+    JOIN vtxos v ON v.outpoint_hash = c.input_txid
+        AND v.outpoint_index = c.input_vout
+    WHERE s.session_id = $1
+        AND v.pk_script = $2
+) AS spends_script;

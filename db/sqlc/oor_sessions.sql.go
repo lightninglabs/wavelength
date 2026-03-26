@@ -42,6 +42,28 @@ func (q *Queries) DeleteOORCheckpoints(ctx context.Context, sessionDbID int32) e
 	return err
 }
 
+const GetOORCheckpointByInput = `-- name: GetOORCheckpointByInput :one
+SELECT checkpoint_psbt
+FROM oor_checkpoints
+WHERE input_txid = $1 AND input_vout = $2
+`
+
+type GetOORCheckpointByInputParams struct {
+	InputTxid []byte
+	InputVout int32
+}
+
+// GetOORCheckpointByInput returns the checkpoint PSBT for the
+// checkpoint that consumed the given input outpoint. This is used
+// to extract condition witness data (e.g., preimage) from a
+// finalized checkpoint that spent a specific VTXO.
+func (q *Queries) GetOORCheckpointByInput(ctx context.Context, arg GetOORCheckpointByInputParams) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, GetOORCheckpointByInput, arg.InputTxid, arg.InputVout)
+	var checkpoint_psbt []byte
+	err := row.Scan(&checkpoint_psbt)
+	return checkpoint_psbt, err
+}
+
 const GetOORSession = `-- name: GetOORSession :one
 SELECT id, session_id, state, ark_psbt,
        created_at, updated_at, expires_at, finalized_at
@@ -119,6 +141,28 @@ func (q *Queries) GetOORSessionStatsByState(ctx context.Context) ([]GetOORSessio
 		return nil, err
 	}
 	return items, nil
+}
+
+const GetOORSpendingSessionTxidByInput = `-- name: GetOORSpendingSessionTxidByInput :one
+SELECT s.session_id
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE c.input_txid = $1 AND c.input_vout = $2
+`
+
+type GetOORSpendingSessionTxidByInputParams struct {
+	InputTxid []byte
+	InputVout int32
+}
+
+// GetOORSpendingSessionTxidByInput returns the OOR session txid that consumed
+// the given input outpoint. The session_id is the deterministic Ark txid for
+// the spending OOR package.
+func (q *Queries) GetOORSpendingSessionTxidByInput(ctx context.Context, arg GetOORSpendingSessionTxidByInputParams) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, GetOORSpendingSessionTxidByInput, arg.InputTxid, arg.InputVout)
+	var session_id []byte
+	err := row.Scan(&session_id)
+	return session_id, err
 }
 
 const ListActiveOORSessions = `-- name: ListActiveOORSessions :many
@@ -217,6 +261,32 @@ func (q *Queries) MarkOORSessionNotified(ctx context.Context, arg MarkOORSession
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const OORSessionSpendsScript = `-- name: OORSessionSpendsScript :one
+SELECT EXISTS(
+    SELECT 1
+    FROM oor_sessions s
+    JOIN oor_checkpoints c ON c.session_db_id = s.id
+    JOIN vtxos v ON v.outpoint_hash = c.input_txid
+        AND v.outpoint_index = c.input_vout
+    WHERE s.session_id = $1
+        AND v.pk_script = $2
+) AS spends_script
+`
+
+type OORSessionSpendsScriptParams struct {
+	SessionID []byte
+	PkScript  []byte
+}
+
+// OORSessionSpendsScript reports whether the given OOR session consumed at
+// least one VTXO with the provided pkScript.
+func (q *Queries) OORSessionSpendsScript(ctx context.Context, arg OORSessionSpendsScriptParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, OORSessionSpendsScript, arg.SessionID, arg.PkScript)
+	var spends_script bool
+	err := row.Scan(&spends_script)
+	return spends_script, err
 }
 
 const UpsertOORCheckpoint = `-- name: UpsertOORCheckpoint :exec
