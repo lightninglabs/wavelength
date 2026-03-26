@@ -576,6 +576,7 @@ func TestOperatorPublishVTXOEvent(t *testing.T) {
 		arkrpc.VTXOEventType_VTXO_EVENT_TYPE_CREATED,
 		outpoint,
 		arkrpc.VTXOStatus_VTXO_STATUS_LIVE,
+		0, "", 0, 0,
 	)
 	require.NoError(t, err)
 
