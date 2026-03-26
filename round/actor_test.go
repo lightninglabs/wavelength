@@ -222,7 +222,6 @@ func TestActorStart(t *testing.T) {
 		require.Equal(t, expectedDesc.PkScript, req.PkScript)
 		require.Equal(t, h.operatorTerms.VTXOExitDelay, req.Expiry)
 		require.True(t, req.OwnerKey.PubKey.IsEqual(ownerKey.PubKey))
-		require.True(t, req.IsOwner)
 		require.True(t, req.OperatorKey.IsEqual(h.operatorPubKey))
 
 		// SigningKey is not on VTXORequest — it lives on

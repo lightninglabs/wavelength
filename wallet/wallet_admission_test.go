@@ -1143,12 +1143,4 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 		)
 	}
 
-	// The change VTXO should have IsOwner=true with the VTXO
-	// owner key family. Recipient VTXOs have IsOwner=false.
-	require.True(t, vtxoChange.IsOwner,
-		"change VTXO should be owned")
-	for _, vtxo := range intent.VTXOs[:2] {
-		require.False(t, vtxo.IsOwner,
-			"recipient VTXO should not be owned")
-	}
 }

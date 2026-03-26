@@ -232,10 +232,6 @@ type VTXOIntent struct {
 	// OwnerKey is the owner's key descriptor for the VTXO.
 	OwnerKey keychain.KeyDescriptor
 
-	// IsOwner reports whether this client controls the VTXO owner
-	// key and should persist the VTXO locally once confirmed.
-	IsOwner bool
-
 	// OperatorKey is the operator's public key for collaborative
 	// spends.
 	OperatorKey *btcec.PublicKey
@@ -260,7 +256,6 @@ func (r RoundVTXORequest) ToVTXORequest() types.VTXORequest {
 		PkScript:    r.PkScript,
 		Expiry:      r.Expiry,
 		OwnerKey:    r.OwnerKey,
-		IsOwner:     r.IsOwner,
 		OperatorKey: r.OperatorKey,
 		SigningKey:  r.SigningKey,
 	}
@@ -444,6 +439,29 @@ type ClientVTXO struct {
 	// is being used in a context where the round is not yet known (e.g.,
 	// during FSM state transitions before persistence).
 	RoundID fn.Option[RoundID]
+}
+
+// OwnedScriptChecker determines whether a pkScript belongs to the local
+// wallet. Implementations typically check against the persisted set of
+// registered receive scripts (the same store used for OOR receives).
+type OwnedScriptChecker interface {
+	// IsOwnedScript returns whether the pkScript is registered as
+	// an owned receive script in the local wallet. Returns an
+	// error if the store lookup fails for reasons other than the
+	// script not being found.
+	IsOwnedScript(ctx context.Context,
+		pkScript []byte) fn.Result[bool]
+}
+
+// OwnedScriptRegistrar registers a pkScript as locally owned. The
+// round actor calls this when building VTXO intents (boarding,
+// refresh, change) so the OwnedScriptChecker can recognize them
+// when the round confirms.
+type OwnedScriptRegistrar interface {
+	// RegisterOwnedScript persists a pkScript + owner key as
+	// locally owned.
+	RegisterOwnedScript(ctx context.Context, pkScript []byte,
+		ownerKey keychain.KeyDescriptor) error
 }
 
 // VTXOStore defines the storage interface for off-chain balance management.

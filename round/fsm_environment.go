@@ -62,6 +62,13 @@ type ClientEnvironment struct {
 	// ForfeitCollectionTimeout is the timeout used while waiting for
 	// forfeit signatures from VTXO actors.
 	ForfeitCollectionTimeout time.Duration
+
+	// OwnedScriptChecker determines whether a pkScript belongs to
+	// the local wallet. Used by buildOwnedClientVTXOs to filter
+	// VTXOs that should be persisted locally. This replaces the
+	// IsOwner flag with a data-driven ownership check backed by
+	// the owned receive scripts store.
+	OwnedScriptChecker OwnedScriptChecker
 }
 
 // Name returns the unique identifier for this FSM instance.

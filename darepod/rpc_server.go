@@ -673,7 +673,7 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 				codes.InvalidArgument,
 				"recipient %d: amount must be "+
 					"between 1 and %d",
-				i, btcutil.MaxSatoshi,
+				i, int64(btcutil.MaxSatoshi),
 			)
 		}
 

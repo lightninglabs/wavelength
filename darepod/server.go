@@ -117,6 +117,7 @@ func Main(cfg *Config, interceptor signal.Interceptor) error {
 // indexer client, and the daemon's own gRPC server.
 type Server struct {
 	cfg *Config
+	clk clock.Clock
 
 	logManager *lndbuild.SubLoggerManager
 	loggers    SubLoggers
@@ -204,6 +205,7 @@ type Server struct {
 func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
 		cfg:         cfg,
+		clk:         clock.NewDefaultClock(),
 		walletReady: make(chan struct{}),
 	}, nil
 }
@@ -473,12 +475,11 @@ func (s *Server) run(ctx context.Context,
 	}
 
 	// Create the VTXO store for RPC queries (ListVTXOs, GetBalance).
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	s.vtxoStore = dbStore.NewVTXOStore(clk)
+	s.vtxoStore = dbStore.NewVTXOStore(s.clk)
 
 	// -------------------------------------------------------
 	// 6. Start the daemon's own gRPC server and mailbox mux.
@@ -1941,7 +1942,7 @@ func (s *Server) initDatabase(ctx context.Context) error {
 	}
 
 	s.deliveryStore, err = actordelivery.NewTxAwareDeliveryStoreFromDB(
-		s.db.DB, s.db.Backend(), clock.NewDefaultClock(),
+		s.db.DB, s.db.Backend(), s.clk,
 		s.subLogger(actor.Subsystem),
 	)
 	if err != nil {
@@ -1965,7 +1966,7 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	packageStore := dbStore.NewOORArtifactStore(clock.NewDefaultClock())
+	packageStore := dbStore.NewOORArtifactStore(s.clk)
 
 	// Determine the node identity pubkey for indexer registration.
 	// In lnd mode this comes from the lnd connection. In lwwallet
@@ -2071,13 +2072,11 @@ func (s *Server) initWalletActor(ctx context.Context,
 		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
 	]) (actor.ActorRef[wallet.WalletMsg, wallet.WalletResp], error) {
 
-	clk := clock.NewDefaultClock()
-
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	boardingStore := dbStore.NewBoardingStore(s.chainParams, clk)
+	boardingStore := dbStore.NewBoardingStore(s.chainParams, s.clk)
 
 	// Select the boarding backend based on wallet type.
 	var boardingBackend wallet.BoardingBackend
@@ -2186,13 +2185,11 @@ func (s *Server) initRoundActor(ctx context.Context,
 		clientWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
-	clk := clock.NewDefaultClock()
-
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	roundStore := dbStore.NewRoundStore(s.chainParams, clk)
+	roundStore := dbStore.NewRoundStore(s.chainParams, s.clk)
 	s.roundStore = roundStore
 
 	// Fetch the operator's terms from the server. These include
@@ -2214,21 +2211,44 @@ func (s *Server) initRoundActor(ctx context.Context,
 	// is generous for regtest/testnet usage.
 	const defaultMaxOperatorFee = btcutil.Amount(1_000_000)
 
+	// Build the owned-script checker from the OOR artifact store.
+	// This allows the round FSM to determine which VTXOs belong
+	// to the local wallet by looking up registered receive scripts.
+	var scriptChecker round.OwnedScriptChecker
+	var scriptRegistrar round.OwnedScriptRegistrar
+	if s.db != nil {
+		oorStore := db.NewStore(
+			s.db.DB, s.db.Queries, s.db.Backend(),
+			s.log,
+		).NewOORArtifactStore(s.clk)
+
+		scriptChecker = &ownedScriptCheckerAdapter{
+			store: oorStore,
+		}
+		scriptRegistrar = &ownedScriptRegistrarAdapter{
+			store:       oorStore,
+			operatorKey: operatorTerms.PubKey,
+			exitDelay:   operatorTerms.VTXOExitDelay,
+		}
+	}
+
 	roundCfg := &round.RoundClientConfig{
-		Name:           "round-client",
-		Logger:         s.subLogger(round.Subsystem),
-		Wallet:         clientWallet,
-		RoundStore:     roundStore,
-		VTXOStore:      roundStore,
-		OperatorTerms:  operatorTerms,
-		ServerConn:     s.runtime.TellRef(),
-		ChainSource:    chainSourceRef,
-		WalletActor:    walletRef,
-		ChainParams:    s.chainParams,
-		ActorSystem:    s.actorSystem,
-		TimeoutActor:   timeoutRef,
-		MaxOperatorFee: defaultMaxOperatorFee,
-		VTXOManager:    vtxoManager,
+		Name:                 "round-client",
+		Logger:               s.subLogger(round.Subsystem),
+		Wallet:               clientWallet,
+		RoundStore:           roundStore,
+		VTXOStore:            roundStore,
+		OperatorTerms:        operatorTerms,
+		ServerConn:           s.runtime.TellRef(),
+		ChainSource:          chainSourceRef,
+		WalletActor:          walletRef,
+		ChainParams:          s.chainParams,
+		ActorSystem:          s.actorSystem,
+		TimeoutActor:         timeoutRef,
+		MaxOperatorFee:       defaultMaxOperatorFee,
+		VTXOManager:          vtxoManager,
+		OwnedScriptChecker:   scriptChecker,
+		OwnedScriptRegistrar: scriptRegistrar,
 		ForfeitCollectionTimeout: s.cfg.
 			ForfeitCollectionTimeout,
 	}
@@ -2288,12 +2308,11 @@ func (s *Server) initVTXOManager(ctx context.Context,
 		vtxoWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
 	)
-	vtxoStore := dbStore.NewVTXOStore(clk)
+	vtxoStore := dbStore.NewVTXOStore(s.clk)
 
 	manager := vtxo.NewManager(&vtxo.ManagerConfig{
 		Store:       vtxoStore,
@@ -2342,7 +2361,6 @@ func (s *Server) initVTXOManager(ctx context.Context,
 func (s *Server) initOORActor(ctx context.Context,
 	vtxoManagerRef actor.TellOnlyRef[vtxo.ManagerMsg]) error {
 
-	clk := clock.NewDefaultClock()
 	dbStore := db.NewStore(
 		s.db.DB, s.db.Queries, s.db.Backend(),
 		s.subLogger(db.Subsystem),
@@ -2368,8 +2386,8 @@ func (s *Server) initOORActor(ctx context.Context,
 		oorSigner = s.btcwWallet.UnsafeFromSome()
 	}
 
-	vtxoStore := dbStore.NewVTXOStore(clk)
-	packageStore := dbStore.NewOORArtifactStore(clk)
+	vtxoStore := dbStore.NewVTXOStore(s.clk)
+	packageStore := dbStore.NewOORArtifactStore(s.clk)
 
 	// Create the timeout actor for scheduling retry timers. When a
 	// retry timer fires, the callback ref transforms the expiry into

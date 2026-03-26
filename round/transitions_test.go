@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -1520,10 +1521,12 @@ func TestInputSigSentState(t *testing.T) {
 			[]BoardingIntent{intent},
 		)
 
-		// Mark the VTXO request as not locally owned. The
-		// client co-signed the tree path but does not own the
-		// resulting VTXO, so it must not be persisted.
-		state.Intents.VTXOs[0].IsOwner = false
+		// Simulate a foreign-owned VTXO: clear the owner key's
+		// key locator family so it doesn't match the local
+		// VTXO owner key family, and install a checker that
+		// also rejects the pkScript.
+		state.Intents.VTXOs[0].OwnerKey.KeyLocator = keychain.KeyLocator{}
+		h.env.OwnedScriptChecker = newMockOwnedScriptChecker()
 
 		h.withState(state)
 

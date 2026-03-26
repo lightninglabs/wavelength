@@ -22,6 +22,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/stretchr/testify/mock"
@@ -144,6 +145,31 @@ func (m *MockVTXOStore) MarkVTXOSpent(ctx context.Context,
 
 // Compile-time check that MockVTXOStore implements VTXOStore.
 var _ VTXOStore = (*MockVTXOStore)(nil)
+
+// mockOwnedScriptChecker is an OwnedScriptChecker backed by a set of
+// known owned pkScripts.
+type mockOwnedScriptChecker struct {
+	owned map[string]bool
+}
+
+func newMockOwnedScriptChecker(
+	ownedScripts ...[]byte) *mockOwnedScriptChecker {
+
+	m := &mockOwnedScriptChecker{owned: make(map[string]bool)}
+	for _, s := range ownedScripts {
+		m.owned[string(s)] = true
+	}
+
+	return m
+}
+
+func (m *mockOwnedScriptChecker) IsOwnedScript(_ context.Context,
+	pkScript []byte) fn.Result[bool] {
+
+	return fn.Ok(m.owned[string(pkScript)])
+}
+
+var _ OwnedScriptChecker = (*mockOwnedScriptChecker)(nil)
 
 // MockClientWallet implements ClientWallet (input.MuSig2Signer + input.Signer)
 // using mock.Mock for testing.
@@ -562,7 +588,6 @@ func (h *boardingTestHarness) newTestVTXORequestForIntent(
 		PkScript:    pkScript,
 		Expiry:      testExitDelay,
 		OwnerKey:    clientKey,
-		IsOwner:     true,
 		OperatorKey: h.operatorPubKey,
 	}
 }

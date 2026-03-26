@@ -1638,16 +1638,27 @@ func (s *PartialSigsSentState) transitionToForfeitCollection(
 }
 
 // buildOwnedClientVTXOs constructs locally owned ClientVTXO instances from
-// the intents and client trees. Requests for foreign-owned VTXOs are skipped:
-// the client still co-signs their tree path, but it must not persist them as
-// spendable local balance.
-func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
+// the intents and client trees. VTXOs whose pkScript is not recognized by
+// the OwnedScriptChecker are skipped: the client still co-signs their tree
+// path, but it must not persist them as spendable local balance.
+func buildOwnedClientVTXOs(ctx context.Context, checker OwnedScriptChecker,
+	intents Intents, trees map[SignerKey]*tree.Tree,
 	roundID RoundID) ([]*ClientVTXO, error) {
 
 	vtxos := make([]*ClientVTXO, 0)
 	for _, req := range intents.VTXOs {
-		if !req.IsOwner {
-			continue
+		if checker != nil {
+			owned, err := checker.IsOwnedScript(
+				ctx, req.PkScript,
+			).Unpack()
+			if err != nil {
+				return nil, fmt.Errorf("check owned "+
+					"script: %w", err)
+			}
+
+			if !owned {
+				continue
+			}
 		}
 
 		signerKey := NewSignerKey(req.SigningKey.PubKey)
@@ -1657,37 +1668,35 @@ func buildOwnedClientVTXOs(intents Intents, trees map[SignerKey]*tree.Tree,
 				"for signing key")
 		}
 
-		// Each signing key maps to exactly one leaf
-		// (enforced by ValidatePath during tree validation).
+		// Each signing key maps to exactly one leaf in the
+		// commitment tree. The server assigns one sub-tree
+		// per signing key, and each sub-tree contains a
+		// single VTXO output leaf (plus an anchor). This is
+		// enforced by ValidatePath during tree validation.
 		leaves := clientTree.Root.GetLeafNodes()
-
-		for _, leaf := range leaves {
-			outpoint, err := leaf.GetNonAnchorOutpoint()
-			if err != nil {
-				return nil, fmt.Errorf("failed to "+
-					"derive VTXO outpoint: %w", err)
-			}
-
-			// Use the VTXO's declared OwnerKey rather
-			// than the SigningKey (MuSig2 co-signer). For
-			// self-refresh these are the same key, but for
-			// directed sends the recipient's OwnerKey
-			// differs from the sender's SigningKey.
-			ownerKeyDesc := keychain.KeyDescriptor{
-				PubKey: req.OwnerKey.PubKey,
-			}
-
-			vtxos = append(vtxos, &ClientVTXO{
-				Outpoint:    *outpoint,
-				Amount:      req.Amount,
-				PkScript:    req.PkScript,
-				Expiry:      req.Expiry,
-				OwnerKey:    ownerKeyDesc,
-				OperatorKey: req.OperatorKey,
-				TreePath:    clientTree,
-				RoundID:     fn.Some(roundID),
-			})
+		if len(leaves) != 1 {
+			return nil, fmt.Errorf("expected exactly "+
+				"1 leaf for signing key, got %d",
+				len(leaves))
 		}
+		leaf := leaves[0]
+
+		outpoint, err := leaf.GetNonAnchorOutpoint()
+		if err != nil {
+			return nil, fmt.Errorf("failed to "+
+				"derive VTXO outpoint: %w", err)
+		}
+
+		vtxos = append(vtxos, &ClientVTXO{
+			Outpoint:    *outpoint,
+			Amount:      req.Amount,
+			PkScript:    req.PkScript,
+			Expiry:      req.Expiry,
+			OwnerKey:    req.OwnerKey,
+			OperatorKey: req.OperatorKey,
+			TreePath:    clientTree,
+			RoundID:     fn.Some(roundID),
+		})
 	}
 
 	return vtxos, nil
@@ -1720,6 +1729,7 @@ func (s *InputSigSentState) ProcessEvent(
 			slog.Int("confirmations", int(evt.Confirmations)))
 
 		vtxos, err := buildOwnedClientVTXOs(
+			ctx, env.OwnedScriptChecker,
 			s.Intents, s.ClientTrees, s.RoundID,
 		)
 		if err != nil {

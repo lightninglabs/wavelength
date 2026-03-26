@@ -785,7 +785,6 @@ func (a *Ark) handleRefreshVTXOs(ctx context.Context,
 			PkScript:    vtxo.PkScript,
 			Expiry:      vtxo.Expiry,
 			OwnerKey:    vtxo.OwnerKey,
-			IsOwner:     true,
 			OperatorKey: vtxo.OperatorKey,
 		})
 	}
@@ -1365,7 +1364,7 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 			return fn.Err[WalletResp](fmt.Errorf(
 				"recipient %d: amount must be "+
 					"between 1 and %d",
-				i, btcutil.MaxSatoshi,
+				i, int64(btcutil.MaxSatoshi),
 			))
 		}
 
@@ -1558,7 +1557,6 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 			OwnerKey: keychain.KeyDescriptor{
 				PubKey: r.ClientKey,
 			},
-			IsOwner:     false,
 			OperatorKey: req.OperatorKey,
 		})
 	}
@@ -1593,7 +1591,6 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 				PkScript:    changeDesc.PkScript,
 				Expiry:      req.VTXOExitDelay,
 				OwnerKey:    *changeOwnerKey,
-				IsOwner:     true,
 				OperatorKey: req.OperatorKey,
 			},
 		)
