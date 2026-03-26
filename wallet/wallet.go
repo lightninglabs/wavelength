@@ -1491,8 +1491,9 @@ func (a *Ark) handleSendVTXOs(ctx context.Context,
 	roundRef := serviceKey.Ref(a.actorSystem)
 
 	future := roundRef.Ask(ctx, &actormsg.RegisterIntentMsg{
-		Forfeits: forfeits,
-		VTXOs:    vtxoRequests,
+		Forfeits:            forfeits,
+		VTXOs:               vtxoRequests,
+		TriggerRegistration: true,
 	})
 	result := future.Await(ctx)
 	if result.IsErr() {
@@ -1531,43 +1532,49 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 		len(req.Recipients)+1,
 	)
 	for i, r := range req.Recipients {
-		signingKey, keyErr := a.backend.DeriveNextKey(
-			ctx, keychain.KeyFamilyMultiSig,
+		// Derive the VTXO descriptor pkScript from
+		// (ownerKey, operatorKey, exitDelay). Signing keys
+		// are NOT derived here — the round FSM derives them
+		// during the RegistrationSent transition per #210.
+		desc, descErr := tree.NewVTXODescriptor(
+			r.Amount, r.ClientKey,
+			req.OperatorKey, nil,
+			req.VTXOExitDelay,
 		)
-		if keyErr != nil {
+		if descErr != nil {
 			return nil, fmt.Errorf(
-				"derive signing key for recipient "+
-					"%d: %w", i, keyErr,
+				"build recipient %d descriptor: %w",
+				i, descErr,
 			)
 		}
 
 		vtxoRequests = append(vtxoRequests, types.VTXORequest{
-			Amount:  r.Amount,
-			PkScript: r.PkScript,
-			Expiry:  req.VTXOExitDelay,
+			Amount:   r.Amount,
+			PkScript: desc.PkScript,
+			Expiry:   req.VTXOExitDelay,
 			OwnerKey: keychain.KeyDescriptor{
 				PubKey: r.ClientKey,
 			},
+			IsOwner:     false,
 			OperatorKey: req.OperatorKey,
-			SigningKey:  *signingKey,
 		})
 	}
 
-	// Add change VTXO if needed.
+	// Add change VTXO if needed. The sender owns the change.
 	if change > 0 {
-		changeKey, keyErr := a.backend.DeriveNextKey(
-			ctx, keychain.KeyFamilyMultiSig,
+		changeOwnerKey, keyErr := a.backend.DeriveNextKey(
+			ctx, types.VTXOOwnerKeyFamily,
 		)
 		if keyErr != nil {
 			return nil, fmt.Errorf(
-				"derive change signing key: %w",
+				"derive change owner key: %w",
 				keyErr,
 			)
 		}
 
 		changeDesc, descErr := tree.NewVTXODescriptor(
-			change, changeKey.PubKey,
-			req.OperatorKey, changeKey.PubKey,
+			change, changeOwnerKey.PubKey,
+			req.OperatorKey, nil,
 			req.VTXOExitDelay,
 		)
 		if descErr != nil {
@@ -1579,14 +1586,12 @@ func (a *Ark) buildSendVTXORequests(ctx context.Context,
 
 		vtxoRequests = append(
 			vtxoRequests, types.VTXORequest{
-				Amount:   change,
-				PkScript: changeDesc.PkScript,
-				Expiry:   req.VTXOExitDelay,
-				OwnerKey: keychain.KeyDescriptor{
-					PubKey: changeKey.PubKey,
-				},
+				Amount:      change,
+				PkScript:    changeDesc.PkScript,
+				Expiry:      req.VTXOExitDelay,
+				OwnerKey:    *changeOwnerKey,
+				IsOwner:     true,
 				OperatorKey: req.OperatorKey,
-				SigningKey:  *changeKey,
 			},
 		)
 	}

@@ -1099,7 +1099,10 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// Recipient A: OwnerKey is the recipient's key.
 	vtxoA := intent.VTXOs[0]
 	require.Equal(t, btcutil.Amount(20000), vtxoA.Amount)
-	require.Equal(t, []byte{0x51, 0x20, 0xAA}, vtxoA.PkScript)
+	// PkScript is derived from the VTXO descriptor, not the
+	// RPC-provided value. Verify it's a valid P2TR (34 bytes).
+	require.Len(t, vtxoA.PkScript, 34)
+	require.Equal(t, byte(0x51), vtxoA.PkScript[0])
 	require.True(t, vtxoA.OwnerKey.PubKey.IsEqual(
 		recipientKeyA.PubKey(),
 	))
@@ -1109,7 +1112,8 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	// Recipient B: OwnerKey is the recipient's key.
 	vtxoB := intent.VTXOs[1]
 	require.Equal(t, btcutil.Amount(15000), vtxoB.Amount)
-	require.Equal(t, []byte{0x51, 0x20, 0xBB}, vtxoB.PkScript)
+	require.Len(t, vtxoB.PkScript, 34)
+	require.Equal(t, byte(0x51), vtxoB.PkScript[0])
 	require.True(t, vtxoB.OwnerKey.PubKey.IsEqual(
 		recipientKeyB.PubKey(),
 	))
@@ -1126,36 +1130,22 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 	))
 	require.True(t, vtxoChange.OperatorKey.IsEqual(operatorKey))
 
-	// All SigningKeys should be sender-derived and distinct from
-	// the recipient OwnerKeys.
-	for i, vtxo := range intent.VTXOs[:2] {
-		// SigningKey is a sender key, not the recipient's.
-		require.False(t,
-			vtxo.SigningKey.PubKey.IsEqual(
-				vtxo.OwnerKey.PubKey,
-			),
-			"recipient %d: SigningKey must differ "+
-				"from OwnerKey", i,
+	// Signing keys are NOT derived in the wallet — the round FSM
+	// derives them during RegistrationSent per #210. Verify they
+	// are empty.
+	for i, vtxo := range intent.VTXOs {
+		require.Nil(t, vtxo.SigningKey.PubKey,
+			"vtxo %d: SigningKey should be nil "+
+				"(FSM derives it)", i,
 		)
 	}
 
-	// Change VTXO: SigningKey and OwnerKey are both sender's,
-	// so SigningKey.PubKey == OwnerKey.PubKey.
-	require.True(t,
-		vtxoChange.SigningKey.PubKey.IsEqual(
-			vtxoChange.OwnerKey.PubKey,
-		),
-		"change VTXO: SigningKey.PubKey should equal "+
-			"OwnerKey.PubKey (both sender's)",
-	)
-
-	// Each VTXORequest should have a valid key locator from
-	// DeriveNextKey (non-zero family).
-	for i, vtxo := range intent.VTXOs {
-		require.Equal(t,
-			keychain.KeyFamilyMultiSig,
-			vtxo.SigningKey.Family,
-			"vtxo %d: wrong key family", i,
-		)
+	// The change VTXO should have IsOwner=true with the VTXO
+	// owner key family. Recipient VTXOs have IsOwner=false.
+	require.True(t, vtxoChange.IsOwner,
+		"change VTXO should be owned")
+	for _, vtxo := range intent.VTXOs[:2] {
+		require.False(t, vtxo.IsOwner,
+			"recipient VTXO should not be owned")
 	}
 }

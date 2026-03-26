@@ -722,7 +722,7 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			"unexpected response type: %T", resp)
 	}
 
-	log.InfoS(ctx, "SendVTXO completed",
+	r.server.log.InfoS(ctx, "SendVTXO completed",
 		slog.String("status", sendResp.Status),
 		slog.Int("selected_count",
 			sendResp.SelectedCount),

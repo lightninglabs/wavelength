@@ -87,6 +87,10 @@ type RegisterIntentRequest struct {
 
 	// Package is the fully composed round intent bundle.
 	Package *IntentPackage
+
+	// TriggerRegistration when true causes immediate
+	// RegistrationRequested after the intent is accepted.
+	TriggerRegistration bool
 }
 
 // RoundReceivable implements actormsg.RoundReceivable marker interface.
@@ -838,6 +842,7 @@ func (a *RoundClientActor) Receive(ctx context.Context,
 				VTXOs:    intents,
 				Leaves:   m.Leaves,
 			},
+			TriggerRegistration: m.TriggerRegistration,
 		})
 
 	case *RefreshVTXORequest:
@@ -1969,6 +1974,23 @@ func (a *RoundClientActor) handleRegisterIntent(ctx context.Context,
 	// sending RegisterIntentMsg, so VTXOs are already in
 	// PendingForfeitState by the time the round registers the
 	// intent. The manager handles atomic reservation and rollback.
+
+	// For directed sends, immediately trigger registration to
+	// advance from PendingRoundAssembly to RegistrationSent.
+	// Other flows (refresh, leave) accumulate intents before
+	// registering.
+	if req.TriggerRegistration {
+		regEvent := &RegistrationRequested{}
+		err = a.askEventAndProcessOutbox(
+			ctx, roundFSM, regEvent,
+		)
+		if err != nil {
+			return fn.Err[actormsg.RoundActorResp](
+				fmt.Errorf("trigger send "+
+					"registration: %w", err),
+			)
+		}
+	}
 
 	a.log.InfoS(ctx, "Registered intent package",
 		slog.Int("forfeits", len(req.Package.Forfeits)),
