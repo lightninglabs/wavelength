@@ -23,6 +23,11 @@ to the appropriate service operator.
 - `AddRoute` / `AddEnvelopeRoute` — Package-level generic functions registering typed routes on an `EventRouter`.
 - `UnknownClientHandler` — Interface for handling envelopes from unregistered senders. The `Server` type in the root package implements this to auto-register external clients.
 - `WithOnUnknownClient` — Bridge option that configures an `UnknownClientHandler`. Concurrent registrations for the same clientID are deduplicated via `singleflight.Group`.
+- `StatusTracker` — Interface for client liveness monitoring. Composes `ActivityMarker` and `ClientRegistrar`. Reports `ClientStatus` (Online/Offline/Unknown) and fires status-change callbacks.
+- `ActivityMarker` — Interface for recording inbound client activity (e.g., mailbox pulls).
+- `ClientRegistrar` — Interface for registering/unregistering clients with the status tracker.
+- `PullActivityTracker` — `StatusTracker` implementation using mailbox pull timestamps. Transitions clients online/offline based on configurable activity and idle timeouts.
+- `HeartbeatService` / `HeartbeatDispatcher` — Well-known service name and no-op dispatcher for client heartbeat envelopes. Heartbeats are treated as liveness signals without application logic.
 
 ## Relationships
 

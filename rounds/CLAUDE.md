@@ -12,12 +12,14 @@ confirmation monitoring.
 - `RoundID` — UUID-based round identifier.
 - `State` — Sealed interface for all FSM states (Created through Confirmed/Failed).
 - `Event` — Inbound events triggering state transitions (ClientJoinRequest, BuildBatchTx, etc.).
-- `OutboxEvent` — Outbound side effects (ClientSuccessResp, BroadcastRoundReq, etc.).
+- `OutboxEvent` — Outbound side effects (ClientSuccessResp, BroadcastRoundReq, RoundSealedReq, etc.).
+- `RoundSealedReq` — Outbox event emitted by `SealEvent` handler when registration closes. Signals the actor to spawn a new round for the next registration window.
 - `ActorMsg` — Messages sent to the round actor (JoinRoundRequest, nonces, sigs).
 - `JoinRoundRequestFromProto`, `NoncesFromProto`, `PartialSigsFromProto`, etc. — Exported proto→domain conversion helpers in `proto_convert.go`, called from `server_rounds.go` `AddEnvelopeRoute` Adapt closures.
 - `BoardingInputLocker` — Interface for locking boarding inputs to prevent double-spending across concurrent rounds. Implemented by `inMemoryBoardingLocker` in the root package.
 - `Environment.HeaderVerifier` — `proof.HeaderVerifier` for TxProof SPV validation when no `ChainSource` is available. Wired from `lndbackend.NewLndHeaderVerifier`.
-- `SealPredicate` — Pure function `func(regs) bool` evaluated after each client join to decide if the round should seal early (before registration timeout). Defined in `seal_policy.go`.
+- `SealEvent` — Canonical internal event that transitions `RegistrationState` -> `BatchBuildingState` and emits `RoundSealedReq`. Fired by registration timeout, seal predicate, or admin `TriggerBatch` RPC. Single emission point prevents duplicate round creation.
+- `SealPredicate` — Pure function `func(regs) bool` evaluated after each client join to decide if the round should seal early (before registration timeout). Defined in `seal_policy.go`. When a predicate fires, it emits `SealEvent`.
 - `MaxClients(limit)` — Seal predicate that fires when `len(regs) >= limit`.
 - `MaxOutputAmount(threshold)` — Seal predicate that fires when total output value reaches a satoshi threshold.
 - `AnySealPredicate(preds...)` — Composite predicate returning true when any sub-predicate fires (logical OR).
@@ -31,6 +33,7 @@ confirmation monitoring.
   - Sends round events, commitment tx, aggregated nonces -> `clientconn` (to clients via bridge egress).
   - Sends batch build requests -> `batch`.
   - Receives confirmation events <- `batchwatcher`.
+  - Emits `RoundSealedReq` from `SealEvent` handler -> actor (triggers new round creation).
   - Proto→domain conversion helpers exported in `proto_convert.go` for use by server wiring layer (`server_rounds.go`).
 
 ## Invariants
@@ -43,6 +46,9 @@ confirmation monitoring.
 - `ValidateBoardingRequest` takes a `currentHeight` parameter for confirmation depth checks in both ChainSource and TxProof paths.
 - Seal predicates are pure functions — they must not perform I/O or modify state. They are evaluated inside FSM transitions after each successful join.
 - Side effects (batch building, signing, persistence) are inlined in FSM transition functions, not dispatched through a separate handler.
+- Single-client refresh settlement: when only one client participates in a refresh round, the settlement path must still produce valid outputs and not skip signing.
+- `RoundSealedReq` is emitted from a single canonical location (`SealEvent` handler in `RegistrationState`). No other code path emits this message.
+- `ConnectorDustAmount` must be > 0 in round terms (default: 330 sats). Wired from config -> `batch.Terms`. Zero value causes refresh commitment assembly to fail (invalid connector leaf outputs).
 
 ## Deep Docs
 

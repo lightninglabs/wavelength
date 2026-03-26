@@ -47,7 +47,8 @@ package may import from a higher layer.
 
 | Package | Purpose |
 |---------|---------|
-| [`harness`](harness/) | Docker-based Bitcoin/LND integration test environment |
+| [`harness`](harness/) | In-process Bitcoin/LND integration test environment |
+| [`itest`](itest/) | Real-daemon integration tests (boarding, OOR, refresh, restart) |
 | [`systest`](systest/) | System-level end-to-end tests |
 | [`internal`](internal/) | Internal test utilities container |
 | [`internal/testutils`](internal/testutils/) | Deterministic key/signature generation for tests |
@@ -78,6 +79,7 @@ Server (darepo, root orchestrator)
 │   └── batchwatcher │ (sweep eligible batches)
 ├── lndbackend       │
 │   └── rounds       │ (chain queries, wallet ops)
+├── bitcoind (opt)   │ (direct RPC for boarding UTXO validation)
 └── db               │
     └── (PostgreSQL | SQLite)
 ```
