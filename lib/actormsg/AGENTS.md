@@ -13,6 +13,7 @@ package boundaries. Lives in `lib/` to break import cycles between `vtxo`,
 - `VTXOManagerMsg` / `VTXOManagerResp` — Marker interfaces for VTXO manager messages and responses.
 - `VTXOActorMsg` / `VTXOActorResp` — Marker interfaces for per-VTXO actor messages and responses.
 - `SelectAndReserveSpendRequest` / `SelectAndReserveSpendResponse` — Ask-message to select and lock VTXOs for OOR spend.
+- `SelectAndReserveForfeitRequest` / `SelectAndReserveForfeitResponse` — Ask-message to atomically select and reserve VTXOs for cooperative forfeit (directed sends). Combines coin selection and PendingForfeit reservation in one step to close a race window.
 - `ReserveForfeitRequest` / `ReleaseForfeitRequest` — Forfeit reservation admission messages.
 - `ReleaseSpendRequest` / `CompleteSpendRequest` — Spend lifecycle completion messages.
 - `RegisterIntentMsg` — Carries pre-composed cooperative intent package to round actor.

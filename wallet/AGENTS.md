@@ -6,7 +6,7 @@ Manages on-chain boarding addresses (2-of-2 multisig with operator + CSV
 timeout), monitors for confirmed boarding UTXOs, composes cooperative
 intent packages, and gates round registration through the VTXO manager
 admission APIs. The wallet actor owns VTXO selection and locking for
-refresh, leave, and OOR spend flows.
+refresh, leave, OOR spend, and directed send flows.
 
 ## Key Types
 
@@ -25,6 +25,8 @@ refresh, leave, and OOR spend flows.
 - `LeaveVTXOsRequest` — Ask-request to select VTXOs for cooperative leave.
 - `CompleteSpendVTXOsRequest` — Tell-message to finalize spend and release locks.
 - `UnlockVTXOsRequest` — Tell-message to release locked VTXOs on failure.
+- `SendRecipient` — Describes a single directed send destination (pkscript, amount, recipient client key).
+- `SendVTXOsRequest` / `SendVTXOsResponse` — Ask-request for in-round directed sends. Atomically selects and reserves VTXOs via `SelectAndReserveForfeitRequest`, builds forfeit + recipient VTXO intents, and registers with the round actor. Supports dry-run mode for previewing coin selection without committing.
 
 ## Relationships
 
@@ -33,11 +35,11 @@ refresh, leave, and OOR spend flows.
 - **Sends**:
   - → `round` (via registered notifier): `BoardingUtxoConfirmedEvent`
   - → `round` (via `lib/actormsg`): `TriggerBoardMsg` (VTXO amounts for boarding), `RegisterIntentMsg` (pre-composed cooperative intents with forfeits + VTXOs/leaves)
-  - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`
+  - → `vtxo` manager (via `lib/actormsg`): `SelectAndReserveSpendRequest`, `ReleaseSpendRequest`, `CompleteSpendRequest`, `ReserveForfeitRequest`, `ReleaseForfeitRequest`, `SelectAndReserveForfeitRequest`
 - **Receives**:
   - ← `chainsource`: `BlockEpochNotification` (triggers UTXO polling)
   - ← `round`: `RegisterConfirmationNotifierRequest`, `UnregisterConfirmationNotifierRequest`
-  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`
+  - ← API: `CreateBoardingAddressRequest`, `GetActiveBoardingAddressesRequest`, `GetBoardingBalanceRequest`, `RefreshVTXOsRequest`, `SelectAndLockVTXOsRequest`, `LeaveVTXOsRequest`, `BoardRequest`, `CompleteSpendVTXOsRequest`, `UnlockVTXOsRequest`, `SendVTXOsRequest`
 
 ## Invariants
 
@@ -46,6 +48,7 @@ refresh, leave, and OOR spend flows.
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
 - If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.
+- Directed sends use `SelectAndReserveForfeitRequest` (cooperative forfeit path) rather than the OOR spend path. The wallet builds recipient VTXOs with the recipient's key as `OwnerKey` and derives a separate ephemeral `SigningKey` for MuSig2 tree construction.
 - `VTXOReader` / `VTXODescriptor` / `SelectedVTXO` break the vtxo → round → wallet import cycle by providing wallet-level types that don't reference `vtxo.Descriptor` directly.
 - Per-subsystem logging via `build.LoggerFromContext` (no global mutable loggers).
 
