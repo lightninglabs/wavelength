@@ -366,8 +366,9 @@ func (s *VTXOPersistenceStore) descriptorToInsertParams(
 	desc *vtxo.Descriptor,
 ) (InsertVTXOParams, error) {
 
-	// Serialize tree path.
-	var treePathBytes []byte
+	// Serialize tree path. Use empty blob if no path is available
+	// (e.g., incoming VTXOs from round notifications).
+	treePathBytes := []byte{}
 	if desc.TreePath != nil {
 		data, err := SerializeTree(desc.TreePath)
 		if err != nil {

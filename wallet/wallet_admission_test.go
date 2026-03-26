@@ -1142,5 +1142,4 @@ func TestSendVTXOsIntentPackageContents(t *testing.T) {
 				"(FSM derives it)", i,
 		)
 	}
-
 }

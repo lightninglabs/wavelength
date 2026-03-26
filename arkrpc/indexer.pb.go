@@ -2261,16 +2261,22 @@ type IncomingVTXOEvent struct {
 	ValueSat uint64 `protobuf:"varint,6,opt,name=value_sat,json=valueSat,proto3" json:"value_sat,omitempty"`
 	// round_id identifies the round that created this VTXO.
 	RoundId string `protobuf:"bytes,7,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
-	// batch_expiry_height is the absolute height at which the batch
-	// expires.
+	// batch_expiry_height is the absolute block height at which the
+	// batch sweep path becomes spendable. The server MUST compute
+	// this as confirmation_height + sweep_delay before publishing
+	// the event.
 	BatchExpiryHeight int32 `protobuf:"varint,8,opt,name=batch_expiry_height,json=batchExpiryHeight,proto3" json:"batch_expiry_height,omitempty"`
 	// relative_expiry is the CSV delay for the unilateral exit path.
 	RelativeExpiry uint32 `protobuf:"varint,9,opt,name=relative_expiry,json=relativeExpiry,proto3" json:"relative_expiry,omitempty"`
 	// origin indicates how the VTXO was created (in-round send vs
 	// out-of-round transfer).
-	Origin        VTXOOrigin `protobuf:"varint,10,opt,name=origin,proto3,enum=arkrpc.VTXOOrigin" json:"origin,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Origin VTXOOrigin `protobuf:"varint,10,opt,name=origin,proto3,enum=arkrpc.VTXOOrigin" json:"origin,omitempty"`
+	// commitment_txid is the transaction ID of the round's
+	// commitment transaction. This is distinct from the leaf txid
+	// carried in the outpoint field.
+	CommitmentTxid []byte `protobuf:"bytes,11,opt,name=commitment_txid,json=commitmentTxid,proto3" json:"commitment_txid,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *IncomingVTXOEvent) Reset() {
@@ -2371,6 +2377,13 @@ func (x *IncomingVTXOEvent) GetOrigin() VTXOOrigin {
 		return x.Origin
 	}
 	return VTXOOrigin_VTXO_ORIGIN_UNSPECIFIED
+}
+
+func (x *IncomingVTXOEvent) GetCommitmentTxid() []byte {
+	if x != nil {
+		return x.CommitmentTxid
+	}
+	return nil
 }
 
 var File_indexer_proto protoreflect.FileDescriptor
@@ -2525,7 +2538,7 @@ const file_indexer_proto_rawDesc = "" +
 	"\x1fListVTXOEventsByScriptsResponse\x12)\n" +
 	"\x06events\x18\x01 \x03(\v2\x11.arkrpc.VTXOEventR\x06events\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\x04R\n" +
-	"nextCursor\"\x8d\x03\n" +
+	"nextCursor\"\xb6\x03\n" +
 	"\x11IncomingVTXOEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x04R\aeventId\x12)\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x15.arkrpc.VTXOEventTypeR\x04type\x12,\n" +
@@ -2537,7 +2550,8 @@ const file_indexer_proto_rawDesc = "" +
 	"\x13batch_expiry_height\x18\b \x01(\x05R\x11batchExpiryHeight\x12'\n" +
 	"\x0frelative_expiry\x18\t \x01(\rR\x0erelativeExpiry\x12*\n" +
 	"\x06origin\x18\n" +
-	" \x01(\x0e2\x12.arkrpc.VTXOOriginR\x06origin*\x84\x02\n" +
+	" \x01(\x0e2\x12.arkrpc.VTXOOriginR\x06origin\x12'\n" +
+	"\x0fcommitment_txid\x18\v \x01(\fR\x0ecommitmentTxid*\x84\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +

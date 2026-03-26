@@ -507,8 +507,10 @@ message IncomingVTXOEvent {
     // round_id identifies the round that created this VTXO.
     string round_id = 7;
 
-    // batch_expiry_height is the absolute height at which the batch
-    // expires.
+    // batch_expiry_height is the absolute block height at which the
+    // batch sweep path becomes spendable. The server MUST compute
+    // this as confirmation_height + sweep_delay before publishing
+    // the event.
     int32 batch_expiry_height = 8;
 
     // relative_expiry is the CSV delay for the unilateral exit path.
@@ -517,4 +519,9 @@ message IncomingVTXOEvent {
     // origin indicates how the VTXO was created (in-round send vs
     // out-of-round transfer).
     VTXOOrigin origin = 10;
+
+    // commitment_txid is the transaction ID of the round's
+    // commitment transaction. This is distinct from the leaf txid
+    // carried in the outpoint field.
+    bytes commitment_txid = 11;
 }

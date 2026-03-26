@@ -99,6 +99,10 @@ const (
 	// MethodIncomingOOR is the routing method name for incoming
 	// OOR transfer notifications pushed by the server indexer.
 	MethodIncomingOOR = "IncomingOOR"
+
+	// MethodIncomingVTXO is the routing method name for incoming
+	// VTXO lifecycle events pushed by the server indexer.
+	MethodIncomingVTXO = "IncomingVTXO"
 )
 
 // Main is the true entry point for the daemon. It is called after CLI flag
@@ -1451,8 +1455,45 @@ func (s *Server) buildEventRoutes() *serverconn.EventRouter {
 
 	s.registerOOREventRoutes(router)
 	s.registerRoundEventRoutes(router)
+	s.registerIncomingVTXOEventRoute(router)
 
 	return router
+}
+
+// registerIncomingVTXOEventRoute registers the IncomingVTXO push event
+// route. When the server publishes a VTXO_CREATED event for a round
+// leaf matching a registered receive script, this route dispatches it
+// to the incoming VTXO handler actor for materialization.
+func (s *Server) registerIncomingVTXOEventRoute(
+	router *serverconn.EventRouter) {
+
+	vtxoKey := vtxo.IncomingVTXOServiceKey()
+
+	serverconn.AddRoute(router, serverconn.EventRouteConfig[
+		vtxo.IncomingVTXOMsg, vtxo.IncomingVTXOResp,
+	]{
+		Service: arkServiceName,
+		Method:  MethodIncomingVTXO,
+		NewEvent: func() proto.Message {
+			return &arkrpc.IncomingVTXOEvent{}
+		},
+		Key: vtxoKey,
+		Adapt: func(p proto.Message) (
+			vtxo.IncomingVTXOMsg, error) {
+
+			evt, ok := p.(*arkrpc.IncomingVTXOEvent)
+			if !ok {
+				return vtxo.IncomingVTXOMsg{},
+					fmt.Errorf(
+						"expected "+
+							"IncomingVTXOEvent"+
+							", got %T", p,
+					)
+			}
+
+			return vtxo.IncomingVTXOMsg{Event: evt}, nil
+		},
+	})
 }
 
 // registerOOREventRoutes registers OOR mailbox service event routes with the
@@ -2484,6 +2525,28 @@ func (s *Server) initOORActor(ctx context.Context,
 	)
 
 	s.log.InfoS(ctx, "OOR client actor started")
+
+	// Register the incoming VTXO handler actor. This handles
+	// IncomingVTXOEvent push notifications from the indexer and
+	// materializes VTXOs for registered receive scripts.
+	incomingVTXOStore := dbStore.NewVTXOStore(s.clk)
+	incomingHandler := vtxo.NewIncomingVTXOHandler(
+		vtxo.IncomingVTXOHandlerConfig{
+			Log: fn.Some(s.subLogger(Subsystem)),
+			ScriptStore: &ownedScriptLookupAdapter{
+				store: packageStore,
+			},
+			VTXOStore:   incomingVTXOStore,
+			VTXOManager: vtxoManagerRef,
+		},
+	)
+	incomingKey := vtxo.IncomingVTXOServiceKey()
+	actor.RegisterWithSystem(
+		s.actorSystem, "incoming-vtxo-handler",
+		incomingKey, incomingHandler,
+	)
+
+	s.log.InfoS(ctx, "Incoming VTXO handler started")
 
 	return nil
 }

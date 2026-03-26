@@ -1525,7 +1525,8 @@ func TestInputSigSentState(t *testing.T) {
 		// key locator family so it doesn't match the local
 		// VTXO owner key family, and install a checker that
 		// also rejects the pkScript.
-		state.Intents.VTXOs[0].OwnerKey.KeyLocator = keychain.KeyLocator{}
+		state.Intents.VTXOs[0].OwnerKey.KeyLocator =
+			keychain.KeyLocator{}
 		h.env.OwnedScriptChecker = newMockOwnedScriptChecker()
 
 		h.withState(state)
