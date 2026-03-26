@@ -17,6 +17,8 @@ resume semantics.
 - `ClientActorCfg` — Configuration for OORClientActor (OutboxHandler,
   ServerConn, PackageStore, DeliveryStore, VTXOManager).
 - `OORClientActor` — Durable actor wrapping per-session state machines. Handles both outgoing transfers and incoming receive via three-phase async resolution.
+- `NewRetryCallbackRef` — Bridges timeout actor expiry notifications into OOR actor `ResumeSessionRequest` messages for event-driven retry scheduling.
+- `IncomingSnapshot` / `NewIncomingSnapshot` — Serializable snapshot of incoming receive session state for diagnostics.
 
 ### Actor Messages (OORDurableMsg / ActorMsg)
 
@@ -41,6 +43,8 @@ resume semantics.
   the wallet/state layer to persist incoming VTXO records.
 - `SendIncomingAckRequest` — Outbox event that asks the transport layer to
   ack the incoming transfer to the server.
+- `IncomingTransferNotification` — Outbox event emitted alongside metadata query during incoming transfer processing.
+- `ScheduleRetryRequest` — Outbox event for scheduling retryable outbox operations via the timeout actor.
 
 ### Events (Event / ReceiveState)
 
@@ -53,6 +57,7 @@ resume semantics.
 - `IncomingHandledEvent` — FSM event indicating the wallet layer has
   persisted incoming VTXOs; carries `MaterializedOutpoints` for the
   durable callback round-trip.
+- `IncomingAckSentEvent` — FSM event driving `ReceiveAwaitingAck → ReceiveCompleted` transition.
 
 ### Incoming Receive FSM States (ReceiveState)
 

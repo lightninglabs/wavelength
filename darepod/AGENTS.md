@@ -9,8 +9,9 @@ gRPC API.
 ## Key Types
 
 - `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem.
-- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, etc.).
-- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.).
+- `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, etc.). Includes test hooks for mailbox edge factory and round registration.
+- `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception.
+- `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
 - `WalletState` — Enum (None/Locked/Ready) for wallet lifecycle.
 - `serverDurableUnaryBuilder` — Implements `serverconn.DurableUnaryRequestBuilder` by delegating to the indexer client with proof-of-control credentials.
 - `NewOwnedReceiveScriptSigner` — Indexer signer that resolves the wallet key for any persisted owned receive script, then delegates signing to the backend-specific signer.
@@ -27,6 +28,7 @@ gRPC API.
 - Server owns ActorSystem lifetime; shutdown stops all subsystems.
 - Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
 - Two wallet modes: LND-backed or lightweight (`lwwallet`).
+- Per-subsystem logging: configurable log writer, no global mutable loggers. Each subsystem receives its own logger instance.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
 - Server holds a `roundStore` reference for direct SQL queries from the RPC layer.

@@ -19,6 +19,7 @@ notifications and fee estimation.
 
 - `LNDBackend` requires an lnd instance (local or remote via lndclient).
 - Provides real-time notifications via lnd's chainntnfs package.
+- Log messages use canonical txid strings (not reversed byte slices).
 
 ## Deep Docs
 

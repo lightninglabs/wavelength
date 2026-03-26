@@ -20,7 +20,7 @@ Supports SQLite and PostgreSQL backends.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer).
+- **Depends on**: `baselib/actor` (DeliveryStore interface), `db/sqlc` (generated query layer), `db/actordelivery` (isolated actor delivery persistence with separate schema lifecycle).
 - **Depended on by**: `round`, `vtxo`, `oor`, `wallet` (all consume storage interfaces), `darepod` (wires DB backends).
 
 ## Invariants
@@ -30,6 +30,7 @@ Supports SQLite and PostgreSQL backends.
 - Round checkpoints include commitment tx, VTXO tree, client sub-trees, boarding signatures, and every intent with updated status.
 - Default retry logic: 10 retries with exponential backoff (40ms initial, capped at 3s).
 - **Never write raw SQL in Go** — add queries to `db/queries/`, regenerate with `make sqlc`.
+- Per-subsystem logging: uses instance logger instead of global package logger.
 - Latest migration: `000005_vtxo_chain_depth` adds `chain_depth INTEGER NOT NULL DEFAULT 0` to `vtxos` table. UPSERT uses zero-value sentinel pattern (same as `tree_depth`, `batch_expiry`): zero means "not yet populated", non-zero overwrites.
 
 ## Deep Docs
