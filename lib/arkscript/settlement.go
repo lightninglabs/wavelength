@@ -1,0 +1,351 @@
+package arkscript
+
+import (
+	"bytes"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/txscript"
+)
+
+// SettlementPair captures the unilateral proof/auth path and the paired
+// operator-backed forfeit path for one participant branch of a custom policy.
+type SettlementPair struct {
+	// ParticipantKey is the participant key this settlement
+	// pair belongs to.
+	ParticipantKey *btcec.PublicKey
+
+	// AuthLeafIndex is the canonical leaf index of the
+	// unilateral auth path.
+	AuthLeafIndex int
+
+	// AuthPath is the unilateral proof/auth spend path for the participant.
+	AuthPath *SpendPath
+
+	// ForfeitLeafIndex is the canonical leaf index of the
+	// operator-backed path.
+	ForfeitLeafIndex int
+
+	// ForfeitPath is the spend path used by the later round forfeit tx.
+	ForfeitPath *SpendPath
+}
+
+// SettlementPairsForParticipant derives the settlement pairs available to the
+// given participant within the semantic policy.
+func (p *PolicyTemplate) SettlementPairsForParticipant(
+	participant, operator *btcec.PublicKey,
+) ([]SettlementPair, error) {
+
+	if p == nil {
+		return nil, fmt.Errorf("policy template must be provided")
+	}
+
+	if participant == nil {
+		return nil, fmt.Errorf("participant key must be provided")
+	}
+
+	if operator == nil {
+		return nil, fmt.Errorf("operator key must be provided")
+	}
+
+	compiled, err := p.Compile()
+	if err != nil {
+		return nil, err
+	}
+
+	type candidate struct {
+		index int
+		node  Node
+		key   []byte
+	}
+
+	var (
+		authCandidates    []candidate
+		forfeitCandidates []candidate
+	)
+
+	for i := range p.Leaves {
+		node := p.Leaves[i].Node
+		if node == nil {
+			return nil, fmt.Errorf("policy leaf %d has nil node", i)
+		}
+
+		norm, err := normalizeSettlementNode(node, operator)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"normalize policy leaf %d: %w", i, err,
+			)
+		}
+
+		normKey, err := EncodeNode(norm)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"encode normalized leaf %d: %w", i, err,
+			)
+		}
+
+		switch {
+		case ContainsKey(node, participant) &&
+			ContainsKey(node, operator):
+			forfeitCandidates = append(forfeitCandidates, candidate{
+				index: i,
+				node:  node,
+				key:   normKey,
+			})
+
+		case ContainsKey(node, participant):
+			authCandidates = append(authCandidates, candidate{
+				index: i,
+				node:  node,
+				key:   normKey,
+			})
+		}
+	}
+
+	pairs := make([]SettlementPair, 0, len(authCandidates))
+	for _, auth := range authCandidates {
+		matchIndex := -1
+		for _, forfeit := range forfeitCandidates {
+			if bytes.Equal(auth.key, forfeit.key) {
+				matchIndex = forfeit.index
+				break
+			}
+		}
+
+		if matchIndex < 0 {
+			continue
+		}
+
+		authPath, err := spendPathForLeaf(
+			compiled, auth.index, auth.node, nil,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("auth spend path: %w", err)
+		}
+
+		forfeitPath, err := spendPathForLeaf(
+			compiled, matchIndex, p.Leaves[matchIndex].Node, nil,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("forfeit spend path: %w", err)
+		}
+
+		pairs = append(pairs, SettlementPair{
+			ParticipantKey:   participant,
+			AuthLeafIndex:    auth.index,
+			AuthPath:         authPath,
+			ForfeitLeafIndex: matchIndex,
+			ForfeitPath:      forfeitPath,
+		})
+	}
+
+	if len(pairs) == 0 {
+		return nil, fmt.Errorf("no settlement pairs for participant")
+	}
+
+	return pairs, nil
+}
+
+// SpendPathForLeaf derives a spend path for a policy leaf using the AST node to
+// infer any tx-context requirements.
+func SpendPathForLeaf(policy *CompiledPolicy, leafIndex int,
+	node Node, conditions [][]byte) (*SpendPath, error) {
+
+	return spendPathForLeaf(policy, leafIndex, node, conditions)
+}
+
+// ExtractAbsoluteLockTime returns the absolute locktime required by the AST
+// node, or zero when no recognized CLTV predicate is present.
+func ExtractAbsoluteLockTime(node Node) uint32 {
+	switch n := node.(type) {
+	case *CSV:
+		return ExtractAbsoluteLockTime(n.Inner)
+
+	case *Condition:
+		lock, ok := parseAbsoluteLockTimePredicate(n.Predicate)
+		if ok {
+			return lock
+		}
+
+		return ExtractAbsoluteLockTime(n.Inner)
+
+	default:
+		return 0
+	}
+}
+
+// spendPathForLeaf derives a spend path for a compiled leaf and applies any
+// tx-context requirements inferred from the AST node.
+func spendPathForLeaf(policy *CompiledPolicy, leafIndex int,
+	node Node, conditions [][]byte) (*SpendPath, error) {
+
+	info, err := policy.SpendInfo(leafIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	info.RequiredSequence = DeriveSequence(node)
+	info.RequiredLockTime = ExtractAbsoluteLockTime(node)
+	if info.RequiredLockTime != 0 &&
+		info.RequiredSequence == 0xffffffff {
+
+		// CLTV requires a non-final sequence even when the leaf does
+		// not carry an Ark-level CSV delay.
+		info.RequiredSequence = 0xfffffffe
+	}
+
+	return &SpendPath{
+		SpendInfo:  info,
+		Conditions: cloneWitnessItems(conditions),
+	}, nil
+}
+
+// normalizeSettlementNode strips Ark exit-only structure and operator keys so
+// the unilateral and operator-backed leaves of one business branch compare
+// equal.
+func normalizeSettlementNode(node Node,
+	operator *btcec.PublicKey) (Node, error) {
+
+	switch n := node.(type) {
+	case *CSV:
+		return normalizeSettlementNode(n.Inner, operator)
+
+	case *Condition:
+		inner, err := normalizeSettlementNode(n.Inner, operator)
+		if err != nil {
+			return nil, err
+		}
+
+		return &Condition{
+			Predicate: bytes.Clone(n.Predicate),
+			Inner:     inner,
+		}, nil
+
+	case *Multisig:
+		keys := make([]*btcec.PublicKey, 0, len(n.Keys))
+		for _, key := range n.Keys {
+			if key == nil {
+				return nil, fmt.Errorf("multisig key is nil")
+			}
+
+			if operator != nil && sameXOnlyKey(key, operator) {
+				continue
+			}
+
+			keys = append(keys, key)
+		}
+
+		if len(keys) == 0 {
+			return nil, fmt.Errorf(
+				"normalized multisig has no keys",
+			)
+		}
+
+		return &Multisig{Keys: keys}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported settlement node %T", node)
+	}
+}
+
+// parseAbsoluteLockTimePredicate extracts the absolute locktime from the
+// canonical CLTV predicate prefix when present.
+func parseAbsoluteLockTimePredicate(script []byte) (uint32, bool) {
+	tokenizer := txscript.MakeScriptTokenizer(0, script)
+	if !tokenizer.Next() {
+		return 0, false
+	}
+
+	lock, ok := parseScriptNumToken(&tokenizer)
+	if !ok {
+		return 0, false
+	}
+
+	if !tokenizer.Next() ||
+		tokenizer.Opcode() != txscript.OP_CHECKLOCKTIMEVERIFY {
+
+		return 0, false
+	}
+
+	if !tokenizer.Next() || tokenizer.Opcode() != txscript.OP_DROP {
+		return 0, false
+	}
+
+	if tokenizer.Next() || tokenizer.Err() != nil {
+		return 0, false
+	}
+
+	if lock < 0 || lock > int64(^uint32(0)) {
+		return 0, false
+	}
+
+	return uint32(lock), true
+}
+
+// parseScriptNumToken decodes the current tokenizer token as a minimally
+// encoded script number.
+func parseScriptNumToken(tokenizer *txscript.ScriptTokenizer) (int64, bool) {
+	if tokenizer == nil {
+		return 0, false
+	}
+
+	opcode := tokenizer.Opcode()
+	switch {
+	case opcode == txscript.OP_0:
+		return 0, true
+
+	case opcode >= txscript.OP_1 && opcode <= txscript.OP_16:
+		return int64(opcode - (txscript.OP_1 - 1)), true
+
+	case opcode == txscript.OP_1NEGATE:
+		return -1, true
+	}
+
+	data := tokenizer.Data()
+	if len(data) == 0 {
+		return 0, false
+	}
+
+	negative := data[len(data)-1]&0x80 != 0
+	last := data[len(data)-1] & 0x7f
+
+	var result int64
+	for i := 0; i < len(data)-1; i++ {
+		result |= int64(data[i]) << (8 * i)
+	}
+	result |= int64(last) << (8 * (len(data) - 1))
+
+	if negative {
+		result = -result
+	}
+
+	return result, true
+}
+
+// sameXOnlyKey returns true when both public keys serialize to the same x-only
+// key.
+func sameXOnlyKey(a, b *btcec.PublicKey) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	return bytes.Equal(
+		schnorr.SerializePubKey(a),
+		schnorr.SerializePubKey(b),
+	)
+}
+
+// cloneWitnessItems deep-copies a witness-item list.
+func cloneWitnessItems(items [][]byte) [][]byte {
+	if len(items) == 0 {
+		return nil
+	}
+
+	cloned := make([][]byte, 0, len(items))
+	for _, item := range items {
+		cloned = append(cloned, bytes.Clone(item))
+	}
+
+	return cloned
+}
