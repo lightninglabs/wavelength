@@ -143,13 +143,13 @@ func TestGoldenVTXOVectors(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			// Verify internal key matches.
-			internalKey := tapscript.ControlBlock.InternalKey
-			internalKeyHex := hex.EncodeToString(
-				internalKey.SerializeCompressed(),
+			// Verify internal key is the NUMS key.
+			require.Equal(t,
+				ARKNUMSKey.SerializeCompressed(),
+				tapscript.ControlBlock.InternalKey.
+					SerializeCompressed(),
+				"internal key should be NUMS key",
 			)
-			require.Equal(t, vec.InternalKeyHex, internalKeyHex,
-				"internal key mismatch")
 
 			// Verify root hash matches.
 			rootHashHex := hex.EncodeToString(tapscript.RootHash)
@@ -339,11 +339,8 @@ func TestVTXOScriptStructure(t *testing.T) {
 
 	// Verify internal key is the NUMS key.
 	require.Equal(t,
-		hex.EncodeToString(ARKNUMSKey.SerializeCompressed()),
-		hex.EncodeToString(
-			tapscript.ControlBlock.InternalKey.
-				SerializeCompressed(),
-		),
+		ARKNUMSKey.SerializeCompressed(),
+		tapscript.ControlBlock.InternalKey.SerializeCompressed(),
 		"internal key should be NUMS key",
 	)
 

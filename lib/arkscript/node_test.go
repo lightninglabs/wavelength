@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
 	"github.com/stretchr/testify/require"
@@ -20,15 +21,14 @@ func TestSingleKeyMultisigScript(t *testing.T) {
 	script, err := node.Script()
 	require.NoError(t, err)
 
-	// Disassemble and verify structure.
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script: <key> CHECKSIG.
+	expected, err := txscript.NewScriptBuilder().
+		AddData(schnorr.SerializePubKey(key)).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
 	require.NoError(t, err)
-	t.Logf("single-key multisig script: %s", dis)
 
-	// Should be: <32-byte-key> OP_CHECKSIG
-	// Script length: 1 (push) + 32 (key) + 1 (OP_CHECKSIG) = 34 bytes
-	require.Len(t, script, 34)
-	require.Equal(t, byte(txscript.OP_CHECKSIG), script[len(script)-1])
+	require.Equal(t, expected, script)
 }
 
 // TestSingleKeyMultisigNilKey tests that 1-of-1 multisig validates keys.
@@ -54,20 +54,17 @@ func TestMultisigChecksigScript(t *testing.T) {
 	script, err := node.Script()
 	require.NoError(t, err)
 
-	// Disassemble and verify structure.
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script manually:
+	// <k1> CHECKSIGVERIFY <k2> CHECKSIG
+	expected, err := txscript.NewScriptBuilder().
+		AddData(schnorr.SerializePubKey(key1)).
+		AddOp(txscript.OP_CHECKSIGVERIFY).
+		AddData(schnorr.SerializePubKey(key2)).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
 	require.NoError(t, err)
-	t.Logf("Multisig (checksig) script: %s", dis)
 
-	// Should be: <k1> CHECKSIGVERIFY <k2> CHECKSIG
-	// Script length: (1 + 32) + 1 + (1 + 32) + 1 = 68 bytes
-	require.Len(t, script, 68)
-
-	// Last opcode should be OP_CHECKSIG.
-	require.Equal(t, byte(txscript.OP_CHECKSIG), script[len(script)-1])
-
-	// There should be one CHECKSIGVERIFY in the middle.
-	require.Contains(t, dis, "OP_CHECKSIGVERIFY")
+	require.Equal(t, expected, script)
 }
 
 // TestMultisigEmptyKeys tests that Multisig returns an error for empty keys.
@@ -96,17 +93,18 @@ func TestCSVScript(t *testing.T) {
 	script, err := node.Script()
 	require.NoError(t, err)
 
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script manually:
+	// <key> CHECKSIG <delay> CSV DROP
+	expected, err := txscript.NewScriptBuilder().
+		AddData(schnorr.SerializePubKey(key)).
+		AddOp(txscript.OP_CHECKSIG).
+		AddInt64(int64(delay)).
+		AddOp(txscript.OP_CHECKSEQUENCEVERIFY).
+		AddOp(txscript.OP_DROP).
+		Script()
 	require.NoError(t, err)
-	t.Logf("CSV script: %s", dis)
 
-	// Should be: <key> CHECKSIG <delay> CSV DROP
-	require.Contains(t, dis, "OP_CHECKSIG")
-	require.Contains(t, dis, "OP_CHECKSEQUENCEVERIFY")
-	require.Contains(t, dis, "OP_DROP")
-
-	// Last opcode should be OP_DROP.
-	require.Equal(t, byte(txscript.OP_DROP), script[len(script)-1])
+	require.Equal(t, expected, script)
 }
 
 // TestCSVNilInner tests that CSV returns an error for nil inner node.
@@ -128,13 +126,16 @@ func TestAbsoluteLockTimeCondition(t *testing.T) {
 	script, err := AbsoluteLockTimeCondition(locktime)
 	require.NoError(t, err)
 
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script manually:
+	// <locktime> CLTV DROP
+	expected, err := txscript.NewScriptBuilder().
+		AddInt64(int64(locktime)).
+		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
+		AddOp(txscript.OP_DROP).
+		Script()
 	require.NoError(t, err)
-	t.Logf("absolute locktime condition: %s", dis)
 
-	require.Contains(t, dis, "OP_CHECKLOCKTIMEVERIFY")
-	require.Contains(t, dis, "OP_DROP")
-	require.Equal(t, byte(txscript.OP_DROP), script[len(script)-1])
+	require.Equal(t, expected, script)
 }
 
 // TestConditionScript tests the Condition node script encoding.
@@ -155,14 +156,18 @@ func TestConditionScript(t *testing.T) {
 	script, err := node.Script()
 	require.NoError(t, err)
 
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script manually:
+	// HASH160 <hash> EQUALVERIFY <key> CHECKSIG
+	expected, err := txscript.NewScriptBuilder().
+		AddOp(txscript.OP_HASH160).
+		AddData(hash).
+		AddOp(txscript.OP_EQUALVERIFY).
+		AddData(schnorr.SerializePubKey(key)).
+		AddOp(txscript.OP_CHECKSIG).
+		Script()
 	require.NoError(t, err)
-	t.Logf("Condition script: %s", dis)
 
-	// Should be: HASH160 <hash> EQUALVERIFY <key> CHECKSIG
-	require.Contains(t, dis, "OP_HASH160")
-	require.Contains(t, dis, "OP_EQUALVERIFY")
-	require.Contains(t, dis, "OP_CHECKSIG")
+	require.Equal(t, expected, script)
 }
 
 // TestHash160ConditionInvalidHashLength tests that Hash160Condition validates
@@ -297,14 +302,23 @@ func TestNestedComposition(t *testing.T) {
 	script, err := node.Script()
 	require.NoError(t, err)
 
-	dis, err := txscript.DisasmString(script)
+	// Assemble expected script manually:
+	// <locktime> CLTV DROP HASH160 <hash> EQUALVERIFY
+	// <key> CHECKSIG <100> CSV DROP
+	expected, err := txscript.NewScriptBuilder().
+		AddInt64(500000).
+		AddOp(txscript.OP_CHECKLOCKTIMEVERIFY).
+		AddOp(txscript.OP_DROP).
+		AddOp(txscript.OP_HASH160).
+		AddData(hash).
+		AddOp(txscript.OP_EQUALVERIFY).
+		AddData(schnorr.SerializePubKey(key)).
+		AddOp(txscript.OP_CHECKSIG).
+		AddInt64(100).
+		AddOp(txscript.OP_CHECKSEQUENCEVERIFY).
+		AddOp(txscript.OP_DROP).
+		Script()
 	require.NoError(t, err)
-	t.Logf("Nested composition: %s", dis)
 
-	// Should contain all the expected opcodes.
-	require.Contains(t, dis, "OP_CHECKLOCKTIMEVERIFY")
-	require.Contains(t, dis, "OP_HASH160")
-	require.Contains(t, dis, "OP_EQUALVERIFY")
-	require.Contains(t, dis, "OP_CHECKSIG")
-	require.Contains(t, dis, "OP_CHECKSEQUENCEVERIFY")
+	require.Equal(t, expected, script)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestContainsKey verifies the AST-level key lookup across all node types.
 func TestContainsKey(t *testing.T) {
 	t.Parallel()
 
@@ -73,6 +74,7 @@ func TestContainsKey(t *testing.T) {
 	})
 }
 
+// TestExtractCSVDelay verifies CSV delay extraction from nested AST structures.
 func TestExtractCSVDelay(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +133,8 @@ func TestExtractCSVDelay(t *testing.T) {
 	})
 }
 
+// TestValidatePolicy checks Ark policy invariant enforcement for various
+// valid and invalid policy configurations.
 func TestValidatePolicy(t *testing.T) {
 	t.Parallel()
 
@@ -256,6 +260,7 @@ func TestValidatePolicy(t *testing.T) {
 	})
 }
 
+// TestScriptContainsKey tests the byte-level script key substring scan.
 func TestScriptContainsKey(t *testing.T) {
 	t.Parallel()
 

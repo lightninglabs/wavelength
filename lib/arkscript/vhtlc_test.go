@@ -119,7 +119,8 @@ func TestVHTLCSpendInfo(t *testing.T) {
 	}
 }
 
-// TestVHTLCNamedAccessors tests the named SpendInfo accessors.
+// TestVHTLCNamedAccessors tests the named SpendInfo accessors including
+// tx-context requirements derived from the AST.
 func TestVHTLCNamedAccessors(t *testing.T) {
 	t.Parallel()
 
@@ -128,22 +129,51 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 	policy, err := NewVHTLCPolicy(opts)
 	require.NoError(t, err)
 
-	// Each accessor should return valid SpendInfo.
+	// Each accessor should return valid SpendInfo with correct
+	// tx-context.
 	accessors := []struct {
-		name string
-		fn   func() (*SpendInfo, error)
+		name     string
+		fn       func() (*SpendInfo, error)
+		wantSeq  uint32
+		wantLock uint32
 	}{
-		{"Claim", policy.ClaimSpendInfo},
-		{"Refund", policy.RefundSpendInfo},
 		{
-			"RefundWithoutReceiver",
-			policy.RefundWithoutReceiverSpendInfo,
+			name:     "Claim",
+			fn:       policy.ClaimSpendInfo,
+			wantSeq:  0xffffffff,
+			wantLock: 0,
 		},
-		{"UnilateralClaim", policy.UnilateralClaimSpendInfo},
-		{"UnilateralRefund", policy.UnilateralRefundSpendInfo},
 		{
-			"UnilateralRefundWithoutReceiver",
-			policy.UnilateralRefundWithoutReceiverSpendInfo,
+			name:     "Refund",
+			fn:       policy.RefundSpendInfo,
+			wantSeq:  0xffffffff,
+			wantLock: 0,
+		},
+		{
+			name:     "RefundWithoutReceiver",
+			fn:       policy.RefundWithoutReceiverSpendInfo,
+			wantSeq:  0xfffffffe,
+			wantLock: opts.RefundLocktime,
+		},
+		{
+			name:     "UnilateralClaim",
+			fn:       policy.UnilateralClaimSpendInfo,
+			wantSeq:  opts.UnilateralClaimDelay,
+			wantLock: 0,
+		},
+		{
+			name:     "UnilateralRefund",
+			fn:       policy.UnilateralRefundSpendInfo,
+			wantSeq:  opts.UnilateralRefundDelay,
+			wantLock: 0,
+		},
+		{
+			name: "UnilateralRefundWithoutReceiver",
+			fn: policy.
+				UnilateralRefundWithoutReceiverSpendInfo,
+			wantSeq: opts.
+				UnilateralRefundWithoutReceiverDelay,
+			wantLock: 0,
 		},
 	}
 
@@ -153,6 +183,12 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 			require.NoError(t, err)
 			require.NotEmpty(t, info.WitnessScript)
 			require.NotEmpty(t, info.ControlBlock)
+			require.Equal(t, a.wantSeq,
+				info.RequiredSequence,
+				"RequiredSequence mismatch")
+			require.Equal(t, a.wantLock,
+				info.RequiredLockTime,
+				"RequiredLockTime mismatch")
 		})
 	}
 }

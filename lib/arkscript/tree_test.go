@@ -367,6 +367,105 @@ func TestSpendInfoOutOfBounds(t *testing.T) {
 	require.NotNil(t, info)
 }
 
+// TestCompareToWithDifferentLeafVersions verifies that canonical ordering
+// is stable for leaves with identical scripts but different leaf versions.
+func TestCompareToWithDifferentLeafVersions(t *testing.T) {
+	t.Parallel()
+
+	script := []byte{0x01, 0x02, 0x03}
+
+	leafA := PolicyLeaf{
+		Leaf: txscript.TapLeaf{
+			LeafVersion: 0xc0,
+			Script:      script,
+		},
+	}
+	leafB := PolicyLeaf{
+		Leaf: txscript.TapLeaf{
+			LeafVersion: 0xc2,
+			Script:      script,
+		},
+	}
+
+	// Version 0xc0 sorts before 0xc2.
+	require.Equal(t, -1, leafA.CompareTo(&leafB))
+	require.Equal(t, 1, leafB.CompareTo(&leafA))
+
+	// SortLeaves should produce a stable order.
+	leaves := []PolicyLeaf{leafB, leafA}
+	SortLeaves(leaves)
+
+	require.Equal(t, txscript.TapscriptLeafVersion(0xc0),
+		leaves[0].Leaf.LeafVersion)
+	require.Equal(t, txscript.TapscriptLeafVersion(0xc2),
+		leaves[1].Leaf.LeafVersion)
+
+	// Reverse input order should produce the same result.
+	leaves2 := []PolicyLeaf{leafA, leafB}
+	SortLeaves(leaves2)
+
+	require.Equal(t, leaves[0].Leaf.LeafVersion,
+		leaves2[0].Leaf.LeafVersion)
+	require.Equal(t, leaves[1].Leaf.LeafVersion,
+		leaves2[1].Leaf.LeafVersion)
+}
+
+// TestBuildTreeNilInternalKey verifies that nil internal key is rejected.
+func TestBuildTreeNilInternalKey(t *testing.T) {
+	t.Parallel()
+
+	leaves := []PolicyLeaf{
+		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
+	}
+
+	_, err := BuildTree(leaves, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "internal key must be provided")
+}
+
+// TestBuildTreeDefensiveCopy verifies that mutating input leaves after
+// BuildTree does not affect the compiled policy.
+func TestBuildTreeDefensiveCopy(t *testing.T) {
+	t.Parallel()
+
+	script := []byte{0x01, 0x02, 0x03}
+	leaves := []PolicyLeaf{
+		{Leaf: txscript.NewBaseTapLeaf(script)},
+	}
+
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
+	require.NoError(t, err)
+
+	// Mutate the original slice.
+	script[0] = 0xff
+
+	// Policy should be unaffected.
+	require.Equal(t, byte(0x01), policy.Leaves[0].Leaf.Script[0])
+}
+
+// TestSpendInfoDefensiveCopy verifies that mutating SpendInfo does not
+// affect the compiled policy.
+func TestSpendInfoDefensiveCopy(t *testing.T) {
+	t.Parallel()
+
+	script := []byte{0x01, 0x02, 0x03}
+	leaves := []PolicyLeaf{
+		{Leaf: txscript.NewBaseTapLeaf(script)},
+	}
+
+	policy, err := BuildTree(leaves, &ARKNUMSKey)
+	require.NoError(t, err)
+
+	info, err := policy.SpendInfo(0)
+	require.NoError(t, err)
+
+	// Mutate the returned witness script.
+	info.WitnessScript[0] = 0xff
+
+	// Policy leaves should be unaffected.
+	require.Equal(t, byte(0x01), policy.Leaves[0].Leaf.Script[0])
+}
+
 // TestControlBlockFormat verifies the control block format matches BIP-341.
 func TestControlBlockFormat(t *testing.T) {
 	t.Parallel()
