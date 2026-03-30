@@ -39,14 +39,20 @@ type VHTLCOpts struct {
 	UnilateralRefundWithoutReceiverDelay uint32
 }
 
-// VHTLCPolicy represents a compiled vHTLC taproot policy.
+// VHTLCPolicy represents a compiled vHTLC taproot policy with 6 leaves:
+// 3 collaborative (operator-cosigned) and 3 unilateral exit paths.
+// Named accessors provide typed spend info with correct tx-context
+// requirements derived from each closure's AST.
 type VHTLCPolicy struct {
 	// Template is the semantic policy template for this vHTLC.
 	Template *PolicyTemplate
 
+	// CompiledPolicy is the underlying compiled taproot tree.
 	*CompiledPolicy
 
-	// Individual closures for easy access.
+	// ClaimClosure through UnilateralRefundWithoutReceiverClosure
+	// are the semantic AST nodes for each of the 6 leaves, kept for
+	// easy programmatic access and tx-context derivation.
 	ClaimClosure                           Node
 	RefundClosure                          Node
 	RefundWithoutReceiverClosure           Node

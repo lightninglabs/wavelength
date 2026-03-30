@@ -246,6 +246,11 @@ func VTXOTimeoutSpendWitness(signer input.Signer,
 // NewVTXOSpendInfoFromPolicy derives the spend information for the
 // specified leaf index from a VTXOPolicy. This is a convenience wrapper
 // for callers migrating from the scripts.NewVTXOSpendInfo API.
+//
+// IMPORTANT: The leafIndex here uses the legacy semantic ordering
+// (0=collab, 1=exit), NOT the canonical VTXOPolicy.Leaves index.
+// New callers should use VTXOPolicy.CollabSpendInfo/ExitSpendInfo
+// directly instead.
 func NewVTXOSpendInfoFromPolicy(ownerKey, cosignerKey *btcec.PublicKey,
 	exitDelay uint32, leafIndex int) (*SpendInfo, error) {
 

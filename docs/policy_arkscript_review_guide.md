@@ -100,6 +100,7 @@ Helper constructors for common predicates:
 | `PaymentHash160Condition`  | `SIZE 32 EQUALVERIFY HASH160 <h> EQUALVERIFY`   |
 | `Hash160Condition`         | `HASH160 <h> EQUALVERIFY`                        |
 | `AbsoluteLockTimeCondition`| `<n> CHECKLOCKTIMEVERIFY DROP`                   |
+| `sha256Condition`          | `SIZE 32 EQUALVERIFY SHA256 <h> EQUALVERIFY`     |
 
 ### Composition
 
@@ -107,7 +108,7 @@ These three building blocks compose arbitrarily. A vHTLC claim leaf is:
 
 ```go
 Condition{
-    Predicate: PaymentHash160Condition(hash),
+    Predicate: sha256Condition(hash),
     Inner: Multisig{Keys: [receiver, server]},
 }
 ```
@@ -421,11 +422,13 @@ Condition: `kind(3) + predicate(varBytes) + innerNode(varBytes)`
 
 ```
 [version: 1 byte = 0x01]
-[witness_script: varBytes]
-[control_block: varBytes]
 [condition_count: varint]
   for each condition:
     [condition_bytes: varBytes]
+[witness_script: varBytes]
+[control_block: varBytes]
+[required_sequence: varint]
+[required_locktime: varint]
 ```
 
 All encodings use Bitcoin-standard varint/varBytes. Version bytes enable
@@ -460,16 +463,6 @@ forward-compatible evolution.
 | `lib/arkscript/compose.go` | External root composition (Taproot Assets) |
 | `lib/arkscript/vtxo.go` | VTXOPolicy convenience wrapper, SpendInfoWithContext |
 
-### Integration (how it flows through the system)
-
-| File | What to look for |
-|------|-----------------|
-| `client oor/transfer_inputs.go` | TransferInput carries PolicyTemplate + CustomSpend |
-| `client oor/checkpoint_sign.go` | Standard vs custom checkpoint signing |
-| `server oor/policy_helpers.go` | Server-side spend path validation |
-| `server oor/submit_rebuild_validation.go` | Rebuild + pkScript verification via policy |
-| `server oor/finalize_signature_validation.go` | Script VM execution for custom witnesses |
-
 ### Tests
 
 | File | What to look for |
@@ -482,35 +475,16 @@ forward-compatible evolution.
 
 ## 8. Migration Boundaries
 
-The PR deletes `lib/scripts/` entirely. Every call site that previously used:
+This PR introduces the `lib/arkscript` foundation package only. It does **not**
+delete `lib/scripts/` or change DB/wire formats — those changes live in the
+follow-up integration PRs.
 
-```go
-scripts.VTXOTapKey(ownerKey, operatorKey, exitDelay)
-```
+The golden test vectors in `golden_test.go` verify that the new `arkscript`
+code produces **byte-identical** output keys, scripts, and control blocks to
+the existing `lib/scripts` implementation. This confirms that the new package
+is a drop-in replacement — existing on-chain outputs remain spendable once the
+integration layer is wired up.
 
-Now uses:
-
-```go
-policy, _ := arkscript.StandardVTXOTemplate(ownerKey, operatorKey, exitDelay)
-pkScript, _ := policy.PkScript()
-```
-
-The golden test vectors in `golden_test.go` verify that the new code produces
-**byte-identical** output keys, scripts, and control blocks to the old
-`lib/scripts` implementation. This confirms the migration is lossless — existing
-on-chain outputs remain spendable.
-
-### DB Migration
-
-Round and VTXO records that previously stored `(ownerKey, operatorKey,
-exitDelay)` as separate columns now store a single `policy_template BLOB`. The
-codec (`db/rounds_codec.go`) was simplified significantly — the old 280-line
-per-field serializer is replaced by encode/decode of the opaque policy blob.
-
-### Wire Protocol
-
-The OOR signing descriptor previously carried `ownerKey`, `operatorKey`, and
-`exitDelay` as separate TLV fields. It now carries `vtxo_policy_template`,
-`spend_path`, and `owner_leaf_policy` as opaque blobs. The server decodes
-these using `DecodePolicyTemplate` and `DecodeSpendPath` — it never needs to
-know the specific policy shape, only that it satisfies `ValidatePolicy`.
+The key improvement is that the checkpoint PSBT can now carry the tap-tree
+metadata directly (via the Ark-specific tap tree encoding), making resume
+after crash more self-contained than the older sidecar story.

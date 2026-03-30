@@ -72,9 +72,13 @@ func (v *VTXOPolicy) SpendInfoWithContext(leafIndex int) (*SpendInfo, error) {
 }
 
 // NewVTXOPolicy creates and validates a standard VTXO policy from the given
-// parameters. The policy consists of:
-// - Leaf 0 (collab): 2-of-2 multisig requiring both owner and operator
-// - Leaf 1 (exit): CSV-gated 1-of-1 multisig for owner only
+// parameters. The semantic template consists of:
+// - Collab: 2-of-2 multisig requiring both owner and operator
+// - Exit: CSV-gated 1-of-1 multisig for owner only
+//
+// After canonical sorting, the actual leaf indices may differ from the
+// template order. Use CollabSpendInfo/ExitSpendInfo to access the
+// correct paths regardless of canonical position.
 //
 // This produces byte-identical output to lib/scripts.VTXOTapScript().
 func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,

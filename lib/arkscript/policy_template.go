@@ -38,6 +38,9 @@ const (
 )
 
 // LeafTemplate is the semantic representation of one policy leaf.
+// Currently this always compiles to a base-leaf-version (0xc0) tapscript.
+// If leaf-versioned policies are needed in the future, this type would
+// need a LeafVersion field.
 type LeafTemplate struct {
 	// Node is the semantic AST that compiles into the tapscript leaf.
 	Node Node
@@ -170,8 +173,10 @@ func (p *PolicyTemplate) ValidateArkPolicy(
 	return ValidatePolicy(nodes, opts)
 }
 
-// Encode serializes the semantic policy template into a stable binary
-// encoding.
+// Encode serializes the semantic policy template into a binary encoding.
+// The encoding preserves the author's leaf order (not canonical order).
+// Two templates with the same leaves in different order will produce
+// different encoded bytes but identical compiled output keys.
 func (p *PolicyTemplate) Encode() ([]byte, error) {
 	if p == nil {
 		return nil, fmt.Errorf("policy template must be provided")
