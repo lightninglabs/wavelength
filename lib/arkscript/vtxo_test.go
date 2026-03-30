@@ -42,24 +42,16 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 			require.Equal(t, vec.RootHashHex, rootHashHex,
 				"root hash mismatch")
 
-			// Verify collab script matches.
-			collabIdx := policy.collabLeafIndex
-			collabScriptHex := hex.EncodeToString(
-				policy.Leaves[collabIdx].Leaf.Script,
-			)
-			require.Equal(t, vec.CollabScriptHex, collabScriptHex,
-				"collab script mismatch")
-
-			// Verify timeout script matches.
-			timeoutScriptHex := hex.EncodeToString(
-				policy.Leaves[policy.exitLeafIndex].Leaf.Script,
-			)
-			require.Equal(t, vec.TimeoutScriptHex, timeoutScriptHex,
-				"timeout script mismatch")
-
-			// Verify collab control block matches.
+			// Verify collab spend info matches.
 			collabInfo, err := policy.CollabSpendInfo()
 			require.NoError(t, err)
+
+			collabScriptHex := hex.EncodeToString(
+				collabInfo.WitnessScript,
+			)
+			require.Equal(t, vec.CollabScriptHex,
+				collabScriptHex, "collab script mismatch")
+
 			collabControlHex := hex.EncodeToString(
 				collabInfo.ControlBlock,
 			)
@@ -69,6 +61,12 @@ func TestNewVTXOPolicyMatchesGoldenVectors(t *testing.T) {
 			// Verify timeout control block matches.
 			exitInfo, err := policy.ExitSpendInfo()
 			require.NoError(t, err)
+			timeoutScriptHex := hex.EncodeToString(
+				exitInfo.WitnessScript,
+			)
+			require.Equal(t, vec.TimeoutScriptHex,
+				timeoutScriptHex, "timeout script mismatch")
+
 			exitControlHex := hex.EncodeToString(
 				exitInfo.ControlBlock,
 			)
@@ -107,14 +105,19 @@ func TestNewVTXOPolicyMatchesVTXOTapScript(t *testing.T) {
 	require.Equal(t, tapscript.RootHash, policy.RootHash,
 		"root hashes should match")
 
-	// Verify leaf scripts match.
+	// Verify leaf scripts match via SpendInfo.
+	collabInfo, err := policy.CollabSpendInfo()
+	require.NoError(t, err)
 	require.Equal(t,
 		tapscript.Leaves[0].Script,
-		policy.Leaves[policy.collabLeafIndex].Leaf.Script,
+		collabInfo.WitnessScript,
 		"collab scripts should match")
+
+	exitInfo, err := policy.ExitSpendInfo()
+	require.NoError(t, err)
 	require.Equal(t,
 		tapscript.Leaves[1].Script,
-		policy.Leaves[policy.exitLeafIndex].Leaf.Script,
+		exitInfo.WitnessScript,
 		"exit scripts should match")
 
 	// Verify VTXOTapKey matches policy OutputKey.

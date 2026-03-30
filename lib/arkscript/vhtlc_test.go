@@ -60,11 +60,12 @@ func TestVHTLCPolicyConstruction(t *testing.T) {
 	for i, leaf := range policy.Leaves {
 		dis, err := txscript.DisasmString(leaf.Leaf.Script)
 		require.NoError(t, err)
-		t.Logf("Leaf %d (%s): %s", i, leaf.Role, dis)
+		t.Logf("Leaf %d: %s", i, dis)
 	}
 }
 
-// TestVHTLCLeafOrdering tests that leaves are sorted in canonical order.
+// TestVHTLCLeafOrdering tests that leaves are sorted in canonical order
+// and classifiable via ContainsKey (operator key presence).
 func TestVHTLCLeafOrdering(t *testing.T) {
 	t.Parallel()
 
@@ -73,16 +74,14 @@ func TestVHTLCLeafOrdering(t *testing.T) {
 	policy, err := NewVHTLCPolicy(opts)
 	require.NoError(t, err)
 
-	// Verify correct role counts. Canonical sorting reorders by script
-	// bytes, so collab and exit leaves may interleave.
+	// Classify leaves by operator key presence via template nodes.
 	collabCount := 0
 	exitCount := 0
 
-	for _, leaf := range policy.Leaves {
-		switch leaf.Role {
-		case LeafRoleCollab:
+	for _, leaf := range policy.Template.Leaves {
+		if ContainsKey(leaf.Node, opts.Server) {
 			collabCount++
-		case LeafRoleExit:
+		} else {
 			exitCount++
 		}
 	}

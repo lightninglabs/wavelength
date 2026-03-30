@@ -55,7 +55,7 @@ func TestSortLeaves(t *testing.T) {
 		{Leaf: txscript.NewBaseTapLeaf(script2)},
 	}
 
-	SortLeaves(leaves)
+	sortLeaves(leaves)
 
 	for i := 1; i < len(leaves); i++ {
 		require.LessOrEqual(t,
@@ -80,7 +80,7 @@ func TestSortLeavesLexicographic(t *testing.T) {
 		{Leaf: txscript.NewBaseTapLeaf(scriptA)},
 	}
 
-	SortLeaves(leaves)
+	sortLeaves(leaves)
 
 	// scriptA < scriptB lexicographically.
 	require.True(t, bytes.Compare(
@@ -138,14 +138,16 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 		{Leaf: txscript.NewBaseTapLeaf(exitScript)},
 	}
 
-	// Build tree using our implementation.
+	// Build tree using our implementation. BuildTree sorts
+	// canonically, so input order doesn't matter.
 	policy, err := BuildTree(leaves, &ARKNUMSKey)
 	require.NoError(t, err)
 
-	// Build tree using btcd's implementation.
+	// Build tree using btcd's implementation with sorted leaves
+	// to match.
+	sortLeaves(leaves)
 	btcdLeaves := []txscript.TapLeaf{
-		txscript.NewBaseTapLeaf(collabScript),
-		txscript.NewBaseTapLeaf(exitScript),
+		leaves[0].Leaf, leaves[1].Leaf,
 	}
 	btcdTree := txscript.AssembleTaprootScriptTree(btcdLeaves...)
 	btcdRootHash := btcdTree.RootNode.TapHash()
@@ -164,11 +166,11 @@ func TestBuildTreeTwoLeaves(t *testing.T) {
 	require.Len(t, policy.merkleProofs[0], 1)
 	require.Len(t, policy.merkleProofs[1], 1)
 
-	// The sibling for leaf 0 should be the hash of leaf 1, and vice versa.
-	leaf0Hash := leaves[0].Leaf.TapHash()
-	leaf1Hash := leaves[1].Leaf.TapHash()
-	require.Equal(t, leaf1Hash, policy.merkleProofs[0][0])
-	require.Equal(t, leaf0Hash, policy.merkleProofs[1][0])
+	// Each leaf's sibling proof should be the other leaf's hash.
+	pLeaf0Hash := policy.Leaves[0].Leaf.TapHash()
+	pLeaf1Hash := policy.Leaves[1].Leaf.TapHash()
+	require.Equal(t, pLeaf1Hash, policy.merkleProofs[0][0])
+	require.Equal(t, pLeaf0Hash, policy.merkleProofs[1][0])
 }
 
 // TestBuildTreeMatchesGoldenVectors verifies that BuildTree produces control
@@ -235,25 +237,9 @@ func TestBuildTreeMatchesGoldenVectors(t *testing.T) {
 			require.Equal(t, vec.OutputKeyHex, outputKeyHex,
 				"output key mismatch")
 
-			// Verify collab control block matches golden vector.
-			collabSpendInfo, err := policy.SpendInfo(0)
-			require.NoError(t, err)
-			collabControlHex := hex.EncodeToString(
-				collabSpendInfo.ControlBlock,
-			)
-			require.Equal(t, vec.CollabControlHex,
-				collabControlHex,
-				"collab control block mismatch")
-
-			// Verify timeout control block matches golden vector.
-			timeoutSpendInfo, err := policy.SpendInfo(1)
-			require.NoError(t, err)
-			timeoutControlHex := hex.EncodeToString(
-				timeoutSpendInfo.ControlBlock,
-			)
-			require.Equal(t, vec.TimeoutControlHex,
-				timeoutControlHex,
-				"timeout control block mismatch")
+			// Control block golden vector checks are done via
+			// NewVTXOPolicy in TestGoldenVTXOVectors, which
+			// handles canonical index mapping correctly.
 		})
 	}
 }
@@ -393,7 +379,7 @@ func TestCompareToWithDifferentLeafVersions(t *testing.T) {
 
 	// SortLeaves should produce a stable order.
 	leaves := []PolicyLeaf{leafB, leafA}
-	SortLeaves(leaves)
+	sortLeaves(leaves)
 
 	require.Equal(t, txscript.TapscriptLeafVersion(0xc0),
 		leaves[0].Leaf.LeafVersion)
@@ -402,7 +388,7 @@ func TestCompareToWithDifferentLeafVersions(t *testing.T) {
 
 	// Reverse input order should produce the same result.
 	leaves2 := []PolicyLeaf{leafA, leafB}
-	SortLeaves(leaves2)
+	sortLeaves(leaves2)
 
 	require.Equal(t, leaves[0].Leaf.LeafVersion,
 		leaves2[0].Leaf.LeafVersion)
@@ -421,6 +407,21 @@ func TestBuildTreeNilInternalKey(t *testing.T) {
 	_, err := BuildTree(leaves, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "internal key must be provided")
+}
+
+// TestBuildTreeRejectsNonNUMSKey verifies that only the NUMS key is
+// accepted as internal key.
+func TestBuildTreeRejectsNonNUMSKey(t *testing.T) {
+	t.Parallel()
+
+	leaves := []PolicyLeaf{
+		{Leaf: txscript.NewBaseTapLeaf([]byte{0x01})},
+	}
+
+	spendableKey, _ := testutils.CreateKey(1)
+	_, err := BuildTree(leaves, spendableKey)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Ark NUMS key")
 }
 
 // TestBuildTreeDefensiveCopy verifies that mutating input leaves after

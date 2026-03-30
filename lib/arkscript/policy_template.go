@@ -145,8 +145,6 @@ func (p *PolicyTemplate) Compile() (*CompiledPolicy, error) {
 		})
 	}
 
-	SortLeaves(compiledLeaves)
-
 	return BuildTree(compiledLeaves, &ARKNUMSKey)
 }
 

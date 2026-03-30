@@ -51,40 +51,15 @@ type VHTLCPolicy struct {
 	*CompiledPolicy
 
 	// ClaimClosure through UnilateralRefundWithoutReceiverClosure
-	// are the semantic AST nodes for each of the 6 leaves, kept for
-	// easy programmatic access and tx-context derivation.
+	// are the semantic AST nodes for each of the 6 leaves, used for
+	// programmatic access and tx-context derivation. Canonical leaf
+	// indices are derived on the fly via ScriptIndex.
 	ClaimClosure                           Node
 	RefundClosure                          Node
 	RefundWithoutReceiverClosure           Node
 	UnilateralClaimClosure                 Node
 	UnilateralRefundClosure                Node
 	UnilateralRefundWithoutReceiverClosure Node
-
-	// claimLeafIndex is the canonical index of the Claim leaf after
-	// sorting.
-	claimLeafIndex int
-
-	// refundLeafIndex is the canonical index of the Refund leaf.
-	refundLeafIndex int
-
-	// refundWithoutReceiverLeafIndex is the canonical index of the
-	// RefundWithoutReceiver leaf.
-	refundWithoutReceiverLeafIndex int
-
-	// unilateralClaimLeafIndex is the canonical index of the
-	// UnilateralClaim leaf.
-	unilateralClaimLeafIndex int
-
-	// unilateralRefundLeafIndex is the canonical index of the
-	// UnilateralRefund leaf.
-	unilateralRefundLeafIndex int
-
-	// unilateralRefundWithoutReceiverLeafIndex is the canonical index
-	// of the UnilateralRefundWithoutReceiver leaf.
-	unilateralRefundWithoutReceiverLeafIndex int
-
-	// orderedNodes maps leaf index → AST Node in canonical order.
-	orderedNodes []Node
 }
 
 // NewVHTLCPolicy constructs a vHTLC policy using the AST closure system.
@@ -173,82 +148,28 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		},
 	}
 
-	// Compile all closures and build leaf set. The first three are
-	// collaborative (require operator), the last three are unilateral
-	// exit paths.
-	type closureEntry struct {
-		node Node
-		role LeafRole
+	// Build the template and compile. Compile() handles leaf
+	// compilation, canonical sorting, and tree construction.
+	closures := []Node{
+		claimClosure,
+		refundClosure,
+		refundWithoutReceiverClosure,
+		unilateralClaimClosure,
+		unilateralRefundClosure,
+		unilateralRefundWithoutReceiverClosure,
 	}
 
-	closures := []closureEntry{
-		{claimClosure, LeafRoleCollab},
-		{refundClosure, LeafRoleCollab},
-		{refundWithoutReceiverClosure, LeafRoleCollab},
-		{unilateralClaimClosure, LeafRoleExit},
-		{unilateralRefundClosure, LeafRoleExit},
-		{unilateralRefundWithoutReceiverClosure, LeafRoleExit},
-	}
-
-	leaves := make([]PolicyLeaf, len(closures))
 	leafTemplates := make([]LeafTemplate, len(closures))
-	for i, entry := range closures {
-		script, err := entry.node.Script()
-		if err != nil {
-			return nil, fmt.Errorf("compile closure %d: %w",
-				i, err)
-		}
-
-		leaves[i] = PolicyLeaf{
-			Leaf: txscript.NewBaseTapLeaf(script),
-			Role: entry.role,
-		}
-		leafTemplates[i] = LeafTemplate{Node: entry.node}
+	for i, node := range closures {
+		leafTemplates[i] = LeafTemplate{Node: node}
 	}
 
 	template := &PolicyTemplate{Leaves: leafTemplates}
 
-	// Sort leaves canonically and track where each closure ended up.
-	SortLeaves(leaves)
-
-	// Build index mapping by matching scripts.
-	claimScript, _ := claimClosure.Script()
-	refundScript, _ := refundClosure.Script()
-	refundWithoutReceiverScript, _ := refundWithoutReceiverClosure.Script()
-	unilateralClaimScript, _ := unilateralClaimClosure.Script()
-	unilateralRefundScript, _ := unilateralRefundClosure.Script()
-	unilateralRefundWithoutReceiverScript, _ :=
-		unilateralRefundWithoutReceiverClosure.Script()
-
-	scriptToIndex := make(map[string]int, len(leaves))
-	for i, leaf := range leaves {
-		scriptToIndex[string(leaf.Leaf.Script)] = i
-	}
-
-	// Build ordered nodes slice (leaf index → AST Node).
-	stn := make(map[string]Node, 6)
-	stn[string(claimScript)] = claimClosure
-	stn[string(refundScript)] = refundClosure
-	stn[string(refundWithoutReceiverScript)] =
-		refundWithoutReceiverClosure
-	stn[string(unilateralClaimScript)] =
-		unilateralClaimClosure
-	stn[string(unilateralRefundScript)] =
-		unilateralRefundClosure
-	stn[string(unilateralRefundWithoutReceiverScript)] =
-		unilateralRefundWithoutReceiverClosure
-
-	ordered := make([]Node, len(leaves))
-	for i, leaf := range leaves {
-		ordered[i] = stn[string(leaf.Leaf.Script)]
-	}
-
-	policy, err := BuildTree(leaves, &ARKNUMSKey)
+	policy, err := template.Compile()
 	if err != nil {
-		return nil, fmt.Errorf("build vhtlc tree: %w", err)
+		return nil, fmt.Errorf("compile vhtlc: %w", err)
 	}
-
-	si := scriptToIndex
 
 	return &VHTLCPolicy{
 		Template:       template,
@@ -261,58 +182,17 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		UnilateralRefundClosure:      unilateralRefundClosure,
 
 		UnilateralRefundWithoutReceiverClosure: unilateralRefundWithoutReceiverClosure, //nolint:ll
-
-		claimLeafIndex:  si[string(claimScript)],
-		refundLeafIndex: si[string(refundScript)],
-		refundWithoutReceiverLeafIndex: si[string(
-			refundWithoutReceiverScript,
-		)],
-		unilateralClaimLeafIndex: si[string(
-			unilateralClaimScript,
-		)],
-		unilateralRefundLeafIndex: si[string(
-			unilateralRefundScript,
-		)],
-		unilateralRefundWithoutReceiverLeafIndex: si[string(
-			unilateralRefundWithoutReceiverScript,
-		)],
-		orderedNodes: ordered,
 	}, nil
-}
-
-// spendInfoWithContext returns the spend information for a leaf at the
-// given index with tx-context requirements derived from the AST node.
-func (p *VHTLCPolicy) spendInfoWithContext(leafIndex int) (
-	*SpendInfo, error) {
-
-	info, err := p.CompiledPolicy.SpendInfo(leafIndex)
-	if err != nil {
-		return nil, err
-	}
-
-	if leafIndex < len(p.orderedNodes) {
-		node := p.orderedNodes[leafIndex]
-		info.RequiredSequence = DeriveSequence(node)
-		info.RequiredLockTime = ExtractAbsoluteLockTime(node)
-
-		if info.RequiredLockTime != 0 &&
-			info.RequiredSequence == 0xffffffff {
-
-			info.RequiredSequence = 0xfffffffe
-		}
-	}
-
-	return info, nil
 }
 
 // ClaimSpendInfo returns the spend information for the Claim path.
 func (p *VHTLCPolicy) ClaimSpendInfo() (*SpendInfo, error) {
-	return p.spendInfoWithContext(p.claimLeafIndex)
+	return p.CompiledPolicy.SpendInfoForNode(p.ClaimClosure)
 }
 
 // RefundSpendInfo returns the spend information for the Refund path.
 func (p *VHTLCPolicy) RefundSpendInfo() (*SpendInfo, error) {
-	return p.spendInfoWithContext(p.refundLeafIndex)
+	return p.CompiledPolicy.SpendInfoForNode(p.RefundClosure)
 }
 
 // RefundWithoutReceiverSpendInfo returns the spend information for the
@@ -320,21 +200,25 @@ func (p *VHTLCPolicy) RefundSpendInfo() (*SpendInfo, error) {
 func (p *VHTLCPolicy) RefundWithoutReceiverSpendInfo() (*SpendInfo,
 	error) {
 
-	return p.spendInfoWithContext(
-		p.refundWithoutReceiverLeafIndex,
+	return p.CompiledPolicy.SpendInfoForNode(
+		p.RefundWithoutReceiverClosure,
 	)
 }
 
 // UnilateralClaimSpendInfo returns the spend information for the
 // UnilateralClaim path.
 func (p *VHTLCPolicy) UnilateralClaimSpendInfo() (*SpendInfo, error) {
-	return p.spendInfoWithContext(p.unilateralClaimLeafIndex)
+	return p.CompiledPolicy.SpendInfoForNode(
+		p.UnilateralClaimClosure,
+	)
 }
 
 // UnilateralRefundSpendInfo returns the spend information for the
 // UnilateralRefund path.
 func (p *VHTLCPolicy) UnilateralRefundSpendInfo() (*SpendInfo, error) {
-	return p.spendInfoWithContext(p.unilateralRefundLeafIndex)
+	return p.CompiledPolicy.SpendInfoForNode(
+		p.UnilateralRefundClosure,
+	)
 }
 
 // UnilateralRefundWithoutReceiverSpendInfo returns the spend information
@@ -342,15 +226,13 @@ func (p *VHTLCPolicy) UnilateralRefundSpendInfo() (*SpendInfo, error) {
 func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 	*SpendInfo, error) {
 
-	return p.spendInfoWithContext(
-		p.unilateralRefundWithoutReceiverLeafIndex,
+	return p.CompiledPolicy.SpendInfoForNode(
+		p.UnilateralRefundWithoutReceiverClosure,
 	)
 }
 
 // ClaimPath returns a SpendPath for claiming via the hashlock leaf.
-// The preimage is included as a condition witness element. The preimage
-// must be exactly 32 bytes (as enforced by the OP_SIZE check in the
-// leaf script).
+// The preimage must be exactly 32 bytes (OP_SIZE check in leaf script).
 func (p *VHTLCPolicy) ClaimPath(
 	preimage []byte) (*SpendPath, error) {
 
@@ -372,8 +254,7 @@ func (p *VHTLCPolicy) ClaimPath(
 	}, nil
 }
 
-// RefundPath returns a SpendPath for the cooperative refund
-// (all parties sign, no conditions).
+// RefundPath returns a SpendPath for the cooperative refund.
 func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
 	info, err := p.RefundSpendInfo()
 	if err != nil {
@@ -394,16 +275,6 @@ func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
 	}
 
 	return &SpendPath{SpendInfo: info}, nil
-}
-
-// OrderedNodes returns the AST nodes in canonical leaf order,
-// matching the Leaves slice indices. The returned slice is a shallow
-// copy to prevent callers from mutating the policy's internal mapping.
-func (p *VHTLCPolicy) OrderedNodes() []Node {
-	out := make([]Node, len(p.orderedNodes))
-	copy(out, p.orderedNodes)
-
-	return out
 }
 
 // PkScript returns the P2TR pkScript for the vHTLC output.

@@ -236,13 +236,12 @@ func TestValidatePolicy(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		// Collect nodes in leaf order.
-		nodes := policy.OrderedNodes()
-
-		err = ValidatePolicy(nodes, PolicyValidationOpts{
-			OperatorKey:  operator,
-			MinExitDelay: 100,
-		})
+		err = policy.Template.ValidateArkPolicy(
+			PolicyValidationOpts{
+				OperatorKey:  operator,
+				MinExitDelay: 100,
+			},
+		)
 		require.NoError(t, err)
 	})
 

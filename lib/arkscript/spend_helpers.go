@@ -267,6 +267,9 @@ func NewVTXOSpendInfoFromPolicy(ownerKey, cosignerKey *btcec.PublicKey,
 		return vp.ExitSpendInfo()
 
 	default:
-		return vp.SpendInfoWithContext(leafIndex)
+		return nil, fmt.Errorf(
+			"leaf index %d out of range for standard VTXO",
+			leafIndex,
+		)
 	}
 }

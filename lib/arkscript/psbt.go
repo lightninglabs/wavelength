@@ -44,10 +44,6 @@ type EncodedLeaf struct {
 // Ark-specific tap tree encoding. Ark policies use at most ~10 leaves.
 const maxTapTreeLeaves = 256
 
-// maxConditionCount is the sanity upper bound for condition witness
-// items in a spend path.
-const maxConditionCount = 64
-
 // maxPreimageLen is the maximum preimage length accepted by both
 // encode and decode for condition witnesses.
 const maxPreimageLen = 520

@@ -24,51 +24,23 @@ type VTXOPolicy struct {
 	// ExitDelay is the CSV delay for the exit path (in blocks).
 	ExitDelay uint32
 
-	// collabLeafIndex is the canonical leaf index of the cooperative path.
-	collabLeafIndex int
+	// collabNode is the collab leaf AST (Multisig{owner, operator}).
+	collabNode Node
 
-	// exitLeafIndex is the canonical leaf index of the unilateral
-	// exit path.
-	exitLeafIndex int
+	// exitNode is the exit leaf AST (CSV{delay, Multisig{owner}}).
+	exitNode Node
 }
 
-// CollabSpendInfo returns the spend information for the collaborative path.
+// CollabSpendInfo returns the spend information for the collaborative
+// path. Tx-context is derived from the collab AST node.
 func (v *VTXOPolicy) CollabSpendInfo() (*SpendInfo, error) {
-	return v.SpendInfoWithContext(v.collabLeafIndex)
+	return v.CompiledPolicy.SpendInfoForNode(v.collabNode)
 }
 
-// ExitSpendInfo returns the spend information for the exit/timeout path.
+// ExitSpendInfo returns the spend information for the exit/timeout
+// path. Tx-context is derived from the exit AST node.
 func (v *VTXOPolicy) ExitSpendInfo() (*SpendInfo, error) {
-	return v.SpendInfoWithContext(v.exitLeafIndex)
-}
-
-// SpendInfoWithContext returns the spend information for the leaf at the given
-// index with tx-context requirements derived from the leaf's AST.
-func (v *VTXOPolicy) SpendInfoWithContext(leafIndex int) (*SpendInfo, error) {
-	info, err := v.CompiledPolicy.SpendInfo(leafIndex)
-	if err != nil {
-		return nil, err
-	}
-
-	// Derive tx-context based on the canonical VTXO path kind.
-	switch leafIndex {
-	case v.collabLeafIndex:
-		// Collaborative path has no timelock requirements.
-		info.RequiredSequence = 0xffffffff
-		info.RequiredLockTime = 0
-
-	case v.exitLeafIndex:
-		// Exit path requires CSV delay.
-		info.RequiredSequence = v.ExitDelay
-		info.RequiredLockTime = 0
-
-	default:
-		// Custom leaves default to no requirements.
-		info.RequiredSequence = 0xffffffff
-		info.RequiredLockTime = 0
-	}
-
-	return info, nil
+	return v.CompiledPolicy.SpendInfoForNode(v.exitNode)
 }
 
 // NewVTXOPolicy creates and validates a standard VTXO policy from the given
@@ -91,53 +63,19 @@ func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
 		return nil, err
 	}
 
-	collabNode, ok := template.Leaves[0].Node.(*Multisig)
-	if !ok {
-		return nil, fmt.Errorf("vtxo: collab leaf is not multisig")
-	}
-
-	exitNode, ok := template.Leaves[1].Node.(*CSV)
-	if !ok {
-		return nil, fmt.Errorf("vtxo: exit leaf is not csv")
-	}
-
-	// Build the tree using the NUMS key as internal key.
 	policy, err := template.Compile()
 	if err != nil {
 		return nil, fmt.Errorf("vtxo: failed to build tree: %w", err)
 	}
 
-	collabScript, err := collabNode.Script()
-	if err != nil {
-		return nil, fmt.Errorf("vtxo: compile collab leaf: %w", err)
-	}
-
-	exitScript, err := exitNode.Script()
-	if err != nil {
-		return nil, fmt.Errorf("vtxo: compile exit leaf: %w", err)
-	}
-
-	scriptToIndex := make(map[string]int, len(policy.Leaves))
-	for i, leaf := range policy.Leaves {
-		scriptToIndex[string(leaf.Leaf.Script)] = i
-	}
-
-	collabIdx := scriptToIndex[string(collabScript)]
-	exitIdx := scriptToIndex[string(exitScript)]
-
-	// Set roles explicitly after canonical sorting so the zero-value
-	// LeafRoleCollab default doesn't misclassify the exit leaf.
-	policy.Leaves[collabIdx].Role = LeafRoleCollab
-	policy.Leaves[exitIdx].Role = LeafRoleExit
-
 	return &VTXOPolicy{
-		Template:        template,
-		CompiledPolicy:  policy,
-		OwnerKey:        ownerKey,
-		OperatorKey:     operatorKey,
-		ExitDelay:       exitDelay,
-		collabLeafIndex: collabIdx,
-		exitLeafIndex:   exitIdx,
+		Template:       template,
+		CompiledPolicy: policy,
+		OwnerKey:       ownerKey,
+		OperatorKey:    operatorKey,
+		ExitDelay:      exitDelay,
+		collabNode:     template.Leaves[0].Node,
+		exitNode:       template.Leaves[1].Node,
 	}, nil
 }
 

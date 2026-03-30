@@ -9,38 +9,10 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 )
 
-// LeafRole classifies a policy leaf as collaborative or unilateral exit.
-type LeafRole uint8
-
-const (
-	// LeafRoleCollab indicates a collaborative spending path that
-	// requires the operator as a cosigner.
-	LeafRoleCollab LeafRole = iota
-
-	// LeafRoleExit indicates a unilateral exit path that does not
-	// require operator cooperation.
-	LeafRoleExit
-)
-
-// String returns a human-readable label for the leaf role.
-func (r LeafRole) String() string {
-	switch r {
-	case LeafRoleCollab:
-		return "collab"
-	case LeafRoleExit:
-		return "exit"
-	default:
-		return "unknown"
-	}
-}
-
 // PolicyLeaf represents a compiled tapscript leaf in canonical ordering.
 type PolicyLeaf struct {
 	// Leaf is the compiled tapscript leaf (script bytes + leaf version).
 	Leaf txscript.TapLeaf
-
-	// Role classifies this leaf as collaborative or unilateral exit.
-	Role LeafRole
 }
 
 // CompareTo returns -1 if this leaf sorts before other, 1 if after, and 0 if
@@ -164,9 +136,55 @@ type SpendInfo struct {
 	RequiredLockTime uint32
 }
 
-// SortLeaves sorts the policy leaves in-place according to canonical
-// lexicographic ordering of script bytes.
-func SortLeaves(leaves []PolicyLeaf) {
+// SpendInfoForNode derives the spend information for the leaf
+// corresponding to the given AST node. The canonical leaf index is
+// resolved via ScriptIndex, and tx-context (RequiredSequence,
+// RequiredLockTime) is derived from the AST.
+func (p *CompiledPolicy) SpendInfoForNode(
+	node Node) (*SpendInfo, error) {
+
+	script, err := node.Script()
+	if err != nil {
+		return nil, err
+	}
+
+	idx := p.ScriptIndex(script)
+	if idx < 0 {
+		return nil, fmt.Errorf("node script not found in tree")
+	}
+
+	info, err := p.SpendInfo(idx)
+	if err != nil {
+		return nil, err
+	}
+
+	info.RequiredSequence = DeriveSequence(node)
+	info.RequiredLockTime = ExtractAbsoluteLockTime(node)
+
+	if info.RequiredLockTime != 0 &&
+		info.RequiredSequence == 0xffffffff {
+
+		info.RequiredSequence = 0xfffffffe
+	}
+
+	return info, nil
+}
+
+// ScriptIndex returns the canonical leaf index for the given script,
+// or -1 if not found.
+func (p *CompiledPolicy) ScriptIndex(script []byte) int {
+	for i, leaf := range p.Leaves {
+		if bytes.Equal(leaf.Leaf.Script, script) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// sortLeaves sorts the policy leaves in-place according to canonical
+// ordering: leaf version first, then lexicographic by script bytes.
+func sortLeaves(leaves []PolicyLeaf) {
 	// Simple insertion sort for small leaf counts (typically 2-4 leaves).
 	for i := 1; i < len(leaves); i++ {
 		for j := i; j > 0 && leaves[j].CompareTo(
@@ -178,7 +196,10 @@ func SortLeaves(leaves []PolicyLeaf) {
 }
 
 // BuildTree constructs a canonical balanced binary taproot tree from the
-// ordered leaf list. This implements the algorithm from the RFC:
+// ordered leaf list using the Ark NUMS internal key. The NUMS key ensures
+// key-path spends are impossible — all spending goes through script leaves.
+//
+// This implements the algorithm from the RFC:
 //   - If n == 1: the root is the single leaf hash.
 //   - If n > 1: split left = leaves[0:n/2], right = leaves[n/2:n],
 //     compute L = BuildTree(left), R = BuildTree(right),
@@ -196,8 +217,19 @@ func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (
 		return nil, fmt.Errorf("internal key must be provided")
 	}
 
+	// Enforce the Ark invariant: the internal key must be the
+	// unspendable NUMS key. This prevents key-path spending and
+	// guarantees all exits go through CSV-gated script leaves.
+	if !internalKey.IsEqual(&ARKNUMSKey) {
+		return nil, fmt.Errorf(
+			"internal key must be the Ark NUMS key",
+		)
+	}
+
 	// Defensively copy the input leaves so the compiled policy is
-	// not aliased to the caller's slice.
+	// not aliased to the caller's slice, then sort canonically.
+	// This is the single canonical ordering point for all Ark
+	// policies — callers do not need to pre-sort.
 	copied := make([]PolicyLeaf, len(leaves))
 	for i, leaf := range leaves {
 		copied[i] = PolicyLeaf{
@@ -205,10 +237,11 @@ func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (
 				LeafVersion: leaf.Leaf.LeafVersion,
 				Script:      bytes.Clone(leaf.Leaf.Script),
 			},
-			Role: leaf.Role,
 		}
 	}
 	leaves = copied
+
+	sortLeaves(leaves)
 
 	// Compute leaf hashes.
 	leafHashes := make([]chainhash.Hash, len(leaves))

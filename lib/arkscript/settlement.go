@@ -185,14 +185,6 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 	return pairs, nil
 }
 
-// SpendPathForLeaf derives a spend path for a policy leaf using the AST node to
-// infer any tx-context requirements.
-func SpendPathForLeaf(policy *CompiledPolicy, leafIndex int,
-	node Node, conditions [][]byte) (*SpendPath, error) {
-
-	return spendPathForLeaf(policy, leafIndex, node, conditions)
-}
-
 // ExtractAbsoluteLockTime returns the absolute locktime required by the AST
 // node, or zero when no recognized CLTV predicate is present.
 func ExtractAbsoluteLockTime(node Node) uint32 {
