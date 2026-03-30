@@ -54,10 +54,32 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 		return nil, err
 	}
 
+	// Build a mapping from template leaf index to canonical leaf
+	// index. Compile() sorts leaves canonically, so template order
+	// may differ from the compiled tree order.
+	templateToCanonical := make(map[int]int, len(p.Leaves))
+	for i := range p.Leaves {
+		script, err := p.Leaves[i].Script()
+		if err != nil {
+			return nil, fmt.Errorf(
+				"compile template leaf %d: %w", i, err,
+			)
+		}
+
+		for j, cl := range compiled.Leaves {
+			if bytes.Equal(script, cl.Leaf.Script) {
+				templateToCanonical[i] = j
+
+				break
+			}
+		}
+	}
+
 	type candidate struct {
-		index int
-		node  Node
-		key   []byte
+		templateIndex  int
+		canonicalIndex int
+		node           Node
+		key            []byte
 	}
 
 	var (
@@ -69,6 +91,14 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 		node := p.Leaves[i].Node
 		if node == nil {
 			return nil, fmt.Errorf("policy leaf %d has nil node", i)
+		}
+
+		canonIdx, ok := templateToCanonical[i]
+		if !ok {
+			return nil, fmt.Errorf(
+				"template leaf %d not found in compiled tree",
+				i,
+			)
 		}
 
 		norm, err := normalizeSettlementNode(node, operator)
@@ -88,44 +118,52 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 		switch {
 		case ContainsKey(node, participant) &&
 			ContainsKey(node, operator):
-			forfeitCandidates = append(forfeitCandidates, candidate{
-				index: i,
-				node:  node,
-				key:   normKey,
-			})
+			forfeitCandidates = append(
+				forfeitCandidates, candidate{
+					templateIndex:  i,
+					canonicalIndex: canonIdx,
+					node:           node,
+					key:            normKey,
+				},
+			)
 
 		case ContainsKey(node, participant):
-			authCandidates = append(authCandidates, candidate{
-				index: i,
-				node:  node,
-				key:   normKey,
-			})
+			authCandidates = append(
+				authCandidates, candidate{
+					templateIndex:  i,
+					canonicalIndex: canonIdx,
+					node:           node,
+					key:            normKey,
+				},
+			)
 		}
 	}
 
 	pairs := make([]SettlementPair, 0, len(authCandidates))
 	for _, auth := range authCandidates {
-		matchIndex := -1
-		for _, forfeit := range forfeitCandidates {
-			if bytes.Equal(auth.key, forfeit.key) {
-				matchIndex = forfeit.index
+		var matched *candidate
+		for idx := range forfeitCandidates {
+			if bytes.Equal(auth.key, forfeitCandidates[idx].key) {
+				matched = &forfeitCandidates[idx]
+
 				break
 			}
 		}
 
-		if matchIndex < 0 {
+		if matched == nil {
 			continue
 		}
 
 		authPath, err := spendPathForLeaf(
-			compiled, auth.index, auth.node, nil,
+			compiled, auth.canonicalIndex, auth.node, nil,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("auth spend path: %w", err)
 		}
 
 		forfeitPath, err := spendPathForLeaf(
-			compiled, matchIndex, p.Leaves[matchIndex].Node, nil,
+			compiled, matched.canonicalIndex,
+			matched.node, nil,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("forfeit spend path: %w", err)
@@ -133,9 +171,9 @@ func (p *PolicyTemplate) SettlementPairsForParticipant(
 
 		pairs = append(pairs, SettlementPair{
 			ParticipantKey:   participant,
-			AuthLeafIndex:    auth.index,
+			AuthLeafIndex:    auth.canonicalIndex,
 			AuthPath:         authPath,
-			ForfeitLeafIndex: matchIndex,
+			ForfeitLeafIndex: matched.canonicalIndex,
 			ForfeitPath:      forfeitPath,
 		})
 	}

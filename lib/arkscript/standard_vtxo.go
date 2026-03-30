@@ -179,6 +179,12 @@ func DecodeStandardVTXOParams(
 		return nil, fmt.Errorf("collab leaf missing owner key")
 	}
 
+	if exit.Lock == 0 {
+		return nil, fmt.Errorf(
+			"standard vtxo exit delay must be non-zero",
+		)
+	}
+
 	return &StandardVTXOParams{
 		OwnerKey:    ownerKey,
 		OperatorKey: operatorKey,

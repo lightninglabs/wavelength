@@ -276,14 +276,39 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	}, nil
 }
 
+// spendInfoWithContext returns the spend information for a leaf at the
+// given index with tx-context requirements derived from the AST node.
+func (p *VHTLCPolicy) spendInfoWithContext(leafIndex int) (
+	*SpendInfo, error) {
+
+	info, err := p.CompiledPolicy.SpendInfo(leafIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	if leafIndex < len(p.orderedNodes) {
+		node := p.orderedNodes[leafIndex]
+		info.RequiredSequence = DeriveSequence(node)
+		info.RequiredLockTime = ExtractAbsoluteLockTime(node)
+
+		if info.RequiredLockTime != 0 &&
+			info.RequiredSequence == 0xffffffff {
+
+			info.RequiredSequence = 0xfffffffe
+		}
+	}
+
+	return info, nil
+}
+
 // ClaimSpendInfo returns the spend information for the Claim path.
 func (p *VHTLCPolicy) ClaimSpendInfo() (*SpendInfo, error) {
-	return p.SpendInfo(p.claimLeafIndex)
+	return p.spendInfoWithContext(p.claimLeafIndex)
 }
 
 // RefundSpendInfo returns the spend information for the Refund path.
 func (p *VHTLCPolicy) RefundSpendInfo() (*SpendInfo, error) {
-	return p.SpendInfo(p.refundLeafIndex)
+	return p.spendInfoWithContext(p.refundLeafIndex)
 }
 
 // RefundWithoutReceiverSpendInfo returns the spend information for the
@@ -291,19 +316,21 @@ func (p *VHTLCPolicy) RefundSpendInfo() (*SpendInfo, error) {
 func (p *VHTLCPolicy) RefundWithoutReceiverSpendInfo() (*SpendInfo,
 	error) {
 
-	return p.SpendInfo(p.refundWithoutReceiverLeafIndex)
+	return p.spendInfoWithContext(
+		p.refundWithoutReceiverLeafIndex,
+	)
 }
 
 // UnilateralClaimSpendInfo returns the spend information for the
 // UnilateralClaim path.
 func (p *VHTLCPolicy) UnilateralClaimSpendInfo() (*SpendInfo, error) {
-	return p.SpendInfo(p.unilateralClaimLeafIndex)
+	return p.spendInfoWithContext(p.unilateralClaimLeafIndex)
 }
 
 // UnilateralRefundSpendInfo returns the spend information for the
 // UnilateralRefund path.
 func (p *VHTLCPolicy) UnilateralRefundSpendInfo() (*SpendInfo, error) {
-	return p.SpendInfo(p.unilateralRefundLeafIndex)
+	return p.spendInfoWithContext(p.unilateralRefundLeafIndex)
 }
 
 // UnilateralRefundWithoutReceiverSpendInfo returns the spend information
@@ -311,7 +338,7 @@ func (p *VHTLCPolicy) UnilateralRefundSpendInfo() (*SpendInfo, error) {
 func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 	*SpendInfo, error) {
 
-	return p.SpendInfo(
+	return p.spendInfoWithContext(
 		p.unilateralRefundWithoutReceiverLeafIndex,
 	)
 }

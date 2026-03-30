@@ -92,7 +92,7 @@ func (p *CompiledPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 	leaf := &p.Leaves[leafIndex]
 
 	return &SpendInfo{
-		WitnessScript:    leaf.Leaf.Script,
+		WitnessScript:    bytes.Clone(leaf.Leaf.Script),
 		ControlBlock:     controlBlock,
 		RequiredSequence: 0xffffffff, // Default; caller may override.
 		RequiredLockTime: 0,
@@ -182,6 +182,24 @@ func BuildTree(leaves []PolicyLeaf, internalKey *btcec.PublicKey) (
 	if len(leaves) == 0 {
 		return nil, fmt.Errorf("cannot build tree with no leaves")
 	}
+
+	if internalKey == nil {
+		return nil, fmt.Errorf("internal key must be provided")
+	}
+
+	// Defensively copy the input leaves so the compiled policy is
+	// not aliased to the caller's slice.
+	copied := make([]PolicyLeaf, len(leaves))
+	for i, leaf := range leaves {
+		copied[i] = PolicyLeaf{
+			Leaf: txscript.TapLeaf{
+				LeafVersion: leaf.Leaf.LeafVersion,
+				Script:      bytes.Clone(leaf.Leaf.Script),
+			},
+			Role: leaf.Role,
+		}
+	}
+	leaves = copied
 
 	// Compute leaf hashes.
 	leafHashes := make([]chainhash.Hash, len(leaves))

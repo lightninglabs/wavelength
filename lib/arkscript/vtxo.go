@@ -118,14 +118,22 @@ func NewVTXOPolicy(ownerKey, operatorKey *btcec.PublicKey,
 		scriptToIndex[string(leaf.Leaf.Script)] = i
 	}
 
+	collabIdx := scriptToIndex[string(collabScript)]
+	exitIdx := scriptToIndex[string(exitScript)]
+
+	// Set roles explicitly after canonical sorting so the zero-value
+	// LeafRoleCollab default doesn't misclassify the exit leaf.
+	policy.Leaves[collabIdx].Role = LeafRoleCollab
+	policy.Leaves[exitIdx].Role = LeafRoleExit
+
 	return &VTXOPolicy{
 		Template:        template,
 		CompiledPolicy:  policy,
 		OwnerKey:        ownerKey,
 		OperatorKey:     operatorKey,
 		ExitDelay:       exitDelay,
-		collabLeafIndex: scriptToIndex[string(collabScript)],
-		exitLeafIndex:   scriptToIndex[string(exitScript)],
+		collabLeafIndex: collabIdx,
+		exitLeafIndex:   exitIdx,
 	}, nil
 }
 

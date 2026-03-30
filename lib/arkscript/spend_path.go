@@ -3,6 +3,7 @@ package arkscript
 import (
 	"bytes"
 	"fmt"
+	"math"
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
@@ -142,9 +143,23 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 		return nil, err
 	}
 
+	if requiredSequence > math.MaxUint32 {
+		return nil, fmt.Errorf(
+			"required sequence %d exceeds uint32 max",
+			requiredSequence,
+		)
+	}
+
 	requiredLockTime, err := wire.ReadVarInt(r, 0)
 	if err != nil {
 		return nil, err
+	}
+
+	if requiredLockTime > math.MaxUint32 {
+		return nil, fmt.Errorf(
+			"required locktime %d exceeds uint32 max",
+			requiredLockTime,
+		)
 	}
 
 	if r.Len() != 0 {
