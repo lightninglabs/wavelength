@@ -84,8 +84,9 @@ func ValidatePolicy(nodes []Node, opts PolicyValidationOpts) error {
 	return nil
 }
 
-// ContainsKey returns true if the AST contains a multisig node that
-// references the given public key.
+// ContainsKey walks the typed AST nodes (Multisig, CSV, Condition) and
+// returns true if any Multisig node references the given public key.
+// Opaque predicate bytes are intentionally not inspected.
 func ContainsKey(node Node, key *btcec.PublicKey) bool {
 	if node == nil || key == nil {
 		return false
@@ -134,13 +135,11 @@ func ExtractCSVDelay(node Node) uint32 {
 	return extractCSVDelay(node)
 }
 
-// ScriptContainsKey performs a byte-level scan of a compiled script
-// for the x-only serialized operator key. This is a lightweight
-// server-side check that doesn't require AST parsing.
-//
-// The check verifies that the 32-byte x-only key appears in the
-// script at a data-push boundary. Combined with script VM execution
-// at finalize time, this confirms the key is meaningfully used.
+// ScriptContainsKey performs a byte-level substring scan of a compiled
+// script for the x-only serialized key. This is a lightweight prefilter
+// that does not verify the key is actually used in a CHECKSIG context.
+// Callers should combine this with script VM execution at finalize time
+// to confirm the key is meaningfully consumed.
 func ScriptContainsKey(script []byte,
 	key *btcec.PublicKey) bool {
 

@@ -131,8 +131,12 @@ func tapBranchHashCompose(a, b chainhash.Hash) chainhash.Hash {
 
 // PolicyRoot returns just the policy root hash from a compiled policy.
 // This can be used when the caller needs to provide the root for external
-// composition.
+// composition. The policy must not be nil.
 func PolicyRoot(policy *CompiledPolicy) chainhash.Hash {
+	if policy == nil {
+		return chainhash.Hash{}
+	}
+
 	var root chainhash.Hash
 	copy(root[:], policy.RootHash)
 

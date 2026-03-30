@@ -44,8 +44,17 @@ type PolicyLeaf struct {
 }
 
 // CompareTo returns -1 if this leaf sorts before other, 1 if after, and 0 if
-// they are equal. Ordering is lexicographic by script bytes.
+// they are equal. Ordering is by leaf version first, then lexicographic by
+// script bytes.
 func (l *PolicyLeaf) CompareTo(other *PolicyLeaf) int {
+	if l.Leaf.LeafVersion != other.Leaf.LeafVersion {
+		if l.Leaf.LeafVersion < other.Leaf.LeafVersion {
+			return -1
+		}
+
+		return 1
+	}
+
 	return bytes.Compare(l.Leaf.Script, other.Leaf.Script)
 }
 

@@ -118,6 +118,16 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 		return nil, err
 	}
 
+	// Sanity check: Ark spend paths have at most a handful of
+	// condition witness items.
+	const maxConditions = 64
+	if conditionCount > maxConditions {
+		return nil, fmt.Errorf(
+			"condition count %d exceeds maximum %d",
+			conditionCount, maxConditions,
+		)
+	}
+
 	conditions := make([][]byte, 0, conditionCount)
 	for i := uint64(0); i < conditionCount; i++ {
 		cond, err := readVarBytes(r, "spend path condition")

@@ -1,12 +1,10 @@
 package arkscript
 
 import (
-	"crypto/sha256"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
-	"golang.org/x/crypto/ripemd160" //nolint:gosec
 )
 
 // VHTLCOpts contains the parameters for constructing a vHTLC policy.
@@ -344,9 +342,18 @@ func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 }
 
 // ClaimPath returns a SpendPath for claiming via the hashlock leaf.
-// The preimage is included as a condition witness element.
+// The preimage is included as a condition witness element. The preimage
+// must be exactly 32 bytes (as enforced by the OP_SIZE check in the
+// leaf script).
 func (p *VHTLCPolicy) ClaimPath(
 	preimage []byte) (*SpendPath, error) {
+
+	if len(preimage) != 32 {
+		return nil, fmt.Errorf(
+			"claim preimage must be 32 bytes, got %d",
+			len(preimage),
+		)
+	}
 
 	info, err := p.ClaimSpendInfo()
 	if err != nil {
@@ -384,9 +391,13 @@ func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
 }
 
 // OrderedNodes returns the AST nodes in canonical leaf order,
-// matching the Leaves slice indices.
+// matching the Leaves slice indices. The returned slice is a shallow
+// copy to prevent callers from mutating the policy's internal mapping.
 func (p *VHTLCPolicy) OrderedNodes() []Node {
-	return p.orderedNodes
+	out := make([]Node, len(p.orderedNodes))
+	copy(out, p.orderedNodes)
+
+	return out
 }
 
 // PkScript returns the P2TR pkScript for the vHTLC output.
@@ -424,15 +435,6 @@ func (opts *VHTLCOpts) validate() error {
 	}
 
 	return nil
-}
-
-// Hash160 computes RIPEMD160(SHA256(data)).
-func Hash160(data []byte) []byte {
-	sha := sha256.Sum256(data)
-	ripemd := ripemd160.New() //nolint:gosec
-	ripemd.Write(sha[:])
-
-	return ripemd.Sum(nil)
 }
 
 // sha256Condition builds the canonical script prefix for

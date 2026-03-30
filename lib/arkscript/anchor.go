@@ -19,10 +19,14 @@ var (
 	}
 )
 
-// AnchorOutput returns a zero value P2A output.
+// AnchorOutput returns a zero value P2A output. The returned PkScript is
+// a defensive copy so callers cannot mutate the package-level global.
 func AnchorOutput() *wire.TxOut {
+	script := make([]byte, len(AnchorPkScript))
+	copy(script, AnchorPkScript)
+
 	return &wire.TxOut{
-		PkScript: AnchorPkScript,
+		PkScript: script,
 		Value:    0,
 	}
 }

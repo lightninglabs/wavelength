@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
+	"sort"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
@@ -202,6 +204,7 @@ func (p *PolicyTemplate) Encode() ([]byte, error) {
 }
 
 // ParticipantKeys returns the unique public keys referenced by the policy.
+// The returned slice is sorted by x-only key bytes for deterministic output.
 func (p *PolicyTemplate) ParticipantKeys() []*btcec.PublicKey {
 	if p == nil {
 		return nil
@@ -219,6 +222,13 @@ func (p *PolicyTemplate) ParticipantKeys() []*btcec.PublicKey {
 	for _, key := range unique {
 		keys = append(keys, key)
 	}
+
+	sort.Slice(keys, func(i, j int) bool {
+		return bytes.Compare(
+			schnorr.SerializePubKey(keys[i]),
+			schnorr.SerializePubKey(keys[j]),
+		) < 0
+	})
 
 	return keys
 }
@@ -404,6 +414,16 @@ func decodeNodePayload(r *bytes.Reader, kind nodeKind) (Node, error) {
 			return nil, fmt.Errorf("multisig must contain keys")
 		}
 
+		// Sanity check: Ark multisig nodes have a small number
+		// of keys (typically 1-3).
+		const maxMultisigKeys = 64
+		if keyCount > maxMultisigKeys {
+			return nil, fmt.Errorf(
+				"multisig key count %d exceeds maximum %d",
+				keyCount, maxMultisigKeys,
+			)
+		}
+
 		keys := make([]*btcec.PublicKey, 0, keyCount)
 		for i := uint64(0); i < keyCount; i++ {
 			keyBytes := make([]byte, schnorr.PubKeyBytesLen)
@@ -432,6 +452,12 @@ func decodeNodePayload(r *bytes.Reader, kind nodeKind) (Node, error) {
 			return nil, err
 		}
 
+		if len(predicate) == 0 {
+			return nil, fmt.Errorf(
+				"condition predicate must not be empty",
+			)
+		}
+
 		childBytes, err := readVarBytes(r, "condition child")
 		if err != nil {
 			return nil, err
@@ -457,6 +483,12 @@ func decodeLockedNode(r *bytes.Reader) (Node, error) {
 	lock, err := wire.ReadVarInt(r, 0)
 	if err != nil {
 		return nil, err
+	}
+
+	if lock > math.MaxUint32 {
+		return nil, fmt.Errorf(
+			"csv lock value %d exceeds uint32 max", lock,
+		)
 	}
 
 	childBytes, err := readVarBytes(r, "locked child")

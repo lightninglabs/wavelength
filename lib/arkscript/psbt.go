@@ -40,8 +40,22 @@ type EncodedLeaf struct {
 	Script []byte
 }
 
-// EncodeTapTree serializes a compiled policy's leaves into the PSBT tap tree
-// encoding format specified in the RFC:
+// maxTapTreeLeaves is the sanity upper bound for leaf counts in the
+// Ark-specific tap tree encoding. Ark policies use at most ~10 leaves.
+const maxTapTreeLeaves = 256
+
+// maxConditionCount is the sanity upper bound for condition witness
+// items in a spend path.
+const maxConditionCount = 64
+
+// maxPreimageLen is the maximum preimage length accepted by both
+// encode and decode for condition witnesses.
+const maxPreimageLen = 520
+
+// EncodeTapTree serializes a compiled policy's leaves into an
+// Ark-specific tap tree encoding. This is NOT the BIP-371
+// PSBT_OUT_TAP_TREE format (which uses depth-first tuples without a
+// leading count). The format is:
 // - leaf count (compact size uint)
 // - for each leaf:
 //   - depth (1 byte)
@@ -132,6 +146,13 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 		return nil, fmt.Errorf("psbt: zero leaves in tap tree")
 	}
 
+	if leafCount > maxTapTreeLeaves {
+		return nil, fmt.Errorf(
+			"psbt: leaf count %d exceeds maximum %d",
+			leafCount, maxTapTreeLeaves,
+		)
+	}
+
 	leaves := make([]EncodedLeaf, leafCount)
 
 	for i := uint64(0); i < leafCount; i++ {
@@ -190,7 +211,15 @@ func DecodeTapTree(data []byte) ([]EncodedLeaf, error) {
 
 // EncodeConditionWitness serializes a hashlock preimage for PSBT storage.
 // Format: standard Bitcoin witness serialization (length + data).
+// The preimage must not exceed maxPreimageLen (520) bytes.
 func EncodeConditionWitness(preimage []byte) ([]byte, error) {
+	if len(preimage) > maxPreimageLen {
+		return nil, fmt.Errorf(
+			"psbt: preimage length %d exceeds maximum %d",
+			len(preimage), maxPreimageLen,
+		)
+	}
+
 	var buf bytes.Buffer
 
 	// Write preimage length + data.
@@ -207,9 +236,18 @@ func EncodeConditionWitness(preimage []byte) ([]byte, error) {
 func DecodeConditionWitness(data []byte) ([]byte, error) {
 	r := bytes.NewReader(data)
 
-	preimage, err := wire.ReadVarBytes(r, 0, 520, "preimage")
+	preimage, err := wire.ReadVarBytes(
+		r, 0, maxPreimageLen, "preimage",
+	)
 	if err != nil {
 		return nil, fmt.Errorf("psbt: failed to read preimage: %w", err)
+	}
+
+	if r.Len() != 0 {
+		return nil, fmt.Errorf(
+			"psbt: unexpected %d trailing bytes in "+
+				"condition witness", r.Len(),
+		)
 	}
 
 	return preimage, nil
@@ -324,6 +362,8 @@ func writeCompactSize(w *bytes.Buffer, val uint64) error {
 }
 
 // readCompactSize reads a compact size integer from the reader.
+// Non-canonical encodings (e.g., 0xfd for values < 0xfd) are rejected
+// so that there is exactly one valid byte representation per value.
 func readCompactSize(r io.ByteReader) (uint64, error) {
 	discriminant, err := r.ReadByte()
 	if err != nil {
@@ -340,7 +380,15 @@ func readCompactSize(r io.ByteReader) (uint64, error) {
 			}
 		}
 
-		return binary.LittleEndian.Uint64(buf[:]), nil
+		val := binary.LittleEndian.Uint64(buf[:])
+		if val <= 0xffffffff {
+			return 0, fmt.Errorf(
+				"non-canonical compact size: 0xff for %d",
+				val,
+			)
+		}
+
+		return val, nil
 
 	case 0xfe:
 		var buf [4]byte
@@ -351,7 +399,15 @@ func readCompactSize(r io.ByteReader) (uint64, error) {
 			}
 		}
 
-		return uint64(binary.LittleEndian.Uint32(buf[:])), nil
+		val := uint64(binary.LittleEndian.Uint32(buf[:]))
+		if val <= 0xffff {
+			return 0, fmt.Errorf(
+				"non-canonical compact size: 0xfe for %d",
+				val,
+			)
+		}
+
+		return val, nil
 
 	case 0xfd:
 		var buf [2]byte
@@ -362,7 +418,15 @@ func readCompactSize(r io.ByteReader) (uint64, error) {
 			}
 		}
 
-		return uint64(binary.LittleEndian.Uint16(buf[:])), nil
+		val := uint64(binary.LittleEndian.Uint16(buf[:]))
+		if val < 0xfd {
+			return 0, fmt.Errorf(
+				"non-canonical compact size: 0xfd for %d",
+				val,
+			)
+		}
+
+		return val, nil
 
 	default:
 		return uint64(discriminant), nil
