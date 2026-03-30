@@ -222,16 +222,6 @@ func TestComposeWithSiblingRootPreservesWitnessScript(t *testing.T) {
 			"leaf %d witness script should be preserved",
 			i,
 		)
-
-		// Tx context should also be preserved.
-		require.Equal(t,
-			originalInfo.RequiredSequence,
-			composedInfo.RequiredSequence,
-			"leaf %d RequiredSequence should be preserved", i)
-		require.Equal(t,
-			originalInfo.RequiredLockTime,
-			composedInfo.RequiredLockTime,
-			"leaf %d RequiredLockTime should be preserved", i)
 	}
 }
 

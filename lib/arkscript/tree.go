@@ -73,10 +73,8 @@ func (p *CompiledPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 	leaf := &p.Leaves[leafIndex]
 
 	return &SpendInfo{
-		WitnessScript:    bytes.Clone(leaf.Leaf.Script),
-		ControlBlock:     controlBlock,
-		RequiredSequence: 0xffffffff, // Default; caller may override.
-		RequiredLockTime: 0,
+		WitnessScript: bytes.Clone(leaf.Leaf.Script),
+		ControlBlock:  controlBlock,
 	}, nil
 }
 
@@ -116,30 +114,22 @@ func (p *CompiledPolicy) buildControlBlock(leafIndex int) ([]byte, error) {
 	return controlBlock, nil
 }
 
-// SpendInfo contains all the information needed to spend a specific leaf in
-// an Ark policy.
+// SpendInfo contains the witness-level data needed to spend a specific
+// leaf in an Ark policy: the tapscript and its BIP-341 control block.
+// Transaction-level context (nSequence, nLockTime) is NOT included here
+// — that is derived from the AST node by the spending tx builder or
+// carried on SpendPath for durable artifacts.
 type SpendInfo struct {
 	// WitnessScript is the tapscript leaf script bytes.
 	WitnessScript []byte
 
 	// ControlBlock is the BIP-341 control block for script-path spending.
 	ControlBlock []byte
-
-	// RequiredSequence is the BIP-68 sequence value required for this leaf.
-	// Policy-specific builders may override this from the default max
-	// sequence when the selected leaf requires CSV or non-final sequence.
-	RequiredSequence uint32
-
-	// RequiredLockTime is the nLockTime value required for this leaf.
-	// Policy-specific builders may override this when the selected leaf
-	// requires an absolute locktime.
-	RequiredLockTime uint32
 }
 
-// SpendInfoForNode derives the spend information for the leaf
-// corresponding to the given AST node. The canonical leaf index is
-// resolved via ScriptIndex, and tx-context (RequiredSequence,
-// RequiredLockTime) is derived from the AST.
+// SpendInfoForNode returns the witness-level spend info (script +
+// control block) for the leaf corresponding to the given AST node.
+// The canonical leaf index is resolved via ScriptIndex.
 func (p *CompiledPolicy) SpendInfoForNode(
 	node Node) (*SpendInfo, error) {
 
@@ -153,21 +143,33 @@ func (p *CompiledPolicy) SpendInfoForNode(
 		return nil, fmt.Errorf("node script not found in tree")
 	}
 
-	info, err := p.SpendInfo(idx)
+	return p.SpendInfo(idx)
+}
+
+// SpendPathForNode returns a full SpendPath for the leaf corresponding
+// to the given AST node, including tx-context (sequence/locktime)
+// derived from the AST and any provided condition witnesses.
+func (p *CompiledPolicy) SpendPathForNode(
+	node Node, conditions [][]byte) (*SpendPath, error) {
+
+	info, err := p.SpendInfoForNode(node)
 	if err != nil {
 		return nil, err
 	}
 
-	info.RequiredSequence = DeriveSequence(node)
-	info.RequiredLockTime = ExtractAbsoluteLockTime(node)
+	seq := DeriveSequence(node)
+	lock := ExtractAbsoluteLockTime(node)
 
-	if info.RequiredLockTime != 0 &&
-		info.RequiredSequence == 0xffffffff {
-
-		info.RequiredSequence = 0xfffffffe
+	if lock != 0 && seq == 0xffffffff {
+		seq = 0xfffffffe
 	}
 
-	return info, nil
+	return &SpendPath{
+		SpendInfo:        info,
+		RequiredSequence: seq,
+		RequiredLockTime: lock,
+		Conditions:       cloneWitnessItems(conditions),
+	}, nil
 }
 
 // ScriptIndex returns the canonical leaf index for the given script,

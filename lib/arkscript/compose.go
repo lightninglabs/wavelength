@@ -80,10 +80,8 @@ func (c *ComposedPolicy) SpendInfo(leafIndex int) (*SpendInfo, error) {
 	newControlBlock = append(newControlBlock, c.ExternalRoot[:]...)
 
 	return &SpendInfo{
-		WitnessScript:    info.WitnessScript,
-		ControlBlock:     newControlBlock,
-		RequiredSequence: info.RequiredSequence,
-		RequiredLockTime: info.RequiredLockTime,
+		WitnessScript: info.WitnessScript,
+		ControlBlock:  newControlBlock,
 	}, nil
 }
 

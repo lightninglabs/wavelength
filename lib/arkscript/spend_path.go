@@ -18,11 +18,19 @@ const (
 )
 
 // SpendPath bundles everything needed to spend a custom VTXO leaf
-// through OOR. It replaces the separate SpendInfo + ConditionWitness
-// fields that callers previously had to manage independently.
+// through OOR. It includes witness data (script + control block),
+// tx-context (sequence/locktime), and any condition witnesses.
 type SpendPath struct {
 	// SpendInfo is the compiled leaf script + control block.
 	*SpendInfo
+
+	// RequiredSequence is the BIP-68 sequence value required for
+	// this leaf (e.g., CSV delay). 0xffffffff means no constraint.
+	RequiredSequence uint32
+
+	// RequiredLockTime is the nLockTime value required for this
+	// leaf (e.g., CLTV locktime). 0 means no constraint.
+	RequiredLockTime uint32
 
 	// Conditions holds extra witness elements needed by the spend
 	// script beyond signatures (e.g., preimage for hashlock).
@@ -181,12 +189,12 @@ func DecodeSpendPath(raw []byte) (*SpendPath, error) {
 
 	path := &SpendPath{
 		SpendInfo: &SpendInfo{
-			WitnessScript:    witnessScript,
-			ControlBlock:     controlBlock,
-			RequiredSequence: uint32(requiredSequence),
-			RequiredLockTime: uint32(requiredLockTime),
+			WitnessScript: witnessScript,
+			ControlBlock:  controlBlock,
 		},
-		Conditions: conditions,
+		RequiredSequence: uint32(requiredSequence),
+		RequiredLockTime: uint32(requiredLockTime),
+		Conditions:       conditions,
 	}
 
 	if err := path.Validate(); err != nil {

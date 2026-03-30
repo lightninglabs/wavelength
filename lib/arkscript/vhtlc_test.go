@@ -128,65 +128,82 @@ func TestVHTLCNamedAccessors(t *testing.T) {
 	policy, err := NewVHTLCPolicy(opts)
 	require.NoError(t, err)
 
-	// Each accessor should return valid SpendInfo with correct
-	// tx-context.
-	accessors := []struct {
-		name     string
-		fn       func() (*SpendInfo, error)
-		wantSeq  uint32
-		wantLock uint32
+	// Each SpendInfo accessor should return valid witness data.
+	infoAccessors := []struct {
+		name string
+		fn   func() (*SpendInfo, error)
 	}{
+		{"Claim", policy.ClaimSpendInfo},
+		{"Refund", policy.RefundSpendInfo},
 		{
-			name:     "Claim",
-			fn:       policy.ClaimSpendInfo,
-			wantSeq:  0xffffffff,
-			wantLock: 0,
+			"RefundWithoutReceiver",
+			policy.RefundWithoutReceiverSpendInfo,
 		},
+		{"UnilateralClaim", policy.UnilateralClaimSpendInfo},
+		{"UnilateralRefund", policy.UnilateralRefundSpendInfo},
 		{
-			name:     "Refund",
-			fn:       policy.RefundSpendInfo,
-			wantSeq:  0xffffffff,
-			wantLock: 0,
-		},
-		{
-			name:     "RefundWithoutReceiver",
-			fn:       policy.RefundWithoutReceiverSpendInfo,
-			wantSeq:  0xfffffffe,
-			wantLock: opts.RefundLocktime,
-		},
-		{
-			name:     "UnilateralClaim",
-			fn:       policy.UnilateralClaimSpendInfo,
-			wantSeq:  opts.UnilateralClaimDelay,
-			wantLock: 0,
-		},
-		{
-			name:     "UnilateralRefund",
-			fn:       policy.UnilateralRefundSpendInfo,
-			wantSeq:  opts.UnilateralRefundDelay,
-			wantLock: 0,
-		},
-		{
-			name: "UnilateralRefundWithoutReceiver",
-			fn: policy.
-				UnilateralRefundWithoutReceiverSpendInfo,
-			wantSeq: opts.
-				UnilateralRefundWithoutReceiverDelay,
-			wantLock: 0,
+			"UnilateralRefundWithoutReceiver",
+			policy.UnilateralRefundWithoutReceiverSpendInfo,
 		},
 	}
 
-	for _, a := range accessors {
+	for _, a := range infoAccessors {
 		t.Run(a.name, func(t *testing.T) {
 			info, err := a.fn()
 			require.NoError(t, err)
 			require.NotEmpty(t, info.WitnessScript)
 			require.NotEmpty(t, info.ControlBlock)
+		})
+	}
+
+	// Tx-context lives on SpendPath, derived via SpendPathForNode.
+	pathAccessors := []struct {
+		name     string
+		node     Node
+		wantSeq  uint32
+		wantLock uint32
+	}{
+		{
+			"Claim", policy.ClaimClosure,
+			0xffffffff, 0,
+		},
+		{
+			"Refund", policy.RefundClosure,
+			0xffffffff, 0,
+		},
+		{
+			"RefundWithoutReceiver",
+			policy.RefundWithoutReceiverClosure,
+			0xfffffffe, opts.RefundLocktime,
+		},
+		{
+			"UnilateralClaim",
+			policy.UnilateralClaimClosure,
+			opts.UnilateralClaimDelay, 0,
+		},
+		{
+			"UnilateralRefund",
+			policy.UnilateralRefundClosure,
+			opts.UnilateralRefundDelay, 0,
+		},
+		{
+			"UnilateralRefundWithoutReceiver",
+			policy.UnilateralRefundWithoutReceiverClosure,
+			opts.UnilateralRefundWithoutReceiverDelay, 0,
+		},
+	}
+
+	for _, a := range pathAccessors {
+		t.Run(a.name+"_tx_context", func(t *testing.T) {
+			path, err := policy.CompiledPolicy.SpendPathForNode(
+				a.node, nil,
+			)
+			require.NoError(t, err)
 			require.Equal(t, a.wantSeq,
-				info.RequiredSequence,
+				path.RequiredSequence,
 				"RequiredSequence mismatch")
 			require.Equal(t, a.wantLock,
-				info.RequiredLockTime,
+				path.RequiredLockTime,
 				"RequiredLockTime mismatch")
 		})
 	}

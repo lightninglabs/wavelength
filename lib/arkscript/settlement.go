@@ -205,7 +205,7 @@ func ExtractAbsoluteLockTime(node Node) uint32 {
 	}
 }
 
-// spendPathForLeaf derives a spend path for a compiled leaf and applies any
+// spendPathForLeaf derives a spend path for a compiled leaf and applies
 // tx-context requirements inferred from the AST node.
 func spendPathForLeaf(policy *CompiledPolicy, leafIndex int,
 	node Node, conditions [][]byte) (*SpendPath, error) {
@@ -215,19 +215,20 @@ func spendPathForLeaf(policy *CompiledPolicy, leafIndex int,
 		return nil, err
 	}
 
-	info.RequiredSequence = DeriveSequence(node)
-	info.RequiredLockTime = ExtractAbsoluteLockTime(node)
-	if info.RequiredLockTime != 0 &&
-		info.RequiredSequence == 0xffffffff {
+	seq := DeriveSequence(node)
+	lock := ExtractAbsoluteLockTime(node)
 
-		// CLTV requires a non-final sequence even when the leaf does
-		// not carry an Ark-level CSV delay.
-		info.RequiredSequence = 0xfffffffe
+	if lock != 0 && seq == 0xffffffff {
+		// CLTV requires a non-final sequence even when the leaf
+		// does not carry an Ark-level CSV delay.
+		seq = 0xfffffffe
 	}
 
 	return &SpendPath{
-		SpendInfo:  info,
-		Conditions: cloneWitnessItems(conditions),
+		SpendInfo:        info,
+		RequiredSequence: seq,
+		RequiredLockTime: lock,
+		Conditions:       cloneWitnessItems(conditions),
 	}, nil
 }
 

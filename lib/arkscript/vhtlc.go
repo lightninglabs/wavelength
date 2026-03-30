@@ -243,25 +243,16 @@ func (p *VHTLCPolicy) ClaimPath(
 		)
 	}
 
-	info, err := p.ClaimSpendInfo()
-	if err != nil {
-		return nil, err
-	}
-
-	return &SpendPath{
-		SpendInfo:  info,
-		Conditions: [][]byte{preimage},
-	}, nil
+	return p.CompiledPolicy.SpendPathForNode(
+		p.ClaimClosure, [][]byte{preimage},
+	)
 }
 
 // RefundPath returns a SpendPath for the cooperative refund.
 func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
-	info, err := p.RefundSpendInfo()
-	if err != nil {
-		return nil, err
-	}
-
-	return &SpendPath{SpendInfo: info}, nil
+	return p.CompiledPolicy.SpendPathForNode(
+		p.RefundClosure, nil,
+	)
 }
 
 // RefundWithoutReceiverPath returns a SpendPath for the CLTV-gated
@@ -269,12 +260,9 @@ func (p *VHTLCPolicy) RefundPath() (*SpendPath, error) {
 func (p *VHTLCPolicy) RefundWithoutReceiverPath() (*SpendPath,
 	error) {
 
-	info, err := p.RefundWithoutReceiverSpendInfo()
-	if err != nil {
-		return nil, err
-	}
-
-	return &SpendPath{SpendInfo: info}, nil
+	return p.CompiledPolicy.SpendPathForNode(
+		p.RefundWithoutReceiverClosure, nil,
+	)
 }
 
 // PkScript returns the P2TR pkScript for the vHTLC output.

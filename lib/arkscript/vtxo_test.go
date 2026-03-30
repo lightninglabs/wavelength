@@ -175,19 +175,24 @@ func TestVTXOSpendInfoTxContext(t *testing.T) {
 	t.Run("collab path has no timelock requirements", func(t *testing.T) {
 		t.Parallel()
 
-		info, err := policy.CollabSpendInfo()
+		path, err := policy.CompiledPolicy.SpendPathForNode(
+			policy.collabNode, nil,
+		)
 		require.NoError(t, err)
-		require.Equal(t, uint32(0xffffffff), info.RequiredSequence)
-		require.Equal(t, uint32(0), info.RequiredLockTime)
+		require.Equal(t, uint32(0xffffffff),
+			path.RequiredSequence)
+		require.Equal(t, uint32(0), path.RequiredLockTime)
 	})
 
 	t.Run("exit path requires CSV delay", func(t *testing.T) {
 		t.Parallel()
 
-		info, err := policy.ExitSpendInfo()
+		path, err := policy.CompiledPolicy.SpendPathForNode(
+			policy.exitNode, nil,
+		)
 		require.NoError(t, err)
-		require.Equal(t, exitDelay, info.RequiredSequence)
-		require.Equal(t, uint32(0), info.RequiredLockTime)
+		require.Equal(t, exitDelay, path.RequiredSequence)
+		require.Equal(t, uint32(0), path.RequiredLockTime)
 	})
 }
 
