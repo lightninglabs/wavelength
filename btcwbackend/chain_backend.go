@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -46,6 +47,18 @@ type ChainBackend struct {
 
 	// Log is an optional logger for this backend.
 	Log fn.Option[btclog.Logger]
+
+	// startOnce ensures Start() logic runs exactly once, even if
+	// called from both Wallet.Start() and daemon wiring.
+	startOnce sync.Once
+
+	// startErr caches the error from the first Start() call so
+	// subsequent calls return the same result.
+	startErr error
+
+	// stopOnce ensures Stop() logic runs exactly once, preventing
+	// double-close panics on the hint DB and notifier.
+	stopOnce sync.Once
 }
 
 // NewChainBackend creates a new neutrino-backed chain backend. The
@@ -110,63 +123,78 @@ func (b *ChainBackend) logger(ctx context.Context) btclog.Logger {
 // Start initializes the chain backend by starting the notifier and
 // fee estimator.
 func (b *ChainBackend) Start() error {
-	b.logger(context.TODO()).InfoS(
-		context.TODO(),
-		"Starting neutrino chain backend",
-	)
+	b.startOnce.Do(func() {
+		b.logger(context.TODO()).InfoS(
+			context.TODO(),
+			"Starting neutrino chain backend",
+		)
 
-	if err := b.notifier.Start(); err != nil {
-		return fmt.Errorf("start notifier: %w", err)
-	}
+		if err := b.notifier.Start(); err != nil {
+			b.startErr = fmt.Errorf(
+				"start notifier: %w", err,
+			)
 
-	if err := b.feeEstimator.Start(); err != nil {
-		_ = b.notifier.Stop()
+			return
+		}
 
-		return fmt.Errorf("start fee estimator: %w", err)
-	}
+		if err := b.feeEstimator.Start(); err != nil {
+			_ = b.notifier.Stop()
+			b.startErr = fmt.Errorf(
+				"start fee estimator: %w", err,
+			)
 
-	b.logger(context.TODO()).InfoS(
-		context.TODO(),
-		"Neutrino chain backend started",
-	)
+			return
+		}
 
-	return nil
+		b.logger(context.TODO()).InfoS(
+			context.TODO(),
+			"Neutrino chain backend started",
+		)
+	})
+
+	return b.startErr
 }
 
 // Stop shuts down the chain backend by stopping the notifier, fee
 // estimator, and closing the hint cache database.
 func (b *ChainBackend) Stop() error {
-	b.logger(context.TODO()).InfoS(
-		context.TODO(),
-		"Stopping neutrino chain backend",
-	)
+	var stopErr error
 
-	var errs []error
+	b.stopOnce.Do(func() {
+		b.logger(context.TODO()).InfoS(
+			context.TODO(),
+			"Stopping neutrino chain backend",
+		)
 
-	if err := b.notifier.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf(
-			"stop notifier: %w", err,
-		))
-	}
+		var errs []error
 
-	if err := b.feeEstimator.Stop(); err != nil {
-		errs = append(errs, fmt.Errorf(
-			"stop fee estimator: %w", err,
-		))
-	}
+		if err := b.notifier.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"stop notifier: %w", err,
+			))
+		}
 
-	if err := b.hintDB.Close(); err != nil {
-		errs = append(errs, fmt.Errorf(
-			"close hint db: %w", err,
-		))
-	}
+		if err := b.feeEstimator.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"stop fee estimator: %w", err,
+			))
+		}
 
-	b.logger(context.TODO()).InfoS(
-		context.TODO(),
-		"Neutrino chain backend stopped",
-	)
+		if err := b.hintDB.Close(); err != nil {
+			errs = append(errs, fmt.Errorf(
+				"close hint db: %w", err,
+			))
+		}
 
-	return errors.Join(errs...)
+		b.logger(context.TODO()).InfoS(
+			context.TODO(),
+			"Neutrino chain backend stopped",
+		)
+
+		stopErr = errors.Join(errs...)
+	})
+
+	return stopErr
 }
 
 // EstimateFee returns the estimated fee rate in satoshis per vbyte
@@ -297,7 +325,12 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 				Block:       lndConf.Block,
 			}
 
-			confChan <- conf
+			select {
+			case confChan <- conf:
+
+			case <-notifyCtx.Done():
+				return
+			}
 
 		case <-notifyCtx.Done():
 			return
@@ -353,7 +386,12 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 				SpendingHeight:    lndSpend.SpendingHeight,
 			}
 
-			spendChan <- spend
+			select {
+			case spendChan <- spend:
+
+			case <-notifyCtx.Done():
+				return
+			}
 
 		case <-notifyCtx.Done():
 			return
@@ -383,10 +421,16 @@ func (b *ChainBackend) RegisterBlocks(
 		return nil, fmt.Errorf("register blocks: %w", err)
 	}
 
+	// Use an independent context so the forwarding goroutine
+	// outlives the caller's context and can be cancelled via
+	// the returned Cancel function.
+	notifyCtx, cancel := context.WithCancel(context.Background())
+
 	epochChan := make(chan *chainsource.BlockEpoch, 10)
 
 	go func() {
 		defer close(epochChan)
+		defer cancel()
 		defer event.Cancel()
 
 		for {
@@ -415,11 +459,11 @@ func (b *ChainBackend) RegisterBlocks(
 				select {
 				case epochChan <- epoch:
 
-				case <-ctx.Done():
+				case <-notifyCtx.Done():
 					return
 				}
 
-			case <-ctx.Done():
+			case <-notifyCtx.Done():
 				return
 			}
 		}
@@ -427,7 +471,10 @@ func (b *ChainBackend) RegisterBlocks(
 
 	return &chainsource.BlockRegistration{
 		Epochs: epochChan,
-		Cancel: event.Cancel,
+		Cancel: func() {
+			cancel()
+			event.Cancel()
+		},
 	}, nil
 }
 

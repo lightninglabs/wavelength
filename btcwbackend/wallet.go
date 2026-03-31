@@ -185,7 +185,8 @@ func (w *Wallet) Start() error {
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
 
-	// Start the chainsource ChainBackend used by the actor system.
+	// Start the chain backend. This is idempotent (sync.Once) so it
+	// is safe even if the daemon's startBtcwallet also calls Start().
 	if err := w.chainBackend.Start(); err != nil {
 		return fmt.Errorf("start chain backend: %w", err)
 	}
@@ -201,8 +202,14 @@ func (w *Wallet) Stop() {
 
 	w.logger(ctx).InfoS(ctx, "Stopping neutrino-backed wallet")
 
+	// Note: chainBackend is NOT stopped here — the daemon's
+	// server.go defer owns that lifecycle. The ChainBackend.Stop()
+	// is idempotent (sync.Once) so it is safe even if called from
+	// both Wallet and server.
+	//
+	// Stop order: btcwallet (depends on neutrino chain client) must
+	// stop before neutrino service.
 	_ = w.btcWallet.Stop()
-	_ = w.chainBackend.Stop()
 	_ = w.neutrinoSvc.Stop()
 
 	w.logger(ctx).InfoS(ctx, "Neutrino-backed wallet stopped")

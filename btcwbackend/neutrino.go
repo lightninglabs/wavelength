@@ -58,11 +58,18 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 
 	dbPath := filepath.Join(dataDir, neutrinoDBName)
 
-	db, err := walletdb.Create(
-		"bdb", dbPath, true, defaultDBTimeout,
-	)
+	// Try to open an existing DB first (daemon restart), falling
+	// back to creating a new one (first run).
+	db, err := walletdb.Open("bdb", dbPath, true, defaultDBTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("create neutrino db: %w", err)
+		db, err = walletdb.Create(
+			"bdb", dbPath, true, defaultDBTimeout,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"create neutrino db: %w", err,
+			)
+		}
 	}
 
 	blockCache := blockcache.NewBlockCache(defaultBlockCacheSize)
