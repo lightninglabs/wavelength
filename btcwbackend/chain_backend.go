@@ -1,0 +1,434 @@
+package btcwbackend
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/neutrino"
+	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
+	"github.com/lightningnetwork/lnd/channeldb"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+	"github.com/lightningnetwork/lnd/kvdb"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+)
+
+// ChainBackend implements chainsource.ChainBackend using neutrino's
+// native chain notification system and a WebAPI-based fee estimator.
+// This provides event-driven confirmation, spend, and block
+// notifications without polling — neutrino's compact block filters
+// enable efficient client-side filtering.
+type ChainBackend struct {
+	// neutrinoCS is the running neutrino chain service used for
+	// broadcasting transactions and querying the best block.
+	neutrinoCS *neutrino.ChainService
+
+	// notifier provides chain notification services backed by
+	// neutrino's compact block filter scanning.
+	notifier *neutrinonotify.NeutrinoNotifier
+
+	// feeEstimator provides fee estimation from a web API since
+	// neutrino has no mempool visibility.
+	feeEstimator *chainfee.WebAPIEstimator
+
+	// hintDB is the kvdb backend for the height hint cache. We keep
+	// a reference so we can close it on Stop().
+	hintDB kvdb.Backend
+
+	// Log is an optional logger for this backend.
+	Log fn.Option[btclog.Logger]
+}
+
+// NewChainBackend creates a new neutrino-backed chain backend. The
+// neutrino service must already be started before calling this.
+func NewChainBackend(svc *NeutrinoService, feeURL string,
+	feeMinTimeout, feeMaxTimeout time.Duration,
+	hintDBPath string) (*ChainBackend, error) {
+
+	// Open the height hint cache database.
+	hintDB, err := kvdb.Open(
+		kvdb.BoltBackendName, hintDBPath, true,
+		defaultDBTimeout, kvdb.DefaultDBTimeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("open hint cache db: %w", err)
+	}
+
+	hintCache, err := channeldb.NewHeightHintCache(
+		channeldb.CacheConfig{QueryDisable: false}, hintDB,
+	)
+	if err != nil {
+		_ = hintDB.Close()
+
+		return nil, fmt.Errorf("create height hint cache: %w", err)
+	}
+
+	// Create the NeutrinoNotifier for event-driven chain
+	// notifications.
+	notifier := neutrinonotify.New(
+		svc.ChainService(), hintCache, hintCache,
+		svc.BlockCache(),
+	)
+
+	// Create the fee estimator. For neutrino, we must use a web API
+	// since there is no mempool access.
+	feeSource := chainfee.SparseConfFeeSource{URL: feeURL}
+	feeEstimator, err := chainfee.NewWebAPIEstimator(
+		feeSource, false, feeMinTimeout, feeMaxTimeout,
+	)
+	if err != nil {
+		_ = hintDB.Close()
+
+		return nil, fmt.Errorf("create fee estimator: %w", err)
+	}
+
+	return &ChainBackend{
+		neutrinoCS:   svc.ChainService(),
+		notifier:     notifier,
+		feeEstimator: feeEstimator,
+		hintDB:       hintDB,
+	}, nil
+}
+
+// logger returns the configured logger, falling back to the context
+// logger.
+func (b *ChainBackend) logger(ctx context.Context) btclog.Logger {
+	return b.Log.UnwrapOr(build.LoggerFromContext(ctx))
+}
+
+// Start initializes the chain backend by starting the notifier and
+// fee estimator.
+func (b *ChainBackend) Start() error {
+	b.logger(context.TODO()).InfoS(
+		context.TODO(),
+		"Starting neutrino chain backend",
+	)
+
+	if err := b.notifier.Start(); err != nil {
+		return fmt.Errorf("start notifier: %w", err)
+	}
+
+	if err := b.feeEstimator.Start(); err != nil {
+		_ = b.notifier.Stop()
+
+		return fmt.Errorf("start fee estimator: %w", err)
+	}
+
+	b.logger(context.TODO()).InfoS(
+		context.TODO(),
+		"Neutrino chain backend started",
+	)
+
+	return nil
+}
+
+// Stop shuts down the chain backend by stopping the notifier, fee
+// estimator, and closing the hint cache database.
+func (b *ChainBackend) Stop() error {
+	b.logger(context.TODO()).InfoS(
+		context.TODO(),
+		"Stopping neutrino chain backend",
+	)
+
+	var errs []error
+
+	if err := b.notifier.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf(
+			"stop notifier: %w", err,
+		))
+	}
+
+	if err := b.feeEstimator.Stop(); err != nil {
+		errs = append(errs, fmt.Errorf(
+			"stop fee estimator: %w", err,
+		))
+	}
+
+	if err := b.hintDB.Close(); err != nil {
+		errs = append(errs, fmt.Errorf(
+			"close hint db: %w", err,
+		))
+	}
+
+	b.logger(context.TODO()).InfoS(
+		context.TODO(),
+		"Neutrino chain backend stopped",
+	)
+
+	return errors.Join(errs...)
+}
+
+// EstimateFee returns the estimated fee rate in satoshis per vbyte
+// for the given confirmation target. The fee estimator queries a web
+// API since neutrino has no mempool visibility.
+func (b *ChainBackend) EstimateFee(ctx context.Context,
+	targetConf uint32) (btcutil.Amount, error) {
+
+	b.logger(ctx).DebugS(ctx, "Estimating fee rate",
+		slog.Int("target_confs", int(targetConf)))
+
+	feePerKw, err := b.feeEstimator.EstimateFeePerKW(targetConf)
+	if err != nil {
+		return 0, fmt.Errorf("estimate fee: %w", err)
+	}
+
+	// Convert from sat/kw to sat/vbyte.
+	satPerVByte := feePerKw.FeePerVByte()
+
+	b.logger(ctx).DebugS(ctx, "Fee rate estimated",
+		slog.Int("target_confs", int(targetConf)),
+		slog.Int64("sat_per_vbyte", int64(satPerVByte)))
+
+	return btcutil.Amount(satPerVByte), nil
+}
+
+// BestBlock returns the current best block height and hash from
+// neutrino's view of the blockchain.
+func (b *ChainBackend) BestBlock(ctx context.Context) (int32,
+	chainhash.Hash, error) {
+
+	b.logger(ctx).DebugS(ctx, "Querying best block from neutrino")
+
+	bs, err := b.neutrinoCS.BestBlock()
+	if err != nil {
+		return 0, chainhash.Hash{}, fmt.Errorf(
+			"neutrino best block: %w", err,
+		)
+	}
+
+	b.logger(ctx).InfoS(ctx, "Best block retrieved",
+		slog.Int("height", int(bs.Height)),
+		btclog.Hex("hash", bs.Hash[:]))
+
+	return bs.Height, bs.Hash, nil
+}
+
+// TestMempoolAccept is not supported by the neutrino backend since
+// neutrino does not maintain a mempool.
+func (b *ChainBackend) TestMempoolAccept(_ context.Context,
+	_ *wire.MsgTx) (bool, string, error) {
+
+	return false, "", fmt.Errorf(
+		"test mempool accept not supported by neutrino backend",
+	)
+}
+
+// BroadcastTx broadcasts a transaction to the Bitcoin P2P network
+// via neutrino's connected peers.
+func (b *ChainBackend) BroadcastTx(ctx context.Context,
+	tx *wire.MsgTx, label string) error {
+
+	txHash := tx.TxHash()
+	b.logger(ctx).InfoS(ctx, "Broadcasting transaction via neutrino",
+		slog.String("txid", txHash.String()),
+		slog.String("label", label))
+
+	if err := b.neutrinoCS.SendTransaction(tx); err != nil {
+		return fmt.Errorf("broadcast transaction: %w", err)
+	}
+
+	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
+		slog.String("txid", txHash.String()))
+
+	return nil
+}
+
+// RegisterConf registers for confirmation notifications using
+// neutrino's chain notifier. The registration returns a
+// ConfRegistration with channels for receiving confirmation events.
+func (b *ChainBackend) RegisterConf(ctx context.Context,
+	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
+	heightHint uint32,
+	includeBlock bool) (*chainsource.ConfRegistration, error) {
+
+	b.logger(ctx).DebugS(
+		ctx, "Registering for confirmation notifications",
+		slog.Int("num_confs", int(numConfs)),
+		slog.Int("height_hint", int(heightHint)),
+		slog.Bool("include_block", includeBlock),
+	)
+
+	var opts []chainntnfs.NotifierOption
+	if includeBlock {
+		opts = append(opts, chainntnfs.WithIncludeBlock())
+	}
+
+	event, err := b.notifier.RegisterConfirmationsNtfn(
+		txid, pkScript, numConfs, heightHint, opts...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register confirmation: %w", err)
+	}
+
+	// The caller context only scopes registration setup. Keep the
+	// delivery forwarder alive until the registration itself is
+	// cancelled.
+	notifyCtx, cancel := context.WithCancel(context.Background())
+
+	confChan := make(chan *chainsource.TxConfirmation, 1)
+
+	go func() {
+		defer close(confChan)
+		defer cancel()
+		defer event.Cancel()
+
+		select {
+		case lndConf, ok := <-event.Confirmed:
+			if !ok {
+				return
+			}
+
+			conf := &chainsource.TxConfirmation{
+				BlockHash:   lndConf.BlockHash,
+				BlockHeight: lndConf.BlockHeight,
+				TxIndex:     lndConf.TxIndex,
+				Tx:          lndConf.Tx,
+				Block:       lndConf.Block,
+			}
+
+			confChan <- conf
+
+		case <-notifyCtx.Done():
+			return
+		}
+	}()
+
+	return &chainsource.ConfRegistration{
+		Confirmed: confChan,
+		Cancel: func() {
+			cancel()
+			event.Cancel()
+		},
+	}, nil
+}
+
+// RegisterSpend registers for spend notifications using neutrino's
+// chain notifier.
+func (b *ChainBackend) RegisterSpend(ctx context.Context,
+	outpoint *wire.OutPoint, pkScript []byte,
+	heightHint uint32) (*chainsource.SpendRegistration, error) {
+
+	b.logger(ctx).DebugS(ctx, "Registering for spend notifications",
+		slog.String("outpoint", outpoint.String()),
+		slog.Int("height_hint", int(heightHint)))
+
+	event, err := b.notifier.RegisterSpendNtfn(
+		outpoint, pkScript, heightHint,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register spend: %w", err)
+	}
+
+	notifyCtx, cancel := context.WithCancel(context.Background())
+
+	spendChan := make(chan *chainsource.SpendDetail, 1)
+
+	go func() {
+		defer close(spendChan)
+		defer cancel()
+		defer event.Cancel()
+
+		select {
+		case lndSpend, ok := <-event.Spend:
+			if !ok {
+				return
+			}
+
+			spend := &chainsource.SpendDetail{
+				SpentOutPoint:     lndSpend.SpentOutPoint,
+				SpenderTxHash:     lndSpend.SpenderTxHash,
+				SpendingTx:        lndSpend.SpendingTx,
+				SpenderInputIndex: lndSpend.SpenderInputIndex,
+				SpendingHeight:    lndSpend.SpendingHeight,
+			}
+
+			spendChan <- spend
+
+		case <-notifyCtx.Done():
+			return
+		}
+	}()
+
+	return &chainsource.SpendRegistration{
+		Spend: spendChan,
+		Cancel: func() {
+			cancel()
+			event.Cancel()
+		},
+	}, nil
+}
+
+// RegisterBlocks registers for new block notifications using
+// neutrino's chain notifier.
+func (b *ChainBackend) RegisterBlocks(
+	ctx context.Context) (*chainsource.BlockRegistration, error) {
+
+	b.logger(ctx).InfoS(
+		ctx, "Registering for block epoch notifications",
+	)
+
+	event, err := b.notifier.RegisterBlockEpochNtfn(nil)
+	if err != nil {
+		return nil, fmt.Errorf("register blocks: %w", err)
+	}
+
+	epochChan := make(chan *chainsource.BlockEpoch, 10)
+
+	go func() {
+		defer close(epochChan)
+		defer event.Cancel()
+
+		for {
+			select {
+			case lndEpoch, ok := <-event.Epochs:
+				if !ok {
+					return
+				}
+
+				if lndEpoch.Hash == nil {
+					continue
+				}
+
+				var timestamp int64
+				if lndEpoch.BlockHeader != nil {
+					ts := lndEpoch.BlockHeader.Timestamp
+					timestamp = ts.Unix()
+				}
+
+				epoch := &chainsource.BlockEpoch{
+					Hash:      *lndEpoch.Hash,
+					Height:    lndEpoch.Height,
+					Timestamp: timestamp,
+				}
+
+				select {
+				case epochChan <- epoch:
+
+				case <-ctx.Done():
+					return
+				}
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return &chainsource.BlockRegistration{
+		Epochs: epochChan,
+		Cancel: event.Cancel,
+	}, nil
+}
+
+// Compile-time check that ChainBackend implements
+// chainsource.ChainBackend.
+var _ chainsource.ChainBackend = (*ChainBackend)(nil)
