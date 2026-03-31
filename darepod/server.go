@@ -451,18 +451,18 @@ func (s *Server) run(ctx context.Context,
 		return err
 	}
 
-	chainActor := chainsource.NewChainSourceActor(
-		chainsource.ChainSourceConfig{
-			Backend: s.chainBackend,
-			System:  s.actorSystem,
-		},
-	)
-	chainSourceRef := actor.RegisterWithSystem(
-		s.actorSystem, "chain-source",
-		chainsource.ChainSourceKey, chainActor,
-	)
-
-	s.log.InfoS(ctx, "Chain source actor registered")
+	// For btcwallet mode when the wallet is not yet unlocked,
+	// s.chainBackend is nil because neutrino requires the full
+	// service to be running. In this case, chain source actor
+	// registration is deferred until startBtcwallet populates
+	// s.chainBackend. The wallet-dependent actors (which are
+	// the only consumers) are also deferred behind walletReady.
+	var chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+	if s.chainBackend != nil {
+		chainSourceRef = s.registerChainSourceActor(ctx)
+	}
 
 	// -------------------------------------------------------
 	// 5. Open the database and create the delivery store.
@@ -594,6 +594,16 @@ func (s *Server) run(ctx context.Context,
 			case <-s.walletReady:
 			case <-ctx.Done():
 				return
+			}
+
+			// For btcwallet mode, the chain source actor
+			// was deferred because s.chainBackend was nil
+			// at startup. Now that startBtcwallet has run,
+			// register it before starting dependent actors.
+			if chainSourceRef == nil {
+				chainSourceRef = s.registerChainSourceActor(
+					ctx,
+				)
 			}
 
 			if err := s.startWalletDependentActors(
@@ -976,6 +986,31 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	s.markWalletReady()
 
 	return nil
+}
+
+// registerChainSourceActor creates and registers the chain source
+// actor with the current s.chainBackend. The caller must ensure
+// s.chainBackend is non-nil before calling this.
+func (s *Server) registerChainSourceActor(
+	ctx context.Context) actor.ActorRef[
+	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+] {
+
+	chainActor := chainsource.NewChainSourceActor(
+		chainsource.ChainSourceConfig{
+			Backend: s.chainBackend,
+			System:  s.actorSystem,
+		},
+	)
+
+	ref := actor.RegisterWithSystem(
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
+	)
+
+	s.log.InfoS(ctx, "Chain source actor registered")
+
+	return ref
 }
 
 // initChainBackend creates and starts the chain backend appropriate
