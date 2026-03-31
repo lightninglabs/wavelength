@@ -1,12 +1,12 @@
 package arkscript
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/internal/testutils"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,14 +18,16 @@ func testVHTLCOpts(t *testing.T) VHTLCOpts {
 	receiver, _ := testutils.CreateKey(2)
 	server, _ := testutils.CreateKey(3)
 
-	preimage := []byte("test_preimage_32_bytes_exactly!!")
-	hash := sha256.Sum256(preimage)
+	preimage, err := lntypes.MakePreimage(
+		[]byte("test_preimage_32_bytes_exactly!!"),
+	)
+	require.NoError(t, err)
 
 	return VHTLCOpts{
 		Sender:                               sender,
 		Receiver:                             receiver,
 		Server:                               server,
-		PreimageHash:                         hash[:],
+		PreimageHash:                         preimage.Hash(),
 		RefundLocktime:                       500000,
 		UnilateralClaimDelay:                 144,
 		UnilateralRefundDelay:                288,
@@ -407,11 +409,11 @@ func TestVHTLCValidation(t *testing.T) {
 		require.Contains(t, err.Error(), "sender")
 	})
 
-	t.Run("bad preimage hash length", func(t *testing.T) {
+	t.Run("zero preimage hash", func(t *testing.T) {
 		bad := opts
-		bad.PreimageHash = []byte{0x01, 0x02}
+		bad.PreimageHash = lntypes.Hash{}
 		_, err := NewVHTLCPolicy(bad)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "32 bytes")
+		require.Contains(t, err.Error(), "zero")
 	})
 }

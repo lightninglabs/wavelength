@@ -228,7 +228,7 @@ func TestValidatePolicy(t *testing.T) {
 			Sender:                               owner,
 			Receiver:                             other,
 			Server:                               operator,
-			PreimageHash:                         paymentHash[:],
+			PreimageHash:                         paymentHash,
 			RefundLocktime:                       500000,
 			UnilateralClaimDelay:                 144,
 			UnilateralRefundDelay:                288,

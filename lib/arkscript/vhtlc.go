@@ -5,6 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/lightningnetwork/lnd/lntypes"
 )
 
 // VHTLCOpts contains the parameters for constructing a vHTLC policy.
@@ -18,10 +19,10 @@ type VHTLCOpts struct {
 	// Server is the Ark operator key.
 	Server *btcec.PublicKey
 
-	// PreimageHash is the SHA256 of the preimage (32 bytes).
+	// PreimageHash is the SHA256 of the preimage.
 	// This matches the Lightning Network payment hash format:
 	// paymentHash = SHA256(preimage).
-	PreimageHash []byte
+	PreimageHash lntypes.Hash
 
 	// RefundLocktime is the absolute locktime for refund without
 	// receiver (CLTV).
@@ -49,6 +50,9 @@ type VHTLCPolicy struct {
 
 	// CompiledPolicy is the underlying compiled taproot tree.
 	*CompiledPolicy
+
+	// PreimageHash is the SHA256 hash the claim paths are locked to.
+	PreimageHash lntypes.Hash
 
 	// ClaimClosure through UnilateralRefundWithoutReceiverClosure
 	// are the semantic AST nodes for each of the 6 leaves, used for
@@ -79,7 +83,7 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 		return nil, err
 	}
 
-	claimPredicate, err := sha256Condition(opts.PreimageHash)
+	claimPredicate, err := sha256Condition(opts.PreimageHash[:])
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +178,7 @@ func NewVHTLCPolicy(opts VHTLCOpts) (*VHTLCPolicy, error) {
 	return &VHTLCPolicy{
 		Template:       template,
 		CompiledPolicy: policy,
+		PreimageHash:   opts.PreimageHash,
 
 		ClaimClosure:                 claimClosure,
 		RefundClosure:                refundClosure,
@@ -232,19 +237,18 @@ func (p *VHTLCPolicy) UnilateralRefundWithoutReceiverSpendInfo() (
 }
 
 // ClaimPath returns a SpendPath for claiming via the hashlock leaf.
-// The preimage must be exactly 32 bytes (OP_SIZE check in leaf script).
+// The preimage's SHA256 must match the policy's PreimageHash.
 func (p *VHTLCPolicy) ClaimPath(
-	preimage []byte) (*SpendPath, error) {
+	preimage lntypes.Preimage) (*SpendPath, error) {
 
-	if len(preimage) != 32 {
+	if !preimage.Matches(p.PreimageHash) {
 		return nil, fmt.Errorf(
-			"claim preimage must be 32 bytes, got %d",
-			len(preimage),
+			"preimage does not match policy hash",
 		)
 	}
 
 	return p.CompiledPolicy.SpendPathForNode(
-		p.ClaimClosure, [][]byte{preimage},
+		p.ClaimClosure, [][]byte{preimage[:]},
 	)
 }
 
@@ -282,9 +286,8 @@ func (opts *VHTLCOpts) validate() error {
 	case opts.Server == nil:
 		return fmt.Errorf("vhtlc: server key is nil")
 
-	case len(opts.PreimageHash) != 32:
-		return fmt.Errorf("vhtlc: preimage hash must be 32 bytes "+
-			"(SHA256), got %d", len(opts.PreimageHash))
+	case opts.PreimageHash == lntypes.Hash{}:
+		return fmt.Errorf("vhtlc: preimage hash must not be zero")
 
 	case opts.UnilateralClaimDelay == 0:
 		return fmt.Errorf("vhtlc: unilateral claim delay must " +
