@@ -55,11 +55,12 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 	}
 }
 
-// ListUnspent returns UTXOs at all imported boarding addresses by
-// querying btcwallet's UTXO set. After ImportTaprootScript,
-// btcwallet's neutrino-backed sync detects matching outputs via
-// compact block filters. We filter the results to only include
-// UTXOs at tracked boarding addresses.
+// ListUnspent returns all UTXOs known to btcwallet with confirmation
+// counts between minConfs and maxConfs. Unlike the lwwallet adapter
+// which filters by imported boarding addresses, this returns all
+// watched UTXOs directly from btcwallet. This avoids UTXO loss on
+// restart since btcwallet persists its watch set independently of the
+// in-memory importedAddrs map.
 func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	minConfs, maxConfs int32) ([]*wallet.Utxo, error) {
 
@@ -69,15 +70,10 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 		maxConfs = math.MaxInt32
 	}
 
-	addrs := b.SnapshotAddrs()
-
-	if len(addrs) == 0 {
-		return nil, nil
-	}
-
-	// Query btcwallet for all unspent outputs. We use the
-	// internal wallet's ListUnspent which returns results for
-	// all accounts including imported scripts.
+	// Query btcwallet for all unspent outputs. btcwallet already
+	// scopes results to watched scripts (including those imported
+	// via ImportTaprootScript), so no additional address filtering
+	// is needed.
 	results, err := b.BtcWallet.InternalWallet().ListUnspent(
 		minConfs, maxConfs, "",
 	)
@@ -88,12 +84,16 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	var utxos []*wallet.Utxo
 
 	for _, r := range results {
-		// Only include UTXOs at imported boarding addresses.
-		if _, ok := addrs[r.Address]; !ok {
+		addr, err := btcutil.DecodeAddress(
+			r.Address, b.chainParams,
+		)
+		if err != nil {
+			b.Log.WarnS(ctx,
+				"Failed to decode UTXO address", err,
+				slog.String("address", r.Address))
+
 			continue
 		}
-
-		addr := addrs[r.Address]
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
@@ -137,7 +137,6 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 	b.Log.DebugS(ctx, "ListUnspent called",
 		slog.Int("min_confs", int(minConfs)),
 		slog.Int("max_confs", int(maxConfs)),
-		slog.Int("tracked_addrs", len(addrs)),
 		slog.Int("utxo_count", len(utxos)))
 
 	return utxos, nil
@@ -149,7 +148,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
 
-	// Try btcwallet's transaction store first.
+	// Fetch the raw transaction from btcwallet's store.
 	tx, err := b.BtcWallet.FetchTx(txid)
 	if err != nil || tx == nil {
 		b.Log.DebugS(ctx,
