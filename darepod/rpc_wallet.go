@@ -23,10 +23,11 @@ func (r *RPCServer) GenSeed(ctx context.Context,
 	req *daemonrpc.GenSeedRequest) (*daemonrpc.GenSeedResponse,
 	error) {
 
-	// GenSeed is only available in lwwallet mode.
-	if r.server.cfg.Wallet.Type != WalletTypeLwwallet {
+	// GenSeed is only available in lwwallet/btcwallet mode.
+	if !r.server.isSelfManagedWallet() {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"GenSeed is only available in lwwallet mode")
+			"GenSeed is only available in lwwallet/"+
+				"btcwallet mode")
 	}
 
 	// GenSeed is only available when no wallet exists yet.
@@ -55,10 +56,11 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	req *daemonrpc.InitWalletRequest) (
 	*daemonrpc.InitWalletResponse, error) {
 
-	// InitWallet is only available in lwwallet mode.
-	if r.server.cfg.Wallet.Type != WalletTypeLwwallet {
+	// InitWallet is only available in lwwallet/btcwallet mode.
+	if !r.server.isSelfManagedWallet() {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"InitWallet is only available in lwwallet mode")
+			"InitWallet is only available in lwwallet/"+
+				"btcwallet mode")
 	}
 
 	// Atomically check that no wallet exists and claim the
@@ -109,8 +111,8 @@ func (r *RPCServer) InitWallet(ctx context.Context,
 	r.server.log.InfoS(ctx, "Wallet seed encrypted and saved",
 		"path", SeedFilePath(networkDir))
 
-	// Start the lwwallet with the derived seed.
-	if err := r.server.startLwwallet(ctx, seed); err != nil {
+	// Start the wallet with the derived seed.
+	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
 		rollbackState()
 
 		return nil, status.Errorf(codes.Internal,
@@ -136,11 +138,11 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 	req *daemonrpc.UnlockWalletRequest) (
 	*daemonrpc.UnlockWalletResponse, error) {
 
-	// UnlockWallet is only available in lwwallet mode.
-	if r.server.cfg.Wallet.Type != WalletTypeLwwallet {
+	// UnlockWallet is only available in lwwallet/btcwallet mode.
+	if !r.server.isSelfManagedWallet() {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"UnlockWallet is only available in "+
-				"lwwallet mode")
+				"lwwallet/btcwallet mode")
 	}
 
 	// Atomically verify the wallet is locked. We do not need a CAS
@@ -175,8 +177,8 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 
 	r.server.log.InfoS(ctx, "Wallet seed decrypted via UnlockWallet RPC")
 
-	// Start the lwwallet with the decrypted seed.
-	if err := r.server.startLwwallet(ctx, seed); err != nil {
+	// Start the wallet with the decrypted seed.
+	if err := r.server.startSelfManagedWallet(ctx, seed); err != nil {
 		return nil, status.Errorf(codes.Internal,
 			"unable to start wallet: %v", err)
 	}
@@ -194,21 +196,67 @@ func (r *RPCServer) UnlockWallet(ctx context.Context,
 }
 
 // deriveIdentityPubkey derives the node identity public key from the
-// active lwwallet using KeyFamilyNodeKey (family 6, index 0). This
-// matches lnd's identity key derivation path. DeriveKey (not
+// active self-managed wallet using KeyFamilyNodeKey (family 6, index
+// 0). This matches lnd's identity key derivation path. DeriveKey (not
 // DeriveNextKey) is used so the identity key is stable across calls.
 func (r *RPCServer) deriveIdentityPubkey(
 	ctx context.Context) (string, error) {
 
-	w := r.server.lwWallet.UnsafeFromSome()
-
-	desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+	loc := keychain.KeyLocator{
 		Family: identityKeyFamily,
 		Index:  0,
-	})
+	}
+
+	var (
+		desc *keychain.KeyDescriptor
+		err  error
+	)
+
+	switch r.server.cfg.Wallet.Type {
+	case WalletTypeLwwallet:
+		w := r.server.lwWallet.UnsafeFromSome()
+		desc, err = w.DeriveKey(ctx, loc)
+
+	case WalletTypeBtcwallet:
+		w := r.server.btcwWallet.UnsafeFromSome()
+		desc, err = w.DeriveKey(ctx, loc)
+
+	default:
+		return "", fmt.Errorf("deriveIdentityPubkey not "+
+			"supported for wallet type %q",
+			r.server.cfg.Wallet.Type)
+	}
 	if err != nil {
 		return "", fmt.Errorf("derive identity key: %w", err)
 	}
 
-	return fmt.Sprintf("%x", desc.PubKey.SerializeCompressed()), nil
+	return fmt.Sprintf(
+		"%x", desc.PubKey.SerializeCompressed(),
+	), nil
+}
+
+// isSelfManagedWallet returns true if the wallet type manages its
+// own seed (lwwallet or btcwallet), as opposed to LND which manages
+// the wallet externally.
+func (s *Server) isSelfManagedWallet() bool {
+	return s.cfg.Wallet.Type == WalletTypeLwwallet ||
+		s.cfg.Wallet.Type == WalletTypeBtcwallet
+}
+
+// startSelfManagedWallet starts the appropriate self-managed wallet
+// based on the configured wallet type.
+func (s *Server) startSelfManagedWallet(ctx context.Context,
+	seed [rawSeedLen]byte) error {
+
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLwwallet:
+		return s.startLwwallet(ctx, seed)
+
+	case WalletTypeBtcwallet:
+		return s.startBtcwallet(ctx, seed)
+
+	default:
+		return fmt.Errorf("unsupported wallet type %q",
+			s.cfg.Wallet.Type)
+	}
 }
