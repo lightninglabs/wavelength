@@ -52,7 +52,8 @@ type ChainBackend struct {
 // neutrino service must already be started before calling this.
 func NewChainBackend(svc *NeutrinoService, feeURL string,
 	feeMinTimeout, feeMaxTimeout time.Duration,
-	hintDBPath string) (*ChainBackend, error) {
+	hintDBPath string,
+	logger btclog.Logger) (*ChainBackend, error) {
 
 	// Open the height hint cache database.
 	hintDB, err := kvdb.Open(
@@ -96,6 +97,7 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 		notifier:     notifier,
 		feeEstimator: feeEstimator,
 		hintDB:       hintDB,
+		Log:          fn.Some(logger),
 	}, nil
 }
 
@@ -205,7 +207,7 @@ func (b *ChainBackend) BestBlock(ctx context.Context) (int32,
 		)
 	}
 
-	b.logger(ctx).InfoS(ctx, "Best block retrieved",
+	b.logger(ctx).DebugS(ctx, "Best block retrieved",
 		slog.Int("height", int(bs.Height)),
 		btclog.Hex("hash", bs.Hash[:]))
 

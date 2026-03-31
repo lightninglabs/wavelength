@@ -413,6 +413,13 @@ func (s *Server) run(ctx context.Context,
 		}
 	}()
 	defer func() {
+		s.btcwWallet.WhenSome(
+			func(w *btcwbackend.Wallet) {
+				w.Stop()
+			},
+		)
+	}()
+	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
 		)
@@ -942,6 +949,18 @@ func (s *Server) startBtcwallet(ctx context.Context,
 
 	s.btcwWallet = fn.Some(w)
 
+	// Initialize the chain backend if it was deferred at startup
+	// because the wallet was not yet available.
+	if s.chainBackend == nil {
+		s.chainBackend = w.ChainBackend()
+
+		if err := s.chainBackend.Start(); err != nil {
+			return fmt.Errorf(
+				"start chain backend: %w", err,
+			)
+		}
+	}
+
 	// Refresh the RPC clients once the wallet is available so the
 	// indexer client picks up the wallet-backed identity key and
 	// signer before any deferred wallet-dependent actors start.
@@ -1016,18 +1035,21 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 
 	case WalletTypeBtcwallet:
 		// If the btcwallet is already started (auto-unlock
-		// succeeded), use its chain backend.
+		// succeeded), use its chain backend. Otherwise the
+		// chain backend will be initialized in
+		// startBtcwallet when the wallet is created via
+		// InitWallet/UnlockWallet RPC, since neutrino
+		// requires the full service to be running.
 		if s.btcwWallet.IsSome() {
 			w := s.btcwWallet.UnsafeFromSome()
 			s.chainBackend = w.ChainBackend()
 			alreadyStarted = true
+		} else {
+			// Defer chain backend start to
+			// startBtcwallet. Skip the Start() call
+			// below.
+			return nil
 		}
-
-		// Unlike lwwallet, we cannot create a standalone
-		// neutrino chain backend without the wallet since
-		// neutrino requires the full service to be running.
-		// If the wallet is not yet started, the chain backend
-		// will be initialized when startBtcwallet is called.
 
 	default:
 		return fmt.Errorf("unknown wallet type %q",

@@ -134,9 +134,10 @@ func New(cfg Config) (*Wallet, error) {
 	chainBackend, err := NewChainBackend(
 		neutrinoSvc, cfg.FeeURL,
 		cfg.feeMinTimeout(), cfg.feeMaxTimeout(),
-		hintDBPath,
+		hintDBPath, walletLog,
 	)
 	if err != nil {
+		_ = btcw.Stop()
 		_ = neutrinoSvc.Stop()
 
 		return nil, fmt.Errorf("create chain backend: %w", err)

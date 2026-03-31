@@ -322,12 +322,11 @@ func (c *Config) Validate() error {
 		}
 
 	case WalletTypeBtcwallet:
-		// Neutrino backend requires a fee URL on mainnet since
-		// neutrino has no mempool visibility for fee estimation.
-		if c.Network == "mainnet" && c.Wallet.FeeURL == "" {
+		// Neutrino has no mempool visibility, so fee estimation
+		// always requires an external API regardless of network.
+		if c.Wallet.FeeURL == "" {
 			return fmt.Errorf("wallet.feeurl is required " +
-				"when wallet.type is btcwallet on " +
-				"mainnet")
+				"when wallet.type is btcwallet")
 		}
 
 	default:

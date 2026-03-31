@@ -39,6 +39,9 @@ type BoardingBackendAdapter struct {
 	// instance.
 	log btclog.Logger
 
+	// keyRing is the cached key ring for HD key derivation.
+	keyRing keychain.KeyRing
+
 	// chainKeyScope is the key scope used for script imports.
 	// This matches LND's m/1017'/coinType' derivation.
 	chainKeyScope waddrmgr.KeyScope
@@ -49,6 +52,11 @@ type BoardingBackendAdapter struct {
 	// importedAddrs tracks addresses imported via
 	// ImportTaprootScript. ListUnspent filters btcwallet's
 	// results by these addresses to return only boarding UTXOs.
+	//
+	// This map is in-memory and is repopulated on daemon restart
+	// by the wallet actor, which re-imports all persisted boarding
+	// addresses from the database during startup (see
+	// wallet.Ark.handleStartupRecovery).
 	importedAddrs map[string]btcutil.Address
 }
 
@@ -60,12 +68,17 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 	chainParams *chaincfg.Params, coinType uint32,
 	logger btclog.Logger) *BoardingBackendAdapter {
 
+	keyRing := keychain.NewBtcWalletKeyRing(
+		btcw.InternalWallet(), coinType,
+	)
+
 	return &BoardingBackendAdapter{
 		btcWallet:   btcw,
 		neutrinoCS:  neutrinoCS,
 		blockCache:  blockCache,
 		chainParams: chainParams,
 		log:         logger,
+		keyRing:     keyRing,
 		chainKeyScope: waddrmgr.KeyScope{
 			Purpose: keychain.BIP0043Purpose,
 			Coin:    coinType,
@@ -81,12 +94,7 @@ func NewBoardingBackendAdapter(btcw *btcwallet.BtcWallet,
 func (b *BoardingBackendAdapter) DeriveNextKey(ctx context.Context,
 	family keychain.KeyFamily) (*keychain.KeyDescriptor, error) {
 
-	keyRing := keychain.NewBtcWalletKeyRing(
-		b.btcWallet.InternalWallet(),
-		b.chainKeyScope.Coin,
-	)
-
-	desc, err := keyRing.DeriveNextKey(family)
+	desc, err := b.keyRing.DeriveNextKey(family)
 	if err != nil {
 		return nil, fmt.Errorf("derive next key: %w", err)
 	}
@@ -121,12 +129,13 @@ func (b *BoardingBackendAdapter) ImportTaprootScript(
 	// btcwallet's results to only return boarding UTXOs.
 	b.mu.Lock()
 	b.importedAddrs[addr.String()] = addr
+	numAddrs := len(b.importedAddrs)
 	b.mu.Unlock()
 
 	b.log.DebugS(ctx,
 		"Imported taproot script via btcwallet",
 		slog.String("address", addr.String()),
-		slog.Int("tracked_addrs", len(b.importedAddrs)))
+		slog.Int("tracked_addrs", numAddrs))
 
 	return addr, nil
 }
@@ -178,17 +187,29 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 
 		pkScript, err := txscript.PayToAddrScript(addr)
 		if err != nil {
+			b.log.WarnS(ctx,
+				"Failed to create pkScript for address",
+				err,
+				slog.String("address", r.Address))
+
 			continue
 		}
 
 		txid, err := chainhash.NewHashFromStr(r.TxID)
 		if err != nil {
+			b.log.WarnS(ctx,
+				"Failed to parse UTXO txid", err,
+				slog.String("txid", r.TxID))
+
 			continue
 		}
 
 		// Convert BTC amount to satoshis.
 		amount, err := btcutil.NewAmount(r.Amount)
 		if err != nil {
+			b.log.WarnS(ctx,
+				"Failed to parse UTXO amount", err)
+
 			continue
 		}
 
@@ -213,9 +234,8 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 }
 
 // GetTransaction returns the full transaction and its confirmation
-// block hash for the given txid. It first attempts to fetch from
-// btcwallet's transaction store, falling back to fetching the
-// containing block via neutrino and scanning for the transaction.
+// block hash for the given txid. It fetches from btcwallet's
+// transaction store, which is populated by neutrino's chain sync.
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
 
