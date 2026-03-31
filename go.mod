@@ -13,6 +13,7 @@ require (
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b
 	github.com/btcsuite/btcwallet v0.16.17
+	github.com/btcsuite/btcwallet/walletdb v1.5.1
 	github.com/btcsuite/btcwallet/wtxmgr v1.5.6
 	github.com/golang-migrate/migrate/v4 v4.17.0
 	github.com/google/uuid v1.6.0
@@ -22,11 +23,13 @@ require (
 	github.com/lib/pq v1.10.9
 	github.com/lightninglabs/darepo-client/baselib v0.0.0-00010101000000-000000000000
 	github.com/lightninglabs/lndclient v1.0.1-0.20260110234312-aefc13f693ea
+	github.com/lightninglabs/neutrino v0.16.2-0.20250820152345-800584718688
 	github.com/lightninglabs/taproot-assets v0.7.0
 	github.com/lightninglabs/taproot-assets/taprpc v1.0.11
 	github.com/lightningnetwork/lnd v0.20.0-beta.rc4.0.20260110233730-15227a4ff50a
 	github.com/lightningnetwork/lnd/clock v1.1.1
 	github.com/lightningnetwork/lnd/fn/v2 v2.0.9
+	github.com/lightningnetwork/lnd/kvdb v1.4.16
 	github.com/lightningnetwork/lnd/tlv v1.3.2
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 	github.com/ory/dockertest/v3 v3.12.0
@@ -59,7 +62,6 @@ require (
 	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.5 // indirect
 	github.com/btcsuite/btcwallet/wallet/txrules v1.2.2 // indirect
 	github.com/btcsuite/btcwallet/wallet/txsizes v1.2.5 // indirect
-	github.com/btcsuite/btcwallet/walletdb v1.5.1 // indirect
 	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect
 	github.com/btcsuite/winsvc v1.0.0 // indirect
@@ -118,12 +120,10 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
 	github.com/lightninglabs/lightning-node-connect/hashmailrpc v1.0.3 // indirect
-	github.com/lightninglabs/neutrino v0.16.2-0.20250820152345-800584718688 // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
 	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240815225420-8b40adf04ab9 // indirect
 	github.com/lightningnetwork/lnd/cert v1.2.2 // indirect
 	github.com/lightningnetwork/lnd/healthcheck v1.2.6 // indirect
-	github.com/lightningnetwork/lnd/kvdb v1.4.16 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/sqldb v1.0.12 // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
