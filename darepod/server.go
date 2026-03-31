@@ -42,6 +42,7 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/lndclient"
 	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
@@ -926,18 +927,20 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	}
 
 	w, err := btcwbackend.New(btcwbackend.Config{
-		Seed:            seed,
-		ChainParams:     s.chainParams,
-		RecoveryWindow:  recoveryWindow,
-		DBDir:           networkDir,
+		Config: walletcore.Config{
+			Seed:           seed,
+			ChainParams:    s.chainParams,
+			RecoveryWindow: recoveryWindow,
+			DBDir:          networkDir,
+			Log: fn.Some(
+				s.subLogger(btcwbackend.Subsystem),
+			),
+		},
 		NeutrinoDataDir: s.cfg.Wallet.BtcwalletDataDir,
 		ConnectPeers:    s.cfg.Wallet.BtcwalletPeers,
 		AddPeers:        s.cfg.Wallet.BtcwalletAddPeers,
 		FeeURL:          s.cfg.Wallet.FeeURL,
 		PersistFilters:  s.cfg.Wallet.PersistFilters,
-		Log: fn.Some(
-			s.subLogger(btcwbackend.Subsystem),
-		),
 	})
 	if err != nil {
 		return fmt.Errorf("create btcwallet: %w", err)

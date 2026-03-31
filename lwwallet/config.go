@@ -8,17 +8,8 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
-// coinTypeForNet returns the BIP44 coin type for the given network.
-// Mainnet uses coin type 0, while all test networks use coin type 1.
-func coinTypeForNet(params *chaincfg.Params) uint32 {
-	switch params.Net {
-	case chaincfg.MainNetParams.Net:
-		return 0
-
-	default:
-		return 1
-	}
-}
+// NOTE: coinTypeForNet, WalletPassphrase, and DefaultBlockCacheSize
+// are now in the walletcore package.
 
 // Config holds the configuration for the lightweight wallet.
 type Config struct {
