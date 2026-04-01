@@ -30,8 +30,8 @@ func (s *IdleState) IsTerminal() bool {
 // stateSealed marks IdleState as implementing the sealed State interface.
 func (s *IdleState) stateSealed() {}
 
-// AwaitingInputsLockState indicates a submit request has been accepted and the
-// FSM is waiting for the input lock side effect to complete.
+// AwaitingInputsLockState indicates submit package validation has succeeded and
+// the FSM is waiting for the input lock side effect to complete.
 type AwaitingInputsLockState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint
@@ -61,8 +61,8 @@ func (s *AwaitingInputsLockState) IsTerminal() bool {
 // interface.
 func (s *AwaitingInputsLockState) stateSealed() {}
 
-// AwaitingSubmitValidationState indicates inputs are locked and the FSM is
-// waiting for submit package validation.
+// AwaitingSubmitValidationState indicates a submit request has been accepted
+// and the FSM is waiting for submit package validation before taking locks.
 type AwaitingSubmitValidationState struct {
 	// Inputs are the VTXO outpoints spent by the checkpoint transactions.
 	Inputs []wire.OutPoint

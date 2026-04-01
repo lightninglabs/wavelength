@@ -1616,17 +1616,12 @@ func (d *notifyFailingDriver) Handle(ctx context.Context,
 // triggering FailedState after session creation.
 type failingOutboxHandler struct{}
 
-// Handle returns a lock success then a validation failure to exercise
-// the FailedState cleanup path.
+// Handle returns a validation failure before any lock event to exercise the
+// FailedState cleanup path.
 func (f *failingOutboxHandler) Handle(_ context.Context,
 	_ SessionID, outbox OutboxEvent) ([]Event, error) {
 
 	switch outbox.(type) {
-	case *LockInputsReq:
-		return []Event{
-			&InputsLockSucceededEvent{},
-		}, nil
-
 	case *ValidateSubmitReq:
 		return []Event{
 			&SubmitFailedEvent{
