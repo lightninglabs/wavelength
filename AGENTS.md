@@ -7,8 +7,9 @@ This file is a **map**, not a manual. Follow links for details.
 | Command | Purpose |
 |---------|---------|
 | `make build` | Compile the project |
-| `make lint` | Run linter (must pass before committing) |
-| `make lint-changed-local` | Run native local linter on changes vs base |
+| `make lint-native` | Run native linter on branch changes (preferred, no Docker) |
+| `make lint-changed-local` | Run native linter on changes vs base (alternative) |
+| `make lint` | Run linter via Docker (CI canonical) |
 | `make install-custom-gcl` | Build native `custom-gcl` for this host |
 | `make fmt` | Format all Go source files |
 | `make unit pkg=<pkg> case=<test>` | Run unit tests |
@@ -50,9 +51,9 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 
 1. **Never edit generated code** — regenerate via `make rpc` or `make sqlc`.
 2. **Never write raw SQL in Go** — add queries to `db/queries/`, use sqlc.
-3. **Run `make lint` before every commit.**
-   Install native `custom-gcl` with `make install-custom-gcl` first if you
-   want the local no-Docker path to load the real `ll` plugin.
+3. **Run `make lint-native` before every commit.**
+   This builds and runs the custom linter natively via `go tool` — much
+   faster than Docker. Only lints changes on the current branch.
 4. **Run tests before every commit** — see [`docs/testing-guide.md`](docs/testing-guide.md).
 5. **No underscores in Go test names** — `TestFoo` not `Test_Foo`.
 6. Use early returns; do not nest error handling.

@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-local lint-source-local lint-changed-local local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
+.PHONY: lint lint-source lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check schema-check doc-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help clean-networks
@@ -19,6 +19,7 @@ TOOLS_DIR := tools
 GOCC ?= go
 
 GOIMPORTS_PKG := github.com/rinchsan/gosimports/cmd/gosimports
+GOLINT_PKG := github.com/golangci/golangci-lint/cmd/golangci-lint
 
 GO_BIN := $(GOPATH)/bin
 MIGRATE_BIN := $(GO_BIN)/migrate
@@ -230,6 +231,15 @@ lint-changed-local: local-custom-gcl #? Run static code analysis only for change
 	$(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
 		--new-from-merge-base=$(LINT_BASE) \
 		--whole-files
+
+build-native-linter: #? Build the custom golangci-lint binary natively via go tool
+	@$(call print, "Building custom linter natively.")
+	cd $(TOOLS_DIR) && CGO_ENABLED=0 $(GOCC) tool $(GOLINT_PKG) custom
+
+lint-native: check-go-version build-native-linter #? Run static code analysis without Docker (faster on macOS)
+	@$(call print, "Linting source (native).")
+	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v --timeout=15m $(LINT_WORKERS) \
+		--new-from-rev=$$(git merge-base HEAD $$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo main))
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'
