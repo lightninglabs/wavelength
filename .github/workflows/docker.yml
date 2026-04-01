@@ -1,0 +1,57 @@
+name: Docker image build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  DOCKER_REPO: 923662548032.dkr.ecr.us-west-2.amazonaws.com/lightninglabs
+  DOCKER_IMAGE_ARKD: arkd
+
+jobs:
+  docker-build-push:
+    name: Build and push docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up QEMU
+        uses: lightninglabs/gh-actions/setup-qemu-action@2021.01.25.00
+
+      - name: Set up Docker Buildx
+        uses: lightninglabs/gh-actions/setup-buildx-action@2021.01.25.00
+
+      - name: Login to AWS ECR
+        uses: lightninglabs/gh-actions/login-action@2021.01.25.00
+        with:
+          registry: ${{ env.DOCKER_REPO }}
+          username: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          password: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Set env
+        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+
+      - name: git checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Fetch all history for the tag and version info
+        run: git fetch --prune --unshallow
+
+      - name: Build and push arkd
+        id: docker_build_arkd
+        uses: lightninglabs/gh-actions/build-push-action@2021.01.25.00
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKER_REPO }}/${{ env.DOCKER_IMAGE_ARKD }}:${{ env.RELEASE_VERSION }}
+            ${{ env.DOCKER_REPO }}/${{ env.DOCKER_IMAGE_ARKD }}:latest
+          build-args: checkout=${{ env.RELEASE_VERSION }}
+
+      - name: Image digest
+        run: "echo arkd: ${{ steps.docker_build_arkd.outputs.digest }}"
