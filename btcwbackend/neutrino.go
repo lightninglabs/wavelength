@@ -60,10 +60,13 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 
 	// Try to open an existing DB first (daemon restart), falling
 	// back to creating a new one (first run).
-	db, err := walletdb.Open("bdb", dbPath, true, defaultDBTimeout)
+	db, err := walletdb.Open(
+		"bdb", dbPath, true, defaultDBTimeout, false,
+	)
 	if err != nil {
 		db, err = walletdb.Create(
 			"bdb", dbPath, true, defaultDBTimeout,
+			false,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(

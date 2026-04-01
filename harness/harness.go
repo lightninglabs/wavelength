@@ -207,6 +207,11 @@ type Harness struct {
 	// BitcoindZMQTx is the host:port of bitcoind ZMQ for raw txs (28333).
 	BitcoindZMQTx string
 
+	// BitcoindP2P is the host:port of bitcoind's P2P interface (18444).
+	// Used by neutrino (BIP 157/158) to sync headers and compact block
+	// filters directly from the regtest bitcoind node.
+	BitcoindP2P string
+
 	// LNDGRPCPort is the host port mapped to lnd gRPC (10009).
 	LNDGRPCPort string
 
@@ -1094,7 +1099,8 @@ func (h *Harness) startBitcoind() {
 			Cmd:        cmd,
 			Env:        []string{},
 			ExposedPorts: []string{
-				"18443/tcp", "28332/tcp", "28333/tcp",
+				"18443/tcp", "18444/tcp",
+				"28332/tcp", "28333/tcp",
 			},
 			Name:     containerName,
 			Networks: []*dockertest.Network{h.network},
@@ -1113,6 +1119,10 @@ func (h *Harness) startBitcoind() {
 			hc.PortBindings =
 				map[docker.Port][]docker.PortBinding{
 					"18443/tcp": {{
+						HostIP:   "0.0.0.0",
+						HostPort: "",
+					}},
+					"18444/tcp": {{
 						HostIP:   "0.0.0.0",
 						HostPort: "",
 					}},
@@ -1145,13 +1155,16 @@ func (h *Harness) startBitcoind() {
 	h.waitContainerRunning(res)
 
 	rpcPort := res.GetPort("18443/tcp")
+	p2pPort := res.GetPort("18444/tcp")
 	zmqBlock := res.GetPort("28332/tcp")
 	zmqTx := res.GetPort("28333/tcp")
 	h.BitcoindRPC = net.JoinHostPort("127.0.0.1", rpcPort)
+	h.BitcoindP2P = net.JoinHostPort("127.0.0.1", p2pPort)
 	h.BitcoindZMQBlock = fmt.Sprintf("tcp://127.0.0.1:%s", zmqBlock)
 	h.BitcoindZMQTx = fmt.Sprintf("tcp://127.0.0.1:%s", zmqTx)
 
-	h.Logf("bitcoind RPC=%s ZMQ(block)=%s ZMQ(tx)=%s", h.BitcoindRPC,
+	h.Logf("bitcoind RPC=%s P2P=%s ZMQ(block)=%s ZMQ(tx)=%s",
+		h.BitcoindRPC, h.BitcoindP2P,
 		h.BitcoindZMQBlock, h.BitcoindZMQTx)
 
 	// Ensure JSON-RPC is responsive before proceeding.

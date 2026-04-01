@@ -68,13 +68,22 @@ func NewChainBackend(svc *NeutrinoService, feeURL string,
 	hintDBPath string,
 	logger btclog.Logger) (*ChainBackend, error) {
 
-	// Open the height hint cache database.
+	// Open the height hint cache database, creating it if it does
+	// not yet exist (first run).
 	hintDB, err := kvdb.Open(
 		kvdb.BoltBackendName, hintDBPath, true,
-		defaultDBTimeout, kvdb.DefaultDBTimeout,
+		defaultDBTimeout, false,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("open hint cache db: %w", err)
+		hintDB, err = kvdb.Create(
+			kvdb.BoltBackendName, hintDBPath, true,
+			defaultDBTimeout, false,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"create hint cache db: %w", err,
+			)
+		}
 	}
 
 	hintCache, err := channeldb.NewHeightHintCache(
