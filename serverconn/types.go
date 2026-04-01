@@ -2,8 +2,11 @@ package serverconn
 
 import (
 	"context"
+	"encoding/hex"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
@@ -13,6 +16,19 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+// PubKeyMailboxID returns the canonical mailbox identifier for a
+// public key: the hex-encoded SEC compressed serialization. Both
+// server and client derive their mailbox IDs from their respective
+// identity keys using this function, ensuring the mailbox namespace
+// is cryptographically bound to key material. Panics if key is nil.
+func PubKeyMailboxID(key *btcec.PublicKey) string {
+	if key == nil {
+		panic("PubKeyMailboxID called with nil public key")
+	}
+
+	return hex.EncodeToString(key.SerializeCompressed())
+}
 
 // CorrelationID links a mailbox request to its response.
 type CorrelationID = mailboxconn.CorrelationID
@@ -152,6 +168,40 @@ type ConnectorConfig struct {
 	// DefaultHeartbeatInterval (30 s). The server's staleness
 	// threshold should be at least 2× this interval.
 	HeartbeatInterval time.Duration
+
+	// AuthSignature is the Schnorr signature proving the client
+	// holds the private key for its pubkey-derived mailbox ID.
+	// When non-nil, it is serialized as hex and included as the
+	// x-mailbox-auth-sig header on every outbound envelope. The
+	// server verifies this signature during client registration.
+	AuthSignature *schnorr.Signature
+}
+
+// mergeAuthHeaders returns a new header map containing both src
+// headers and the auth signature header. If AuthSignature is nil,
+// src is returned unchanged. The auth signature header always takes
+// precedence over any caller-provided header with the same key to
+// prevent accidental or malicious signature replacement.
+func (c *ConnectorConfig) mergeAuthHeaders(
+	src map[string]string) map[string]string {
+
+	if c.AuthSignature == nil {
+		return src
+	}
+
+	sigHex := hex.EncodeToString(c.AuthSignature.Serialize())
+
+	merged := make(map[string]string, len(src)+1)
+
+	// Copy caller-provided headers first.
+	for k, v := range src {
+		merged[k] = v
+	}
+
+	// Auth signature always wins over caller-provided headers.
+	merged[AuthHeaderKey] = sigHex
+
+	return merged
 }
 
 // DefaultConnectorConfig returns a ConnectorConfig with sensible defaults for
