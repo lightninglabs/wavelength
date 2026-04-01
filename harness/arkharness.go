@@ -793,6 +793,13 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		)
 	}
 
+	// Neutrino-backed wallets need extra time for initial header
+	// and compact block filter sync before marking wallet ready.
+	walletReadyTimeout := defaultTimeout
+	if walletBackend == ClientWalletBackendBtcwallet {
+		walletReadyTimeout = 3 * time.Minute
+	}
+
 	require.Eventually(d.T, func() bool {
 		waitCtx, waitCancel := context.WithTimeout(
 			d.T.Context(), defaultSmallTimeout,
@@ -807,7 +814,7 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		}
 
 		return updatedInfo.WalletReady
-	}, defaultTimeout, pollInterval,
+	}, walletReadyTimeout, pollInterval,
 		"client daemon %q wallet never became ready", d.Name)
 }
 
