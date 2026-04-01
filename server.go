@@ -2,11 +2,13 @@ package darepo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btclog/v2"
@@ -26,12 +28,15 @@ import (
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightninglabs/darepo/rounds"
+	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/signal"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 )
 
@@ -49,9 +54,15 @@ type Server struct {
 	db *db.Store
 
 	// vtxoLocker provides mutual exclusion for VTXO operations
-	// across both the rounds and OOR subsystems. Shared to
-	// ensure consistent locking semantics.
-	vtxoLocker *db.VTXOLockerDB
+	// across both the rounds and OOR subsystems. Wrapped with
+	// metrics instrumentation so lock durations and failures
+	// are reported to the centralized metrics actor.
+	vtxoLocker vtxo.Locker
+
+	// instrumentedLocker holds a reference to the instrumented
+	// wrapper so SetMetricsRef can be called after the metrics
+	// actor is spawned.
+	instrumentedLocker *metrics.InstrumentedLocker
 
 	// walletController is the shared LND-backed wallet/signer used
 	// by the rounds and OOR subsystems for PSBT funding and
@@ -150,6 +161,20 @@ type Server struct {
 	// auto-registered client runtimes for inbox persistence and
 	// checkpoint state.
 	deliveryStore actor.DeliveryStore
+
+	// metricsRef is an optional reference to the centralized
+	// metrics actor. Set during metrics server startup (step 8).
+	metricsRef fn.Option[actor.TellOnlyRef[metrics.Msg]]
+}
+
+// tellMetrics sends a metric message to the metrics actor if
+// configured. Safe to call before the metrics actor is spawned.
+func (s *Server) tellMetrics(ctx context.Context, msg metrics.Msg) {
+	s.metricsRef.WhenSome(
+		func(ref actor.TellOnlyRef[metrics.Msg]) {
+			_ = ref.Tell(ctx, msg)
+		},
+	)
 }
 
 // subLogger extracts a subsystem logger from the config's Loggers map.
@@ -231,7 +256,7 @@ func (s *Server) RunUntilShutdown(
 // context is cancelled. This is the test-friendly entry point:
 // tests manage daemon lifecycle via context cancellation instead of
 // requiring a signal.Interceptor (which is process-global).
-func (s *Server) RunWithContext(ctx context.Context) error {
+func (s *Server) RunWithContext(ctx context.Context) error { //nolint:funlen
 	// Only allow the server to be started once.
 	if !s.started.CompareAndSwap(false, true) {
 		return nil
@@ -241,6 +266,14 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		slog.String("version", build.Version()),
 		slog.String("commit", build.CommitHash),
 		slog.String("network", s.cfg.Network))
+
+	// Register Prometheus metrics before any subsystem starts
+	// incrementing them. MustRegister panics on duplicate
+	// registration, which is fine at startup but must happen
+	// before actor creation.
+	if s.cfg.Metrics != nil && s.cfg.Metrics.ListenAddr != "" {
+		metrics.RegisterAll(prometheus.DefaultRegisterer)
+	}
 
 	// -------------------------------------------------------
 	// 1. Connect to lnd.
@@ -318,7 +351,10 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 
 	// Create the shared VTXO locker used by both rounds and OOR
 	// subsystems for mutual exclusion during VTXO operations.
-	s.vtxoLocker = db.NewVTXOLockerDB(s.db, dbLog)
+	s.instrumentedLocker = metrics.NewInstrumentedLocker(
+		db.NewVTXOLockerDB(s.db, dbLog),
+	)
+	s.vtxoLocker = s.instrumentedLocker
 
 	// -------------------------------------------------------
 	// 5. Setup indexer subsystem.
@@ -492,7 +528,17 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 			),
 			fn.Some(metricsLog),
 		)
-		prometheus.MustRegister(sysCollector)
+		// Use Register (not MustRegister) so integration
+		// tests with multiple servers in one process don't
+		// panic on duplicate collector registration.
+		err = prometheus.Register(sysCollector)
+		if err != nil {
+			var alreadyReg prometheus.AlreadyRegisteredError
+			if !errors.As(err, &alreadyReg) {
+				return fmt.Errorf("register system "+
+					"collector: %w", err)
+			}
+		}
 
 		s.log.InfoS(ctx, "Metrics server started",
 			"addr", metricsSrv.Addr().String())
@@ -501,7 +547,7 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 	s.log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
-	// 8. Block until shutdown.
+	// 9. Block until shutdown.
 	// -------------------------------------------------------
 	select {
 	case <-ctx.Done():
