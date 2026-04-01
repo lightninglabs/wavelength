@@ -16,6 +16,7 @@ import (
 	"github.com/lightninglabs/darepo/adminrpc"
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/db/sqlc"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/rounds"
 	"google.golang.org/grpc"
 )
@@ -61,13 +62,22 @@ func NewAdminRPCServer(cfg *AdminRPCConfig, operator *Server,
 	// any non-regtest deployment. The admin server currently
 	// binds to localhost with no authentication — any local
 	// process can call TriggerBatch, enumerate VTXOs, etc.
+	grpcMetrics := metrics.GRPCServerMetrics
+
 	s := &AdminRPCServer{
-		cfg:        cfg,
-		server:     operator,
-		log:        log,
-		grpcServer: grpc.NewServer(),
-		listener:   listener,
-		quit:       make(chan struct{}),
+		cfg:    cfg,
+		server: operator,
+		log:    log,
+		grpcServer: grpc.NewServer(
+			grpc.UnaryInterceptor(
+				grpcMetrics.UnaryServerInterceptor(),
+			),
+			grpc.StreamInterceptor(
+				grpcMetrics.StreamServerInterceptor(),
+			),
+		),
+		listener: listener,
+		quit:     make(chan struct{}),
 	}
 
 	// Register the admin RPC service.

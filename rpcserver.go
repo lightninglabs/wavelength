@@ -12,6 +12,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo/build"
+	"github.com/lightninglabs/darepo/metrics"
 	"google.golang.org/grpc"
 )
 
@@ -100,13 +101,22 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 	// TODO(security): Add TLS and authentication before
 	// non-regtest deployment. The client RPC server currently
 	// runs without TLS or auth interceptors.
+	grpcMetrics := metrics.GRPCServerMetrics
+
 	s := &RPCServer{
-		cfg:        cfg,
-		server:     operator,
-		log:        log,
-		grpcServer: grpc.NewServer(),
-		listener:   listener,
-		quit:       make(chan struct{}),
+		cfg:    cfg,
+		server: operator,
+		log:    log,
+		grpcServer: grpc.NewServer(
+			grpc.UnaryInterceptor(
+				grpcMetrics.UnaryServerInterceptor(),
+			),
+			grpc.StreamInterceptor(
+				grpcMetrics.StreamServerInterceptor(),
+			),
+		),
+		listener: listener,
+		quit:     make(chan struct{}),
 	}
 
 	// Register the client RPC service.
