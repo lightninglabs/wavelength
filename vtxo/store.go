@@ -93,13 +93,18 @@ type Store interface {
 	MarkInFlight(ctx context.Context, outpoints []wire.OutPoint,
 		owner LockOwner) error
 
-	// MarkSpent marks the outpoints spent.
+	// MarkSpent marks outpoints spent for owner.
 	//
 	// The transition rules are:
-	//   - live -> spent
-	//   - in_flight(*) -> spent
-	//   - spent -> spent (idempotent)
-	MarkSpent(ctx context.Context, outpoints []wire.OutPoint) error
+	//   - in_flight(owner) -> spent
+	//   - spent -> spent (idempotent for any caller
+	//     because no in-flight owner remains once the
+	//     record is spent)
+	//
+	// Any other status (including live or in_flight held by another owner)
+	// returns an error.
+	MarkSpent(ctx context.Context, outpoints []wire.OutPoint,
+		owner LockOwner) error
 }
 
 // InMemoryStore is an in-memory Store implementation intended for unit tests
@@ -370,12 +375,16 @@ func (s *InMemoryStore) MarkInFlight(ctx context.Context,
 	return nil
 }
 
-// MarkSpent marks the outpoints spent.
+// MarkSpent marks outpoints spent for owner.
 func (s *InMemoryStore) MarkSpent(ctx context.Context,
-	outpoints []wire.OutPoint) error {
+	outpoints []wire.OutPoint, owner LockOwner) error {
 
 	if len(outpoints) == 0 {
 		return nil
+	}
+
+	if owner == "" {
+		return fmt.Errorf("owner must be provided")
 	}
 
 	s.mu.Lock()
@@ -394,8 +403,20 @@ func (s *InMemoryStore) MarkSpent(ctx context.Context,
 		}
 
 		switch rec.Status {
-		case StatusLive, StatusInFlight, StatusSpent:
-			// ok
+		case StatusInFlight:
+			if rec.InFlightOwner != owner {
+				return fmt.Errorf("vtxo %v in-flight by %s",
+					op, rec.InFlightOwner)
+			}
+
+		case StatusSpent:
+			// Already-spent rows stay idempotent regardless
+			// of owner because no in-flight claim remains
+			// to protect at this point.
+
+		case StatusLive:
+			return fmt.Errorf("vtxo %v not spendable (%s)",
+				op, rec.Status)
 
 		default:
 			return fmt.Errorf("unknown status %s for %v",

@@ -782,6 +782,7 @@ func TestAtomicFinalizeAndMaterialize(t *testing.T) {
 	err = store.ApplyFinalizeAndMaterialize(
 		ctx, sessionID, []wire.OutPoint{input},
 		[]*psbt.Packet{finalCheckpoint}, []*vtxo.Record{output},
+		owner,
 	)
 	require.NoError(t, err)
 
@@ -867,7 +868,7 @@ func TestAtomicFinalizeRollbackOnCreateFailure(t *testing.T) {
 				arkPSBT.UnsignedTx.TxOut[0].PkScript...,
 			),
 			Status: vtxo.StatusLive,
-		}},
+		}}, owner,
 	)
 	require.ErrorContains(t, err, "different value")
 

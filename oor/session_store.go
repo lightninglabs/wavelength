@@ -91,7 +91,8 @@ type FinalizeAtomicStore interface {
 	ApplyFinalizeAndMaterialize(ctx context.Context,
 		sessionID SessionID, inputs []wire.OutPoint,
 		finalCheckpointPSBTs []*psbt.Packet,
-		outputRecords []*vtxo.Record) error
+		outputRecords []*vtxo.Record,
+		owner vtxo.LockOwner) error
 }
 
 // sessionState is a typed lifecycle state for OOR sessions persisted in the

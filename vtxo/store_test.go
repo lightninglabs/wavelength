@@ -40,7 +40,7 @@ func TestInMemoryStoreLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	// Spent marks spent and clears owner.
-	err = store.MarkSpent(ctx, []wire.OutPoint{op})
+	err = store.MarkSpent(ctx, []wire.OutPoint{op}, owner)
 	require.NoError(t, err)
 
 	rec, err = store.Get(ctx, op)
@@ -50,7 +50,7 @@ func TestInMemoryStoreLifecycle(t *testing.T) {
 	require.Equal(t, LockOwner(""), rec.InFlightOwner)
 
 	// Idempotent spent.
-	err = store.MarkSpent(ctx, []wire.OutPoint{op})
+	err = store.MarkSpent(ctx, []wire.OutPoint{op}, owner)
 	require.NoError(t, err)
 }
 
@@ -104,13 +104,48 @@ func TestInMemoryStoreRejectsDuplicateOutpoints(t *testing.T) {
 	require.NotNil(t, rec)
 	require.Equal(t, StatusLive, rec.Status)
 
-	err = store.MarkSpent(ctx, []wire.OutPoint{op, op})
+	err = store.MarkSpent(
+		ctx, []wire.OutPoint{op, op}, LockOwner("oor:a"),
+	)
 	require.ErrorContains(t, err, "duplicate outpoint")
 
 	rec, err = store.Get(ctx, op)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	require.Equal(t, StatusLive, rec.Status)
+}
+
+// TestInMemoryStoreMarkSpentOwnerEnforcement asserts spent transition requires
+// matching in-flight ownership.
+func TestInMemoryStoreMarkSpentOwnerEnforcement(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	store := NewInMemoryStore()
+
+	op := wire.OutPoint{Hash: chainhash.Hash{9}, Index: 3}
+	err := store.Create(ctx, &Record{
+		Outpoint: op,
+		Value:    1000,
+		PkScript: []byte{0x51},
+		Status:   StatusLive,
+	})
+	require.NoError(t, err)
+
+	// Cannot spend directly from live.
+	err = store.MarkSpent(ctx, []wire.OutPoint{op}, LockOwner("oor:a"))
+	require.ErrorContains(t, err, "not spendable (live)")
+
+	err = store.MarkInFlight(ctx, []wire.OutPoint{op}, LockOwner("oor:a"))
+	require.NoError(t, err)
+
+	// Wrong owner cannot finalize.
+	err = store.MarkSpent(ctx, []wire.OutPoint{op}, LockOwner("oor:b"))
+	require.ErrorContains(t, err, "in-flight by")
+
+	// Correct owner finalizes.
+	err = store.MarkSpent(ctx, []wire.OutPoint{op}, LockOwner("oor:a"))
+	require.NoError(t, err)
 }
 
 // TestInMemoryStoreCreateIdempotency asserts Create is idempotent for identical
