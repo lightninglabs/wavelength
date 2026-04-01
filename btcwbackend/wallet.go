@@ -1,27 +1,26 @@
-package lwwallet
+package btcwbackend
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/walletcore"
-	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
 
+// hintCacheDBName is the filename for the height hint cache database.
+const hintCacheDBName = "heighthint.db"
+
 // Wallet is a lightweight in-process Bitcoin wallet backed by LND's
-// btcwallet implementation and an Esplora chain backend. It provides
-// full on-chain wallet capabilities (receive, balance, key derivation,
-// signing, MuSig2) plus Ark protocol participation (boarding address
-// management, chain monitoring).
-//
-// The wallet embeds walletcore.Wallet for shared btcwallet operations
-// and adds Esplora-specific chain service, chain backend, and
-// boarding backend.
+// btcwallet implementation and a neutrino (BIP 157/158) chain
+// backend. It embeds walletcore.Wallet for shared btcwallet
+// operations and adds neutrino-specific chain service, chain backend,
+// and boarding backend.
 //
 // The wallet exposes sub-interfaces via accessor methods:
 //   - BoardingBackend() returns the wallet.BoardingBackend adapter
@@ -32,13 +31,8 @@ type Wallet struct {
 	// Wallet provides shared btcwallet-backed operations.
 	walletcore.Wallet
 
-	// chainSvc implements btcwallet's chain.Interface, feeding
-	// block notifications to btcwallet for wallet sync.
-	chainSvc *EsploraChainService
-
-	// esplora is the Esplora REST API client shared by chain
-	// service and chain backend.
-	esplora *EsploraClient
+	// neutrinoSvc manages the neutrino chain service lifecycle.
+	neutrinoSvc *NeutrinoService
 
 	// chainBackend implements chainsource.ChainBackend for the
 	// actor system (confirmation/spend/block registrations).
@@ -49,40 +43,40 @@ type Wallet struct {
 	boardingBackend *BoardingBackendAdapter
 }
 
-// New creates a new lightweight wallet from the given configuration.
-// The caller must provide a DBDir for btcwallet's bbolt database and
-// is responsible for managing the directory's lifecycle (creation
-// before calling New, cleanup after Stop if desired).
+// New creates a new neutrino-backed wallet from the given
+// configuration. The caller must provide a DBDir for btcwallet's
+// bbolt database and is responsible for managing the directory's
+// lifecycle.
 func New(cfg Config) (*Wallet, error) {
-	// Constructors run before a contextual logger is guaranteed,
-	// so default to a disabled logger when one was not explicitly
-	// provided.
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
 
-	esplora := NewEsploraClient(cfg.EsploraURL, walletLog)
+	neutrinoDataDir := cfg.neutrinoDataDir()
 
-	// The EsploraChainService implements btcwallet's chain.Interface
-	// and feeds block notifications to btcwallet for wallet sync.
-	chainSvc := NewEsploraChainService(
-		esplora, cfg.PollInterval, walletLog,
+	// Create and start the neutrino chain service.
+	neutrinoSvc, err := NewNeutrinoService(
+		neutrinoDataDir, cfg.ChainParams,
+		cfg.ConnectPeers, cfg.AddPeers,
+		cfg.PersistFilters, walletLog,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("create neutrino service: %w", err)
+	}
 
-	// The ChainBackend implements chainsource.ChainBackend for the
-	// actor system (confirmation/spend/block registrations).
-	chainBackend := NewChainBackend(
-		esplora, cfg.PollInterval, walletLog,
-	)
+	if err := neutrinoSvc.Start(); err != nil {
+		return nil, fmt.Errorf("start neutrino service: %w", err)
+	}
+
+	// Create the btcwallet chain client backed by neutrino.
+	chainClient := neutrinoSvc.ChainClient()
 
 	coinType := walletcore.CoinTypeForNet(cfg.ChainParams)
-	blockCache := blockcache.NewBlockCache(
-		walletcore.DefaultBlockCacheSize,
-	)
+	blockCache := neutrinoSvc.BlockCache()
 
 	btcw, err := btcwallet.New(btcwallet.Config{
 		PrivatePass:    walletcore.WalletPassphrase,
 		PublicPass:     walletcore.WalletPassphrase,
 		HdSeed:         cfg.Seed[:],
-		ChainSource:    chainSvc,
+		ChainSource:    chainClient,
 		NetParams:      cfg.ChainParams,
 		CoinType:       coinType,
 		RecoveryWindow: cfg.RecoveryWindow,
@@ -93,22 +87,41 @@ func New(cfg Config) (*Wallet, error) {
 		},
 	}, blockCache)
 	if err != nil {
+		_ = neutrinoSvc.Stop()
+
 		return nil, fmt.Errorf("create btcwallet: %w", err)
 	}
 
-	// Create the keyring from btcwallet's internal wallet. This
-	// provides HD key derivation using the same m/1017'/coinType'
-	// scope as LND.
+	// Create the keyring from btcwallet's internal wallet.
 	keyRing := keychain.NewBtcWalletKeyRing(
 		btcw.InternalWallet(), coinType,
 	)
 
+	// Create the chain backend with neutrino notifier and fee
+	// estimation.
+	hintDBPath := filepath.Join(neutrinoDataDir, hintCacheDBName)
+	chainBackend, err := NewChainBackend(
+		neutrinoSvc, cfg.FeeURL,
+		cfg.feeMinTimeout(), cfg.feeMaxTimeout(),
+		hintDBPath, walletLog,
+	)
+	if err != nil {
+		_ = btcw.Stop()
+		_ = neutrinoSvc.Stop()
+
+		return nil, fmt.Errorf("create chain backend: %w", err)
+	}
+
+	// Create the boarding backend adapter.
 	boardingBackend := NewBoardingBackendAdapter(
-		btcw, esplora, cfg.ChainParams, coinType, walletLog,
+		btcw, neutrinoSvc.ChainService(),
+		blockCache, cfg.ChainParams, coinType, walletLog,
 	)
 
-	walletLog.InfoS(context.Background(), "Lightweight wallet created",
+	walletLog.InfoS(context.Background(),
+		"Neutrino-backed wallet created",
 		slog.String("db_dir", cfg.DBDir),
+		slog.String("neutrino_dir", neutrinoDataDir),
 		slog.Uint64("coin_type", uint64(coinType)))
 
 	return &Wallet{
@@ -119,49 +132,53 @@ func New(cfg Config) (*Wallet, error) {
 			ChainParams: cfg.ChainParams,
 			WalletLog:   cfg.Log,
 		},
-		chainSvc:        chainSvc,
-		esplora:         esplora,
+		neutrinoSvc:     neutrinoSvc,
 		chainBackend:    chainBackend,
 		boardingBackend: boardingBackend,
 	}, nil
 }
 
 // Start initializes the wallet by starting btcwallet (which
-// internally starts the EsploraChainService and syncs the wallet)
-// and the chainsource ChainBackend.
+// internally starts the chain client and syncs the wallet) and the
+// chainsource ChainBackend.
 func (w *Wallet) Start() error {
 	ctx := context.Background()
 
 	// btcWallet.Start() unlocks the wallet, creates key scopes,
-	// starts the chain service, and begins wallet synchronization.
+	// starts the chain client, and begins wallet synchronization.
 	if err := w.BtcWallet.Start(); err != nil {
 		return fmt.Errorf("start btcwallet: %w", err)
 	}
 
-	// Start the chainsource ChainBackend used by the actor system.
-	// This is separate from the chain service used by btcwallet.
+	// Start the chain backend. This is idempotent (sync.Once) so
+	// it is safe even if the daemon's startBtcwallet also calls
+	// Start().
 	if err := w.chainBackend.Start(); err != nil {
 		return fmt.Errorf("start chain backend: %w", err)
 	}
 
-	w.Logger(ctx).InfoS(ctx, "Lightweight wallet started")
+	w.Logger(ctx).InfoS(ctx, "Neutrino-backed wallet started")
 
 	return nil
 }
 
-// Stop shuts down the wallet, chain service, and chain backend. We
-// wait for the chain service goroutine to fully exit before
-// returning to avoid racing with btcwallet's internal writes.
+// Stop shuts down the wallet, neutrino service, and chain backend.
 func (w *Wallet) Stop() {
 	ctx := context.Background()
 
-	w.Logger(ctx).InfoS(ctx, "Stopping lightweight wallet")
+	w.Logger(ctx).InfoS(ctx, "Stopping neutrino-backed wallet")
 
+	// Note: chainBackend is NOT stopped here — the daemon's
+	// server.go defer owns that lifecycle. The ChainBackend.Stop()
+	// is idempotent (sync.Once) so it is safe even if called from
+	// both Wallet and server.
+	//
+	// Stop order: btcwallet (depends on neutrino chain client)
+	// must stop before neutrino service.
 	_ = w.BtcWallet.Stop()
-	w.chainSvc.WaitForShutdown()
-	_ = w.chainBackend.Stop()
+	_ = w.neutrinoSvc.Stop()
 
-	w.Logger(ctx).InfoS(ctx, "Lightweight wallet stopped")
+	w.Logger(ctx).InfoS(ctx, "Neutrino-backed wallet stopped")
 }
 
 // BoardingBackend returns the wallet.BoardingBackend adapter that
@@ -176,9 +193,8 @@ func (w *Wallet) ChainBackend() *ChainBackend {
 	return w.chainBackend
 }
 
-// KeyRing returns the wallet's secret key ring for key derivation and
-// message signing operations that need direct access to wallet-owned
-// keys.
+// KeyRing returns the wallet's secret key ring for key derivation
+// and message signing operations.
 func (w *Wallet) KeyRing() keychain.SecretKeyRing {
 	return w.Wallet.KeyRing
 }

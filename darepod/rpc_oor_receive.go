@@ -147,6 +147,21 @@ func (r *RPCServer) oorReceiveKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 				)
 			}, nil
 
+	case r.server.btcwWallet.IsSome():
+		wallet := r.server.btcwWallet.UnsafeFromSome()
+
+		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
+				return wallet.DeriveNextKey(
+					ctx, keychain.KeyFamilyMultiSig,
+				)
+			}, func(
+				keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
+
+				return indexer.NewKeyRingSchnorrSigner(
+					wallet.KeyRing(), keyDesc,
+				)
+			}, nil
+
 	default:
 		return nil, nil, fmt.Errorf("wallet backend not initialized")
 	}

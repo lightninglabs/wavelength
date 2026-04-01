@@ -61,6 +61,10 @@ const (
 	// backed by btcwallet and Esplora.
 	WalletTypeLwwallet = "lwwallet"
 
+	// WalletTypeBtcwallet selects the in-process wallet backed by
+	// btcwallet and neutrino (BIP 157/158 compact block filters).
+	WalletTypeBtcwallet = "btcwallet"
+
 	// DefaultEsploraPollInterval is the default interval at which the
 	// lwwallet polls the Esplora API for new blocks and transactions.
 	DefaultEsploraPollInterval = 5 * time.Second
@@ -221,6 +225,30 @@ type WalletConfig struct {
 	// an existing encrypted seed file, the daemon unlocks the wallet
 	// automatically without requiring an UnlockWallet RPC call.
 	PasswordFile string `mapstructure:"password_file"`
+
+	// BtcwalletPeers is a list of host:port addresses for neutrino
+	// to connect to exclusively (no DNS seeding). Only used when
+	// Type is "btcwallet".
+	BtcwalletPeers []string `mapstructure:"btcwallet_peers"`
+
+	// BtcwalletAddPeers is a list of additional persistent peers
+	// for neutrino. DNS seeding still runs. Only used when Type is
+	// "btcwallet".
+	BtcwalletAddPeers []string `mapstructure:"btcwallet_addpeers"`
+
+	// BtcwalletDataDir is the directory for neutrino's chain data
+	// (headers, cfilters). Defaults to the network data directory.
+	// Only used when Type is "btcwallet".
+	BtcwalletDataDir string `mapstructure:"btcwallet_datadir"`
+
+	// FeeURL is the URL for the fee estimation API endpoint used by
+	// the btcwallet/neutrino backend. Required on mainnet since
+	// neutrino has no mempool visibility.
+	FeeURL string `mapstructure:"feeurl"`
+
+	// PersistFilters controls whether neutrino writes compact block
+	// filters to disk in addition to the in-memory cache.
+	PersistFilters bool `mapstructure:"persist_filters"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -293,10 +321,18 @@ func (c *Config) Validate() error {
 				"lwwallet")
 		}
 
+	case WalletTypeBtcwallet:
+		// Neutrino has no mempool visibility, so fee estimation
+		// always requires an external API regardless of network.
+		if c.Wallet.FeeURL == "" {
+			return fmt.Errorf("wallet.feeurl is required " +
+				"when wallet.type is btcwallet")
+		}
+
 	default:
 		return fmt.Errorf(
 			"unknown wallet type %q, valid values: "+
-				"lnd, lwwallet",
+				"lnd, lwwallet, btcwallet",
 			c.Wallet.Type,
 		)
 	}

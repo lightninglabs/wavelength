@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -20,6 +21,7 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -41,6 +43,7 @@ import (
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
+	"github.com/lightninglabs/darepo-client/walletcore"
 	"github.com/lightninglabs/lndclient"
 	lndbuild "github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/clock"
@@ -131,6 +134,10 @@ type Server struct {
 	// lwWallet holds the lightweight wallet instance when
 	// wallet.type is "lwwallet". It is None in lnd mode.
 	lwWallet fn.Option[*lwwallet.Wallet]
+
+	// btcwWallet holds the neutrino-backed wallet instance when
+	// wallet.type is "btcwallet". It is None in other modes.
+	btcwWallet fn.Option[*btcwbackend.Wallet]
 
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
@@ -362,6 +369,11 @@ func (s *Server) run(ctx context.Context,
 		// RPCs.
 		s.tryAutoUnlockLwwallet(ctx)
 
+	case WalletTypeBtcwallet:
+		// In btcwallet mode, use the same auto-unlock flow
+		// as lwwallet but start a neutrino-backed wallet.
+		s.tryAutoUnlockBtcwallet(ctx)
+
 	default:
 		return fmt.Errorf("unknown wallet type %q",
 			s.cfg.Wallet.Type)
@@ -403,6 +415,13 @@ func (s *Server) run(ctx context.Context,
 		}
 	}()
 	defer func() {
+		s.btcwWallet.WhenSome(
+			func(w *btcwbackend.Wallet) {
+				w.Stop()
+			},
+		)
+	}()
+	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(), DefaultShutdownTimeout,
 		)
@@ -433,18 +452,18 @@ func (s *Server) run(ctx context.Context,
 		return err
 	}
 
-	chainActor := chainsource.NewChainSourceActor(
-		chainsource.ChainSourceConfig{
-			Backend: s.chainBackend,
-			System:  s.actorSystem,
-		},
-	)
-	chainSourceRef := actor.RegisterWithSystem(
-		s.actorSystem, "chain-source",
-		chainsource.ChainSourceKey, chainActor,
-	)
-
-	s.log.InfoS(ctx, "Chain source actor registered")
+	// For btcwallet mode when the wallet is not yet unlocked,
+	// s.chainBackend is nil because neutrino requires the full
+	// service to be running. In this case, chain source actor
+	// registration is deferred until startBtcwallet populates
+	// s.chainBackend. The wallet-dependent actors (which are
+	// the only consumers) are also deferred behind walletReady.
+	var chainSourceRef actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+	if s.chainBackend != nil {
+		chainSourceRef = s.registerChainSourceActor(ctx)
+	}
 
 	// -------------------------------------------------------
 	// 5. Open the database and create the delivery store.
@@ -576,6 +595,16 @@ func (s *Server) run(ctx context.Context,
 			case <-s.walletReady:
 			case <-ctx.Done():
 				return
+			}
+
+			// For btcwallet mode, the chain source actor
+			// was deferred because s.chainBackend was nil
+			// at startup. Now that startBtcwallet has run,
+			// register it before starting dependent actors.
+			if chainSourceRef == nil {
+				chainSourceRef = s.registerChainSourceActor(
+					ctx,
+				)
 			}
 
 			if err := s.startWalletDependentActors(
@@ -787,6 +816,246 @@ func (s *Server) startLwwallet(ctx context.Context,
 	return nil
 }
 
+// tryAutoUnlockBtcwallet attempts to initialize the btcwallet+neutrino
+// backend at startup without user interaction. It follows the same
+// pattern as tryAutoUnlockLwwallet: check for a seed in the
+// environment, then check for an encrypted seed file with a password.
+func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
+	// Check for a raw seed in the environment (dev/CI path).
+	seed, err := LoadSeedFromEnv()
+	if err != nil {
+		s.log.WarnS(ctx,
+			"Invalid seed in environment variable", err)
+
+		return
+	}
+
+	if seed != nil {
+		s.log.InfoS(ctx,
+			"Loaded seed from environment variable")
+
+		if err := s.startBtcwallet(ctx, *seed); err != nil {
+			s.log.ErrorS(ctx,
+				"Failed to start btcwallet from env seed",
+				err)
+
+			return
+		}
+
+		return
+	}
+
+	networkDir, err := s.cfg.NetworkDir()
+	if err != nil {
+		s.log.ErrorS(ctx,
+			"Unable to resolve network directory", err)
+
+		return
+	}
+
+	// Check for an encrypted seed file on disk.
+	if !SeedFileExists(networkDir) {
+		s.log.InfoS(ctx,
+			"No wallet seed found, awaiting InitWallet RPC")
+
+		s.walletState.Store(int32(WalletStateNone))
+
+		return
+	}
+
+	// Encrypted seed exists. Try to find a password for
+	// auto-unlock.
+	s.walletState.Store(int32(WalletStateLocked))
+
+	password, ok := LoadPasswordFromEnv()
+	if !ok && s.cfg.Wallet.PasswordFile != "" {
+		var err error
+		password, err = LoadPasswordFromFile(
+			s.cfg.Wallet.PasswordFile,
+		)
+		if err != nil {
+			s.log.WarnS(ctx,
+				"Failed to read wallet password file",
+				err)
+
+			return
+		}
+
+		ok = true
+	}
+
+	if !ok {
+		s.log.InfoS(ctx, "Encrypted seed found but no "+
+			"password available, awaiting UnlockWallet "+
+			"RPC")
+
+		return
+	}
+
+	// We have both seed file and password: auto-unlock.
+	seedPath := SeedFilePath(networkDir)
+	ciphertext, err := LoadEncryptedSeed(seedPath)
+	if err != nil {
+		s.log.ErrorS(ctx,
+			"Failed to load encrypted seed", err)
+
+		return
+	}
+
+	decryptedSeed, err := DecryptSeed(ciphertext, password)
+	if err != nil {
+		s.log.ErrorS(ctx,
+			"Failed to decrypt seed at startup", err)
+
+		return
+	}
+
+	s.log.InfoS(ctx,
+		"Auto-unlocking btcwallet from encrypted seed")
+
+	if err := s.startBtcwallet(ctx, decryptedSeed); err != nil {
+		s.log.ErrorS(ctx,
+			"Failed to start btcwallet", err)
+
+		return
+	}
+}
+
+// startBtcwallet creates and starts the neutrino-backed wallet from
+// the given raw seed. On success it populates s.btcwWallet and marks
+// the wallet as ready.
+func (s *Server) startBtcwallet(ctx context.Context,
+	seed [rawSeedLen]byte) error {
+
+	networkDir, err := s.cfg.NetworkDir()
+	if err != nil {
+		return fmt.Errorf("resolve network directory: %w", err)
+	}
+
+	recoveryWindow := s.cfg.Wallet.RecoveryWindow
+	if recoveryWindow == 0 {
+		recoveryWindow = DefaultRecoveryWindow
+	}
+
+	w, err := btcwbackend.New(btcwbackend.Config{
+		Config: walletcore.Config{
+			Seed:           seed,
+			ChainParams:    s.chainParams,
+			RecoveryWindow: recoveryWindow,
+			DBDir:          networkDir,
+			Log: fn.Some(
+				s.subLogger(btcwbackend.Subsystem),
+			),
+		},
+		NeutrinoDataDir: s.cfg.Wallet.BtcwalletDataDir,
+		ConnectPeers:    s.cfg.Wallet.BtcwalletPeers,
+		AddPeers:        s.cfg.Wallet.BtcwalletAddPeers,
+		FeeURL:          s.cfg.Wallet.FeeURL,
+		PersistFilters:  s.cfg.Wallet.PersistFilters,
+	})
+	if err != nil {
+		return fmt.Errorf("create btcwallet: %w", err)
+	}
+
+	if err := w.Start(); err != nil {
+		return fmt.Errorf("start btcwallet: %w", err)
+	}
+
+	s.btcwWallet = fn.Some(w)
+
+	// Initialize the chain backend if it was deferred at startup
+	// because the wallet was not yet available.
+	if s.chainBackend == nil {
+		s.chainBackend = w.ChainBackend()
+
+		if err := s.chainBackend.Start(); err != nil {
+			return fmt.Errorf(
+				"start chain backend: %w", err,
+			)
+		}
+	}
+
+	// Refresh the RPC clients once the wallet is available so the
+	// indexer client picks up the wallet-backed identity key and
+	// signer before any deferred wallet-dependent actors start.
+	if s.runtime != nil {
+		s.initRPCClients(ctx)
+	}
+
+	s.log.InfoS(ctx, "Neutrino-backed wallet started, "+
+		"waiting for initial sync in background")
+
+	// Wait for neutrino to sync at least one block before marking
+	// the wallet ready. This runs in a goroutine so the InitWallet
+	// RPC can return without blocking on neutrino header sync.
+	go func() {
+		syncCtx, syncCancel := context.WithTimeout(
+			context.Background(), 2*time.Minute,
+		)
+		defer syncCancel()
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-syncCtx.Done():
+				s.log.ErrorS(
+					syncCtx,
+					"Neutrino did not sync in time",
+					syncCtx.Err(),
+				)
+
+				return
+
+			case <-ticker.C:
+				height, _, err := w.ChainBackend().BestBlock(
+					syncCtx,
+				)
+				if err == nil && height > 0 {
+					s.log.InfoS(syncCtx,
+						"Neutrino initial sync "+
+							"complete",
+						slog.Int("height",
+							int(height)),
+					)
+
+					s.markWalletReady()
+
+					return
+				}
+			}
+		}
+	}()
+
+	return nil
+}
+
+// registerChainSourceActor creates and registers the chain source
+// actor with the current s.chainBackend. The caller must ensure
+// s.chainBackend is non-nil before calling this.
+func (s *Server) registerChainSourceActor(
+	ctx context.Context) actor.ActorRef[
+	chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+] {
+
+	chainActor := chainsource.NewChainSourceActor(
+		chainsource.ChainSourceConfig{
+			Backend: s.chainBackend,
+			System:  s.actorSystem,
+		},
+	)
+
+	ref := actor.RegisterWithSystem(
+		s.actorSystem, "chain-source",
+		chainsource.ChainSourceKey, chainActor,
+	)
+
+	s.log.InfoS(ctx, "Chain source actor registered")
+
+	return ref
+}
+
 // initChainBackend creates and starts the chain backend appropriate
 // for the configured wallet type. In lnd mode it uses the lndclient
 // chain notifier and fee estimator. In lwwallet mode it uses the
@@ -843,6 +1112,24 @@ func (s *Server) initChainBackend(ctx context.Context) error {
 				s.cfg.Wallet.PollInterval,
 				s.subLogger(lwwallet.Subsystem),
 			)
+		}
+
+	case WalletTypeBtcwallet:
+		// If the btcwallet is already started (auto-unlock
+		// succeeded), use its chain backend. Otherwise the
+		// chain backend will be initialized in
+		// startBtcwallet when the wallet is created via
+		// InitWallet/UnlockWallet RPC, since neutrino
+		// requires the full service to be running.
+		if s.btcwWallet.IsSome() {
+			w := s.btcwWallet.UnsafeFromSome()
+			s.chainBackend = w.ChainBackend()
+			alreadyStarted = true
+		} else {
+			// Defer chain backend start to
+			// startBtcwallet. Skip the Start() call
+			// below.
+			return nil
 		}
 
 	default:
@@ -1738,6 +2025,27 @@ func (s *Server) initRPCClients(ctx context.Context) {
 			)
 		}
 	})
+	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		identityDesc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+			Family: identityKeyFamily,
+			Index:  0,
+		})
+		if err != nil {
+			s.log.WarnS(ctx,
+				"Unable to derive identity key for "+
+					"indexer", err)
+		} else {
+			s.clientKeyDesc = *identityDesc
+			signer = NewOwnedReceiveScriptSigner(
+				packageStore,
+				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
+					return indexer.NewKeyRingSchnorrSigner(
+						w.KeyRing(), keyDesc,
+					)
+				},
+			)
+		}
+	})
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
@@ -1784,6 +2092,10 @@ func (s *Server) initWalletActor(ctx context.Context,
 
 	case WalletTypeLwwallet:
 		w := s.lwWallet.UnsafeFromSome()
+		boardingBackend = w.BoardingBackend()
+
+	case WalletTypeBtcwallet:
+		w := s.btcwWallet.UnsafeFromSome()
 		boardingBackend = w.BoardingBackend()
 	}
 
@@ -1869,6 +2181,9 @@ func (s *Server) initRoundActor(ctx context.Context,
 
 	case WalletTypeLwwallet:
 		clientWallet = s.lwWallet.UnsafeFromSome()
+
+	case WalletTypeBtcwallet:
+		clientWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
 	clk := clock.NewDefaultClock()
@@ -1968,6 +2283,9 @@ func (s *Server) initVTXOManager(ctx context.Context,
 
 	case WalletTypeLwwallet:
 		vtxoWallet = s.lwWallet.UnsafeFromSome()
+
+	case WalletTypeBtcwallet:
+		vtxoWallet = s.btcwWallet.UnsafeFromSome()
 	}
 
 	clk := clock.NewDefaultClock()
@@ -2045,6 +2363,9 @@ func (s *Server) initOORActor(ctx context.Context,
 
 	case WalletTypeLwwallet:
 		oorSigner = s.lwWallet.UnsafeFromSome()
+
+	case WalletTypeBtcwallet:
+		oorSigner = s.btcwWallet.UnsafeFromSome()
 	}
 
 	vtxoStore := dbStore.NewVTXOStore(clk)
