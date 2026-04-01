@@ -11,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo/adminrpc"
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -89,6 +91,12 @@ type ArkHarnessOptions struct {
 	// client daemon. When nil, logs are prefixed by daemon name and
 	// written to stdout.
 	ClientLogWriterFactory ClientLogWriterFactory
+
+	// ServerConfigFunc is an optional callback that modifies the
+	// operator server config before startup. Use this to customize
+	// round parameters, exit delays, or other operator settings for
+	// specific tests.
+	ServerConfigFunc func(cfg *darepo.Config)
 }
 
 // ArkHarness extends the client harness with an in-process arkd server and
@@ -140,6 +148,9 @@ type ArkHarness struct {
 	// clientLogWriterFactory resolves stdout sinks for client daemon logs.
 	clientLogWriterFactory ClientLogWriterFactory
 
+	// serverConfigFunc modifies the operator config before startup.
+	serverConfigFunc func(cfg *darepo.Config)
+
 	// clientDaemons tracks any in-process darepod instances started through
 	// this harness so Stop can shut them down before tearing down arkd/LND.
 	clientDaemons ClientDaemonSet
@@ -189,6 +200,7 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 	return &ArkHarness{
 		Harness:                clientHarness,
 		skipArkd:               opts.SkipArkd,
+		serverConfigFunc:       opts.ServerConfigFunc,
 		clientDaemonWalletType: walletType,
 		operatorLogWriter:      operatorLogWriter,
 		clientLogWriterFactory: clientLogWriterFactory,
@@ -313,6 +325,11 @@ func (h *ArkHarness) startArkd() {
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
 		"admin.macaroon",
 	)
+
+	// Apply any test-specific server config overrides.
+	if h.serverConfigFunc != nil {
+		h.serverConfigFunc(cfg)
+	}
 
 	// Create a cancelable context for arkd.
 	arkdCtx, arkdCancel := context.WithCancel(context.Background())
@@ -482,6 +499,45 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	return daemon
 }
 
+// FundClientLND sends coins to a client daemon's backing LND wallet so the
+// unroll executor can use them as CPFP fee inputs. It requests a new address
+// from the client's LND, faucets the given amount, and mines blocks to
+// confirm.
+func (h *ArkHarness) FundClientLND(daemon *ClientDaemonHarness,
+	amount btcutil.Amount) {
+
+	h.T.Helper()
+
+	require.NotNil(h.T, daemon.LND,
+		"client daemon must use LND wallet backend")
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(), 30*time.Second,
+	)
+	defer cancel()
+
+	lndAddr := net.JoinHostPort("127.0.0.1", daemon.LND.GRPCPort)
+	conn, err := client_harness.GetLNDClientConn(
+		ctx, lndAddr, daemon.LND.TLSCert, daemon.LND.Macaroon,
+	)
+	require.NoError(h.T, err, "connect to client LND for funding")
+	defer conn.Close()
+
+	lndClient := lnrpc.NewLightningClient(conn)
+	addrResp, err := lndClient.NewAddress(
+		ctx, &lnrpc.NewAddressRequest{
+			Type: lnrpc.AddressType_TAPROOT_PUBKEY,
+		},
+	)
+	require.NoError(h.T, err, "client LND NewAddress")
+
+	h.Faucet(addrResp.Address, amount)
+	h.Generate(6)
+
+	h.T.Logf("Funded client %s LND wallet with %v to %s",
+		daemon.Name, amount, addrResp.Address)
+}
+
 // RestartClientDaemon restarts an existing in-process darepod instance while
 // reusing its data directory, mailbox IDs, and backing wallet resources.
 func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
@@ -577,6 +633,14 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.LocalMailboxID = localMailboxID
 	cfg.Server.RemoteMailboxID = remoteMailboxID
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+
+	// Wire a package submitter for unroll CPFP package relay.
+	// This talks directly to the harness bitcoind via JSON-RPC.
+	cfg.PackageSubmitter = client_harness.NewBitcoindPackageSubmitter(
+		h.BitcoindRPC,
+		client_harness.BitcoindRPCUser,
+		client_harness.BitcoindRPCPass,
+	)
 
 	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
 	cfg.MailboxEdgeFactory = newEdgeFactory(mailboxEdge)
