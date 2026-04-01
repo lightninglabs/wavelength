@@ -12,6 +12,7 @@ import (
 	"github.com/lightninglabs/darepo-client/lib/scripts"
 	oorlib "github.com/lightninglabs/darepo-client/lib/tx/oor"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -59,6 +60,10 @@ type ActorCfg struct {
 	// ActorID is the mailbox/checkpoint identifier for this coordinator.
 	// Defaults to "oor.transfer.coordinator" if empty.
 	ActorID string
+
+	// MetricsActor is an optional reference to the centralized
+	// metrics actor for OOR transfer instrumentation.
+	MetricsActor fn.Option[actor.TellOnlyRef[metrics.Msg]]
 }
 
 // TransferCoordinatorActor manages concurrent OOR transfer session FSMs. Each
@@ -97,6 +102,18 @@ var _ actor.ActorBehavior[OORDurableMsg, ActorResp] = (*TransferCoordinatorActor
 // log returns the configured logger or a disabled fallback.
 func (a *TransferCoordinatorActor) log() btclog.Logger {
 	return a.cfg.Log.UnwrapOr(btclog.Disabled)
+}
+
+// tellMetrics sends a metric message to the metrics actor if
+// configured.
+func (a *TransferCoordinatorActor) tellMetrics(ctx context.Context,
+	msg metrics.Msg) {
+
+	a.cfg.MetricsActor.WhenSome(
+		func(ref actor.TellOnlyRef[metrics.Msg]) {
+			_ = ref.Tell(ctx, msg)
+		},
+	)
 }
 
 // Actor is a backward-compatible alias for TransferCoordinatorActor.
@@ -286,6 +303,11 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 
 	sessionID := SessionID(validated.ArkTxid)
 
+	// Notify metrics actor that a new OOR transfer started.
+	a.tellMetrics(ctx, &metrics.OORTransferStartedMsg{
+		SessionID: fmt.Sprintf("%x", sessionID[:]),
+	})
+
 	a.log().InfoS(ctx, "Processing submit request",
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)),
@@ -341,6 +363,11 @@ func (a *TransferCoordinatorActor) handleSubmit(ctx context.Context,
 		a.sessionsMu.Lock()
 		delete(a.sessions, sessionID)
 		a.sessionsMu.Unlock()
+
+		a.tellMetrics(ctx, &metrics.OORTransferCompletedMsg{
+			SessionID: fmt.Sprintf("%x", sessionID[:]),
+			Status:    "failed",
+		})
 
 		a.log().DebugS(ctx, "Submit failed",
 			btclog.Hex("session_id", sessionID[:]),
@@ -400,6 +427,13 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		delete(a.sessions, msg.SessionID)
 		a.sessionsMu.Unlock()
 
+		a.tellMetrics(ctx, &metrics.OORTransferCompletedMsg{
+			SessionID: fmt.Sprintf(
+				"%x", msg.SessionID[:],
+			),
+			Status: "finalized",
+		})
+
 		resp := &FinalizeOORResponse{
 			clientID:  msg.ClientID,
 			SessionID: msg.SessionID,
@@ -430,6 +464,13 @@ func (a *TransferCoordinatorActor) handleFinalize(ctx context.Context,
 		a.sessionsMu.Lock()
 		delete(a.sessions, msg.SessionID)
 		a.sessionsMu.Unlock()
+
+		a.tellMetrics(ctx, &metrics.OORTransferCompletedMsg{
+			SessionID: fmt.Sprintf(
+				"%x", msg.SessionID[:],
+			),
+			Status: "failed",
+		})
 
 		a.log().DebugS(ctx, "Finalize failed",
 			btclog.Hex("session_id", msg.SessionID[:]),
