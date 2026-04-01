@@ -33,6 +33,8 @@ type (
 	MarkProcessedParams    = adsqlc.MarkMessageProcessedParams
 	SaveCheckpointParams   = adsqlc.SaveFSMCheckpointParams
 	DeadLetterInsertParams = adsqlc.MoveMailboxToDeadLetterParams
+	GetDeadLetterParams    = adsqlc.GetDeadLetterParams
+	DeleteDeadLetterParams = adsqlc.DeleteDeadLetterParams
 	ListDeadLettersParams  = adsqlc.ListDeadLettersByActorParams
 )
 
@@ -80,9 +82,10 @@ type ActorDeliveryQueries interface {
 		arg ClaimOutboxBatchParams) ([]OutboxMsgRow, error)
 
 	CompleteOutboxMessage(ctx context.Context,
-		arg CompleteOutboxParams) error
+		arg CompleteOutboxParams) (int64, error)
 
-	FailOutboxMessage(ctx context.Context, arg FailOutboxParams) error
+	FailOutboxMessage(ctx context.Context,
+		arg FailOutboxParams) (int64, error)
 
 	// Deduplication operations.
 	IsMessageProcessed(ctx context.Context, id string) (bool, error)
@@ -98,16 +101,19 @@ type ActorDeliveryQueries interface {
 	DeleteFSMCheckpoint(ctx context.Context, actorID string) error
 
 	// Dead letter operations.
-	MoveMailboxToDeadLetter(
-		ctx context.Context, arg DeadLetterInsertParams,
-	) error
+	MoveMailboxToDeadLetter(ctx context.Context,
+		arg DeadLetterInsertParams) (int64, error)
 
-	GetDeadLetter(ctx context.Context, id string) (DeadLetterRow, error)
+	MoveOutboxToDeadLetter(ctx context.Context,
+		arg adsqlc.MoveOutboxToDeadLetterParams) error
+
+	GetDeadLetter(ctx context.Context,
+		arg GetDeadLetterParams) (DeadLetterRow, error)
 
 	ListDeadLettersByActor(ctx context.Context,
 		arg ListDeadLettersParams) ([]DeadLetterRow, error)
 
-	DeleteDeadLetter(ctx context.Context, id string) error
+	DeleteDeadLetter(ctx context.Context, arg DeleteDeadLetterParams) error
 
 	// Cleanup operations.
 	CleanupExpiredProcessedMessages(ctx context.Context,
@@ -271,6 +277,45 @@ func (s *Store) AckMessage(ctx context.Context, id, leaseToken string) (int64,
 	return rows, err
 }
 
+// AckMessageWithAskResult atomically removes a mailbox message and persists
+// the Ask result marker for the same lease holder.
+func (s *Store) AckMessageWithAskResult(ctx context.Context, id,
+	leaseToken string, params actor.AskResultParams) (int64, error) {
+
+	writeTxOpts := db.WriteTxOption()
+
+	var rows int64
+
+	err := s.db.ExecTx(
+		ctx,
+		writeTxOpts,
+		func(q ActorDeliveryQueries) error {
+			var err error
+			rows, err = q.AckMailboxMessage(ctx, AckMailboxParams{
+				ID:         id,
+				LeaseToken: toNullString(leaseToken),
+			})
+			if err != nil {
+				return err
+			}
+
+			if rows == 0 {
+				return nil
+			}
+
+			return q.InsertAskResult(ctx, InsertAskResultParams{
+				PromiseID:  params.PromiseID,
+				ResultBlob: params.ResultBlob,
+				ErrorText:  toNullString(params.ErrorText),
+				CreatedAt:  s.clock.Now().Unix(),
+				ExpiresAt:  params.ExpiresAt.Unix(),
+			})
+		},
+	)
+
+	return rows, err
+}
+
 // NackMessage releases a message for redelivery after the specified delay.
 func (s *Store) NackMessage(ctx context.Context, id, leaseToken string,
 	retryAfter time.Duration) (int64, error) {
@@ -333,23 +378,26 @@ func (s *Store) ExtendLease(ctx context.Context, id, leaseToken string,
 }
 
 // MoveToDeadLetter moves a failed message to the dead letter queue.
-func (s *Store) MoveToDeadLetter(
-	ctx context.Context, id, reason string,
-) error {
+func (s *Store) MoveToDeadLetter(ctx context.Context, id, leaseToken,
+	reason string) (int64, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(
+	var rows int64
+
+	err := s.db.ExecTx(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
 			createdAt := s.clock.Now().Unix()
 
 			// First, move to dead letter.
-			err := q.MoveMailboxToDeadLetter(
+			var err error
+			rows, err = q.MoveMailboxToDeadLetter(
 				ctx,
 				DeadLetterInsertParams{
 					ID:            id,
+					LeaseToken:    toNullString(leaseToken),
 					FailureReason: reason,
 					CreatedAt:     createdAt,
 				},
@@ -358,10 +406,16 @@ func (s *Store) MoveToDeadLetter(
 				return err
 			}
 
+			if rows == 0 {
+				return nil
+			}
+
 			// Then delete from mailbox.
 			return q.DeleteMailboxMessage(ctx, id)
 		},
 	)
+
+	return rows, err
 }
 
 // DeleteMessage removes a message from the mailbox.
@@ -570,17 +624,19 @@ func (s *Store) ClaimOutboxBatch(ctx context.Context,
 
 // CompleteOutbox marks an outbox message as successfully delivered. The
 // claim token must match the token set during ClaimOutboxBatch.
-func (s *Store) CompleteOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *Store) CompleteOutbox(ctx context.Context, id, claimToken string) (
+	int64, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(
+	var rows int64
+
+	err := s.db.ExecTx(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			return q.CompleteOutboxMessage(
+			var err error
+			rows, err = q.CompleteOutboxMessage(
 				ctx,
 				CompleteOutboxParams{
 					ID: id,
@@ -592,31 +648,54 @@ func (s *Store) CompleteOutbox(
 					),
 				},
 			)
+
+			return err
 		},
 	)
+
+	return rows, err
 }
 
 // FailOutbox marks an outbox message as failed (dead letter). The claim
 // token must match the token set during ClaimOutboxBatch.
-func (s *Store) FailOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *Store) FailOutbox(ctx context.Context, id, claimToken, reason string) (
+	int64, error) {
 
 	writeTxOpts := db.WriteTxOption()
 
-	return s.db.ExecTx(
+	var rows int64
+
+	err := s.db.ExecTx(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			return q.FailOutboxMessage(ctx, FailOutboxParams{
+			var err error
+			rows, err = q.FailOutboxMessage(ctx, FailOutboxParams{
 				ID: id,
 				CompletedAt: toNullInt64(
 					s.clock.Now().Unix(),
 				),
 				ClaimToken: toNullString(claimToken),
 			})
+			if err != nil {
+				return err
+			}
+
+			if rows == 0 {
+				return nil
+			}
+
+			return q.MoveOutboxToDeadLetter(
+				ctx, adsqlc.MoveOutboxToDeadLetterParams{
+					ID:            id,
+					FailureReason: reason,
+					CreatedAt:     s.clock.Now().Unix(),
+				},
+			)
 		},
 	)
+
+	return rows, err
 }
 
 // IsProcessed checks if a message has already been processed.
@@ -734,7 +813,7 @@ func (s *Store) DeleteCheckpoint(
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
-func (s *Store) GetDeadLetter(ctx context.Context, id string) (
+func (s *Store) GetDeadLetter(ctx context.Context, source, id string) (
 	*actor.DeadLetter, error) {
 
 	readTxOpts := db.ReadTxOption()
@@ -742,7 +821,10 @@ func (s *Store) GetDeadLetter(ctx context.Context, id string) (
 	var result *actor.DeadLetter
 
 	err := s.db.ExecTx(ctx, readTxOpts, func(q ActorDeliveryQueries) error {
-		row, err := q.GetDeadLetter(ctx, id)
+		row, err := q.GetDeadLetter(ctx, GetDeadLetterParams{
+			Source: source,
+			ID:     id,
+		})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
@@ -812,7 +894,7 @@ func (s *Store) ListDeadLetters(ctx context.Context, actorID string,
 
 // DeleteDeadLetter removes a dead letter after manual processing.
 func (s *Store) DeleteDeadLetter(
-	ctx context.Context, id string,
+	ctx context.Context, source, id string,
 ) error {
 
 	writeTxOpts := db.WriteTxOption()
@@ -821,7 +903,10 @@ func (s *Store) DeleteDeadLetter(
 		ctx,
 		writeTxOpts,
 		func(q ActorDeliveryQueries) error {
-			return q.DeleteDeadLetter(ctx, id)
+			return q.DeleteDeadLetter(ctx, DeleteDeadLetterParams{
+				Source: source,
+				ID:     id,
+			})
 		},
 	)
 }
@@ -1001,6 +1086,32 @@ func (s *TxActorDeliveryStore) AckMessage(ctx context.Context, id,
 	})
 }
 
+// AckMessageWithAskResult atomically removes a mailbox message and persists
+// the Ask result marker for the same lease holder.
+func (s *TxActorDeliveryStore) AckMessageWithAskResult(ctx context.Context, id,
+	leaseToken string, params actor.AskResultParams) (int64, error) {
+
+	rows, err := s.querier.AckMailboxMessage(ctx, AckMailboxParams{
+		ID:         id,
+		LeaseToken: toNullString(leaseToken),
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	if rows == 0 {
+		return 0, nil
+	}
+
+	return rows, s.querier.InsertAskResult(ctx, InsertAskResultParams{
+		PromiseID:  params.PromiseID,
+		ResultBlob: params.ResultBlob,
+		ErrorText:  toNullString(params.ErrorText),
+		CreatedAt:  s.clock.Now().Unix(),
+		ExpiresAt:  params.ExpiresAt.Unix(),
+	})
+}
+
 // NackMessage releases a message for redelivery after the specified delay.
 func (s *TxActorDeliveryStore) NackMessage(ctx context.Context, id,
 	leaseToken string, retryAfter time.Duration) (int64, error) {
@@ -1028,20 +1139,29 @@ func (s *TxActorDeliveryStore) ExtendLease(ctx context.Context, id,
 }
 
 // MoveToDeadLetter moves a failed message to the dead letter queue.
-func (s *TxActorDeliveryStore) MoveToDeadLetter(
-	ctx context.Context, id, reason string,
-) error {
+func (s *TxActorDeliveryStore) MoveToDeadLetter(ctx context.Context, id,
+	leaseToken, reason string) (int64, error) {
 
-	err := s.querier.MoveMailboxToDeadLetter(ctx, DeadLetterInsertParams{
-		ID:            id,
-		FailureReason: reason,
-		CreatedAt:     s.clock.Now().Unix(),
-	})
+	rows, err := s.querier.MoveMailboxToDeadLetter(
+		ctx, DeadLetterInsertParams{
+			ID:            id,
+			LeaseToken:    toNullString(leaseToken),
+			FailureReason: reason,
+			CreatedAt:     s.clock.Now().Unix(),
+		})
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	return s.querier.DeleteMailboxMessage(ctx, id)
+	if rows == 0 {
+		return 0, nil
+	}
+
+	if err := s.querier.DeleteMailboxMessage(ctx, id); err != nil {
+		return 0, err
+	}
+
+	return rows, nil
 }
 
 // DeleteMessage removes a message from the mailbox.
@@ -1163,9 +1283,8 @@ func (s *TxActorDeliveryStore) ClaimOutboxBatch(ctx context.Context,
 
 // CompleteOutbox marks an outbox message as successfully delivered. The
 // claim token must match the token set during ClaimOutboxBatch.
-func (s *TxActorDeliveryStore) CompleteOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *TxActorDeliveryStore) CompleteOutbox(ctx context.Context, id,
+	claimToken string) (int64, error) {
 
 	return s.querier.CompleteOutboxMessage(ctx, CompleteOutboxParams{
 		ID:          id,
@@ -1175,15 +1294,34 @@ func (s *TxActorDeliveryStore) CompleteOutbox(
 }
 
 // FailOutbox marks an outbox message as failed.
-func (s *TxActorDeliveryStore) FailOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *TxActorDeliveryStore) FailOutbox(ctx context.Context, id, claimToken,
+	reason string) (int64, error) {
 
-	return s.querier.FailOutboxMessage(ctx, FailOutboxParams{
+	rows, err := s.querier.FailOutboxMessage(ctx, FailOutboxParams{
 		ID:          id,
 		CompletedAt: toNullInt64(s.clock.Now().Unix()),
 		ClaimToken:  toNullString(claimToken),
 	})
+	if err != nil {
+		return 0, err
+	}
+
+	if rows == 0 {
+		return 0, nil
+	}
+
+	err = s.querier.MoveOutboxToDeadLetter(
+		ctx, adsqlc.MoveOutboxToDeadLetterParams{
+			ID:            id,
+			FailureReason: reason,
+			CreatedAt:     s.clock.Now().Unix(),
+		},
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	return rows, nil
 }
 
 // IsProcessed checks if a message has already been processed.
@@ -1256,10 +1394,13 @@ func (s *TxActorDeliveryStore) DeleteCheckpoint(
 }
 
 // GetDeadLetter retrieves a specific dead letter message.
-func (s *TxActorDeliveryStore) GetDeadLetter(ctx context.Context, id string) (
-	*actor.DeadLetter, error) {
+func (s *TxActorDeliveryStore) GetDeadLetter(ctx context.Context, source,
+	id string) (*actor.DeadLetter, error) {
 
-	row, err := s.querier.GetDeadLetter(ctx, id)
+	row, err := s.querier.GetDeadLetter(ctx, GetDeadLetterParams{
+		Source: source,
+		ID:     id,
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -1314,10 +1455,13 @@ func (s *TxActorDeliveryStore) ListDeadLetters(ctx context.Context,
 
 // DeleteDeadLetter removes a dead letter after manual processing.
 func (s *TxActorDeliveryStore) DeleteDeadLetter(
-	ctx context.Context, id string,
+	ctx context.Context, source, id string,
 ) error {
 
-	return s.querier.DeleteDeadLetter(ctx, id)
+	return s.querier.DeleteDeadLetter(ctx, DeleteDeadLetterParams{
+		Source: source,
+		ID:     id,
+	})
 }
 
 // ExpireLeases releases all expired leases so messages can be redelivered.

@@ -360,9 +360,13 @@ func replayDeadLetter(t *testing.T, store actor.TxAwareDeliveryStore,
 		reason = "model trace dead letter"
 	}
 
-	requireNoError(t, store.MoveToDeadLetter(t.Context(), event.ID, reason))
+	rows, err := store.MoveToDeadLetter(
+		t.Context(), event.ID, event.LeaseToken, reason,
+	)
+	requireNoError(t, err)
+	requireExpectedRows(t, rows, event, "dead_letter")
 
-	deadLetter, err := store.GetDeadLetter(t.Context(), event.ID)
+	deadLetter, err := store.GetDeadLetter(t.Context(), "mailbox", event.ID)
 	requireNoError(t, err)
 	if deadLetter == nil {
 		t.Fatalf("expected dead letter %s, got nil", event.ID)

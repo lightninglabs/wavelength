@@ -177,6 +177,25 @@ func NewTxBehaviorEither[M TLVMessage, R any, S any](
 	)
 }
 
+const (
+	defaultDurableCleanupTimeout = 5 * time.Second
+	defaultDeduplicationTTL      = 24 * time.Hour
+)
+
+// defaultDurableHeartbeatInterval returns the default lease heartbeat interval
+// derived from the configured lease duration.
+func defaultDurableHeartbeatInterval(
+	leaseDuration time.Duration,
+) time.Duration {
+
+	heartbeatInterval := leaseDuration / 3
+	if heartbeatInterval <= 0 {
+		return time.Nanosecond
+	}
+
+	return heartbeatInterval
+}
+
 // DefaultDurableActorConfig returns a config with sensible defaults.
 func DefaultDurableActorConfig[M TLVMessage, R any](
 	id string,
@@ -185,22 +204,24 @@ func DefaultDurableActorConfig[M TLVMessage, R any](
 	codec *MessageCodec,
 ) DurableActorConfig[M, R] {
 
-	leaseDuration := 30 * time.Second
+	leaseDuration := defaultDurableLeaseDuration
 
 	return DurableActorConfig[M, R]{
-		ID:                id,
-		Log:               fn.None[btclog.Logger](),
-		Behavior:          NewClassicBehavior(behavior),
-		Store:             store,
-		Codec:             codec,
-		TellRetryPolicy:   DefaultTellRetryPolicy,
-		LeaseDuration:     leaseDuration,
-		HeartbeatInterval: leaseDuration / 3,
-		PollInterval:      time.Second,
-		MaxAttempts:       10,
-		CleanupTimeout:    5 * time.Second,
-		DeduplicationTTL:  24 * time.Hour,
-		NumWorkers:        1,
+		ID:              id,
+		Log:             fn.None[btclog.Logger](),
+		Behavior:        NewClassicBehavior(behavior),
+		Store:           store,
+		Codec:           codec,
+		TellRetryPolicy: DefaultTellRetryPolicy,
+		LeaseDuration:   leaseDuration,
+		HeartbeatInterval: defaultDurableHeartbeatInterval(
+			leaseDuration,
+		),
+		PollInterval:     defaultDurablePollInterval,
+		MaxAttempts:      defaultDurableMaxAttempts,
+		CleanupTimeout:   defaultDurableCleanupTimeout,
+		DeduplicationTTL: defaultDeduplicationTTL,
+		NumWorkers:       1,
 	}
 }
 
@@ -367,14 +388,41 @@ func NewDurableActor[M TLVMessage, R any](
 		numWorkers = 1
 	}
 
+	leaseDuration := cfg.LeaseDuration
+	if leaseDuration <= 0 {
+		leaseDuration = defaultDurableLeaseDuration
+	}
+
+	pollInterval := cfg.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultDurablePollInterval
+	}
+
+	maxAttempts := cfg.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultDurableMaxAttempts
+	}
+
+	heartbeatInterval := cfg.HeartbeatInterval
+	if heartbeatInterval <= 0 || heartbeatInterval >= leaseDuration/2 {
+		heartbeatInterval = defaultDurableHeartbeatInterval(
+			leaseDuration,
+		)
+	}
+
+	cleanupTimeout := cfg.CleanupTimeout
+	if cleanupTimeout <= 0 {
+		cleanupTimeout = defaultDurableCleanupTimeout
+	}
+
 	mailboxCfg := DurableMailboxConfig{
 		MailboxID:     cfg.ID,
 		Store:         cfg.Store,
 		Codec:         cfg.Codec,
 		Clock:         cfg.Clock,
-		LeaseDuration: cfg.LeaseDuration,
-		PollInterval:  cfg.PollInterval,
-		MaxAttempts:   cfg.MaxAttempts,
+		LeaseDuration: leaseDuration,
+		PollInterval:  pollInterval,
+		MaxAttempts:   maxAttempts,
 
 		// Size the wake channel to the worker count so a burst of
 		// enqueues can rouse every idle worker at once.
@@ -387,8 +435,8 @@ func NewDurableActor[M TLVMessage, R any](
 	}
 
 	deduplicationTTL := cfg.DeduplicationTTL
-	if deduplicationTTL == 0 {
-		deduplicationTTL = 24 * time.Hour
+	if deduplicationTTL <= 0 {
+		deduplicationTTL = defaultDeduplicationTTL
 	}
 
 	// Check if the store supports transaction awareness.
@@ -451,9 +499,9 @@ func NewDurableActor[M TLVMessage, R any](
 		dlo:               cfg.DLO,
 		wg:                cfg.Wg,
 		tellRetryPolicy:   tellPolicy,
-		leaseDuration:     cfg.LeaseDuration,
-		heartbeatInterval: cfg.HeartbeatInterval,
-		cleanupTimeout:    cfg.CleanupTimeout,
+		leaseDuration:     leaseDuration,
+		heartbeatInterval: heartbeatInterval,
+		cleanupTimeout:    cleanupTimeout,
 		deduplicationTTL:  deduplicationTTL,
 		numWorkers:        numWorkers,
 		done:              make(chan struct{}),
@@ -542,6 +590,11 @@ func (a *DurableActor[M, R]) teardown() {
 	// The actor's context has been cancelled and all workers have exited.
 	// Close the mailbox.
 	a.mailbox.Close()
+
+	// Standard Ask promises are in-memory only. Once the durable actor
+	// stops, any still-pending live asks must fail instead of hanging
+	// forever while the mailbox rows remain on disk for a later restart.
+	a.mailbox.failPendingAsks(fn.Err[R](ErrActorTerminated))
 
 	// For durable mailboxes, we don't drain to DLO since messages persist
 	// in the database and will be picked up on restart.
@@ -718,7 +771,7 @@ func (a *DurableActor[M, R]) processInTransaction(ctx context.Context,
 	// Transaction committed -- now it is safe to complete the
 	// in-memory promise so the caller observes the result.
 	if delivery.IsAsk() && delivery.Promise != nil {
-		delivery.Promise.Complete(behaviorResult)
+		delivery.settleAsk(behaviorResult)
 	}
 }
 
@@ -1030,6 +1083,7 @@ func (a *DurableActor[M, R]) handleResultInTx(
 	// promise completion after ExecTx returns.
 	txDelivery := &Delivery[M, R]{
 		ID:              delivery.ID,
+		PromiseID:       delivery.PromiseID,
 		Message:         delivery.Message,
 		Promise:         delivery.Promise,
 		CallerCtx:       delivery.CallerCtx,
@@ -1040,6 +1094,8 @@ func (a *DurableActor[M, R]) handleResultInTx(
 		Attempts:        delivery.Attempts,
 		MaxAttempts:     delivery.MaxAttempts,
 		store:           store,
+		nowFn:           delivery.nowFn,
+		onAskSettled:    delivery.onAskSettled,
 		deferPromise:    delivery.deferPromise,
 	}
 
@@ -1107,7 +1163,18 @@ func (a *DurableActor[M, R]) handleResultInTx(
 			return fmt.Errorf("mark processed: %w", err)
 		}
 
-		return store.MoveToDeadLetter(ctx, delivery.ID, err.Error())
+		rowsAffected, moveErr := store.MoveToDeadLetter(
+			ctx, delivery.ID, delivery.LeaseToken, err.Error(),
+		)
+		if moveErr != nil {
+			return moveErr
+		}
+
+		if rowsAffected == 0 {
+			return ErrLeaseExpired
+		}
+
+		return nil
 	}
 
 	// Success - mark as processed and Ack the message.
@@ -1218,25 +1285,20 @@ func (a *DurableActor[M, R]) handleResult(ctx context.Context,
 			// Max retries exceeded or policy says don't retry.
 			// Explicitly move to dead letter queue.
 			reason := fmt.Sprintf("retry policy exhausted: %v", err)
-			if dlErr := a.store.MoveToDeadLetter(
-				ctx, delivery.ID, reason,
-			); dlErr != nil {
-
-				logger(ctx).WarnS(ctx, "Failed to dead-letter "+
-					"Tell message",
+			rowsAffected, dlErr := a.store.MoveToDeadLetter(
+				ctx, delivery.ID, delivery.LeaseToken, reason,
+			)
+			if dlErr != nil {
+				logger(ctx).WarnS(ctx,
+					"Failed to dead-letter Tell message",
 					dlErr,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
-			}
-
-			// Delete from mailbox after dead-lettering.
-			if delErr := a.store.DeleteMessage(
-				ctx, delivery.ID,
-			); delErr != nil {
-
-				logger(ctx).WarnS(ctx, "Failed to delete "+
-					"dead-lettered message",
-					delErr,
+			} else if rowsAffected == 0 {
+				logger(ctx).WarnS(ctx,
+					"Skipped dead-lettering Tell message "+
+						"after lease loss",
+					nil,
 					"actor_id", a.id,
 					"delivery_id", delivery.ID)
 			}

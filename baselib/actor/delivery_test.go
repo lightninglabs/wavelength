@@ -46,6 +46,9 @@ type mockDeliveryStore struct {
 
 	// injectEnqueueError causes only EnqueueMessage to fail.
 	injectEnqueueError error
+
+	// injectAskResultError causes only Ask-result persistence to fail.
+	injectAskResultError error
 }
 
 func newMockDeliveryStore() *mockDeliveryStore {
@@ -59,8 +62,14 @@ func newMockDeliveryStore() *mockDeliveryStore {
 	}
 }
 
-func (m *mockDeliveryStore) EnqueueMessage(ctx context.Context,
-	params EnqueueParams) error {
+// deadLetterKey returns the stable in-memory key for a dead letter entry.
+func deadLetterKey(source, id string) string {
+	return source + ":" + id
+}
+
+func (m *mockDeliveryStore) EnqueueMessage(
+	ctx context.Context, params EnqueueParams,
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -155,6 +164,46 @@ func (m *mockDeliveryStore) AckMessage(ctx context.Context, id,
 	return 1, nil
 }
 
+// AckMessageWithAskResult removes a mailbox row and persists the Ask result
+// under the same critical section to emulate the real store's atomic behavior.
+func (m *mockDeliveryStore) AckMessageWithAskResult(ctx context.Context, id,
+	leaseToken string, params AskResultParams) (int64, error) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.injectError != nil {
+		return 0, m.injectError
+	}
+
+	msg, ok := m.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	if m.injectAskResultError != nil {
+		return 0, m.injectAskResultError
+	}
+
+	if _, ok := m.askResults[params.PromiseID]; !ok {
+		m.askResults[params.PromiseID] = &AskResult{
+			PromiseID:  params.PromiseID,
+			ResultBlob: append([]byte(nil), params.ResultBlob...),
+			ErrorText:  params.ErrorText,
+			CreatedAt:  time.Now(),
+			ExpiresAt:  params.ExpiresAt,
+		}
+	}
+
+	delete(m.messages, id)
+
+	return 1, nil
+}
+
 func (m *mockDeliveryStore) NackMessage(ctx context.Context, id,
 	leaseToken string, retryAfter time.Duration) (int64, error) {
 
@@ -206,21 +255,25 @@ func (m *mockDeliveryStore) ExtendLease(ctx context.Context, id,
 }
 
 func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id,
-	reason string) error {
+	leaseToken, reason string) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.injectError != nil {
-		return m.injectError
+		return 0, m.injectError
 	}
 
 	msg, ok := m.messages[id]
 	if !ok {
-		return nil
+		return 0, nil
 	}
 
-	m.deadLetters[id] = &DeadLetter{
+	if msg.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	m.deadLetters[deadLetterKey("mailbox", id)] = &DeadLetter{
 		ID:            id,
 		Source:        "mailbox",
 		ActorID:       msg.MailboxID,
@@ -231,7 +284,9 @@ func (m *mockDeliveryStore) MoveToDeadLetter(ctx context.Context, id,
 		CreatedAt:     time.Now(),
 	}
 
-	return nil
+	delete(m.messages, id)
+
+	return 1, nil
 }
 
 func (m *mockDeliveryStore) DeleteMessage(ctx context.Context,
@@ -259,9 +314,17 @@ func (m *mockDeliveryStore) SaveAskResult(ctx context.Context,
 		return m.injectError
 	}
 
+	if m.injectAskResultError != nil {
+		return m.injectAskResultError
+	}
+
+	if _, ok := m.askResults[params.PromiseID]; ok {
+		return nil
+	}
+
 	m.askResults[params.PromiseID] = &AskResult{
 		PromiseID:  params.PromiseID,
-		ResultBlob: params.ResultBlob,
+		ResultBlob: append([]byte(nil), params.ResultBlob...),
 		ErrorText:  params.ErrorText,
 		CreatedAt:  time.Now(),
 		ExpiresAt:  params.ExpiresAt,
@@ -369,32 +432,53 @@ func (m *mockDeliveryStore) ClaimOutboxBatch(ctx context.Context,
 	return result, nil
 }
 
-func (m *mockDeliveryStore) CompleteOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (m *mockDeliveryStore) CompleteOutbox(ctx context.Context, id,
+	claimToken string) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if msg, ok := m.outbox[id]; ok {
+		if msg.ClaimToken != claimToken || msg.Status != "pending" {
+			return 0, nil
+		}
+
 		msg.Status = "completed"
+
+		return 1, nil
 	}
 
-	return nil
+	return 0, nil
 }
 
-func (m *mockDeliveryStore) FailOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (m *mockDeliveryStore) FailOutbox(ctx context.Context, id, claimToken,
+	reason string) (int64, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if msg, ok := m.outbox[id]; ok {
+		if msg.ClaimToken != claimToken || msg.Status != "pending" {
+			return 0, nil
+		}
+
 		msg.Status = "dead_letter"
+
+		m.deadLetters[deadLetterKey("outbox", id)] = &DeadLetter{
+			ID:            id,
+			Source:        "outbox",
+			ActorID:       msg.SourceActorID,
+			MessageType:   msg.MessageType,
+			Payload:       append([]byte(nil), msg.Payload...),
+			FailureReason: reason,
+			Attempts:      msg.DeliveryAttempts,
+			CreatedAt:     time.Now(),
+		}
+
+		return 1, nil
 	}
 
-	return nil
+	return 0, nil
 }
 
 func (m *mockDeliveryStore) IsProcessed(ctx context.Context, id string) (bool,
@@ -461,13 +545,13 @@ func (m *mockDeliveryStore) DeleteCheckpoint(ctx context.Context,
 	return nil
 }
 
-func (m *mockDeliveryStore) GetDeadLetter(ctx context.Context, id string) (
-	*DeadLetter, error) {
+func (m *mockDeliveryStore) GetDeadLetter(ctx context.Context, source,
+	id string) (*DeadLetter, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.deadLetters[id], nil
+	return m.deadLetters[deadLetterKey(source, id)], nil
 }
 
 func (m *mockDeliveryStore) ListDeadLetters(ctx context.Context, actorID string,
@@ -490,13 +574,14 @@ func (m *mockDeliveryStore) ListDeadLetters(ctx context.Context, actorID string,
 	return result, nil
 }
 
-func (m *mockDeliveryStore) DeleteDeadLetter(ctx context.Context,
-	id string) error {
+func (m *mockDeliveryStore) DeleteDeadLetter(
+	ctx context.Context, source, id string,
+) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	delete(m.deadLetters, id)
+	delete(m.deadLetters, deadLetterKey(source, id))
 
 	return nil
 }
@@ -612,6 +697,56 @@ func TestDeliveryAckWithPromise(t *testing.T) {
 	require.Len(t, store.askResults, 1)
 }
 
+// TestDeliveryAckWithPromiseKeepsMessageOnAskResultFailure verifies that Ask
+// ack/result persistence is atomic: a failed ask-result write must not drop the
+// mailbox message.
+func TestDeliveryAckWithPromiseKeepsMessageOnAskResultFailure(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	store.injectAskResultError = errors.New("save ask result failed")
+	ctx := context.Background()
+
+	msgID := "test-msg-1"
+	leaseToken := "test-lease-token"
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	promise := NewPromise[string]()
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(42)),
+		},
+		Promise:     promise,
+		LeaseToken:  leaseToken,
+		LeaseUntil:  time.Now().Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+	}
+
+	err := delivery.Ack(ctx, fn.Ok("the result"))
+	require.ErrorContains(t, err, "ack ask message")
+
+	// The mailbox row must still exist because the ack/result step is
+	// atomic.
+	require.Contains(t, store.messages, msgID)
+	require.Empty(t, store.askResults)
+
+	promiseCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+
+	result := promise.Future().Await(promiseCtx)
+	require.Error(t, result.Err())
+}
+
 // TestDeliveryNack tests basic Nack functionality.
 func TestDeliveryNack(t *testing.T) {
 	t.Parallel()
@@ -702,7 +837,7 @@ func TestDeliveryNackPoisonPill(t *testing.T) {
 
 	// Message should be in dead letter queue.
 	require.Len(t, store.deadLetters, 1)
-	dl := store.deadLetters[msgID]
+	dl := store.deadLetters[deadLetterKey("mailbox", msgID)]
 	require.Equal(t, "mailbox", dl.Source)
 	require.Contains(t, dl.FailureReason, "max attempts reached")
 }
@@ -838,6 +973,70 @@ func TestDeliveryHelperMethods(t *testing.T) {
 	require.True(t, askDelivery.IsLeaseExpired())
 	require.True(t, askDelivery.ShouldDeadLetter())
 	require.True(t, askDelivery.LeaseRemaining() < 0)
+}
+
+// TestDeliveryUsesInjectedClock tests that Delivery uses its configured clock
+// for lease bookkeeping and Ask-result expiry instead of wall clock time.
+func TestDeliveryUsesInjectedClock(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	ctx := context.Background()
+	baseTime := time.Unix(1_700_000_000, 0)
+
+	msgID := "clocked-ask"
+	leaseToken := "clocked-lease"
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  baseTime.Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	delivery := &Delivery[*testTLVMsg, string]{
+		ID: msgID,
+		Message: &testTLVMsg{
+			Value: tlv.NewPrimitiveRecord[tlv.TlvType1](uint64(7)),
+		},
+		Promise:     NewPromise[string](),
+		LeaseToken:  leaseToken,
+		LeaseUntil:  baseTime.Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+		store:       store,
+		nowFn: func() time.Time {
+			return baseTime
+		},
+	}
+
+	require.Equal(t, 30*time.Second, delivery.LeaseRemaining())
+	require.False(t, delivery.IsLeaseExpired())
+
+	err := delivery.Ack(ctx, fn.Ok("ok"))
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	result := store.askResults[msgID]
+	store.mu.Unlock()
+
+	require.NotNil(t, result)
+	require.Equal(t, baseTime.Add(24*time.Hour), result.ExpiresAt)
+
+	delivery.acked = false
+	store.messages[msgID] = &LeasedMessage{
+		ID:          msgID,
+		MailboxID:   "test-actor",
+		LeaseToken:  leaseToken,
+		LeaseUntil:  baseTime.Add(30 * time.Second),
+		Attempts:    1,
+		MaxAttempts: 10,
+	}
+
+	err = delivery.Extend(ctx, 45*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, baseTime.Add(45*time.Second), delivery.LeaseUntil)
 }
 
 // TestDeliveryRapidAckNack is a property-based test for Ack/Nack behavior.

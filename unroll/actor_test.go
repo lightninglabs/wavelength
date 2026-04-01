@@ -796,6 +796,13 @@ func (s *memCheckpointStore) AckMessage(context.Context, string, string) (int64,
 	return 1, nil
 }
 
+// AckMessageWithAskResult is unused in these tests.
+func (s *memCheckpointStore) AckMessageWithAskResult(context.Context, string,
+	string, actor.AskResultParams) (int64, error) {
+
+	return 1, nil
+}
+
 // NackMessage is unused in these tests.
 func (s *memCheckpointStore) NackMessage(context.Context, string, string,
 	time.Duration) (int64, error) {
@@ -811,10 +818,10 @@ func (s *memCheckpointStore) ExtendLease(context.Context, string, string,
 }
 
 // MoveToDeadLetter is unused in these tests.
-func (s *memCheckpointStore) MoveToDeadLetter(context.Context, string,
-	string) error {
+func (s *memCheckpointStore) MoveToDeadLetter(context.Context, string, string,
+	string) (int64, error) {
 
-	return nil
+	return 1, nil
 }
 
 // DeleteMessage is unused in these tests.
@@ -856,15 +863,17 @@ func (s *memCheckpointStore) ClaimOutboxBatch(context.Context,
 }
 
 // CompleteOutbox is unused in these tests.
-func (s *memCheckpointStore) CompleteOutbox(context.Context, string,
-	string) error {
+func (s *memCheckpointStore) CompleteOutbox(context.Context, string, string) (
+	int64, error) {
 
-	return nil
+	return 1, nil
 }
 
 // FailOutbox is unused in these tests.
-func (s *memCheckpointStore) FailOutbox(context.Context, string, string) error {
-	return nil
+func (s *memCheckpointStore) FailOutbox(context.Context, string, string,
+	string) (int64, error) {
+
+	return 1, nil
 }
 
 // IsProcessed is unused in these tests.
@@ -882,7 +891,7 @@ func (s *memCheckpointStore) MarkProcessed(context.Context, string, string,
 }
 
 // GetDeadLetter is unused in these tests.
-func (s *memCheckpointStore) GetDeadLetter(context.Context, string) (
+func (s *memCheckpointStore) GetDeadLetter(context.Context, string, string) (
 	*actor.DeadLetter, error) {
 
 	return nil, nil
@@ -896,7 +905,9 @@ func (s *memCheckpointStore) ListDeadLetters(context.Context, string, int) (
 }
 
 // DeleteDeadLetter is unused in these tests.
-func (s *memCheckpointStore) DeleteDeadLetter(context.Context, string) error {
+func (s *memCheckpointStore) DeleteDeadLetter(context.Context, string,
+	string) error {
+
 	return nil
 }
 

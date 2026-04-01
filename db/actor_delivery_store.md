@@ -24,8 +24,9 @@ The durable mailbox schema consists of six tables:
 2. **outbox_messages**: Transactional outbox for CDC pattern. Messages written
    here are delivered asynchronously by the OutboxPublisher.
 
-3. **ask_results**: Persists results for Ask messages so callers can recover
-   outcomes after crash.
+3. **ask_results**: Persists Ask result markers so mailbox ack and result
+   durability can commit together, even though standard `Ask` callers still
+   consume responses through an in-memory future.
 
 4. **processed_messages**: Deduplication table tracking processed message IDs
    with TTL-based expiry.
@@ -101,8 +102,8 @@ erDiagram
     }
 
     dead_letters {
-        TEXT id "PK"
-        TEXT source "mailbox|outbox"
+        TEXT source "PK (part 1), mailbox|outbox"
+        TEXT id "PK (part 2)"
         TEXT actor_id "Idx"
         TEXT message_type
         BLOB payload
@@ -184,11 +185,13 @@ changes. The OutboxPublisher drains this table and delivers messages.
   for delivery.
 
 - `domain_key`: Optional natural idempotency key. For example:
-  `"round:abc123:phase:nonces"` ensures the same round/phase combination is only
-  processed once by the receiver.
+  `"round:abc123:phase:nonces"` can be used by higher layers to correlate
+  related messages. The store currently persists and indexes this field, but
+  does not itself enforce deduplication or supersession by `domain_key`.
 
-- `version`: Monotonic counter for ordering within a domain. Higher versions
-  supersede lower versions for the same `domain_key`.
+- `version`: Monotonic counter associated with a `domain_key`. The store
+  persists this metadata, but higher versions do not currently suppress lower
+  versions automatically.
 
 - `status`: Delivery lifecycle state:
   - `pending`: Awaiting delivery (OutboxPublisher polls this)
@@ -201,7 +204,8 @@ changes. The OutboxPublisher drains this table and delivers messages.
 - `idx_outbox_messages_pending`: Partial index on `(status, created_at)` for
   efficient polling of pending messages.
 
-- `idx_outbox_messages_domain_key`: Partial index for idempotency checks.
+- `idx_outbox_messages_domain_key`: Partial index for domain-key lookups by
+  higher-level tooling or future supersession logic.
 
 **CDC flow**:
 1. Actor writes to outbox within transaction (alongside FSM state changes)
@@ -214,24 +218,28 @@ changes. The OutboxPublisher drains this table and delivers messages.
 
 ### ask_results
 
-Persists results for Ask messages so callers can recover outcomes after crash.
-Separating this from mailbox_messages allows the original message to be deleted
-while the result remains available.
+Persists Ask result markers separately from mailbox messages so acknowledging an
+Ask can atomically remove the inbox row and retain its outcome metadata.
+Standard `Ask` still completes through the in-memory promise path; full
+crash-safe response delivery remains the `DurableAsk` mechanism.
 
 **Key fields**:
 - `promise_id`: Links to the original Ask message.
 
-- `result_blob`: TLV-encoded successful result (NULL if error).
+- `result_blob`: Optional persisted success payload. The current runtime stores
+  this only when a caller explicitly writes a blob through the store API; the
+  standard actor `Ask` path persists success/failure status but not the
+  successful return value itself.
 
 - `error_text`: Error message if the request failed (NULL if success).
 
 - `expires_at`: Unix timestamp for TTL-based garbage collection.
 
 **Usage pattern**: When an actor processes an Ask message:
-1. Result (success or error) is written to `ask_results`
-2. Original message is deleted from `mailbox_messages`
-3. In-memory Promise is completed
-4. For DurableAsk: AskResponse is also written to outbox for callback delivery
+1. The store atomically validates the lease, deletes the mailbox row, and
+   inserts the Ask result marker
+2. The in-memory Promise is completed after that durable step succeeds
+3. For DurableAsk: AskResponse is also written to outbox for callback delivery
 
 ### processed_messages
 
@@ -281,7 +289,8 @@ Failed messages after max_attempts or unrecoverable errors. Supports debugging
 and manual intervention for operational recovery.
 
 **Key fields**:
-- `id`: Original message ID for correlation.
+- `source`, `id`: Composite durable identity. The same propagated message ID can
+  appear once as a mailbox dead letter and once as an outbox dead letter.
 
 - `source`: Whether from `mailbox` (incoming) or `outbox` (outgoing).
 

@@ -39,7 +39,7 @@ WHERE id IN (
     SELECT o.id FROM outbox_messages o
     WHERE o.status = 'pending'
       AND (o.claimed_until IS NULL OR o.claimed_until < $4)
-    ORDER BY o.created_at ASC
+    ORDER BY o.created_at ASC, o.id ASC
     LIMIT $1
 )
 RETURNING id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at
@@ -55,6 +55,8 @@ type ClaimOutboxBatchParams struct {
 // Claim a batch of pending outbox messages for delivery. Sets a claim token
 // and expiry to prevent concurrent publishers from processing the same messages.
 // Only selects rows that are unclaimed or whose claim has expired.
+// Ordering uses created_at ASC and then id ASC so UUIDv7 remains the final
+// deterministic tiebreaker when rows land in the same created_at second.
 func (q *Queries) ClaimOutboxBatch(ctx context.Context, arg ClaimOutboxBatchParams) ([]OutboxMessage, error) {
 	rows, err := q.db.QueryContext(ctx, ClaimOutboxBatch,
 		arg.Limit,
@@ -127,10 +129,10 @@ func (q *Queries) CleanupOldDeadLetters(ctx context.Context, createdAt int64) er
 	return err
 }
 
-const CompleteOutboxMessage = `-- name: CompleteOutboxMessage :exec
+const CompleteOutboxMessage = `-- name: CompleteOutboxMessage :execrows
 UPDATE outbox_messages
 SET status = 'completed', completed_at = $2
-WHERE id = $1 AND claim_token = $3
+WHERE id = $1 AND claim_token = $3 AND status = 'pending'
 `
 
 type CompleteOutboxMessageParams struct {
@@ -141,9 +143,12 @@ type CompleteOutboxMessageParams struct {
 
 // Mark an outbox message as successfully delivered. The claim token must match
 // to prevent stale publishers from completing messages they no longer own.
-func (q *Queries) CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) error {
-	_, err := q.db.ExecContext(ctx, CompleteOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
-	return err
+func (q *Queries) CompleteOutboxMessage(ctx context.Context, arg CompleteOutboxMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, CompleteOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const CountDeadLetters = `-- name: CountDeadLetters :one
@@ -200,12 +205,17 @@ func (q *Queries) DeleteAskResult(ctx context.Context, promiseID string) error {
 }
 
 const DeleteDeadLetter = `-- name: DeleteDeadLetter :exec
-DELETE FROM dead_letters WHERE id = $1
+DELETE FROM dead_letters WHERE source = $1 AND id = $2
 `
 
+type DeleteDeadLetterParams struct {
+	Source string
+	ID     string
+}
+
 // Delete a dead letter after manual processing.
-func (q *Queries) DeleteDeadLetter(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, DeleteDeadLetter, id)
+func (q *Queries) DeleteDeadLetter(ctx context.Context, arg DeleteDeadLetterParams) error {
+	_, err := q.db.ExecContext(ctx, DeleteDeadLetter, arg.Source, arg.ID)
 	return err
 }
 
@@ -377,10 +387,10 @@ func (q *Queries) ExtendMailboxLease(ctx context.Context, arg ExtendMailboxLease
 	return result.RowsAffected()
 }
 
-const FailOutboxMessage = `-- name: FailOutboxMessage :exec
+const FailOutboxMessage = `-- name: FailOutboxMessage :execrows
 UPDATE outbox_messages
 SET status = 'dead_letter', completed_at = $2
-WHERE id = $1 AND claim_token = $3
+WHERE id = $1 AND claim_token = $3 AND status = 'pending'
 `
 
 type FailOutboxMessageParams struct {
@@ -391,9 +401,12 @@ type FailOutboxMessageParams struct {
 
 // Mark an outbox message as failed (dead letter). The claim token must match
 // to prevent stale publishers from failing messages they no longer own.
-func (q *Queries) FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) error {
-	_, err := q.db.ExecContext(ctx, FailOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
-	return err
+func (q *Queries) FailOutboxMessage(ctx context.Context, arg FailOutboxMessageParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, FailOutboxMessage, arg.ID, arg.CompletedAt, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const GetAskResult = `-- name: GetAskResult :one
@@ -416,15 +429,20 @@ func (q *Queries) GetAskResult(ctx context.Context, promiseID string) (AskResult
 
 const GetDeadLetter = `-- name: GetDeadLetter :one
 
-SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at FROM dead_letters WHERE id = $1
+SELECT id, source, actor_id, message_type, payload, failure_reason, attempts, created_at FROM dead_letters WHERE source = $1 AND id = $2
 `
+
+type GetDeadLetterParams struct {
+	Source string
+	ID     string
+}
 
 // =============================================================================
 // Dead Letter Operations
 // =============================================================================
 // Get a specific dead letter by ID.
-func (q *Queries) GetDeadLetter(ctx context.Context, id string) (DeadLetter, error) {
-	row := q.db.QueryRowContext(ctx, GetDeadLetter, id)
+func (q *Queries) GetDeadLetter(ctx context.Context, arg GetDeadLetterParams) (DeadLetter, error) {
+	row := q.db.QueryRowContext(ctx, GetDeadLetter, arg.Source, arg.ID)
 	var i DeadLetter
 	err := row.Scan(
 		&i.ID,
@@ -575,7 +593,7 @@ WHERE mailbox_messages.id = (
                 AND m2.attempts < m2.max_attempts
           )
       )
-    ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
+    ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC, m.id ASC
     LIMIT 1
 )
 RETURNING id, mailbox_id, message_type, payload, promise_id, callback_actor_id, correlation_id, priority, lease_token, lease_until, available_at, attempts, max_attempts, created_at, correlation_key
@@ -594,8 +612,8 @@ type LeaseNextMailboxMessageParams struct {
 //
 // Ordering: priority DESC ensures high-priority (e.g., restart) messages
 // first, then available_at ASC for delivery order, then created_at ASC as
-// a tiebreaker to ensure deterministic ordering when priority and
-// available_at are equal.
+// a tiebreaker, then id ASC so UUIDv7 time-ordering remains the final
+// deterministic tiebreaker when rows land in the same created_at second.
 //
 // Per-correlation-key FIFO: when a row carries a non-NULL correlation_key,
 // it is eligible only if no earlier same-key row exists in this mailbox.
@@ -773,7 +791,7 @@ func (q *Queries) ListFSMCheckpoints(ctx context.Context) ([]FsmCheckpoint, erro
 const ListMailboxMessagesByActor = `-- name: ListMailboxMessagesByActor :many
 SELECT id, mailbox_id, message_type, payload, promise_id, callback_actor_id, correlation_id, priority, lease_token, lease_until, available_at, attempts, max_attempts, created_at, correlation_key FROM mailbox_messages
 WHERE mailbox_id = $1
-ORDER BY priority DESC, available_at ASC, created_at ASC
+ORDER BY priority DESC, available_at ASC, created_at ASC, id ASC
 `
 
 // List all messages for an actor's mailbox (for debugging).
@@ -819,7 +837,7 @@ func (q *Queries) ListMailboxMessagesByActor(ctx context.Context, mailboxID stri
 const ListPendingOutboxByTarget = `-- name: ListPendingOutboxByTarget :many
 SELECT id, source_actor_id, target_actor_id, message_type, payload, domain_key, version, status, delivery_attempts, claim_token, claimed_until, created_at, completed_at FROM outbox_messages
 WHERE target_actor_id = $1 AND status = 'pending'
-ORDER BY created_at ASC
+ORDER BY created_at ASC, id ASC
 `
 
 // List pending outbox messages for a specific target actor.
@@ -893,23 +911,32 @@ func (q *Queries) MarkMessageProcessed(ctx context.Context, arg MarkMessageProce
 	return err
 }
 
-const MoveMailboxToDeadLetter = `-- name: MoveMailboxToDeadLetter :exec
+const MoveMailboxToDeadLetter = `-- name: MoveMailboxToDeadLetter :execrows
 INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
-SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2, m.attempts, $3
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $3, m.attempts, $4
 FROM mailbox_messages m
-WHERE m.id = $1
+WHERE m.id = $1 AND m.lease_token = $2
 `
 
 type MoveMailboxToDeadLetterParams struct {
 	ID            string
+	LeaseToken    sql.NullString
 	FailureReason string
 	CreatedAt     int64
 }
 
 // Move a failed message to the dead letter queue.
-func (q *Queries) MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) error {
-	_, err := q.db.ExecContext(ctx, MoveMailboxToDeadLetter, arg.ID, arg.FailureReason, arg.CreatedAt)
-	return err
+func (q *Queries) MoveMailboxToDeadLetter(ctx context.Context, arg MoveMailboxToDeadLetterParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MoveMailboxToDeadLetter,
+		arg.ID,
+		arg.LeaseToken,
+		arg.FailureReason,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const MoveOutboxToDeadLetter = `-- name: MoveOutboxToDeadLetter :exec

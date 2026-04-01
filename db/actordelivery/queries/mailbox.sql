@@ -38,8 +38,8 @@ ON CONFLICT (id) DO NOTHING;
 --
 -- Ordering: priority DESC ensures high-priority (e.g., restart) messages
 -- first, then available_at ASC for delivery order, then created_at ASC as
--- a tiebreaker to ensure deterministic ordering when priority and
--- available_at are equal.
+-- a tiebreaker, then id ASC so UUIDv7 time-ordering remains the final
+-- deterministic tiebreaker when rows land in the same created_at second.
 --
 -- Per-correlation-key FIFO: when a row carries a non-NULL correlation_key,
 -- it is eligible only if no earlier same-key row exists in this mailbox.
@@ -83,7 +83,7 @@ WHERE mailbox_messages.id = (
                 AND m2.attempts < m2.max_attempts
           )
       )
-    ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC
+    ORDER BY m.priority DESC, m.available_at ASC, m.created_at ASC, m.id ASC
     LIMIT 1
 )
 RETURNING *;
@@ -131,12 +131,12 @@ SET
     lease_until = NULL
 WHERE lease_until IS NOT NULL AND lease_until < $1;
 
--- name: MoveMailboxToDeadLetter :exec
+-- name: MoveMailboxToDeadLetter :execrows
 -- Move a failed message to the dead letter queue.
 INSERT INTO dead_letters (id, source, actor_id, message_type, payload, failure_reason, attempts, created_at)
-SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $2, m.attempts, $3
+SELECT m.id, 'mailbox', m.mailbox_id, m.message_type, m.payload, $3, m.attempts, $4
 FROM mailbox_messages m
-WHERE m.id = $1;
+WHERE m.id = $1 AND m.lease_token = $2;
 
 -- name: DeleteMailboxMessage :exec
 -- Delete a mailbox message by ID (used after moving to dead letter).
@@ -146,7 +146,7 @@ DELETE FROM mailbox_messages WHERE id = $1;
 -- List all messages for an actor's mailbox (for debugging).
 SELECT * FROM mailbox_messages
 WHERE mailbox_id = $1
-ORDER BY priority DESC, available_at ASC, created_at ASC;
+ORDER BY priority DESC, available_at ASC, created_at ASC, id ASC;
 
 -- =============================================================================
 -- Ask Result Operations
@@ -192,6 +192,8 @@ INSERT INTO outbox_messages (
 -- Claim a batch of pending outbox messages for delivery. Sets a claim token
 -- and expiry to prevent concurrent publishers from processing the same messages.
 -- Only selects rows that are unclaimed or whose claim has expired.
+-- Ordering uses created_at ASC and then id ASC so UUIDv7 remains the final
+-- deterministic tiebreaker when rows land in the same created_at second.
 UPDATE outbox_messages
 SET delivery_attempts = delivery_attempts + 1,
     claim_token = $2,
@@ -200,24 +202,24 @@ WHERE id IN (
     SELECT o.id FROM outbox_messages o
     WHERE o.status = 'pending'
       AND (o.claimed_until IS NULL OR o.claimed_until < $4)
-    ORDER BY o.created_at ASC
+    ORDER BY o.created_at ASC, o.id ASC
     LIMIT $1
 )
 RETURNING *;
 
--- name: CompleteOutboxMessage :exec
+-- name: CompleteOutboxMessage :execrows
 -- Mark an outbox message as successfully delivered. The claim token must match
 -- to prevent stale publishers from completing messages they no longer own.
 UPDATE outbox_messages
 SET status = 'completed', completed_at = $2
-WHERE id = $1 AND claim_token = $3;
+WHERE id = $1 AND claim_token = $3 AND status = 'pending';
 
--- name: FailOutboxMessage :exec
+-- name: FailOutboxMessage :execrows
 -- Mark an outbox message as failed (dead letter). The claim token must match
 -- to prevent stale publishers from failing messages they no longer own.
 UPDATE outbox_messages
 SET status = 'dead_letter', completed_at = $2
-WHERE id = $1 AND claim_token = $3;
+WHERE id = $1 AND claim_token = $3 AND status = 'pending';
 
 -- name: GetOutboxMessage :one
 -- Get a specific outbox message by ID.
@@ -231,7 +233,7 @@ SELECT COUNT(*) FROM outbox_messages WHERE status = 'pending';
 -- List pending outbox messages for a specific target actor.
 SELECT * FROM outbox_messages
 WHERE target_actor_id = $1 AND status = 'pending'
-ORDER BY created_at ASC;
+ORDER BY created_at ASC, id ASC;
 
 -- name: MoveOutboxToDeadLetter :exec
 -- Move a failed outbox message to the dead letter queue.
@@ -295,7 +297,7 @@ SELECT * FROM fsm_checkpoints ORDER BY updated_at DESC;
 
 -- name: GetDeadLetter :one
 -- Get a specific dead letter by ID.
-SELECT * FROM dead_letters WHERE id = $1;
+SELECT * FROM dead_letters WHERE source = $1 AND id = $2;
 
 -- name: ListDeadLettersByActor :many
 -- List dead letters for a specific actor.
@@ -313,7 +315,7 @@ LIMIT $2;
 
 -- name: DeleteDeadLetter :exec
 -- Delete a dead letter after manual processing.
-DELETE FROM dead_letters WHERE id = $1;
+DELETE FROM dead_letters WHERE source = $1 AND id = $2;
 
 -- name: CountDeadLetters :one
 -- Count total dead letters.

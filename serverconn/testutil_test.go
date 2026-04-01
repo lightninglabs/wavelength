@@ -305,6 +305,11 @@ type memCheckpointStore struct {
 	outbox      map[string]*actor.OutboxMessage
 }
 
+// deadLetterKey returns the stable in-memory key for a dead letter entry.
+func deadLetterKey(source, id string) string {
+	return source + ":" + id
+}
+
 // storeMessage tracks mailbox delivery state in memory.
 type storeMessage struct {
 	leased      actor.LeasedMessage
@@ -518,9 +523,8 @@ func (s *memCheckpointStore) ExtendLease(ctx context.Context, id,
 }
 
 // MoveToDeadLetter moves a mailbox message to the dead letter map.
-func (s *memCheckpointStore) MoveToDeadLetter(
-	ctx context.Context, id, reason string,
-) error {
+func (s *memCheckpointStore) MoveToDeadLetter(ctx context.Context, id,
+	leaseToken, reason string) (int64, error) {
 
 	_ = ctx
 
@@ -529,12 +533,16 @@ func (s *memCheckpointStore) MoveToDeadLetter(
 
 	msg, ok := s.messages[id]
 	if !ok {
-		return nil
+		return 0, nil
+	}
+
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
 	}
 
 	payloadCopy := append([]byte(nil), msg.leased.Payload...)
 
-	s.deadLetters[id] = &actor.DeadLetter{
+	s.deadLetters[deadLetterKey("mailbox", id)] = &actor.DeadLetter{
 		ID:            id,
 		Source:        "mailbox",
 		ActorID:       msg.leased.MailboxID,
@@ -545,7 +553,9 @@ func (s *memCheckpointStore) MoveToDeadLetter(
 		CreatedAt:     time.Now(),
 	}
 
-	return nil
+	delete(s.messages, id)
+
+	return 1, nil
 }
 
 // DeleteMessage removes a mailbox message by ID.
@@ -584,6 +594,42 @@ func (s *memCheckpointStore) SaveAskResult(
 	}
 
 	return nil
+}
+
+// AckMessageWithAskResult removes a mailbox message and stores the Ask result
+// in memory as a single critical section.
+func (s *memCheckpointStore) AckMessageWithAskResult(ctx context.Context, id,
+	leaseToken string, params actor.AskResultParams) (int64, error) {
+
+	_ = ctx
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msg, ok := s.messages[id]
+	if !ok {
+		return 0, nil
+	}
+
+	if msg.leased.LeaseToken != leaseToken {
+		return 0, nil
+	}
+
+	if _, ok := s.askResults[params.PromiseID]; !ok {
+		resultBlob := append([]byte(nil), params.ResultBlob...)
+
+		s.askResults[params.PromiseID] = &actor.AskResult{
+			PromiseID:  params.PromiseID,
+			ResultBlob: resultBlob,
+			ErrorText:  params.ErrorText,
+			CreatedAt:  time.Now(),
+			ExpiresAt:  params.ExpiresAt,
+		}
+	}
+
+	delete(s.messages, id)
+
+	return 1, nil
 }
 
 // GetAskResult retrieves an ask result from memory.
@@ -680,9 +726,8 @@ func (s *memCheckpointStore) ClaimOutboxBatch(ctx context.Context,
 }
 
 // CompleteOutbox marks a claimed outbox message as completed.
-func (s *memCheckpointStore) CompleteOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *memCheckpointStore) CompleteOutbox(ctx context.Context, id,
+	claimToken string) (int64, error) {
 
 	_ = ctx
 
@@ -691,22 +736,21 @@ func (s *memCheckpointStore) CompleteOutbox(
 
 	msg, ok := s.outbox[id]
 	if !ok {
-		return nil
+		return 0, nil
 	}
 
-	if msg.ClaimToken != claimToken {
-		return nil
+	if msg.ClaimToken != claimToken || msg.Status != "pending" {
+		return 0, nil
 	}
 
 	msg.Status = "completed"
 
-	return nil
+	return 1, nil
 }
 
 // FailOutbox marks a claimed outbox message as dead-lettered.
-func (s *memCheckpointStore) FailOutbox(
-	ctx context.Context, id, claimToken string,
-) error {
+func (s *memCheckpointStore) FailOutbox(ctx context.Context, id, claimToken,
+	reason string) (int64, error) {
 
 	_ = ctx
 
@@ -715,16 +759,28 @@ func (s *memCheckpointStore) FailOutbox(
 
 	msg, ok := s.outbox[id]
 	if !ok {
-		return nil
+		return 0, nil
 	}
 
-	if msg.ClaimToken != claimToken {
-		return nil
+	if msg.ClaimToken != claimToken || msg.Status != "pending" {
+		return 0, nil
 	}
 
 	msg.Status = "dead_letter"
 
-	return nil
+	payloadCopy := append([]byte(nil), msg.Payload...)
+	s.deadLetters[deadLetterKey("outbox", id)] = &actor.DeadLetter{
+		ID:            id,
+		Source:        "outbox",
+		ActorID:       msg.SourceActorID,
+		MessageType:   msg.MessageType,
+		Payload:       payloadCopy,
+		FailureReason: reason,
+		Attempts:      msg.DeliveryAttempts,
+		CreatedAt:     time.Now(),
+	}
+
+	return 1, nil
 }
 
 // IsProcessed returns true when the message ID is marked processed.
@@ -773,15 +829,15 @@ func (s *memCheckpointStore) DeleteCheckpoint(
 }
 
 // GetDeadLetter returns a dead letter entry by ID.
-func (s *memCheckpointStore) GetDeadLetter(ctx context.Context, id string) (
-	*actor.DeadLetter, error) {
+func (s *memCheckpointStore) GetDeadLetter(ctx context.Context, source,
+	id string) (*actor.DeadLetter, error) {
 
 	_ = ctx
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	deadLetter, ok := s.deadLetters[id]
+	deadLetter, ok := s.deadLetters[deadLetterKey(source, id)]
 	if !ok {
 		return nil, nil
 	}
@@ -824,7 +880,7 @@ func (s *memCheckpointStore) ListDeadLetters(ctx context.Context,
 
 // DeleteDeadLetter deletes a dead-letter entry by ID.
 func (s *memCheckpointStore) DeleteDeadLetter(
-	ctx context.Context, id string,
+	ctx context.Context, source, id string,
 ) error {
 
 	_ = ctx
@@ -832,7 +888,7 @@ func (s *memCheckpointStore) DeleteDeadLetter(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.deadLetters, id)
+	delete(s.deadLetters, deadLetterKey(source, id))
 
 	return nil
 }

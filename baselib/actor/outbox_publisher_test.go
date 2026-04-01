@@ -150,9 +150,54 @@ func TestOutboxPublisherCreation(t *testing.T) {
 	publisher := NewOutboxPublisher(cfg)
 
 	require.NotNil(t, publisher)
-	require.Equal(t, time.Second, publisher.cfg.PollInterval)
-	require.Equal(t, 100, publisher.cfg.BatchSize)
-	require.Equal(t, 10, publisher.cfg.MaxDeliveryAttempts)
+	require.Equal(
+		t, defaultOutboxPublisherPollInterval,
+		publisher.cfg.PollInterval,
+	)
+	require.Equal(
+		t, defaultOutboxPublisherBatchSize, publisher.cfg.BatchSize,
+	)
+	require.Equal(
+		t, defaultOutboxPublisherMaxDeliveryAttempts,
+		publisher.cfg.MaxDeliveryAttempts,
+	)
+}
+
+// TestOutboxPublisherAppliesNonPositiveDefaults tests that constructing an
+// outbox publisher directly still applies the documented defaults.
+func TestOutboxPublisherAppliesNonPositiveDefaults(t *testing.T) {
+	t.Parallel()
+
+	store := newMockDeliveryStore()
+	codec := newOutboxTestCodec()
+	system := newMockSystem()
+
+	cfg := OutboxPublisherConfig{
+		Store:               store,
+		Codec:               codec,
+		System:              system,
+		PollInterval:        -time.Second,
+		BatchSize:           -1,
+		MaxDeliveryAttempts: -1,
+		ClaimDuration:       -time.Second,
+	}
+	publisher := NewOutboxPublisher(cfg)
+
+	require.Equal(
+		t, defaultOutboxPublisherPollInterval,
+		publisher.cfg.PollInterval,
+	)
+	require.Equal(
+		t, defaultOutboxPublisherBatchSize, publisher.cfg.BatchSize,
+	)
+	require.Equal(
+		t, defaultOutboxPublisherMaxDeliveryAttempts,
+		publisher.cfg.MaxDeliveryAttempts,
+	)
+	require.Equal(
+		t, defaultOutboxPublisherClaimDuration,
+		publisher.cfg.ClaimDuration,
+	)
 }
 
 // TestOutboxPublisherStartStop tests lifecycle.
