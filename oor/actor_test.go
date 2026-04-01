@@ -1205,6 +1205,74 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 	require.ErrorAs(t, err, &lockedErr)
 }
 
+// TestActorUnauthorizedSubmitFailsBeforeLock asserts owner-proof failures stop
+// at submit validation and leave the shared locker untouched.
+func TestActorUnauthorizedSubmitFailsBeforeLock(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	policy, arkPsbt, checkpointPsbts, signDesc, _, _ :=
+		buildTestSubmitPackageWithDescriptor(t, nil)
+	arkPsbt.Inputs[0].TaprootScriptSpendSig = nil
+
+	inputOutpoint := signDesc.Outpoint
+
+	sqlStore := db.NewTestDB(t)
+	dbStore := db.NewStore(
+		sqlStore.DB, sqlStore.Queries,
+		sqlStore.Backend(), btclog.Disabled,
+		clock.NewDefaultClock(),
+	)
+	store := dbStore.NewVTXORecordStore()
+	locker := db.NewVTXOLockerDB(sqlStore, btclog.Disabled)
+
+	err := store.Create(ctx, &vtxo.Record{
+		Outpoint: inputOutpoint,
+		Value:    checkpointPsbts[0].Inputs[0].WitnessUtxo.Value,
+		PkScript: checkpointPsbts[0].Inputs[0].WitnessUtxo.PkScript,
+		Status:   vtxo.StatusLive,
+	})
+	require.NoError(t, err)
+
+	deliveryStore := newActorDeliveryStoreForTest(t, sqlStore)
+
+	driver := NewDriver(DriverCfg{
+		Store:  store,
+		Locker: locker,
+	})
+	actor := newTestActor(t, ActorCfg{
+		OutboxHandler:    driver,
+		CheckpointPolicy: policy,
+		DeliveryStore:    deliveryStore,
+	})
+
+	submitResp := actor.Receive(ctx, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPsbts,
+		VTXOSigningDescriptors: []VTXOSigningDescriptor{
+			signDesc,
+		},
+	})
+	require.True(t, submitResp.IsErr())
+
+	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	_, err = actor.CurrentState(ctx, sessionID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown session")
+
+	seen := driver.SeenOutboxTypes()
+	require.Contains(t, seen, "ValidateSubmitReq")
+	require.NotContains(t, seen, "LockInputsReq")
+	require.NotContains(t, seen, "UnlockInputsReq")
+
+	err = locker.LockMany(
+		ctx, []wire.OutPoint{inputOutpoint},
+		vtxo.RoundLockOwner("12345678-1234-1234-1234-123456789012"),
+	)
+	require.NoError(t, err)
+}
+
 // TestActorFinalizeUpdatesVTXOStore asserts that finalize updates the shared
 // VTXO store by marking inputs spent and materializing recipient outputs.
 func TestActorFinalizeUpdatesVTXOStore(t *testing.T) {
