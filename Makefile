@@ -300,17 +300,17 @@ unit-race: #? Run unit tests with race detector
 	@$(call print, "Running unit race tests.")
 	env CGO_ENABLED=1 GORACE="history_size=7 halt_on_errors=1" $(UNIT_RACE)
 
-# Client wallet backend for daemon integration tests: lnd (default) or
-# lwwallet.
+# Client wallet backend for daemon integration tests: lnd (default),
+# lwwallet, or btcwallet.
 ITEST_CLIENT_WALLET := $(if $(backend),$(backend),lnd)
 
-itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet to run with lwwallet.
+itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet or backend=btcwallet to select backend.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
 	$(if $(case),-run $(case),)
 
-itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet to run with lwwallet.
+itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet or backend=btcwallet to select backend.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
@@ -334,14 +334,14 @@ ifdef CI
 SYSTEST_PARALLEL ?= 2
 endif
 
-systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet to select backend.
+systest: #? Run system integration tests. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet or backend=btcwallet to select backend.
 	@$(call print, "Running system integration tests (db=$(or $(db),sqlite)).")
 	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
 		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \
 		$(if $(backend),-systest.backend $(backend),) \
 		$(if $(case),-run $(case),)
 
-systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet to select backend.
+systest-verbose: #? Run system integration tests with verbose logging. Use db=postgres for PostgreSQL. Use case=TestName to run specific test. Use backend=lwwallet or backend=btcwallet to select backend.
 	@$(call print, "Running system integration tests with verbose logging (db=$(or $(db),sqlite)).")
 	env SYSTEST_PARALLEL="$(SYSTEST_PARALLEL)" $(GOTEST) \
 		-tags "$(SYSTEST_TAGS)" -v ./systest/... -timeout 60m \

@@ -47,8 +47,13 @@ const (
 	// lightweight wallet backend.
 	ClientWalletBackendLWWallet = clientdarepod.WalletTypeLwwallet
 
+	// ClientWalletBackendBtcwallet runs client daemons using the
+	// in-process neutrino-backed btcwallet backend.
+	ClientWalletBackendBtcwallet = clientdarepod.WalletTypeBtcwallet
+
 	// defaultLWWalletPassword is the deterministic test password used by
-	// the harness when creating and unlocking lwwallet-backed daemons.
+	// the harness when creating and unlocking lwwallet- and
+	// btcwallet-backed daemons.
 	defaultLWWalletPassword = "itest-wallet-password"
 )
 
@@ -77,8 +82,9 @@ type ArkHarnessOptions struct {
 	SkipArkd bool
 
 	// ClientDaemonWalletType selects the wallet backend for in-process
-	// client daemons. Valid values: "lnd", "lwwallet". If empty, the
-	// value is read from ARK_ITEST_CLIENT_WALLET and defaults to "lnd".
+	// client daemons. Valid values: "lnd", "lwwallet", "btcwallet".
+	// If empty, the value is read from ARK_ITEST_CLIENT_WALLET and
+	// defaults to "lnd".
 	ClientDaemonWalletType string
 
 	// OperatorLogWriter is the stdout sink used for operator daemon logs.
@@ -209,7 +215,9 @@ func resolveClientDaemonWalletType(requestedType string) (string, error) {
 	}
 
 	switch backend {
-	case ClientWalletBackendLND, ClientWalletBackendLWWallet:
+	case ClientWalletBackendLND, ClientWalletBackendLWWallet,
+		ClientWalletBackendBtcwallet:
+
 		return backend, nil
 
 	default:
@@ -567,6 +575,12 @@ func (h *ArkHarness) launchClientDaemon(name string,
 		cfg.Wallet.Type = clientdarepod.WalletTypeLwwallet
 		cfg.Wallet.EsploraURL = h.Harness.EsploraURL
 
+	case ClientWalletBackendBtcwallet:
+		cfg.Wallet.Type = clientdarepod.WalletTypeBtcwallet
+		cfg.Wallet.BtcwalletPeers = []string{
+			h.Harness.BitcoindP2P,
+		}
+
 	default:
 		h.T.Fatalf("unsupported client daemon wallet backend: %s",
 			h.clientDaemonWalletType)
@@ -760,14 +774,19 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 		return
 	}
 
-	require.Equal(
-		d.T, ClientWalletBackendLWWallet, walletBackend,
+	require.Contains(
+		d.T,
+		[]string{
+			ClientWalletBackendLWWallet,
+			ClientWalletBackendBtcwallet,
+		},
+		walletBackend,
 		"wallet must already be ready for backend %q", walletBackend,
 	)
 
 	if err := d.initOrUnlockLWWallet(); err != nil {
 		d.T.Fatalf(
-			"failed to initialize lwwallet-backed daemon %q: %v",
+			"failed to initialize wallet-backed daemon %q: %v",
 			d.Name, err,
 		)
 	}
