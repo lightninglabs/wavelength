@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo/db"
+	"github.com/lightninglabs/darepo/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -229,6 +230,10 @@ type Config struct {
 	// timeouts, confirmation targets).
 	Rounds *RoundsConfig `mapstructure:"rounds"`
 
+	// Metrics configures the Prometheus metrics HTTP server.
+	// When nil, the metrics endpoint is disabled.
+	Metrics *metrics.ServerConfig `mapstructure:"metrics"`
+
 	// Log is an optional logger for the server itself. When None,
 	// logging is disabled.
 	Log fn.Option[btclog.Logger]
@@ -294,6 +299,7 @@ func DefaultConfig() *Config {
 		AdminRPC: DefaultAdminRPCConfig(),
 		RPC:      DefaultRPCConfig(),
 		Rounds:   DefaultRoundsConfig(),
+		Metrics:  metrics.DefaultServerConfig(),
 	}
 }
 
