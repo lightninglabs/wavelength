@@ -97,7 +97,7 @@ func (f *UnaryFacade) SendRPC(ctx context.Context,
 		Sender:          cfg.LocalMailboxID,
 		Recipient:       cfg.RemoteMailboxID,
 		CreatedAtUnixMs: time.Now().UnixMilli(),
-		Headers:         opts.Headers,
+		Headers:         cfg.mergeAuthHeaders(opts.Headers),
 		Body:            body,
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:          mailboxpb.RpcMeta_KIND_REQUEST,

@@ -175,6 +175,29 @@ type ConnectorConfig struct {
 	// x-mailbox-auth-sig header on every outbound envelope. The
 	// server verifies this signature during client registration.
 	AuthSignature *schnorr.Signature
+
+	// authSigHex caches the hex-encoded auth signature string,
+	// computed once by InitAuthHeader to avoid per-envelope
+	// serialization.
+	authSigHex string
+
+	// authHeaderCache holds the singleton auth-only header map
+	// for the common case where callers provide no extra headers.
+	authHeaderCache map[string]string
+}
+
+// InitAuthHeader pre-computes the cached auth header state from
+// AuthSignature. Must be called after AuthSignature is set and
+// before the first mergeAuthHeaders call.
+func (c *ConnectorConfig) InitAuthHeader() {
+	if c.AuthSignature == nil {
+		return
+	}
+
+	c.authSigHex = hex.EncodeToString(c.AuthSignature.Serialize())
+	c.authHeaderCache = map[string]string{
+		AuthHeaderKey: c.authSigHex,
+	}
 }
 
 // mergeAuthHeaders returns a new header map containing both src
@@ -185,11 +208,14 @@ type ConnectorConfig struct {
 func (c *ConnectorConfig) mergeAuthHeaders(
 	src map[string]string) map[string]string {
 
-	if c.AuthSignature == nil {
+	if c.authSigHex == "" {
 		return src
 	}
 
-	sigHex := hex.EncodeToString(c.AuthSignature.Serialize())
+	// Fast path: no caller headers, return the cached singleton.
+	if len(src) == 0 {
+		return c.authHeaderCache
+	}
 
 	merged := make(map[string]string, len(src)+1)
 
@@ -199,7 +225,7 @@ func (c *ConnectorConfig) mergeAuthHeaders(
 	}
 
 	// Auth signature always wins over caller-provided headers.
-	merged[AuthHeaderKey] = sigHex
+	merged[AuthHeaderKey] = c.authSigHex
 
 	return merged
 }

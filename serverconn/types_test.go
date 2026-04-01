@@ -1,10 +1,10 @@
 package serverconn
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,6 +31,7 @@ func TestMergeAuthHeadersNilSrc(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &ConnectorConfig{AuthSignature: sig}
+	cfg.InitAuthHeader()
 	result := cfg.mergeAuthHeaders(nil)
 	require.Len(t, result, 1)
 	require.Contains(t, result, AuthHeaderKey)
@@ -48,6 +49,7 @@ func TestMergeAuthHeadersAuthWins(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &ConnectorConfig{AuthSignature: sig}
+	cfg.InitAuthHeader()
 
 	// Caller tries to inject a fake auth signature.
 	src := map[string]string{
@@ -57,12 +59,9 @@ func TestMergeAuthHeadersAuthWins(t *testing.T) {
 	result := cfg.mergeAuthHeaders(src)
 
 	// The real auth signature must win.
-	expectedSigHex := schnorr.SerializePubKey(
-		privKey.PubKey(),
-	)
-	_ = expectedSigHex
+	expectedSigHex := hex.EncodeToString(sig.Serialize())
 
-	require.NotEqual(t, "fake-sig", result[AuthHeaderKey])
+	require.Equal(t, expectedSigHex, result[AuthHeaderKey])
 	require.Equal(t, "value", result["other"])
 }
 
