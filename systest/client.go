@@ -364,7 +364,9 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	// clientID, and the remote mailbox is the server's per-client
 	// mailbox.
 	clientMBID := string(clientID)
-	serverMBID := serverMailboxPrefix + clientMBID
+	serverMBID := serverconn.PubKeyMailboxID(
+		h.operatorKeyDesc.PubKey,
+	)
 
 	// Register the mailbox pair for direction detection in the
 	// instrumented mailbox.

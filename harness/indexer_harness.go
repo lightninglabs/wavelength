@@ -2,13 +2,13 @@ package harness
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/arkrpc"
 	clientdb "github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/db/actordelivery"
 	"github.com/lightninglabs/darepo-client/indexer"
@@ -32,9 +32,6 @@ const (
 // proof-gated indexer RPCs against the running operator in integration tests.
 type IndexerTestClient struct {
 	T *testing.T
-
-	LocalMailboxID  string
-	RemoteMailboxID string
 
 	Indexer *indexer.Client
 
@@ -89,10 +86,9 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	)
 	require.NoError(h.T, err, "derive key descriptor for indexer signer")
 
-	localMailboxID := fmt.Sprintf(
-		"itest-indexer-%s-%d", daemonName, time.Now().UnixNano(),
-	)
-	remoteMailboxID := fmt.Sprintf("server-for-%s", localMailboxID)
+	// Derive mailbox IDs from the test key's public key and
+	// the server's operator key.
+	localMailboxID := serverconn.PubKeyMailboxID(keyDesc.PubKey)
 
 	dataDir := filepath.Join(
 		h.BaseDir(), "indexer-test-clients", localMailboxID,
@@ -120,6 +116,20 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	)
 	require.NoError(h.T, err, "dial operator mailbox edge")
 
+	// Fetch the operator's pubkey via direct gRPC to derive
+	// the remote mailbox ID.
+	arkClient := arkrpc.NewArkServiceClient(edgeConn)
+	infoResp, err := arkClient.GetInfo(
+		h.T.Context(), &arkrpc.GetInfoRequest{},
+	)
+	require.NoError(h.T, err, "fetch operator info for indexer")
+	require.NotEmpty(h.T, infoResp.Pubkey, "operator pubkey empty")
+
+	operatorPubKey, err := btcec.ParsePubKey(infoResp.Pubkey)
+	require.NoError(h.T, err, "parse operator pubkey")
+
+	remoteMailboxID := serverconn.PubKeyMailboxID(operatorPubKey)
+
 	connCfg := serverconn.DefaultConnectorConfig()
 	connCfg.Edge = mailboxpb.NewMailboxServiceClient(edgeConn)
 	connCfg.LocalMailboxID = localMailboxID
@@ -143,14 +153,12 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	)
 
 	indexerClient := &IndexerTestClient{
-		T:               h.T,
-		LocalMailboxID:  localMailboxID,
-		RemoteMailboxID: remoteMailboxID,
-		Indexer:         idxClient,
-		runtime:         runtime,
-		runtimeCancel:   runtimeCancel,
-		edgeConn:        edgeConn,
-		sqliteStore:     sqliteStore,
+		T:             h.T,
+		Indexer:       idxClient,
+		runtime:       runtime,
+		runtimeCancel: runtimeCancel,
+		edgeConn:      edgeConn,
+		sqliteStore:   sqliteStore,
 	}
 
 	h.T.Cleanup(indexerClient.Stop)
