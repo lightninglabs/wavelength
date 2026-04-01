@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -50,6 +52,7 @@ import (
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/signal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -190,6 +193,15 @@ type Server struct {
 	// clientKeyDesc is the client's identity key descriptor,
 	// derived during wallet initialization.
 	clientKeyDesc keychain.KeyDescriptor
+
+	// localMailboxID caches the pubkey-derived mailbox ID for
+	// this client, avoiding repeated hex encoding of the
+	// identity key.
+	localMailboxID string
+
+	// authSigHex caches the hex-encoded Schnorr auth signature
+	// so response envelopes can include it without re-computing.
+	authSigHex string
 
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
@@ -414,6 +426,15 @@ func (s *Server) run(ctx context.Context,
 			s.cfg.Wallet.Type)
 	}
 
+	// Derive the client's identity key early so it is available
+	// for mailbox ID derivation before the transport starts. In
+	// lnd mode the key comes from the lnd wallet. In lwwallet
+	// mode it comes from the lightweight wallet keyring (only
+	// possible if the wallet is already unlocked).
+	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
+		return fmt.Errorf("derive identity key: %w", err)
+	}
+
 	// -------------------------------------------------------
 	// 2. Connect to the ark operator's mailbox edge server.
 	// -------------------------------------------------------
@@ -428,6 +449,19 @@ func (s *Server) run(ctx context.Context,
 	defer s.serverConn.Close()
 
 	s.log.InfoS(ctx, "Connected to ark server")
+
+	// Fetch the operator's public key via direct gRPC before
+	// wiring the mailbox transport. The mailbox runtime needs
+	// the operator's pubkey-derived mailbox ID as the remote
+	// endpoint, so this must happen before step 7.
+	operatorPubKey, err := s.fetchOperatorPubKeyDirect(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch operator pubkey: %w", err)
+	}
+
+	s.log.InfoS(ctx, "Fetched operator pubkey via direct gRPC",
+		slog.String("operator_mailbox_id",
+			serverconn.PubKeyMailboxID(operatorPubKey)))
 
 	// -------------------------------------------------------
 	// 3. Initialize the actor system.
@@ -571,13 +605,33 @@ func (s *Server) run(ctx context.Context,
 	edge := s.newMailboxEdge()
 	dispatchers := s.buildRPCDispatchers(edge)
 
+	// Derive mailbox IDs from public keys. The client's local
+	// mailbox is its identity pubkey, and the remote mailbox is
+	// the operator's pubkey.
+	s.localMailboxID = serverconn.PubKeyMailboxID(
+		s.clientKeyDesc.PubKey,
+	)
+	remoteMailboxID := serverconn.PubKeyMailboxID(operatorPubKey)
+
+	// Compute the Schnorr auth signature proving we hold the
+	// private key for our claimed mailbox identity. This is
+	// verified by the server during client registration.
+	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	if err != nil {
+		return fmt.Errorf("sign mailbox auth: %w", err)
+	}
+
+	s.authSigHex = hex.EncodeToString(authSig.Serialize())
+
 	connCfg := serverconn.DefaultConnectorConfig()
 	connCfg.Edge = edge
-	connCfg.LocalMailboxID = s.cfg.Server.LocalMailboxID
-	connCfg.RemoteMailboxID = s.cfg.Server.RemoteMailboxID
+	connCfg.LocalMailboxID = s.localMailboxID
+	connCfg.RemoteMailboxID = remoteMailboxID
 	connCfg.ProtocolVersion = 1
 	connCfg.Store = s.deliveryStore
 	connCfg.Dispatchers = dispatchers
+	connCfg.AuthSignature = authSig
+	connCfg.InitAuthHeader()
 	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
 		server: s,
 	}
@@ -596,10 +650,8 @@ func (s *Server) run(ctx context.Context,
 	defer s.runtime.Stop()
 
 	s.log.InfoS(ctx, "Mailbox transport runtime started",
-		slog.String("local_mailbox",
-			s.cfg.Server.LocalMailboxID),
-		slog.String("remote_mailbox",
-			s.cfg.Server.RemoteMailboxID))
+		slog.String("local_mailbox", s.localMailboxID),
+		slog.String("remote_mailbox", remoteMailboxID))
 
 	// -------------------------------------------------------
 	// 8. Create the Ark and indexer RPC clients.
@@ -1479,6 +1531,23 @@ func (s *Server) dialServer(ctx context.Context) (
 
 	var dialOpts []grpc.DialOption
 
+	// Generate a P-256 client TLS cert carrying the secp256k1
+	// identity pubkey in the Subject CN. The server uses this
+	// for per-RPC access control on Pull/AckUpTo. Skip cert
+	// generation in insecure mode where TLS is disabled.
+	var clientCerts []tls.Certificate
+	if !s.cfg.Server.Insecure && s.clientKeyDesc.PubKey != nil {
+		clientCert, certErr := serverconn.GenerateClientTLSCert(
+			s.clientKeyDesc.PubKey,
+		)
+		if certErr != nil {
+			return nil, fmt.Errorf("generate client TLS "+
+				"cert: %w", certErr)
+		}
+
+		clientCerts = []tls.Certificate{clientCert}
+	}
+
 	switch {
 	case s.cfg.Server.Insecure:
 		dialOpts = append(
@@ -1503,8 +1572,9 @@ func (s *Server) dialServer(ctx context.Context) (
 		}
 
 		creds := credentials.NewTLS(&tls.Config{
-			RootCAs:    pool,
-			MinVersion: tls.VersionTLS12,
+			RootCAs:      pool,
+			Certificates: clientCerts,
+			MinVersion:   tls.VersionTLS12,
 		})
 		dialOpts = append(
 			dialOpts,
@@ -1515,7 +1585,8 @@ func (s *Server) dialServer(ctx context.Context) (
 		// Use the system certificate pool when no explicit cert
 		// is provided.
 		creds := credentials.NewTLS(&tls.Config{
-			MinVersion: tls.VersionTLS12,
+			Certificates: clientCerts,
+			MinVersion:   tls.VersionTLS12,
 		})
 		dialOpts = append(
 			dialOpts,
@@ -2030,9 +2101,18 @@ func (s *Server) handleInboundRPC(ctx context.Context,
 		body = &anypb.Any{}
 	}
 
+	// Include the auth signature in response headers so the
+	// server can verify identity on all envelopes.
+	if headers == nil {
+		headers = make(map[string]string, 1)
+	}
+	if s.authSigHex != "" {
+		headers[serverconn.AuthHeaderKey] = s.authSigHex
+	}
+
 	responseEnv := &mailboxpb.Envelope{
 		ProtocolVersion: env.ProtocolVersion,
-		Sender:          s.cfg.Server.LocalMailboxID,
+		Sender:          s.localMailboxID,
 		Recipient:       env.Rpc.ReplyTo,
 		Headers:         headers,
 		Body:            body,
@@ -2183,10 +2263,15 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		}
 	})
 
+	// The indexer principal is the client's pubkey-derived
+	// mailbox ID, used in proof-of-control signatures.
+	principal := serverconn.PubKeyMailboxID(
+		s.clientKeyDesc.PubKey,
+	)
+
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
-		indexerProofServerID,
-		s.cfg.Server.LocalMailboxID,
+		indexerProofServerID, principal,
 		fn.Some(s.subLogger(indexer.Subsystem)),
 	)
 
@@ -2671,6 +2756,189 @@ func (s *Server) fetchOperatorTerms(
 		MinOperatorFee:    btcutil.Amount(resp.MinOperatorFee),
 		MinConfirmations:  resp.MinConfirmations,
 	}, nil
+}
+
+// deriveIdentityKeyEarly derives the client's identity key before the
+// mailbox transport starts. In LND mode the key is derived from the
+// connected LND wallet. In lwwallet mode the key is derived from the
+// lightweight wallet keyring if already unlocked.
+func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
+	var (
+		derived bool
+		lndErr  error
+		lwErr   error
+	)
+
+	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		desc, err := lndSvc.WalletKit.DeriveKey(ctx,
+			&keychain.KeyLocator{
+				Family: identityKeyFamily,
+				Index:  0,
+			},
+		)
+		if err != nil {
+			lndErr = fmt.Errorf("lnd: %w", err)
+
+			s.log.WarnS(ctx,
+				"Unable to derive identity key from lnd",
+				err,
+			)
+
+			return
+		}
+
+		s.clientKeyDesc = *desc
+		derived = true
+	})
+
+	if derived {
+		return nil
+	}
+
+	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		desc, err := w.DeriveKey(ctx, keychain.KeyLocator{
+			Family: identityKeyFamily,
+			Index:  0,
+		})
+		if err != nil {
+			lwErr = fmt.Errorf("lwwallet: %w", err)
+
+			s.log.WarnS(ctx,
+				"Unable to derive identity key from "+
+					"lwwallet", err,
+			)
+
+			return
+		}
+
+		s.clientKeyDesc = *desc
+		derived = true
+	})
+
+	if !derived {
+		switch {
+		case lndErr != nil && lwErr != nil:
+			return fmt.Errorf("unable to derive identity "+
+				"key: %v; %v", lndErr, lwErr)
+		case lndErr != nil:
+			return fmt.Errorf("unable to derive identity "+
+				"key: %w", lndErr)
+		case lwErr != nil:
+			return fmt.Errorf("unable to derive identity "+
+				"key: %w", lwErr)
+		default:
+			return fmt.Errorf("no wallet backend available "+
+				"to derive identity key")
+		}
+	}
+
+	s.log.InfoS(ctx, "Derived client identity key",
+		slog.String("mailbox_id", serverconn.PubKeyMailboxID(
+			s.clientKeyDesc.PubKey,
+		)))
+
+	return nil
+}
+
+// fetchOperatorPubKeyDirect fetches the operator's public key via a
+// direct gRPC call to ArkService.GetInfo, bypassing the mailbox
+// transport. This is needed before the mailbox runtime starts because
+// the remote mailbox ID is derived from the operator's pubkey.
+func (s *Server) fetchOperatorPubKeyDirect(
+	ctx context.Context) (*btcec.PublicKey, error) {
+
+	client := arkrpc.NewArkServiceClient(s.serverConn)
+
+	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("GetInfo RPC: %w", err)
+	}
+
+	if len(resp.Pubkey) == 0 {
+		return nil, fmt.Errorf("operator pubkey is missing")
+	}
+
+	pubKey, err := btcec.ParsePubKey(resp.Pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("parse operator pubkey: %w", err)
+	}
+
+	return pubKey, nil
+}
+
+// signMailboxAuth computes the Schnorr auth signature for the
+// client's identity key bound to the given recipient mailbox ID.
+// The signature is included in every outbound envelope header so
+// the server can verify the client's identity during registration.
+func (s *Server) signMailboxAuth(ctx context.Context,
+	recipientMailboxID string) (*schnorr.Signature, error) {
+
+	var (
+		sig *schnorr.Signature
+		err error
+	)
+
+	// In LND mode, use lnd's tagged Schnorr signing RPC. We
+	// pass the raw message and tag so LND computes the BIP-340
+	// tagged hash internally, avoiding double-hashing.
+	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		msg := serverconn.MailboxAuthMessage(
+			s.clientKeyDesc.PubKey, recipientMailboxID,
+		)
+
+		tag := []byte(serverconn.MailboxAuthTagStr)
+
+		var rawSig []byte
+		rawSig, err = lndSvc.Signer.SignMessage(
+			ctx, msg, s.clientKeyDesc.KeyLocator,
+			lndclient.SignSchnorr(nil),
+			withSchnorrTag(tag),
+		)
+		if err != nil {
+			err = fmt.Errorf("lnd sign mailbox auth: %w",
+				err)
+
+			return
+		}
+
+		sig, err = schnorr.ParseSignature(rawSig)
+	})
+
+	if sig != nil || err != nil {
+		return sig, err
+	}
+
+	// In lwwallet mode, derive the private key directly and
+	// sign locally.
+	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		var privKey *btcec.PrivateKey
+		privKey, err = w.KeyRing().DerivePrivKey(
+			s.clientKeyDesc,
+		)
+		if err != nil {
+			err = fmt.Errorf("derive priv key: %w", err)
+
+			return
+		}
+
+		sig, err = serverconn.SignMailboxAuth(
+			privKey, recipientMailboxID,
+		)
+	})
+
+	if sig == nil && err == nil {
+		return nil, fmt.Errorf("no wallet backend available " +
+			"to sign mailbox auth")
+	}
+
+	return sig, err
+}
+
+// withSchnorrTag applies a BIP-340 tag to lnd's SignMessage request.
+func withSchnorrTag(tag []byte) lndclient.SignMessageOption {
+	return func(req *signrpc.SignMessageReq) {
+		req.Tag = tag
+	}
 }
 
 // networkToLndclient maps our network string to the lndclient network type.

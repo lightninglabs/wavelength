@@ -390,8 +390,6 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 	)
 	cfg.Server.Host = mailboxAddr
 	cfg.Server.Insecure = true
-	cfg.Server.LocalMailboxID = "client-mailbox"
-	cfg.Server.RemoteMailboxID = operatorMailbox
 	cfg.RPC.ListenAddr = rpcAddr
 
 	seededOutpoint := seedLiveVTXO(

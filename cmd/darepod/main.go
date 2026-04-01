@@ -83,12 +83,7 @@ func newRootCmd() *cobra.Command {
 	f.Bool("server.insecure", cfg.Server.Insecure,
 		"disable TLS for the server connection (dev only)",
 	)
-	f.String("server.localmailboxid", cfg.Server.LocalMailboxID,
-		"this client's mailbox identifier",
-	)
-	f.String("server.remotemailboxid", cfg.Server.RemoteMailboxID,
-		"remote server's mailbox identifier",
-	)
+
 
 	// Wallet backend flags.
 	f.String("wallet.type", cfg.Wallet.Type,

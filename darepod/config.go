@@ -173,15 +173,6 @@ type ServerConfig struct {
 	// oversized tree payloads. If zero, the default of
 	// roundpb.DefaultMaxTreeNodes (50,000) is used.
 	MaxTreeNodes int `mapstructure:"maxtreenodes"`
-
-	// LocalMailboxID is this client's mailbox identifier within the
-	// mailbox edge transport. Inbound envelopes are pulled from this
-	// mailbox and outbound envelopes carry it as the sender.
-	LocalMailboxID string `mapstructure:"localmailboxid"`
-
-	// RemoteMailboxID is the remote server's mailbox identifier.
-	// Outbound envelopes are addressed to this mailbox.
-	RemoteMailboxID string `mapstructure:"remotemailboxid"`
 }
 
 // RPCConfig holds configuration for the daemon's own gRPC server.
@@ -343,15 +334,6 @@ func (c *Config) Validate() error {
 	if c.Server.Host == "" {
 		return fmt.Errorf("server host is required")
 	}
-	if c.Server.LocalMailboxID == "" {
-		return fmt.Errorf("server local mailbox ID is " +
-			"required")
-	}
-	if c.Server.RemoteMailboxID == "" {
-		return fmt.Errorf("server remote mailbox ID is " +
-			"required")
-	}
-
 	if c.RPC == nil {
 		return fmt.Errorf("rpc config is required")
 	}
