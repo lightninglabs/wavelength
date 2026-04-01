@@ -130,6 +130,11 @@ type Server struct {
 	// the GetInfo RPC can return them to clients.
 	terms *batch.Terms
 
+	// operatorMailboxID is the deterministic mailbox ID derived
+	// from the operator's public key. Cached at startup since
+	// the operator key is immutable.
+	operatorMailboxID string
+
 	// forfeitScript is the P2TR output script that clients must
 	// use for the penalty output in forfeit transactions. Derived
 	// from the operator key during rounds setup.
