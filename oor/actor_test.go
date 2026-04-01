@@ -240,6 +240,21 @@ func buildTestSubmitPackageWithDescriptor(t *testing.T,
 	arkPsbt.Inputs[0].TaprootLeafScript =
 		[]*psbt.TaprootTapLeafScript{leaf}
 
+	clientSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{ownerKey}, nil,
+	)
+	err = clientoor.SignArkPSBT(
+		clientSigner, arkPsbt, []*psbt.Packet{checkpointRes.PSBT},
+		[]clientoor.TransferInput{
+			buildClientTransferInput(
+				t, ownerKey, policy.OperatorKey, exitDelay,
+				vtxoOutpoint, btcutil.Amount(testVTXOValue),
+				ownerLeafScript, ownerLeafPolicy,
+			),
+		},
+	)
+	require.NoError(t, err)
+
 	desc := VTXOSigningDescriptor{
 		Outpoint: vtxoOutpoint,
 		VTXOPolicyTemplate: testStandardVTXOPolicyTemplate(
@@ -310,6 +325,27 @@ func testStandardCollabSpendPath(t *testing.T, ownerKey,
 	return raw
 }
 
+// buildTestSubmitRequest constructs a valid submit request with the signing
+// descriptor needed by server-side owner-proof validation.
+func buildTestSubmitRequest(t *testing.T,
+	recipients []oorlib.RecipientOutput) (
+	arkscript.CheckpointPolicy, *SubmitOORRequest, *btcec.PrivateKey,
+	*btcec.PrivateKey,
+) {
+
+	t.Helper()
+
+	policy, arkPsbt, checkpointPSBTs, desc, operatorKey, ownerKey :=
+		buildTestSubmitPackageWithDescriptor(t, recipients)
+
+	return policy, &SubmitOORRequest{
+		ArkPSBT:         arkPsbt,
+		CheckpointPSBTs: checkpointPSBTs,
+		VTXOSigningDescriptors: []VTXOSigningDescriptor{
+			desc,
+		},
+	}, operatorKey, ownerKey
+}
 // buildFinalCheckpointPSBT creates a finalize checkpoint PSBT with placeholder
 // signature material so structural finalize validation succeeds.
 func buildFinalCheckpointPSBT(t *testing.T,
@@ -590,8 +626,10 @@ func TestActorHappyPath(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -599,10 +637,7 @@ func TestActorHappyPath(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
 	submitRaw := submitResp.UnwrapOr(nil)
@@ -632,8 +667,8 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	arkPsbt.Inputs[0].WitnessUtxo = nil
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	submitReq.ArkPSBT.Inputs[0].WitnessUtxo = nil
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -641,13 +676,10 @@ func TestActorSubmitMissingWitnessAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err := actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 
@@ -661,8 +693,8 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	stripCheckpointTapTreeMetadata(t, checkpointPsbts[0], 0)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	stripCheckpointTapTreeMetadata(t, submitReq.CheckpointPSBTs[0], 0)
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -670,13 +702,10 @@ func TestActorSubmitMissingTapTreeAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err := actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 
@@ -690,7 +719,7 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -698,20 +727,17 @@ func TestActorFinalizeMissingSigDoesNotUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	state, err := actor.CurrentState(ctx, sessionID)
 	require.NoError(t, err)
 	require.IsType(t, &CoSignedState{}, state)
 
 	// Finalize without FinalScriptWitness fails structural validation.
 	finalCheckpoint, err := psbt.NewFromUnsignedTx(
-		checkpointPsbts[0].UnsignedTx,
+		submitReq.CheckpointPSBTs[0].UnsignedTx,
 	)
 	require.NoError(t, err)
 
@@ -737,7 +763,7 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
 	recipientEvents := &failingRecipientEventStore{
 		err: errors.New("notify failed"),
@@ -748,14 +774,13 @@ func TestActorFinalizeNotifyFailureIsRetryable(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	finalizeReq := &FinalizeOORRequest{
 		SessionID:            sessionID,
@@ -796,8 +821,10 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	sqlStore := db.NewTestDB(t)
 	sessionStore := NewDBSessionStore(
@@ -821,13 +848,10 @@ func TestActorFinalizeSessionStoreFailureIsRetryable(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	finalizeReq := &FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
@@ -860,8 +884,10 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	dbh := db.NewTestDB(t)
 	sessionStore := NewDBSessionStore(
@@ -876,13 +902,10 @@ func TestActorFinalizeRetryAfterCleanupIsIdempotent(t *testing.T) {
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	finalizeReq := &FinalizeOORRequest{
 		SessionID:            sessionID,
 		FinalCheckpointPSBTs: []*psbt.Packet{finalCheckpoint},
@@ -910,8 +933,10 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	dbh := db.NewTestDB(t)
 	sessionStore := NewDBSessionStore(
@@ -926,13 +951,10 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 		SessionStore:     sessionStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 
 	firstFinalize := actor.Receive(ctx, &FinalizeOORRequest{
 		SessionID:            sessionID,
@@ -940,7 +962,7 @@ func TestActorFinalizeRetryAfterCleanupRejectsMismatchedPayload(
 	})
 	require.True(t, firstFinalize.IsOk())
 
-	mismatch := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	mismatch := buildFinalCheckpointPSBT(t, submitReq.CheckpointPSBTs[0])
 	mismatch.Inputs[0].FinalScriptWitness = []byte{0x02}
 
 	retryFinalize := actor.Receive(ctx, &FinalizeOORRequest{
@@ -971,14 +993,12 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 		},
 	}
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(
-		t, recipients,
-	)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, recipients)
 
 	// BuildArkPSBT canonicalizes ordering. Break it by swapping the first
 	// two recipient outputs while keeping the anchor in the final position.
-	require.GreaterOrEqual(t, len(arkPsbt.UnsignedTx.TxOut), 3)
-	outs := arkPsbt.UnsignedTx.TxOut
+	require.GreaterOrEqual(t, len(submitReq.ArkPSBT.UnsignedTx.TxOut), 3)
+	outs := submitReq.ArkPSBT.UnsignedTx.TxOut
 	outs[0], outs[1] = outs[1], outs[0]
 
 	driver := NewDriver(DriverCfg{})
@@ -987,13 +1007,10 @@ func TestActorSubmitNonCanonicalOutputsAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err := actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 
@@ -1018,12 +1035,10 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 		},
 	}
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(
-		t, recipients,
-	)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, recipients)
 
-	require.GreaterOrEqual(t, len(arkPsbt.UnsignedTx.TxOut), 3)
-	outs := arkPsbt.UnsignedTx.TxOut
+	require.GreaterOrEqual(t, len(submitReq.ArkPSBT.UnsignedTx.TxOut), 3)
+	outs := submitReq.ArkPSBT.UnsignedTx.TxOut
 	last := len(outs) - 1
 	outs[0], outs[last] = outs[last], outs[0]
 
@@ -1033,13 +1048,10 @@ func TestActorSubmitAnchorNotLastAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err := actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 
@@ -1053,11 +1065,11 @@ func TestActorSubmitMissingAnchorAssertsUnlock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
-	require.GreaterOrEqual(t, len(arkPsbt.UnsignedTx.TxOut), 2)
-	outs := arkPsbt.UnsignedTx.TxOut
-	arkPsbt.UnsignedTx.TxOut = outs[:len(outs)-1]
+	require.GreaterOrEqual(t, len(submitReq.ArkPSBT.UnsignedTx.TxOut), 2)
+	outs := submitReq.ArkPSBT.UnsignedTx.TxOut
+	submitReq.ArkPSBT.UnsignedTx.TxOut = outs[:len(outs)-1]
 
 	driver := NewDriver(DriverCfg{})
 	actor := newTestActor(t, ActorCfg{
@@ -1065,13 +1077,10 @@ func TestActorSubmitMissingAnchorAssertsUnlock(t *testing.T) {
 		CheckpointPolicy: policy,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err := actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 
@@ -1086,9 +1095,9 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
-	inputOutpoint := checkpointPsbts[0].UnsignedTx.
+	inputOutpoint := submitReq.CheckpointPSBTs[0].UnsignedTx.
 		TxIn[0].PreviousOutPoint
 
 	sqlStore := db.NewTestDB(t)
@@ -1102,9 +1111,11 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 
 	err := store.Create(ctx, &vtxo.Record{
 		Outpoint: inputOutpoint,
-		Value:    checkpointPsbts[0].Inputs[0].WitnessUtxo.Value,
-		PkScript: checkpointPsbts[0].Inputs[0].WitnessUtxo.PkScript,
-		Status:   vtxo.StatusLive,
+		Value: submitReq.CheckpointPSBTs[0].Inputs[0].
+			WitnessUtxo.Value,
+		PkScript: submitReq.CheckpointPSBTs[0].Inputs[0].
+			WitnessUtxo.PkScript,
+		Status: vtxo.StatusLive,
 	})
 	require.NoError(t, err)
 
@@ -1125,15 +1136,12 @@ func TestActorLockConflictFailsWithoutUnlock(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsErr())
 
 	// Failed sessions are cleaned from the in-memory map, so
 	// CurrentState returns an error for the evicted session.
-	sessionID := SessionID(arkPsbt.UnsignedTx.TxHash())
+	sessionID := SessionID(submitReq.ArkPSBT.UnsignedTx.TxHash())
 	_, err = actor.CurrentState(ctx, sessionID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown session")
@@ -1150,8 +1158,8 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	inputOutpoint := checkpointPsbts[0].UnsignedTx.
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	inputOutpoint := submitReq.CheckpointPSBTs[0].UnsignedTx.
 		TxIn[0].PreviousOutPoint
 
 	sqlStore := db.NewTestDB(t)
@@ -1165,9 +1173,11 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 
 	err := store.Create(ctx, &vtxo.Record{
 		Outpoint: inputOutpoint,
-		Value:    checkpointPsbts[0].Inputs[0].WitnessUtxo.Value,
-		PkScript: checkpointPsbts[0].Inputs[0].WitnessUtxo.PkScript,
-		Status:   vtxo.StatusLive,
+		Value: submitReq.CheckpointPSBTs[0].Inputs[0].
+			WitnessUtxo.Value,
+		PkScript: submitReq.CheckpointPSBTs[0].Inputs[0].
+			WitnessUtxo.PkScript,
+		Status: vtxo.StatusLive,
 	})
 	require.NoError(t, err)
 
@@ -1182,10 +1192,7 @@ func TestActorOORLockBlocksRoundLock(t *testing.T) {
 		DeliveryStore:    deliveryStore,
 	})
 
-	submitResp := actor.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
 	err = locker.LockMany(
@@ -1357,7 +1364,7 @@ func TestSubmitFailedCleansSessionMap(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
 	// Use a driver that always fails validation to trigger
 	// FailedState after the session is created in the map.
@@ -1373,13 +1380,15 @@ func TestSubmitFailedCleansSessionMap(t *testing.T) {
 		// Each iteration uses a unique locktime to create a
 		// distinct session ID.
 		attackPsbt := clonePSBTSliceForTest(
-			t, []*psbt.Packet{arkPsbt},
+			t, []*psbt.Packet{submitReq.ArkPSBT},
 		)[0]
 		attackPsbt.UnsignedTx.LockTime = uint32(i + 1)
 
 		resp := a.Receive(ctx, &SubmitOORRequest{
 			ArkPSBT:         attackPsbt,
-			CheckpointPSBTs: checkpointPsbts,
+			CheckpointPSBTs: submitReq.CheckpointPSBTs,
+			VTXOSigningDescriptors: submitReq.
+				VTXOSigningDescriptors,
 		})
 		require.True(t, resp.IsErr(),
 			"iteration %d should fail", i)
@@ -1407,8 +1416,10 @@ func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
 	clk := clock.NewDefaultClock()
 	testLog := btclog.Disabled
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	sessionStore1 := NewDBSessionStore(sqlStore, clk, testLog)
 	realDriver := NewDriver(DriverCfg{
@@ -1431,10 +1442,7 @@ func TestRestartPopulatesFinalCheckpointPSBTs(t *testing.T) {
 		SessionStore:     sessionStore1,
 	})
 
-	submitResp := actor1.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := actor1.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
 	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
@@ -1505,8 +1513,10 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
-	finalCheckpoint := buildFinalCheckpointPSBT(t, checkpointPsbts[0])
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
+	finalCheckpoint := buildFinalCheckpointPSBT(
+		t, submitReq.CheckpointPSBTs[0],
+	)
 
 	driver := NewDriver(DriverCfg{})
 	a := newTestActor(t, ActorCfg{
@@ -1515,10 +1525,7 @@ func TestToProtoReturnsNonNil(t *testing.T) {
 	})
 
 	// Get a real SubmitOORResponse.
-	submitResp := a.Receive(ctx, &SubmitOORRequest{
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
-	})
+	submitResp := a.Receive(ctx, submitReq)
 	require.True(t, submitResp.IsOk())
 
 	submitMsg, ok := submitResp.UnwrapOr(nil).(*SubmitOORResponse)
@@ -1548,7 +1555,7 @@ func TestClientIDFlowsThroughPushDelivery(t *testing.T) {
 
 	ctx := t.Context()
 
-	policy, arkPsbt, checkpointPsbts := buildTestSubmitPackage(t, nil)
+	policy, submitReq, _, _ := buildTestSubmitRequest(t, nil)
 
 	driver := NewDriver(DriverCfg{})
 
@@ -1579,8 +1586,10 @@ func TestClientIDFlowsThroughPushDelivery(t *testing.T) {
 
 	submitResp := a.Receive(ctx, &SubmitOORRequest{
 		ClientID:        expectedClientID,
-		ArkPSBT:         arkPsbt,
-		CheckpointPSBTs: checkpointPsbts,
+		ArkPSBT:         submitReq.ArkPSBT,
+		CheckpointPSBTs: submitReq.CheckpointPSBTs,
+		VTXOSigningDescriptors: submitReq.
+			VTXOSigningDescriptors,
 	})
 	require.True(t, submitResp.IsOk())
 	require.Equal(t, expectedClientID, pushedClientID,

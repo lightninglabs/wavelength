@@ -327,6 +327,22 @@ func (d *InProcessOutboxDriver) handleValidateSubmit(ctx context.Context,
 		}
 	}
 
+	err = validateSubmitOwnerProofs(
+		msg.ArkPSBT, msg.CheckpointPSBTs,
+		msg.VTXOSigningDescriptors, msg.CheckpointPolicy,
+	)
+	if err != nil {
+		d.log.DebugS(ctx, "Submit owner proof check failed",
+			slog.String("ark_txid", validated.ArkTxid.String()),
+			slog.String("reason", err.Error()))
+
+		return []Event{
+			&SubmitFailedEvent{
+				Reason: err.Error(),
+			},
+		}, nil
+	}
+
 	d.log.InfoS(ctx, "Submit package validated",
 		slog.String("ark_txid", validated.ArkTxid.String()),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
