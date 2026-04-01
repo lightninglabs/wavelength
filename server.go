@@ -440,6 +440,64 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 		_ = rpcSrv.Stop(ctx)
 	}()
 
+	// -------------------------------------------------------
+	// 8. Start metrics server and collector (optional).
+	// -------------------------------------------------------
+	if s.cfg.Metrics != nil && s.cfg.Metrics.ListenAddr != "" {
+		metricsLog := subLogger(
+			s.cfg.Loggers, metrics.Subsystem,
+		)
+		s.cfg.Metrics.Log = fn.Some(metricsLog)
+
+		metricsSrv := metrics.NewServer(s.cfg.Metrics)
+		if err := metricsSrv.Start(ctx); err != nil {
+			return fmt.Errorf("unable to start metrics "+
+				"server: %w", err)
+		}
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(
+				context.Background(), 5*time.Second,
+			)
+			defer cancel()
+			_ = metricsSrv.Stop(shutCtx)
+		}()
+
+		// Spawn the centralized metrics actor. All subsystems
+		// send typed metric events here rather than calling
+		// Prometheus directly.
+		metricsActor := metrics.NewMetricsActor(
+			metrics.ActorConfig{
+				Log: fn.Some(metricsLog),
+			},
+		)
+		metricsActorRef := actor.RegisterWithSystem(
+			s.actorSystem, metrics.ActorName,
+			metrics.ActorKey, metricsActor,
+		)
+		s.metricsRef = fn.Some[actor.TellOnlyRef[metrics.Msg]](
+			metricsActorRef,
+		)
+
+		// Wire the metrics actor ref into the instrumented
+		// locker so lock durations start being reported.
+		s.instrumentedLocker.SetMetricsRef(metricsActorRef)
+
+		// Register the system collector which queries the DB
+		// and wallet on each Prometheus scrape for fresh
+		// gauge values (VTXOs, rounds, OOR sessions, wallet
+		// balance).
+		sysCollector := metrics.NewSystemCollector(
+			newSystemStatsAdapter(
+				s.db, s.lnd.LndServices.Client,
+			),
+			fn.Some(metricsLog),
+		)
+		prometheus.MustRegister(sysCollector)
+
+		s.log.InfoS(ctx, "Metrics server started",
+			"addr", metricsSrv.Addr().String())
+	}
+
 	s.log.InfoS(ctx, "Daemon ready")
 
 	// -------------------------------------------------------
