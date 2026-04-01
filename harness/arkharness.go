@@ -17,6 +17,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo"
+	"github.com/lightninglabs/darepo-client/chainbackends/bitcoindrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	clientdarepod "github.com/lightninglabs/darepo-client/darepod"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -780,6 +781,14 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+
+	// Wire a package submitter for unroll CPFP package relay.
+	// This talks directly to the harness bitcoind via JSON-RPC.
+	cfg.PackageSubmitter = bitcoindrpc.New(
+		h.BitcoindRPC,
+		client_harness.BitcoindRPCUser,
+		client_harness.BitcoindRPCPass,
+	)
 
 	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
 	cfg.MailboxEdgeFactory = newEdgeFactory(mailboxEdge)
