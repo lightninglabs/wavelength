@@ -580,6 +580,8 @@ func (h *ArkHarness) launchClientDaemon(name string,
 		cfg.Wallet.BtcwalletPeers = []string{
 			h.Harness.BitcoindP2P,
 		}
+		cfg.Wallet.FeeURL = h.Harness.EsploraURL +
+			"/api/v1/fees/recommended"
 
 	default:
 		h.T.Fatalf("unsupported client daemon wallet backend: %s",
