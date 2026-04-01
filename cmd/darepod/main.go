@@ -84,7 +84,6 @@ func newRootCmd() *cobra.Command {
 		"disable TLS for the server connection (dev only)",
 	)
 
-
 	// Wallet backend flags.
 	f.String("wallet.type", cfg.Wallet.Type,
 		"wallet backend type (lnd, lwwallet)",

@@ -40,7 +40,7 @@ func MailboxAuthMessage(senderPubKey *btcec.PublicKey,
 // MailboxAuthDigest constructs the BIP-340 tagged hash digest that a
 // client signs to prove ownership of its identity key. The digest is:
 //
-//	sha256(sha256("mailbox-auth") || sha256("mailbox-auth") || senderPubKey || recipientMailboxID)
+//	TaggedHash("mailbox-auth", senderPubKey || recipientID)
 //
 // This follows the BIP-340 tagged hashing convention used throughout
 // the codebase, ensuring domain separation and compatibility with

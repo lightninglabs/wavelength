@@ -2827,7 +2827,7 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 			return fmt.Errorf("unable to derive identity "+
 				"key: %w", lwErr)
 		default:
-			return fmt.Errorf("no wallet backend available "+
+			return fmt.Errorf("no wallet backend available " +
 				"to derive identity key")
 		}
 	}
