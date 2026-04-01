@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -137,16 +138,7 @@ func lockForfeitVTXOs(ctx context.Context, env *Environment,
 	}
 
 	if env.VTXOLocker == nil {
-		// Preserve compatibility for tests and configurations that do
-		// not wire VTXOLocker yet.
-		err := env.VTXOStore.LockVTXO(ctx, env.RoundID, outpoints...)
-		if err != nil {
-			return fmt.Errorf(
-				"failed to lock forfeit VTXOs: %w", err,
-			)
-		}
-
-		return nil
+		return errors.New("vtxo locker not configured")
 	}
 
 	owner := vtxo.RoundLockOwner(env.RoundID.String())
@@ -243,14 +235,9 @@ func unlockForfeitVTXOs(ctx context.Context, env *Environment,
 		}
 
 		if env.VTXOLocker == nil {
-			err := env.VTXOStore.UnlockVTXO(
-				ctx, env.RoundID, outpoints...,
-			)
-			if err != nil {
-				env.Log.ErrorS(ctx, "Failed to unlock forfeit "+
-					"VTXOs", err,
-					"count", len(outpoints))
-			}
+			env.Log.ErrorS(ctx, "Failed to unlock forfeit VTXOs",
+				errors.New("vtxo locker not configured"),
+				"count", len(outpoints))
 
 			continue
 		}
