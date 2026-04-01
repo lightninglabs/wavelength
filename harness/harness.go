@@ -1082,6 +1082,14 @@ func (h *Harness) startBitcoind() {
 		"-rpcbind=0.0.0.0",
 		"-zmqpubrawblock=tcp://0.0.0.0:28332",
 		"-zmqpubrawtx=tcp://0.0.0.0:28333",
+		// Enable P2P listening on all interfaces so neutrino can
+		// connect from the host for compact block filter sync.
+		"-listen=1",
+		"-bind=0.0.0.0:18444",
+		// Enable compact block filter index and serving so
+		// neutrino (BIP 157/158) clients can sync.
+		"-blockfilterindex=1",
+		"-peerblockfilters=1",
 		"-printtoconsole",
 	}
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
@@ -981,9 +982,51 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		s.initRPCClients(ctx)
 	}
 
-	s.log.InfoS(ctx, "Neutrino-backed wallet started")
+	s.log.InfoS(ctx, "Neutrino-backed wallet started, "+
+		"waiting for initial sync in background")
 
-	s.markWalletReady()
+	// Wait for neutrino to sync at least one block before marking
+	// the wallet ready. This runs in a goroutine so the InitWallet
+	// RPC can return without blocking on neutrino header sync.
+	go func() {
+		syncCtx, syncCancel := context.WithTimeout(
+			context.Background(), 2*time.Minute,
+		)
+		defer syncCancel()
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-syncCtx.Done():
+				s.log.ErrorS(
+					syncCtx,
+					"Neutrino did not sync in time",
+					syncCtx.Err(),
+				)
+
+				return
+
+			case <-ticker.C:
+				height, _, err := w.ChainBackend().BestBlock(
+					syncCtx,
+				)
+				if err == nil && height > 0 {
+					s.log.InfoS(syncCtx,
+						"Neutrino initial sync "+
+							"complete",
+						slog.Int("height",
+							int(height)),
+					)
+
+					s.markWalletReady()
+
+					return
+				}
+			}
+		}
+	}()
 
 	return nil
 }
