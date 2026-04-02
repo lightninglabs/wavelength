@@ -3,6 +3,7 @@ package darepod
 import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/chainbackends"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
@@ -29,6 +30,7 @@ var allSubsystems = []string{
 	vtxo.Subsystem,
 	wallet.Subsystem,
 	lwwallet.Subsystem,
+	btcwbackend.Subsystem,
 	serverconn.Subsystem,
 	chainbackends.Subsystem,
 	chainbackends.LndClientSubsystem,

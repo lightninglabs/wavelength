@@ -42,7 +42,10 @@ const (
 	// ListUnspent query within a single block epoch if we didn't detect any
 	// new boarding UTXOs. This mitigates a race where we receive a block
 	// epoch notification before the wallet's UTXO set is fully updated.
-	listUnspentMaxRetries = 5
+	// For neutrino backends, btcwallet's internal block processing
+	// (fetching the full block from P2P, running AddCredit) can take
+	// over a second after the epoch arrives.
+	listUnspentMaxRetries = 10
 
 	// listUnspentRetryDelay is the delay between ListUnspent retries.
 	// We keep this small so confirmed boarding UTXOs are detected

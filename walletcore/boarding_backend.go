@@ -94,12 +94,19 @@ func (b *BoardingBackendBase) DeriveNextKey(ctx context.Context,
 // btcwallet will track UTXOs paying to this address via whatever
 // chain source is configured (Esplora notifications or neutrino
 // compact block filter matching).
+//
+// The script is imported under BIP86 (default taproot) scope rather
+// than the custom chain key scope used for key derivation. This
+// matches lnd's ImportTaprootScript RPC behavior and is required
+// because btcwallet's block processing pipeline skips credit
+// tracking for addresses in non-default scopes
+// (chainntfns.go:IsDefaultScope check).
 func (b *BoardingBackendBase) ImportTaprootScript(
 	ctx context.Context,
 	script *waddrmgr.Tapscript) (btcutil.Address, error) {
 
 	managedAddr, err := b.BtcWallet.ImportTaprootScript(
-		b.ChainKeyScope, script,
+		waddrmgr.KeyScopeBIP0086, script,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

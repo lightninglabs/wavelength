@@ -139,6 +139,20 @@ type Server struct {
 	// wallet.type is "btcwallet". It is None in other modes.
 	btcwWallet fn.Option[*btcwbackend.Wallet]
 
+	// neutrinoSvc holds the pre-started neutrino chain service
+	// when wallet.type is "btcwallet". Started early in daemon
+	// startup (before seed is available) so P2P peer connection
+	// and header sync can proceed in parallel. Reused by
+	// startBtcwallet when the wallet is finally unlocked.
+	neutrinoSvc fn.Option[*btcwbackend.NeutrinoService]
+
+	// runCtx is the context that spans the server's entire Run
+	// lifecycle. It is set at the start of run() and cancelled
+	// when the daemon shuts down. Background goroutines that
+	// must outlive RPC handlers but not the daemon should
+	// select on runCtx.Done().
+	runCtx context.Context //nolint:containedctx
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -232,6 +246,11 @@ func (s *Server) isWalletReady() bool {
 	}
 }
 
+// WalletType returns the configured wallet backend type string.
+func (s *Server) WalletType() string {
+	return s.cfg.Wallet.Type
+}
+
 // markWalletReady atomically stores WalletStateReady and closes the
 // walletReady channel, signaling to all waiting RPC handlers that the
 // wallet is operational. The channel close is guarded by sync.Once to
@@ -308,6 +327,11 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 func (s *Server) run(ctx context.Context,
 	shutdownFn func()) error {
 
+	// Store the run context so background goroutines (like the
+	// btcwallet sync poller) can outlive individual RPC
+	// handlers but still shut down with the daemon.
+	s.runCtx = ctx
+
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
 	// -------------------------------------------------------
@@ -373,6 +397,17 @@ func (s *Server) run(ctx context.Context,
 		// In btcwallet mode, use the same auto-unlock flow
 		// as lwwallet but start a neutrino-backed wallet.
 		s.tryAutoUnlockBtcwallet(ctx)
+
+		// Register neutrino cleanup immediately so it fires
+		// even if a later startup step (dialServer, actor
+		// system init) fails before the main defer block.
+		defer func() {
+			s.neutrinoSvc.WhenSome(
+				func(svc *btcwbackend.NeutrinoService) {
+					_ = svc.Stop()
+				},
+			)
+		}()
 
 	default:
 		return fmt.Errorf("unknown wallet type %q",
@@ -820,7 +855,25 @@ func (s *Server) startLwwallet(ctx context.Context,
 // backend at startup without user interaction. It follows the same
 // pattern as tryAutoUnlockLwwallet: check for a seed in the
 // environment, then check for an encrypted seed file with a password.
+//
+// Neutrino is started eagerly before checking for a wallet seed so
+// that P2P peer connection and header sync can proceed in parallel
+// while the daemon waits for the InitWallet or UnlockWallet RPC.
+// The pre-started service is stored in s.neutrinoSvc and reused by
+// startBtcwallet when the seed becomes available.
 func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
+	// Start neutrino early so it can connect to P2P peers and
+	// sync headers while we wait for the wallet seed. This
+	// dramatically reduces the time startBtcwallet needs when
+	// the UnlockWallet RPC finally arrives.
+	if err := s.preStartNeutrino(ctx); err != nil {
+		s.log.ErrorS(ctx,
+			"Failed to pre-start neutrino service", err)
+
+		// Non-fatal: startBtcwallet will create its own
+		// neutrino service if s.neutrinoSvc is nil.
+	}
+
 	// Check for a raw seed in the environment (dev/CI path).
 	seed, err := LoadSeedFromEnv()
 	if err != nil {
@@ -921,9 +974,51 @@ func (s *Server) tryAutoUnlockBtcwallet(ctx context.Context) {
 	}
 }
 
+// preStartNeutrino creates and starts the neutrino chain service
+// early so it can begin P2P peer connection and header/filter sync
+// while the daemon waits for a wallet seed. The started service is
+// stored in s.neutrinoSvc for reuse by startBtcwallet.
+func (s *Server) preStartNeutrino(ctx context.Context) error {
+	walletLog := s.subLogger(btcwbackend.Subsystem)
+
+	neutrinoDataDir := s.cfg.Wallet.BtcwalletDataDir
+	if neutrinoDataDir == "" {
+		networkDir, err := s.cfg.NetworkDir()
+		if err != nil {
+			return fmt.Errorf(
+				"resolve network directory: %w", err,
+			)
+		}
+
+		neutrinoDataDir = networkDir
+	}
+
+	svc, err := btcwbackend.NewNeutrinoService(
+		neutrinoDataDir, s.chainParams,
+		s.cfg.Wallet.BtcwalletPeers,
+		s.cfg.Wallet.BtcwalletAddPeers,
+		s.cfg.Wallet.PersistFilters, walletLog,
+	)
+	if err != nil {
+		return fmt.Errorf("create neutrino service: %w", err)
+	}
+
+	if err := svc.Start(); err != nil {
+		return fmt.Errorf("start neutrino service: %w", err)
+	}
+
+	s.neutrinoSvc = fn.Some(svc)
+	s.log.InfoS(ctx,
+		"Neutrino service pre-started for P2P sync")
+
+	return nil
+}
+
 // startBtcwallet creates and starts the neutrino-backed wallet from
-// the given raw seed. On success it populates s.btcwWallet and marks
-// the wallet as ready.
+// the given raw seed. If a neutrino service was pre-started via
+// preStartNeutrino, it is reused; otherwise a new one is created.
+// On success it populates s.btcwWallet and marks the wallet as
+// ready.
 func (s *Server) startBtcwallet(ctx context.Context,
 	seed [rawSeedLen]byte) error {
 
@@ -937,7 +1032,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		recoveryWindow = DefaultRecoveryWindow
 	}
 
-	w, err := btcwbackend.New(btcwbackend.Config{
+	cfg := btcwbackend.Config{
 		Config: walletcore.Config{
 			Seed:           seed,
 			ChainParams:    s.chainParams,
@@ -952,7 +1047,18 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		AddPeers:        s.cfg.Wallet.BtcwalletAddPeers,
 		FeeURL:          s.cfg.Wallet.FeeURL,
 		PersistFilters:  s.cfg.Wallet.PersistFilters,
-	})
+	}
+
+	// Reuse the pre-started neutrino service if available.
+	// Otherwise, create a new one (fallback for callers that
+	// skip preStartNeutrino).
+	var w *btcwbackend.Wallet
+	if s.neutrinoSvc.IsSome() {
+		svc := s.neutrinoSvc.UnsafeFromSome()
+		w, err = btcwbackend.NewWithNeutrino(cfg, svc)
+	} else {
+		w, err = btcwbackend.New(cfg)
+	}
 	if err != nil {
 		return fmt.Errorf("create btcwallet: %w", err)
 	}
@@ -985,46 +1091,76 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	s.log.InfoS(ctx, "Neutrino-backed wallet started, "+
 		"waiting for initial sync in background")
 
-	// Wait for neutrino to sync at least one block before marking
-	// the wallet ready. This runs in a goroutine so the InitWallet
-	// RPC can return without blocking on neutrino header sync.
+	// Wait for btcwallet to fully sync with the chain before
+	// marking the wallet ready. This includes the recovery scan
+	// (when recoveryWindow > 0) which downloads and checks compact
+	// block filters for all existing blocks. Without this wait,
+	// the daemon would accept requests while btcwallet's chain
+	// notification handler is blocked in syncWithChain, causing
+	// newly mined blocks to be missed.
+	//
+	// The goroutine polls until sync completes or the daemon
+	// shuts down. We use s.walletReady as the success signal
+	// (closed by markWalletReady) and a server-scoped quit
+	// channel so the goroutine doesn't outlive the daemon.
+	//
+	// We must NOT use the caller's ctx here: the RPC context
+	// is cancelled when the handler returns, but the sync
+	// goroutine must outlive the RPC. Instead, we select on
+	// the server's runCtx (the context passed to Run, which
+	// lives until daemon shutdown).
+	runCtx := s.runCtx
 	go func() {
-		syncCtx, syncCancel := context.WithTimeout(
-			context.Background(), 2*time.Minute,
-		)
-		defer syncCancel()
-
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
+		logInterval := 30 * time.Second
+		lastLog := time.Now()
+
 		for {
 			select {
-			case <-syncCtx.Done():
-				s.log.ErrorS(
-					syncCtx,
-					"Neutrino did not sync in time",
-					syncCtx.Err(),
-				)
-
+			case <-runCtx.Done():
 				return
 
 			case <-ticker.C:
-				height, _, err := w.ChainBackend().BestBlock(
-					syncCtx,
-				)
-				if err == nil && height > 0 {
-					s.log.InfoS(syncCtx,
-						"Neutrino initial sync "+
-							"complete",
-						slog.Int("height",
-							int(height)),
-					)
-
-					s.markWalletReady()
-
-					return
-				}
 			}
+
+			synced, bestTimestamp, err := w.IsSynced()
+			if err != nil {
+				continue
+			}
+
+			if !synced {
+				if time.Since(lastLog) >= logInterval {
+					s.log.InfoS(
+						context.Background(),
+						"Waiting for neutrino "+
+							"wallet sync",
+					)
+					lastLog = time.Now()
+				}
+
+				continue
+			}
+
+			height, _, hErr := w.ChainBackend().BestBlock(
+				context.Background(),
+			)
+			if hErr != nil || height == 0 {
+				continue
+			}
+
+			s.log.InfoS(context.Background(),
+				"Neutrino initial sync complete",
+				slog.Int("height",
+					int(height)),
+				slog.Int64("best_time",
+					bestTimestamp),
+			)
+
+			s.markWalletReady()
+
+			return
 		}
 	}()
 

@@ -29,6 +29,8 @@ package may import from a higher layer.
 | [`chain`](chain/) | Bitcoind RPC utilities (package relay, `SubmitPackage`) |
 | [`lndbackend`](lndbackend/) | `BoardingBackend` implementation via LND's wallet kit |
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
+| [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
+| [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
@@ -80,7 +82,7 @@ darepod (orchestrator)
 │   ├── mailbox     │ (protocol primitives)
 │   └── db          │ (durable delivery store)
 ├── chainsource     │
-│   └── chainbackends (pluggable: LND or lwwallet)
+│   └── chainbackends (pluggable: LND, lwwallet, or btcwbackend)
 └── db              │
     └── (SQLite | PostgreSQL)
 ```

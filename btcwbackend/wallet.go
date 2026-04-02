@@ -41,15 +41,19 @@ type Wallet struct {
 	// boardingBackend wraps btcwallet to provide the
 	// wallet.BoardingBackend interface for Ark boarding.
 	boardingBackend *BoardingBackendAdapter
+
+	// ownsNeutrino is true when the wallet created and owns the
+	// neutrino service lifecycle (created via New). When false
+	// (created via NewWithNeutrino), the caller manages neutrino
+	// shutdown.
+	ownsNeutrino bool
 }
 
 // New creates a new neutrino-backed wallet from the given
-// configuration. The caller must provide a DBDir for btcwallet's
-// bbolt database and is responsible for managing the directory's
-// lifecycle.
+// configuration. The wallet creates and owns its own neutrino
+// service, which is stopped when the wallet is stopped.
 func New(cfg Config) (*Wallet, error) {
 	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
-
 	neutrinoDataDir := cfg.neutrinoDataDir()
 
 	// Create and start the neutrino chain service.
@@ -65,6 +69,31 @@ func New(cfg Config) (*Wallet, error) {
 	if err := neutrinoSvc.Start(); err != nil {
 		return nil, fmt.Errorf("start neutrino service: %w", err)
 	}
+
+	w, err := NewWithNeutrino(cfg, neutrinoSvc)
+	if err != nil {
+		_ = neutrinoSvc.Stop()
+
+		return nil, err
+	}
+
+	// Mark that this wallet owns the neutrino service lifecycle.
+	w.ownsNeutrino = true
+
+	return w, nil
+}
+
+// NewWithNeutrino creates a new neutrino-backed wallet using a
+// pre-started NeutrinoService. The caller retains ownership of the
+// neutrino service lifecycle — the wallet will NOT stop it on
+// Wallet.Stop(). This allows the daemon to start neutrino early
+// (for P2P connection and header sync) independently of wallet
+// unlock timing.
+func NewWithNeutrino(cfg Config,
+	neutrinoSvc *NeutrinoService) (*Wallet, error) {
+
+	walletLog := cfg.Log.UnwrapOr(btclog.Disabled)
+	neutrinoDataDir := cfg.neutrinoDataDir()
 
 	// Create the btcwallet chain client backed by neutrino.
 	chainClient := neutrinoSvc.ChainClient()
@@ -87,8 +116,6 @@ func New(cfg Config) (*Wallet, error) {
 		},
 	}, blockCache)
 	if err != nil {
-		_ = neutrinoSvc.Stop()
-
 		return nil, fmt.Errorf("create btcwallet: %w", err)
 	}
 
@@ -107,7 +134,6 @@ func New(cfg Config) (*Wallet, error) {
 	)
 	if err != nil {
 		_ = btcw.Stop()
-		_ = neutrinoSvc.Stop()
 
 		return nil, fmt.Errorf("create chain backend: %w", err)
 	}
@@ -162,7 +188,9 @@ func (w *Wallet) Start() error {
 	return nil
 }
 
-// Stop shuts down the wallet, neutrino service, and chain backend.
+// Stop shuts down the wallet and, if the wallet owns the neutrino
+// service (created via New), stops it too. When created via
+// NewWithNeutrino, the caller manages the neutrino lifecycle.
 func (w *Wallet) Stop() {
 	ctx := context.Background()
 
@@ -176,7 +204,10 @@ func (w *Wallet) Stop() {
 	// Stop order: btcwallet (depends on neutrino chain client)
 	// must stop before neutrino service.
 	_ = w.BtcWallet.Stop()
-	_ = w.neutrinoSvc.Stop()
+
+	if w.ownsNeutrino {
+		_ = w.neutrinoSvc.Stop()
+	}
 
 	w.Logger(ctx).InfoS(ctx, "Neutrino-backed wallet stopped")
 }
@@ -197,4 +228,12 @@ func (w *Wallet) ChainBackend() *ChainBackend {
 // and message signing operations.
 func (w *Wallet) KeyRing() keychain.SecretKeyRing {
 	return w.Wallet.KeyRing
+}
+
+// IsSynced returns whether the underlying btcwallet has fully synced
+// to the current best block. This includes completion of any recovery
+// scan. Callers should poll this before marking the wallet ready to
+// ensure the chain notification pipeline is fully operational.
+func (w *Wallet) IsSynced() (bool, int64, error) {
+	return w.BtcWallet.IsSynced()
 }
