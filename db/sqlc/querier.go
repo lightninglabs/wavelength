@@ -38,6 +38,7 @@ type Querier interface {
 	GetRoundClientTree(ctx context.Context, arg GetRoundClientTreeParams) (RoundClientTree, error)
 	GetRoundClientTrees(ctx context.Context, roundID string) ([]RoundClientTree, error)
 	GetRoundVtxoRequests(ctx context.Context, roundID string) ([]RoundVtxoRequest, error)
+	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -85,6 +86,7 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
 	ListOORPackages(ctx context.Context) ([]OorPackage, error)
 	ListOORPackagesByDirection(ctx context.Context, direction int32) ([]OorPackage, error)
@@ -103,6 +105,7 @@ type Querier interface {
 	// management, including status transitions and forfeit transaction tracking.
 	// ListVTXOsByStatus returns all VTXOs with the specified status.
 	ListVTXOsByStatus(ctx context.Context, status int32) ([]Vtxo, error)
+	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
 	// commitment transaction confirms.
@@ -127,6 +130,8 @@ type Querier interface {
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
 	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
+	// Unilateral-exit job control-plane queries.
+	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
 }
 
 var _ Querier = (*Queries)(nil)
