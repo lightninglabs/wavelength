@@ -28,6 +28,7 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 		PkScript: []byte{0x51},
 	}
 	checkpointTx.AddTxOut(checkpointOut)
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -83,6 +84,7 @@ func TestValidateSubmitPackageMissingWitness(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -130,6 +132,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		PkScript: []byte{0x51},
 	}
 	checkpointTxA.AddTxOut(checkpointOutA)
+	checkpointTxA.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbtA, err := psbt.NewFromUnsignedTx(checkpointTxA)
 	require.NoError(t, err)
@@ -145,6 +148,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTxB.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbtB, err := psbt.NewFromUnsignedTx(checkpointTxB)
 	require.NoError(t, err)
@@ -178,4 +182,56 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		checkpointPsbtB,
 	})
 	require.Error(t, err)
+}
+
+// TestValidateSubmitPackageRejectsCheckpointWithoutAnchor asserts old-style
+// anchorless checkpoints fail with a clear structural error.
+func TestValidateSubmitPackageRejectsCheckpointWithoutAnchor(t *testing.T) {
+	t.Parallel()
+
+	checkpointTx := wire.NewMsgTx(3)
+	checkpointTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  chainhash.Hash{1},
+			Index: 7,
+		},
+	})
+
+	checkpointOut := &wire.TxOut{
+		Value:    1234,
+		PkScript: []byte{0x51},
+	}
+	checkpointTx.AddTxOut(checkpointOut)
+
+	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
+	require.NoError(t, err)
+
+	arkTx := wire.NewMsgTx(3)
+	arkTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{
+			Hash:  checkpointTx.TxHash(),
+			Index: 0,
+		},
+	})
+	arkTx.AddTxOut(&wire.TxOut{
+		Value:    1234,
+		PkScript: []byte{0x6a, 0x01, 0x01},
+	})
+	arkTx.AddTxOut(scripts.AnchorOutput())
+
+	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
+	require.NoError(t, err)
+
+	arkPsbt.Inputs[0].WitnessUtxo = checkpointOut
+
+	encodedTapTree, err := EncodeTapTree([][]byte{{0x51}})
+	require.NoError(t, err)
+
+	err = PutTapTreePSBTInput(arkPsbt, 0, encodedTapTree)
+	require.NoError(t, err)
+
+	_, err = ValidateSubmitPackage(
+		arkPsbt, []*psbt.Packet{checkpointPsbt},
+	)
+	require.ErrorContains(t, err, "anchor output")
 }

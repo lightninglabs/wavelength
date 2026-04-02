@@ -27,6 +27,7 @@ func TestApplyFinalizeDataAttachesTapTree(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -81,6 +82,7 @@ func TestApplyFinalizeDataMissingTapTree(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -123,6 +125,7 @@ func TestApplyFinalizeDataMappingMismatch(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)

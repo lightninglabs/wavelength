@@ -32,6 +32,7 @@ func TestValidateFinalizePackageHappyPath(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -75,6 +76,7 @@ func TestValidateFinalizePackageMissingSig(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTx.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -115,6 +117,7 @@ func TestValidateFinalizePackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTxA.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbtA, err := psbt.NewFromUnsignedTx(checkpointTxA)
 	require.NoError(t, err)
@@ -131,6 +134,7 @@ func TestValidateFinalizePackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
+	checkpointTxB.AddTxOut(scripts.AnchorOutput())
 
 	checkpointPsbtB, err := psbt.NewFromUnsignedTx(checkpointTxB)
 	require.NoError(t, err)

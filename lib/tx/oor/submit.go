@@ -83,8 +83,11 @@ func ValidateSubmitPackage(ark *psbt.Packet,
 				checkpointTxid)
 		}
 
-		if len(checkpoint.UnsignedTx.TxOut) == 0 {
-			return nil, fmt.Errorf("checkpoint tx has no outputs")
+		if err := validateCheckpointTx(
+			checkpoint.UnsignedTx,
+		); err != nil {
+			return nil, fmt.Errorf("checkpoint %s invalid: %w",
+				checkpointTxid, err)
 		}
 
 		checkpointByTxid[checkpointTxid] = checkpoint

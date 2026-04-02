@@ -46,10 +46,8 @@ func (a *CheckpointArtifact) ToCheckpointOutput() (CheckpointOutput, error) {
 		)
 	}
 
-	if len(a.PSBT.UnsignedTx.TxOut) == 0 {
-		return CheckpointOutput{}, fmt.Errorf(
-			"checkpoint output must be provided",
-		)
+	if err := validateCheckpointTx(a.PSBT.UnsignedTx); err != nil {
+		return CheckpointOutput{}, err
 	}
 
 	return CheckpointOutput{
@@ -68,8 +66,9 @@ type RecipientOutput struct {
 	Value btcutil.Amount
 }
 
-// BuildCheckpointPSBT constructs an unsigned checkpoint PSBT that spends a VTXO
-// input and pays the entire input value to a checkpoint P2TR output.
+// BuildCheckpointPSBT constructs an unsigned checkpoint PSBT that spends a
+// VTXO input, pays the entire input value to a checkpoint P2TR output, and
+// appends a zero-value anchor output.
 //
 // The checkpoint output pkScript is derived deterministically from:
 //

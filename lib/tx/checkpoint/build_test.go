@@ -68,8 +68,9 @@ func TestBuildPSBTHappyPath(t *testing.T) {
 	require.Equal(t, int32(arktx.TxVersion), tx.Version)
 	require.Len(t, tx.TxIn, 1)
 	require.Equal(t, in.SpentVTXO.Outpoint, tx.TxIn[0].PreviousOutPoint)
-	require.Len(t, tx.TxOut, 1)
+	require.Len(t, tx.TxOut, 2)
 	require.Equal(t, witnessUtxo.Value, tx.TxOut[0].Value)
+	require.True(t, arktx.IsAnchorOutput(tx.TxOut[1]))
 
 	expectedPkScript, err := scripts.CheckpointPkScript(
 		policy, in.OwnerLeafScript,

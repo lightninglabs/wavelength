@@ -46,10 +46,6 @@ func ApplyFinalizeData(ark *psbt.Packet,
 				"unsigned tx")
 		}
 
-		if len(checkpoint.UnsignedTx.TxOut) == 0 {
-			return fmt.Errorf("checkpoint tx has no outputs")
-		}
-
 		if len(checkpoint.Outputs) != len(checkpoint.UnsignedTx.TxOut) {
 			return fmt.Errorf("checkpoint psbt output count " +
 				"mismatch")
@@ -60,6 +56,13 @@ func ApplyFinalizeData(ark *psbt.Packet,
 		}
 
 		checkpointTxid := checkpoint.UnsignedTx.TxHash()
+		if err := validateCheckpointTx(
+			checkpoint.UnsignedTx,
+		); err != nil {
+			return fmt.Errorf("checkpoint %s invalid: %w",
+				checkpointTxid, err)
+		}
+
 		outpoint := wire.OutPoint{
 			Hash:  checkpointTxid,
 			Index: 0,
