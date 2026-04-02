@@ -8,9 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/db"
-	"github.com/lightninglabs/darepo-client/indexer"
 	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -113,56 +111,5 @@ func (r *RPCServer) newOORReceiveScriptStore() (
 func (r *RPCServer) oorReceiveKeyOps() (DeriveDefaultOORReceiveKeyFunc,
 	OORReceiveScriptSignerFactory, error) {
 
-	switch {
-	case r.server.lnd.IsSome():
-		lndSvc := r.server.lnd.UnsafeFromSome()
-
-		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
-				keyDesc, err := lndSvc.WalletKit.DeriveNextKey(
-					ctx, int32(keychain.KeyFamilyMultiSig),
-				)
-				if err != nil {
-					return nil, fmt.Errorf("derive next key: %w", err) //nolint:ll
-				}
-
-				return keyDesc, nil
-			}, func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-				return indexer.NewLNDSchnorrSigner(
-					lndSvc.Signer, keyDesc,
-				)
-			}, nil
-
-	case r.server.lwWallet.IsSome():
-		wallet := r.server.lwWallet.UnsafeFromSome()
-
-		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
-				return wallet.DeriveNextKey(
-					ctx, keychain.KeyFamilyMultiSig,
-				)
-			}, func(
-				keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-
-				return indexer.NewKeyRingSchnorrSigner(
-					wallet.KeyRing(), keyDesc,
-				)
-			}, nil
-
-	case r.server.btcwWallet.IsSome():
-		wallet := r.server.btcwWallet.UnsafeFromSome()
-
-		return func(ctx context.Context) (*keychain.KeyDescriptor, error) { //nolint:ll
-				return wallet.DeriveNextKey(
-					ctx, keychain.KeyFamilyMultiSig,
-				)
-			}, func(
-				keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-
-				return indexer.NewKeyRingSchnorrSigner(
-					wallet.KeyRing(), keyDesc,
-				)
-			}, nil
-
-	default:
-		return nil, nil, fmt.Errorf("wallet backend not initialized")
-	}
+	return r.server.indexerProofNextKeyOps()
 }
