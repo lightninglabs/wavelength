@@ -93,6 +93,17 @@ service DaemonService {
     // GetFeeHistory returns paginated fee ledger entries from the
     // client's local accounting database.
     rpc GetFeeHistory (GetFeeHistoryRequest) returns (GetFeeHistoryResponse);
+
+    // Unroll triggers a unilateral exit for the specified VTXO outpoint.
+    // The daemon will assemble the recovery proof, spawn a durable unroll
+    // job, and drive the on-chain recovery process to completion.
+    rpc Unroll (UnrollRequest) returns (UnrollResponse);
+
+    // GetUnrollStatus returns the current status of an unroll job for the
+    // specified VTXO outpoint, including recovery chain progress and
+    // sweep state.
+    rpc GetUnrollStatus (GetUnrollStatusRequest)
+        returns (GetUnrollStatusResponse);
 }
 
 message GetInfoRequest {
@@ -767,4 +778,69 @@ message GetFeeHistoryResponse {
     // total_fees_paid_sat is the cumulative total of all fees
     // paid by this client.
     int64 total_fees_paid_sat = 2;
+}
+
+message UnrollRequest {
+    // outpoint is the VTXO outpoint to unilaterally exit, formatted as
+    // "txid:index".
+    string outpoint = 1;
+}
+
+message UnrollResponse {
+    // created indicates whether a new unroll job was spawned. False if
+    // an existing job already covers this target.
+    bool created = 1;
+
+    // actor_id is the identifier of the durable unroll job actor.
+    string actor_id = 2;
+}
+
+message GetUnrollStatusRequest {
+    // outpoint is the VTXO outpoint to query, formatted as "txid:index".
+    string outpoint = 1;
+}
+
+// UnrollJobStatus represents the high-level phase of an unroll job.
+enum UnrollJobStatus {
+    UNROLL_JOB_STATUS_UNSPECIFIED = 0;
+
+    // UNROLL_JOB_STATUS_PENDING indicates the job has been created but
+    // has not yet started materializing recovery transactions.
+    UNROLL_JOB_STATUS_PENDING = 1;
+
+    // UNROLL_JOB_STATUS_MATERIALIZING indicates recovery transactions
+    // are being broadcast and confirmed on-chain.
+    UNROLL_JOB_STATUS_MATERIALIZING = 2;
+
+    // UNROLL_JOB_STATUS_CSV_PENDING indicates all recovery transactions
+    // are confirmed and the job is waiting for the CSV delay to expire.
+    UNROLL_JOB_STATUS_CSV_PENDING = 3;
+
+    // UNROLL_JOB_STATUS_SWEEPING indicates the CSV delay has expired
+    // and the sweep transaction is being broadcast/confirmed.
+    UNROLL_JOB_STATUS_SWEEPING = 4;
+
+    // UNROLL_JOB_STATUS_COMPLETED is terminal: the sweep confirmed and
+    // the funds are in the on-chain wallet.
+    UNROLL_JOB_STATUS_COMPLETED = 5;
+
+    // UNROLL_JOB_STATUS_FAILED is terminal: the unroll encountered an
+    // unrecoverable error.
+    UNROLL_JOB_STATUS_FAILED = 6;
+}
+
+message GetUnrollStatusResponse {
+    // found is true if an unroll job exists for the requested outpoint.
+    bool found = 1;
+
+    // status is the current high-level phase of the unroll job.
+    UnrollJobStatus status = 2;
+
+    // sweep_txid is the txid of the sweep transaction, set once the
+    // sweep has been broadcast.
+    string sweep_txid = 3;
+
+    // last_error contains the failure reason if the job is in FAILED
+    // status.
+    string last_error = 4;
 }
