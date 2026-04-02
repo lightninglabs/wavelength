@@ -72,24 +72,32 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	// Use the cached operator mailbox ID derived at startup.
 	// Guard against calls before rounds subsystem initializes
 	// the operator key.
-	serverMailboxID := s.operatorMailboxID
-	if serverMailboxID == "" {
+	operatorMBID := s.operatorMailboxID
+	if operatorMBID == "" {
 		return fmt.Errorf("server not ready: operator " +
 			"mailbox ID not initialized")
 	}
 
-	// Verify the envelope is addressed to this server's
-	// mailbox. Reject envelopes with mismatched recipients
-	// before checking the auth signature.
-	if env.Recipient != serverMailboxID {
+	// Derive the compound mailbox ID that the client addresses
+	// envelopes to: operator:client. This gives each client a
+	// unique server-side mailbox for Pull/checkpoint isolation.
+	clientMBID := serverconn.PubKeyMailboxID(senderPubKey)
+	compoundMBID := serverconn.CompoundMailboxID(
+		operatorMBID, clientMBID,
+	)
+
+	// Verify the envelope is addressed to this client's
+	// compound mailbox on this server.
+	if env.Recipient != compoundMBID {
 		return fmt.Errorf("envelope recipient %q does not "+
-			"match server mailbox %q",
-			env.Recipient, serverMailboxID)
+			"match expected mailbox %q",
+			env.Recipient, compoundMBID)
 	}
 
 	// Verify the Schnorr auth signature from the envelope
 	// headers. This proves the client holds the secp256k1
-	// private key for their claimed mailbox identity.
+	// private key for their claimed mailbox identity. The
+	// signature is bound to the compound mailbox ID.
 	authSig := env.Headers[serverconn.AuthHeaderKey]
 	if authSig == "" {
 		return fmt.Errorf("missing %s header from client %q",
@@ -97,7 +105,7 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	}
 
 	if err := serverconn.VerifyMailboxAuth(
-		senderPubKey, serverMailboxID, authSig,
+		senderPubKey, compoundMBID, authSig,
 	); err != nil {
 		return fmt.Errorf("auth verification failed for "+
 			"client %q: %w", env.Sender, err)
@@ -115,16 +123,11 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 	cfg := clientconn.DefaultPerClientConfig()
 	cfg.Edge = edgeClient
 
-	// Derive a per-client unique local mailbox ID by combining
-	// the operator mailbox with the client's identity. The
-	// bridge requires unique LocalMailboxIDs across all clients
-	// because checkpoints and durable actor state are keyed by
-	// this value. The remote mailbox ID uses the canonical
-	// form derived from the parsed public key.
-	cfg.LocalMailboxID = serverMailboxID + ":" + env.Sender
-	cfg.RemoteMailboxID = serverconn.PubKeyMailboxID(
-		senderPubKey,
-	)
+	// The compound mailbox ID is unique per client, satisfying
+	// the bridge's uniqueness constraint while matching the
+	// wire-level address the client sends to.
+	cfg.LocalMailboxID = compoundMBID
+	cfg.RemoteMailboxID = clientMBID
 	cfg.Store = s.deliveryStore
 	cfg.ProtocolVersion = env.ProtocolVersion
 
@@ -138,7 +141,7 @@ func (s *Server) HandleUnknownClient(ctx context.Context,
 
 	s.log.InfoS(ctx, "Auto-registered external client",
 		"client_id", string(clientID),
-		"local_mailbox", serverMailboxID,
+		"local_mailbox", compoundMBID,
 		"remote_mailbox", env.Sender)
 
 	return nil

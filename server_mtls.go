@@ -112,8 +112,11 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 	}
 }
 
-// checkMailboxIdentity verifies that the claimed mailbox ID matches
-// the TLS-authenticated client identity. If rpcName is empty (no
+// checkMailboxIdentity verifies that the claimed mailbox ID belongs
+// to the TLS-authenticated client. The claimedID may be either the
+// client's bare pubkey hex (for Send) or a compound key
+// "operator:client" (for Pull/AckUpTo). In both cases the client
+// portion must match the TLS identity. If rpcName is empty (no
 // mailbox RPC matched), it returns nil immediately.
 func checkMailboxIdentity(ctx context.Context,
 	log btclog.Logger, rpcName string,
@@ -123,8 +126,23 @@ func checkMailboxIdentity(ctx context.Context,
 		return nil
 	}
 
-	if strings.ToLower(claimedID) == clientIdentity {
+	normalizedClaim := strings.ToLower(claimedID)
+
+	// Direct match: the claimed ID is the client's bare
+	// pubkey (used by Send where env.Sender is the client
+	// identity).
+	if normalizedClaim == clientIdentity {
 		return nil
+	}
+
+	// Compound match: the claimed ID is "operator:client"
+	// (used by Pull/AckUpTo). Verify the client portion
+	// after the colon matches the TLS identity.
+	if idx := strings.LastIndex(normalizedClaim, ":"); idx >= 0 {
+		clientPart := normalizedClaim[idx+1:]
+		if clientPart == clientIdentity {
+			return nil
+		}
 	}
 
 	log.WarnS(ctx,

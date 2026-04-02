@@ -178,6 +178,28 @@ func TestMailboxAuthInterceptor(t *testing.T) {
 			wantCode: codes.InvalidArgument,
 		},
 		{
+			name:       "TLS compound Pull match",
+			requireTLS: false,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, alicePK)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: bobPK + ":" + alicePK,
+			},
+			wantPass: true,
+		},
+		{
+			name:       "TLS compound Pull mismatch",
+			requireTLS: false,
+			makeCtx: func(t *testing.T) context.Context {
+				return tlsPeerCtx(t, alicePK)
+			},
+			req: &mailboxpb.PullRequest{
+				MailboxId: bobPK + ":" + bobPK,
+			},
+			wantCode: codes.PermissionDenied,
+		},
+		{
 			name:       "non-mailbox with TLS — pass",
 			requireTLS: true,
 			makeCtx: func(t *testing.T) context.Context {
