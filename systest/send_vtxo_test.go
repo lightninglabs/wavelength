@@ -29,6 +29,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -56,11 +57,12 @@ const (
 )
 
 // fakeMailboxServer implements just enough of the operator mailbox edge for the
-// daemon systest. It serves ArkService.GetInfo over mailbox unary RPC, records
-// round JoinRound requests, and long-polls empty inboxes so the ingress loop
-// does not busy-spin.
+// daemon systest. It serves ArkService.GetInfo over both direct gRPC and
+// mailbox unary RPC, records round JoinRound requests, and long-polls
+// empty inboxes so the ingress loop does not busy-spin.
 type fakeMailboxServer struct {
 	mailboxpb.UnimplementedMailboxServiceServer
+	arkrpc.UnimplementedArkServiceServer
 
 	t                *testing.T
 	operatorMailbox  string
@@ -89,6 +91,15 @@ func newFakeMailboxServer(t *testing.T, operatorMailbox string,
 		nextEventSeq:     make(map[string]uint64),
 		inboxSignalChan:  make(chan struct{}, 1),
 	}
+}
+
+// GetInfo implements arkrpc.ArkServiceServer. It returns the canned
+// operator info so the client daemon can fetch the operator pubkey
+// via direct gRPC before the mailbox transport starts.
+func (s *fakeMailboxServer) GetInfo(_ context.Context,
+	_ *arkrpc.GetInfoRequest) (*arkrpc.GetInfoResponse, error) {
+
+	return s.operatorInfoResp, nil
 }
 
 // Send stores inbound envelopes addressed to the fake operator and synthesizes
@@ -367,7 +378,9 @@ func newDirectedSendFixture(t *testing.T) *directedSendFixture {
 		MinConfirmations:  1,
 	}
 
-	operatorMailbox := "operator-mailbox"
+	operatorMailbox := serverconn.PubKeyMailboxID(
+		operatorPriv.PubKey(),
+	)
 	mailboxAddr, mailboxServer, stopMailbox := startFakeMailboxServer(
 		t, operatorMailbox, operatorInfo,
 	)
@@ -489,6 +502,7 @@ func startFakeMailboxServer(t *testing.T, operatorMailbox string,
 
 	grpcServer := grpc.NewServer()
 	mailboxpb.RegisterMailboxServiceServer(grpcServer, serverImpl)
+	arkrpc.RegisterArkServiceServer(grpcServer, serverImpl)
 
 	go func() {
 		if serveErr := grpcServer.Serve(listener); serveErr != nil &&
