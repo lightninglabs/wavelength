@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	"github.com/lightninglabs/darepo-client/lib/scripts"
@@ -90,6 +91,47 @@ func (r *RPCServer) GetInfo(ctx context.Context,
 			// index 0), matching lnd's identity key
 			// derivation path. DeriveKey (not
 			// DeriveNextKey) ensures a stable identity.
+			desc, err := w.DeriveKey(
+				ctx, keychain.KeyLocator{
+					Family: identityKeyFamily,
+					Index:  0,
+				},
+			)
+			if err != nil {
+				r.server.log.WarnS(ctx,
+					"Unable to derive identity key",
+					err)
+			} else {
+				resp.IdentityPubkey = fmt.Sprintf(
+					"%x",
+					desc.PubKey.SerializeCompressed(),
+				)
+			}
+
+			// Get block height from the chain backend.
+			if r.server.chainBackend != nil {
+				height, _, err :=
+					r.server.chainBackend.BestBlock(
+						ctx,
+					)
+				if err != nil {
+					r.server.log.WarnS(ctx,
+						"Unable to fetch block "+
+							"height", err)
+				} else {
+					resp.BlockHeight = uint32(height)
+				}
+			}
+		},
+	)
+
+	// Populate btcwallet fields if the neutrino-backed wallet is
+	// active.
+	r.server.btcwWallet.WhenSome(
+		func(w *btcwbackend.Wallet) {
+			// Derive the node identity key using the same
+			// path as lnd/lwwallet: KeyFamilyNodeKey (family
+			// 6, index 0).
 			desc, err := w.DeriveKey(
 				ctx, keychain.KeyLocator{
 					Family: identityKeyFamily,
