@@ -49,11 +49,13 @@ type Querier interface {
 	// session. Used by the incoming transfer flow to construct the
 	// full IncomingTransferEvent with the Ark PSBT data.
 	GetOORSessionPackage(ctx context.Context, sessionID []byte) (GetOORSessionPackageRow, error)
+	GetOORSessionStatsByState(ctx context.Context) ([]GetOORSessionStatsByStateRow, error)
 	GetRound(ctx context.Context, roundID []byte) (Round, error)
 	GetRoundClientRegistrations(ctx context.Context, roundID []byte) ([]RoundClientRegistration, error)
 	GetRoundConnectorDescriptors(ctx context.Context, roundID []byte) ([]RoundConnectorDescriptor, error)
 	GetRoundForfeitInfoByOutpoint(ctx context.Context, arg GetRoundForfeitInfoByOutpointParams) ([]RoundForfeitInfo, error)
 	GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]RoundForfeitInfo, error)
+	GetRoundStatsByStatus(ctx context.Context) ([]GetRoundStatsByStatusRow, error)
 	GetRoundVTXOTrees(ctx context.Context, roundID []byte) ([]RoundVtxoTree, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	GetVTXOStatsByStatus(ctx context.Context) ([]GetVTXOStatsByStatusRow, error)

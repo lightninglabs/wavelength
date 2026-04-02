@@ -266,6 +266,39 @@ func (q *Queries) GetRoundForfeitInfos(ctx context.Context, roundID []byte) ([]R
 	return items, nil
 }
 
+const GetRoundStatsByStatus = `-- name: GetRoundStatsByStatus :many
+SELECT status, COUNT(*) AS count
+FROM rounds GROUP BY status
+`
+
+type GetRoundStatsByStatusRow struct {
+	Status string
+	Count  int64
+}
+
+func (q *Queries) GetRoundStatsByStatus(ctx context.Context) ([]GetRoundStatsByStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, GetRoundStatsByStatus)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetRoundStatsByStatusRow
+	for rows.Next() {
+		var i GetRoundStatsByStatusRow
+		if err := rows.Scan(&i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const GetRoundVTXOTrees = `-- name: GetRoundVTXOTrees :many
 SELECT round_id, batch_output_index FROM round_vtxo_tree
 WHERE round_id = $1
