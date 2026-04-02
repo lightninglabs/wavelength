@@ -9,6 +9,8 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/build"
+	"github.com/lightninglabs/darepo-client/indexer"
+	"github.com/lightninglabs/darepo-client/proofkeys"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -80,6 +82,14 @@ func (w *Wallet) DeriveKey(_ context.Context,
 	return &desc, nil
 }
 
+// ProofSigner returns an indexer proof signer bound to keyDesc using the
+// wallet's local secret key ring.
+func (w *Wallet) ProofSigner(
+	keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner {
+
+	return indexer.NewKeyRingSchnorrSigner(w.KeyRing, keyDesc)
+}
+
 // NewAddress generates a new BIP86 taproot receiving address (P2TR
 // key-path only) via btcwallet.
 func (w *Wallet) NewAddress(
@@ -98,6 +108,8 @@ func (w *Wallet) NewAddress(
 
 	return addr, nil
 }
+
+var _ proofkeys.Backend = (*Wallet)(nil)
 
 // Balance returns the confirmed and unconfirmed balance across all
 // wallet-managed addresses. Confirmed balance requires at least 1
