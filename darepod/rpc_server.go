@@ -261,10 +261,103 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 		}
 	}
 
+	// Fetch the confirmed balance of the backing on-chain wallet so
+	// callers can observe sweep proceeds from unilateral exits.
+	fetchers := r.walletBalanceFetchers()
+	resp.OnchainWalletConfirmedSat = int64(sumOnchainWalletConfirmed(
+		ctx, fetchers, func(err error) {
+			r.server.log.WarnS(ctx,
+				"Unable to fetch onchain wallet balance", err)
+		},
+	))
+
 	resp.TotalConfirmedSat = resp.BoardingConfirmedSat +
 		resp.VtxoBalanceSat
 
 	return resp, nil
+}
+
+// onchainWalletConfirmedFetcher returns the confirmed balance of one
+// on-chain wallet backend. Returning an error lets the caller log the
+// failure while continuing on to any sibling backends.
+type onchainWalletConfirmedFetcher func(
+	ctx context.Context) (btcutil.Amount, error)
+
+// walletBalanceFetchers returns one fetcher per active on-chain
+// wallet backend. Backends are mutually exclusive in production, but
+// returning a slice keeps the summation logic independent of how many
+// backends are wired up.
+func (r *RPCServer) walletBalanceFetchers() []onchainWalletConfirmedFetcher {
+	var fetchers []onchainWalletConfirmedFetcher
+
+	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		fetchers = append(fetchers, func(
+			ctx context.Context) (btcutil.Amount, error) {
+
+			wb, err := lndSvc.Client.WalletBalance(ctx)
+			if err != nil {
+				return 0, fmt.Errorf("lnd wallet "+
+					"balance: %w", err)
+			}
+
+			return wb.Confirmed, nil
+		})
+	})
+
+	r.server.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		fetchers = append(fetchers, func(
+			ctx context.Context) (btcutil.Amount, error) {
+
+			confirmed, _, err := w.Balance(ctx)
+			if err != nil {
+				return 0, fmt.Errorf("lightweight "+
+					"wallet balance: %w", err)
+			}
+
+			return confirmed, nil
+		})
+	})
+
+	r.server.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		fetchers = append(fetchers, func(
+			ctx context.Context) (btcutil.Amount, error) {
+
+			confirmed, _, err := w.Balance(ctx)
+			if err != nil {
+				return 0, fmt.Errorf("btcwallet "+
+					"balance: %w", err)
+			}
+
+			return confirmed, nil
+		})
+	})
+
+	return fetchers
+}
+
+// sumOnchainWalletConfirmed invokes each fetcher in order and returns
+// the accumulated confirmed balance. A per-fetcher error is reported
+// via onErr and treated as a zero contribution so that one failing
+// backend does not mask the balance of another.
+func sumOnchainWalletConfirmed(ctx context.Context,
+	fetchers []onchainWalletConfirmedFetcher,
+	onErr func(err error)) btcutil.Amount {
+
+	var total btcutil.Amount
+	for _, fetch := range fetchers {
+		confirmed, err := fetch(ctx)
+		if err != nil {
+			if onErr != nil {
+				onErr(err)
+			}
+
+			continue
+		}
+
+		total += confirmed
+	}
+
+	return total
 }
 
 // ListVTXOs returns the set of VTXOs known to the wallet, optionally

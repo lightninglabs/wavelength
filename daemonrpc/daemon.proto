@@ -217,6 +217,11 @@ message GetBalanceResponse {
     // total_confirmed_sat is the sum of all confirmed balances
     // (boarding_confirmed_sat + vtxo_balance_sat).
     int64 total_confirmed_sat = 4;
+
+    // onchain_wallet_confirmed_sat is the total confirmed on-chain
+    // balance of the backing wallet (all confirmed UTXOs, including
+    // sweep proceeds from unilateral exits).
+    int64 onchain_wallet_confirmed_sat = 5;
 }
 
 // VTXOStatus represents the lifecycle state of a virtual transaction

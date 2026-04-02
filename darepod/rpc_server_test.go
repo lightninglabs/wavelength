@@ -2,6 +2,7 @@ package darepod
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -382,4 +383,108 @@ func TestDeriveIdentityPubkeyPreWalletInit(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantErrMsg)
 		})
 	}
+}
+
+// TestSumOnchainWalletConfirmed locks in the invariant that the on-chain
+// wallet balance accumulates across every registered backend fetcher and
+// that a failing fetcher does not erase the contribution of its
+// siblings. A regression to a simple `=` assignment would overwrite the
+// running total and trip this test.
+func TestSumOnchainWalletConfirmed(t *testing.T) {
+	t.Parallel()
+
+	makeFetcher := func(amount btcutil.Amount,
+		err error) onchainWalletConfirmedFetcher {
+
+		return func(context.Context) (btcutil.Amount, error) {
+			return amount, err
+		}
+	}
+
+	tests := []struct {
+		name     string
+		fetchers []onchainWalletConfirmedFetcher
+		want     btcutil.Amount
+		wantErrs int
+	}{
+		{
+			name:     "no fetchers returns zero",
+			fetchers: nil,
+			want:     0,
+		},
+		{
+			name: "single backend returns its balance",
+			fetchers: []onchainWalletConfirmedFetcher{
+				makeFetcher(100_000, nil),
+			},
+			want: 100_000,
+		},
+		{
+			name: "multiple backends accumulate",
+			fetchers: []onchainWalletConfirmedFetcher{
+				makeFetcher(100_000, nil),
+				makeFetcher(250_000, nil),
+				makeFetcher(42, nil),
+			},
+			want: 350_042,
+		},
+		{
+			name: "failing backend does not mask siblings",
+			fetchers: []onchainWalletConfirmedFetcher{
+				makeFetcher(100_000, nil),
+				makeFetcher(0, errors.New("boom")),
+				makeFetcher(50_000, nil),
+			},
+			want:     150_000,
+			wantErrs: 1,
+		},
+		{
+			name: "all-failing reports zero and logs each error",
+			fetchers: []onchainWalletConfirmedFetcher{
+				makeFetcher(0, errors.New("a")),
+				makeFetcher(0, errors.New("b")),
+			},
+			want:     0,
+			wantErrs: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotErrs []error
+			total := sumOnchainWalletConfirmed(
+				context.Background(), tc.fetchers,
+				func(err error) {
+					gotErrs = append(gotErrs, err)
+				},
+			)
+
+			require.Equal(t, tc.want, total)
+			require.Len(t, gotErrs, tc.wantErrs)
+		})
+	}
+}
+
+// TestSumOnchainWalletConfirmedNilErrCallback verifies that a nil
+// onErr callback is tolerated so callers who do not care about
+// per-fetcher failures do not have to supply a noop logger.
+func TestSumOnchainWalletConfirmedNilErrCallback(t *testing.T) {
+	t.Parallel()
+
+	fetchers := []onchainWalletConfirmedFetcher{
+		func(context.Context) (btcutil.Amount, error) {
+			return 0, errors.New("should not panic")
+		},
+		func(context.Context) (btcutil.Amount, error) {
+			return 77, nil
+		},
+	}
+
+	total := sumOnchainWalletConfirmed(
+		context.Background(), fetchers, nil,
+	)
+	require.Equal(t, btcutil.Amount(77), total)
 }
