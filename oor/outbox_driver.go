@@ -46,7 +46,8 @@ type InProcessOutboxDriver struct {
 
 	recipientNotifier RecipientNotifier
 
-	coSigner CheckpointCoSigner
+	coSigner       CheckpointCoSigner
+	operatorSigner input.Signer
 
 	operatorKey keychain.KeyDescriptor
 
@@ -170,6 +171,7 @@ func NewDriver(cfg DriverCfg) *InProcessOutboxDriver {
 		recipientEvents:   cfg.RecipientEvents,
 		recipientNotifier: cfg.RecipientNotifier,
 		coSigner:          coSigner,
+		operatorSigner:    cfg.OperatorSigner,
 		operatorKey:       cfg.OperatorKey,
 		sessionExpiry:     sessionExpiry,
 		operatorPolicy:    cfg.OperatorPolicy,
@@ -357,6 +359,43 @@ func (d *InProcessOutboxDriver) handleCoSign(ctx context.Context,
 	d.log.DebugS(ctx, "Checkpoints co-signed",
 		btclog.Hex("session_id", sessionID[:]),
 		slog.Int("num_checkpoints", len(msg.CheckpointPSBTs)))
+
+	if d.operatorSigner != nil && msg.ArkPSBT != nil {
+		arkSigned, err := CoSignArkPSBT(
+			d.operatorSigner, d.operatorKey, msg.ArkPSBT,
+		)
+		if err != nil {
+			d.log.WarnS(ctx, "Co-sign Ark PSBT failed", err,
+				btclog.Hex("session_id", sessionID[:]))
+
+			return []Event{
+				&SignFailedEvent{
+					Reason: fmt.Sprintf(
+						"co-sign ark psbt: %v", err,
+					),
+				},
+			}, nil
+		}
+
+		if arkSigned {
+			_, err = oorlib.ValidateSubmitPackageSigned(
+				msg.ArkPSBT, msg.CheckpointPSBTs,
+			)
+			if err != nil {
+				d.log.WarnS(ctx, "Co-signed Ark PSBT invalid",
+					err, btclog.Hex("session_id", sessionID[:]))
+
+				return []Event{
+					&SignFailedEvent{
+						Reason: fmt.Sprintf(
+							"co-signed ark psbt invalid: %v",
+							err,
+						),
+					},
+				}, nil
+			}
+		}
+	}
 
 	owner := vtxo.OORLockOwner(sessionID.String())
 

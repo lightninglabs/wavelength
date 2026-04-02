@@ -1,0 +1,272 @@
+package oor
+
+import (
+	"bytes"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
+)
+
+// CoSignArkPSBT attaches the operator's tapscript signature to each Ark input.
+//
+// The client already commits to the intended leaf path by attaching the leaf
+// script and its own signature material to the Ark PSBT. The operator signs
+// that same leaf here so the persisted Ark PSBT is actually broadcastable
+// during unilateral exit/unroll.
+func CoSignArkPSBT(signer input.Signer, operatorKey keychain.KeyDescriptor,
+	ark *psbt.Packet) (bool, error) {
+
+	switch {
+	case signer == nil:
+		return false, fmt.Errorf("signer must be provided")
+
+	case operatorKey.PubKey == nil:
+		return false, fmt.Errorf("operator pubkey must be provided")
+
+	case ark == nil || ark.UnsignedTx == nil:
+		return false, fmt.Errorf("ark psbt must include unsigned tx")
+
+	case len(ark.Inputs) != len(ark.UnsignedTx.TxIn):
+		return false, fmt.Errorf("ark psbt input count mismatch")
+	}
+
+	prevOuts := make(map[wire.OutPoint]*wire.TxOut, len(ark.UnsignedTx.TxIn))
+	for i, txIn := range ark.UnsignedTx.TxIn {
+		witnessUtxo := ark.Inputs[i].WitnessUtxo
+		if witnessUtxo == nil {
+			return false, fmt.Errorf("ark input %d missing witness utxo", i)
+		}
+
+		prevOuts[txIn.PreviousOutPoint] = witnessUtxo
+	}
+
+	prevFetcher := txscript.NewMultiPrevOutFetcher(prevOuts)
+	sigHashes := txscript.NewTxSigHashes(ark.UnsignedTx, prevFetcher)
+
+	signedAny := false
+	for i := range ark.Inputs {
+		signed, err := coSignArkInput(
+			signer, operatorKey, ark, i, prevFetcher, sigHashes,
+		)
+		if err != nil {
+			return false, fmt.Errorf("co-sign ark input %d: %w", i, err)
+		}
+
+		signedAny = signedAny || signed
+	}
+
+	return signedAny, nil
+}
+
+func coSignArkInput(signer input.Signer, operatorKey keychain.KeyDescriptor,
+	ark *psbt.Packet, inputIndex int,
+	prevFetcher txscript.PrevOutputFetcher,
+	sigHashes *txscript.TxSigHashes) (bool, error) {
+
+	if ark == nil || ark.UnsignedTx == nil {
+		return false, fmt.Errorf("ark psbt must include unsigned tx")
+	}
+
+	pInput := &ark.Inputs[inputIndex]
+	if len(pInput.TaprootScriptSpendSig) == 0 {
+		return false, nil
+	}
+
+	leaf, sigHash, err := arkSigningLeaf(pInput)
+	if err != nil {
+		return false, err
+	}
+
+	if !bytes.Contains(
+		leaf.Script, schnorr.SerializePubKey(operatorKey.PubKey),
+	) {
+		return false, nil
+	}
+
+	witnessUtxo := pInput.WitnessUtxo
+	if witnessUtxo == nil {
+		return false, fmt.Errorf("missing witness utxo")
+	}
+
+	signDesc := &input.SignDescriptor{
+		KeyDesc:           operatorKey,
+		SignMethod:        input.TaprootScriptSpendSignMethod,
+		Output:            witnessUtxo,
+		HashType:          sigHash,
+		SigHashes:         sigHashes,
+		PrevOutputFetcher: prevFetcher,
+		InputIndex:        inputIndex,
+		WitnessScript:     leaf.Script,
+		ControlBlock:      leaf.ControlBlock,
+	}
+
+	sig, err := signer.SignOutputRaw(ark.UnsignedTx, signDesc)
+	if err != nil {
+		return false, fmt.Errorf("sign output: %w", err)
+	}
+
+	sigBytes := sig.Serialize()
+	if len(sigBytes) == 0 {
+		return false, fmt.Errorf("signer returned empty signature")
+	}
+
+	if err := addTapLeafScript(pInput, &scripts.VTXOSpendData{
+		WitnessScript: leaf.Script,
+		ControlBlock:  leaf.ControlBlock,
+	}); err != nil {
+		return false, err
+	}
+
+	if err := addTaprootScriptSpendSig(
+		pInput, operatorKey.PubKey, leaf.Script, sigBytes,
+		signDesc.HashType,
+	); err != nil {
+		return false, err
+	}
+
+	reorderTaprootScriptSpendSigs(pInput, operatorKey.PubKey, leaf.Script)
+
+	return true, nil
+}
+
+func arkSigningLeaf(in *psbt.PInput) (*psbt.TaprootTapLeafScript,
+	txscript.SigHashType, error) {
+
+	if in == nil {
+		return nil, 0, fmt.Errorf("psbt input must be provided")
+	}
+
+	sigHash := txscript.SigHashDefault
+	var targetLeafHash []byte
+
+	for i := range in.TaprootScriptSpendSig {
+		sigRec := in.TaprootScriptSpendSig[i]
+		if sigRec == nil {
+			continue
+		}
+
+		if len(targetLeafHash) == 0 {
+			targetLeafHash = append(
+				[]byte(nil), sigRec.LeafHash...,
+			)
+			sigHash = sigRec.SigHash
+			continue
+		}
+
+		if !bytes.Equal(targetLeafHash, sigRec.LeafHash) {
+			return nil, 0, fmt.Errorf("taproot signatures " +
+				"reference multiple leaf hashes")
+		}
+	}
+
+	for i := range in.TaprootLeafScript {
+		leaf := in.TaprootLeafScript[i]
+		if leaf == nil {
+			continue
+		}
+
+		if len(targetLeafHash) == 0 {
+			return leaf, sigHash, nil
+		}
+
+		leafHash := txscript.NewTapLeaf(
+			leaf.LeafVersion, leaf.Script,
+		).TapHash()
+		if bytes.Equal(leafHash[:], targetLeafHash) {
+			return leaf, sigHash, nil
+		}
+	}
+
+	if len(targetLeafHash) != 0 {
+		return nil, 0, fmt.Errorf("taproot leaf script not found")
+	}
+
+	return nil, 0, fmt.Errorf("missing taproot leaf script")
+}
+
+func reorderTaprootScriptSpendSigs(in *psbt.PInput, operatorKey *btcec.PublicKey,
+	leafScript []byte) {
+
+	if in == nil || operatorKey == nil || len(leafScript) == 0 {
+		return
+	}
+
+	operatorSig, err := findArkTaprootScriptSpendSig(
+		in, operatorKey, leafScript,
+	)
+	if err != nil || operatorSig == nil {
+		return
+	}
+
+	leafHash := txscript.NewBaseTapLeaf(leafScript).TapHash()
+	reordered := make(
+		[]*psbt.TaprootScriptSpendSig, 0,
+		len(in.TaprootScriptSpendSig),
+	)
+	reordered = append(reordered, operatorSig)
+
+	for i := range in.TaprootScriptSpendSig {
+		sigRec := in.TaprootScriptSpendSig[i]
+		if sigRec == nil || sigRec == operatorSig {
+			continue
+		}
+
+		if bytes.Equal(sigRec.LeafHash, leafHash[:]) {
+			reordered = append(reordered, sigRec)
+		}
+	}
+
+	for i := range in.TaprootScriptSpendSig {
+		sigRec := in.TaprootScriptSpendSig[i]
+		if sigRec == nil || sigRec == operatorSig {
+			continue
+		}
+
+		if !bytes.Equal(sigRec.LeafHash, leafHash[:]) {
+			reordered = append(reordered, sigRec)
+		}
+	}
+
+	in.TaprootScriptSpendSig = reordered
+}
+
+func findArkTaprootScriptSpendSig(in *psbt.PInput, pubKey *btcec.PublicKey,
+	leafScript []byte) (*psbt.TaprootScriptSpendSig, error) {
+
+	if in == nil {
+		return nil, fmt.Errorf("psbt input must be provided")
+	}
+
+	if pubKey == nil {
+		return nil, fmt.Errorf("pubkey must be provided")
+	}
+
+	leafHash := txscript.NewBaseTapLeaf(leafScript).TapHash()
+	wantPub := schnorr.SerializePubKey(pubKey)
+
+	for i := range in.TaprootScriptSpendSig {
+		sigRec := in.TaprootScriptSpendSig[i]
+		if sigRec == nil {
+			continue
+		}
+
+		if !bytes.Equal(sigRec.XOnlyPubKey, wantPub) {
+			continue
+		}
+
+		if !bytes.Equal(sigRec.LeafHash, leafHash[:]) {
+			continue
+		}
+
+		return sigRec, nil
+	}
+
+	return nil, fmt.Errorf("missing taproot script spend signature")
+}
