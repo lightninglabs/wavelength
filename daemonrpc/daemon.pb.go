@@ -819,8 +819,12 @@ type GetBalanceResponse struct {
 	// total_confirmed_sat is the sum of all confirmed balances
 	// (boarding_confirmed_sat + vtxo_balance_sat).
 	TotalConfirmedSat int64 `protobuf:"varint,4,opt,name=total_confirmed_sat,json=totalConfirmedSat,proto3" json:"total_confirmed_sat,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// onchain_wallet_confirmed_sat is the total confirmed on-chain
+	// balance of the backing wallet (all confirmed UTXOs, including
+	// sweep proceeds from unilateral exits).
+	OnchainWalletConfirmedSat int64 `protobuf:"varint,5,opt,name=onchain_wallet_confirmed_sat,json=onchainWalletConfirmedSat,proto3" json:"onchain_wallet_confirmed_sat,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *GetBalanceResponse) Reset() {
@@ -877,6 +881,13 @@ func (x *GetBalanceResponse) GetVtxoBalanceSat() int64 {
 func (x *GetBalanceResponse) GetTotalConfirmedSat() int64 {
 	if x != nil {
 		return x.TotalConfirmedSat
+	}
+	return 0
+}
+
+func (x *GetBalanceResponse) GetOnchainWalletConfirmedSat() int64 {
+	if x != nil {
+		return x.OnchainWalletConfirmedSat
 	}
 	return 0
 }
@@ -2558,12 +2569,13 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fwallet_password\x18\x01 \x01(\fR\x0ewalletPassword\"?\n" +
 	"\x14UnlockWalletResponse\x12'\n" +
 	"\x0fidentity_pubkey\x18\x01 \x01(\tR\x0eidentityPubkey\"\x13\n" +
-	"\x11GetBalanceRequest\"\xde\x01\n" +
+	"\x11GetBalanceRequest\"\x9f\x02\n" +
 	"\x12GetBalanceResponse\x124\n" +
 	"\x16boarding_confirmed_sat\x18\x01 \x01(\x03R\x14boardingConfirmedSat\x128\n" +
 	"\x18boarding_unconfirmed_sat\x18\x02 \x01(\x03R\x16boardingUnconfirmedSat\x12(\n" +
 	"\x10vtxo_balance_sat\x18\x03 \x01(\x03R\x0evtxoBalanceSat\x12.\n" +
-	"\x13total_confirmed_sat\x18\x04 \x01(\x03R\x11totalConfirmedSat\"\xe5\x02\n" +
+	"\x13total_confirmed_sat\x18\x04 \x01(\x03R\x11totalConfirmedSat\x12?\n" +
+	"\x1conchain_wallet_confirmed_sat\x18\x05 \x01(\x03R\x19onchainWalletConfirmedSat\"\xe5\x02\n" +
 	"\x04VTXO\x12\x1a\n" +
 	"\boutpoint\x18\x01 \x01(\tR\boutpoint\x12\x1d\n" +
 	"\n" +
