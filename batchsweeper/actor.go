@@ -59,7 +59,7 @@ type ActorConfig struct {
 	Log fn.Option[btclog.Logger]
 
 	// BatchWatcher is a reference to the BatchWatcher actor for querying
-	// tree state and unregistering batches after sweeping.
+	// tree state when building sweep transactions.
 	BatchWatcher actor.ActorRef[
 		batchwatcher.BatchWatcherMsg, batchwatcher.BatchWatcherResp,
 	]
@@ -83,8 +83,12 @@ type ActorConfig struct {
 	// operator wallet.
 	Signer input.Signer
 
-	// SweepPkScript is the destination script for sweep outputs.
-	SweepPkScript []byte
+	// NewSweepPkScript returns a fresh destination script for a sweep
+	// output. Each successful broadcast consumes the address, so the
+	// next sweep will request a new one. The sweeper caches the script
+	// until it is used in a broadcast to avoid unnecessary address
+	// generation on retries.
+	NewSweepPkScript func(ctx context.Context) ([]byte, error)
 
 	// FeeTarget is the confirmation target used for fee estimation.
 	FeeTarget uint32
@@ -116,6 +120,13 @@ type ActorConfig struct {
 	// SweepConfirmations is the number of confirmations required before
 	// considering a sweep transaction confirmed.
 	SweepConfirmations uint32
+
+	// OnBatchSwept is an optional callback invoked when the watcher
+	// notifies that a batch has been fully swept. It receives the
+	// VTXO outpoints extracted from the tree so the server can mark
+	// them as expired.
+	OnBatchSwept func(ctx context.Context,
+		vtxoOutpoints []wire.OutPoint) error
 
 	// SelfRef is a reference to this actor for receiving mapped
 	// notifications and internal timer callbacks.
@@ -187,6 +198,11 @@ type Actor struct {
 	// pendingSweeps tracks broadcast sweep transactions awaiting
 	// confirmation, keyed by batch ID.
 	pendingSweeps map[batchwatcher.BatchID]*pendingSweep
+
+	// cachedSweepPkScript holds a pre-generated sweep destination
+	// script so retries reuse the same address. Cleared after a
+	// successful broadcast so the next sweep gets a fresh address.
+	cachedSweepPkScript []byte
 }
 
 // NewActor creates a new BatchSweeperActor with the provided configuration.
@@ -241,6 +257,9 @@ func (a *Actor) Receive(ctx context.Context, msg Msg) fn.Result[Resp] {
 
 	case *SweepConfirmedEvent:
 		return a.handleSweepConfirmed(ctx, m)
+
+	case *BatchSweptEvent:
+		return a.handleBatchSwept(ctx, m)
 
 	default:
 		return fn.Err[Resp](fmt.Errorf("unknown message type: %T", m))
@@ -499,12 +518,20 @@ func (a *Actor) trySweep(ctx context.Context,
 
 	builder := a.cfg.BuildSweepTx
 	if builder == nil {
+		// Lazily generate a sweep destination, caching it so
+		// retries reuse the same address.
+		sweepPkScript, err := a.sweepPkScript(ctx)
+		if err != nil {
+			return err
+		}
+
 		builder = func(candidates []*batchwatcher.Output,
 			feeRate btcutil.Amount) (*wire.MsgTx, error) {
 
 			return buildSignedSweepTx(
-				candidates, a.cfg.SweepKey, a.cfg.SweepDelay,
-				a.cfg.SweepPkScript, feeRate, a.cfg.Signer,
+				candidates, a.cfg.SweepKey,
+				a.cfg.SweepDelay, sweepPkScript,
+				feeRate, a.cfg.Signer,
 			)
 		}
 	}
@@ -534,6 +561,10 @@ func (a *Actor) trySweep(ctx context.Context,
 		"num_inputs", len(candidates),
 		"fee_rate_sat_vb", feeRate)
 
+	// The address was consumed by a successful broadcast, so clear
+	// the cache so the next sweep gets a fresh destination.
+	a.cachedSweepPkScript = nil
+
 	// Track this pending sweep and register for confirmation notification.
 	a.pendingSweeps[batchID] = &pendingSweep{
 		txid:        txid,
@@ -543,12 +574,39 @@ func (a *Actor) trySweep(ctx context.Context,
 		numInputs:   len(candidates),
 	}
 
-	a.registerSweepConfirmation(
+	err = a.registerSweepConfirmation(
 		ctx, batchID, &txid, sweepTx.TxOut[0].PkScript,
 		uint32(bestHeight),
 	)
+	if err != nil {
+		return newRetryableError(err, 0, true)
+	}
 
 	return nil
+}
+
+// sweepPkScript returns a cached sweep destination script, generating a
+// fresh one via NewSweepPkScript if the cache is empty. The cache is
+// cleared after a successful broadcast so the next sweep gets a new
+// address.
+func (a *Actor) sweepPkScript(ctx context.Context) ([]byte, error) {
+	if len(a.cachedSweepPkScript) > 0 {
+		return a.cachedSweepPkScript, nil
+	}
+
+	if a.cfg.NewSweepPkScript == nil {
+		return nil, fmt.Errorf("NewSweepPkScript not configured")
+	}
+
+	pkScript, err := a.cfg.NewSweepPkScript(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("generate sweep pkscript: %w",
+			err)
+	}
+
+	a.cachedSweepPkScript = pkScript
+
+	return pkScript, nil
 }
 
 // queryTreeState retrieves the current tree state for a batch from the
@@ -626,7 +684,7 @@ func (a *Actor) queryFeeRate(ctx context.Context) (btcutil.Amount, error) {
 // height to avoid unnecessary rescans of historical blocks.
 func (a *Actor) registerSweepConfirmation(ctx context.Context,
 	batchID batchwatcher.BatchID, txid *chainhash.Hash, pkScript []byte,
-	heightHint uint32) {
+	heightHint uint32) error {
 
 	// Create a mapped reference that transforms ConfirmationEvent to
 	// SweepConfirmedEvent.
@@ -650,13 +708,12 @@ func (a *Actor) registerSweepConfirmation(ctx context.Context,
 		NotifyActor: fn.Some(mappedRef),
 	}
 
-	// Fire-and-forget: we don't block on registration response. The
-	// confirmation will arrive asynchronously via SweepConfirmedEvent.
-	if err := a.cfg.ChainSource.Tell(ctx, req); err != nil {
-		a.log.WarnS(ctx, "Unable to register sweep confirmation",
-			err,
-			"batch_id", batchID,
-			"txid", txid)
+	// Use a background context because the confirmation subscription
+	// must outlive the current batch-expiry handler invocation.
+	bgCtx := context.Background()
+	if err := a.cfg.ChainSource.Tell(bgCtx, req); err != nil {
+		return fmt.Errorf("register sweep confirmation: %w",
+			err)
 	}
 
 	a.log.DebugS(ctx, "Registered for sweep confirmation",
@@ -664,6 +721,8 @@ func (a *Actor) registerSweepConfirmation(ctx context.Context,
 		"txid", txid,
 		"target_confs", a.cfg.SweepConfirmations,
 		"height_hint", heightHint)
+
+	return nil
 }
 
 // handleSweepConfirmed processes a sweep confirmation notification and cleans
@@ -688,9 +747,83 @@ func (a *Actor) handleSweepConfirmed(ctx context.Context,
 		"fee_rate_sat_vb", pending.feeRate,
 		"num_inputs", pending.numInputs)
 
-	// Clean up tracking state.
+	// Clean up tracking state. The watcher self-unregisters and sends
+	// a BatchSweptNotification when it detects the batch root spend,
+	// so VTXO marking is handled in handleBatchSwept rather than here.
 	delete(a.pendingSweeps, msg.BatchID)
 	delete(a.expired, msg.BatchID)
+
+	return fn.Ok[Resp](nil)
+}
+
+// handleBatchSwept processes a notification from the watcher that a batch was
+// fully swept by a non-tree transaction. The watcher has already self-
+// unregistered, so we just extract VTXO outpoints from the carried tree and
+// invoke the OnBatchSwept callback.
+func (a *Actor) handleBatchSwept(ctx context.Context,
+	msg *BatchSweptEvent) fn.Result[Resp] {
+
+	if msg.Notification == nil {
+		return fn.Err[Resp](fmt.Errorf("nil batch swept notification"))
+	}
+
+	batchID := msg.Notification.BatchID
+
+	a.log.InfoS(ctx, "Batch swept notification received",
+		"batch_id", batchID)
+
+	// Clean up tracking state since the watcher has already
+	// self-unregistered and won't send further notifications.
+	delete(a.expired, batchID)
+	delete(a.pendingSweeps, batchID)
+
+	if a.cfg.OnBatchSwept == nil {
+		return fn.Ok[Resp](nil)
+	}
+
+	batchTree := msg.Notification.Tree
+	if batchTree == nil || batchTree.Root == nil {
+		a.log.WarnS(ctx,
+			"Batch swept notification has nil tree",
+			nil, "batch_id", batchID)
+
+		return fn.Ok[Resp](nil)
+	}
+
+	var vtxoOutpoints []wire.OutPoint
+	for node := range batchTree.Root.NodesIter() {
+		if !node.IsLeaf() {
+			continue
+		}
+
+		txid, err := node.TXID()
+		if err != nil {
+			return fn.Err[Resp](fmt.Errorf(
+				"compute leaf TXID for batch %s: %w",
+				batchID, err,
+			))
+		}
+
+		// The VTXO output is at index 0 of each leaf transaction.
+		vtxoOutpoints = append(vtxoOutpoints, wire.OutPoint{
+			Hash:  txid,
+			Index: 0,
+		})
+	}
+
+	if len(vtxoOutpoints) > 0 {
+		err := a.cfg.OnBatchSwept(ctx, vtxoOutpoints)
+		if err != nil {
+			return fn.Err[Resp](fmt.Errorf(
+				"mark swept VTXOs for batch %s: %w",
+				batchID, err,
+			))
+		}
+
+		a.log.InfoS(ctx, "Marked swept VTXOs as expired",
+			"batch_id", batchID,
+			"num_vtxos", len(vtxoOutpoints))
+	}
 
 	return fn.Ok[Resp](nil)
 }

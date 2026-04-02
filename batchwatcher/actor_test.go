@@ -597,20 +597,22 @@ func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
 	result := h.actor.Receive(h.t.Context(), msg)
 	require.True(t, result.IsOk())
 
-	// Verify BatchSweeper was notified of tree state change.
-	// Look for TreeStateChangedNotification in received messages.
-	var foundTreeStateChanged bool
+	// The spending tx doesn't match the tree root TXID, so this is a
+	// non-tree spend. With no remaining outputs the watcher
+	// self-unregisters and sends BatchSweptNotification.
+	var foundBatchSwept bool
 	for _, msg := range h.mockBatchSweeper.receivedMsgs {
-		if notification, ok := msg.(*TreeStateChangedNotification); ok {
+		if notification, ok := msg.(*BatchSweptNotification); ok {
 			require.Equal(t, batchID, notification.BatchID)
-			foundTreeStateChanged = true
+			require.NotNil(t, notification.Tree)
+			foundBatchSwept = true
 
 			break
 		}
 	}
 
-	require.True(t, foundTreeStateChanged,
-		"BatchSweeper should receive TreeStateChangedNotification")
+	require.True(t, foundBatchSwept,
+		"BatchSweeper should receive BatchSweptNotification")
 }
 
 // ===== Mock implementations =====

@@ -408,6 +408,20 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 			"outpoint", msg.SpentOutpoint,
 			"spending_tx", spendingTxHash)
 
+		// If no unspent outputs remain, the batch is fully consumed
+		// (the operator swept the root whole). Notify the sweeper
+		// with the tree so it can extract VTXO outpoints, then
+		// self-unregister so expiry notifications stop.
+		if len(batchState.ExistingOutputs) == 0 {
+			a.notifyBatchSwept(ctx, msg.BatchID, batchState.Tree)
+			a.state.UnregisterBatch(msg.BatchID)
+
+			a.log.InfoS(ctx, "Batch fully swept, unregistered",
+				"batch_id", msg.BatchID)
+
+			return fn.Ok[BatchWatcherResp](nil)
+		}
+
 		a.notifyTreeStateChanged(ctx, msg.BatchID)
 
 		return fn.Ok[BatchWatcherResp](nil)
@@ -597,6 +611,35 @@ func (a *Actor) notifyTreeStateChanged(ctx context.Context, batchID BatchID) {
 		}
 
 		a.log.TraceS(ctx, "Notified BatchSweeper of tree state change",
+			"batch_id", batchID)
+	})
+}
+
+// notifyBatchSwept sends a notification to the BatchSweeper that a batch has
+// been fully swept by a non-tree transaction. The tree is included so the
+// sweeper can extract VTXO leaf outpoints without querying back.
+func (a *Actor) notifyBatchSwept(ctx context.Context, batchID BatchID,
+	t *tree.Tree) {
+
+	a.cfg.BatchSweeper.WhenSome(func(
+		ref actor.TellOnlyRef[BatchSweeperMsg],
+	) {
+
+		notification := &BatchSweptNotification{
+			BatchID: batchID,
+			Tree:    t,
+		}
+
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx, "Failed to notify BatchSweeper of sweep",
+				err,
+				"batch_id", batchID,
+			)
+
+			return
+		}
+
+		a.log.DebugS(ctx, "Notified BatchSweeper of batch sweep",
 			"batch_id", batchID)
 	})
 }

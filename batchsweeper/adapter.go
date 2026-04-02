@@ -55,6 +55,11 @@ func (r *batchWatcherNotificationRef) Tell(ctx context.Context,
 			Notification: m,
 		})
 
+	case *batchwatcher.BatchSweptNotification:
+		return r.self.Tell(ctx, &BatchSweptEvent{
+			Notification: m,
+		})
+
 	default:
 		// Ignore unknown notifications.
 		return nil
