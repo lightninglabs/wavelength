@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/arkrpc"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -751,6 +752,108 @@ func waitForVTXOBalanceBelow(t *testing.T,
 		maxExclusiveVTXOBalanceSat)
 
 	return lastResp
+}
+
+// waitForOnchainWalletConfirmedBalanceAbove waits until the daemon reports a
+// confirmed backing-wallet balance strictly above the provided baseline.
+func waitForOnchainWalletConfirmedBalanceAbove(t *testing.T,
+	client daemonrpc.DaemonServiceClient,
+	baselineConfirmedSat int64) *daemonrpc.GetBalanceResponse {
+
+	t.Helper()
+
+	var lastResp *daemonrpc.GetBalanceResponse
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		resp, err := client.GetBalance(
+			ctx, &daemonrpc.GetBalanceRequest{},
+		)
+		if err != nil {
+			return false
+		}
+
+		lastResp = resp
+
+		return resp.OnchainWalletConfirmedSat > baselineConfirmedSat
+	}, defaultTimeout, pollInterval,
+		"confirmed wallet balance never rose above %d sats",
+		baselineConfirmedSat)
+
+	return lastResp
+}
+
+// confirmedWalletUTXOValues returns the current set of confirmed LND wallet
+// UTXOs keyed by outpoint.
+func confirmedWalletUTXOValues(t *testing.T,
+	daemon *harness.ClientDaemonHarness) map[wire.OutPoint]btcutil.Amount {
+
+	t.Helper()
+
+	require.NotNil(t, daemon.LND, "client daemon must use LND wallet backend")
+	require.NotNil(t, daemon.LND.Client,
+		"client daemon must expose LND services")
+
+	ctx, cancel := context.WithTimeout(
+		t.Context(), defaultSmallTimeout,
+	)
+	defer cancel()
+
+	utxos, err := daemon.LND.Client.WalletKit.ListUnspent(
+		ctx, 1, 9999999,
+	)
+	require.NoError(t, err, "list confirmed wallet UTXOs")
+
+	result := make(map[wire.OutPoint]btcutil.Amount, len(utxos))
+	for _, utxo := range utxos {
+		result[utxo.OutPoint] = utxo.Value
+	}
+
+	return result
+}
+
+// waitForNewConfirmedWalletUTXOWithMaxValue waits until the client's wallet
+// has a new confirmed UTXO not present in the baseline and whose value is at
+// most maxValueSat. For unroll itests, this identifies the swept VTXO output
+// rather than the much larger CPFP change output.
+func waitForNewConfirmedWalletUTXOWithMaxValue(t *testing.T,
+	daemon *harness.ClientDaemonHarness,
+	baseline map[wire.OutPoint]btcutil.Amount,
+	maxValueSat int64) wire.OutPoint {
+
+	t.Helper()
+
+	var found wire.OutPoint
+	var foundValue btcutil.Amount
+
+	require.Eventually(t, func() bool {
+		current := confirmedWalletUTXOValues(t, daemon)
+		for outpoint, value := range current {
+			if _, ok := baseline[outpoint]; ok {
+				continue
+			}
+
+			if int64(value) <= 0 || int64(value) > maxValueSat {
+				continue
+			}
+
+			found = outpoint
+			foundValue = value
+			return true
+		}
+
+		return false
+	}, defaultTimeout, pollInterval,
+		"no new confirmed wallet UTXO at or below %d sats appeared",
+		maxValueSat)
+
+	t.Logf("Detected swept wallet UTXO: outpoint=%s amount=%d",
+		found.String(), foundValue)
+
+	return found
 }
 
 // waitForDaemonInfoReachable waits until the daemon's GetInfo RPC succeeds.

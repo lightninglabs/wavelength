@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
 	client_harness "github.com/lightninglabs/darepo-client/harness"
@@ -66,8 +67,10 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 	// Fund Alice's LND wallet for CPFP fees during unroll.
 	h.FundClientLND(alice, btcutil.SatoshiPerBitcoin)
 
-	t.Logf("Alice has live VTXO: outpoint=%s amount=%d",
+	h.Logf("Alice has live VTXO: outpoint=%s amount=%d",
 		aliceVTXO.Outpoint, aliceVTXO.AmountSat)
+
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, alice)
 
 	// Trigger the unilateral exit via the Unroll RPC.
 	unrollResp, err := alice.RPCClient.Unroll(
@@ -81,7 +84,7 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 	require.NotEmpty(t, unrollResp.ActorId,
 		"actor ID should be set")
 
-	t.Logf("Unroll job created: actor_id=%s", unrollResp.ActorId)
+	h.Logf("Unroll job created: actor_id=%s", unrollResp.ActorId)
 
 	// Verify the VTXO is retired from the live set.
 	waitForVTXOStatusByOutpoint(
@@ -109,16 +112,17 @@ func TestUnilateralExitManualStartSingleParentTree(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, statusResp.Found, "unroll job should be found")
 
-	t.Logf("VTXO in UNILATERAL_EXIT, job status=%s",
+	h.Logf("VTXO in UNILATERAL_EXIT, job status=%s",
 		statusResp.Status)
 
 	// Mine blocks and wait for the unroll job to reach completion.
-	waitForUnrollJobCompletion(
-		t, h, alice.RPCClient, aliceVTXO.Outpoint,
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, alice, alice.RPCClient, aliceVTXO.Outpoint,
+		aliceVTXO.AmountSat, initialWalletUTXOs,
 	)
 
-	t.Logf("Unroll completed: VTXO %s swept successfully",
-		aliceVTXO.Outpoint)
+	h.Logf("Unroll completed: VTXO %s swept back to wallet UTXO %s",
+		aliceVTXO.Outpoint, sweptOutpoint)
 }
 
 // TestUnilateralExitRoundBornCompletion verifies the full end-to-end
@@ -141,8 +145,10 @@ func TestUnilateralExitRoundBornCompletion(t *testing.T) {
 
 	h.FundClientLND(alice, btcutil.SatoshiPerBitcoin)
 
-	t.Logf("Alice VTXO: outpoint=%s amount=%d",
+	h.Logf("Alice VTXO: outpoint=%s amount=%d",
 		aliceVTXO.Outpoint, aliceVTXO.AmountSat)
+
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, alice)
 
 	unrollResp, err := alice.RPCClient.Unroll(
 		t.Context(), &daemonrpc.UnrollRequest{
@@ -157,12 +163,13 @@ func TestUnilateralExitRoundBornCompletion(t *testing.T) {
 		daemonrpc.VTXOStatus_VTXO_STATUS_UNILATERAL_EXIT,
 	)
 
-	waitForUnrollJobCompletion(
-		t, h, alice.RPCClient, aliceVTXO.Outpoint,
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, alice, alice.RPCClient, aliceVTXO.Outpoint,
+		aliceVTXO.AmountSat, initialWalletUTXOs,
 	)
 
-	t.Logf("Unroll completed: VTXO %s swept successfully",
-		aliceVTXO.Outpoint)
+	h.Logf("Unroll completed: VTXO %s swept back to wallet UTXO %s",
+		aliceVTXO.Outpoint, sweptOutpoint)
 }
 
 // TestUnilateralExitOORDerivedCompletion verifies the full end-to-end
@@ -219,7 +226,7 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "submitted", sendResp.Status)
 
-	t.Logf("OOR transfer submitted: session=%s amount=%d",
+	h.Logf("OOR transfer submitted: session=%s amount=%d",
 		sendResp.SessionId, sendAmount)
 
 	// Wait for Bob to receive the OOR VTXO.
@@ -228,10 +235,12 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	)
 	require.NotNil(t, receivedVTXO)
 
-	t.Logf("Bob received OOR VTXO: outpoint=%s amount=%d "+
+	h.Logf("Bob received OOR VTXO: outpoint=%s amount=%d "+
 		"round_id=%s",
 		receivedVTXO.Outpoint, receivedVTXO.AmountSat,
 		receivedVTXO.RoundId)
+
+	initialWalletUTXOs := confirmedWalletUTXOValues(t, bob)
 
 	// Verify the OOR-derived VTXO shares the same parent tree.
 	require.Equal(t, aliceLiveVTXO.RoundId, receivedVTXO.RoundId,
@@ -246,7 +255,7 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, unrollResp.Created)
 
-	t.Logf("Unroll job created for OOR VTXO: actor_id=%s",
+	h.Logf("Unroll job created for OOR VTXO: actor_id=%s",
 		unrollResp.ActorId)
 
 	// Verify the VTXO is retired from Bob's live set.
@@ -256,12 +265,13 @@ func TestUnilateralExitOORDerivedCompletion(t *testing.T) {
 	)
 
 	// Mine blocks and wait for unroll completion.
-	waitForUnrollJobCompletion(
-		t, h, bob.RPCClient, receivedVTXO.Outpoint,
+	sweptOutpoint := waitForUnrollSweepToWallet(
+		t, h, bob, bob.RPCClient, receivedVTXO.Outpoint,
+		receivedVTXO.AmountSat, initialWalletUTXOs,
 	)
 
-	t.Logf("Unroll completed: OOR VTXO %s swept successfully",
-		receivedVTXO.Outpoint)
+	h.Logf("Unroll completed: OOR VTXO %s swept back to wallet UTXO %s",
+		receivedVTXO.Outpoint, sweptOutpoint)
 }
 
 // waitForUnrollJobCompletion mines blocks and polls GetUnrollStatus
@@ -295,7 +305,7 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 		}
 
 		if resp.Status != lastStatus {
-			t.Logf("Unroll job %s status: %s",
+			h.Logf("Unroll job %s status: %s",
 				outpoint, resp.Status)
 			lastStatus = resp.Status
 		}
@@ -308,4 +318,24 @@ func waitForUnrollJobCompletion(t *testing.T, h *harness.ArkHarness,
 	}, 90*time.Second, 1*time.Second,
 		"unroll job never completed for %s (last status: %s)",
 		outpoint, lastStatus)
+}
+
+// waitForUnrollSweepToWallet waits for the unroll job to complete, then
+// confirms the resulting sweep funds are reflected in the daemon's
+// confirmed backing-wallet balance.
+func waitForUnrollSweepToWallet(t *testing.T, h *harness.ArkHarness,
+	daemon *harness.ClientDaemonHarness,
+	client daemonrpc.DaemonServiceClient, outpoint string,
+	maxSweptValueSat int64,
+	initialWalletUTXOs map[wire.OutPoint]btcutil.Amount) string {
+
+	t.Helper()
+
+	waitForUnrollJobCompletion(t, h, client, outpoint)
+
+	sweptOutpoint := waitForNewConfirmedWalletUTXOWithMaxValue(
+		t, daemon, initialWalletUTXOs, maxSweptValueSat,
+	)
+
+	return sweptOutpoint.String()
 }
