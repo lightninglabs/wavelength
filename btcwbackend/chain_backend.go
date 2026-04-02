@@ -313,12 +313,22 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 	// cancelled.
 	notifyCtx, cancel := context.WithCancel(context.Background())
 
+	// Wrap event.Cancel in a sync.Once to prevent double-cancel
+	// panics. Both the forwarding goroutine and the returned Cancel
+	// closure call this, but lnd's notificationDispatcher panics
+	// if Cancel is sent twice for the same registration ID
+	// (nil map lookup after delete).
+	var cancelOnce sync.Once
+	safeCancel := func() {
+		cancelOnce.Do(event.Cancel)
+	}
+
 	confChan := make(chan *chainsource.TxConfirmation, 1)
 
 	go func() {
 		defer close(confChan)
 		defer cancel()
-		defer event.Cancel()
+		defer safeCancel()
 
 		select {
 		case lndConf, ok := <-event.Confirmed:
@@ -350,7 +360,7 @@ func (b *ChainBackend) RegisterConf(ctx context.Context,
 		Confirmed: confChan,
 		Cancel: func() {
 			cancel()
-			event.Cancel()
+			safeCancel()
 		},
 	}, nil
 }
@@ -374,12 +384,19 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 
 	notifyCtx, cancel := context.WithCancel(context.Background())
 
+	// Wrap event.Cancel in a sync.Once to prevent double-cancel
+	// panics — same rationale as RegisterConf.
+	var cancelOnce sync.Once
+	safeCancel := func() {
+		cancelOnce.Do(event.Cancel)
+	}
+
 	spendChan := make(chan *chainsource.SpendDetail, 1)
 
 	go func() {
 		defer close(spendChan)
 		defer cancel()
-		defer event.Cancel()
+		defer safeCancel()
 
 		select {
 		case lndSpend, ok := <-event.Spend:
@@ -411,7 +428,7 @@ func (b *ChainBackend) RegisterSpend(ctx context.Context,
 		Spend: spendChan,
 		Cancel: func() {
 			cancel()
-			event.Cancel()
+			safeCancel()
 		},
 	}, nil
 }
@@ -435,12 +452,19 @@ func (b *ChainBackend) RegisterBlocks(
 	// the returned Cancel function.
 	notifyCtx, cancel := context.WithCancel(context.Background())
 
+	// Wrap event.Cancel in a sync.Once to prevent double-cancel
+	// panics — same rationale as RegisterConf.
+	var cancelOnce sync.Once
+	safeCancel := func() {
+		cancelOnce.Do(event.Cancel)
+	}
+
 	epochChan := make(chan *chainsource.BlockEpoch, 10)
 
 	go func() {
 		defer close(epochChan)
 		defer cancel()
-		defer event.Cancel()
+		defer safeCancel()
 
 		for {
 			select {
@@ -482,7 +506,7 @@ func (b *ChainBackend) RegisterBlocks(
 		Epochs: epochChan,
 		Cancel: func() {
 			cancel()
-			event.Cancel()
+			safeCancel()
 		},
 	}, nil
 }
