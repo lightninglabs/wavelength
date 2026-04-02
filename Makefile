@@ -303,18 +303,19 @@ unit-race: #? Run unit tests with race detector
 # Client wallet backend for daemon integration tests: lnd (default) or
 # lwwallet.
 ITEST_CLIENT_WALLET := $(if $(backend),$(backend),lnd)
+ITEST_CASE := $(or $(icase),$(case))
 
 itest: #? Run daemon-level integration tests in ./itest. Use backend=lwwallet to run with lwwallet.
 	@$(call print, "Running daemon integration tests.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
-	$(if $(case),-run $(case),)
+	$(if $(ITEST_CASE),-run $(ITEST_CASE),)
 
 itest-verbose: #? Run daemon-level integration tests with stdout logs. Use backend=lwwallet to run with lwwallet.
 	@$(call print, "Running daemon integration tests with verbose logs.")
 	ARK_ITEST_CLIENT_WALLET=$(ITEST_CLIENT_WALLET) \
 	$(GOTEST) -tags itest -v ./itest/... -timeout 60m \
-	-harness.logstdout $(if $(case),-run $(case),)
+	-harness.logstdout $(if $(ITEST_CASE),-run $(ITEST_CASE),)
 
 check-commits: #? Run lint+unit on each commit since branch base (use upstream=<ref>, base=<ref>, keep_going=1, no_submodules=1)
 	./scripts/check_commits_since_base.sh \
