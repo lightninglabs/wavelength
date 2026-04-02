@@ -703,6 +703,7 @@ func (h *E2EHarness) initOORSubsystem() {
 	sessionStore := oor.NewDBSessionStore(
 		h.sqlStore, clk, oorLog,
 	)
+	sessionStore.SetOperatorKey(*h.operatorKeyDesc)
 
 	deliveryStore, err := db.NewActorDeliveryStoreFromDB(
 		h.sqlStore, clk, oorLog,
@@ -712,6 +713,7 @@ func (h *E2EHarness) initOORSubsystem() {
 	)
 
 	vtxoRecordStore := h.sqlStore.NewVTXORecordStore()
+	vtxoRecordStore.SetOperatorKey(*h.operatorKeyDesc)
 
 	recipientEvents := oor.NewDBRecipientEventStore(
 		h.sqlStore, clk, oorLog,

@@ -72,6 +72,22 @@ type CoSignedAtomicStore interface {
 		owner vtxo.LockOwner) error
 }
 
+// FinalizeAtomicStore is an optional extension for stores that can apply the
+// finalized session transition and VTXO set mutations in one transaction.
+//
+// This closes the crash window where inputs can be marked spent before
+// recipient outputs are materialized or the session advances to
+// awaiting_notify.
+type FinalizeAtomicStore interface {
+	// ApplyFinalizeAndMaterialize persists the finalized checkpoint set,
+	// marks the consumed inputs spent, and materializes recipient
+	// outputs atomically.
+	ApplyFinalizeAndMaterialize(ctx context.Context,
+		sessionID SessionID, inputs []wire.OutPoint,
+		finalCheckpointPSBTs []*psbt.Packet,
+		outputRecords []*vtxo.Record) error
+}
+
 // sessionState is a typed lifecycle state for OOR sessions persisted in the
 // database. Using a dedicated type prevents accidental comparison against
 // arbitrary strings.
