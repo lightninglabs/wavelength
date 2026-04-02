@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btclog/v2"
@@ -154,11 +155,14 @@ func (a *ConfActor) handleRegisterConf(actorCtx context.Context,
 	}
 	a.promise = promise
 
-	// Register with the backend to receive confirmation notifications. We
-	// do this before starting the goroutine so we can return an error to
-	// the caller if registration fails.
+	// Register with the backend to receive confirmation notifications.
+	// Use a timeout to prevent hanging if the backend (LND) is slow
+	// to respond under heavy block processing load.
+	regCtx, regCancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer regCancel()
+
 	registration, err := a.cfg.Backend.RegisterConf(
-		a.ctx, a.txid, a.pkScript, a.targetConfs, a.heightHint,
+		regCtx, a.txid, a.pkScript, a.targetConfs, a.heightHint,
 		a.includeBlock,
 	)
 	if err != nil {

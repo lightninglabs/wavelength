@@ -1,6 +1,7 @@
 package lwwallet
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -12,6 +13,17 @@ import (
 	"github.com/btcsuite/btclog/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// testTxHex serializes a transaction and returns its hex encoding.
+func testTxHex(t *testing.T, tx *wire.MsgTx) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	err := tx.Serialize(&buf)
+	require.NoError(t, err)
+
+	return hex.EncodeToString(buf.Bytes())
+}
 
 // TestScriptHashHex verifies the Esplora script hash computation matches
 // the expected Electrum-style reversed SHA256 hex encoding.
@@ -311,6 +323,75 @@ func TestEsploraBroadcastTx(t *testing.T) {
 	txid, err := client.BroadcastTx(tx)
 	require.NoError(t, err)
 	require.Equal(t, "aabbccdd", txid)
+}
+
+// TestEsploraSubmitPackage verifies package submission via the Esplora API.
+func TestEsploraSubmitPackage(t *testing.T) {
+	t.Parallel()
+
+	parent := wire.NewMsgTx(3)
+	child := wire.NewMsgTx(3)
+	expected := []string{
+		testTxHex(t, parent),
+		testTxHex(t, child),
+	}
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "/txs/package", r.URL.Path)
+			require.Equal(t, "application/json", r.Header.Get(
+				"Content-Type",
+			))
+
+			var got []string
+			err := json.NewDecoder(r.Body).Decode(&got)
+			require.NoError(t, err)
+			require.Equal(t, expected, got)
+
+			_, err = w.Write([]byte(`{"package_msg":"success"}`))
+			require.NoError(t, err)
+		}),
+	)
+	defer srv.Close()
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	err := client.SubmitPackage(expected)
+	require.NoError(t, err)
+}
+
+// TestEsploraSubmitPackageReject verifies that package relay failures are
+// surfaced to callers even when Esplora returns HTTP 200.
+func TestEsploraSubmitPackageReject(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "/txs/package", r.URL.Path)
+
+			_, err := w.Write([]byte(
+				`{"package_msg":"transaction failed",` +
+					`"tx-results":{` +
+					`"childwtxid":{` +
+					`"txid":"childtxid",` +
+					`"error":"bad-txns-inputs-` +
+					`missingorspent"},` +
+					`"parentwtxid":{` +
+					`"txid":"parenttxid",` +
+					`"error":"txn-already-known"}}}`,
+			))
+			require.NoError(t, err)
+		}),
+	)
+	defer srv.Close()
+
+	client := NewEsploraClient(srv.URL, btclog.Disabled)
+	err := client.SubmitPackage([]string{"aa", "bb"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "package not accepted")
+	require.Contains(t, err.Error(), "bad-txns-inputs-missingorspent")
+	require.Contains(t, err.Error(), "txn-already-known")
 }
 
 // TestEsploraHTTPError verifies that non-200 responses produce an error.

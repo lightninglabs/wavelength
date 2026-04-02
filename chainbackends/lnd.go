@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -27,6 +28,16 @@ type TxBroadcaster interface {
 		label string) error
 }
 
+// PackageSubmitter atomically submits parent+child transaction packages.
+// Bitcoind-backed implementations can satisfy this interface to expose v3
+// package relay through the LND chain backend.
+type PackageSubmitter interface {
+	// SubmitPackage submits the package. The maxFeeRate parameter is
+	// optional and nil leaves the node default unchanged.
+	SubmitPackage(parents []*wire.MsgTx, child *wire.MsgTx,
+		maxFeeRate *float64) (*btcjson.SubmitPackageResult, error)
+}
+
 // LNDBackend implements the chainsource.ChainBackend interface by wrapping
 // lnd's chain notification and fee estimation interfaces. This backend provides
 // full-node functionality and is suitable for production deployments where lnd
@@ -44,6 +55,9 @@ type LNDBackend struct {
 	// broadcaster provides transaction broadcasting capabilities.
 	broadcaster TxBroadcaster
 
+	// packageSubmitter optionally provides atomic package relay support.
+	packageSubmitter PackageSubmitter
+
 	// Log is an optional logger for this backend. If None, the backend
 	// falls back to extracting a logger from context.
 	Log fn.Option[btclog.Logger]
@@ -60,6 +74,13 @@ func NewLNDBackend(notifier chainntnfs.ChainNotifier,
 		feeEstimator: feeEstimator,
 		broadcaster:  broadcaster,
 	}
+}
+
+// SetPackageSubmitter attaches optional package relay support to the backend.
+func (b *LNDBackend) SetPackageSubmitter(
+	packageSubmitter PackageSubmitter) {
+
+	b.packageSubmitter = packageSubmitter
 }
 
 // logger returns the configured logger, falling back to the context logger.
@@ -172,6 +193,58 @@ func (b *LNDBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 
 	b.logger(ctx).InfoS(ctx, "Transaction broadcast successfully",
 		slog.String("txid", txHash.String()))
+
+	return nil
+}
+
+// SubmitPackage submits a parent+child package through the configured
+// PackageSubmitter. This is required for v3 package relay when a fee-paying
+// child must accompany otherwise non-relayable parents.
+func (b *LNDBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	if b.packageSubmitter == nil {
+		return fmt.Errorf("package submission not supported by " +
+			"LND backend")
+	}
+
+	result, err := b.packageSubmitter.SubmitPackage(
+		parents, child, nil,
+	)
+	if err != nil {
+		return fmt.Errorf("submit package RPC: %w", err)
+	}
+	if result == nil {
+		return fmt.Errorf("submit package RPC returned nil result")
+	}
+	// Log per-tx results and collect errors.
+	var txErrors []error
+	for wtxid, txResult := range result.TxResults {
+		b.logger(ctx).DebugS(ctx, "Package tx result",
+			slog.String("wtxid", wtxid),
+			slog.String("txid", txResult.TxID.String()))
+
+		if txResult.Error != nil {
+			txErrors = append(txErrors, fmt.Errorf(
+				"wtxid=%s txid=%s: %s",
+				wtxid, txResult.TxID,
+				*txResult.Error,
+			))
+		}
+	}
+
+	if result.PackageMsg != "success" {
+		return fmt.Errorf("package not accepted: %s: %w",
+			result.PackageMsg, errors.Join(txErrors...))
+	}
+
+	if len(txErrors) > 0 {
+		return fmt.Errorf("package tx rejected: %w",
+			errors.Join(txErrors...))
+	}
+
+	b.logger(ctx).InfoS(ctx, "Submitted transaction package",
+		slog.Int("parent_count", len(parents)))
 
 	return nil
 }

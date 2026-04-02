@@ -183,14 +183,43 @@ func (n *LndClientChainNotifier) RegisterConfirmationsNtfn(
 		slog.Int("num_confs", int(numConfs)),
 		slog.Int("height_hint", int(heightHint)))
 
-	confChan, errChan, err := chainNotifier.RegisterConfirmationsNtfn(
-		ctx, txid, pkScript, int32(numConfs), int32(heightHint),
-		lndOpts...,
-	)
-	if err != nil {
+	// Run the registration in a goroutine with a timeout to
+	// prevent hanging when LND is slow under block load.
+	type regResult struct {
+		confChan chan *chainntnfs.TxConfirmation
+		errChan  chan error
+		err      error
+	}
+
+	resultCh := make(chan regResult, 1)
+	go func() {
+		cc, ec, err := chainNotifier.RegisterConfirmationsNtfn(
+			ctx, txid, pkScript, int32(numConfs),
+			int32(heightHint), lndOpts...,
+		)
+		resultCh <- regResult{cc, ec, err}
+	}()
+
+	var confChan chan *chainntnfs.TxConfirmation
+	var errChan chan error
+
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			cancel()
+
+			return nil, fmt.Errorf(
+				"register confirmations: %w", r.err)
+		}
+
+		confChan = r.confChan
+		errChan = r.errChan
+
+	case <-time.After(15 * time.Second):
 		cancel()
 
-		return nil, fmt.Errorf("register confirmations: %w", err)
+		return nil, fmt.Errorf(
+			"register confirmations timed out after 15s")
 	}
 
 	go func() {
@@ -346,6 +375,12 @@ type LNDBackendFromLndClientConfig struct {
 	// backend falls back to extracting a logger from context or uses
 	// btclog.Disabled.
 	Log fn.Option[btclog.Logger]
+
+	// PackageSubmitter is an optional package submitter for atomic
+	// parent+child package submission. When nil, SubmitPackage
+	// returns an "unsupported" error. Typically backed by a direct
+	// bitcoind RPC client.
+	PackageSubmitter PackageSubmitter
 }
 
 // WithLogger returns a new config with the given logger set.
@@ -368,7 +403,6 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 
 	// Use explicit struct initialization instead of type cast for safety -
 	// this ensures we don't silently miss fields if the types diverge.
-	//nolint:gosimple
 	notifier := NewLndClientChainNotifier(LndClientChainNotifierConfig{
 		LND: cfg.LND,
 		Log: cfg.Log,
@@ -378,6 +412,7 @@ func NewLNDBackendFromLndClient(cfg LNDBackendFromLndClientConfig) *LNDBackend {
 
 	backend := NewLNDBackend(notifier, feeEstimator, broadcaster)
 	backend.Log = cfg.Log
+	backend.packageSubmitter = cfg.PackageSubmitter
 
 	return backend
 }

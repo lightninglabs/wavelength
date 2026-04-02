@@ -85,6 +85,12 @@ type ChainBackend interface {
 	// missed blocks if the client provides a best known block.
 	RegisterBlocks(ctx context.Context) (*BlockRegistration, error)
 
+	// SubmitPackage atomically submits a parent+child transaction
+	// package to the network. This is required for V3 package relay
+	// where the child pays fees for otherwise non-relayable parents.
+	SubmitPackage(ctx context.Context, parents []*wire.MsgTx,
+		child *wire.MsgTx) error
+
 	// Start initializes the backend and any background processes. This
 	// must be called before using any other methods.
 	Start() error

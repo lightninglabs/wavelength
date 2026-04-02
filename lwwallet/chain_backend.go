@@ -1,7 +1,9 @@
 package lwwallet
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"math"
@@ -257,6 +259,47 @@ func (b *ChainBackend) BroadcastTx(_ context.Context,
 	if err != nil {
 		return fmt.Errorf("broadcast tx: %w", err)
 	}
+
+	return nil
+}
+
+// SubmitPackage submits a parent+child package through the Esplora
+// /txs/package endpoint. Transactions are serialized in dependency order with
+// parents first and the fee-paying child last.
+func (b *ChainBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	if len(parents) == 0 {
+		return fmt.Errorf("submit package: need at least one " +
+			"parent transaction")
+	}
+	if child == nil {
+		return fmt.Errorf("submit package: child transaction " +
+			"not defined")
+	}
+
+	txHexes := make([]string, 0, len(parents)+1)
+	for i, tx := range parents {
+		var buf bytes.Buffer
+		if err := tx.Serialize(&buf); err != nil {
+			return fmt.Errorf("serialize parent %d: %w", i, err)
+		}
+
+		txHexes = append(txHexes, hex.EncodeToString(buf.Bytes()))
+	}
+
+	var childBuf bytes.Buffer
+	if err := child.Serialize(&childBuf); err != nil {
+		return fmt.Errorf("serialize child: %w", err)
+	}
+	txHexes = append(txHexes, hex.EncodeToString(childBuf.Bytes()))
+
+	if err := b.esplora.SubmitPackage(txHexes); err != nil {
+		return fmt.Errorf("submit package: %w", err)
+	}
+
+	b.log.InfoS(ctx, "Submitted transaction package via Esplora",
+		slog.Int("parent_count", len(parents)))
 
 	return nil
 }

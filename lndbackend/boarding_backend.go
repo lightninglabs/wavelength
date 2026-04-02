@@ -47,6 +47,12 @@ func NewBoardingBackend(walletKit lndclient.WalletKitClient,
 	}
 }
 
+// WalletKit returns the underlying LND WalletKit client for
+// operations not covered by the BoardingBackend interface.
+func (l *BoardingBackend) WalletKit() lndclient.WalletKitClient {
+	return l.walletKit
+}
+
 // logger returns the configured logger, falling back to the context logger.
 func (l *BoardingBackend) logger(ctx context.Context) btclog.Logger {
 	return l.Log.UnwrapOr(build.LoggerFromContext(ctx))
