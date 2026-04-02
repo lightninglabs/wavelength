@@ -88,4 +88,86 @@ func TestBuildSignedSweepTx(t *testing.T) {
 		int64(inputValue-expectedFee),
 		sweepTx.TxOut[0].Value,
 	)
+
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		pkScript, int64(inputValue),
+	)
+	sigHashes := txscript.NewTxSigHashes(sweepTx, prevFetcher)
+
+	engine, err := txscript.NewEngine(
+		pkScript, sweepTx, 0, txscript.StandardVerifyFlags, nil,
+		sigHashes, int64(inputValue), prevFetcher,
+	)
+	require.NoError(t, err)
+	require.NoError(t, engine.Execute())
+}
+
+// TestBuildSignedSweepTxBatchRoot verifies that sweeping a real batch root
+// output succeeds when the internal key is a MuSig2 aggregate over the
+// operator and client signing keys.
+func TestBuildSignedSweepTxBatchRoot(t *testing.T) {
+	t.Parallel()
+
+	operatorKey, _ := testutils.CreateKey(10)
+	sweepPubKey, signer := testutils.CreateKey(11)
+	client1Owner, _ := testutils.CreateKey(12)
+	client1Signing, _ := testutils.CreateKey(13)
+	client2Owner, _ := testutils.CreateKey(14)
+	client2Signing, _ := testutils.CreateKey(15)
+
+	sweepDelay := uint32(10)
+
+	vtxo1, err := treepkg.NewVTXODescriptor(
+		btcutil.Amount(120_000), client1Owner, operatorKey,
+		client1Signing, sweepDelay,
+	)
+	require.NoError(t, err)
+
+	vtxo2, err := treepkg.NewVTXODescriptor(
+		btcutil.Amount(80_000), client2Owner, operatorKey,
+		client2Signing, sweepDelay,
+	)
+	require.NoError(t, err)
+
+	vtxos := []treepkg.VTXODescriptor{*vtxo1, *vtxo2}
+
+	batchOutput, err := treepkg.BuildBatchOutput(
+		vtxos, operatorKey, sweepPubKey, sweepDelay,
+	)
+	require.NoError(t, err)
+
+	batchOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{2},
+		Index: 0,
+	}
+
+	tree, err := treepkg.BuildVTXOTree(
+		batchOutpoint, batchOutput, vtxos, operatorKey,
+		sweepPubKey, sweepDelay, 2,
+	)
+	require.NoError(t, err)
+
+	candidates := []*batchwatcher.Output{{
+		Outpoint: batchOutpoint,
+		TxOut:    batchOutput,
+		TreeNode: tree.Root,
+	}}
+
+	sweepTx, err := buildSignedSweepTx(
+		candidates, keychain.KeyDescriptor{PubKey: sweepPubKey},
+		sweepDelay, []byte{0x51}, btcutil.Amount(1), signer,
+	)
+	require.NoError(t, err)
+
+	prevFetcher := txscript.NewCannedPrevOutputFetcher(
+		batchOutput.PkScript, batchOutput.Value,
+	)
+	sigHashes := txscript.NewTxSigHashes(sweepTx, prevFetcher)
+
+	engine, err := txscript.NewEngine(
+		batchOutput.PkScript, sweepTx, 0, txscript.StandardVerifyFlags,
+		nil, sigHashes, batchOutput.Value, prevFetcher,
+	)
+	require.NoError(t, err)
+	require.NoError(t, engine.Execute())
 }
