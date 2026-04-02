@@ -221,8 +221,9 @@ func (l *LndWalletController) SignOutputRaw(tx *wire.MsgTx,
 		prevOutputs[i] = prevOut
 	}
 
-	sigs, err := l.signer.SignOutputRaw(
-		ctx, tx, []*lndclient.SignDescriptor{lndSignDesc}, prevOutputs,
+	sigs, err := l.signer.SignOutputRawKeyLocator(
+		ctx, tx, []*lndclient.SignDescriptor{lndSignDesc},
+		prevOutputs,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sign output raw via lnd: %w", err)
