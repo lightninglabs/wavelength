@@ -582,6 +582,7 @@ func (h *ArkHarness) launchClientDaemon(name string,
 		}
 		cfg.Wallet.FeeURL = h.Harness.EsploraURL +
 			"/api/v1/fees/recommended"
+		cfg.Wallet.PersistFilters = true
 
 	default:
 		h.T.Fatalf("unsupported client daemon wallet backend: %s",
@@ -819,9 +820,17 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 }
 
 func (d *ClientDaemonHarness) initOrUnlockLWWallet() error {
-	ctx, cancel := context.WithTimeout(
-		d.T.Context(), defaultSmallTimeout,
-	)
+	// The btcwallet backend pre-starts neutrino for P2P sync,
+	// but Init/UnlockWallet still synchronously creates the
+	// btcwallet (opens bbolt DB, creates key scopes, starts
+	// chain client sync). Use a generous timeout to allow for
+	// P2P reconnection on daemon restart.
+	timeout := defaultSmallTimeout
+	if d.server.WalletType() == clientdarepod.WalletTypeBtcwallet {
+		timeout = 90 * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(d.T.Context(), timeout)
 	defer cancel()
 
 	seedResp, err := d.RPCClient.GenSeed(
