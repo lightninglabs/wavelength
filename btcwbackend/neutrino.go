@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/btcsuite/btcwallet/chain"
+	basewallet "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb" // Register bdb backend.
 	"github.com/lightninglabs/neutrino"
@@ -19,10 +20,12 @@ import (
 // neutrinoDBName is the filename for the neutrino bbolt database.
 const neutrinoDBName = "neutrino.db"
 
-// defaultBlockCacheSize is the number of blocks to cache in memory.
-// This prevents redundant block fetches during wallet sync and chain
-// notification processing.
-const defaultBlockCacheSize uint64 = 20
+// defaultBlockCacheSize is the maximum size in bytes of the in-memory
+// block cache. This prevents redundant block fetches during wallet
+// sync, chain notification processing, and TxProof construction.
+// lnd uses 20 MiB; we use a smaller default since the light client
+// only fetches blocks on demand.
+const defaultBlockCacheSize uint64 = 2 * 1024 * 1024 // 2 MiB
 
 // defaultDBTimeout is the default timeout for opening the neutrino
 // bbolt database.
@@ -107,6 +110,12 @@ func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 // syncing headers and compact block filters.
 func (n *NeutrinoService) Start() error {
 	n.log.InfoS(context.Background(), "Starting neutrino chain service")
+
+	// Wire up neutrino and btcwallet chain client internal loggers
+	// so their debug output is visible alongside our daemon logs.
+	neutrino.UseLogger(n.log)
+	chain.UseLogger(n.log)
+	basewallet.UseLogger(n.log)
 
 	if err := n.cs.Start(); err != nil {
 		return fmt.Errorf("start neutrino: %w", err)
