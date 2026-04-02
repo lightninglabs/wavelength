@@ -2321,6 +2321,27 @@ func (s *AwaitingVTXOSignaturesState) transitionToInputSigs(
 		})
 	}
 
+	// Apply aggregated signatures to VTXOTrees so they are
+	// persisted with signatures when the round is stored. This
+	// enables OOR receivers to obtain signed tree paths from the
+	// indexer for unilateral exit.
+	for idx, coordinator := range s.TreeSignCoordinators {
+		allSigs, err := coordinator.AllFinalSigs()
+		if err != nil {
+			return nil, fmt.Errorf("failed to collect "+
+				"final sigs for tree persistence: %w", err)
+		}
+
+		if idx < 0 || idx >= len(s.VTXOTrees) {
+			continue
+		}
+
+		if err := s.VTXOTrees[idx].SubmitTreeSigs(allSigs); err != nil {
+			return nil, fmt.Errorf("submit tree "+
+				"sigs to VTXOTree: %w", err)
+		}
+	}
+
 	// Notify clients with boarding inputs that we're ready for their
 	// signatures.
 	for clientID, reg := range s.ClientRegistrations {

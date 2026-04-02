@@ -2191,6 +2191,70 @@ func TestFSMVTXOSigningFlowE2ERealSigs(t *testing.T) {
 	h.assertOutboxLen(0)
 }
 
+// TestFSMVTXOSigningFlowPersistsSignedTrees verifies that once the server
+// aggregates VTXO MuSig2 signatures, it also applies them to the server-side
+// VTXO trees before transitioning. This ensures persisted indexer paths are
+// already broadcastable for unilateral exit.
+func TestFSMVTXOSigningFlowPersistsSignedTrees(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHarness(t)
+	h.setupPermissiveMocks()
+
+	outpoint := wire.OutPoint{
+		Hash:  chainhash.HashH([]byte("persist-signed-tree-input")),
+		Index: 0,
+	}
+
+	client, joinEvt := quickClientWithVTXOs(
+		h, "client1", 20, &outpoint, 50000,
+	)
+	feedJoinSuccess(h, joinEvt)
+
+	h.outboxMessages = nil
+	err := h.sendEvent(&RegistrationTimeoutEvent{})
+	require.NoError(t, err)
+
+	awaitNonces := assertStateType[*AwaitingVTXONoncesState](h)
+	require.NotEmpty(t, awaitNonces.VTXOTrees)
+
+	batchInfo := h.getClientBatchInfo(client.clientID)
+	require.NotNil(t, batchInfo)
+	require.NotEmpty(t, batchInfo.VTXOTreePaths)
+
+	keys := client.vtxoSigningKeys()
+	require.NotEmpty(t, keys)
+
+	h.outboxMessages = nil
+	nonceEvent := client.createVTXONoncesEvent(
+		keys[0], batchInfo.VTXOTreePaths,
+	)
+	err = h.sendEvent(nonceEvent)
+	require.NoError(t, err)
+
+	aggNonces := h.getClientVTXOAggNonces(client.clientID)
+	require.NotNil(t, aggNonces)
+	require.NotEmpty(t, aggNonces.AggNonces)
+
+	h.outboxMessages = nil
+	sigEvent := client.createVTXOPartialSigsEvent(
+		keys[0], batchInfo.VTXOTreePaths, aggNonces.AggNonces,
+	)
+	err = h.sendEvent(sigEvent)
+	require.NoError(t, err)
+
+	awaitBoarding := assertStateType[*AwaitingInputSigsState](h)
+	require.NotEmpty(t, awaitBoarding.VTXOTrees)
+
+	aggSigs := h.getClientVTXOAggSigs(client.clientID)
+	require.NotNil(t, aggSigs)
+	require.NotEmpty(t, aggSigs.AggSigs)
+
+	for _, vtxoTree := range awaitBoarding.VTXOTrees {
+		require.NoError(t, vtxoTree.VerifySigned())
+	}
+}
+
 // TestFSMForfeitSigningFlowE2ERealSigs exercises the full forfeit signing flow
 // with real signatures and validates the completed forfeit transaction.
 func TestFSMForfeitSigningFlowE2ERealSigs(t *testing.T) {
