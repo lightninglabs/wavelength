@@ -205,6 +205,17 @@ func (w *Wallet) Stop() {
 	// must stop before neutrino service.
 	_ = w.BtcWallet.Stop()
 
+	// Explicitly close the wallet's bbolt database. btcwallet
+	// does not close it in Stop/WaitForShutdown — it relies on
+	// GC finalizers. Without this, the file lock persists until
+	// garbage collection, causing "timeout" errors when a
+	// restarted daemon tries to open the same DB file.
+	if iw := w.BtcWallet.InternalWallet(); iw != nil {
+		if db := iw.Database(); db != nil {
+			_ = db.Close()
+		}
+	}
+
 	if w.ownsNeutrino {
 		_ = w.neutrinoSvc.Stop()
 	}

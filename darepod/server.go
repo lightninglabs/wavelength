@@ -146,6 +146,13 @@ type Server struct {
 	// startBtcwallet when the wallet is finally unlocked.
 	neutrinoSvc fn.Option[*btcwbackend.NeutrinoService]
 
+	// runCtx is the context that spans the server's entire Run
+	// lifecycle. It is set at the start of run() and cancelled
+	// when the daemon shuts down. Background goroutines that
+	// must outlive RPC handlers but not the daemon should
+	// select on runCtx.Done().
+	runCtx context.Context
+
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
 	// after successful lnd connection. In lwwallet mode it
@@ -319,6 +326,11 @@ func (s *Server) RunWithContext(ctx context.Context) error {
 //nolint:funlen
 func (s *Server) run(ctx context.Context,
 	shutdownFn func()) error {
+
+	// Store the run context so background goroutines (like the
+	// btcwallet sync poller) can outlive individual RPC
+	// handlers but still shut down with the daemon.
+	s.runCtx = ctx
 
 	// -------------------------------------------------------
 	// 0. Initialize the logging backend and subsystem loggers.
@@ -1087,25 +1099,32 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	// notification handler is blocked in syncWithChain, causing
 	// newly mined blocks to be missed.
 	//
-	// The goroutine polls indefinitely rather than timing out,
-	// because a timeout would leave the wallet permanently
-	// unready with no retry path. Progress is logged every 30
-	// seconds so operators can observe sync advancement.
+	// The goroutine polls until sync completes or the daemon
+	// shuts down. We use s.walletReady as the success signal
+	// (closed by markWalletReady) and a server-scoped quit
+	// channel so the goroutine doesn't outlive the daemon.
 	//
-	// We use a detached context because the caller's ctx (from
-	// the InitWallet/UnlockWallet RPC) is cancelled as soon as
-	// the RPC handler returns. The sync goroutine must outlive
-	// the RPC.
+	// We must NOT use the caller's ctx here: the RPC context
+	// is cancelled when the handler returns, but the sync
+	// goroutine must outlive the RPC. Instead, we select on
+	// the server's runCtx (the context passed to Run, which
+	// lives until daemon shutdown).
+	runCtx := s.runCtx
 	go func() {
-		syncCtx := context.Background()
-
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
 		logInterval := 30 * time.Second
 		lastLog := time.Now()
 
-		for range ticker.C {
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+
+			case <-ticker.C:
+			}
+
 			synced, bestTimestamp, err := w.IsSynced()
 			if err != nil {
 				continue
@@ -1113,7 +1132,8 @@ func (s *Server) startBtcwallet(ctx context.Context,
 
 			if !synced {
 				if time.Since(lastLog) >= logInterval {
-					s.log.InfoS(syncCtx,
+					s.log.InfoS(
+						context.Background(),
 						"Waiting for neutrino "+
 							"wallet sync",
 					)
@@ -1124,13 +1144,13 @@ func (s *Server) startBtcwallet(ctx context.Context,
 			}
 
 			height, _, hErr := w.ChainBackend().BestBlock(
-				syncCtx,
+				context.Background(),
 			)
 			if hErr != nil || height == 0 {
 				continue
 			}
 
-			s.log.InfoS(syncCtx,
+			s.log.InfoS(context.Background(),
 				"Neutrino initial sync complete",
 				slog.Int("height",
 					int(height)),
