@@ -721,6 +721,35 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 		"bob", recvResp.KeyFamily, recvResp.KeyIndex,
 	)
 
+	// The integration harness derives the external signer from
+	// Bob's daemon-backed wallet backend. Build the proof-gated
+	// query while Bob is still online, then reuse that signed
+	// request after shutdown so this test stays focused on
+	// authoritative offline event visibility.
+	prebuiltQueryReq, err := indexerClient.Indexer.
+		BuildListOORRecipientEventsByScriptTaprootRequest(
+			t.Context(), recipientPkScript, 0, 20,
+		)
+	require.NoError(t, err)
+
+	// Prime the external mailbox client so the operator
+	// auto-registers it before Bob goes offline. Use a
+	// principal-scoped query here rather than the script
+	// query under test so later recipient-event polling
+	// observes fresh state instead of depending on any
+	// request dedupe behavior.
+	require.Eventually(t, func() bool {
+		ctx, cancel := context.WithTimeout(
+			t.Context(), defaultSmallTimeout,
+		)
+		defer cancel()
+
+		_, queryErr := indexerClient.Indexer.ListMyReceiveScripts(ctx)
+
+		return queryErr == nil
+	}, defaultTimeout, pollInterval,
+		"indexer test client never became ready")
+
 	bob.Stop()
 	t.Log("stopped bob daemon before OOR send to force offline receive")
 
@@ -739,19 +768,26 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	require.Equal(t, "submitted", sendResp.Status)
 
 	var recipientEvents *arkrpc.ListOORRecipientEventsByScriptResponse
+	var lastQueryErr error
+	var lastEventCount int
 	require.Eventually(t, func() bool {
 		ctx, cancel := context.WithTimeout(
 			t.Context(), defaultSmallTimeout,
 		)
 		defer cancel()
 
-		resp, queryErr := indexerClient.Indexer.
-			ListOORRecipientEventsByScriptTaproot(
-				ctx, recipientPkScript, 0, 20,
+		resp, queryErr := indexerClient.
+			ListOORRecipientEventsByRequest(
+				ctx, prebuiltQueryReq,
 			)
 		if queryErr != nil {
+			lastQueryErr = queryErr
+
 			return false
 		}
+
+		lastQueryErr = nil
+		lastEventCount = len(resp.Events)
 
 		for _, ev := range resp.Events {
 			if int64(ev.Value) == sendAmount {
@@ -764,7 +800,10 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 		return false
 	}, defaultTimeout, pollInterval,
 		"indexer did not expose OOR recipient event while "+
-			"bob was offline")
+			"bob was offline "+
+			"(last_query_err=%v, last_event_count=%d)",
+		lastQueryErr, lastEventCount,
+	)
 
 	require.NotNil(t, recipientEvents)
 
