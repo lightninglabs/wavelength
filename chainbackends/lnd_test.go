@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/chainsource"
@@ -73,6 +74,18 @@ func (s *stubBroadcaster) PublishTransaction(
 ) error {
 
 	return nil
+}
+
+type stubPackageSubmitter struct {
+	result *btcjson.SubmitPackageResult
+	err    error
+}
+
+func (s *stubPackageSubmitter) SubmitPackage(parents []*wire.MsgTx,
+	child *wire.MsgTx,
+	maxFeeRate *float64) (*btcjson.SubmitPackageResult, error) {
+
+	return s.result, s.err
 }
 
 func TestRegisterConfSurvivesCallerContextCancellation(t *testing.T) {
@@ -180,6 +193,72 @@ func TestRegisterSpendSurvivesCallerContextCancellation(t *testing.T) {
 	require.Equal(t, int32(144), got.SpendingHeight)
 	require.Equal(t, spenderHash, *got.SpenderTxHash)
 	reg.Cancel()
+}
+
+func TestSubmitPackageUnsupported(t *testing.T) {
+	t.Parallel()
+
+	backend := NewLNDBackend(
+		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
+	)
+
+	err := backend.SubmitPackage(
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
+		wire.NewMsgTx(3),
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not supported")
+}
+
+func TestSubmitPackageSuccess(t *testing.T) {
+	t.Parallel()
+
+	backend := NewLNDBackend(
+		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
+	)
+	backend.SetPackageSubmitter(&stubPackageSubmitter{
+		result: &btcjson.SubmitPackageResult{
+			PackageMsg: "success",
+			TxResults: map[string]btcjson.SubmitPackageTxResult{
+				"wtxid-1": {
+					TxID: chainhash.Hash{1},
+				},
+			},
+		},
+	})
+
+	err := backend.SubmitPackage(
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
+		wire.NewMsgTx(3),
+	)
+	require.NoError(t, err)
+}
+
+func TestSubmitPackageRejectsRejectedTransactions(t *testing.T) {
+	t.Parallel()
+
+	rejectReason := "insufficient fee"
+	backend := NewLNDBackend(
+		&stubNotifier{}, &stubFeeEstimator{}, &stubBroadcaster{},
+	)
+	backend.SetPackageSubmitter(&stubPackageSubmitter{
+		result: &btcjson.SubmitPackageResult{
+			PackageMsg: "success",
+			TxResults: map[string]btcjson.SubmitPackageTxResult{
+				"wtxid-1": {
+					TxID:  chainhash.Hash{1},
+					Error: &rejectReason,
+				},
+			},
+		},
+	})
+
+	err := backend.SubmitPackage(
+		t.Context(), []*wire.MsgTx{wire.NewMsgTx(3)},
+		wire.NewMsgTx(3),
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "insufficient fee")
 }
 
 const (

@@ -527,6 +527,42 @@ type testMempoolAcceptFees struct {
 	Base float64 `json:"base"`
 }
 
+// SubmitPackage posts a package of raw transaction hex strings to the
+// Esplora /txs/package endpoint for atomic package relay. Transactions must be
+// ordered by dependency with parents first and child last.
+func (c *EsploraClient) SubmitPackage(txHexes []string) error {
+	jsonBody, err := json.Marshal(txHexes)
+	if err != nil {
+		return fmt.Errorf("marshal package txs: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/txs/package", "application/json",
+		bytes.NewReader(jsonBody),
+	)
+	if err != nil {
+		return fmt.Errorf("submit package: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read package response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("submit package HTTP %d: %s",
+			resp.StatusCode, string(respBody))
+	}
+
+	if len(respBody) > 0 {
+		c.log.DebugS(context.Background(), "Package response",
+			slog.String("body", string(respBody)))
+	}
+
+	return nil
+}
+
 // post performs an HTTP POST request with a text body and returns the
 // response body.
 func (c *EsploraClient) post(path string,

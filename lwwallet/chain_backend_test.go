@@ -270,6 +270,42 @@ func TestChainBackendTestMempoolAccept(t *testing.T) {
 	require.Contains(t, err.Error(), "not supported")
 }
 
+// TestChainBackendSubmitPackage verifies that package submission is
+// forwarded to the Esplora /txs/package endpoint.
+func TestChainBackendSubmitPackage(t *testing.T) {
+	t.Parallel()
+
+	parent := wire.NewMsgTx(3)
+	child := wire.NewMsgTx(3)
+	expected := []string{
+		testTxHex(t, parent),
+		testTxHex(t, child),
+	}
+
+	srv := mockEsploraServer(
+		t, func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, http.MethodPost, r.Method)
+			require.Equal(t, "/txs/package", r.URL.Path)
+
+			var got []string
+			err := json.NewDecoder(r.Body).Decode(&got)
+			require.NoError(t, err)
+			require.Equal(t, expected, got)
+
+			_, err = w.Write([]byte(`{"package_msg":"success"}`))
+			require.NoError(t, err)
+		},
+	)
+
+	esplora := NewEsploraClient(srv.URL, btclog.Disabled)
+	backend := NewChainBackend(esplora, time.Hour, btclog.Disabled)
+
+	err := backend.SubmitPackage(
+		t.Context(), []*wire.MsgTx{parent}, child,
+	)
+	require.NoError(t, err)
+}
+
 // TestChainBackendConfRegistration verifies that confirmation
 // registrations fire when a transaction reaches the target
 // confirmation count.

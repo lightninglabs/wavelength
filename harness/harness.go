@@ -61,11 +61,11 @@ const (
 	// for each harness instance to ensure isolation between test runs.
 	networkPrefix = "ark-harness-"
 
-	// bitcoindRPCUser is the RPC username for bitcoind in regtest mode.
-	bitcoindRPCUser = "admin1"
+	// BitcoindRPCUser is the RPC username for bitcoind in regtest mode.
+	BitcoindRPCUser = "admin1"
 
-	// bitcoindRPCPass is the RPC password for bitcoind in regtest mode.
-	bitcoindRPCPass = "123"
+	// BitcoindRPCPass is the RPC password for bitcoind in regtest mode.
+	BitcoindRPCPass = "123"
 
 	// maxNetworkNameRetries is the number of times to retry creating a
 	// unique network name on collision before giving up. Set to 5 to
@@ -1076,8 +1076,8 @@ func (h *Harness) startBitcoind() {
 		// Keep the miner inclusion floor aligned with relay policy so
 		// low-fee mempool transactions are still mined on regtest.
 		"-blockmintxfee=0.00000500",
-		fmt.Sprintf("-rpcuser=%s", bitcoindRPCUser),
-		fmt.Sprintf("-rpcpassword=%s", bitcoindRPCPass),
+		fmt.Sprintf("-rpcuser=%s", BitcoindRPCUser),
+		fmt.Sprintf("-rpcpassword=%s", BitcoindRPCPass),
 		"-rpcallowip=0.0.0.0/0",
 		"-rpcbind=0.0.0.0",
 		"-zmqpubrawblock=tcp://0.0.0.0:28332",
@@ -1198,7 +1198,7 @@ func (h *Harness) startElectrs() {
 		"-vvv",
 		"--timestamp",
 		"--network=regtest",
-		fmt.Sprintf("--cookie=%s:%s", bitcoindRPCUser, bitcoindRPCPass),
+		fmt.Sprintf("--cookie=%s:%s", BitcoindRPCUser, BitcoindRPCPass),
 		fmt.Sprintf("--daemon-rpc-addr=%s:18443", h.bitcoindName),
 		"--http-addr=0.0.0.0:3002",
 		"--electrum-rpc-addr=0.0.0.0:60401",
@@ -1466,7 +1466,7 @@ func (h *Harness) FundOperatorLND(amount btcutil.Amount) {
 
 	// Connect to LND using the harness credential paths.
 	lndAddr := net.JoinHostPort("127.0.0.1", h.LNDGRPCPort)
-	conn, err := getLNDClientConn(
+	conn, err := GetLNDClientConn(
 		ctx, lndAddr, h.lndTLSCert, h.lndMacaroon,
 	)
 	require.NoError(h.T, err, "connect to LND for funding")
@@ -1571,8 +1571,8 @@ type rpcResponse struct {
 func (h *Harness) BitcoinRPCClient() (*rpcclient.Client, error) {
 	connCfg := &rpcclient.ConnConfig{
 		Host:         h.BitcoindRPC,
-		User:         bitcoindRPCUser,
-		Pass:         bitcoindRPCPass,
+		User:         BitcoindRPCUser,
+		Pass:         BitcoindRPCPass,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
@@ -1619,7 +1619,7 @@ func (h *Harness) bitcoinRPCCall(method string,
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(bitcoindRPCUser, bitcoindRPCPass)
+	req.SetBasicAuth(BitcoindRPCUser, BitcoindRPCPass)
 	resp, err := harnessHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("rpc request failed: %s: %w", method,
@@ -2008,7 +2008,7 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 
 	// Create authenticated connection to local LND.
 	localAddr := net.JoinHostPort("127.0.0.1", local.GRPCPort)
-	localConn, err := getLNDClientConn(
+	localConn, err := GetLNDClientConn(
 		ctx, localAddr, local.TLSCert, local.Macaroon,
 	)
 	require.NoError(t, err, "failed to connect to %s gRPC", local.Name)
@@ -2105,9 +2105,9 @@ func (h *Harness) startTapd() {
 	h.Log("tapd is ready and synced")
 }
 
-// getLNDClientConn creates a gRPC connection to LND using TLS and macaroon
-// authentication.
-func getLNDClientConn(ctx context.Context, addr, tlsPath,
+// GetLNDClientConn creates an authenticated gRPC connection to the given
+// LND instance using the provided TLS certificate and macaroon paths.
+func GetLNDClientConn(ctx context.Context, addr, tlsPath,
 	macaroonPath string) (*grpc.ClientConn, error) {
 
 	// Load TLS credentials.

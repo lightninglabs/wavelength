@@ -64,6 +64,13 @@ func (m *mockBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	return nil
 }
 
+// SubmitPackage is a no-op for the mock backend.
+func (m *mockBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	return nil
+}
+
 // broadcastErrorBackend is a mock backend that allows injecting broadcast
 // errors and mempool accept behavior while reusing the base mock backend for
 // other operations.
@@ -230,6 +237,40 @@ func TestChainSourceActorBroadcastTx(t *testing.T) {
 	require.True(t, ok)
 	expectedHash := tx.TxHash()
 	require.Equal(t, expectedHash, broadcastResp.Txid)
+}
+
+// TestChainSourceActorSubmitPackage tests package submission through the
+// ChainSource actor.
+func TestChainSourceActorSubmitPackage(t *testing.T) {
+	t.Parallel()
+
+	backend := newMockBackend()
+	system := actor.NewActorSystem()
+	defer func() { _ = system.Shutdown(t.Context()) }()
+
+	chainSource := NewChainSourceActor(ChainSourceConfig{
+		Backend: backend,
+		System:  system,
+	})
+	ref := ChainSourceKey.Spawn(
+		system, "chainsource-submit-package", chainSource,
+	)
+
+	ctx := t.Context()
+	parent := wire.NewMsgTx(3)
+	child := wire.NewMsgTx(3)
+	future := ref.Ask(ctx, &SubmitPackageRequest{
+		Parents: []*wire.MsgTx{parent},
+		Child:   child,
+	})
+
+	result := future.Await(ctx)
+	require.True(t, result.IsOk())
+
+	resp, err := result.Unpack()
+	require.NoError(t, err)
+	_, ok := resp.(*SubmitPackageResponse)
+	require.True(t, ok)
 }
 
 // TestChainSourceActorBroadcastTxIgnoresRebroadcastErrors tests that broadcast
