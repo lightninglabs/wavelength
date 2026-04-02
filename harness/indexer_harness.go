@@ -76,13 +76,11 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 
 	daemon := h.GetClientDaemon(daemonName)
 	require.NotNil(h.T, daemon, "client daemon %q not found", daemonName)
-	require.NotNil(h.T, daemon.LND,
-		"indexer test client currently requires lnd backend")
-	require.NotNil(h.T, daemon.LND.Client,
-		"lnd services are not available for daemon %q", daemonName)
+	require.NotNil(h.T, daemon.server,
+		"client daemon %q server not initialized", daemonName)
 
-	keyDesc, err := daemon.LND.Client.WalletKit.DeriveKey(
-		h.T.Context(), &keychain.KeyLocator{
+	_, signer, err := daemon.server.IndexerProofKey(
+		h.T.Context(), keychain.KeyLocator{
 			Family: keychain.KeyFamily(keyFamily),
 			Index:  keyIndex,
 		},
@@ -158,9 +156,6 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	require.NoError(h.T, runtime.Start(runtimeCtx),
 		"start indexer mailbox runtime")
 
-	signer := indexer.NewLNDSchnorrSigner(
-		daemon.LND.Client.Signer, *keyDesc,
-	)
 	idxClient := indexer.New(
 		runtime.Unary(), signer, defaultIndexerProofServerID,
 		localMailboxID, fn.None[btclog.Logger](),

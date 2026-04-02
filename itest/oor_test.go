@@ -694,13 +694,6 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	t.Cleanup(h.Stop)
 
 	h.Start()
-
-	// This test requires the indexer test client which needs
-	// an lnd backend for key derivation.
-	if h.ClientWalletBackend() != harness.ClientWalletBackendLND {
-		t.Skipf("test requires lnd backend for indexer "+
-			"client (got %s)", h.ClientWalletBackend())
-	}
 	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
 
 	alice := h.StartClientDaemon("alice")
@@ -712,6 +705,7 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	_, aliceLiveVTXO, _ := boardClientAndConfirmRound(
 		t, h, alice.RPCClient, operatorInfo.MinConfirmations, 100_000,
 	)
+	bobLiveBefore := outpointSet(listLiveVTXOs(t, bob.RPCClient))
 
 	recvResp, err := bob.RPCClient.NewOORReceiveScript(
 		t.Context(), &daemonrpc.NewOORReceiveScriptRequest{
@@ -774,12 +768,19 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 
 	require.NotNil(t, recipientEvents)
 
+	oldRPCAddr := bob.RPCAddr
 	bob = h.RestartClientDaemon("bob")
-	waitForDaemonInfoReachable(t, bob.RPCClient)
 	require.NotNil(t, bob)
 	require.NotEmpty(t, bob.RPCAddr)
+	t.Logf("restarted recipient daemon after offline OOR receive: "+
+		"old_rpc=%s new_rpc=%s session_id=%s", oldRPCAddr,
+		bob.RPCAddr, sendResp.SessionId)
 
-	// TODO(bhandras): Extend this to assert Bob's local daemon state
-	// converges after restart once offline OOR receive materialization is
-	// resumable through the daemon path too.
+	waitForDaemonInfoReachable(t, bob.RPCClient)
+
+	waitForRegisteredClients(t, h, 2)
+	waitForExactVTXOBalance(t, bob.RPCClient, sendAmount)
+	waitForNewLiveVTXOWithAmount(
+		t, bob.RPCClient, bobLiveBefore, sendAmount,
+	)
 }
