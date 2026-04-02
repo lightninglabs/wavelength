@@ -508,6 +508,12 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 	oldRPCAddr := oldDaemon.RPCAddr
 	oldDaemon.Stop()
 
+	// Pause to ensure the old daemon's bbolt databases (wallet,
+	// neutrino) have fully released their file locks. btcwallet's
+	// SynchronizeRPC goroutines may still be winding down after
+	// Stop() returns.
+	time.Sleep(2 * time.Second)
+
 	daemon := h.launchClientDaemon(
 		name, oldDaemon.LND, oldDaemon.DataDir,
 		oldDaemon.LocalMailboxID, oldDaemon.RemoteMailboxID,
@@ -558,7 +564,10 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	cfg := clientdarepod.DefaultConfig()
 	cfg.DataDir = dataDir
 	cfg.Network = "regtest"
-	cfg.DebugLevel = "trace"
+	// Use trace for daemon subsystems but cap BTCW at debug —
+	// neutrino's internal trace logging is extremely verbose
+	// and floods test output.
+	cfg.DebugLevel = "trace,BTCW=debug"
 	cfg.LogWriter = io.MultiWriter(
 		h.clientLogWriterFactory(name), logFile,
 	)
