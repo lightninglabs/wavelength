@@ -7,13 +7,14 @@ CREATE TABLE IF NOT EXISTS vtxo_statuses (
 );
 
 -- Populate the possible VTXO statuses.
--- VTXOs follow a state machine: pending → live → in_flight → (forfeited|spent).
+-- VTXOs follow a state machine: pending → live → in_flight → (forfeited|spent|expired).
 INSERT INTO vtxo_statuses (status) VALUES
 	('pending'),    -- Commitment tx broadcast but not yet confirmed
 	('live'),       -- Commitment tx confirmed, VTXO is spendable
 	('in_flight'),  -- Reserved for a spend operation (forfeit or out-of-round)
 	('forfeited'),  -- Forfeited back to operator
-	('spent')       -- Spent in out-of-round transaction
+	('spent'),      -- Spent in out-of-round transaction
+	('expired')     -- Batch swept by operator after CSV timelock
 ON CONFLICT DO NOTHING;
 
 -- VTXOs table.

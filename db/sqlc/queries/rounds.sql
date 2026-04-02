@@ -131,6 +131,12 @@ UPDATE vtxos
 SET status = 'forfeited', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
+-- name: MarkVTXOExpired :execrows
+UPDATE vtxos
+SET status = 'expired', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+  AND status IN ('live', 'pending', 'in_flight');
+
 -- name: LockVTXO :execrows
 UPDATE vtxos
 SET status = 'in_flight', lock_owner_kind = $3, lock_owner_id = $4

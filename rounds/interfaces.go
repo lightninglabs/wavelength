@@ -270,6 +270,12 @@ type VTXOStore interface {
 	// "live" after the commitment transaction has been confirmed.
 	MarkVTXOsLive(ctx context.Context, roundID RoundID) error
 
+	// MarkVTXOsExpired marks the given VTXOs as expired. This is used
+	// when the operator sweeps an expired batch, making the entire
+	// presigned tree (and all VTXOs in it) unspendable.
+	MarkVTXOsExpired(ctx context.Context,
+		outpoints []wire.OutPoint) error
+
 	// MarkVTXOForfeit marks a VTXO as forfeited and stores the forfeit
 	// metadata.
 	MarkVTXOForfeit(ctx context.Context, outpoint wire.OutPoint,

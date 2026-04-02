@@ -1063,6 +1063,26 @@ func (q *Queries) LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, erro
 	return result.RowsAffected()
 }
 
+const MarkVTXOExpired = `-- name: MarkVTXOExpired :execrows
+UPDATE vtxos
+SET status = 'expired', lock_owner_kind = NULL, lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+  AND status IN ('live', 'pending', 'in_flight')
+`
+
+type MarkVTXOExpiredParams struct {
+	OutpointHash  []byte
+	OutpointIndex int32
+}
+
+func (q *Queries) MarkVTXOExpired(ctx context.Context, arg MarkVTXOExpiredParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, MarkVTXOExpired, arg.OutpointHash, arg.OutpointIndex)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const MarkVTXOForfeited = `-- name: MarkVTXOForfeited :execrows
 UPDATE vtxos
 SET status = 'forfeited', lock_owner_kind = NULL, lock_owner_id = NULL
