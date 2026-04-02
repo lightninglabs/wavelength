@@ -20,6 +20,9 @@ type IndexerReceiveScript struct {
 	ExpiresAtUnixS     int64
 	Label              string
 	UpdatedAt          int64
+	OwnerPubkey        []byte
+	OperatorPubkey     []byte
+	ExitDelay          sql.NullInt64
 }
 
 type IndexerVtxoEvent struct {

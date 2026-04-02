@@ -129,7 +129,8 @@ func (m *mockLineageStore) ListOORCheckpoints(
 
 func (m *mockLineageStore) UpsertReceiveScript(
 	_ context.Context, _ string, _ []byte,
-	_ time.Time, _ string, _ time.Time) error {
+	_ time.Time, _ string, _ time.Time, _ []byte, _ []byte,
+	_ uint32) error {
 
 	return nil
 }

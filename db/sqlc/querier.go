@@ -91,6 +91,7 @@ type Querier interface {
 	InsertRoundVTXOTree(ctx context.Context, arg InsertRoundVTXOTreeParams) error
 	// VTXOStore queries.
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
+	InsertVTXOIfAbsent(ctx context.Context, arg InsertVTXOIfAbsentParams) (int64, error)
 	InsertVTXOTreeCosigner(ctx context.Context, arg InsertVTXOTreeCosignerParams) error
 	// VTXO tree recursive queries.
 	// These queries support storing and retrieving VTXO trees in normalized form.

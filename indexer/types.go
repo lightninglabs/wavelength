@@ -80,6 +80,20 @@ type ReceiveScript struct {
 
 	// Label is a human-readable label for the registration.
 	Label string
+
+	// OwnerPubKey is the optional compressed owner pubkey for standardized
+	// VTXO receive scripts. Nil means the registration does not carry Ark
+	// VTXO descriptor metadata.
+	OwnerPubKey []byte
+
+	// OperatorPubKey is the optional compressed operator pubkey
+	// committed to a standardized VTXO receive script. Nil means the
+	// registration does not carry Ark VTXO descriptor metadata.
+	OperatorPubKey []byte
+
+	// ExitDelay is the optional CSV delay committed to a standardized VTXO
+	// receive script. Zero means no Ark VTXO descriptor metadata is stored.
+	ExitDelay uint32
 }
 
 // OORRecipientEventWithSession is an OOR recipient event joined with

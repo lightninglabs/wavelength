@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 const DeleteIndexerReceiveScript = `-- name: DeleteIndexerReceiveScript :execrows
@@ -29,7 +30,8 @@ func (q *Queries) DeleteIndexerReceiveScript(ctx context.Context, arg DeleteInde
 }
 
 const ListActiveIndexerReceivePrincipalsByScript = `-- name: ListActiveIndexerReceivePrincipalsByScript :many
-SELECT principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at
+SELECT principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at,
+    owner_pubkey, operator_pubkey, exit_delay
 FROM indexer_receive_scripts
 WHERE pk_script = $1
     AND (expires_at_unix_s = 0 OR expires_at_unix_s >= $2)
@@ -56,6 +58,9 @@ func (q *Queries) ListActiveIndexerReceivePrincipalsByScript(ctx context.Context
 			&i.ExpiresAtUnixS,
 			&i.Label,
 			&i.UpdatedAt,
+			&i.OwnerPubkey,
+			&i.OperatorPubkey,
+			&i.ExitDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -71,7 +76,8 @@ func (q *Queries) ListActiveIndexerReceivePrincipalsByScript(ctx context.Context
 }
 
 const ListActiveIndexerReceiveScriptsByPrincipal = `-- name: ListActiveIndexerReceiveScriptsByPrincipal :many
-SELECT principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at
+SELECT principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at,
+    owner_pubkey, operator_pubkey, exit_delay
 FROM indexer_receive_scripts
 WHERE principal_mailbox_id = $1
     AND (expires_at_unix_s = 0 OR expires_at_unix_s >= $2)
@@ -98,6 +104,9 @@ func (q *Queries) ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context
 			&i.ExpiresAtUnixS,
 			&i.Label,
 			&i.UpdatedAt,
+			&i.OwnerPubkey,
+			&i.OperatorPubkey,
+			&i.ExitDelay,
 		); err != nil {
 			return nil, err
 		}
@@ -114,14 +123,18 @@ func (q *Queries) ListActiveIndexerReceiveScriptsByPrincipal(ctx context.Context
 
 const UpsertIndexerReceiveScript = `-- name: UpsertIndexerReceiveScript :exec
 INSERT INTO indexer_receive_scripts (
-    principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at
+    principal_mailbox_id, pk_script, expires_at_unix_s, label, updated_at,
+    owner_pubkey, operator_pubkey, exit_delay
 ) VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
 ON CONFLICT (principal_mailbox_id, pk_script) DO UPDATE SET
     expires_at_unix_s = excluded.expires_at_unix_s,
     label = excluded.label,
-    updated_at = excluded.updated_at
+    updated_at = excluded.updated_at,
+    owner_pubkey = excluded.owner_pubkey,
+    operator_pubkey = excluded.operator_pubkey,
+    exit_delay = excluded.exit_delay
 `
 
 type UpsertIndexerReceiveScriptParams struct {
@@ -130,6 +143,9 @@ type UpsertIndexerReceiveScriptParams struct {
 	ExpiresAtUnixS     int64
 	Label              string
 	UpdatedAt          int64
+	OwnerPubkey        []byte
+	OperatorPubkey     []byte
+	ExitDelay          sql.NullInt64
 }
 
 func (q *Queries) UpsertIndexerReceiveScript(ctx context.Context, arg UpsertIndexerReceiveScriptParams) error {
@@ -139,6 +155,9 @@ func (q *Queries) UpsertIndexerReceiveScript(ctx context.Context, arg UpsertInde
 		arg.ExpiresAtUnixS,
 		arg.Label,
 		arg.UpdatedAt,
+		arg.OwnerPubkey,
+		arg.OperatorPubkey,
+		arg.ExitDelay,
 	)
 	return err
 }

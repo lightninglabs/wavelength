@@ -93,7 +93,8 @@ type Store interface {
 	UpsertReceiveScript(ctx context.Context,
 		principal string, pkScript []byte,
 		expiresAt time.Time, label string,
-		updatedAt time.Time) error
+		updatedAt time.Time, ownerPubKey,
+		operatorPubKey []byte, exitDelay uint32) error
 
 	// DeleteReceiveScript removes a receive script registration.
 	DeleteReceiveScript(ctx context.Context,
