@@ -427,7 +427,8 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	serverPerClientCfg := clientconn.DefaultPerClientConfig()
 	serverPerClientCfg.Edge = h.instrumentedMB
-	serverPerClientCfg.LocalMailboxID = serverMBID
+	serverPerClientCfg.LocalMailboxID = serverMBID +
+		":" + clientMBID
 	serverPerClientCfg.RemoteMailboxID = clientMBID
 	serverDispatchers := make(clientconn.DispatcherMap)
 	for key, dispatcher := range h.indexerOperator.Dispatchers() {
