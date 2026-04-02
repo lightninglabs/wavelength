@@ -112,6 +112,14 @@ INSERT INTO vtxos (
 	operator_key_family, operator_key_index, lock_owner_kind, lock_owner_id
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
 
+-- name: InsertVTXOIfAbsent :execrows
+INSERT INTO vtxos (
+	outpoint_hash, outpoint_index, round_id, batch_output_index,
+	amount, exit_delay, pk_script, owner_key, operator_key, status,
+	operator_key_family, operator_key_index, lock_owner_kind, lock_owner_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+ON CONFLICT DO NOTHING;
+
 -- name: GetVTXO :one
 SELECT * FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
