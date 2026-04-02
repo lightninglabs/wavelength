@@ -71,6 +71,14 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 		}
 
 		// Enforce identity matching for mailbox RPCs.
+		// Extract the claimed mailbox ID from the
+		// request, then verify it matches the TLS
+		// identity.
+		var (
+			rpcName   string
+			claimedID string
+		)
+
 		switch typedReq := req.(type) {
 		case *mailboxpb.SendRequest:
 			if typedReq.Envelope == nil {
@@ -81,73 +89,55 @@ func newMailboxAuthInterceptor(log btclog.Logger,
 				)
 			}
 
-			if typedReq.Envelope.Sender !=
-				clientIdentity {
-
-				log.WarnS(ctx,
-					"Rejected Send: identity "+
-						"mismatch", nil,
-					slog.String(
-						"claimed",
-						typedReq.Envelope.Sender,
-					),
-					slog.String(
-						"actual",
-						clientIdentity,
-					),
-				)
-
-				return nil, status.Errorf(
-					codes.PermissionDenied,
-					"mailbox identity mismatch",
-				)
-			}
+			rpcName = "Send"
+			claimedID = typedReq.Envelope.Sender
 
 		case *mailboxpb.PullRequest:
-			if typedReq.MailboxId != clientIdentity {
-				log.WarnS(ctx,
-					"Rejected Pull: identity "+
-						"mismatch", nil,
-					slog.String(
-						"claimed",
-						typedReq.MailboxId,
-					),
-					slog.String(
-						"actual",
-						clientIdentity,
-					),
-				)
-
-				return nil, status.Errorf(
-					codes.PermissionDenied,
-					"mailbox identity mismatch",
-				)
-			}
+			rpcName = "Pull"
+			claimedID = typedReq.MailboxId
 
 		case *mailboxpb.AckUpToRequest:
-			if typedReq.MailboxId != clientIdentity {
-				log.WarnS(ctx,
-					"Rejected AckUpTo: identity "+
-						"mismatch", nil,
-					slog.String(
-						"claimed",
-						typedReq.MailboxId,
-					),
-					slog.String(
-						"actual",
-						clientIdentity,
-					),
-				)
+			rpcName = "AckUpTo"
+			claimedID = typedReq.MailboxId
+		}
 
-				return nil, status.Errorf(
-					codes.PermissionDenied,
-					"mailbox identity mismatch",
-				)
-			}
+		if err := checkMailboxIdentity(
+			ctx, log, rpcName,
+			claimedID, clientIdentity,
+		); err != nil {
+			return nil, err
 		}
 
 		return handler(ctx, req)
 	}
+}
+
+// checkMailboxIdentity verifies that the claimed mailbox ID matches
+// the TLS-authenticated client identity. If rpcName is empty (no
+// mailbox RPC matched), it returns nil immediately.
+func checkMailboxIdentity(ctx context.Context,
+	log btclog.Logger, rpcName string,
+	claimedID, clientIdentity string) error {
+
+	if rpcName == "" {
+		return nil
+	}
+
+	if strings.ToLower(claimedID) == clientIdentity {
+		return nil
+	}
+
+	log.WarnS(ctx,
+		"Rejected "+rpcName+": identity mismatch",
+		nil,
+		slog.String("claimed", claimedID),
+		slog.String("actual", clientIdentity),
+	)
+
+	return status.Errorf(
+		codes.PermissionDenied,
+		"mailbox identity mismatch",
+	)
 }
 
 // isMailboxRPC returns true if the request is a mailbox operation
