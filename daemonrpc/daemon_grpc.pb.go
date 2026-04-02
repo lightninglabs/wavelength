@@ -33,6 +33,8 @@ const (
 	DaemonService_Board_FullMethodName               = "/daemonrpc.DaemonService/Board"
 	DaemonService_ListRounds_FullMethodName          = "/daemonrpc.DaemonService/ListRounds"
 	DaemonService_WatchRounds_FullMethodName         = "/daemonrpc.DaemonService/WatchRounds"
+	DaemonService_Unroll_FullMethodName              = "/daemonrpc.DaemonService/Unroll"
+	DaemonService_GetUnrollStatus_FullMethodName     = "/daemonrpc.DaemonService/GetUnrollStatus"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -95,6 +97,14 @@ type DaemonServiceClient interface {
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(ctx context.Context, in *WatchRoundsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchRoundsResponse], error)
+	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
+	// The daemon will assemble the recovery proof, spawn a durable unroll
+	// job, and drive the on-chain recovery process to completion.
+	Unroll(ctx context.Context, in *UnrollRequest, opts ...grpc.CallOption) (*UnrollResponse, error)
+	// GetUnrollStatus returns the current status of an unroll job for the
+	// specified VTXO outpoint, including recovery chain progress and
+	// sweep state.
+	GetUnrollStatus(ctx context.Context, in *GetUnrollStatusRequest, opts ...grpc.CallOption) (*GetUnrollStatusResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -254,6 +264,26 @@ func (c *daemonServiceClient) WatchRounds(ctx context.Context, in *WatchRoundsRe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsClient = grpc.ServerStreamingClient[WatchRoundsResponse]
 
+func (c *daemonServiceClient) Unroll(ctx context.Context, in *UnrollRequest, opts ...grpc.CallOption) (*UnrollResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnrollResponse)
+	err := c.cc.Invoke(ctx, DaemonService_Unroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetUnrollStatus(ctx context.Context, in *GetUnrollStatusRequest, opts ...grpc.CallOption) (*GetUnrollStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUnrollStatusResponse)
+	err := c.cc.Invoke(ctx, DaemonService_GetUnrollStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility.
@@ -314,6 +344,14 @@ type DaemonServiceServer interface {
 	// round state updates as they occur. The stream stays open until
 	// the client disconnects.
 	WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error
+	// Unroll triggers a unilateral exit for the specified VTXO outpoint.
+	// The daemon will assemble the recovery proof, spawn a durable unroll
+	// job, and drive the on-chain recovery process to completion.
+	Unroll(context.Context, *UnrollRequest) (*UnrollResponse, error)
+	// GetUnrollStatus returns the current status of an unroll job for the
+	// specified VTXO outpoint, including recovery chain progress and
+	// sweep state.
+	GetUnrollStatus(context.Context, *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -365,6 +403,12 @@ func (UnimplementedDaemonServiceServer) ListRounds(context.Context, *ListRoundsR
 }
 func (UnimplementedDaemonServiceServer) WatchRounds(*WatchRoundsRequest, grpc.ServerStreamingServer[WatchRoundsResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method WatchRounds not implemented")
+}
+func (UnimplementedDaemonServiceServer) Unroll(context.Context, *UnrollRequest) (*UnrollResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Unroll not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetUnrollStatus(context.Context, *GetUnrollStatusRequest) (*GetUnrollStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetUnrollStatus not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 func (UnimplementedDaemonServiceServer) testEmbeddedByValue()                       {}
@@ -632,6 +676,42 @@ func _DaemonService_WatchRounds_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_WatchRoundsServer = grpc.ServerStreamingServer[WatchRoundsResponse]
 
+func _DaemonService_Unroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnrollRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).Unroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_Unroll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).Unroll(ctx, req.(*UnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetUnrollStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUnrollStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetUnrollStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetUnrollStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetUnrollStatus(ctx, req.(*GetUnrollStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -690,6 +770,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRounds",
 			Handler:    _DaemonService_ListRounds_Handler,
+		},
+		{
+			MethodName: "Unroll",
+			Handler:    _DaemonService_Unroll_Handler,
+		},
+		{
+			MethodName: "GetUnrollStatus",
+			Handler:    _DaemonService_GetUnrollStatus_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

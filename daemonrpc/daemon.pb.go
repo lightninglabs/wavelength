@@ -218,6 +218,80 @@ func (RoundState) EnumDescriptor() ([]byte, []int) {
 	return file_daemon_proto_rawDescGZIP(), []int{1}
 }
 
+// UnrollJobStatus represents the high-level phase of an unroll job.
+type UnrollJobStatus int32
+
+const (
+	UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED UnrollJobStatus = 0
+	// UNROLL_JOB_STATUS_PENDING indicates the job has been created but
+	// has not yet started materializing recovery transactions.
+	UnrollJobStatus_UNROLL_JOB_STATUS_PENDING UnrollJobStatus = 1
+	// UNROLL_JOB_STATUS_MATERIALIZING indicates recovery transactions
+	// are being broadcast and confirmed on-chain.
+	UnrollJobStatus_UNROLL_JOB_STATUS_MATERIALIZING UnrollJobStatus = 2
+	// UNROLL_JOB_STATUS_CSV_PENDING indicates all recovery transactions
+	// are confirmed and the job is waiting for the CSV delay to expire.
+	UnrollJobStatus_UNROLL_JOB_STATUS_CSV_PENDING UnrollJobStatus = 3
+	// UNROLL_JOB_STATUS_SWEEPING indicates the CSV delay has expired
+	// and the sweep transaction is being broadcast/confirmed.
+	UnrollJobStatus_UNROLL_JOB_STATUS_SWEEPING UnrollJobStatus = 4
+	// UNROLL_JOB_STATUS_COMPLETED is terminal: the sweep confirmed and
+	// the funds are in the on-chain wallet.
+	UnrollJobStatus_UNROLL_JOB_STATUS_COMPLETED UnrollJobStatus = 5
+	// UNROLL_JOB_STATUS_FAILED is terminal: the unroll encountered an
+	// unrecoverable error.
+	UnrollJobStatus_UNROLL_JOB_STATUS_FAILED UnrollJobStatus = 6
+)
+
+// Enum value maps for UnrollJobStatus.
+var (
+	UnrollJobStatus_name = map[int32]string{
+		0: "UNROLL_JOB_STATUS_UNSPECIFIED",
+		1: "UNROLL_JOB_STATUS_PENDING",
+		2: "UNROLL_JOB_STATUS_MATERIALIZING",
+		3: "UNROLL_JOB_STATUS_CSV_PENDING",
+		4: "UNROLL_JOB_STATUS_SWEEPING",
+		5: "UNROLL_JOB_STATUS_COMPLETED",
+		6: "UNROLL_JOB_STATUS_FAILED",
+	}
+	UnrollJobStatus_value = map[string]int32{
+		"UNROLL_JOB_STATUS_UNSPECIFIED":   0,
+		"UNROLL_JOB_STATUS_PENDING":       1,
+		"UNROLL_JOB_STATUS_MATERIALIZING": 2,
+		"UNROLL_JOB_STATUS_CSV_PENDING":   3,
+		"UNROLL_JOB_STATUS_SWEEPING":      4,
+		"UNROLL_JOB_STATUS_COMPLETED":     5,
+		"UNROLL_JOB_STATUS_FAILED":        6,
+	}
+)
+
+func (x UnrollJobStatus) Enum() *UnrollJobStatus {
+	p := new(UnrollJobStatus)
+	*p = x
+	return p
+}
+
+func (x UnrollJobStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (UnrollJobStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_daemon_proto_enumTypes[2].Descriptor()
+}
+
+func (UnrollJobStatus) Type() protoreflect.EnumType {
+	return &file_daemon_proto_enumTypes[2]
+}
+
+func (x UnrollJobStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use UnrollJobStatus.Descriptor instead.
+func (UnrollJobStatus) EnumDescriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{2}
+}
+
 type GetInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2230,6 +2304,226 @@ func (x *WatchRoundsResponse) GetRound() *RoundInfo {
 	return nil
 }
 
+type UnrollRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint is the VTXO outpoint to unilaterally exit, formatted as
+	// "txid:index".
+	Outpoint      string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnrollRequest) Reset() {
+	*x = UnrollRequest{}
+	mi := &file_daemon_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnrollRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnrollRequest) ProtoMessage() {}
+
+func (x *UnrollRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnrollRequest.ProtoReflect.Descriptor instead.
+func (*UnrollRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UnrollRequest) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+type UnrollResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// created indicates whether a new unroll job was spawned. False if
+	// an existing job already covers this target.
+	Created bool `protobuf:"varint,1,opt,name=created,proto3" json:"created,omitempty"`
+	// actor_id is the identifier of the durable unroll job actor.
+	ActorId       string `protobuf:"bytes,2,opt,name=actor_id,json=actorId,proto3" json:"actor_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnrollResponse) Reset() {
+	*x = UnrollResponse{}
+	mi := &file_daemon_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnrollResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnrollResponse) ProtoMessage() {}
+
+func (x *UnrollResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnrollResponse.ProtoReflect.Descriptor instead.
+func (*UnrollResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *UnrollResponse) GetCreated() bool {
+	if x != nil {
+		return x.Created
+	}
+	return false
+}
+
+func (x *UnrollResponse) GetActorId() string {
+	if x != nil {
+		return x.ActorId
+	}
+	return ""
+}
+
+type GetUnrollStatusRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// outpoint is the VTXO outpoint to query, formatted as "txid:index".
+	Outpoint      string `protobuf:"bytes,1,opt,name=outpoint,proto3" json:"outpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUnrollStatusRequest) Reset() {
+	*x = GetUnrollStatusRequest{}
+	mi := &file_daemon_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUnrollStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUnrollStatusRequest) ProtoMessage() {}
+
+func (x *GetUnrollStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUnrollStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetUnrollStatusRequest) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *GetUnrollStatusRequest) GetOutpoint() string {
+	if x != nil {
+		return x.Outpoint
+	}
+	return ""
+}
+
+type GetUnrollStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// found is true if an unroll job exists for the requested outpoint.
+	Found bool `protobuf:"varint,1,opt,name=found,proto3" json:"found,omitempty"`
+	// status is the current high-level phase of the unroll job.
+	Status UnrollJobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=daemonrpc.UnrollJobStatus" json:"status,omitempty"`
+	// sweep_txid is the txid of the sweep transaction, set once the
+	// sweep has been broadcast.
+	SweepTxid string `protobuf:"bytes,3,opt,name=sweep_txid,json=sweepTxid,proto3" json:"sweep_txid,omitempty"`
+	// last_error contains the failure reason if the job is in FAILED
+	// status.
+	LastError     string `protobuf:"bytes,4,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUnrollStatusResponse) Reset() {
+	*x = GetUnrollStatusResponse{}
+	mi := &file_daemon_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUnrollStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUnrollStatusResponse) ProtoMessage() {}
+
+func (x *GetUnrollStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_daemon_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUnrollStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetUnrollStatusResponse) Descriptor() ([]byte, []int) {
+	return file_daemon_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *GetUnrollStatusResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
+func (x *GetUnrollStatusResponse) GetStatus() UnrollJobStatus {
+	if x != nil {
+		return x.Status
+	}
+	return UnrollJobStatus_UNROLL_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *GetUnrollStatusResponse) GetSweepTxid() string {
+	if x != nil {
+		return x.SweepTxid
+	}
+	return ""
+}
+
+func (x *GetUnrollStatusResponse) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
 var File_daemon_proto protoreflect.FileDescriptor
 
 const file_daemon_proto_rawDesc = "" +
@@ -2358,7 +2652,21 @@ const file_daemon_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x14\n" +
 	"\x12WatchRoundsRequest\"A\n" +
 	"\x13WatchRoundsResponse\x12*\n" +
-	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round*\x81\x02\n" +
+	"\x05round\x18\x01 \x01(\v2\x14.daemonrpc.RoundInfoR\x05round\"+\n" +
+	"\rUnrollRequest\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\"E\n" +
+	"\x0eUnrollResponse\x12\x18\n" +
+	"\acreated\x18\x01 \x01(\bR\acreated\x12\x19\n" +
+	"\bactor_id\x18\x02 \x01(\tR\aactorId\"4\n" +
+	"\x16GetUnrollStatusRequest\x12\x1a\n" +
+	"\boutpoint\x18\x01 \x01(\tR\boutpoint\"\xa1\x01\n" +
+	"\x17GetUnrollStatusResponse\x12\x14\n" +
+	"\x05found\x18\x01 \x01(\bR\x05found\x122\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1a.daemonrpc.UnrollJobStatusR\x06status\x12\x1d\n" +
+	"\n" +
+	"sweep_txid\x18\x03 \x01(\tR\tsweepTxid\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x04 \x01(\tR\tlastError*\x81\x02\n" +
 	"\n" +
 	"VTXOStatus\x12\x1b\n" +
 	"\x17VTXO_STATUS_UNSPECIFIED\x10\x00\x12\x14\n" +
@@ -2387,7 +2695,15 @@ const file_daemon_proto_rawDesc = "" +
 	"\x1aROUND_STATE_INPUT_SIG_SENT\x10\v\x12\x19\n" +
 	"\x15ROUND_STATE_CONFIRMED\x10\f\x12\x16\n" +
 	"\x12ROUND_STATE_FAILED\x10\r\x12\x18\n" +
-	"\x14ROUND_STATE_RECOVERY\x10\x0e2\xa2\b\n" +
+	"\x14ROUND_STATE_RECOVERY\x10\x0e*\xfa\x01\n" +
+	"\x0fUnrollJobStatus\x12!\n" +
+	"\x1dUNROLL_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19UNROLL_JOB_STATUS_PENDING\x10\x01\x12#\n" +
+	"\x1fUNROLL_JOB_STATUS_MATERIALIZING\x10\x02\x12!\n" +
+	"\x1dUNROLL_JOB_STATUS_CSV_PENDING\x10\x03\x12\x1e\n" +
+	"\x1aUNROLL_JOB_STATUS_SWEEPING\x10\x04\x12\x1f\n" +
+	"\x1bUNROLL_JOB_STATUS_COMPLETED\x10\x05\x12\x1c\n" +
+	"\x18UNROLL_JOB_STATUS_FAILED\x10\x062\xbb\t\n" +
 	"\rDaemonService\x12@\n" +
 	"\aGetInfo\x12\x19.daemonrpc.GetInfoRequest\x1a\x1a.daemonrpc.GetInfoResponse\x12@\n" +
 	"\aGenSeed\x12\x19.daemonrpc.GenSeedRequest\x1a\x1a.daemonrpc.GenSeedResponse\x12I\n" +
@@ -2406,7 +2722,9 @@ const file_daemon_proto_rawDesc = "" +
 	"\x05Board\x12\x17.daemonrpc.BoardRequest\x1a\x18.daemonrpc.BoardResponse\x12I\n" +
 	"\n" +
 	"ListRounds\x12\x1c.daemonrpc.ListRoundsRequest\x1a\x1d.daemonrpc.ListRoundsResponse\x12N\n" +
-	"\vWatchRounds\x12\x1d.daemonrpc.WatchRoundsRequest\x1a\x1e.daemonrpc.WatchRoundsResponse0\x01B2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
+	"\vWatchRounds\x12\x1d.daemonrpc.WatchRoundsRequest\x1a\x1e.daemonrpc.WatchRoundsResponse0\x01\x12=\n" +
+	"\x06Unroll\x12\x18.daemonrpc.UnrollRequest\x1a\x19.daemonrpc.UnrollResponse\x12X\n" +
+	"\x0fGetUnrollStatus\x12!.daemonrpc.GetUnrollStatusRequest\x1a\".daemonrpc.GetUnrollStatusResponseB2Z0github.com/lightninglabs/darepo-client/daemonrpcb\x06proto3"
 
 var (
 	file_daemon_proto_rawDescOnce sync.Once
@@ -2420,89 +2738,99 @@ func file_daemon_proto_rawDescGZIP() []byte {
 	return file_daemon_proto_rawDescData
 }
 
-var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_daemon_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_daemon_proto_goTypes = []any{
 	(VTXOStatus)(0),                     // 0: daemonrpc.VTXOStatus
 	(RoundState)(0),                     // 1: daemonrpc.RoundState
-	(*GetInfoRequest)(nil),              // 2: daemonrpc.GetInfoRequest
-	(*GetInfoResponse)(nil),             // 3: daemonrpc.GetInfoResponse
-	(*GenSeedRequest)(nil),              // 4: daemonrpc.GenSeedRequest
-	(*GenSeedResponse)(nil),             // 5: daemonrpc.GenSeedResponse
-	(*InitWalletRequest)(nil),           // 6: daemonrpc.InitWalletRequest
-	(*InitWalletResponse)(nil),          // 7: daemonrpc.InitWalletResponse
-	(*UnlockWalletRequest)(nil),         // 8: daemonrpc.UnlockWalletRequest
-	(*UnlockWalletResponse)(nil),        // 9: daemonrpc.UnlockWalletResponse
-	(*GetBalanceRequest)(nil),           // 10: daemonrpc.GetBalanceRequest
-	(*GetBalanceResponse)(nil),          // 11: daemonrpc.GetBalanceResponse
-	(*VTXO)(nil),                        // 12: daemonrpc.VTXO
-	(*ListVTXOsRequest)(nil),            // 13: daemonrpc.ListVTXOsRequest
-	(*ListVTXOsResponse)(nil),           // 14: daemonrpc.ListVTXOsResponse
-	(*NewAddressRequest)(nil),           // 15: daemonrpc.NewAddressRequest
-	(*NewAddressResponse)(nil),          // 16: daemonrpc.NewAddressResponse
-	(*NewOORReceiveScriptRequest)(nil),  // 17: daemonrpc.NewOORReceiveScriptRequest
-	(*NewOORReceiveScriptResponse)(nil), // 18: daemonrpc.NewOORReceiveScriptResponse
-	(*Output)(nil),                      // 19: daemonrpc.Output
-	(*SendVTXORequest)(nil),             // 20: daemonrpc.SendVTXORequest
-	(*SendVTXOResponse)(nil),            // 21: daemonrpc.SendVTXOResponse
-	(*SendOORRequest)(nil),              // 22: daemonrpc.SendOORRequest
-	(*SendOORResponse)(nil),             // 23: daemonrpc.SendOORResponse
-	(*OutpointSelection)(nil),           // 24: daemonrpc.OutpointSelection
-	(*RefreshVTXOsRequest)(nil),         // 25: daemonrpc.RefreshVTXOsRequest
-	(*RefreshVTXOsResponse)(nil),        // 26: daemonrpc.RefreshVTXOsResponse
-	(*BoardRequest)(nil),                // 27: daemonrpc.BoardRequest
-	(*BoardResponse)(nil),               // 28: daemonrpc.BoardResponse
-	(*RoundVTXOInfo)(nil),               // 29: daemonrpc.RoundVTXOInfo
-	(*RoundInfo)(nil),                   // 30: daemonrpc.RoundInfo
-	(*ListRoundsRequest)(nil),           // 31: daemonrpc.ListRoundsRequest
-	(*ListRoundsResponse)(nil),          // 32: daemonrpc.ListRoundsResponse
-	(*WatchRoundsRequest)(nil),          // 33: daemonrpc.WatchRoundsRequest
-	(*WatchRoundsResponse)(nil),         // 34: daemonrpc.WatchRoundsResponse
+	(UnrollJobStatus)(0),                // 2: daemonrpc.UnrollJobStatus
+	(*GetInfoRequest)(nil),              // 3: daemonrpc.GetInfoRequest
+	(*GetInfoResponse)(nil),             // 4: daemonrpc.GetInfoResponse
+	(*GenSeedRequest)(nil),              // 5: daemonrpc.GenSeedRequest
+	(*GenSeedResponse)(nil),             // 6: daemonrpc.GenSeedResponse
+	(*InitWalletRequest)(nil),           // 7: daemonrpc.InitWalletRequest
+	(*InitWalletResponse)(nil),          // 8: daemonrpc.InitWalletResponse
+	(*UnlockWalletRequest)(nil),         // 9: daemonrpc.UnlockWalletRequest
+	(*UnlockWalletResponse)(nil),        // 10: daemonrpc.UnlockWalletResponse
+	(*GetBalanceRequest)(nil),           // 11: daemonrpc.GetBalanceRequest
+	(*GetBalanceResponse)(nil),          // 12: daemonrpc.GetBalanceResponse
+	(*VTXO)(nil),                        // 13: daemonrpc.VTXO
+	(*ListVTXOsRequest)(nil),            // 14: daemonrpc.ListVTXOsRequest
+	(*ListVTXOsResponse)(nil),           // 15: daemonrpc.ListVTXOsResponse
+	(*NewAddressRequest)(nil),           // 16: daemonrpc.NewAddressRequest
+	(*NewAddressResponse)(nil),          // 17: daemonrpc.NewAddressResponse
+	(*NewOORReceiveScriptRequest)(nil),  // 18: daemonrpc.NewOORReceiveScriptRequest
+	(*NewOORReceiveScriptResponse)(nil), // 19: daemonrpc.NewOORReceiveScriptResponse
+	(*Output)(nil),                      // 20: daemonrpc.Output
+	(*SendVTXORequest)(nil),             // 21: daemonrpc.SendVTXORequest
+	(*SendVTXOResponse)(nil),            // 22: daemonrpc.SendVTXOResponse
+	(*SendOORRequest)(nil),              // 23: daemonrpc.SendOORRequest
+	(*SendOORResponse)(nil),             // 24: daemonrpc.SendOORResponse
+	(*OutpointSelection)(nil),           // 25: daemonrpc.OutpointSelection
+	(*RefreshVTXOsRequest)(nil),         // 26: daemonrpc.RefreshVTXOsRequest
+	(*RefreshVTXOsResponse)(nil),        // 27: daemonrpc.RefreshVTXOsResponse
+	(*BoardRequest)(nil),                // 28: daemonrpc.BoardRequest
+	(*BoardResponse)(nil),               // 29: daemonrpc.BoardResponse
+	(*RoundVTXOInfo)(nil),               // 30: daemonrpc.RoundVTXOInfo
+	(*RoundInfo)(nil),                   // 31: daemonrpc.RoundInfo
+	(*ListRoundsRequest)(nil),           // 32: daemonrpc.ListRoundsRequest
+	(*ListRoundsResponse)(nil),          // 33: daemonrpc.ListRoundsResponse
+	(*WatchRoundsRequest)(nil),          // 34: daemonrpc.WatchRoundsRequest
+	(*WatchRoundsResponse)(nil),         // 35: daemonrpc.WatchRoundsResponse
+	(*UnrollRequest)(nil),               // 36: daemonrpc.UnrollRequest
+	(*UnrollResponse)(nil),              // 37: daemonrpc.UnrollResponse
+	(*GetUnrollStatusRequest)(nil),      // 38: daemonrpc.GetUnrollStatusRequest
+	(*GetUnrollStatusResponse)(nil),     // 39: daemonrpc.GetUnrollStatusResponse
 }
 var file_daemon_proto_depIdxs = []int32{
 	0,  // 0: daemonrpc.VTXO.status:type_name -> daemonrpc.VTXOStatus
 	0,  // 1: daemonrpc.ListVTXOsRequest.status_filter:type_name -> daemonrpc.VTXOStatus
-	12, // 2: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
-	19, // 3: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
-	19, // 4: daemonrpc.SendOORRequest.recipient:type_name -> daemonrpc.Output
-	24, // 5: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
+	13, // 2: daemonrpc.ListVTXOsResponse.vtxos:type_name -> daemonrpc.VTXO
+	20, // 3: daemonrpc.SendVTXORequest.recipients:type_name -> daemonrpc.Output
+	20, // 4: daemonrpc.SendOORRequest.recipient:type_name -> daemonrpc.Output
+	25, // 5: daemonrpc.RefreshVTXOsRequest.outpoints:type_name -> daemonrpc.OutpointSelection
 	1,  // 6: daemonrpc.RoundInfo.state:type_name -> daemonrpc.RoundState
-	29, // 7: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
-	30, // 8: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
-	30, // 9: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
-	2,  // 10: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
-	4,  // 11: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
-	6,  // 12: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
-	8,  // 13: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
-	10, // 14: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
-	13, // 15: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
-	15, // 16: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
-	17, // 17: daemonrpc.DaemonService.NewOORReceiveScript:input_type -> daemonrpc.NewOORReceiveScriptRequest
-	20, // 18: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
-	22, // 19: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
-	25, // 20: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
-	27, // 21: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
-	31, // 22: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
-	33, // 23: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
-	3,  // 24: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
-	5,  // 25: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
-	7,  // 26: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
-	9,  // 27: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
-	11, // 28: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
-	14, // 29: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
-	16, // 30: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
-	18, // 31: daemonrpc.DaemonService.NewOORReceiveScript:output_type -> daemonrpc.NewOORReceiveScriptResponse
-	21, // 32: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
-	23, // 33: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
-	26, // 34: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
-	28, // 35: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
-	32, // 36: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
-	34, // 37: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
-	24, // [24:38] is the sub-list for method output_type
-	10, // [10:24] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	30, // 7: daemonrpc.RoundInfo.vtxos:type_name -> daemonrpc.RoundVTXOInfo
+	31, // 8: daemonrpc.ListRoundsResponse.rounds:type_name -> daemonrpc.RoundInfo
+	31, // 9: daemonrpc.WatchRoundsResponse.round:type_name -> daemonrpc.RoundInfo
+	2,  // 10: daemonrpc.GetUnrollStatusResponse.status:type_name -> daemonrpc.UnrollJobStatus
+	3,  // 11: daemonrpc.DaemonService.GetInfo:input_type -> daemonrpc.GetInfoRequest
+	5,  // 12: daemonrpc.DaemonService.GenSeed:input_type -> daemonrpc.GenSeedRequest
+	7,  // 13: daemonrpc.DaemonService.InitWallet:input_type -> daemonrpc.InitWalletRequest
+	9,  // 14: daemonrpc.DaemonService.UnlockWallet:input_type -> daemonrpc.UnlockWalletRequest
+	11, // 15: daemonrpc.DaemonService.GetBalance:input_type -> daemonrpc.GetBalanceRequest
+	14, // 16: daemonrpc.DaemonService.ListVTXOs:input_type -> daemonrpc.ListVTXOsRequest
+	16, // 17: daemonrpc.DaemonService.NewAddress:input_type -> daemonrpc.NewAddressRequest
+	18, // 18: daemonrpc.DaemonService.NewOORReceiveScript:input_type -> daemonrpc.NewOORReceiveScriptRequest
+	21, // 19: daemonrpc.DaemonService.SendVTXO:input_type -> daemonrpc.SendVTXORequest
+	23, // 20: daemonrpc.DaemonService.SendOOR:input_type -> daemonrpc.SendOORRequest
+	26, // 21: daemonrpc.DaemonService.RefreshVTXOs:input_type -> daemonrpc.RefreshVTXOsRequest
+	28, // 22: daemonrpc.DaemonService.Board:input_type -> daemonrpc.BoardRequest
+	32, // 23: daemonrpc.DaemonService.ListRounds:input_type -> daemonrpc.ListRoundsRequest
+	34, // 24: daemonrpc.DaemonService.WatchRounds:input_type -> daemonrpc.WatchRoundsRequest
+	36, // 25: daemonrpc.DaemonService.Unroll:input_type -> daemonrpc.UnrollRequest
+	38, // 26: daemonrpc.DaemonService.GetUnrollStatus:input_type -> daemonrpc.GetUnrollStatusRequest
+	4,  // 27: daemonrpc.DaemonService.GetInfo:output_type -> daemonrpc.GetInfoResponse
+	6,  // 28: daemonrpc.DaemonService.GenSeed:output_type -> daemonrpc.GenSeedResponse
+	8,  // 29: daemonrpc.DaemonService.InitWallet:output_type -> daemonrpc.InitWalletResponse
+	10, // 30: daemonrpc.DaemonService.UnlockWallet:output_type -> daemonrpc.UnlockWalletResponse
+	12, // 31: daemonrpc.DaemonService.GetBalance:output_type -> daemonrpc.GetBalanceResponse
+	15, // 32: daemonrpc.DaemonService.ListVTXOs:output_type -> daemonrpc.ListVTXOsResponse
+	17, // 33: daemonrpc.DaemonService.NewAddress:output_type -> daemonrpc.NewAddressResponse
+	19, // 34: daemonrpc.DaemonService.NewOORReceiveScript:output_type -> daemonrpc.NewOORReceiveScriptResponse
+	22, // 35: daemonrpc.DaemonService.SendVTXO:output_type -> daemonrpc.SendVTXOResponse
+	24, // 36: daemonrpc.DaemonService.SendOOR:output_type -> daemonrpc.SendOORResponse
+	27, // 37: daemonrpc.DaemonService.RefreshVTXOs:output_type -> daemonrpc.RefreshVTXOsResponse
+	29, // 38: daemonrpc.DaemonService.Board:output_type -> daemonrpc.BoardResponse
+	33, // 39: daemonrpc.DaemonService.ListRounds:output_type -> daemonrpc.ListRoundsResponse
+	35, // 40: daemonrpc.DaemonService.WatchRounds:output_type -> daemonrpc.WatchRoundsResponse
+	37, // 41: daemonrpc.DaemonService.Unroll:output_type -> daemonrpc.UnrollResponse
+	39, // 42: daemonrpc.DaemonService.GetUnrollStatus:output_type -> daemonrpc.GetUnrollStatusResponse
+	27, // [27:43] is the sub-list for method output_type
+	11, // [11:27] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -2524,8 +2852,8 @@ func file_daemon_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_daemon_proto_rawDesc), len(file_daemon_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   33,
+			NumEnums:      3,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
