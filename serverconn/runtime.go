@@ -59,6 +59,7 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 		cfg.Store,
 		cfg.Codec,
 	)
+	durableCfg.Log = cfg.Log
 
 	durable := actor.NewDurableActor(durableCfg)
 	unary := NewUnaryFacade(connector)
