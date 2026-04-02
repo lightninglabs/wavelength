@@ -19,6 +19,8 @@ This file is a **map**, not a manual. Follow links for details.
 | `make rpc` | Regenerate protobuf stubs |
 | `make sqlc` | Regenerate type-safe DB queries |
 | `make ast-lint` | Check ast-grep style rules |
+| `make systest` | Run system integration tests (sqlite) |
+| `make systest db=postgres` | Run system integration tests (postgres) |
 
 ## Code Style (Summary)
 
