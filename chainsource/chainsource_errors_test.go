@@ -126,6 +126,12 @@ func (b *errorBackend) BroadcastTx(ctx context.Context, tx *wire.MsgTx,
 	return b.err
 }
 
+func (b *errorBackend) SubmitPackage(ctx context.Context,
+	parents []*wire.MsgTx, child *wire.MsgTx) error {
+
+	return b.err
+}
+
 func (b *errorBackend) RegisterConf(ctx context.Context,
 	txid *chainhash.Hash, pkScript []byte, numConfs uint32,
 	heightHint uint32, includeBlock bool) (*ConfRegistration, error) {
@@ -203,6 +209,18 @@ func TestChainSourceActorBackendErrors(t *testing.T) {
 	require.Contains(
 		t, broadcastResult.Err().Error(),
 		"failed to broadcast transaction",
+	)
+
+	submitResult := ref.Ask(
+		ctx, &SubmitPackageRequest{
+			Parents: []*wire.MsgTx{tx},
+			Child:   tx,
+		},
+	).Await(ctx)
+	require.True(t, submitResult.IsErr())
+	require.Contains(
+		t, submitResult.Err().Error(),
+		"submit package",
 	)
 }
 

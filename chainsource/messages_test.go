@@ -81,6 +81,21 @@ func TestMessageTypes(t *testing.T) {
 			isChainSourceResp: true,
 		},
 		{
+			name: "SubmitPackageRequest",
+			msg: &SubmitPackageRequest{
+				Parents: []*wire.MsgTx{wire.NewMsgTx(3)},
+				Child:   wire.NewMsgTx(3),
+			},
+			expectedType:     "SubmitPackageRequest",
+			isChainSourceMsg: true,
+		},
+		{
+			name:              "SubmitPackageResponse",
+			msg:               &SubmitPackageResponse{},
+			expectedType:      "SubmitPackageResponse",
+			isChainSourceResp: true,
+		},
+		{
 			name: "RegisterConfRequest",
 			msg: &RegisterConfRequest{
 				CallerID:    "test",

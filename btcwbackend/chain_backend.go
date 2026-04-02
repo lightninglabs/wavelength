@@ -281,6 +281,15 @@ func (b *ChainBackend) BroadcastTx(ctx context.Context,
 	return nil
 }
 
+// SubmitPackage is not currently supported by the neutrino backend.
+// Neutrino can broadcast individual transactions, but it does not expose
+// a package-submission path comparable to the other backends.
+func (b *ChainBackend) SubmitPackage(_ context.Context,
+	_ []*wire.MsgTx, _ *wire.MsgTx) error {
+
+	return fmt.Errorf("submit package not supported by neutrino backend")
+}
+
 // RegisterConf registers for confirmation notifications using
 // neutrino's chain notifier. The registration returns a
 // ConfRegistration with channels for receiving confirmation events.
