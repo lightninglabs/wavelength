@@ -233,6 +233,30 @@ func (r *RPCServer) GetBalance(ctx context.Context,
 		}
 	}
 
+	// Fetch the confirmed balance of the backing on-chain wallet so
+	// callers can observe sweep proceeds from unilateral exits.
+	r.server.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
+		walletBalance, err := lndSvc.Client.WalletBalance(ctx)
+		if err != nil {
+			r.server.log.WarnS(ctx,
+				"Unable to fetch LND wallet balance", err)
+			return
+		}
+
+		resp.OnchainWalletConfirmedSat = int64(walletBalance.Confirmed)
+	})
+
+	r.server.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
+		confirmed, _, err := w.Balance(ctx)
+		if err != nil {
+			r.server.log.WarnS(ctx,
+				"Unable to fetch lightweight wallet balance", err)
+			return
+		}
+
+		resp.OnchainWalletConfirmedSat = int64(confirmed)
+	})
+
 	resp.TotalConfirmedSat = resp.BoardingConfirmedSat +
 		resp.VtxoBalanceSat
 
