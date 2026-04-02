@@ -168,6 +168,9 @@ func (m *Manager) Receive(ctx context.Context,
 			Count: len(m.actors),
 		})
 
+	case *ForceUnrollRequest:
+		return m.handleForceUnroll(ctx, req)
+
 	default:
 		return fn.Err[ManagerResp](
 			fmt.Errorf("unknown message: %T", msg),
@@ -270,6 +273,47 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 	}
 
 	return fn.Ok[ManagerResp](&VTXOsMaterializedResp{})
+}
+
+// handleForceUnroll transitions a VTXO into UnilateralExitState via the
+// VTXO actor's FSM, then lets the outbox handler emit
+// ExpiringNotification through the chain resolver seam. This ensures
+// manual and automatic unroll converge on the same ownership/state
+// transition path.
+func (m *Manager) handleForceUnroll(ctx context.Context,
+	req *ForceUnrollRequest) fn.Result[ManagerResp] {
+
+	actorRef, ok := m.actors[req.Outpoint]
+	if !ok {
+		// The VTXO actor is already gone (likely already in
+		// UnilateralExitState or terminal). Return accepted=false
+		// so the caller knows this is a no-op.
+		return fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+		})
+	}
+
+	reason := req.Reason
+	if reason == "" {
+		reason = "manual unroll"
+	}
+
+	err := actorRef.Tell(ctx, &ForceUnrollEvent{
+		Reason: reason,
+	})
+	if err != nil {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"tell force-unroll: %w", err,
+		))
+	}
+
+	m.logger(ctx).InfoS(ctx, "Force-unroll sent to VTXO actor",
+		slog.String("outpoint", req.Outpoint.String()),
+		slog.String("reason", reason))
+
+	return fn.Ok[ManagerResp](&ForceUnrollResponse{
+		Accepted: true,
+	})
 }
 
 // handleVTXOTerminated removes a VTXO actor from tracking when it reaches

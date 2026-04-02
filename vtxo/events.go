@@ -1,6 +1,7 @@
 package vtxo
 
 import (
+	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
 	"github.com/lightninglabs/darepo-client/round"
 )
@@ -57,3 +58,22 @@ type (
 	// LiveState.
 	ForfeitReleasedEvent = round.ForfeitReleasedEvent
 )
+
+// ForceUnrollEvent is sent to a VTXO actor when a manual unilateral
+// exit is requested via the Unroll RPC. The VTXO actor transitions to
+// UnilateralExitState and emits ExpiringNotification through the chain
+// resolver seam, converging with the automatic critical-expiry path.
+type ForceUnrollEvent struct {
+	actor.BaseMessage
+
+	// Reason explains why the manual unroll was requested.
+	Reason string
+}
+
+// VTXOActorMsg implements actormsg.VTXOActorMsg marker interface.
+func (e *ForceUnrollEvent) VTXOActorMsg() {}
+
+// MessageType returns the message type for logging.
+func (e *ForceUnrollEvent) MessageType() string {
+	return "ForceUnrollEvent"
+}
