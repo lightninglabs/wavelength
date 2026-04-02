@@ -151,7 +151,7 @@ type Server struct {
 	// when the daemon shuts down. Background goroutines that
 	// must outlive RPC handlers but not the daemon should
 	// select on runCtx.Done().
-	runCtx context.Context
+	runCtx context.Context //nolint:containedctx
 
 	// walletState tracks the lifecycle state of the wallet
 	// subsystem. In lnd mode this is always WalletStateReady
