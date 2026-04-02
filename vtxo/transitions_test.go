@@ -213,6 +213,38 @@ func TestLiveStateBlockEpochCritical(t *testing.T) {
 	assertOutboxContains[*ExpiringNotification](h)
 }
 
+// TestLiveStateForceUnroll verifies that LiveState transitions to
+// UnilateralExitState on ForceUnrollEvent, emitting the same outbox as
+// the critical expiry path.
+func TestLiveStateForceUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+	vtxo.BatchExpiry = 10000
+	vtxo.CreatedHeight = 100
+
+	h.withState(&LiveState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 100,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil)
+
+	_, err := h.sendEvent(&ForceUnrollEvent{
+		Reason: "manual unroll",
+	})
+	require.NoError(t, err)
+
+	assertState[*UnilateralExitState](h)
+	assertOutboxContains[*ExpiringNotification](h)
+	assertOutboxContains[*VTXOStatusUpdate](h)
+	assertOutboxContains[*VTXOTerminatedNotification](h)
+}
+
 // TestForfeitRequestFromLiveState verifies that LiveState transitions to
 // ForfeitingState on ForfeitRequest from round actor.
 func TestForfeitRequestFromLiveState(t *testing.T) {
@@ -1067,6 +1099,67 @@ func TestSpendingStateFailedEvent(t *testing.T) {
 
 	state := assertState[*FailedState](h)
 	require.Equal(t, "test failure", state.Reason)
+}
+
+// TestSpendingStateForceUnroll verifies that SpendingState escalates to
+// UnilateralExitState on ForceUnrollEvent, emitting the same outbox shape
+// as the critical-expiry branch so manual and automatic exits converge on
+// a single chain resolver seam.
+func TestSpendingStateForceUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&SpendingState{
+		VTXO:              vtxo,
+		LastCheckedHeight: 200,
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil)
+
+	_, err := h.sendEvent(&ForceUnrollEvent{
+		Reason: "manual unroll",
+	})
+	require.NoError(t, err)
+
+	assertState[*UnilateralExitState](h)
+	assertOutboxContains[*ExpiringNotification](h)
+	assertOutboxContains[*VTXOStatusUpdate](h)
+	assertOutboxContains[*VTXOTerminatedNotification](h)
+}
+
+// TestForfeitingStateForceUnroll verifies that ForfeitingState escalates to
+// UnilateralExitState on ForceUnrollEvent so an in-flight forfeit does not
+// swallow a manual unroll request.
+func TestForfeitingStateForceUnroll(t *testing.T) {
+	t.Parallel()
+
+	h := newVTXOTestHarness(t)
+	vtxo := h.newTestDescriptor()
+
+	h.withState(&ForfeitingState{
+		VTXO:       vtxo,
+		NewRoundID: "round-123",
+	})
+
+	h.store.On(
+		"UpdateVTXOStatus", h.ctx, vtxo.Outpoint,
+		VTXOStatusUnilateralExit,
+	).Return(nil)
+
+	_, err := h.sendEvent(&ForceUnrollEvent{
+		Reason: "manual unroll",
+	})
+	require.NoError(t, err)
+
+	assertState[*UnilateralExitState](h)
+	assertOutboxContains[*ExpiringNotification](h)
+	assertOutboxContains[*VTXOStatusUpdate](h)
+	assertOutboxContains[*VTXOTerminatedNotification](h)
 }
 
 // TestForfeitSignatureValidity verifies that forfeit signatures produced by

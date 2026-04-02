@@ -166,3 +166,10 @@ type SelectAndReserveForfeitRequest = actormsg.SelectAndReserveForfeitRequest
 // SelectAndReserveForfeitResponse is an alias for the canonical type in
 // actormsg.
 type SelectAndReserveForfeitResponse = actormsg.SelectAndReserveForfeitResponse
+
+// ForceUnrollRequest asks the manager to transition a VTXO into
+// UnilateralExitState and trigger unroll through the chain resolver.
+type ForceUnrollRequest = actormsg.ForceUnrollRequest
+
+// ForceUnrollResponse confirms the force-unroll request was accepted.
+type ForceUnrollResponse = actormsg.ForceUnrollResponse

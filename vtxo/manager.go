@@ -176,6 +176,9 @@ func (m *Manager) Receive(ctx context.Context,
 			Count: len(m.actors),
 		})
 
+	case *ForceUnrollRequest:
+		return m.handleForceUnroll(ctx, req)
+
 	default:
 		return fn.Err[ManagerResp](
 			fmt.Errorf("unknown message: %T", msg),
@@ -278,6 +281,86 @@ func (m *Manager) handleVTXOsMaterialized(ctx context.Context,
 	}
 
 	return fn.Ok[ManagerResp](&VTXOsMaterializedResp{})
+}
+
+// handleForceUnroll transitions a VTXO into UnilateralExitState via the
+// VTXO actor's FSM, then lets the outbox handler emit
+// ExpiringNotification through the chain resolver seam. This ensures
+// manual and automatic unroll converge on the same ownership/state
+// transition path. The actor is driven via Ask (not Tell) so the caller
+// can distinguish "accepted and transitioning", "already terminal", and
+// "no such vtxo" rather than observing a uniform Accepted:true even when
+// the FSM silently self-looped on a terminal state.
+func (m *Manager) handleForceUnroll(ctx context.Context,
+	req *ForceUnrollRequest) fn.Result[ManagerResp] {
+
+	actorRef, ok := m.actors[req.Outpoint]
+	if !ok {
+		// The VTXO actor is already gone (likely already terminal
+		// and cleaned up via handleVTXOTerminated). Report a
+		// specific reason so the caller can tell this apart from
+		// "event accepted but actor self-looped".
+		return fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "no such vtxo",
+		})
+	}
+
+	reason := req.Reason
+	if reason == "" {
+		reason = "manual unroll"
+	}
+
+	resp, err := actorRef.Ask(ctx, &ForceUnrollEvent{
+		Reason: reason,
+	}).Await(ctx).Unpack()
+	if err != nil {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"ask force-unroll: %w", err,
+		))
+	}
+
+	actorResp, ok := resp.(VTXOActorResponse)
+	if !ok {
+		return fn.Err[ManagerResp](fmt.Errorf(
+			"unexpected force-unroll response type: %T", resp,
+		))
+	}
+
+	// Terminal states self-loop on ForceUnrollEvent. Detect the
+	// PriorState == NewState case on a terminal state and report a
+	// clear Reason so the caller sees a no-op explicitly rather than
+	// Accepted:true on work that was never scheduled.
+	priorTerminal := actorResp.PriorState != nil &&
+		actorResp.PriorState.IsTerminal()
+	newTerminal := actorResp.NewState != nil &&
+		actorResp.NewState.IsTerminal()
+
+	if priorTerminal && newTerminal {
+		m.logger(ctx).InfoS(ctx, "Force-unroll no-op on terminal VTXO",
+			slog.String("outpoint", req.Outpoint.String()),
+			slog.String("state", fmt.Sprintf(
+				"%T", actorResp.NewState,
+			)),
+		)
+
+		return fn.Ok[ManagerResp](&ForceUnrollResponse{
+			Accepted: false,
+			Reason:   "already terminal",
+		})
+	}
+
+	m.logger(ctx).InfoS(ctx, "Force-unroll accepted by VTXO actor",
+		slog.String("outpoint", req.Outpoint.String()),
+		slog.String("reason", reason),
+		slog.String("new_state", fmt.Sprintf(
+			"%T", actorResp.NewState,
+		)),
+	)
+
+	return fn.Ok[ManagerResp](&ForceUnrollResponse{
+		Accepted: true,
+	})
 }
 
 // handleVTXOTerminated removes a VTXO actor from tracking when it reaches
