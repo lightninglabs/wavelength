@@ -228,6 +228,12 @@ func resolveClientDaemonWalletType(requestedType string) (string, error) {
 	}
 }
 
+// ClientWalletBackend returns the wallet backend type used by client
+// daemons in this harness.
+func (h *ArkHarness) ClientWalletBackend() string {
+	return h.clientDaemonWalletType
+}
+
 // Start starts the harness infrastructure and optionally the in-process arkd
 // server (unless SkipArkd was set in options).
 func (h *ArkHarness) Start() {
@@ -507,12 +513,6 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 
 	oldRPCAddr := oldDaemon.RPCAddr
 	oldDaemon.Stop()
-
-	// Pause to ensure the old daemon's bbolt databases (wallet,
-	// neutrino) have fully released their file locks. btcwallet's
-	// SynchronizeRPC goroutines may still be winding down after
-	// Stop() returns.
-	time.Sleep(2 * time.Second)
 
 	daemon := h.launchClientDaemon(
 		name, oldDaemon.LND, oldDaemon.DataDir,
