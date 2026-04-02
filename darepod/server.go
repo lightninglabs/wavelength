@@ -1091,7 +1091,14 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	// because a timeout would leave the wallet permanently
 	// unready with no retry path. Progress is logged every 30
 	// seconds so operators can observe sync advancement.
+	//
+	// We use a detached context because the caller's ctx (from
+	// the InitWallet/UnlockWallet RPC) is cancelled as soon as
+	// the RPC handler returns. The sync goroutine must outlive
+	// the RPC.
 	go func() {
+		syncCtx := context.Background()
+
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -1099,10 +1106,6 @@ func (s *Server) startBtcwallet(ctx context.Context,
 		lastLog := time.Now()
 
 		for range ticker.C {
-			if ctx.Err() != nil {
-				return
-			}
-
 			synced, bestTimestamp, err := w.IsSynced()
 			if err != nil {
 				continue
@@ -1110,7 +1113,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 
 			if !synced {
 				if time.Since(lastLog) >= logInterval {
-					s.log.InfoS(ctx,
+					s.log.InfoS(syncCtx,
 						"Waiting for neutrino "+
 							"wallet sync",
 					)
@@ -1121,13 +1124,13 @@ func (s *Server) startBtcwallet(ctx context.Context,
 			}
 
 			height, _, hErr := w.ChainBackend().BestBlock(
-				ctx,
+				syncCtx,
 			)
 			if hErr != nil || height == 0 {
 				continue
 			}
 
-			s.log.InfoS(ctx,
+			s.log.InfoS(syncCtx,
 				"Neutrino initial sync complete",
 				slog.Int("height",
 					int(height)),
