@@ -207,6 +207,7 @@ func NewOORClientActor(cfg ClientActorCfg) *OORClientActor {
 		cfg.DeliveryStore,
 		codec,
 	)
+	durableCfg.Log = cfg.Log
 
 	durable := actor.NewDurableActor(durableCfg)
 	actorRef.durable = durable
