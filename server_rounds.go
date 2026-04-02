@@ -9,20 +9,28 @@ import (
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
+	"github.com/lightninglabs/darepo/batchsweeper"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
 	"github.com/lightninglabs/darepo/lndbackend"
 	"github.com/lightninglabs/darepo/rounds"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"google.golang.org/protobuf/proto"
 )
+
+// keyFamilyArkSweep is a dedicated LND key family for the operator's
+// batch sweep key. Using a separate family from the MuSig2 operator key
+// avoids key-resolution ambiguity in the lndclient signing layer.
+const keyFamilyArkSweep = keychain.KeyFamily(200)
 
 // setupRoundsSubsystem initializes the timeout actor, batch watcher,
 // and rounds actor. The rounds actor drives the round FSM lifecycle:
@@ -92,10 +100,8 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	// needed for callback mapping in the batch watcher.
 	batchWatcherCfg.SelfRef = s.batchWatcherRef
 
-	// Derive operator and sweep keys from LND at fixed indices
-	// so they are stable across restarts. Both use the
-	// multi-sig key family so they are backed by real on-chain
-	// keys.
+	// Derive the operator key from the multi-sig family. This is
+	// used for MuSig2 tree signing and the connector address.
 	operatorKeyDesc, err := s.lnd.WalletKit.DeriveKey(
 		ctx, &keychain.KeyLocator{
 			Family: keychain.KeyFamilyMultiSig,
@@ -106,9 +112,14 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 		return fmt.Errorf("derive operator key: %w", err)
 	}
 
+	// Derive the sweep key from a dedicated key family so it is
+	// distinct from the operator signing key. Using a separate
+	// family with a non-zero index ensures the lndclient signing
+	// layer includes both the public key and key locator when
+	// requesting signatures from LND.
 	sweepKeyDesc, err := s.lnd.WalletKit.DeriveKey(
 		ctx, &keychain.KeyLocator{
-			Family: keychain.KeyFamilyMultiSig,
+			Family: keyFamilyArkSweep,
 			Index:  1,
 		},
 	)
@@ -154,6 +165,58 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 			terms.OperatorKey.PubKey, terms.VTXOExitDelay,
 		)
 	}
+
+	// Create the batch sweeper actor that reclaims expired
+	// operator-controlled outputs back to the wallet. Wire it into
+	// the already-spawned batch watcher through the adapter so the
+	// watcher can stay agnostic of batchsweeper internals.
+	bsLog := subLogger(s.cfg.Loggers, batchsweeper.Subsystem)
+	batchSweeperCfg := &batchsweeper.ActorConfig{
+		Log:          fn.Some(bsLog),
+		BatchWatcher: s.batchWatcherRef,
+		ChainSource:  s.chainSourceRef,
+		SweepKey:     *sweepKeyDesc,
+		SweepDelay:   terms.SweepDelay,
+		Signer:       walletCtrl,
+		NewSweepPkScript: func(ctx context.Context) (
+			[]byte, error) {
+
+			addr, err := s.lnd.WalletKit.NextAddr(
+				ctx, "",
+				walletrpc.AddressType_TAPROOT_PUBKEY,
+				false,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return txscript.PayToAddrScript(addr)
+		},
+		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
+			s.timeoutRef,
+		),
+		OnBatchSwept: func(ctx context.Context,
+			vtxoOutpoints []wire.OutPoint) error {
+
+			return vtxoStore.MarkVTXOsExpired(
+				ctx, vtxoOutpoints,
+			)
+		},
+	}
+	batchSweeper := batchsweeper.NewActor(batchSweeperCfg)
+	batchSweeperKey := actor.NewServiceKey[
+		batchsweeper.Msg, batchsweeper.Resp,
+	]("batch-sweeper-actor")
+	batchSweeperRef := batchSweeperKey.Spawn(
+		s.actorSystem, "batch-sweeper-actor", batchSweeper,
+	)
+
+	// Set SelfRef before any expiry notifications can flow through the
+	// watcher and then attach the notification adapter.
+	batchSweeperCfg.SelfRef = batchSweeperRef
+	batchWatcherCfg.BatchSweeper = fn.Some(
+		batchsweeper.MapBatchWatcherNotification(batchSweeperRef),
+	)
 
 	// Create a header verifier for TxProof validation using LND's
 	// chain backend.
