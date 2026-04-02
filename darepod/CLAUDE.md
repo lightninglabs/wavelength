@@ -22,14 +22,14 @@ gRPC API.
 
 ## Relationships
 
-- **Depends on**: `baselib/actor` (ActorSystem), `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `round`, `vtxo`, `wallet`, `oor`, `serverconn`, `indexer`, `arkrpc`.
+- **Depends on**: `baselib/actor` (ActorSystem), `btcwbackend`, `chainbackends`, `chainsource`, `lib/actormsg`, `db`, `round`, `vtxo`, `wallet`, `walletcore`, `oor`, `serverconn`, `indexer`, `arkrpc`.
 - **Depended on by**: `cmd/darepod` (main entry point).
 
 ## Invariants
 
 - Server owns ActorSystem lifetime; shutdown stops all subsystems.
 - Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
-- Two wallet modes: LND-backed or lightweight (`lwwallet`).
+- Three wallet modes: LND-backed, lightweight (`lwwallet`), or neutrino-backed (`btcwallet` via `btcwbackend`).
 - Per-subsystem logging: configurable log writer, no global mutable loggers. Each subsystem receives its own logger instance.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.
@@ -37,6 +37,8 @@ gRPC API.
 - Actor startup order: VTXO manager starts before round actor and OOR actor, so the manager ref is available for both. The round actor ref in the VTXO manager is lazy (service-key-based, resolved at Tell time).
 - `mapRoundVTXOManagerMsg` bridges `round.VTXOManagerMsg` → `vtxo.ManagerMsg` via `MapInputRef`. Compile-time assertions enforce that all `round.VTXOManagerMsg` implementors satisfy `vtxo.ManagerMsg`.
 - OOR receive-key is derived once at startup via `EnsureDefaultOORReceiveScript` and persisted for restart-safe re-registration. The `DurableUnaryBuilder` is wired through `serverconn.ConnectorConfig` so all indexer queries flow through the durable transport path.
+- In btcwallet mode, neutrino is pre-started before seed availability so P2P sync proceeds in parallel. The `neutrinoSvc` field uses `fn.Option` and is reused by `startBtcwallet` via `NewWithNeutrino`.
+- The neutrino sync-wait goroutine polls indefinitely (no timeout) to avoid leaving the wallet permanently unready. Progress is logged every 30 seconds.
 - `ensureRoundExists` in `db/vtxo_store.go` uses check-then-insert (not upsert) because `InsertRound`'s `ON CONFLICT DO UPDATE` would overwrite richer round state.
 
 ## Deep Docs
