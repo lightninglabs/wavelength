@@ -44,6 +44,7 @@ type Querier interface {
 	// Returns cumulative Ark protocol fees paid to the operator (fees_paid
 	// account only). Does not include L1 chain/miner fees (onchain_fees).
 	GetTotalOperatorFeesPaid(ctx context.Context) (int64, error)
+	GetUnilateralExitJob(ctx context.Context, arg GetUnilateralExitJobParams) (UnilateralExitJob, error)
 	GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error)
 	// GetVTXOForfeitTx retrieves the persisted forfeit transaction for a VTXO.
 	// Used during recovery to restore the ForfeitingState with its tx.
@@ -115,6 +116,9 @@ type Querier interface {
 	// Also filter on spent = FALSE to handle VTXOs marked spent via the earlier
 	// flag before the status field was introduced.
 	ListLiveVTXOs(ctx context.Context) ([]Vtxo, error)
+	// Status 4 = Completed, 5 = Failed (anchored to Go iota in
+	// db/unilateral_exit_store.go UnilateralExitJobStatus).
+	ListNonTerminalUnilateralExitJobs(ctx context.Context) ([]UnilateralExitJob, error)
 	ListOORPackageCheckpoints(ctx context.Context, sessionID []byte) ([]OorPackageCheckpoint, error)
 	ListOORPackages(ctx context.Context) ([]OorPackage, error)
 	ListOORPackagesByDirection(ctx context.Context, direction int32) ([]OorPackage, error)
@@ -136,6 +140,7 @@ type Querier interface {
 	ListWalletUTXOLog(ctx context.Context, arg ListWalletUTXOLogParams) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByBlock(ctx context.Context, blockHeight int32) ([]WalletUtxoLog, error)
 	ListWalletUTXOLogByClassification(ctx context.Context, arg ListWalletUTXOLogByClassificationParams) ([]WalletUtxoLog, error)
+	MarkUnilateralExitJobTerminal(ctx context.Context, arg MarkUnilateralExitJobTerminalParams) error
 	// MarkVTXOForfeited marks a VTXO as forfeited and records the forfeit
 	// transaction ID and replacement VTXO outpoint. Called when the new round's
 	// commitment transaction confirms.
@@ -160,6 +165,8 @@ type Querier interface {
 	UpsertOORRecipientCursor(ctx context.Context, arg UpsertOORRecipientCursorParams) error
 	UpsertOORVTXOBinding(ctx context.Context, arg UpsertOORVTXOBindingParams) (int64, error)
 	UpsertOwnedReceiveScript(ctx context.Context, arg UpsertOwnedReceiveScriptParams) error
+	// Unilateral-exit job control-plane queries.
+	UpsertUnilateralExitJob(ctx context.Context, arg UpsertUnilateralExitJobParams) error
 }
 
 var _ Querier = (*Queries)(nil)

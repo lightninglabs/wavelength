@@ -293,3 +293,21 @@ func (s *Store) NewOORArtifactStore(
 
 	return NewOORArtifactPersistenceStore(artifactDB, clk)
 }
+
+// NewUnilateralExitStore builds the unilateral-exit persistence store with
+// transactional query execution.
+func (s *Store) NewUnilateralExitStore(
+	clk clock.Clock) *UnilateralExitPersistenceStore {
+
+	baseDB := s.BaseDB()
+
+	exitDB := NewTransactionExecutor(
+		baseDB,
+		func(tx *sql.Tx) UnilateralExitStore {
+			return s.queries.WithTx(tx)
+		},
+		s.log,
+	)
+
+	return NewUnilateralExitPersistenceStore(exitDB, clk)
+}
