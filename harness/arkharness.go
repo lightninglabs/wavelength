@@ -314,6 +314,7 @@ func (h *ArkHarness) startArkd() {
 	)
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.Metrics = nil
 
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
@@ -799,10 +800,12 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 	}
 
 	// Neutrino-backed wallets need extra time for initial header
-	// and compact block filter sync before marking wallet ready.
+	// and compact block filter sync before marking wallet ready,
+	// but keep the bound close to the unlock budget so restart
+	// regressions surface promptly.
 	walletReadyTimeout := defaultTimeout
 	if walletBackend == ClientWalletBackendBtcwallet {
-		walletReadyTimeout = 3 * time.Minute
+		walletReadyTimeout = 90 * time.Second
 	}
 
 	require.Eventually(d.T, func() bool {
@@ -824,15 +827,13 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 }
 
 func (d *ClientDaemonHarness) initOrUnlockLWWallet() error {
-	// The btcwallet backend pre-starts neutrino for P2P sync,
-	// but Init/UnlockWallet still synchronously creates the
-	// btcwallet (opens bbolt DB, creates key scopes, starts
-	// chain client sync). Use a generous timeout to allow for
-	// P2P reconnection on daemon restart.
-	timeout := defaultSmallTimeout
-	if d.server.WalletType() == clientdarepod.WalletTypeBtcwallet {
-		timeout = 90 * time.Second
-	}
+	// Self-managed wallet unlock can take materially longer than a
+	// quick RPC budget during restart. Both lwwallet and btcwallet
+	// must reopen btcwallet state, restart their chain backend, and
+	// derive the identity key before UnlockWallet returns. Use a
+	// generous but still bounded timeout so restart tests fail on
+	// real recovery bugs rather than a 5s harness deadline.
+	timeout := 90 * time.Second
 
 	ctx, cancel := context.WithTimeout(d.T.Context(), timeout)
 	defer cancel()
