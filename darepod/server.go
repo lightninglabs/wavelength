@@ -426,42 +426,13 @@ func (s *Server) run(ctx context.Context,
 			s.cfg.Wallet.Type)
 	}
 
-	// Derive the client's identity key early so it is available
-	// for mailbox ID derivation before the transport starts. In
-	// lnd mode the key comes from the lnd wallet. In lwwallet
-	// mode it comes from the lightweight wallet keyring (only
-	// possible if the wallet is already unlocked).
-	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
-		return fmt.Errorf("derive identity key: %w", err)
-	}
-
-	// -------------------------------------------------------
-	// 2. Connect to the ark operator's mailbox edge server.
-	// -------------------------------------------------------
-	s.log.InfoS(ctx, "Connecting to ark server",
-		"host", s.cfg.Server.Host)
-
-	serverConn, err := s.dialServer(ctx)
-	if err != nil {
-		return fmt.Errorf("unable to connect to server: %w", err)
-	}
-	s.serverConn = serverConn
-	defer s.serverConn.Close()
-
-	s.log.InfoS(ctx, "Connected to ark server")
-
-	// Fetch the operator's public key via direct gRPC before
-	// wiring the mailbox transport. The mailbox runtime needs
-	// the operator's pubkey-derived mailbox ID as the remote
-	// endpoint, so this must happen before step 7.
-	operatorPubKey, err := s.fetchOperatorPubKeyDirect(ctx)
-	if err != nil {
-		return fmt.Errorf("fetch operator pubkey: %w", err)
-	}
-
-	s.log.InfoS(ctx, "Fetched operator pubkey via direct gRPC",
-		slog.String("operator_mailbox_id",
-			serverconn.PubKeyMailboxID(operatorPubKey)))
+	// NOTE: Identity key derivation, server connection, and
+	// mailbox transport wiring are deferred to
+	// connectAndBootstrapMailbox(), which runs either
+	// synchronously (LND, wallet always ready) or
+	// asynchronously after wallet unlock (lwwallet/btcwallet).
+	// The gRPC server must start first so InitWallet/
+	// UnlockWallet RPCs can arrive.
 
 	// -------------------------------------------------------
 	// 3. Initialize the actor system.
@@ -473,6 +444,16 @@ func (s *Server) run(ctx context.Context,
 	// Register cleanup from least dependent to most dependent so that the
 	// defer LIFO order tears down components from most dependent to least
 	// dependent: actor system -> chain backend -> DB.
+	defer func() {
+		if s.runtime != nil {
+			s.runtime.Stop()
+		}
+	}()
+	defer func() {
+		if s.serverConn != nil {
+			_ = s.serverConn.Close()
+		}
+	}()
 	defer func() {
 		if s.db != nil {
 			_ = s.db.Close()
@@ -595,84 +576,19 @@ func (s *Server) run(ctx context.Context,
 	defer s.grpcServer.GracefulStop()
 
 	// -------------------------------------------------------
-	// 7. Wire the mailbox transport runtime.
+	// 7-11. Mailbox transport + wallet-dependent actors.
 	// -------------------------------------------------------
-	// Build the dispatcher map for inbound RPCs. The server
-	// sends KIND_REQUEST envelopes (e.g., GetInfo) which the
-	// ingress loop routes to the ServeMux dispatcher. The
-	// dispatcher calls ServeRPC, serializes the response, and
-	// sends it back as a KIND_RESPONSE envelope.
-	edge := s.newMailboxEdge()
-	dispatchers := s.buildRPCDispatchers(edge)
-
-	// Derive mailbox IDs from public keys. The client's local
-	// mailbox is its identity pubkey. The remote mailbox is a
-	// compound key of operator:client so the server can
-	// maintain per-client unique Pull/checkpoint state while
-	// both sides agree on the wire-level address.
-	s.localMailboxID = serverconn.PubKeyMailboxID(
-		s.clientKeyDesc.PubKey,
-	)
-	operatorMBID := serverconn.PubKeyMailboxID(operatorPubKey)
-	remoteMailboxID := serverconn.CompoundMailboxID(
-		operatorMBID, s.localMailboxID,
-	)
-
-	// Compute the Schnorr auth signature proving we hold the
-	// private key for our claimed mailbox identity. The
-	// signature binds to the compound remote mailbox ID.
-	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
-	if err != nil {
-		return fmt.Errorf("sign mailbox auth: %w", err)
-	}
-
-	s.authSigHex = hex.EncodeToString(authSig.Serialize())
-
-	connCfg := serverconn.DefaultConnectorConfig()
-	connCfg.Edge = edge
-	connCfg.LocalMailboxID = s.localMailboxID
-	connCfg.RemoteMailboxID = remoteMailboxID
-	connCfg.ProtocolVersion = 1
-	connCfg.Store = s.deliveryStore
-	connCfg.Dispatchers = dispatchers
-	connCfg.AuthSignature = authSig
-	connCfg.InitAuthHeader()
-	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
-		server: s,
-	}
-	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
-
-	s.runtime, err = serverconn.NewRuntime(connCfg)
-	if err != nil {
-		return fmt.Errorf("unable to create serverconn "+
-			"runtime: %w", err)
-	}
-
-	if err := s.runtime.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start serverconn "+
-			"runtime: %w", err)
-	}
-	defer s.runtime.Stop()
-
-	s.log.InfoS(ctx, "Mailbox transport runtime started",
-		slog.String("local_mailbox", s.localMailboxID),
-		slog.String("remote_mailbox", remoteMailboxID))
-
-	// -------------------------------------------------------
-	// 8. Create the Ark and indexer RPC clients.
-	// -------------------------------------------------------
-	s.initRPCClients(ctx)
-
-	// -------------------------------------------------------
-	// 9-11. Register wallet, round, and OOR actors.
-	// -------------------------------------------------------
-	// These steps require the wallet to be ready. In lnd mode
-	// the wallet is always ready at this point. In lwwallet
-	// mode, if the wallet was auto-unlocked (via env var or
-	// password file), it is also ready. Otherwise, these steps
-	// are deferred until the wallet is unlocked via RPC (see
-	// startWalletDependentActors).
+	// The mailbox transport requires the identity key (derived
+	// from the wallet) and the operator pubkey (fetched via
+	// direct gRPC). In LND mode the wallet is always ready, so
+	// this runs synchronously. In lwwallet/btcwallet mode the
+	// wallet may not be unlocked yet, so everything is deferred
+	// to a background goroutine that fires after walletReady.
 	if s.isWalletReady() {
+		if err := s.connectAndBootstrapMailbox(ctx); err != nil {
+			return err
+		}
+
 		if err := s.startWalletDependentActors(
 			ctx, chainSourceRef, timeoutRef,
 		); err != nil {
@@ -681,7 +597,7 @@ func (s *Server) run(ctx context.Context,
 	} else {
 		// Launch a goroutine that waits for the wallet to
 		// become ready (via InitWallet or UnlockWallet RPC)
-		// and then starts the wallet-dependent actors.
+		// and then bootstraps the full mailbox + actor stack.
 		go func() {
 			select {
 			case <-s.walletReady:
@@ -697,6 +613,17 @@ func (s *Server) run(ctx context.Context,
 				chainSourceRef = s.registerChainSourceActor(
 					ctx,
 				)
+			}
+
+			if err := s.connectAndBootstrapMailbox(
+				ctx,
+			); err != nil {
+				s.log.ErrorS(ctx,
+					"Failed to bootstrap mailbox "+
+						"transport", err,
+				)
+
+				return
 			}
 
 			if err := s.startWalletDependentActors(
@@ -2281,6 +2208,102 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	)
 
 	s.log.InfoS(ctx, "RPC clients initialized")
+}
+
+// connectAndBootstrapMailbox derives the identity key, connects to the
+// ark operator, fetches the operator pubkey, and wires the mailbox
+// transport runtime. This is called synchronously for LND (wallet
+// always ready) or after walletReady fires for lwwallet/btcwallet.
+func (s *Server) connectAndBootstrapMailbox(
+	ctx context.Context) error {
+
+	// Derive the identity key from the now-ready wallet.
+	if err := s.deriveIdentityKeyEarly(ctx); err != nil {
+		return fmt.Errorf("derive identity key: %w", err)
+	}
+
+	// Connect to the ark operator's mailbox edge server.
+	s.log.InfoS(ctx, "Connecting to ark server",
+		"host", s.cfg.Server.Host)
+
+	serverConn, err := s.dialServer(ctx)
+	if err != nil {
+		return fmt.Errorf("unable to connect to server: %w",
+			err)
+	}
+	s.serverConn = serverConn
+
+	s.log.InfoS(ctx, "Connected to ark server")
+
+	// Fetch the operator's public key via direct gRPC before
+	// wiring the mailbox transport.
+	operatorPubKey, err := s.fetchOperatorPubKeyDirect(ctx)
+	if err != nil {
+		return fmt.Errorf("fetch operator pubkey: %w", err)
+	}
+
+	s.log.InfoS(ctx, "Fetched operator pubkey via direct gRPC",
+		slog.String("operator_mailbox_id",
+			serverconn.PubKeyMailboxID(operatorPubKey),
+		),
+	)
+
+	// Build the mailbox transport runtime.
+	edge := s.newMailboxEdge()
+	dispatchers := s.buildRPCDispatchers(edge)
+
+	// Derive compound mailbox ID: operator:client.
+	s.localMailboxID = serverconn.PubKeyMailboxID(
+		s.clientKeyDesc.PubKey,
+	)
+	operatorMBID := serverconn.PubKeyMailboxID(operatorPubKey)
+	remoteMailboxID := serverconn.CompoundMailboxID(
+		operatorMBID, s.localMailboxID,
+	)
+
+	// Sign the Schnorr auth proving key ownership, bound to
+	// the compound recipient mailbox.
+	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
+	if err != nil {
+		return fmt.Errorf("sign mailbox auth: %w", err)
+	}
+
+	s.authSigHex = hex.EncodeToString(authSig.Serialize())
+
+	connCfg := serverconn.DefaultConnectorConfig()
+	connCfg.Edge = edge
+	connCfg.LocalMailboxID = s.localMailboxID
+	connCfg.RemoteMailboxID = remoteMailboxID
+	connCfg.ProtocolVersion = 1
+	connCfg.Store = s.deliveryStore
+	connCfg.Dispatchers = dispatchers
+	connCfg.AuthSignature = authSig
+	connCfg.InitAuthHeader()
+	connCfg.DurableUnaryBuilder = &serverDurableUnaryBuilder{
+		server: s,
+	}
+	connCfg.Log = fn.Some(s.subLogger(serverconn.Subsystem))
+
+	s.runtime, err = serverconn.NewRuntime(connCfg)
+	if err != nil {
+		return fmt.Errorf("unable to create serverconn "+
+			"runtime: %w", err)
+	}
+
+	if err := s.runtime.Start(ctx); err != nil {
+		return fmt.Errorf("unable to start serverconn "+
+			"runtime: %w", err)
+	}
+
+	s.log.InfoS(ctx, "Mailbox transport runtime started",
+		slog.String("local_mailbox", s.localMailboxID),
+		slog.String("remote_mailbox", remoteMailboxID),
+	)
+
+	// Create RPC clients that use the mailbox transport.
+	s.initRPCClients(ctx)
+
+	return nil
 }
 
 // initWalletActor creates, registers, and starts the boarding wallet
