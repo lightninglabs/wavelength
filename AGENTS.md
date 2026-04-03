@@ -46,7 +46,6 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 
 - Prefix with package name (`db:`, `rpc:`, `multi:` for multiple).
 - Small, atomic commits. Separate bug fixes, refactors, and features.
-- Sign with GPG: `git commit -S -F /path/to/message.txt`
 - Tooling: [`docs/commit-tooling.md`](docs/commit-tooling.md)
 
 ## Critical Rules
@@ -80,6 +79,11 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 Each major package contains a `CLAUDE.md`/`AGENTS.md` with purpose, key types,
 relationships, and invariants. Start from [`ARCHITECTURE.md`](ARCHITECTURE.md)
 and navigate into the package relevant to your task.
+
+### Docker Development
+- [`docker-compose.yml`](docker-compose.yml) — Full regtest stack (bitcoind + 2x lnd + arkd + darepod).
+- [`scripts/docker-regtest-setup.sh`](scripts/docker-regtest-setup.sh) — Setup script for Docker stack.
+- [`Dockerfile`](Dockerfile) — Server image. [`client/Dockerfile`](client/Dockerfile) — Client image.
 
 ## Code Generation Workflow
 
