@@ -490,6 +490,13 @@ func (s *Server) run(ctx context.Context,
 		}
 	}()
 	defer func() {
+		s.lwWallet.WhenSome(
+			func(w *lwwallet.Wallet) {
+				w.Stop()
+			},
+		)
+	}()
+	defer func() {
 		s.btcwWallet.WhenSome(
 			func(w *btcwbackend.Wallet) {
 				w.Stop()
@@ -620,6 +627,10 @@ func (s *Server) run(ctx context.Context,
 			return err
 		}
 
+		if err := s.startMailboxIngress(ctx); err != nil {
+			return err
+		}
+
 		s.markDaemonReady()
 	} else {
 		// Launch a goroutine that waits for the wallet to
@@ -665,6 +676,14 @@ func (s *Server) run(ctx context.Context,
 			); err != nil {
 				s.log.ErrorS(ctx,
 					"Failed to start wallet actors",
+					err)
+
+				return
+			}
+
+			if err := s.startMailboxIngress(ctx); err != nil {
+				s.log.ErrorS(ctx,
+					"Failed to start mailbox ingress",
 					err)
 
 				return
@@ -1362,6 +1381,16 @@ func (s *Server) startWalletDependentActors(ctx context.Context,
 	}
 
 	s.log.InfoS(ctx, "Wallet-dependent actors started")
+
+	return nil
+}
+
+// startMailboxIngress starts mailbox ingress once all actor dispatch targets
+// have been registered.
+func (s *Server) startMailboxIngress(ctx context.Context) error {
+	if err := s.runtime.StartIngress(ctx); err != nil {
+		return fmt.Errorf("start serverconn ingress: %w", err)
+	}
 
 	return nil
 }
@@ -2329,10 +2358,11 @@ func (s *Server) connectAndBootstrapMailbox(
 			"runtime: %w", err)
 	}
 
-	if err := s.runtime.Start(ctx); err != nil {
-		return fmt.Errorf("unable to start serverconn "+
-			"runtime: %w", err)
-	}
+	// Start durable egress immediately so unary sends and actor outbox
+	// delivery can begin, but defer ingress until wallet-dependent actors
+	// are registered. On restart the remote mailbox may already contain
+	// queued server-push envelopes targeting the round or OOR actors.
+	s.runtime.StartEgress()
 
 	s.log.InfoS(ctx, "Mailbox transport runtime started",
 		slog.String("local_mailbox", s.localMailboxID),
@@ -2778,14 +2808,24 @@ func mapRoundVTXOManagerMsg(msg round.VTXOManagerMsg) vtxo.ManagerMsg {
 }
 
 // fetchOperatorTerms retrieves the operator's terms from the Ark
-// server via the ArkService.GetInfo RPC. The terms include the
-// operator pubkey, sweep delay, VTXO exit delay, forfeit script, dust
-// limit, and fee rate. These are required before the round actor can
-// start, as they govern all round signing and validation parameters.
+// server via a direct ArkService.GetInfo RPC on the base gRPC
+// transport. This must not depend on mailbox ingress during startup:
+// a restarted client can already have queued server-push envelopes in
+// its mailbox, and those envelopes may target actors that have not yet
+// been registered. Using the mailbox transport here can therefore
+// deadlock round/OOR bootstrap behind redelivery of those pending
+// events.
+//
+// The terms include the operator pubkey, sweep delay, VTXO exit delay,
+// forfeit script, dust limit, and fee rate. These are required before
+// the round actor can start, as they govern all round signing and
+// validation parameters.
 func (s *Server) fetchOperatorTerms(
 	ctx context.Context) (*types.OperatorTerms, error) {
 
-	resp, err := s.ark.GetInfo(ctx, &arkrpc.GetInfoRequest{})
+	client := arkrpc.NewArkServiceClient(s.serverConn)
+
+	resp, err := client.GetInfo(ctx, &arkrpc.GetInfoRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("GetInfo RPC: %w", err)
 	}
@@ -2831,10 +2871,10 @@ func (s *Server) fetchOperatorTerms(
 // from the respective wallet keyring if already unlocked.
 func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 	var (
-		derived  bool
-		lndErr   error
-		lwErr    error
-		btcwErr  error
+		derived bool
+		lndErr  error
+		lwErr   error
+		btcwErr error
 	)
 
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
