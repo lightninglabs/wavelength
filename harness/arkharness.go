@@ -629,6 +629,19 @@ func (h *ArkHarness) launchClientDaemon(name string,
 	daemon.waitForReady()
 	daemon.ensureWalletReady(h.clientDaemonWalletType)
 
+	// Wait for the full daemon stack (mailbox transport + actors)
+	// to finish initialization. For LND this is immediate since
+	// everything runs synchronously. For lwwallet/btcwallet the
+	// deferred goroutine needs time after wallet unlock.
+	select {
+	case <-server.DaemonReady():
+	case <-time.After(defaultTimeout):
+		h.T.Fatalf(
+			"client daemon %q never became fully ready",
+			name,
+		)
+	}
+
 	return daemon
 }
 
