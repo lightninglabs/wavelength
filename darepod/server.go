@@ -2827,13 +2827,14 @@ func (s *Server) fetchOperatorTerms(
 
 // deriveIdentityKeyEarly derives the client's identity key before the
 // mailbox transport starts. In LND mode the key is derived from the
-// connected LND wallet. In lwwallet mode the key is derived from the
-// lightweight wallet keyring if already unlocked.
+// connected LND wallet. In lwwallet/btcwallet mode the key is derived
+// from the respective wallet keyring if already unlocked.
 func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 	var (
-		derived bool
-		lndErr  error
-		lwErr   error
+		derived  bool
+		lndErr   error
+		lwErr    error
+		btcwErr  error
 	)
 
 	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
@@ -2882,21 +2883,48 @@ func (s *Server) deriveIdentityKeyEarly(ctx context.Context) error {
 		derived = true
 	})
 
-	if !derived {
-		switch {
-		case lndErr != nil && lwErr != nil:
-			return fmt.Errorf("unable to derive identity "+
-				"key: %v; %v", lndErr, lwErr)
-		case lndErr != nil:
-			return fmt.Errorf("unable to derive identity "+
-				"key: %w", lndErr)
-		case lwErr != nil:
-			return fmt.Errorf("unable to derive identity "+
-				"key: %w", lwErr)
-		default:
-			return fmt.Errorf("no wallet backend available " +
-				"to derive identity key")
+	if derived {
+		return nil
+	}
+
+	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		desc, err := w.KeyRing().DeriveKey(keychain.KeyLocator{
+			Family: identityKeyFamily,
+			Index:  0,
+		})
+		if err != nil {
+			btcwErr = fmt.Errorf("btcwallet: %w", err)
+
+			s.log.WarnS(ctx,
+				"Unable to derive identity key from "+
+					"btcwallet", err,
+			)
+
+			return
 		}
+
+		s.clientKeyDesc = desc
+		derived = true
+	})
+
+	if !derived {
+		errs := []error{lndErr, lwErr, btcwErr}
+		var errMsgs []string
+		for _, e := range errs {
+			if e != nil {
+				errMsgs = append(errMsgs, e.Error())
+			}
+		}
+
+		if len(errMsgs) > 0 {
+			return fmt.Errorf(
+				"derive identity key: %s",
+				strings.Join(errMsgs, "; "),
+			)
+		}
+
+		return fmt.Errorf("no wallet backend available " +
+			"to derive identity key")
 	}
 
 	s.log.InfoS(ctx, "Derived client identity key",
@@ -2975,21 +3003,24 @@ func (s *Server) signMailboxAuth(ctx context.Context,
 		return sig, err
 	}
 
-	// In lwwallet mode, derive the private key directly and
-	// sign locally.
+	// In lwwallet mode, use the keyring's Schnorr signing
+	// directly — no private key extraction needed.
 	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
-		var privKey *btcec.PrivateKey
-		privKey, err = w.KeyRing().DerivePrivKey(
-			s.clientKeyDesc,
+		sig, err = s.signMailboxAuthViaKeyRing(
+			w.KeyRing(), recipientMailboxID,
 		)
-		if err != nil {
-			err = fmt.Errorf("derive priv key: %w", err)
+	})
 
-			return
-		}
+	if sig != nil || err != nil {
+		return sig, err
+	}
 
-		sig, err = serverconn.SignMailboxAuth(
-			privKey, recipientMailboxID,
+	// In btcwallet mode, use the neutrino-backed keyring's
+	// Schnorr signing — same interface, no private key
+	// extraction.
+	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
+		sig, err = s.signMailboxAuthViaKeyRing(
+			w.KeyRing(), recipientMailboxID,
 		)
 	})
 
@@ -3006,6 +3037,31 @@ func withSchnorrTag(tag []byte) lndclient.SignMessageOption {
 	return func(req *signrpc.SignMessageReq) {
 		req.Tag = tag
 	}
+}
+
+// signMailboxAuthViaKeyRing signs the mailbox auth digest using a
+// keyring's SignMessageSchnorr method. This avoids extracting private
+// keys — the keyring handles signing internally. The BIP-340 tagged
+// hash is computed by the keyring via the tag parameter.
+func (s *Server) signMailboxAuthViaKeyRing(
+	keyRing keychain.SecretKeyRing,
+	recipientMailboxID string) (*schnorr.Signature, error) {
+
+	msg := serverconn.MailboxAuthMessage(
+		s.clientKeyDesc.PubKey, recipientMailboxID,
+	)
+	tag := []byte(serverconn.MailboxAuthTagStr)
+
+	sig, err := keyRing.SignMessageSchnorr(
+		s.clientKeyDesc.KeyLocator, msg,
+		false, nil, tag,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("keyring sign mailbox auth: %w",
+			err)
+	}
+
+	return sig, nil
 }
 
 // networkToLndclient maps our network string to the lndclient network type.
