@@ -694,6 +694,13 @@ func TestOORIntegrationOfflineRecipientEventVisibility(t *testing.T) {
 	t.Cleanup(h.Stop)
 
 	h.Start()
+
+	// This test requires the indexer test client which needs
+	// an lnd backend for key derivation.
+	if h.ClientWalletBackend() != harness.ClientWalletBackendLND {
+		t.Skipf("test requires lnd backend for indexer "+
+			"client (got %s)", h.ClientWalletBackend())
+	}
 	h.FundOperatorLND(btcutil.SatoshiPerBitcoin * 2)
 
 	alice := h.StartClientDaemon("alice")
