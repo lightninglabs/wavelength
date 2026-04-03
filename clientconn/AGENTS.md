@@ -32,7 +32,7 @@ to the appropriate service operator.
 ## Relationships
 
 - **Depends on**: `mailbox` (envelope store and delivery primitives), client submodule's `baselib/actor`.
-- **Depended on by**: `rounds` (outbound round events), `oor` (outbound OOR events), `indexer` (per-client queries), root `darepo` (wiring).
+- **Depended on by**: `rounds` (outbound round events), `oor` (outbound OOR events), `indexer` (per-client queries), `metrics` (dispatch latency events), root `darepo` (wiring).
 - **Messages to/from**:
   - Receives envelopes from clients via mailbox ingress.
   - Sends envelopes to clients via durable egress actors.
@@ -55,6 +55,8 @@ response envelope?**
 - Ingress dispatchers must be registered before the client runtime starts.
 - The bridge must handle client disconnection gracefully without losing queued egress messages.
 - `HandleInbound` uses `singleflight.Group` keyed by clientID to deduplicate concurrent registration attempts for the same client.
+- Envelope dispatch latency is instrumented via `DispatchCompletedMsg` sent to
+  the metrics actor after each ingress dispatch.
 
 ## Deep Docs
 

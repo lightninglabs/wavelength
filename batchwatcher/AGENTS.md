@@ -34,6 +34,8 @@ changes to the round and sweep subsystems.
 
 - Must detect all spends of tracked outputs; missed spends can cause incorrect VTXO state.
 - Batch state must be persisted before notifications are sent.
+- After a batch is fully swept, the watcher self-unregisters the batch and
+  notifies the sweeper via `BatchSweptEvent`, preventing duplicate monitoring.
 
 ## Deep Docs
 

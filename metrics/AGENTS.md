@@ -29,7 +29,8 @@ The package also provides the HTTP `/metrics` scrape endpoint and an
   wallet). Implemented by `systemStatsAdapter` in the root package.
 - `Msg` — Sealed message interface for metric events sent to the actor.
 - `Server` — HTTP server exposing the `/metrics` Prometheus scrape endpoint,
-  with configurable timeouts via functional options.
+  with configurable timeouts via functional options. **Opt-in by default**:
+  the metrics server only starts when explicitly enabled via config/CLI flag.
 - `ServerConfig` — Configuration for the HTTP server (listen address, logger).
 - `InstrumentedLocker` — Decorator wrapping `vtxo.Locker` with transparent
   lock-duration and failure reporting to the metrics actor.
