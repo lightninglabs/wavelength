@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	// DefaultListenAddr is the default address the metrics HTTP
-	// server listens on.
+	// DefaultListenAddr is the address the metrics HTTP server
+	// listens on when metrics are explicitly enabled.
 	DefaultListenAddr = "0.0.0.0:9090"
 
 	// defaultReadTimeout is the maximum duration for reading the
@@ -42,12 +42,10 @@ type ServerConfig struct {
 	Log fn.Option[btclog.Logger]
 }
 
-// DefaultServerConfig returns a ServerConfig with the default listen
-// address.
+// DefaultServerConfig returns a disabled ServerConfig. Set ListenAddr
+// to DefaultListenAddr or another address to enable metrics serving.
 func DefaultServerConfig() *ServerConfig {
-	return &ServerConfig{
-		ListenAddr: DefaultListenAddr,
-	}
+	return &ServerConfig{}
 }
 
 // ServerOption is a functional option for configuring the metrics

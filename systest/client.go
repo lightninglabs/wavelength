@@ -361,15 +361,21 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	// Create per-client serverconn.Runtime wired through the
 	// InstrumentedMailbox. The client's local mailbox is its
-	// clientID, and the remote mailbox is the server's per-client
-	// mailbox.
+	// clientID. The remote (server) mailbox is a compound key
+	// of operator:client so each client gets a unique
+	// server-side Pull/checkpoint identity.
 	clientMBID := string(clientID)
-	serverMBID := serverMailboxPrefix + clientMBID
+	operatorMBID := serverconn.PubKeyMailboxID(
+		h.operatorKeyDesc.PubKey,
+	)
+	compoundServerMBID := serverconn.CompoundMailboxID(
+		operatorMBID, clientMBID,
+	)
 
 	// Register the mailbox pair for direction detection in the
 	// instrumented mailbox.
 	h.instrumentedMB.RegisterMailboxPair(
-		clientID, serverMBID, clientMBID,
+		clientID, compoundServerMBID, clientMBID,
 	)
 
 	// Create client-side EventRouter and register all routes.
@@ -396,7 +402,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 	clientConnCfg := serverconn.DefaultConnectorConfig()
 	clientConnCfg.Edge = h.instrumentedMB
 	clientConnCfg.LocalMailboxID = clientMBID
-	clientConnCfg.RemoteMailboxID = serverMBID
+	clientConnCfg.RemoteMailboxID = compoundServerMBID
 	clientConnCfg.Dispatchers = clientRouter.AsDispatcherMap()
 	clientConnCfg.Store = clientDeliveryStore
 	clientConnCfg.ProtocolVersion = 1
@@ -425,7 +431,7 @@ func newTestClientInternal(h *E2EHarness, opts testClientOpts) *TestClient {
 
 	serverPerClientCfg := clientconn.DefaultPerClientConfig()
 	serverPerClientCfg.Edge = h.instrumentedMB
-	serverPerClientCfg.LocalMailboxID = serverMBID
+	serverPerClientCfg.LocalMailboxID = compoundServerMBID
 	serverPerClientCfg.RemoteMailboxID = clientMBID
 	serverDispatchers := make(clientconn.DispatcherMap)
 	for key, dispatcher := range h.indexerOperator.Dispatchers() {

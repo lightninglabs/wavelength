@@ -323,6 +323,7 @@ func (h *ArkHarness) startArkd() {
 	)
 	cfg.AdminRPC.ListenAddr = "127.0.0.1:0"
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
+	cfg.Metrics = nil
 
 	// Point arkd at the LND started by the client harness.
 	// Derive credential paths from the harness artifacts directory
@@ -445,13 +446,6 @@ type ClientDaemonHarness struct {
 	// RPCAddr is the daemon gRPC address used by external clients.
 	RPCAddr string
 
-	// LocalMailboxID is the darepod mailbox ID used for inbound pulls.
-	LocalMailboxID string
-
-	// RemoteMailboxID is the per-client server mailbox ID this daemon talks
-	// to.
-	RemoteMailboxID string
-
 	// LND is the dedicated backing LND instance for this daemon when
 	// running with the lnd wallet backend. It is nil for lwwallet
 	// daemons.
@@ -495,12 +489,7 @@ func (h *ArkHarness) StartClientDaemon(name string) *ClientDaemonHarness {
 	}
 
 	dataDir := filepath.Join(h.BaseDir(), "client-daemons", name)
-	localMailboxID := fmt.Sprintf("client-%s", name)
-	remoteMailboxID := fmt.Sprintf("server-for-%s", name)
-
-	daemon := h.launchClientDaemon(
-		name, lnd, dataDir, localMailboxID, remoteMailboxID,
-	)
+	daemon := h.launchClientDaemon(name, lnd, dataDir)
 
 	h.clientDaemonsMu.Lock()
 	h.clientDaemons[daemonName] = daemon
@@ -529,7 +518,6 @@ func (h *ArkHarness) RestartClientDaemon(name string) *ClientDaemonHarness {
 
 	daemon := h.launchClientDaemon(
 		name, oldDaemon.LND, oldDaemon.DataDir,
-		oldDaemon.LocalMailboxID, oldDaemon.RemoteMailboxID,
 	)
 
 	h.clientDaemonsMu.Lock()
@@ -557,15 +545,14 @@ func (h *ArkHarness) ClientMailbox(name string) *ControlledMailboxClient {
 
 	return edge
 }
+
 func (h *ArkHarness) launchClientDaemon(name string,
-	lnd *client_harness.LndInstance, dataDir, localMailboxID,
-	remoteMailboxID string) *ClientDaemonHarness {
+	lnd *client_harness.LndInstance,
+	dataDir string) *ClientDaemonHarness {
 
 	h.T.Helper()
 
 	require.NotEmpty(h.T, dataDir, "client daemon data dir is required")
-	require.NotEmpty(h.T, localMailboxID, "local mailbox ID is required")
-	require.NotEmpty(h.T, remoteMailboxID, "remote mailbox ID is required")
 
 	require.NoError(h.T, os.MkdirAll(dataDir, 0o755))
 	logPath := filepath.Join(dataDir, "darepod.log")
@@ -613,8 +600,6 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	cfg.Server.Host = h.ArkRPCAddr
 	cfg.Server.Insecure = true
-	cfg.Server.LocalMailboxID = localMailboxID
-	cfg.Server.RemoteMailboxID = remoteMailboxID
 	cfg.RPC.ListenAddr = "127.0.0.1:0"
 
 	mailboxEdge := h.clientMailboxEdge(ClientDaemonName(name))
@@ -627,16 +612,14 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	ctx, cancel := context.WithCancel(context.Background())
 	daemon := &ClientDaemonHarness{
-		T:               h.T,
-		Name:            name,
-		DataDir:         dataDir,
-		LocalMailboxID:  localMailboxID,
-		RemoteMailboxID: remoteMailboxID,
-		LND:             lnd,
-		server:          server,
-		cancel:          cancel,
-		runErr:          make(chan error, 1),
-		logFile:         logFile,
+		T:       h.T,
+		Name:    name,
+		DataDir: dataDir,
+		LND:     lnd,
+		server:  server,
+		cancel:  cancel,
+		runErr:  make(chan error, 1),
+		logFile: logFile,
 	}
 
 	daemon.wg.Add(1)
@@ -659,6 +642,19 @@ func (h *ArkHarness) launchClientDaemon(name string,
 
 	daemon.waitForReady()
 	daemon.ensureWalletReady(h.clientDaemonWalletType)
+
+	// Wait for the full daemon stack (mailbox transport + actors)
+	// to finish initialization. For LND this is immediate since
+	// everything runs synchronously. For lwwallet/btcwallet the
+	// deferred goroutine needs time after wallet unlock.
+	select {
+	case <-server.DaemonReady():
+	case <-time.After(defaultTimeout):
+		h.T.Fatalf(
+			"client daemon %q never became fully ready",
+			name,
+		)
+	}
 
 	return daemon
 }
@@ -817,10 +813,12 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 	}
 
 	// Neutrino-backed wallets need extra time for initial header
-	// and compact block filter sync before marking wallet ready.
+	// and compact block filter sync before marking wallet ready,
+	// but keep the bound close to the unlock budget so restart
+	// regressions surface promptly.
 	walletReadyTimeout := defaultTimeout
 	if walletBackend == ClientWalletBackendBtcwallet {
-		walletReadyTimeout = 3 * time.Minute
+		walletReadyTimeout = 90 * time.Second
 	}
 
 	require.Eventually(d.T, func() bool {
@@ -842,15 +840,13 @@ func (d *ClientDaemonHarness) ensureWalletReady(walletBackend string) {
 }
 
 func (d *ClientDaemonHarness) initOrUnlockLWWallet() error {
-	// The btcwallet backend pre-starts neutrino for P2P sync,
-	// but Init/UnlockWallet still synchronously creates the
-	// btcwallet (opens bbolt DB, creates key scopes, starts
-	// chain client sync). Use a generous timeout to allow for
-	// P2P reconnection on daemon restart.
-	timeout := defaultSmallTimeout
-	if d.server.WalletType() == clientdarepod.WalletTypeBtcwallet {
-		timeout = 90 * time.Second
-	}
+	// Self-managed wallet unlock can take materially longer than a
+	// quick RPC budget during restart. Both lwwallet and btcwallet
+	// must reopen btcwallet state, restart their chain backend, and
+	// derive the identity key before UnlockWallet returns. Use a
+	// generous but still bounded timeout so restart tests fail on
+	// real recovery bugs rather than a 5s harness deadline.
+	timeout := 90 * time.Second
 
 	ctx, cancel := context.WithTimeout(d.T.Context(), timeout)
 	defer cancel()

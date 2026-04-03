@@ -13,6 +13,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
+	"github.com/lightninglabs/darepo-client/serverconn"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchsweeper"
@@ -157,9 +158,13 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	}
 
 	// Store terms and forfeit script on the server so the
-	// GetInfo RPC can return them to clients.
+	// GetInfo RPC can return them to clients. Cache the
+	// operator mailbox ID since the key is immutable.
 	s.terms = terms
 	s.forfeitScript = forfeitScript
+	s.operatorMailboxID = serverconn.PubKeyMailboxID(
+		terms.OperatorKey.PubKey,
+	)
 	if s.indexerService != nil {
 		s.indexerService.SetVTXOProofPolicy(
 			terms.OperatorKey.PubKey, terms.VTXOExitDelay,

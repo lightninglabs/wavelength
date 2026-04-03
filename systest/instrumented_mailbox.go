@@ -16,11 +16,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// serverMailboxPrefix is the mailbox ID prefix for server-side
-// per-client mailboxes. Envelopes sent to these mailboxes are
-// client-to-server messages.
-const serverMailboxPrefix = "server-for-"
-
 // InstrumentedMailbox wraps a production MailboxServiceClient with
 // transcript recording, per-direction per-client buffering, and event
 // subscription. It implements mailboxpb.MailboxServiceClient so both
@@ -58,9 +53,10 @@ type InstrumentedMailbox struct {
 	// client.
 	pendingS2C map[clientconn.ClientID][]*mailboxpb.Envelope
 
-	// serverMailboxes maps server mailbox IDs ("server-for-X") to
-	// the corresponding client ID for direction detection.
-	serverMailboxes map[string]clientconn.ClientID
+	// serverMailboxes tracks the shared server mailbox ID for
+	// direction detection. With pubkey-derived IDs all clients
+	// share the same server mailbox.
+	serverMailboxes map[string]struct{}
 
 	// clientMailboxes maps client mailbox IDs to their client ID.
 	clientMailboxes map[string]clientconn.ClientID
@@ -83,7 +79,7 @@ func NewInstrumentedMailbox(inner mailboxpb.MailboxServiceClient,
 		bufferedS2C:     make(map[clientconn.ClientID]bool),
 		pendingC2S:      make(map[clientconn.ClientID][]*mailboxpb.Envelope),
 		pendingS2C:      make(map[clientconn.ClientID][]*mailboxpb.Envelope),
-		serverMailboxes: make(map[string]clientconn.ClientID),
+		serverMailboxes: make(map[string]struct{}),
 		clientMailboxes: make(map[string]clientconn.ClientID),
 		eventServers:    make(map[clientconn.ClientID]*subscribe.Server),
 	}
@@ -91,8 +87,8 @@ func NewInstrumentedMailbox(inner mailboxpb.MailboxServiceClient,
 
 // RegisterMailboxPair registers a client's mailbox pair for direction
 // detection and event subscription. The server mailbox ID is the
-// server's per-client mailbox (e.g., "server-for-alice"), and the
-// client mailbox ID is the client's mailbox (e.g., "alice").
+// shared operator-key-derived mailbox, and the client mailbox ID is
+// the client's pubkey-derived mailbox.
 func (m *InstrumentedMailbox) RegisterMailboxPair(
 	clientID clientconn.ClientID,
 	serverMBID, clientMBID string) {
@@ -100,7 +96,7 @@ func (m *InstrumentedMailbox) RegisterMailboxPair(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.serverMailboxes[serverMBID] = clientID
+	m.serverMailboxes[serverMBID] = struct{}{}
 	m.clientMailboxes[clientMBID] = clientID
 
 	// Create and start a subscribe.Server for this client if one
@@ -127,11 +123,8 @@ func (m *InstrumentedMailbox) UnregisterClient(
 	defer m.mu.Unlock()
 
 	// Remove mailbox ID mappings.
-	for mbID, cID := range m.serverMailboxes {
-		if cID == clientID {
-			delete(m.serverMailboxes, mbID)
-		}
-	}
+	// NOTE: serverMailboxes is a shared set and not per-client,
+	// so we don't remove entries here.
 	for mbID, cID := range m.clientMailboxes {
 		if cID == clientID {
 			delete(m.clientMailboxes, mbID)
@@ -465,8 +458,10 @@ func (m *InstrumentedMailbox) detectDirection(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check if the recipient is a server mailbox (C2S).
-	if clientID, ok := m.serverMailboxes[env.Recipient]; ok {
+	// Check if the sender is a known client mailbox (C2S).
+	// With pubkey-derived IDs, all clients send to the same
+	// server mailbox, so we identify the client by sender.
+	if clientID, ok := m.clientMailboxes[env.Sender]; ok {
 		return ClientToServer, clientID
 	}
 
@@ -475,13 +470,11 @@ func (m *InstrumentedMailbox) detectDirection(
 		return ServerToClient, clientID
 	}
 
-	// Fallback: use the mailbox prefix convention.
-	if strings.HasPrefix(env.Recipient, serverMailboxPrefix) {
-		clientID := clientconn.ClientID(
-			strings.TrimPrefix(
-				env.Recipient, serverMailboxPrefix,
-			),
-		)
+	// Fallback: check if the recipient is the shared server
+	// mailbox and identify the client from the sender.
+	if _, ok := m.serverMailboxes[env.Recipient]; ok {
+		// The sender is the client's mailbox ID.
+		clientID := clientconn.ClientID(env.Sender)
 
 		return ClientToServer, clientID
 	}

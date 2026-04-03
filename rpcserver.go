@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/build"
 	"github.com/lightninglabs/darepo/metrics"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // RPCConfig contains configuration for the client-facing RPC server.
@@ -98,25 +99,50 @@ func NewRPCServer(cfg *RPCConfig, operator *Server,
 		}
 	}
 
-	// TODO(security): Add TLS and authentication before
-	// non-regtest deployment. The client RPC server currently
-	// runs without TLS or auth interceptors.
+	// Build gRPC server options with mailbox auth interceptors
+	// and metrics.
+	requireTLS := cfg.TLS != nil
 	grpcMetrics := metrics.GRPCServerMetrics
 
-	s := &RPCServer{
-		cfg:    cfg,
-		server: operator,
-		log:    log,
-		grpcServer: grpc.NewServer(
-			grpc.UnaryInterceptor(
-				grpcMetrics.UnaryServerInterceptor(),
-			),
-			grpc.StreamInterceptor(
-				grpcMetrics.StreamServerInterceptor(),
-			),
+	serverOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(
+			grpcMetrics.UnaryServerInterceptor(),
+			newMailboxAuthInterceptor(log, requireTLS),
 		),
-		listener: listener,
-		quit:     make(chan struct{}),
+		grpc.ChainStreamInterceptor(
+			grpcMetrics.StreamServerInterceptor(),
+			newMailboxStreamInterceptor(),
+		),
+	}
+
+	// Wire TLS credentials when configured. The server requests
+	// (but does not require) client certificates so the mTLS
+	// interceptor can enforce per-RPC identity for clients that
+	// present one.
+	//
+	// TODO(security): When TLS is not configured the server runs
+	// without transport security. Do not deploy without TLS
+	// outside regtest/dev environments.
+	if cfg.TLS != nil {
+		tlsCfg, err := loadServerTLSConfig(cfg.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS config: %w",
+				err)
+		}
+
+		serverOpts = append(
+			serverOpts,
+			grpc.Creds(credentials.NewTLS(tlsCfg)),
+		)
+	}
+
+	s := &RPCServer{
+		cfg:        cfg,
+		server:     operator,
+		log:        log,
+		grpcServer: grpc.NewServer(serverOpts...),
+		listener:   listener,
+		quit:       make(chan struct{}),
 	}
 
 	// Register the client RPC service.
