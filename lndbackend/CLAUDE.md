@@ -2,17 +2,24 @@
 
 ## Purpose
 
-`BoardingBackend` implementation wrapping lndclient's WalletKitClient for key
-derivation, taproot script import, and UTXO enumeration via LND.
+`BoardingBackend` and `ProofKeyBackend` implementations wrapping lndclient's
+WalletKitClient for key derivation, taproot script import, UTXO enumeration,
+and proof key signing via LND.
 
 ## Key Types
 
-- `BoardingBackend` — Struct holding `walletKit lndclient.WalletKitClient` and `chainKit lndclient.ChainKitClient`. Implements `wallet.BoardingBackend`.
-- `GetTransaction` / `GetBlock` — Methods using `chainKit` for raw tx/block fetching (for `TxProof` construction, added by vtxo-owner-cosigner-split).
+- `BoardingBackend` — Struct holding `walletKit lndclient.WalletKitClient` and
+  `chainKit lndclient.ChainKitClient`. Implements `wallet.BoardingBackend`.
+  `GetTransaction` returns `*wallet.TxInfo`; `GetBlock` fetches raw blocks via
+  `chainKit`.
+- `ProofKeyBackend` — Implements `proofkeys.Backend` for LND-backed key
+  derivation and Schnorr proof signing. Wraps `walletKit` for `DeriveKey`,
+  `DeriveNextKey`, and produces `indexer.SchnorrSigner` instances.
 
 ## Relationships
 
-- **Depends on**: `wallet` (implements `BoardingBackend`).
+- **Depends on**: `wallet` (implements `BoardingBackend`), `proofkeys`
+  (implements `Backend`), `indexer` (SchnorrSigner interface).
 - **Depended on by**: `darepod` (LND-backed wallet mode).
 
 ## Deep Docs

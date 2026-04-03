@@ -45,6 +45,10 @@ protocols with MuSig2 signing ceremonies.
 
 - Tree signatures must be validated BEFORE boarding input signatures are released (security checkpoint at InputSigSent).
 - Forfeit signatures are collected AFTER VTXO tree signing is complete (ForfeitSignaturesCollectingState), ensuring clients only forfeit old VTXOs after verifying new VTXOs are properly signed.
+- After aggregated signatures are validated on `VTXOTreePaths`, they are
+  propagated to extracted `ClientTrees` via `SubmitTreeSigs` + `VerifySigned`.
+  This ensures persisted client trees contain valid signatures for unilateral
+  exit (unrolling).
 - Round state is checkpointed atomically after tree validation; crash before checkpoint means client has no record of sent signatures.
 - Primary FSM handles interactive phases (through InputSigSent); a dedicated FSM per round handles confirmation monitoring.
 - The round actor does not mark VTXOs as PendingForfeit — the wallet/manager admits VTXOs before sending RegisterIntentMsg.

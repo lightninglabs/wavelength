@@ -24,6 +24,7 @@ into specific topics below.
 | [commit-tooling.md](commit-tooling.md) | commit_message.py workflows for linting and rewording |
 | [testing-guide.md](testing-guide.md) | Coverage targets, test approaches, pre-commit checklist |
 | [go_workspace.md](go_workspace.md) | Multi-module Go workspace setup |
+| [policy_arkscript_review_guide.md](policy_arkscript_review_guide.md) | Policy-first arkscript reviewer guide |
 
 ## Operations
 

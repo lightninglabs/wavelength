@@ -18,6 +18,13 @@ package may import from a higher layer.
 | [`oor`](oor/) | Out-of-round transfer coordination FSM |
 | [`wallet`](wallet/) | On-chain boarding wallet actor (address derivation, UTXO monitoring) |
 | [`lib`](lib/) | Shared domain utilities: tree paths, BIP-322, tapscripts, types |
+| [`lib/arkscript`](lib/arkscript/) | Tapscript AST compiler and policy system for Ark taproot outputs |
+| [`lib/bip322`](lib/bip322/) | BIP-322 intent-bound message authentication |
+| [`lib/scripts`](lib/scripts/) | Low-level Bitcoin script construction for VTXO and checkpoint outputs |
+| [`lib/tx/arktx`](lib/tx/arktx/) | Canonical Ark transaction ordering and validation |
+| [`lib/tx/checkpoint`](lib/tx/checkpoint/) | Checkpoint PSBT construction for OOR transfers |
+| [`lib/tx/oor`](lib/tx/oor/) | OOR submit/finalize package builders and validators |
+| [`lib/tx/psbtutil`](lib/tx/psbtutil/) | PSBT encoding, decoding, and signature attachment helpers |
 
 ### Layer 2: Infrastructure (Chain, Storage, Messaging)
 
@@ -31,6 +38,7 @@ package may import from a higher layer.
 | [`lwwallet`](lwwallet/) | Lightweight in-process wallet (btcwallet + Esplora, no external LND) |
 | [`btcwbackend`](btcwbackend/) | Neutrino-backed wallet backend (btcwallet + compact block filters) |
 | [`walletcore`](walletcore/) | Shared wallet abstractions and boarding logic used by lwwallet and btcwbackend |
+| [`proofkeys`](proofkeys/) | Interface for wallet-managed key derivation and indexer proof signing |
 | [`db`](db/) | SQLite/PostgreSQL persistence: boarding, rounds, VTXOs, OOR artifacts |
 | [`mailbox`](mailbox/) | Mailbox protocol primitives across three sub-packages (pb, rpc, conn) |
 | [`serverconn`](serverconn/) | Unified server connector: durable egress, ingress polling, unary RPC facade |
@@ -77,10 +85,13 @@ darepod (orchestrator)
 │   ├── chainsource │ (UTXO confirmation monitoring)
 │   └── db          │ (boarding store)
 ├── oor             │
-│   └── db          │ (oor artifact store)
+│   ├── db          │ (oor artifact store)
+│   └── lib/tx      │ (arktx, checkpoint, oor, psbtutil)
 ├── serverconn      │
 │   ├── mailbox     │ (protocol primitives)
 │   └── db          │ (durable delivery store)
+├── proofkeys       │ (wallet key derivation for indexer proofs)
+│   └── walletcore / lndbackend (implementations)
 ├── chainsource     │
 │   └── chainbackends (pluggable: LND, lwwallet, or btcwbackend)
 └── db              │
@@ -131,6 +142,10 @@ corresponding state transition being durable.
 | `ClientWallet` | round | MuSig2 signing + key derivation interface for round participation |
 | `VTXOReader` | wallet | Read-only VTXO descriptor access (breaks import cycle) |
 | `SelectedVTXO` | wallet | Locked VTXO descriptor for transfer inputs (breaks import cycle) |
+| `TxInfo` | wallet | Confirmed transaction with block hash and height |
+| `Backend` | proofkeys | Wallet key derivation and proof signing interface |
+| `Node` | lib/arkscript | Sealed AST node interface for tapscript compilation |
+| `VTXOPolicy` | lib/arkscript | Compiled VTXO taproot policy with collab/exit spend paths |
 
 ## State Machines
 
