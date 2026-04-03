@@ -30,6 +30,15 @@ func PubKeyMailboxID(key *btcec.PublicKey) string {
 	return hex.EncodeToString(key.SerializeCompressed())
 }
 
+// CompoundMailboxID builds a per-client mailbox identifier by
+// joining the server (operator) and client pubkey-derived IDs
+// with a colon separator. Both the client and server derive this
+// independently so the wire-level Pull/Send addresses match, while
+// the bridge's uniqueness constraint on LocalMailboxID is satisfied.
+func CompoundMailboxID(serverID, clientID string) string {
+	return serverID + ":" + clientID
+}
+
 // CorrelationID links a mailbox request to its response.
 type CorrelationID = mailboxconn.CorrelationID
 

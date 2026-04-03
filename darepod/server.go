@@ -606,16 +606,21 @@ func (s *Server) run(ctx context.Context,
 	dispatchers := s.buildRPCDispatchers(edge)
 
 	// Derive mailbox IDs from public keys. The client's local
-	// mailbox is its identity pubkey, and the remote mailbox is
-	// the operator's pubkey.
+	// mailbox is its identity pubkey. The remote mailbox is a
+	// compound key of operator:client so the server can
+	// maintain per-client unique Pull/checkpoint state while
+	// both sides agree on the wire-level address.
 	s.localMailboxID = serverconn.PubKeyMailboxID(
 		s.clientKeyDesc.PubKey,
 	)
-	remoteMailboxID := serverconn.PubKeyMailboxID(operatorPubKey)
+	operatorMBID := serverconn.PubKeyMailboxID(operatorPubKey)
+	remoteMailboxID := serverconn.CompoundMailboxID(
+		operatorMBID, s.localMailboxID,
+	)
 
 	// Compute the Schnorr auth signature proving we hold the
-	// private key for our claimed mailbox identity. This is
-	// verified by the server during client registration.
+	// private key for our claimed mailbox identity. The
+	// signature binds to the compound remote mailbox ID.
 	authSig, err := s.signMailboxAuth(ctx, remoteMailboxID)
 	if err != nil {
 		return fmt.Errorf("sign mailbox auth: %w", err)

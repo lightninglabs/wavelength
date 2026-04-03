@@ -121,7 +121,15 @@ func (s *fakeMailboxServer) Send(ctx context.Context,
 		)
 	}
 
-	if env.Recipient == s.operatorMailbox {
+	// Match the compound mailbox ID that the client derives
+	// as CompoundMailboxID(operatorPub, clientPub). We
+	// reconstruct it from the envelope's sender (the
+	// client's pubkey-derived ID) and the known operator
+	// mailbox.
+	expectedCompound := serverconn.CompoundMailboxID(
+		s.operatorMailbox, env.Sender,
+	)
+	if env.Recipient == expectedCompound {
 		if err := s.handleOperatorEnvelope(ctx, env); err != nil {
 			return nil, err
 		}
