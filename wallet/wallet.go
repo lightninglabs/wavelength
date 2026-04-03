@@ -601,11 +601,11 @@ func (a *Ark) processUtxo(ctx context.Context,
 		slog.Int("height", int(epoch.Height)),
 	)
 
-	// Fetch the full transaction and its confirmation block hash. The
-	// block hash from GetTransaction is the UTXO's actual confirmation
-	// block, which may differ from epoch.Hash during catch-up after
-	// downtime.
-	confTx, confBlockHash, err := a.backend.GetTransaction(
+	// Fetch the full transaction and its confirmation metadata. The
+	// TxInfo block hash and height reflect the UTXO's actual
+	// confirmation block, which may differ from the epoch during
+	// catch-up after downtime.
+	txInfo, err := a.backend.GetTransaction(
 		ctx, utxo.Outpoint.Hash,
 	)
 	if err != nil {
@@ -617,18 +617,22 @@ func (a *Ark) processUtxo(ctx context.Context,
 		return false
 	}
 
-	// Use the confirmation block hash from the transaction if
-	// available. Fall back to epoch.Hash for backends that don't
-	// provide it (e.g., unconfirmed or missing metadata).
+	// Use the confirmation block hash and height from the
+	// transaction if available. Fall back to epoch values for
+	// backends that don't provide confirmation metadata (e.g.,
+	// unconfirmed or missing details).
 	blockHash := epoch.Hash
-	if confBlockHash != nil {
-		blockHash = *confBlockHash
+	blockHeight := epoch.Height
+	if txInfo.BlockHash != nil {
+		blockHash = *txInfo.BlockHash
+		blockHeight = txInfo.BlockHeight
 	}
 
-	// Build the SPV TxProof so the server can verify the boarding UTXO
-	// without querying its own chain source.
+	// Build the SPV TxProof so the server can verify the boarding
+	// UTXO without querying its own chain source.
 	txProof := a.buildBoardingTxProof(
-		ctx, blockHash, epoch.Height, confTx, utxo.Outpoint, addr,
+		ctx, blockHash, blockHeight, txInfo.Tx,
+		utxo.Outpoint, addr,
 	)
 
 	intent := BoardingIntent{
@@ -637,7 +641,7 @@ func (a *Ark) processUtxo(ctx context.Context,
 		ChainInfo: BoardingChainInfo{
 			ConfHeight: epoch.Height,
 			ConfHash:   epoch.Hash,
-			ConfTx:     confTx,
+			ConfTx:     txInfo.Tx,
 			OutPoint:   utxo.Outpoint,
 			Amount:     utxo.Amount,
 			TxProof:    txProof,

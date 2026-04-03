@@ -673,9 +673,9 @@ func (s *stubBackend) ListUnspent(_ context.Context,
 
 // GetTransaction is a no-op stub.
 func (s *stubBackend) GetTransaction(_ context.Context,
-	_ chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	_ chainhash.Hash) (*TxInfo, error) {
 
-	return nil, nil, fmt.Errorf("not implemented")
+	return nil, fmt.Errorf("not implemented")
 }
 
 // GetBlock is a no-op stub.

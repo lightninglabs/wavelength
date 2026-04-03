@@ -64,21 +64,15 @@ func (m *MockBoardingBackend) ListUnspent(ctx context.Context,
 }
 
 func (m *MockBoardingBackend) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	txid chainhash.Hash) (*TxInfo, error) {
 
 	args := m.Called(ctx, txid)
 	if args.Get(0) == nil {
-		return nil, nil, args.Error(2)
-	}
-
-	var blockHash *chainhash.Hash
-	if args.Get(1) != nil {
-		//nolint:forcetypeassert
-		blockHash = args.Get(1).(*chainhash.Hash)
+		return nil, args.Error(1)
 	}
 
 	//nolint:forcetypeassert
-	return args.Get(0).(*wire.MsgTx), blockHash, args.Error(2)
+	return args.Get(0).(*TxInfo), args.Error(1)
 }
 
 func (m *MockBoardingBackend) GetBlock(ctx context.Context,
@@ -487,7 +481,11 @@ func TestProcessNewUtxo(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint.Hash,
-	).Return(mockTx, &epochHash, nil)
+	).Return(&TxInfo{
+		Tx:          mockTx,
+		BlockHash:   &epochHash,
+		BlockHeight: 100,
+	}, nil)
 
 	// Return a block containing the mock tx so TxProof can be built.
 	mockBlock := &wire.MsgBlock{
@@ -651,10 +649,18 @@ func TestProcessUtxoMinConfFiltering(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint1.Hash,
-	).Return(mockTx1, &epochHash, nil)
+	).Return(&TxInfo{
+		Tx:          mockTx1,
+		BlockHash:   &epochHash,
+		BlockHeight: 100,
+	}, nil)
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint2.Hash,
-	).Return(mockTx2, &epochHash, nil)
+	).Return(&TxInfo{
+		Tx:          mockTx2,
+		BlockHash:   &epochHash,
+		BlockHeight: 100,
+	}, nil)
 
 	// Return blocks containing the respective mock txs.
 	backend.On(
@@ -850,7 +856,11 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	backend := &MockBoardingBackend{}
 	backend.On(
 		"GetTransaction", mock.Anything, testOutpoint.Hash,
-	).Return(boardingTx, &confBlockHash, nil)
+	).Return(&TxInfo{
+		Tx:          boardingTx,
+		BlockHash:   &confBlockHash,
+		BlockHeight: 100,
+	}, nil)
 
 	// Return a block that does NOT contain the boarding tx — only
 	// otherTx. This simulates a block hash mismatch.
