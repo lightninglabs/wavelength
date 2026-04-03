@@ -77,6 +77,9 @@ func newCommonMockSetup(t *testing.T) *commonMockSetup {
 		"MarkVTXOsLive", mock.Anything, mock.Anything,
 	).Return(nil).Maybe()
 	mockVTXOStore.On(
+		"MarkVTXOsExpired", mock.Anything, mock.Anything,
+	).Return(nil).Maybe()
+	mockVTXOStore.On(
 		"MarkVTXOForfeit", mock.Anything, mock.Anything,
 		mock.Anything,
 	).Return(nil).Maybe()
@@ -1467,6 +1470,15 @@ func (m *mockVTXOStore) MarkVTXOsLive(ctx context.Context,
 	roundID RoundID) error {
 
 	args := m.Called(ctx, roundID)
+
+	return args.Error(0)
+}
+
+// MarkVTXOsExpired is a mock implementation of VTXOStore.MarkVTXOsExpired.
+func (m *mockVTXOStore) MarkVTXOsExpired(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoints)
 
 	return args.Error(0)
 }

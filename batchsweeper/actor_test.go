@@ -369,18 +369,21 @@ func TestRepeatedBatchExpiredPreservesAttempts(t *testing.T) {
 }
 
 // TestSweepConfirmedCleansUp verifies that a sweep confirmation event cleans
-// up the tracking state for the batch.
+// up the tracking state for the batch. The watcher self-unregisters, so the
+// sweeper only needs to clean up its own maps.
 func TestSweepConfirmedCleansUp(t *testing.T) {
 	t.Parallel()
 
 	batchID := batchwatcher.BatchID(uuid.New())
 
+	mockWatcher := &mockBatchWatcherRef{}
 	mockChainSource := &mockChainSourceRef{}
 
 	cfg := &ActorConfig{
-		Log:         fn.Some(btclog.Disabled),
-		ChainSource: mockChainSource,
-		SelfRef:     &nopSelfRef{},
+		Log:          fn.Some(btclog.Disabled),
+		BatchWatcher: mockWatcher,
+		ChainSource:  mockChainSource,
+		SelfRef:      &nopSelfRef{},
 	}
 
 	a := NewActor(cfg)

@@ -659,19 +659,20 @@ func (h *E2EHarness) initActorSystem() {
 // initBatchSweeper creates and wires a real BatchSweeperActor so systests can
 // assert sweeping behavior while still capturing notifications via the mock.
 func (h *E2EHarness) initBatchSweeper() {
-	sweepPkScript, err := txscript.PayToTaprootScript(
-		h.terms.SweepKey.PubKey,
-	)
-	require.NoError(h.t, err, "failed to create sweep pkScript")
-
 	cfg := &batchsweeper.ActorConfig{
-		Log:           fn.Some(h.SubLogger("BSWP")),
-		BatchWatcher:  h.batchWatcherRef,
-		ChainSource:   h.chainSourceActorRef,
-		SweepKey:      h.terms.SweepKey,
-		SweepDelay:    h.terms.SweepDelay,
-		Signer:        h.walletController,
-		SweepPkScript: sweepPkScript,
+		Log:          fn.Some(h.SubLogger("BSWP")),
+		BatchWatcher: h.batchWatcherRef,
+		ChainSource:  h.chainSourceActorRef,
+		SweepKey:     h.terms.SweepKey,
+		SweepDelay:   h.terms.SweepDelay,
+		Signer:       h.walletController,
+		NewSweepPkScript: func(_ context.Context) (
+			[]byte, error) {
+
+			return txscript.PayToTaprootScript(
+				h.terms.SweepKey.PubKey,
+			)
+		},
 		TimeoutActor: fn.Some[actor.TellOnlyRef[timeout.Msg]](
 			h.mockTimeoutRef,
 		),

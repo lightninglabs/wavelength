@@ -91,3 +91,23 @@ func (m *SweepConfirmedEvent) MessageType() string {
 
 // batchSweeperMsgSealed implements the sealed Msg interface.
 func (m *SweepConfirmedEvent) batchSweeperMsgSealed() {}
+
+// BatchSweptEvent wraps a BatchWatcher swept notification for internal
+// BatchSweeper processing. The watcher sends this after detecting that the
+// batch root was spent by a non-tree tx and no outputs remain.
+type BatchSweptEvent struct {
+	actor.BaseMessage
+
+	// Notification is the original notification from the BatchWatcher.
+	// The Tree field carries the pre-signed VTXO tree for extracting
+	// leaf outpoints.
+	Notification *batchwatcher.BatchSweptNotification
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BatchSweptEvent) MessageType() string {
+	return "BatchSweptEvent"
+}
+
+// batchSweeperMsgSealed implements the sealed Msg interface.
+func (m *BatchSweptEvent) batchSweeperMsgSealed() {}

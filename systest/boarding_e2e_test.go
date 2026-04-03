@@ -1524,15 +1524,14 @@ func TestBatchSweepOnExpiry(t *testing.T) {
 		}
 
 		stateResp, ok := resp.(*batchwatcher.GetTreeStateResponse)
-		if !ok || stateResp.TreeState == nil {
+		if !ok {
 			return false
 		}
 
-		// A non-presigned spend (the operator sweep tx) should not
-		// trigger progressive unrolling. The spend should simply
-		// remove the output from ExistingOutputs.
-		return len(stateResp.TreeState.ExistingOutputs) == 0
-	}, defaultTimeout, pollInterval, "batch watcher state not updated")
+		// After a full sweep with no remaining outputs, the watcher
+		// self-unregisters the batch entirely.
+		return !stateResp.Found
+	}, defaultTimeout, pollInterval, "batch watcher should unregister swept batch")
 
 	t.Logf("Verified sweep tx %s spent %s", sweepTxid, rootOutpoint)
 }

@@ -111,6 +111,35 @@ func (v *VTXOStoreDB) MarkVTXOsLive(ctx context.Context,
 	})
 }
 
+// MarkVTXOsExpired marks the given VTXOs as expired. This is called
+// when the operator sweeps an expired batch, making all VTXOs in the
+// presigned tree unspendable. Only transitions VTXOs in live, pending,
+// or in_flight states — VTXOs already in a terminal state (forfeited,
+// spent) are left unchanged.
+func (v *VTXOStoreDB) MarkVTXOsExpired(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	if len(outpoints) == 0 {
+		return nil
+	}
+
+	return v.ExecTx(ctx, WriteTxOption(), func(q *sqlc.Queries) error {
+		for _, op := range outpoints {
+			_, err := q.MarkVTXOExpired(
+				ctx, sqlc.MarkVTXOExpiredParams{
+					OutpointHash:  op.Hash[:],
+					OutpointIndex: int32(op.Index),
+				},
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
 // MarkVTXOForfeit marks a VTXO as forfeited and stores the forfeit metadata.
 func (v *VTXOStoreDB) MarkVTXOForfeit(ctx context.Context,
 	outpoint wire.OutPoint, info *rounds.ForfeitInfo) error {

@@ -137,6 +137,15 @@ func (m *MockVTXOStore) MarkVTXOsLive(ctx context.Context,
 	return args.Error(0)
 }
 
+// MarkVTXOsExpired implements rounds.VTXOStore.
+func (m *MockVTXOStore) MarkVTXOsExpired(ctx context.Context,
+	outpoints []wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoints)
+
+	return args.Error(0)
+}
+
 // MarkVTXOForfeit implements rounds.VTXOStore.
 func (m *MockVTXOStore) MarkVTXOForfeit(ctx context.Context,
 	outpoint wire.OutPoint, info *rounds.ForfeitInfo) error {
@@ -268,6 +277,19 @@ func (m *MemoryVTXOStore) MarkVTXOsLive(ctx context.Context,
 	for _, op := range outpoints {
 		if vtxo, exists := m.vtxos[op]; exists {
 			vtxo.Status = rounds.VTXOStatusLive
+		}
+	}
+
+	return nil
+}
+
+// MarkVTXOsExpired implements rounds.VTXOStore.
+func (m *MemoryVTXOStore) MarkVTXOsExpired(_ context.Context,
+	outpoints []wire.OutPoint) error {
+
+	for _, op := range outpoints {
+		if vtxo, exists := m.vtxos[op.String()]; exists {
+			vtxo.Status = "expired"
 		}
 	}
 

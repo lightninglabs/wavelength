@@ -95,6 +95,10 @@ type ArkHarnessOptions struct {
 	// client daemon. When nil, logs are prefixed by daemon name and
 	// written to stdout.
 	ClientLogWriterFactory ClientLogWriterFactory
+
+	// OperatorConfigMutator allows integration tests to tweak the arkd
+	// config before the in-process server starts.
+	OperatorConfigMutator func(*darepo.Config)
 }
 
 // ArkHarness extends the client harness with an in-process arkd server and
@@ -145,6 +149,10 @@ type ArkHarness struct {
 
 	// clientLogWriterFactory resolves stdout sinks for client daemon logs.
 	clientLogWriterFactory ClientLogWriterFactory
+
+	// operatorConfigMutator optionally tweaks the in-process operator
+	// config before startup.
+	operatorConfigMutator func(*darepo.Config)
 
 	// clientDaemons tracks any in-process darepod instances started through
 	// this harness so Stop can shut them down before tearing down arkd/LND.
@@ -198,6 +206,7 @@ func NewArkHarness(t *testing.T, opts *ArkHarnessOptions) *ArkHarness {
 		clientDaemonWalletType: walletType,
 		operatorLogWriter:      operatorLogWriter,
 		clientLogWriterFactory: clientLogWriterFactory,
+		operatorConfigMutator:  opts.OperatorConfigMutator,
 		clientDaemons:          make(ClientDaemonSet),
 		clientMailboxEdges: make(
 			map[ClientDaemonName]*ControlledMailboxClient,
@@ -327,6 +336,10 @@ func (h *ArkHarness) startArkd() {
 		lndDataDir, "data", "chain", "bitcoin", "regtest",
 		"admin.macaroon",
 	)
+
+	if h.operatorConfigMutator != nil {
+		h.operatorConfigMutator(cfg)
+	}
 
 	// Create a cancelable context for arkd.
 	arkdCtx, arkdCancel := context.WithCancel(context.Background())

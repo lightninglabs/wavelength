@@ -277,3 +277,27 @@ func (m *TreeStateChangedNotification) MessageType() string {
 
 // batchSweeperMsgSealed implements the sealed BatchSweeperMsg interface.
 func (m *TreeStateChangedNotification) batchSweeperMsgSealed() {}
+
+// BatchSweptNotification is sent to the BatchSweeper when the watcher detects
+// that a batch root output has been spent by a non-tree transaction (operator
+// sweep) and no unspent outputs remain in the tree. The watcher self-
+// unregisters after sending this, so the sweeper must not query the watcher
+// for tree state after receiving it.
+type BatchSweptNotification struct {
+	actor.BaseMessage
+
+	// BatchID identifies which batch was swept.
+	BatchID BatchID
+
+	// Tree is the full pre-signed VTXO tree so the sweeper can extract
+	// leaf outpoints without querying back to the watcher.
+	Tree *tree.Tree
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *BatchSweptNotification) MessageType() string {
+	return "BatchSweptNotification"
+}
+
+// batchSweeperMsgSealed implements the sealed BatchSweeperMsg interface.
+func (m *BatchSweptNotification) batchSweeperMsgSealed() {}

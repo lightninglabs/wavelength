@@ -124,6 +124,7 @@ type Querier interface {
 	ListVTXOsByStatusPaged(ctx context.Context, arg ListVTXOsByStatusPagedParams) ([]Vtxo, error)
 	LockVTXO(ctx context.Context, arg LockVTXOParams) (int64, error)
 	MarkOORSessionNotified(ctx context.Context, arg MarkOORSessionNotifiedParams) (int64, error)
+	MarkVTXOExpired(ctx context.Context, arg MarkVTXOExpiredParams) (int64, error)
 	MarkVTXOForfeited(ctx context.Context, arg MarkVTXOForfeitedParams) (int64, error)
 	PullMailboxEnvelopes(ctx context.Context, arg PullMailboxEnvelopesParams) ([]MailboxEnvelope, error)
 	UnlockAllLockedVTXOs(ctx context.Context) (int64, error)
