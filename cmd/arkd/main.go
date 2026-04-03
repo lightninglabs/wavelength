@@ -211,6 +211,12 @@ func newRootCmd() *cobra.Command {
 		"enable automatic TLS certificate generation",
 	)
 
+	// Metrics server flags.
+	f.String("metrics.listen", cfg.Metrics.ListenAddr,
+		"Prometheus metrics HTTP listen address "+
+			"(empty to disable)",
+	)
+
 	// Bind all flags to viper so Unmarshal populates the config
 	// struct from the combined flag/env/file sources.
 	v.SetEnvPrefix("ARKD")

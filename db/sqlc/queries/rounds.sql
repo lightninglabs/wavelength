@@ -189,6 +189,10 @@ ORDER BY outpoint_hash, outpoint_index;
 SELECT status, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total_value
 FROM vtxos GROUP BY status;
 
+-- name: GetRoundStatsByStatus :many
+SELECT status, COUNT(*) AS count
+FROM rounds GROUP BY status;
+
 -- name: ListVTXOsByStatusPaged :many
 SELECT * FROM vtxos WHERE status = $1
 ORDER BY outpoint_hash, outpoint_index LIMIT $2 OFFSET $3;

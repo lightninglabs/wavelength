@@ -11,6 +11,7 @@ import (
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo/metrics"
 )
 
 // ingressLoop is the main pull-dispatch-ack loop for a single client. It
@@ -322,6 +323,7 @@ func (a *ClientConnectionActor) dispatchBatch(
 				continue
 			}
 
+			dispatchStart := time.Now()
 			if err := dispatcher(ctx, env); err != nil {
 				// Dispatch failed. Return lastSafe
 				// (which does NOT include this
@@ -330,6 +332,10 @@ func (a *ClientConnectionActor) dispatchBatch(
 				// preserves this one for retry.
 				return lastSafe, anyProcessed, err
 			}
+
+			a.reportDispatchLatency(
+				ctx, key, dispatchStart,
+			)
 
 		default:
 			a.log.WarnS(ctx,
@@ -506,4 +512,21 @@ func (e *statusError) Error() string {
 	}
 
 	return e.Op + ": " + e.Status.Message + " (" + e.Status.Code + ")"
+}
+
+// reportDispatchLatency sends a dispatch duration metric to the
+// metrics actor if configured.
+func (a *ClientConnectionActor) reportDispatchLatency(
+	ctx context.Context, key mailboxrpc.ServiceMethod,
+	start time.Time) {
+
+	a.cfg.MetricsActor.WhenSome(
+		func(ref actor.TellOnlyRef[metrics.Msg]) {
+			_ = ref.Tell(ctx, &metrics.DispatchCompletedMsg{
+				ServiceMethod: key.Service + "." +
+					key.Method,
+				Duration: time.Since(start),
+			})
+		},
+	)
 }

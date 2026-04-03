@@ -88,6 +88,39 @@ func (q *Queries) GetOORSessionByID(ctx context.Context, id int64) (OorSession, 
 	return i, err
 }
 
+const GetOORSessionStatsByState = `-- name: GetOORSessionStatsByState :many
+SELECT state, COUNT(*) AS count
+FROM oor_sessions GROUP BY state
+`
+
+type GetOORSessionStatsByStateRow struct {
+	State string
+	Count int64
+}
+
+func (q *Queries) GetOORSessionStatsByState(ctx context.Context) ([]GetOORSessionStatsByStateRow, error) {
+	rows, err := q.db.QueryContext(ctx, GetOORSessionStatsByState)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetOORSessionStatsByStateRow
+	for rows.Next() {
+		var i GetOORSessionStatsByStateRow
+		if err := rows.Scan(&i.State, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ListActiveOORSessions = `-- name: ListActiveOORSessions :many
 SELECT id, session_id, state, ark_psbt,
        created_at, updated_at, expires_at, finalized_at

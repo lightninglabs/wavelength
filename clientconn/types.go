@@ -9,6 +9,7 @@ import (
 	mailboxconn "github.com/lightninglabs/darepo-client/mailbox/conn"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
+	"github.com/lightninglabs/darepo/metrics"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
 
@@ -106,6 +107,11 @@ type PerClientConfig struct {
 	// from its StatusTracker, but callers that construct runtimes
 	// directly may leave it unset.
 	ActivityMarker ActivityMarker
+
+	// MetricsActor is an optional reference to the centralized
+	// metrics actor. When set, the ingress loop reports per-method
+	// dispatch latency.
+	MetricsActor fn.Option[actor.TellOnlyRef[metrics.Msg]]
 }
 
 // DefaultPerClientConfig returns a PerClientConfig with sensible defaults for

@@ -47,6 +47,10 @@ FROM oor_sessions
 WHERE state IN ('cosigned', 'awaiting_notify')
 ORDER BY updated_at DESC;
 
+-- name: GetOORSessionStatsByState :many
+SELECT state, COUNT(*) AS count
+FROM oor_sessions GROUP BY state;
+
 -- name: DeleteOORCheckpoints :exec
 DELETE FROM oor_checkpoints WHERE session_db_id = $1;
 

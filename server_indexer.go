@@ -14,6 +14,7 @@ import (
 	"github.com/lightninglabs/darepo/indexer"
 	"github.com/lightninglabs/darepo/mailbox"
 	"github.com/lightninglabs/darepo/mailboxrpcserver"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/oor"
 	"github.com/lightningnetwork/lnd/clock"
 	"google.golang.org/grpc"
@@ -121,6 +122,30 @@ func (s *Server) setupIndexerSubsystem(ctx context.Context) error {
 	// Create the client status tracker so the bridge can report
 	// per-client liveness derived from inbound envelope activity.
 	s.statusTracker = clientconn.NewPullActivityTracker()
+
+	// Register a callback to notify the metrics actor when clients
+	// transition between online and offline. The metrics actor
+	// handles all Prometheus gauge updates.
+	s.statusTracker.OnStatusChange(
+		func(_ clientconn.ClientID, status clientconn.ClientStatus) {
+			var online bool
+			switch status {
+			case clientconn.StatusOnline:
+				online = true
+			case clientconn.StatusOffline:
+				online = false
+			default:
+				return
+			}
+
+			s.tellMetrics(
+				context.Background(),
+				&metrics.ClientStatusChangedMsg{
+					Online: online,
+				},
+			)
+		},
+	)
 
 	// Create the shared per-client connection bridge. All subsystems
 	// contribute dispatchers to this bridge so a single client

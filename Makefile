@@ -1,5 +1,5 @@
 .PHONY: sqlc sqlc-check migrate-create migrate-up migrate-down gen
-.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
+.PHONY: lint lint-source lint-changed lint-local lint-source-local lint-changed-local lint-native build-native-linter local-custom-gcl install-custom-gcl docker-tools fmt fmt-check tidy-module tidy-module-check
 .PHONY: ast-lint ast-grep-fix
 .PHONY: unit unit-cover unit-race check-go-version build install clean release
 .PHONY: build rpc install help
@@ -236,6 +236,15 @@ lint-changed-local: check-go-version local-custom-gcl #? Run static code analysi
 		LINT_BASE="$(LINT_BASE)" \
 		LINT_WHOLE_FILES=1 \
 		./scripts/lint_tag_guarded_pkgs.sh
+
+build-native-linter: #? Build the custom golangci-lint binary natively
+	@$(call print, "Building custom linter natively.")
+	@./scripts/install-custom-gcl.sh "$(LOCAL_CUSTOM_GCL)"
+
+lint-native: check-go-version build-native-linter #? Run static code analysis natively without Docker (faster on macOS)
+	@$(call print, "Linting source (native).")
+	GOWORK=off $(LOCAL_CUSTOM_GCL) run -v $(LINT_WORKERS) \
+		--new-from-rev=$$(git merge-base HEAD master)
 
 # Globs to exclude generated files from ast-grep.
 AST_GREP_EXCLUDE := --globs '!**/*.pb.go' --globs '!**/*.pb.gw.go' --globs '!**/*.pb.json.go' --globs '!**/db/sqlc/*.go'

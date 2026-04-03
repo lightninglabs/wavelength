@@ -18,6 +18,7 @@ import (
 	"github.com/lightninglabs/darepo/batch"
 	"github.com/lightninglabs/darepo/batchwatcher"
 	"github.com/lightninglabs/darepo/clientconn"
+	"github.com/lightninglabs/darepo/metrics"
 	"github.com/lightninglabs/darepo/vtxo"
 	"github.com/lightninglabs/taproot-assets/proof"
 	"github.com/lightningnetwork/lnd/fn/v2"
@@ -123,6 +124,11 @@ type ActorConfig struct {
 	// sealed immediately without waiting for the registration
 	// timeout. A nil predicate is equivalent to "never seal early".
 	ShouldSeal SealPredicate
+
+	// MetricsActor is an optional reference to the centralized
+	// metrics actor. When set, the rounds actor sends metric
+	// events here instead of calling Prometheus directly.
+	MetricsActor fn.Option[actor.TellOnlyRef[metrics.Msg]]
 }
 
 // Actor is the server rounds actor. It wraps the round FSM and manages its
@@ -142,11 +148,23 @@ type Actor struct {
 	// Access the round via rounds[currentRoundID].
 	currentRoundID RoundID
 
-	// clientRounds tracks which rounds each client is participating in.
-	// Updated when clients join rounds and when rounds complete/fail.
+	// clientRounds tracks which rounds each client is participating
+	// in. Updated when clients join rounds and when rounds
+	// complete/fail.
 	clientRounds map[clientconn.ClientID]map[RoundID]struct{}
 
 	log btclog.Logger
+}
+
+// tellMetrics sends a metric message to the metrics actor if
+// configured. Errors are silently ignored since metrics are
+// best-effort.
+func (a *Actor) tellMetrics(ctx context.Context, msg metrics.Msg) {
+	a.cfg.MetricsActor.WhenSome(
+		func(ref actor.TellOnlyRef[metrics.Msg]) {
+			_ = ref.Tell(ctx, msg)
+		},
+	)
 }
 
 // makeTimeoutID creates a composite timeout ID from a round ID and phase.
@@ -224,11 +242,17 @@ func (a *Actor) getCurrentRound() *RoundFSM {
 }
 
 // trackClientJoin records that a client has joined a specific round.
-func (a *Actor) trackClientJoin(clientID clientconn.ClientID, roundID RoundID) {
+func (a *Actor) trackClientJoin(ctx context.Context,
+	clientID clientconn.ClientID, roundID RoundID) {
+
 	if a.clientRounds[clientID] == nil {
 		a.clientRounds[clientID] = make(map[RoundID]struct{})
 	}
 	a.clientRounds[clientID][roundID] = struct{}{}
+
+	a.tellMetrics(ctx, &metrics.ClientJoinedRoundMsg{
+		RoundID: roundID.String(),
+	})
 }
 
 // untrackRound removes a round from all clients' tracking. This is called when
@@ -554,7 +578,8 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			// Track client join when a ClientSuccessResp is sent.
 			if successResp, ok := m.(*ClientSuccessResp); ok {
 				a.trackClientJoin(
-					successResp.Client, successResp.RoundID,
+					ctx, successResp.Client,
+					successResp.RoundID,
 				)
 			}
 
@@ -567,6 +592,12 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			}
 
 		case *StartTimeoutReq:
+			// Notify metrics actor that a new phase is starting.
+			a.tellMetrics(ctx, &metrics.PhaseStartedMsg{
+				RoundID: m.RoundID.String(),
+				Phase:   string(m.Phase),
+			})
+
 			// Create composite timeout ID that includes the phase.
 			// This allows us to identify which state scheduled the
 			// timeout when it expires.
@@ -598,6 +629,12 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			}
 
 		case *CancelTimeoutReq:
+			// Phase completed before timeout fired.
+			a.tellMetrics(ctx, &metrics.PhaseEndedMsg{
+				RoundID: m.RoundID.String(),
+				Phase:   string(m.Phase),
+			})
+
 			// Cancel timeout using composite ID constructed from
 			// round ID and phase.
 			compositeID := makeTimeoutID(m.RoundID, m.Phase)
@@ -610,6 +647,11 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 			}
 
 		case *RoundSealedReq:
+			// Notify metrics actor that registration closed.
+			a.tellMetrics(ctx, &metrics.RoundSealedMsg{
+				RoundID: m.SealedRoundID.String(),
+			})
+
 			// Round has been sealed - create a new round for new
 			// registrations.
 			newRound, err := a.newRoundFSM(ctx)
@@ -632,6 +674,12 @@ func (a *Actor) processOutbox(ctx context.Context, outbox []OutboxEvent) error {
 				fmt.Errorf("round failed: %s", m.Reason),
 				"round_id", m.FailedRoundID,
 				"reason", m.Reason)
+
+			// Notify metrics actor of round failure.
+			a.tellMetrics(ctx, &metrics.RoundCompletedMsg{
+				RoundID: m.FailedRoundID.String(),
+				Status:  "failed",
+			})
 
 			// Untrack all clients from this failed round.
 			a.untrackRound(m.FailedRoundID)
@@ -748,6 +796,11 @@ func (a *Actor) newRoundFSM(ctx context.Context) (*RoundFSM, error) {
 		startHeight = uint32(bestHeightResp.Height)
 	}
 
+	// Notify metrics actor of new round creation.
+	a.tellMetrics(ctx, &metrics.RoundCreatedMsg{
+		RoundID: roundID.String(),
+	})
+
 	return a.buildAndStartRoundFSM(
 		ctx, roundID, &CreatedState{}, startHeight,
 	), nil
@@ -839,6 +892,27 @@ func (a *Actor) handleTimeout(ctx context.Context,
 		return fn.Ok[ActorResp](nil)
 	}
 
+	// Notify metrics actor that a phase ended by timeout.
+	if phase == TimeoutPhaseRegistration ||
+		phase == TimeoutPhaseInputSigs ||
+		phase == TimeoutPhaseVTXONonces {
+
+		a.tellMetrics(ctx, &metrics.PhaseEndedMsg{
+			RoundID:  roundID.String(),
+			Phase:    string(phase),
+			TimedOut: true,
+		})
+	}
+
+	// Also notify for registration timeout specifically so the
+	// metrics actor can observe it with "timeout" status.
+	if phase == TimeoutPhaseRegistration {
+		a.tellMetrics(ctx, &metrics.RoundSealedMsg{
+			RoundID:  roundID.String(),
+			TimedOut: true,
+		})
+	}
+
 	// Create the appropriate phase-specific timeout event.
 	var timeoutEvent Event
 	switch phase {
@@ -922,6 +996,13 @@ func (a *Actor) handleConfirmation(ctx context.Context,
 
 	// Untrack all clients from this completed round.
 	a.untrackRound(msg.RoundID)
+
+	// Notify metrics actor of round confirmation.
+	a.tellMetrics(ctx, &metrics.RoundCompletedMsg{
+		RoundID:     msg.RoundID.String(),
+		Status:      "confirmed",
+		BlockHeight: uint32(msg.BlockHeight),
+	})
 
 	a.log.InfoS(ctx, "Round transaction confirmed",
 		"round_id", msg.RoundID,

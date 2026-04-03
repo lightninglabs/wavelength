@@ -31,6 +31,7 @@ package may import from a higher layer.
 | [`indexer`](indexer/) | Wallet-scoped VTXO/round/OOR event query service |
 | [`batchwatcher`](batchwatcher/) | On-chain batch transaction monitoring and VTXO spend detection |
 | [`batchsweeper`](batchsweeper/) | Expired batch recovery via sweep transactions |
+| [`metrics`](metrics/) | Centralized Prometheus metrics actor, HTTP scrape endpoint |
 
 ### Layer 3: Application & Orchestration
 
