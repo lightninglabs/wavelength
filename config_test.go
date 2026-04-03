@@ -18,6 +18,16 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+// TestDefaultConfigDisablesMetrics ensures metrics remain opt-in in the
+// default daemon configuration.
+func TestDefaultConfigDisablesMetrics(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	require.NotNil(t, cfg.Metrics)
+	require.Empty(t, cfg.Metrics.ListenAddr)
+}
+
 // TestConfigValidate exercises the config validation logic across a
 // range of valid and invalid configurations.
 func TestConfigValidate(t *testing.T) {

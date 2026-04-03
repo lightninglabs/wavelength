@@ -90,8 +90,8 @@ Subsystem actors                  MetricsActor              Prometheus
 ## Configuration
 
 The metrics HTTP server is configured via the `--metrics.listen` CLI flag
-(env: `ARKD_METRICS_LISTEN`). Default: `0.0.0.0:9090`. Set to empty string
-to disable.
+(env: `ARKD_METRICS_LISTEN`). Metrics are disabled by default. Set the flag
+to an address such as `0.0.0.0:9090` to enable the Prometheus endpoint.
 
 ## Adding New Metrics
 
