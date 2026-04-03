@@ -528,6 +528,27 @@ func (c *TreeSignCoordinator) GetFinalSigsForSigners(
 	return result, nil
 }
 
+// AllFinalSigs returns aggregated signatures for all transactions in this
+// coordinator. This is used by the server to apply signatures to the
+// persisted VTXO trees so OOR receivers can obtain signed tree paths.
+func (c *TreeSignCoordinator) AllFinalSigs() (
+	map[TxID]*schnorr.Signature, error) {
+
+	result := make(map[TxID]*schnorr.Signature, len(c.txSigners))
+
+	for txid, txCoordinator := range c.txSigners {
+		sig, err := txCoordinator.AggregateSig()
+		if err != nil {
+			return nil, fmt.Errorf("aggregate sig for %s: %w",
+				txid, err)
+		}
+
+		result[txid] = sig
+	}
+
+	return result, nil
+}
+
 // AddPartialSignatures adds partial signatures from a signer for their
 // transactions. Returns the number of signatures accepted.
 func (c *TreeSignCoordinator) AddPartialSignatures(signer *btcec.PublicKey,
