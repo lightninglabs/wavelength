@@ -175,6 +175,14 @@ type Server struct {
 	// handlers that require wallet access select on this channel.
 	walletReady chan struct{}
 
+	// daemonReady is closed when all startup steps have
+	// completed: wallet initialized, mailbox transport
+	// connected, and wallet-dependent actors started. Test
+	// harnesses should wait on this before issuing RPCs that
+	// require the full stack.
+	daemonReady     chan struct{}
+	daemonReadyOnce sync.Once
+
 	// chainParams identifies the active Bitcoin network. In lnd
 	// mode this is populated from the lnd connection; in lwwallet
 	// mode it is derived from the config's network string.
@@ -231,6 +239,7 @@ func NewServer(cfg *Config) (*Server, error) {
 	return &Server{
 		cfg:         cfg,
 		walletReady: make(chan struct{}),
+		daemonReady: make(chan struct{}),
 	}, nil
 }
 
@@ -273,6 +282,22 @@ func (s *Server) markWalletReady() {
 	s.walletReadyOnce.Do(func() {
 		close(s.walletReady)
 	})
+}
+
+// markDaemonReady closes the daemonReady channel, signaling that all
+// startup steps (wallet + mailbox + actors) have completed.
+func (s *Server) markDaemonReady() {
+	s.daemonReadyOnce.Do(func() {
+		close(s.daemonReady)
+	})
+}
+
+// DaemonReady returns a channel that is closed when the daemon has
+// fully started: wallet initialized, mailbox connected, and all
+// actors registered. Test harnesses should wait on this before
+// issuing RPCs that require the full stack.
+func (s *Server) DaemonReady() <-chan struct{} {
+	return s.daemonReady
 }
 
 // RPCAddr returns the bound daemon gRPC listener address once startup has
@@ -594,11 +619,20 @@ func (s *Server) run(ctx context.Context,
 		); err != nil {
 			return err
 		}
+
+		s.markDaemonReady()
 	} else {
 		// Launch a goroutine that waits for the wallet to
 		// become ready (via InitWallet or UnlockWallet RPC)
 		// and then bootstraps the full mailbox + actor stack.
+		// The WaitGroup ensures the goroutine completes (or
+		// is cancelled) before RunWithContext returns and
+		// defers start tearing down resources.
+		var deferredWg sync.WaitGroup
+		deferredWg.Add(1)
 		go func() {
+			defer deferredWg.Done()
+
 			select {
 			case <-s.walletReady:
 			case <-ctx.Done():
@@ -632,8 +666,13 @@ func (s *Server) run(ctx context.Context,
 				s.log.ErrorS(ctx,
 					"Failed to start wallet actors",
 					err)
+
+				return
 			}
+
+			s.markDaemonReady()
 		}()
+		defer deferredWg.Wait()
 
 		s.log.InfoS(ctx, "Wallet not ready, waiting for "+
 			"InitWallet or UnlockWallet RPC",
