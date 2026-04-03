@@ -73,15 +73,27 @@ func NewRuntime(cfg ConnectorConfig) (*Runtime, error) {
 // Start launches durable egress processing and ingress pulling. Returns an
 // error if the ingress checkpoint cannot be loaded from the store.
 func (r *Runtime) Start(ctx context.Context) error {
-	r.DurableActor.Start()
+	r.StartEgress()
 
-	if err := r.connector.StartIngress(ctx); err != nil {
+	if err := r.StartIngress(ctx); err != nil {
 		r.DurableActor.Stop()
 
 		return err
 	}
 
 	return nil
+}
+
+// StartEgress launches durable egress processing without starting ingress.
+// Callers that need local actors registered before remote mailbox replay can
+// use this to bring up outbound delivery first and start ingress later.
+func (r *Runtime) StartEgress() {
+	r.DurableActor.Start()
+}
+
+// StartIngress launches ingress pulling and heartbeat handling.
+func (r *Runtime) StartIngress(ctx context.Context) error {
+	return r.connector.StartIngress(ctx)
 }
 
 // Stop shuts down ingress polling and durable egress processing.

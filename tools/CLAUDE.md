@@ -11,8 +11,9 @@ Development tool dependencies (`tools.go` for protoc plugins, sqlc, linters).
 
 ## Local Linting
 
-- Run `make install-custom-gcl` from the repo root to build a native
-  `custom-gcl` binary for the current macOS/Linux host.
-- After installation, `make lint-local` and `make lint-changed-local`
-  reuse that native binary and load the real `ll` plugin instead of the
-  fallback `lll` approximation.
+- **Preferred**: `make lint-native` builds the custom linter via
+  `go tool golangci-lint custom` and runs it on branch changes. No Docker
+  required, loads the real `ll` plugin.
+- **Alternative**: `make install-custom-gcl` builds a native `custom-gcl`
+  binary, then `make lint-changed-local` uses it.
+- Both native paths are much faster than `make lint` (Docker) on macOS.

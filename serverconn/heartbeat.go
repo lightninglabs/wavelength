@@ -94,6 +94,7 @@ func (a *ServerConnectionActor) sendHeartbeat(ctx context.Context) {
 		Sender:          a.cfg.LocalMailboxID,
 		Recipient:       a.cfg.RemoteMailboxID,
 		CreatedAtUnixMs: now.UnixMilli(),
+		Headers:         a.cfg.mergeAuthHeaders(nil),
 		Rpc: &mailboxpb.RpcMeta{
 			Kind:    mailboxpb.RpcMeta_KIND_EVENT,
 			Service: HeartbeatService,

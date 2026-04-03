@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -58,6 +59,15 @@ type NeutrinoService struct {
 func NewNeutrinoService(dataDir string, chainParams *chaincfg.Params,
 	connectPeers, addPeers []string, persistFilters bool,
 	logger btclog.Logger) (*NeutrinoService, error) {
+
+	// Ensure the data directory exists before attempting to
+	// open or create the bbolt database. The daemon's
+	// initDatabase creates the network directory, but callers
+	// like preStartNeutrino may resolve a custom path that
+	// does not yet exist.
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create neutrino data dir: %w", err)
+	}
 
 	dbPath := filepath.Join(dataDir, neutrinoDBName)
 

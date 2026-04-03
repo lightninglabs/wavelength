@@ -8,7 +8,7 @@ gRPC API.
 
 ## Key Types
 
-- `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem.
+- `Server` — Main daemon owning wallet, DB, chainsource actor, gRPC server, and ActorSystem. Caches `localMailboxID` (pubkey-derived) and `authSigHex` (Schnorr auth) on the struct for use in response envelopes.
 - `RPCServer` — Implements the gRPC `DaemonService` API (Board, ListRounds, WatchRounds, NewOORReceiveScript, SendVTXO, etc.). Includes test hooks for mailbox edge factory and round registration.
 - `Config` — Daemon configuration (data dir, network, RPC host, wallet type, etc.). Includes `MailboxEdgeFactory` hook for test harness transport interception.
 - `TriggerRoundRegistration` — Test-hook method that injects a round registration event into the round actor (in `server_round_testhook.go`).
@@ -19,6 +19,9 @@ gRPC API.
 - `ResolveIncomingMetadataFromIndexer` — Resolves authoritative VTXO lineage metadata from the indexer's `ListVTXOsByScripts` response for incoming materialization.
 - `SendVTXO` — RPC handler for in-round directed sends. Validates recipients, resolves destinations via `resolveRecipientOutput`, and delegates to the wallet actor.
 - `resolveRecipientOutput` — Extracts pkScript and client pubkey from an `Output` proto oneof (pubkey or address). Enforces taproot-only for directed sends.
+- `deriveIdentityKeyEarly` — Derives the client's secp256k1 identity key from LND or lwwallet before mailbox transport starts. Propagates wallet-specific errors on failure.
+- `signMailboxAuth` — Produces Schnorr auth signature. LND path uses tagged Schnorr signing RPC (`withSchnorrTag`); lwwallet path signs locally via `serverconn.SignMailboxAuth`.
+- `fetchOperatorPubKeyDirect` — Fetches operator pubkey via direct gRPC `GetInfo` call before the mailbox runtime starts.
 
 ## Relationships
 
@@ -30,6 +33,9 @@ gRPC API.
 - Server owns ActorSystem lifetime; shutdown stops all subsystems.
 - Wallet transitions None → Locked → Ready (or direct to Ready if seed provided).
 - Three wallet modes: LND-backed, lightweight (`lwwallet`), or neutrino-backed (`btcwallet` via `btcwbackend`).
+- Mailbox IDs are derived from identity pubkeys (via `serverconn.PubKeyMailboxID`), not config strings. The operator's remote mailbox ID is fetched via direct gRPC before the mailbox runtime starts.
+- Auth headers (Schnorr signature) are injected into all outbound envelopes including response envelopes in `handleInboundRPC`.
+- TLS client cert generation is skipped in insecure mode.
 - Per-subsystem logging: configurable log writer, no global mutable loggers. Each subsystem receives its own logger instance.
 - Board RPC is non-blocking: delegates to wallet actor and returns immediately.
 - ListRounds splits pending (in-memory from actor) and persisted (SQL with cursor pagination) rounds.

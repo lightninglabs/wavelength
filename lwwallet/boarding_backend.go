@@ -136,7 +136,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 // from Esplora's tx status endpoint so it is available for TxProof
 // construction even when catching up on UTXOs confirmed many blocks ago.
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	txid chainhash.Hash) (*wallet.TxInfo, error) {
 
 	// Try btcwallet's transaction store first for the raw tx.
 	tx, err := b.BtcWallet.FetchTx(txid)
@@ -151,16 +151,16 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 
 		tx, err = b.esplora.GetRawTx(txid)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"get transaction: %w", err,
 			)
 		}
 	}
 
-	// Fetch the confirmation status from Esplora to get the block
-	// hash. This is needed for TxProof construction.
-	var blockHash *chainhash.Hash
+	info := &wallet.TxInfo{Tx: tx}
 
+	// Fetch the confirmation status from Esplora to get the block
+	// hash and height. Both are needed for TxProof construction.
 	status, err := b.esplora.GetTxStatus(txid)
 	if err != nil {
 		b.Log.WarnS(ctx,
@@ -170,15 +170,16 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 	} else if status.Confirmed && status.BlockHash != "" {
 		h, err := chainhash.NewHashFromStr(status.BlockHash)
 		if err != nil {
-			return nil, nil, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"parse block hash: %w", err,
 			)
 		}
 
-		blockHash = h
+		info.BlockHash = h
+		info.BlockHeight = int32(status.BlockHeight)
 	}
 
-	return tx, blockHash, nil
+	return info, nil
 }
 
 // GetBlock returns the full block for the given block hash via the Esplora

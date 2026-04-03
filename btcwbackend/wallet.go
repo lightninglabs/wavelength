@@ -204,6 +204,9 @@ func (w *Wallet) Stop() {
 	// Stop order: btcwallet (depends on neutrino chain client)
 	// must stop before neutrino service.
 	_ = w.BtcWallet.Stop()
+	if err := w.BtcWallet.InternalWallet().Database().Close(); err != nil {
+		w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB", err)
+	}
 
 	if w.ownsNeutrino {
 		_ = w.neutrinoSvc.Stop()

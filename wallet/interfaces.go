@@ -163,15 +163,14 @@ type BoardingBackend interface {
 		ctx context.Context, minConfs, maxConfs int32,
 	) ([]*Utxo, error)
 
-	// GetTransaction returns the full transaction and its confirmation
-	// block hash for a given txid. The block hash is needed for TxProof
-	// construction — using the actual confirmation block ensures proofs
-	// are correct even for UTXOs discovered during catch-up after
-	// downtime. The block hash pointer is nil when the tx is
-	// unconfirmed.
+	// GetTransaction returns the full transaction and its
+	// confirmation metadata. The confirmation block hash and height
+	// are needed for TxProof construction — using the actual
+	// confirmation block ensures proofs are correct even for UTXOs
+	// discovered during catch-up after downtime.
 	GetTransaction(
 		ctx context.Context, txid chainhash.Hash,
-	) (*wire.MsgTx, *chainhash.Hash, error)
+	) (*TxInfo, error)
 
 	// GetBlock returns the full block for the given block hash. This is
 	// used to compute merkle inclusion proofs (TxProof) when a boarding
@@ -179,6 +178,22 @@ type BoardingBackend interface {
 	GetBlock(
 		ctx context.Context, blockHash chainhash.Hash,
 	) (*wire.MsgBlock, error)
+}
+
+// TxInfo contains a fetched transaction and its on-chain confirmation
+// metadata. When the transaction is unconfirmed, BlockHash is nil and
+// BlockHeight is 0.
+type TxInfo struct {
+	// Tx is the full deserialized transaction.
+	Tx *wire.MsgTx
+
+	// BlockHash is the hash of the block that confirms the
+	// transaction. Nil when unconfirmed.
+	BlockHash *chainhash.Hash
+
+	// BlockHeight is the height of the confirmation block. Zero
+	// when unconfirmed.
+	BlockHeight int32
 }
 
 // Utxo represents an unspent transaction output returned by ListUnspent. This

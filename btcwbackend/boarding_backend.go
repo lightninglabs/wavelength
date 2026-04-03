@@ -146,7 +146,7 @@ func (b *BoardingBackendAdapter) ListUnspent(ctx context.Context,
 // block hash for the given txid. It fetches from btcwallet's
 // transaction store, which is populated by neutrino's chain sync.
 func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
-	txid chainhash.Hash) (*wire.MsgTx, *chainhash.Hash, error) {
+	txid chainhash.Hash) (*wallet.TxInfo, error) {
 
 	// Fetch the raw transaction from btcwallet's store.
 	tx, err := b.BtcWallet.FetchTx(txid)
@@ -156,23 +156,28 @@ func (b *BoardingBackendAdapter) GetTransaction(ctx context.Context,
 			slog.String("txid", txid.String()),
 		)
 
-		return nil, nil, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"transaction %s not found in wallet", txid,
 		)
 	}
 
+	info := &wallet.TxInfo{Tx: tx}
+
 	// Look up the transaction details from btcwallet to get the
-	// block hash.
+	// confirmation block hash and height.
 	txDetails, err := b.BtcWallet.InternalWallet().GetTransaction(
 		txid,
 	)
 	if err != nil {
-		// We have the tx but no details — return without block
-		// hash.
-		return tx, nil, nil
+		// We have the tx but no details — return without
+		// confirmation metadata.
+		return info, nil
 	}
 
-	return tx, txDetails.BlockHash, nil
+	info.BlockHash = txDetails.BlockHash
+	info.BlockHeight = txDetails.Height
+
+	return info, nil
 }
 
 // GetBlock returns the full block for the given block hash via

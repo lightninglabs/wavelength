@@ -158,6 +158,9 @@ func (w *Wallet) Stop() {
 	w.Logger(ctx).InfoS(ctx, "Stopping lightweight wallet")
 
 	_ = w.BtcWallet.Stop()
+	if err := w.BtcWallet.InternalWallet().Database().Close(); err != nil {
+		w.Logger(ctx).WarnS(ctx, "Failed to close btcwallet DB", err)
+	}
 	w.chainSvc.WaitForShutdown()
 	_ = w.chainBackend.Stop()
 
