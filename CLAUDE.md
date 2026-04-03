@@ -46,7 +46,6 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 
 - Prefix with package name (`db:`, `rpc:`, `multi:` for multiple).
 - Small, atomic commits. Separate bug fixes, refactors, and features.
-- Sign with GPG: `git commit -S -F /path/to/message.txt`
 - Tooling: [`docs/commit-tooling.md`](docs/commit-tooling.md)
 
 ## Critical Rules
