@@ -1223,6 +1223,84 @@ func TestPartialSigsSentState(t *testing.T) {
 		h.assertOutboxContainsType("*round.RegisterConfirmationRequest")
 	})
 
+	t.Run("OperatorSigned_propagates_sigs_to_extracted_client_tree",
+		func(t *testing.T) {
+			t.Parallel()
+
+			h := newRealSigningTestHarness(t)
+
+			intent := h.newTestBoardingIntentWithTapscript()
+			vtxoReq := h.newTestVTXORequestForIntent(intent)
+			vtxtTree := h.newTestVTXOTreeForIntents(
+				[]VTXOIntent{vtxoReq},
+			)
+
+			validSigs, err := h.generateValidTreeSignatures(
+				vtxtTree,
+			)
+			require.NoError(t, err)
+			require.NotEmpty(t, validSigs)
+
+			commitmentTx := h.newCommitmentTxForIntents(
+				[]BoardingIntent{intent}, vtxtTree,
+			)
+
+			roundVTXOReqs := h.wrapVTXOIntents(
+				[]VTXOIntent{vtxoReq},
+			)
+			signerKey := NewSignerKey(
+				roundVTXOReqs[0].SigningKey.PubKey,
+			)
+
+			clientTree, err := vtxtTree.ExtractPathForCoSigners(
+				roundVTXOReqs[0].SigningKey.PubKey,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, clientTree)
+			require.Error(t, clientTree.VerifySigned())
+
+			state := &PartialSigsSentState{
+				RoundID: testRoundIDTr(
+					"round-client-tree-sigs",
+				),
+				CommitmentTx:  commitmentTx,
+				VTXOTreePaths: map[int]*tree.Tree{0: vtxtTree},
+				Intents: Intents{
+					Boarding: []BoardingIntent{intent},
+					VTXOs:    roundVTXOReqs,
+				},
+				ClientTrees: map[SignerKey]*tree.Tree{
+					signerKey: clientTree,
+				},
+				BoardingInputIndices: map[wire.OutPoint]int{
+					intent.Outpoint: 0,
+				},
+				Musig2Sessions: make(
+					map[SignerKey]*tree.SignerSession,
+				),
+			}
+
+			h.setupMockWalletForBoardingSigning()
+			h.setupMockRoundStoreForCommit()
+			h.withState(state)
+
+			event := &OperatorSigned{
+				RoundID: testRoundIDTr(
+					"round-client-tree-sigs",
+				),
+				AggSigs: validSigs,
+			}
+
+			transition, err := h.sendEvent(event)
+			require.NoError(t, err)
+			require.NotNil(t, transition)
+
+			assertStateType[*InputSigSentState](
+				h.boardingTestHarness,
+			)
+			require.NoError(t, clientTree.VerifySigned())
+		})
+
 	t.Run("OperatorSigned_starts_forfeit_timeout", func(t *testing.T) {
 		t.Parallel()
 

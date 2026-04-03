@@ -70,7 +70,11 @@ func TestBuildCheckpointAndArkPSBT(t *testing.T) {
 
 	checkpointTx := cpResult.PSBT.UnsignedTx
 	require.NotNil(t, checkpointTx)
-	require.Len(t, checkpointTx.TxOut, 1)
+	require.Len(t, checkpointTx.TxOut, 2)
+	require.Equal(t, scripts.AnchorOutput().Value,
+		checkpointTx.TxOut[1].Value)
+	require.Equal(t, scripts.AnchorOutput().PkScript,
+		checkpointTx.TxOut[1].PkScript)
 
 	arkPsbt, err := BuildArkPSBT([]CheckpointOutput{
 		{

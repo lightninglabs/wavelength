@@ -58,8 +58,9 @@ type Result struct {
 	TapTreeEncoded []byte
 }
 
-// BuildPSBT constructs an unsigned checkpoint PSBT that spends a VTXO input and
-// pays the entire input value to a checkpoint P2TR output.
+// BuildPSBT constructs an unsigned checkpoint PSBT that spends a VTXO input,
+// pays the entire input value to a checkpoint P2TR output, and appends a
+// zero-value anchor output.
 //
 // The checkpoint output pkScript is derived deterministically from:
 //
@@ -119,6 +120,7 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 		Value:    in.SpentVTXO.Output.Value,
 		PkScript: checkpointPkScript,
 	})
+	tx.AddTxOut(scripts.AnchorOutput())
 
 	pkt, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {

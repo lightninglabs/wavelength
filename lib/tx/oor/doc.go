@@ -9,6 +9,8 @@ package oor
 // - PSBT is used as the transport and storage envelope.
 // - Output ordering follows BIP69 ordering (amount, then pkScript) for
 //   recipient outputs.
+// - Checkpoint txs use output 0 as the spendable output and place their
+//   anchor output last.
 // - The Ark anchor output is always last.
 //
 // The submit flow builds a package containing the Ark PSBT plus one or more

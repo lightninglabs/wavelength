@@ -63,6 +63,13 @@ func ValidateFinalizePackage(ark *psbt.Packet,
 				txid)
 		}
 
+		if err := validateCheckpointTx(
+			checkpoint.UnsignedTx,
+		); err != nil {
+			return fmt.Errorf("checkpoint %s invalid: %w", txid,
+				err)
+		}
+
 		if len(checkpoint.Inputs) != len(checkpoint.UnsignedTx.TxIn) {
 			return fmt.Errorf("checkpoint psbt input count " +
 				"mismatch")
