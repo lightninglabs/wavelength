@@ -36,6 +36,7 @@ import (
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	mailboxrpc "github.com/lightninglabs/darepo-client/mailbox/rpc"
 	"github.com/lightninglabs/darepo-client/oor"
+	"github.com/lightninglabs/darepo-client/proofkeys"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/rpc/oorpb"
 	"github.com/lightninglabs/darepo-client/rpc/roundpb"
@@ -194,6 +195,10 @@ type Server struct {
 	runtime *serverconn.Runtime
 	ark     *arkrpc.ArkServiceMailboxClient
 	indexer *indexer.Client
+
+	// proofKeyBackend derives wallet-managed keys and produces proof
+	// signers for daemon-owned receive scripts and indexer identity.
+	proofKeyBackend proofkeys.Backend
 
 	actorSystem  *actor.ActorSystem
 	chainBackend chainsource.ChainBackend
@@ -681,6 +686,7 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 		return fmt.Errorf("unable to connect to lnd: %w", err)
 	}
 	s.lnd = fn.Some(lndServices)
+	s.refreshProofKeyBackend()
 
 	// Use lnd's chain params as the authoritative source.
 	s.chainParams = lndServices.ChainParams
@@ -693,6 +699,39 @@ func (s *Server) initLndBackend(ctx context.Context) error {
 	s.markWalletReady()
 
 	return nil
+}
+
+// refreshProofKeyBackend resolves the active wallet backend to the shared
+// proof-key capability used by daemon-owned receive scripts and indexer proof
+// generation.
+func (s *Server) refreshProofKeyBackend() {
+	switch s.cfg.Wallet.Type {
+	case WalletTypeLnd:
+		if s.lnd.IsSome() {
+			lndSvc := s.lnd.UnsafeFromSome()
+			s.proofKeyBackend = lndbackend.NewProofKeyBackend(
+				lndSvc.WalletKit, lndSvc.Signer,
+			)
+
+			return
+		}
+
+	case WalletTypeLwwallet:
+		if s.lwWallet.IsSome() {
+			s.proofKeyBackend = s.lwWallet.UnsafeFromSome()
+
+			return
+		}
+
+	case WalletTypeBtcwallet:
+		if s.btcwWallet.IsSome() {
+			s.proofKeyBackend = s.btcwWallet.UnsafeFromSome()
+
+			return
+		}
+	}
+
+	s.proofKeyBackend = nil
 }
 
 // tryAutoUnlockLwwallet attempts to initialize the lwwallet backend
@@ -836,6 +875,7 @@ func (s *Server) startLwwallet(ctx context.Context,
 	}
 
 	s.lwWallet = fn.Some(w)
+	s.refreshProofKeyBackend()
 
 	// Refresh the RPC clients once the wallet is available so the
 	// indexer client picks up the wallet-backed identity key and signer
@@ -1068,6 +1108,7 @@ func (s *Server) startBtcwallet(ctx context.Context,
 	}
 
 	s.btcwWallet = fn.Some(w)
+	s.refreshProofKeyBackend()
 
 	// Initialize the chain backend if it was deferred at startup
 	// because the wallet was not yet available.
@@ -2113,9 +2154,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 	// correct wallet key from the persisted owned-script map for each
 	// pkScript.
 	var signer indexer.SchnorrSigner
-	s.lnd.WhenSome(func(lndSvc *lndclient.GrpcLndServices) {
-		identityDesc, err := lndSvc.WalletKit.DeriveKey(ctx,
-			&keychain.KeyLocator{
+	signerFactory, err := s.indexerProofSignerFactory()
+	if err != nil {
+		s.log.WarnS(ctx,
+			"Unable to initialize indexer signer factory", err)
+	} else {
+		identityDesc, _, err := s.IndexerProofKey(
+			ctx, keychain.KeyLocator{
 				Family: identityKeyFamily,
 				Index:  0,
 			},
@@ -2123,65 +2168,13 @@ func (s *Server) initRPCClients(ctx context.Context) {
 		if err != nil {
 			s.log.WarnS(ctx,
 				"Unable to derive identity key for indexer", err)
-
-			return
-		}
-
-		s.clientKeyDesc = *identityDesc
-		signer = NewOwnedReceiveScriptSigner(
-			packageStore,
-			func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-				return indexer.NewLNDSchnorrSigner(
-					lndSvc.Signer, keyDesc,
-				)
-			},
-		)
-	})
-	s.lwWallet.WhenSome(func(w *lwwallet.Wallet) {
-		// Derive the node identity key from the wallet
-		// keyring. This is safe even if the wallet isn't
-		// fully synced, as it only depends on the seed.
-		identityDesc, err := w.DeriveKey(ctx, keychain.KeyLocator{
-			Family: identityKeyFamily,
-			Index:  0,
-		})
-		if err != nil {
-			s.log.WarnS(ctx,
-				"Unable to derive identity key for "+
-					"indexer", err)
 		} else {
 			s.clientKeyDesc = *identityDesc
 			signer = NewOwnedReceiveScriptSigner(
-				packageStore,
-				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-					return indexer.NewKeyRingSchnorrSigner(
-						w.KeyRing(), keyDesc,
-					)
-				},
+				packageStore, signerFactory,
 			)
 		}
-	})
-	s.btcwWallet.WhenSome(func(w *btcwbackend.Wallet) {
-		identityDesc, err := w.DeriveKey(ctx, keychain.KeyLocator{
-			Family: identityKeyFamily,
-			Index:  0,
-		})
-		if err != nil {
-			s.log.WarnS(ctx,
-				"Unable to derive identity key for "+
-					"indexer", err)
-		} else {
-			s.clientKeyDesc = *identityDesc
-			signer = NewOwnedReceiveScriptSigner(
-				packageStore,
-				func(keyDesc keychain.KeyDescriptor) indexer.SchnorrSigner { //nolint:ll
-					return indexer.NewKeyRingSchnorrSigner(
-						w.KeyRing(), keyDesc,
-					)
-				},
-			)
-		}
-	})
+	}
 
 	s.indexer = indexer.New(
 		s.runtime.Unary(), signer,
