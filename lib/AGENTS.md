@@ -13,10 +13,16 @@ interfaces, and core Ark types.
 - `Node` — Individual tree node with children and outputs.
 - `LeafDescriptor` — VTXO or connector output to include in tree construction.
 
+### lib/arkscript
+- `Node` — Sealed AST interface for tapscript spending conditions (Multisig, CSV, Condition, etc.).
+- `VTXOPolicy` / `VHTLCPolicy` / `CheckpointPolicy` — High-level policy templates.
+- `CompiledPolicy` — Fully compiled taproot tree with canonical leaf ordering.
+
 ### lib/tx
-- `arktx` — Canonical output ordering for virtual-chain step transactions.
-- `checkpoint` — Checkpoint transaction construction.
-- `oor` — OOR-specific transaction builders.
+- `arktx` — Canonical output ordering and validation for Ark transactions.
+- `checkpoint` — Checkpoint PSBT construction for OOR on-chain anchors.
+- `oor` — OOR submit/finalize package builders and validators.
+- `psbtutil` — PSBT encoding, decoding, and signature attachment helpers.
 
 ### lib/types
 - `OperatorTerms` — Server-published terms (key, delays, fee rate, dust limit).

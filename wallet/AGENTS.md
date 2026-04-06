@@ -11,7 +11,8 @@ refresh, leave, OOR spend, and directed send flows.
 ## Key Types
 
 - `Ark` — Main actor managing boarding addresses, UTXO enumeration, confirmation polling, admission forwarding, and VTXO selection/locking.
-- `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent).
+- `BoardingBackend` — Interface for wallet integration (key derivation, taproot import, ListUnspent). `GetTransaction` returns `*TxInfo` (containing tx, block hash, and block height).
+- `TxInfo` — Struct wrapping a confirmed transaction with its block hash and block height. Returned by `BoardingBackend.GetTransaction`.
 - `BoardingStore` — Interface for persisting boarding addresses and intents.
 - `VTXOReader` — Read-only interface for loading VTXO descriptors by outpoint. Wallet uses this to build intent packages without importing `vtxo` directly.
 - `VTXODescriptor` — Wallet-level VTXO descriptor (outpoint, amount, pkscript, tree, expiry). Avoids direct dependency on `vtxo.Descriptor`.
@@ -44,7 +45,7 @@ refresh, leave, OOR spend, and directed send flows.
 ## Invariants
 
 - UTXO confirmation requires `MinBoardingConfs` (1) on-chain confirmations.
-- `ListUnspent` queries are retried up to 5 times with 200ms delay (mitigates race between block epoch and wallet update).
+- `ListUnspent` queries are retried up to 10 times with 200ms delay (mitigates race between block epoch and wallet update, especially for neutrino backends).
 - Notifier registration captures `minConf` parameter per actor; different actors can require different confirmation depths.
 - Cooperative admission (refresh/leave) must reserve forfeit inputs through the VTXO manager before sending `RegisterIntentMsg` to the round actor.
 - If round registration fails after successful admission, the wallet releases the forfeit reservation so VTXOs return to LiveState.
