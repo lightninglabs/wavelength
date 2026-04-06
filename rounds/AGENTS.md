@@ -26,7 +26,12 @@ confirmation monitoring.
 
 ## Relationships
 
-- **Depends on**: `batch` (tx building, MuSig2 coordination), `batchwatcher` (confirmation monitoring), `clientconn` (outbound events to clients), `vtxo` (VTXO locking during rounds).
+- **Depends on**: `batch` (tx building, MuSig2 coordination), `batchwatcher`
+  (confirmation monitoring), `clientconn` (outbound events to clients),
+  `vtxo` (VTXO locking during rounds), `metrics` (round lifecycle
+  instrumentation). Interaction with `batchsweeper` is indirect:
+  `rounds` registers batches with `batchwatcher`, which in turn notifies
+  `batchsweeper`.
 - **Depended on by**: `indexer` (round event subscription), `lndbackend` (chain queries), root `darepo` (wiring).
 - **Messages to/from**:
   - Receives JoinRoundRequest, nonces, partial sigs <- `clientconn` via `AddEnvelopeRoute` (fire-and-forget Tell from clients).
@@ -49,6 +54,12 @@ confirmation monitoring.
 - Single-client refresh settlement: when only one client participates in a refresh round, the settlement path must still produce valid outputs and not skip signing.
 - `RoundSealedReq` is emitted from a single canonical location (`SealEvent` handler in `RegistrationState`). No other code path emits this message.
 - `ConnectorDustAmount` must be > 0 in round terms (default: 330 sats). Wired from config -> `batch.Terms`. Zero value causes refresh commitment assembly to fail (invalid connector leaf outputs).
+- Round lifecycle is instrumented via metrics actor: `RoundCreatedMsg`,
+  `ClientJoinedRoundMsg`, `RoundSealedMsg`, `PhaseStartedMsg`/`PhaseEndedMsg`,
+  `RoundCompletedMsg`.
+- Aggregated MuSig2 sigs are persisted on server VTXOTrees so they survive
+  restarts and support batch sweep transactions.
+- Swept batches transition VTXOs to Expired status via `batchsweeper` -> `db`.
 
 ## Deep Docs
 

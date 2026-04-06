@@ -13,19 +13,25 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   Supports `SetVTXOProofPolicy(operatorKey, exitDelay)` for owner-pubkey
   proof verification on receive script registration.
 - `Principal` — Authenticated client context (mailbox ID, wallet scope).
-- `lineageResolver` — Per-request resolver for authoritative VTXO lineage
-  metadata (round ID, commitment tx, batch expiry, tree depth, chain depth,
-  tree path). Handles both round-backed and virtual (OOR) VTXOs with
-  checkpoint chain tracing and per-outpoint caching.
+- `LineageResolver` — Interface for per-request resolvers of authoritative VTXO
+  lineage metadata (round ID, commitment tx, batch expiry, tree depth, chain
+  depth, tree path). Extracted as an interface for testability.
+- `lineageResolver` — Concrete implementation handling both round-backed and
+  virtual (OOR) VTXOs with checkpoint chain tracing and per-outpoint caching.
+  Wrapped in `ExecReadTx` for atomic multi-query reads.
 - `ScriptAuthorizer` — Interface for wallet-scope authorization of receive
   script operations.
 - Event types (`IncomingOOREvent`, `IncomingVTXOEvent`) with `ServiceMethod()`
   routing metadata for client-side EventRouter dispatch.
+- `ExecReadTx` — Atomic read transaction wrapper for multi-query consistency.
 
 ## Relationships
 
-- **Depends on**: `clientconn` (per-client dispatch), `db` (wallet-scoped queries), `rounds` (round event subscription).
-- **Depended on by**: root `darepo` (wiring).
+- **Depends on**: `clientconn` (per-client dispatch), `db` (wallet-scoped
+  queries, `ExecReadTx`), `rounds` (round event subscription), `batch` (VTXO
+  spend metadata).
+- **Depended on by**: root `darepo` (wiring), `oor` (`RecipientNotifier`
+  implementation).
 - **Messages to/from**:
   - Receives query requests <- `clientconn` (from clients).
   - Returns query results -> `clientconn` (to clients).
@@ -41,6 +47,10 @@ to their wallet. Dispatched via the mailbox RPC pipeline like other services.
   output key. When absent, the direct-P2TR path is used.
 - `ServiceMethod()` on indexer event messages returns `arkServiceName`
   (not `indexerServiceName`) to match client-side EventRouter routes.
+- Lineage resolver must return errors on checkpoint fetch failure (not
+  silently skip); partial lineage data is worse than an error.
+- Tree path uses proto `TreePath` representation instead of raw TLV bytes.
+- Query limits are enforced to prevent unbounded result sets.
 
 ## Deep Docs
 

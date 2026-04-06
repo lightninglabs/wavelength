@@ -10,16 +10,25 @@ derivation, signing, UTXO management) for the server.
 
 - `ChainSource` — Chain backend implementation backed by LND RPCs.
 - `LndWalletController` — Wallet operations (signing, key management) via LND.
-- `NewLndHeaderVerifier` — Returns a `proof.HeaderVerifier` that validates block headers against LND's chain backend via `ChainKit.GetBlockHash`. Used for TxProof SPV validation of boarding inputs.
+  Uses `SignOutputRawKeyLocator` for all signing operations (key-locator-based
+  signing rather than raw private key export).
+- `NewLndHeaderVerifier` — Returns a `proof.HeaderVerifier` that validates block
+  headers against LND's chain backend via `ChainKit.GetBlockHash`. Used for
+  TxProof SPV validation of boarding inputs.
 
 ## Relationships
 
 - **Depends on**: `rounds` (chain query interfaces).
-- **Depended on by**: root `darepo` (wiring as concrete backend).
+- **Depended on by**: root `darepo` (wiring as concrete backend). The
+  `batchsweeper` package depends on the external `input.Signer` interface
+  from `lnd`; `lndbackend` satisfies that interface only through root-package
+  wiring, not a direct import.
 
 ## Invariants
 
 - LND connection must be established and healthy before round operations begin.
+- All signing uses `SignOutputRawKeyLocator` with `KeyLocator` references; no
+  raw private key export from LND.
 - Wallet operations must use the correct key scope for Ark-specific derivations.
 
 ## Deep Docs

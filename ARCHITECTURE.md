@@ -30,8 +30,8 @@ package may import from a higher layer.
 | [`lndbackend`](lndbackend/) | LND chain backend integration (ChainSource, WalletController) |
 | [`indexer`](indexer/) | Wallet-scoped VTXO/round/OOR event query service |
 | [`batchwatcher`](batchwatcher/) | On-chain batch transaction monitoring and VTXO spend detection |
-| [`batchsweeper`](batchsweeper/) | Expired batch recovery via sweep transactions |
-| [`metrics`](metrics/) | Centralized Prometheus metrics actor, HTTP scrape endpoint |
+| [`batchsweeper`](batchsweeper/) | Expired batch recovery via sweep transactions (production-wired) |
+| [`metrics`](metrics/) | Centralized Prometheus metrics actor, HTTP scrape endpoint (opt-in) |
 
 ### Layer 3: Application & Orchestration
 
@@ -65,19 +65,28 @@ Server (darepo, root orchestrator)
 │   ├── batch        │ (tx building, MuSig2 coordination)
 │   ├── batchwatcher │ (confirmation monitoring)
 │   ├── clientconn   │ (outbound events to clients)
+│   ├── metrics      │ (round lifecycle instrumentation)
 │   └── vtxo         │ (VTXO locking during rounds)
 ├── oor              │
 │   ├── clientconn   │ (outbound events to clients)
 │   ├── db           │ (OOR session persistence)
+│   ├── metrics      │ (transfer outcome instrumentation)
 │   └── vtxo         │ (VTXO locking during transfers)
 ├── indexer          │
+│   ├── batch        │ (VTXO spend metadata)
 │   ├── clientconn   │ (per-client query dispatch)
-│   ├── db           │ (wallet-scoped queries)
+│   ├── db           │ (wallet-scoped queries, ExecReadTx)
 │   └── rounds       │ (round event subscription)
 ├── clientconn       │
-│   └── mailbox      │ (envelope store & delivery)
+│   ├── mailbox      │ (envelope store & delivery)
+│   └── metrics      │ (dispatch latency instrumentation)
 ├── batchsweeper     │
-│   └── batchwatcher │ (sweep eligible batches)
+│   └── batchwatcher │ (sweep eligible batches; VTXO Expired
+│                    │  status updates via injected callback)
+├── metrics          │
+│   ├── db           │ (scrape-time aggregate queries)
+│   └── lndclient    │ (wallet balance queries)
+├── mTLS interceptor │ (per-RPC mailbox access control)
 ├── lndbackend       │
 │   └── rounds       │ (chain queries, wallet ops)
 ├── bitcoind (opt)   │ (direct RPC for boarding UTXO validation)
@@ -145,6 +154,14 @@ FSMs emit messages as data (outbox events). The actor runtime dispatches them
 after state is persisted. This ensures no message is sent without the
 corresponding state transition being durable.
 
+### Mailbox Identity & mTLS
+Client mailbox IDs use a compound format `operator:client` for per-client wire
+routing. The mTLS interceptor (`server_mtls.go`) enforces per-RPC identity
+matching: the TLS client certificate CN (secp256k1 pubkey hex) must match the
+mailbox ID in Send/Pull/AckUpTo requests. Schnorr auth during initial
+registration provides the cryptographic identity proof; mTLS is
+defense-in-depth for post-registration access control.
+
 ## Key Types and Interfaces
 
 | Type | Package | Purpose |
@@ -168,6 +185,11 @@ corresponding state transition being durable.
 | `Operator` | indexer | RPC dispatcher factory for indexer |
 | `Store` | db | Main persistence layer (wraps Postgres/SQLite) |
 | `Store` | mailbox | Durable envelope store |
+| `MetricsActor` | metrics | Event-driven Prometheus metric updates |
+| `SystemCollector` | metrics | Scrape-driven DB/wallet gauge collection |
+| `InstrumentedLocker` | metrics | VTXO lock timing decorator |
+| `systemStatsAdapter` | darepo | Bridges DB+LND queries for metrics collector |
+| `newMailboxAuthInterceptor` | darepo | mTLS unary interceptor for mailbox identity |
 
 ## State Machines
 
@@ -192,6 +214,7 @@ Finalized
 ### VTXO Lifecycle
 ```
 Live → InFlight → Spent
+Live → Expired  (batch swept by operator after CSV timelock expiry)
 ```
 
 ## Per-Package Agent Context

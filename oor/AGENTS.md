@@ -52,12 +52,18 @@ co-signing, finalization, and recipient notification.
 
 - VTXO inputs must be locked before validation proceeds (prevents double-spend).
 - Co-signing happens atomically: either all inputs are co-signed or none.
+- Ark PSBTs are co-signed before persisting OOR packages (ordering fix: sign
+  then persist, not persist then sign).
 - Recipients are notified only after finalization is persisted.
 - Failed transfers must release all VTXO locks and clean up the session map
   entry to prevent leaks.
 - `FinalCheckpointPSBTs` are threaded through FSM states so they survive
   restart and are available for re-notification of `AwaitingRecipientsNotify`
   sessions.
+- Self-contained VTXO spend metadata (outpoint, owner key, exit delay) is
+  persisted alongside OOR packages for checkpoint construction.
+- OOR transfer outcomes are instrumented via metrics actor events
+  (`OORTransferStartedMsg`/`OORTransferCompletedMsg`).
 - Structured logging emits at every key lifecycle event (submit, co-sign,
   finalize, restore, lock/unlock, validation, notification).
 
