@@ -46,7 +46,6 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 
 - Prefix with package name (`db:`, `rpc:`, `multi:` for multiple).
 - Small, atomic commits. Separate bug fixes, refactors, and features.
-- Sign with GPG: `git commit -S -F /path/to/message.txt`
 - Tooling: [`docs/commit-tooling.md`](docs/commit-tooling.md)
 
 ## Critical Rules
@@ -80,6 +79,7 @@ Body wrapped at 72 characters. Explain WHY, not just WHAT.
 - [`docs/commit-tooling.md`](docs/commit-tooling.md) — commit_message.py workflows
 - [`docs/daemon_cli_guide.md`](docs/daemon_cli_guide.md) — darepod/darepocli setup and CLI reference
 - [`docs/go_workspace.md`](docs/go_workspace.md) — Multi-module Go workspace setup
+- [`docs/policy_arkscript_review_guide.md`](docs/policy_arkscript_review_guide.md) — Policy-first arkscript reviewer guide
 
 ### Per-Package Context
 Each major package contains a `CLAUDE.md`/`AGENTS.md` with purpose, key types,
