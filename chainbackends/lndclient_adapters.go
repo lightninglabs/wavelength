@@ -66,8 +66,8 @@ func (e *LndClientFeeEstimator) Stop() error {
 	return nil
 }
 
-// EstimateFeePerKW returns the estimated fee rate in satoshis per kilo-weight
-// unit for the given confirmation target.
+// EstimateFeePerKW returns the estimated fee rate in satoshis per
+// kilo-weight unit for the given confirmation target.
 func (e *LndClientFeeEstimator) EstimateFeePerKW(
 	numBlocks uint32) (chainfee.SatPerKWeight, error) {
 
@@ -75,14 +75,15 @@ func (e *LndClientFeeEstimator) EstimateFeePerKW(
 		context.Background(), 30*time.Second,
 	)
 	defer cancel()
-	satPerVByte, err := e.walletKit.EstimateFeeRate(
+
+	// EstimateFeeRate already returns chainfee.SatPerKWeight
+	// (it does SatPerKWeight(resp.SatPerKw) internally).
+	satPerKw, err := e.walletKit.EstimateFeeRate(
 		ctx, int32(numBlocks),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("estimate fee rate: %w", err)
 	}
-
-	satPerKw := chainfee.SatPerVByte(satPerVByte).FeePerKWeight()
 
 	return satPerKw, nil
 }
