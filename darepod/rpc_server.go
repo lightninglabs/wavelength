@@ -1,8 +1,11 @@
 package darepod
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -19,14 +22,17 @@ import (
 	"github.com/lightninglabs/darepo-client/btcwbackend"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/daemonrpc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
 	"github.com/lightninglabs/darepo-client/lwwallet"
 	"github.com/lightninglabs/darepo-client/oor"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightninglabs/darepo-client/wallet"
 	"github.com/lightninglabs/lndclient"
+	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/keychain"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -297,13 +303,38 @@ func (r *RPCServer) ListVTXOs(ctx context.Context,
 
 	filtered := vtxo.FilterDescriptors(dbVTXOs, filterOpts)
 
+	var packageStore *db.OORArtifactPersistenceStore
+	for i := range filtered {
+		if filtered[i].Status == vtxo.VTXOStatusSpent ||
+			filtered[i].ChainDepth > 0 {
+
+			packageStore = r.newLocalOORArtifactStore()
+
+			break
+		}
+	}
+
 	// Convert to proto.
 	protoVTXOs := make(
 		[]*daemonrpc.VTXO, 0, len(filtered),
 	)
 	for _, v := range filtered {
-		protoVTXOs = append(protoVTXOs,
-			descriptorToProto(v))
+		protoVTXO := descriptorToProto(v)
+		if packageStore != nil &&
+			(v.Status == vtxo.VTXOStatusSpent ||
+				v.ChainDepth > 0) {
+
+			err := populatePackageCheckpointPSBTs(
+				ctx, packageStore, v, protoVTXO,
+			)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal,
+					"populate package checkpoint psbts: %v",
+					err)
+			}
+		}
+
+		protoVTXOs = append(protoVTXOs, protoVTXO)
 	}
 
 	return &daemonrpc.ListVTXOsResponse{
@@ -393,6 +424,62 @@ func descriptorToProto(v *vtxo.Descriptor) *daemonrpc.VTXO {
 		CommitmentTxid: v.CommitmentTxID.String(),
 		ChainDepth:     uint32(v.ChainDepth),
 	}
+}
+
+// newLocalOORArtifactStore returns the local artifact store used to resolve
+// persisted OOR package checkpoints for spent VTXOs.
+func (r *RPCServer) newLocalOORArtifactStore() *db.OORArtifactPersistenceStore {
+	if r.server.db == nil {
+		return nil
+	}
+
+	dbStore := db.NewStore(
+		r.server.db.DB, r.server.db.Queries,
+		r.server.db.Backend(), r.server.log,
+	)
+
+	return dbStore.NewOORArtifactStore(clock.NewDefaultClock())
+}
+
+// populatePackageCheckpointPSBTs attaches locally persisted finalized
+// checkpoint PSBTs to one VTXO response when an OOR package is available for
+// its outpoint.
+func populatePackageCheckpointPSBTs(ctx context.Context,
+	store *db.OORArtifactPersistenceStore, desc *vtxo.Descriptor,
+	protoVTXO *daemonrpc.VTXO) error {
+
+	if store == nil || desc == nil || protoVTXO == nil {
+		return nil
+	}
+
+	bundle, err := store.GetPackageForOutpoint(ctx, desc.Outpoint)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+
+	case err != nil:
+		return err
+	}
+
+	checkpoints := make(
+		[][]byte, 0, len(bundle.FinalCheckpointPSBTs),
+	)
+	for i := range bundle.FinalCheckpointPSBTs {
+		raw, err := psbtutil.Serialize(
+			bundle.FinalCheckpointPSBTs[i],
+		)
+		if err != nil {
+			return fmt.Errorf(
+				"serialize checkpoint %d: %w", i, err,
+			)
+		}
+
+		checkpoints = append(checkpoints, raw)
+	}
+
+	protoVTXO.OorFinalCheckpointPsbts = checkpoints
+
+	return nil
 }
 
 // NewAddress generates a new boarding address that can receive
@@ -790,8 +877,7 @@ func (r *RPCServer) SendVTXO(ctx context.Context,
 			sendResp.SelectedCount),
 		slog.Int64("total_selected",
 			int64(sendResp.TotalSelected)),
-		slog.Int64("change",
-			int64(sendResp.ChangeAmount)))
+		slog.Int64("change", int64(sendResp.ChangeAmount)))
 
 	return &daemonrpc.SendVTXOResponse{
 		Status:          sendResp.Status,
@@ -860,67 +946,104 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 			"unable to fetch operator terms: %v", err)
 	}
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: terms.PubKey,
 		CSVDelay:    terms.VTXOExitDelay,
 	}
 
-	// Ask the wallet actor to select and lock VTXOs covering the
-	// send amount. This is atomic: selected VTXOs are locked to
-	// prevent double-spends until the transfer completes or is
-	// cancelled.
-	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
-	wRef := r.server.walletRef.UnsafeFromSome()
-
-	selectReq := &wallet.SelectAndLockVTXOsRequest{
-		TargetAmount: targetAmt,
-	}
-	selectFuture := wRef.Ask(ctx, selectReq)
-	selectResult := selectFuture.Await(ctx)
-
-	selectResp, err := selectResult.Unpack()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal,
-			"VTXO selection failed: %v", err)
-	}
-
-	locked, ok := selectResp.(*wallet.SelectAndLockVTXOsResponse)
-	if !ok {
-		return nil, status.Errorf(codes.Internal,
-			"unexpected response type: %T", selectResp)
-	}
-
-	// Look up full VTXO descriptors from the store and build
-	// OOR transfer inputs. This is delegated to a package-level
-	// function so a future SDK can call it directly.
-	outpoints := make(
-		[]wire.OutPoint, 0, len(locked.SelectedVTXOs),
-	)
-	for _, sv := range locked.SelectedVTXOs {
-		outpoints = append(outpoints, sv.Outpoint)
-	}
-
-	selectedInputs, err := BuildTransferInputs(
-		ctx, r.server.vtxoStore, outpoints,
+	recipientPolicyTemplate, err := r.resolveOutputPolicyTemplate(
+		ctx, req.Recipient, pkScript, terms.PubKey,
+		terms.VTXOExitDelay,
 	)
 	if err != nil {
-		if unlockErr := r.unlockVTXOs(
-			ctx, locked.SelectedVTXOs,
-		); unlockErr != nil {
-			r.server.log.ErrorS(
-				ctx, "Unable to unlock VTXOs",
-				unlockErr,
+		return nil, err
+	}
+
+	var (
+		selectedInputs []oor.TransferInput
+		locked         *wallet.SelectAndLockVTXOsResponse
+	)
+
+	if len(req.CustomInputs) > 0 {
+		// Custom inputs provided — bypass wallet selection
+		// and build TransferInputs from the specified VTXOs.
+		//
+		// NOTE: Custom inputs are not locked via the wallet
+		// actor because they typically refer to non-standard
+		// VTXOs (e.g. vHTLC outputs) that live outside the
+		// wallet's managed set. The caller is responsible for
+		// ensuring these inputs are not double-spent. A future
+		// improvement could add explicit locking for custom
+		// inputs that overlap with wallet-managed VTXOs.
+		selectedInputs, err = BuildCustomTransferInputs(
+			ctx, r.server.vtxoStore, req.CustomInputs,
+			r.server.clientKeyDesc, terms.PubKey,
+			terms.VTXOExitDelay,
+		)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"build custom inputs: %v", err)
+		}
+	} else {
+		// Standard path: select and lock VTXOs from wallet.
+		targetAmt := btcutil.Amount(req.Recipient.AmountSat)
+		wRef := r.server.walletRef.UnsafeFromSome()
+
+		selectReq := &wallet.SelectAndLockVTXOsRequest{
+			TargetAmount: targetAmt,
+		}
+		selectFuture := wRef.Ask(ctx, selectReq)
+		selectResult := selectFuture.Await(ctx)
+
+		selectResp, err := selectResult.Unpack()
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"VTXO selection failed: %v", err)
+		}
+
+		var ok bool
+		locked, ok = selectResp.(*wallet.SelectAndLockVTXOsResponse)
+		if !ok {
+			return nil, status.Errorf(codes.Internal,
+				"unexpected response type: %T",
+				selectResp)
+		}
+
+		outpoints := make(
+			[]wire.OutPoint, 0,
+			len(locked.SelectedVTXOs),
+		)
+		for _, sv := range locked.SelectedVTXOs {
+			outpoints = append(
+				outpoints, sv.Outpoint,
 			)
 		}
 
-		return nil, status.Errorf(codes.Internal,
-			"unable to build transfer inputs: %v", err)
+		selectedInputs, err = BuildTransferInputs(
+			ctx, r.server.vtxoStore, outpoints,
+		)
+		if err != nil {
+			if unlockErr := r.unlockVTXOs(
+				ctx, locked.SelectedVTXOs,
+			); unlockErr != nil {
+				r.server.log.ErrorS(ctx,
+					"Unable to unlock VTXOs",
+					unlockErr,
+				)
+			}
+
+			return nil, status.Errorf(codes.Internal,
+				"build transfer inputs: %v", err)
+		}
 	}
+
+	targetAmt := btcutil.Amount(req.Recipient.AmountSat)
 
 	// Build the recipient output for the OOR transfer.
 	recipients := []oortx.RecipientOutput{{
-		PkScript: pkScript,
-		Value:    targetAmt,
+		PkScript:           pkScript,
+		Value:              targetAmt,
+		VTXOPolicyTemplate: recipientPolicyTemplate,
 	}}
 
 	// Resolve the OOR actor via the service key registered in the
@@ -942,14 +1065,16 @@ func (r *RPCServer) SendOOR(ctx context.Context,
 	oorResp, err := oorResult.Unpack()
 	if err != nil {
 		// Unlock VTXOs on OOR failure so they can be
-		// reused.
-		if unlockErr := r.unlockVTXOs(
-			ctx, locked.SelectedVTXOs,
-		); unlockErr != nil {
-			r.server.log.ErrorS(
-				ctx, "Unable to unlock VTXOs",
-				unlockErr,
-			)
+		// reused (only for wallet-selected inputs).
+		if locked != nil {
+			if unlockErr := r.unlockVTXOs(
+				ctx, locked.SelectedVTXOs,
+			); unlockErr != nil {
+				r.server.log.ErrorS(ctx,
+					"Unable to unlock VTXOs",
+					unlockErr,
+				)
+			}
 		}
 
 		return nil, status.Errorf(codes.Internal,
@@ -996,9 +1121,9 @@ func (r *RPCServer) unlockVTXOs(ctx context.Context,
 
 // resolveRecipientOutput extracts both the pkScript and the client
 // public key from an Output proto. The client key is required for
-// constructing VTXO descriptors in directed sends. Only the pubkey and
-// taproot address destination types are supported — raw pk_script does
-// not carry the public key needed for MuSig2.
+// constructing VTXO descriptors in directed sends, so policy-template
+// destinations must decode to the standard Ark VTXO shape with an
+// explicit owner key.
 func (r *RPCServer) resolveRecipientOutput(
 	out *daemonrpc.Output) ([]byte, *btcec.PublicKey, error) {
 
@@ -1078,18 +1203,194 @@ func (r *RPCServer) resolveRecipientOutput(
 
 		return pkScript, clientKey, nil
 
+	case *daemonrpc.Output_PolicyTemplate:
+		if len(d.PolicyTemplate) == 0 {
+			return nil, nil, fmt.Errorf(
+				"policy_template is empty",
+			)
+		}
+
+		template, err := arkscript.DecodePolicyTemplate(
+			d.PolicyTemplate,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"decode policy_template: %w", err,
+			)
+		}
+
+		params, err := arkscript.DecodeStandardVTXOParams(
+			template,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"directed sends require a standard "+
+					"policy_template: %w",
+				err,
+			)
+		}
+
+		pkScript, err := template.PkScript()
+		if err != nil {
+			return nil, nil, fmt.Errorf(
+				"derive pkScript from policy_template: %w",
+				err,
+			)
+		}
+
+		return pkScript, params.OwnerKey, nil
+
 	default:
 		return nil, nil, fmt.Errorf(
-			"directed sends require pubkey or taproot "+
-				"address destination, got %T", d,
+			"directed sends require pubkey, taproot "+
+				"address, or standard policy_template "+
+				"destination, got %T", d,
 		)
 	}
 }
 
-// resolveOutputPkScript derives a pkScript from the Output's
-// destination oneof. It supports address, raw pubkey, and raw
-// pkScript destinations. For pubkey destinations, operator terms
-// are fetched to derive a VTXO-compatible taproot output.
+// resolveOutputPolicyTemplate returns the semantic policy template to persist
+// for one OOR recipient output when it is known locally.
+func (r *RPCServer) resolveOutputPolicyTemplate(_ context.Context,
+	out *daemonrpc.Output, pkScript []byte, operatorKey *btcec.PublicKey,
+	exitDelay uint32) ([]byte, error) {
+
+	if out == nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"recipient must be provided")
+	}
+
+	switch d := out.Destination.(type) {
+	case *daemonrpc.Output_PolicyTemplate:
+		if len(d.PolicyTemplate) == 0 {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"policy_template is empty")
+		}
+
+		if len(out.VtxoPolicyTemplate) > 0 &&
+			!bytes.Equal(
+				out.VtxoPolicyTemplate, d.PolicyTemplate,
+			) {
+
+			return nil, status.Errorf(codes.InvalidArgument,
+				"destination policy_template does not "+
+					"match vtxo_policy_template")
+		}
+
+		return validateOutputPolicyTemplate(
+			pkScript, d.PolicyTemplate, operatorKey,
+		)
+
+	case nil:
+		return nil, status.Errorf(codes.InvalidArgument,
+			"recipient destination is required")
+	}
+
+	if len(out.VtxoPolicyTemplate) > 0 {
+		return validateOutputPolicyTemplate(
+			pkScript, out.VtxoPolicyTemplate,
+			operatorKey,
+		)
+	}
+
+	switch d := out.Destination.(type) {
+	case *daemonrpc.Output_Pubkey:
+		ownerKey, err := schnorr.ParsePubKey(d.Pubkey)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"invalid pubkey: %v", err)
+		}
+
+		return encodeStandardRecipientPolicy(
+			ownerKey, operatorKey, exitDelay, pkScript,
+		)
+
+	default:
+		return nil, nil
+	}
+}
+
+// validateOutputPolicyTemplate verifies one provided semantic policy against
+// the derived recipient script, checks Ark invariants, and returns a defensive
+// copy on success.
+func validateOutputPolicyTemplate(pkScript,
+	policyTemplate []byte,
+	operatorKey *btcec.PublicKey) ([]byte, error) {
+
+	template, err := arkscript.DecodePolicyTemplate(
+		policyTemplate,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"decode policy_template: %v", err)
+	}
+
+	if !template.MatchesPkScript(pkScript) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"policy_template does not match output script")
+	}
+
+	// Validate Ark invariants: collab leaf with operator, CSV-gated
+	// exit leaves.
+	if operatorKey != nil {
+		nodes := make(
+			[]arkscript.Node, len(template.Leaves),
+		)
+		for i, leaf := range template.Leaves {
+			nodes[i] = leaf.Node
+		}
+
+		if err := arkscript.ValidatePolicy(
+			nodes, arkscript.PolicyValidationOpts{
+				OperatorKey: operatorKey,
+			},
+		); err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"policy violates Ark invariants: %v",
+				err,
+			)
+		}
+	}
+
+	return append([]byte(nil), policyTemplate...), nil
+}
+
+// encodeStandardRecipientPolicy derives the canonical standard Ark VTXO policy
+// and verifies it compiles back to the target output script.
+func encodeStandardRecipientPolicy(ownerKey, operatorKey *btcec.PublicKey,
+	exitDelay uint32, pkScript []byte) ([]byte, error) {
+
+	if ownerKey == nil || operatorKey == nil || exitDelay == 0 {
+		return nil, nil
+	}
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
+		ownerKey, operatorKey, exitDelay,
+	)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"encode standard recipient policy: %v", err)
+	}
+
+	template, err := arkscript.DecodePolicyTemplate(policyTemplate)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"decode derived recipient policy: %v", err)
+	}
+
+	if !template.MatchesPkScript(pkScript) {
+		return nil, status.Errorf(codes.Internal,
+			"derived recipient policy does not match pk_script")
+	}
+
+	return policyTemplate, nil
+}
+
+// resolveOutputPkScript derives a pkScript from the Output's destination
+// oneof. It supports address, pubkey, and semantic policy destinations. For
+// pubkey destinations, operator terms are fetched to derive a VTXO-compatible
+// taproot output.
 func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 	out *daemonrpc.Output) ([]byte, error) {
 
@@ -1162,15 +1463,34 @@ func (r *RPCServer) resolveOutputPkScript(ctx context.Context,
 
 		return pkScript, nil
 
-	case *daemonrpc.Output_PkScript:
-		if len(d.PkScript) == 0 {
+	case *daemonrpc.Output_PolicyTemplate:
+		if len(d.PolicyTemplate) == 0 {
 			return nil, status.Errorf(
 				codes.InvalidArgument,
-				"pk_script is empty",
+				"policy_template is empty",
 			)
 		}
 
-		return d.PkScript, nil
+		template, err := arkscript.DecodePolicyTemplate(
+			d.PolicyTemplate,
+		)
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"decode policy_template: %v", err,
+			)
+		}
+
+		pkScript, err := template.PkScript()
+		if err != nil {
+			return nil, status.Errorf(
+				codes.InvalidArgument,
+				"derive pkScript from policy_template: %v",
+				err,
+			)
+		}
+
+		return pkScript, nil
 
 	default:
 		return nil, status.Errorf(

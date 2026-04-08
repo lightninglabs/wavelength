@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/lightninglabs/darepo-client/db"
 	"github.com/lightninglabs/darepo-client/indexer"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/oor"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -17,7 +17,19 @@ import (
 
 const (
 	defaultOORReceiveScriptRegistrationTTL = 30 * 24 * time.Hour
+
+	// oorReceiveKeyFamily is the key family used for OOR receive
+	// keys. Uses a custom family distinct from the identity key
+	// family to keep receive keys in their own derivation path.
+	oorReceiveKeyFamily = keychain.KeyFamily(987_200)
 )
+
+// DefaultOORReceiveKeyFamily returns the key family used for
+// deriving OOR receive keys. Exported so that test harnesses can
+// derive keys from the same family.
+func DefaultOORReceiveKeyFamily() keychain.KeyFamily {
+	return oorReceiveKeyFamily
+}
 
 // ownedReceiveScriptStore persists locally owned receive-script metadata.
 type ownedReceiveScriptStore interface {
@@ -70,7 +82,7 @@ func BuildPubKeyVTXOReceiveScript(recipientKey,
 		return nil, fmt.Errorf("operator key must be provided")
 	}
 
-	tapKey, err := scripts.VTXOTapKey(
+	tapKey, err := arkscript.VTXOTapKey(
 		recipientKey, operatorKey, exitDelay,
 	)
 	if err != nil {
@@ -129,6 +141,121 @@ func NewOwnedReceiveScriptSigner(store ownedReceiveScriptLookup,
 		store:         store,
 		signerFactory: signerFactory,
 	}
+}
+
+// fallbackSchnorrSigner tries the primary signer first and falls back to a
+// secondary signer when the primary cannot resolve the requested script.
+type fallbackSchnorrSigner struct {
+	primary  indexer.SchnorrSigner
+	fallback indexer.SchnorrSigner
+}
+
+// NewFallbackSchnorrSigner returns a signer that tries primary first and uses
+// fallback only when primary fails.
+func NewFallbackSchnorrSigner(primary,
+	fallback indexer.SchnorrSigner) indexer.SchnorrSigner {
+
+	switch {
+	case primary == nil:
+		return fallback
+
+	case fallback == nil:
+		return primary
+	}
+
+	return &fallbackSchnorrSigner{
+		primary:  primary,
+		fallback: fallback,
+	}
+}
+
+// SignSchnorr signs hash with the primary signer, falling back on error.
+func (s *fallbackSchnorrSigner) SignSchnorr(
+	pkScript []byte, hash [32]byte) ([]byte, error) {
+
+	if s.primary != nil {
+		sig, err := s.primary.SignSchnorr(pkScript, hash)
+		if err == nil {
+			return sig, nil
+		}
+	}
+
+	if s.fallback == nil {
+		return nil, fmt.Errorf("fallback signer not configured")
+	}
+
+	return s.fallback.SignSchnorr(pkScript, hash)
+}
+
+// SignSchnorrMessage signs a tagged message with the primary signer, falling
+// back on error.
+func (s *fallbackSchnorrSigner) SignSchnorrMessage(ctx context.Context,
+	pkScript []byte, message []byte, tag []byte) ([]byte, error) {
+
+	if s.primary != nil {
+		msgSigner, ok := s.primary.(interface {
+			SignSchnorrMessage(context.Context, []byte, []byte,
+				[]byte) ([]byte, error)
+		})
+		if ok {
+			sig, err := msgSigner.SignSchnorrMessage(
+				ctx, pkScript, message, tag,
+			)
+			if err == nil {
+				return sig, nil
+			}
+		}
+	}
+
+	if s.fallback == nil {
+		return nil, fmt.Errorf("fallback signer not configured")
+	}
+
+	msgSigner, ok := s.fallback.(interface {
+		SignSchnorrMessage(context.Context, []byte, []byte,
+			[]byte) ([]byte, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("fallback signer does not support " +
+			"tagged message signing")
+	}
+
+	return msgSigner.SignSchnorrMessage(
+		ctx, pkScript, message, tag,
+	)
+}
+
+// ProofPubKey returns the proof pubkey from the primary signer, falling back
+// on error.
+func (s *fallbackSchnorrSigner) ProofPubKey(
+	pkScript []byte) (*btcec.PublicKey, error) {
+
+	if s.primary != nil {
+		pubKeySource, ok := s.primary.(interface {
+			ProofPubKey([]byte) (*btcec.PublicKey, error)
+		})
+		if ok {
+			pubKey, err := pubKeySource.ProofPubKey(pkScript)
+			if err == nil {
+				return pubKey, nil
+			}
+		}
+	}
+
+	if s.fallback == nil {
+		return nil, fmt.Errorf("fallback signer not configured")
+	}
+
+	pubKeySource, ok := s.fallback.(interface {
+		ProofPubKey([]byte) (*btcec.PublicKey, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf(
+			"fallback signer does not expose proof pubkey",
+		)
+	}
+
+	return pubKeySource.ProofPubKey(pkScript)
 }
 
 // resolveSigner loads the locally owned key for pkScript and constructs the

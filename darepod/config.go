@@ -34,6 +34,10 @@ const (
 	// mailbox edge server.
 	DefaultServerHost = "localhost:10010"
 
+	// DefaultIndexerServerID is the canonical operator identifier used
+	// in signed indexer proofs.
+	DefaultIndexerServerID = "arkd"
+
 	// DefaultRPCTimeout is the default timeout for RPC calls to lnd.
 	DefaultRPCTimeout = 30 * time.Second
 

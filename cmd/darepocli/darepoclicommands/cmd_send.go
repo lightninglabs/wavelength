@@ -134,9 +134,6 @@ func newSendOORCmd() *cobra.Command {
 	cmd.Flags().String("pubkey", "",
 		"recipient 32-byte x-only pubkey hex")
 
-	cmd.Flags().String("pk_script", "",
-		"recipient raw pk_script hex")
-
 	cmd.Flags().Int64("amount", 0,
 		"amount in sats")
 
@@ -144,7 +141,7 @@ func newSendOORCmd() *cobra.Command {
 		"validate without initiating")
 
 	cmd.MarkFlagsMutuallyExclusive(
-		"to", "pubkey", "pk_script",
+		"to", "pubkey",
 	)
 
 	return cmd
@@ -162,12 +159,11 @@ func sendOOR(cmd *cobra.Command, _ []string) error {
 	if err := parseRequest(cmd, req, func() error {
 		address, _ := cmd.Flags().GetString("to")
 		pubKeyHex, _ := cmd.Flags().GetString("pubkey")
-		pkScriptHex, _ := cmd.Flags().GetString("pk_script")
 		amount, _ := cmd.Flags().GetInt64("amount")
 		dryRun, _ := cmd.Flags().GetBool("dry_run")
 
 		recipient, err := buildOORRecipientOutput(
-			address, pubKeyHex, pkScriptHex, amount,
+			address, pubKeyHex, amount,
 		)
 		if err != nil {
 			return err
