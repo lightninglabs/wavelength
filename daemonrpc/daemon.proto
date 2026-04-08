@@ -47,6 +47,16 @@ service DaemonService {
     rpc NewOORReceiveScript (NewOORReceiveScriptRequest)
         returns (NewOORReceiveScriptResponse);
 
+    // GetIndexedVTXOByPkScript queries the authoritative indexer for the
+    // first VTXO matching the given script and status filter.
+    rpc GetIndexedVTXOByPkScript (GetIndexedVTXOByPkScriptRequest)
+        returns (GetIndexedVTXOByPkScriptResponse);
+
+    // GetIndexedOORSessionByTxid queries the authoritative indexer for one
+    // OOR session using a spent script proof and deterministic session txid.
+    rpc GetIndexedOORSessionByTxid (GetIndexedOORSessionByTxidRequest)
+        returns (GetIndexedOORSessionByTxidResponse);
+
     // SendVTXO initiates an in-round transfer by submitting a refresh
     // request to the round coordinator. The transfer completes when the
     // next round commits.
@@ -261,6 +271,15 @@ message VTXO {
     // and the most recent on-chain commitment. Round-created VTXOs have
     // chain_depth 0.
     uint32 chain_depth = 10;
+
+    // oor_final_checkpoint_psbts are the serialized finalized checkpoint
+    // PSBTs that spent this VTXO through an out-of-round package, when
+    // available.
+    repeated bytes oor_final_checkpoint_psbts = 11;
+
+    // spent_by_txid is the hex-encoded Ark/OOR transaction txid that spent
+    // this VTXO through an out-of-round package, when known.
+    string spent_by_txid = 12;
 }
 
 message ListVTXOsRequest {
@@ -308,6 +327,37 @@ message NewOORReceiveScriptResponse {
     string label = 5;
 }
 
+message GetIndexedVTXOByPkScriptRequest {
+    // pk_script is the raw output script to query.
+    bytes pk_script = 1;
+
+    // status_filter restricts the indexer query to matching lifecycle
+    // states. If empty, all statuses are considered.
+    repeated VTXOStatus status_filter = 2;
+}
+
+message GetIndexedVTXOByPkScriptResponse {
+    // vtxo is the first matching VTXO, when found.
+    VTXO vtxo = 1;
+}
+
+message GetIndexedOORSessionByTxidRequest {
+    // pk_script is the spent script used to authorize the indexed lookup.
+    bytes pk_script = 1;
+
+    // session_txid is the deterministic Ark/OOR session txid to fetch.
+    bytes session_txid = 2;
+}
+
+message GetIndexedOORSessionByTxidResponse {
+    // ark_psbt is the serialized Ark PSBT for the indexed OOR session.
+    bytes ark_psbt = 1;
+
+    // checkpoint_psbts are the serialized finalized checkpoint PSBTs for
+    // the indexed OOR session.
+    repeated bytes checkpoint_psbts = 2;
+}
+
 // Output describes a single recipient in a send operation.
 message Output {
     oneof destination {
@@ -320,12 +370,19 @@ message Output {
         // delay, so the recipient gets a standard Ark VTXO.
         bytes pubkey = 3;
 
-        // pk_script is the raw output script for the recipient.
-        bytes pk_script = 4;
+        // policy_template is the serialized arkscript policy for the
+        // recipient. The daemon derives the concrete pk_script from
+        // this semantic destination.
+        bytes policy_template = 4;
     }
 
     // amount_sat is the value to send in satoshis.
     int64 amount_sat = 2;
+
+    // vtxo_policy_template is the serialized arkscript policy for the
+    // created output when the caller knows semantic ownership metadata
+    // that is not already carried by the destination itself.
+    bytes vtxo_policy_template = 5;
 }
 
 message SendVTXORequest {
@@ -366,6 +423,34 @@ message SendOORRequest {
 
     // dry_run validates the request without initiating the transfer.
     bool dry_run = 2;
+
+    // custom_inputs overrides wallet VTXO selection. When set, the
+    // daemon uses these pre-specified inputs instead of selecting from
+    // the wallet. This enables non-standard spend paths like vHTLC
+    // claims.
+    repeated CustomOORInput custom_inputs = 3;
+}
+
+// CustomOORInput specifies a VTXO to spend with an explicit semantic policy
+// and selected spend path.
+message CustomOORInput {
+    // outpoint identifies the VTXO to spend in "txid:vout" format.
+    string outpoint = 1;
+
+    // vtxo_policy_template is the serialized arkscript policy for the spent
+    // input VTXO. When empty, the daemon derives the standard Ark policy from
+    // the local descriptor.
+    bytes vtxo_policy_template = 2;
+
+    // spend_path is the serialized arkscript spend path selected for the
+    // checkpoint spend of the input VTXO.
+    bytes spend_path = 3;
+
+    // amount_sat is the VTXO value in satoshis.
+    int64 amount_sat = 4;
+
+    // pk_script is the VTXO taproot output script.
+    bytes pk_script = 5;
 }
 
 message SendOORResponse {
