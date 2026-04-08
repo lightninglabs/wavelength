@@ -1073,8 +1073,10 @@ func (h *Harness) startBitcoind() {
 		// Match the lower fee estimates we see from electrs in tests so
 		// commitment packages targeting ~0.5 sat/vB still pass policy.
 		"-minrelaytxfee=0.00000500",
-		// Keep the miner inclusion floor aligned with relay policy so
-		// low-fee mempool transactions are still mined on regtest.
+		// Regtest smoke flows mine blocks directly with bitcoind.
+		// Keep the miner floor aligned with relay policy so
+		// low-fee round commitment transactions don't sit in the
+		// mempool forever.
 		"-blockmintxfee=0.00000500",
 		fmt.Sprintf("-rpcuser=%s", bitcoindRPCUser),
 		fmt.Sprintf("-rpcpassword=%s", bitcoindRPCPass),
@@ -2004,7 +2006,11 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 	peerInfo, err := peer.Client.Client.GetInfo(ctx)
 	require.NoError(t, err, "getinfo failed for %s", peer.Name)
 
+	localInfo, err := local.Client.Client.GetInfo(ctx)
+	require.NoError(t, err, "getinfo failed for %s", local.Name)
+
 	peerKeyHex := fmt.Sprintf("%x", peerInfo.IdentityPubkey[:])
+	localKeyHex := fmt.Sprintf("%x", localInfo.IdentityPubkey[:])
 
 	// Create authenticated connection to local LND.
 	localAddr := net.JoinHostPort("127.0.0.1", local.GRPCPort)
@@ -2064,15 +2070,49 @@ func (h *Harness) SetupChannelBetween(local *LndInstance, peer *LndInstance,
 
 	h.Generate(6)
 
+	// Wait until both nodes report the private channel as
+	// active. Returning earlier can race higher-level tests
+	// that immediately try to route over the new link under
+	// heavy parallel load.
 	require.Eventually(t, func() bool {
-		resp, err := localRPC.ListChannels(
+		localResp, err := localRPC.ListChannels(
 			ctx, &lnrpc.ListChannelsRequest{},
 		)
 		if err != nil {
 			return false
 		}
 
-		return len(resp.Channels) > 0
+		localActive := false
+		for _, ch := range localResp.Channels {
+			if ch.RemotePubkey != peerKeyHex {
+				continue
+			}
+
+			if ch.Active {
+				localActive = true
+				break
+			}
+		}
+		if !localActive {
+			return false
+		}
+
+		peerResp, err := peer.Client.Client.ListChannels(
+			ctx, false, false,
+		)
+		if err != nil {
+			return false
+		}
+
+		for _, ch := range peerResp {
+			if fmt.Sprintf("%x", ch.PubKeyBytes[:]) != localKeyHex {
+				continue
+			}
+
+			return ch.Active
+		}
+
+		return false
 	}, defaultTimeout, pollInterval)
 }
 
