@@ -1,0 +1,170 @@
+package unroll
+
+import (
+	"fmt"
+
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/unrollplan"
+)
+
+// checkpointFromState exports the current protofsm state into the durable actor
+// checkpoint shape.
+func checkpointFromState(state State,
+	sweepTx *wire.MsgTx) *actorCheckpoint {
+
+	checkpoint := &actorCheckpoint{
+		Version: checkpointVersion,
+		SweepTx: copyTx(sweepTx),
+	}
+
+	if state == nil || isIdleState(state) {
+		return checkpoint
+	}
+
+	job := stateJob(state)
+	checkpoint.Height = job.Height
+	checkpoint.Started = true
+	checkpoint.Trigger = job.Trigger
+	checkpoint.State = copyPlannerState(job.PlannerState)
+	checkpoint.Fail = job.FailReason
+	checkpoint.SweepAttempts = job.SweepAttempts
+
+	return checkpoint
+}
+
+// stateFromCheckpoint restores a concrete protofsm state from the durable
+// checkpoint shape.
+func stateFromCheckpoint(checkpoint *actorCheckpoint) State {
+	if checkpoint == nil || !checkpoint.Started {
+		return &Idle{}
+	}
+
+	job := &JobState{
+		Height:        checkpoint.Height,
+		Trigger:       checkpoint.Trigger,
+		PlannerState:  copyPlannerState(checkpoint.State),
+		FailReason:    checkpoint.Fail,
+		SweepAttempts: checkpoint.SweepAttempts,
+	}
+
+	switch phaseFromPlannerState(job) {
+	case PhaseCompleted:
+		return &Completed{Job: job}
+
+	case PhaseFailed:
+		return &Failed{Job: job}
+
+	case PhaseSweepConfirmation:
+		return &AwaitingSweepConfirmation{Job: job}
+
+	case PhaseSweepBroadcast:
+		return &AwaitingSweepBroadcast{Job: job}
+
+	case PhaseCSVPending:
+		return &AwaitingCSV{Job: job}
+
+	default:
+		return &AwaitingMaterialization{Job: job}
+	}
+}
+
+// phaseFromState projects the concrete protofsm state into the public coarse
+// phase enum.
+func phaseFromState(state State) Phase {
+	switch state.(type) {
+	case *Idle:
+		return PhasePending
+
+	case *AwaitingMaterialization:
+		return PhaseMaterializing
+
+	case *AwaitingCSV:
+		return PhaseCSVPending
+
+	case *AwaitingSweepBroadcast:
+		return PhaseSweepBroadcast
+
+	case *AwaitingSweepConfirmation:
+		return PhaseSweepConfirmation
+
+	case *Completed:
+		return PhaseCompleted
+
+	case *Failed:
+		return PhaseFailed
+
+	default:
+		return PhaseFailed
+	}
+}
+
+// phaseFromPlannerState derives a coarse phase from the durable planner state
+// when restoring from checkpoint before the planner is bound.
+func phaseFromPlannerState(job *JobState) Phase {
+	if job == nil {
+		return PhasePending
+	}
+
+	if job.FailReason != "" {
+		return PhaseFailed
+	}
+
+	switch {
+	case job.PlannerState.Sweep.Status == unrollplan.SweepStatusConfirmed:
+		return PhaseCompleted
+
+	case job.PlannerState.Sweep.Status == unrollplan.SweepStatusBroadcasted:
+		return PhaseSweepConfirmation
+
+	case job.PlannerState.TargetConfirmHeight != nil:
+		return PhaseCSVPending
+
+	default:
+		return PhaseMaterializing
+	}
+}
+
+// stateJob extracts the durable job state from a concrete protofsm state.
+func stateJob(state State) *JobState {
+	switch s := state.(type) {
+	case *Idle:
+		return &JobState{}
+
+	case *AwaitingMaterialization:
+		return s.Job.Copy()
+
+	case *AwaitingCSV:
+		return s.Job.Copy()
+
+	case *AwaitingSweepBroadcast:
+		return s.Job.Copy()
+
+	case *AwaitingSweepConfirmation:
+		return s.Job.Copy()
+
+	case *Completed:
+		return s.Job.Copy()
+
+	case *Failed:
+		return s.Job.Copy()
+
+	default:
+		panic(fmt.Sprintf("unexpected state type %T", state))
+	}
+}
+
+// stateHeight returns the best height tracked by the current state.
+func stateHeight(state State) int32 {
+	return stateJob(state).Height
+}
+
+// stateTrigger returns the start trigger tracked by the current state.
+func stateTrigger(state State) StartTrigger {
+	return stateJob(state).Trigger
+}
+
+// isIdleState reports whether the current state is idle.
+func isIdleState(state State) bool {
+	_, ok := state.(*Idle)
+	return ok
+}

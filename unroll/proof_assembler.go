@@ -1,0 +1,413 @@
+package unroll
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/db"
+	"github.com/lightninglabs/darepo-client/lib/recovery"
+	"github.com/lightninglabs/darepo-client/lib/tree"
+	"github.com/lightninglabs/darepo-client/lib/tx/psbtutil"
+	"github.com/lightninglabs/darepo-client/vtxo"
+)
+
+var (
+	// ErrUnrollTargetNotFound indicates the requested local target does not
+	// exist or cannot be used for unilateral exit.
+	ErrUnrollTargetNotFound = errors.New("unroll target not found")
+
+	// ErrUnrollProofUnavailable indicates local data was insufficient to build
+	// a unilateral-exit proof.
+	ErrUnrollProofUnavailable = errors.New("unroll proof unavailable")
+
+	// ErrUnrollProofInvalid indicates a locally assembled or decoded proof was
+	// invalid.
+	ErrUnrollProofInvalid = errors.New("unroll proof invalid")
+)
+
+type packageResolver interface {
+	ResolveUnrollPackages(ctx context.Context,
+		outpoint wire.OutPoint) (*db.OORUnrollPackages, error)
+}
+
+// LocalProofAssembler builds unilateral-exit proofs from strictly local state.
+type LocalProofAssembler struct {
+	// Resolver gathers normalized lineage material for a target. When nil,
+	// EnsureProof falls back to DescriptorLineageResolver using VTXOStore and
+	// ArtifactStore.
+	Resolver LineageResolver
+
+	// VTXOStore provides VTXO descriptor lookups for proof assembly.
+	VTXOStore vtxo.VTXOStore
+
+	// ArtifactStore resolves OOR unroll packages for chained VTXOs.
+	ArtifactStore packageResolver
+}
+
+// EnsureProof builds an immutable proof for the target from local
+// authoritative state.
+func (a *LocalProofAssembler) EnsureProof(ctx context.Context,
+	target wire.OutPoint) (*recovery.Proof, error) {
+
+	if a == nil {
+		return nil, fmt.Errorf("proof assembler must be provided")
+	}
+
+	resolver := a.resolver()
+	mat, err := resolver.ResolveLineage(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+
+	return BuildProofFromMaterial(mat)
+}
+
+// resolver returns the configured LineageResolver or creates a fallback
+// DescriptorLineageResolver from the legacy fields.
+func (a *LocalProofAssembler) resolver() LineageResolver {
+	if a.Resolver != nil {
+		return a.Resolver
+	}
+
+	return &DescriptorLineageResolver{
+		VTXOStore:     a.VTXOStore,
+		ArtifactStore: a.ArtifactStore,
+	}
+}
+
+// BuildProofFromMaterial constructs an immutable recovery proof from
+// normalized lineage material.
+func BuildProofFromMaterial(mat *LineageMaterial) (*recovery.Proof,
+	error) {
+
+	if err := mat.Validate(); err != nil {
+		return nil, err
+	}
+
+	nodes := make([]*recovery.Node, 0)
+	seen := make(map[chainhash.Hash]*recovery.Node)
+
+	for i, tp := range mat.TreePaths {
+		if err := addTreePathNodes(&nodes, seen, tp); err != nil {
+			return nil, fmt.Errorf("tree path %d: %w", i, err)
+		}
+	}
+
+	for _, extra := range mat.ExtraNodes {
+		if err := addProofNode(&nodes, seen, extra); err != nil {
+			return nil, err
+		}
+	}
+
+	proof, err := recovery.NewProof(
+		mat.TargetOutpoint, mat.CSVDelay, nodes...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v",
+			ErrUnrollProofInvalid, err)
+	}
+
+	if err := validateInputCompleteness(proof, mat); err != nil {
+		return nil, err
+	}
+
+	return proof, nil
+}
+
+// validateInputCompleteness checks that every input of the target transaction
+// has its parent present in the proof or among known external inputs.
+func validateInputCompleteness(proof *recovery.Proof,
+	mat *LineageMaterial) error {
+
+	targetNode, err := proof.TargetNode()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnrollProofInvalid, err)
+	}
+
+	isRoot := false
+	for _, rootTxid := range proof.RootTxids() {
+		if rootTxid == proof.TargetOutpoint().Hash {
+			isRoot = true
+			break
+		}
+	}
+
+	if isRoot {
+		return nil
+	}
+
+	knownExternal := make(map[chainhash.Hash]struct{})
+	for _, tp := range mat.TreePaths {
+		if tp == nil {
+			continue
+		}
+
+		knownExternal[tp.BatchOutpoint.Hash] = struct{}{}
+	}
+
+	for _, txIn := range targetNode.Tx.TxIn {
+		parentHash := txIn.PreviousOutPoint.Hash
+		if _, inProof := proof.Node(parentHash); inProof {
+			continue
+		}
+
+		if _, ext := knownExternal[parentHash]; ext {
+			continue
+		}
+
+		return fmt.Errorf(
+			"%w: target %s has input spending from %s "+
+				"which is neither in the proof nor a "+
+				"known external input (incomplete "+
+				"lineage branch)",
+			ErrUnrollProofUnavailable,
+			proof.TargetOutpoint().Hash, parentHash,
+		)
+	}
+
+	return nil
+}
+
+// validateProofDescriptor enforces the hard local start contract for one
+// unilateral-exit target descriptor.
+func validateProofDescriptor(desc *vtxo.Descriptor) error {
+	switch {
+	case desc == nil:
+		return fmt.Errorf("%w: descriptor missing",
+			ErrUnrollTargetNotFound)
+
+	case desc.TreePath == nil:
+		return fmt.Errorf("%w: descriptor missing tree path",
+			ErrUnrollProofUnavailable)
+
+	case desc.CommitmentTxID == (chainhash.Hash{}):
+		return fmt.Errorf("%w: descriptor missing commitment txid",
+			ErrUnrollProofUnavailable)
+
+	case desc.RoundID == "":
+		return fmt.Errorf("%w: descriptor missing round id",
+			ErrUnrollProofUnavailable)
+
+	case desc.CreatedHeight == 0:
+		return fmt.Errorf("%w: descriptor missing created height",
+			ErrUnrollProofUnavailable)
+
+	case desc.BatchExpiry == 0:
+		return fmt.Errorf("%w: descriptor missing batch expiry",
+			ErrUnrollProofUnavailable)
+
+	case desc.ChainDepth < 0:
+		return fmt.Errorf("%w: invalid chain depth %d",
+			ErrUnrollProofInvalid, desc.ChainDepth)
+
+	case desc.Status == vtxo.VTXOStatusSpent ||
+		desc.Status == vtxo.VTXOStatusForfeited ||
+		desc.Status == vtxo.VTXOStatusFailed:
+
+		return fmt.Errorf("%w: target %v is terminal (%s)",
+			ErrUnrollTargetNotFound, desc.Outpoint, desc.Status)
+	}
+
+	return nil
+}
+
+// addTreePathNodes appends the round-birth ancestry from one descriptor tree
+// path into the in-progress proof node set.
+func addTreePathNodes(nodes *[]*recovery.Node,
+	seen map[chainhash.Hash]*recovery.Node, treePath *tree.Tree) error {
+
+	if treePath == nil || treePath.Root == nil {
+		return fmt.Errorf("%w: tree path missing root",
+			ErrUnrollProofUnavailable)
+	}
+
+	for treeNode := range treePath.Root.NodesIter() {
+		tx, err := proofTxFromTreeNode(treeNode)
+		if err != nil {
+			return err
+		}
+
+		node := &recovery.Node{
+			Kind: recovery.NodeKindTree,
+			Tx:   tx,
+		}
+
+		if err := addProofNode(nodes, seen, node); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// addProofNode appends one proof node while rejecting conflicting duplicate
+// txids.
+func addProofNode(nodes *[]*recovery.Node,
+	seen map[chainhash.Hash]*recovery.Node, node *recovery.Node) error {
+
+	txid, err := node.TXID()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnrollProofInvalid, err)
+	}
+
+	existing, ok := seen[txid]
+	if ok {
+		equal, err := sameNode(existing, node)
+		if err != nil {
+			return err
+		}
+
+		if !equal {
+			return fmt.Errorf("%w: conflicting proof node %s",
+				ErrUnrollProofInvalid, txid)
+		}
+
+		return nil
+	}
+
+	seen[txid] = node
+	*nodes = append(*nodes, node)
+
+	return nil
+}
+
+// sameNode reports whether two proof nodes represent the same transaction and
+// role.
+func sameNode(a, b *recovery.Node) (bool, error) {
+	switch {
+	case a == nil || b == nil:
+		return false, fmt.Errorf("%w: proof node cannot be nil",
+			ErrUnrollProofInvalid)
+
+	case a.Kind != b.Kind:
+		return false, nil
+	}
+
+	var aBuf bytes.Buffer
+	if err := a.Tx.Serialize(&aBuf); err != nil {
+		return false, err
+	}
+
+	var bBuf bytes.Buffer
+	if err := b.Tx.Serialize(&bBuf); err != nil {
+		return false, err
+	}
+
+	return bytes.Equal(aBuf.Bytes(), bBuf.Bytes()), nil
+}
+
+// extractFinalizedTx prefers the fully finalized transaction from a persisted
+// PSBT, but falls back to the unsigned transaction for synthetic test packets.
+func extractFinalizedTx(pkt *psbt.Packet) (*wire.MsgTx, error) {
+	if pkt == nil {
+		return nil, fmt.Errorf("%w: psbt must be provided",
+			ErrUnrollProofInvalid)
+	}
+
+	raw, err := psbtutil.Serialize(pkt)
+	if err != nil {
+		return nil, fmt.Errorf("%w: serialize psbt: %v",
+			ErrUnrollProofInvalid, err)
+	}
+
+	cloned, err := psbtutil.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parse psbt: %v",
+			ErrUnrollProofInvalid, err)
+	}
+
+	tx, extractErr := psbt.Extract(cloned)
+	if extractErr == nil {
+		return tx, nil
+	}
+
+	err = psbt.MaybeFinalizeAll(cloned)
+	if err == nil {
+		tx, extractErr = psbt.Extract(cloned)
+		if extractErr == nil {
+			return tx, nil
+		}
+	}
+
+	for i := range cloned.Inputs {
+		if len(cloned.Inputs[i].FinalScriptWitness) > 0 {
+			continue
+		}
+
+		if err := psbt.Finalize(cloned, i); err == nil {
+			continue
+		}
+
+		if err := finalizeTaprootScriptSpend(&cloned.Inputs[i]); err != nil {
+			return nil, fmt.Errorf("%w: finalize "+
+				"taproot script spend input %d: %v",
+				ErrUnrollProofInvalid, i, err)
+		}
+	}
+
+	tx, extractErr = psbt.Extract(cloned)
+	if extractErr == nil {
+		return tx, nil
+	}
+
+	return nil, fmt.Errorf("%w: psbt not fully finalized "+
+		"(last extract error: %v)", ErrUnrollProofInvalid,
+		extractErr)
+}
+
+// finalizeTaprootScriptSpend constructs FinalScriptWitness from PSBT taproot
+// script-spend signature fields.
+func finalizeTaprootScriptSpend(in *psbt.PInput) error {
+	if len(in.TaprootScriptSpendSig) == 0 {
+		return fmt.Errorf("no taproot script spend signatures")
+	}
+
+	if len(in.TaprootLeafScript) == 0 {
+		return fmt.Errorf("no taproot leaf scripts")
+	}
+
+	leaf := in.TaprootLeafScript[0]
+	var witnessItems [][]byte
+	for _, sig := range in.TaprootScriptSpendSig {
+		witnessItems = append(witnessItems, sig.Signature)
+	}
+
+	witnessItems = append(witnessItems, leaf.Script)
+	witnessItems = append(witnessItems, leaf.ControlBlock)
+
+	witness := wire.TxWitness(witnessItems)
+	var buf bytes.Buffer
+	if err := psbt.WriteTxWitness(&buf, witness); err != nil {
+		return fmt.Errorf("encode witness: %w", err)
+	}
+	in.FinalScriptWitness = buf.Bytes()
+
+	return nil
+}
+
+// proofTxFromTreeNode prefers the signed tree transaction when available, but
+// falls back to the unsigned form for synthetic test trees.
+func proofTxFromTreeNode(node *tree.Node) (*wire.MsgTx, error) {
+	if node == nil {
+		return nil, fmt.Errorf("%w: tree node missing",
+			ErrUnrollProofInvalid)
+	}
+
+	tx, err := node.ToSignedTx()
+	if err == nil {
+		return tx, nil
+	}
+
+	tx, err = node.ToTx()
+	if err != nil {
+		return nil, fmt.Errorf("%w: tree node tx: %v",
+			ErrUnrollProofInvalid, err)
+	}
+
+	return tx, nil
+}
