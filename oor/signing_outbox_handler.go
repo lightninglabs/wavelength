@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/timeout"
 	"github.com/lightningnetwork/lnd/input"
@@ -127,11 +128,48 @@ func (h *SigningOutboxHandler) handleCheckpointSignatures(
 		return nil, err
 	}
 
+	logCheckpointSummary(
+		context.Background(),
+		"Checkpoint signatures attached",
+		msg.CoSignedCheckpointPSBTs,
+	)
+
 	return []Event{
 		&CheckpointsSignedEvent{
 			FinalCheckpointPSBTs: msg.CoSignedCheckpointPSBTs,
 		},
 	}, nil
+}
+
+// logCheckpointSummary emits a compact summary of the first input metadata for
+// each checkpoint PSBT. This is used to trace finalize payload fidelity across
+// client/server boundaries.
+func logCheckpointSummary(ctx context.Context, prefix string,
+	checkpoints []*psbt.Packet) {
+
+	for i := range checkpoints {
+		checkpoint := checkpoints[i]
+		if checkpoint == nil || len(checkpoint.Inputs) == 0 {
+			logger(ctx).DebugS(ctx, prefix,
+				slog.Int("checkpoint_index", i),
+				slog.Bool("nil_checkpoint", checkpoint == nil),
+			)
+
+			continue
+		}
+
+		in := checkpoint.Inputs[0]
+		logger(ctx).DebugS(ctx, prefix,
+			slog.Int("checkpoint_index", i),
+			slog.Int("final_witness_len",
+				len(in.FinalScriptWitness)),
+			slog.Int("taproot_sig_count",
+				len(in.TaprootScriptSpendSig)),
+			slog.Int("taproot_leaf_count",
+				len(in.TaprootLeafScript)),
+			slog.Int("unknown_count", len(in.Unknowns)),
+		)
+	}
 }
 
 // handleScheduleRetry schedules a retry timer via the timeout actor. The

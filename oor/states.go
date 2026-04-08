@@ -3,6 +3,7 @@ package oor
 import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/lightninglabs/darepo-client/baselib/protofsm"
+	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
 )
 
 // State is a sealed interface for all states in the OOR client transfer FSM.
@@ -43,6 +44,11 @@ type AwaitingArkSignatures struct {
 
 	// TransferInputs carry client-side signing context.
 	TransferInputs []TransferInput
+
+	// RecipientOutputs are the canonical non-anchor Ark outputs
+	// plus optional semantic policy metadata for the created
+	// VTXOs.
+	RecipientOutputs []oortx.RecipientOutput
 }
 
 // String returns a human-readable representation of AwaitingArkSignatures.
@@ -80,6 +86,11 @@ type AwaitingSubmitAccepted struct {
 	// need the signing context) and so checkpoint snapshots capture them
 	// for crash-resume.
 	TransferInputs []TransferInput
+
+	// RecipientOutputs are the canonical non-anchor Ark
+	// outputs plus optional semantic policy metadata for the
+	// created VTXOs.
+	RecipientOutputs []oortx.RecipientOutput
 }
 
 // String returns a human-readable representation of AwaitingSubmitAccepted.

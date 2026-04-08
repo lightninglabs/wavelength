@@ -1,13 +1,14 @@
 package oor
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/vtxo"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -41,10 +42,29 @@ type TransferInputSnapshot struct {
 
 	// OwnerLeafScript is the leaf script committed to the checkpoint tap
 	// tree.
-	//
-	// This is currently a draft implementation, and may change as the
-	// checkpoint policy is refined.
 	OwnerLeafScript []byte
+
+	// OwnerLeafPolicy is the semantic owner-leaf policy encoding that
+	// corresponds to OwnerLeafScript.
+	OwnerLeafPolicy []byte
+
+	// VTXOPolicyTemplate is the semantic arkscript policy encoding for the
+	// spent input VTXO.
+	VTXOPolicyTemplate []byte
+
+	// PkScript is the VTXO pkscript. Stored for custom spend paths
+	// where the pkscript cannot be derived from keys + exit delay.
+	PkScript []byte
+
+	// SpendWitnessScript is the leaf script for custom VTXO types.
+	SpendWitnessScript []byte
+
+	// SpendControlBlock is the BIP-341 control block for the custom
+	// spend leaf.
+	SpendControlBlock []byte
+
+	// ConditionWitness holds extra witness elements (e.g., preimage).
+	ConditionWitness [][]byte
 }
 
 // ToSnapshot converts the transfer input into a portable snapshot.
@@ -64,16 +84,36 @@ func (i *TransferInput) ToSnapshot() (*TransferInputSnapshot, error) {
 		return nil, fmt.Errorf("vtxo exit delay must be provided")
 	}
 
-	return &TransferInputSnapshot{
-		Outpoint:        i.VTXO.Outpoint,
-		AmountSat:       int64(i.VTXO.Amount),
-		ClientKeyFamily: int32(i.VTXO.OwnerKey.KeyLocator.Family),
-		ClientKeyIndex:  i.VTXO.OwnerKey.KeyLocator.Index,
-		ClientPubKey:    i.VTXO.OwnerKey.PubKey.SerializeCompressed(),
-		OperatorPubKey:  operatorKey.SerializeCompressed(),
-		ExitDelay:       exitDelay,
-		OwnerLeafScript: i.OwnerLeafScript,
-	}, nil
+	snap := &TransferInputSnapshot{
+		Outpoint:           i.VTXO.Outpoint,
+		AmountSat:          int64(i.VTXO.Amount),
+		ClientKeyFamily:    int32(i.VTXO.ClientKey.KeyLocator.Family),
+		ClientKeyIndex:     i.VTXO.ClientKey.KeyLocator.Index,
+		OperatorPubKey:     operatorKey.SerializeCompressed(),
+		ExitDelay:          exitDelay,
+		OwnerLeafScript:    i.OwnerLeafScript,
+		OwnerLeafPolicy:    i.OwnerLeafPolicy,
+		VTXOPolicyTemplate: i.VTXOPolicyTemplate,
+		PkScript:           i.VTXO.PkScript,
+	}
+
+	if i.VTXO.ClientKey.PubKey != nil {
+		snap.ClientPubKey =
+			i.VTXO.ClientKey.PubKey.SerializeCompressed()
+	}
+
+	if i.CustomSpend != nil {
+		snap.ConditionWitness = i.CustomSpend.Conditions
+
+		if i.CustomSpend.SpendInfo != nil {
+			snap.SpendWitnessScript =
+				i.CustomSpend.SpendInfo.WitnessScript
+			snap.SpendControlBlock =
+				i.CustomSpend.SpendInfo.ControlBlock
+		}
+	}
+
+	return snap, nil
 }
 
 // TransferInputFromSnapshot reconstructs a transfer input from a snapshot.
@@ -97,9 +137,9 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			"provided")
 	}
 
-	if len(snap.OwnerLeafScript) == 0 {
-		return TransferInput{}, fmt.Errorf("owner leaf script must " +
-			"be provided")
+	if len(snap.OwnerLeafScript) == 0 && len(snap.OwnerLeafPolicy) == 0 {
+		return TransferInput{}, fmt.Errorf("owner leaf script or " +
+			"policy must be provided")
 	}
 
 	clientPub, err := btcec.ParsePubKey(snap.ClientPubKey)
@@ -114,14 +154,14 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 			err)
 	}
 
-	tapScript, err := scripts.VTXOTapScript(clientPub, operatorPub,
+	tapScript, err := arkscript.VTXOTapScript(clientPub, operatorPub,
 		snap.ExitDelay)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapscript: %w",
 			err)
 	}
 
-	tapKey, err := scripts.VTXOTapKey(clientPub, operatorPub,
+	tapKey, err := arkscript.VTXOTapKey(clientPub, operatorPub,
 		snap.ExitDelay)
 	if err != nil {
 		return TransferInput{}, fmt.Errorf("rebuild vtxo tapkey: %w",
@@ -135,10 +175,11 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 	}
 
 	desc := &vtxo.Descriptor{
-		Outpoint: snap.Outpoint,
-		Amount:   btcutil.Amount(snap.AmountSat),
-		PkScript: pkScript,
-		OwnerKey: keychain.KeyDescriptor{
+		Outpoint:       snap.Outpoint,
+		Amount:         btcutil.Amount(snap.AmountSat),
+		PolicyTemplate: bytes.Clone(snap.VTXOPolicyTemplate),
+		PkScript:       pkScript,
+		ClientKey: keychain.KeyDescriptor{
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(
 					snap.ClientKeyFamily,
@@ -153,8 +194,28 @@ func TransferInputFromSnapshot(snap *TransferInputSnapshot) (TransferInput,
 		Status:         vtxo.VTXOStatusLive,
 	}
 
-	return TransferInput{
-		VTXO:            desc,
-		OwnerLeafScript: snap.OwnerLeafScript,
-	}, nil
+	result := TransferInput{
+		VTXO:               desc,
+		OwnerLeafScript:    snap.OwnerLeafScript,
+		OwnerLeafPolicy:    snap.OwnerLeafPolicy,
+		VTXOPolicyTemplate: snap.VTXOPolicyTemplate,
+	}
+
+	if len(snap.SpendWitnessScript) > 0 {
+		result.CustomSpend = &arkscript.SpendPath{
+			SpendInfo: &arkscript.SpendInfo{
+				WitnessScript: snap.SpendWitnessScript,
+				ControlBlock:  snap.SpendControlBlock,
+			},
+			Conditions: snap.ConditionWitness,
+		}
+	}
+
+	// For custom spend paths, use the stored PkScript instead of
+	// deriving from keys.
+	if len(snap.PkScript) > 0 {
+		desc.PkScript = snap.PkScript
+	}
+
+	return result, nil
 }

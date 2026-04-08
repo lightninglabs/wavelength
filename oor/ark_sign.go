@@ -162,7 +162,7 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	// Pass the full KeyDescriptor (including KeyLocator) so
 	// signers that require the locator can find the private key.
 	signDesc := &input.SignDescriptor{
-		KeyDesc:    in.VTXO.OwnerKey,
+		KeyDesc:    in.VTXO.ClientKey,
 		SignMethod: input.TaprootScriptSpendSignMethod,
 		Output: &wire.TxOut{
 			Value:    witnessUtxo.Value,
@@ -187,7 +187,7 @@ func signArkPSBTInput(signer input.Signer, arkPSBT *psbt.Packet,
 	}
 
 	return psbtutil.AddTaprootScriptSpendSig(
-		pInput, in.VTXO.OwnerKey.PubKey,
+		pInput, in.VTXO.ClientKey.PubKey,
 		collabLeaf.Script, sigBytes, signDesc.HashType,
 	)
 }

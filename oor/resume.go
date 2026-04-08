@@ -81,6 +81,7 @@ func OutboxForState(state State) ([]OutboxEvent, error) {
 				ArkPSBT:         s.ArkPSBT,
 				CheckpointPSBTs: s.CheckpointPSBTs,
 				TransferInputs:  s.TransferInputs,
+				Recipients:      s.RecipientOutputs,
 			},
 		}, nil
 

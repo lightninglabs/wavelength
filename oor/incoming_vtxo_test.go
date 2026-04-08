@@ -22,7 +22,7 @@ func TestBuildIncomingVTXODescriptorChainDepth(t *testing.T) {
 	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
 		IncomingVTXOConfig{
 			OutputIndex: recipients[0].OutputIndex,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: recipientKey.PubKey(),
 			},
 			OperatorKey: operatorKey,
@@ -54,7 +54,7 @@ func TestBuildIncomingVTXODescriptorZeroChainDepth(t *testing.T) {
 	desc, err := BuildIncomingVTXODescriptor(arkPSBT,
 		IncomingVTXOConfig{
 			OutputIndex: recipients[0].OutputIndex,
-			OwnerKey: keychain.KeyDescriptor{
+			ClientKey: keychain.KeyDescriptor{
 				PubKey: recipientKey.PubKey(),
 			},
 			OperatorKey: operatorKey,
