@@ -396,11 +396,15 @@ submodule-sync: #? Sync submodule URLs from .gitmodules
 
 build: #? Build debug binaries and place in project directory
 	@$(call print, "Building debug binaries.")
-	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/...
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o . ./cmd/merge-sql-schemas
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/arkd ./cmd/arkd
+	$(GOBUILD) -trimpath -tags="$(DEV_TAGS)" $(DEV_GCFLAGS) $(DEV_LDFLAGS) -o ./bin/arkcli ./cmd/arkcli
 
 install: #? Build and install binaries to GOPATH/bin
 	@$(call print, "Installing binaries.")
-	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/...
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/merge-sql-schemas
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkd
+	$(GOINSTALL) -trimpath -tags="$(DEV_TAGS)" $(DEV_LDFLAGS) ./cmd/arkcli
 
 clean: #? Remove build artifacts
 	@$(call print, "Cleaning build artifacts.")
@@ -422,7 +426,9 @@ release: #? Cross compile for all supported platforms
 		elif [ "$$GOARCH" = "armv7" ]; then \
 			export GOARCH=arm; export GOARM=7; \
 		fi; \
-		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/darepo-$$sys ./cmd/...; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/merge-sql-schemas-$$sys ./cmd/merge-sql-schemas; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/arkd-$$sys ./cmd/arkd; \
+		$(GOBUILD) -trimpath $(RELEASE_LDFLAGS) -tags="$(RELEASE_TAGS)" -o ./bin/arkcli-$$sys ./cmd/arkcli; \
 		echo; \
 	done
 

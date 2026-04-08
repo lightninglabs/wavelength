@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,11 +16,9 @@ import (
 	"github.com/lightninglabs/darepo-client/indexer"
 	mailboxpb "github.com/lightninglabs/darepo-client/mailbox/pb"
 	"github.com/lightninglabs/darepo-client/serverconn"
-	"github.com/lightninglabs/lndclient"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -42,6 +41,7 @@ type IndexerTestClient struct {
 	runtimeCancel context.CancelFunc
 	edgeConn      *grpc.ClientConn
 	sqliteStore   *clientdb.SqliteStore
+	rpc           *arkrpc.IndexerServiceMailboxClient
 }
 
 // Stop gracefully stops the indexer runtime and closes all backing resources.
@@ -67,6 +67,24 @@ func (c *IndexerTestClient) Stop() {
 	}
 }
 
+// ListOORRecipientEventsByRequest submits a prebuilt, proof-gated recipient
+// event query through the mailbox transport. Tests can build the request while
+// a daemon-backed signer is online, then reuse it after the daemon stops to
+// focus on offline event visibility rather than post-shutdown proof creation.
+func (c *IndexerTestClient) ListOORRecipientEventsByRequest(
+	ctx context.Context,
+	req *arkrpc.ListOORRecipientEventsByScriptRequest,
+) (*arkrpc.ListOORRecipientEventsByScriptResponse, error) {
+
+	if c == nil || c.rpc == nil {
+		return nil, fmt.Errorf(
+			"indexer mailbox rpc client not configured",
+		)
+	}
+
+	return c.rpc.ListOORRecipientEventsByScript(ctx, req)
+}
+
 // StartIndexerTestClient starts a mailbox-backed indexer client bound to the
 // given daemon's backing wallet key descriptor.
 func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
@@ -76,18 +94,18 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 
 	daemon := h.GetClientDaemon(daemonName)
 	require.NotNil(h.T, daemon, "client daemon %q not found", daemonName)
-	require.NotNil(h.T, daemon.LND,
-		"indexer test client currently requires lnd backend")
-	require.NotNil(h.T, daemon.LND.Client,
-		"lnd services are not available for daemon %q", daemonName)
+	require.NotNil(h.T, daemon.server,
+		"client daemon %q server not initialized", daemonName)
 
-	keyDesc, err := daemon.LND.Client.WalletKit.DeriveKey(
-		h.T.Context(), &keychain.KeyLocator{
+	keyDesc, signer, err := daemon.server.IndexerProofKey(
+		h.T.Context(), keychain.KeyLocator{
 			Family: keychain.KeyFamily(keyFamily),
 			Index:  keyIndex,
 		},
 	)
 	require.NoError(h.T, err, "derive key descriptor for indexer signer")
+	require.NotNil(h.T, keyDesc, "indexer signer key descriptor missing")
+	require.NotNil(h.T, keyDesc.PubKey, "indexer signer pubkey missing")
 
 	// Derive mailbox IDs from the test key's public key and
 	// the server's operator key.
@@ -137,8 +155,7 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	)
 
 	authSig, err := signIndexerMailboxAuth(
-		h.T.Context(), daemon.LND.Client.Signer, *keyDesc,
-		remoteMailboxID,
+		h.T.Context(), signer, keyDesc.PubKey, remoteMailboxID,
 	)
 	require.NoError(h.T, err, "sign indexer mailbox auth")
 
@@ -158,13 +175,11 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 	require.NoError(h.T, runtime.Start(runtimeCtx),
 		"start indexer mailbox runtime")
 
-	signer := indexer.NewLNDSchnorrSigner(
-		daemon.LND.Client.Signer, *keyDesc,
-	)
 	idxClient := indexer.New(
 		runtime.Unary(), signer, defaultIndexerProofServerID,
 		localMailboxID, fn.None[btclog.Logger](),
 	)
+	rpcClient := arkrpc.NewIndexerServiceMailboxClient(runtime.Unary())
 
 	indexerClient := &IndexerTestClient{
 		T:             h.T,
@@ -173,6 +188,7 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 		runtimeCancel: runtimeCancel,
 		edgeConn:      edgeConn,
 		sqliteStore:   sqliteStore,
+		rpc:           rpcClient,
 	}
 
 	h.T.Cleanup(indexerClient.Stop)
@@ -198,33 +214,33 @@ func (h *ArkHarness) StartIndexerTestClient(daemonName string, keyFamily,
 
 // signIndexerMailboxAuth computes the tagged Schnorr signature that proves
 // ownership of the indexer test client's mailbox identity key.
-func signIndexerMailboxAuth(ctx context.Context,
-	signer lndclient.SignerClient, keyDesc keychain.KeyDescriptor,
+func signIndexerMailboxAuth(ctx context.Context, signer indexer.SchnorrSigner,
+	signerPubKey *btcec.PublicKey,
 	recipientMailboxID string) (*schnorr.Signature, error) {
 
-	msg := serverconn.MailboxAuthMessage(
-		keyDesc.PubKey, recipientMailboxID,
-	)
-	tag := []byte(serverconn.MailboxAuthTagStr)
+	if signerPubKey == nil {
+		return nil, fmt.Errorf("signer pubkey not configured")
+	}
 
-	rawSig, err := signer.SignMessage(
-		ctx, msg, keyDesc.KeyLocator,
-		lndclient.SignSchnorr(nil),
-		withIndexerHarnessSchnorrTag(tag),
+	messageSigner, ok := signer.(interface {
+		SignSchnorrMessage(
+			context.Context, []byte, []byte, []byte,
+		) ([]byte, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("indexer signer does not support " +
+			"tagged message signing")
+	}
+
+	msg := serverconn.MailboxAuthMessage(
+		signerPubKey, recipientMailboxID,
+	)
+	rawSig, err := messageSigner.SignSchnorrMessage(
+		ctx, nil, msg, []byte(serverconn.MailboxAuthTagStr),
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	return schnorr.ParseSignature(rawSig)
-}
-
-// withIndexerHarnessSchnorrTag applies a BIP-340 tag to lnd's SignMessage
-// request.
-func withIndexerHarnessSchnorrTag(
-	tag []byte) lndclient.SignMessageOption {
-
-	return func(req *signrpc.SignMessageReq) {
-		req.Tag = tag
-	}
 }
