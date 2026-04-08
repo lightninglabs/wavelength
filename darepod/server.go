@@ -314,6 +314,21 @@ func (s *Server) RPCAddr() net.Addr {
 	return s.rpcAddr
 }
 
+// GetStoredVTXO returns the persisted VTXO descriptor for the
+// given outpoint. This method exists for test harnesses only;
+// it lets integration tests inspect locally stored partial
+// unroll state without reaching into internal daemon fields.
+func (s *Server) GetStoredVTXO(ctx context.Context,
+	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
+
+	if s.vtxoStore == nil {
+		return nil, fmt.Errorf("client daemon VTXO " +
+			"store not initialized")
+	}
+
+	return s.vtxoStore.GetVTXO(ctx, outpoint)
+}
+
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
 // interceptor fires or a fatal error occurs. The startup sequence
 // branches on the configured wallet type: in lnd mode, the daemon
