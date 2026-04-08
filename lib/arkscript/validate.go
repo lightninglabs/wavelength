@@ -135,11 +135,15 @@ func ExtractCSVDelay(node Node) uint32 {
 	return extractCSVDelay(node)
 }
 
-// ScriptContainsKey performs a byte-level substring scan of a compiled
-// script for the x-only serialized key. This is a lightweight prefilter
-// that does not verify the key is actually used in a CHECKSIG context.
-// Callers should combine this with script VM execution at finalize time
-// to confirm the key is meaningfully consumed.
+// ScriptContainsKey performs a byte-level scan of a compiled script
+// for the x-only serialized public key. This is a lightweight
+// server-side heuristic that doesn't require AST parsing.
+//
+// The check verifies that the 32-byte x-only key appears somewhere
+// in the raw script bytes. This can produce false positives if the
+// key bytes happen to span an opcode boundary, but combined with
+// full script VM execution at finalize time the result is safe:
+// the heuristic gates admission, the VM proves correctness.
 func ScriptContainsKey(script []byte,
 	key *btcec.PublicKey) bool {
 
