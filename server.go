@@ -126,6 +126,10 @@ type Server struct {
 		batchwatcher.BatchWatcherResp,
 	]
 
+	// batchWatcherCfg is the live config pointer used to inject optional
+	// recovery collaborators after the watcher actor has been spawned.
+	batchWatcherCfg *batchwatcher.ActorConfig
+
 	// terms holds the batch terms (sweep delay, exit delays, keys,
 	// etc.) resolved during rounds subsystem setup. Stored here so
 	// the GetInfo RPC can return them to clients.

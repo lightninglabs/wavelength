@@ -90,8 +90,17 @@ func (s *Server) setupRoundsSubsystem(ctx context.Context) error {
 	batchWatcherCfg := &batchwatcher.ActorConfig{
 		Log:         fn.Some(bwLog),
 		ChainSource: s.chainSourceRef,
+		SpendRecoveryStore: fn.Some(
+			newBatchWatcherSpendRecoveryStore(vtxoStore),
+		),
 	}
 	batchWatcher := batchwatcher.NewActor(batchWatcherCfg)
+
+	// Store the config pointer so setupOORSubsystem can inject the
+	// CheckpointLookup after the OOR store is created. This is safe
+	// because all setup* calls complete before the actor system
+	// begins dispatching chain events.
+	s.batchWatcherCfg = batchWatcherCfg
 	bwKey := batchwatcher.NewServiceKey()
 	s.batchWatcherRef = bwKey.Spawn(
 		s.actorSystem,

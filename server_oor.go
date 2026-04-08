@@ -39,6 +39,11 @@ func (s *Server) setupOORSubsystem(ctx context.Context) error {
 		s.db, clk, oorLog,
 	)
 	sessionStore.SetOperatorKey(s.terms.OperatorKey)
+	if s.batchWatcherCfg != nil {
+		s.batchWatcherCfg.CheckpointLookup = fn.Some(
+			newBatchWatcherCheckpointLookup(sessionStore),
+		)
+	}
 
 	// Create the DB-backed delivery store for durable actor
 	// mailbox checkpoints.

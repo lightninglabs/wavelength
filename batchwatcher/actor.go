@@ -31,6 +31,15 @@ type ActorConfig struct {
 	// enabled.
 	FraudDetector fn.Option[actor.TellOnlyRef[FraudDetectorMsg]]
 
+	// SpendRecoveryStore provides persisted VTXO and forfeit lookups for
+	// recognized client-owned spend handling. May be None until the
+	// surrounding subsystem wires recovery support.
+	SpendRecoveryStore fn.Option[SpendRecoveryStore]
+
+	// CheckpointLookup provides OOR checkpoint lookup by spent VTXO input.
+	// May be None until the OOR subsystem is initialized.
+	CheckpointLookup fn.Option[CheckpointLookup]
+
 	// BatchSweeper is a reference to the BatchSweeper actor for sending
 	// expiry and tree state change notifications. May be None if sweeping
 	// is not enabled.
@@ -396,7 +405,8 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		// Mark the spent output as consumed before ratcheting forward.
 		batchState.RemoveExistingOutput(msg.SpentOutpoint)
 
-		// Mark the presigned node transaction as spent (tree progression).
+		// Mark the presigned node transaction as spent to record
+		// normal tree progression.
 		batchState.MarkNodeSpent(spendingTxHash)
 
 		err = a.watchNodeOutputs(
