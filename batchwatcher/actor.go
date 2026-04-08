@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -54,6 +55,16 @@ type Actor struct {
 	// subscription.
 	blockSubscriptionActive bool
 }
+
+// spendDisposition classifies how the BatchWatcher should react to a confirmed
+// spend of a watched output.
+type spendDisposition uint8
+
+const (
+	spendDispositionBranchTx spendDisposition = iota
+	spendDispositionExpiredRootSweep
+	spendDispositionUnexpected
+)
 
 // NewActor creates a new BatchWatcherActor with the provided configuration.
 func NewActor(cfg *ActorConfig) *Actor {
@@ -359,12 +370,11 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
-	// Get the output that was spent. For the batch root output, this was
-	// registered with TreeNode set to Tree.Root in handleRegisterBatch.
-	spentOutput := batchState.RemoveExistingOutput(msg.SpentOutpoint)
-
 	spendingTxHash := msg.SpendingTx.TxHash()
 
+	// Get the output that was spent. For the batch root output, this was
+	// registered with TreeNode set to Tree.Root in handleRegisterBatch.
+	spentOutput := batchState.GetExistingOutput(msg.SpentOutpoint)
 	if spentOutput == nil {
 		a.log.WarnS(ctx, "Spend detected for unknown output", nil,
 			"batch_id", msg.BatchID,
@@ -374,72 +384,98 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
-	if spentOutput.TreeNode == nil {
-		a.log.WarnS(ctx, "Spent output missing tree node", nil,
-			"batch_id", msg.BatchID,
-			"outpoint", msg.SpentOutpoint,
-			"spending_tx", spendingTxHash)
-
-		a.notifyTreeStateChanged(ctx, msg.BatchID)
-
-		return fn.Ok[BatchWatcherResp](nil)
-	}
-
-	// Compute the expected txid for this node's presigned transaction.
-	// Only treat this as a tree unroll if the spend matches the presigned
-	// transaction. Non-matching spends (e.g., operator sweeps) must not
-	// trigger progressive watching.
-	expectedTxid, err := spentOutput.TreeNode.TXID()
-	if err != nil {
-		a.log.WarnS(ctx, "Failed to compute tree node txid", err,
-			"batch_id", msg.BatchID,
-			"outpoint", msg.SpentOutpoint)
-
-		a.notifyTreeStateChanged(ctx, msg.BatchID)
-
-		return fn.Ok[BatchWatcherResp](nil)
-	}
-
-	// If this spend is not the presigned transaction for this output, it
-	// is a non-tree spend (typically an operator sweep). Do not unroll.
-	if spendingTxHash != expectedTxid {
-		a.log.InfoS(ctx, "Output spent by non-tree tx",
-			"batch_id", msg.BatchID,
-			"outpoint", msg.SpentOutpoint,
-			"spending_tx", spendingTxHash)
-
-		// If no unspent outputs remain, the batch is fully consumed
-		// (the operator swept the root whole). Notify the sweeper
-		// with the tree so it can extract VTXO outpoints, then
-		// self-unregister so expiry notifications stop.
-		if len(batchState.ExistingOutputs) == 0 {
-			a.notifyBatchSwept(ctx, msg.BatchID, batchState.Tree)
-			a.state.UnregisterBatch(msg.BatchID)
-
-			a.log.InfoS(ctx, "Batch fully swept, unregistered",
-				"batch_id", msg.BatchID)
-
-			return fn.Ok[BatchWatcherResp](nil)
-		}
-
-		a.notifyTreeStateChanged(ctx, msg.BatchID)
-
-		return fn.Ok[BatchWatcherResp](nil)
-	}
-
-	// Mark the presigned node transaction as spent (tree progression).
-	batchState.MarkNodeSpent(spendingTxHash)
-
-	err = a.watchNodeOutputs(
-		ctx, msg.BatchID, spentOutput.TreeNode, msg.SpendingTx,
-		msg.SpendingHeight,
+	disposition, err := a.classifySpend(
+		batchState, spentOutput, spendingTxHash, msg.SpendingHeight,
 	)
 	if err != nil {
-		a.log.WarnS(ctx, "Failed to watch child outputs",
-			err, "batch_id", msg.BatchID)
+		return fn.Err[BatchWatcherResp](err)
 	}
 
-	return fn.Ok[BatchWatcherResp](nil)
+	switch disposition {
+	case spendDispositionBranchTx:
+		// Mark the spent output as consumed before ratcheting forward.
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
+
+		// Mark the presigned node transaction as spent (tree progression).
+		batchState.MarkNodeSpent(spendingTxHash)
+
+		err = a.watchNodeOutputs(
+			ctx, msg.BatchID, spentOutput.TreeNode, msg.SpendingTx,
+			msg.SpendingHeight,
+		)
+		if err != nil {
+			a.log.WarnS(ctx, "Failed to watch child outputs",
+				err, "batch_id", msg.BatchID)
+		}
+
+		return fn.Ok[BatchWatcherResp](nil)
+
+	case spendDispositionExpiredRootSweep:
+		// The confirmed batch root was swept after expiry. Remove the
+		// tracked output, notify the sweeper, and stop monitoring.
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
+		a.notifyBatchSwept(ctx, msg.BatchID, batchState.Tree)
+		a.state.UnregisterBatch(msg.BatchID)
+
+		a.log.InfoS(ctx, "Expired batch root swept, unregistered",
+			"batch_id", msg.BatchID,
+			"spending_tx", spendingTxHash)
+
+		return fn.Ok[BatchWatcherResp](nil)
+
+	default:
+		return fn.Err[BatchWatcherResp](fmt.Errorf(
+			"TODO: handle non-branch spend of watched output %s "+
+				"in batch %s by tx %s",
+			msg.SpentOutpoint, msg.BatchID, spendingTxHash,
+		))
+	}
+}
+
+// classifySpend decides whether a confirmed spend advances the expected tree
+// path, is the terminal expired root sweep case, or is an unexpected spend
+// that the future fraud-response flow must handle.
+func (a *Actor) classifySpend(batchState *BatchTreeState,
+	spentOutput *Output, spendingTxHash chainhash.Hash,
+	spendingHeight int32) (spendDisposition, error) {
+
+	if spentOutput == nil {
+		return spendDispositionUnexpected, fmt.Errorf(
+			"spent output must be provided",
+		)
+	}
+
+	if spentOutput.TreeNode == nil {
+		return spendDispositionUnexpected, fmt.Errorf(
+			"tracked output %s has no tree node",
+			spentOutput.Outpoint,
+		)
+	}
+
+	expectedTxid, err := spentOutput.TreeNode.TXID()
+	if err != nil {
+		return spendDispositionUnexpected, fmt.Errorf(
+			"compute expected tree txid for %s: %w",
+			spentOutput.Outpoint, err,
+		)
+	}
+
+	if spendingTxHash == expectedTxid {
+		return spendDispositionBranchTx, nil
+	}
+
+	// Expired-root sweep: only the original batch output qualifies.
+	// Mid-tree branch outputs exposed by partial unrolls are not
+	// checked here; the sweeper handles those through a separate
+	// path, so they fall through to spendDispositionUnexpected.
+	if batchState.Tree != nil &&
+		spentOutput.Outpoint == batchState.Tree.BatchOutpoint &&
+		spendingHeight >= int32(batchState.ExpiryHeight) {
+
+		return spendDispositionExpiredRootSweep, nil
+	}
+
+	return spendDispositionUnexpected, nil
 }
 
 // handleNewBlockReceived processes a new block notification. It notifies the

@@ -121,6 +121,47 @@ func (h *testHarness) createSimpleTree(t *testing.T) *tree.Tree {
 	return t1
 }
 
+// createFanOutTree creates a multi-level binary tree whose root fans out into
+// two non-leaf branch outputs.
+func (h *testHarness) createFanOutTree(t *testing.T) *tree.Tree {
+	t.Helper()
+
+	leafAmounts := []btcutil.Amount{
+		40_000, 30_000, 20_000, 10_000,
+	}
+	leaves := make([]tree.LeafDescriptor, 0, len(leafAmounts))
+	var totalAmount btcutil.Amount
+
+	for i, amount := range leafAmounts {
+		clientKey, _ := testutils.CreateKey(int32(200 + i))
+		totalAmount += amount
+
+		leaves = append(leaves, tree.LeafDescriptor{
+			SigningKey: clientKey,
+			Amount:     amount,
+			PkScript: []byte{
+				0x51, 0x20, byte(i + 1), byte(i + 2),
+			},
+		})
+	}
+
+	batchOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{9, 8, 7, 6},
+		Index: 0,
+	}
+	batchOutput := wire.NewTxOut(int64(totalAmount), []byte{0x51})
+
+	fanOutTree, err := tree.NewTree(
+		batchOutpoint, batchOutput, leaves, h.operatorKey,
+		[]byte{0xdd, 0xee, 0xff}, 2,
+	)
+	require.NoError(t, err)
+	require.False(t, fanOutTree.Root.IsLeaf())
+	require.Len(t, fanOutTree.Root.Children, 2)
+
+	return fanOutTree
+}
+
 // completedFuture returns a Future that is already completed with the given
 // response.
 func completedFuture(
@@ -485,6 +526,124 @@ func TestNodeSpendDetected_ProgressiveWatching(t *testing.T) {
 		"child outputs should be tracked")
 }
 
+// TestNodeSpendDetectedFanOutRatchetsForward verifies the new partial-unroll
+// watcher behavior for a multi-level binary tree.
+//
+// The test tree has this shape:
+//
+//	   batch output
+//	       |
+//	     root tx
+//	    /      \
+//	 out0      out1
+//	  |          |
+//	branch0   branch1
+//	 /   \      /   \
+//	l0   l1    l2   l3
+//
+// The watcher starts by watching only the confirmed batch output.
+//
+// Step 1:
+// Confirm the root tx spend of the batch output.
+// Expected result:
+// - the batch output is consumed
+// - the root tx is marked spent
+// - the watcher fans out to both branch outputs
+//
+// Step 2:
+// Confirm the spend of branch output 0 by branch0.
+// Expected result:
+// - branch output 0 is consumed
+// - branch0 is marked spent
+// - the watcher ratchets forward to the two leaf VTXOs under branch0
+// - the sibling branch output 1 remains tracked and watched.
+func TestNodeSpendDetectedFanOutRatchetsForward(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createFanOutTree(t)
+
+	// Seed the actor state as if RegisterBatch had already run for a confirmed
+	// round output. At this point only the single batch output exists on-chain
+	// and only that outpoint is being watched.
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	h.mockChainSource.mock.On("Ask", mock.Anything, mock.Anything).
+		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
+		Maybe()
+
+	// Spend the batch output with the presigned root tx. This is the first
+	// ratchet step: one watched output should turn into two watched branch
+	// outputs, but no VTXO leaves should yet be on-chain.
+	rootTx, err := testTree.Root.ToTx()
+	require.NoError(t, err)
+
+	rootSpend := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     rootTx,
+		SpendingHeight: 500,
+	}
+	result := h.actor.Receive(h.t.Context(), rootSpend)
+	require.True(t, result.IsOk())
+
+	rootTxID := rootTx.TxHash()
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.True(t, state.IsNodeSpent(rootTxID))
+	require.Len(t, state.ExistingOutputs, 2)
+	require.Len(t, state.VTXOsOnChain, 0)
+	require.Len(t, state.WatchedOutpoints, 3)
+
+	// Pick one of the two branch outputs revealed by the root spend. This is
+	// still a non-leaf branch, so spending it should ratchet forward again.
+	branchNode, ok := testTree.Root.Children[0]
+	require.True(t, ok)
+	require.False(t, branchNode.IsLeaf())
+
+	// Spend root output 0 with the matching presigned branch tx.
+	branchTx, err := branchNode.ToTx()
+	require.NoError(t, err)
+
+	branchSpend := &NodeSpendDetected{
+		BatchID: batchID,
+		SpentOutpoint: wire.OutPoint{
+			Hash:  rootTxID,
+			Index: 0,
+		},
+		SpendingTx:     branchTx,
+		SpendingHeight: 501,
+	}
+	result = h.actor.Receive(h.t.Context(), branchSpend)
+	require.True(t, result.IsOk())
+
+	branchTxID := branchTx.TxHash()
+	state = h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.True(t, state.IsNodeSpent(branchTxID))
+
+	// After the second ratchet:
+	// - the sibling root output (root:1) is still tracked
+	// - the spent branch output (root:0) has been replaced by its two leaf
+	//   descendants
+	// - those two leaves are now recorded as on-chain VTXOs
+	require.Len(t, state.ExistingOutputs, 3)
+	require.Len(t, state.VTXOsOnChain, 2)
+
+	_, siblingTracked := state.ExistingOutputs[wire.OutPoint{
+		Hash:  rootTxID,
+		Index: 1,
+	}]
+	require.True(t, siblingTracked)
+}
+
 // TestNodeSpendDetected_VTXONotification tests that when a VTXO leaf appears
 // on-chain, the FraudDetector receives a notification.
 func TestNodeSpendDetected_VTXONotification(t *testing.T) {
@@ -547,9 +706,10 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 	}
 }
 
-// TestNodeSpendDetected_TreeStateChangedNotification tests that when tree
-// state changes, the BatchSweeper receives a notification.
-func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
+// TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors verifies that
+// unexpected non-branch spends are rejected until fraud-response handling is
+// implemented.
+func TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors(t *testing.T) {
 	h := newTestHarness(t)
 
 	batchID := createBatchID(t)
@@ -595,11 +755,50 @@ func TestNodeSpendDetected_TreeStateChangedNotification(t *testing.T) {
 	}
 
 	result := h.actor.Receive(h.t.Context(), msg)
+	require.True(t, result.IsErr())
+	require.Contains(t, result.Err().Error(), "TODO: handle non-branch")
+
+	state := h.actor.state.GetBatch(batchID)
+	require.NotNil(t, state)
+	require.Len(t, state.ExistingOutputs, 1)
+}
+
+// TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired
+// batch root spent by a non-branch transaction is treated as the terminal
+// whole-batch sweep case and notifies the BatchSweeper.
+func TestNodeSpendDetected_ExpiredRootSweepNotification(t *testing.T) {
+	h := newTestHarness(t)
+
+	batchID := createBatchID(t)
+	testTree := h.createSimpleTree(t)
+
+	treeState := NewBatchTreeState(batchID, testTree, 1000)
+	treeState.AddExistingOutput(&Output{
+		Outpoint: testTree.BatchOutpoint,
+		TxOut:    testTree.BatchOutput,
+		TreeNode: testTree.Root,
+	})
+	treeState.MarkWatched(testTree.BatchOutpoint)
+	h.actor.state.RegisterBatch(treeState)
+
+	spendingTx := wire.NewMsgTx(3)
+	spendingTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: testTree.BatchOutpoint,
+	})
+	for _, txOut := range testTree.Root.Outputs {
+		spendingTx.AddTxOut(txOut)
+	}
+
+	msg := &NodeSpendDetected{
+		BatchID:        batchID,
+		SpentOutpoint:  testTree.BatchOutpoint,
+		SpendingTx:     spendingTx,
+		SpendingHeight: 1000,
+	}
+
+	result := h.actor.Receive(h.t.Context(), msg)
 	require.True(t, result.IsOk())
 
-	// The spending tx doesn't match the tree root TXID, so this is a
-	// non-tree spend. With no remaining outputs the watcher
-	// self-unregisters and sends BatchSweptNotification.
 	var foundBatchSwept bool
 	for _, msg := range h.mockBatchSweeper.receivedMsgs {
 		if notification, ok := msg.(*BatchSweptNotification); ok {
