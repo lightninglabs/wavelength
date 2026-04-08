@@ -1499,6 +1499,16 @@ func (m *mockVTXOStore) MarkVTXOForfeit(ctx context.Context,
 	return args.Error(0)
 }
 
+// MarkVTXOUnrolledByClient is a mock implementation of
+// VTXOStore.MarkVTXOUnrolledByClient.
+func (m *mockVTXOStore) MarkVTXOUnrolledByClient(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	args := m.Called(ctx, outpoint)
+
+	return args.Error(0)
+}
+
 // GetVTXO is a mock implementation of VTXOStore.GetVTXO.
 func (m *mockVTXOStore) GetVTXO(ctx context.Context,
 	outpoint wire.OutPoint) (*VTXO, error) {

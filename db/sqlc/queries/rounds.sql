@@ -139,6 +139,13 @@ UPDATE vtxos
 SET status = 'forfeited', lock_owner_kind = NULL, lock_owner_id = NULL
 WHERE outpoint_hash = $1 AND outpoint_index = $2;
 
+-- name: MarkVTXOUnrolledByClient :execrows
+UPDATE vtxos
+SET status = 'unrolled_by_client', lock_owner_kind = NULL,
+    lock_owner_id = NULL
+WHERE outpoint_hash = $1 AND outpoint_index = $2
+  AND status = 'live';
+
 -- name: MarkVTXOExpired :execrows
 UPDATE vtxos
 SET status = 'expired', lock_owner_kind = NULL, lock_owner_id = NULL

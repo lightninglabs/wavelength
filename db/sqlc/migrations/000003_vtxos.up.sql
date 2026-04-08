@@ -7,13 +7,17 @@ CREATE TABLE IF NOT EXISTS vtxo_statuses (
 );
 
 -- Populate the possible VTXO statuses.
--- VTXOs follow a state machine: pending → live → in_flight → (forfeited|spent|expired).
+-- VTXO state machine:
+--   pending → live → in_flight → (forfeited | spent)
+--   live → unrolled_by_client  (direct terminal transition)
+-- Any non-live terminal state bars the VTXO from cooperative spends.
 INSERT INTO vtxo_statuses (status) VALUES
 	('pending'),    -- Commitment tx broadcast but not yet confirmed
 	('live'),       -- Commitment tx confirmed, VTXO is spendable
 	('in_flight'),  -- Reserved for a spend operation (forfeit or out-of-round)
 	('forfeited'),  -- Forfeited back to operator
 	('spent'),      -- Spent in out-of-round transaction
+	('unrolled_by_client'), -- Revealed by a client-owned on-chain path
 	('expired')     -- Batch swept by operator after CSV timelock
 ON CONFLICT DO NOTHING;
 
@@ -53,7 +57,8 @@ CREATE TABLE IF NOT EXISTS vtxos (
 	-- This key is always required for spend path reconstruction.
 	cosigner_key BLOB NOT NULL,
 
-	-- status tracks VTXO lifecycle (pending, live, in_flight, forfeited, spent).
+	-- status tracks VTXO lifecycle (pending, live, in_flight,
+	-- forfeited, spent, unrolled_by_client, expired).
 	status TEXT NOT NULL DEFAULT 'pending',
 
 	-- lock_owner_kind identifies who owns the in-flight lock.

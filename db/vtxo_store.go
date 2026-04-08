@@ -164,6 +164,37 @@ func (v *VTXOStoreDB) MarkVTXOForfeit(ctx context.Context,
 	})
 }
 
+// MarkVTXOUnrolledByClient marks a live VTXO as revealed by a recognized
+// client-owned on-chain path. Such a VTXO must no longer be used for future
+// OOR or forfeit admission.
+func (v *VTXOStoreDB) MarkVTXOUnrolledByClient(ctx context.Context,
+	outpoint wire.OutPoint) error {
+
+	return v.ExecTx(ctx, WriteTxOption(), func(qtx *sqlc.Queries) error {
+		affected, err := qtx.MarkVTXOUnrolledByClient(ctx,
+			sqlc.MarkVTXOUnrolledByClientParams{
+				OutpointHash:  outpoint.Hash[:],
+				OutpointIndex: int32(outpoint.Index),
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("mark vtxo "+
+				"unrolled_by_client: %w", err)
+		}
+		if affected == 0 {
+			// The SQL WHERE clause requires both existence
+			// and status = 'live'. A zero-row result means
+			// the VTXO either does not exist or has already
+			// transitioned to a terminal state.
+			return fmt.Errorf("vtxo %v not live "+
+				"(missing or already terminal)",
+				outpoint)
+		}
+
+		return nil
+	})
+}
+
 // GetVTXO retrieves a VTXO by its outpoint. Returns nil and no error if the
 // VTXO doesn't exist.
 func (v *VTXOStoreDB) GetVTXO(ctx context.Context,
