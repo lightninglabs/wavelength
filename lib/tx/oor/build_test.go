@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +37,7 @@ func TestBuildCheckpointAndArkPSBT(t *testing.T) {
 	operatorKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -71,9 +71,9 @@ func TestBuildCheckpointAndArkPSBT(t *testing.T) {
 	checkpointTx := cpResult.PSBT.UnsignedTx
 	require.NotNil(t, checkpointTx)
 	require.Len(t, checkpointTx.TxOut, 2)
-	require.Equal(t, scripts.AnchorOutput().Value,
+	require.Equal(t, arkscript.AnchorOutput().Value,
 		checkpointTx.TxOut[1].Value)
-	require.Equal(t, scripts.AnchorOutput().PkScript,
+	require.Equal(t, arkscript.AnchorOutput().PkScript,
 		checkpointTx.TxOut[1].PkScript)
 
 	arkPsbt, err := BuildArkPSBT([]CheckpointOutput{

@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +28,7 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 		PkScript: []byte{0x51},
 	}
 	checkpointTx.AddTxOut(checkpointOut)
-	checkpointTx.AddTxOut(scripts.AnchorOutput())
+	checkpointTx.AddTxOut(arkscript.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -44,7 +44,7 @@ func TestValidateSubmitPackageHappyPath(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestValidateSubmitPackageMissingWitness(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
-	checkpointTx.AddTxOut(scripts.AnchorOutput())
+	checkpointTx.AddTxOut(arkscript.AnchorOutput())
 
 	checkpointPsbt, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestValidateSubmitPackageMissingWitness(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		PkScript: []byte{0x51},
 	}
 	checkpointTxA.AddTxOut(checkpointOutA)
-	checkpointTxA.AddTxOut(scripts.AnchorOutput())
+	checkpointTxA.AddTxOut(arkscript.AnchorOutput())
 
 	checkpointPsbtA, err := psbt.NewFromUnsignedTx(checkpointTxA)
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x51},
 	})
-	checkpointTxB.AddTxOut(scripts.AnchorOutput())
+	checkpointTxB.AddTxOut(arkscript.AnchorOutput())
 
 	checkpointPsbtB, err := psbt.NewFromUnsignedTx(checkpointTxB)
 	require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestValidateSubmitPackageExtraCheckpoint(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestValidateSubmitPackageRejectsCheckpointWithoutAnchor(t *testing.T) {
 		Value:    1234,
 		PkScript: []byte{0x6a, 0x01, 0x01},
 	})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 
 	arkPsbt, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)

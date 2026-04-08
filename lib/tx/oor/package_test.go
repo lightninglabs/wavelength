@@ -5,7 +5,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +17,7 @@ func TestSubmitPackageMarshalRoundTrip(t *testing.T) {
 	checkpointTx := wire.NewMsgTx(3)
 	checkpointTx.AddTxIn(&wire.TxIn{})
 	checkpointTx.AddTxOut(&wire.TxOut{Value: 5, PkScript: []byte{0x51}})
-	checkpointTx.AddTxOut(scripts.AnchorOutput())
+	checkpointTx.AddTxOut(arkscript.AnchorOutput())
 	checkpointPSBT, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
 
@@ -29,7 +29,7 @@ func TestSubmitPackageMarshalRoundTrip(t *testing.T) {
 		},
 	})
 	arkTx.AddTxOut(&wire.TxOut{Value: 5, PkScript: []byte{0x51}})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 	arkPSBT, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
@@ -59,7 +59,7 @@ func TestSubmitPackageUnmarshalRejectsMalformedTrailingBytes(t *testing.T) {
 	checkpointTx := wire.NewMsgTx(3)
 	checkpointTx.AddTxIn(&wire.TxIn{})
 	checkpointTx.AddTxOut(&wire.TxOut{Value: 5, PkScript: []byte{0x51}})
-	checkpointTx.AddTxOut(scripts.AnchorOutput())
+	checkpointTx.AddTxOut(arkscript.AnchorOutput())
 	checkpointPSBT, err := psbt.NewFromUnsignedTx(checkpointTx)
 	require.NoError(t, err)
 
@@ -71,7 +71,7 @@ func TestSubmitPackageUnmarshalRejectsMalformedTrailingBytes(t *testing.T) {
 		},
 	})
 	arkTx.AddTxOut(&wire.TxOut{Value: 5, PkScript: []byte{0x51}})
-	arkTx.AddTxOut(scripts.AnchorOutput())
+	arkTx.AddTxOut(arkscript.AnchorOutput())
 	arkPSBT, err := psbt.NewFromUnsignedTx(arkTx)
 	require.NoError(t, err)
 
