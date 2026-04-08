@@ -16,7 +16,7 @@ const (
 
 // buildOORRecipientOutput converts the user-facing OOR destination flags or
 // MCP args into the daemonrpc Output used by SendOOR.
-func buildOORRecipientOutput(address, pubKeyHex, pkScriptHex string,
+func buildOORRecipientOutput(address, pubKeyHex string,
 	amount int64) (*daemonrpc.Output, error) {
 
 	if amount <= 0 {
@@ -25,7 +25,6 @@ func buildOORRecipientOutput(address, pubKeyHex, pkScriptHex string,
 
 	address = strings.TrimSpace(address)
 	pubKeyHex = strings.TrimSpace(pubKeyHex)
-	pkScriptHex = strings.TrimSpace(pkScriptHex)
 
 	destinations := 0
 	if address != "" {
@@ -34,13 +33,10 @@ func buildOORRecipientOutput(address, pubKeyHex, pkScriptHex string,
 	if pubKeyHex != "" {
 		destinations++
 	}
-	if pkScriptHex != "" {
-		destinations++
-	}
 
 	if destinations != 1 {
-		return nil, fmt.Errorf("exactly one of to, pubkey, or " +
-			"pk_script is required")
+		return nil, fmt.Errorf("exactly one of to or pubkey " +
+			"is required")
 	}
 
 	output := &daemonrpc.Output{
@@ -61,16 +57,6 @@ func buildOORRecipientOutput(address, pubKeyHex, pkScriptHex string,
 
 		output.Destination = &daemonrpc.Output_Pubkey{
 			Pubkey: pubKey,
-		}
-
-	case pkScriptHex != "":
-		pkScript, err := parseOORPkScriptHex(pkScriptHex)
-		if err != nil {
-			return nil, err
-		}
-
-		output.Destination = &daemonrpc.Output_PkScript{
-			PkScript: pkScript,
 		}
 	}
 
@@ -95,18 +81,4 @@ func parseOORPubKeyHex(pubKeyHex string) ([]byte, error) {
 	}
 
 	return schnorr.SerializePubKey(pubKey), nil
-}
-
-// parseOORPkScriptHex validates and decodes a raw output script hex string.
-func parseOORPkScriptHex(pkScriptHex string) ([]byte, error) {
-	pkScript, err := hex.DecodeString(pkScriptHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid pk_script hex: %w", err)
-	}
-
-	if len(pkScript) == 0 {
-		return nil, fmt.Errorf("pk_script must not be empty")
-	}
-
-	return pkScript, nil
 }

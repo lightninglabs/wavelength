@@ -581,7 +581,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 	require.NoError(t, err)
 
 	descriptor, err := tree.NewVTXODescriptor(
-		amount, clientPriv.PubKey(), operatorKey, nil, 144,
+		amount, clientPriv.PubKey(), operatorKey, 144,
 	)
 	require.NoError(t, err)
 
@@ -641,7 +641,7 @@ func seedLiveVTXO(t *testing.T, cfg *darepod.Config,
 		Outpoint: outpoint,
 		Amount:   amount,
 		PkScript: descriptor.PkScript,
-		OwnerKey: keychain.KeyDescriptor{
+		ClientKey: keychain.KeyDescriptor{
 			PubKey: clientPriv.PubKey(),
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamilyMultiSig,

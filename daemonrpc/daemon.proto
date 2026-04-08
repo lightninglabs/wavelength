@@ -372,7 +372,9 @@ message Output {
 
         // policy_template is the serialized arkscript policy for the
         // recipient. The daemon derives the concrete pk_script from
-        // this semantic destination.
+        // this semantic destination, and APIs that need a collaborative
+        // owner key require the template to use the standard Ark VTXO
+        // shape.
         bytes policy_template = 4;
     }
 

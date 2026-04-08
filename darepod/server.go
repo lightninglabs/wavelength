@@ -320,21 +320,6 @@ func (s *Server) RPCAddr() net.Addr {
 	return s.rpcAddr
 }
 
-// GetStoredVTXO returns the persisted VTXO descriptor for the
-// given outpoint. This method exists for test harnesses only;
-// it lets integration tests inspect locally stored partial
-// unroll state without reaching into internal daemon fields.
-func (s *Server) GetStoredVTXO(ctx context.Context,
-	outpoint wire.OutPoint) (*vtxo.Descriptor, error) {
-
-	if s.vtxoStore == nil {
-		return nil, fmt.Errorf("client daemon VTXO " +
-			"store not initialized")
-	}
-
-	return s.vtxoStore.GetVTXO(ctx, outpoint)
-}
-
 // RunUntilShutdown starts all subsystems and blocks until the shutdown
 // interceptor fires or a fatal error occurs. The startup sequence
 // branches on the configured wallet type: in lnd mode, the daemon
@@ -535,11 +520,8 @@ func (s *Server) run(ctx context.Context,
 		)
 		defer shutdownCancel()
 
-		_ = s.actorSystem.Shutdown(shutdownCtx)
-	}()
-	defer func() {
-		if s.oorActor != nil {
-			s.oorActor.Stop()
+		if s.runtime != nil {
+			_ = s.runtime.StopAndWait(shutdownCtx)
 		}
 	}()
 
@@ -630,7 +612,21 @@ func (s *Server) run(ctx context.Context,
 			s.log.ErrorS(ctx, "gRPC server error", err)
 		}
 	}()
-	defer s.grpcServer.GracefulStop()
+	defer func() {
+		stopped := make(chan struct{})
+
+		go func() {
+			s.grpcServer.GracefulStop()
+			close(stopped)
+		}()
+
+		select {
+		case <-stopped:
+		case <-time.After(DefaultShutdownTimeout):
+			s.grpcServer.Stop()
+			<-stopped
+		}
+	}()
 
 	// -------------------------------------------------------
 	// 7-11. Mailbox transport + wallet-dependent actors.
@@ -2477,12 +2473,13 @@ func (s *Server) initWalletActor(ctx context.Context,
 		}
 
 		return &wallet.VTXODescriptor{
-			Outpoint:    desc.Outpoint,
-			Amount:      desc.Amount,
-			PkScript:    desc.PkScript,
-			Expiry:      desc.RelativeExpiry,
-			OwnerKey:    desc.OwnerKey,
-			OperatorKey: desc.OperatorKey,
+			Outpoint:       desc.Outpoint,
+			Amount:         desc.Amount,
+			PolicyTemplate: desc.PolicyTemplate,
+			PkScript:       desc.PkScript,
+			Expiry:         desc.RelativeExpiry,
+			ClientKey:      desc.ClientKey,
+			OperatorKey:    desc.OperatorKey,
 		}, nil
 	})
 
@@ -2938,7 +2935,7 @@ func (s *Server) fetchOperatorTerms(
 		}
 	}
 
-	return &types.OperatorTerms{
+	terms := &types.OperatorTerms{
 		PubKey:            pubKey,
 		BoardingExitDelay: resp.BoardingExitDelay,
 		VTXOExitDelay:     resp.VtxoExitDelay,
@@ -2951,7 +2948,9 @@ func (s *Server) fetchOperatorTerms(
 		FeeRate:           btcutil.Amount(resp.FeeRate),
 		MinOperatorFee:    btcutil.Amount(resp.MinOperatorFee),
 		MinConfirmations:  resp.MinConfirmations,
-	}, nil
+	}
+
+	return terms, nil
 }
 
 // deriveIdentityKeyEarly derives the client's identity key before the
