@@ -240,13 +240,21 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 			// the round-specific message here since the VTXO
 			// actor has the descriptor data needed.
 			vtxo := a.cfg.VTXO
+			policyTemplate, err := vtxo.EffectivePolicyTemplate()
+			if err != nil {
+				a.logger(ctx).ErrorS(ctx,
+					"Failed to encode refresh policy", err,
+					slog.String("outpoint", vtxo.Outpoint.String()))
+
+				continue
+			}
+
 			refreshReq := &round.RefreshVTXORequest{
-				VTXOOutpoint: m.VTXOOutpoint,
-				Amount:       int64(vtxo.Amount),
-				NewVTXOKey:   vtxo.OwnerKey,
-				PkScript:     vtxo.PkScript,
-				OperatorKey:  vtxo.OperatorKey,
-				Expiry:       vtxo.RelativeExpiry,
+				VTXOOutpoint:   m.VTXOOutpoint,
+				Amount:         int64(vtxo.Amount),
+				PolicyTemplate: policyTemplate,
+				OwnerKey:       vtxo.ClientKey,
+				SigningKey:     vtxo.ClientKey,
 			}
 			a.tellManager(ctx, &RelayToRoundMsg{
 				Payload: refreshReq,
@@ -259,6 +267,7 @@ func (a *VTXOActor) processOutbox(ctx context.Context, outbox []VTXOOutMsg) {
 				RoundID:      m.RoundID,
 				ForfeitTx:    m.ForfeitTx,
 				Signature:    m.Signature,
+				SpendPath:    m.SpendPath,
 			}
 			a.tellManager(ctx, &RelayToRoundMsg{
 				Payload: resp,

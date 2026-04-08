@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -194,17 +195,29 @@ func (s *LiveState) handleForfeitRequest(
 	_ context.Context, evt *ForfeitRequestEvent, env *VTXOEnvironment,
 ) (*VTXOStateTransition, error) {
 
-	forfeitTx, err := tx.BuildForfeitTx(
+	forfeitSpend, err := resolveForfeitSpendPath(s.VTXO, evt)
+	if err != nil {
+		return nil, fmt.Errorf("resolve forfeit spend path: %w", err)
+	}
+
+	forfeitTx, err := tx.BuildForfeitTxWithContext(
 		&s.VTXO.Outpoint, s.VTXO.Amount,
 		&evt.ConnectorOutpoint, evt.ServerForfeitPkScript,
+		tx.ForfeitTxContext{
+			VTXOSequence: forfeitSpend.RequiredSequence,
+			LockTime:     forfeitSpend.RequiredLockTime,
+		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build forfeit tx: %w", err)
+		return nil, fmt.Errorf("failed to build custom forfeit tx: %w",
+			err)
 	}
 
 	// Sign our portion of the collaborative 2-of-2 spend on the VTXO input.
 	// The operator will complete the multisig witness with their signature.
-	sig, err := signForfeitVTXOInput(s.VTXO, evt, forfeitTx, env)
+	sig, err := signForfeitVTXOInput(
+		s.VTXO, forfeitSpend, evt, forfeitTx, env,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign forfeit tx: %w", err)
 	}
@@ -226,6 +239,7 @@ func (s *LiveState) handleForfeitRequest(
 					RoundID:      evt.RoundID,
 					ForfeitTx:    forfeitTx,
 					Signature:    sig,
+					SpendPath:    forfeitSpend,
 				},
 				&VTXOStatusUpdate{
 					Outpoint:  s.VTXO.Outpoint,
@@ -238,17 +252,49 @@ func (s *LiveState) handleForfeitRequest(
 	}, nil
 }
 
+// resolveForfeitSpendPath chooses the explicit arkscript spend path used for
+// the VTXO input of a forfeit transaction.
+func resolveForfeitSpendPath(vtxo *Descriptor,
+	evt *ForfeitRequestEvent) (*arkscript.SpendPath, error) {
+
+	if evt != nil && evt.ForfeitSpend != nil {
+		err := evt.ForfeitSpend.Validate()
+		if err != nil {
+			return nil, err
+		}
+
+		return evt.ForfeitSpend, nil
+	}
+
+	if vtxo == nil {
+		return nil, fmt.Errorf("vtxo descriptor is required")
+	}
+
+	policy, err := arkscript.NewVTXOPolicy(
+		vtxo.ClientKey.PubKey, vtxo.OperatorKey, vtxo.RelativeExpiry,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	spendInfo, err := policy.CollabSpendInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkscript.SpendPath{
+		SpendInfo: spendInfo,
+	}, nil
+}
+
 // signForfeitVTXOInput produces the client's schnorr signature for the VTXO
 // input of a forfeit transaction. The VTXO uses a tapscript with a 2-of-2
 // collaborative spend path, so both client and operator signatures are needed.
 // This function only produces the client's half; the operator adds theirs.
-func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
-	forfeitTx *wire.MsgTx,
+func signForfeitVTXOInput(vtxo *Descriptor, spendPath *arkscript.SpendPath,
+	evt *ForfeitRequestEvent, forfeitTx *wire.MsgTx,
 	env *VTXOEnvironment) (*schnorr.Signature, error) {
 
-	if vtxo.TapScript == nil {
-		return nil, fmt.Errorf("VTXO tapscript is required for signing")
-	}
 	if env.Wallet == nil {
 		return nil, fmt.Errorf("wallet is required for signing")
 	}
@@ -279,15 +325,12 @@ func signForfeitVTXOInput(vtxo *Descriptor, evt *ForfeitRequestEvent,
 
 	sigHashes := txscript.NewTxSigHashes(forfeitTx, prevFetcher)
 
-	// NewVTXOCollabSignDescriptor extracts the collaborative leaf's witness
-	// script and control block from the tapscript, which are needed for
-	// script-path spending.
-	signDesc, _, err := tx.NewVTXOCollabSignDescriptor(
-		vtxoCtx, vtxo.OwnerKey, tx.ForfeitVTXOInputIndex,
-		sigHashes, prevFetcher,
+	signDesc := spendPath.BuildSignDescriptor(
+		vtxo.ClientKey, vtxoOutput, sigHashes, prevFetcher,
+		tx.ForfeitVTXOInputIndex,
 	)
-	if err != nil {
-		return nil, fmt.Errorf("sign descriptor: %w", err)
+	if signDesc == nil {
+		return nil, fmt.Errorf("sign descriptor: missing spend path")
 	}
 
 	sig, err := env.Wallet.SignOutputRaw(forfeitTx, signDesc)
@@ -359,15 +402,28 @@ func (s *PendingForfeitState) ProcessEvent(
 	case *ForfeitRequestEvent:
 		// Round actor is ready for forfeit. Build and sign the forfeit
 		// tx to transfer this VTXO to the new round.
-		forfeitTx, err := tx.BuildForfeitTx(
+		forfeitSpend, err := resolveForfeitSpendPath(s.VTXO, evt)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolve forfeit spend path: %w", err,
+			)
+		}
+
+		forfeitTx, err := tx.BuildForfeitTxWithContext(
 			&s.VTXO.Outpoint, s.VTXO.Amount,
 			&evt.ConnectorOutpoint, evt.ServerForfeitPkScript,
+			tx.ForfeitTxContext{
+				VTXOSequence: forfeitSpend.RequiredSequence,
+				LockTime:     forfeitSpend.RequiredLockTime,
+			},
 		)
 		if err != nil {
 			return nil, fmt.Errorf("build forfeit tx: %w", err)
 		}
 
-		sig, err := signForfeitVTXOInput(s.VTXO, evt, forfeitTx, env)
+		sig, err := signForfeitVTXOInput(
+			s.VTXO, forfeitSpend, evt, forfeitTx, env,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("sign forfeit tx: %w", err)
 		}
@@ -389,6 +445,7 @@ func (s *PendingForfeitState) ProcessEvent(
 						RoundID:      evt.RoundID,
 						ForfeitTx:    forfeitTx,
 						Signature:    sig,
+						SpendPath:    forfeitSpend,
 					},
 					&VTXOStatusUpdate{
 						Outpoint:  s.VTXO.Outpoint,

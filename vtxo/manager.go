@@ -11,11 +11,11 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/chainsource"
 	"github.com/lightninglabs/darepo-client/lib/actormsg"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
 	"github.com/lightninglabs/darepo-client/round"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
 )
@@ -810,22 +810,25 @@ func clientVTXOToDescriptor(cv *round.ClientVTXO,
 		treeDepth = cv.TreePath.Depth()
 	}
 
-	// Construct the TapScript from the client and operator keys. This is
-	// the standard VTXO tapscript with collaborative and timeout paths.
-	tapscript, err := scripts.VTXOTapScript(
-		cv.OwnerKey.PubKey, cv.OperatorKey, cv.Expiry,
-	)
-	if err != nil {
-		return fn.Err[*Descriptor](
-			fmt.Errorf("build tapscript: %w", err),
-		)
+	// Reconstruct the standard tapscript only when the round
+	// output uses the default Ark policy shape. Custom policies
+	// carry their semantic template and explicit spend paths
+	// instead of a derived standard tapscript.
+	var tapscript *waddrmgr.Tapscript
+	if len(cv.PolicyTemplate) > 0 {
+		desc := &Descriptor{PolicyTemplate: cv.PolicyTemplate}
+		ts, err := desc.StandardTapScript()
+		if err == nil {
+			tapscript = ts
+		}
 	}
 
 	return fn.Ok(&Descriptor{
 		Outpoint:       cv.Outpoint,
 		Amount:         cv.Amount,
+		PolicyTemplate: cv.PolicyTemplate,
 		PkScript:       cv.PkScript,
-		OwnerKey:       cv.OwnerKey,
+		ClientKey:      cv.OwnerKey,
 		OperatorKey:    cv.OperatorKey,
 		TapScript:      tapscript,
 		TreePath:       cv.TreePath,

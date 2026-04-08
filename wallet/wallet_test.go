@@ -2,7 +2,6 @@ package wallet
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -190,14 +189,6 @@ func (m *MockBoardingStore) GetIntent(ctx context.Context,
 
 	//nolint:forcetypeassert
 	return args.Get(0).(*BoardingIntent), args.Error(1)
-}
-
-func (m *MockBoardingStore) MarkBoardingIntentsAdopted(
-	ctx context.Context, outpoints []wire.OutPoint,
-) (int, error) {
-
-	args := m.Called(ctx, outpoints)
-	return args.Int(0), args.Error(1)
 }
 
 func (m *MockBoardingStore) LookupIntentByScript(ctx context.Context,
@@ -939,6 +930,128 @@ func TestProcessUtxoProofOmittedWhenTxNotInBlock(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
+// TestProcessUtxoUsesActualConfirmationBlock verifies that catch-up flows use
+// the transaction's actual confirmation block metadata for persisted intents
+// and TxProofs instead of the current polling epoch.
+func TestProcessUtxoUsesActualConfirmationBlock(t *testing.T) {
+	t.Parallel()
+
+	clientKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	operatorKey, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+
+	rootHash := []byte{0xaa, 0xbb, 0xcc}
+	taprootKey := txscript.ComputeTaprootOutputKey(
+		clientKey.PubKey(), rootHash,
+	)
+	address, err := btcutil.NewAddressTaproot(
+		taprootKey.SerializeCompressed()[1:],
+		&chaincfg.RegressionNetParams,
+	)
+	require.NoError(t, err)
+
+	pkScript, err := txscript.PayToAddrScript(address)
+	require.NoError(t, err)
+
+	boardingAddr := &BoardingAddress{
+		Address: address,
+		Tapscript: &waddrmgr.Tapscript{
+			Type: waddrmgr.TaprootKeySpendRootHash,
+			ControlBlock: &txscript.ControlBlock{
+				InternalKey: clientKey.PubKey(),
+			},
+			RootHash: rootHash,
+		},
+		KeyDesc: keychain.KeyDescriptor{
+			PubKey: clientKey.PubKey(),
+			KeyLocator: keychain.KeyLocator{
+				Family: 42,
+				Index:  0,
+			},
+		},
+		OperatorKey: operatorKey.PubKey(),
+		ExitDelay:   144,
+	}
+
+	testOutpoint := wire.OutPoint{
+		Hash:  chainhash.Hash{0x11, 0x22},
+		Index: 0,
+	}
+
+	boardingTx := &wire.MsgTx{
+		TxOut: []*wire.TxOut{
+			{Value: 100000, PkScript: pkScript},
+		},
+	}
+
+	confBlockHash := chainhash.Hash{0xcc, 0xdd}
+	confHeight := int32(95)
+	epoch := chainsource.BlockEpoch{
+		Height: 100,
+		Hash:   chainhash.Hash{0xaa, 0xbb},
+	}
+
+	backend := &MockBoardingBackend{}
+	backend.On(
+		"GetTransaction", mock.Anything, testOutpoint.Hash,
+	).Return(&TxInfo{
+		Tx:          boardingTx,
+		BlockHash:   &confBlockHash,
+		BlockHeight: confHeight,
+	}, nil)
+	backend.On(
+		"GetBlock", mock.Anything, confBlockHash,
+	).Return(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{boardingTx},
+	}, nil)
+
+	var inserted BoardingIntent
+	store := &MockBoardingStore{}
+	store.On(
+		"LookupBoardingAddress", mock.Anything, pkScript,
+	).Return(boardingAddr, nil)
+	store.On(
+		"InsertBoardingIntents", mock.Anything, mock.Anything,
+	).Run(func(args mock.Arguments) {
+		intents, ok := args.Get(1).([]BoardingIntent)
+		require.True(t, ok)
+		require.NotEmpty(t, intents)
+
+		inserted = intents[0]
+	}).Return(nil)
+
+	epochChan := make(chan chainsource.BlockEpoch, 1)
+	chainSource := newMockChainSourceActor(epochChan)
+
+	walletActor := NewArk(
+		backend, store, nil, chainSource, nil,
+		btclog.Disabled,
+	)
+	walletActor.seenUtxos = fn.NewSet[UtxoKey]()
+	walletActor.notifiers = make(map[string]notifierInfo)
+
+	processed := walletActor.processUtxo(t.Context(), epoch, &Utxo{
+		Outpoint:      testOutpoint,
+		PkScript:      pkScript,
+		Amount:        100000,
+		Confirmations: 6,
+	})
+	require.True(t, processed)
+
+	require.Equal(t, confHeight, inserted.ChainInfo.ConfHeight)
+	require.Equal(t, confBlockHash, inserted.ChainInfo.ConfHash)
+	require.True(t, inserted.ChainInfo.TxProof.IsSome())
+
+	txProof := inserted.ChainInfo.TxProof.UnsafeFromSome()
+	require.Equal(t, uint32(confHeight), txProof.BlockHeight)
+	require.Equal(t, testOutpoint, txProof.ClaimedOutPoint)
+
+	backend.AssertExpectations(t)
+	store.AssertExpectations(t)
+}
+
 // TestGetActiveBoardingAddresses tests querying boarding addresses.
 func TestGetActiveBoardingAddresses(t *testing.T) {
 	t.Parallel()
@@ -1088,93 +1201,6 @@ func TestGetConfirmedBoardingIntents(t *testing.T) {
 	require.Equal(
 		t, confirmed[0].ChainInfo.Amount,
 		resp.Intents[0].ChainInfo.Amount,
-	)
-
-	store.AssertExpectations(t)
-}
-
-// TestMarkBoardingIntentsAdopted verifies that checkpoint notifications from
-// the round actor transition consumed boarding intents out of Confirmed status.
-func TestMarkBoardingIntentsAdopted(t *testing.T) {
-	t.Parallel()
-
-	backend := &MockBoardingBackend{}
-	store := &MockBoardingStore{}
-	epochChan := make(chan chainsource.BlockEpoch, 1)
-	chainSource := newMockChainSourceActor(epochChan)
-
-	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
-	)
-
-	outpointA := wire.OutPoint{
-		Hash:  chainhash.Hash{0x01},
-		Index: 0,
-	}
-	outpointB := wire.OutPoint{
-		Hash:  chainhash.Hash{0x02},
-		Index: 1,
-	}
-
-	store.On(
-		"MarkBoardingIntentsAdopted", mock.Anything,
-		mock.MatchedBy(func(outpoints []wire.OutPoint) bool {
-			return len(outpoints) == 3 &&
-				outpoints[0] == outpointA &&
-				outpoints[1] == outpointB &&
-				outpoints[2] == outpointA
-		}),
-	).Return(1, nil).Once()
-
-	req := &MarkBoardingIntentsAdoptedRequest{
-		Outpoints: []wire.OutPoint{
-			outpointA, outpointB, outpointA,
-		},
-	}
-	result := walletActor.Receive(t.Context(), req)
-	require.True(t, result.IsOk())
-
-	respVal, _ := result.Unpack()
-
-	//nolint:forcetypeassert
-	resp := respVal.(*MarkBoardingIntentsAdoptedResponse)
-	require.Equal(t, 1, resp.UpdatedCount)
-
-	store.AssertExpectations(t)
-}
-
-// TestMarkBoardingIntentsAdoptedLookupError verifies that an unknown outpoint
-// fails the request and preserves fail-fast behavior.
-func TestMarkBoardingIntentsAdoptedLookupError(t *testing.T) {
-	t.Parallel()
-
-	backend := &MockBoardingBackend{}
-	store := &MockBoardingStore{}
-	epochChan := make(chan chainsource.BlockEpoch, 1)
-	chainSource := newMockChainSourceActor(epochChan)
-
-	walletActor := NewArk(
-		backend, store, nil, chainSource, nil,
-		btclog.Disabled,
-	)
-
-	outpoint := wire.OutPoint{
-		Hash:  chainhash.Hash{0x03},
-		Index: 0,
-	}
-	store.On(
-		"MarkBoardingIntentsAdopted", mock.Anything,
-		[]wire.OutPoint{outpoint},
-	).Return(0, errors.New("unexpected boarding intent state")).Once()
-
-	req := &MarkBoardingIntentsAdoptedRequest{
-		Outpoints: []wire.OutPoint{outpoint},
-	}
-	result := walletActor.Receive(t.Context(), req)
-	require.True(t, result.IsErr())
-	require.Contains(
-		t, result.Err().Error(), "persist adopted boarding intents",
 	)
 
 	store.AssertExpectations(t)

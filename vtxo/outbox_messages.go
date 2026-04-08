@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 )
 
 // VTXOOutMsg is a sealed interface for messages emitted via the FSM outbox.
@@ -92,6 +93,10 @@ type ForfeitSignatureSubmission struct {
 
 	// Signature is the client's schnorr signature for the forfeit tx.
 	Signature *schnorr.Signature
+
+	// SpendPath is the canonical arkscript spend path used for the VTXO
+	// input of the forfeit transaction.
+	SpendPath *arkscript.SpendPath
 }
 
 func (m *ForfeitSignatureSubmission) vtxoOutMsgSealed() {}

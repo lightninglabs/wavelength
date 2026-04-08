@@ -333,12 +333,17 @@ type Descriptor struct {
 	// Amount is the value of this VTXO in satoshis.
 	Amount btcutil.Amount
 
+	// PolicyTemplate is the semantic arkscript policy for this
+	// VTXO. This is the authoritative representation for
+	// ownership and spend semantics.
+	PolicyTemplate []byte
+
 	// PkScript is the output script for this VTXO (taproot with
 	// collaborative and timeout spend paths).
 	PkScript []byte
 
-	// OwnerKey is the client's key descriptor for this VTXO.
-	OwnerKey keychain.KeyDescriptor
+	// ClientKey is the client's key descriptor for this VTXO.
+	ClientKey keychain.KeyDescriptor
 
 	// OperatorKey is the operator's public key for collaborative spends.
 	OperatorKey *btcec.PublicKey
