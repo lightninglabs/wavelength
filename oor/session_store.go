@@ -55,6 +55,12 @@ type SessionStore interface {
 	LoadFinalizedPackage(ctx context.Context, sessionID SessionID) (
 		*FinalizedPackage, error,
 	)
+
+	// LoadCheckpointTxByInput returns the broadcastable finalized
+	// checkpoint transaction that spends input, if one exists.
+	LoadCheckpointTxByInput(ctx context.Context, input wire.OutPoint) (
+		*wire.MsgTx, bool, error,
+	)
 }
 
 // CoSignedAtomicStore is an optional extension for stores that can persist the

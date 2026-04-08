@@ -1,6 +1,7 @@
 package oor
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"testing"
@@ -55,6 +56,24 @@ func makeTestPSBT(t *testing.T, seed byte) *psbt.Packet {
 		Value:    1000,
 		PkScript: makeTestP2TRScript(seed),
 	}
+
+	return pkt
+}
+
+// makeFinalizedTestPSBT builds a PSBT fixture with placeholder final witness
+// data so it can be extracted to a broadcastable transaction.
+func makeFinalizedTestPSBT(t *testing.T, seed byte) *psbt.Packet {
+	t.Helper()
+
+	pkt := makeTestPSBT(t, seed)
+
+	var witnessBuf bytes.Buffer
+	err := psbt.WriteTxWitness(
+		&witnessBuf, wire.TxWitness{[]byte{0x01}},
+	)
+	require.NoError(t, err)
+
+	pkt.Inputs[0].FinalScriptWitness = witnessBuf.Bytes()
 
 	return pkt
 }
@@ -499,6 +518,121 @@ func TestLoadFinalizedPackage(t *testing.T) {
 	expectedTxid := arkPSBT.UnsignedTx.TxHash()
 	actualTxid := pkg.ArkPSBT.UnsignedTx.TxHash()
 	require.Equal(t, expectedTxid, actualTxid)
+}
+
+// TestLoadCheckpointTxByInput verifies that the session store returns a
+// broadcastable checkpoint tx for a claimed VTXO input once the OOR session
+// has reached a finalized or awaiting_notify state.
+func TestLoadCheckpointTxByInput(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	t.Run("awaiting_notify", func(t *testing.T) {
+		t.Parallel()
+
+		store, _ := newTestSessionStore(t)
+
+		arkPSBT := makeTestPSBT(t, 83)
+		checkpoint := makeTestPSBT(t, 84)
+		input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+		sessionID := makeTestSessionID(arkPSBT)
+
+		err := store.UpsertCoSigned(
+			ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+			[]*psbt.Packet{checkpoint},
+			time.Now().Add(DefaultSessionExpiry),
+		)
+		require.NoError(t, err)
+
+		finalCheckpoint := makeFinalizedTestPSBT(t, 85)
+		err = store.ApplyFinalize(
+			ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+		)
+		require.NoError(t, err)
+
+		tx, found, err := store.LoadCheckpointTxByInput(ctx, input)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotNil(t, tx)
+		require.Equal(
+			t, finalCheckpoint.UnsignedTx.TxHash(), tx.TxHash(),
+		)
+	})
+
+	t.Run("finalized", func(t *testing.T) {
+		t.Parallel()
+
+		store, _ := newTestSessionStore(t)
+
+		arkPSBT := makeTestPSBT(t, 86)
+		checkpoint := makeTestPSBT(t, 87)
+		input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+		sessionID := makeTestSessionID(arkPSBT)
+
+		err := store.UpsertCoSigned(
+			ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+			[]*psbt.Packet{checkpoint},
+			time.Now().Add(DefaultSessionExpiry),
+		)
+		require.NoError(t, err)
+
+		finalCheckpoint := makeFinalizedTestPSBT(t, 88)
+		err = store.ApplyFinalize(
+			ctx, sessionID, []*psbt.Packet{finalCheckpoint},
+		)
+		require.NoError(t, err)
+
+		err = store.MarkNotified(ctx, sessionID)
+		require.NoError(t, err)
+
+		tx, found, err := store.LoadCheckpointTxByInput(ctx, input)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotNil(t, tx)
+		require.Equal(
+			t, finalCheckpoint.UnsignedTx.TxHash(), tx.TxHash(),
+		)
+	})
+
+	t.Run("cosigned not broadcastable", func(t *testing.T) {
+		t.Parallel()
+
+		store, _ := newTestSessionStore(t)
+
+		arkPSBT := makeTestPSBT(t, 89)
+		checkpoint := makeTestPSBT(t, 90)
+		input := checkpoint.UnsignedTx.TxIn[0].PreviousOutPoint
+		sessionID := makeTestSessionID(arkPSBT)
+
+		err := store.UpsertCoSigned(
+			ctx, sessionID, []wire.OutPoint{input}, arkPSBT,
+			[]*psbt.Packet{checkpoint},
+			time.Now().Add(DefaultSessionExpiry),
+		)
+		require.NoError(t, err)
+
+		tx, found, err := store.LoadCheckpointTxByInput(ctx, input)
+		require.NoError(t, err)
+		require.False(t, found)
+		require.Nil(t, tx)
+	})
+
+	t.Run("missing input", func(t *testing.T) {
+		t.Parallel()
+
+		store, _ := newTestSessionStore(t)
+
+		tx, found, err := store.LoadCheckpointTxByInput(
+			ctx, wire.OutPoint{
+				Hash:  chainhash.Hash{9, 9, 9},
+				Index: 1,
+			},
+		)
+		require.NoError(t, err)
+		require.False(t, found)
+		require.Nil(t, tx)
+	})
 }
 
 // TestAtomicCoSignedAndMarkInFlight verifies atomic session+lock persistence.

@@ -100,3 +100,16 @@ SELECT EXISTS(
     WHERE s.session_id = $1
         AND v.pk_script = $2
 ) AS spends_script;
+
+-- name: GetBroadcastableOORCheckpointByInput :one
+-- GetBroadcastableOORCheckpointByInput returns the checkpoint PSBT for the
+-- checkpoint that consumed the given input outpoint, gated on the owning
+-- session having reached awaiting_notify or finalized state. Sessions that
+-- are still in cosigned state are excluded because the checkpoint PSBT is
+-- not yet sender-signed and cannot be extracted to a broadcastable tx.
+SELECT c.checkpoint_psbt
+FROM oor_checkpoints c
+JOIN oor_sessions s ON s.id = c.session_db_id
+WHERE c.input_txid = $1
+  AND c.input_vout = $2
+  AND s.state IN ('awaiting_notify', 'finalized');
