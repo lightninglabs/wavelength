@@ -1,0 +1,637 @@
+package txconfirm
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btclog/v2"
+	"github.com/lightninglabs/darepo-client/baselib/actor"
+	"github.com/lightninglabs/darepo-client/chainsource"
+	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
+	"github.com/lightninglabs/darepo-client/wallet"
+	fn "github.com/lightningnetwork/lnd/fn/v2"
+)
+
+const (
+	// DefaultMaxFeeRateSatPerVByte clamps fee estimates to a sane ceiling.
+	// On regtest or freshly synced nodes, the estimator can return wildly
+	// inflated rates.
+	DefaultMaxFeeRateSatPerVByte int64 = 100
+
+	// ChildVSizeEstimate is the estimated virtual size of a CPFP child with
+	// one anchor input, one confirmed fee input, and a single change
+	// output. Revisit this estimate if the child input composition changes.
+	ChildVSizeEstimate = 155
+
+	// DustLimit is the minimum useful value for the CPFP child change
+	// output. Values below this are donated to fees.
+	DustLimit = btcutil.Amount(330)
+)
+
+var (
+	// ErrCPFPFeeInputUnavailable indicates that an anchor
+	// parent still needs a confirmed wallet fee input before
+	// it can be broadcast safely.
+	ErrCPFPFeeInputUnavailable = errors.New(
+		"cpfp fee input unavailable",
+	)
+)
+
+// Wallet provides the wallet operations needed by the broadcaster for CPFP fee
+// payment.
+type Wallet interface {
+	// ListUnspent returns confirmed wallet UTXOs usable as CPFP fee inputs.
+	ListUnspent(ctx context.Context,
+		minConfs, maxConfs int32) ([]*wallet.Utxo, error)
+
+	// NewWalletPkScript returns a fresh wallet-managed pkScript
+	// suitable for
+	// change outputs.
+	NewWalletPkScript(ctx context.Context) ([]byte, error)
+
+	// FinalizePsbt signs and finalizes a PSBT packet. The wallet signs all
+	// inputs it owns and returns the finalized wire tx.
+	FinalizePsbt(ctx context.Context, packet []byte) (*wire.MsgTx, error)
+}
+
+// FeeInput is a confirmed wallet UTXO selected for CPFP fee payment.
+type FeeInput struct {
+	// Outpoint identifies the wallet UTXO.
+	Outpoint wire.OutPoint
+
+	// Output is the output being spent for fees.
+	Output *wire.TxOut
+
+	// Confirmed indicates whether this UTXO is confirmed.
+	Confirmed bool
+}
+
+// BroadcastRequest describes a signed transaction to broadcast.
+type BroadcastRequest struct {
+	// Tx is the fully signed parent transaction.
+	Tx *wire.MsgTx
+
+	// Label is a human-readable label for logging.
+	Label string
+}
+
+// BroadcastResult describes the outcome of one broadcast attempt.
+type BroadcastResult struct {
+	// Txid is the parent transaction hash.
+	Txid chainhash.Hash
+
+	// ChildTxid is set when a CPFP child was built and submitted.
+	ChildTxid *chainhash.Hash
+
+	// FeeRate is the fee rate used in sat/vB.
+	FeeRate int64
+}
+
+// BroadcasterConfig configures the generic CPFP broadcaster helper.
+type BroadcasterConfig struct {
+	// ChainSource provides fee estimation, package submission, and direct
+	// transaction broadcast.
+	ChainSource actor.ActorRef[
+		chainsource.ChainSourceMsg, chainsource.ChainSourceResp,
+	]
+
+	// Wallet provides UTXO selection and PSBT signing for CPFP children.
+	Wallet Wallet
+
+	// Log is an optional logger.
+	Log fn.Option[btclog.Logger]
+
+	// MaxFeeRateSatPerVByte caps fee estimates. Zero falls back to
+	// DefaultMaxFeeRateSatPerVByte.
+	MaxFeeRateSatPerVByte int64
+}
+
+// CPFPBroadcaster broadcasts signed transactions and automatically attaches a
+// CPFP child when the transaction contains an anchor output.
+//
+// CPFPBroadcaster is not safe for concurrent use. The outer txconfirm actor
+// serializes access.
+type CPFPBroadcaster struct {
+	cfg BroadcasterConfig
+	log btclog.Logger
+
+	// usedFeeOutpoints tracks fee UTXOs consumed by recent requests that may
+	// not yet be reflected in ListUnspent. It is cleared on each new block
+	// height observation.
+	usedFeeOutpoints map[wire.OutPoint]struct{}
+	lastFeeHeight    int32
+}
+
+// NewCPFPBroadcaster creates a new generic CPFP broadcaster helper.
+func NewCPFPBroadcaster(cfg BroadcasterConfig) *CPFPBroadcaster {
+	if cfg.MaxFeeRateSatPerVByte <= 0 {
+		cfg.MaxFeeRateSatPerVByte = DefaultMaxFeeRateSatPerVByte
+	}
+
+	return &CPFPBroadcaster{
+		cfg:              cfg,
+		log:              cfg.Log.UnwrapOr(btclog.Disabled),
+		usedFeeOutpoints: make(map[wire.OutPoint]struct{}),
+	}
+}
+
+// Submit broadcasts a signed transaction. If the transaction contains an
+// anchor output, Submit constructs a CPFP child and submits the package.
+func (b *CPFPBroadcaster) Submit(ctx context.Context, height int32,
+	req *BroadcastRequest) (*BroadcastResult, error) {
+
+	if req == nil || req.Tx == nil {
+		return nil, fmt.Errorf("broadcast request and tx required")
+	}
+
+	if height > b.lastFeeHeight {
+		b.usedFeeOutpoints = make(map[wire.OutPoint]struct{})
+		b.lastFeeHeight = height
+	}
+
+	txid := req.Tx.TxHash()
+	anchorIdx := findAnchorOutput(req.Tx)
+	if anchorIdx < 0 {
+		return b.broadcastDirect(ctx, req, txid)
+	}
+
+	return b.broadcastWithCPFP(ctx, height, req, txid, anchorIdx)
+}
+
+// broadcastDirect broadcasts a transaction without CPFP.
+func (b *CPFPBroadcaster) broadcastDirect(ctx context.Context,
+	req *BroadcastRequest, txid chainhash.Hash) (*BroadcastResult, error) {
+
+	_, err := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.BroadcastTxRequest{
+			Tx:    req.Tx,
+			Label: req.Label,
+		},
+	).Await(ctx).Unpack()
+	if err != nil && !IsIgnorableBroadcastError(err) {
+		return nil, fmt.Errorf("broadcast %s: %w", txid, err)
+	}
+
+	return &BroadcastResult{Txid: txid}, nil
+}
+
+// broadcastWithCPFP builds a CPFP child and submits the parent+child package.
+func (b *CPFPBroadcaster) broadcastWithCPFP(ctx context.Context,
+	height int32, req *BroadcastRequest, txid chainhash.Hash,
+	anchorIdx int) (*BroadcastResult, error) {
+
+	feeRate, err := b.EstimateFeeRate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("estimate fee: %w", err)
+	}
+
+	totalFee, err := EstimatePackageFee(req.Tx, btcutil.Amount(feeRate))
+	if err != nil {
+		return nil, fmt.Errorf("estimate package fee: %w", err)
+	}
+
+	feeInput, err := b.selectFeeInput(ctx, totalFee)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w",
+			ErrCPFPFeeInputUnavailable, err,
+		)
+	}
+
+	b.usedFeeOutpoints[feeInput.Outpoint] = struct{}{}
+
+	changePkScript, err := b.deriveChangePkScript(ctx)
+	if err != nil {
+		return b.fallbackDirectBroadcast(
+			ctx, req, txid, "derive_change_pkscript", err,
+		)
+	}
+
+	anchorOutpoint := wire.OutPoint{Hash: txid, Index: uint32(anchorIdx)}
+	anchorOutput := req.Tx.TxOut[anchorIdx]
+
+	child, err := BuildCPFPChild(
+		req.Tx.Version, anchorOutpoint, anchorOutput, feeInput,
+		changePkScript, totalFee,
+	)
+	if err != nil {
+		return b.fallbackDirectBroadcast(
+			ctx, req, txid, "build_cpfp_child", err,
+		)
+	}
+
+	err = b.signCPFPChild(ctx, child, anchorOutput, feeInput)
+	if err != nil {
+		return b.fallbackDirectBroadcast(
+			ctx, req, txid, "sign_cpfp_child", err,
+		)
+	}
+
+	_, pkgErr := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.SubmitPackageRequest{
+			Parents: []*wire.MsgTx{req.Tx},
+			Child:   child,
+		},
+	).Await(ctx).Unpack()
+	if pkgErr != nil {
+		switch {
+		case IsIgnorableBroadcastError(pkgErr):
+			b.log.DebugS(
+				ctx,
+				"Package already known for "+
+					txid.String(),
+			)
+
+		case isPackageSubmissionUnsupported(pkgErr):
+			if err := b.broadcastIndividually(
+				ctx, req.Tx, child, req.Label,
+			); err != nil {
+				return nil, fmt.Errorf(
+					"broadcast fallback: %w",
+					err,
+				)
+			}
+
+		default:
+			return nil, fmt.Errorf(
+				"submit package: %w", pkgErr,
+			)
+		}
+	}
+
+	childTxid := child.TxHash()
+
+	return &BroadcastResult{
+		Txid:      txid,
+		ChildTxid: &childTxid,
+		FeeRate:   feeRate,
+	}, nil
+}
+
+// fallbackDirectBroadcast logs one CPFP setup failure and falls back to
+// broadcasting the parent transaction directly.
+func (b *CPFPBroadcaster) fallbackDirectBroadcast(ctx context.Context,
+	req *BroadcastRequest, txid chainhash.Hash, stage string,
+	err error) (*BroadcastResult, error) {
+
+	b.log.WarnS(ctx, "CPFP unavailable; broadcasting parent directly",
+		err, "txid", txid, "stage", stage, "label", req.Label)
+
+	return b.broadcastDirect(ctx, req, txid)
+}
+
+// EstimateFeeRate returns the current fee rate in sat/vbyte, clamped by the
+// configured maximum. On regtest (or when the chain backend has no fee
+// history), estimation may fail — in that case we fall back to a minimum
+// floor so the CPFP broadcast can still proceed.
+func (b *CPFPBroadcaster) EstimateFeeRate(ctx context.Context) (int64, error) {
+	const minFeeRateSatPerVByte int64 = 2
+
+	resp, err := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.FeeEstimateRequest{
+			TargetConf: 6,
+		},
+	).Await(ctx).Unpack()
+	if err != nil {
+		b.log.Warnf("Fee estimation failed, using fallback "+
+			"%d sat/vB: %v", minFeeRateSatPerVByte, err)
+
+		return minFeeRateSatPerVByte, nil
+	}
+
+	feeResp, ok := resp.(*chainsource.FeeEstimateResponse)
+	if !ok {
+		return 0, fmt.Errorf("unexpected fee response type %T", resp)
+	}
+
+	rate := int64(feeResp.SatPerVByte)
+	if rate < minFeeRateSatPerVByte {
+		rate = minFeeRateSatPerVByte
+	}
+	if rate > b.cfg.MaxFeeRateSatPerVByte {
+		rate = b.cfg.MaxFeeRateSatPerVByte
+	}
+
+	return rate, nil
+}
+
+// selectFeeInput finds the smallest confirmed wallet UTXO that covers the
+// required fee amount, excluding recently used outpoints.
+func (b *CPFPBroadcaster) selectFeeInput(ctx context.Context,
+	minAmount btcutil.Amount) (*FeeInput, error) {
+
+	if b.cfg.Wallet == nil {
+		return nil, fmt.Errorf("wallet must be provided")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+
+	for {
+		utxos, err := b.cfg.Wallet.ListUnspent(ctx, 1, 9999999)
+		if err != nil {
+			return nil, fmt.Errorf("list unspent: %w", err)
+		}
+
+		var best *wallet.Utxo
+		for _, utxo := range utxos {
+			_, excluded := b.usedFeeOutpoints[utxo.Outpoint]
+			if excluded {
+				continue
+			}
+
+			if utxo.Amount < minAmount {
+				continue
+			}
+
+			if best == nil || utxo.Amount < best.Amount {
+				best = utxo
+			}
+		}
+
+		if best != nil {
+			return &FeeInput{
+				Outpoint: best.Outpoint,
+				Output: &wire.TxOut{
+					Value:    int64(best.Amount),
+					PkScript: best.PkScript,
+				},
+				Confirmed: true,
+			}, nil
+		}
+
+		// After one CPFP package confirms, wallet backends
+		// with asynchronous chain ingestion can lag briefly
+		// before the confirmed change output becomes visible.
+		// Poll through that handoff instead of immediately
+		// falling back to direct broadcast of a zero-fee
+		// parent.
+		if len(b.usedFeeOutpoints) == 0 || time.Now().After(deadline) {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	return nil, fmt.Errorf("no confirmed wallet UTXOs available "+
+		"(need >= %d sats)", int64(minAmount))
+}
+
+// deriveChangePkScript obtains a fresh wallet-managed pkScript for use as a
+// CPFP child change output.
+func (b *CPFPBroadcaster) deriveChangePkScript(
+	ctx context.Context) ([]byte, error) {
+
+	if b.cfg.Wallet == nil {
+		return nil, fmt.Errorf("wallet must be provided")
+	}
+
+	pkScript, err := b.cfg.Wallet.NewWalletPkScript(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("new wallet pkscript: %w", err)
+	}
+
+	if len(pkScript) == 0 {
+		return nil, fmt.Errorf("wallet returned empty pkscript")
+	}
+
+	return append([]byte(nil), pkScript...), nil
+}
+
+// signCPFPChild signs the CPFP child via PSBT.
+func (b *CPFPBroadcaster) signCPFPChild(ctx context.Context,
+	child *wire.MsgTx, anchorOutput *wire.TxOut, feeInput *FeeInput) error {
+
+	if b.cfg.Wallet == nil {
+		return fmt.Errorf("wallet must be provided")
+	}
+
+	inputs := make([]*wire.OutPoint, len(child.TxIn))
+	sequences := make([]uint32, len(child.TxIn))
+	for i, txIn := range child.TxIn {
+		op := txIn.PreviousOutPoint
+		inputs[i] = &op
+		sequences[i] = txIn.Sequence
+	}
+
+	packet, err := psbt.New(
+		inputs, child.TxOut, child.Version, child.LockTime, sequences,
+	)
+	if err != nil {
+		return fmt.Errorf("create PSBT: %w", err)
+	}
+
+	packet.Inputs[0].WitnessUtxo = anchorOutput
+	packet.Inputs[0].FinalScriptWitness = []byte{0x00}
+	packet.Inputs[1].WitnessUtxo = feeInput.Output
+
+	var buf bytes.Buffer
+	if err := packet.Serialize(&buf); err != nil {
+		return fmt.Errorf("serialize PSBT: %w", err)
+	}
+
+	finalTx, err := b.cfg.Wallet.FinalizePsbt(ctx, buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("finalize PSBT: %w", err)
+	}
+
+	for i := range finalTx.TxIn {
+		child.TxIn[i].Witness = finalTx.TxIn[i].Witness
+	}
+
+	return nil
+}
+
+// broadcastIndividually broadcasts the parent and child transactions one at a
+// time as a fallback for backends without package relay.
+func (b *CPFPBroadcaster) broadcastIndividually(ctx context.Context,
+	parent, child *wire.MsgTx, label string) error {
+
+	parentTxid := parent.TxHash()
+	_, parentErr := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.BroadcastTxRequest{
+			Tx:    parent,
+			Label: label + "-parent",
+		},
+	).Await(ctx).Unpack()
+	if parentErr != nil && !IsIgnorableBroadcastError(parentErr) {
+		return fmt.Errorf("broadcast parent %s: %w",
+			parentTxid, parentErr)
+	}
+
+	childTxid := child.TxHash()
+	_, childErr := b.cfg.ChainSource.Ask(
+		ctx, &chainsource.BroadcastTxRequest{
+			Tx:    child,
+			Label: label + "-child",
+		},
+	).Await(ctx).Unpack()
+	if childErr != nil && !IsIgnorableBroadcastError(childErr) {
+		return fmt.Errorf("broadcast child %s: %w", childTxid, childErr)
+	}
+
+	return nil
+}
+
+// findAnchorOutput returns the index of the anchor output in the transaction
+// or -1 if none is found.
+func findAnchorOutput(tx *wire.MsgTx) int {
+	for i, out := range tx.TxOut {
+		if arktx.IsAnchorOutput(out) {
+			return i
+		}
+	}
+
+	return -1
+}
+
+// EstimatePackageFee computes the total package fee for one parent+child
+// submission at the given fee rate.
+func EstimatePackageFee(parentTx *wire.MsgTx,
+	feeRate btcutil.Amount) (btcutil.Amount, error) {
+
+	if parentTx == nil {
+		return 0, fmt.Errorf("parent tx cannot be nil")
+	}
+
+	if feeRate <= 0 {
+		return 0, fmt.Errorf("fee rate must be positive")
+	}
+
+	parentWeight := EstimateWeight(parentTx)
+	parentVSize := (parentWeight + 3) / 4
+	totalFee := feeRate * btcutil.Amount(parentVSize+ChildVSizeEstimate)
+	if totalFee < 1 {
+		return 1, nil
+	}
+
+	return totalFee, nil
+}
+
+// BuildCPFPChild constructs an unsigned CPFP child that spends an anchor
+// output and one confirmed wallet fee input.
+func BuildCPFPChild(parentVersion int32,
+	anchorOutpoint wire.OutPoint, anchorOutput *wire.TxOut,
+	feeInput *FeeInput, changePkScript []byte,
+	totalFee btcutil.Amount) (*wire.MsgTx, error) {
+
+	if feeInput == nil || feeInput.Output == nil {
+		return nil, fmt.Errorf("fee input and output required")
+	}
+
+	if !feeInput.Confirmed {
+		return nil, fmt.Errorf("fee input must be confirmed")
+	}
+
+	childTx := wire.NewMsgTx(parentVersion)
+	childTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: anchorOutpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+	childTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: feeInput.Outpoint,
+		Sequence:         wire.MaxTxInSequenceNum,
+	})
+
+	changeValue := btcutil.Amount(feeInput.Output.Value) - totalFee
+	if changeValue < 0 {
+		return nil, fmt.Errorf("fee input value %d insufficient for "+
+			"fee %d", feeInput.Output.Value, int64(totalFee))
+	}
+
+	if changeValue >= DustLimit {
+		childTx.AddTxOut(&wire.TxOut{
+			Value:    int64(changeValue),
+			PkScript: append([]byte(nil), changePkScript...),
+		})
+	}
+
+	return childTx, nil
+}
+
+// EstimateWeight computes the transaction weight including witness data.
+func EstimateWeight(tx *wire.MsgTx) int64 {
+	baseSize := int64(tx.SerializeSizeStripped())
+	totalSize := int64(tx.SerializeSize())
+
+	return baseSize*3 + totalSize
+}
+
+// SelectFeeInput selects the smallest confirmed fee input that meets the
+// minimum value, excluding any outpoints in the exclude set.
+func SelectFeeInput(inputs []FeeInput, minValue btcutil.Amount,
+	exclude map[wire.OutPoint]bool) (*FeeInput, error) {
+
+	var best *FeeInput
+	for i := range inputs {
+		input := &inputs[i]
+		if !input.Confirmed || input.Output == nil {
+			continue
+		}
+
+		if exclude != nil && exclude[input.Outpoint] {
+			continue
+		}
+
+		if btcutil.Amount(input.Output.Value) < minValue {
+			continue
+		}
+
+		if best == nil || input.Output.Value < best.Output.Value {
+			cp := *input
+			best = &cp
+		}
+	}
+
+	if best == nil {
+		return nil, fmt.Errorf("no confirmed fee input "+
+			"with at least %d sat", int64(minValue))
+	}
+
+	return best, nil
+}
+
+// IsIgnorableBroadcastError returns true for errors that indicate the
+// transaction is already known to the network.
+func IsIgnorableBroadcastError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	ignorable := []string{
+		"already in block chain",
+		"already known",
+		"txn-already-in-mempool",
+		"transaction already exists",
+	}
+
+	for _, pattern := range ignorable {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isPackageSubmissionUnsupported returns true if the error indicates the chain
+// backend does not support atomic package submission.
+func isPackageSubmissionUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(err.Error(), "not supported")
+}
