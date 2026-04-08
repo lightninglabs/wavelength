@@ -8,7 +8,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 )
@@ -467,7 +467,10 @@ func (t *Tree) ValidateAnchors() error {
 
 		// Anchor script must match the standard ephemeral anchor
 		// script.
-		if !bytes.Equal(anchorOutput.PkScript, scripts.AnchorPkScript) {
+		matchesAnchorScript := bytes.Equal(
+			anchorOutput.PkScript, arkscript.AnchorPkScript,
+		)
+		if !matchesAnchorScript {
 			return fmt.Errorf("anchor output at index %d has "+
 				"invalid script", anchorIdx)
 		}

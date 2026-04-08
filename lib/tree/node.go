@@ -14,7 +14,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightningnetwork/lnd/fn/v2"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -72,9 +72,9 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 	operatorKey *btcec.PublicKey, sweepTapscriptRoot []byte) (*Node,
 	error) {
 
-	// The signers for a leaf are the leaf signing key and operator.
+	// The cosigners for a leaf are the leaf owner and operator.
 	cosigners := []*btcec.PublicKey{
-		leaf.SigningKey,
+		leaf.CoSignerKey,
 		operatorKey,
 	}
 
@@ -83,7 +83,7 @@ func NewLeafNode(input wire.OutPoint, leaf LeafDescriptor,
 		wire.NewTxOut(int64(leaf.Amount), leaf.PkScript),
 
 		// The zero value ephemeral anchor output.
-		scripts.AnchorOutput(),
+		arkscript.AnchorOutput(),
 	}
 
 	// Compute the final key for this node's input at construction time.
@@ -116,15 +116,15 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 		return nil, fmt.Errorf("at least one group required")
 	}
 
-	// Validate all leaf signing keys.
+	// Validate all leaf cosigner keys.
 	for i, group := range groups {
 		if len(group) == 0 {
 			return nil, fmt.Errorf("group %d is empty", i)
 		}
 
 		for j, leaf := range group {
-			if leaf.SigningKey == nil {
-				return nil, fmt.Errorf("leaf signing key "+
+			if leaf.CoSignerKey == nil {
+				return nil, fmt.Errorf("leaf cosigner key "+
 					"cannot be nil at groups[%d][%d]", i, j)
 			}
 		}
@@ -135,7 +135,7 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 
 	// Each group will become an output.
 	for groupIdx, group := range groups {
-		// Calculate total amount and collect signers for this group.
+		// Calculate total amount and collect cosigners for this group.
 		var (
 			amount         = int64(0)
 			groupCosigners = []*btcec.PublicKey{operatorKey}
@@ -160,9 +160,9 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 
 			amount += leafAmt
 			groupCosigners = append(
-				groupCosigners, leaf.SigningKey,
+				groupCosigners, leaf.CoSignerKey,
 			)
-			allCosigners = append(allCosigners, leaf.SigningKey)
+			allCosigners = append(allCosigners, leaf.CoSignerKey)
 		}
 
 		// Deduplicate cosigners for this group.
@@ -197,7 +197,7 @@ func NewBranchNode(input wire.OutPoint, groups [][]LeafDescriptor,
 	}
 
 	// Add anchor output.
-	outputs = append(outputs, scripts.AnchorOutput())
+	outputs = append(outputs, arkscript.AnchorOutput())
 
 	// Use all unique cosigners for the branch transaction.
 	allCosigners = UniqueCosigners(allCosigners)
@@ -711,7 +711,7 @@ func (n *Node) GetNonAnchorOutpoint() (*wire.OutPoint, error) {
 	}
 
 	// Get the anchor script to compare against.
-	anchorScript := scripts.AnchorOutput().PkScript
+	anchorScript := arkscript.AnchorOutput().PkScript
 
 	// Find the non-anchor output (the one that is NOT the anchor script).
 	for i, output := range n.Outputs {

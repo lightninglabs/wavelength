@@ -9,7 +9,7 @@ import (
 
 // StructureConfig contains configuration for building tree structure.
 type StructureConfig struct {
-	// OperatorKey is the operator's public key (included in all signer
+	// OperatorKey is the operator's public key (included in all cosigner
 	// sets).
 	OperatorKey *btcec.PublicKey
 
@@ -112,14 +112,14 @@ func buildStructureRecursive(leaves []LeafDescriptor,
 
 		children[uint32(i)] = child
 
-		// Collect signers from child.
+		// Collect cosigners from child.
 		allCosigners = append(allCosigners, child.CoSigners...)
 
 		// Sum BTC amounts from children (stored in Node.Amount).
 		totalBtcAmount += child.Amount
 	}
 
-	// Deduplicate signers.
+	// Deduplicate cosigners.
 	allCosigners = UniqueCosigners(allCosigners)
 
 	// Create branch node structure.
@@ -140,12 +140,12 @@ func buildLeafStructure(leaf LeafDescriptor,
 	operatorKey *btcec.PublicKey,
 	leafScripts map[*Node][]byte) (*Node, error) {
 
-	if leaf.SigningKey == nil {
-		return nil, fmt.Errorf("leaf signing key cannot be nil")
+	if leaf.CoSignerKey == nil {
+		return nil, fmt.Errorf("leaf cosigner key cannot be nil")
 	}
 
-	// Leaf signers: operator + leaf tree signing key.
-	cosigners := []*btcec.PublicKey{operatorKey, leaf.SigningKey}
+	// Leaf cosigners: operator + leaf owner.
+	cosigners := []*btcec.PublicKey{operatorKey, leaf.CoSignerKey}
 
 	node := &Node{
 		// Input, Outputs, FinalKey left empty - filled by Materialize.

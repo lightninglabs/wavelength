@@ -9,7 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr/musig2"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +60,7 @@ func createSimpleLeaf(name string, value int64,
 		},
 		[]*wire.TxOut{
 			{Value: value, PkScript: []byte("vtxo_script")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		cosigners,
 	)
@@ -91,7 +91,7 @@ func createTestTree(t *testing.T) (*Node, *Node, *Node,
 		[]*wire.TxOut{
 			{Value: 1000, PkScript: []byte("out0")},
 			{Value: 2000, PkScript: []byte("out1")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		[]*btcec.PublicKey{key1, key2, key3},
 	)
@@ -139,7 +139,7 @@ func createDeepTree(t *testing.T) *Node {
 		[]*wire.TxOut{
 			{Value: 1000, PkScript: []byte("b1_out0")},
 			{Value: 2000, PkScript: []byte("b1_out1")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		[]*btcec.PublicKey{key1, key2},
 	)
@@ -156,7 +156,7 @@ func createDeepTree(t *testing.T) *Node {
 		[]*wire.TxOut{
 			{Value: 3000, PkScript: []byte("b2_out0")},
 			{Value: 4000, PkScript: []byte("b2_out1")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		[]*btcec.PublicKey{key3, key4},
 	)
@@ -174,7 +174,7 @@ func createDeepTree(t *testing.T) *Node {
 		[]*wire.TxOut{
 			{Value: 3000, PkScript: []byte("r_out0")},
 			{Value: 7000, PkScript: []byte("r_out1")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		},
 		[]*btcec.PublicKey{key1, key2, key3, key4},
 	)
@@ -213,7 +213,7 @@ func TestNodeTransactionConversion(t *testing.T) {
 			},
 			[]*wire.TxOut{
 				{Value: 1000, PkScript: []byte("script1")},
-				scripts.AnchorOutput(),
+				arkscript.AnchorOutput(),
 			},
 			[]*btcec.PublicKey{},
 		)
@@ -244,7 +244,7 @@ func TestNodeTransactionConversion(t *testing.T) {
 			},
 			[]*wire.TxOut{
 				{Value: 1000, PkScript: []byte("script1")},
-				scripts.AnchorOutput(),
+				arkscript.AnchorOutput(),
 			},
 			[]*btcec.PublicKey{},
 		)
@@ -286,7 +286,7 @@ func TestNodeTransactionConversion(t *testing.T) {
 			},
 			[]*wire.TxOut{
 				{Value: 1000, PkScript: []byte("script1")},
-				scripts.AnchorOutput(),
+				arkscript.AnchorOutput(),
 			},
 			[]*btcec.PublicKey{},
 		)
@@ -618,7 +618,7 @@ func TestNodeVerify(t *testing.T) {
 			root.Input,
 			[]*wire.TxOut{
 				{Value: 1000},
-				scripts.AnchorOutput(),
+				arkscript.AnchorOutput(),
 			},
 			root.CoSigners,
 		)
@@ -646,7 +646,7 @@ func TestNodeVerify(t *testing.T) {
 				{Value: 1000},
 				{Value: 2000},
 				{Value: 3000},
-				scripts.AnchorOutput(),
+				arkscript.AnchorOutput(),
 			},
 			root.CoSigners,
 		)
@@ -722,7 +722,7 @@ func TestNodeLeafOperations(t *testing.T) {
 			// Create leaf with all anchor outputs.
 			badLeaf := newNode(
 				wire.OutPoint{},
-				[]*wire.TxOut{scripts.AnchorOutput()},
+				[]*wire.TxOut{arkscript.AnchorOutput()},
 				[]*btcec.PublicKey{},
 			)
 
@@ -1037,7 +1037,7 @@ func TestNodeConstructors(t *testing.T) {
 		}
 		outputs := []*wire.TxOut{
 			{Value: 1000, PkScript: []byte("script")},
-			scripts.AnchorOutput(),
+			arkscript.AnchorOutput(),
 		}
 		_, key1 := createTestKey(t)
 		cosigners := []*btcec.PublicKey{key1}
@@ -1058,9 +1058,9 @@ func TestNodeConstructors(t *testing.T) {
 		_, operatorKey := createTestKey(t)
 
 		leaf := LeafDescriptor{
-			PkScript:   []byte("vtxo_script"),
-			Amount:     1000,
-			SigningKey: ownerKey,
+			PkScript:    []byte("vtxo_script"),
+			Amount:      1000,
+			CoSignerKey: ownerKey,
 		}
 
 		input := wire.OutPoint{
@@ -1103,14 +1103,14 @@ func TestNodeConstructors(t *testing.T) {
 
 			leaves := []LeafDescriptor{
 				{
-					PkScript:   []byte("script1"),
-					Amount:     1000,
-					SigningKey: key1,
+					PkScript:    []byte("script1"),
+					Amount:      1000,
+					CoSignerKey: key1,
 				},
 				{
-					PkScript:   []byte("script2"),
-					Amount:     2000,
-					SigningKey: key2,
+					PkScript:    []byte("script2"),
+					Amount:      2000,
+					CoSignerKey: key2,
 				},
 			}
 
@@ -1156,22 +1156,22 @@ func TestNodeConstructors(t *testing.T) {
 
 			group1 := []LeafDescriptor{
 				{
-					PkScript:   []byte("script1"),
-					Amount:     1000,
-					SigningKey: key1,
+					PkScript:    []byte("script1"),
+					Amount:      1000,
+					CoSignerKey: key1,
 				},
 				{
-					PkScript:   []byte("script2"),
-					Amount:     2000,
-					SigningKey: key2,
+					PkScript:    []byte("script2"),
+					Amount:      2000,
+					CoSignerKey: key2,
 				},
 			}
 
 			group2 := []LeafDescriptor{
 				{
-					PkScript:   []byte("script3"),
-					Amount:     3000,
-					SigningKey: key3,
+					PkScript:    []byte("script3"),
+					Amount:      3000,
+					CoSignerKey: key3,
 				},
 			}
 
@@ -1211,14 +1211,14 @@ func TestNodeConstructors(t *testing.T) {
 		// Create two leaves with the same cosigner key.
 		leaves := []LeafDescriptor{
 			{
-				PkScript:   []byte("script1"),
-				Amount:     1000,
-				SigningKey: key1,
+				PkScript:    []byte("script1"),
+				Amount:      1000,
+				CoSignerKey: key1,
 			},
 			{
-				PkScript:   []byte("script2"),
-				Amount:     2000,
-				SigningKey: key1, // Same key!
+				PkScript:    []byte("script2"),
+				Amount:      2000,
+				CoSignerKey: key1, // Same key!
 			},
 		}
 
