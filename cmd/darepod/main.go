@@ -7,6 +7,7 @@ import (
 
 	"github.com/lightninglabs/darepo-client/build"
 	"github.com/lightninglabs/darepo-client/darepod"
+	"github.com/lightninglabs/darepo-client/harness"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -38,7 +39,23 @@ func newRootCmd() *cobra.Command {
 			// Merge flags, environment variables, and config
 			// file into the config struct. Viper handles the
 			// precedence: flags > env > config file > defaults.
-			return v.Unmarshal(cfg)
+			if err := v.Unmarshal(cfg); err != nil {
+				return err
+			}
+
+			// Wire bitcoind package submitter for V3
+			// ephemeral anchor package relay (unroll).
+			host := v.GetString("bitcoind.host")
+			user := v.GetString("bitcoind.user")
+			pass := v.GetString("bitcoind.pass")
+			if host != "" {
+				cfg.PackageSubmitter =
+					harness.NewBitcoindPackageSubmitter(
+						host, user, pass,
+					)
+			}
+
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(cfg)
@@ -100,6 +117,19 @@ func newRootCmd() *cobra.Command {
 	f.String("wallet.password_file", cfg.Wallet.PasswordFile,
 		"path to file containing wallet password for "+
 			"auto-unlock at startup (lwwallet mode)",
+	)
+
+	// Optional bitcoind direct connection for package relay.
+	// Required for V3 ephemeral anchor transactions (unroll).
+	f.String("bitcoind.host", "",
+		"bitcoind RPC address (host:port) for "+
+			"submitpackage support",
+	)
+	f.String("bitcoind.user", "",
+		"bitcoind RPC username",
+	)
+	f.String("bitcoind.pass", "",
+		"bitcoind RPC password",
 	)
 
 	// Daemon RPC server flags.
