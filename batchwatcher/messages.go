@@ -1,6 +1,7 @@
 package batchwatcher
 
 import (
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/google/uuid"
 	"github.com/lightninglabs/darepo-client/baselib/actor"
@@ -229,6 +230,39 @@ func (m *VTXOOnChainNotification) MessageType() string {
 
 // fraudDetectorMsgSealed implements the sealed FraudDetectorMsg interface.
 func (m *VTXOOnChainNotification) fraudDetectorMsgSealed() {}
+
+// UnexpectedSpendNotification is sent to the FraudDetector when a watched
+// output confirms a spend that does not match the next presigned branch
+// transaction. This is the hand-off point for future fraud-response logic.
+type UnexpectedSpendNotification struct {
+	actor.BaseMessage
+
+	// BatchID identifies which batch this spend belongs to.
+	BatchID BatchID
+
+	// TrackedOutput is the watched output that was consumed on-chain.
+	TrackedOutput *Output
+
+	// ExpectedTreeTxID is the presigned transaction that should have spent
+	// TrackedOutput if the tree were progressing normally.
+	ExpectedTreeTxID chainhash.Hash
+
+	// SpendingTx is the confirmed transaction that actually spent the
+	// watched output.
+	SpendingTx *wire.MsgTx
+
+	// SpendingHeight is the block height where the unexpected spend
+	// confirmed.
+	SpendingHeight int32
+}
+
+// MessageType returns the message type identifier for logging and debugging.
+func (m *UnexpectedSpendNotification) MessageType() string {
+	return "UnexpectedSpendNotification"
+}
+
+// fraudDetectorMsgSealed implements the sealed FraudDetectorMsg interface.
+func (m *UnexpectedSpendNotification) fraudDetectorMsgSealed() {}
 
 // BatchSweeperMsg is the sealed interface for messages sent to the
 // BatchSweeper actor.

@@ -393,7 +393,7 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 	}
 
-	disposition, err := a.classifySpend(
+	disposition, expectedTxid, err := a.classifySpend(
 		batchState, spentOutput, spendingTxHash, msg.SpendingHeight,
 	)
 	if err != nil {
@@ -434,44 +434,61 @@ func (a *Actor) handleNodeSpendDetected(ctx context.Context,
 		return fn.Ok[BatchWatcherResp](nil)
 
 	default:
-		return fn.Err[BatchWatcherResp](fmt.Errorf(
-			"TODO: handle non-branch spend of watched output %s "+
-				"in batch %s by tx %s",
-			msg.SpentOutpoint, msg.BatchID, spendingTxHash,
-		))
+		// The spend is confirmed but does not match the expected
+		// presigned branch transaction. Remove the tracked output
+		// and hand off to the fraud detector for classification.
+		batchState.RemoveExistingOutput(msg.SpentOutpoint)
+
+		a.notifyUnexpectedSpend(
+			ctx, msg.BatchID, spentOutput, expectedTxid,
+			msg.SpendingTx, msg.SpendingHeight,
+		)
+		a.notifyTreeStateChanged(ctx, msg.BatchID)
+
+		a.log.InfoS(ctx, "Unexpected spend handed to fraud detector",
+			"batch_id", msg.BatchID,
+			"outpoint", msg.SpentOutpoint,
+			"expected_tx", expectedTxid,
+			"spending_tx", spendingTxHash)
+
+		return fn.Ok[BatchWatcherResp](nil)
 	}
 }
 
 // classifySpend decides whether a confirmed spend advances the expected tree
 // path, is the terminal expired root sweep case, or is an unexpected spend
 // that the future fraud-response flow must handle.
+//
+// The returned hash is the expected presigned tree txid. It is only
+// meaningful when the disposition is not an error.
 func (a *Actor) classifySpend(batchState *BatchTreeState,
 	spentOutput *Output, spendingTxHash chainhash.Hash,
-	spendingHeight int32) (spendDisposition, error) {
+	spendingHeight int32) (spendDisposition, chainhash.Hash, error) {
 
 	if spentOutput == nil {
-		return spendDispositionUnexpected, fmt.Errorf(
-			"spent output must be provided",
-		)
+		return spendDispositionUnexpected, chainhash.Hash{},
+			fmt.Errorf("spent output must be provided")
 	}
 
 	if spentOutput.TreeNode == nil {
-		return spendDispositionUnexpected, fmt.Errorf(
-			"tracked output %s has no tree node",
-			spentOutput.Outpoint,
-		)
+		return spendDispositionUnexpected, chainhash.Hash{},
+			fmt.Errorf(
+				"tracked output %s has no tree node",
+				spentOutput.Outpoint,
+			)
 	}
 
 	expectedTxid, err := spentOutput.TreeNode.TXID()
 	if err != nil {
-		return spendDispositionUnexpected, fmt.Errorf(
-			"compute expected tree txid for %s: %w",
-			spentOutput.Outpoint, err,
-		)
+		return spendDispositionUnexpected, chainhash.Hash{},
+			fmt.Errorf(
+				"compute expected tree txid for %s: %w",
+				spentOutput.Outpoint, err,
+			)
 	}
 
 	if spendingTxHash == expectedTxid {
-		return spendDispositionBranchTx, nil
+		return spendDispositionBranchTx, expectedTxid, nil
 	}
 
 	// Expired-root sweep: only the original batch output qualifies.
@@ -482,10 +499,10 @@ func (a *Actor) classifySpend(batchState *BatchTreeState,
 		spentOutput.Outpoint == batchState.Tree.BatchOutpoint &&
 		spendingHeight >= int32(batchState.ExpiryHeight) {
 
-		return spendDispositionExpiredRootSweep, nil
+		return spendDispositionExpiredRootSweep, expectedTxid, nil
 	}
 
-	return spendDispositionUnexpected, nil
+	return spendDispositionUnexpected, expectedTxid, nil
 }
 
 // handleNewBlockReceived processes a new block notification. It notifies the
@@ -571,6 +588,45 @@ func (a *Actor) subscribeToBlocks(ctx context.Context) error {
 	a.log.DebugS(ctx, "Subscribed to block notifications")
 
 	return nil
+}
+
+// notifyUnexpectedSpend sends a notification to the FraudDetector that a
+// watched output was spent by a transaction other than the expected presigned
+// branch. The fraud detector is responsible for classifying and responding.
+func (a *Actor) notifyUnexpectedSpend(ctx context.Context, batchID BatchID,
+	trackedOutput *Output, expectedTreeTxID chainhash.Hash,
+	spendingTx *wire.MsgTx, spendingHeight int32) {
+
+	a.cfg.FraudDetector.WhenSome(func(
+		ref actor.TellOnlyRef[FraudDetectorMsg],
+	) {
+
+		notification := &UnexpectedSpendNotification{
+			BatchID:          batchID,
+			TrackedOutput:    trackedOutput,
+			ExpectedTreeTxID: expectedTreeTxID,
+			SpendingTx:       spendingTx,
+			SpendingHeight:   spendingHeight,
+		}
+
+		if err := ref.Tell(ctx, notification); err != nil {
+			a.log.WarnS(ctx,
+				"Failed to notify FraudDetector of "+
+					"unexpected spend",
+				err,
+				"batch_id", batchID,
+				"outpoint", trackedOutput.Outpoint,
+			)
+
+			return
+		}
+
+		a.log.DebugS(ctx,
+			"Notified FraudDetector of unexpected spend",
+			"batch_id", batchID,
+			"outpoint", trackedOutput.Outpoint,
+			"spending_tx", spendingTx.TxHash())
+	})
 }
 
 // notifyVTXOOnChain sends a notification to the FraudDetector that a VTXO

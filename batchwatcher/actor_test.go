@@ -526,8 +526,8 @@ func TestNodeSpendDetected_ProgressiveWatching(t *testing.T) {
 		"child outputs should be tracked")
 }
 
-// TestNodeSpendDetectedFanOutRatchetsForward verifies the new partial-unroll
-// watcher behavior for a multi-level binary tree.
+// TestNodeSpendDetectedFanOutRatchetsForward verifies the new
+// partial-unroll watcher behavior for a multi-level binary tree.
 //
 // The test tree has this shape:
 //
@@ -602,8 +602,9 @@ func TestNodeSpendDetectedFanOutRatchetsForward(t *testing.T) {
 	require.Len(t, state.VTXOsOnChain, 0)
 	require.Len(t, state.WatchedOutpoints, 3)
 
-	// Pick one of the two branch outputs revealed by the root spend. This is
-	// still a non-leaf branch, so spending it should ratchet forward again.
+	// Pick one of the two branch outputs revealed by the root spend.
+	// This is still a non-leaf branch, so spending it should ratchet
+	// forward again.
 	branchNode, ok := testTree.Root.Children[0]
 	require.True(t, ok)
 	require.False(t, branchNode.IsLeaf())
@@ -706,10 +707,11 @@ func TestNodeSpendDetected_VTXONotification(t *testing.T) {
 	}
 }
 
-// TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors verifies that
-// unexpected non-branch spends are rejected until fraud-response handling is
-// implemented.
-func TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors(t *testing.T) {
+// TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector verifies that a
+// confirmed spend which does not match the next presigned branch transaction
+// is surfaced as a fraud-detector escalation instead of a transport-level
+// error.
+func TestNodeSpendDetectedUnexpectedSpendNotifiesFraudDetector(t *testing.T) {
 	h := newTestHarness(t)
 
 	batchID := createBatchID(t)
@@ -735,7 +737,9 @@ func TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors(t *testing.T) {
 		Return(completedFuture(&chainsource.RegisterSpendResponse{})).
 		Maybe()
 
-	// Create a spending transaction.
+	// Create a confirmed transaction that spends the watched output but does
+	// not match the presigned tree tx. This exercises the future fraud-
+	// response boundary without trying to ratchet the watcher forward.
 	spendingTx := wire.NewMsgTx(3)
 	spendingTx.AddTxIn(&wire.TxIn{
 		PreviousOutPoint: testTree.BatchOutpoint,
@@ -755,12 +759,39 @@ func TestNodeSpendDetected_NonBranchSpendBeforeExpiryErrors(t *testing.T) {
 	}
 
 	result := h.actor.Receive(h.t.Context(), msg)
-	require.True(t, result.IsErr())
-	require.Contains(t, result.Err().Error(), "TODO: handle non-branch")
+	require.True(t, result.IsOk())
 
+	// The watched output is confirmed spent, so it must be removed from the
+	// tracked unspent set even though we do not yet know the recovery action.
 	state := h.actor.state.GetBatch(batchID)
 	require.NotNil(t, state)
-	require.Len(t, state.ExistingOutputs, 1)
+	require.Len(t, state.ExistingOutputs, 0)
+
+	// The watcher should hand off enough structured context for future fraud
+	// handling to decide whether to broadcast the next transaction.
+	require.Len(t, h.mockFraudDetector.receivedMsgs, 1)
+
+	fdMsg := h.mockFraudDetector.receivedMsgs[0]
+	notification, ok := fdMsg.(*UnexpectedSpendNotification)
+	require.True(t, ok, "should be UnexpectedSpendNotification")
+	require.Equal(t, batchID, notification.BatchID)
+	require.Equal(t, int32(500), notification.SpendingHeight)
+	require.Equal(
+		t, testTree.BatchOutpoint, notification.TrackedOutput.Outpoint,
+	)
+	require.Equal(
+		t, spendingTx.TxHash(), notification.SpendingTx.TxHash(),
+	)
+
+	expectedTxID, err := testTree.Root.TXID()
+	require.NoError(t, err)
+	require.Equal(t, expectedTxID, notification.ExpectedTreeTxID)
+
+	// This is still a tree-state transition, so the sweeper should be nudged
+	// to refresh its view if the batch is already expired.
+	require.Len(t, h.mockBatchSweeper.receivedMsgs, 1)
+	_, ok = h.mockBatchSweeper.receivedMsgs[0].(*TreeStateChangedNotification)
+	require.True(t, ok, "should be TreeStateChangedNotification")
 }
 
 // TestNodeSpendDetected_ExpiredRootSweepNotification tests that an expired
