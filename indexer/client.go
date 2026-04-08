@@ -107,6 +107,10 @@ const (
 	// RegisterReceiveScript.
 	purposeRegisterReceiveScript = "register_receive_script"
 
+	// purposeGetOORSessionByTxid is the canonical purpose string expected
+	// by the server when verifying proofs for GetOORSessionByTxid.
+	purposeGetOORSessionByTxid = "get_oor_session_by_txid"
+
 	// purposeUnregisterReceiveScript is the canonical purpose
 	// string expected by the server when verifying proofs for
 	// UnregisterReceiveScript.
@@ -154,6 +158,10 @@ const (
 	// to prove control over supported standardized receive scripts such as
 	// VTXO tapscripts.
 	proofTLVTypeOwnerPubKey tlv.Type = 10
+
+	// proofTLVTypeSignerPubKey identifies the compressed participant pubkey
+	// used to sign script-scope query proofs.
+	proofTLVTypeSignerPubKey tlv.Type = 11
 )
 
 // New creates an Indexer client wrapper. The signer is used for all
@@ -221,6 +229,79 @@ func encodeProofTLV(msgType, serverID, principal, purpose string,
 		msgType, serverID, principal, purpose, pkScript, nil,
 		nonce, issuedAt, expiresAt,
 	)
+}
+
+// encodeScriptScopeProofTLV encodes a script-scope query proof message that
+// is bound to one explicit participant signer rather than a specific script.
+//
+// This uses a distinct TLV schema from encodeProofTLV/encodeProofTLVWithOwner:
+// it carries signerPubKey instead of pk_script because the prover is
+// authorizing queries for all scripts derived from their key, not one
+// specific script. The server verifies this variant separately via the
+// "script_scope" message type discriminator.
+func encodeScriptScopeProofTLV(
+	serverID, principal, purpose string,
+	signerPubKey, nonce []byte, issuedAt, expiresAt uint64,
+) ([]byte, error) {
+
+	proofTypeBytes := []byte(scriptScopeMessageType)
+	version := uint32(registrationMessageVersion)
+	serverIDBytes := []byte(serverID)
+	principalBytes := []byte(principal)
+	purposeBytes := []byte(purpose)
+	records := []tlv.Record{
+		tlv.MakeDynamicRecord(
+			proofTLVTypeType, &proofTypeBytes,
+			tlv.SizeVarBytes(&proofTypeBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeVersion, &version,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeServerID, &serverIDBytes,
+			tlv.SizeVarBytes(&serverIDBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePrincipal, &principalBytes,
+			tlv.SizeVarBytes(&principalBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeIssuedAt, &issuedAt,
+		),
+		tlv.MakePrimitiveRecord(
+			proofTLVTypeExpiresAt, &expiresAt,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeNonce, &nonce,
+			tlv.SizeVarBytes(&nonce),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypePurpose, &purposeBytes,
+			tlv.SizeVarBytes(&purposeBytes),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+		tlv.MakeDynamicRecord(
+			proofTLVTypeSignerPubKey, &signerPubKey,
+			tlv.SizeVarBytes(&signerPubKey),
+			tlv.EVarBytes, tlv.DVarBytes,
+		),
+	}
+
+	tlvStream, err := tlv.NewStream(records...)
+	if err != nil {
+		return nil, fmt.Errorf("build TLV stream: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tlvStream.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode TLV proof: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // encodeProofTLVWithOwner encodes a proof message to its canonical TLV byte
@@ -382,6 +463,14 @@ func proofOwnerPubKey(pkScript []byte,
 	return pubKey.SerializeCompressed(), nil
 }
 
+// proofSignerPubKey returns the explicit participant pubkey committed into a
+// script-scope query proof.
+func proofSignerPubKey(pkScript []byte,
+	signer SchnorrSigner) ([]byte, error) {
+
+	return proofOwnerPubKey(pkScript, signer)
+}
+
 // schnorrSigOverMessage returns a 64-byte schnorr signature over a
 // BIP-340 tagged hash of the message. The tag provides domain separation so
 // indexer proof signatures cannot be replayed in other protocols. The
@@ -446,9 +535,12 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 
 	now := time.Now()
 	expiresAt := now.Add(offlineReceiveProofTTL)
-	ownerPubKey, err := proofOwnerPubKey(pkScript, c.signer)
+	signerPubKey, err := proofSignerPubKey(pkScript, c.signer)
 	if err != nil {
 		return nil, err
+	}
+	if len(signerPubKey) == 0 {
+		return nil, fmt.Errorf("signer pubkey not configured")
 	}
 
 	nonce, err := randomNonce(registrationNonceBytes)
@@ -456,10 +548,8 @@ func (c *Client) newTaprootScope(ctx context.Context, pkScript []byte,
 		return nil, err
 	}
 
-	msgBytes, err := encodeProofTLVWithOwner(
-		scriptScopeMessageType,
-		c.serverID, c.principal, purpose, pkScript, ownerPubKey,
-		nonce,
+	msgBytes, err := encodeScriptScopeProofTLV(
+		c.serverID, c.principal, purpose, signerPubKey, nonce,
 		uint64(now.Unix()), uint64(expiresAt.Unix()),
 	)
 	if err != nil {
@@ -555,6 +645,46 @@ func (c *Client) ListVTXOsByScriptsTaproot(ctx context.Context,
 	}
 
 	return resp, nil
+}
+
+// BuildGetOORSessionByTxidTaprootRequest builds the proof-gated indexer
+// request body for one script-scoped OOR session lookup.
+func (c *Client) BuildGetOORSessionByTxidTaprootRequest(
+	ctx context.Context, pkScript []byte, sessionTxid []byte,
+) (*arkrpc.GetOORSessionByTxidRequest, error) {
+
+	c.logger(ctx).TraceS(ctx, "Building GetOORSessionByTxid request",
+		btclog.Hex("pk_script", pkScript),
+		btclog.Hex("session_txid", sessionTxid))
+
+	scope, err := c.newTaprootScope(
+		ctx, pkScript, purposeGetOORSessionByTxid,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &arkrpc.GetOORSessionByTxidRequest{
+		Script:      scope,
+		SessionTxid: append([]byte(nil), sessionTxid...),
+	}, nil
+}
+
+// GetOORSessionByTxidTaproot performs a proof-gated OOR session lookup for
+// one script and deterministic session txid.
+func (c *Client) GetOORSessionByTxidTaproot(ctx context.Context,
+	pkScript []byte, sessionTxid []byte,
+	opts ...mailboxrpc.RPCOptions) (
+	*arkrpc.GetOORSessionByTxidResponse, error) {
+
+	req, err := c.BuildGetOORSessionByTxidTaprootRequest(
+		ctx, pkScript, sessionTxid,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.rpc.GetOORSessionByTxid(ctx, req, firstOpt(opts))
 }
 
 // GetSubtreeByScriptsTaproot performs a proof-gated subtree query for
