@@ -6,7 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tx/arktx"
 )
 
@@ -29,6 +29,11 @@ type Input struct {
 	// the closure system is canonical, higher layers should construct this
 	// leaf using closure helpers and pass the resulting script bytes here.
 	OwnerLeafScript []byte
+
+	// OwnerLeafPolicy is the semantic owner-leaf policy encoding that
+	// corresponds to OwnerLeafScript. When present, higher layers can
+	// reconstruct the owner leaf without decompiling raw script.
+	OwnerLeafPolicy []byte
 }
 
 // SpentVTXORef groups the spent VTXO outpoint and output data in one value so
@@ -52,10 +57,17 @@ type Result struct {
 
 	// TapTreeEncoded is the v0 tap tree encoding for the checkpoint output.
 	//
-	// This is intended to be attached to the Ark tx PSBT inputs under the
-	// `taptree` unknown key so finalization can later copy it onto the
-	// checkpoint output metadata.
+	// This sidecar is carried forward into the Ark PSBT inputs so later
+	// validation can recover the checkpoint tap tree without rebuilding it.
 	TapTreeEncoded []byte
+
+	// OwnerLeafScript is the canonical script committed into the checkpoint
+	// tree.
+	OwnerLeafScript []byte
+
+	// OwnerLeafPolicy is the semantic owner-leaf policy encoding attached
+	// to this checkpoint.
+	OwnerLeafPolicy []byte
 }
 
 // BuildPSBT constructs an unsigned checkpoint PSBT that spends a VTXO input,
@@ -69,7 +81,7 @@ type Result struct {
 //
 // This function does not attempt to sign the checkpoint tx. It also does not
 // validate that the owner leaf is a canonical Ark closure (draft phase).
-func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
+func BuildPSBT(policy arkscript.CheckpointPolicy, in Input) (*Result, error) {
 	switch {
 	case policy.CSVDelay < MinCheckpointCSVDelay:
 		return nil, fmt.Errorf(
@@ -89,7 +101,22 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 			"provided")
 	}
 
-	tapscript, err := scripts.CheckpointTapScript(
+	if len(in.OwnerLeafScript) == 0 && len(in.OwnerLeafPolicy) > 0 {
+		leaf, err := arkscript.DecodeLeafTemplate(in.OwnerLeafPolicy)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"decode owner leaf policy: %w", err,
+			)
+		}
+
+		in.OwnerLeafScript, err = leaf.Script()
+		if err != nil {
+			return nil, fmt.Errorf("compile owner leaf policy: %w",
+				err)
+		}
+	}
+
+	tapscript, err := arkscript.CheckpointTapScript(
 		policy, in.OwnerLeafScript,
 	)
 	if err != nil {
@@ -120,7 +147,7 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 		Value:    in.SpentVTXO.Output.Value,
 		PkScript: checkpointPkScript,
 	})
-	tx.AddTxOut(scripts.AnchorOutput())
+	tx.AddTxOut(arkscript.AnchorOutput())
 
 	pkt, err := psbt.NewFromUnsignedTx(tx)
 	if err != nil {
@@ -131,8 +158,10 @@ func BuildPSBT(policy scripts.CheckpointPolicy, in Input) (*Result, error) {
 	pkt.Inputs[0].WitnessUtxo = in.SpentVTXO.Output
 
 	return &Result{
-		PSBT:           pkt,
-		TapTreeEncoded: encodedTapTree,
+		PSBT:            pkt,
+		TapTreeEncoded:  encodedTapTree,
+		OwnerLeafScript: in.OwnerLeafScript,
+		OwnerLeafPolicy: in.OwnerLeafPolicy,
 	}, nil
 }
 
