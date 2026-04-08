@@ -1124,13 +1124,12 @@ func (a *Actor) registerBatchesWithWatcher(ctx context.Context, roundID RoundID,
 				continue
 			}
 
-			// Create a deterministic BatchID from RoundID and
-			// output index using UUID v5. This ensures the BatchID
-			// encodes both values and is reproducible.
-			batchIDName := fmt.Sprintf("%s-%d", roundID, outputIdx)
-			batchID := batchwatcher.BatchID(uuid.NewSHA1(
-				uuid.UUID(roundID), []byte(batchIDName),
-			))
+			// Create the deterministic BatchID for this
+			// round/output pair so watcher state can be recovered
+			// and inspected consistently.
+			batchID := batchwatcher.BatchIDForRoundOutput(
+				uuid.UUID(roundID), outputIdx,
+			)
 
 			req := &batchwatcher.RegisterBatchRequest{
 				BatchID:            batchID,
