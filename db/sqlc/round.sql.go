@@ -159,7 +159,7 @@ func (q *Queries) GetRound(ctx context.Context, roundID string) (Round, error) {
 }
 
 const GetRoundBoardingIntents = `-- name: GetRoundBoardingIntents :many
-SELECT round_id, outpoint_hash, outpoint_index, client_key, operator_key, exit_delay, tx_proof, input_index, input_signature FROM round_boarding_intents WHERE round_id = $1
+SELECT round_id, outpoint_hash, outpoint_index, client_key, operator_key, exit_delay, policy_template, tx_proof, input_index, input_signature FROM round_boarding_intents WHERE round_id = $1
 `
 
 func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) ([]RoundBoardingIntent, error) {
@@ -178,6 +178,7 @@ func (q *Queries) GetRoundBoardingIntents(ctx context.Context, roundID string) (
 			&i.ClientKey,
 			&i.OperatorKey,
 			&i.ExitDelay,
+			&i.PolicyTemplate,
 			&i.TxProof,
 			&i.InputIndex,
 			&i.InputSignature,
@@ -262,7 +263,7 @@ func (q *Queries) GetRoundClientTrees(ctx context.Context, roundID string) ([]Ro
 }
 
 const GetRoundVtxoRequests = `-- name: GetRoundVtxoRequests :many
-SELECT round_id, request_index, amount, pk_script, expiry, client_pubkey, client_key_family, client_key_index, owns_client_key, operator_pubkey, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
+SELECT round_id, request_index, amount, pk_script, expiry, policy_template, client_pubkey, operator_pubkey, owner_key_family, owner_key_index, signing_key_family, signing_key_index, signing_pubkey FROM round_vtxo_requests
 WHERE round_id = $1
 ORDER BY request_index ASC
 `
@@ -282,11 +283,11 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientPubkey,
-			&i.ClientKeyFamily,
-			&i.ClientKeyIndex,
-			&i.OwnsClientKey,
 			&i.OperatorPubkey,
+			&i.OwnerKeyFamily,
+			&i.OwnerKeyIndex,
 			&i.SigningKeyFamily,
 			&i.SigningKeyIndex,
 			&i.SigningPubkey,
@@ -305,7 +306,7 @@ func (q *Queries) GetRoundVtxoRequests(ctx context.Context, roundID string) ([]R
 }
 
 const GetVTXO = `-- name: GetVTXO :one
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE outpoint_hash = $1 AND outpoint_index = $2
 `
 
@@ -324,6 +325,7 @@ func (q *Queries) GetVTXO(ctx context.Context, arg GetVTXOParams) (Vtxo, error) 
 		&i.Amount,
 		&i.PkScript,
 		&i.Expiry,
+		&i.PolicyTemplate,
 		&i.ClientKeyFamily,
 		&i.ClientKeyIndex,
 		&i.ClientPubkey,
@@ -425,8 +427,8 @@ const InsertRoundBoardingIntent = `-- name: InsertRoundBoardingIntent :exec
 
 INSERT INTO round_boarding_intents (
     round_id, outpoint_hash, outpoint_index, client_key, operator_key,
-    exit_delay, tx_proof, input_index, input_signature
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    exit_delay, policy_template, tx_proof, input_index, input_signature
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (round_id, outpoint_hash, outpoint_index) DO UPDATE SET
     input_index = COALESCE(excluded.input_index, round_boarding_intents.input_index),
     input_signature = COALESCE(excluded.input_signature, round_boarding_intents.input_signature)
@@ -439,6 +441,7 @@ type InsertRoundBoardingIntentParams struct {
 	ClientKey      []byte
 	OperatorKey    []byte
 	ExitDelay      int32
+	PolicyTemplate []byte
 	TxProof        []byte
 	InputIndex     sql.NullInt32
 	InputSignature []byte
@@ -453,6 +456,7 @@ func (q *Queries) InsertRoundBoardingIntent(ctx context.Context, arg InsertRound
 		arg.ClientKey,
 		arg.OperatorKey,
 		arg.ExitDelay,
+		arg.PolicyTemplate,
 		arg.TxProof,
 		arg.InputIndex,
 		arg.InputSignature,
@@ -483,8 +487,8 @@ func (q *Queries) InsertRoundClientTree(ctx context.Context, arg InsertRoundClie
 const InsertRoundVtxoRequest = `-- name: InsertRoundVtxoRequest :exec
 
 INSERT INTO round_vtxo_requests (
-    round_id, request_index, amount, pk_script, expiry, client_pubkey,
-    client_key_family, client_key_index, owns_client_key, operator_pubkey,
+    round_id, request_index, amount, pk_script, expiry, policy_template,
+    client_pubkey, operator_pubkey, owner_key_family, owner_key_index,
     signing_key_family, signing_key_index, signing_pubkey
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT (round_id, request_index) DO NOTHING
@@ -496,11 +500,11 @@ type InsertRoundVtxoRequestParams struct {
 	Amount           int64
 	PkScript         []byte
 	Expiry           int32
+	PolicyTemplate   []byte
 	ClientPubkey     []byte
-	ClientKeyFamily  int32
-	ClientKeyIndex   int32
-	OwnsClientKey    bool
 	OperatorPubkey   []byte
+	OwnerKeyFamily   int32
+	OwnerKeyIndex    int32
 	SigningKeyFamily int32
 	SigningKeyIndex  int32
 	SigningPubkey    []byte
@@ -514,11 +518,11 @@ func (q *Queries) InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtx
 		arg.Amount,
 		arg.PkScript,
 		arg.Expiry,
+		arg.PolicyTemplate,
 		arg.ClientPubkey,
-		arg.ClientKeyFamily,
-		arg.ClientKeyIndex,
-		arg.OwnsClientKey,
 		arg.OperatorPubkey,
+		arg.OwnerKeyFamily,
+		arg.OwnerKeyIndex,
 		arg.SigningKeyFamily,
 		arg.SigningKeyIndex,
 		arg.SigningPubkey,
@@ -530,14 +534,22 @@ const InsertVTXO = `-- name: InsertVTXO :exec
 
 INSERT INTO vtxos (
     outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry,
-    client_key_family, client_key_index, client_pubkey, operator_pubkey,
-    tree_path, batch_expiry, tree_depth, chain_depth, created_height,
-    commitment_txid, spent, creation_time, last_update_time
+    policy_template, client_key_family, client_key_index, client_pubkey,
+    operator_pubkey, tree_path, batch_expiry, tree_depth, chain_depth,
+    created_height, commitment_txid, spent, creation_time, last_update_time
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-    $16, $17, $18, $19
+    $16, $17, $18, $19, $20
 )
 ON CONFLICT (outpoint_hash, outpoint_index) DO UPDATE SET
+    pk_script = CASE WHEN excluded.pk_script IS NOT NULL AND length(excluded.pk_script) > 0 THEN excluded.pk_script ELSE vtxos.pk_script END,
+    expiry = CASE WHEN excluded.expiry != 0 THEN excluded.expiry ELSE vtxos.expiry END,
+    policy_template = CASE WHEN excluded.policy_template IS NOT NULL AND length(excluded.policy_template) > 0 THEN excluded.policy_template ELSE vtxos.policy_template END,
+    client_pubkey = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_pubkey ELSE vtxos.client_pubkey END,
+    client_key_family = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_family ELSE vtxos.client_key_family END,
+    client_key_index = CASE WHEN excluded.client_pubkey IS NOT NULL AND length(excluded.client_pubkey) > 0 THEN excluded.client_key_index ELSE vtxos.client_key_index END,
+    operator_pubkey = CASE WHEN excluded.operator_pubkey IS NOT NULL AND length(excluded.operator_pubkey) > 0 THEN excluded.operator_pubkey ELSE vtxos.operator_pubkey END,
+    tree_path = CASE WHEN excluded.tree_path IS NOT NULL AND length(excluded.tree_path) > 0 THEN excluded.tree_path ELSE vtxos.tree_path END,
     batch_expiry = CASE WHEN excluded.batch_expiry != 0 THEN excluded.batch_expiry ELSE vtxos.batch_expiry END,
     tree_depth = CASE WHEN excluded.tree_depth != 0 THEN excluded.tree_depth ELSE vtxos.tree_depth END,
     chain_depth = CASE WHEN excluded.chain_depth != 0 THEN excluded.chain_depth ELSE vtxos.chain_depth END,
@@ -553,6 +565,7 @@ type InsertVTXOParams struct {
 	Amount          int64
 	PkScript        []byte
 	Expiry          int32
+	PolicyTemplate  []byte
 	ClientKeyFamily int32
 	ClientKeyIndex  int32
 	ClientPubkey    []byte
@@ -569,10 +582,10 @@ type InsertVTXOParams struct {
 }
 
 // VTXO queries.
-// InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
-// updated if the new values are non-zero/non-null (allowing the VTXO manager
-// to fill in BatchExpiry, TreeDepth, CreatedHeight, CommitmentTxid after the
-// round store creates the initial record).
+// InsertVTXO creates or updates a VTXO. On conflict, richer semantic and
+// metadata fields from the later insert win when present. This allows the
+// round store to create the initial row and the VTXO manager to heal it with
+// the finalized descriptor (policy template, key material, batch metadata).
 func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 	_, err := q.db.ExecContext(ctx, InsertVTXO,
 		arg.OutpointHash,
@@ -581,6 +594,7 @@ func (q *Queries) InsertVTXO(ctx context.Context, arg InsertVTXOParams) error {
 		arg.Amount,
 		arg.PkScript,
 		arg.Expiry,
+		arg.PolicyTemplate,
 		arg.ClientKeyFamily,
 		arg.ClientKeyIndex,
 		arg.ClientPubkey,
@@ -637,7 +651,7 @@ func (q *Queries) ListActiveRounds(ctx context.Context) ([]Round, error) {
 }
 
 const ListAllVTXOs = `-- name: ListAllVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
@@ -656,6 +670,7 @@ func (q *Queries) ListAllVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientKeyFamily,
 			&i.ClientKeyIndex,
 			&i.ClientPubkey,
@@ -776,7 +791,7 @@ func (q *Queries) ListRoundsPaginated(ctx context.Context, arg ListRoundsPaginat
 }
 
 const ListUnspentVTXOs = `-- name: ListUnspentVTXOs :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos
 WHERE spent = FALSE
     AND status != 4
 ORDER BY creation_time DESC
@@ -799,6 +814,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientKeyFamily,
 			&i.ClientKeyIndex,
 			&i.ClientPubkey,
@@ -833,7 +849,7 @@ func (q *Queries) ListUnspentVTXOs(ctx context.Context) ([]Vtxo, error) {
 }
 
 const ListVTXOsByRound = `-- name: ListVTXOsByRound :many
-SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
+SELECT outpoint_hash, outpoint_index, round_id, amount, pk_script, expiry, policy_template, client_key_family, client_key_index, client_pubkey, operator_pubkey, tree_path, batch_expiry, tree_depth, created_height, commitment_txid, spent, status, forfeit_round_id, forfeit_tx, forfeit_txid, replaced_by_hash, replaced_by_index, creation_time, last_update_time, chain_depth FROM vtxos WHERE round_id = $1 ORDER BY creation_time DESC
 `
 
 func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo, error) {
@@ -852,6 +868,7 @@ func (q *Queries) ListVTXOsByRound(ctx context.Context, roundID string) ([]Vtxo,
 			&i.Amount,
 			&i.PkScript,
 			&i.Expiry,
+			&i.PolicyTemplate,
 			&i.ClientKeyFamily,
 			&i.ClientKeyIndex,
 			&i.ClientPubkey,

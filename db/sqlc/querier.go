@@ -67,10 +67,10 @@ type Querier interface {
 	// Round VTXO request queries.
 	InsertRoundVtxoRequest(ctx context.Context, arg InsertRoundVtxoRequestParams) error
 	// VTXO queries.
-	// InsertVTXO creates or updates a VTXO. On conflict, metadata fields are
-	// updated if the new values are non-zero/non-null (allowing the VTXO manager
-	// to fill in BatchExpiry, TreeDepth, CreatedHeight, CommitmentTxid after the
-	// round store creates the initial record).
+	// InsertVTXO creates or updates a VTXO. On conflict, richer semantic and
+	// metadata fields from the later insert win when present. This allows the
+	// round store to create the initial row and the VTXO manager to heal it with
+	// the finalized descriptor (policy template, key material, batch metadata).
 	InsertVTXO(ctx context.Context, arg InsertVTXOParams) error
 	ListActiveRounds(ctx context.Context) ([]Round, error)
 	ListAllBoardingAddresses(ctx context.Context) ([]BoardingAddress, error)

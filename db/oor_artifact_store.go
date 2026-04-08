@@ -446,8 +446,8 @@ func (s *OORArtifactPersistenceStore) UpsertBinding(ctx context.Context,
 			// Continue.
 
 		case errors.Is(err, sql.ErrNoRows):
-			return fmt.Errorf("binding outpoint %v not found in "+
-				"local vtxo store", outpoint)
+			return fmt.Errorf("%w: %v",
+				types.ErrOORBindingOutpointNotFound, outpoint)
 
 		default:
 			return err
@@ -1351,7 +1351,8 @@ func packageDirectionConflictErr(
 ) error {
 
 	return fmt.Errorf(
-		"package direction conflict: %x existing=%s requested=%s",
-		sessionID, existing, requested,
+		"%w: %x existing=%s requested=%s",
+		types.ErrOORPackageDirectionConflict, sessionID, existing,
+		requested,
 	)
 }

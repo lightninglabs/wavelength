@@ -14,9 +14,10 @@ import (
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	oortx "github.com/lightninglabs/darepo-client/lib/tx/oor"
+	"github.com/lightninglabs/darepo-client/lib/types"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightningnetwork/lnd/clock"
 	fn "github.com/lightningnetwork/lnd/fn/v2"
@@ -199,6 +200,7 @@ func TestOORArtifactStoreUpsertPackageDirectionConflict(t *testing.T) {
 	err = store.UpsertPackage(ctx, OORPackageDirectionOutgoing,
 		sessionID, arkPSBT, checkpoints)
 	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrOORPackageDirectionConflict)
 	require.ErrorContains(t, err, "package direction conflict")
 }
 
@@ -333,6 +335,7 @@ func TestOORArtifactStoreBindingRequiresExistingVTXO(t *testing.T) {
 	err = store.UpsertBinding(ctx, outpoint, sessionID, 0,
 		OORPackageLinkKindCreatedOutput)
 	require.Error(t, err)
+	require.ErrorIs(t, err, types.ErrOORBindingOutpointNotFound)
 	require.ErrorContains(t, err, "not found in local vtxo store")
 }
 
@@ -534,7 +537,7 @@ func buildTestOORPackageWithInput(t *testing.T, seed byte,
 	recipientKey, err := btcec.NewPrivateKey()
 	require.NoError(t, err)
 
-	policy := scripts.CheckpointPolicy{
+	policy := arkscript.CheckpointPolicy{
 		OperatorKey: operatorKey.PubKey(),
 		CSVDelay:    10,
 	}
@@ -557,7 +560,7 @@ func buildTestOORPackageWithInput(t *testing.T, seed byte,
 	checkpointRes, err := oortx.BuildCheckpointPSBT(policy, checkpointInput)
 	require.NoError(t, err)
 
-	recipientTapKey, err := scripts.VTXOTapKey(
+	recipientTapKey, err := arkscript.VTXOTapKey(
 		recipientKey.PubKey(), operatorKey.PubKey(), 10,
 	)
 	require.NoError(t, err)

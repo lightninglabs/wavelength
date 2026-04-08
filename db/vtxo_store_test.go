@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog/v2"
 	"github.com/lightninglabs/darepo-client/db/sqlc"
-	"github.com/lightninglabs/darepo-client/lib/scripts"
+	"github.com/lightninglabs/darepo-client/lib/arkscript"
 	"github.com/lightninglabs/darepo-client/lib/tree"
 	"github.com/lightninglabs/darepo-client/round"
 	"github.com/lightninglabs/darepo-client/vtxo"
@@ -90,16 +90,22 @@ func createTestVTXODescriptor(
 
 	// Build the tapscript from client and operator keys.
 	const exitDelay uint32 = 144
-	tapscript, err := scripts.VTXOTapScript(
+	tapscript, err := arkscript.VTXOTapScript(
+		privKey.PubKey(), operatorKey.PubKey(), exitDelay,
+	)
+	require.NoError(t, err)
+
+	policyTemplate, err := arkscript.EncodeStandardVTXOTemplate(
 		privKey.PubKey(), operatorKey.PubKey(), exitDelay,
 	)
 	require.NoError(t, err)
 
 	return &vtxo.Descriptor{
-		Outpoint: outpoint,
-		Amount:   btcutil.Amount(100000 * (idx + 1)),
-		PkScript: []byte{0x51, 0x20, byte(idx)},
-		OwnerKey: keychain.KeyDescriptor{
+		Outpoint:       outpoint,
+		Amount:         btcutil.Amount(100000 * (idx + 1)),
+		PolicyTemplate: policyTemplate,
+		PkScript:       []byte{0x51, 0x20, byte(idx)},
+		ClientKey: keychain.KeyDescriptor{
 			PubKey: privKey.PubKey(),
 			KeyLocator: keychain.KeyLocator{
 				Family: keychain.KeyFamily(0),
@@ -155,10 +161,10 @@ func TestVTXOPersistenceStoreSaveAndGet(t *testing.T) {
 	require.Equal(t, desc.Status, fetched.Status)
 
 	// Verify keys.
-	require.NotNil(t, fetched.OwnerKey.PubKey)
+	require.NotNil(t, fetched.ClientKey.PubKey)
 	require.NotNil(t, fetched.OperatorKey)
-	require.Equal(t, desc.OwnerKey.Family, fetched.OwnerKey.Family)
-	require.Equal(t, desc.OwnerKey.Index, fetched.OwnerKey.Index)
+	require.Equal(t, desc.ClientKey.Family, fetched.ClientKey.Family)
+	require.Equal(t, desc.ClientKey.Index, fetched.ClientKey.Index)
 
 	// Verify tree path was persisted.
 	require.NotNil(t, fetched.TreePath)
@@ -782,7 +788,7 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		Amount:      desc.Amount,
 		PkScript:    desc.PkScript,
 		Expiry:      desc.RelativeExpiry,
-		OwnerKey:    desc.OwnerKey,
+		OwnerKey:    desc.ClientKey,
 		OperatorKey: desc.OperatorKey,
 		TreePath:    desc.TreePath,
 		RoundID:     fn.Some(roundID),
@@ -796,6 +802,10 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		OutpointIndex: int32(desc.Outpoint.Index),
 	})
 	require.NoError(t, err)
+	require.Equal(
+		t, desc.PolicyTemplate, row.PolicyTemplate,
+		"initial policy template should be persisted",
+	)
 	require.Equal(
 		t, int32(0), row.BatchExpiry, "initial BatchExpiry should be 0",
 	)
@@ -817,6 +827,10 @@ func TestVTXOPersistenceStoreMetadataUpdate(t *testing.T) {
 		OutpointIndex: int32(desc.Outpoint.Index),
 	})
 	require.NoError(t, err)
+	require.Equal(
+		t, desc.PolicyTemplate, row.PolicyTemplate,
+		"policy template should be updated",
+	)
 	require.Equal(
 		t, desc.BatchExpiry, row.BatchExpiry,
 		"BatchExpiry should be updated",
